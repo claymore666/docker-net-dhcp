@@ -197,6 +197,13 @@ func vethPairNames(id string) (string, string) {
 // absent; an ErrIPAM-wrapped error when set but malformed or v6.
 // The bare-IP form is what udhcpc wants for `-r ADDR`; the mask is
 // supplied by the DHCP ACK, not the operator.
+//
+// Note: docker-engine itself rejects `--ip` for null-IPAM networks,
+// so this path only fires when the operator has wired up a non-null
+// IPAM driver, or when libnetwork synthesises an Interface.Address
+// from elsewhere. The driver-opt path (`--driver-opt ip=...`) is the
+// realistic UX for static-IP requests on this plugin's networks; see
+// parseDriverOptIP.
 func parseExplicitV4(iface *EndpointInterface) (string, error) {
 	if iface == nil || iface.Address == "" {
 		return "", nil
@@ -209,6 +216,56 @@ func parseExplicitV4(iface *EndpointInterface) (string, error) {
 		return "", fmt.Errorf("Interface.Address must be IPv4: got %q: %w", iface.Address, util.ErrIPAM)
 	}
 	return addr.IP.String(), nil
+}
+
+// resolveExplicitV4 collects an explicit IPv4 from either of the two
+// libnetwork channels: Interface.Address (from `docker run --ip`) or
+// the `ip` driver-opt (from `docker network connect --driver-opt
+// ip=...`). Returns "" when neither is set, an error when both are
+// set to different values, and the agreed value otherwise.
+func resolveExplicitV4(r CreateEndpointRequest) (string, error) {
+	fromIface, err := parseExplicitV4(r.Interface)
+	if err != nil {
+		return "", err
+	}
+	fromOpt, err := parseDriverOptIP(r.Options)
+	if err != nil {
+		return "", err
+	}
+	if fromIface != "" && fromOpt != "" && fromIface != fromOpt {
+		return "", fmt.Errorf("conflicting static IP: --ip=%q vs --driver-opt ip=%q: %w", fromIface, fromOpt, util.ErrIPAM)
+	}
+	if fromIface != "" {
+		return fromIface, nil
+	}
+	return fromOpt, nil
+}
+
+// parseDriverOptIP extracts the bare IPv4 address from an optional
+// `ip` driver-option. libnetwork places per-endpoint driver-opts
+// (from `docker network connect --driver-opt KEY=VAL`) as flat keys
+// in r.Options. Bare-IP form here, since that's how operators type
+// it on the command line; netmask comes from DHCP regardless. A v4
+// driver-opt `ip6` is also accepted but currently logged-and-skipped
+// because busybox udhcpc6 has no equivalent of `-r`.
+func parseDriverOptIP(options map[string]interface{}) (string, error) {
+	raw, ok := options["ip"]
+	if !ok {
+		return "", nil
+	}
+	s, ok := raw.(string)
+	if !ok || s == "" {
+		return "", fmt.Errorf("invalid driver-opt ip %v: expected non-empty string: %w", raw, util.ErrIPAM)
+	}
+	parsed := net.ParseIP(s)
+	if parsed == nil {
+		return "", fmt.Errorf("invalid driver-opt ip %q (want bare IPv4): %w", s, util.ErrIPAM)
+	}
+	v4 := parsed.To4()
+	if v4 == nil {
+		return "", fmt.Errorf("driver-opt ip must be IPv4: got %q: %w", s, util.ErrIPAM)
+	}
+	return v4.String(), nil
 }
 
 // netOptions returns the decoded options for a network, preferring the
@@ -270,7 +327,7 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 		}).Warn("Static IPv6 address requested but not yet wired through to udhcpc6; lease will come unhinted")
 	}
 
-	explicitV4, err := parseExplicitV4(r.Interface)
+	explicitV4, err := resolveExplicitV4(r)
 	if err != nil {
 		return res, err
 	}

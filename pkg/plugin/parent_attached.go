@@ -88,7 +88,7 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 	if r.Interface != nil {
 		effectiveMAC = r.Interface.MacAddress
 	}
-	explicitV4, err := parseExplicitV4(r.Interface)
+	explicitV4, err := resolveExplicitV4(r)
 	if err != nil {
 		return res, err
 	}

@@ -168,6 +168,46 @@ DHCP server has a free lease in its pool.
 **`docker plugin install` reports "invalid rootfs"** — your Docker daemon
 is too old. Plugin requires Docker 23+.
 
+## Static IP requests
+
+Plugin networks use `--ipam-driver=null`, which means `docker run --ip=`
+is rejected by the daemon before it ever reaches the plugin. To pin an
+IP per container, use the per-endpoint driver option instead — the
+plugin reads it as a hint and passes it to `udhcpc` as `-r ADDR` on the
+initial DISCOVER:
+
+```bash
+docker create --name app alpine sleep 600
+docker network connect --driver-opt ip=192.168.0.55 lan-dhcp app
+docker start app
+```
+
+Compose:
+
+```yaml
+services:
+  app:
+    image: alpine
+    command: sleep 600
+    networks:
+      lan-dhcp:
+        driver_opts:
+          ip: 192.168.0.55
+
+networks:
+  lan-dhcp:
+    external: true
+```
+
+Whether the upstream DHCP server actually honors the request is up to
+the server. Most enterprise DHCP servers (ISC, dnsmasq, Windows DHCP)
+do; Fritz.Box does **not** unless you also configure a UI-side static
+reservation for the container's MAC. With a stable MAC (which the
+plugin gives you across restarts), that reservation persists.
+
+`ip` must be a bare IPv4 address. IPv6 driver-opt is not yet wired
+through to `udhcpc6`.
+
 ## Restart stability (MAC and IP)
 
 The plugin keeps the container's MAC stable across `docker restart`

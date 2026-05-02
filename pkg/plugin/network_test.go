@@ -155,6 +155,99 @@ func TestParseExplicitV4(t *testing.T) {
 	}
 }
 
+func TestParseDriverOptIP(t *testing.T) {
+	cases := []struct {
+		name    string
+		opts    map[string]interface{}
+		wantIP  string
+		wantErr bool
+	}{
+		{name: "nil_map", opts: nil, wantIP: ""},
+		{name: "absent", opts: map[string]interface{}{"other": "x"}, wantIP: ""},
+		{name: "valid_v4", opts: map[string]interface{}{"ip": "192.168.0.55"}, wantIP: "192.168.0.55"},
+		{name: "v4_short_form", opts: map[string]interface{}{"ip": "10.0.0.1"}, wantIP: "10.0.0.1"},
+		{name: "cidr_form_rejected", opts: map[string]interface{}{"ip": "192.168.0.55/24"}, wantErr: true},
+		{name: "v6_rejected", opts: map[string]interface{}{"ip": "fe80::1"}, wantErr: true},
+		{name: "non_string_value", opts: map[string]interface{}{"ip": 42}, wantErr: true},
+		{name: "empty_string", opts: map[string]interface{}{"ip": ""}, wantErr: true},
+		{name: "garbage", opts: map[string]interface{}{"ip": "not-an-ip"}, wantErr: true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			ip, err := parseDriverOptIP(c.opts)
+			if c.wantErr {
+				if err == nil {
+					t.Errorf("expected error, got nil (ip=%q)", ip)
+				}
+				if err != nil && !errors.Is(err, util.ErrIPAM) {
+					t.Errorf("expected ErrIPAM, got %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+			if ip != c.wantIP {
+				t.Errorf("ip mismatch: got %q want %q", ip, c.wantIP)
+			}
+		})
+	}
+}
+
+func TestResolveExplicitV4(t *testing.T) {
+	cases := []struct {
+		name    string
+		r       CreateEndpointRequest
+		wantIP  string
+		wantErr bool
+	}{
+		{name: "neither", wantIP: ""},
+		{
+			name:   "iface_only",
+			r:      CreateEndpointRequest{Interface: &EndpointInterface{Address: "192.168.0.50/24"}},
+			wantIP: "192.168.0.50",
+		},
+		{
+			name:   "driver_opt_only",
+			r:      CreateEndpointRequest{Options: map[string]interface{}{"ip": "192.168.0.50"}},
+			wantIP: "192.168.0.50",
+		},
+		{
+			name: "both_agree",
+			r: CreateEndpointRequest{
+				Interface: &EndpointInterface{Address: "192.168.0.50/24"},
+				Options:   map[string]interface{}{"ip": "192.168.0.50"},
+			},
+			wantIP: "192.168.0.50",
+		},
+		{
+			name: "both_disagree",
+			r: CreateEndpointRequest{
+				Interface: &EndpointInterface{Address: "192.168.0.50/24"},
+				Options:   map[string]interface{}{"ip": "192.168.0.51"},
+			},
+			wantErr: true,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			ip, err := resolveExplicitV4(c.r)
+			if c.wantErr {
+				if err == nil {
+					t.Errorf("expected error, got nil (ip=%q)", ip)
+				}
+				return
+			}
+			if err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+			if ip != c.wantIP {
+				t.Errorf("ip mismatch: got %q want %q", ip, c.wantIP)
+			}
+		})
+	}
+}
+
 func TestValidateIPAMData(t *testing.T) {
 	cases := []struct {
 		name    string
