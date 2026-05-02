@@ -227,12 +227,12 @@ func (p *Plugin) apiLeave(w http.ResponseWriter, r *http.Request) {
 // expiry. Operators should restart those containers (which produces a
 // fresh CreateEndpoint and gets them back into the persistent map).
 type HealthResponse struct {
-	Healthy          bool    `json:"healthy"`
-	UptimeSeconds    float64 `json:"uptime_seconds"`
-	ActiveEndpoints  int     `json:"active_endpoints"`
-	PendingHints     int     `json:"pending_hints"`
-	RecoveredOK      int32   `json:"recovered_ok"`
-	RecoveryFailed   int32   `json:"recovery_failed"`
+	Healthy         bool    `json:"healthy"`
+	UptimeSeconds   float64 `json:"uptime_seconds"`
+	ActiveEndpoints int     `json:"active_endpoints"`
+	PendingHints    int     `json:"pending_hints"`
+	RecoveredOK     int32   `json:"recovered_ok"`
+	RecoveryFailed  int32   `json:"recovery_failed"`
 }
 
 func (p *Plugin) apiHealth(w http.ResponseWriter, r *http.Request) {

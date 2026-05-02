@@ -30,7 +30,7 @@ const DriverName string = "net-dhcp"
 // happen on malformed daemon responses during recovery).
 func shortID(id string) string {
 	if len(id) >= 12 {
-		return shortID(id)
+		return id[:12]
 	}
 	return id
 }
@@ -176,8 +176,8 @@ type Plugin struct {
 	// operators can see whether plugin-restart recovery succeeded for
 	// every previously-attached container or whether some containers
 	// are now running without renewal.
-	recoveredOK     atomic.Int32
-	recoveryFailed  atomic.Int32
+	recoveredOK    atomic.Int32
+	recoveryFailed atomic.Int32
 }
 
 // storeJoinHint records the state collected during CreateEndpoint so
