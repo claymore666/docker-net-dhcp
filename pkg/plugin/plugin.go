@@ -139,7 +139,7 @@ type Plugin struct {
 	docker *docker.Client
 	server http.Server
 
-	// mu guards joinHints, persistentDHCP, and endpointMACs.
+	// mu guards joinHints, persistentDHCP, and endpointFingerprints.
 	// libnetwork dispatches CreateEndpoint / Join / Leave from
 	// concurrent HTTP handlers, each of which touches one or more
 	// of these maps; without the mutex the race detector reproduces
@@ -147,12 +147,13 @@ type Plugin struct {
 	mu             sync.Mutex
 	joinHints      map[string]joinHint
 	persistentDHCP map[string]*dhcpManager
-	// endpointMACs records the MAC chosen at CreateEndpoint so
-	// DeleteEndpoint can stash it as a tombstone for the next
-	// CreateEndpoint on the same network to inherit. Necessary
-	// because by DeleteEndpoint time the dhcpManager (which also
-	// holds the MAC) has already been taken by Leave.
-	endpointMACs map[string]string
+	// endpointFingerprints records the MAC and last-known IPv4 of
+	// each live endpoint so DeleteEndpoint can stash both as a
+	// tombstone for the next CreateEndpoint on the same network to
+	// inherit. By DeleteEndpoint time the dhcpManager (which also
+	// holds these) has already been taken by Leave, so we keep our
+	// own copy.
+	endpointFingerprints map[string]endpointFingerprint
 
 	// tombstoneMu serializes the tombstones.json read-modify-write
 	// path. Held only across that small operation; never combined
@@ -214,38 +215,48 @@ func (p *Plugin) takeDHCPManager(endpointID string) (*dhcpManager, bool) {
 	return m, ok
 }
 
-// rememberEndpointMAC stashes the MAC of an endpoint we just created
-// so DeleteEndpoint can resurrect it as a tombstone later. No-op for
-// empty MACs (avoids polluting the map for failed CreateEndpoints).
-func (p *Plugin) rememberEndpointMAC(endpointID, mac string) {
-	if mac == "" {
+// endpointFingerprint is the stable identity of a live endpoint we
+// remember between CreateEndpoint and DeleteEndpoint. When the
+// endpoint is deleted these fields become a tombstone for the next
+// CreateEndpoint on the same network to inherit.
+type endpointFingerprint struct {
+	MAC  string
+	IPv4 string // bare IPv4, e.g. "192.168.0.166" (no /mask). May be empty.
+}
+
+// rememberEndpoint stashes the fingerprint of an endpoint we just
+// created so DeleteEndpoint can resurrect it as a tombstone later.
+// No-op when the MAC is empty (avoids polluting the map for failed
+// CreateEndpoints).
+func (p *Plugin) rememberEndpoint(endpointID string, fp endpointFingerprint) {
+	if fp.MAC == "" {
 		return
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.endpointMACs[endpointID] = mac
+	p.endpointFingerprints[endpointID] = fp
 }
 
-// takeEndpointMAC atomically retrieves and deletes the remembered MAC
-// for an endpoint. Returns ok=false if no MAC was recorded (e.g. an
-// endpoint created before this build, or a CreateEndpoint that failed
-// before reaching the rememberEndpointMAC call).
-func (p *Plugin) takeEndpointMAC(endpointID string) (string, bool) {
+// takeEndpoint atomically retrieves and deletes the remembered
+// fingerprint for an endpoint. Returns ok=false if no fingerprint
+// was recorded (e.g. an endpoint created before this build, or a
+// CreateEndpoint that failed before reaching the remember call).
+func (p *Plugin) takeEndpoint(endpointID string) (endpointFingerprint, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	mac, ok := p.endpointMACs[endpointID]
+	fp, ok := p.endpointFingerprints[endpointID]
 	if ok {
-		delete(p.endpointMACs, endpointID)
+		delete(p.endpointFingerprints, endpointID)
 	}
-	return mac, ok
+	return fp, ok
 }
 
-// addTombstone appends a tombstone for a deleted endpoint's MAC so the
+// addTombstone appends a tombstone for a deleted endpoint so the
 // next CreateEndpoint on the same network within tombstoneTTL can
-// inherit it. Best-effort: a disk failure here just means MAC stability
-// across this particular `docker restart` is lost; it's logged and the
-// flow continues.
-func (p *Plugin) addTombstone(networkID, mac string) {
+// inherit its MAC and last IP. Best-effort: a disk failure here just
+// means restart-stability for this particular event is lost; it's
+// logged and the flow continues.
+func (p *Plugin) addTombstone(networkID, mac, ip string) {
 	if mac == "" {
 		return
 	}
@@ -259,26 +270,27 @@ func (p *Plugin) addTombstone(networkID, mac string) {
 	ts = append(pruneTombstones(ts), tombstone{
 		NetworkID:  networkID,
 		MacAddress: mac,
+		IPAddress:  ip,
 		DeletedAt:  time.Now(),
 	})
 	if err := saveTombstones(ts); err != nil {
-		log.WithError(err).Warn("Failed to persist tombstone; container restart may pick a new MAC")
+		log.WithError(err).Warn("Failed to persist tombstone; container restart may pick a new MAC/IP")
 	}
 }
 
 // consumeTombstone returns and removes a tombstone for networkID iff
 // EXACTLY one fresh entry exists for it. The "exactly one" rule
 // avoids ambiguity when multiple containers on the same network are
-// restarted concurrently — those fall back to fresh MACs rather than
-// risk swapping MACs between containers. Sequential restarts (the
-// common case) always satisfy the rule.
-func (p *Plugin) consumeTombstone(networkID string) (string, bool) {
+// restarted concurrently — those fall back to fresh MACs/IPs rather
+// than risk swapping identities between containers. Sequential
+// restarts (the common case) always satisfy the rule.
+func (p *Plugin) consumeTombstone(networkID string) (mac, ip string, ok bool) {
 	p.tombstoneMu.Lock()
 	defer p.tombstoneMu.Unlock()
 	ts, err := loadTombstones()
 	if err != nil {
 		log.WithError(err).Warn("Failed to load tombstones; treating as empty")
-		return "", false
+		return "", "", false
 	}
 	ts = pruneTombstones(ts)
 	matchIdx := -1
@@ -294,14 +306,15 @@ func (p *Plugin) consumeTombstone(networkID string) (string, bool) {
 		if err := saveTombstones(ts); err != nil {
 			log.WithError(err).Debug("Failed to persist pruned tombstones")
 		}
-		return "", false
+		return "", "", false
 	}
-	mac := ts[matchIdx].MacAddress
+	mac = ts[matchIdx].MacAddress
+	ip = ts[matchIdx].IPAddress
 	ts = append(ts[:matchIdx], ts[matchIdx+1:]...)
 	if err := saveTombstones(ts); err != nil {
 		log.WithError(err).Warn("Failed to persist tombstones after consume")
 	}
-	return mac, true
+	return mac, ip, true
 }
 
 // recoverEndpoints walks Docker's networks, finds the ones served by
@@ -538,9 +551,9 @@ func NewPlugin(awaitTimeout time.Duration) (*Plugin, error) {
 
 		docker: client,
 
-		joinHints:      make(map[string]joinHint),
-		persistentDHCP: make(map[string]*dhcpManager),
-		endpointMACs:   make(map[string]string),
+		joinHints:            make(map[string]joinHint),
+		persistentDHCP:       make(map[string]*dhcpManager),
+		endpointFingerprints: make(map[string]endpointFingerprint),
 	}
 
 	mux := http.NewServeMux()

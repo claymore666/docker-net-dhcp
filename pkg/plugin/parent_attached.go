@@ -78,7 +78,7 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 		return res, err
 	}
 
-	// MAC selection: explicit > tombstone > kernel-picked. ipvlan
+	// MAC/IP selection: explicit > tombstone > kernel-picked. ipvlan
 	// children share the parent's MAC and ignore HardwareAddr, so
 	// the tombstone path doesn't apply there (and an explicit MAC is
 	// rejected loudly to avoid silent misconfiguration).
@@ -86,14 +86,17 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 	if r.Interface != nil {
 		effectiveMAC = r.Interface.MacAddress
 	}
+	requestedIP := ""
 	if mode == ModeMacvlan && effectiveMAC == "" {
-		if tomb, ok := p.consumeTombstone(r.NetworkID); ok {
-			effectiveMAC = tomb
+		if tombMAC, tombIP, ok := p.consumeTombstone(r.NetworkID); ok {
+			effectiveMAC = tombMAC
+			requestedIP = tombIP
 			log.WithFields(log.Fields{
-				"network":     r.NetworkID[:12],
-				"endpoint":    r.EndpointID[:12],
-				"mac_address": tomb,
-			}).Info("Inherited MAC from recent endpoint on same network (likely container restart)")
+				"network":      r.NetworkID[:12],
+				"endpoint":     r.EndpointID[:12],
+				"mac_address":  tombMAC,
+				"requested_ip": tombIP,
+			}).Info("Inherited MAC/IP from recent endpoint on same network (likely container restart)")
 		}
 	}
 
@@ -161,11 +164,15 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 			tCtx, cancel := context.WithTimeout(ctx, timeout)
 			defer cancel()
 
-			info, err := udhcpc.GetIP(tCtx, la.Name, &udhcpc.DHCPClientOptions{
+			clientOpts := &udhcpc.DHCPClientOptions{
 				V6:       v6,
 				Hostname: hostname,
 				ClientID: clientID,
-			})
+			}
+			if !v6 {
+				clientOpts.RequestedIP = requestedIP
+			}
+			info, err := udhcpc.GetIP(tCtx, la.Name, clientOpts)
 			if err != nil {
 				return fmt.Errorf("failed to get initial IP%v address via DHCP%v: %w", v6str, v6str, err)
 			}
@@ -208,17 +215,20 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 		return res, err
 	}
 
-	var hintMAC, hintGW string
+	var hintMAC, hintGW, hintIPv4 string
 	p.updateJoinHint(r.EndpointID, func(h *joinHint) {
 		hintMAC = h.MacAddress.String()
 		hintGW = h.Gateway
+		if h.IPv4 != nil {
+			hintIPv4 = h.IPv4.IP.String()
+		}
 	})
 
-	// Remember the chosen MAC so DeleteEndpoint can stash it as a
-	// tombstone. macvlan only — for ipvlan the MAC is the parent's
-	// and there's nothing to stabilize.
+	// Remember the chosen MAC and IP so DeleteEndpoint can stash
+	// both as a tombstone. macvlan only — for ipvlan the MAC is the
+	// parent's and there's nothing to stabilize.
 	if mode == ModeMacvlan {
-		p.rememberEndpointMAC(r.EndpointID, hintMAC)
+		p.rememberEndpoint(r.EndpointID, endpointFingerprint{MAC: hintMAC, IPv4: hintIPv4})
 	}
 
 	log.WithFields(log.Fields{

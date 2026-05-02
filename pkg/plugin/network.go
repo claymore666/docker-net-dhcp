@@ -260,19 +260,23 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 	// MAC selection: an explicit MAC from libnetwork wins. Otherwise
 	// see if the previous endpoint on this network was deleted within
 	// tombstoneTTL — if exactly one tombstone matches, this is almost
-	// certainly the same container coming back from `docker restart`,
-	// and reusing its MAC keeps the upstream DHCP lease stable
-	// (Fritz.Box keys reservations on MAC, so a fresh MAC every
-	// restart pollutes its lease table with stale entries).
+	// certainly the same container coming back from `docker restart`.
+	// Reusing the MAC keeps Fritz.Box from accumulating stale (MAC,
+	// IP) entries in its lease table; reusing the IP via udhcpc's
+	// `-r` request hint keeps the same lease attached even when the
+	// upstream rotates pool addresses on each unhinted DISCOVER.
 	effectiveMAC := r.Interface.MacAddress
+	requestedIP := ""
 	if effectiveMAC == "" {
-		if mac, ok := p.consumeTombstone(r.NetworkID); ok {
+		if mac, ip, ok := p.consumeTombstone(r.NetworkID); ok {
 			effectiveMAC = mac
+			requestedIP = ip
 			log.WithFields(log.Fields{
-				"network":     r.NetworkID[:12],
-				"endpoint":    r.EndpointID[:12],
-				"mac_address": mac,
-			}).Info("Inherited MAC from recent endpoint on same network (likely container restart)")
+				"network":      r.NetworkID[:12],
+				"endpoint":     r.EndpointID[:12],
+				"mac_address":  mac,
+				"requested_ip": ip,
+			}).Info("Inherited MAC/IP from recent endpoint on same network (likely container restart)")
 		}
 	}
 
@@ -348,11 +352,17 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 			timeoutCtx, cancel := context.WithTimeout(ctx, timeout)
 			defer cancel()
 
-			info, err := udhcpc.GetIP(timeoutCtx, ctrName, &udhcpc.DHCPClientOptions{
+			clientOpts := &udhcpc.DHCPClientOptions{
 				V6:       v6,
 				Hostname: hostname,
 				ClientID: clientID,
-			})
+			}
+			// RequestedIP is v4-only in udhcpc; passing it for v6
+			// would be silently ignored anyway, but keep it explicit.
+			if !v6 {
+				clientOpts.RequestedIP = requestedIP
+			}
+			info, err := udhcpc.GetIP(timeoutCtx, ctrName, clientOpts)
 			if err != nil {
 				return fmt.Errorf("failed to get initial IP%v address via DHCP%v: %w", v6str, v6str, err)
 			}
@@ -397,15 +407,22 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 	}
 
 	gateway := ""
-	p.updateJoinHint(r.EndpointID, func(h *joinHint) { gateway = h.Gateway })
+	var v4IP string
+	p.updateJoinHint(r.EndpointID, func(h *joinHint) {
+		gateway = h.Gateway
+		if h.IPv4 != nil {
+			v4IP = h.IPv4.IP.String()
+		}
+	})
 
-	// Remember the chosen MAC so DeleteEndpoint can stash it as a
-	// tombstone for the next CreateEndpoint on the same network.
+	// Remember the chosen MAC and IP so DeleteEndpoint can stash
+	// both as a tombstone for the next CreateEndpoint on the same
+	// network.
 	mac := r.Interface.MacAddress
 	if mac == "" {
 		mac = res.Interface.MacAddress
 	}
-	p.rememberEndpointMAC(r.EndpointID, mac)
+	p.rememberEndpoint(r.EndpointID, endpointFingerprint{MAC: mac, IPv4: v4IP})
 
 	log.WithFields(log.Fields{
 		"network":     r.NetworkID[:12],
@@ -470,8 +487,8 @@ func (p *Plugin) DeleteEndpoint(ctx context.Context, r DeleteEndpointRequest) er
 	// network to inherit. ipvlan children share the parent MAC, so
 	// the tombstone is meaningless there (we'd just be re-handing the
 	// parent MAC back, which the kernel inherits anyway) — skip it.
-	if mac, ok := p.takeEndpointMAC(r.EndpointID); ok && opts.effectiveMode() != ModeIPvlan {
-		p.addTombstone(r.NetworkID, mac)
+	if fp, ok := p.takeEndpoint(r.EndpointID); ok && opts.effectiveMode() != ModeIPvlan {
+		p.addTombstone(r.NetworkID, fp.MAC, fp.IPv4)
 	}
 
 	if m := opts.effectiveMode(); m == ModeMacvlan || m == ModeIPvlan {
