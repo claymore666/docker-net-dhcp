@@ -112,6 +112,19 @@ The host's NIC config (IP, routes, netplan/`systemd-networkd`,
 - **ipvlan-specific:** only L2 mode is supported. ipvlan L3 / L3S
   modes are not used because they'd break DHCP (DHCP requires L2
   broadcast).
+- **ipvlan-specific (known limitation):** the DHCP exchange may not
+  succeed with all DHCP servers. ipvlan children share the parent's
+  MAC, so during DHCP discovery the server cannot differentiate
+  multiple clients on the same parent by MAC. Some DHCP servers
+  (including AVM Fritz.Box) won't reply correctly in this case and
+  the lease acquisition times out. ipvlan currently works only with
+  DHCP servers that handle shared-MAC clients (typically those that
+  honour DHCP option 61 / client identifier). If your DHCP server
+  doesn't, use `mode=macvlan` instead. Future work: udhcpc client-id
+  support.
+- **ipvlan-specific:** only one of macvlan or ipvlan can be active on
+  a given parent NIC at a time. The kernel rejects mixing them with
+  `EBUSY`. Use one mode per parent.
 - The plugin requires `--ipam-driver=null` because the LAN's DHCP
   server is the address source of truth, not Docker's IPAM.
 - One DHCP-served network per container. If a container also joins a
