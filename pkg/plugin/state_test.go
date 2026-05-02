@@ -123,3 +123,109 @@ func TestSaveOptions_CreatesStateDir(t *testing.T) {
 		t.Errorf("expected file to exist: %v", err)
 	}
 }
+
+func TestTombstones_RoundtripAndConsume(t *testing.T) {
+	withStateDir(t, t.TempDir())
+
+	p := &Plugin{
+		joinHints:      make(map[string]joinHint),
+		persistentDHCP: make(map[string]*dhcpManager),
+		endpointMACs:   make(map[string]string),
+	}
+
+	// Empty state: no tombstones to consume.
+	if mac, ok := p.consumeTombstone("net-A"); ok {
+		t.Errorf("consumeTombstone on empty state returned (%q, true), want (\"\", false)", mac)
+	}
+
+	// One tombstone for net-A → next consumeTombstone for net-A wins.
+	p.addTombstone("net-A", "02:42:ac:11:00:01")
+	mac, ok := p.consumeTombstone("net-A")
+	if !ok || mac != "02:42:ac:11:00:01" {
+		t.Errorf("consumeTombstone net-A: got (%q, %v), want (02:42:ac:11:00:01, true)", mac, ok)
+	}
+	// Tombstone is consumed exactly once.
+	if mac, ok := p.consumeTombstone("net-A"); ok {
+		t.Errorf("second consumeTombstone returned (%q, true); should be empty after consume", mac)
+	}
+}
+
+func TestTombstones_DifferentNetworksDoNotMix(t *testing.T) {
+	withStateDir(t, t.TempDir())
+	p := &Plugin{
+		joinHints:      make(map[string]joinHint),
+		persistentDHCP: make(map[string]*dhcpManager),
+		endpointMACs:   make(map[string]string),
+	}
+	p.addTombstone("net-A", "aa:aa:aa:aa:aa:aa")
+	p.addTombstone("net-B", "bb:bb:bb:bb:bb:bb")
+
+	if mac, ok := p.consumeTombstone("net-A"); !ok || mac != "aa:aa:aa:aa:aa:aa" {
+		t.Errorf("net-A consume: got (%q, %v)", mac, ok)
+	}
+	if mac, ok := p.consumeTombstone("net-B"); !ok || mac != "bb:bb:bb:bb:bb:bb" {
+		t.Errorf("net-B consume: got (%q, %v)", mac, ok)
+	}
+}
+
+func TestTombstones_TwoOnSameNetworkBothSkipped(t *testing.T) {
+	withStateDir(t, t.TempDir())
+	p := &Plugin{
+		joinHints:      make(map[string]joinHint),
+		persistentDHCP: make(map[string]*dhcpManager),
+		endpointMACs:   make(map[string]string),
+	}
+	p.addTombstone("net-A", "aa:aa:aa:aa:aa:aa")
+	p.addTombstone("net-A", "bb:bb:bb:bb:bb:bb")
+
+	// Two matches on same network → ambiguous, return ok=false.
+	// The point is to avoid handing one container's MAC to a
+	// concurrently-restarting peer.
+	if mac, ok := p.consumeTombstone("net-A"); ok {
+		t.Errorf("consumeTombstone with 2 candidates should return ok=false, got (%q, true)", mac)
+	}
+}
+
+func TestTombstones_ExpiredEntriesPruned(t *testing.T) {
+	withStateDir(t, t.TempDir())
+	// Hand-craft an expired entry directly to disk (faster than
+	// sleeping for tombstoneTTL in a test).
+	old := []tombstone{{
+		NetworkID:  "net-A",
+		MacAddress: "ff:ff:ff:ff:ff:ff",
+		DeletedAt:  time.Now().Add(-2 * tombstoneTTL),
+	}}
+	if err := saveTombstones(old); err != nil {
+		t.Fatalf("saveTombstones: %v", err)
+	}
+	p := &Plugin{
+		joinHints:      make(map[string]joinHint),
+		persistentDHCP: make(map[string]*dhcpManager),
+		endpointMACs:   make(map[string]string),
+	}
+	if mac, ok := p.consumeTombstone("net-A"); ok {
+		t.Errorf("expired tombstone should not be consumed, got (%q, true)", mac)
+	}
+}
+
+func TestRememberAndTakeEndpointMAC(t *testing.T) {
+	p := &Plugin{
+		joinHints:      make(map[string]joinHint),
+		persistentDHCP: make(map[string]*dhcpManager),
+		endpointMACs:   make(map[string]string),
+	}
+	p.rememberEndpointMAC("ep-1", "02:42:ac:11:00:02")
+	mac, ok := p.takeEndpointMAC("ep-1")
+	if !ok || mac != "02:42:ac:11:00:02" {
+		t.Errorf("take after remember: got (%q, %v)", mac, ok)
+	}
+	if _, ok := p.takeEndpointMAC("ep-1"); ok {
+		t.Errorf("take must remove the entry it returned")
+	}
+	// Empty MAC must not be remembered (avoids polluting map for
+	// failed CreateEndpoints).
+	p.rememberEndpointMAC("ep-2", "")
+	if _, ok := p.takeEndpointMAC("ep-2"); ok {
+		t.Errorf("rememberEndpointMAC on empty MAC must be a no-op")
+	}
+}

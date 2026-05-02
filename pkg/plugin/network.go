@@ -257,6 +257,25 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 		return res, fmt.Errorf("failed to get bridge interface: %w", err)
 	}
 
+	// MAC selection: an explicit MAC from libnetwork wins. Otherwise
+	// see if the previous endpoint on this network was deleted within
+	// tombstoneTTL — if exactly one tombstone matches, this is almost
+	// certainly the same container coming back from `docker restart`,
+	// and reusing its MAC keeps the upstream DHCP lease stable
+	// (Fritz.Box keys reservations on MAC, so a fresh MAC every
+	// restart pollutes its lease table with stale entries).
+	effectiveMAC := r.Interface.MacAddress
+	if effectiveMAC == "" {
+		if mac, ok := p.consumeTombstone(r.NetworkID); ok {
+			effectiveMAC = mac
+			log.WithFields(log.Fields{
+				"network":     r.NetworkID[:12],
+				"endpoint":    r.EndpointID[:12],
+				"mac_address": mac,
+			}).Info("Inherited MAC from recent endpoint on same network (likely container restart)")
+		}
+	}
+
 	hostName, ctrName := vethPairNames(r.EndpointID)
 	la := netlink.NewLinkAttrs()
 	la.Name = hostName
@@ -264,8 +283,8 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 		LinkAttrs: la,
 		PeerName:  ctrName,
 	}
-	if r.Interface.MacAddress != "" {
-		addr, err := net.ParseMAC(r.Interface.MacAddress)
+	if effectiveMAC != "" {
+		addr, err := net.ParseMAC(effectiveMAC)
 		if err != nil {
 			return res, util.ErrMACAddress
 		}
@@ -289,14 +308,21 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 			return fmt.Errorf("failed to set container side link of veth pair up: %w", err)
 		}
 
-		// Only write back the MAC address if it wasn't provided to us by libnetwork
-		if r.Interface.MacAddress == "" {
-			// The kernel will often reset a randomly assigned MAC address after actions like LinkSetMaster. We prevent
-			// this behaviour by setting it manually to the random value
+		// Pin the container-side MAC. The kernel will often reset a
+		// randomly assigned MAC after actions like LinkSetMaster, and
+		// we need it to stay the value we (or the tombstone) chose.
+		if effectiveMAC == "" {
 			if err := netlink.LinkSetHardwareAddr(ctrLink, ctrLink.Attrs().HardwareAddr); err != nil {
 				return fmt.Errorf("failed to set container side of veth pair's MAC address: %w", err)
 			}
-
+		}
+		// Tell libnetwork the MAC iff it didn't tell us. The
+		// tombstone-inherited case falls into this branch — libnetwork
+		// passed an empty MAC and we picked one, so docker inspect
+		// needs us to surface it. For the libnetwork-provided case,
+		// res.Interface.MacAddress stays empty (signals "we kept what
+		// you sent").
+		if r.Interface.MacAddress == "" {
 			res.Interface.MacAddress = ctrLink.Attrs().HardwareAddr.String()
 		}
 
@@ -372,10 +398,19 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 
 	gateway := ""
 	p.updateJoinHint(r.EndpointID, func(h *joinHint) { gateway = h.Gateway })
+
+	// Remember the chosen MAC so DeleteEndpoint can stash it as a
+	// tombstone for the next CreateEndpoint on the same network.
+	mac := r.Interface.MacAddress
+	if mac == "" {
+		mac = res.Interface.MacAddress
+	}
+	p.rememberEndpointMAC(r.EndpointID, mac)
+
 	log.WithFields(log.Fields{
 		"network":     r.NetworkID[:12],
 		"endpoint":    r.EndpointID[:12],
-		"mac_address": res.Interface.MacAddress,
+		"mac_address": mac,
 		"ip":          res.Interface.Address,
 		"ipv6":        res.Interface.AddressIPv6,
 		"gateway":     gateway,
@@ -429,6 +464,14 @@ func (p *Plugin) DeleteEndpoint(ctx context.Context, r DeleteEndpointRequest) er
 	opts, err := p.netOptions(ctx, r.NetworkID)
 	if err != nil {
 		return fmt.Errorf("failed to get network options: %w", err)
+	}
+
+	// Lay down a tombstone for the next CreateEndpoint on this
+	// network to inherit. ipvlan children share the parent MAC, so
+	// the tombstone is meaningless there (we'd just be re-handing the
+	// parent MAC back, which the kernel inherits anyway) — skip it.
+	if mac, ok := p.takeEndpointMAC(r.EndpointID); ok && opts.effectiveMode() != ModeIPvlan {
+		p.addTombstone(r.NetworkID, mac)
 	}
 
 	if m := opts.effectiveMode(); m == ModeMacvlan || m == ModeIPvlan {

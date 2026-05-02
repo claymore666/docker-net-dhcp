@@ -78,17 +78,38 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 		return res, err
 	}
 
+	// MAC selection: explicit > tombstone > kernel-picked. ipvlan
+	// children share the parent's MAC and ignore HardwareAddr, so
+	// the tombstone path doesn't apply there (and an explicit MAC is
+	// rejected loudly to avoid silent misconfiguration).
+	effectiveMAC := ""
+	if r.Interface != nil {
+		effectiveMAC = r.Interface.MacAddress
+	}
+	if mode == ModeMacvlan && effectiveMAC == "" {
+		if tomb, ok := p.consumeTombstone(r.NetworkID); ok {
+			effectiveMAC = tomb
+			log.WithFields(log.Fields{
+				"network":     r.NetworkID[:12],
+				"endpoint":    r.EndpointID[:12],
+				"mac_address": tomb,
+			}).Info("Inherited MAC from recent endpoint on same network (likely container restart)")
+		}
+	}
+
 	la := netlink.NewLinkAttrs()
 	la.Name = subLinkName(r.EndpointID)
 	la.ParentIndex = parent.Attrs().Index
-	if r.Interface != nil && r.Interface.MacAddress != "" {
+	if effectiveMAC != "" {
 		// ipvlan children share the parent's MAC by design; libnetwork
 		// passing us a custom MAC would silently get ignored, so we
-		// fail loudly instead.
+		// fail loudly instead. (Tombstones are filtered out above for
+		// ipvlan, so reaching this branch in ipvlan mode means the
+		// caller really did request a custom MAC.)
 		if mode == ModeIPvlan {
 			return res, fmt.Errorf("%w: ipvlan does not support a custom MAC address (children share the parent's MAC)", util.ErrMACAddress)
 		}
-		mac, err := net.ParseMAC(r.Interface.MacAddress)
+		mac, err := net.ParseMAC(effectiveMAC)
 		if err != nil {
 			return res, util.ErrMACAddress
 		}
@@ -192,6 +213,14 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 		hintMAC = h.MacAddress.String()
 		hintGW = h.Gateway
 	})
+
+	// Remember the chosen MAC so DeleteEndpoint can stash it as a
+	// tombstone. macvlan only — for ipvlan the MAC is the parent's
+	// and there's nothing to stabilize.
+	if mode == ModeMacvlan {
+		p.rememberEndpointMAC(r.EndpointID, hintMAC)
+	}
+
 	log.WithFields(log.Fields{
 		"network":     r.NetworkID[:12],
 		"endpoint":    r.EndpointID[:12],
