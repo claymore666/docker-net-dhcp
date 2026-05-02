@@ -346,6 +346,12 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 		return res, fmt.Errorf("failed to get bridge interface: %w", err)
 	}
 
+	// Look up the hostname up front so we can scope tombstone matching
+	// to the same container (prevents identity swap during sequential
+	// `compose restart`). Best-effort: if the lookup misses or returns
+	// empty, consumeTombstone falls back to network-only matching.
+	hostname := p.initialDHCPHostname(ctx, r.NetworkID, r.EndpointID)
+
 	// MAC/IP selection priority:
 	//   1. Explicit values from libnetwork (`--mac-address`, `--ip`)
 	//   2. Tombstone (recently-deleted endpoint on the same network)
@@ -356,7 +362,7 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 	effectiveMAC := r.Interface.MacAddress
 	requestedIP := explicitV4
 	if effectiveMAC == "" {
-		if mac, ip, ipv6, ok := p.consumeTombstone(r.NetworkID); ok {
+		if mac, ip, ipv6, ok := p.consumeTombstone(r.NetworkID, hostname); ok {
 			effectiveMAC = mac
 			if requestedIP == "" {
 				requestedIP = ip
@@ -369,6 +375,7 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 			log.WithFields(log.Fields{
 				"network":      shortID(r.NetworkID),
 				"endpoint":     shortID(r.EndpointID),
+				"hostname":     hostname,
 				"mac_address":  mac,
 				"requested_ip": requestedIP,
 				"prior_ipv6":   ipv6,
@@ -434,10 +441,6 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 		if opts.LeaseTimeout != 0 {
 			timeout = opts.LeaseTimeout
 		}
-		// Best-effort hostname for the initial DISCOVER. Empty if the
-		// container isn't yet registered with this network — the
-		// persistent renewal client will fill it in later.
-		hostname := p.initialDHCPHostname(ctx, r.NetworkID, r.EndpointID)
 		clientID := clientIDFromEndpoint(r.EndpointID)
 		initialIP := func(v6 bool) error {
 			v6str := ""
@@ -521,7 +524,7 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 	if mac == "" {
 		mac = res.Interface.MacAddress
 	}
-	p.rememberEndpoint(r.EndpointID, endpointFingerprint{MAC: mac, IPv4: v4IP, IPv6: v6IP})
+	p.rememberEndpoint(r.EndpointID, endpointFingerprint{MAC: mac, IPv4: v4IP, IPv6: v6IP, Hostname: hostname})
 
 	log.WithFields(log.Fields{
 		"network":     shortID(r.NetworkID),
@@ -587,7 +590,7 @@ func (p *Plugin) DeleteEndpoint(ctx context.Context, r DeleteEndpointRequest) er
 	// the tombstone is meaningless there (we'd just be re-handing the
 	// parent MAC back, which the kernel inherits anyway) — skip it.
 	if fp, ok := p.takeEndpoint(r.EndpointID); ok && opts.effectiveMode() != ModeIPvlan {
-		p.addTombstone(r.NetworkID, fp.MAC, fp.IPv4, fp.IPv6)
+		p.addTombstone(r.NetworkID, fp.Hostname, fp.MAC, fp.IPv4, fp.IPv6)
 	}
 
 	if m := opts.effectiveMode(); m == ModeMacvlan || m == ModeIPvlan {

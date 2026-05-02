@@ -48,6 +48,15 @@ const tombstoneTTL = 10 * time.Second
 type tombstone struct {
 	NetworkID  string `json:"network_id"`
 	MacAddress string `json:"mac_address"`
+	// Hostname, when non-empty, narrows tombstone matching to "same
+	// container" instead of "any container on the network". Without
+	// it, a sequential `compose restart` of N containers can let
+	// container B inherit container A's MAC during the brief window
+	// where A's tombstone is still fresh. With it, consumeTombstone
+	// requires NetworkID+Hostname to match. Empty hostname falls back
+	// to network-only matching (preserves the v0.5.0 contract for
+	// hostname-less containers and cases where the lookup raced).
+	Hostname string `json:"hostname,omitempty"`
 	// IPAddress, when non-empty, is the bare IPv4 address (no /mask)
 	// from the previous endpoint's lease. The next CreateEndpoint
 	// passes it to udhcpc as `-r ADDR` so the upstream DHCP server

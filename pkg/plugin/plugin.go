@@ -239,9 +239,10 @@ func (p *Plugin) takeDHCPManager(endpointID string) (*dhcpManager, bool) {
 // endpoint is deleted these fields become a tombstone for the next
 // CreateEndpoint on the same network to inherit.
 type endpointFingerprint struct {
-	MAC  string
-	IPv4 string // bare IPv4, e.g. "192.168.0.166" (no /mask). May be empty.
-	IPv6 string // bare IPv6, e.g. "2001:db8::1" (no /prefix). May be empty.
+	MAC      string
+	IPv4     string // bare IPv4, e.g. "192.168.0.166" (no /mask). May be empty.
+	IPv6     string // bare IPv6, e.g. "2001:db8::1" (no /prefix). May be empty.
+	Hostname string // container hostname; used to narrow tombstone match.
 }
 
 // rememberEndpoint stashes the fingerprint of an endpoint we just
@@ -298,10 +299,11 @@ func (p *Plugin) takeEndpoint(endpointID string) (endpointFingerprint, bool) {
 
 // addTombstone appends a tombstone for a deleted endpoint so the
 // next CreateEndpoint on the same network within tombstoneTTL can
-// inherit its MAC and last IP/IPv6. Best-effort: a disk failure
-// here just means restart-stability for this particular event is
-// lost; it's logged and the flow continues.
-func (p *Plugin) addTombstone(networkID, mac, ipv4, ipv6 string) {
+// inherit its MAC and last IP/IPv6. hostname narrows the match in
+// consumeTombstone to the same container. Best-effort: a disk
+// failure here just means restart-stability for this particular
+// event is lost; it's logged and the flow continues.
+func (p *Plugin) addTombstone(networkID, hostname, mac, ipv4, ipv6 string) {
 	if mac == "" {
 		return
 	}
@@ -314,6 +316,7 @@ func (p *Plugin) addTombstone(networkID, mac, ipv4, ipv6 string) {
 	}
 	ts = append(pruneTombstones(ts), tombstone{
 		NetworkID:   networkID,
+		Hostname:    hostname,
 		MacAddress:  mac,
 		IPAddress:   ipv4,
 		IPv6Address: ipv6,
@@ -325,12 +328,14 @@ func (p *Plugin) addTombstone(networkID, mac, ipv4, ipv6 string) {
 }
 
 // consumeTombstone returns and removes a tombstone for networkID iff
-// EXACTLY one fresh entry exists for it. The "exactly one" rule
-// avoids ambiguity when multiple containers on the same network are
-// restarted concurrently — those fall back to fresh MACs/IPs rather
-// than risk swapping identities between containers. Sequential
-// restarts (the common case) always satisfy the rule.
-func (p *Plugin) consumeTombstone(networkID string) (mac, ipv4, ipv6 string, ok bool) {
+// EXACTLY one fresh entry matches. When hostname is non-empty we
+// narrow the match to NetworkID+Hostname so a sequential `compose
+// restart` of multiple containers on the same network can't swap
+// identities between containers. When hostname is empty we fall back
+// to NetworkID-only matching (preserves the v0.5.0 contract for
+// hostname-less containers and races where the lookup didn't return
+// in time). The "exactly one" rule still applies after filtering.
+func (p *Plugin) consumeTombstone(networkID, hostname string) (mac, ipv4, ipv6 string, ok bool) {
 	p.tombstoneMu.Lock()
 	defer p.tombstoneMu.Unlock()
 	ts, err := loadTombstones()
@@ -342,10 +347,18 @@ func (p *Plugin) consumeTombstone(networkID string) (mac, ipv4, ipv6 string, ok 
 	matchIdx := -1
 	matches := 0
 	for i, t := range ts {
-		if t.NetworkID == networkID {
-			matches++
-			matchIdx = i
+		if t.NetworkID != networkID {
+			continue
 		}
+		// When the caller knows the hostname, only match tombstones
+		// whose hostname agrees. Tombstones written by a v0.5.0 build
+		// (or with hostname-lookup races) have empty Hostname; treat
+		// them as "matches anything" so we don't regress those.
+		if hostname != "" && t.Hostname != "" && t.Hostname != hostname {
+			continue
+		}
+		matches++
+		matchIdx = i
 	}
 	// Always rewrite to persist the prune, even if we don't consume.
 	if matches != 1 {
