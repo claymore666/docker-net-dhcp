@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net"
 	"os"
+	"strings"
 
 	log "github.com/sirupsen/logrus"
 
@@ -23,12 +24,18 @@ func main() {
 	switch event.Type {
 	case "bound", "renew":
 		if v6, ok := os.LookupEnv("ipv6"); ok {
-			// Clean up the IP (udhcpc6 emits a _lot_ of zeros)
-			_, netV6, err := net.ParseCIDR(v6 + "/128")
-			if err != nil {
-				log.WithError(err).Warn("Failed to parse IPv6 address")
+			if v6 == "" {
+				log.Warn("udhcpc6 emitted empty ipv6; skipping event")
+				return
 			}
-
+			// Defensive: strip any /mask if a future busybox emits CIDR form,
+			// then canonicalise via ParseCIDR (udhcpc6 emits a _lot_ of zeros).
+			v6Bare := strings.SplitN(v6, "/", 2)[0]
+			_, netV6, err := net.ParseCIDR(v6Bare + "/128")
+			if err != nil {
+				log.WithError(err).WithField("ipv6", v6).Error("Failed to parse IPv6 address; skipping event")
+				return
+			}
 			event.Data.IP = netV6.String()
 		} else {
 			event.Data.IP = os.Getenv("ip") + "/" + os.Getenv("mask")
