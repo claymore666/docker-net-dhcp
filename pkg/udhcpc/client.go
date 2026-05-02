@@ -61,8 +61,13 @@ func NewDHCPClient(iface string, opts *DHCPClientOptions) (*DHCPClient, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to set up udhcpc stderr pipe: %w", err)
 	}
-	// Pipe udhcpc stderr (logs) to logrus at debug level
-	go io.Copy(log.StandardLogger().WriterLevel(log.DebugLevel), stderrPipe)
+	// Pipe udhcpc stderr (logs) to logrus at debug level. io.Copy returns
+	// io.EOF as nil; any non-nil error means the pipe broke unexpectedly.
+	go func() {
+		if _, err := io.Copy(log.StandardLogger().WriterLevel(log.DebugLevel), stderrPipe); err != nil {
+			log.WithError(err).Debug("udhcpc stderr pipe closed with error")
+		}
+	}()
 
 	if c.eventPipe, err = c.cmd.StdoutPipe(); err != nil {
 		return nil, fmt.Errorf("failed to set up udhcpc stdout pipe: %w", err)
@@ -82,9 +87,10 @@ func NewDHCPClient(iface string, opts *DHCPClientOptions) (*DHCPClient, error) {
 			// TODO: We encode the fqdn for DHCPv6 because udhcpc6 seems to be broken
 			var data bytes.Buffer
 
-			// flags: S bit set (see RFC4704)
-			binary.Write(&data, binary.BigEndian, uint8(0b0001))
-			binary.Write(&data, binary.BigEndian, uint8(len(opts.Hostname)))
+			// flags: S bit set (see RFC4704). binary.Write to a bytes.Buffer
+			// can only fail on out-of-memory, which we'd never recover from.
+			_ = binary.Write(&data, binary.BigEndian, uint8(0b0001))
+			_ = binary.Write(&data, binary.BigEndian, uint8(len(opts.Hostname)))
 			data.WriteString(opts.Hostname)
 
 			hostnameOpt = "0x27:" + hex.EncodeToString(data.Bytes())
@@ -126,8 +132,18 @@ func (c *DHCPClient) Start() (chan Event, error) {
 			return nil, fmt.Errorf("failed to enter network namespace: %w", err)
 		}
 
-		// Make sure we go back to the old namespace when we return
-		defer netns.Set(origNS)
+		// Make sure we go back to the old namespace when we return.
+		// If restoration fails the goroutine is locked to a thread that is
+		// now in the wrong netns; we deliberately keep it locked (and a
+		// second Lock call ensures the Unlock above doesn't pair) so the
+		// thread dies rather than leak the wrong-netns state into the Go
+		// runtime's thread pool.
+		defer func() {
+			if err := netns.Set(origNS); err != nil {
+				log.WithError(err).Error("Failed to restore original netns; pinning thread for kill")
+				runtime.LockOSThread()
+			}
+		}()
 	}
 
 	if err := c.cmd.Start(); err != nil {
@@ -173,7 +189,8 @@ func (c *DHCPClient) Finish(ctx context.Context) error {
 	case err := <-errChan:
 		return err
 	case <-ctx.Done():
-		c.cmd.Process.Kill()
+		// Best-effort kill; if it fails the process is already gone.
+		_ = c.cmd.Process.Kill()
 		return ctx.Err()
 	}
 }

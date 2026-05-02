@@ -38,7 +38,7 @@ func main() {
 		if err != nil {
 			log.WithError(err).Fatal("Failed to open log file for writing")
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 
 		log.StandardLogger().Out = f
 	}

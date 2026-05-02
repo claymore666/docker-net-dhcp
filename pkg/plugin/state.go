@@ -31,10 +31,11 @@ func stateFilePath(networkID string) string {
 // creates the state directory if it doesn't already exist (the Dockerfile
 // pre-creates it, but a fresh test environment won't).
 //
-// We write the file directly rather than via temp+rename because a
-// torn write becomes invalid JSON, which loadOptions reports as
-// "missing", which sends netOptions down the docker-API fallback path
-// — i.e. the failure mode is "lose the optimization", not corruption.
+// Writes are atomic via temp-file + rename so that a crash mid-write
+// either leaves the previous file intact or no file at all — never a
+// partial/torn JSON. (The earlier non-atomic implementation depended on
+// loadOptions falling back to the docker API on parse error, which
+// works but is the wrong default.)
 func saveOptions(networkID string, opts DHCPNetworkOptions) error {
 	if err := os.MkdirAll(stateDir, 0o755); err != nil {
 		return fmt.Errorf("failed to create state dir %v: %w", stateDir, err)
@@ -43,8 +44,28 @@ func saveOptions(networkID string, opts DHCPNetworkOptions) error {
 	if err != nil {
 		return fmt.Errorf("failed to encode options: %w", err)
 	}
-	if err := os.WriteFile(stateFilePath(networkID), data, 0o644); err != nil {
-		return fmt.Errorf("failed to write options file: %w", err)
+	final := stateFilePath(networkID)
+	tmp, err := os.CreateTemp(stateDir, "."+networkID+".*.tmp")
+	if err != nil {
+		return fmt.Errorf("failed to create temp options file: %w", err)
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("failed to write temp options file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("failed to close temp options file: %w", err)
+	}
+	if err := os.Chmod(tmpName, 0o644); err != nil {
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("failed to chmod temp options file: %w", err)
+	}
+	if err := os.Rename(tmpName, final); err != nil {
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("failed to rename options file into place: %w", err)
 	}
 	return nil
 }

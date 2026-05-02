@@ -43,9 +43,9 @@ func IsDHCPPlugin(driver string) bool {
 type DHCPNetworkOptions struct {
 	// Mode selects the attachment strategy: "bridge" (default, requires
 	// `bridge`) or "macvlan" (requires `parent`).
-	Mode            string `mapstructure:"mode"`
-	Bridge          string
-	Parent          string `mapstructure:"parent"`
+	Mode   string `mapstructure:"mode"`
+	Bridge string
+	Parent string `mapstructure:"parent"`
 	// Gateway, if set, overrides the default gateway returned by the
 	// upstream DHCP server. Useful for split-horizon LANs where
 	// containers should egress via a different router than the one

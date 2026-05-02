@@ -335,7 +335,7 @@ func (m *dhcpManager) Start(ctx context.Context) error {
 
 		return nil
 	}(); err != nil {
-		m.netHandle.Delete()
+		m.netHandle.Close()
 		m.nsHandle.Close()
 		return err
 	}
@@ -345,7 +345,7 @@ func (m *dhcpManager) Start(ctx context.Context) error {
 
 func (m *dhcpManager) Stop() error {
 	defer m.nsHandle.Close()
-	defer m.netHandle.Delete()
+	defer m.netHandle.Close()
 
 	close(m.stopChan)
 

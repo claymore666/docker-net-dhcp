@@ -167,8 +167,10 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 		}
 		return nil
 	}(); err != nil {
-		// Roll back the macvlan link if anything after LinkAdd failed.
-		netlink.LinkDel(link)
+		// Roll back the child link if anything after LinkAdd failed.
+		// Best-effort: if LinkDel itself fails the kernel will reap the
+		// link with the netns soon enough.
+		_ = netlink.LinkDel(link)
 		return res, err
 	}
 

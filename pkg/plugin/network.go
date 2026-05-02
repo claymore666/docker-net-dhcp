@@ -328,8 +328,9 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 
 		return nil
 	}(); err != nil {
-		// Be sure to clean up the veth pair if any of this fails
-		netlink.LinkDel(hostLink)
+		// Be sure to clean up the veth pair if any of this fails.
+		// Best-effort cleanup; ignore secondary error.
+		_ = netlink.LinkDel(hostLink)
 		return res, err
 	}
 
