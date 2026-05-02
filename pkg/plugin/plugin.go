@@ -1,13 +1,17 @@
 package plugin
 
 import (
+	"context"
+	"encoding/hex"
 	"fmt"
 	"net"
 	"net/http"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 
+	dNetwork "github.com/docker/docker/api/types/network"
 	docker "github.com/docker/docker/client"
 	"github.com/gorilla/handlers"
 	"github.com/mitchellh/mapstructure"
@@ -25,6 +29,36 @@ const (
 	ModeMacvlan = "macvlan"
 	ModeIPvlan  = "ipvlan"
 )
+
+// initialDHCPHostnameLookupTimeout caps how long CreateEndpoint waits
+// for Docker to associate the container with the network so we can
+// look up its hostname for the initial DISCOVER. Short on purpose: if
+// the lookup misses, the persistent client will fill in the hostname
+// on first renewal, so the worst case is "first lease appears in the
+// upstream DHCP server's table without a hostname for a few minutes".
+const initialDHCPHostnameLookupTimeout = 2 * time.Second
+
+// clientIDFromEndpoint derives a stable DHCP option-61 client identifier
+// from a Docker endpoint ID. Docker's endpoint IDs are 64 hex chars
+// (32 bytes). We take the first 8 bytes — long enough to be unique
+// in any realistic deployment, short enough to keep the option payload
+// well below the 255-byte wire limit. The same endpoint ID is used
+// across container restarts on the same network, so this client-id
+// also stays stable, which is what makes Fritz.Box-style hostname
+// reservations actually work for our containers.
+//
+// Returns nil if the endpoint ID isn't valid hex (which would only
+// happen on a fundamentally broken libnetwork request).
+func clientIDFromEndpoint(endpointID string) []byte {
+	if len(endpointID) < 16 {
+		return nil
+	}
+	b, err := hex.DecodeString(endpointID[:16])
+	if err != nil {
+		return nil
+	}
+	return b
+}
 
 const defaultLeaseTimeout = 10 * time.Second
 
@@ -164,6 +198,50 @@ func (p *Plugin) takeDHCPManager(endpointID string) (*dhcpManager, bool) {
 		delete(p.persistentDHCP, endpointID)
 	}
 	return m, ok
+}
+
+// initialDHCPHostname makes a best-effort attempt to find the hostname
+// of the container we're about to attach an endpoint to, so we can pass
+// it in the initial DHCPDISCOVER. Polls the network's Containers map
+// for up to initialDHCPHostnameLookupTimeout; if the container hasn't
+// been registered yet (it's a race; sometimes Docker calls
+// CreateEndpoint before the container appears in the network's
+// container list), we fall through with an empty hostname. The
+// persistent renewal client populates the hostname later regardless,
+// so the worst case is "first lease appears in the upstream DHCP
+// server's UI without a hostname for a few minutes".
+func (p *Plugin) initialDHCPHostname(ctx context.Context, networkID, endpointID string) string {
+	ctx, cancel := context.WithTimeout(ctx, initialDHCPHostnameLookupTimeout)
+	defer cancel()
+
+	var hostname string
+	_ = util.AwaitCondition(ctx, func() (bool, error) {
+		dockerNet, err := p.docker.NetworkInspect(ctx, networkID, dNetwork.InspectOptions{})
+		if err != nil {
+			// Don't propagate the error — we want to keep retrying
+			// while the timeout has time. The caller treats an empty
+			// hostname as "not yet known" and lets renewal handle it.
+			return false, nil
+		}
+		for ctrID, info := range dockerNet.Containers {
+			if info.EndpointID != endpointID {
+				continue
+			}
+			// Docker uses an "ep-<endpointID>" placeholder until the
+			// real container ID is bound. Wait for the real one.
+			if strings.HasPrefix(ctrID, "ep-") {
+				return false, nil
+			}
+			ctr, err := p.docker.ContainerInspect(ctx, ctrID)
+			if err != nil {
+				return false, nil
+			}
+			hostname = ctr.Config.Hostname
+			return true, nil
+		}
+		return false, nil
+	}, 100*time.Millisecond)
+	return hostname
 }
 
 // NewPlugin creates a new Plugin

@@ -153,6 +153,9 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 		Hostname:  m.hostname,
 		V6:        v6,
 		Namespace: m.nsPath,
+		// Same client-id the initial DISCOVER used in CreateEndpoint,
+		// so renewals are seen as the same client by the server.
+		ClientID: clientIDFromEndpoint(m.joinReq.EndpointID),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create DHCP%v client: %w", v6Str, err)

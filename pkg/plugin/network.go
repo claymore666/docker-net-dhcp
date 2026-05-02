@@ -308,6 +308,11 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 		if opts.LeaseTimeout != 0 {
 			timeout = opts.LeaseTimeout
 		}
+		// Best-effort hostname for the initial DISCOVER. Empty if the
+		// container isn't yet registered with this network — the
+		// persistent renewal client will fill it in later.
+		hostname := p.initialDHCPHostname(ctx, r.NetworkID, r.EndpointID)
+		clientID := clientIDFromEndpoint(r.EndpointID)
 		initialIP := func(v6 bool) error {
 			v6str := ""
 			if v6 {
@@ -317,7 +322,11 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 			timeoutCtx, cancel := context.WithTimeout(ctx, timeout)
 			defer cancel()
 
-			info, err := udhcpc.GetIP(timeoutCtx, ctrName, &udhcpc.DHCPClientOptions{V6: v6})
+			info, err := udhcpc.GetIP(timeoutCtx, ctrName, &udhcpc.DHCPClientOptions{
+				V6:       v6,
+				Hostname: hostname,
+				ClientID: clientID,
+			})
 			if err != nil {
 				return fmt.Errorf("failed to get initial IP%v address via DHCP%v: %w", v6str, v6str, err)
 			}

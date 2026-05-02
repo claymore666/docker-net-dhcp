@@ -121,6 +121,15 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 		if opts.LeaseTimeout != 0 {
 			timeout = opts.LeaseTimeout
 		}
+		// Best-effort hostname for the initial DISCOVER (so the lease
+		// shows up in the upstream DHCP server's UI tagged with the
+		// container hostname from minute one) and a stable client-id
+		// derived from the endpoint ID (so reservations keyed on
+		// option 61 survive container recreation, and so ipvlan
+		// children can be told apart even though they all share the
+		// parent's MAC).
+		hostname := p.initialDHCPHostname(ctx, r.NetworkID, r.EndpointID)
+		clientID := clientIDFromEndpoint(r.EndpointID)
 
 		runDHCP := func(v6 bool) error {
 			v6str := ""
@@ -131,7 +140,11 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 			tCtx, cancel := context.WithTimeout(ctx, timeout)
 			defer cancel()
 
-			info, err := udhcpc.GetIP(tCtx, la.Name, &udhcpc.DHCPClientOptions{V6: v6})
+			info, err := udhcpc.GetIP(tCtx, la.Name, &udhcpc.DHCPClientOptions{
+				V6:       v6,
+				Hostname: hostname,
+				ClientID: clientID,
+			})
 			if err != nil {
 				return fmt.Errorf("failed to get initial IP%v address via DHCP%v: %w", v6str, v6str, err)
 			}

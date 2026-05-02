@@ -30,6 +30,17 @@ type DHCPClientOptions struct {
 	Once      bool
 	Namespace string
 
+	// ClientID, when non-empty, is sent as DHCP option 61 (RFC 2132).
+	// Servers that key reservations on client-id (rather than MAC) can
+	// then track the same logical client across MAC changes — including
+	// the kernel-randomised MACs Docker assigns when a container is
+	// recreated, and the shared-MAC scenario inherent to ipvlan L2.
+	//
+	// The wire format is one type byte followed by an opaque identifier.
+	// We use type 0 (per-client opaque) and let the caller pass whatever
+	// stable bytes make sense (typically a hash of the Docker EndpointID).
+	ClientID []byte
+
 	HandlerScript string
 }
 
@@ -102,6 +113,18 @@ func NewDHCPClient(iface string, opts *DHCPClientOptions) (*DHCPClient, error) {
 	// Vendor ID string option is not available for udhcpc6
 	if !opts.V6 {
 		c.cmd.Args = append(c.cmd.Args, "-V", VendorID)
+	}
+
+	// DHCP option 61 (client identifier). Format on the wire is
+	// 1 byte type + N bytes id. udhcpc takes hex via -x 0x3d:HEX,
+	// where HEX is the literal hex of the option payload — so we
+	// prefix with our type byte and hex-encode the rest.
+	if len(opts.ClientID) > 0 && !opts.V6 {
+		const clientIDType = 0x00 // RFC 2132: type 0 = opaque, no DUID
+		var b bytes.Buffer
+		b.WriteByte(clientIDType)
+		b.Write(opts.ClientID)
+		c.cmd.Args = append(c.cmd.Args, "-x", "0x3d:"+hex.EncodeToString(b.Bytes()))
 	}
 
 	log.WithField("cmd", c.cmd).Trace("new udhcpc client")

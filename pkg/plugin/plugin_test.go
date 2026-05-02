@@ -175,3 +175,44 @@ func TestSubLinkName(t *testing.T) {
 		t.Errorf("subLinkName = %q, want %q", got, want)
 	}
 }
+
+func TestClientIDFromEndpoint(t *testing.T) {
+	cases := []struct {
+		name string
+		eid  string
+		// We test length + stability rather than literal bytes, since the
+		// derivation is "first 8 bytes of hex-decoded EndpointID".
+		wantLen int
+		wantNil bool
+	}{
+		{"full_endpoint_id", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", 8, false},
+		{"min_required", "0123456789abcdef", 8, false},
+		{"too_short", "0123", 0, true},
+		{"empty", "", 0, true},
+		{"non_hex", "this-is-not-hex!", 0, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := clientIDFromEndpoint(c.eid)
+			if c.wantNil && got != nil {
+				t.Errorf("expected nil, got %x", got)
+			}
+			if !c.wantNil && len(got) != c.wantLen {
+				t.Errorf("expected %d bytes, got %d (%x)", c.wantLen, len(got), got)
+			}
+		})
+	}
+
+	// Stability: same input must produce same bytes.
+	a := clientIDFromEndpoint("0123456789abcdef0123456789abcdef")
+	b := clientIDFromEndpoint("0123456789abcdef0123456789abcdef")
+	if string(a) != string(b) {
+		t.Errorf("derivation is not stable: %x vs %x", a, b)
+	}
+
+	// Distinctness: different inputs produce different bytes.
+	c := clientIDFromEndpoint("fedcba9876543210fedcba9876543210")
+	if string(a) == string(c) {
+		t.Errorf("derivation collided on different inputs")
+	}
+}
