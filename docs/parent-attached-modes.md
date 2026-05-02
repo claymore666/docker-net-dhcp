@@ -168,6 +168,62 @@ DHCP server has a free lease in its pool.
 **`docker plugin install` reports "invalid rootfs"** — your Docker daemon
 is too old. Plugin requires Docker 23+.
 
+## Restart stability (MAC and IP)
+
+The plugin keeps the container's MAC stable across `docker restart`
+so the upstream DHCP server (Fritz.Box, pfSense, etc.) sees one
+device, not a new one per restart. This matters because most
+home-grade DHCP servers key reservations on MAC — without
+stability the lease table fills up with stale (MAC, IP) pairs and
+fragments the pool.
+
+The mechanism is a short-lived tombstone written at
+`DeleteEndpoint` and consumed at the next `CreateEndpoint` on the
+same network within 10 seconds. It carries the previous MAC and
+the most-recent leased IP. The next initial DISCOVER passes the
+IP to `udhcpc` as `-r ADDR` (a hint).
+
+- **MAC stability**: works always. `docker inspect` and the LAN
+  see the same MAC across restarts.
+- **IP stability via the `-r` hint**: works on DHCP servers that
+  honor option 50 (Requested IP). Fritz.Box specifically does
+  **not** honor it without a UI-side reservation; it walks the
+  pool and hands out the next free address even when the same MAC
+  is presented. The fix is to configure a Fritz.Box static
+  reservation on the now-stable MAC: Heimnetz → Netzwerk → pick
+  the device → "Diesem Netzwerkgerät immer die gleiche IPv4-Adresse
+  zuweisen". Once set, every subsequent restart gets that IP.
+
+Concurrent restarts of multiple containers on the same network
+within the 10-second window fall back to fresh MACs to avoid
+swapping identities between containers. Sequential restarts (the
+typical case) always satisfy the rule.
+
+## Health endpoint
+
+`/Plugin.Health` on the plugin's Unix socket returns:
+
+```json
+{
+  "healthy": true,
+  "uptime_seconds": 12345.6,
+  "active_endpoints": 3,
+  "pending_hints": 0
+}
+```
+
+Sample call from a host shell:
+
+```bash
+sudo curl --unix-socket \
+  /run/docker/plugins/<plugin-id>/net-dhcp.sock \
+  http://./Plugin.Health
+```
+
+Where `<plugin-id>` is the long ID from `docker plugin inspect`.
+Use it as a liveness check from your monitoring stack; anything
+that can talk to the plugin socket can poll it.
+
 ## State persistence
 
 Per-network options are persisted inside the plugin to

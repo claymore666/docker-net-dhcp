@@ -11,6 +11,94 @@ forks that have been waiting on review.
 
 [upstream]: https://github.com/devplayer0/docker-net-dhcp
 
+## v0.5.0
+
+This release focuses on lifecycle correctness — keeping the DHCP
+identity (MAC, lease, hostname) of a container stable across the
+events that previously broke it: container restart, plugin restart,
+and the initial DISCOVER timing window.
+
+### Restart stability via tombstones
+
+Docker 26.x reacts to `docker restart` by destroying the endpoint
+and creating a fresh one with a new EndpointID, so any state keyed
+on the endpoint can't bridge the two halves. The new mechanism:
+
+- `DeleteEndpoint` writes a tombstone `{NetworkID, MAC, IPv4,
+  deletedAt}` to `<stateDir>/tombstones.json`.
+- The next `CreateEndpoint` on the same NetworkID within
+  `tombstoneTTL` (10s) inherits the MAC and passes the IPv4 to
+  `udhcpc` as `-r ADDR` on the initial DISCOVER, iff exactly one
+  fresh tombstone matches.
+- Concurrent restarts of multiple containers on the same network
+  within the TTL fall back to fresh MACs — the "exactly one" rule
+  prevents accidentally swapping identities between containers.
+
+The IP carried in the tombstone is the **most recent** lease the
+persistent client saw, not the initial-DISCOVER one. `dhcpManager`
+now updates `LastIP`/`LastIPv6` on every `bound` and `renew` event
+(previously only logged), and `Leave` refreshes the endpoint
+fingerprint from `manager.LastIP` after `Stop` drains the event
+goroutine. With a server that honors option 50 (Requested IP),
+this makes IPs stable across restart. Servers that don't honor it
+(notably Fritz.Box without a UI-side reservation) still rotate IPs
+from the pool, but the **MAC** stays stable — which is the
+prerequisite for setting a static reservation that does pin the IP.
+
+Why this matters: consumer DHCP servers like Fritz.Box key
+reservations on MAC. A fresh MAC every restart pollutes the lease
+table and fragments the address pool. With a stable MAC, one-time
+UI-side reservation pins the IP for good.
+
+### Plugin-restart lease recovery
+
+`docker plugin disable && enable`, plugin upgrade, or a plugin
+crash previously left containers running without a renewal client,
+so when the lease expired the IP went away. The plugin now walks
+Docker's networks at startup, finds existing endpoints on
+plugin-served networks, and rebuilds an in-memory `dhcpManager`
+for each — passing `udhcpc -r LAST_IP` so the upstream ACKs the
+lease the container is already using.
+
+### Container-restart path fix
+
+For Docker versions that issue Leave→Join on the same EndpointID
+(older flows), `Join` now detects the missing `joinHint` and
+synthesises an equivalent `CreateEndpoint` to rebuild the link.
+On Docker 26.x the daemon takes a different path
+(Delete→Create with new ID), where the tombstone mechanism above
+takes over.
+
+### Hostname + DHCP option 61 client-id
+
+The initial DISCOVER now carries the container's hostname (option
+12) when libnetwork has bound the container to the endpoint by the
+time we look (best-effort, 2s poll; the persistent renewal client
+fills it in regardless). The persistent client always carries the
+hostname.
+
+A stable client-id (option 61) derived from the first 8 bytes of
+the EndpointID is also sent. This lets ipvlan deployments — where
+all children share the parent MAC — be distinguished on the
+upstream DHCP server, and lets reservations key on client-id
+instead of MAC where the operator prefers.
+
+### `/Plugin.Health` endpoint
+
+A non-libnetwork endpoint at `/Plugin.Health` returns
+`{healthy, uptime_seconds, active_endpoints, pending_hints}`.
+Same socket as the libnetwork RPC, JSON body — anything that can
+talk to the plugin can poll it for liveness/state.
+
+### Phase D verification on a real LAN
+
+Walked through the Phase D checklist on a Docker 26.1 host with a
+Fritz.Box DHCP server: container gets LAN IP, two containers get
+distinct leases, lease released on stop, forced renewal succeeds
+without container restart, daemon-restart-with-plugin-enabled
+completes in ~3 seconds with no hang and the plugin functional
+immediately.
+
 ## v0.4.1
 
 - **Critical fix:** added `sync.Mutex` to the `Plugin` struct guarding
@@ -236,7 +324,17 @@ changes to include `daemon.*`. New vulnerabilities reported in
 - One DHCP-served network per container. Joining additional bridges
   works but may interact in surprising ways with the routing rules
   installed by the persistent client.
-- The persistent client cannot currently handle the DHCP server handing
-  out a different IP at renewal time. The lease must be sticky enough
-  to survive a renewal cycle. This is a pre-existing upstream limitation
-  documented in the source.
+- The persistent client tracks the renewed IP (`LastIP` is updated on
+  every `bound`/`renew` event since v0.5.0), but **does not yet
+  reconfigure the in-container address** if the upstream hands out a
+  different IP at renewal. The lease must be sticky enough to survive
+  a renewal cycle. The renewed IP is at least surfaced to the
+  next restart's tombstone, so it isn't lost.
+- IPv6 leases are not stabilized across restart yet — the tombstone
+  carries v4 only. v6 endpoints will get a fresh kernel-assigned
+  address on each restart.
+- Concurrent `docker restart` of multiple containers on the same
+  DHCP network within ~10 seconds falls back to fresh MACs (the
+  tombstone mechanism requires exactly one match to avoid swapping
+  identities). Sequential restarts — the typical case — are
+  stable.
