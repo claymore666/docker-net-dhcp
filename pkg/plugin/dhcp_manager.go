@@ -47,6 +47,14 @@ type dhcpManager struct {
 	stopChan  chan struct{}
 	errChan   chan error
 	errChanV6 chan error
+
+	// startedCh is closed when Start has finished (success or failure);
+	// startErr captures the result. This lets Stop be called against a
+	// manager whose Start is still in flight (e.g. when Leave races
+	// against the goroutine that Join spawned to call Start) — Stop
+	// blocks until Start completes, then short-circuits if Start failed.
+	startedCh chan struct{}
+	startErr  error
 }
 
 func newDHCPManager(docker *docker.Client, r JoinRequest, opts DHCPNetworkOptions) *dhcpManager {
@@ -55,7 +63,8 @@ func newDHCPManager(docker *docker.Client, r JoinRequest, opts DHCPNetworkOption
 		joinReq: r,
 		opts:    opts,
 
-		stopChan: make(chan struct{}),
+		stopChan:  make(chan struct{}),
+		startedCh: make(chan struct{}),
 	}
 }
 
@@ -272,7 +281,11 @@ func (m *dhcpManager) locateContainerLink(ctx context.Context) error {
 	}, pollTime)
 }
 
-func (m *dhcpManager) Start(ctx context.Context) error {
+func (m *dhcpManager) Start(ctx context.Context) (err error) {
+	defer func() {
+		m.startErr = err
+		close(m.startedCh)
+	}()
 	var ctrID string
 	if err := util.AwaitCondition(ctx, func() (bool, error) {
 		dockerNet, err := m.docker.NetworkInspect(ctx, m.joinReq.NetworkID, dNetwork.InspectOptions{})
@@ -344,6 +357,13 @@ func (m *dhcpManager) Start(ctx context.Context) error {
 }
 
 func (m *dhcpManager) Stop() error {
+	// Wait for Start to finish so we don't tear down half-initialised
+	// state. If Start failed there's nothing to clean up.
+	<-m.startedCh
+	if m.startErr != nil {
+		return nil
+	}
+
 	defer m.nsHandle.Close()
 	defer m.netHandle.Close()
 

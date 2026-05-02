@@ -140,20 +140,20 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 				return fmt.Errorf("failed to parse initial IP%v address: %w", v6str, err)
 			}
 
-			hint := p.joinHints[r.EndpointID]
-			hint.MacAddress = mac
-			if v6 {
-				res.Interface.AddressIPv6 = info.IP
-				hint.IPv6 = addr
-			} else {
-				res.Interface.Address = info.IP
-				hint.IPv4 = addr
-				hint.Gateway = info.Gateway
-				if opts.Gateway != "" {
-					hint.Gateway = opts.Gateway
+			p.updateJoinHint(r.EndpointID, func(hint *joinHint) {
+				hint.MacAddress = mac
+				if v6 {
+					res.Interface.AddressIPv6 = info.IP
+					hint.IPv6 = addr
+				} else {
+					res.Interface.Address = info.IP
+					hint.IPv4 = addr
+					hint.Gateway = info.Gateway
+					if opts.Gateway != "" {
+						hint.Gateway = opts.Gateway
+					}
 				}
-			}
-			p.joinHints[r.EndpointID] = hint
+			})
 			return nil
 		}
 
@@ -174,15 +174,20 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 		return res, err
 	}
 
+	var hintMAC, hintGW string
+	p.updateJoinHint(r.EndpointID, func(h *joinHint) {
+		hintMAC = h.MacAddress.String()
+		hintGW = h.Gateway
+	})
 	log.WithFields(log.Fields{
 		"network":     r.NetworkID[:12],
 		"endpoint":    r.EndpointID[:12],
 		"mode":        mode,
 		"parent":      opts.Parent,
-		"mac_address": p.joinHints[r.EndpointID].MacAddress.String(),
+		"mac_address": hintMAC,
 		"ip":          res.Interface.Address,
 		"ipv6":        res.Interface.AddressIPv6,
-		"gateway":     p.joinHints[r.EndpointID].Gateway,
+		"gateway":     hintGW,
 	}).Info("Endpoint created")
 
 	return res, nil

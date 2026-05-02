@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/http"
 	"regexp"
+	"sync"
 	"time"
 
 	docker "github.com/docker/docker/client"
@@ -102,8 +103,67 @@ type Plugin struct {
 	docker *docker.Client
 	server http.Server
 
+	// mu guards joinHints and persistentDHCP. libnetwork dispatches
+	// CreateEndpoint / Join / Leave from concurrent HTTP handlers,
+	// each of which touches one or both maps; without the mutex the
+	// race detector reproduces a concurrent map read+write.
+	mu             sync.Mutex
 	joinHints      map[string]joinHint
 	persistentDHCP map[string]*dhcpManager
+}
+
+// storeJoinHint records the state collected during CreateEndpoint so
+// Join can pick it up.
+func (p *Plugin) storeJoinHint(endpointID string, h joinHint) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.joinHints[endpointID] = h
+}
+
+// updateJoinHint applies fn to the (possibly-zero) hint for endpointID
+// and stores the result. Allows the read-modify-write pattern used in
+// CreateEndpoint without exposing the map directly. fn runs under the
+// lock — keep it short; do not call back into Plugin from inside fn.
+func (p *Plugin) updateJoinHint(endpointID string, fn func(*joinHint)) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	h := p.joinHints[endpointID]
+	fn(&h)
+	p.joinHints[endpointID] = h
+}
+
+// takeJoinHint atomically retrieves and deletes the join hint for an
+// endpoint. Returns ok=false if no hint was registered.
+func (p *Plugin) takeJoinHint(endpointID string) (joinHint, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	h, ok := p.joinHints[endpointID]
+	if ok {
+		delete(p.joinHints, endpointID)
+	}
+	return h, ok
+}
+
+// registerDHCPManager stores a running per-endpoint DHCP client so Leave
+// can find it. Caller registers the manager *before* spawning the
+// goroutine that runs dhcpManager.Start; dhcpManager.Stop is safe to
+// call against a manager whose Start is still in flight.
+func (p *Plugin) registerDHCPManager(endpointID string, m *dhcpManager) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.persistentDHCP[endpointID] = m
+}
+
+// takeDHCPManager atomically retrieves and deletes the DHCP manager for
+// an endpoint, suitable for Leave's Stop-then-discard pattern.
+func (p *Plugin) takeDHCPManager(endpointID string) (*dhcpManager, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	m, ok := p.persistentDHCP[endpointID]
+	if ok {
+		delete(p.persistentDHCP, endpointID)
+	}
+	return m, ok
 }
 
 // NewPlugin creates a new Plugin

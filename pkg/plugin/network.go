@@ -23,24 +23,26 @@ const CLIOptionsKey string = "com.docker.network.generic"
 // Implementations of the endpoints described in
 // https://github.com/moby/libnetwork/blob/master/docs/remote.md
 
-// CreateNetwork validates network creation: existence of the parent
-// interface (bridge or NIC depending on mode), the null IPAM driver
-// requirement, and (for bridge mode) that no other Docker network already
-// owns this bridge's address space.
-func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
-	log.WithField("options", r.Options).Debug("CreateNetwork options")
-
-	opts, err := decodeOpts(r.Options[util.OptionsKeyGeneric])
-	if err != nil {
-		return fmt.Errorf("failed to decode network options: %w", err)
-	}
-
-	for _, d := range r.IPv4Data {
+// validateIPAMData enforces the null-IPAM-driver requirement that
+// libnetwork passes us via the IPv4Data slice.
+func validateIPAMData(ipv4 []*IPAMData) error {
+	for _, d := range ipv4 {
 		if d.AddressSpace != "null" || d.Pool != "0.0.0.0/0" {
 			return util.ErrIPAM
 		}
 	}
+	return nil
+}
 
+// validateModeOptions performs the pure-Go subset of CreateNetwork's
+// validation: mode value, and which other options are required or
+// forbidden for that mode. It does NOT touch netlink or the docker
+// API; the kernel-facing checks (parent NIC up, bridge type, address
+// conflicts) are layered on top in CreateNetwork itself.
+//
+// Returning an error wrapped with fmt.Errorf preserves errors.Is so
+// the HTTP layer can map sentinels to 400 status codes.
+func validateModeOptions(opts DHCPNetworkOptions) error {
 	switch opts.effectiveMode() {
 	case ModeMacvlan, ModeIPvlan:
 		if opts.Parent == "" {
@@ -49,6 +51,40 @@ func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 		if opts.Bridge != "" {
 			return fmt.Errorf("%w: bridge cannot be set in mode=%v", util.ErrModeMismatch, opts.effectiveMode())
 		}
+	case ModeBridge:
+		if opts.Bridge == "" {
+			return util.ErrBridgeRequired
+		}
+		if opts.Parent != "" {
+			return fmt.Errorf("%w: parent cannot be set in mode=bridge", util.ErrModeMismatch)
+		}
+	default:
+		return fmt.Errorf("%w: %q", util.ErrInvalidMode, opts.Mode)
+	}
+	return nil
+}
+
+// CreateNetwork validates network creation: option shape (pure), then
+// existence of the parent interface (bridge or NIC depending on mode),
+// the null IPAM driver requirement, and — for bridge mode — that no
+// other Docker network already owns this bridge's address space.
+func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
+	log.WithField("options", r.Options).Debug("CreateNetwork options")
+
+	opts, err := decodeOpts(r.Options[util.OptionsKeyGeneric])
+	if err != nil {
+		return fmt.Errorf("failed to decode network options: %w", err)
+	}
+
+	if err := validateIPAMData(r.IPv4Data); err != nil {
+		return err
+	}
+
+	if err := validateModeOptions(opts); err != nil {
+		return err
+	}
+
+	if mode := opts.effectiveMode(); mode == ModeMacvlan || mode == ModeIPvlan {
 		if _, err := validateParentForChild(opts.Parent); err != nil {
 			return err
 		}
@@ -58,24 +94,15 @@ func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 		}
 		log.WithFields(log.Fields{
 			"network": r.NetworkID,
-			"mode":    opts.effectiveMode(),
+			"mode":    mode,
 			"parent":  opts.Parent,
 			"ipv6":    opts.IPv6,
 		}).Info("Network created")
 		return nil
-	case ModeBridge:
-		// fall through to existing bridge validation
-	default:
-		return fmt.Errorf("%w: %q", util.ErrInvalidMode, opts.Mode)
 	}
 
-	if opts.Bridge == "" {
-		return util.ErrBridgeRequired
-	}
-	if opts.Parent != "" {
-		return fmt.Errorf("%w: parent cannot be set in mode=bridge", util.ErrModeMismatch)
-	}
-
+	// Bridge mode: pure validation already passed; do the kernel-facing
+	// and docker-API-facing checks.
 	link, err := netlink.LinkByName(opts.Bridge)
 	if err != nil {
 		return fmt.Errorf("failed to lookup interface %v: %w", opts.Bridge, err)
@@ -299,20 +326,20 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 				return fmt.Errorf("failed to parse initial IP%v address: %w", v6str, err)
 			}
 
-			hint := p.joinHints[r.EndpointID]
-			if v6 {
-				res.Interface.AddressIPv6 = info.IP
-				hint.IPv6 = ip
-				// No gateways in DHCPv6!
-			} else {
-				res.Interface.Address = info.IP
-				hint.IPv4 = ip
-				hint.Gateway = info.Gateway
-				if opts.Gateway != "" {
-					hint.Gateway = opts.Gateway
+			p.updateJoinHint(r.EndpointID, func(hint *joinHint) {
+				if v6 {
+					res.Interface.AddressIPv6 = info.IP
+					hint.IPv6 = ip
+					// No gateways in DHCPv6!
+				} else {
+					res.Interface.Address = info.IP
+					hint.IPv4 = ip
+					hint.Gateway = info.Gateway
+					if opts.Gateway != "" {
+						hint.Gateway = opts.Gateway
+					}
 				}
-			}
-			p.joinHints[r.EndpointID] = hint
+			})
 
 			return nil
 		}
@@ -334,13 +361,15 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 		return res, err
 	}
 
+	gateway := ""
+	p.updateJoinHint(r.EndpointID, func(h *joinHint) { gateway = h.Gateway })
 	log.WithFields(log.Fields{
 		"network":     r.NetworkID[:12],
 		"endpoint":    r.EndpointID[:12],
 		"mac_address": res.Interface.MacAddress,
 		"ip":          res.Interface.Address,
 		"ipv6":        res.Interface.AddressIPv6,
-		"gateway":     fmt.Sprintf("%#v", p.joinHints[r.EndpointID].Gateway),
+		"gateway":     gateway,
 	}).Info("Endpoint created")
 
 	return res, nil
@@ -543,11 +572,10 @@ func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) 
 		DstPrefix: dstPrefix,
 	}
 
-	hint, ok := p.joinHints[r.EndpointID]
+	hint, ok := p.takeJoinHint(r.EndpointID)
 	if !ok {
 		return res, util.ErrNoHint
 	}
-	delete(p.joinHints, r.EndpointID)
 
 	if hint.Gateway != "" {
 		log.WithFields(log.Fields{
@@ -575,25 +603,32 @@ func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) 
 		}
 	}
 
+	// Register the manager BEFORE spawning the start goroutine so that a
+	// fast Leave can find it. Stop blocks until Start has completed
+	// (success or failure), so it's safe to call against a manager whose
+	// Start is still in flight.
+	m := newDHCPManager(p.docker, r, opts)
+	m.LastIP = hint.IPv4
+	m.LastIPv6 = hint.IPv6
+	m.MacAddress = hint.MacAddress
+	p.registerDHCPManager(r.EndpointID, m)
+
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), p.awaitTimeout)
 		defer cancel()
-
-		m := newDHCPManager(p.docker, r, opts)
-		m.LastIP = hint.IPv4
-		m.LastIPv6 = hint.IPv6
-		m.MacAddress = hint.MacAddress
 
 		if err := m.Start(ctx); err != nil {
 			log.WithError(err).WithFields(log.Fields{
 				"network":  r.NetworkID[:12],
 				"endpoint": r.EndpointID[:12],
 				"sandbox":  r.SandboxKey,
-			}).Error("Failed to start persistent DHCP client")
-			return
+			}).Error("Failed to start persistent DHCP client; lease will not be renewed")
+			// If Start failed, take ourselves out of the registry so a
+			// later Leave doesn't try to Stop() us. Stop() is safe to
+			// call against a failed-Start manager (it returns the start
+			// error), but de-registering keeps the map tidy.
+			p.takeDHCPManager(r.EndpointID)
 		}
-
-		p.persistentDHCP[r.EndpointID] = m
 	}()
 
 	log.WithFields(log.Fields{
@@ -607,11 +642,10 @@ func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) 
 
 // Leave stops the persistent DHCP client for an endpoint
 func (p *Plugin) Leave(ctx context.Context, r LeaveRequest) error {
-	manager, ok := p.persistentDHCP[r.EndpointID]
+	manager, ok := p.takeDHCPManager(r.EndpointID)
 	if !ok {
 		return util.ErrNoSandbox
 	}
-	delete(p.persistentDHCP, r.EndpointID)
 
 	if err := manager.Stop(); err != nil {
 		return err
