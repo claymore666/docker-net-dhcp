@@ -143,7 +143,7 @@ func (p *Plugin) apiDeleteEndpoint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := p.DeleteEndpoint(req); err != nil {
+	if err := p.DeleteEndpoint(r.Context(), req); err != nil {
 		util.JSONErrResponse(w, err, 0)
 		return
 	}

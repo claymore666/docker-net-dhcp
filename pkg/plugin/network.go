@@ -22,8 +22,10 @@ const CLIOptionsKey string = "com.docker.network.generic"
 // Implementations of the endpoints described in
 // https://github.com/moby/libnetwork/blob/master/docs/remote.md
 
-// CreateNetwork "creates" a new DHCP network (just checks if the provided bridge exists and the null IPAM driver is
-// used)
+// CreateNetwork validates network creation: existence of the parent
+// interface (bridge or NIC depending on mode), the null IPAM driver
+// requirement, and (for bridge mode) that no other Docker network already
+// owns this bridge's address space.
 func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 	log.WithField("options", r.Options).Debug("CreateNetwork options")
 
@@ -32,14 +34,41 @@ func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 		return fmt.Errorf("failed to decode network options: %w", err)
 	}
 
-	if opts.Bridge == "" {
-		return util.ErrBridgeRequired
-	}
-
 	for _, d := range r.IPv4Data {
 		if d.AddressSpace != "null" || d.Pool != "0.0.0.0/0" {
 			return util.ErrIPAM
 		}
+	}
+
+	switch opts.effectiveMode() {
+	case ModeMacvlan:
+		if opts.Parent == "" {
+			return util.ErrParentRequired
+		}
+		if opts.Bridge != "" {
+			return fmt.Errorf("%w: bridge cannot be set in mode=macvlan", util.ErrModeMismatch)
+		}
+		if _, err := validateMacvlanParent(opts.Parent); err != nil {
+			return err
+		}
+		log.WithFields(log.Fields{
+			"network": r.NetworkID,
+			"mode":    ModeMacvlan,
+			"parent":  opts.Parent,
+			"ipv6":    opts.IPv6,
+		}).Info("Network created")
+		return nil
+	case ModeBridge:
+		// fall through to existing bridge validation
+	default:
+		return fmt.Errorf("%w: %q", util.ErrInvalidMode, opts.Mode)
+	}
+
+	if opts.Bridge == "" {
+		return util.ErrBridgeRequired
+	}
+	if opts.Parent != "" {
+		return fmt.Errorf("%w: parent cannot be set in mode=bridge", util.ErrModeMismatch)
 	}
 
 	link, err := netlink.LinkByName(opts.Bridge)
@@ -138,8 +167,11 @@ func (p *Plugin) netOptions(ctx context.Context, id string) (DHCPNetworkOptions,
 	return opts, nil
 }
 
-// CreateEndpoint creates a veth pair and uses udhcpc to acquire an initial IP address on the container end. Docker will
-// move the interface into the container's namespace and apply the address.
+// CreateEndpoint creates the per-endpoint host-side network plumbing
+// (veth pair in bridge mode, macvlan child in macvlan mode), runs udhcpc
+// once to acquire an initial lease, and stashes the result for Join.
+// Docker moves the link into the container's netns when it acts on our
+// Join response.
 func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (CreateEndpointResponse, error) {
 	log.WithField("options", r.Options).Debug("CreateEndpoint options")
 	res := CreateEndpointResponse{
@@ -154,6 +186,10 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 	opts, err := p.netOptions(ctx, r.NetworkID)
 	if err != nil {
 		return res, fmt.Errorf("failed to get network options: %w", err)
+	}
+
+	if opts.effectiveMode() == ModeMacvlan {
+		return p.createMacvlanEndpoint(ctx, r, opts)
 	}
 
 	bridge, err := netlink.LinkByName(opts.Bridge)
@@ -288,6 +324,10 @@ func (p *Plugin) EndpointOperInfo(ctx context.Context, r InfoRequest) (InfoRespo
 		return res, fmt.Errorf("failed to get network options: %w", err)
 	}
 
+	if opts.effectiveMode() == ModeMacvlan {
+		return p.macvlanEndpointOperInfo(opts, r)
+	}
+
 	hostName, _ := vethPairNames(r.EndpointID)
 	hostLink, err := netlink.LinkByName(hostName)
 	if err != nil {
@@ -306,8 +346,27 @@ func (p *Plugin) EndpointOperInfo(ctx context.Context, r InfoRequest) (InfoRespo
 	return res, nil
 }
 
-// DeleteEndpoint deletes the veth pair
-func (p *Plugin) DeleteEndpoint(r DeleteEndpointRequest) error {
+// DeleteEndpoint deletes the host-side network plumbing for an endpoint.
+// In bridge mode that's the veth pair (deleting one side removes the
+// peer). In macvlan mode the link has typically already been moved into
+// the container netns and reaped with it, so cleanup is best-effort.
+func (p *Plugin) DeleteEndpoint(ctx context.Context, r DeleteEndpointRequest) error {
+	opts, err := p.netOptions(ctx, r.NetworkID)
+	if err != nil {
+		return fmt.Errorf("failed to get network options: %w", err)
+	}
+
+	if opts.effectiveMode() == ModeMacvlan {
+		if err := p.deleteMacvlanEndpoint(r); err != nil {
+			return err
+		}
+		log.WithFields(log.Fields{
+			"network":  r.NetworkID[:12],
+			"endpoint": r.EndpointID[:12],
+		}).Info("Endpoint deleted")
+		return nil
+	}
+
 	hostName, _ := vethPairNames(r.EndpointID)
 	link, err := netlink.LinkByName(hostName)
 	if err != nil {
@@ -409,8 +468,16 @@ func (p *Plugin) addRoutes(opts *DHCPNetworkOptions, v6 bool, bridge netlink.Lin
 	return nil
 }
 
-// Join passes the veth name and route information (gateway from DHCP and existing routes on the host bridge) to Docker
-// and starts a persistent DHCP client to maintain the lease on the acquired IP
+// Join hands the per-endpoint host-side link to Docker (so it can move it
+// into the container netns) along with route information, then starts a
+// persistent DHCP client to keep the lease alive for the life of the
+// endpoint.
+//
+// Bridge mode also copies static routes from the host bridge — those
+// routes are how the upstream propagates LAN topology when the bridge is
+// the host's L3 gateway. Macvlan mode skips that: the parent NIC's host
+// routes belong to the host, not the container, and the DHCP gateway is
+// the only route the container needs.
 func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) {
 	log.WithField("options", r.Options).Debug("Join options")
 	res := JoinResponse{}
@@ -420,11 +487,19 @@ func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) 
 		return res, fmt.Errorf("failed to get network options: %w", err)
 	}
 
-	_, ctrName := vethPairNames(r.EndpointID)
+	macvlan := opts.effectiveMode() == ModeMacvlan
 
+	var srcName, dstPrefix string
+	if macvlan {
+		srcName = macvlanLinkName(r.EndpointID)
+		dstPrefix = "eth"
+	} else {
+		_, srcName = vethPairNames(r.EndpointID)
+		dstPrefix = opts.Bridge
+	}
 	res.InterfaceName = InterfaceName{
-		SrcName:   ctrName,
-		DstPrefix: opts.Bridge,
+		SrcName:   srcName,
+		DstPrefix: dstPrefix,
 	}
 
 	hint, ok := p.joinHints[r.EndpointID]
@@ -443,17 +518,19 @@ func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) 
 		res.Gateway = hint.Gateway
 	}
 
-	bridge, err := netlink.LinkByName(opts.Bridge)
-	if err != nil {
-		return res, fmt.Errorf("failed to get bridge interface: %w", err)
-	}
+	if !macvlan {
+		bridge, err := netlink.LinkByName(opts.Bridge)
+		if err != nil {
+			return res, fmt.Errorf("failed to get bridge interface: %w", err)
+		}
 
-	if err := p.addRoutes(&opts, false, bridge, r, hint, &res); err != nil {
-		return res, err
-	}
-	if opts.IPv6 {
-		if err := p.addRoutes(&opts, true, bridge, r, hint, &res); err != nil {
+		if err := p.addRoutes(&opts, false, bridge, r, hint, &res); err != nil {
 			return res, err
+		}
+		if opts.IPv6 {
+			if err := p.addRoutes(&opts, true, bridge, r, hint, &res); err != nil {
+				return res, err
+			}
 		}
 	}
 
@@ -464,6 +541,7 @@ func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) 
 		m := newDHCPManager(p.docker, r, opts)
 		m.LastIP = hint.IPv4
 		m.LastIPv6 = hint.IPv6
+		m.MacAddress = hint.MacAddress
 
 		if err := m.Start(ctx); err != nil {
 			log.WithError(err).WithFields(log.Fields{

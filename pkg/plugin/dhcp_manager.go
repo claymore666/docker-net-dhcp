@@ -18,6 +18,12 @@ import (
 	"github.com/devplayer0/docker-net-dhcp/pkg/util"
 )
 
+// linkAwaitTimeout caps how long Start waits for the macvlan child to
+// reappear in the container netns under its post-rename name. Bridge mode
+// keys off the veth peer index, which is symmetric across netns and
+// available immediately, so it doesn't need this.
+const linkAwaitTimeout = 30 * time.Second
+
 const pollTime = 100 * time.Millisecond
 
 type dhcpManager struct {
@@ -27,6 +33,10 @@ type dhcpManager struct {
 
 	LastIP   *netlink.Addr
 	LastIPv6 *netlink.Addr
+	// MacAddress is set in macvlan mode so we can re-find the link inside
+	// the container netns after Docker has moved and renamed it. Empty in
+	// bridge mode.
+	MacAddress net.HardwareAddr
 
 	nsPath    string
 	hostname  string
@@ -205,6 +215,58 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 	return errChan, nil
 }
 
+// locateContainerLink populates m.ctrLink with the post-Docker-move
+// interface inside the container netns. The mechanism differs by mode:
+//
+//   - bridge: veth peer indexes are symmetric, so we read the host-side
+//     veth's peer index and look that up in the sandbox netns. We also
+//     wait for Docker's rename (the link must no longer carry the
+//     pre-move name) so the persistent client doesn't race the move.
+//   - macvlan: only one link is created and Docker moves it wholesale,
+//     so we identify it by MAC after it reappears in the sandbox.
+func (m *dhcpManager) locateContainerLink(ctx context.Context) error {
+	if m.opts.effectiveMode() == ModeMacvlan {
+		if len(m.MacAddress) == 0 {
+			return fmt.Errorf("macvlan mode but no MAC address recorded for endpoint")
+		}
+
+		awaitCtx, cancel := context.WithTimeout(ctx, linkAwaitTimeout)
+		defer cancel()
+		return util.AwaitCondition(awaitCtx, func() (bool, error) {
+			link, err := findLinkByMAC(m.netHandle, m.MacAddress)
+			if err != nil {
+				// Not in the container netns yet — keep polling.
+				return false, nil
+			}
+			m.ctrLink = link
+			return true, nil
+		}, pollTime)
+	}
+
+	hostName, oldCtrName := vethPairNames(m.joinReq.EndpointID)
+	hostLink, err := netlink.LinkByName(hostName)
+	if err != nil {
+		return fmt.Errorf("failed to find host side of veth pair: %w", err)
+	}
+	hostVeth, ok := hostLink.(*netlink.Veth)
+	if !ok {
+		return util.ErrNotVEth
+	}
+
+	ctrIndex, err := netlink.VethPeerIndex(hostVeth)
+	if err != nil {
+		return fmt.Errorf("failed to get container side of veth's index: %w", err)
+	}
+
+	return util.AwaitCondition(ctx, func() (bool, error) {
+		m.ctrLink, err = util.AwaitLinkByIndex(ctx, m.netHandle, ctrIndex, pollTime)
+		if err != nil {
+			return false, fmt.Errorf("failed to get link for container side of veth pair: %w", err)
+		}
+		return m.ctrLink.Attrs().Name != oldCtrName, nil
+	}, pollTime)
+}
+
 func (m *dhcpManager) Start(ctx context.Context) error {
 	var ctrID string
 	if err := util.AwaitCondition(ctx, func() (bool, error) {
@@ -250,29 +312,7 @@ func (m *dhcpManager) Start(ctx context.Context) error {
 	}
 
 	if err := func() error {
-		hostName, oldCtrName := vethPairNames(m.joinReq.EndpointID)
-		hostLink, err := netlink.LinkByName(hostName)
-		if err != nil {
-			return fmt.Errorf("failed to find host side of veth pair: %w", err)
-		}
-		hostVeth, ok := hostLink.(*netlink.Veth)
-		if !ok {
-			return util.ErrNotVEth
-		}
-
-		ctrIndex, err := netlink.VethPeerIndex(hostVeth)
-		if err != nil {
-			return fmt.Errorf("failed to get container side of veth's index: %w", err)
-		}
-
-		if err := util.AwaitCondition(ctx, func() (bool, error) {
-			m.ctrLink, err = util.AwaitLinkByIndex(ctx, m.netHandle, ctrIndex, pollTime)
-			if err != nil {
-				return false, fmt.Errorf("failed to get link for container side of veth pair: %w", err)
-			}
-
-			return m.ctrLink.Attrs().Name != oldCtrName, nil
-		}, pollTime); err != nil {
+		if err := m.locateContainerLink(ctx); err != nil {
 			return err
 		}
 
