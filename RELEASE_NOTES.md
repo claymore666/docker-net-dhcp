@@ -3,11 +3,32 @@
 This is a maintained fork of [`devplayer0/docker-net-dhcp`][upstream]. The
 upstream repository has not been updated in several years and does not
 build on current Docker hosts; the goals of this fork are (1) keep the
-plugin building and running on modern Docker, and (2) add a macvlan
+plugin building and running on modern Docker, (2) add a macvlan
 attachment mode so containers can pick up DHCP leases from the LAN
-without requiring the operator to maintain a host bridge.
+without requiring the operator to maintain a host bridge, and (3)
+incorporate sensible improvements from open upstream PRs and other
+forks that have been waiting on review.
 
 [upstream]: https://github.com/devplayer0/docker-net-dhcp
+
+## v0.3.0
+
+- Persist per-network options to disk so per-endpoint handlers don't
+  call back into the docker API on the hot path. Fixes the upstream
+  daemon-restart deadlock. **Configurable** via `STATE_DIR` env var
+  (default `/var/lib/net-dhcp`).
+- New `gateway` driver option to override the IPv4 gateway returned
+  by DHCP (useful for VPN-egress / split-horizon LANs).
+- 2-second timeout on all docker client requests as a safety net for
+  any path that still talks to the docker socket.
+- `driverRegexp` now matches any registry namespace, so the
+  bridge-conflict scan keeps working under forks published under a
+  name other than `ghcr.io/devplayer0`.
+
+## v0.2.0
+
+- New `mode=macvlan` attachment mode (see below).
+- Modernized toolchain and dependency tree (see below).
 
 ## Changes vs. upstream
 
@@ -103,6 +124,33 @@ The plugin requests the following privileges (same as upstream):
   is preserved; if you publish under a different namespace, see
   `pkg/plugin/plugin.go:driverRegexp` and adjust to match your registry
   before relying on the bridge-conflict scan.
+
+## Credits
+
+This fork stands on the shoulders of work that originated elsewhere.
+With thanks to:
+
+- **[@devplayer0](https://github.com/devplayer0)** — author of the
+  original plugin. Everything in `bridge` mode is their design.
+- **[@aczwink](https://github.com/aczwink)** — independently
+  diagnosed the daemon-restart deadlock and shipped the
+  persist-options-to-disk fix in
+  [aczwink/docker-net-dhcp@c060b9c9](https://github.com/aczwink/docker-net-dhcp/commit/c060b9c9).
+  This fork's persistence implementation is inspired by that approach,
+  with state moved to a dedicated state directory and a graceful
+  fallback to the docker API for networks that pre-date the change.
+- **[@asheliahut](https://github.com/asheliahut)** — proposed the
+  Docker client request timeout in upstream PR
+  [#34](https://github.com/devplayer0/docker-net-dhcp/pull/34).
+- **[@Vigilans](https://github.com/Vigilans)** — proposed the
+  `gateway` override option in upstream PR
+  [#32](https://github.com/devplayer0/docker-net-dhcp/pull/32).
+- **[@relet](https://github.com/relet)** — proposed the
+  package-bump-and-API-version-removal modernization in upstream PR
+  [#43](https://github.com/devplayer0/docker-net-dhcp/pull/43); the
+  spirit of that PR is reflected in this fork's Phase A modernization.
+- The dependabot bumps that have been waiting on review in upstream
+  (#35–#38) — superseded by the broader Phase A bump here.
 
 ## Known limitations
 
