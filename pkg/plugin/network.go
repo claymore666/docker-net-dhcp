@@ -321,8 +321,8 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 	// best-effort basis: warn loudly but don't fail the endpoint.
 	if r.Interface != nil && r.Interface.AddressIPv6 != "" {
 		log.WithFields(log.Fields{
-			"network":  r.NetworkID[:12],
-			"endpoint": r.EndpointID[:12],
+			"network":  shortID(r.NetworkID),
+			"endpoint": shortID(r.EndpointID),
 			"ipv6":     r.Interface.AddressIPv6,
 		}).Warn("Static IPv6 address requested but not yet wired through to udhcpc6; lease will come unhinted")
 	}
@@ -367,8 +367,8 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 			// future change can request preferred-address from a
 			// DHCPv6 client without a wire-format change.
 			log.WithFields(log.Fields{
-				"network":      r.NetworkID[:12],
-				"endpoint":     r.EndpointID[:12],
+				"network":      shortID(r.NetworkID),
+				"endpoint":     shortID(r.EndpointID),
 				"mac_address":  mac,
 				"requested_ip": requestedIP,
 				"prior_ipv6":   ipv6,
@@ -524,8 +524,8 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 	p.rememberEndpoint(r.EndpointID, endpointFingerprint{MAC: mac, IPv4: v4IP, IPv6: v6IP})
 
 	log.WithFields(log.Fields{
-		"network":     r.NetworkID[:12],
-		"endpoint":    r.EndpointID[:12],
+		"network":     shortID(r.NetworkID),
+		"endpoint":    shortID(r.EndpointID),
 		"mac_address": mac,
 		"ip":          res.Interface.Address,
 		"ipv6":        res.Interface.AddressIPv6,
@@ -595,8 +595,8 @@ func (p *Plugin) DeleteEndpoint(ctx context.Context, r DeleteEndpointRequest) er
 			return err
 		}
 		log.WithFields(log.Fields{
-			"network":  r.NetworkID[:12],
-			"endpoint": r.EndpointID[:12],
+			"network":  shortID(r.NetworkID),
+			"endpoint": shortID(r.EndpointID),
 		}).Info("Endpoint deleted")
 		return nil
 	}
@@ -612,8 +612,8 @@ func (p *Plugin) DeleteEndpoint(ctx context.Context, r DeleteEndpointRequest) er
 	}
 
 	log.WithFields(log.Fields{
-		"network":  r.NetworkID[:12],
-		"endpoint": r.EndpointID[:12],
+		"network":  shortID(r.NetworkID),
+		"endpoint": shortID(r.EndpointID),
 	}).Info("Endpoint deleted")
 
 	return nil
@@ -634,8 +634,8 @@ func (p *Plugin) addRoutes(opts *DHCPNetworkOptions, v6 bool, bridge netlink.Lin
 	}
 
 	logFields := log.Fields{
-		"network":  r.NetworkID[:12],
-		"endpoint": r.EndpointID[:12],
+		"network":  shortID(r.NetworkID),
+		"endpoint": shortID(r.EndpointID),
 		"sandbox":  r.SandboxKey,
 	}
 	for _, route := range routes {
@@ -749,8 +749,8 @@ func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) 
 		// and the link in the destroyed sandbox is gone with it.
 		// Reacquire from scratch.
 		log.WithFields(log.Fields{
-			"network":  r.NetworkID[:12],
-			"endpoint": r.EndpointID[:12],
+			"network":  shortID(r.NetworkID),
+			"endpoint": shortID(r.EndpointID),
 			"sandbox":  r.SandboxKey,
 		}).Info("[Join] No hint; attempting endpoint reacquisition (likely container restart)")
 		if err := p.reacquireEndpoint(ctx, r, opts); err != nil {
@@ -764,8 +764,8 @@ func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) 
 
 	if hint.Gateway != "" {
 		log.WithFields(log.Fields{
-			"network":  r.NetworkID[:12],
-			"endpoint": r.EndpointID[:12],
+			"network":  shortID(r.NetworkID),
+			"endpoint": shortID(r.EndpointID),
 			"sandbox":  r.SandboxKey,
 			"gateway":  hint.Gateway,
 		}).Info("[Join] Setting IPv4 gateway retrieved from initial DHCP in CreateEndpoint")
@@ -804,8 +804,8 @@ func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) 
 
 		if err := m.Start(ctx); err != nil {
 			log.WithError(err).WithFields(log.Fields{
-				"network":  r.NetworkID[:12],
-				"endpoint": r.EndpointID[:12],
+				"network":  shortID(r.NetworkID),
+				"endpoint": shortID(r.EndpointID),
 				"sandbox":  r.SandboxKey,
 			}).Error("Failed to start persistent DHCP client; lease will not be renewed")
 			// If Start failed, take ourselves out of the registry so a
@@ -817,8 +817,8 @@ func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) 
 	}()
 
 	log.WithFields(log.Fields{
-		"network":  r.NetworkID[:12],
-		"endpoint": r.EndpointID[:12],
+		"network":  shortID(r.NetworkID),
+		"endpoint": shortID(r.EndpointID),
 		"sandbox":  r.SandboxKey,
 	}).Info("Joined sandbox to endpoint")
 
@@ -851,8 +851,8 @@ func (p *Plugin) Leave(ctx context.Context, r LeaveRequest) error {
 	p.updateEndpointIPs(r.EndpointID, v4, v6)
 
 	log.WithFields(log.Fields{
-		"network":  r.NetworkID[:12],
-		"endpoint": r.EndpointID[:12],
+		"network":  shortID(r.NetworkID),
+		"endpoint": shortID(r.EndpointID),
 	}).Info("Sandbox left endpoint")
 
 	return nil

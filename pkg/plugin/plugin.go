@@ -24,6 +24,16 @@ import (
 // DriverName is the name of the Docker Network Driver
 const DriverName string = "net-dhcp"
 
+// shortID truncates a Docker network/endpoint ID to 12 chars for
+// log fields, without panicking on short or empty IDs (which can
+// happen on malformed daemon responses during recovery).
+func shortID(id string) string {
+	if len(id) >= 12 {
+		return shortID(id)
+	}
+	return id
+}
+
 // Network attachment modes selected by the `mode` driver option.
 const (
 	ModeBridge  = "bridge"
@@ -371,14 +381,14 @@ func (p *Plugin) recoverEndpoints(ctx context.Context) {
 		// Re-fetch with full container details (NetworkList is summary-only).
 		netInfo, err := p.docker.NetworkInspect(ctx, n.ID, dNetwork.InspectOptions{})
 		if err != nil {
-			log.WithError(err).WithField("network", n.ID[:12]).
+			log.WithError(err).WithField("network", shortID(n.ID)).
 				Warn("recovery: NetworkInspect failed; skipping")
 			failed++
 			continue
 		}
 		opts, err := p.netOptions(ctx, n.ID)
 		if err != nil {
-			log.WithError(err).WithField("network", n.ID[:12]).
+			log.WithError(err).WithField("network", shortID(n.ID)).
 				Warn("recovery: failed to load network options; skipping")
 			failed++
 			continue
@@ -393,8 +403,8 @@ func (p *Plugin) recoverEndpoints(ctx context.Context) {
 			}
 			if err := p.recoverOneEndpoint(ctx, n.ID, info.EndpointID, info.MacAddress, info.IPv4Address, info.IPv6Address, opts); err != nil {
 				log.WithError(err).WithFields(log.Fields{
-					"network":  n.ID[:12],
-					"endpoint": info.EndpointID[:12],
+					"network":  shortID(n.ID),
+					"endpoint": shortID(info.EndpointID),
 				}).Warn("recovery: endpoint recovery failed")
 				failed++
 				continue
@@ -454,8 +464,8 @@ func (p *Plugin) recoverOneEndpoint(ctx context.Context, networkID, endpointID, 
 		defer cancel()
 		if err := m.Start(startCtx); err != nil {
 			log.WithError(err).WithFields(log.Fields{
-				"network":  networkID[:12],
-				"endpoint": endpointID[:12],
+				"network":  shortID(networkID),
+				"endpoint": shortID(endpointID),
 			}).Warn("recovery: persistent DHCP client Start failed; lease will not renew until next restart")
 			p.takeDHCPManager(endpointID)
 		}

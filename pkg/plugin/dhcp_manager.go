@@ -70,8 +70,8 @@ func newDHCPManager(docker *docker.Client, r JoinRequest, opts DHCPNetworkOption
 
 func (m *dhcpManager) logFields(v6 bool) log.Fields {
 	return log.Fields{
-		"network":  m.joinReq.NetworkID[:12],
-		"endpoint": m.joinReq.EndpointID[:12],
+		"network":  shortID(m.joinReq.NetworkID),
+		"endpoint": shortID(m.joinReq.EndpointID),
 		"sandbox":  m.joinReq.SandboxKey,
 		"is_ipv6":  v6,
 	}

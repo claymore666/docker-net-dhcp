@@ -100,8 +100,8 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 				requestedIP = tombIP
 			}
 			log.WithFields(log.Fields{
-				"network":      r.NetworkID[:12],
-				"endpoint":     r.EndpointID[:12],
+				"network":      shortID(r.NetworkID),
+				"endpoint":     shortID(r.EndpointID),
 				"mac_address":  tombMAC,
 				"requested_ip": requestedIP,
 				"prior_ipv6":   tombIPv6,
@@ -244,8 +244,8 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 	}
 
 	log.WithFields(log.Fields{
-		"network":     r.NetworkID[:12],
-		"endpoint":    r.EndpointID[:12],
+		"network":     shortID(r.NetworkID),
+		"endpoint":    shortID(r.EndpointID),
 		"mode":        mode,
 		"parent":      opts.Parent,
 		"mac_address": hintMAC,
@@ -270,8 +270,8 @@ func (p *Plugin) deleteParentAttachedEndpoint(r DeleteEndpointRequest) error {
 	if err != nil {
 		// Expected: the link is gone with the container netns.
 		log.WithFields(log.Fields{
-			"network":  r.NetworkID[:12],
-			"endpoint": r.EndpointID[:12],
+			"network":  shortID(r.NetworkID),
+			"endpoint": shortID(r.EndpointID),
 		}).Debug("Child link already gone (expected)")
 		return nil
 	}
@@ -279,8 +279,8 @@ func (p *Plugin) deleteParentAttachedEndpoint(r DeleteEndpointRequest) error {
 		return fmt.Errorf("failed to delete leftover child link %v: %w", name, err)
 	}
 	log.WithFields(log.Fields{
-		"network":  r.NetworkID[:12],
-		"endpoint": r.EndpointID[:12],
+		"network":  shortID(r.NetworkID),
+		"endpoint": shortID(r.EndpointID),
 	}).Info("Cleaned up leftover child link in host netns")
 	return nil
 }
