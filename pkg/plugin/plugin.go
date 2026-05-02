@@ -26,7 +26,12 @@ const (
 
 const defaultLeaseTimeout = 10 * time.Second
 
-var driverRegexp = regexp.MustCompile(`^ghcr\.io/devplayer0/docker-net-dhcp:.+$`)
+// driverRegexp matches plugin references that this driver should treat as
+// "another instance of itself" when scanning for bridge conflicts. Upstream
+// pinned this to ghcr.io/devplayer0; we accept any registry namespace as
+// long as the image name and tag are present, so forks published under a
+// different namespace still cross-detect each other on the same host.
+var driverRegexp = regexp.MustCompile(`(^|/)docker-net-dhcp:.+$`)
 
 // IsDHCPPlugin checks if a Docker network driver is an instance of this plugin
 func IsDHCPPlugin(driver string) bool {
