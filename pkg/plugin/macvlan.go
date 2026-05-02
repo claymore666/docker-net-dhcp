@@ -118,6 +118,9 @@ func (p *Plugin) createMacvlanEndpoint(ctx context.Context, r CreateEndpointRequ
 				res.Interface.Address = info.IP
 				hint.IPv4 = addr
 				hint.Gateway = info.Gateway
+				if opts.Gateway != "" {
+					hint.Gateway = opts.Gateway
+				}
 			}
 			p.joinHints[r.EndpointID] = hint
 			return nil

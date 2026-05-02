@@ -73,6 +73,7 @@ The host's NIC config (IP, routes, netplan/`systemd-networkd`,
 | `mode`              | both      | no       | `bridge` (default) or `macvlan`                               |
 | `parent`            | macvlan   | yes      | Host NIC to use as the macvlan parent (e.g. `ens18`, `eno1`). Must exist and be `UP`. |
 | `bridge`            | bridge    | yes      | Existing Linux bridge to plug veths into.                     |
+| `gateway`           | both      | no       | Override the IPv4 gateway returned by DHCP (e.g. when egress should go through a VPN router instead of the LAN's default gateway). |
 | `ipv6`              | both      | no       | Also run DHCPv6 in addition to DHCPv4.                        |
 | `lease_timeout`     | both      | no       | Initial-lease timeout for the up-front DHCP exchange (default `10s`). |
 | `ignore_conflicts`  | bridge    | no       | Skip the bridge-already-in-use check. No-op in macvlan mode.  |

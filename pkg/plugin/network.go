@@ -275,6 +275,9 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 				res.Interface.Address = info.IP
 				hint.IPv4 = ip
 				hint.Gateway = info.Gateway
+				if opts.Gateway != "" {
+					hint.Gateway = opts.Gateway
+				}
 			}
 			p.joinHints[r.EndpointID] = hint
 

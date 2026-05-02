@@ -45,6 +45,11 @@ type DHCPNetworkOptions struct {
 	Mode            string `mapstructure:"mode"`
 	Bridge          string
 	Parent          string `mapstructure:"parent"`
+	// Gateway, if set, overrides the default gateway returned by the
+	// upstream DHCP server. Useful for split-horizon LANs where
+	// containers should egress via a different router than the one
+	// the DHCP server advertises (e.g. VPN gateway).
+	Gateway         string
 	IPv6            bool
 	LeaseTimeout    time.Duration `mapstructure:"lease_timeout"`
 	IgnoreConflicts bool          `mapstructure:"ignore_conflicts"`
