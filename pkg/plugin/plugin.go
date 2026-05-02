@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	dNetwork "github.com/docker/docker/api/types/network"
@@ -169,6 +170,14 @@ type Plugin struct {
 	// path. Held only across that small operation; never combined
 	// with mu so the two locks can't deadlock against each other.
 	tombstoneMu sync.Mutex
+
+	// recoveredOK and recoveryFailed are bumped by recoverOneEndpoint's
+	// background Start goroutine and reported via /Plugin.Health, so
+	// operators can see whether plugin-restart recovery succeeded for
+	// every previously-attached container or whether some containers
+	// are now running without renewal.
+	recoveredOK     atomic.Int32
+	recoveryFailed  atomic.Int32
 }
 
 // storeJoinHint records the state collected during CreateEndpoint so
@@ -463,12 +472,15 @@ func (p *Plugin) recoverOneEndpoint(ctx context.Context, networkID, endpointID, 
 		startCtx, cancel := context.WithTimeout(context.Background(), p.awaitTimeout)
 		defer cancel()
 		if err := m.Start(startCtx); err != nil {
+			p.recoveryFailed.Add(1)
 			log.WithError(err).WithFields(log.Fields{
 				"network":  shortID(networkID),
 				"endpoint": shortID(endpointID),
-			}).Warn("recovery: persistent DHCP client Start failed; lease will not renew until next restart")
+			}).Error("recovery: persistent DHCP client Start failed; lease will not renew until container restart")
 			p.takeDHCPManager(endpointID)
+			return
 		}
+		p.recoveredOK.Add(1)
 	}()
 	return nil
 }
