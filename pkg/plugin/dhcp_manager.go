@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	dTypes "github.com/docker/docker/api/types"
+	dNetwork "github.com/docker/docker/api/types/network"
 	docker "github.com/docker/docker/client"
 	log "github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
@@ -208,7 +208,7 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 func (m *dhcpManager) Start(ctx context.Context) error {
 	var ctrID string
 	if err := util.AwaitCondition(ctx, func() (bool, error) {
-		dockerNet, err := m.docker.NetworkInspect(ctx, m.joinReq.NetworkID, dTypes.NetworkInspectOptions{})
+		dockerNet, err := m.docker.NetworkInspect(ctx, m.joinReq.NetworkID, dNetwork.InspectOptions{})
 		if err != nil {
 			return false, fmt.Errorf("failed to get Docker network info: %w", err)
 		}

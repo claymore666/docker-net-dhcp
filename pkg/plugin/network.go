@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"net"
 
-	dTypes "github.com/docker/docker/api/types"
+	dNetwork "github.com/docker/docker/api/types/network"
 	"github.com/mitchellh/mapstructure"
 	log "github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
@@ -61,7 +61,7 @@ func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 		}
 		bridgeAddrs := append(v4Addrs, v6Addrs...)
 
-		nets, err := p.docker.NetworkList(context.Background(), dTypes.NetworkListOptions{})
+		nets, err := p.docker.NetworkList(context.Background(), dNetwork.ListOptions{})
 		if err != nil {
 			return fmt.Errorf("failed to retrieve list of networks from Docker: %w", err)
 		}
@@ -125,7 +125,7 @@ func vethPairNames(id string) (string, string) {
 func (p *Plugin) netOptions(ctx context.Context, id string) (DHCPNetworkOptions, error) {
 	dummy := DHCPNetworkOptions{}
 
-	n, err := p.docker.NetworkInspect(ctx, id, dTypes.NetworkInspectOptions{})
+	n, err := p.docker.NetworkInspect(ctx, id, dNetwork.InspectOptions{})
 	if err != nil {
 		return dummy, fmt.Errorf("failed to get info from Docker: %w", err)
 	}
