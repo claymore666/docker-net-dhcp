@@ -356,16 +356,22 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 	effectiveMAC := r.Interface.MacAddress
 	requestedIP := explicitV4
 	if effectiveMAC == "" {
-		if mac, ip, ok := p.consumeTombstone(r.NetworkID); ok {
+		if mac, ip, ipv6, ok := p.consumeTombstone(r.NetworkID); ok {
 			effectiveMAC = mac
 			if requestedIP == "" {
 				requestedIP = ip
 			}
+			// IPv6 from the tombstone is logged but not yet wired to
+			// udhcpc6 (busybox has no `-r` equivalent for v6). The
+			// data is preserved through the full lifecycle so a
+			// future change can request preferred-address from a
+			// DHCPv6 client without a wire-format change.
 			log.WithFields(log.Fields{
 				"network":      r.NetworkID[:12],
 				"endpoint":     r.EndpointID[:12],
 				"mac_address":  mac,
 				"requested_ip": requestedIP,
+				"prior_ipv6":   ipv6,
 			}).Info("Inherited MAC/IP from recent endpoint on same network (likely container restart)")
 		}
 	}
@@ -497,22 +503,25 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 	}
 
 	gateway := ""
-	var v4IP string
+	var v4IP, v6IP string
 	p.updateJoinHint(r.EndpointID, func(h *joinHint) {
 		gateway = h.Gateway
 		if h.IPv4 != nil {
 			v4IP = h.IPv4.IP.String()
 		}
+		if h.IPv6 != nil {
+			v6IP = h.IPv6.IP.String()
+		}
 	})
 
-	// Remember the chosen MAC and IP so DeleteEndpoint can stash
-	// both as a tombstone for the next CreateEndpoint on the same
+	// Remember the chosen MAC and IPs so DeleteEndpoint can stash
+	// them as a tombstone for the next CreateEndpoint on the same
 	// network.
 	mac := r.Interface.MacAddress
 	if mac == "" {
 		mac = res.Interface.MacAddress
 	}
-	p.rememberEndpoint(r.EndpointID, endpointFingerprint{MAC: mac, IPv4: v4IP})
+	p.rememberEndpoint(r.EndpointID, endpointFingerprint{MAC: mac, IPv4: v4IP, IPv6: v6IP})
 
 	log.WithFields(log.Fields{
 		"network":     r.NetworkID[:12],
@@ -578,7 +587,7 @@ func (p *Plugin) DeleteEndpoint(ctx context.Context, r DeleteEndpointRequest) er
 	// the tombstone is meaningless there (we'd just be re-handing the
 	// parent MAC back, which the kernel inherits anyway) — skip it.
 	if fp, ok := p.takeEndpoint(r.EndpointID); ok && opts.effectiveMode() != ModeIPvlan {
-		p.addTombstone(r.NetworkID, fp.MAC, fp.IPv4)
+		p.addTombstone(r.NetworkID, fp.MAC, fp.IPv4, fp.IPv6)
 	}
 
 	if m := opts.effectiveMode(); m == ModeMacvlan || m == ModeIPvlan {
@@ -827,14 +836,19 @@ func (p *Plugin) Leave(ctx context.Context, r LeaveRequest) error {
 		return err
 	}
 
-	// Refresh the endpoint fingerprint with the most recent IP the
-	// persistent client saw. Stop has already drained the event
-	// goroutine, so manager.LastIP is stable to read here. The
+	// Refresh the endpoint fingerprint with the most recent v4/v6 IPs
+	// the persistent client saw. Stop has already drained the event
+	// goroutine, so manager.LastIP* are stable to read here. The
 	// tombstone DeleteEndpoint lays down next will then carry the
-	// renewed IP rather than the initial-DISCOVER one.
+	// renewed addresses rather than the initial-DISCOVER ones.
+	v4, v6 := "", ""
 	if manager.LastIP != nil && manager.LastIP.IP != nil {
-		p.updateEndpointIP(r.EndpointID, manager.LastIP.IP.String())
+		v4 = manager.LastIP.IP.String()
 	}
+	if manager.LastIPv6 != nil && manager.LastIPv6.IP != nil {
+		v6 = manager.LastIPv6.IP.String()
+	}
+	p.updateEndpointIPs(r.EndpointID, v4, v6)
 
 	log.WithFields(log.Fields{
 		"network":  r.NetworkID[:12],

@@ -222,6 +222,7 @@ func (p *Plugin) takeDHCPManager(endpointID string) (*dhcpManager, bool) {
 type endpointFingerprint struct {
 	MAC  string
 	IPv4 string // bare IPv4, e.g. "192.168.0.166" (no /mask). May be empty.
+	IPv6 string // bare IPv6, e.g. "2001:db8::1" (no /prefix). May be empty.
 }
 
 // rememberEndpoint stashes the fingerprint of an endpoint we just
@@ -237,13 +238,14 @@ func (p *Plugin) rememberEndpoint(endpointID string, fp endpointFingerprint) {
 	p.endpointFingerprints[endpointID] = fp
 }
 
-// updateEndpointIP overwrites the recorded IPv4 of an existing
-// fingerprint without disturbing the MAC. No-op if we're not
-// tracking this endpoint or the IP is empty. Used by Leave to
-// capture the latest persistent-client IP before DeleteEndpoint
-// freezes the value into a tombstone.
-func (p *Plugin) updateEndpointIP(endpointID, ip string) {
-	if ip == "" {
+// updateEndpointIPs overwrites the recorded IPv4/IPv6 of an existing
+// fingerprint. Empty arguments leave the corresponding field
+// untouched, so callers that only know one family don't accidentally
+// erase the other. No-op if we're not tracking this endpoint. Used
+// by Leave to capture the latest persistent-client lease before
+// DeleteEndpoint freezes the value into a tombstone.
+func (p *Plugin) updateEndpointIPs(endpointID, ipv4, ipv6 string) {
+	if ipv4 == "" && ipv6 == "" {
 		return
 	}
 	p.mu.Lock()
@@ -252,7 +254,12 @@ func (p *Plugin) updateEndpointIP(endpointID, ip string) {
 	if !ok {
 		return
 	}
-	fp.IPv4 = ip
+	if ipv4 != "" {
+		fp.IPv4 = ipv4
+	}
+	if ipv6 != "" {
+		fp.IPv6 = ipv6
+	}
 	p.endpointFingerprints[endpointID] = fp
 }
 
@@ -272,10 +279,10 @@ func (p *Plugin) takeEndpoint(endpointID string) (endpointFingerprint, bool) {
 
 // addTombstone appends a tombstone for a deleted endpoint so the
 // next CreateEndpoint on the same network within tombstoneTTL can
-// inherit its MAC and last IP. Best-effort: a disk failure here just
-// means restart-stability for this particular event is lost; it's
-// logged and the flow continues.
-func (p *Plugin) addTombstone(networkID, mac, ip string) {
+// inherit its MAC and last IP/IPv6. Best-effort: a disk failure
+// here just means restart-stability for this particular event is
+// lost; it's logged and the flow continues.
+func (p *Plugin) addTombstone(networkID, mac, ipv4, ipv6 string) {
 	if mac == "" {
 		return
 	}
@@ -287,10 +294,11 @@ func (p *Plugin) addTombstone(networkID, mac, ip string) {
 		ts = nil
 	}
 	ts = append(pruneTombstones(ts), tombstone{
-		NetworkID:  networkID,
-		MacAddress: mac,
-		IPAddress:  ip,
-		DeletedAt:  time.Now(),
+		NetworkID:   networkID,
+		MacAddress:  mac,
+		IPAddress:   ipv4,
+		IPv6Address: ipv6,
+		DeletedAt:   time.Now(),
 	})
 	if err := saveTombstones(ts); err != nil {
 		log.WithError(err).Warn("Failed to persist tombstone; container restart may pick a new MAC/IP")
@@ -303,13 +311,13 @@ func (p *Plugin) addTombstone(networkID, mac, ip string) {
 // restarted concurrently — those fall back to fresh MACs/IPs rather
 // than risk swapping identities between containers. Sequential
 // restarts (the common case) always satisfy the rule.
-func (p *Plugin) consumeTombstone(networkID string) (mac, ip string, ok bool) {
+func (p *Plugin) consumeTombstone(networkID string) (mac, ipv4, ipv6 string, ok bool) {
 	p.tombstoneMu.Lock()
 	defer p.tombstoneMu.Unlock()
 	ts, err := loadTombstones()
 	if err != nil {
 		log.WithError(err).Warn("Failed to load tombstones; treating as empty")
-		return "", "", false
+		return "", "", "", false
 	}
 	ts = pruneTombstones(ts)
 	matchIdx := -1
@@ -325,15 +333,16 @@ func (p *Plugin) consumeTombstone(networkID string) (mac, ip string, ok bool) {
 		if err := saveTombstones(ts); err != nil {
 			log.WithError(err).Debug("Failed to persist pruned tombstones")
 		}
-		return "", "", false
+		return "", "", "", false
 	}
 	mac = ts[matchIdx].MacAddress
-	ip = ts[matchIdx].IPAddress
+	ipv4 = ts[matchIdx].IPAddress
+	ipv6 = ts[matchIdx].IPv6Address
 	ts = append(ts[:matchIdx], ts[matchIdx+1:]...)
 	if err := saveTombstones(ts); err != nil {
 		log.WithError(err).Warn("Failed to persist tombstones after consume")
 	}
-	return mac, ip, true
+	return mac, ipv4, ipv6, true
 }
 
 // recoverEndpoints walks Docker's networks, finds the ones served by

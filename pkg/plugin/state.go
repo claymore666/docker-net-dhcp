@@ -46,15 +46,22 @@ const tombstoneTTL = 10 * time.Second
 // same network within the TTL fall through to a fresh MAC because
 // consumeTombstone requires exactly one match.
 type tombstone struct {
-	NetworkID  string    `json:"network_id"`
-	MacAddress string    `json:"mac_address"`
+	NetworkID  string `json:"network_id"`
+	MacAddress string `json:"mac_address"`
 	// IPAddress, when non-empty, is the bare IPv4 address (no /mask)
 	// from the previous endpoint's lease. The next CreateEndpoint
 	// passes it to udhcpc as `-r ADDR` so the upstream DHCP server
 	// can ACK the same lease back to the same MAC. Empty means
 	// "do an unhinted DISCOVER".
-	IPAddress string    `json:"ip_address,omitempty"`
-	DeletedAt time.Time `json:"deleted_at"`
+	IPAddress string `json:"ip_address,omitempty"`
+	// IPv6Address, when non-empty, is the bare IPv6 address from the
+	// previous lease. busybox udhcpc6 has no `-r` equivalent so this
+	// isn't surfaced as a request hint today, but it's persisted so
+	// (a) operators can correlate disk-state with leases and (b) a
+	// future change to a DHCPv6 client that supports preferred-
+	// address requests can read it without a wire-format change.
+	IPv6Address string    `json:"ipv6_address,omitempty"`
+	DeletedAt   time.Time `json:"deleted_at"`
 }
 
 // tombstoneFilePath returns the on-disk path for the tombstone list.

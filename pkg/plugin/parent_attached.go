@@ -94,7 +94,7 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 	}
 	requestedIP := explicitV4
 	if mode == ModeMacvlan && effectiveMAC == "" {
-		if tombMAC, tombIP, ok := p.consumeTombstone(r.NetworkID); ok {
+		if tombMAC, tombIP, tombIPv6, ok := p.consumeTombstone(r.NetworkID); ok {
 			effectiveMAC = tombMAC
 			if requestedIP == "" {
 				requestedIP = tombIP
@@ -104,6 +104,7 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 				"endpoint":     r.EndpointID[:12],
 				"mac_address":  tombMAC,
 				"requested_ip": requestedIP,
+				"prior_ipv6":   tombIPv6,
 			}).Info("Inherited MAC/IP from recent endpoint on same network (likely container restart)")
 		}
 	}
@@ -223,20 +224,23 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 		return res, err
 	}
 
-	var hintMAC, hintGW, hintIPv4 string
+	var hintMAC, hintGW, hintIPv4, hintIPv6 string
 	p.updateJoinHint(r.EndpointID, func(h *joinHint) {
 		hintMAC = h.MacAddress.String()
 		hintGW = h.Gateway
 		if h.IPv4 != nil {
 			hintIPv4 = h.IPv4.IP.String()
 		}
+		if h.IPv6 != nil {
+			hintIPv6 = h.IPv6.IP.String()
+		}
 	})
 
-	// Remember the chosen MAC and IP so DeleteEndpoint can stash
-	// both as a tombstone. macvlan only — for ipvlan the MAC is the
+	// Remember the chosen MAC and IPs so DeleteEndpoint can stash
+	// them as a tombstone. macvlan only — for ipvlan the MAC is the
 	// parent's and there's nothing to stabilize.
 	if mode == ModeMacvlan {
-		p.rememberEndpoint(r.EndpointID, endpointFingerprint{MAC: hintMAC, IPv4: hintIPv4})
+		p.rememberEndpoint(r.EndpointID, endpointFingerprint{MAC: hintMAC, IPv4: hintIPv4, IPv6: hintIPv6})
 	}
 
 	log.WithFields(log.Fields{

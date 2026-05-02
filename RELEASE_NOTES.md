@@ -330,9 +330,14 @@ changes to include `daemon.*`. New vulnerabilities reported in
   different IP at renewal. The lease must be sticky enough to survive
   a renewal cycle. The renewed IP is at least surfaced to the
   next restart's tombstone, so it isn't lost.
-- IPv6 leases are not stabilized across restart yet — the tombstone
-  carries v4 only. v6 endpoints will get a fresh kernel-assigned
-  address on each restart.
+- IPv6 lease tracking lands in tombstones (so the data flows through
+  CreateEndpoint/Leave/DeleteEndpoint), but the request hint isn't
+  surfaced to `udhcpc6` — busybox has no `-r` equivalent for v6.
+  IPv6 endpoints get whatever the DHCPv6 server assigns; with a
+  stable MAC and a server that keys reservations on
+  client-id/MAC, that's typically the same address. Switching to a
+  DHCPv6 client that supports preferred-address requests is a
+  future enhancement.
 - Concurrent `docker restart` of multiple containers on the same
   DHCP network within ~10 seconds falls back to fresh MACs (the
   tombstone mechanism requires exactly one match to avoid swapping
