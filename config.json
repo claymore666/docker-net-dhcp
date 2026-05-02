@@ -17,9 +17,17 @@
             ]
         },
         {
-            "description": "Log level",
+            "description": "Timeout while awaiting container/sandbox readiness",
             "name": "AWAIT_TIMEOUT",
             "value": "10s",
+            "settable": [
+                "value"
+            ]
+        },
+        {
+            "description": "Directory where per-network options are persisted",
+            "name": "STATE_DIR",
+            "value": "/var/lib/net-dhcp",
             "settable": [
                 "value"
             ]

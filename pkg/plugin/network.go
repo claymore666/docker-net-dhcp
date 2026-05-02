@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"os"
 
 	dNetwork "github.com/docker/docker/api/types/network"
 	"github.com/mitchellh/mapstructure"
@@ -50,6 +51,10 @@ func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 		}
 		if _, err := validateMacvlanParent(opts.Parent); err != nil {
 			return err
+		}
+		if err := saveOptions(r.NetworkID, opts); err != nil {
+			log.WithError(err).WithField("network", r.NetworkID).
+				Warn("Failed to persist options; daemon-restart may need API fallback")
 		}
 		log.WithFields(log.Fields{
 			"network": r.NetworkID,
@@ -132,6 +137,10 @@ func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 		}
 	}
 
+	if err := saveOptions(r.NetworkID, opts); err != nil {
+		log.WithError(err).WithField("network", r.NetworkID).
+			Warn("Failed to persist options; daemon-restart may need API fallback")
+	}
 	log.WithFields(log.Fields{
 		"network": r.NetworkID,
 		"bridge":  opts.Bridge,
@@ -143,6 +152,10 @@ func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 
 // DeleteNetwork "deletes" a DHCP network (does nothing, the bridge is managed by the user)
 func (p *Plugin) DeleteNetwork(r DeleteNetworkRequest) error {
+	if err := deleteOptions(r.NetworkID); err != nil {
+		log.WithError(err).WithField("network", r.NetworkID).
+			Warn("Failed to remove persisted options; harmless leftover")
+	}
 	log.WithField("network", r.NetworkID).Info("Network deleted")
 	return nil
 }
@@ -151,7 +164,21 @@ func vethPairNames(id string) (string, string) {
 	return "dh-" + id[:12], id[:12] + "-dh"
 }
 
+// netOptions returns the decoded options for a network, preferring the
+// on-disk cache populated by CreateNetwork. The fallback to docker
+// NetworkInspect is what makes existing networks (created before this
+// fork added persistence) keep working after upgrade — but every fresh
+// network has its options served from disk, which is what avoids the
+// daemon-restart deadlock when dockerd is calling our endpoint
+// handlers while not yet ready to serve API calls.
 func (p *Plugin) netOptions(ctx context.Context, id string) (DHCPNetworkOptions, error) {
+	if opts, err := loadOptions(id); err == nil {
+		return opts, nil
+	} else if !os.IsNotExist(err) {
+		log.WithError(err).WithField("network", id).
+			Warn("Failed to load persisted options; falling back to docker API")
+	}
+
 	dummy := DHCPNetworkOptions{}
 
 	n, err := p.docker.NetworkInspect(ctx, id, dNetwork.InspectOptions{})
@@ -164,6 +191,12 @@ func (p *Plugin) netOptions(ctx context.Context, id string) (DHCPNetworkOptions,
 		return dummy, fmt.Errorf("failed to parse options: %w", err)
 	}
 
+	// Backfill: persist options for networks that pre-date the
+	// persistence feature so the next call hits the disk path.
+	if err := saveOptions(id, opts); err != nil {
+		log.WithError(err).WithField("network", id).
+			Debug("Failed to backfill persisted options")
+	}
 	return opts, nil
 }
 

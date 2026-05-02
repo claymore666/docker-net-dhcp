@@ -11,7 +11,7 @@ RUN mkdir bin/ && go build -o bin/ ./cmd/...
 
 FROM alpine:3.20
 
-RUN mkdir -p /run/docker/plugins && apk add --no-cache busybox-extras iproute2
+RUN mkdir -p /run/docker/plugins /var/lib/net-dhcp && apk add --no-cache busybox-extras iproute2
 
 COPY --from=builder /usr/local/src/docker-net-dhcp/bin/net-dhcp /usr/sbin/
 COPY --from=builder /usr/local/src/docker-net-dhcp/bin/udhcpc-handler /usr/lib/net-dhcp/udhcpc-handler

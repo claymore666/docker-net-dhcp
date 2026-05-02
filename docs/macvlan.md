@@ -131,3 +131,25 @@ DHCP server has a free lease in its pool.
 
 **`docker plugin install` reports "invalid rootfs"** — your Docker daemon
 is too old. Plugin requires Docker 23+.
+
+## State persistence
+
+Per-network options are persisted inside the plugin to
+`/var/lib/net-dhcp/<network_id>.json` on `docker network create`. This
+exists so the per-endpoint handlers (`CreateEndpoint`, `Join`,
+`EndpointOperInfo`, `DeleteEndpoint`) don't need to call back into the
+docker API to learn the mode/parent/etc — which is what made the
+upstream plugin deadlock during `dockerd` startup when it was being
+asked to restore containers using its own networks.
+
+State survives plugin enable/disable cycles. It is reset on
+`docker plugin rm` or `docker plugin upgrade`. After an upgrade,
+existing networks transparently fall back to the docker API on first
+read, which then back-fills the persisted state — so by the second
+endpoint operation everything is back to disk-served.
+
+Override the location via the `STATE_DIR` env var on the plugin:
+
+```bash
+docker plugin set ghcr.io/<your-namespace>/docker-net-dhcp:v0.3.0 STATE_DIR=/some/other/path
+```
