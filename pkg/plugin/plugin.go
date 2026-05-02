@@ -237,6 +237,25 @@ func (p *Plugin) rememberEndpoint(endpointID string, fp endpointFingerprint) {
 	p.endpointFingerprints[endpointID] = fp
 }
 
+// updateEndpointIP overwrites the recorded IPv4 of an existing
+// fingerprint without disturbing the MAC. No-op if we're not
+// tracking this endpoint or the IP is empty. Used by Leave to
+// capture the latest persistent-client IP before DeleteEndpoint
+// freezes the value into a tombstone.
+func (p *Plugin) updateEndpointIP(endpointID, ip string) {
+	if ip == "" {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	fp, ok := p.endpointFingerprints[endpointID]
+	if !ok {
+		return
+	}
+	fp.IPv4 = ip
+	p.endpointFingerprints[endpointID] = fp
+}
+
 // takeEndpoint atomically retrieves and deletes the remembered
 // fingerprint for an endpoint. Returns ok=false if no fingerprint
 // was recorded (e.g. an endpoint created before this build, or a

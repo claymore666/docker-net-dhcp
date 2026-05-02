@@ -737,6 +737,15 @@ func (p *Plugin) Leave(ctx context.Context, r LeaveRequest) error {
 		return err
 	}
 
+	// Refresh the endpoint fingerprint with the most recent IP the
+	// persistent client saw. Stop has already drained the event
+	// goroutine, so manager.LastIP is stable to read here. The
+	// tombstone DeleteEndpoint lays down next will then carry the
+	// renewed IP rather than the initial-DISCOVER one.
+	if manager.LastIP != nil && manager.LastIP.IP != nil {
+		p.updateEndpointIP(r.EndpointID, manager.LastIP.IP.String())
+	}
+
 	log.WithFields(log.Fields{
 		"network":  r.NetworkID[:12],
 		"endpoint": r.EndpointID[:12],

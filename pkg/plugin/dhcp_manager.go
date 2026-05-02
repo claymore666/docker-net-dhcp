@@ -88,13 +88,24 @@ func (m *dhcpManager) renew(v6 bool, info udhcpc.Info) error {
 		return fmt.Errorf("failed to parse IP address: %w", err)
 	}
 
-	if !ip.Equal(*lastIP) {
+	if lastIP == nil || !ip.Equal(*lastIP) {
 		// TODO: We can't deal with a different renewed IP for the same reason as described for `bound`
 		log.
 			WithFields(m.logFields(v6)).
 			WithField("old_ip", lastIP).
 			WithField("new_ip", ip).
 			Warn("udhcpc renew with changed IP")
+	}
+
+	// Track the freshly-bound address so Leave can hand it to the
+	// tombstone (and thus the next CreateEndpoint's `-r` hint).
+	// Without this the manager keeps reporting whatever the very
+	// first CreateEndpoint DISCOVER produced, even if udhcpc has
+	// moved to a different lease since.
+	if v6 {
+		m.LastIPv6 = ip
+	} else {
+		m.LastIP = ip
 	}
 
 	// Skip gateway-from-DHCP renewal handling when the operator pinned a
@@ -203,8 +214,20 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 				//			WithField("ip", ip).
 				//			Error("Failed to delete existing udhcpc address")
 				//	}
-				// We're `bound` from the beginning
-				//case "bound":
+				case "bound":
+					// The persistent client's first DHCPACK can land
+					// on a different IP than CreateEndpoint's initial
+					// DISCOVER (some servers, including Fritz.Box,
+					// hand out a fresh address per DISCOVER even for
+					// the same MAC). Reuse the renew path so LastIP
+					// reflects what's actually in the kernel.
+					if err := m.renew(v6, event.Data); err != nil {
+						log.
+							WithError(err).
+							WithFields(m.logFields(v6)).
+							WithField("ip", event.Data.IP).
+							Error("Failed to record initial bind")
+					}
 				case "renew":
 					log.
 						WithFields(m.logFields(v6)).
