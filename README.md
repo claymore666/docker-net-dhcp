@@ -1,5 +1,29 @@
 # docker-net-dhcp
 
+> **This is a maintained fork** of [`devplayer0/docker-net-dhcp`][upstream].
+> The upstream repository has been quiet since 2021 and no longer builds on
+> current Docker. This fork modernises the toolchain (Go 1.25, docker SDK
+> v28, current Alpine), adds **macvlan** and **ipvlan** attachment modes,
+> fixes the daemon-restart deadlock, fixes a data race on the plugin's
+> internal state, and incorporates several open upstream PRs.
+>
+> See [`RELEASE_NOTES.md`](RELEASE_NOTES.md) for the full changelog and
+> credits, and [`docs/parent-attached-modes.md`](docs/parent-attached-modes.md)
+> for the macvlan / ipvlan how-to.
+>
+> Install:
+> ```bash
+> docker plugin install ghcr.io/claymore666/docker-net-dhcp:v0.4.0
+> ```
+>
+> All upstream usage below still applies — bridge mode is unchanged and
+> remains the default. The maintained image lives at
+> `ghcr.io/claymore666/docker-net-dhcp` instead of `ghcr.io/devplayer0/...`.
+
+[upstream]: https://github.com/devplayer0/docker-net-dhcp
+
+---
+
 `docker-net-dhcp` is a Docker plugin providing a network driver which allocates IP addresses (IPv4 and optionally IPv6)
 via an existing DHCP server (e.g. your router).
 

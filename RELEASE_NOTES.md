@@ -11,6 +11,38 @@ forks that have been waiting on review.
 
 [upstream]: https://github.com/devplayer0/docker-net-dhcp
 
+## v0.4.1
+
+- **Critical fix:** added `sync.Mutex` to the `Plugin` struct guarding
+  the `joinHints` and `persistentDHCP` maps, which were being mutated
+  from concurrent `CreateEndpoint` / `Join` / `Leave` HTTP handlers
+  without synchronisation. The race detector reproduced a concurrent
+  map read+write that crashes the plugin under realistic load
+  (multi-service compose-up, daemon-restart restoration sweep). This
+  is the C-1 finding from the internal code review; inherited from
+  upstream and present in every fork in the survey.
+- **Race-time fix:** `Join` now registers the `dhcpManager` *before*
+  spawning the goroutine that calls `Start`, so a fast `Leave` doesn't
+  silently lose the lease-renewal client. `dhcpManager.Stop` blocks
+  until `Start` has finished and short-circuits if `Start` failed.
+- **Test suite:** added ~750 LOC of tests across `pkg/plugin` and
+  `pkg/util`. CI on push/PR runs `go build`, `go vet`, `gofmt -l`,
+  `staticcheck`, and `go test -race`.
+- **Lint sweep:** all static-analysis findings from the internal code
+  review (`go vet`, `staticcheck`, `gofmt`, the actionable subset of
+  `errcheck`) cleared.
+- Atomic write for persisted network options (temp + rename) instead
+  of best-effort `os.WriteFile`.
+- `JSONResponse` encodes to a buffer first so encoding failures
+  produce a clean HTTP 500 instead of a half-flushed body and a
+  no-op second `WriteHeader`.
+- Dropped the broken upstream `.github/workflows/build.yaml` and
+  `release.yaml`; replaced with a minimal `test.yaml` that runs the
+  test suite on push/PR. The plugin image continues to be built and
+  pushed manually via `make push`.
+- Renamed `pkg/plugin/macvlan.go` to `pkg/plugin/parent_attached.go`
+  to reflect that the file owns both macvlan and ipvlan paths.
+
 ## v0.4.0
 
 - New `mode=ipvlan` attachment mode (L2 submode), as a third value
@@ -173,6 +205,28 @@ With thanks to:
   arrives at the same place semantically.
 - The dependabot bumps that have been waiting on review in upstream
   (#35–#38) — superseded by the broader Phase A bump here.
+
+## Security advisory assessment
+
+`govulncheck` reports two vulnerabilities in `github.com/docker/docker`:
+
+| ID | Description | Status |
+|---|---|---|
+| [GO-2026-4887](https://pkg.go.dev/vuln/GO-2026-4887) | Moby AuthZ plugin bypass on oversized request bodies | **Not applicable** |
+| [GO-2026-4883](https://pkg.go.dev/vuln/GO-2026-4883) | Moby off-by-one in plugin privilege validation | **Not applicable** |
+
+Both vulnerabilities live in **Moby daemon** (server-side authz/privilege)
+code, not in the client SDK we consume. Our usage of
+`github.com/docker/docker` is exclusively the `client` package
+(`NewClientWithOpts`, `NetworkInspect`, `NetworkList`,
+`ContainerInspect`); the vulnerable code paths are in `daemon.*`, which
+this codebase neither imports nor links. `govulncheck` flags any module
+with a vuln conservatively without distinguishing client vs. daemon.
+
+If you point `govulncheck` at a future build of this plugin and see
+these IDs, the assessment above still holds unless the call graph
+changes to include `daemon.*`. New vulnerabilities reported in
+`docker/docker/client` should be re-evaluated.
 
 ## Known limitations
 
