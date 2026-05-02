@@ -30,6 +30,16 @@ type DHCPClientOptions struct {
 	Once      bool
 	Namespace string
 
+	// RequestedIP, when non-empty, is passed to udhcpc as `-r ADDR`,
+	// which makes the client send DHCPREQUEST for that specific IP
+	// before falling back to DISCOVER. Used on plugin-restart
+	// recovery to keep the same lease the container is already using
+	// (the server ACKs if the lease is still valid; on NAK udhcpc
+	// transparently falls back to a fresh DISCOVER).
+	//
+	// Format: a bare dotted-quad IPv4 address. No effect for V6.
+	RequestedIP string
+
 	// ClientID, when non-empty, is sent as DHCP option 61 (RFC 2132).
 	// Servers that key reservations on client-id (rather than MAC) can
 	// then track the same logical client across MAC changes — including
@@ -90,6 +100,10 @@ func NewDHCPClient(iface string, opts *DHCPClientOptions) (*DHCPClient, error) {
 	} else {
 		// Release IP address on exit
 		c.cmd.Args = append(c.cmd.Args, "-R")
+	}
+
+	if opts.RequestedIP != "" && !opts.V6 {
+		c.cmd.Args = append(c.cmd.Args, "-r", opts.RequestedIP)
 	}
 
 	if opts.Hostname != "" {

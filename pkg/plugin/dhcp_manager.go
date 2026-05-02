@@ -149,10 +149,22 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 		WithFields(m.logFields(v6)).
 		Info("Starting persistent DHCP client")
 
+	// On plugin-restart recovery the persistent client should ask the
+	// DHCP server for the IP the container is already using, instead
+	// of doing a fresh DISCOVER that might return something different.
+	// In the normal CreateEndpoint -> Join path m.LastIP / m.LastIPv6
+	// already point at the IP we just acquired; passing it as -r is a
+	// no-op (server still ACKs the same address). On recovery it's
+	// what makes the lease "sticky".
+	requestedIP := ""
+	if !v6 && m.LastIP != nil && m.LastIP.IP != nil {
+		requestedIP = m.LastIP.IP.String()
+	}
 	client, err := udhcpc.NewDHCPClient(m.ctrLink.Attrs().Name, &udhcpc.DHCPClientOptions{
-		Hostname:  m.hostname,
-		V6:        v6,
-		Namespace: m.nsPath,
+		Hostname:    m.hostname,
+		V6:          v6,
+		Namespace:   m.nsPath,
+		RequestedIP: requestedIP,
 		// Same client-id the initial DISCOVER used in CreateEndpoint,
 		// so renewals are seen as the same client by the server.
 		ClientID: clientIDFromEndpoint(m.joinReq.EndpointID),

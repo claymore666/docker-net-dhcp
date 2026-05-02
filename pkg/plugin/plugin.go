@@ -15,6 +15,7 @@ import (
 	docker "github.com/docker/docker/client"
 	"github.com/gorilla/handlers"
 	"github.com/mitchellh/mapstructure"
+	log "github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
 
 	"github.com/devplayer0/docker-net-dhcp/pkg/util"
@@ -200,6 +201,124 @@ func (p *Plugin) takeDHCPManager(endpointID string) (*dhcpManager, bool) {
 	return m, ok
 }
 
+// recoverEndpoints walks Docker's networks, finds the ones served by
+// this plugin, and rebuilds an in-memory dhcpManager for each attached
+// endpoint. This restores the lease-renewal goroutines after a plugin
+// process restart (e.g. `docker plugin disable` + `enable`, or after
+// the plugin container has crashed and been restarted by Docker).
+//
+// Recovery sources state from Docker rather than persisting our own
+// per-endpoint files: NetworkInspect gives us the MAC and IP of each
+// attached endpoint, ContainerInspect gives the hostname and the
+// container's PID for netns access. udhcpc is invoked with `-r <IP>`
+// so the upstream DHCP server can ACK the lease the container is
+// already using rather than handing out a fresh one.
+func (p *Plugin) recoverEndpoints(ctx context.Context) {
+	nets, err := p.docker.NetworkList(ctx, dNetwork.ListOptions{})
+	if err != nil {
+		log.WithError(err).Warn("recovery: failed to list networks; skipping")
+		return
+	}
+	var recovered, failed int
+	for _, n := range nets {
+		if !IsDHCPPlugin(n.Driver) {
+			continue
+		}
+		// Re-fetch with full container details (NetworkList is summary-only).
+		netInfo, err := p.docker.NetworkInspect(ctx, n.ID, dNetwork.InspectOptions{})
+		if err != nil {
+			log.WithError(err).WithField("network", n.ID[:12]).
+				Warn("recovery: NetworkInspect failed; skipping")
+			failed++
+			continue
+		}
+		opts, err := p.netOptions(ctx, n.ID)
+		if err != nil {
+			log.WithError(err).WithField("network", n.ID[:12]).
+				Warn("recovery: failed to load network options; skipping")
+			failed++
+			continue
+		}
+		for cid, info := range netInfo.Containers {
+			// Skip libnetwork's "ep-<endpoint>" placeholder: it means
+			// the container is mid-creation. Either CreateEndpoint /
+			// Join will run for it shortly (and our normal flow will
+			// take over), or it'll never come up.
+			if strings.HasPrefix(cid, "ep-") {
+				continue
+			}
+			if err := p.recoverOneEndpoint(ctx, n.ID, info.EndpointID, info.MacAddress, info.IPv4Address, info.IPv6Address, opts); err != nil {
+				log.WithError(err).WithFields(log.Fields{
+					"network":  n.ID[:12],
+					"endpoint": info.EndpointID[:12],
+				}).Warn("recovery: endpoint recovery failed")
+				failed++
+				continue
+			}
+			recovered++
+		}
+	}
+	if recovered > 0 || failed > 0 {
+		log.WithFields(log.Fields{
+			"recovered": recovered,
+			"failed":    failed,
+		}).Info("Plugin recovery complete")
+	}
+}
+
+// recoverOneEndpoint synthesises a JoinRequest and dhcpManager for a
+// single existing endpoint, then spawns Start in a goroutine. Idempotent:
+// if a manager already exists for the endpoint (e.g. because libnetwork
+// raced with us and called Join concurrently), we skip.
+func (p *Plugin) recoverOneEndpoint(ctx context.Context, networkID, endpointID, macStr, ipv4Cidr, ipv6Cidr string, opts DHCPNetworkOptions) error {
+	p.mu.Lock()
+	_, exists := p.persistentDHCP[endpointID]
+	p.mu.Unlock()
+	if exists {
+		return nil
+	}
+
+	mac, err := net.ParseMAC(macStr)
+	if err != nil {
+		return fmt.Errorf("parse MAC %q: %w", macStr, err)
+	}
+
+	var ipv4, ipv6 *netlink.Addr
+	if ipv4Cidr != "" {
+		if a, err := netlink.ParseAddr(ipv4Cidr); err == nil {
+			ipv4 = a
+		}
+	}
+	if ipv6Cidr != "" {
+		if a, err := netlink.ParseAddr(ipv6Cidr); err == nil {
+			ipv6 = a
+		}
+	}
+
+	fakeJoin := JoinRequest{
+		NetworkID:  networkID,
+		EndpointID: endpointID,
+	}
+	m := newDHCPManager(p.docker, fakeJoin, opts)
+	m.LastIP = ipv4
+	m.LastIPv6 = ipv6
+	m.MacAddress = mac
+	p.registerDHCPManager(endpointID, m)
+
+	go func() {
+		startCtx, cancel := context.WithTimeout(context.Background(), p.awaitTimeout)
+		defer cancel()
+		if err := m.Start(startCtx); err != nil {
+			log.WithError(err).WithFields(log.Fields{
+				"network":  networkID[:12],
+				"endpoint": endpointID[:12],
+			}).Warn("recovery: persistent DHCP client Start failed; lease will not renew until next restart")
+			p.takeDHCPManager(endpointID)
+		}
+	}()
+	return nil
+}
+
 // lookupEndpointMAC reads the MAC address Docker has stored for an
 // endpoint by inspecting the network it belongs to. We use this on the
 // container-restart path so the rebuilt link can be given the same MAC
@@ -335,6 +454,16 @@ func NewPlugin(awaitTimeout time.Duration) (*Plugin, error) {
 	p.server = http.Server{
 		Handler: handlers.CustomLoggingHandler(nil, mux, util.WriteAccessLog),
 	}
+
+	// Kick off endpoint recovery in the background. We don't block
+	// plugin startup on it: libnetwork RPCs for fresh networks should
+	// be served immediately. Recovery serialises against those via the
+	// Plugin mutex on the maps.
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		p.recoverEndpoints(ctx)
+	}()
 
 	return &p, nil
 }

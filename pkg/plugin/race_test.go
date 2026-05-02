@@ -56,6 +56,33 @@ func TestPlugin_JoinHints_ConcurrentAccess(t *testing.T) {
 	wg.Wait()
 }
 
+// TestPlugin_RecoverOneEndpointIsIdempotent guards the recovery
+// fast-path: if an endpoint already has a manager (e.g. because a
+// concurrent Join beat us to it), recoverOneEndpoint must not
+// register a second one.
+func TestPlugin_RecoverOneEndpointIsIdempotent(t *testing.T) {
+	p := &Plugin{
+		joinHints:      make(map[string]joinHint),
+		persistentDHCP: make(map[string]*dhcpManager),
+	}
+	existing := &dhcpManager{}
+	p.registerDHCPManager("ep-existing", existing)
+
+	// Call should bail early because an entry already exists.
+	// We pass a syntactically-invalid MAC to confirm the early-out
+	// runs before MAC parsing — if it didn't, this would error.
+	err := p.recoverOneEndpoint(t.Context(), "net-1", "ep-existing", "not-a-mac", "", "", DHCPNetworkOptions{})
+	if err != nil {
+		t.Errorf("recoverOneEndpoint should be idempotent on existing entry, got %v", err)
+	}
+
+	// Confirm we still hold the original manager, not a replacement.
+	got, ok := p.takeDHCPManager("ep-existing")
+	if !ok || got != existing {
+		t.Errorf("existing manager was replaced; got %v ok=%v", got, ok)
+	}
+}
+
 // TestPlugin_JoinHintFlow walks one CreateEndpoint -> Join -> Leave
 // sequence through the helper accessors and verifies the values
 // land where expected.
