@@ -105,6 +105,10 @@ func NewPlugin(awaitTimeout time.Duration) (*Plugin, error) {
 	client, err := docker.NewClientWithOpts(
 		docker.WithHost("unix:///run/docker.sock"),
 		docker.WithAPIVersionNegotiation(),
+		// Fail fast on hung API calls. Concretely defends against the
+		// daemon-startup window where dockerd may be calling into us
+		// before it can respond to our own NetworkInspect / etc.
+		docker.WithTimeout(2*time.Second),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create docker client: %w", err)
