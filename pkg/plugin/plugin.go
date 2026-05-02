@@ -22,6 +22,7 @@ const DriverName string = "net-dhcp"
 const (
 	ModeBridge  = "bridge"
 	ModeMacvlan = "macvlan"
+	ModeIPvlan  = "ipvlan"
 )
 
 const defaultLeaseTimeout = 10 * time.Second

@@ -224,12 +224,15 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 //     veth's peer index and look that up in the sandbox netns. We also
 //     wait for Docker's rename (the link must no longer carry the
 //     pre-move name) so the persistent client doesn't race the move.
-//   - macvlan: only one link is created and Docker moves it wholesale,
-//     so we identify it by MAC after it reappears in the sandbox.
+//   - macvlan / ipvlan: only one link is created and Docker moves it
+//     wholesale, so we identify it by MAC after it reappears in the
+//     sandbox. For ipvlan the child shares the parent's MAC, but the
+//     parent is not in the container netns, so the MAC is still unique
+//     within the search scope (loopback's MAC is all-zeros).
 func (m *dhcpManager) locateContainerLink(ctx context.Context) error {
-	if m.opts.effectiveMode() == ModeMacvlan {
+	if mode := m.opts.effectiveMode(); mode == ModeMacvlan || mode == ModeIPvlan {
 		if len(m.MacAddress) == 0 {
-			return fmt.Errorf("macvlan mode but no MAC address recorded for endpoint")
+			return fmt.Errorf("%v mode but no MAC address recorded for endpoint", mode)
 		}
 
 		awaitCtx, cancel := context.WithTimeout(ctx, linkAwaitTimeout)

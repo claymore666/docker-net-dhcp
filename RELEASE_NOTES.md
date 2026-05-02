@@ -11,6 +11,20 @@ forks that have been waiting on review.
 
 [upstream]: https://github.com/devplayer0/docker-net-dhcp
 
+## v0.4.0
+
+- New `mode=ipvlan` attachment mode (L2 submode), as a third value
+  for the existing `mode` driver option. Useful when the upstream
+  switch or hypervisor refuses to bridge multiple MACs from one port
+  (sticky-MAC port security, hostile vSwitches, some Wi-Fi APs).
+  ipvlan children share the parent's MAC and differentiate by IP.
+- ipvlan rejects custom MACs (kernel design); macvlan continues to
+  accept `--mac-address`.
+- `docs/macvlan.md` renamed to `docs/parent-attached-modes.md` since
+  it now covers both modes.
+- Internal: macvlan-specific helper names rebranded as
+  `parent-attached` to reflect the shared lifecycle.
+
 ## v0.3.0
 
 - Persist per-network options to disk so per-endpoint handlers don't
@@ -59,7 +73,7 @@ requirement, no per-container compose plumbing, no sidecar, no `cap_add`.
 Adding a container to the network is `networks: [<name>]` and nothing
 else.
 
-See [`docs/macvlan.md`](docs/macvlan.md) for the full how-to.
+See [`docs/parent-attached-modes.md`](docs/parent-attached-modes.md) for the full how-to.
 
 ### Bridge mode
 
@@ -150,6 +164,13 @@ With thanks to:
   package-bump-and-API-version-removal modernization in upstream PR
   [#43](https://github.com/devplayer0/docker-net-dhcp/pull/43); the
   spirit of that PR is reflected in this fork's Phase A modernization.
+- **[@LANCommander](https://github.com/LANCommander)** — independently
+  built both macvlan and ipvlan support side-by-side in
+  [LANCommander/docker-net-dhcp](https://github.com/LANCommander/docker-net-dhcp).
+  This fork's ipvlan addition (v0.4.0) is inspired by their approach;
+  the macvlan implementation here predates and differs in its UX
+  (separate `parent` option) and link rediscovery (MAC-based) but
+  arrives at the same place semantically.
 - The dependabot bumps that have been waiting on review in upstream
   (#35–#38) — superseded by the broader Phase A bump here.
 

@@ -1,5 +1,18 @@
 package plugin
 
+// This file implements the macvlan and ipvlan attachment modes. Both
+// share the same lifecycle: a child sub-interface is created on a host
+// parent NIC, an initial DHCP lease is acquired in the host netns,
+// libnetwork moves the link into the container netns. The only
+// per-mode difference is the netlink link type and whether the child
+// can carry a distinct MAC.
+//
+// ipvlan support inspired by @LANCommander's fork
+// (LANCommander/docker-net-dhcp), which independently added both
+// modes side-by-side. Our implementation differs in keeping a separate
+// `parent` driver option (instead of overloading `bridge`) and in
+// using MAC-based link rediscovery instead of ifindex-based.
+
 import (
 	"bytes"
 	"context"
@@ -14,23 +27,24 @@ import (
 	"github.com/devplayer0/docker-net-dhcp/pkg/util"
 )
 
-// macvlanLinkName returns the host-side macvlan link name for an endpoint.
+// subLinkName returns the host-side child link name for an endpoint.
 // Mirrors the prefix used for the bridge-mode veth so existing log/diag
-// patterns still apply.
-func macvlanLinkName(endpointID string) string {
+// patterns still apply. Used for both macvlan and ipvlan children.
+func subLinkName(endpointID string) string {
 	return "dh-" + endpointID[:12]
 }
 
-// validateMacvlanParent ensures the parent NIC exists, is up, and is itself a
-// suitable parent for a macvlan child (i.e. not already a bridge or macvlan).
-// We do not change the parent's state — the host's NIC config is off-limits.
-func validateMacvlanParent(name string) (netlink.Link, error) {
+// validateParentForChild ensures the parent NIC exists, is up, and is
+// itself a suitable parent for a macvlan/ipvlan child (i.e. not already
+// a bridge or another macvlan/ipvlan). We do not change the parent's
+// state — the host's NIC config is off-limits.
+func validateParentForChild(name string) (netlink.Link, error) {
 	link, err := netlink.LinkByName(name)
 	if err != nil {
 		return nil, fmt.Errorf("failed to lookup parent interface %v: %w", name, err)
 	}
 	switch link.Type() {
-	case "bridge", "macvlan", "macvtap":
+	case "bridge", "macvlan", "macvtap", "ipvlan":
 		return nil, fmt.Errorf("%w: %v is %v", util.ErrParentInvalid, name, link.Type())
 	}
 	if link.Attrs().Flags&net.FlagUp == 0 {
@@ -39,47 +53,64 @@ func validateMacvlanParent(name string) (netlink.Link, error) {
 	return link, nil
 }
 
-// createMacvlanEndpoint creates the per-endpoint macvlan child on the host's
-// parent NIC, runs udhcpc on it (still in host netns) to acquire an initial
-// lease, and stashes the result for Join. Docker will move the link into the
-// container's netns when it acts on our Join response.
-func (p *Plugin) createMacvlanEndpoint(ctx context.Context, r CreateEndpointRequest, opts DHCPNetworkOptions) (CreateEndpointResponse, error) {
-	res := CreateEndpointResponse{Interface: &EndpointInterface{}}
+// newChildLink builds the right netlink.Link for the requested mode.
+// macvlan submode is "bridge" so children on the same parent can talk
+// to each other. ipvlan submode is L2 so it bridges (rather than
+// L3-routes) packets — required for DHCP since DHCP needs L2 broadcast.
+func newChildLink(mode string, la netlink.LinkAttrs) netlink.Link {
+	if mode == ModeIPvlan {
+		return &netlink.IPVlan{LinkAttrs: la, Mode: netlink.IPVLAN_MODE_L2}
+	}
+	return &netlink.Macvlan{LinkAttrs: la, Mode: netlink.MACVLAN_MODE_BRIDGE}
+}
 
-	parent, err := validateMacvlanParent(opts.Parent)
+// createParentAttachedEndpoint creates the per-endpoint child link on
+// the host's parent NIC (macvlan or ipvlan depending on mode), runs
+// udhcpc on it (still in host netns) to acquire an initial lease, and
+// stashes the result for Join. Docker will move the link into the
+// container's netns when it acts on our Join response.
+func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpointRequest, opts DHCPNetworkOptions) (CreateEndpointResponse, error) {
+	res := CreateEndpointResponse{Interface: &EndpointInterface{}}
+	mode := opts.effectiveMode()
+
+	parent, err := validateParentForChild(opts.Parent)
 	if err != nil {
 		return res, err
 	}
 
 	la := netlink.NewLinkAttrs()
-	la.Name = macvlanLinkName(r.EndpointID)
+	la.Name = subLinkName(r.EndpointID)
 	la.ParentIndex = parent.Attrs().Index
 	if r.Interface != nil && r.Interface.MacAddress != "" {
+		// ipvlan children share the parent's MAC by design; libnetwork
+		// passing us a custom MAC would silently get ignored, so we
+		// fail loudly instead.
+		if mode == ModeIPvlan {
+			return res, fmt.Errorf("%w: ipvlan does not support a custom MAC address (children share the parent's MAC)", util.ErrMACAddress)
+		}
 		mac, err := net.ParseMAC(r.Interface.MacAddress)
 		if err != nil {
 			return res, util.ErrMACAddress
 		}
 		la.HardwareAddr = mac
 	}
-	link := &netlink.Macvlan{
-		LinkAttrs: la,
-		Mode:      netlink.MACVLAN_MODE_BRIDGE,
-	}
+	link := newChildLink(mode, la)
 
 	if err := netlink.LinkAdd(link); err != nil {
-		return res, fmt.Errorf("failed to create macvlan link: %w", err)
+		return res, fmt.Errorf("failed to create %v link: %w", mode, err)
 	}
 
 	if err := func() error {
-		// Reload to pick up the kernel-assigned MAC if we didn't set one.
+		// Reload to pick up the kernel-assigned MAC (macvlan) or the
+		// inherited parent MAC (ipvlan) if we didn't set one.
 		fresh, err := netlink.LinkByName(la.Name)
 		if err != nil {
-			return fmt.Errorf("failed to re-fetch macvlan link: %w", err)
+			return fmt.Errorf("failed to re-fetch %v link: %w", mode, err)
 		}
 		mac := fresh.Attrs().HardwareAddr
 
 		if err := netlink.LinkSetUp(fresh); err != nil {
-			return fmt.Errorf("failed to set macvlan link up: %w", err)
+			return fmt.Errorf("failed to set %v link up: %w", mode, err)
 		}
 
 		if r.Interface == nil || r.Interface.MacAddress == "" {
@@ -144,40 +175,42 @@ func (p *Plugin) createMacvlanEndpoint(ctx context.Context, r CreateEndpointRequ
 	log.WithFields(log.Fields{
 		"network":     r.NetworkID[:12],
 		"endpoint":    r.EndpointID[:12],
+		"mode":        mode,
 		"parent":      opts.Parent,
 		"mac_address": p.joinHints[r.EndpointID].MacAddress.String(),
 		"ip":          res.Interface.Address,
 		"ipv6":        res.Interface.AddressIPv6,
 		"gateway":     p.joinHints[r.EndpointID].Gateway,
-	}).Info("Macvlan endpoint created")
+	}).Info("Endpoint created")
 
 	return res, nil
 }
 
-// deleteMacvlanEndpoint best-effort cleans up the host-side macvlan link.
-// Once Docker has moved the link into the container netns the host can no
-// longer see it, and the kernel removes it when the netns dies — so a
-// "not found" here is the normal happy path. We only delete when the link
-// is still in our netns (e.g. CreateEndpoint failed mid-way or Join was
-// never called).
-func (p *Plugin) deleteMacvlanEndpoint(r DeleteEndpointRequest) error {
-	name := macvlanLinkName(r.EndpointID)
+// deleteParentAttachedEndpoint best-effort cleans up the host-side
+// child link. Once Docker has moved the link into the container netns
+// the host can no longer see it, and the kernel removes it when the
+// netns dies — so a "not found" here is the normal happy path. We
+// only delete when the link is still in our netns (e.g. CreateEndpoint
+// failed mid-way or Join was never called). Same code handles macvlan
+// and ipvlan since they live under the same name.
+func (p *Plugin) deleteParentAttachedEndpoint(r DeleteEndpointRequest) error {
+	name := subLinkName(r.EndpointID)
 	link, err := netlink.LinkByName(name)
 	if err != nil {
 		// Expected: the link is gone with the container netns.
 		log.WithFields(log.Fields{
 			"network":  r.NetworkID[:12],
 			"endpoint": r.EndpointID[:12],
-		}).Debug("Macvlan link already gone (expected)")
+		}).Debug("Child link already gone (expected)")
 		return nil
 	}
 	if err := netlink.LinkDel(link); err != nil {
-		return fmt.Errorf("failed to delete leftover macvlan link %v: %w", name, err)
+		return fmt.Errorf("failed to delete leftover child link %v: %w", name, err)
 	}
 	log.WithFields(log.Fields{
 		"network":  r.NetworkID[:12],
 		"endpoint": r.EndpointID[:12],
-	}).Info("Cleaned up leftover macvlan link in host netns")
+	}).Info("Cleaned up leftover child link in host netns")
 	return nil
 }
 
@@ -198,20 +231,21 @@ func findLinkByMAC(handle *netlink.Handle, mac net.HardwareAddr) (netlink.Link, 
 	return nil, fmt.Errorf("no link with MAC %v", mac)
 }
 
-// macvlanOperInfo is what we hand back to libnetwork in EndpointOperInfo.
-type macvlanOperInfo struct {
-	Mode      string `mapstructure:"mode"`
-	Parent    string `mapstructure:"parent"`
-	HostLink  string `mapstructure:"macvlan_host"`
-	LinkMAC   string `mapstructure:"macvlan_mac"`
+// parentAttachedOperInfo is what we hand back to libnetwork in
+// EndpointOperInfo for both macvlan and ipvlan endpoints.
+type parentAttachedOperInfo struct {
+	Mode     string `mapstructure:"mode"`
+	Parent   string `mapstructure:"parent"`
+	HostLink string `mapstructure:"sub_link_host"`
+	LinkMAC  string `mapstructure:"sub_link_mac"`
 }
 
-func (p *Plugin) macvlanEndpointOperInfo(opts DHCPNetworkOptions, r InfoRequest) (InfoResponse, error) {
+func (p *Plugin) parentAttachedEndpointOperInfo(opts DHCPNetworkOptions, r InfoRequest) (InfoResponse, error) {
 	res := InfoResponse{}
-	name := macvlanLinkName(r.EndpointID)
+	name := subLinkName(r.EndpointID)
 
-	info := macvlanOperInfo{
-		Mode:     ModeMacvlan,
+	info := parentAttachedOperInfo{
+		Mode:     opts.effectiveMode(),
 		Parent:   opts.Parent,
 		HostLink: name,
 	}
@@ -221,7 +255,7 @@ func (p *Plugin) macvlanEndpointOperInfo(opts DHCPNetworkOptions, r InfoRequest)
 		info.LinkMAC = link.Attrs().HardwareAddr.String()
 	}
 	if err := mapstructure.Decode(info, &res.Value); err != nil {
-		return res, fmt.Errorf("failed to encode macvlan oper info: %w", err)
+		return res, fmt.Errorf("failed to encode oper info: %w", err)
 	}
 	return res, nil
 }

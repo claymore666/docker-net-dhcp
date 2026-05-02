@@ -42,14 +42,14 @@ func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 	}
 
 	switch opts.effectiveMode() {
-	case ModeMacvlan:
+	case ModeMacvlan, ModeIPvlan:
 		if opts.Parent == "" {
 			return util.ErrParentRequired
 		}
 		if opts.Bridge != "" {
-			return fmt.Errorf("%w: bridge cannot be set in mode=macvlan", util.ErrModeMismatch)
+			return fmt.Errorf("%w: bridge cannot be set in mode=%v", util.ErrModeMismatch, opts.effectiveMode())
 		}
-		if _, err := validateMacvlanParent(opts.Parent); err != nil {
+		if _, err := validateParentForChild(opts.Parent); err != nil {
 			return err
 		}
 		if err := saveOptions(r.NetworkID, opts); err != nil {
@@ -58,7 +58,7 @@ func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 		}
 		log.WithFields(log.Fields{
 			"network": r.NetworkID,
-			"mode":    ModeMacvlan,
+			"mode":    opts.effectiveMode(),
 			"parent":  opts.Parent,
 			"ipv6":    opts.IPv6,
 		}).Info("Network created")
@@ -221,8 +221,8 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 		return res, fmt.Errorf("failed to get network options: %w", err)
 	}
 
-	if opts.effectiveMode() == ModeMacvlan {
-		return p.createMacvlanEndpoint(ctx, r, opts)
+	if m := opts.effectiveMode(); m == ModeMacvlan || m == ModeIPvlan {
+		return p.createParentAttachedEndpoint(ctx, r, opts)
 	}
 
 	bridge, err := netlink.LinkByName(opts.Bridge)
@@ -360,8 +360,8 @@ func (p *Plugin) EndpointOperInfo(ctx context.Context, r InfoRequest) (InfoRespo
 		return res, fmt.Errorf("failed to get network options: %w", err)
 	}
 
-	if opts.effectiveMode() == ModeMacvlan {
-		return p.macvlanEndpointOperInfo(opts, r)
+	if m := opts.effectiveMode(); m == ModeMacvlan || m == ModeIPvlan {
+		return p.parentAttachedEndpointOperInfo(opts, r)
 	}
 
 	hostName, _ := vethPairNames(r.EndpointID)
@@ -392,8 +392,8 @@ func (p *Plugin) DeleteEndpoint(ctx context.Context, r DeleteEndpointRequest) er
 		return fmt.Errorf("failed to get network options: %w", err)
 	}
 
-	if opts.effectiveMode() == ModeMacvlan {
-		if err := p.deleteMacvlanEndpoint(r); err != nil {
+	if m := opts.effectiveMode(); m == ModeMacvlan || m == ModeIPvlan {
+		if err := p.deleteParentAttachedEndpoint(r); err != nil {
 			return err
 		}
 		log.WithFields(log.Fields{
@@ -523,11 +523,15 @@ func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) 
 		return res, fmt.Errorf("failed to get network options: %w", err)
 	}
 
-	macvlan := opts.effectiveMode() == ModeMacvlan
+	parentAttached := false
+	switch opts.effectiveMode() {
+	case ModeMacvlan, ModeIPvlan:
+		parentAttached = true
+	}
 
 	var srcName, dstPrefix string
-	if macvlan {
-		srcName = macvlanLinkName(r.EndpointID)
+	if parentAttached {
+		srcName = subLinkName(r.EndpointID)
 		dstPrefix = "eth"
 	} else {
 		_, srcName = vethPairNames(r.EndpointID)
@@ -554,7 +558,7 @@ func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) 
 		res.Gateway = hint.Gateway
 	}
 
-	if !macvlan {
+	if !parentAttached {
 		bridge, err := netlink.LinkByName(opts.Bridge)
 		if err != nil {
 			return res, fmt.Errorf("failed to get bridge interface: %w", err)
