@@ -189,7 +189,10 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 		return nil, fmt.Errorf("failed to start DHCP%v client: %w", v6Str, err)
 	}
 
-	errChan := make(chan error)
+	// Buffered: a partial-Start failure (v4 OK, v6 fails) bypasses Stop's
+	// errChan reads; Stop short-circuits on m.startErr. Without a buffer
+	// the goroutine here would block forever on the final write below.
+	errChan := make(chan error, 1)
 	go func() {
 		for {
 			select {

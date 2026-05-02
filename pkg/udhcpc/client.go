@@ -187,8 +187,14 @@ func (c *DHCPClient) Start() (chan Event, error) {
 		return nil, err
 	}
 
-	events := make(chan Event)
+	// Buffered + non-blocking send: after Finish runs, the consumer
+	// goroutine in dhcpManager has already taken the stop branch and
+	// will never read events again. A final event line emitted by
+	// udhcpc between SIGTERM and exit must not deadlock the scanner
+	// goroutine on an unbuffered send.
+	events := make(chan Event, 16)
 	go func() {
+		defer close(events)
 		scanner := bufio.NewScanner(c.eventPipe)
 		for scanner.Scan() {
 			log.WithField("line", string(scanner.Bytes())).Trace("udhcpc handler line")
@@ -200,7 +206,11 @@ func (c *DHCPClient) Start() (chan Event, error) {
 				continue
 			}
 
-			events <- event
+			select {
+			case events <- event:
+			default:
+				log.WithField("event", event.Type).Warn("udhcpc event dropped: consumer slow or finished")
+			}
 		}
 	}()
 
@@ -217,7 +227,10 @@ func (c *DHCPClient) Finish(ctx context.Context) error {
 		}
 	}
 
-	errChan := make(chan error)
+	// Buffered: on ctx.Done we Kill and return without reading errChan,
+	// so the Wait goroutine must not block forever trying to send. With
+	// the buffer, Wait completes and the goroutine exits, no zombie.
+	errChan := make(chan error, 1)
 	go func() {
 		errChan <- c.cmd.Wait()
 	}()
