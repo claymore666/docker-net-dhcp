@@ -78,24 +78,32 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 		return res, err
 	}
 
-	// MAC/IP selection: explicit > tombstone > kernel-picked. ipvlan
-	// children share the parent's MAC and ignore HardwareAddr, so
-	// the tombstone path doesn't apply there (and an explicit MAC is
-	// rejected loudly to avoid silent misconfiguration).
+	// MAC/IP selection: explicit > tombstone > kernel-picked /
+	// server-picked. ipvlan children share the parent's MAC and ignore
+	// HardwareAddr, so the tombstone path doesn't apply there (and an
+	// explicit MAC is rejected loudly to avoid silent misconfiguration).
+	// Static IPs (`docker run --ip`) are accepted in both modes — they
+	// pass through to udhcpc as a `-r ADDR` hint.
 	effectiveMAC := ""
 	if r.Interface != nil {
 		effectiveMAC = r.Interface.MacAddress
 	}
-	requestedIP := ""
+	explicitV4, err := parseExplicitV4(r.Interface)
+	if err != nil {
+		return res, err
+	}
+	requestedIP := explicitV4
 	if mode == ModeMacvlan && effectiveMAC == "" {
 		if tombMAC, tombIP, ok := p.consumeTombstone(r.NetworkID); ok {
 			effectiveMAC = tombMAC
-			requestedIP = tombIP
+			if requestedIP == "" {
+				requestedIP = tombIP
+			}
 			log.WithFields(log.Fields{
 				"network":      r.NetworkID[:12],
 				"endpoint":     r.EndpointID[:12],
 				"mac_address":  tombMAC,
-				"requested_ip": tombIP,
+				"requested_ip": requestedIP,
 			}).Info("Inherited MAC/IP from recent endpoint on same network (likely container restart)")
 		}
 	}

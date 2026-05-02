@@ -191,6 +191,26 @@ func vethPairNames(id string) (string, string) {
 	return "dh-" + id[:12], id[:12] + "-dh"
 }
 
+// parseExplicitV4 extracts the bare IPv4 address from an optional
+// libnetwork-supplied Interface.Address (CIDR form, e.g. set by
+// `docker run --ip=192.168.0.50`). Returns "" when the field is
+// absent; an ErrIPAM-wrapped error when set but malformed or v6.
+// The bare-IP form is what udhcpc wants for `-r ADDR`; the mask is
+// supplied by the DHCP ACK, not the operator.
+func parseExplicitV4(iface *EndpointInterface) (string, error) {
+	if iface == nil || iface.Address == "" {
+		return "", nil
+	}
+	addr, err := netlink.ParseAddr(iface.Address)
+	if err != nil {
+		return "", fmt.Errorf("invalid Interface.Address %q (want CIDR): %w", iface.Address, util.ErrIPAM)
+	}
+	if addr.IP.To4() == nil {
+		return "", fmt.Errorf("Interface.Address must be IPv4: got %q: %w", iface.Address, util.ErrIPAM)
+	}
+	return addr.IP.String(), nil
+}
+
 // netOptions returns the decoded options for a network, preferring the
 // on-disk cache populated by CreateNetwork. The fallback to docker
 // NetworkInspect is what makes existing networks (created before this
@@ -238,9 +258,21 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 		Interface: &EndpointInterface{},
 	}
 
-	if r.Interface != nil && (r.Interface.Address != "" || r.Interface.AddressIPv6 != "") {
-		// TODO: Should we allow static IP's somehow?
-		return res, util.ErrIPAM
+	// libnetwork passes Interface.AddressIPv6 when the user supplied
+	// `--ip6` on `docker run`. We don't yet wire that through to
+	// udhcpc6 (RequestedIP is v4-only in busybox), so honor it on a
+	// best-effort basis: warn loudly but don't fail the endpoint.
+	if r.Interface != nil && r.Interface.AddressIPv6 != "" {
+		log.WithFields(log.Fields{
+			"network":  r.NetworkID[:12],
+			"endpoint": r.EndpointID[:12],
+			"ipv6":     r.Interface.AddressIPv6,
+		}).Warn("Static IPv6 address requested but not yet wired through to udhcpc6; lease will come unhinted")
+	}
+
+	explicitV4, err := parseExplicitV4(r.Interface)
+	if err != nil {
+		return res, err
 	}
 
 	opts, err := p.netOptions(ctx, r.NetworkID)
@@ -257,25 +289,26 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 		return res, fmt.Errorf("failed to get bridge interface: %w", err)
 	}
 
-	// MAC selection: an explicit MAC from libnetwork wins. Otherwise
-	// see if the previous endpoint on this network was deleted within
-	// tombstoneTTL — if exactly one tombstone matches, this is almost
-	// certainly the same container coming back from `docker restart`.
-	// Reusing the MAC keeps Fritz.Box from accumulating stale (MAC,
-	// IP) entries in its lease table; reusing the IP via udhcpc's
-	// `-r` request hint keeps the same lease attached even when the
-	// upstream rotates pool addresses on each unhinted DISCOVER.
+	// MAC/IP selection priority:
+	//   1. Explicit values from libnetwork (`--mac-address`, `--ip`)
+	//   2. Tombstone (recently-deleted endpoint on the same network)
+	//   3. Kernel-picked MAC, server-picked IP
+	// Tombstones are only consumed when no explicit MAC was supplied
+	// — explicit MAC means the operator is taking responsibility for
+	// identity, and we don't want to surprise-mix in a stale neighbor.
 	effectiveMAC := r.Interface.MacAddress
-	requestedIP := ""
+	requestedIP := explicitV4
 	if effectiveMAC == "" {
 		if mac, ip, ok := p.consumeTombstone(r.NetworkID); ok {
 			effectiveMAC = mac
-			requestedIP = ip
+			if requestedIP == "" {
+				requestedIP = ip
+			}
 			log.WithFields(log.Fields{
 				"network":      r.NetworkID[:12],
 				"endpoint":     r.EndpointID[:12],
 				"mac_address":  mac,
-				"requested_ip": ip,
+				"requested_ip": requestedIP,
 			}).Info("Inherited MAC/IP from recent endpoint on same network (likely container restart)")
 		}
 	}

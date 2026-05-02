@@ -98,6 +98,63 @@ func TestValidateModeOptions(t *testing.T) {
 	}
 }
 
+func TestParseExplicitV4(t *testing.T) {
+	cases := []struct {
+		name    string
+		iface   *EndpointInterface
+		wantIP  string
+		wantErr bool
+	}{
+		{name: "nil_interface", iface: nil, wantIP: ""},
+		{name: "empty_address", iface: &EndpointInterface{}, wantIP: ""},
+		{
+			name:   "valid_v4_cidr",
+			iface:  &EndpointInterface{Address: "192.168.0.50/24"},
+			wantIP: "192.168.0.50",
+		},
+		{
+			name:   "valid_v4_short_mask",
+			iface:  &EndpointInterface{Address: "10.0.0.1/8"},
+			wantIP: "10.0.0.1",
+		},
+		{
+			name:    "bare_ip_no_mask_rejected",
+			iface:   &EndpointInterface{Address: "192.168.0.50"},
+			wantErr: true,
+		},
+		{
+			name:    "v6_rejected",
+			iface:   &EndpointInterface{Address: "fe80::1/64"},
+			wantErr: true,
+		},
+		{
+			name:    "garbage",
+			iface:   &EndpointInterface{Address: "not-an-ip"},
+			wantErr: true,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			ip, err := parseExplicitV4(c.iface)
+			if c.wantErr {
+				if err == nil {
+					t.Errorf("expected error, got nil (ip=%q)", ip)
+				}
+				if err != nil && !errors.Is(err, util.ErrIPAM) {
+					t.Errorf("expected ErrIPAM, got %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+			if ip != c.wantIP {
+				t.Errorf("ip mismatch: got %q want %q", ip, c.wantIP)
+			}
+		})
+	}
+}
+
 func TestValidateIPAMData(t *testing.T) {
 	cases := []struct {
 		name    string
