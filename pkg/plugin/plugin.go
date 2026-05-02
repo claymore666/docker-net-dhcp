@@ -200,6 +200,58 @@ func (p *Plugin) takeDHCPManager(endpointID string) (*dhcpManager, bool) {
 	return m, ok
 }
 
+// lookupEndpointMAC reads the MAC address Docker has stored for an
+// endpoint by inspecting the network it belongs to. We use this on the
+// container-restart path so the rebuilt link can be given the same MAC
+// libnetwork already returned to Docker — keeping `docker inspect`'s
+// view consistent with the actual interface inside the container.
+//
+// Returns ErrNoHint-equivalent if the endpoint can't be found, which
+// callers treat as "give up and let libnetwork error this Join".
+func (p *Plugin) lookupEndpointMAC(ctx context.Context, networkID, endpointID string) (string, error) {
+	dockerNet, err := p.docker.NetworkInspect(ctx, networkID, dNetwork.InspectOptions{})
+	if err != nil {
+		return "", fmt.Errorf("failed to inspect network: %w", err)
+	}
+	for _, info := range dockerNet.Containers {
+		if info.EndpointID == endpointID {
+			return info.MacAddress, nil
+		}
+	}
+	return "", fmt.Errorf("endpoint %v not found in network %v's container list", endpointID, networkID)
+}
+
+// reacquireEndpoint rebuilds the host-side link and re-runs the initial
+// DHCP exchange for an endpoint whose state was lost. Invoked from
+// Join when no joinHint is present, which happens when libnetwork
+// drives Leave -> Join on the same EndpointID (Docker container restart).
+//
+// Implementation: synthesise the equivalent CreateEndpointRequest and
+// reuse CreateEndpoint's logic. For ipvlan we deliberately leave the
+// MAC blank — ipvlan children share the parent's MAC, so passing an
+// explicit one would just trip the ipvlan-rejects-custom-MAC check;
+// the rebuilt link will inherit the parent's MAC the same way the
+// original did.
+func (p *Plugin) reacquireEndpoint(ctx context.Context, r JoinRequest, opts DHCPNetworkOptions) error {
+	macAddr := ""
+	if opts.effectiveMode() != ModeIPvlan {
+		mac, err := p.lookupEndpointMAC(ctx, r.NetworkID, r.EndpointID)
+		if err != nil {
+			return fmt.Errorf("failed to look up original endpoint MAC: %w", err)
+		}
+		macAddr = mac
+	}
+	fakeReq := CreateEndpointRequest{
+		NetworkID:  r.NetworkID,
+		EndpointID: r.EndpointID,
+		Interface:  &EndpointInterface{MacAddress: macAddr},
+	}
+	if _, err := p.CreateEndpoint(ctx, fakeReq); err != nil {
+		return fmt.Errorf("CreateEndpoint replay failed: %w", err)
+	}
+	return nil
+}
+
 // initialDHCPHostname makes a best-effort attempt to find the hostname
 // of the container we're about to attach an endpoint to, so we can pass
 // it in the initial DHCPDISCOVER. Polls the network's Containers map

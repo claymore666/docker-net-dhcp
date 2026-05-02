@@ -583,7 +583,24 @@ func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) 
 
 	hint, ok := p.takeJoinHint(r.EndpointID)
 	if !ok {
-		return res, util.ErrNoHint
+		// Most likely cause: the container was restarted. libnetwork's
+		// flow on `docker restart` is Leave (old sandbox) -> Join (new
+		// sandbox) on the same EndpointID, *without* a fresh
+		// CreateEndpoint — so the hint our first Join consumed is gone
+		// and the link in the destroyed sandbox is gone with it.
+		// Reacquire from scratch.
+		log.WithFields(log.Fields{
+			"network":  r.NetworkID[:12],
+			"endpoint": r.EndpointID[:12],
+			"sandbox":  r.SandboxKey,
+		}).Info("[Join] No hint; attempting endpoint reacquisition (likely container restart)")
+		if err := p.reacquireEndpoint(ctx, r, opts); err != nil {
+			return res, fmt.Errorf("failed to reacquire endpoint after restart: %w", err)
+		}
+		hint, ok = p.takeJoinHint(r.EndpointID)
+		if !ok {
+			return res, util.ErrNoHint
+		}
 	}
 
 	if hint.Gateway != "" {
