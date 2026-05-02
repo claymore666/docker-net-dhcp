@@ -120,10 +120,11 @@ The plugin requests the following privileges (same as upstream):
   work — bridge mode is the default and the option schema is a strict
   superset of upstream's.
 - The driver name (`net-dhcp`) and Docker plugin manifest are unchanged.
-- The pattern matched by `IsDHCPPlugin` (`ghcr.io/devplayer0/docker-net-dhcp:.+`)
-  is preserved; if you publish under a different namespace, see
-  `pkg/plugin/plugin.go:driverRegexp` and adjust to match your registry
-  before relying on the bridge-conflict scan.
+- The bridge-conflict scan recognizes plugin instances by image name
+  (`*/docker-net-dhcp:*`), so it works regardless of which registry
+  namespace the plugin was published under — including the upstream
+  `ghcr.io/devplayer0` and any fork. Upstream's regex was pinned to
+  the upstream namespace; this fork loosened it.
 
 ## Credits
 
