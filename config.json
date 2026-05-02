@@ -1,5 +1,5 @@
 {
-    "description": "Docker host bridge DHCP networking",
+    "description": "Docker DHCP networking (host-bridge or macvlan attachment)",
     "interface": {
         "socket": "net-dhcp.sock",
         "types": [
