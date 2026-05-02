@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/devplayer0/docker-net-dhcp/pkg/util"
 )
@@ -215,4 +216,26 @@ func (p *Plugin) apiLeave(w http.ResponseWriter, r *http.Request) {
 	}
 
 	util.JSONResponse(w, struct{}{}, http.StatusOK)
+}
+
+// HealthResponse is the payload returned by /Plugin.Health.
+type HealthResponse struct {
+	Healthy         bool    `json:"healthy"`
+	UptimeSeconds   float64 `json:"uptime_seconds"`
+	ActiveEndpoints int     `json:"active_endpoints"`
+	PendingHints    int     `json:"pending_hints"`
+}
+
+func (p *Plugin) apiHealth(w http.ResponseWriter, r *http.Request) {
+	p.mu.Lock()
+	active := len(p.persistentDHCP)
+	pending := len(p.joinHints)
+	p.mu.Unlock()
+
+	util.JSONResponse(w, HealthResponse{
+		Healthy:         true,
+		UptimeSeconds:   time.Since(p.startTime).Seconds(),
+		ActiveEndpoints: active,
+		PendingHints:    pending,
+	}, http.StatusOK)
 }

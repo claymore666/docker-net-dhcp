@@ -134,6 +134,7 @@ type joinHint struct {
 // Plugin is the DHCP network plugin
 type Plugin struct {
 	awaitTimeout time.Duration
+	startTime    time.Time
 
 	docker *docker.Client
 	server http.Server
@@ -431,6 +432,7 @@ func NewPlugin(awaitTimeout time.Duration) (*Plugin, error) {
 
 	p := Plugin{
 		awaitTimeout: awaitTimeout,
+		startTime:    time.Now(),
 
 		docker: client,
 
@@ -450,6 +452,11 @@ func NewPlugin(awaitTimeout time.Duration) (*Plugin, error) {
 
 	mux.HandleFunc("/NetworkDriver.Join", p.apiJoin)
 	mux.HandleFunc("/NetworkDriver.Leave", p.apiLeave)
+
+	// Plugin observability — not part of the libnetwork RPC contract,
+	// but lives on the same socket so anything that can talk to the
+	// plugin can also poll its state.
+	mux.HandleFunc("/Plugin.Health", p.apiHealth)
 
 	p.server = http.Server{
 		Handler: handlers.CustomLoggingHandler(nil, mux, util.WriteAccessLog),
