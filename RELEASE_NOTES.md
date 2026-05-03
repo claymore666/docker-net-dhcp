@@ -11,6 +11,81 @@ forks that have been waiting on review.
 
 [upstream]: https://github.com/devplayer0/docker-net-dhcp
 
+## v0.5.1
+
+Critical-bug cleanup pass driven by a full code-review of the v0.5.0
+codebase. No new features; six classes of latent bug closed.
+
+### Identity swap during sequential `compose restart` (C-5)
+
+Tombstones in v0.5.0 were keyed only by NetworkID. A `docker compose
+restart` of N containers on the same network could let container B
+inherit container A's MAC during the brief 10s TTL window where A's
+tombstone was fresh and B's was not yet written.
+
+Fixed by extending the tombstone with the container's hostname (which
+survives `docker restart`) and narrowing `consumeTombstone` to match
+on NetworkID + Hostname when both sides know it. v0.5.0 tombstones
+without a hostname still match — the new rule is "when both sides
+know the hostname they must agree." Verified live on gpu1 with a
+two-container sequential restart: each container kept its own MAC,
+no swap.
+
+### Recovery failures are now visible to operators (C-4)
+
+`/Plugin.Health` gained two counters: `recovered_ok` and
+`recovery_failed`. `healthy` flips to `false` when at least one
+plugin-restart recovery fails — previously the only signal was a
+single warn-level log line that scrolled away. The failure mode
+mattered: a recovery failure means the container kept running but
+without a lease-renewal client, so its IP would silently disappear
+at lease expiry.
+
+### nil-pointer panic in udhcpc-handler on malformed IPv6 (N-1)
+
+`cmd/udhcpc-handler/main.go` would log a `net.ParseCIDR` error and
+then dereference the (nil) result on the next line, panicking. A
+handler panic means the corresponding `bound`/`renew` event is never
+delivered to the persistent client; the lease silently ages out.
+Fixed with an early return on parse error and an empty-string guard.
+
+### Goroutine and udhcpc child leaks on lifecycle edges (C-1, C-2, W-9)
+
+Three buffer fixes that together close three goroutine/process leak
+classes:
+
+- `udhcpc.Start` now writes events to a buffered channel (cap 16)
+  with non-blocking send, so a final event line emitted by udhcpc
+  between SIGTERM and exit can no longer deadlock the scanner
+  goroutine.
+- `udhcpc.Finish`'s `cmd.Wait` channel is buffered (cap 1), so
+  context-cancel doesn't leave the Wait goroutine blocked on a send.
+- `dhcpManager.setupClient`'s errChan is buffered (cap 1), so a
+  partial Start (v4 OK, v6 fails) doesn't leave the v4 goroutine
+  blocked on the final Finish-error send.
+
+### Defensive ID truncation (C-3)
+
+A `shortID(id)` helper replaces ~15 sites that did `id[:12]` for
+log fields. A malformed Docker response with an empty/short ID
+would have crashed the plugin during recovery, taking down lease
+renewal for every healthy endpoint too. Two interface-name
+construction sites still slice (they rely on Docker's 64-char
+EndpointID contract for IFNAMSIZ fitting).
+
+### Tests
+
+Two new tests pinning the C-5 fix:
+
+- `TestTombstones_HostnameNarrowsMatch` — two tombstones, two
+  hostnames; each consume returns only its own.
+- `TestTombstones_EmptyHostnameMatchesAny` — v0.5.0 tombstone
+  without hostname is still consumable by a v0.5.1 binary.
+
+Phase D walkthrough re-run on gpu1: D2, restart-stability, C-5
+sequential-restart, D6 distinct-leases, C-4 health counters, D9
+plugin disable/enable recovery, D7 release-on-stop — all green.
+
 ## v0.5.0
 
 This release focuses on lifecycle correctness — keeping the DHCP
