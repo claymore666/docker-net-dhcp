@@ -43,7 +43,7 @@ func main() {
 		log.StandardLogger().Out = f
 	}
 
-	awaitTimeout := 5 * time.Second
+	awaitTimeout := 10 * time.Second // matches config.json default
 	if t, ok := os.LookupEnv("AWAIT_TIMEOUT"); ok {
 		awaitTimeout, err = time.ParseDuration(t)
 		if err != nil {
