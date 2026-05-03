@@ -362,6 +362,24 @@ func (p *Plugin) consumeTombstone(networkID, hostname string) (mac, ipv4, ipv6 s
 	}
 	// Always rewrite to persist the prune, even if we don't consume.
 	if matches != 1 {
+		// More than one match → ambiguous. Drop *all* matches so the
+		// next consumeTombstone for this network/hostname doesn't keep
+		// hitting the same poisoned set for the rest of the TTL window.
+		// Zero matches is harmless; the prune still gets persisted.
+		if matches > 1 {
+			kept := ts[:0]
+			for _, t := range ts {
+				if t.NetworkID == networkID {
+					if hostname != "" && t.Hostname != "" && t.Hostname != hostname {
+						kept = append(kept, t)
+						continue
+					}
+					continue
+				}
+				kept = append(kept, t)
+			}
+			ts = kept
+		}
 		if err := saveTombstones(ts); err != nil {
 			log.WithError(err).Debug("Failed to persist pruned tombstones")
 		}

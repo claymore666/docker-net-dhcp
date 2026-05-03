@@ -182,6 +182,34 @@ func TestTombstones_TwoOnSameNetworkBothSkipped(t *testing.T) {
 	}
 }
 
+// TestTombstones_AmbiguousMatchesDropped encodes the W-3 fix: when
+// two same-network tombstones both match the consume key, return
+// ok=false AND drop both, so the next consume isn't poisoned by the
+// same ambiguity for the rest of the TTL window.
+func TestTombstones_AmbiguousMatchesDropped(t *testing.T) {
+	withStateDir(t, t.TempDir())
+	p := newPluginForTest()
+	// Two tombstones with empty hostnames on the same network — the
+	// classic concurrent-restart case.
+	p.addTombstone("net-A", "", "aa:aa:aa:aa:aa:aa", "10.0.0.1", "")
+	p.addTombstone("net-A", "", "bb:bb:bb:bb:bb:bb", "10.0.0.2", "")
+
+	if _, _, _, ok := p.consumeTombstone("net-A", ""); ok {
+		t.Fatal("first consume must return ok=false (ambiguous)")
+	}
+	// Subsequent consume must also be ok=false but for "no match"
+	// reasons, not "still ambiguous" — both should be gone.
+	ts, err := loadTombstones()
+	if err != nil {
+		t.Fatalf("loadTombstones: %v", err)
+	}
+	for _, ts := range ts {
+		if ts.NetworkID == "net-A" {
+			t.Errorf("net-A tombstone survived ambiguous consume: %+v", ts)
+		}
+	}
+}
+
 // TestTombstones_HostnameNarrowsMatch encodes the C-5 fix: with two
 // tombstones on the same network but different hostnames, a consume
 // that names one hostname must return only that container's MAC.

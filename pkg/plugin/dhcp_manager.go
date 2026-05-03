@@ -405,8 +405,20 @@ func (m *dhcpManager) Stop() error {
 		return nil
 	}
 
-	defer m.nsHandle.Close()
-	defer m.netHandle.Close()
+	// Guard against zero handles: Stop can be called against a manager
+	// whose Start failed before AwaitNetNS / NewHandleAt set these
+	// (see C-2 fix), in which case the deferred Close on the zero
+	// value emits a noisy EBADF.
+	defer func() {
+		if m.nsHandle.IsOpen() {
+			m.nsHandle.Close()
+		}
+	}()
+	defer func() {
+		if m.netHandle != nil {
+			m.netHandle.Close()
+		}
+	}()
 
 	close(m.stopChan)
 

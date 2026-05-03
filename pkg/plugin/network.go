@@ -215,6 +215,9 @@ func parseExplicitV4(iface *EndpointInterface) (string, error) {
 	if addr.IP.To4() == nil {
 		return "", fmt.Errorf("Interface.Address must be IPv4: got %q: %w", iface.Address, util.ErrIPAM)
 	}
+	if addr.IP.IsUnspecified() {
+		return "", fmt.Errorf("Interface.Address must be a unicast IPv4: got %q: %w", iface.Address, util.ErrIPAM)
+	}
 	return addr.IP.String(), nil
 }
 
@@ -264,6 +267,9 @@ func parseDriverOptIP(options map[string]interface{}) (string, error) {
 	v4 := parsed.To4()
 	if v4 == nil {
 		return "", fmt.Errorf("driver-opt ip must be IPv4: got %q: %w", s, util.ErrIPAM)
+	}
+	if v4.IsUnspecified() {
+		return "", fmt.Errorf("driver-opt ip must be a unicast IPv4: got %q: %w", s, util.ErrIPAM)
 	}
 	return v4.String(), nil
 }
@@ -835,15 +841,15 @@ func (p *Plugin) Leave(ctx context.Context, r LeaveRequest) error {
 		return util.ErrNoSandbox
 	}
 
-	if err := manager.Stop(); err != nil {
-		return err
-	}
+	stopErr := manager.Stop()
 
 	// Refresh the endpoint fingerprint with the most recent v4/v6 IPs
-	// the persistent client saw. Stop has already drained the event
-	// goroutine, so manager.LastIP* are stable to read here. The
-	// tombstone DeleteEndpoint lays down next will then carry the
-	// renewed addresses rather than the initial-DISCOVER ones.
+	// the persistent client saw, *whether or not Stop succeeded*. Stop
+	// drains the event goroutine before returning even on error, so
+	// manager.LastIP* are stable to read here. Doing this on the error
+	// path too means a wedged-udhcpc shutdown still produces a tombstone
+	// with the latest known lease (W-4) — otherwise DeleteEndpoint
+	// would lay down a tombstone with the stale initial-DISCOVER IPs.
 	v4, v6 := "", ""
 	if manager.LastIP != nil && manager.LastIP.IP != nil {
 		v4 = manager.LastIP.IP.String()
@@ -852,6 +858,10 @@ func (p *Plugin) Leave(ctx context.Context, r LeaveRequest) error {
 		v6 = manager.LastIPv6.IP.String()
 	}
 	p.updateEndpointIPs(r.EndpointID, v4, v6)
+
+	if stopErr != nil {
+		return stopErr
+	}
 
 	log.WithFields(log.Fields{
 		"network":  shortID(r.NetworkID),

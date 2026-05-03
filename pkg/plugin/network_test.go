@@ -132,6 +132,16 @@ func TestParseExplicitV4(t *testing.T) {
 			iface:   &EndpointInterface{Address: "not-an-ip"},
 			wantErr: true,
 		},
+		{
+			name:    "unspecified_v4_rejected",
+			iface:   &EndpointInterface{Address: "0.0.0.0/0"},
+			wantErr: true,
+		},
+		{
+			name:    "unspecified_host_rejected",
+			iface:   &EndpointInterface{Address: "0.0.0.0/24"},
+			wantErr: true,
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -171,6 +181,7 @@ func TestParseDriverOptIP(t *testing.T) {
 		{name: "non_string_value", opts: map[string]interface{}{"ip": 42}, wantErr: true},
 		{name: "empty_string", opts: map[string]interface{}{"ip": ""}, wantErr: true},
 		{name: "garbage", opts: map[string]interface{}{"ip": "not-an-ip"}, wantErr: true},
+		{name: "unspecified_rejected", opts: map[string]interface{}{"ip": "0.0.0.0"}, wantErr: true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

@@ -246,12 +246,15 @@ func (c *DHCPClient) Finish(ctx context.Context) error {
 }
 
 // GetIP is a convenience function that runs udhcpc(6) once and returns the IP
-// info obtained.
+// info obtained. The caller's opts is not mutated — we work on a local copy
+// so a caller that reuses the options struct between persistent and one-shot
+// calls doesn't get its Once flag flipped on.
 func GetIP(ctx context.Context, iface string, opts *DHCPClientOptions) (Info, error) {
 	dummy := Info{}
 
-	opts.Once = true
-	client, err := NewDHCPClient(iface, opts)
+	optsCopy := *opts
+	optsCopy.Once = true
+	client, err := NewDHCPClient(iface, &optsCopy)
 	if err != nil {
 		return dummy, fmt.Errorf("failed to create DHCP client: %w", err)
 	}
