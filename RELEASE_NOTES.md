@@ -11,6 +11,56 @@ forks that have been waiting on review.
 
 [upstream]: https://github.com/devplayer0/docker-net-dhcp
 
+## v0.5.2
+
+Quick-wins cleanup pass on warning-level findings from the v0.5.0
+code review. No new features; ten issues closed at low risk.
+
+### Lease release on plugin shutdown (W-10)
+
+`Plugin.Close` now stops every persistent DHCP client before
+returning, in parallel with a 5-second total ceiling. This is what
+v0.5.0's "send DHCPRELEASE on stop" contract was supposed to deliver
+at the per-endpoint level — but plugin upgrade / `docker plugin
+disable` previously bypassed it entirely, killing udhcpc children
+with no chance to release. Result was orphaned leases on the
+upstream DHCP server after every upgrade.
+
+### Other fixes
+
+- `parseExplicitV4` and `parseDriverOptIP` now reject `0.0.0.0` /
+  unspecified IPv4 addresses — `udhcpc -r 0.0.0.0` is a malformed
+  REQUEST hint (W-8).
+- `Leave` refreshes the endpoint fingerprint from `manager.LastIP*`
+  *unconditionally*, so a wedged-udhcpc shutdown still produces a
+  tombstone with the latest known lease instead of stale
+  initial-DISCOVER values (W-4).
+- `dhcpManager.Stop`'s deferred `nsHandle.Close` / `netHandle.Close`
+  now guard against zero values, so a Start that failed before
+  AwaitNetNS no longer emits noisy EBADF on Stop (W-7).
+- `consumeTombstone` drops *all* matching tombstones when the match
+  is ambiguous, so the next consume isn't poisoned by the same
+  ambiguity for the rest of the TTL window (W-3).
+- `udhcpc.GetIP` no longer mutates the caller's `opts.Once` (I-7).
+
+### Hygiene
+
+- Makefile `PLUGIN_NAME` defaults to this fork's registry instead of
+  the upstream one this fork can't push to (N-12).
+- `cmd/net-dhcp/main.go` `AWAIT_TIMEOUT` default changed from 5s to
+  10s to match `config.json` (N-4).
+- `.dockerignore` excludes `.git/`, `.github/`, `docs/`, `scripts/`,
+  `*.md` — saves ~8MB of context per build (N-5).
+
+### Tests
+
+- `TestParseExplicitV4` / `TestParseDriverOptIP` cover unspecified
+  addresses (`0.0.0.0`, `0.0.0.0/0`, `0.0.0.0/24`).
+- `TestTombstones_AmbiguousMatchesDropped` pins the W-3 fix.
+
+Phase D smoke on gpu1 walked through D2 (LAN IP), plugin
+disable/enable (lease persisted across the bounce), teardown.
+
 ## v0.5.1
 
 Critical-bug cleanup pass driven by a full code-review of the v0.5.0
