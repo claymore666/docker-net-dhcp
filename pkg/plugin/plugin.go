@@ -682,8 +682,54 @@ func (p *Plugin) Listen(bindSock string) error {
 	return p.server.Serve(l)
 }
 
-// Close stops the plugin server
+// pluginShutdownTimeout caps how long Close waits for each persistent
+// DHCP client to send DHCPRELEASE and exit. Short enough to keep a
+// plugin upgrade snappy on hosts with many endpoints; long enough that
+// a typical udhcpc release-and-exit cycle completes well within it.
+const pluginShutdownTimeout = 5 * time.Second
+
+// Close stops the plugin server. Persistent DHCP clients are stopped
+// first so they get a chance to send DHCPRELEASE for their leases —
+// otherwise plugin upgrade or `docker plugin disable` would orphan
+// every active lease at the upstream DHCP server, defeating the
+// release-on-stop contract Leave normally honors.
 func (p *Plugin) Close() error {
+	// Snapshot the live managers under the lock, then drop the lock
+	// before calling Stop on each (Stop blocks on udhcpc Wait and we
+	// don't want to hold p.mu across that).
+	p.mu.Lock()
+	managers := make([]*dhcpManager, 0, len(p.persistentDHCP))
+	for _, m := range p.persistentDHCP {
+		managers = append(managers, m)
+	}
+	p.persistentDHCP = make(map[string]*dhcpManager)
+	p.mu.Unlock()
+
+	if len(managers) > 0 {
+		log.WithField("count", len(managers)).Info("Stopping persistent DHCP clients before shutdown")
+		// Stop in parallel — each udhcpc release is independent and
+		// we don't want N×timeout wall time.
+		var wg sync.WaitGroup
+		for _, m := range managers {
+			wg.Add(1)
+			go func(m *dhcpManager) {
+				defer wg.Done()
+				if err := m.Stop(); err != nil {
+					log.WithError(err).Warn("Failed to stop persistent DHCP client at shutdown")
+				}
+			}(m)
+		}
+		// Bound wall time: we can't let one wedged udhcpc hold up the
+		// whole shutdown.
+		done := make(chan struct{})
+		go func() { wg.Wait(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(pluginShutdownTimeout):
+			log.Warn("Timeout waiting for persistent DHCP clients to stop; continuing shutdown")
+		}
+	}
+
 	if err := p.docker.Close(); err != nil {
 		return fmt.Errorf("failed to close docker client: %w", err)
 	}
