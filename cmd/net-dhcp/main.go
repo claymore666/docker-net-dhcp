@@ -4,6 +4,7 @@ import (
 	"flag"
 	"os"
 	"os/signal"
+	"sync"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -33,14 +34,56 @@ func main() {
 	}
 	log.SetLevel(level)
 
-	if *logFile != "" {
+	// logFileMu guards the SIGHUP reopen path. Without it, a HUP
+	// arriving while logrus is mid-write could swap Out from under
+	// the writer; the lock makes "current fd is the one we just
+	// installed" hold.
+	var logFileMu sync.Mutex
+	var currentLogFd *os.File
+	openLogFile := func() error {
 		f, err := os.OpenFile(*logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
 		if err != nil {
+			return err
+		}
+		logFileMu.Lock()
+		old := currentLogFd
+		currentLogFd = f
+		log.StandardLogger().Out = f
+		logFileMu.Unlock()
+		if old != nil {
+			_ = old.Close()
+		}
+		return nil
+	}
+
+	if *logFile != "" {
+		if err := openLogFile(); err != nil {
 			log.WithError(err).Fatal("Failed to open log file for writing")
 		}
-		defer func() { _ = f.Close() }()
+		defer func() {
+			logFileMu.Lock()
+			defer logFileMu.Unlock()
+			if currentLogFd != nil {
+				_ = currentLogFd.Close()
+			}
+		}()
 
-		log.StandardLogger().Out = f
+		// SIGHUP reopens the log file so logrotate (move-then-signal,
+		// or copytruncate followed by HUP) doesn't leave us writing
+		// into a unlinked or truncated fd. logrotate's `postrotate`
+		// is the conventional place to send HUP; this handler matches
+		// the common daemon behaviour.
+		hup := make(chan os.Signal, 1)
+		signal.Notify(hup, unix.SIGHUP)
+		go func() {
+			for range hup {
+				if err := openLogFile(); err != nil {
+					log.WithError(err).Warn("Failed to reopen log file on SIGHUP")
+				} else {
+					log.Info("Reopened log file on SIGHUP")
+				}
+			}
+		}()
 	}
 
 	awaitTimeout := 10 * time.Second // matches config.json default

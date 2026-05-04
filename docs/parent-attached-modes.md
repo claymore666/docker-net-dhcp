@@ -168,6 +168,55 @@ DHCP server has a free lease in its pool.
 **`docker plugin install` reports "invalid rootfs"** — your Docker daemon
 is too old. Plugin requires Docker 23+.
 
+**Compose silently doesn't attach the container to the DHCP network.**
+Compose merges base and override files at the top-level `networks:` map
+*key by key*, not file by file. A common deployment shape with this
+plugin is "use built-in macvlan in dev, switch to an external pre-created
+DHCP network in prod" — written as:
+
+```yaml
+# docker-compose.yml (base)
+networks:
+  lan:
+    driver: macvlan
+    driver_opts:
+      parent: ${LAN_INTERFACE:-eth0}
+    ipam:
+      config:
+        - subnet: 192.168.0.0/24
+          gateway: 192.168.0.1
+          ip_range: 192.168.0.200/30
+
+# docker-compose.prod.yml (override)
+networks:
+  lan:
+    external: true
+    name: lan-shared
+```
+
+Compose merges these into a hybrid: `external: true` AND `driver: macvlan`
+AND `ipam.config: [...]`. At runtime Compose silently skips attaching
+your service to `lan` because the merged result doesn't match either
+contract (pure-external attach vs internal-create). The container comes
+up attached only to the other networks listed in `services.<name>.networks`.
+
+Diagnostic: run `docker compose -f docker-compose.yml -f docker-compose.prod.yml config`
+and check the merged `networks.lan` block. If you see `external: true`
+alongside `driver` or `ipam`, you've hit this trap.
+
+Fixes (consumer-side; the plugin can't influence Compose's merge logic):
+
+- **Best**: don't define `lan` in the base file at all. Move the dev
+  definition into `docker-compose.dev.yml` and the prod override into
+  `docker-compose.prod.yml`. Each file then *replaces* `lan` entirely.
+- **Acceptable**: keep base, but in the override redefine `lan` with
+  every key the base sets to `null` to wipe them: `driver: null`,
+  `driver_opts: null`, `ipam: null`, `external: true`, `name: lan-shared`.
+  Brittle — each new key in base needs a matching null in override.
+- **Workaround for stuck operators**: `docker network connect lan-shared
+  <container>` after `docker compose up`. One-shot fix; doesn't survive
+  recreate.
+
 ## Static IP requests
 
 Plugin networks use `--ipam-driver=null`, which means `docker run --ip=`

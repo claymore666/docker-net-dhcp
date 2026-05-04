@@ -582,9 +582,20 @@ func (p *Plugin) initialDHCPHostname(ctx context.Context, networkID, endpointID 
 	ctx, cancel := context.WithTimeout(ctx, initialDHCPHostnameLookupTimeout)
 	defer cancel()
 
+	// Each Docker call inside the poll body is bounded much tighter
+	// than the outer 2s budget so a single hung NetworkInspect /
+	// ContainerInspect doesn't burn the whole window. The Docker client
+	// itself has its own 2s per-request timeout (NewPlugin), but that's
+	// the same as our entire poll budget — without an inner cap, one
+	// stuck call effectively turns the 100ms retry interval into a 2s
+	// retry interval. Cap the inner ctx at the poll interval.
+	const dockerCallTimeout = 200 * time.Millisecond
+
 	var hostname string
 	_ = util.AwaitCondition(ctx, func() (bool, error) {
-		dockerNet, err := p.docker.NetworkInspect(ctx, networkID, dNetwork.InspectOptions{})
+		inner, innerCancel := context.WithTimeout(ctx, dockerCallTimeout)
+		defer innerCancel()
+		dockerNet, err := p.docker.NetworkInspect(inner, networkID, dNetwork.InspectOptions{})
 		if err != nil {
 			// Don't propagate the error — we want to keep retrying
 			// while the timeout has time. The caller treats an empty
@@ -600,7 +611,7 @@ func (p *Plugin) initialDHCPHostname(ctx context.Context, networkID, endpointID 
 			if strings.HasPrefix(ctrID, "ep-") {
 				return false, nil
 			}
-			ctr, err := p.docker.ContainerInspect(ctx, ctrID)
+			ctr, err := p.docker.ContainerInspect(inner, ctrID)
 			if err != nil {
 				return false, nil
 			}
