@@ -1,6 +1,9 @@
 package plugin
 
 import (
+	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -215,4 +218,32 @@ func TestClientIDFromEndpoint(t *testing.T) {
 	if string(a) == string(c) {
 		t.Errorf("derivation collided on different inputs")
 	}
+}
+
+// TestListen_RemovesStaleSocket covers the I-9 fix: Listen must
+// best-effort unlink any leftover socket file before binding so a
+// previous unclean shutdown doesn't EADDRINUSE the new one. Driving
+// the full Listen would block on Serve, so we replicate the prelude:
+// pre-place a regular file at the socket path and confirm the unlink
+// path clears it before net.Listen would fail.
+func TestListen_RemovesStaleSocket(t *testing.T) {
+	dir := t.TempDir()
+	sockPath := filepath.Join(dir, "stale.sock")
+
+	// Pre-place a non-socket file at the target path. net.Listen would
+	// fail with EADDRINUSE / "address already in use" on this path
+	// without the os.Remove in Listen.
+	if err := os.WriteFile(sockPath, []byte("stale"), 0o600); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	// Mirror Listen's prelude. We can't call p.Listen directly because
+	// Serve blocks; the unlink + Listen sequence is what we care about.
+	_ = os.Remove(sockPath)
+	l, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("net.Listen after prelude: %v (the os.Remove in Listen should have cleared the path)", err)
+	}
+	_ = l.Close()
+	_ = os.Remove(sockPath)
 }

@@ -106,13 +106,17 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 				requestedIP = tombIP
 			}
 			log.WithFields(log.Fields{
+				"network":  shortID(r.NetworkID),
+				"endpoint": shortID(r.EndpointID),
+				"hostname": hostname,
+			}).Info("Inherited MAC/IP from recent endpoint on same network (likely container restart)")
+			log.WithFields(log.Fields{
 				"network":      shortID(r.NetworkID),
 				"endpoint":     shortID(r.EndpointID),
-				"hostname":     hostname,
 				"mac_address":  tombMAC,
 				"requested_ip": requestedIP,
 				"prior_ipv6":   tombIPv6,
-			}).Info("Inherited MAC/IP from recent endpoint on same network (likely container restart)")
+			}).Debug("Tombstone inheritance details")
 		}
 	}
 
@@ -248,15 +252,19 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 	}
 
 	log.WithFields(log.Fields{
+		"network":  shortID(r.NetworkID),
+		"endpoint": shortID(r.EndpointID),
+		"mode":     mode,
+		"parent":   opts.Parent,
+	}).Info("Endpoint created")
+	log.WithFields(log.Fields{
 		"network":     shortID(r.NetworkID),
 		"endpoint":    shortID(r.EndpointID),
-		"mode":        mode,
-		"parent":      opts.Parent,
 		"mac_address": hintMAC,
 		"ip":          res.Interface.Address,
 		"ipv6":        res.Interface.AddressIPv6,
 		"gateway":     hintGW,
-	}).Info("Endpoint created")
+	}).Debug("Endpoint details")
 
 	return res, nil
 }
