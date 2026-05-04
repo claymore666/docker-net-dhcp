@@ -30,10 +30,19 @@ func stateFilePath(networkID string) string {
 
 // tombstoneTTL bounds how long a recently-deleted endpoint's MAC is
 // available for inheritance by the next CreateEndpoint on the same
-// network. `docker restart` issues Delete then Create back-to-back —
-// well under a second in practice — so 10s is generous headroom while
-// still expiring stale entries quickly.
-const tombstoneTTL = 10 * time.Second
+// network. Two restart shapes both need to fit inside it:
+//   - `docker restart <ctr>` issues Delete then Create back-to-back —
+//     well under a second in practice.
+//   - `systemctl restart docker` shuts containers down and (with
+//     `--restart=always`) brings them back up after the daemon comes
+//     ready. On a host with non-trivial container counts this gap is
+//     typically 15–30s; we want the tombstone to survive it so MAC/IP
+//     stay stable across daemon restarts too.
+//
+// 60s gives generous headroom over both. The on-disk cost is bounded
+// by the prune-on-write strategy (only fresh entries land in the file)
+// so a longer TTL doesn't grow disk usage.
+const tombstoneTTL = 60 * time.Second
 
 // tombstone records the MAC of an endpoint at DeleteEndpoint time so
 // the next CreateEndpoint on the same NetworkID within tombstoneTTL
