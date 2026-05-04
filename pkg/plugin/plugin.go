@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	dNetwork "github.com/docker/docker/api/types/network"
@@ -23,6 +24,16 @@ import (
 
 // DriverName is the name of the Docker Network Driver
 const DriverName string = "net-dhcp"
+
+// shortID truncates a Docker network/endpoint ID to 12 chars for
+// log fields, without panicking on short or empty IDs (which can
+// happen on malformed daemon responses during recovery).
+func shortID(id string) string {
+	if len(id) >= 12 {
+		return id[:12]
+	}
+	return id
+}
 
 // Network attachment modes selected by the `mode` driver option.
 const (
@@ -159,6 +170,14 @@ type Plugin struct {
 	// path. Held only across that small operation; never combined
 	// with mu so the two locks can't deadlock against each other.
 	tombstoneMu sync.Mutex
+
+	// recoveredOK and recoveryFailed are bumped by recoverOneEndpoint's
+	// background Start goroutine and reported via /Plugin.Health, so
+	// operators can see whether plugin-restart recovery succeeded for
+	// every previously-attached container or whether some containers
+	// are now running without renewal.
+	recoveredOK    atomic.Int32
+	recoveryFailed atomic.Int32
 }
 
 // storeJoinHint records the state collected during CreateEndpoint so
@@ -220,9 +239,10 @@ func (p *Plugin) takeDHCPManager(endpointID string) (*dhcpManager, bool) {
 // endpoint is deleted these fields become a tombstone for the next
 // CreateEndpoint on the same network to inherit.
 type endpointFingerprint struct {
-	MAC  string
-	IPv4 string // bare IPv4, e.g. "192.168.0.166" (no /mask). May be empty.
-	IPv6 string // bare IPv6, e.g. "2001:db8::1" (no /prefix). May be empty.
+	MAC      string
+	IPv4     string // bare IPv4, e.g. "192.168.0.166" (no /mask). May be empty.
+	IPv6     string // bare IPv6, e.g. "2001:db8::1" (no /prefix). May be empty.
+	Hostname string // container hostname; used to narrow tombstone match.
 }
 
 // rememberEndpoint stashes the fingerprint of an endpoint we just
@@ -279,10 +299,11 @@ func (p *Plugin) takeEndpoint(endpointID string) (endpointFingerprint, bool) {
 
 // addTombstone appends a tombstone for a deleted endpoint so the
 // next CreateEndpoint on the same network within tombstoneTTL can
-// inherit its MAC and last IP/IPv6. Best-effort: a disk failure
-// here just means restart-stability for this particular event is
-// lost; it's logged and the flow continues.
-func (p *Plugin) addTombstone(networkID, mac, ipv4, ipv6 string) {
+// inherit its MAC and last IP/IPv6. hostname narrows the match in
+// consumeTombstone to the same container. Best-effort: a disk
+// failure here just means restart-stability for this particular
+// event is lost; it's logged and the flow continues.
+func (p *Plugin) addTombstone(networkID, hostname, mac, ipv4, ipv6 string) {
 	if mac == "" {
 		return
 	}
@@ -295,6 +316,7 @@ func (p *Plugin) addTombstone(networkID, mac, ipv4, ipv6 string) {
 	}
 	ts = append(pruneTombstones(ts), tombstone{
 		NetworkID:   networkID,
+		Hostname:    hostname,
 		MacAddress:  mac,
 		IPAddress:   ipv4,
 		IPv6Address: ipv6,
@@ -306,12 +328,14 @@ func (p *Plugin) addTombstone(networkID, mac, ipv4, ipv6 string) {
 }
 
 // consumeTombstone returns and removes a tombstone for networkID iff
-// EXACTLY one fresh entry exists for it. The "exactly one" rule
-// avoids ambiguity when multiple containers on the same network are
-// restarted concurrently — those fall back to fresh MACs/IPs rather
-// than risk swapping identities between containers. Sequential
-// restarts (the common case) always satisfy the rule.
-func (p *Plugin) consumeTombstone(networkID string) (mac, ipv4, ipv6 string, ok bool) {
+// EXACTLY one fresh entry matches. When hostname is non-empty we
+// narrow the match to NetworkID+Hostname so a sequential `compose
+// restart` of multiple containers on the same network can't swap
+// identities between containers. When hostname is empty we fall back
+// to NetworkID-only matching (preserves the v0.5.0 contract for
+// hostname-less containers and races where the lookup didn't return
+// in time). The "exactly one" rule still applies after filtering.
+func (p *Plugin) consumeTombstone(networkID, hostname string) (mac, ipv4, ipv6 string, ok bool) {
 	p.tombstoneMu.Lock()
 	defer p.tombstoneMu.Unlock()
 	ts, err := loadTombstones()
@@ -323,13 +347,39 @@ func (p *Plugin) consumeTombstone(networkID string) (mac, ipv4, ipv6 string, ok 
 	matchIdx := -1
 	matches := 0
 	for i, t := range ts {
-		if t.NetworkID == networkID {
-			matches++
-			matchIdx = i
+		if t.NetworkID != networkID {
+			continue
 		}
+		// When the caller knows the hostname, only match tombstones
+		// whose hostname agrees. Tombstones written by a v0.5.0 build
+		// (or with hostname-lookup races) have empty Hostname; treat
+		// them as "matches anything" so we don't regress those.
+		if hostname != "" && t.Hostname != "" && t.Hostname != hostname {
+			continue
+		}
+		matches++
+		matchIdx = i
 	}
 	// Always rewrite to persist the prune, even if we don't consume.
 	if matches != 1 {
+		// More than one match → ambiguous. Drop *all* matches so the
+		// next consumeTombstone for this network/hostname doesn't keep
+		// hitting the same poisoned set for the rest of the TTL window.
+		// Zero matches is harmless; the prune still gets persisted.
+		if matches > 1 {
+			kept := ts[:0]
+			for _, t := range ts {
+				if t.NetworkID == networkID {
+					if hostname != "" && t.Hostname != "" && t.Hostname != hostname {
+						kept = append(kept, t)
+						continue
+					}
+					continue
+				}
+				kept = append(kept, t)
+			}
+			ts = kept
+		}
 		if err := saveTombstones(ts); err != nil {
 			log.WithError(err).Debug("Failed to persist pruned tombstones")
 		}
@@ -371,14 +421,14 @@ func (p *Plugin) recoverEndpoints(ctx context.Context) {
 		// Re-fetch with full container details (NetworkList is summary-only).
 		netInfo, err := p.docker.NetworkInspect(ctx, n.ID, dNetwork.InspectOptions{})
 		if err != nil {
-			log.WithError(err).WithField("network", n.ID[:12]).
+			log.WithError(err).WithField("network", shortID(n.ID)).
 				Warn("recovery: NetworkInspect failed; skipping")
 			failed++
 			continue
 		}
 		opts, err := p.netOptions(ctx, n.ID)
 		if err != nil {
-			log.WithError(err).WithField("network", n.ID[:12]).
+			log.WithError(err).WithField("network", shortID(n.ID)).
 				Warn("recovery: failed to load network options; skipping")
 			failed++
 			continue
@@ -393,8 +443,8 @@ func (p *Plugin) recoverEndpoints(ctx context.Context) {
 			}
 			if err := p.recoverOneEndpoint(ctx, n.ID, info.EndpointID, info.MacAddress, info.IPv4Address, info.IPv6Address, opts); err != nil {
 				log.WithError(err).WithFields(log.Fields{
-					"network":  n.ID[:12],
-					"endpoint": info.EndpointID[:12],
+					"network":  shortID(n.ID),
+					"endpoint": shortID(info.EndpointID),
 				}).Warn("recovery: endpoint recovery failed")
 				failed++
 				continue
@@ -453,12 +503,15 @@ func (p *Plugin) recoverOneEndpoint(ctx context.Context, networkID, endpointID, 
 		startCtx, cancel := context.WithTimeout(context.Background(), p.awaitTimeout)
 		defer cancel()
 		if err := m.Start(startCtx); err != nil {
+			p.recoveryFailed.Add(1)
 			log.WithError(err).WithFields(log.Fields{
-				"network":  networkID[:12],
-				"endpoint": endpointID[:12],
-			}).Warn("recovery: persistent DHCP client Start failed; lease will not renew until next restart")
+				"network":  shortID(networkID),
+				"endpoint": shortID(endpointID),
+			}).Error("recovery: persistent DHCP client Start failed; lease will not renew until container restart")
 			p.takeDHCPManager(endpointID)
+			return
 		}
+		p.recoveredOK.Add(1)
 	}()
 	return nil
 }
@@ -629,8 +682,54 @@ func (p *Plugin) Listen(bindSock string) error {
 	return p.server.Serve(l)
 }
 
-// Close stops the plugin server
+// pluginShutdownTimeout caps how long Close waits for each persistent
+// DHCP client to send DHCPRELEASE and exit. Short enough to keep a
+// plugin upgrade snappy on hosts with many endpoints; long enough that
+// a typical udhcpc release-and-exit cycle completes well within it.
+const pluginShutdownTimeout = 5 * time.Second
+
+// Close stops the plugin server. Persistent DHCP clients are stopped
+// first so they get a chance to send DHCPRELEASE for their leases —
+// otherwise plugin upgrade or `docker plugin disable` would orphan
+// every active lease at the upstream DHCP server, defeating the
+// release-on-stop contract Leave normally honors.
 func (p *Plugin) Close() error {
+	// Snapshot the live managers under the lock, then drop the lock
+	// before calling Stop on each (Stop blocks on udhcpc Wait and we
+	// don't want to hold p.mu across that).
+	p.mu.Lock()
+	managers := make([]*dhcpManager, 0, len(p.persistentDHCP))
+	for _, m := range p.persistentDHCP {
+		managers = append(managers, m)
+	}
+	p.persistentDHCP = make(map[string]*dhcpManager)
+	p.mu.Unlock()
+
+	if len(managers) > 0 {
+		log.WithField("count", len(managers)).Info("Stopping persistent DHCP clients before shutdown")
+		// Stop in parallel — each udhcpc release is independent and
+		// we don't want N×timeout wall time.
+		var wg sync.WaitGroup
+		for _, m := range managers {
+			wg.Add(1)
+			go func(m *dhcpManager) {
+				defer wg.Done()
+				if err := m.Stop(); err != nil {
+					log.WithError(err).Warn("Failed to stop persistent DHCP client at shutdown")
+				}
+			}(m)
+		}
+		// Bound wall time: we can't let one wedged udhcpc hold up the
+		// whole shutdown.
+		done := make(chan struct{})
+		go func() { wg.Wait(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(pluginShutdownTimeout):
+			log.Warn("Timeout waiting for persistent DHCP clients to stop; continuing shutdown")
+		}
+	}
+
 	if err := p.docker.Close(); err != nil {
 		return fmt.Errorf("failed to close docker client: %w", err)
 	}

@@ -138,18 +138,18 @@ func TestTombstones_RoundtripAndConsume(t *testing.T) {
 	p := newPluginForTest()
 
 	// Empty state: no tombstones to consume.
-	if mac, ip, ipv6, ok := p.consumeTombstone("net-A"); ok {
+	if mac, ip, ipv6, ok := p.consumeTombstone("net-A", ""); ok {
 		t.Errorf("consumeTombstone on empty state returned (%q, %q, %q, true), want (\"\", \"\", \"\", false)", mac, ip, ipv6)
 	}
 
 	// One tombstone for net-A → next consumeTombstone for net-A wins.
-	p.addTombstone("net-A", "02:42:ac:11:00:01", "192.168.0.166", "fe80::1")
-	mac, ip, ipv6, ok := p.consumeTombstone("net-A")
+	p.addTombstone("net-A", "", "02:42:ac:11:00:01", "192.168.0.166", "fe80::1")
+	mac, ip, ipv6, ok := p.consumeTombstone("net-A", "")
 	if !ok || mac != "02:42:ac:11:00:01" || ip != "192.168.0.166" || ipv6 != "fe80::1" {
 		t.Errorf("consumeTombstone net-A: got (%q, %q, %q, %v), want (02:42:ac:11:00:01, 192.168.0.166, fe80::1, true)", mac, ip, ipv6, ok)
 	}
 	// Tombstone is consumed exactly once.
-	if mac, ip, ipv6, ok := p.consumeTombstone("net-A"); ok {
+	if mac, ip, ipv6, ok := p.consumeTombstone("net-A", ""); ok {
 		t.Errorf("second consumeTombstone returned (%q, %q, %q, true); should be empty after consume", mac, ip, ipv6)
 	}
 }
@@ -157,13 +157,13 @@ func TestTombstones_RoundtripAndConsume(t *testing.T) {
 func TestTombstones_DifferentNetworksDoNotMix(t *testing.T) {
 	withStateDir(t, t.TempDir())
 	p := newPluginForTest()
-	p.addTombstone("net-A", "aa:aa:aa:aa:aa:aa", "10.0.0.1", "")
-	p.addTombstone("net-B", "bb:bb:bb:bb:bb:bb", "10.0.0.2", "fe80::2")
+	p.addTombstone("net-A", "", "aa:aa:aa:aa:aa:aa", "10.0.0.1", "")
+	p.addTombstone("net-B", "", "bb:bb:bb:bb:bb:bb", "10.0.0.2", "fe80::2")
 
-	if mac, ip, ipv6, ok := p.consumeTombstone("net-A"); !ok || mac != "aa:aa:aa:aa:aa:aa" || ip != "10.0.0.1" || ipv6 != "" {
+	if mac, ip, ipv6, ok := p.consumeTombstone("net-A", ""); !ok || mac != "aa:aa:aa:aa:aa:aa" || ip != "10.0.0.1" || ipv6 != "" {
 		t.Errorf("net-A consume: got (%q, %q, %q, %v)", mac, ip, ipv6, ok)
 	}
-	if mac, ip, ipv6, ok := p.consumeTombstone("net-B"); !ok || mac != "bb:bb:bb:bb:bb:bb" || ip != "10.0.0.2" || ipv6 != "fe80::2" {
+	if mac, ip, ipv6, ok := p.consumeTombstone("net-B", ""); !ok || mac != "bb:bb:bb:bb:bb:bb" || ip != "10.0.0.2" || ipv6 != "fe80::2" {
 		t.Errorf("net-B consume: got (%q, %q, %q, %v)", mac, ip, ipv6, ok)
 	}
 }
@@ -171,14 +171,83 @@ func TestTombstones_DifferentNetworksDoNotMix(t *testing.T) {
 func TestTombstones_TwoOnSameNetworkBothSkipped(t *testing.T) {
 	withStateDir(t, t.TempDir())
 	p := newPluginForTest()
-	p.addTombstone("net-A", "aa:aa:aa:aa:aa:aa", "10.0.0.1", "")
-	p.addTombstone("net-A", "bb:bb:bb:bb:bb:bb", "10.0.0.2", "")
+	p.addTombstone("net-A", "", "aa:aa:aa:aa:aa:aa", "10.0.0.1", "")
+	p.addTombstone("net-A", "", "bb:bb:bb:bb:bb:bb", "10.0.0.2", "")
 
 	// Two matches on same network → ambiguous, return ok=false.
 	// The point is to avoid handing one container's MAC to a
 	// concurrently-restarting peer.
-	if mac, ip, ipv6, ok := p.consumeTombstone("net-A"); ok {
+	if mac, ip, ipv6, ok := p.consumeTombstone("net-A", ""); ok {
 		t.Errorf("consumeTombstone with 2 candidates should return ok=false, got (%q, %q, %q, true)", mac, ip, ipv6)
+	}
+}
+
+// TestTombstones_AmbiguousMatchesDropped encodes the W-3 fix: when
+// two same-network tombstones both match the consume key, return
+// ok=false AND drop both, so the next consume isn't poisoned by the
+// same ambiguity for the rest of the TTL window.
+func TestTombstones_AmbiguousMatchesDropped(t *testing.T) {
+	withStateDir(t, t.TempDir())
+	p := newPluginForTest()
+	// Two tombstones with empty hostnames on the same network — the
+	// classic concurrent-restart case.
+	p.addTombstone("net-A", "", "aa:aa:aa:aa:aa:aa", "10.0.0.1", "")
+	p.addTombstone("net-A", "", "bb:bb:bb:bb:bb:bb", "10.0.0.2", "")
+
+	if _, _, _, ok := p.consumeTombstone("net-A", ""); ok {
+		t.Fatal("first consume must return ok=false (ambiguous)")
+	}
+	// Subsequent consume must also be ok=false but for "no match"
+	// reasons, not "still ambiguous" — both should be gone.
+	ts, err := loadTombstones()
+	if err != nil {
+		t.Fatalf("loadTombstones: %v", err)
+	}
+	for _, ts := range ts {
+		if ts.NetworkID == "net-A" {
+			t.Errorf("net-A tombstone survived ambiguous consume: %+v", ts)
+		}
+	}
+}
+
+// TestTombstones_HostnameNarrowsMatch encodes the C-5 fix: with two
+// tombstones on the same network but different hostnames, a consume
+// that names one hostname must return only that container's MAC.
+// Before the fix, this case would return ok=false (ambiguous), and
+// before *that* a worse design returned ok=true with whichever
+// tombstone happened to be first — silently swapping container
+// identities during sequential `compose restart`.
+func TestTombstones_HostnameNarrowsMatch(t *testing.T) {
+	withStateDir(t, t.TempDir())
+	p := newPluginForTest()
+	p.addTombstone("net-A", "alpha", "aa:aa:aa:aa:aa:aa", "10.0.0.1", "")
+	p.addTombstone("net-A", "beta", "bb:bb:bb:bb:bb:bb", "10.0.0.2", "")
+
+	// Consume narrowed by hostname returns only the matching MAC.
+	mac, ip, _, ok := p.consumeTombstone("net-A", "alpha")
+	if !ok || mac != "aa:aa:aa:aa:aa:aa" || ip != "10.0.0.1" {
+		t.Fatalf("alpha consume: got (%q, %q, %v), want alpha's tombstone", mac, ip, ok)
+	}
+	// beta's tombstone must still be there.
+	mac, ip, _, ok = p.consumeTombstone("net-A", "beta")
+	if !ok || mac != "bb:bb:bb:bb:bb:bb" || ip != "10.0.0.2" {
+		t.Fatalf("beta consume: got (%q, %q, %v), want beta's tombstone", mac, ip, ok)
+	}
+}
+
+// TestTombstones_EmptyHostnameMatchesAny verifies the backward-compat
+// path: a v0.5.0 tombstone (no hostname) is still consumable when the
+// new code calls with hostname="" or with a non-empty hostname (in
+// which case empty Hostname is treated as "matches anything"). Only
+// the "exactly one" rule still fires.
+func TestTombstones_EmptyHostnameMatchesAny(t *testing.T) {
+	withStateDir(t, t.TempDir())
+	p := newPluginForTest()
+	// Pre-existing tombstone written by an older binary (no hostname).
+	p.addTombstone("net-A", "", "aa:aa:aa:aa:aa:aa", "10.0.0.1", "")
+	mac, _, _, ok := p.consumeTombstone("net-A", "alpha")
+	if !ok || mac != "aa:aa:aa:aa:aa:aa" {
+		t.Errorf("v0.5.0 tombstone should still match: got (%q, %v)", mac, ok)
 	}
 }
 
@@ -197,7 +266,7 @@ func TestTombstones_ExpiredEntriesPruned(t *testing.T) {
 		t.Fatalf("saveTombstones: %v", err)
 	}
 	p := newPluginForTest()
-	if mac, ip, ipv6, ok := p.consumeTombstone("net-A"); ok {
+	if mac, ip, ipv6, ok := p.consumeTombstone("net-A", ""); ok {
 		t.Errorf("expired tombstone should not be consumed, got (%q, %q, %q, true)", mac, ip, ipv6)
 	}
 }

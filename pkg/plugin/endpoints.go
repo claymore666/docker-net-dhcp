@@ -219,11 +219,20 @@ func (p *Plugin) apiLeave(w http.ResponseWriter, r *http.Request) {
 }
 
 // HealthResponse is the payload returned by /Plugin.Health.
+//
+// Healthy is false when at least one plugin-restart recovery failed —
+// the plugin keeps serving requests for fresh attaches, but containers
+// that were running before the restart and got a recovery failure are
+// now running without lease renewal and will lose their IP at lease
+// expiry. Operators should restart those containers (which produces a
+// fresh CreateEndpoint and gets them back into the persistent map).
 type HealthResponse struct {
 	Healthy         bool    `json:"healthy"`
 	UptimeSeconds   float64 `json:"uptime_seconds"`
 	ActiveEndpoints int     `json:"active_endpoints"`
 	PendingHints    int     `json:"pending_hints"`
+	RecoveredOK     int32   `json:"recovered_ok"`
+	RecoveryFailed  int32   `json:"recovery_failed"`
 }
 
 func (p *Plugin) apiHealth(w http.ResponseWriter, r *http.Request) {
@@ -232,10 +241,13 @@ func (p *Plugin) apiHealth(w http.ResponseWriter, r *http.Request) {
 	pending := len(p.joinHints)
 	p.mu.Unlock()
 
+	failed := p.recoveryFailed.Load()
 	util.JSONResponse(w, HealthResponse{
-		Healthy:         true,
+		Healthy:         failed == 0,
 		UptimeSeconds:   time.Since(p.startTime).Seconds(),
 		ActiveEndpoints: active,
 		PendingHints:    pending,
+		RecoveredOK:     p.recoveredOK.Load(),
+		RecoveryFailed:  failed,
 	}, http.StatusOK)
 }

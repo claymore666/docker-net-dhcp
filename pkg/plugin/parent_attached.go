@@ -92,16 +92,23 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 	if err != nil {
 		return res, err
 	}
+	// Look up the hostname up front so we can scope tombstone matching
+	// to the same container (prevents identity swap during sequential
+	// `compose restart`). Best-effort: if the lookup misses or returns
+	// empty, consumeTombstone falls back to network-only matching.
+	hostname := p.initialDHCPHostname(ctx, r.NetworkID, r.EndpointID)
+
 	requestedIP := explicitV4
 	if mode == ModeMacvlan && effectiveMAC == "" {
-		if tombMAC, tombIP, tombIPv6, ok := p.consumeTombstone(r.NetworkID); ok {
+		if tombMAC, tombIP, tombIPv6, ok := p.consumeTombstone(r.NetworkID, hostname); ok {
 			effectiveMAC = tombMAC
 			if requestedIP == "" {
 				requestedIP = tombIP
 			}
 			log.WithFields(log.Fields{
-				"network":      r.NetworkID[:12],
-				"endpoint":     r.EndpointID[:12],
+				"network":      shortID(r.NetworkID),
+				"endpoint":     shortID(r.EndpointID),
+				"hostname":     hostname,
 				"mac_address":  tombMAC,
 				"requested_ip": requestedIP,
 				"prior_ipv6":   tombIPv6,
@@ -154,14 +161,11 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 		if opts.LeaseTimeout != 0 {
 			timeout = opts.LeaseTimeout
 		}
-		// Best-effort hostname for the initial DISCOVER (so the lease
-		// shows up in the upstream DHCP server's UI tagged with the
-		// container hostname from minute one) and a stable client-id
-		// derived from the endpoint ID (so reservations keyed on
-		// option 61 survive container recreation, and so ipvlan
+		// Stable client-id derived from the endpoint ID (so reservations
+		// keyed on option 61 survive container recreation, and so ipvlan
 		// children can be told apart even though they all share the
-		// parent's MAC).
-		hostname := p.initialDHCPHostname(ctx, r.NetworkID, r.EndpointID)
+		// parent's MAC). hostname was resolved earlier for tombstone
+		// matching and is reused for the DHCP option 12 hint here.
 		clientID := clientIDFromEndpoint(r.EndpointID)
 
 		runDHCP := func(v6 bool) error {
@@ -240,12 +244,12 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 	// them as a tombstone. macvlan only — for ipvlan the MAC is the
 	// parent's and there's nothing to stabilize.
 	if mode == ModeMacvlan {
-		p.rememberEndpoint(r.EndpointID, endpointFingerprint{MAC: hintMAC, IPv4: hintIPv4, IPv6: hintIPv6})
+		p.rememberEndpoint(r.EndpointID, endpointFingerprint{MAC: hintMAC, IPv4: hintIPv4, IPv6: hintIPv6, Hostname: hostname})
 	}
 
 	log.WithFields(log.Fields{
-		"network":     r.NetworkID[:12],
-		"endpoint":    r.EndpointID[:12],
+		"network":     shortID(r.NetworkID),
+		"endpoint":    shortID(r.EndpointID),
 		"mode":        mode,
 		"parent":      opts.Parent,
 		"mac_address": hintMAC,
@@ -270,8 +274,8 @@ func (p *Plugin) deleteParentAttachedEndpoint(r DeleteEndpointRequest) error {
 	if err != nil {
 		// Expected: the link is gone with the container netns.
 		log.WithFields(log.Fields{
-			"network":  r.NetworkID[:12],
-			"endpoint": r.EndpointID[:12],
+			"network":  shortID(r.NetworkID),
+			"endpoint": shortID(r.EndpointID),
 		}).Debug("Child link already gone (expected)")
 		return nil
 	}
@@ -279,8 +283,8 @@ func (p *Plugin) deleteParentAttachedEndpoint(r DeleteEndpointRequest) error {
 		return fmt.Errorf("failed to delete leftover child link %v: %w", name, err)
 	}
 	log.WithFields(log.Fields{
-		"network":  r.NetworkID[:12],
-		"endpoint": r.EndpointID[:12],
+		"network":  shortID(r.NetworkID),
+		"endpoint": shortID(r.EndpointID),
 	}).Info("Cleaned up leftover child link in host netns")
 	return nil
 }

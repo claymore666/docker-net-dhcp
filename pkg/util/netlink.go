@@ -4,63 +4,42 @@ import (
 	"context"
 	"time"
 
-	log "github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
 )
 
+// AwaitNetNS polls for a netns at path until it appears, ctx is cancelled,
+// or interval-paced retries exhaust. Synchronous to avoid leaking a
+// poller goroutine on ctx-cancel (the previous form did, and each leaked
+// goroutine kept hammering netns.GetFromPath forever).
 func AwaitNetNS(ctx context.Context, path string, interval time.Duration) (netns.NsHandle, error) {
-	var err error
-	nsChan := make(chan netns.NsHandle)
-	go func() {
-		for {
-			var ns netns.NsHandle
-			ns, err = netns.GetFromPath(path)
-			if err == nil {
-				nsChan <- ns
-				return
-			}
-
-			time.Sleep(interval)
-		}
-	}()
-
 	var dummy netns.NsHandle
-	select {
-	case ns := <-nsChan:
-		return ns, nil
-	case <-ctx.Done():
-		if err != nil {
-			log.WithError(err).WithField("path", path).Error("Failed to await network namespace")
+	for {
+		ns, err := netns.GetFromPath(path)
+		if err == nil {
+			return ns, nil
 		}
-		return dummy, ctx.Err()
+		select {
+		case <-ctx.Done():
+			return dummy, ctx.Err()
+		case <-time.After(interval):
+		}
 	}
 }
 
+// AwaitLinkByIndex polls for a netlink Link by index until it appears,
+// ctx is cancelled, or interval-paced retries exhaust. Synchronous for
+// the same reason as AwaitNetNS.
 func AwaitLinkByIndex(ctx context.Context, handle *netlink.Handle, index int, interval time.Duration) (netlink.Link, error) {
-	var err error
-	linkChan := make(chan netlink.Link)
-	go func() {
-		for {
-			var link netlink.Link
-			link, err = handle.LinkByIndex(index)
-			if err == nil {
-				linkChan <- link
-				return
-			}
-
-			time.Sleep(interval)
+	for {
+		link, err := handle.LinkByIndex(index)
+		if err == nil {
+			return link, nil
 		}
-	}()
-
-	var dummy netlink.Link
-	select {
-	case link := <-linkChan:
-		return link, nil
-	case <-ctx.Done():
-		if err != nil {
-			log.WithError(err).WithField("index", index).Error("Failed to await link by index")
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(interval):
 		}
-		return dummy, ctx.Err()
 	}
 }

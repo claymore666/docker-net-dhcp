@@ -187,8 +187,14 @@ func (c *DHCPClient) Start() (chan Event, error) {
 		return nil, err
 	}
 
-	events := make(chan Event)
+	// Buffered + non-blocking send: after Finish runs, the consumer
+	// goroutine in dhcpManager has already taken the stop branch and
+	// will never read events again. A final event line emitted by
+	// udhcpc between SIGTERM and exit must not deadlock the scanner
+	// goroutine on an unbuffered send.
+	events := make(chan Event, 16)
 	go func() {
+		defer close(events)
 		scanner := bufio.NewScanner(c.eventPipe)
 		for scanner.Scan() {
 			log.WithField("line", string(scanner.Bytes())).Trace("udhcpc handler line")
@@ -200,7 +206,11 @@ func (c *DHCPClient) Start() (chan Event, error) {
 				continue
 			}
 
-			events <- event
+			select {
+			case events <- event:
+			default:
+				log.WithField("event", event.Type).Warn("udhcpc event dropped: consumer slow or finished")
+			}
 		}
 	}()
 
@@ -217,7 +227,18 @@ func (c *DHCPClient) Finish(ctx context.Context) error {
 		}
 	}
 
-	errChan := make(chan error)
+	return c.Wait(ctx)
+}
+
+// Wait reaps the udhcpc(6) child without signalling it. Use this when the
+// process has already exited on its own (e.g. the consumer noticed the
+// event pipe close): if cmd.Wait is never called the kernel keeps the
+// child as a zombie. Bounded by ctx so a stuck Wait can't block teardown.
+func (c *DHCPClient) Wait(ctx context.Context) error {
+	// Buffered: on ctx.Done we Kill and return without reading errChan,
+	// so the Wait goroutine must not block forever trying to send. With
+	// the buffer, Wait completes and the goroutine exits, no zombie.
+	errChan := make(chan error, 1)
 	go func() {
 		errChan <- c.cmd.Wait()
 	}()
@@ -233,12 +254,15 @@ func (c *DHCPClient) Finish(ctx context.Context) error {
 }
 
 // GetIP is a convenience function that runs udhcpc(6) once and returns the IP
-// info obtained.
+// info obtained. The caller's opts is not mutated — we work on a local copy
+// so a caller that reuses the options struct between persistent and one-shot
+// calls doesn't get its Once flag flipped on.
 func GetIP(ctx context.Context, iface string, opts *DHCPClientOptions) (Info, error) {
 	dummy := Info{}
 
-	opts.Once = true
-	client, err := NewDHCPClient(iface, opts)
+	optsCopy := *opts
+	optsCopy.Once = true
+	client, err := NewDHCPClient(iface, &optsCopy)
 	if err != nil {
 		return dummy, fmt.Errorf("failed to create DHCP client: %w", err)
 	}

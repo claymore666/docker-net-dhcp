@@ -70,8 +70,8 @@ func newDHCPManager(docker *docker.Client, r JoinRequest, opts DHCPNetworkOption
 
 func (m *dhcpManager) logFields(v6 bool) log.Fields {
 	return log.Fields{
-		"network":  m.joinReq.NetworkID[:12],
-		"endpoint": m.joinReq.EndpointID[:12],
+		"network":  shortID(m.joinReq.NetworkID),
+		"endpoint": shortID(m.joinReq.EndpointID),
 		"sandbox":  m.joinReq.SandboxKey,
 		"is_ipv6":  v6,
 	}
@@ -189,11 +189,46 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 		return nil, fmt.Errorf("failed to start DHCP%v client: %w", v6Str, err)
 	}
 
-	errChan := make(chan error)
+	// Buffered: a partial-Start failure (v4 OK, v6 fails) bypasses Stop's
+	// errChan reads; Stop short-circuits on m.startErr. Without a buffer
+	// the goroutine here would block forever on the final write below.
+	errChan := make(chan error, 1)
 	go func() {
 		for {
 			select {
-			case event := <-events:
+			case event, ok := <-events:
+				if !ok {
+					// udhcpc exited on its own (NAK, parent NIC vanished,
+					// container netns torn down out from under us, etc.).
+					// The scanner goroutine in udhcpc.Start closes events
+					// when its read pipe hits EOF. Without this branch,
+					// `<-events` on a closed channel returns the zero
+					// Event{} every iteration, the switch matches nothing,
+					// and we burn a CPU thread forever.
+					log.
+						WithFields(m.logFields(v6)).
+						Warn("udhcpc event stream closed; client process exited")
+
+					// Reap the child so it doesn't linger as a zombie:
+					// cmd.Wait must be called exactly once per process,
+					// and Stop's Finish path won't run if the consumer
+					// returned first.
+					reapCtx, reapCancel := context.WithTimeout(context.Background(), 5*time.Second)
+					if err := client.Wait(reapCtx); err != nil {
+						log.
+							WithError(err).
+							WithFields(m.logFields(v6)).
+							Debug("udhcpc reap returned error")
+					}
+					reapCancel()
+
+					// Unblock Stop() if it's waiting on errChan. The
+					// channel is buffered=1 so this never blocks; if
+					// nobody's reading yet, the value sits until Stop
+					// calls close(stopChan) and reads it.
+					errChan <- nil
+					return
+				}
 				switch event.Type {
 				// TODO: We can't really allow the IP in the container to be deleted, it'll delete some of our previously
 				// copied routes. Should this be handled somehow?
@@ -402,8 +437,20 @@ func (m *dhcpManager) Stop() error {
 		return nil
 	}
 
-	defer m.nsHandle.Close()
-	defer m.netHandle.Close()
+	// Guard against zero handles: Stop can be called against a manager
+	// whose Start failed before AwaitNetNS / NewHandleAt set these
+	// (see C-2 fix), in which case the deferred Close on the zero
+	// value emits a noisy EBADF.
+	defer func() {
+		if m.nsHandle.IsOpen() {
+			m.nsHandle.Close()
+		}
+	}()
+	defer func() {
+		if m.netHandle != nil {
+			m.netHandle.Close()
+		}
+	}()
 
 	close(m.stopChan)
 

@@ -1,3 +1,11 @@
 /bin/
 /plugin/
 /multiarch/
+.git/
+.github/
+docs/
+scripts/
+*.md
+LICENSE.md
+test_env.sh
+code-review-report.md

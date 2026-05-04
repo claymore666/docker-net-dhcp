@@ -215,6 +215,9 @@ func parseExplicitV4(iface *EndpointInterface) (string, error) {
 	if addr.IP.To4() == nil {
 		return "", fmt.Errorf("Interface.Address must be IPv4: got %q: %w", iface.Address, util.ErrIPAM)
 	}
+	if addr.IP.IsUnspecified() {
+		return "", fmt.Errorf("Interface.Address must be a unicast IPv4: got %q: %w", iface.Address, util.ErrIPAM)
+	}
 	return addr.IP.String(), nil
 }
 
@@ -264,6 +267,9 @@ func parseDriverOptIP(options map[string]interface{}) (string, error) {
 	v4 := parsed.To4()
 	if v4 == nil {
 		return "", fmt.Errorf("driver-opt ip must be IPv4: got %q: %w", s, util.ErrIPAM)
+	}
+	if v4.IsUnspecified() {
+		return "", fmt.Errorf("driver-opt ip must be a unicast IPv4: got %q: %w", s, util.ErrIPAM)
 	}
 	return v4.String(), nil
 }
@@ -321,8 +327,8 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 	// best-effort basis: warn loudly but don't fail the endpoint.
 	if r.Interface != nil && r.Interface.AddressIPv6 != "" {
 		log.WithFields(log.Fields{
-			"network":  r.NetworkID[:12],
-			"endpoint": r.EndpointID[:12],
+			"network":  shortID(r.NetworkID),
+			"endpoint": shortID(r.EndpointID),
 			"ipv6":     r.Interface.AddressIPv6,
 		}).Warn("Static IPv6 address requested but not yet wired through to udhcpc6; lease will come unhinted")
 	}
@@ -346,6 +352,12 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 		return res, fmt.Errorf("failed to get bridge interface: %w", err)
 	}
 
+	// Look up the hostname up front so we can scope tombstone matching
+	// to the same container (prevents identity swap during sequential
+	// `compose restart`). Best-effort: if the lookup misses or returns
+	// empty, consumeTombstone falls back to network-only matching.
+	hostname := p.initialDHCPHostname(ctx, r.NetworkID, r.EndpointID)
+
 	// MAC/IP selection priority:
 	//   1. Explicit values from libnetwork (`--mac-address`, `--ip`)
 	//   2. Tombstone (recently-deleted endpoint on the same network)
@@ -356,7 +368,7 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 	effectiveMAC := r.Interface.MacAddress
 	requestedIP := explicitV4
 	if effectiveMAC == "" {
-		if mac, ip, ipv6, ok := p.consumeTombstone(r.NetworkID); ok {
+		if mac, ip, ipv6, ok := p.consumeTombstone(r.NetworkID, hostname); ok {
 			effectiveMAC = mac
 			if requestedIP == "" {
 				requestedIP = ip
@@ -367,8 +379,9 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 			// future change can request preferred-address from a
 			// DHCPv6 client without a wire-format change.
 			log.WithFields(log.Fields{
-				"network":      r.NetworkID[:12],
-				"endpoint":     r.EndpointID[:12],
+				"network":      shortID(r.NetworkID),
+				"endpoint":     shortID(r.EndpointID),
+				"hostname":     hostname,
 				"mac_address":  mac,
 				"requested_ip": requestedIP,
 				"prior_ipv6":   ipv6,
@@ -434,10 +447,6 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 		if opts.LeaseTimeout != 0 {
 			timeout = opts.LeaseTimeout
 		}
-		// Best-effort hostname for the initial DISCOVER. Empty if the
-		// container isn't yet registered with this network — the
-		// persistent renewal client will fill it in later.
-		hostname := p.initialDHCPHostname(ctx, r.NetworkID, r.EndpointID)
 		clientID := clientIDFromEndpoint(r.EndpointID)
 		initialIP := func(v6 bool) error {
 			v6str := ""
@@ -521,11 +530,11 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 	if mac == "" {
 		mac = res.Interface.MacAddress
 	}
-	p.rememberEndpoint(r.EndpointID, endpointFingerprint{MAC: mac, IPv4: v4IP, IPv6: v6IP})
+	p.rememberEndpoint(r.EndpointID, endpointFingerprint{MAC: mac, IPv4: v4IP, IPv6: v6IP, Hostname: hostname})
 
 	log.WithFields(log.Fields{
-		"network":     r.NetworkID[:12],
-		"endpoint":    r.EndpointID[:12],
+		"network":     shortID(r.NetworkID),
+		"endpoint":    shortID(r.EndpointID),
 		"mac_address": mac,
 		"ip":          res.Interface.Address,
 		"ipv6":        res.Interface.AddressIPv6,
@@ -587,7 +596,7 @@ func (p *Plugin) DeleteEndpoint(ctx context.Context, r DeleteEndpointRequest) er
 	// the tombstone is meaningless there (we'd just be re-handing the
 	// parent MAC back, which the kernel inherits anyway) — skip it.
 	if fp, ok := p.takeEndpoint(r.EndpointID); ok && opts.effectiveMode() != ModeIPvlan {
-		p.addTombstone(r.NetworkID, fp.MAC, fp.IPv4, fp.IPv6)
+		p.addTombstone(r.NetworkID, fp.Hostname, fp.MAC, fp.IPv4, fp.IPv6)
 	}
 
 	if m := opts.effectiveMode(); m == ModeMacvlan || m == ModeIPvlan {
@@ -595,8 +604,8 @@ func (p *Plugin) DeleteEndpoint(ctx context.Context, r DeleteEndpointRequest) er
 			return err
 		}
 		log.WithFields(log.Fields{
-			"network":  r.NetworkID[:12],
-			"endpoint": r.EndpointID[:12],
+			"network":  shortID(r.NetworkID),
+			"endpoint": shortID(r.EndpointID),
 		}).Info("Endpoint deleted")
 		return nil
 	}
@@ -612,8 +621,8 @@ func (p *Plugin) DeleteEndpoint(ctx context.Context, r DeleteEndpointRequest) er
 	}
 
 	log.WithFields(log.Fields{
-		"network":  r.NetworkID[:12],
-		"endpoint": r.EndpointID[:12],
+		"network":  shortID(r.NetworkID),
+		"endpoint": shortID(r.EndpointID),
 	}).Info("Endpoint deleted")
 
 	return nil
@@ -634,8 +643,8 @@ func (p *Plugin) addRoutes(opts *DHCPNetworkOptions, v6 bool, bridge netlink.Lin
 	}
 
 	logFields := log.Fields{
-		"network":  r.NetworkID[:12],
-		"endpoint": r.EndpointID[:12],
+		"network":  shortID(r.NetworkID),
+		"endpoint": shortID(r.EndpointID),
 		"sandbox":  r.SandboxKey,
 	}
 	for _, route := range routes {
@@ -749,8 +758,8 @@ func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) 
 		// and the link in the destroyed sandbox is gone with it.
 		// Reacquire from scratch.
 		log.WithFields(log.Fields{
-			"network":  r.NetworkID[:12],
-			"endpoint": r.EndpointID[:12],
+			"network":  shortID(r.NetworkID),
+			"endpoint": shortID(r.EndpointID),
 			"sandbox":  r.SandboxKey,
 		}).Info("[Join] No hint; attempting endpoint reacquisition (likely container restart)")
 		if err := p.reacquireEndpoint(ctx, r, opts); err != nil {
@@ -764,8 +773,8 @@ func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) 
 
 	if hint.Gateway != "" {
 		log.WithFields(log.Fields{
-			"network":  r.NetworkID[:12],
-			"endpoint": r.EndpointID[:12],
+			"network":  shortID(r.NetworkID),
+			"endpoint": shortID(r.EndpointID),
 			"sandbox":  r.SandboxKey,
 			"gateway":  hint.Gateway,
 		}).Info("[Join] Setting IPv4 gateway retrieved from initial DHCP in CreateEndpoint")
@@ -804,8 +813,8 @@ func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) 
 
 		if err := m.Start(ctx); err != nil {
 			log.WithError(err).WithFields(log.Fields{
-				"network":  r.NetworkID[:12],
-				"endpoint": r.EndpointID[:12],
+				"network":  shortID(r.NetworkID),
+				"endpoint": shortID(r.EndpointID),
 				"sandbox":  r.SandboxKey,
 			}).Error("Failed to start persistent DHCP client; lease will not be renewed")
 			// If Start failed, take ourselves out of the registry so a
@@ -817,8 +826,8 @@ func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) 
 	}()
 
 	log.WithFields(log.Fields{
-		"network":  r.NetworkID[:12],
-		"endpoint": r.EndpointID[:12],
+		"network":  shortID(r.NetworkID),
+		"endpoint": shortID(r.EndpointID),
 		"sandbox":  r.SandboxKey,
 	}).Info("Joined sandbox to endpoint")
 
@@ -832,15 +841,15 @@ func (p *Plugin) Leave(ctx context.Context, r LeaveRequest) error {
 		return util.ErrNoSandbox
 	}
 
-	if err := manager.Stop(); err != nil {
-		return err
-	}
+	stopErr := manager.Stop()
 
 	// Refresh the endpoint fingerprint with the most recent v4/v6 IPs
-	// the persistent client saw. Stop has already drained the event
-	// goroutine, so manager.LastIP* are stable to read here. The
-	// tombstone DeleteEndpoint lays down next will then carry the
-	// renewed addresses rather than the initial-DISCOVER ones.
+	// the persistent client saw, *whether or not Stop succeeded*. Stop
+	// drains the event goroutine before returning even on error, so
+	// manager.LastIP* are stable to read here. Doing this on the error
+	// path too means a wedged-udhcpc shutdown still produces a tombstone
+	// with the latest known lease (W-4) — otherwise DeleteEndpoint
+	// would lay down a tombstone with the stale initial-DISCOVER IPs.
 	v4, v6 := "", ""
 	if manager.LastIP != nil && manager.LastIP.IP != nil {
 		v4 = manager.LastIP.IP.String()
@@ -850,9 +859,13 @@ func (p *Plugin) Leave(ctx context.Context, r LeaveRequest) error {
 	}
 	p.updateEndpointIPs(r.EndpointID, v4, v6)
 
+	if stopErr != nil {
+		return stopErr
+	}
+
 	log.WithFields(log.Fields{
-		"network":  r.NetworkID[:12],
-		"endpoint": r.EndpointID[:12],
+		"network":  shortID(r.NetworkID),
+		"endpoint": shortID(r.EndpointID),
 	}).Info("Sandbox left endpoint")
 
 	return nil
