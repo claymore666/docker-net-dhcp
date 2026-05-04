@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"regexp"
 	"strings"
 	"sync"
@@ -49,6 +50,14 @@ const (
 // on first renewal, so the worst case is "first lease appears in the
 // upstream DHCP server's table without a hostname for a few minutes".
 const initialDHCPHostnameLookupTimeout = 2 * time.Second
+
+// recoveryBudget caps the wall-time the plugin spends rebuilding its
+// in-memory state for already-attached endpoints on startup. Each
+// endpoint's recovery does its own DHCP DISCOVER through udhcpc with
+// network-IO timeouts; this is the umbrella above all of them. Beyond
+// it, recovery is abandoned and the affected endpoints surface as
+// recovery_failed on /Plugin.Health.
+const recoveryBudget = 30 * time.Second
 
 // clientIDFromEndpoint derives a stable DHCP option-61 client identifier
 // from a Docker endpoint ID. Docker's endpoint IDs are 64 hex chars
@@ -693,10 +702,9 @@ func NewPlugin(awaitTimeout time.Duration) (*Plugin, error) {
 	// background goroutine — the previous behaviour — opened a window
 	// where a fresh CreateEndpoint could race recovery's Start for the
 	// same endpoint: the map check is mutex-protected, but Start runs
-	// outside the mutex. Recovery is bounded at 30s, which is acceptable
-	// plugin-enable latency.
+	// outside the mutex. recoveryBudget bounds plugin-enable latency.
 	{
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), recoveryBudget)
 		p.recoverEndpoints(ctx)
 		cancel()
 	}
@@ -706,6 +714,12 @@ func NewPlugin(awaitTimeout time.Duration) (*Plugin, error) {
 
 // Listen starts the plugin server
 func (p *Plugin) Listen(bindSock string) error {
+	// Best-effort: remove a stale socket file from a prior run so
+	// net.Listen doesn't EADDRINUSE on it. Production plugin runtimes
+	// recreate the workdir between starts, so this is a no-op there;
+	// it matters for local / test runs where the file lingers.
+	_ = os.Remove(bindSock)
+
 	l, err := net.Listen("unix", bindSock)
 	if err != nil {
 		return err

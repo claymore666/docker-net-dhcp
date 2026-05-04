@@ -562,13 +562,17 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 	p.rememberEndpoint(r.EndpointID, endpointFingerprint{MAC: mac, IPv4: v4IP, IPv6: v6IP, Hostname: hostname})
 
 	log.WithFields(log.Fields{
+		"network":  shortID(r.NetworkID),
+		"endpoint": shortID(r.EndpointID),
+	}).Info("Endpoint created")
+	log.WithFields(log.Fields{
 		"network":     shortID(r.NetworkID),
 		"endpoint":    shortID(r.EndpointID),
 		"mac_address": mac,
 		"ip":          res.Interface.Address,
 		"ipv6":        res.Interface.AddressIPv6,
 		"gateway":     gateway,
-	}).Info("Endpoint created")
+	}).Debug("Endpoint details")
 
 	return res, nil
 }
@@ -716,12 +720,12 @@ func (p *Plugin) addRoutes(opts *DHCPNetworkOptions, v6 bool, bridge netlink.Lin
 		staticRoute := &StaticRoute{
 			Destination: route.Dst.String(),
 			// Default to an on-link route
-			RouteType: 1,
+			RouteType: RouteTypeOnLink,
 		}
 		res.StaticRoutes = append(res.StaticRoutes, staticRoute)
 
 		if route.Gw != nil {
-			staticRoute.RouteType = 0
+			staticRoute.RouteType = RouteTypeNextHop
 			staticRoute.NextHop = route.Gw.String()
 
 			log.

@@ -27,6 +27,19 @@ const linkAwaitTimeout = 30 * time.Second
 
 const pollTime = 100 * time.Millisecond
 
+// dhcpClientReapTimeout caps how long the udhcpc consumer waits to
+// reap a self-exited child process before giving up and letting it
+// linger as a zombie. The kernel's eventual reaping by init handles
+// the worst case; this just bounds wall time on the cleanup path.
+const dhcpClientReapTimeout = 5 * time.Second
+
+// dhcpClientFinishTimeout caps how long Stop waits for SIGTERM ->
+// DHCPRELEASE -> exit on the persistent udhcpc child. Long enough
+// for a DHCPRELEASE round-trip on a healthy LAN; short enough that
+// plugin shutdown / Leave isn't held hostage by an unresponsive
+// upstream DHCP server.
+const dhcpClientFinishTimeout = 5 * time.Second
+
 type dhcpManager struct {
 	docker  *docker.Client
 	joinReq JoinRequest
@@ -238,7 +251,7 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 					// cmd.Wait must be called exactly once per process,
 					// and Stop's Finish path won't run if the consumer
 					// returned first.
-					reapCtx, reapCancel := context.WithTimeout(context.Background(), 5*time.Second)
+					reapCtx, reapCancel := context.WithTimeout(context.Background(), dhcpClientReapTimeout)
 					if err := client.Wait(reapCtx); err != nil {
 						log.
 							WithError(err).
@@ -312,7 +325,7 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 					WithFields(m.logFields(v6)).
 					Info("Shutting down persistent DHCP client")
 
-				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				ctx, cancel := context.WithTimeout(context.Background(), dhcpClientFinishTimeout)
 				defer cancel()
 
 				errChan <- client.Finish(ctx)

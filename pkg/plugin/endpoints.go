@@ -167,6 +167,15 @@ type InterfaceName struct {
 	DstPrefix string
 }
 
+// libnetwork's route-type encoding for StaticRoute.RouteType.
+// See https://github.com/moby/libnetwork/blob/master/docs/remote.md
+// — 0 ("via gateway") expects a NextHop; 1 ("on-link / connected")
+// has no next hop.
+const (
+	RouteTypeNextHop = 0
+	RouteTypeOnLink  = 1
+)
+
 // StaticRoute contains static route information
 type StaticRoute struct {
 	Destination string
