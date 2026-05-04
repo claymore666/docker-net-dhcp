@@ -121,3 +121,54 @@ func TestPlugin_JoinHintFlow(t *testing.T) {
 		t.Error("takeDHCPManager must remove the entry it returns")
 	}
 }
+
+// TestTakeDHCPManagersForNetwork_PrunesByNetwork covers the #44 fix:
+// DeleteNetwork must evict every manager attached to the disappearing
+// network, leaving managers on other networks untouched. It's the
+// underlying primitive — DeleteNetwork's HTTP path also calls Stop on
+// each, but Stop's blocking semantics are exercised separately in
+// integration testing.
+func TestTakeDHCPManagersForNetwork_PrunesByNetwork(t *testing.T) {
+	p := &Plugin{
+		joinHints:      make(map[string]joinHint),
+		persistentDHCP: make(map[string]*dhcpManager),
+	}
+	mkMgr := func(networkID string) *dhcpManager {
+		return &dhcpManager{joinReq: JoinRequest{NetworkID: networkID}}
+	}
+	mA1 := mkMgr("net-A")
+	mA2 := mkMgr("net-A")
+	mB1 := mkMgr("net-B")
+	p.registerDHCPManager("ep-A1", mA1)
+	p.registerDHCPManager("ep-A2", mA2)
+	p.registerDHCPManager("ep-B1", mB1)
+
+	got := p.takeDHCPManagersForNetwork("net-A")
+	if len(got) != 2 {
+		t.Fatalf("expected 2 managers evicted for net-A, got %d", len(got))
+	}
+	// Order isn't guaranteed (map iteration); verify by set membership.
+	have := map[*dhcpManager]bool{got[0]: true, got[1]: true}
+	if !have[mA1] || !have[mA2] {
+		t.Errorf("evicted set missing one of mA1/mA2: %+v", got)
+	}
+	if have[mB1] {
+		t.Error("net-B manager was wrongly evicted")
+	}
+
+	// Registry should now hold only the unrelated manager.
+	if _, ok := p.takeDHCPManager("ep-A1"); ok {
+		t.Error("ep-A1 should already be gone")
+	}
+	if _, ok := p.takeDHCPManager("ep-A2"); ok {
+		t.Error("ep-A2 should already be gone")
+	}
+	if m, ok := p.takeDHCPManager("ep-B1"); !ok || m != mB1 {
+		t.Errorf("ep-B1 should still be there: ok=%v m=%v", ok, m)
+	}
+
+	// Calling again on the now-empty network is a clean no-op.
+	if got := p.takeDHCPManagersForNetwork("net-A"); len(got) != 0 {
+		t.Errorf("expected empty result on second call, got %d managers", len(got))
+	}
+}

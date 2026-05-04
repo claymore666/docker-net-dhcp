@@ -2,8 +2,10 @@ package plugin
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -248,6 +250,41 @@ func TestTombstones_EmptyHostnameMatchesAny(t *testing.T) {
 	mac, _, _, ok := p.consumeTombstone("net-A", "alpha")
 	if !ok || mac != "aa:aa:aa:aa:aa:aa" {
 		t.Errorf("v0.5.0 tombstone should still match: got (%q, %v)", mac, ok)
+	}
+}
+
+// TestTombstones_ConcurrentAddDoesNotLose asserts that N parallel
+// addTombstone calls all land on disk. tombstoneMu serializes the
+// read-modify-write today; a refactor that drops the mutex would
+// silently lose entries because each writer's load+marshal loses
+// concurrent peers' updates. Run with -race for the full guarantee.
+func TestTombstones_ConcurrentAddDoesNotLose(t *testing.T) {
+	withStateDir(t, t.TempDir())
+	p := newPluginForTest()
+
+	const N = 50
+	var wg sync.WaitGroup
+	wg.Add(N)
+	for i := 0; i < N; i++ {
+		go func(i int) {
+			defer wg.Done()
+			p.addTombstone(
+				fmt.Sprintf("net-%d", i),
+				"",
+				fmt.Sprintf("aa:bb:cc:dd:%02x:%02x", i>>8, i&0xff),
+				fmt.Sprintf("10.0.0.%d", (i%254)+1),
+				"",
+			)
+		}(i)
+	}
+	wg.Wait()
+
+	ts, err := loadTombstones()
+	if err != nil {
+		t.Fatalf("loadTombstones: %v", err)
+	}
+	if len(ts) != N {
+		t.Errorf("lost tombstones under concurrent adds: got %d, want %d", len(ts), N)
 	}
 }
 

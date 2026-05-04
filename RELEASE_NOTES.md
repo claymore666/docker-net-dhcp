@@ -11,6 +11,21 @@ forks that have been waiting on review.
 
 [upstream]: https://github.com/devplayer0/docker-net-dhcp
 
+## Acknowledged findings (not applicable to this fork)
+
+The third-pass code review of v0.5.3 ran `govulncheck` and surfaced
+two informational findings on `github.com/docker/docker`:
+
+- **GO-2026-4887** — Moby AuthZ plugin bypass on oversized request bodies.
+- **GO-2026-4883** — Moby off-by-one in plugin privilege validation.
+
+Both are **daemon-side** vulnerabilities. This plugin uses
+`github.com/docker/docker` only as a client library — the call sites
+are `NetworkList`, `NetworkInspect`, and `ContainerInspect`. Neither
+vulnerable code path is reachable from the plugin process, so no
+action is required. Recorded here so future audits don't
+re-investigate. (Original report: third-pass code review, 2026-05-04.)
+
 ## v0.5.3
 
 Hotfix for a CPU-burning busy loop and a process-leak in the

@@ -40,7 +40,7 @@ type CreateNetworkRequest struct {
 
 func (p *Plugin) apiCreateNetwork(w http.ResponseWriter, r *http.Request) {
 	var req CreateNetworkRequest
-	if err := util.ParseJSONBody(&req, w, r); err != nil {
+	if err := util.ParseJSONOrErrorResponse(&req, w, r); err != nil {
 		return
 	}
 
@@ -59,7 +59,7 @@ type DeleteNetworkRequest struct {
 
 func (p *Plugin) apiDeleteNetwork(w http.ResponseWriter, r *http.Request) {
 	var req DeleteNetworkRequest
-	if err := util.ParseJSONBody(&req, w, r); err != nil {
+	if err := util.ParseJSONOrErrorResponse(&req, w, r); err != nil {
 		return
 	}
 
@@ -93,7 +93,7 @@ type CreateEndpointResponse struct {
 
 func (p *Plugin) apiCreateEndpoint(w http.ResponseWriter, r *http.Request) {
 	var req CreateEndpointRequest
-	if err := util.ParseJSONBody(&req, w, r); err != nil {
+	if err := util.ParseJSONOrErrorResponse(&req, w, r); err != nil {
 		return
 	}
 
@@ -119,7 +119,7 @@ type InfoResponse struct {
 
 func (p *Plugin) apiEndpointOperInfo(w http.ResponseWriter, r *http.Request) {
 	var req InfoRequest
-	if err := util.ParseJSONBody(&req, w, r); err != nil {
+	if err := util.ParseJSONOrErrorResponse(&req, w, r); err != nil {
 		return
 	}
 
@@ -140,7 +140,7 @@ type DeleteEndpointRequest struct {
 
 func (p *Plugin) apiDeleteEndpoint(w http.ResponseWriter, r *http.Request) {
 	var req DeleteEndpointRequest
-	if err := util.ParseJSONBody(&req, w, r); err != nil {
+	if err := util.ParseJSONOrErrorResponse(&req, w, r); err != nil {
 		return
 	}
 
@@ -167,6 +167,15 @@ type InterfaceName struct {
 	DstPrefix string
 }
 
+// libnetwork's route-type encoding for StaticRoute.RouteType.
+// See https://github.com/moby/libnetwork/blob/master/docs/remote.md
+// — 0 ("via gateway") expects a NextHop; 1 ("on-link / connected")
+// has no next hop.
+const (
+	RouteTypeNextHop = 0
+	RouteTypeOnLink  = 1
+)
+
 // StaticRoute contains static route information
 type StaticRoute struct {
 	Destination string
@@ -185,7 +194,7 @@ type JoinResponse struct {
 
 func (p *Plugin) apiJoin(w http.ResponseWriter, r *http.Request) {
 	var req JoinRequest
-	if err := util.ParseJSONBody(&req, w, r); err != nil {
+	if err := util.ParseJSONOrErrorResponse(&req, w, r); err != nil {
 		return
 	}
 
@@ -206,7 +215,7 @@ type LeaveRequest struct {
 
 func (p *Plugin) apiLeave(w http.ResponseWriter, r *http.Request) {
 	var req LeaveRequest
-	if err := util.ParseJSONBody(&req, w, r); err != nil {
+	if err := util.ParseJSONOrErrorResponse(&req, w, r); err != nil {
 		return
 	}
 
@@ -227,12 +236,13 @@ func (p *Plugin) apiLeave(w http.ResponseWriter, r *http.Request) {
 // expiry. Operators should restart those containers (which produces a
 // fresh CreateEndpoint and gets them back into the persistent map).
 type HealthResponse struct {
-	Healthy         bool    `json:"healthy"`
-	UptimeSeconds   float64 `json:"uptime_seconds"`
-	ActiveEndpoints int     `json:"active_endpoints"`
-	PendingHints    int     `json:"pending_hints"`
-	RecoveredOK     int32   `json:"recovered_ok"`
-	RecoveryFailed  int32   `json:"recovery_failed"`
+	Healthy                bool    `json:"healthy"`
+	UptimeSeconds          float64 `json:"uptime_seconds"`
+	ActiveEndpoints        int     `json:"active_endpoints"`
+	PendingHints           int     `json:"pending_hints"`
+	RecoveredOK            int32   `json:"recovered_ok"`
+	RecoveryFailed         int32   `json:"recovery_failed"`
+	TombstoneWriteFailures int32   `json:"tombstone_write_failures"`
 }
 
 func (p *Plugin) apiHealth(w http.ResponseWriter, r *http.Request) {
@@ -242,12 +252,18 @@ func (p *Plugin) apiHealth(w http.ResponseWriter, r *http.Request) {
 	p.mu.Unlock()
 
 	failed := p.recoveryFailed.Load()
+	tsFails := p.tombstoneWriteFailures.Load()
 	util.JSONResponse(w, HealthResponse{
-		Healthy:         failed == 0,
-		UptimeSeconds:   time.Since(p.startTime).Seconds(),
-		ActiveEndpoints: active,
-		PendingHints:    pending,
-		RecoveredOK:     p.recoveredOK.Load(),
-		RecoveryFailed:  failed,
+		// Healthy is false on any condition that means an operator
+		// should look: a recovery failure means a running container has
+		// no renewal goroutine; a tombstone-write failure means the
+		// next restart of some container will pick a new MAC/IP.
+		Healthy:                failed == 0 && tsFails == 0,
+		UptimeSeconds:          time.Since(p.startTime).Seconds(),
+		ActiveEndpoints:        active,
+		PendingHints:           pending,
+		RecoveredOK:            p.recoveredOK.Load(),
+		RecoveryFailed:         failed,
+		TombstoneWriteFailures: tsFails,
 	}, http.StatusOK)
 }

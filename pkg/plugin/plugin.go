@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"regexp"
 	"strings"
 	"sync"
@@ -49,6 +50,14 @@ const (
 // on first renewal, so the worst case is "first lease appears in the
 // upstream DHCP server's table without a hostname for a few minutes".
 const initialDHCPHostnameLookupTimeout = 2 * time.Second
+
+// recoveryBudget caps the wall-time the plugin spends rebuilding its
+// in-memory state for already-attached endpoints on startup. Each
+// endpoint's recovery does its own DHCP DISCOVER through udhcpc with
+// network-IO timeouts; this is the umbrella above all of them. Beyond
+// it, recovery is abandoned and the affected endpoints surface as
+// recovery_failed on /Plugin.Health.
+const recoveryBudget = 30 * time.Second
 
 // clientIDFromEndpoint derives a stable DHCP option-61 client identifier
 // from a Docker endpoint ID. Docker's endpoint IDs are 64 hex chars
@@ -178,6 +187,13 @@ type Plugin struct {
 	// are now running without renewal.
 	recoveredOK    atomic.Int32
 	recoveryFailed atomic.Int32
+
+	// tombstoneWriteFailures counts saveTombstones failures (disk full,
+	// EROFS) from addTombstone. Reported on /Plugin.Health so operators
+	// can detect a degraded restart-stability window — every failure
+	// here means one container that won't get its previous MAC/IP back
+	// on restart until the disk recovers.
+	tombstoneWriteFailures atomic.Int32
 }
 
 // storeJoinHint records the state collected during CreateEndpoint so
@@ -232,6 +248,27 @@ func (p *Plugin) takeDHCPManager(endpointID string) (*dhcpManager, bool) {
 		delete(p.persistentDHCP, endpointID)
 	}
 	return m, ok
+}
+
+// takeDHCPManagersForNetwork atomically retrieves and removes every
+// DHCP manager whose JoinRequest belongs to networkID. Used by
+// DeleteNetwork to evict managers that libnetwork didn't issue a Leave
+// for — typically the recovery-then-network-removed path: the plugin
+// recovered an endpoint into its registry, the network was deleted
+// while the container's netns was already gone, and no Leave RPC ever
+// arrived. Without this prune, /Plugin.Health's active_endpoints
+// count drifts upward across network upgrade cycles.
+func (p *Plugin) takeDHCPManagersForNetwork(networkID string) []*dhcpManager {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	var out []*dhcpManager
+	for id, m := range p.persistentDHCP {
+		if m.joinReq.NetworkID == networkID {
+			out = append(out, m)
+			delete(p.persistentDHCP, id)
+		}
+	}
+	return out
 }
 
 // endpointFingerprint is the stable identity of a live endpoint we
@@ -323,6 +360,7 @@ func (p *Plugin) addTombstone(networkID, hostname, mac, ipv4, ipv6 string) {
 		DeletedAt:   time.Now(),
 	})
 	if err := saveTombstones(ts); err != nil {
+		p.tombstoneWriteFailures.Add(1)
 		log.WithError(err).Warn("Failed to persist tombstone; container restart may pick a new MAC/IP")
 	}
 }
@@ -494,8 +532,8 @@ func (p *Plugin) recoverOneEndpoint(ctx context.Context, networkID, endpointID, 
 		EndpointID: endpointID,
 	}
 	m := newDHCPManager(p.docker, fakeJoin, opts)
-	m.LastIP = ipv4
-	m.LastIPv6 = ipv6
+	m.setLastIP(false, ipv4)
+	m.setLastIP(true, ipv6)
 	m.MacAddress = mac
 	p.registerDHCPManager(endpointID, m)
 
@@ -582,9 +620,20 @@ func (p *Plugin) initialDHCPHostname(ctx context.Context, networkID, endpointID 
 	ctx, cancel := context.WithTimeout(ctx, initialDHCPHostnameLookupTimeout)
 	defer cancel()
 
+	// Each Docker call inside the poll body is bounded much tighter
+	// than the outer 2s budget so a single hung NetworkInspect /
+	// ContainerInspect doesn't burn the whole window. The Docker client
+	// itself has its own 2s per-request timeout (NewPlugin), but that's
+	// the same as our entire poll budget — without an inner cap, one
+	// stuck call effectively turns the 100ms retry interval into a 2s
+	// retry interval. Cap the inner ctx at the poll interval.
+	const dockerCallTimeout = 200 * time.Millisecond
+
 	var hostname string
 	_ = util.AwaitCondition(ctx, func() (bool, error) {
-		dockerNet, err := p.docker.NetworkInspect(ctx, networkID, dNetwork.InspectOptions{})
+		inner, innerCancel := context.WithTimeout(ctx, dockerCallTimeout)
+		defer innerCancel()
+		dockerNet, err := p.docker.NetworkInspect(inner, networkID, dNetwork.InspectOptions{})
 		if err != nil {
 			// Don't propagate the error — we want to keep retrying
 			// while the timeout has time. The caller treats an empty
@@ -600,7 +649,7 @@ func (p *Plugin) initialDHCPHostname(ctx context.Context, networkID, endpointID 
 			if strings.HasPrefix(ctrID, "ep-") {
 				return false, nil
 			}
-			ctr, err := p.docker.ContainerInspect(ctx, ctrID)
+			ctr, err := p.docker.ContainerInspect(inner, ctrID)
 			if err != nil {
 				return false, nil
 			}
@@ -659,21 +708,29 @@ func NewPlugin(awaitTimeout time.Duration) (*Plugin, error) {
 		Handler: handlers.CustomLoggingHandler(nil, mux, util.WriteAccessLog),
 	}
 
-	// Kick off endpoint recovery in the background. We don't block
-	// plugin startup on it: libnetwork RPCs for fresh networks should
-	// be served immediately. Recovery serialises against those via the
-	// Plugin mutex on the maps.
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
+	// Run endpoint recovery synchronously before NewPlugin returns
+	// (and thus before Listen accepts the first RPC). Doing it on a
+	// background goroutine — the previous behaviour — opened a window
+	// where a fresh CreateEndpoint could race recovery's Start for the
+	// same endpoint: the map check is mutex-protected, but Start runs
+	// outside the mutex. recoveryBudget bounds plugin-enable latency.
+	{
+		ctx, cancel := context.WithTimeout(context.Background(), recoveryBudget)
 		p.recoverEndpoints(ctx)
-	}()
+		cancel()
+	}
 
 	return &p, nil
 }
 
 // Listen starts the plugin server
 func (p *Plugin) Listen(bindSock string) error {
+	// Best-effort: remove a stale socket file from a prior run so
+	// net.Listen doesn't EADDRINUSE on it. Production plugin runtimes
+	// recreate the workdir between starts, so this is a no-op there;
+	// it matters for local / test runs where the file lingers.
+	_ = os.Remove(bindSock)
+
 	l, err := net.Listen("unix", bindSock)
 	if err != nil {
 		return err

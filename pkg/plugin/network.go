@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"sync"
 
 	dNetwork "github.com/docker/docker/api/types/network"
 	"github.com/mitchellh/mapstructure"
@@ -177,12 +178,40 @@ func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 	return nil
 }
 
-// DeleteNetwork "deletes" a DHCP network (does nothing, the bridge is managed by the user)
+// DeleteNetwork "deletes" a DHCP network (the bridge is managed by the
+// user). We also evict any persistent DHCP managers attached to this
+// network: libnetwork doesn't issue Leave for endpoints in stopped
+// containers when the network is removed, so without this prune they
+// linger as ghost entries in /Plugin.Health.active_endpoints. Stop is
+// safe to call against a manager whose underlying netns is gone — it
+// just unblocks the udhcpc-events loop and returns; udhcpc itself may
+// have already self-exited because its netns vanished.
 func (p *Plugin) DeleteNetwork(r DeleteNetworkRequest) error {
 	if err := deleteOptions(r.NetworkID); err != nil {
 		log.WithError(err).WithField("network", r.NetworkID).
 			Warn("Failed to remove persisted options; harmless leftover")
 	}
+
+	orphaned := p.takeDHCPManagersForNetwork(r.NetworkID)
+	if len(orphaned) > 0 {
+		log.WithFields(log.Fields{
+			"network": r.NetworkID,
+			"count":   len(orphaned),
+		}).Info("Stopping orphaned DHCP managers on network removal")
+		var wg sync.WaitGroup
+		for _, m := range orphaned {
+			wg.Add(1)
+			go func(m *dhcpManager) {
+				defer wg.Done()
+				if err := m.Stop(); err != nil {
+					log.WithError(err).WithField("network", r.NetworkID).
+						Warn("Orphaned manager stop returned error; manager already removed from registry")
+				}
+			}(m)
+		}
+		wg.Wait()
+	}
+
 	log.WithField("network", r.NetworkID).Info("Network deleted")
 	return nil
 }
@@ -533,13 +562,17 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 	p.rememberEndpoint(r.EndpointID, endpointFingerprint{MAC: mac, IPv4: v4IP, IPv6: v6IP, Hostname: hostname})
 
 	log.WithFields(log.Fields{
+		"network":  shortID(r.NetworkID),
+		"endpoint": shortID(r.EndpointID),
+	}).Info("Endpoint created")
+	log.WithFields(log.Fields{
 		"network":     shortID(r.NetworkID),
 		"endpoint":    shortID(r.EndpointID),
 		"mac_address": mac,
 		"ip":          res.Interface.Address,
 		"ipv6":        res.Interface.AddressIPv6,
 		"gateway":     gateway,
-	}).Info("Endpoint created")
+	}).Debug("Endpoint details")
 
 	return res, nil
 }
@@ -687,12 +720,12 @@ func (p *Plugin) addRoutes(opts *DHCPNetworkOptions, v6 bool, bridge netlink.Lin
 		staticRoute := &StaticRoute{
 			Destination: route.Dst.String(),
 			// Default to an on-link route
-			RouteType: 1,
+			RouteType: RouteTypeOnLink,
 		}
 		res.StaticRoutes = append(res.StaticRoutes, staticRoute)
 
 		if route.Gw != nil {
-			staticRoute.RouteType = 0
+			staticRoute.RouteType = RouteTypeNextHop
 			staticRoute.NextHop = route.Gw.String()
 
 			log.
@@ -802,8 +835,8 @@ func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) 
 	// (success or failure), so it's safe to call against a manager whose
 	// Start is still in flight.
 	m := newDHCPManager(p.docker, r, opts)
-	m.LastIP = hint.IPv4
-	m.LastIPv6 = hint.IPv6
+	m.setLastIP(false, hint.IPv4)
+	m.setLastIP(true, hint.IPv6)
 	m.MacAddress = hint.MacAddress
 	p.registerDHCPManager(r.EndpointID, m)
 
@@ -846,16 +879,19 @@ func (p *Plugin) Leave(ctx context.Context, r LeaveRequest) error {
 	// Refresh the endpoint fingerprint with the most recent v4/v6 IPs
 	// the persistent client saw, *whether or not Stop succeeded*. Stop
 	// drains the event goroutine before returning even on error, so
-	// manager.LastIP* are stable to read here. Doing this on the error
-	// path too means a wedged-udhcpc shutdown still produces a tombstone
-	// with the latest known lease (W-4) — otherwise DeleteEndpoint
-	// would lay down a tombstone with the stale initial-DISCOVER IPs.
+	// the read here is sequenced after every renew that's going to
+	// happen — but go through ipMu anyway so the race detector doesn't
+	// have to reason through `select`. Doing this on the error path too
+	// means a wedged-udhcpc shutdown still produces a tombstone with
+	// the latest known lease (W-4) — otherwise DeleteEndpoint would
+	// lay down a tombstone with the stale initial-DISCOVER IPs.
+	v4Addr, v6Addr := manager.lastIPs()
 	v4, v6 := "", ""
-	if manager.LastIP != nil && manager.LastIP.IP != nil {
-		v4 = manager.LastIP.IP.String()
+	if v4Addr != nil && v4Addr.IP != nil {
+		v4 = v4Addr.IP.String()
 	}
-	if manager.LastIPv6 != nil && manager.LastIPv6.IP != nil {
-		v6 = manager.LastIPv6.IP.String()
+	if v6Addr != nil && v6Addr.IP != nil {
+		v6 = v6Addr.IP.String()
 	}
 	p.updateEndpointIPs(r.EndpointID, v4, v6)
 
