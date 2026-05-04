@@ -1,0 +1,54 @@
+name: Integration
+
+# Live integration tests against the plugin. Run on the self-hosted
+# `gpu1` runner because they need privileges (CAP_NET_ADMIN, mount/
+# netns ops, bind UDP/67) and a real DHCP server (dnsmasq) — neither
+# is feasible on free GitHub-hosted runners.
+#
+# SECURITY: this workflow runs as root on the maintainer's hardware.
+# Repo Settings → Actions → General → "Fork pull request workflows
+# from outside collaborators" is set to "Require approval for all
+# outside collaborators" so external PRs sit in pending until manually
+# approved.
+on:
+  push:
+    branches:
+      - main
+      - dev
+  pull_request:
+    branches:
+      - main
+      - dev
+
+permissions:
+  contents: read
+
+jobs:
+  integration:
+    runs-on: [self-hosted, gpu1]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      # Best-effort: clean any orphans from a previous run that
+      # panicked mid-setup. Safe to run even on a clean state.
+      - name: Cleanup orphans from previous runs
+        run: bash test/integration/cleanup-orphans.sh
+
+      # Verify the plugin is installed + enabled before we run tests.
+      # The plugin install is a one-time operator action on the runner
+      # (we deliberately don't reinstall per-PR — that would mutate
+      # daemon-global state and conflict with smoke testing on the
+      # same host).
+      - name: Verify plugin enabled
+        run: |
+          if ! docker plugin ls --format '{{.Name}}: enabled={{.Enabled}}' \
+              | grep -q '^ghcr.io/claymore666/docker-net-dhcp:golang: enabled=true$'; then
+            echo "Plugin ghcr.io/claymore666/docker-net-dhcp:golang is not enabled."
+            echo "Operator action required: docker plugin install + enable on the runner."
+            docker plugin ls
+            exit 1
+          fi
+
+      - name: Run integration tests
+        run: make integration-test
