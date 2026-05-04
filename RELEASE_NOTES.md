@@ -11,6 +11,51 @@ forks that have been waiting on review.
 
 [upstream]: https://github.com/devplayer0/docker-net-dhcp
 
+## v0.5.3
+
+Hotfix for a CPU-burning busy loop and a process-leak in the
+persistent-DHCP path. Operators on v0.5.0 – v0.5.2 should upgrade.
+
+### Closed udhcpc event channel turned the consumer into a CPU spinner
+
+The persistent-DHCP consumer goroutine in `dhcpManager.setupClient`
+selected on `<-events` without checking `ok`. When udhcpc exited on
+its own (server NAK on a renew, parent NIC vanished, container netns
+torn down), the scanner goroutine in `udhcpc.Start` closed `events`,
+and from that point every iteration of the consumer's `select` took
+the now-always-ready `<-events` branch and got a zero-value
+`Event{}`. The switch matched no case, the loop iterated, and the
+goroutine pegged a CPU thread forever — silently, with no log
+output. Observed in the field as ~70 % of one host core sustained
+for 1 d 14 h with seven hot Go runtime threads.
+
+The consumer now uses the comma-ok form, logs the unexpected close,
+reaps the udhcpc child via `client.Wait` (see below), and posts to
+`errChan` so a concurrent `Stop` doesn't deadlock waiting on a
+goroutine that's already gone.
+
+### Zombie udhcpc child when the process exited unexpectedly
+
+`cmd.Wait` was only ever called from `Finish`, which assumed `Stop`
+would drive teardown. When udhcpc died on its own, nobody called
+`Wait`, so the kernel kept the child as a zombie until plugin
+shutdown. `udhcpc.Finish` is now split into a signal phase plus a
+new `Wait(ctx)` method, and the consumer calls `Wait` from the
+events-closed branch above to reap.
+
+### `Await*` helper goroutines leaked on context cancel
+
+`util.AwaitCondition`, `AwaitNetNS`, `AwaitLinkByIndex`, and
+`AwaitContainerInspect` ran their poll in a side goroutine that
+didn't observe `ctx`: when the outer `select` returned via
+`<-ctx.Done()`, the poller kept calling its expensive operation
+(Docker `NetworkInspect`, `netns.GetFromPath`, `LinkByIndex`,
+`ContainerInspect`) every 100 ms forever, and blocked permanently on
+the unbuffered result channel. Each leaked poller meant ~10
+syscalls/s, accumulating across plugin restarts and per-endpoint
+recovery attempts. All four helpers are now synchronous loops with
+`select` on `ctx.Done()` between iterations.
+
 ## v0.5.2
 
 Quick-wins cleanup pass on warning-level findings from the v0.5.0

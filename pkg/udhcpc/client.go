@@ -227,6 +227,14 @@ func (c *DHCPClient) Finish(ctx context.Context) error {
 		}
 	}
 
+	return c.Wait(ctx)
+}
+
+// Wait reaps the udhcpc(6) child without signalling it. Use this when the
+// process has already exited on its own (e.g. the consumer noticed the
+// event pipe close): if cmd.Wait is never called the kernel keeps the
+// child as a zombie. Bounded by ctx so a stuck Wait can't block teardown.
+func (c *DHCPClient) Wait(ctx context.Context) error {
 	// Buffered: on ctx.Done we Kill and return without reading errChan,
 	// so the Wait goroutine must not block forever trying to send. With
 	// the buffer, Wait completes and the goroutine exits, no zombie.

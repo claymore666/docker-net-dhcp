@@ -6,37 +6,27 @@ import (
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
-	log "github.com/sirupsen/logrus"
 )
 
 const (
 	OptionsKeyGeneric = "com.docker.network.generic"
 )
 
+// AwaitContainerInspect polls docker.ContainerInspect until it succeeds,
+// ctx is cancelled, or interval-paced retries exhaust. Synchronous for
+// the same reason as AwaitNetNS — the previous async form leaked a
+// poller goroutine on ctx-cancel that kept hitting the Docker API forever.
 func AwaitContainerInspect(ctx context.Context, docker *client.Client, id string, interval time.Duration) (container.InspectResponse, error) {
-	var err error
-	ctrChan := make(chan container.InspectResponse)
-	go func() {
-		for {
-			var ctr container.InspectResponse
-			ctr, err = docker.ContainerInspect(ctx, id)
-			if err == nil {
-				ctrChan <- ctr
-				return
-			}
-
-			time.Sleep(interval)
-		}
-	}()
-
 	var dummy container.InspectResponse
-	select {
-	case link := <-ctrChan:
-		return link, nil
-	case <-ctx.Done():
-		if err != nil {
-			log.WithError(err).WithField("id", id).Error("Failed to await container by ID")
+	for {
+		ctr, err := docker.ContainerInspect(ctx, id)
+		if err == nil {
+			return ctr, nil
 		}
-		return dummy, ctx.Err()
+		select {
+		case <-ctx.Done():
+			return dummy, ctx.Err()
+		case <-time.After(interval):
+		}
 	}
 }

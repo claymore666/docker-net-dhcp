@@ -196,7 +196,39 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 	go func() {
 		for {
 			select {
-			case event := <-events:
+			case event, ok := <-events:
+				if !ok {
+					// udhcpc exited on its own (NAK, parent NIC vanished,
+					// container netns torn down out from under us, etc.).
+					// The scanner goroutine in udhcpc.Start closes events
+					// when its read pipe hits EOF. Without this branch,
+					// `<-events` on a closed channel returns the zero
+					// Event{} every iteration, the switch matches nothing,
+					// and we burn a CPU thread forever.
+					log.
+						WithFields(m.logFields(v6)).
+						Warn("udhcpc event stream closed; client process exited")
+
+					// Reap the child so it doesn't linger as a zombie:
+					// cmd.Wait must be called exactly once per process,
+					// and Stop's Finish path won't run if the consumer
+					// returned first.
+					reapCtx, reapCancel := context.WithTimeout(context.Background(), 5*time.Second)
+					if err := client.Wait(reapCtx); err != nil {
+						log.
+							WithError(err).
+							WithFields(m.logFields(v6)).
+							Debug("udhcpc reap returned error")
+					}
+					reapCancel()
+
+					// Unblock Stop() if it's waiting on errChan. The
+					// channel is buffered=1 so this never blocks; if
+					// nobody's reading yet, the value sits until Stop
+					// calls close(stopChan) and reads it.
+					errChan <- nil
+					return
+				}
 				switch event.Type {
 				// TODO: We can't really allow the IP in the container to be deleted, it'll delete some of our previously
 				// copied routes. Should this be handled somehow?
