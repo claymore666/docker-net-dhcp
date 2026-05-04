@@ -40,7 +40,7 @@ type CreateNetworkRequest struct {
 
 func (p *Plugin) apiCreateNetwork(w http.ResponseWriter, r *http.Request) {
 	var req CreateNetworkRequest
-	if err := util.ParseJSONBody(&req, w, r); err != nil {
+	if err := util.ParseJSONOrErrorResponse(&req, w, r); err != nil {
 		return
 	}
 
@@ -59,7 +59,7 @@ type DeleteNetworkRequest struct {
 
 func (p *Plugin) apiDeleteNetwork(w http.ResponseWriter, r *http.Request) {
 	var req DeleteNetworkRequest
-	if err := util.ParseJSONBody(&req, w, r); err != nil {
+	if err := util.ParseJSONOrErrorResponse(&req, w, r); err != nil {
 		return
 	}
 
@@ -93,7 +93,7 @@ type CreateEndpointResponse struct {
 
 func (p *Plugin) apiCreateEndpoint(w http.ResponseWriter, r *http.Request) {
 	var req CreateEndpointRequest
-	if err := util.ParseJSONBody(&req, w, r); err != nil {
+	if err := util.ParseJSONOrErrorResponse(&req, w, r); err != nil {
 		return
 	}
 
@@ -119,7 +119,7 @@ type InfoResponse struct {
 
 func (p *Plugin) apiEndpointOperInfo(w http.ResponseWriter, r *http.Request) {
 	var req InfoRequest
-	if err := util.ParseJSONBody(&req, w, r); err != nil {
+	if err := util.ParseJSONOrErrorResponse(&req, w, r); err != nil {
 		return
 	}
 
@@ -140,7 +140,7 @@ type DeleteEndpointRequest struct {
 
 func (p *Plugin) apiDeleteEndpoint(w http.ResponseWriter, r *http.Request) {
 	var req DeleteEndpointRequest
-	if err := util.ParseJSONBody(&req, w, r); err != nil {
+	if err := util.ParseJSONOrErrorResponse(&req, w, r); err != nil {
 		return
 	}
 
@@ -185,7 +185,7 @@ type JoinResponse struct {
 
 func (p *Plugin) apiJoin(w http.ResponseWriter, r *http.Request) {
 	var req JoinRequest
-	if err := util.ParseJSONBody(&req, w, r); err != nil {
+	if err := util.ParseJSONOrErrorResponse(&req, w, r); err != nil {
 		return
 	}
 
@@ -206,7 +206,7 @@ type LeaveRequest struct {
 
 func (p *Plugin) apiLeave(w http.ResponseWriter, r *http.Request) {
 	var req LeaveRequest
-	if err := util.ParseJSONBody(&req, w, r); err != nil {
+	if err := util.ParseJSONOrErrorResponse(&req, w, r); err != nil {
 		return
 	}
 
