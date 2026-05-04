@@ -26,6 +26,134 @@ vulnerable code path is reachable from the plugin process, so no
 action is required. Recorded here so future audits don't
 re-investigate. (Original report: third-pass code review, 2026-05-04.)
 
+## v0.6.0
+
+Bundle of code-review-driven fixes plus a unit-test coverage bump
+(20.2% → 30.7%). Smoke-tested end-to-end on a live integration host:
+golden path, multi-container, `docker inspect` truthfulness, LAN
+reachability (gateway, peer, internet), `/Plugin.Health`, daemon
+restart no-hang.
+
+### Concurrency hazards eliminated (W-1, W-5, W-11)
+
+- `recoverEndpoints` now runs synchronously inside `NewPlugin` before
+  the listener accepts traffic, so a libnetwork RPC arriving during
+  recovery can't race with the in-progress map writes (W-1).
+- `dhcpManager.lastIP` / `lastIPv6` are now under a per-manager
+  `ipMu`; the udhcpc-renew goroutine and Leave's reader were
+  previously coordinating only via channel-drain, which the race
+  detector couldn't always verify (W-5).
+- New `TestTombstones_ConcurrentAddDoesNotLose` regression-tests the
+  `tombstoneMu`-serialised read-modify-write path (W-11).
+
+### Lifecycle stability (W-2, #44)
+
+- `addTombstone` save failures now bump a
+  `tombstoneWriteFailures` atomic counter, exposed on
+  `/Plugin.Health.tombstone_write_failures` and folded into the
+  top-level `healthy` boolean. Operators can detect a degraded
+  restart-stability window (disk full, EROFS) instead of finding out
+  on the next container restart (W-2).
+- `DeleteNetwork` now runs `Stop()` on every DHCP manager attached to
+  the disappearing network, fixing the recovery-then-network-removed
+  leak where managers stayed in `persistentDHCP` forever (#44).
+
+### Operational ergonomics (N-3, N-7, #30)
+
+- `cmd/net-dhcp/main.go` reopens the log file on `SIGHUP` so
+  `logrotate`-style external rotation works without restarting the
+  plugin (N-3).
+- `log.Fatal` calls replaced with a `fatalCleanup` helper that closes
+  the log file before `os.Exit(1)`, preventing torn final writes
+  during emergency exits (N-7).
+- `Listen` does a best-effort `os.Remove(bindSock)` before
+  `net.Listen` to clear stale socket files left over from unclean
+  shutdowns (#30).
+
+### HTTP error mapping widened (N-9)
+
+`ErrToStatus` now returns:
+
+- `502 Bad Gateway` for `ErrNoLease` (upstream DHCP server didn't
+  respond — not our fault, not the caller's).
+- `503 Service Unavailable` for `ErrNoContainer` / `ErrNoSandbox`
+  (Docker is in a transient teardown/up state — retry later).
+- `409 Conflict` for `ErrNoHint` / `ErrNotVEth` (stage state
+  mismatch — request arrived in the wrong order).
+
+Libnetwork lumps all 5xx the same so this is purely a clarity win for
+direct API consumers, logs, and dashboards.
+
+### API hygiene (N-8)
+
+`util.ParseJSONBody` renamed to `ParseJSONOrErrorResponse`. The verbose
+name makes the response-writing side-effect impossible to overlook —
+a future caller writing `if err := ParseJSONBody(&req, w, r); err
+!= nil { JSONErrResponse(w, err, ...); return }` would have
+double-written headers; the new name doesn't read as a pure parse, so
+callers reach for the right pattern.
+
+### Dockerfile hardening (N-11, I-1, I-2, I-10)
+
+- Alpine base pinned to `3.20.3` by digest
+  (`sha256:d9e853e87e55…`), not the moving `:latest` or `:3.20` tag
+  (I-1).
+- `apk add` packages pinned by version: `busybox-extras=1.36.1-r31`,
+  `iproute2=6.9.0-r0` (N-11).
+- `CAP_SYS_PTRACE` removed from `config.json` — the plugin enters
+  container netnses via `/proc/<pid>/ns/net` symlink resolution
+  through `setns(2)`, which only needs `CAP_SYS_ADMIN`. The smoke
+  test confirmed the plugin still works without the cap (I-2).
+- `govulncheck` findings GO-2026-4887 / GO-2026-4883 documented in
+  the "Acknowledged findings" preamble as not reachable from
+  client-only `docker.Client` usage (I-10).
+
+### Code-review polish
+
+- INFO logs no longer leak MAC/IP at every endpoint event; that
+  information is now emitted at DEBUG. INFO retains the
+  `network`/`endpoint` (shortened) identifiers operators actually
+  need to correlate (I-3).
+- `dhcpClientReapTimeout` / `dhcpClientFinishTimeout` /
+  `recoveryBudget` now have named constants instead of bare
+  `5 * time.Second` literals scattered through the manager code
+  (I-6).
+- `StaticRoute.RouteType` integer literals (`0` / `1`) replaced with
+  `RouteTypeNextHop` / `RouteTypeOnLink` constants from
+  `pkg/plugin/endpoints.go` (I-8).
+- `docs/parent-attached-modes.md` documents the Compose `external:
+  true; name: <network>` merge gotcha that silently drops the network
+  attachment when a base + override file declare the same network
+  with the second one omitting `external: true` (#45).
+
+### Test coverage 20.2% → 30.7%
+
+Three rounds of unit-test additions:
+
+- `pkg/util` 10.3% → 63.8% (`JSONResponse`, `JSONErrResponse`,
+  `ParseJSONOrErrorResponse`, `AwaitCondition`, `WriteAccessLog`).
+- `pkg/plugin` 20.1% → 28.7% (HTTP wrappers, `decodeOpts` edge
+  cases, tombstone failure paths, `shortID` / `newChildLink`
+  invariants, `updateJoinHint` read-modify-write, `dhcpManager`
+  helpers, `parentAttachedEndpointOperInfo`, `newDHCPManager`
+  constructor invariants).
+- `pkg/udhcpc` 27.9% → 33.7% (RequestedIP carve-outs, vendor-id
+  v4-only, binary selection, handler-script default/override, v6
+  hostname FQDN encoding, always-on `-f`/`-i` flags).
+
+The remaining ~70% is integration code (`CreateEndpoint`, `Join`,
+`Leave`, `recoverEndpoints`, `dhcpManager.{Start,Stop}`,
+parent-attached link wiring, `udhcpc.{Start,Finish,Wait,GetIP}`) that
+needs a real netns + parent NIC + DHCP server. Tracked under #56 for
+v0.7.0.
+
+### Known limitation (fixed in v0.6.1)
+
+Tombstone TTL was 10s, shorter than typical `systemctl restart
+docker` window (15–30s). MAC/IP could change across daemon restart
+even with `--restart=always`. v0.6.1 bumps the TTL to 60s. The
+`docker restart <ctr>` contract was always covered.
+
 ## v0.5.3
 
 Hotfix for a CPU-burning busy loop and a process-leak in the
