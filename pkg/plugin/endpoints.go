@@ -227,12 +227,13 @@ func (p *Plugin) apiLeave(w http.ResponseWriter, r *http.Request) {
 // expiry. Operators should restart those containers (which produces a
 // fresh CreateEndpoint and gets them back into the persistent map).
 type HealthResponse struct {
-	Healthy         bool    `json:"healthy"`
-	UptimeSeconds   float64 `json:"uptime_seconds"`
-	ActiveEndpoints int     `json:"active_endpoints"`
-	PendingHints    int     `json:"pending_hints"`
-	RecoveredOK     int32   `json:"recovered_ok"`
-	RecoveryFailed  int32   `json:"recovery_failed"`
+	Healthy                bool    `json:"healthy"`
+	UptimeSeconds          float64 `json:"uptime_seconds"`
+	ActiveEndpoints        int     `json:"active_endpoints"`
+	PendingHints           int     `json:"pending_hints"`
+	RecoveredOK            int32   `json:"recovered_ok"`
+	RecoveryFailed         int32   `json:"recovery_failed"`
+	TombstoneWriteFailures int32   `json:"tombstone_write_failures"`
 }
 
 func (p *Plugin) apiHealth(w http.ResponseWriter, r *http.Request) {
@@ -242,12 +243,18 @@ func (p *Plugin) apiHealth(w http.ResponseWriter, r *http.Request) {
 	p.mu.Unlock()
 
 	failed := p.recoveryFailed.Load()
+	tsFails := p.tombstoneWriteFailures.Load()
 	util.JSONResponse(w, HealthResponse{
-		Healthy:         failed == 0,
-		UptimeSeconds:   time.Since(p.startTime).Seconds(),
-		ActiveEndpoints: active,
-		PendingHints:    pending,
-		RecoveredOK:     p.recoveredOK.Load(),
-		RecoveryFailed:  failed,
+		// Healthy is false on any condition that means an operator
+		// should look: a recovery failure means a running container has
+		// no renewal goroutine; a tombstone-write failure means the
+		// next restart of some container will pick a new MAC/IP.
+		Healthy:                failed == 0 && tsFails == 0,
+		UptimeSeconds:          time.Since(p.startTime).Seconds(),
+		ActiveEndpoints:        active,
+		PendingHints:           pending,
+		RecoveredOK:            p.recoveredOK.Load(),
+		RecoveryFailed:         failed,
+		TombstoneWriteFailures: tsFails,
 	}, http.StatusOK)
 }

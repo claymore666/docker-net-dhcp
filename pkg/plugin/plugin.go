@@ -178,6 +178,13 @@ type Plugin struct {
 	// are now running without renewal.
 	recoveredOK    atomic.Int32
 	recoveryFailed atomic.Int32
+
+	// tombstoneWriteFailures counts saveTombstones failures (disk full,
+	// EROFS) from addTombstone. Reported on /Plugin.Health so operators
+	// can detect a degraded restart-stability window — every failure
+	// here means one container that won't get its previous MAC/IP back
+	// on restart until the disk recovers.
+	tombstoneWriteFailures atomic.Int32
 }
 
 // storeJoinHint records the state collected during CreateEndpoint so
@@ -232,6 +239,27 @@ func (p *Plugin) takeDHCPManager(endpointID string) (*dhcpManager, bool) {
 		delete(p.persistentDHCP, endpointID)
 	}
 	return m, ok
+}
+
+// takeDHCPManagersForNetwork atomically retrieves and removes every
+// DHCP manager whose JoinRequest belongs to networkID. Used by
+// DeleteNetwork to evict managers that libnetwork didn't issue a Leave
+// for — typically the recovery-then-network-removed path: the plugin
+// recovered an endpoint into its registry, the network was deleted
+// while the container's netns was already gone, and no Leave RPC ever
+// arrived. Without this prune, /Plugin.Health's active_endpoints
+// count drifts upward across network upgrade cycles.
+func (p *Plugin) takeDHCPManagersForNetwork(networkID string) []*dhcpManager {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	var out []*dhcpManager
+	for id, m := range p.persistentDHCP {
+		if m.joinReq.NetworkID == networkID {
+			out = append(out, m)
+			delete(p.persistentDHCP, id)
+		}
+	}
+	return out
 }
 
 // endpointFingerprint is the stable identity of a live endpoint we
@@ -323,6 +351,7 @@ func (p *Plugin) addTombstone(networkID, hostname, mac, ipv4, ipv6 string) {
 		DeletedAt:   time.Now(),
 	})
 	if err := saveTombstones(ts); err != nil {
+		p.tombstoneWriteFailures.Add(1)
 		log.WithError(err).Warn("Failed to persist tombstone; container restart may pick a new MAC/IP")
 	}
 }

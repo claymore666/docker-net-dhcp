@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"sync"
 
 	dNetwork "github.com/docker/docker/api/types/network"
 	"github.com/mitchellh/mapstructure"
@@ -177,12 +178,40 @@ func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 	return nil
 }
 
-// DeleteNetwork "deletes" a DHCP network (does nothing, the bridge is managed by the user)
+// DeleteNetwork "deletes" a DHCP network (the bridge is managed by the
+// user). We also evict any persistent DHCP managers attached to this
+// network: libnetwork doesn't issue Leave for endpoints in stopped
+// containers when the network is removed, so without this prune they
+// linger as ghost entries in /Plugin.Health.active_endpoints. Stop is
+// safe to call against a manager whose underlying netns is gone — it
+// just unblocks the udhcpc-events loop and returns; udhcpc itself may
+// have already self-exited because its netns vanished.
 func (p *Plugin) DeleteNetwork(r DeleteNetworkRequest) error {
 	if err := deleteOptions(r.NetworkID); err != nil {
 		log.WithError(err).WithField("network", r.NetworkID).
 			Warn("Failed to remove persisted options; harmless leftover")
 	}
+
+	orphaned := p.takeDHCPManagersForNetwork(r.NetworkID)
+	if len(orphaned) > 0 {
+		log.WithFields(log.Fields{
+			"network": r.NetworkID,
+			"count":   len(orphaned),
+		}).Info("Stopping orphaned DHCP managers on network removal")
+		var wg sync.WaitGroup
+		for _, m := range orphaned {
+			wg.Add(1)
+			go func(m *dhcpManager) {
+				defer wg.Done()
+				if err := m.Stop(); err != nil {
+					log.WithError(err).WithField("network", r.NetworkID).
+						Warn("Orphaned manager stop returned error; manager already removed from registry")
+				}
+			}(m)
+		}
+		wg.Wait()
+	}
+
 	log.WithField("network", r.NetworkID).Info("Network deleted")
 	return nil
 }
