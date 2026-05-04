@@ -131,10 +131,10 @@ func (f *Fixture) startDnsmasq() error {
 	f.dnsmasq = exec.Command("/usr/sbin/dnsmasq",
 		"--no-daemon",
 		"--conf-file=/dev/null",
-		"--port=0",                                            // disable DNS
-		"--interface="+DhcpVeth,                               // DHCP only on this interface
-		"--bind-interfaces",                                   // don't open sockets on others
-		"--except-interface=lo",                               // belt + braces
+		"--port=0",              // disable DNS
+		"--interface="+DhcpVeth, // DHCP only on this interface
+		"--bind-interfaces",     // don't open sockets on others
+		"--except-interface=lo", // belt + braces
 		"--dhcp-range="+DHCPPoolStart+","+DHCPPoolEnd+","+LeaseTime,
 		"--dhcp-leasefile="+f.leaseFile,
 		"--dhcp-no-override", // keep the leasefile clean for parsing

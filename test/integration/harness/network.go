@@ -37,8 +37,8 @@ func CreateNetwork(t *testing.T, ctx context.Context, name, mode string, extraOp
 	}
 
 	res, err := cli.NetworkCreate(ctx, name, network.CreateOptions{
-		Driver: DriverName,
-		IPAM:   &network.IPAM{Driver: "null"},
+		Driver:  DriverName,
+		IPAM:    &network.IPAM{Driver: "null"},
 		Options: opts,
 	})
 	if err != nil {
