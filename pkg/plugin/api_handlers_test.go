@@ -384,4 +384,3 @@ func TestApiCreateNetwork_BridgeAndParentRejected(t *testing.T) {
 		t.Errorf("body: got %q want substring 'option does not apply'", msg)
 	}
 }
-
