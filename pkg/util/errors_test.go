@@ -24,12 +24,16 @@ func TestErrToStatus(t *testing.T) {
 		{"ParentDown", ErrParentDown, http.StatusBadRequest},
 		{"ModeMismatch", ErrModeMismatch, http.StatusBadRequest},
 
-		// Internal errors fall through to 500
-		{"NoLease", ErrNoLease, http.StatusInternalServerError},
-		{"NoHint", ErrNoHint, http.StatusInternalServerError},
-		{"NotVEth", ErrNotVEth, http.StatusInternalServerError},
-		{"NoContainer", ErrNoContainer, http.StatusInternalServerError},
-		{"NoSandbox", ErrNoSandbox, http.StatusInternalServerError},
+		// Upstream-misbehaviour: DHCP server didn't reply.
+		{"NoLease", ErrNoLease, http.StatusBadGateway},
+
+		// Transient Docker state — retryable.
+		{"NoContainer", ErrNoContainer, http.StatusServiceUnavailable},
+		{"NoSandbox", ErrNoSandbox, http.StatusServiceUnavailable},
+
+		// Stage state mismatch — request arrived in the wrong order.
+		{"NoHint", ErrNoHint, http.StatusConflict},
+		{"NotVEth", ErrNotVEth, http.StatusConflict},
 
 		// Anything we don't know about is a 500
 		{"unknown", errors.New("something else"), http.StatusInternalServerError},
@@ -51,5 +55,15 @@ func TestErrToStatus_Wrapped(t *testing.T) {
 	wrapped := fmt.Errorf("validation context: %w", ErrParentRequired)
 	if got := ErrToStatus(wrapped); got != http.StatusBadRequest {
 		t.Errorf("wrapped ErrParentRequired should map to 400, got %d", got)
+	}
+	// Also exercise the new non-400 mappings under wrapping.
+	if got := ErrToStatus(fmt.Errorf("upstream: %w", ErrNoLease)); got != http.StatusBadGateway {
+		t.Errorf("wrapped ErrNoLease should map to 502, got %d", got)
+	}
+	if got := ErrToStatus(fmt.Errorf("teardown race: %w", ErrNoSandbox)); got != http.StatusServiceUnavailable {
+		t.Errorf("wrapped ErrNoSandbox should map to 503, got %d", got)
+	}
+	if got := ErrToStatus(fmt.Errorf("missing: %w", ErrNoHint)); got != http.StatusConflict {
+		t.Errorf("wrapped ErrNoHint should map to 409, got %d", got)
 	}
 }

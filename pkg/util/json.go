@@ -46,8 +46,21 @@ func JSONErrResponse(w http.ResponseWriter, err error, statusCode int) {
 	}
 }
 
-// ParseJSONBody attempts to parse the request body as JSON
-func ParseJSONBody(v interface{}, w http.ResponseWriter, r *http.Request) error {
+// ParseJSONOrErrorResponse decodes the request body as JSON into v.
+// On failure it ALSO writes a 400 JSON error response to w; the
+// caller is expected to early-return on a non-nil error and not
+// touch w again. The verbose name is deliberate: the prior name
+// (ParseJSONBody) read as a pure parse, but the function quietly
+// took over response writing — a future caller writing the
+// obvious-looking
+//
+//	if err := ParseJSONBody(&req, w, r); err != nil {
+//	    JSONErrResponse(w, err, ...); return
+//	}
+//
+// would double-write headers. This name makes the response-writing
+// side-effect impossible to overlook at the call site.
+func ParseJSONOrErrorResponse(v interface{}, w http.ResponseWriter, r *http.Request) error {
 	d := json.NewDecoder(r.Body)
 	d.DisallowUnknownFields()
 	if err := d.Decode(v); err != nil {
