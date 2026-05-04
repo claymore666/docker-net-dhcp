@@ -30,6 +30,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
       # Best-effort: clean any orphans from a previous run that
       # panicked mid-setup. Safe to run even on a clean state.
       - name: Cleanup orphans from previous runs
