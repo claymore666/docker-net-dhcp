@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"sync"
 	"time"
 
 	dNetwork "github.com/docker/docker/api/types/network"
@@ -31,8 +32,15 @@ type dhcpManager struct {
 	joinReq JoinRequest
 	opts    DHCPNetworkOptions
 
-	LastIP   *netlink.Addr
-	LastIPv6 *netlink.Addr
+	// ipMu guards lastIP / lastIPv6. Writes happen from the udhcpc
+	// event goroutine (renew); reads happen from Leave after Stop has
+	// drained that goroutine. The drain establishes happens-before in
+	// practice, but the race detector doesn't always see the channel
+	// pairing through `select`, and a future change to stop priority
+	// could turn this into a real race. Cheap to make explicit.
+	ipMu     sync.Mutex
+	lastIP   *netlink.Addr
+	lastIPv6 *netlink.Addr
 	// MacAddress is set in macvlan mode so we can re-find the link inside
 	// the container netns after Docker has moved and renamed it. Empty in
 	// bridge mode.
@@ -77,10 +85,29 @@ func (m *dhcpManager) logFields(v6 bool) log.Fields {
 	}
 }
 
-func (m *dhcpManager) renew(v6 bool, info udhcpc.Info) error {
-	lastIP := m.LastIP
+// lastIPs returns the most recently observed v4/v6 leases under ipMu.
+func (m *dhcpManager) lastIPs() (*netlink.Addr, *netlink.Addr) {
+	m.ipMu.Lock()
+	defer m.ipMu.Unlock()
+	return m.lastIP, m.lastIPv6
+}
+
+// setLastIP records a freshly-bound address under ipMu.
+func (m *dhcpManager) setLastIP(v6 bool, addr *netlink.Addr) {
+	m.ipMu.Lock()
+	defer m.ipMu.Unlock()
 	if v6 {
-		lastIP = m.LastIPv6
+		m.lastIPv6 = addr
+	} else {
+		m.lastIP = addr
+	}
+}
+
+func (m *dhcpManager) renew(v6 bool, info udhcpc.Info) error {
+	v4, v6Last := m.lastIPs()
+	lastIP := v4
+	if v6 {
+		lastIP = v6Last
 	}
 
 	ip, err := netlink.ParseAddr(info.IP)
@@ -102,11 +129,7 @@ func (m *dhcpManager) renew(v6 bool, info udhcpc.Info) error {
 	// Without this the manager keeps reporting whatever the very
 	// first CreateEndpoint DISCOVER produced, even if udhcpc has
 	// moved to a different lease since.
-	if v6 {
-		m.LastIPv6 = ip
-	} else {
-		m.LastIP = ip
-	}
+	m.setLastIP(v6, ip)
 
 	// Skip gateway-from-DHCP renewal handling when the operator pinned a
 	// gateway override on the network — leave their override in place.
@@ -163,13 +186,15 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 	// On plugin-restart recovery the persistent client should ask the
 	// DHCP server for the IP the container is already using, instead
 	// of doing a fresh DISCOVER that might return something different.
-	// In the normal CreateEndpoint -> Join path m.LastIP / m.LastIPv6
+	// In the normal CreateEndpoint -> Join path lastIP / lastIPv6
 	// already point at the IP we just acquired; passing it as -r is a
 	// no-op (server still ACKs the same address). On recovery it's
 	// what makes the lease "sticky".
 	requestedIP := ""
-	if !v6 && m.LastIP != nil && m.LastIP.IP != nil {
-		requestedIP = m.LastIP.IP.String()
+	if !v6 {
+		if v4Addr, _ := m.lastIPs(); v4Addr != nil && v4Addr.IP != nil {
+			requestedIP = v4Addr.IP.String()
+		}
 	}
 	client, err := udhcpc.NewDHCPClient(m.ctrLink.Attrs().Name, &udhcpc.DHCPClientOptions{
 		Hostname:    m.hostname,

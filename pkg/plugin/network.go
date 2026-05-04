@@ -802,8 +802,8 @@ func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) 
 	// (success or failure), so it's safe to call against a manager whose
 	// Start is still in flight.
 	m := newDHCPManager(p.docker, r, opts)
-	m.LastIP = hint.IPv4
-	m.LastIPv6 = hint.IPv6
+	m.setLastIP(false, hint.IPv4)
+	m.setLastIP(true, hint.IPv6)
 	m.MacAddress = hint.MacAddress
 	p.registerDHCPManager(r.EndpointID, m)
 
@@ -846,16 +846,19 @@ func (p *Plugin) Leave(ctx context.Context, r LeaveRequest) error {
 	// Refresh the endpoint fingerprint with the most recent v4/v6 IPs
 	// the persistent client saw, *whether or not Stop succeeded*. Stop
 	// drains the event goroutine before returning even on error, so
-	// manager.LastIP* are stable to read here. Doing this on the error
-	// path too means a wedged-udhcpc shutdown still produces a tombstone
-	// with the latest known lease (W-4) — otherwise DeleteEndpoint
-	// would lay down a tombstone with the stale initial-DISCOVER IPs.
+	// the read here is sequenced after every renew that's going to
+	// happen — but go through ipMu anyway so the race detector doesn't
+	// have to reason through `select`. Doing this on the error path too
+	// means a wedged-udhcpc shutdown still produces a tombstone with
+	// the latest known lease (W-4) — otherwise DeleteEndpoint would
+	// lay down a tombstone with the stale initial-DISCOVER IPs.
+	v4Addr, v6Addr := manager.lastIPs()
 	v4, v6 := "", ""
-	if manager.LastIP != nil && manager.LastIP.IP != nil {
-		v4 = manager.LastIP.IP.String()
+	if v4Addr != nil && v4Addr.IP != nil {
+		v4 = v4Addr.IP.String()
 	}
-	if manager.LastIPv6 != nil && manager.LastIPv6.IP != nil {
-		v6 = manager.LastIPv6.IP.String()
+	if v6Addr != nil && v6Addr.IP != nil {
+		v6 = v6Addr.IP.String()
 	}
 	p.updateEndpointIPs(r.EndpointID, v4, v6)
 
