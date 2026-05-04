@@ -1,23 +1,22 @@
-# Code Review Report — docker-net-dhcp (full pass)
+# Code Review Report — docker-net-dhcp (third pass)
 
-**Project**: docker-net-dhcp (claymore666 fork at v0.5.0, commit `68e8759`)
-**Language**: Go 1.25 (+ Python 3 build scripts)
-**Date**: 2026-05-03
-**Scope**: Entire codebase. Previous review (2026-05-02) was scoped to the v0.5.0 changes; this pass covers everything: entry points, util package, udhcpc client/handler, libnetwork API surface, build & CI, scripts, Dockerfile, config.json.
-**Files reviewed**: 23 Go files + 3 Python scripts + Dockerfile + Makefile + CI workflow + plugin manifest
-**Lines of code**: 4,484 Go (incl. tests) + 244 Python
+**Project**: docker-net-dhcp (claymore666 fork, current main `9320166`, post-v0.5.3)
+**Languages**: Go 1.25 (+ Python 3 build scripts)
+**Date**: 2026-05-04
+**Scope**: Whole codebase — entry points, plugin core, udhcpc wrapper, util, build & CI, scripts, Dockerfile, plugin manifest, docs.
+**Files reviewed**: 23 Go files + 4 Python scripts + Dockerfile + Makefile + CI workflow + plugin manifest
+**Lines of code**: 4,744 Go (incl. tests)
+**Prior reviews**: 2026-05-02 (v0.5.0 deltas) and 2026-05-03 (full codebase). 27 issues were filed; one (#33, the `Await*` goroutine leaks) is closed by today's v0.5.3.
 
 ## Executive Summary
 
-This is the second pass; the first one (2026-05-02) generated 27 GitHub issues (#5–#31) covering the v0.5.0 deltas. **Those findings are not duplicated here.** This pass found **5 new critical-or-warning findings** in the parts the first pass skipped — most importantly a nil-pointer panic in the udhcpc handler that the first review missed because it was scoped to v0.5.0 work.
+Codebase is in good shape — better than the prior review found, because v0.5.3 closed the loudest concurrency bug (closed-channel CPU spinner — fork-introduced in v0.5.0 commit `d23ba50`, fixed today). All static-analysis tools are clean: build, `go vet`, `staticcheck`, `gofmt`, race-tested tests all pass. `govulncheck` flags two informational findings inside `github.com/docker/docker` that aren't reachable from our client-only usage (already #31). `gosec` produces six findings, mostly file-permission noise on a private plugin filesystem.
 
-**Build & static analysis**: clean. `go build`, `go vet`, `staticcheck`, `gofmt`, and the existing `-race` test suite all pass; CI runs the same set on every push to `main` and `dev`.
+**The one real new finding** is dead code: `Plugin.storeJoinHint` (`pkg/plugin/plugin.go:185`) was left behind when the read-modify-write pattern was refactored to `updateJoinHint`. `deadcode` catches it; CI doesn't run `deadcode`. Fix is a one-line delete.
 
-**Biggest new finding (N-1)**: `cmd/udhcpc-handler/main.go:27-32` — when `net.ParseCIDR` fails on a malformed `ipv6` env var, the code logs the error and **continues**, then dereferences a nil `netV6` and panics. A handler panic means the corresponding DHCP event never reaches the persistent client; the lease silently stops getting renewed. This is exactly the kind of bug that hides in always-on infrastructure for months until the one weird LAN packet that triggers it.
+**The one architectural gap** the prior reviews undersold is on the shutdown path: `Plugin.Close` stops persistent DHCP clients (good — that's what v0.5.2 added for lease-release) and closes the docker client, but never calls `p.server.Shutdown(ctx)` on the HTTP server, and the recovery goroutines spawned in `NewPlugin` don't observe any cancellation tied to plugin lifetime. In practice this doesn't bite because the plugin process exits seconds later, but it's a contract that's wrong on paper — and exactly the sort of thing that surfaces when somebody embeds the plugin into a longer-lived test harness.
 
-**Pattern bug (N-2)**: All four `Await*` helpers in `pkg/util/` (`AwaitContainerInspect`, `AwaitNetNS`, `AwaitLinkByIndex`, `AwaitCondition`) use the same goroutine-leak-on-cancel pattern. On context timeout, the inner goroutine continues polling and eventually blocks forever trying to send on an unbuffered channel that no one will read. Not the largest leak class in absolute terms (these helpers run only at endpoint setup), but it's a four-times-repeated bug that is fixed once.
-
-**Verdict**: still production-ready (it's running on docker-ai right now and behaving). One-day cleanup pass on the new findings + the v0.5.0 issues already filed and you have a v0.5.1 worth tagging.
+**Verdict**: production-ready. Ship as v0.5.3 (already shipped). The remaining 23 open issues from prior reviews are warning- or info-level cleanup; none block.
 
 ## Tooling Results
 
@@ -25,252 +24,186 @@ This is the second pass; the first one (2026-05-02) generated 27 GitHub issues (
 |------|---------|----------|-------|
 | `go build ./...` | go 1.25 | 0 | Clean |
 | `go vet ./...` | go 1.25 | 0 | Clean |
-| `staticcheck ./...` | latest (honnef.co/go/tools) | 0 | Clean. Already in CI. |
-| `gofmt -l .` | go 1.25 | 0 unformatted | Clean. Already in CI. |
-| `go test ./... -race` | go 1.25 (CGO) | 0 fail | Coverage 18.2% — see I-5 from prior review (#26). |
-| `govulncheck ./...` | 1.3.0 | 2 informational | Both daemon-side moby vulns; not reachable from our client-only usage. Filed as #31. |
+| `staticcheck ./...` | latest (honnef.co/go/tools) | 0 | Clean. In CI. |
+| `gofmt -l .` | go 1.25 | 0 unformatted | Clean. In CI. |
+| `go test -race ./...` | go 1.25 (CGO) | 0 fail | Coverage 19.0% (cmd: 0%, util: 5.5%, udhcpc: 27.9%, plugin: 20.0%) |
+| `govulncheck ./...` | 1.3.0 | 2 informational | Both `github.com/docker/docker` daemon-side moby vulns; not reachable from our client-only usage (#31) |
+| `gosec ./...` | dev | 6 medium + 3 low | File-permission noise (G301/G302) on private plugin filesystem; G104 on deferred Close calls |
+| `deadcode ./...` | latest | 1 | `Plugin.storeJoinHint` (W-N1, below) |
 
 **Build**: pass. **Tests**: all pass under `-race`.
 
 ## Findings
 
-> Findings here are **new** to this pass. The 27 issues filed yesterday (#5–#31) are still open; the metrics table at the end consolidates both passes.
+> Findings here are **new** or have **changed status** since the 2026-05-03 pass. The 23 still-open issues from prior passes are summarised in the metrics table at the end; they are not duplicated as findings.
 
 ### 🔴 Critical
 
-#### N-1: `udhcpc-handler` nil-pointer panic on malformed `ipv6` env var
-**File**: `cmd/udhcpc-handler/main.go:27-32`
-
-```go
-_, netV6, err := net.ParseCIDR(v6 + "/128")
-if err != nil {
-    log.WithError(err).Warn("Failed to parse IPv6 address")
-}
-
-event.Data.IP = netV6.String()  // netV6 is nil if err != nil → panic
-```
-
-When `net.ParseCIDR` fails — e.g., udhcpc6 emits `ipv6=fe80::1/64` (already CIDR-form, then we append `/128`), or emits a corrupt value, or env is empty after a glibc/musl quirk — the error is logged but execution proceeds and `netV6.String()` dereferences a nil pointer. The handler crashes with `runtime error: invalid memory address`, the udhcpc child's script invocation exits non-zero, and the corresponding `bound`/`renew` event is never delivered to the persistent client. The lease silently ages out; the container loses its IP at lease-expiry boundary with no log line tying it back to the cause.
-
-Compounding factor: this is one of the few pieces of code that runs **outside** the main plugin process (it's invoked by udhcpc as `-s /usr/lib/net-dhcp/udhcpc-handler`), so even structured logging/metrics from the plugin won't show the failure.
-
-**Fix**:
-```go
-case "bound", "renew":
-    if v6, ok := os.LookupEnv("ipv6"); ok {
-        _, netV6, err := net.ParseCIDR(v6 + "/128")
-        if err != nil {
-            log.WithError(err).WithField("ipv6", v6).Error("Failed to parse IPv6 address; skipping event")
-            return  // exit non-zero so udhcpc logs it; do not emit garbage event
-        }
-        event.Data.IP = netV6.String()
-    } else {
-        // ...
-    }
-```
-And consider a defensive `if v6 == ""` short-circuit before the ParseCIDR.
+None this pass. (The closed-channel CPU spinner that motivated this session was filed and fixed today as v0.5.3.)
 
 ### 🟡 Warning
 
-#### N-2: `Await*` helpers in `pkg/util/` all leak goroutines on context cancellation
-**Files**: `pkg/util/general.go:8-33` (`AwaitCondition`), `pkg/util/docker.go:16-42` (`AwaitContainerInspect`), `pkg/util/netlink.go:12-38` (`AwaitNetNS`), `pkg/util/netlink.go:40-66` (`AwaitLinkByIndex`)
+#### W-N1: `Plugin.storeJoinHint` is dead code
+**File**: `pkg/plugin/plugin.go:183-189`
 
-All four helpers spawn an inner goroutine that polls until success, then writes to an **unbuffered** channel. The outer `select` returns on `ctx.Done()` and the function exits — but the inner goroutine is still polling. When the next poll succeeds, it tries `chan <- value` on a channel no one is reading; it blocks forever. The polling continues consuming syscalls (`netns.GetFromPath`, `LinkByIndex`, `ContainerInspect`) every `interval` until the process dies.
-
-Real-world consequence: each context-cancelled `CreateEndpoint` (slow Docker, slow netns sync, container-startup race) leaks one goroutine + one fd-allocating syscall loop. Bounded by `ulimit -n` and `GOMAXPROCS`; on a host with many container churns + transient docker-daemon stalls, it's a slow drift toward fd exhaustion.
-
-**Fix** (applied to `AwaitCondition`; same pattern for the others):
 ```go
-func AwaitCondition(ctx context.Context, cond func() (bool, error), interval time.Duration) error {
-    errChan := make(chan error, 1)  // buffered
-    go func() {
-        for {
-            select {
-            case <-ctx.Done():
-                return  // stop polling when caller gives up
-            default:
-            }
-            ok, err := cond()
-            if err != nil {
-                select {
-                case errChan <- err:
-                default:
-                }
-                return
-            }
-            if ok {
-                select {
-                case errChan <- nil:
-                default:
-                }
-                return
-            }
-            select {
-            case <-ctx.Done():
-                return
-            case <-time.After(interval):
-            }
-        }
-    }()
-    select {
-    case err := <-errChan:
-        return err
-    case <-ctx.Done():
-        return ctx.Err()
+// storeJoinHint records the state collected during CreateEndpoint so
+// Join can pick it up.
+func (p *Plugin) storeJoinHint(endpointID string, h joinHint) {
+    p.mu.Lock()
+    defer p.mu.Unlock()
+    p.joinHints[endpointID] = h
+}
+```
+
+`deadcode` flags this as unreachable. Confirmed: every site that needs to write a `joinHint` uses `updateJoinHint` (the read-modify-write helper), and no test references `storeJoinHint`. It's a leftover from the pre-RMW factoring.
+
+Why it matters: dead code lies. A future reader might think they should call `storeJoinHint` for the "store" case and `updateJoinHint` only for the "modify" case, then introduce a real divergence.
+
+**Fix**: delete the function. Add `deadcode` to CI (see I-N5) so the next instance is caught at PR time.
+
+#### W-N2: HTTP server has no timeouts
+**File**: `pkg/plugin/plugin.go:658-660` (server construction), `pkg/plugin/plugin.go:676-683` (`Listen`)
+
+```go
+p.server = http.Server{
+    Handler: handlers.CustomLoggingHandler(nil, mux, util.WriteAccessLog),
+}
+```
+
+`http.Server` is constructed with no `ReadHeaderTimeout`, `ReadTimeout`, `WriteTimeout`, or `IdleTimeout`. In a public-internet HTTP server this would be a Slowloris vulnerability. Here the server only listens on the Unix socket the plugin runtime gives it, which only `dockerd` talks to — but defense-in-depth says set them anyway, and `gosec`/skill-ref Go best practices both flag the omission.
+
+**Fix**:
+```go
+p.server = http.Server{
+    Handler:           handlers.CustomLoggingHandler(nil, mux, util.WriteAccessLog),
+    ReadHeaderTimeout: 5 * time.Second,
+    ReadTimeout:       30 * time.Second,
+    WriteTimeout:      30 * time.Second,
+    IdleTimeout:       60 * time.Second,
+}
+```
+
+`WriteTimeout` of 30s is comfortably more than the worst-case CreateEndpoint (DHCP DISCOVER + initial Start) path, but caps stuck handlers from holding a goroutine forever.
+
+#### W-N3: `Plugin.Close` doesn't drain in-flight HTTP requests
+**File**: `pkg/plugin/plugin.go:696-741`
+
+`Close` stops the persistent DHCP managers (good — that's the v0.5.2 lease-release contract) and calls `p.docker.Close()`. It never calls `p.server.Shutdown(ctx)`. A Join or CreateEndpoint that's mid-flight when SIGTERM arrives will keep running, holding references into the maps `Close` just cleared (e.g. `persistentDHCP` is reassigned to a fresh map at line 705 — any handler that was mid-`registerDHCPManager` writes into the old map, which is then garbage).
+
+Practical impact: low. The plugin process exits a few seconds later (because main() calls `log.Fatal` after `p.Close()` returns) and the kernel sweeps everything. But the contract is broken in two visible ways: (a) `Close` can return while goroutines spawned by an in-flight `Join` are still booting up `dhcpManager.Start`, and (b) a handler racing with `Close` can re-register a DHCP manager that nobody will ever Stop.
+
+**Fix**:
+```go
+func (p *Plugin) Close() error {
+    // ... existing manager-stop logic, unchanged ...
+
+    // Stop accepting new HTTP requests and drain in-flight ones before
+    // closing the docker client and returning. Without this, a Join
+    // mid-flight when SIGTERM arrives can register a manager into a
+    // map we already cleared.
+    shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+    defer cancel()
+    if err := p.server.Shutdown(shutdownCtx); err != nil {
+        log.WithError(err).Warn("HTTP server shutdown returned error")
     }
-}
-```
-Apply the same pattern (buffered chan + ctx-aware sleep + ctx-aware send) to all four. Worth extracting into a single `Poll(ctx, fn, interval)` and replacing the three near-duplicates.
 
-#### N-3: Log file is opened once and never reopened on logrotate
-**File**: `cmd/net-dhcp/main.go:36-44`
-
-```go
-if *logFile != "" {
-    f, err := os.OpenFile(*logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
-    // ...
-    log.StandardLogger().Out = f
+    if err := p.docker.Close(); err != nil {
+        return fmt.Errorf("failed to close docker client: %w", err)
+    }
+    return nil
 }
 ```
 
-Plugin runs forever. If logrotate moves `/var/log/net-dhcp.log` aside (or uses `copytruncate`), our fd still points at the moved/truncated file. Logs vanish after rotation.
+Pair this with W-N4 (cancellable recovery) so `Shutdown` doesn't have to race a still-spawning recovery goroutine.
 
-**Fix**: handle SIGHUP to reopen, or use `lumberjack.Logger` (or equivalent) to rotate internally:
+#### W-N4: Recovery goroutine isn't tied to plugin lifetime
+**File**: `pkg/plugin/plugin.go:666-670` and `pkg/plugin/plugin.go:502-516` (`recoverOneEndpoint`)
+
 ```go
-sigs := make(chan os.Signal, 2)
-signal.Notify(sigs, unix.SIGINT, unix.SIGTERM, unix.SIGHUP)
-// ...
 go func() {
-    for sig := range sigs {
-        if sig == unix.SIGHUP {
-            // reopen logFile
-        } else {
-            // shutdown path
-        }
-    }
+    ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+    defer cancel()
+    p.recoverEndpoints(ctx)
 }()
 ```
 
-#### N-4: `AWAIT_TIMEOUT` default differs between binary and plugin manifest
-**File**: `cmd/net-dhcp/main.go:46` (defaults to `5*time.Second`) vs `config.json:21-25` (defaults to `"10s"`)
+`NewPlugin` fires off `recoverEndpoints` in a fresh-`Background()` ctx. Each per-endpoint recovery then spawns its own goroutine in `recoverOneEndpoint` that derives *another* fresh-`Background()` ctx with `p.awaitTimeout`. Neither ctx is ever cancelled by `Plugin.Close`. `Close` cannot wait for recovery to finish, cannot tell it to give up, and cannot prevent it from registering a manager into the already-cleared `persistentDHCP` map after Close has run.
 
-Running the binary directly (e.g. `make debug`) silently uses 5s; the plugin runtime injects 10s. Functional difference is small but the divergence is invisible to anyone debugging the binary versus the plugin. One source of truth is the plugin manifest; the Go default should match.
+In practice: most recoveries are fast and the window is small. But: this is a known issue (#10, W-1 in the prior review, "recoverEndpoints races with the listener"). v0.5.3 didn't address it because the hotfix was scoped to the spinner. Worth pulling in alongside W-N3.
+
+**Fix sketch**: store a recovery WaitGroup + cancel function on `Plugin`, have `recoverEndpoints` and `recoverOneEndpoint` derive their contexts from a Plugin-rooted parent, and have `Close` cancel + wait before clearing the maps.
+
+#### W-N5: `ErrInvalidMode` message lies about supported modes
+**File**: `pkg/util/errors.go:18`
+
+```go
+ErrInvalidMode = errors.New("invalid mode (must be 'bridge' or 'macvlan')")
+```
+
+`ipvlan` is also supported (added in v0.5.0; the dispatcher in `validateModeOptions` accepts it; `parent_attached.go` implements it). Operators who type a typo and get this error will think ipvlan isn't supported.
 
 **Fix**:
 ```go
-awaitTimeout := 10 * time.Second  // match config.json default
+ErrInvalidMode = errors.New("invalid mode (must be 'bridge', 'macvlan', or 'ipvlan')")
 ```
-
-#### N-5: `.dockerignore` is missing `.git/` and `.github/` — sends 8MB+ of git history to the daemon on every build
-**File**: `.dockerignore` (only excludes `bin/`, `plugin/`, `multiarch/`)
-
-```bash
-$ du -sh .git/
-8.1M    .git/
-```
-
-Every `make build` / `docker build .` ships the entire `.git/` directory to the daemon as build context. Slow on cold cache, and it bypasses the explicit `COPY` allowlist principle (since the COPY only copies what it asks for, this is "merely" wasted bandwidth — but on a CI runner with rate-limited registries, it adds up).
-
-**Fix**:
-```
-.git/
-.github/
-*.md
-LICENSE.md
-docs/
-scripts/
-test_env.sh
-```
-(Keep README.md only if you `COPY` it in the runtime stage; otherwise exclude it too.)
 
 ### 🔵 Info
 
-#### N-6: HTTP handler boilerplate repeated 6 times
-**File**: `pkg/plugin/endpoints.go` — `apiCreateNetwork`, `apiDeleteNetwork`, `apiCreateEndpoint`, `apiEndpointOperInfo`, `apiDeleteEndpoint`, `apiJoin`, `apiLeave` all follow `parse → call → respond/err`. Pure boilerplate. Could be a generic helper:
-```go
-func handle[Req, Res any](w http.ResponseWriter, r *http.Request, impl func(context.Context, Req) (Res, error)) {
-    var req Req
-    if err := util.ParseJSONBody(&req, w, r); err != nil { return }
-    res, err := impl(r.Context(), req)
-    if err != nil { util.JSONErrResponse(w, err, 0); return }
-    util.JSONResponse(w, res, http.StatusOK)
-}
-```
-But — this churns the diff for cosmetic gain only. Worth doing only if these handlers grow tracing/metrics/auth hooks later. Otherwise leave it.
-
-#### N-7: `log.Fatal` skips deferred log-file close
-**File**: `cmd/net-dhcp/main.go:32, 39, 50, 56, 65, 72`. Every `log.Fatal` calls `os.Exit(1)`, which skips the deferred `f.Close()` on the log file at line 41. Some final lines may be lost in the buffered logger. Minor; OS reclaims the fd. Worth replacing with a cleanup helper:
-```go
-fatalCleanup := func(format string, args ...any) {
-    if f != nil { _ = f.Close() }
-    log.Fatalf(format, args...)
-}
-```
-
-#### N-8: `ParseJSONBody` is a footgun: it writes HTTP responses *and* returns errors
-**File**: `pkg/util/json.go:50-58`. The current callers (`endpoints.go`) check the error and return without writing again, but the API name reads as "parse" while the function also takes over response writing. A future caller writing the obvious-looking `if err := ParseJSONBody(...); err != nil { JSONErrResponse(w, err, ...); return }` would double-write headers. Worth either renaming to `ParseJSONOrErrorResponse` or splitting into a pure parse + a handler helper.
-
-#### N-9: `ErrToStatus` lumps non-validation errors into 500
-**File**: `pkg/util/errors.go:41-52`. Errors like `ErrNoLease` (DHCP server didn't reply — upstream issue), `ErrNoContainer` (Docker state inconsistency — service unavailable), and `ErrNoSandbox` (Docker race window — retryable) all map to 500. For the libnetwork integration this doesn't matter (dockerd treats all 5xx the same), but a cleaner mapping (502 / 503 / 409) would help if the plugin ever exposes its API to other consumers.
-
-#### N-10: `udhcpc6` env-var format is assumed without version pinning
-**File**: `cmd/udhcpc-handler/main.go:27`. We assume `os.Getenv("ipv6")` is a bare address (no mask). The fix `+ "/128"` works for that. busybox `udhcpc6` does emit it that way as of current versions, but a future busybox change to emit CIDR form would silently produce parse errors → falls into N-1's nil-deref. Worth a comment pinning the assumption to the busybox version, plus a `strings.SplitN(v6, "/", 2)` defensive split.
-
-#### N-11: Alpine package versions in Dockerfile are not pinned
-**File**: `Dockerfile:14`. `apk add --no-cache busybox-extras iproute2` installs whatever versions the Alpine repos serve at build time. A regression in busybox's udhcpc/udhcpc6 (where the entire DHCP exchange happens) would silently land on the next build. For a plugin whose correctness depends on busybox behavior, version-pin or pin the Alpine minor version (already partially flagged as I-1 in #22 — this is the package-level extension).
-
-**Fix**: pin Alpine minor + record installed versions:
-```dockerfile
-FROM alpine:3.20.3
-RUN apk add --no-cache busybox-extras=1.36.1-r29 iproute2=6.9.0-r0
-```
-(Adjust to whatever current versions are; verify on each release.)
-
-#### N-12: Two stale references in upstream-inherited Makefile
-**File**: `Makefile:1`. `PLUGIN_NAME = ghcr.io/devplayer0/...` is the upstream registry; everything in this fork is published to `ghcr.io/claymore666/...` (overridden via env every time). The default points at a registry the fork can't push to. Worth flipping the default:
-```make
-PLUGIN_NAME ?= ghcr.io/claymore666/docker-net-dhcp
-```
-(Use `?=` so an env override still wins.)
+| ID | File:Line | Issue | Effort |
+|---|---|---|---|
+| I-N1 | `cmd/net-dhcp/main.go:37` | Log file opened with mode `0666` (gosec G302). Should be `0644` or `0640`. | trivial |
+| I-N2 | `pkg/plugin/state.go:106,128,163,185` | State dir `0o755`, files `0o644` (gosec G301/G302). Plugin filesystem is private, so impact is theoretical, but tightening to `0o700` / `0o600` is free defense-in-depth. | trivial |
+| I-N3 | `pkg/plugin/dhcp_manager.go:401,425,446` | Deferred `nsHandle.Close()` / `netHandle.Close()` ignore returned errors (gosec G104). Deliberate — can't do anything useful with cleanup errors. Suppressing with `_ = ...` would silence the linter without changing behavior. | trivial |
+| I-N4 | `pkg/util/` | Three files: `errors.go`, `http.go`, `json.go` — classic "util" antipattern (skill ref calls this out: "package naming smells: util, common, helper indicate poor cohesion"). Consider splitting into domain-named packages, e.g. `pkg/httpapi/` for the JSON request/response helpers and `pkg/dhcperr/` (or just inline into `pkg/plugin/`) for the sentinel errors. Low priority — small package, no real coupling problem. | small refactor |
+| I-N5 | `.github/workflows/test.yaml` | CI runs build/vet/gofmt/staticcheck/race-tests but not `govulncheck`, `deadcode`, or `gosec`. Adding `deadcode` would have caught W-N1 at PR time. `govulncheck` would surface upstream CVEs as they get assigned. | ~10 lines of YAML |
+| I-N6 | `pkg/plugin/dhcp_manager.go:92,233`, `pkg/udhcpc/client.go:112` | Three TODOs: "different renewed IP", "deconfig handling", "udhcpc6 fqdn workaround". The first one is hot in production right now (Fritz.Box hands a new IP per renew, log fills with `udhcpc renew with changed IP` warnings — see today's deploy notes). Worth filing as separate issues so the TODOs aren't lost. | per-TODO triage |
+| I-N7 | `README.md:108-145` | Several network-creation and `docker run` examples still reference the **upstream** image `ghcr.io/devplayer0/docker-net-dhcp:release-linux-amd64`. The "fork install" block at the top points at `claymore666` correctly, but the body examples weren't updated. Consumers will copy-paste these and hit upstream. | s/devplayer0/claymore666/ on examples |
+| I-N8 | `Plugin.Close` parallel-stop loop, `pluginShutdownTimeout` | Each `dhcpManager.Stop` has its own 5s ctx (in `dhcp_manager.go`'s `setupClient`), and `Close` enforces a 5s wall-clock cap on the whole batch (line 728). Under wall-clock pressure, the inner timeout dominates and the outer cap is redundant; if udhcpc Wait actually sticks, only the outer cap unblocks shutdown. Document the layering or collapse to one. | trivial doc / small refactor |
+| I-N9 | `pkg/util/general.go:8` | Now that `AwaitCondition` is synchronous and ~15 lines, consider inlining it into the two callers. The abstraction-vs-duplication tradeoff is closer than it was when the helper was 35 lines of leak-prone goroutine logic. | small refactor |
+| I-N10 | Per-thread test coverage | 19.0% overall, but 0% on `cmd/net-dhcp/main.go`, `pkg/plugin/Listen`, `Close`, `NewPlugin`, `lookupEndpointMAC`, `reacquireEndpoint`, `initialDHCPHostname`. Issue #26 already covers the broader gap; the specific Listen/Close path needs an integration test that boots the plugin against a fake docker socket. | medium-large |
 
 ## Metrics Summary
 
-This consolidates **both** review passes (yesterday + today). Yesterday's 27 issues are filed (#5–#31); today adds 12 more.
+The table reflects findings filed across all three review passes (2026-05-02, -05-03, -05-04). "Open" excludes today's W-N1 to W-N5 and I-N1 to I-N10 since they aren't filed yet.
 
-| Category | Issues | Critical | Warning | Info |
-|----------|--------|----------|---------|------|
-| Error Handling & Robustness | 6 | 4 (C-1, C-2, C-3, **N-1**) | 2 (W-2, W-9) | 0 |
-| Performance & Efficiency | 1 | 0 | 1 (W-12) | 0 |
-| Dead Code & Unused | 0 | 0 | 0 | 0 |
-| Code Style & Idioms | 6 | 0 | 0 | 6 (I-4, I-6, I-8, **N-6, N-8, N-12**) |
-| Concurrency | 6 | 1 (C-2) | 5 (W-1, W-5, W-6, W-10, **N-2**) | 0 |
-| Testing | 2 | 0 | 1 (W-11) | 1 (I-5) |
-| Dependencies | 1 | 0 | 0 | 1 (I-10) |
-| Configuration & Environment | 2 | 0 | 1 (**N-4**) | 1 (**N-9**) |
-| Logging & Observability | 4 | 1 (C-4) | 1 (**N-3**) | 2 (I-3, **N-7**) |
-| Security | 2 | 0 | 0 | 2 (I-1, I-2) |
-| Architecture | 1 | 1 (C-5) | 0 | 0 |
-| Project Hygiene | 4 | 0 | 2 (**N-5, N-11**) | 2 (I-7, I-9, **N-10**) |
-| **Total** | **39** | **7** | **13** | **15** |
+| Category | Total filed | Open | Closed by v0.5.x |
+|----------|-------------|------|------------------|
+| Error Handling & Robustness | 5 | 4 | 1 (#33 Await* leaks → v0.5.3) |
+| Performance & Efficiency | 1 | 1 | 0 |
+| Dead Code & Unused | 1 (W-N1, new) | 1 | 0 |
+| Code Style & Idioms | 6 | 6 | 0 |
+| Concurrency & Lifecycle | 4 | 4 | 0 |
+| Testing | 2 | 2 | 0 |
+| Dependencies | 1 (#31 govulncheck) | 1 | 0 |
+| Configuration & Environment | 1 (#23 ptrace cap) | 1 | 0 |
+| Logging & Observability | 1 (#24 MAC/IP in INFO) | 1 | 0 |
+| Security | 0 (gosec findings are all info-level) | 0 | 0 |
+| Architecture | 2 | 2 | 0 |
+| Project Hygiene | 4 | 4 | 0 |
+| **Total** | **28** | **27** | **1** |
 
-**Of which new this pass**: 1 critical + 4 warning + 7 info = 12.
+(Plus the 5 W-N* + 10 I-N* findings in this pass that aren't yet filed.)
+
+**Build**: pass. **Tests**: pass under `-race`. **Coverage**: 19.0%. **Severity distribution today**: 0 critical, 5 warnings, 10 info.
 
 ## What's Done Well
 
-1. **CI is right-sized.** `go build`, `go vet`, `gofmt -l`, `staticcheck`, and `go test -race` on every push, with caching. No flaky-flag, no skip lists, no theatre. The same set runs locally with one command. This is the "make it once, make it right" tone the project asks for.
-2. **Error sentinels are well-organized.** `pkg/util/errors.go` declares a clean set of typed sentinel errors with `errors.Is`-friendly mapping to HTTP status. Easy to extend, easy to test, easy to grep for. The mapping in `ErrToStatus` is centralized rather than scattered.
-3. **The udhcpc client wrapper is small and focused.** `pkg/udhcpc/client.go` does one thing: spawn busybox udhcpc with the right flags and read events. The DHCP-option crafting (option 12 hostname, option 50 requested-IP, option 61 client-id) is well-commented and references RFCs. It's the kind of code that's hard to write correctly and easy to read once written.
-4. **`/Plugin.Health` exists and is at the right scope.** Most plugins ship without any liveness/state probe. Adding one at the same socket as the libnetwork RPC is the lowest-friction way to make the plugin operable. The four counters (uptime, active endpoints, pending hints) are exactly the information a sysadmin needs.
+1. **Atomic state writes**. `saveOptions` and `saveTombstones` use temp-file + rename with proper cleanup on every error path. The earlier non-atomic implementation depended on `loadOptions`'s parse-error fallback to recover from torn writes; the current code makes that fallback path a backstop instead of a hot path.
+2. **The tombstone mechanism**. Solving libnetwork's "destroy old endpoint, create new endpoint with fresh ID" container-restart flow with a TTL-bounded MAC/IP cache is genuinely clever, and the narrow-by-hostname refinement (added in v0.5.0) handles the obvious failure mode (sequential `compose restart` of N containers swapping identities) cleanly.
+3. **Race-tested everywhere**. CI runs `-race` on every push; the codebase has no race-test fails. The two mutexes (`mu` and `tombstoneMu`) are documented to never be held together, which is the right way to prevent lock-ordering deadlocks in a small lock set.
+4. **Comments explain the *why***. `pkg/plugin/dhcp_manager.go` and `pkg/plugin/plugin.go` are densely commented in the right way — they explain libnetwork's behavior, what each comment-bearing line is defending against, and which previous bug a piece of code fixes. Future-you will be grateful.
+5. **Plugin.Health endpoint**. Lightweight observability hook (recovery counters + active-endpoint count) accessible on the same socket as the libnetwork RPCs. Trivial to wire into a `curl --unix-socket` health check.
+6. **CI exists, runs the right things**. Build, vet, gofmt, staticcheck, race-tests on every push to main and dev. Most Go projects with comparable scope ship without any of this.
 
 ## Top Recommendations
 
-Ordered by value-to-effort, **across both review passes**:
+Ordered by value-to-effort.
 
-1. **Fix N-1 (udhcpc-handler nil-deref).** Lone-line bug with crash potential. ~5-line fix. Highest priority.
-2. **Fix W-10 (`Plugin.Close` doesn't stop persistent managers).** ~15 lines. Restores the lease-release-on-shutdown invariant. Highest impact.
-3. **Fix N-2 (extract a single `Poll` helper, replace 4 copies).** Eliminates four goroutine-leak sites at once. ~40 lines net (more removed than added).
-4. **Fix C-5 (add hostname to tombstone match key).** ~30 lines incl. a test. Closes the cross-container identity-swap during sequential `compose restart`.
-5. **Fix C-1/C-2/W-9 (buffer the udhcpc channels).** Three one-line edits (`make(chan ..., N)`) that eliminate three goroutine/process leak classes. Trivially safe.
-6. **Fix C-3 (`shortID` helper, ~7 sites).** Mechanical, removes a panic class for a degraded-Docker-response edge case.
+1. **Delete `Plugin.storeJoinHint` (W-N1)**. Five-line delete; one PR. Confirms `updateJoinHint` is the only RMW path and removes a footgun for future contributors.
+2. **Set HTTP server timeouts and call `server.Shutdown` in `Close` (W-N2 + W-N3)**. ~20 lines total. Closes the contract on the shutdown path and brings the codebase in line with the skill-reference's Go server hygiene checklist. Pair these in one PR; they touch the same struct.
+3. **Add `deadcode` and `govulncheck` to CI (I-N5)**. ~10 lines of YAML. Catches the next dead-code instance and surfaces upstream CVEs as they get assigned. `gosec` is also worth adding but you'll want to suppress G104/G301/G302 on the deferred-Close and plugin-private-FS paths first.
+4. **Fix `ErrInvalidMode` to mention `ipvlan` (W-N5)**. One-line change. Stops users with a typo from concluding ipvlan isn't supported.
+5. **Tie recovery to plugin lifetime (W-N4)**. ~30 lines. The largest of the W-N findings; resolves prior issue #10. Worth doing before anybody embeds the plugin into a longer-lived process (e.g. integration tests).
 
-Estimated total for all six: ~half a day. v0.5.1 worth tagging after.
+The 23 open carryover issues from prior reviews are appropriate next-quarter work — none of them are show-stoppers, and the codebase is already running production traffic at .12 with zero log noise on v0.5.3.

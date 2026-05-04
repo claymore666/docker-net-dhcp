@@ -4,6 +4,7 @@
 /multiarch/
 
 .vscode/
+.claude/
 __pycache__/
 
 # Local-only handoff brief — not part of the project
