@@ -13,7 +13,7 @@
 >
 > Install:
 > ```bash
-> docker plugin install ghcr.io/claymore666/docker-net-dhcp:v0.4.0
+> docker plugin install ghcr.io/claymore666/docker-net-dhcp:v0.5.3
 > ```
 >
 > All upstream usage below still applies — bridge mode is unchanged and
@@ -38,17 +38,17 @@ handy for home deployment.
 The plugin can be installed with the `docker plugin install` command:
 
 ```
-$ docker plugin install ghcr.io/devplayer0/docker-net-dhcp:release-linux-amd64
-Plugin "ghcr.io/devplayer0/docker-net-dhcp:release-linux-amd64" is requesting the following privileges:
+$ docker plugin install ghcr.io/claymore666/docker-net-dhcp:v0.5.3
+Plugin "ghcr.io/claymore666/docker-net-dhcp:v0.5.3" is requesting the following privileges:
  - network: [host]
  - host pid namespace: [true]
  - mount: [/var/run/docker.sock]
  - capabilities: [CAP_NET_ADMIN CAP_SYS_ADMIN CAP_SYS_PTRACE]
 Do you grant the above permissions? [y/N] y
-release-linux-amd64: Pulling from ghcr.io/devplayer0/docker-net-dhcp
+v0.5.3: Pulling from ghcr.io/claymore666/docker-net-dhcp
 Digest: sha256:<some hash>
 <some id>: Complete
-Installed plugin ghcr.io/devplayer0/docker-net-dhcp:release-linux-amd64
+Installed plugin ghcr.io/claymore666/docker-net-dhcp:v0.5.3
 $
 ```
 
@@ -56,28 +56,9 @@ Note: If you get an error like `invalid rootfs in image configuration`, try upgr
 
 ## Other tags
 
-There are a number of supported tags for different architectures and versions, the format is
-`<version>-<os>-<architecture>`. For example, `latest-linux-arm-v7` would install the newest build for ARMv7 (e.g. for
-Raspberry Pi).
+This fork publishes semver-tagged plugin images on GitHub Container Registry: `ghcr.io/claymore666/docker-net-dhcp:vX.Y.Z`. See the [Releases page](https://github.com/claymore666/docker-net-dhcp/releases) for the changelog of each release.
 
-### Version
-
-- `release`: The latest release (can be upgraded via `docker plugin upgrade`)
-- `x.y.z`: A specific ([semver](https://semver.org/)) release (e.g. `0.1.0`)
-- `latest`: Build of the newest commit
-
-### OS
-
-Currently only `linux` is supported.
-
-### Architecture
-
-- `amd64`: Intel / AMD 64-bit
-- `386`: Intel / AMD legacy 32-bit
-- `arm64-v8`: ARMv8 64-bit
-- `arm-v7`: ARMv7 (e.g. Raspberry Pi)
-
-Unfortunately Docker plugin images don't support multiple architectures per tag.
+Currently published architectures: `linux/amd64` only. ARM builds (multi-arch via `scripts/push_multiarch_plugin.py`) are supported by the build pipeline but not currently published — open an issue if you need one.
 
 ## Network creation
 
@@ -105,13 +86,13 @@ $ sudo dhcpcd my-bridge
 Once the bridge is ready, you can create the network:
 
 ```
-$ docker network create -d ghcr.io/devplayer0/docker-net-dhcp:release-linux-amd64 --ipam-driver null -o bridge=my-bridge my-dhcp-net
+$ docker network create -d ghcr.io/claymore666/docker-net-dhcp:v0.5.3 --ipam-driver null -o bridge=my-bridge my-dhcp-net
 <some network id>
 $
 
 # With IPv6 enabled
 # Although `docker network create` has a `--ipv6` flag, it doesn't work with the null IPAM driver
-$ docker network create -d ghcr.io/devplayer0/docker-net-dhcp:release-linux-amd64 --ipam-driver null -o bridge=my-bridge -o ipv6=true my-dhcp-net
+$ docker network create -d ghcr.io/claymore666/docker-net-dhcp:v0.5.3 --ipam-driver null -o bridge=my-bridge -o ipv6=true my-dhcp-net
 <some network id>
 $
 ```
@@ -172,7 +153,7 @@ services:
       - dhcp
 networks:
   dhcp:
-    driver: ghcr.io/devplayer0/docker-net-dhcp:release-linux-amd64
+    driver: ghcr.io/claymore666/docker-net-dhcp:v0.5.3
     driver_opts:
       bridge: my-bridge
       ipv6: 'true'
@@ -201,7 +182,7 @@ Note:
 ## Debugging
 
 To read the plugin's log, do `cat /var/lib/docker/plugins/*/rootfs/var/log/net-dhcp.log` (as `root`). You can also use
-`docker plugin set ghcr.io/devplayer0/docker-net-dhcp:release-linux-amd64 LOG_LEVEL=trace` to increase log verbosity.
+`docker plugin set ghcr.io/claymore666/docker-net-dhcp:v0.5.3 LOG_LEVEL=trace` to increase log verbosity.
 
 # Implementation
 
