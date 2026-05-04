@@ -523,8 +523,8 @@ func (p *Plugin) recoverOneEndpoint(ctx context.Context, networkID, endpointID, 
 		EndpointID: endpointID,
 	}
 	m := newDHCPManager(p.docker, fakeJoin, opts)
-	m.LastIP = ipv4
-	m.LastIPv6 = ipv6
+	m.setLastIP(false, ipv4)
+	m.setLastIP(true, ipv6)
 	m.MacAddress = mac
 	p.registerDHCPManager(endpointID, m)
 
@@ -688,15 +688,18 @@ func NewPlugin(awaitTimeout time.Duration) (*Plugin, error) {
 		Handler: handlers.CustomLoggingHandler(nil, mux, util.WriteAccessLog),
 	}
 
-	// Kick off endpoint recovery in the background. We don't block
-	// plugin startup on it: libnetwork RPCs for fresh networks should
-	// be served immediately. Recovery serialises against those via the
-	// Plugin mutex on the maps.
-	go func() {
+	// Run endpoint recovery synchronously before NewPlugin returns
+	// (and thus before Listen accepts the first RPC). Doing it on a
+	// background goroutine — the previous behaviour — opened a window
+	// where a fresh CreateEndpoint could race recovery's Start for the
+	// same endpoint: the map check is mutex-protected, but Start runs
+	// outside the mutex. Recovery is bounded at 30s, which is acceptable
+	// plugin-enable latency.
+	{
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
 		p.recoverEndpoints(ctx)
-	}()
+		cancel()
+	}
 
 	return &p, nil
 }
