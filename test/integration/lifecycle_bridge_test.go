@@ -46,12 +46,17 @@ func TestLifecycleBridge_GoldenPath(t *testing.T) {
 	ip := harness.AssertBridgeIP(t, ipv4)
 	t.Logf("✓ container IP %s falls in bridge DHCP pool", ip)
 
-	out := harness.ExecOutput(t, ctx, id, "ip", "-4", "addr", "show", "eth0")
+	// Bridge mode names the in-container interface after the bridge
+	// (DstPrefix=opts.Bridge in pkg/plugin/network.go), not "eth0",
+	// so we check `ip -4 addr` without naming the link. The IP being
+	// configured on *some* interface inside the container netns is
+	// the real invariant.
+	out := harness.ExecOutput(t, ctx, id, "ip", "-4", "addr")
 	if !strings.Contains(out, ipv4) {
-		t.Errorf("eth0 inside container does not show docker-inspect IP %q\nactual:\n%s", ipv4, out)
+		t.Errorf("no interface inside container reports docker-inspect IP %q\nactual:\n%s", ipv4, out)
 	}
-	macOut := harness.ExecOutput(t, ctx, id, "ip", "link", "show", "eth0")
+	macOut := harness.ExecOutput(t, ctx, id, "ip", "link")
 	if !strings.Contains(strings.ToLower(macOut), strings.ToLower(mac)) {
-		t.Errorf("eth0 MAC inside container does not match docker inspect MAC %q\nactual:\n%s", mac, macOut)
+		t.Errorf("no interface inside container reports docker-inspect MAC %q\nactual:\n%s", mac, macOut)
 	}
 }
