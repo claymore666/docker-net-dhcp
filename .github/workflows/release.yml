@@ -92,9 +92,17 @@ jobs:
       # is built fresh and published with the resolved tag. The Make
       # default PLUGIN_NAME already points at GHCR — passing it
       # explicitly here keeps the workflow self-documenting.
+      #
+      # Each registry gets two pushes: the version tag AND `:latest`,
+      # so consumers can pin (`:v0.8.0`) or just track tip (`:latest`).
+      # docker plugin doesn't support tag aliasing the way regular
+      # images do — every tag is a separate push of the same rootfs.
+      # The Make `create` target rebuilds only the plugin handle, not
+      # the underlying rootfs image, so the second push is fast.
       - name: Push to GHCR
         run: |
           make PLUGIN_NAME="${GHCR_NAME}" PLUGIN_TAG="${{ steps.tag.outputs.tag }}" push
+          make PLUGIN_NAME="${GHCR_NAME}" PLUGIN_TAG="latest" push
 
       # Same plugin to Docker Hub when credentials are present. Make
       # rebuilds the rootfs with the Hub-prefixed name; the underlying
@@ -103,6 +111,7 @@ jobs:
         if: ${{ steps.hub-login.outcome == 'success' }}
         run: |
           make PLUGIN_NAME="${HUB_NAME}" PLUGIN_TAG="${{ steps.tag.outputs.tag }}" push
+          make PLUGIN_NAME="${HUB_NAME}" PLUGIN_TAG="latest" push
 
       # Convenience: print the install incantations operators will use,
       # straight into the workflow summary so the release page links
@@ -113,14 +122,18 @@ jobs:
           {
             echo "## Released ${{ steps.tag.outputs.tag }}"
             echo
+            echo "Each registry receives both \`:${{ steps.tag.outputs.tag }}\` (pin) and \`:latest\` (tip)."
+            echo
             echo "### Install from GHCR"
             echo '```'
             echo "docker plugin install ${GHCR_NAME}:${{ steps.tag.outputs.tag }}"
+            echo "docker plugin install ${GHCR_NAME}:latest"
             echo '```'
             if [ "${{ steps.hub-login.outcome }}" = "success" ]; then
               echo "### Install from Docker Hub"
               echo '```'
               echo "docker plugin install ${HUB_NAME}:${{ steps.tag.outputs.tag }}"
+              echo "docker plugin install ${HUB_NAME}:latest"
               echo '```'
             else
               echo "_Docker Hub push skipped — set DOCKERHUB_USERNAME / DOCKERHUB_TOKEN secrets to enable._"
