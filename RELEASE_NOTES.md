@@ -30,9 +30,9 @@ re-investigate. (Original report: third-pass code review, 2026-05-04.)
 
 DHCP-helper polish: option propagation, parent-attached parity,
 truthfulness counter, DHCP-wire health metrics, configurable
-client-id and vendor class, NTP / search-list / TFTP capture.
-Tier 1 (#100, #101, #102, #104) plus T2-2 (#105), T2-3 (#106)
-and T2-4 (#107) closed.
+client-id and vendor class, NTP / search-list / TFTP capture,
+pre-flight DHCP probe. Tier 1 (#100, #101, #102, #104) plus
+T2-2 (#105), T2-3 (#106), T2-4 (#107) and T2-5 (#108) closed.
 
 ### New driver-opts (opt-in, default off for backwards compatibility)
 
@@ -63,6 +63,17 @@ and T2-4 (#107) closed.
   or option set to containers tagged with a known vendor string.
   Default empty falls back to the historical `docker-net-dhcp`
   string. v6 unaffected — udhcpc6 doesn't accept the option.
+- **`validate_dhcp=true`** (#108) — pre-flight DHCP probe at
+  `docker network create` time. Creates a temporary macvlan child
+  on the parent NIC with a random locally-administered MAC, runs
+  one-shot udhcpc with a 5-second budget, and rejects the network
+  with `no DHCP OFFER on <parent> within 5s` if no server answers.
+  Catches misconfigurations (parent isolated, firewall blocking
+  UDP/67-68, broken VLAN) at create time rather than the first
+  `docker run`. macvlan / ipvlan modes only — bridge mode rejects
+  the opt with a clear error. Cost: one transient lease in the
+  upstream pool per probe (busybox udhcpc has no DISCOVER-only
+  mode); the lease times out naturally.
 
 ### Additional captured DHCP options (#105)
 

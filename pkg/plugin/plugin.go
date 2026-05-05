@@ -170,6 +170,26 @@ type DHCPNetworkOptions struct {
 	// for example to issue a different gateway or option set to
 	// containers tagged with a known vendor string.
 	VendorClass string `mapstructure:"vendor_class"`
+	// ValidateDHCP, when true, makes CreateNetwork run a one-shot
+	// DHCP probe on the parent NIC before the network is created,
+	// failing fast with a clear error if no DHCP server answers
+	// within the budget (see preflightProbeBudget). Catches
+	// misconfigurations (parent isolated from any DHCP server,
+	// firewall blocking UDP/67-68, broken VLAN tag) at create time
+	// rather than the first `docker run` attempt.
+	//
+	// macvlan / ipvlan modes only — bridge mode's "parent" is an
+	// existing Linux bridge, where the probe semantics are different
+	// and not yet implemented.
+	//
+	// The probe runs a full DHCPDISCOVER → REQUEST → ACK cycle
+	// (busybox udhcpc has no DISCOVER-only mode), so the upstream
+	// pool briefly sees one extra lease per `docker network create`
+	// with this opt-in. The probe MAC is random (locally-administered
+	// bit set) so it doesn't collide with anything stable upstream;
+	// the lease times out naturally rather than dragging CreateNetwork
+	// on a slow release path.
+	ValidateDHCP bool `mapstructure:"validate_dhcp"`
 }
 
 // effectiveMode returns Mode with the empty default normalized to ModeBridge.
