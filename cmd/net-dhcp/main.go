@@ -1,7 +1,9 @@
 package main
 
 import (
+	"errors"
 	"flag"
+	"net/http"
 	"os"
 	"os/signal"
 	"sync"
@@ -117,7 +119,12 @@ func main() {
 
 	go func() {
 		log.Info("Starting server...")
-		if err := p.Listen(*bindSock); err != nil {
+		// http.Server.Serve returns http.ErrServerClosed on a clean
+		// Close — that's the success path on SIGTERM, not a failure.
+		// Without this guard the goroutine logs ERROR and os.Exit(1)s
+		// while the main goroutine is still finishing its own clean
+		// shutdown, racing the exit code to 1.
+		if err := p.Listen(*bindSock); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			fatalCleanup(err, "Failed to start plugin")
 		}
 	}()
