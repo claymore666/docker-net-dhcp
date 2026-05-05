@@ -143,6 +143,26 @@ network's create options. The bridge-mode default is unchanged
 (it's always copied; v0.9.0 just extends the same behaviour to the
 other modes).
 
+### Coverage
+
+Combined unit + integration coverage harvested by the manual
+`Coverage` workflow on the dev branch:
+
+| package | merged |
+|---------|--------|
+| `pkg/util` | 87.7% |
+| `pkg/plugin` | 82.4% |
+| `pkg/udhcpc` | 81.3% |
+| `cmd/net-dhcp` | 75.0% |
+| `cmd/udhcpc-handler` | 50.0% |
+| **overall** | **76.5%** |
+
+`pkg/plugin` moved from 68.9% (v0.8.0) → 82.4% — the new T1 / T2
+features each shipped with their own integration tests, plus the
+`BuildEvent` extraction in pkg/udhcpc and the extensive T2-3
+vendor-class / client-id round-trip tests filled previously-
+uncovered branches. First time the combined number is published.
+
 ## v0.8.0
 
 Code-review fix sweep + automated release pipeline. No new features —
