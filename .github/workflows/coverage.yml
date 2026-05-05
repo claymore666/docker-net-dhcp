@@ -1,0 +1,159 @@
+name: Coverage
+
+# Integration coverage harvesting. Builds a cover-instrumented plugin
+# (`go build -cover -coverpkg=./...`), runs the full integration suite
+# against it, then flushes counter files via `docker plugin disable`
+# and reports per-package coverage + uploads an HTML report.
+#
+# Manual-only (`workflow_dispatch`) — coverage runs cost ~3-5 min on top
+# of the integration suite (cover plugin build + flush + report) and
+# don't gate PR merges. The production gate is `integration.yml`.
+#
+# Same self-hosted runner as integration.yml (gpu1), same security
+# posture (outside-collaborator approval required for forked PRs —
+# though only `workflow_dispatch` is wired here, so forks can't trigger
+# this at all).
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  coverage:
+    runs-on: [self-hosted, gpu1]
+    timeout-minutes: 20
+    env:
+      COVER_PLUGIN_REF: ghcr.io/claymore666/docker-net-dhcp:golang-cover
+      COVER_DIR: /var/lib/dh-cover
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify Go toolchain
+        run: |
+          if ! command -v go >/dev/null; then
+            echo "go not in PATH on this runner."
+            echo "Run: sudo bash test/integration/install-go-runner.sh"
+            exit 1
+          fi
+          go version
+
+      - name: Cleanup orphans from previous runs
+        run: bash test/integration/cleanup-orphans.sh
+
+      # Wipe any counter/meta files from a previous coverage run so
+      # `go tool covdata` only sees data from this invocation. The
+      # mkdir is idempotent — first ever run creates it, subsequent
+      # runs no-op.
+      - name: Prepare coverage dir
+        run: |
+          mkdir -p "${COVER_DIR}"
+          rm -f "${COVER_DIR}"/cov*
+
+      # Build the instrumented plugin from the current checkout. We
+      # rebuild every run rather than caching the image: cover builds
+      # are PR-specific (the instrumented binary changes whenever any
+      # tracked .go file does), so a cache here would be a footgun.
+      - name: Build + install cover plugin
+        run: |
+          make plugin-cover
+          docker plugin rm -f "${COVER_PLUGIN_REF}" 2>/dev/null || true
+          docker plugin create "${COVER_PLUGIN_REF}" plugin-cover
+          docker plugin set "${COVER_PLUGIN_REF}" LOG_LEVEL=trace
+          docker plugin enable "${COVER_PLUGIN_REF}"
+
+      # The harness routes everything through INTEGRATION_PLUGIN_REF
+      # (default :golang). Pointing it at :golang-cover makes the
+      # whole suite drive the instrumented plugin.
+      - name: Run integration tests against cover plugin
+        env:
+          INTEGRATION_PLUGIN_REF: ${{ env.COVER_PLUGIN_REF }}
+        run: make integration-test
+
+      # Flush counter files. Go's binary coverage runtime only writes
+      # `covcounters.*` on graceful exit, which `docker plugin disable`
+      # triggers (SIGTERM → plugin shuts down → runtime flushes).
+      # Always-run so even a failing test gets partial coverage.
+      - name: Flush coverage counters
+        if: always()
+        run: |
+          docker plugin disable "${COVER_PLUGIN_REF}" || true
+          ls -la "${COVER_DIR}"
+
+      # Run the unit test suite with coverage so the workflow summary
+      # can report unit + integration + merged numbers (I-14 in the
+      # 2026-05-05 review). go test's `-cover -test.gocoverdir` writes
+      # the same binary-coverage format covdata understands, which
+      # lets us merge directly without converting through textfmt.
+      - name: Run unit tests with coverage
+        if: always()
+        run: |
+          mkdir -p coverage-unit
+          go test -count=1 -coverpkg=./... \
+              -args -test.gocoverdir="$PWD/coverage-unit" \
+              ./pkg/... ./cmd/...
+
+      - name: Coverage summary
+        if: always()
+        run: |
+          if ! ls "${COVER_DIR}"/covcounters.* >/dev/null 2>&1; then
+            echo "No coverage counter files found — plugin may have crashed before flush."
+            exit 1
+          fi
+          {
+              echo "## Coverage by package"
+              echo
+              echo "### Integration only"
+              echo '```'
+              go tool covdata percent -i="${COVER_DIR}"
+              echo '```'
+              if ls coverage-unit/covcounters.* >/dev/null 2>&1; then
+                  echo "### Unit only"
+                  echo '```'
+                  go tool covdata percent -i=coverage-unit
+                  echo '```'
+                  echo "### Merged (unit + integration)"
+                  echo '```'
+                  go tool covdata percent -i="${COVER_DIR}",coverage-unit
+                  echo '```'
+              fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Generate coverage reports
+        if: always()
+        run: |
+          if ! ls "${COVER_DIR}"/covcounters.* >/dev/null 2>&1; then
+            echo "Skipping report generation — no counter files."
+            exit 0
+          fi
+          # Per-source profiles: integration-only (back-compat), and
+          # merged when unit counters are present.
+          go tool covdata textfmt -i="${COVER_DIR}" -o coverage.out
+          if ls coverage-unit/covcounters.* >/dev/null 2>&1; then
+              go tool covdata textfmt -i="${COVER_DIR}",coverage-unit -o coverage-merged.out
+              go tool cover -html=coverage-merged.out -o coverage-merged.html
+          fi
+          go tool cover -html=coverage.out -o coverage.html
+
+      - name: Upload coverage artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ github.run_id }}
+          path: |
+            coverage.out
+            coverage.html
+            coverage-merged.out
+            coverage-merged.html
+          if-no-files-found: warn
+          retention-days: 30
+
+      # Tear down the cover plugin so a follow-up integration.yml run
+      # on the same runner doesn't trip over a stale :golang-cover
+      # reference. The production :golang plugin is untouched.
+      - name: Tear down cover plugin
+        if: always()
+        run: |
+          docker plugin disable "${COVER_PLUGIN_REF}" 2>/dev/null || true
+          docker plugin rm -f "${COVER_PLUGIN_REF}" 2>/dev/null || true
+          rm -f "${COVER_DIR}"/cov*

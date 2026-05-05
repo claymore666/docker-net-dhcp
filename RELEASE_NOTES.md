@@ -26,6 +26,123 @@ vulnerable code path is reachable from the plugin process, so no
 action is required. Recorded here so future audits don't
 re-investigate. (Original report: third-pass code review, 2026-05-04.)
 
+## v0.8.0
+
+Code-review fix sweep + automated release pipeline. No new features —
+the change set is hardening + tooling. 23 issues closed (the 22
+findings from the 2026-05-05 review pass plus the doc audit).
+
+### Compatibility note
+
+`IsDHCPPlugin` now matches only `devplayer0/docker-net-dhcp:*` and
+`claymore666/docker-net-dhcp:*` (W-6, #74). The previous catch-all
+let any image whose name ended in `docker-net-dhcp:<tag>` claim a
+shared bridge — including third-party images that aren't actually
+this plugin. Forks publishing under another namespace need to add
+their namespace to `driverRegexp` in `pkg/plugin/plugin.go` to keep
+cross-detect working on the same host. No effect for installations
+using the upstream image or this fork's image.
+
+### Robustness
+
+- **Recovery counter** (W-2, #70) — `/Plugin.Health.recovery_failed`
+  now reflects synchronous failures (`NetworkInspect`, `netOptions`,
+  endpoint-prelude) in addition to the per-endpoint Start failures
+  it already counted. Operators paging on `recovery_failed > 0`
+  used to miss those classes.
+- **Per-network recovery timeout** (W-7, #75) — recovery's per-iter
+  Docker calls now use a 3s timeout each instead of sharing the
+  whole 30s recoveryBudget; one stuck `NetworkInspect` no longer
+  starves later networks.
+- **Clean shutdown exit code** (W-3, #71) — `cmd/net-dhcp/main.go`
+  filters `http.ErrServerClosed`, so plugin SIGTERM exits 0 instead
+  of 1 with a spurious ERROR log line.
+- **GetIP race + busy loop** (W-5, #73) — the events-collector
+  goroutine in `udhcpc.GetIP` now hands the final lease back over
+  a buffered channel (proper happens-before instead of a fragile
+  defer-close ordering), and the loop honours channel close
+  via `range` instead of busy-spinning on zero-value receives
+  after the scanner exits.
+- **udhcpc Finish on already-exited child** (I-3, #79) — `Finish`
+  now treats `os.ErrProcessDone` on `Signal` as success and lets
+  `Wait` reap, so a self-exited udhcpc doesn't leave a zombie.
+- **Defensive prefix derivation** (I-2, #78) — `vethPairNames` and
+  `subLinkName` no longer panic on short EndpointIDs; they match
+  `shortID`'s pattern. Production EndpointIDs are 64 hex so this
+  is unreachable today, but recovery on malformed daemon
+  responses is now safe.
+- **Close hygiene** (W-4 / I-1, #72 / #77) — `nsHandle` and netns
+  Close errors land at Debug instead of being silently ignored.
+
+### Logging and ergonomics
+
+- **JSONErrResponse log levels** (I-12, #88) — 5xx logs at Error,
+  4xx logs at Warn, others at Info. Caller-supplied bad input no
+  longer drowns real failures at ERROR.
+- **deconfig handler** (I-9 / I-8, #85 / #84) — the multi-line
+  commented-out deconfig block in `dhcpManager.setupClient` is
+  replaced by a one-paragraph rationale for why deconfig is
+  intentionally not handled (would wipe Join's copied static
+  routes). Git history preserves the original code.
+- **Tombstone prune-on-write** (I-10, #86) — `consumeTombstone`
+  skips the rewrite when the prune produced no change and no
+  consume happened. Saves an fsync per CreateEndpoint on quiet
+  networks.
+- **Plugin.Close shutdown leak boundary** (W-8, #76) — documented.
+  The WaitGroup watcher goroutine's leak on timeout is acceptable
+  for process-exit only; a "do not copy this pattern into
+  long-lived callers" banner now sits next to the code.
+
+### Toolchain
+
+- `go.mod` directive bumped 1.25.0 → 1.25.9 (W-1, #69). Drops
+  `govulncheck` affecting count from 18 → 2 (the remaining two
+  are upstream docker SDK vulns with no fix yet).
+
+### Test surface
+
+- Unit-test pin for `decodeOpts(nil)` behaviour (I-11, #87).
+- Bridge integration fixture polls UDP/67 instead of sleeping 200ms
+  (I-4, #80).
+- `EnsureImage` decodes the pull stream and surfaces errors instead
+  of silently swallowing partial pulls (I-6, #82).
+- Misc style fixes — `bytes.Compare` over string-converted `net.IP`
+  (I-5, #81), `DHCPClient.Start` doc comment on netns thread-locking
+  (I-7, #83).
+
+### CI
+
+- **Coverage** (#90 / I-14) — the manual `Coverage` workflow now runs
+  unit tests with binary-coverage instrumentation and merges them
+  with the integration counters in the workflow summary, plus an
+  HTML artefact for the merged profile. The integration-only output
+  remains for back-compat.
+- **APK pin drift** (#89 / I-13) — new weekly workflow (and ad-hoc
+  `scripts/check-apk-pins.sh`) compares the Dockerfile's pinned
+  `busybox-extras` and `iproute2` versions against the latest in
+  the alpine package index. Reports drift in the workflow log so
+  bumps land on the maintainer's desk without anyone having to
+  remember to look.
+- **Release pipeline** (#93) — new `release.yml` publishes to GHCR
+  (always) and Docker Hub (gated on secrets) on `vX.Y.Z` tag push.
+  Tagging stays a manual decision; the workflow only fires on a
+  tag that already exists.
+
+### Documentation
+
+- `docs/parent-attached-modes.md` updated to current code state
+  (#91): tombstone TTL is 60s (was documented as 10s, stale since
+  v0.6.1); `/Plugin.Health` payload now lists all seven fields
+  with semantics; new sections for DHCP identity (option 12 / 60
+  / 61, the latter previously misdocumented as ipvlan-only) and
+  plugin-restart recovery; env-var reference table covering
+  `LOG_LEVEL`, `AWAIT_TIMEOUT`, `STATE_DIR` (the second was
+  shipping since v0.4.x but never documented).
+- `README.md` gains an Attachment-modes summary with a pointer to
+  the parent-attached doc; the bridge-mode walkthrough is retitled
+  so a reader knows it's mode-specific; debugging section mentions
+  `/Plugin.Health` and the env-var knobs.
+
 ## v0.7.0
 
 Live integration test harness running on every PR via a self-hosted

@@ -4,7 +4,10 @@ package harness
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"strings"
 	"testing"
@@ -46,15 +49,30 @@ func EnsureImage(ctx context.Context) error {
 		return fmt.Errorf("ImagePull: %w", err)
 	}
 	defer rc.Close()
-	// Drain the stream so the pull completes synchronously.
-	buf := make([]byte, 4096)
+	// Decode each JSON line so a mid-stream {"errorDetail":...} is
+	// surfaced as a real error instead of a silent partial pull
+	// (I-6 in the 2026-05-05 review).
+	dec := json.NewDecoder(rc)
 	for {
-		_, err := rc.Read(buf)
-		if err != nil {
-			break
+		var msg struct {
+			Error       string `json:"error"`
+			ErrorDetail struct {
+				Message string `json:"message"`
+			} `json:"errorDetail"`
+		}
+		if err := dec.Decode(&msg); err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			return fmt.Errorf("decode pull stream: %w", err)
+		}
+		if msg.Error != "" {
+			return fmt.Errorf("image pull: %s", msg.Error)
+		}
+		if msg.ErrorDetail.Message != "" {
+			return fmt.Errorf("image pull: %s", msg.ErrorDetail.Message)
 		}
 	}
-	return nil
 }
 
 // RunContainer starts a long-lived alpine container attached to the

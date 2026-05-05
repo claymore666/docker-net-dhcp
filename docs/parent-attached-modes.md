@@ -112,12 +112,12 @@ The host's NIC config (IP, routes, netplan/`systemd-networkd`,
 - **ipvlan-specific:** only L2 mode is supported. ipvlan L3 / L3S
   modes are not used because they'd break DHCP (DHCP requires L2
   broadcast).
-- **ipvlan-specific:** the plugin sends a DHCP option 61 client
-  identifier derived from the Docker endpoint ID, so DHCP servers
-  that key on client-id can correctly distinguish multiple ipvlan
-  children on the same parent. If your DHCP server keys solely on
-  MAC and ignores option 61, ipvlan won't work and you should use
-  `mode=macvlan` instead.
+- **ipvlan-specific:** if your DHCP server keys reservations solely
+  on MAC and ignores DHCP option 61 (client identifier), ipvlan
+  won't work as a stability mechanism — every ipvlan slave shares
+  the parent's MAC, so the server has no way to tell them apart.
+  Use `mode=macvlan` if your server is MAC-only. (See "DHCP
+  identity" below for what the plugin sends.)
 - **ipvlan-specific:** only one of macvlan or ipvlan can be active on
   a given parent NIC at a time. The kernel rejects mixing them with
   `EBUSY`. Use one mode per parent.
@@ -268,9 +268,12 @@ fragments the pool.
 
 The mechanism is a short-lived tombstone written at
 `DeleteEndpoint` and consumed at the next `CreateEndpoint` on the
-same network within 10 seconds. It carries the previous MAC and
+same network within 60 seconds. It carries the previous MAC and
 the most-recent leased IP. The next initial DISCOVER passes the
-IP to `udhcpc` as `-r ADDR` (a hint).
+IP to `udhcpc` as `-r ADDR` (a hint). The TTL is generous enough
+to cover both `docker restart <ctr>` (sub-second) and
+`systemctl restart docker` (typically 15–30 s while the daemon
+re-attaches all containers).
 
 - **MAC stability**: works always. `docker inspect` and the LAN
   see the same MAC across restarts.
@@ -284,9 +287,65 @@ IP to `udhcpc` as `-r ADDR` (a hint).
   zuweisen". Once set, every subsequent restart gets that IP.
 
 Concurrent restarts of multiple containers on the same network
-within the 10-second window fall back to fresh MACs to avoid
-swapping identities between containers. Sequential restarts (the
-typical case) always satisfy the rule.
+within the 60-second window fall back to fresh MACs to avoid
+swapping identities between containers. Tombstones also carry the
+container's hostname so that two restarts in flight can be
+told apart when the hostname is known on both sides; only when
+neither side knows the hostname does the network-wide
+"exactly one match" rule apply. Sequential restarts (the typical
+case) always satisfy the rule.
+
+## DHCP identity
+
+Every DHCP exchange the plugin runs on a container's behalf carries
+the same identity fields, regardless of attachment mode:
+
+- **Hostname (option 12)** — taken from the container's
+  `hostname` (Compose `hostname:`, `docker run --hostname`). DHCP
+  servers that auto-update DNS (`dnsmasq` with
+  `--dhcp-hostsfile`, the typical SOHO-router behaviour) will
+  publish the container under that name. Best-effort on the
+  initial DISCOVER (we wait up to 2 s for libnetwork to bind the
+  endpoint to a container ID); the persistent renewal client
+  always sends it.
+- **Vendor class (option 60)** — the literal string
+  `docker-net-dhcp`. Lets DHCP servers gate behaviour (e.g. a
+  separate pool for plugin-managed containers) without parsing
+  hostname conventions. v4 only — DHCPv6 has no equivalent.
+- **Client identifier (option 61)** — eight bytes derived from
+  the Docker endpoint ID, prefixed by the type byte 0
+  (per-client opaque, RFC 2132). Stable across container
+  restarts on the same network because the EndpointID is —
+  meaning DHCP servers that key reservations on option 61
+  (rather than MAC) keep handing the same lease back. This is
+  the mechanism that makes ipvlan stability work, since every
+  ipvlan slave shares the parent's MAC; for macvlan and bridge
+  it's a redundant safety net.
+
+## Plugin-restart recovery
+
+`docker plugin disable && enable`, plugin upgrade, and plugin
+crashes used to leave running containers on the plugin's networks
+without a renewal client — the lease would silently expire and
+the container would lose its IP.
+
+The plugin now walks Docker's network list at startup, finds the
+endpoints attached to plugin-served networks, and rebuilds an
+in-memory DHCP manager for each. The first `udhcpc` call uses
+`-r LAST_IP` so the upstream server ACKs the lease the container
+is already using rather than handing out a fresh address.
+
+Recovery runs synchronously inside `NewPlugin` before the plugin
+socket starts accepting requests, so a fresh `CreateEndpoint`
+arriving during enable can't race the recovery path. Per-endpoint
+results land on `/Plugin.Health` as `recovered_ok` / `recovery_failed`.
+
+The same recovery path also covers `systemctl restart docker` —
+the daemon brings every plugin back as part of its startup. In
+practice MAC/IP is preserved either via this path (when the
+daemon's graceful shutdown didn't get to call `Leave`) or via the
+tombstone path (when it did), and both produce the same
+user-visible outcome.
 
 ## Health endpoint
 
@@ -297,9 +356,31 @@ typical case) always satisfy the rule.
   "healthy": true,
   "uptime_seconds": 12345.6,
   "active_endpoints": 3,
-  "pending_hints": 0
+  "pending_hints": 0,
+  "recovered_ok": 0,
+  "recovery_failed": 0,
+  "tombstone_write_failures": 0
 }
 ```
+
+Field meanings:
+
+- `healthy` — `false` when at least one of `recovery_failed` or
+  `tombstone_write_failures` is non-zero. The plugin keeps serving
+  fresh attaches in either case, but `false` means an operator
+  should look: a recovery failure means a previously-attached
+  container is now running without lease renewal, and a tombstone
+  write failure means the next restart of some container will pick
+  a fresh MAC/IP rather than inheriting the previous one.
+- `active_endpoints` — count of DHCP managers currently registered
+  (post-`Join`, pre-`Leave`).
+- `pending_hints` — count of `joinHint` entries waiting to be
+  consumed by a `Join` (steady-state should be ~0).
+- `recovered_ok` / `recovery_failed` — counters bumped by the
+  plugin-restart recovery path (running endpoints rebuilt vs.
+  endpoints whose rebuild failed).
+- `tombstone_write_failures` — counter bumped on any
+  `addTombstone` save failure (disk full, EROFS, etc.).
 
 Sample call from a host shell:
 
@@ -332,5 +413,16 @@ endpoint operation everything is back to disk-served.
 Override the location via the `STATE_DIR` env var on the plugin:
 
 ```bash
-docker plugin set ghcr.io/<your-namespace>/docker-net-dhcp:v0.7.0 STATE_DIR=/some/other/path
+docker plugin set ghcr.io/<your-namespace>/docker-net-dhcp:v0.8.0 STATE_DIR=/some/other/path
 ```
+
+## Plugin env vars
+
+All settable via `docker plugin set <ref> KEY=VALUE`. None require a
+plugin restart — `docker plugin disable && enable` picks them up.
+
+| name            | default            | meaning |
+| --------------- | ------------------ | ------- |
+| `LOG_LEVEL`     | `info`             | logrus level (`trace`, `debug`, `info`, `warn`, `error`). `trace` includes per-event udhcpc lines and full HTTP-RPC bodies. |
+| `AWAIT_TIMEOUT` | `10s`              | Cap on the polling helpers (waits for sandbox readiness, container hostname lookup, link rename, netns appearance). Bump if a slow Docker restore window starves the per-endpoint Start. |
+| `STATE_DIR`     | `/var/lib/net-dhcp` | Where per-network options and the tombstone file live. Override if you want them on a tmpfs or a different volume. |

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -130,10 +131,40 @@ func (f *Fixture) startBridge() error {
 	if err := f.bridgeDnsmasq.Start(); err != nil {
 		return fmt.Errorf("start bridge dnsmasq: %w", err)
 	}
-	// Bind takes <50ms in practice but allow a beat for the listen
-	// socket to come up.
-	time.Sleep(200 * time.Millisecond)
+	// Poll the bridge IP's UDP/67 until the bind shows up. We dial
+	// the bridge address rather than INADDR_ANY because the bridge
+	// dnsmasq is `--bind-interfaces`'d to the bridge — it doesn't
+	// take INADDR_ANY, so a parallel listen on 0.0.0.0:67 succeeds
+	// even after the bridge bind has happened. Same shape as
+	// waitDnsmasqReady; symmetric polling avoids the prior 200ms
+	// sleep flaking on slow boxes (I-4 in the 2026-05-05 review).
+	if err := waitBridgeDnsmasqReady(2 * time.Second); err != nil {
+		return fmt.Errorf("bridge dnsmasq did not bind: %w", err)
+	}
 	return nil
+}
+
+// waitBridgeDnsmasqReady polls UDP/67 on the bridge IP until dnsmasq
+// has bound it. Mirrors waitDnsmasqReady but targets the bridge's
+// L3 address (BridgeAddr without the /mask) so it doesn't conflict
+// with the macvlan-fixture dnsmasq that already owns INADDR_ANY:67
+// in this test process.
+func waitBridgeDnsmasqReady(budget time.Duration) error {
+	bridgeIP := net.ParseIP(strings.SplitN(BridgeAddr, "/", 2)[0])
+	if bridgeIP == nil {
+		return fmt.Errorf("invalid BridgeAddr %q", BridgeAddr)
+	}
+	deadline := time.Now().Add(budget)
+	for time.Now().Before(deadline) {
+		conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: bridgeIP, Port: 67})
+		if err != nil {
+			// Port is taken — dnsmasq has bound it.
+			return nil
+		}
+		_ = conn.Close()
+		time.Sleep(50 * time.Millisecond)
+	}
+	return fmt.Errorf("bridge dnsmasq did not bind UDP/67 on %s within %v", bridgeIP, budget)
 }
 
 // stopBridge tears down whatever startBridge brought up. Idempotent

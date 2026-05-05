@@ -322,6 +322,23 @@ func TestDecodeOpts_NilInput(t *testing.T) {
 	}
 }
 
+// TestDecodeOpts_NilUnderGenericKey pins the behaviour for the case
+// where the libnetwork payload has the generic key present but with a
+// nil value (rare but reachable via the docker API). decodeOpts must
+// return zero options without error — validateModeOptions then catches
+// the missing-bridge / missing-parent case downstream. Pinned by I-11
+// in the 2026-05-05 review.
+func TestDecodeOpts_NilUnderGenericKey(t *testing.T) {
+	var nilMap map[string]interface{}
+	opts, err := decodeOpts(nilMap)
+	if err != nil {
+		t.Fatalf("decode(nilMap): %v", err)
+	}
+	if opts.Mode != "" || opts.Bridge != "" || opts.Parent != "" {
+		t.Errorf("zero options expected, got %+v", opts)
+	}
+}
+
 // TestApiCreateNetwork_DecodeOptsError covers the error path where the
 // driver-opts payload itself is shaped wrong (a non-map under the
 // generic key). decodeOpts returns a wrapped mapstructure error which

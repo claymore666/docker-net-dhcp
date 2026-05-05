@@ -14,12 +14,12 @@
 package harness
 
 import (
+	"bytes"
 	"fmt"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"time"
 
@@ -36,11 +36,14 @@ const (
 	// DHCPServerAddr is the static IP on DhcpVeth.
 	DHCPServerAddr = "192.168.99.1/24"
 	// DHCPPoolStart / DHCPPoolEnd / LeaseTime drive dnsmasq's
-	// --dhcp-range. 30s lease is short enough to exercise renewal
-	// in test wall-time without flaking on response delays.
+	// --dhcp-range. 2 minutes is dnsmasq's hard floor — anything
+	// shorter is silently rounded up, which made an earlier "30s"
+	// constant lie about the actual lease. T1 (renewal trigger
+	// inside udhcpc) lands at half-lease = 1m, so renewal-tests
+	// have a ~1m floor on wait time.
 	DHCPPoolStart = "192.168.99.10"
 	DHCPPoolEnd   = "192.168.99.99"
-	LeaseTime     = "30s"
+	LeaseTime     = "2m"
 
 	// SubnetCIDR is what callers expect IP assertions to fall inside.
 	SubnetCIDR = "192.168.99.0/24"
@@ -234,6 +237,12 @@ func wrapTeardown(err error) error {
 // dnsmasq(8): "expiration_epoch MAC IP hostname client-id".
 func (f *Fixture) LeaseFile() string { return f.leaseFile }
 
+// DnsmasqLog returns the path of the macvlan-fixture dnsmasq log
+// file. Tests that need to assert on the wire conversation (e.g.
+// "did a renewal DHCPACK arrive?") can grep this file directly
+// during the test rather than waiting for the failure-path dump.
+func (f *Fixture) DnsmasqLog() string { return f.dnsmasqLog }
+
 // DumpLogs prints captured dnsmasq stderr to a writer (usually
 // t.Log) so failed tests have the wire-level conversation. Tests
 // should call this from a t.Cleanup with a check for t.Failed().
@@ -266,5 +275,5 @@ func IsInPool(ip net.IP) bool {
 	return bytesGE(v4, start) && bytesLE(v4, end)
 }
 
-func bytesGE(a, b net.IP) bool { return strings.Compare(string(a), string(b)) >= 0 }
-func bytesLE(a, b net.IP) bool { return strings.Compare(string(a), string(b)) <= 0 }
+func bytesGE(a, b net.IP) bool { return bytes.Compare(a, b) >= 0 }
+func bytesLE(a, b net.IP) bool { return bytes.Compare(a, b) <= 0 }

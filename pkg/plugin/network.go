@@ -216,8 +216,18 @@ func (p *Plugin) DeleteNetwork(r DeleteNetworkRequest) error {
 	return nil
 }
 
+// vethPairNames derives the host-side and container-side veth names from
+// an endpoint ID. Docker EndpointIDs are 64 hex chars in production, but
+// recovery / malformed daemon responses can in principle hand us a
+// shorter ID — same defensive shape as shortID. The pair-uniqueness
+// guarantee is weakened in that case (two short IDs sharing a prefix
+// would collide), but the function won't panic.
 func vethPairNames(id string) (string, string) {
-	return "dh-" + id[:12], id[:12] + "-dh"
+	prefix := id
+	if len(id) > 12 {
+		prefix = id[:12]
+	}
+	return "dh-" + prefix, prefix + "-dh"
 }
 
 // parseExplicitV4 extracts the bare IPv4 address from an optional
