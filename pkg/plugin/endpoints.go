@@ -243,6 +243,12 @@ type HealthResponse struct {
 	RecoveredOK            int32   `json:"recovered_ok"`
 	RecoveryFailed         int32   `json:"recovery_failed"`
 	TombstoneWriteFailures int32   `json:"tombstone_write_failures"`
+	// LeaseChanged counts renewals where udhcpc returned a different
+	// IP than the manager last recorded. Not Healthy-affecting (it
+	// doesn't break Docker's view fatally — see plugin.go for the
+	// truthfulness-gap discussion), but worth alerting on for
+	// long-running containers.
+	LeaseChanged int32 `json:"lease_changed"`
 }
 
 func (p *Plugin) apiHealth(w http.ResponseWriter, r *http.Request) {
@@ -265,5 +271,6 @@ func (p *Plugin) apiHealth(w http.ResponseWriter, r *http.Request) {
 		RecoveredOK:            p.recoveredOK.Load(),
 		RecoveryFailed:         failed,
 		TombstoneWriteFailures: tsFails,
+		LeaseChanged:           p.leaseChanged.Load(),
 	}, http.StatusOK)
 }

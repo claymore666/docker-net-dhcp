@@ -92,7 +92,9 @@ The host's NIC config (IP, routes, netplan/`systemd-networkd`,
 | `ipv6`              | all              | no       | Also run DHCPv6 in addition to DHCPv4.                        |
 | `lease_timeout`     | both      | no       | Initial-lease timeout for the up-front DHCP exchange (default `10s`). |
 | `ignore_conflicts`  | bridge    | no       | Skip the bridge-already-in-use check. No-op in macvlan mode.  |
-| `skip_routes`       | bridge    | no       | Don't copy static routes from the bridge into the container. No-op in macvlan mode. |
+| `skip_routes`       | all       | no       | Don't copy non-default static routes from the parent (bridge / macvlan parent NIC / ipvlan parent NIC) into the container. v0.9.0 extended this from bridge-only to all modes for parity (#102) — set `true` to restore pre-v0.9.0 macvlan/ipvlan no-copy behaviour. |
+| `propagate_dns`     | all       | no       | (v0.9.0+) Write DHCP option 6 / 23 (DNS server list) into the container's `/etc/resolv.conf` on bind/renew. Off by default; turning it on overrides Docker's embedded resolver for this network. |
+| `propagate_mtu`     | all       | no       | (v0.9.0+) Apply DHCP option 26 (Interface MTU) to the container link on bind/renew. Off by default; useful for jumbo-frame networks (9000) and VPN-reduced ones (~1450). |
 
 ## Constraints
 

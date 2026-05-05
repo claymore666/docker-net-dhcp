@@ -26,7 +26,9 @@ permissions:
 jobs:
   integration:
     runs-on: [self-hosted, gpu1]
-    timeout-minutes: 15
+    timeout-minutes: 20
+    env:
+      INTEGRATION_PLUGIN_REF: ghcr.io/claymore666/docker-net-dhcp:integration
     steps:
       - uses: actions/checkout@v4
 
@@ -50,30 +52,34 @@ jobs:
       - name: Cleanup orphans from previous runs
         run: bash test/integration/cleanup-orphans.sh
 
-      # Verify the plugin is installed + enabled before we run tests.
-      # The plugin install is a one-time operator action on the runner
-      # (we deliberately don't reinstall per-PR — that would mutate
-      # daemon-global state and conflict with smoke testing on the
-      # same host).
+      # Build + install the plugin from THIS PR's source tree, tagged
+      # `:integration` so it coexists with `:golang` (production) and
+      # `:golang-cover` (coverage workflow). Replaces the pre-v0.9.0
+      # behaviour of testing against a manually-installed `:golang`
+      # — that approach silently skipped validation for any PR that
+      # modified plugin code (new driver-opts, RPC shape changes,
+      # etc.), since the production plugin pre-dated the change.
       #
-      # The harness reads INTEGRATION_PLUGIN_REF and defaults to
-      # :golang. Setting it explicitly here documents the contract;
-      # CI runs always use :golang. To stage a fix on :dev before
-      # promoting, override INTEGRATION_PLUGIN_REF in this step
-      # for one PR cycle, then promote and revert.
-      - name: Verify plugin enabled
-        env:
-          INTEGRATION_PLUGIN_REF: ghcr.io/claymore666/docker-net-dhcp:golang
+      # ~60s rebuild cost per run is the right trade for "every PR
+      # tests its own plugin code". Same shape as coverage.yml's
+      # plugin-cover step, just without the -cover instrumentation.
+      - name: Build + install integration plugin
         run: |
-          if ! docker plugin ls --format '{{.Name}}: enabled={{.Enabled}}' \
-              | grep -q "^${INTEGRATION_PLUGIN_REF}: enabled=true$"; then
-            echo "Plugin ${INTEGRATION_PLUGIN_REF} is not enabled."
-            echo "Operator action required: build + install + enable on the runner."
-            docker plugin ls
-            exit 1
-          fi
+          make PLUGIN_NAME=ghcr.io/claymore666/docker-net-dhcp PLUGIN_TAG=integration plugin
+          docker plugin rm -f "${INTEGRATION_PLUGIN_REF}" 2>/dev/null || true
+          docker plugin create "${INTEGRATION_PLUGIN_REF}" plugin
+          docker plugin set "${INTEGRATION_PLUGIN_REF}" LOG_LEVEL=trace
+          docker plugin enable "${INTEGRATION_PLUGIN_REF}"
 
       - name: Run integration tests
-        env:
-          INTEGRATION_PLUGIN_REF: ghcr.io/claymore666/docker-net-dhcp:golang
         run: make integration-test
+
+      # Tear down so a follow-up workflow on the same runner doesn't
+      # find a stale `:integration` plugin pinned to the previous
+      # PR's source. Always-run; failure of the test step shouldn't
+      # leave global state behind.
+      - name: Tear down integration plugin
+        if: always()
+        run: |
+          docker plugin disable "${INTEGRATION_PLUGIN_REF}" 2>/dev/null || true
+          docker plugin rm -f "${INTEGRATION_PLUGIN_REF}" 2>/dev/null || true

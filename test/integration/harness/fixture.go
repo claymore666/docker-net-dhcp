@@ -47,6 +47,25 @@ const (
 
 	// SubnetCIDR is what callers expect IP assertions to fall inside.
 	SubnetCIDR = "192.168.99.0/24"
+
+	// TestDNSServer / TestMTU are the values the macvlan-fixture
+	// dnsmasq advertises via DHCP options 6 and 26 respectively.
+	// Tests that exercise PropagateDNS / PropagateMTU assert these
+	// land on the container; tests that don't opt-in should see
+	// neither the DNS server in resolv.conf nor a non-1500 MTU.
+	// .53 is a recognisable "this is a DNS server" address but
+	// nothing on the test fixture actually serves DNS — the test
+	// only asserts the address propagation, not query resolution.
+	TestDNSServer = "192.168.99.53"
+	// TestMTU is the value the fixture's dnsmasq advertises as DHCP
+	// option 26. Chosen below the 1500 default so:
+	//   - macvlan children can come up at this MTU regardless of
+	//     parent (children can be ≤ parent, so 1400 ≤ 1500 holds);
+	//   - "unchanged default" tests can assert MTU != 1400 because
+	//     1500 is what the link inherits without propagation.
+	// Operationally 1400 is the typical VPN-reduced MTU (WireGuard,
+	// OpenVPN), so the test mirrors a real-world propagation case.
+	TestMTU = "1400"
 )
 
 // Fixture owns the lifecycle of the shared integration-test environment.
@@ -160,6 +179,12 @@ func (f *Fixture) startDnsmasq() error {
 		"--dhcp-range="+DHCPPoolStart+","+DHCPPoolEnd+","+LeaseTime,
 		"--dhcp-leasefile="+f.leaseFile,
 		"--dhcp-no-override",
+		// DHCP options every test gets to opt-into via PropagateDNS /
+		// PropagateMTU on the network. Tests that don't opt-in see
+		// the options on the wire (in the dnsmasq log) but the plugin
+		// ignores them, so default behaviour is unchanged.
+		"--dhcp-option=6,"+TestDNSServer, // option 6: DNS servers
+		"--dhcp-option=26,"+TestMTU,      // option 26: Interface MTU
 		// dhcp-broadcast forces OFFER/ACK to be sent as L2 broadcast
 		// regardless of the client's broadcast flag. Required for
 		// ipvlan-L2 mode: the slave's IP isn't registered with the
