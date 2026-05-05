@@ -74,7 +74,9 @@ func TestErrors_ParentIsBridge(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	const brName = "dh-itest-bridge-test"
+	// Linux IFNAMSIZ caps interface names at 15 characters + NUL.
+	// "dh-itest-br" is 11; fits with room for a suffix.
+	const brName = "dh-itest-br"
 	br := &netlink.Bridge{LinkAttrs: netlink.LinkAttrs{Name: brName}}
 	if err := netlink.LinkAdd(br); err != nil {
 		t.Fatalf("LinkAdd(%s bridge): %v", brName, err)
@@ -114,22 +116,24 @@ func TestErrors_ParentIsBridge(t *testing.T) {
 	}
 }
 
-// TestErrors_IPCollision drives the resolveExplicitV4 conflict
-// branch in CreateEndpoint: libnetwork hands us an Interface.Address
-// from `--ip=A`, while the endpoint-level driver-opt `ip=B` says
-// something different. The plugin can't choose silently — it
-// refuses with ErrIPAM-wrapped "conflicting static IP".
+// TestErrors_DriverOptIPMalformed drives the resolveExplicitV4
+// driver-opt validation branch in CreateEndpoint: an endpoint-level
+// `ip=` driver-opt that doesn't parse as a bare IPv4 must be
+// rejected with ErrIPAM wrapping.
 //
-// The created network and (failed) container are cleaned up in
-// t.Cleanup. The container create is what fails — ContainerCreate
-// asks libnetwork to reach the plugin's CreateEndpoint, which is
-// where the conflict is detected.
-func TestErrors_IPCollision(t *testing.T) {
+// The conflict path (Interface.Address from --ip vs driver-opt ip)
+// is unreachable through the docker API on a null-IPAM network —
+// libnetwork rejects --ip with "user specified IP address is
+// supported only when connecting to networks with user configured
+// subnets", before the plugin's CreateEndpoint sees it. The
+// driver-opt path is the one we can exercise end-to-end here, and
+// it covers the same parsing helper.
+func TestErrors_DriverOptIPMalformed(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	netName := "dh-itest-err-ipcoll"
-	ctrName := "dh-itest-err-ipcoll-ctr"
+	netName := "dh-itest-err-droptip"
+	ctrName := "dh-itest-err-droptip-ctr"
 	harness.CreateNetwork(t, ctx, netName, "macvlan", nil)
 
 	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
@@ -138,18 +142,13 @@ func TestErrors_IPCollision(t *testing.T) {
 	}
 	defer cli.Close()
 
-	const (
-		ipFromIface = "192.168.99.40"
-		ipFromOpt   = "192.168.99.41"
-	)
 	_, createErr := cli.ContainerCreate(ctx,
 		&container.Config{Image: harness.TestImage, Cmd: []string{"sleep", "infinity"}},
 		&container.HostConfig{},
 		&network.NetworkingConfig{
 			EndpointsConfig: map[string]*network.EndpointSettings{
 				netName: {
-					IPAMConfig: &network.EndpointIPAMConfig{IPv4Address: ipFromIface},
-					DriverOpts: map[string]string{"ip": ipFromOpt},
+					DriverOpts: map[string]string{"ip": "not-a-valid-ip"},
 				},
 			},
 		},
@@ -161,11 +160,11 @@ func TestErrors_IPCollision(t *testing.T) {
 		_ = cli.ContainerRemove(bg, ctrName, container.RemoveOptions{Force: true})
 	})
 	if createErr == nil {
-		t.Fatalf("expected ContainerCreate to fail on conflicting --ip / driver-opt ip, got success")
+		t.Fatalf("expected ContainerCreate to fail on malformed driver-opt ip, got success")
 	}
-	if !strings.Contains(strings.ToLower(createErr.Error()), "conflicting static ip") {
-		t.Errorf("error missing expected substring 'conflicting static IP'\nactual: %s", createErr.Error())
+	if !strings.Contains(strings.ToLower(createErr.Error()), "invalid driver-opt ip") {
+		t.Errorf("error missing expected substring 'invalid driver-opt ip'\nactual: %s", createErr.Error())
 	} else {
-		t.Logf("✓ ip-collision rejected: %s", createErr.Error())
+		t.Logf("✓ malformed driver-opt ip rejected: %s", createErr.Error())
 	}
 }

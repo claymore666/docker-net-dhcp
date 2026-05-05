@@ -64,14 +64,12 @@ func TestRecovery_PluginDisableEnable_PreservesEndpoint(t *testing.T) {
 		}
 	})
 
-	// Capture the recovered_ok counter before the recycle so we can
-	// detect a delta rather than absolute >=1 (other tests might
-	// have triggered recoveries earlier in the suite).
-	healthBefore, err := harness.PluginHealth(ctx, cli)
-	if err != nil {
-		t.Fatalf("Plugin.Health (before): %v", err)
-	}
-	t.Logf("recovered_ok before: %d", healthBefore.RecoveredOK)
+	// We don't read recovered_ok before the recycle: PluginDisable
+	// kills the plugin process and PluginEnable starts a fresh one,
+	// so the counter we see after is from a brand-new instance with
+	// initial value zero. The before-snapshot would be from a stale
+	// process and isn't comparable. Asserting `after >= 1` is the
+	// right invariant.
 
 	if err := cli.PluginDisable(ctx, harness.PluginRef, types.PluginDisableOptions{Force: true}); err != nil {
 		t.Fatalf("PluginDisable: %v", err)
@@ -109,9 +107,9 @@ func TestRecovery_PluginDisableEnable_PreservesEndpoint(t *testing.T) {
 	}
 	t.Logf("recovered_ok after: %d", healthAfter.RecoveredOK)
 
-	if healthAfter.RecoveredOK <= healthBefore.RecoveredOK {
-		t.Errorf("recovered_ok did not advance: before=%d after=%d (recovery did not run for our endpoint)",
-			healthBefore.RecoveredOK, healthAfter.RecoveredOK)
+	if healthAfter.RecoveredOK < 1 {
+		t.Errorf("recovered_ok=%d (expected >=1; recovery did not pick up our endpoint after the recycle)",
+			healthAfter.RecoveredOK)
 	}
 	if healthAfter.RecoveryFailed != 0 {
 		t.Errorf("recovery_failed=%d (recovery saw at least one endpoint it could not rebuild)", healthAfter.RecoveryFailed)
