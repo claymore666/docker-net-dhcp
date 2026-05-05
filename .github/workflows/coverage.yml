@@ -15,12 +15,6 @@ name: Coverage
 # this at all).
 on:
   workflow_dispatch:
-  # TEMPORARY: smoke-test the new tests on this branch. Reverted
-  # before merge to dev. If you see this `push:` trigger anywhere
-  # but on a feature branch, it's a bug.
-  push:
-    branches:
-      - feat/integration-coverage-tests
 
 permissions:
   contents: read
