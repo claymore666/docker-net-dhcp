@@ -14,12 +14,12 @@
 package harness
 
 import (
+	"bytes"
 	"fmt"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"time"
 
@@ -275,5 +275,5 @@ func IsInPool(ip net.IP) bool {
 	return bytesGE(v4, start) && bytesLE(v4, end)
 }
 
-func bytesGE(a, b net.IP) bool { return strings.Compare(string(a), string(b)) >= 0 }
-func bytesLE(a, b net.IP) bool { return strings.Compare(string(a), string(b)) <= 0 }
+func bytesGE(a, b net.IP) bool { return bytes.Compare(a, b) >= 0 }
+func bytesLE(a, b net.IP) bool { return bytes.Compare(a, b) <= 0 }
