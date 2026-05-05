@@ -228,6 +228,25 @@ type Plugin struct {
 	// docker-socket update) lands. See issue #104 for the design
 	// discussion deferred from v0.9.0.
 	leaseChanged atomic.Int32
+
+	// leasesObtained / leasesRenewed / dhcpTimeouts / leaseReleaseFailures
+	// expose DHCP-wire-level counters via /Plugin.Health (T2-4). They
+	// complement the lease_changed signal and let operators alert on
+	// regressions in the DHCP exchange itself without scraping dnsmasq
+	// logs server-side or running the plugin at trace level. Bumped
+	// from dhcpManager:
+	//   - leasesObtained: udhcpc "bound" event — first successful
+	//     DHCPACK on either initial bind or after a NAK / lease loss
+	//   - leasesRenewed: udhcpc "renew" event — a renewal DHCPACK
+	//   - dhcpTimeouts: udhcpc "leasefail" event — discovery / renewal
+	//     hit udhcpc's internal timeout without an OFFER or ACK
+	//   - leaseReleaseFailures: client.Finish returned an error in
+	//     Stop, meaning the SIGTERM-driven DHCPRELEASE didn't complete
+	//     cleanly (timeout, exit code, or pipe closure)
+	leasesObtained       atomic.Int32
+	leasesRenewed        atomic.Int32
+	dhcpTimeouts         atomic.Int32
+	leaseReleaseFailures atomic.Int32
 }
 
 // storeJoinHint records the state collected during CreateEndpoint so

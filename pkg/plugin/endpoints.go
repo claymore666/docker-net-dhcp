@@ -249,6 +249,16 @@ type HealthResponse struct {
 	// truthfulness-gap discussion), but worth alerting on for
 	// long-running containers.
 	LeaseChanged int32 `json:"lease_changed"`
+
+	// DHCP-wire counters (T2-4). Naming intentionally drops the
+	// Prometheus `_total` suffix to stay consistent with the
+	// existing fields above; the issue's proposal listed them with
+	// `_total` for documentation clarity but the wire field is the
+	// shorter form.
+	LeasesObtained       int32 `json:"leases_obtained"`
+	LeasesRenewed        int32 `json:"leases_renewed"`
+	DHCPTimeouts         int32 `json:"dhcp_timeouts"`
+	LeaseReleaseFailures int32 `json:"lease_release_failures"`
 }
 
 func (p *Plugin) apiHealth(w http.ResponseWriter, r *http.Request) {
@@ -272,5 +282,9 @@ func (p *Plugin) apiHealth(w http.ResponseWriter, r *http.Request) {
 		RecoveryFailed:         failed,
 		TombstoneWriteFailures: tsFails,
 		LeaseChanged:           p.leaseChanged.Load(),
+		LeasesObtained:         p.leasesObtained.Load(),
+		LeasesRenewed:          p.leasesRenewed.Load(),
+		DHCPTimeouts:           p.dhcpTimeouts.Load(),
+		LeaseReleaseFailures:   p.leaseReleaseFailures.Load(),
 	}, http.StatusOK)
 }
