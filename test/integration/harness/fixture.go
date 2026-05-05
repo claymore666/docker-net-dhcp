@@ -66,6 +66,20 @@ const (
 	// Operationally 1400 is the typical VPN-reduced MTU (WireGuard,
 	// OpenVPN), so the test mirrors a real-world propagation case.
 	TestMTU = "1400"
+
+	// TestNTPServer / TestSearchList / TestTFTPServer / TestBootFile
+	// are the values the macvlan-fixture dnsmasq advertises via the
+	// extra DHCP options surfaced in v0.9.0 / T2-2:
+	//   - 42  (NTP)        — captured into Info.NTPServers, surfaced via plugin log
+	//   - 119 (search)     — written to resolv.conf when PropagateDNS=true
+	//   - 66  (TFTP)       — captured, surfaced via plugin log
+	//   - 67  (boot file)  — captured, surfaced via plugin log
+	// Values are recognisable + obviously test-only so a real-LAN
+	// leak would be immediately obvious.
+	TestNTPServer  = "192.168.99.123"
+	TestSearchList = "corp.example,internal.example"
+	TestTFTPServer = "tftp.example.test"
+	TestBootFile   = "pxelinux.0"
 )
 
 // Fixture owns the lifecycle of the shared integration-test environment.
@@ -183,8 +197,12 @@ func (f *Fixture) startDnsmasq() error {
 		// PropagateMTU on the network. Tests that don't opt-in see
 		// the options on the wire (in the dnsmasq log) but the plugin
 		// ignores them, so default behaviour is unchanged.
-		"--dhcp-option=6,"+TestDNSServer, // option 6: DNS servers
-		"--dhcp-option=26,"+TestMTU,      // option 26: Interface MTU
+		"--dhcp-option=6,"+TestDNSServer,    // option 6: DNS servers
+		"--dhcp-option=26,"+TestMTU,         // option 26: Interface MTU
+		"--dhcp-option=42,"+TestNTPServer,   // option 42: NTP servers
+		"--dhcp-option=66,"+TestTFTPServer,  // option 66: TFTP server name
+		"--dhcp-option=67,"+TestBootFile,    // option 67: boot file
+		"--dhcp-option=119,"+TestSearchList, // option 119: domain search list
 		// dhcp-broadcast forces OFFER/ACK to be sent as L2 broadcast
 		// regardless of the client's broadcast flag. Required for
 		// ipvlan-L2 mode: the slave's IP isn't registered with the

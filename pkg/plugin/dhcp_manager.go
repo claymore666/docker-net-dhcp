@@ -211,6 +211,28 @@ func (m *dhcpManager) renew(v6 bool, info udhcpc.Info) error {
 			Warn("udhcpc renew with changed IP — Docker's view is now stale")
 	}
 
+	// Surface DHCP options the plugin captures but doesn't auto-apply
+	// (NTP servers, TFTP server, boot-file name, search list when not
+	// propagating DNS). Operators can grep plugin logs for these
+	// without flipping LOG_LEVEL=trace. Only emits when at least one
+	// is non-empty so plain LANs don't get a noisy line per renewal.
+	if len(info.NTPServers) > 0 || info.TFTPServer != "" || info.BootFile != "" || len(info.SearchList) > 0 {
+		fields := m.logFields(v6)
+		if len(info.NTPServers) > 0 {
+			fields["ntp"] = info.NTPServers
+		}
+		if info.TFTPServer != "" {
+			fields["tftp"] = info.TFTPServer
+		}
+		if info.BootFile != "" {
+			fields["bootfile"] = info.BootFile
+		}
+		if len(info.SearchList) > 0 {
+			fields["search"] = info.SearchList
+		}
+		log.WithFields(fields).Info("DHCP options received")
+	}
+
 	// Track the freshly-bound address so Leave can hand it to the
 	// tombstone (and thus the next CreateEndpoint's `-r` hint).
 	// Without this the manager keeps reporting whatever the very
@@ -232,7 +254,7 @@ func (m *dhcpManager) renew(v6 bool, info udhcpc.Info) error {
 				WithError(err).
 				WithFields(m.logFields(v6)).
 				Warn("Skipping DNS propagation — could not resolve container PID")
-		} else if err := writeContainerResolvConf(pid, info.DNSServers, info.Domain); err != nil {
+		} else if err := writeContainerResolvConf(pid, info.DNSServers, info.SearchList, info.Domain); err != nil {
 			log.
 				WithError(err).
 				WithFields(m.logFields(v6)).

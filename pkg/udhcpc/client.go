@@ -95,15 +95,22 @@ func NewDHCPClient(iface string, opts *DHCPClientOptions) (*DHCPClient, error) {
 	c := &DHCPClient{
 		Opts: opts,
 		// Foreground, set interface and handler "script". Also
-		// explicitly request option 26 (Interface MTU) — busybox
-		// udhcpc's default request list (1, 3, 6, 12, 15, 28, 42)
-		// doesn't include it, and dnsmasq / RFC-conformant servers
-		// only return options the client asked for. This is
-		// always-on regardless of PropagateMTU on the network: the
-		// extra option in DISCOVER/REQUEST is free and harmless if
-		// the server doesn't supply it; the plugin's PropagateMTU
-		// gate decides whether to *act* on the value.
-		cmd: exec.Command(path, "-f", "-i", iface, "-s", opts.HandlerScript, "-O", "mtu"),
+		// explicitly request the options not in busybox udhcpc's
+		// default list (1, 3, 6, 12, 15, 28, 42):
+		//
+		//   - mtu     (option 26)  — applied to ctr link when PropagateMTU
+		//   - search  (option 119) — written to resolv.conf when PropagateDNS
+		//   - tftp    (option 66)  — surfaced via plugin log
+		//   - bootfile(option 67)  — surfaced via plugin log
+		//
+		// Note: busybox already requests option 42 (ntpsrv) by default,
+		// so there's no -O for it. dnsmasq / RFC-conformant servers
+		// only return options the client asked for. This block is
+		// always-on; the per-option propagate_* gates decide whether
+		// to *act* on the values, but capturing them is free and
+		// harmless if the server doesn't supply them.
+		cmd: exec.Command(path, "-f", "-i", iface, "-s", opts.HandlerScript,
+			"-O", "mtu", "-O", "search", "-O", "tftp", "-O", "bootfile"),
 	}
 
 	stderrPipe, err := c.cmd.StderrPipe()

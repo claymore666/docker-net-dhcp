@@ -85,6 +85,36 @@ func PluginHealth(ctx context.Context, cli *docker.Client) (*HealthResponse, err
 	return &out, nil
 }
 
+// ReadPluginLog returns the current contents of the plugin's
+// /var/log/net-dhcp.log as a string, or an empty string with a t.Logf
+// note on error. Useful when a test wants to assert on a specific log
+// line emitted by the plugin during a bound/renew event (e.g. T2-2
+// surfaces NTP / TFTP / search-list values at info level there).
+//
+// Path resolution mirrors DumpPluginLog. ctx is used for the
+// PluginInspect round-trip; the local ReadFile is unbounded.
+func ReadPluginLog(t *testing.T, ctx context.Context) string {
+	t.Helper()
+	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	if err != nil {
+		t.Logf("ReadPluginLog: docker client: %v", err)
+		return ""
+	}
+	defer cli.Close()
+	p, _, err := cli.PluginInspectWithRaw(ctx, PluginRef)
+	if err != nil {
+		t.Logf("ReadPluginLog: PluginInspect: %v", err)
+		return ""
+	}
+	logPath := filepath.Join("/var/lib/docker/plugins", p.ID, "rootfs/var/log/net-dhcp.log")
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Logf("ReadPluginLog: read %s: %v", logPath, err)
+		return ""
+	}
+	return string(data)
+}
+
 // DumpPluginLog tails the plugin's /var/log/net-dhcp.log into t.Log.
 // Plugin logs live under /var/lib/docker/plugins/<plugin-id>/rootfs/
 // (Docker's standard layout for managed plugins). The plugin id comes
