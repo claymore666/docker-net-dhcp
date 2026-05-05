@@ -5,6 +5,7 @@ package harness
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/docker/docker/api/types/filters"
@@ -16,7 +17,17 @@ import (
 // don't install/enable from within tests — that's a global daemon
 // mutation and conflicts with whatever the operator already has set
 // up. The runner's pre-test step handles install (or not).
-const PluginRef = "ghcr.io/claymore666/docker-net-dhcp:golang"
+//
+// The default ":golang" matches the production install. A run can
+// point the harness at a different tag (e.g. ":dev" for a code
+// change being verified before the ":golang" slot is bumped) by
+// setting INTEGRATION_PLUGIN_REF in the environment.
+var PluginRef = func() string {
+	if v := os.Getenv("INTEGRATION_PLUGIN_REF"); v != "" {
+		return v
+	}
+	return "ghcr.io/claymore666/docker-net-dhcp:golang"
+}()
 
 // VerifyPluginEnabled checks that PluginRef is installed and currently
 // enabled in the local Docker daemon. Use from TestMain so the suite
@@ -46,4 +57,4 @@ func VerifyPluginEnabled(ctx context.Context) error {
 
 // DriverName is the network driver name to pass to docker network
 // create — same as PluginRef. Aliased for readability.
-const DriverName = PluginRef
+var DriverName = PluginRef

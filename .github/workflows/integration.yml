@@ -55,15 +55,24 @@ jobs:
       # (we deliberately don't reinstall per-PR — that would mutate
       # daemon-global state and conflict with smoke testing on the
       # same host).
+      #
+      # The harness reads INTEGRATION_PLUGIN_REF (set below) and
+      # falls back to :golang. We point at :dev for the v0.7.0 PR
+      # so the udhcpc -B fix for ipvlan (#62) can be verified before
+      # the operator promotes the same build to :golang.
       - name: Verify plugin enabled
+        env:
+          INTEGRATION_PLUGIN_REF: ghcr.io/claymore666/docker-net-dhcp:dev
         run: |
           if ! docker plugin ls --format '{{.Name}}: enabled={{.Enabled}}' \
-              | grep -q '^ghcr.io/claymore666/docker-net-dhcp:golang: enabled=true$'; then
-            echo "Plugin ghcr.io/claymore666/docker-net-dhcp:golang is not enabled."
-            echo "Operator action required: docker plugin install + enable on the runner."
+              | grep -q "^${INTEGRATION_PLUGIN_REF}: enabled=true$"; then
+            echo "Plugin ${INTEGRATION_PLUGIN_REF} is not enabled."
+            echo "Operator action required: build + install + enable on the runner."
             docker plugin ls
             exit 1
           fi
 
       - name: Run integration tests
+        env:
+          INTEGRATION_PLUGIN_REF: ghcr.io/claymore666/docker-net-dhcp:dev
         run: make integration-test

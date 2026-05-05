@@ -182,9 +182,10 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 			defer cancel()
 
 			clientOpts := &udhcpc.DHCPClientOptions{
-				V6:       v6,
-				Hostname: hostname,
-				ClientID: clientID,
+				V6:        v6,
+				Hostname:  hostname,
+				ClientID:  clientID,
+				Broadcast: mode == ModeIPvlan,
 			}
 			if !v6 {
 				clientOpts.RequestedIP = requestedIP

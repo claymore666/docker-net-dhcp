@@ -17,20 +17,19 @@ import (
 // guards that invariant; an accidental switch to L3 mode would fail
 // here with udhcpc never seeing an OFFER.
 //
-// **Currently skipped**: when the harness's DHCP server runs over a
-// veth-pair parent (our setup) the broadcast OFFER doesn't reach the
-// ipvlan slave inside the container netns. Real LAN DHCP servers
-// (Fritz.Box etc) over a hardware NIC parent work — that path is
-// covered by manual smoke testing. Investigating the veth-parent
-// delivery quirk is tracked as a follow-up; documented in
-// test/integration/README.md "ipvlan + veth" section.
-//
 // One observable mode-specific difference: ipvlan children inherit
 // the parent's MAC, so docker inspect shows the HostVeth MAC instead
 // of a random one. The test asserts the container's eth0 has the
 // same MAC the daemon reported.
+//
+// Earlier this test was `t.Skip`'d because the OFFER never reached
+// the slave through a veth parent. The fix landed in pkg/udhcpc:
+// setting the BROADCAST flag in DISCOVER (`udhcpc -B`) for ipvlan
+// mode forces the OFFER to be L2-broadcast at the wire level, which
+// the kernel then floods correctly to all slaves of the parent.
+// dnsmasq's `--dhcp-broadcast` in our fixture is now belt-and-braces
+// rather than the only thing keeping ipvlan honest.
 func TestLifecycleIPvlan_GoldenPath(t *testing.T) {
-	t.Skip("ipvlan-L2 broadcast OFFER delivery to a slave whose parent is a veth doesn't work in our harness; tracked as a follow-up. Real LAN DHCP via hardware parent is covered by manual smoke testing.")
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
