@@ -33,6 +33,15 @@ for if in $(ip -br link 2>/dev/null | awk '/^dh-itest-/{print $1}' | sed 's|@.*|
     ip link del "$if" 2>/dev/null || true
 done
 
+echo "=== ensuring plugin is enabled (recovery test may have left it disabled) ==="
+# If the recovery test panicked between disable and enable, the plugin is
+# stuck off and every subsequent run will fail at VerifyPluginEnabled.
+# PluginEnable is idempotent — already-enabled returns an error we ignore.
+plugin_ref="ghcr.io/claymore666/docker-net-dhcp:golang"
+if docker plugin inspect "$plugin_ref" >/dev/null 2>&1; then
+    docker plugin enable "$plugin_ref" 2>&1 | sed 's/^/  /' || true
+fi
+
 echo "=== killing lingering dnsmasq listening on dh-itest-dhcp ==="
 # dnsmasq with --interface=dh-itest-dhcp argv signature
 pids=$(pgrep -f -- '--interface=dh-itest-dhcp' || true)
