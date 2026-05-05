@@ -31,14 +31,31 @@ type jsonError struct {
 	Message string `json:"Err"`
 }
 
-// JSONErrResponse Sends an `error` as a JSON object with a `message` property
+// JSONErrResponse Sends an `error` as a JSON object with a `message`
+// property. Logs at a level matching the HTTP status:
+//
+//   - 5xx -> Error (we did something wrong)
+//   - 4xx -> Warn  (caller did something wrong; not actionable for us)
+//   - other -> Info
+//
+// A torrent of 4xx from a misconfigured client used to land at ERROR,
+// drowning real failures (I-12 in the 2026-05-05 review).
 func JSONErrResponse(w http.ResponseWriter, err error, statusCode int) {
-	log.WithError(err).Error("Error while processing request")
-
-	w.Header().Set("Content-Type", "application/problem+json")
 	if statusCode == 0 {
 		statusCode = ErrToStatus(err)
 	}
+
+	entry := log.WithError(err).WithField("status", statusCode)
+	switch {
+	case statusCode >= 500:
+		entry.Error("Error while processing request")
+	case statusCode >= 400:
+		entry.Warn("Caller error while processing request")
+	default:
+		entry.Info("Non-success response")
+	}
+
+	w.Header().Set("Content-Type", "application/problem+json")
 	w.WriteHeader(statusCode)
 
 	if encErr := json.NewEncoder(w).Encode(jsonError{err.Error()}); encErr != nil {
