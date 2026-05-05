@@ -1,0 +1,74 @@
+{
+    "description": "Docker DHCP networking (host-bridge or macvlan attachment) — coverage-instrumented build",
+    "interface": {
+        "socket": "net-dhcp.sock",
+        "types": [
+            "docker.networkdriver/1.0"
+        ]
+    },
+    "entrypoint": ["/usr/sbin/net-dhcp", "-logfile", "/var/log/net-dhcp.log"],
+    "env": [
+        {
+            "description": "Log level",
+            "name": "LOG_LEVEL",
+            "value": "info",
+            "settable": [
+                "value"
+            ]
+        },
+        {
+            "description": "Timeout while awaiting container/sandbox readiness",
+            "name": "AWAIT_TIMEOUT",
+            "value": "10s",
+            "settable": [
+                "value"
+            ]
+        },
+        {
+            "description": "Directory where per-network options are persisted",
+            "name": "STATE_DIR",
+            "value": "/var/lib/net-dhcp",
+            "settable": [
+                "value"
+            ]
+        },
+        {
+            "description": "Directory where Go binary coverage counters are written on shutdown (cover build only)",
+            "name": "GOCOVERDIR",
+            "value": "/coverage",
+            "settable": [
+                "value"
+            ]
+        }
+    ],
+    "workdir": "/",
+    "network": {
+        "type": "host"
+    },
+    "pidhost": true,
+    "mounts": [
+        {
+            "source": "/var/run/docker.sock",
+            "destination": "/run/docker.sock",
+            "type": "bind",
+            "options": [
+                "bind"
+            ]
+        },
+        {
+            "source": "/var/lib/dh-cover",
+            "destination": "/coverage",
+            "type": "bind",
+            "options": [
+                "bind",
+                "rw"
+            ]
+        }
+    ],
+    "linux": {
+        "capabilities": [
+            "CAP_NET_ADMIN",
+            "CAP_SYS_ADMIN"
+        ]
+    }
+}

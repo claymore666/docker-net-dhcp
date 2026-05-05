@@ -1,12 +1,19 @@
 FROM golang:1.25-alpine AS builder
 
+# COVER_FLAGS is empty for the production build and `-cover -coverpkg=./...`
+# for the instrumented build used by the coverage workflow. Keeping the
+# instrumentation behind a build arg means the production image is byte-
+# identical to the unparameterized build — no risk of accidentally shipping
+# a cover-instrumented binary.
+ARG COVER_FLAGS=
+
 WORKDIR /usr/local/src/docker-net-dhcp
 COPY go.* ./
 RUN go mod download
 
 COPY cmd/ ./cmd/
 COPY pkg/ ./pkg/
-RUN mkdir bin/ && go build -o bin/ ./cmd/...
+RUN mkdir bin/ && go build $COVER_FLAGS -o bin/ ./cmd/...
 
 
 FROM alpine:3.20.3@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
