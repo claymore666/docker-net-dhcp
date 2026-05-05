@@ -50,6 +50,19 @@ func main() {
 			if dns := os.Getenv("dns"); dns != "" {
 				event.Data.DNSServers = strings.Fields(dns)
 			}
+			// Option 42 (NTP servers) — env var `ntpsrv`.
+			if ntp := os.Getenv("ntpsrv"); ntp != "" {
+				event.Data.NTPServers = strings.Fields(ntp)
+			}
+			// Option 119 (DNS Search List) — env var `search`.
+			// busybox formats multi-entry lists as space-separated.
+			if search := os.Getenv("search"); search != "" {
+				event.Data.SearchList = strings.Fields(search)
+			}
+			// Option 66 (TFTP server name) — env var `tftp`.
+			event.Data.TFTPServer = os.Getenv("tftp")
+			// Option 67 (Boot file name) — env var `bootfile`.
+			event.Data.BootFile = os.Getenv("bootfile")
 		}
 		// MTU (option 26) applies to both v4 and v6 — udhcpc / udhcpc6
 		// both expose it as `mtu` when the server sends it. Skip on

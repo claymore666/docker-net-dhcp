@@ -30,8 +30,9 @@ re-investigate. (Original report: third-pass code review, 2026-05-04.)
 
 DHCP-helper polish: option propagation, parent-attached parity,
 truthfulness counter, DHCP-wire health metrics, configurable
-client-id and vendor class. Tier 1 (#100, #101, #102, #104)
-plus T2-3 (#106) and T2-4 (#107) closed.
+client-id and vendor class, NTP / search-list / TFTP capture.
+Tier 1 (#100, #101, #102, #104) plus T2-2 (#105), T2-3 (#106)
+and T2-4 (#107) closed.
 
 ### New driver-opts (opt-in, default off for backwards compatibility)
 
@@ -62,6 +63,33 @@ plus T2-3 (#106) and T2-4 (#107) closed.
   or option set to containers tagged with a known vendor string.
   Default empty falls back to the historical `docker-net-dhcp`
   string. v6 unaffected — udhcpc6 doesn't accept the option.
+
+### Additional captured DHCP options (#105)
+
+`udhcpc-handler` now captures four more options on every bind /
+renew event and surfaces them via the plugin log at info level
+(only when at least one is non-empty, so plain LANs see no extra
+noise):
+
+- **Option 42 (NTP servers)** — captured into `Info.NTPServers`.
+  Not auto-applied to the container; workloads needing NTP
+  consume the value via plugin logs or future tooling.
+- **Option 119 (DNS Search List)** — captured into
+  `Info.SearchList`. When `propagate_dns=true`, the plugin emits
+  every entry on the container's `search` line in
+  `/etc/resolv.conf`. RFC 3397 precedence: option 119 supersedes
+  option 15 (`Domain`) when both are present; option 15 is the
+  fallback otherwise.
+- **Option 66 (TFTP server name)** — captured into
+  `Info.TFTPServer`. Surfaced via plugin log; not auto-applied.
+- **Option 67 (Boot file name)** — captured into `Info.BootFile`.
+  Surfaced via plugin log; not auto-applied.
+
+The udhcpc command line now requests `mtu`, `search`, `tftp`,
+and `bootfile` explicitly via `-O`. Busybox already requests
+`ntpsrv` (option 42) by default. RFC-conformant servers only
+return options the client asked for; this block is always-on but
+free when the server doesn't supply them.
 
 ### Behaviour change (default flipped — see compatibility note)
 
