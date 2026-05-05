@@ -17,8 +17,14 @@ func TestIsDHCPPlugin(t *testing.T) {
 		{"ghcr.io/devplayer0/docker-net-dhcp:release-linux-amd64", true},
 		{"ghcr.io/claymore666/docker-net-dhcp:v0.4.0", true},
 		{"ghcr.io/claymore666/docker-net-dhcp:latest", true},
-		{"someregistry.example/team/docker-net-dhcp:1.0", true},
-		{"docker-net-dhcp:local", true},
+
+		// Foreign namespaces are deliberately rejected — see W-6 in the
+		// 2026-05-05 review. A broader regex would let a third-party
+		// image masquerade as an instance of this plugin and trigger
+		// spurious bridge-conflict errors.
+		{"someregistry.example/team/docker-net-dhcp:1.0", false},
+		{"docker-net-dhcp:local", false},
+		{"evil.example/docker-net-dhcp:bad", false},
 
 		{"bridge", false},
 		{"macvlan", false},

@@ -7,8 +7,10 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"runtime"
 	"syscall"
@@ -161,7 +163,20 @@ func NewDHCPClient(iface string, opts *DHCPClientOptions) (*DHCPClient, error) {
 	return c, nil
 }
 
-// Start starts udhcpc(6)
+// Start starts udhcpc(6).
+//
+// Concurrency contract: when Opts.Namespace is non-empty, Start enters
+// the target netns by locking the calling goroutine to its OS thread,
+// switching netns, spawning the child, and switching back. It is *not*
+// re-entrant on the same goroutine (a nested Start on the same g would
+// double-LockOSThread). Concurrent Starts on *different* goroutines
+// are safe — each goroutine flips its own thread independently.
+//
+// On netns-restore failure the calling thread is deliberately leaked
+// (a second LockOSThread pins it so Go's runtime won't reuse it for
+// other goroutines). That's the safer choice than letting the wrong-
+// netns state leak into the runtime's thread pool — the OS scheduler
+// reaps the thread when the process exits, which is soon enough.
 func (c *DHCPClient) Start() (chan Event, error) {
 	if c.Opts.Namespace != "" {
 		// Lock the OS Thread so we don't accidentally switch namespaces
@@ -172,13 +187,21 @@ func (c *DHCPClient) Start() (chan Event, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to open current network namespace: %w", err)
 		}
-		defer origNS.Close()
+		defer func() {
+			if err := origNS.Close(); err != nil {
+				log.WithError(err).Debug("origNS close failed")
+			}
+		}()
 
 		ns, err := netns.GetFromPath(c.Opts.Namespace)
 		if err != nil {
 			return nil, fmt.Errorf("failed to open network namespace `%v`: %w", c.Opts.Namespace, err)
 		}
-		defer ns.Close()
+		defer func() {
+			if err := ns.Close(); err != nil {
+				log.WithError(err).Debug("netns close failed")
+			}
+		}()
 
 		if err := netns.Set(ns); err != nil {
 			return nil, fmt.Errorf("failed to enter network namespace: %w", err)
@@ -232,12 +255,21 @@ func (c *DHCPClient) Start() (chan Event, error) {
 	return events, nil
 }
 
-// Finish sends SIGTERM to udhcpc(6) and waits for it to exit. SIGTERM will not
-// be sent if `Opts.Once` is set.
+// Finish sends SIGTERM to udhcpc(6) and waits for it to exit. SIGTERM
+// will not be sent if `Opts.Once` is set.
 func (c *DHCPClient) Finish(ctx context.Context) error {
 	// If only running to get an IP once, udhcpc will terminate on its own
 	if !c.Opts.Once {
 		if err := c.cmd.Process.Signal(syscall.SIGTERM); err != nil {
+			// The process can self-exit between Start and here (NAK,
+			// parent NIC vanished, netns torn down). os.ErrProcessDone
+			// is the wrapped sentinel for that race; treat as success
+			// and let Wait reap so we don't leak a zombie.
+			if errors.Is(err, os.ErrProcessDone) {
+				log.WithFields(log.Fields{"v6": c.Opts.V6}).
+					Debug("udhcpc already exited before SIGTERM; reaping")
+				return c.Wait(ctx)
+			}
 			return fmt.Errorf("failed to send SIGTERM to udhcpc: %w", err)
 		}
 	}
@@ -268,10 +300,19 @@ func (c *DHCPClient) Wait(ctx context.Context) error {
 	}
 }
 
-// GetIP is a convenience function that runs udhcpc(6) once and returns the IP
-// info obtained. The caller's opts is not mutated — we work on a local copy
-// so a caller that reuses the options struct between persistent and one-shot
-// calls doesn't get its Once flag flipped on.
+// GetIP is a convenience function that runs udhcpc(6) once and returns
+// the IP info obtained. The caller's opts is not mutated — we work on a
+// local copy so a caller that reuses the options struct between persistent
+// and one-shot calls doesn't get its Once flag flipped on.
+//
+// Implementation note (W-5 in the 2026-05-05 review): the previous form
+// shared a `*Info` pointer between the events-collector goroutine and
+// the main goroutine without synchronisation, and busy-looped on the
+// closed events channel because the receive didn't check `ok`. The
+// `range events` loop here drains until the scanner closes the channel,
+// then hands the final lease back through `ch` — which is the
+// happens-before edge between the goroutine's last write and the main
+// goroutine's read.
 func GetIP(ctx context.Context, iface string, opts *DHCPClientOptions) (Info, error) {
 	dummy := Info{}
 
@@ -287,30 +328,35 @@ func GetIP(ctx context.Context, iface string, opts *DHCPClientOptions) (Info, er
 		return dummy, fmt.Errorf("failed to start DHCP client: %w", err)
 	}
 
-	var info *Info
-	done := make(chan struct{})
+	// ch carries the final lease seen, or stays unsent if no
+	// bound/renew event arrived before the scanner closed events.
+	// Buffered=1 so the goroutine never blocks on send.
+	ch := make(chan Info, 1)
 	go func() {
-		for {
-			select {
-			case event := <-events:
-				switch event.Type {
-				case "bound", "renew":
-					info = &event.Data
-				}
-			case <-done:
-				return
+		var last *Info
+		for event := range events {
+			if event.Type == "bound" || event.Type == "renew" {
+				v := event.Data
+				last = &v
 			}
 		}
+		if last != nil {
+			ch <- *last
+		}
+		close(ch)
 	}()
-	defer close(done)
 
 	if err := client.Finish(ctx); err != nil {
 		return dummy, err
 	}
 
-	if info == nil {
-		return dummy, util.ErrNoLease
+	select {
+	case info, ok := <-ch:
+		if !ok {
+			return dummy, util.ErrNoLease
+		}
+		return info, nil
+	case <-ctx.Done():
+		return dummy, ctx.Err()
 	}
-
-	return *info, nil
 }

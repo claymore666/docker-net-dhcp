@@ -30,8 +30,13 @@ import (
 // subLinkName returns the host-side child link name for an endpoint.
 // Mirrors the prefix used for the bridge-mode veth so existing log/diag
 // patterns still apply. Used for both macvlan and ipvlan children.
+// Defensive against short IDs (see vethPairNames) — never panics.
 func subLinkName(endpointID string) string {
-	return "dh-" + endpointID[:12]
+	prefix := endpointID
+	if len(endpointID) > 12 {
+		prefix = endpointID[:12]
+	}
+	return "dh-" + prefix
 }
 
 // validateParentForChild ensures the parent NIC exists, is up, and is

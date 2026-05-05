@@ -10,3 +10,6 @@ __pycache__/
 
 # Local-only handoff brief — not part of the project
 CLAUDE.md
+
+# Local code-review reports — kept on disk for follow-up but not committed
+code-review-report.md

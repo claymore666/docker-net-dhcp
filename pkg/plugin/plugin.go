@@ -59,6 +59,14 @@ const initialDHCPHostnameLookupTimeout = 2 * time.Second
 // recovery_failed on /Plugin.Health.
 const recoveryBudget = 30 * time.Second
 
+// recoveryPerNetworkTimeout caps each individual NetworkInspect /
+// netOptions Docker round-trip during recovery. Without it (W-7 in
+// the 2026-05-05 review) one stuck Docker call could consume the
+// entire recoveryBudget and starve later networks of their chance
+// to recover. Tight on purpose — these are local-socket calls that
+// either return promptly or are wedged.
+const recoveryPerNetworkTimeout = 3 * time.Second
+
 // clientIDFromEndpoint derives a stable DHCP option-61 client identifier
 // from a Docker endpoint ID. Docker's endpoint IDs are 64 hex chars
 // (32 bytes). We take the first 8 bytes — long enough to be unique
@@ -83,12 +91,14 @@ func clientIDFromEndpoint(endpointID string) []byte {
 
 const defaultLeaseTimeout = 10 * time.Second
 
-// driverRegexp matches plugin references that this driver should treat as
-// "another instance of itself" when scanning for bridge conflicts. Upstream
-// pinned this to ghcr.io/devplayer0; we accept any registry namespace as
-// long as the image name and tag are present, so forks published under a
-// different namespace still cross-detect each other on the same host.
-var driverRegexp = regexp.MustCompile(`(^|/)docker-net-dhcp:.+$`)
+// driverRegexp matches plugin references that this driver should treat
+// as "another instance of itself" when scanning for bridge conflicts.
+// Pinned to known maintained namespaces (devplayer0 = upstream,
+// claymore666 = this fork) — broader matching would treat an attacker-
+// controlled image like `evil.example/docker-net-dhcp:bad` as ours and
+// surface spurious "Bridge already in use" errors. New forks that need
+// cross-detection should add their namespace here.
+var driverRegexp = regexp.MustCompile(`(^|/)(devplayer0|claymore666)/docker-net-dhcp:.+$`)
 
 // IsDHCPPlugin checks if a Docker network driver is an instance of this plugin
 func IsDHCPPlugin(driver string) bool {
@@ -381,7 +391,9 @@ func (p *Plugin) consumeTombstone(networkID, hostname string) (mac, ipv4, ipv6 s
 		log.WithError(err).Warn("Failed to load tombstones; treating as empty")
 		return "", "", "", false
 	}
+	preLen := len(ts)
 	ts = pruneTombstones(ts)
+	pruned := len(ts) != preLen
 	matchIdx := -1
 	matches := 0
 	for i, t := range ts {
@@ -398,12 +410,13 @@ func (p *Plugin) consumeTombstone(networkID, hostname string) (mac, ipv4, ipv6 s
 		matches++
 		matchIdx = i
 	}
-	// Always rewrite to persist the prune, even if we don't consume.
 	if matches != 1 {
 		// More than one match → ambiguous. Drop *all* matches so the
 		// next consumeTombstone for this network/hostname doesn't keep
 		// hitting the same poisoned set for the rest of the TTL window.
-		// Zero matches is harmless; the prune still gets persisted.
+		// Zero matches is harmless; the prune still gets persisted iff
+		// it changed something.
+		dirty := pruned
 		if matches > 1 {
 			kept := ts[:0]
 			for _, t := range ts {
@@ -417,9 +430,15 @@ func (p *Plugin) consumeTombstone(networkID, hostname string) (mac, ipv4, ipv6 s
 				kept = append(kept, t)
 			}
 			ts = kept
+			dirty = true
 		}
-		if err := saveTombstones(ts); err != nil {
-			log.WithError(err).Debug("Failed to persist pruned tombstones")
+		// Skip the rewrite when nothing changed (I-10 in the
+		// 2026-05-05 review): the common no-op consume on a quiet
+		// network used to fsync a file write per CreateEndpoint.
+		if dirty {
+			if err := saveTombstones(ts); err != nil {
+				log.WithError(err).Debug("Failed to persist pruned tombstones")
+			}
 		}
 		return "", "", "", false
 	}
@@ -446,29 +465,47 @@ func (p *Plugin) consumeTombstone(networkID, hostname string) (mac, ipv4, ipv6 s
 // so the upstream DHCP server can ACK the lease the container is
 // already using rather than handing out a fresh one.
 func (p *Plugin) recoverEndpoints(ctx context.Context) {
+	// recordSyncFailure bumps both the local counter (used for the
+	// summary log line) and the atomic surfaced on /Plugin.Health.
+	// The async Start failure path bumps p.recoveryFailed directly;
+	// without this, NetworkInspect / netOptions / recoverOneEndpoint
+	// failures would only show up in the log line and not on the
+	// health endpoint operators page on (W-2 in the 2026-05-05 review).
+	var recovered, failed int
+	recordSyncFailure := func() {
+		failed++
+		p.recoveryFailed.Add(1)
+	}
 	nets, err := p.docker.NetworkList(ctx, dNetwork.ListOptions{})
 	if err != nil {
 		log.WithError(err).Warn("recovery: failed to list networks; skipping")
+		// We don't know how many endpoints we missed; at least flip
+		// Healthy=false so an operator notices.
+		p.recoveryFailed.Add(1)
 		return
 	}
-	var recovered, failed int
 	for _, n := range nets {
 		if !IsDHCPPlugin(n.Driver) {
 			continue
 		}
+		// Per-network bounded ctx so a single hung NetworkInspect /
+		// netOptions doesn't consume the whole recoveryBudget.
+		netCtx, netCancel := context.WithTimeout(ctx, recoveryPerNetworkTimeout)
 		// Re-fetch with full container details (NetworkList is summary-only).
-		netInfo, err := p.docker.NetworkInspect(ctx, n.ID, dNetwork.InspectOptions{})
+		netInfo, err := p.docker.NetworkInspect(netCtx, n.ID, dNetwork.InspectOptions{})
 		if err != nil {
+			netCancel()
 			log.WithError(err).WithField("network", shortID(n.ID)).
 				Warn("recovery: NetworkInspect failed; skipping")
-			failed++
+			recordSyncFailure()
 			continue
 		}
-		opts, err := p.netOptions(ctx, n.ID)
+		opts, err := p.netOptions(netCtx, n.ID)
+		netCancel()
 		if err != nil {
 			log.WithError(err).WithField("network", shortID(n.ID)).
 				Warn("recovery: failed to load network options; skipping")
-			failed++
+			recordSyncFailure()
 			continue
 		}
 		for cid, info := range netInfo.Containers {
@@ -484,7 +521,7 @@ func (p *Plugin) recoverEndpoints(ctx context.Context) {
 					"network":  shortID(n.ID),
 					"endpoint": shortID(info.EndpointID),
 				}).Warn("recovery: endpoint recovery failed")
-				failed++
+				recordSyncFailure()
 				continue
 			}
 			recovered++
@@ -778,6 +815,14 @@ func (p *Plugin) Close() error {
 		}
 		// Bound wall time: we can't let one wedged udhcpc hold up the
 		// whole shutdown.
+		//
+		// Known leak (W-8 in the 2026-05-05 review): if the timeout
+		// fires before wg.Wait returns, the watcher goroutine and any
+		// stuck Stop() calls live on until the OS reaps the process.
+		// That's acceptable here because Close runs at process exit
+		// — but DO NOT copy this pattern into a long-lived caller
+		// (e.g. a future SIGHUP-driven re-attach). For long-lived use,
+		// pass a ctx into Stop and have it abort cleanly on cancel.
 		done := make(chan struct{})
 		go func() { wg.Wait(); close(done) }()
 		select {

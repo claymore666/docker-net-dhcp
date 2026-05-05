@@ -1,0 +1,27 @@
+name: APK pin drift
+
+# Weekly check on the apk pins in the Dockerfile (busybox-extras,
+# iproute2). Surfaces an upgrade signal so a silent upstream change
+# in the udhcpc-shipping busybox doesn't land in plugin builds
+# without the maintainer noticing (I-13 in the 2026-05-05 review).
+#
+# Runs on a Sunday-morning UTC schedule, plus on-demand via the
+# Actions tab. Doesn't fail the workflow on drift — the report in
+# the run log is the actionable artefact.
+
+on:
+  schedule:
+    - cron: '7 6 * * 0'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check apk pins
+        run: bash scripts/check-apk-pins.sh

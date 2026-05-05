@@ -80,6 +80,19 @@ jobs:
           docker plugin disable "${COVER_PLUGIN_REF}" || true
           ls -la "${COVER_DIR}"
 
+      # Run the unit test suite with coverage so the workflow summary
+      # can report unit + integration + merged numbers (I-14 in the
+      # 2026-05-05 review). go test's `-cover -test.gocoverdir` writes
+      # the same binary-coverage format covdata understands, which
+      # lets us merge directly without converting through textfmt.
+      - name: Run unit tests with coverage
+        if: always()
+        run: |
+          mkdir -p coverage-unit
+          go test -count=1 -coverpkg=./... \
+              -args -test.gocoverdir="$PWD/coverage-unit" \
+              ./pkg/... ./cmd/...
+
       - name: Coverage summary
         if: always()
         run: |
@@ -87,10 +100,24 @@ jobs:
             echo "No coverage counter files found — plugin may have crashed before flush."
             exit 1
           fi
-          echo "## Coverage by package" >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-          go tool covdata percent -i="${COVER_DIR}" | tee -a "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          {
+              echo "## Coverage by package"
+              echo
+              echo "### Integration only"
+              echo '```'
+              go tool covdata percent -i="${COVER_DIR}"
+              echo '```'
+              if ls coverage-unit/covcounters.* >/dev/null 2>&1; then
+                  echo "### Unit only"
+                  echo '```'
+                  go tool covdata percent -i=coverage-unit
+                  echo '```'
+                  echo "### Merged (unit + integration)"
+                  echo '```'
+                  go tool covdata percent -i="${COVER_DIR}",coverage-unit
+                  echo '```'
+              fi
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Generate coverage reports
         if: always()
@@ -99,7 +126,13 @@ jobs:
             echo "Skipping report generation — no counter files."
             exit 0
           fi
+          # Per-source profiles: integration-only (back-compat), and
+          # merged when unit counters are present.
           go tool covdata textfmt -i="${COVER_DIR}" -o coverage.out
+          if ls coverage-unit/covcounters.* >/dev/null 2>&1; then
+              go tool covdata textfmt -i="${COVER_DIR}",coverage-unit -o coverage-merged.out
+              go tool cover -html=coverage-merged.out -o coverage-merged.html
+          fi
           go tool cover -html=coverage.out -o coverage.html
 
       - name: Upload coverage artifact
@@ -110,6 +143,8 @@ jobs:
           path: |
             coverage.out
             coverage.html
+            coverage-merged.out
+            coverage-merged.html
           if-no-files-found: warn
           retention-days: 30
 
