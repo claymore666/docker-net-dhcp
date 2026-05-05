@@ -63,9 +63,26 @@ This fork publishes semver-tagged plugin images on GitHub Container Registry: `g
 
 Currently published architectures: `linux/amd64` only. ARM builds (multi-arch via `scripts/push_multiarch_plugin.py`) are supported by the build pipeline but not currently published — open an issue if you need one.
 
-## Network creation
+## Attachment modes
 
-In order to create a Docker network using `net-dhcp`, you'll need a pre-configured bridge interface on the host. How you
+The plugin supports three attachment modes, selected by the `mode` driver option:
+
+| mode | parent | host changes required |
+| ---- | ------ | --------------------- |
+| `bridge` (default) | a Linux bridge you maintain (`-o bridge=<name>`) | yes — you bring the bridge |
+| `macvlan` | a host NIC (`-o parent=<iface>`) | none |
+| `ipvlan` (L2) | a host NIC (`-o parent=<iface>`) | none |
+
+The bridge-mode walkthrough below is the original upstream flow. For
+macvlan/ipvlan see [`docs/parent-attached-modes.md`](docs/parent-attached-modes.md) — those modes
+attach directly to a host NIC without a bridge and are the right pick
+when you don't want to reconfigure the host's networking. The doc also
+covers DHCP identity (hostname / option 60 / option 61), the
+`/Plugin.Health` endpoint, restart stability, and recovery.
+
+## Network creation (bridge mode)
+
+In order to create a Docker network in bridge mode, you'll need a pre-configured bridge interface on the host. How you
 set this up will depend on your system, but the following (manual) instructions should work on most Linux distros:
 
 ```
@@ -186,6 +203,18 @@ Note:
 
 To read the plugin's log, do `cat /var/lib/docker/plugins/*/rootfs/var/log/net-dhcp.log` (as `root`). You can also use
 `docker plugin set ghcr.io/claymore666/docker-net-dhcp:v0.7.0 LOG_LEVEL=trace` to increase log verbosity.
+
+`/Plugin.Health` exposes liveness and recovery counters as JSON on the plugin's UNIX socket — useful as a monitoring probe. See [`docs/parent-attached-modes.md`](docs/parent-attached-modes.md#health-endpoint) for the payload schema and a sample `curl` invocation.
+
+### Plugin env vars
+
+All three are `docker plugin set`-able and take effect after a `disable && enable` cycle:
+
+| name            | default              | meaning |
+| --------------- | -------------------- | ------- |
+| `LOG_LEVEL`     | `info`               | logrus level. `trace` is the most verbose. |
+| `AWAIT_TIMEOUT` | `10s`                | Cap on the per-endpoint polling helpers (sandbox / link rename / netns appearance). |
+| `STATE_DIR`     | `/var/lib/net-dhcp`  | Where per-network options and the tombstone file are persisted. |
 
 # Implementation
 
