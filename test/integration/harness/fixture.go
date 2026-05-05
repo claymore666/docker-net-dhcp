@@ -234,6 +234,12 @@ func wrapTeardown(err error) error {
 // dnsmasq(8): "expiration_epoch MAC IP hostname client-id".
 func (f *Fixture) LeaseFile() string { return f.leaseFile }
 
+// DnsmasqLog returns the path of the macvlan-fixture dnsmasq log
+// file. Tests that need to assert on the wire conversation (e.g.
+// "did a renewal DHCPACK arrive?") can grep this file directly
+// during the test rather than waiting for the failure-path dump.
+func (f *Fixture) DnsmasqLog() string { return f.dnsmasqLog }
+
 // DumpLogs prints captured dnsmasq stderr to a writer (usually
 // t.Log) so failed tests have the wire-level conversation. Tests
 // should call this from a t.Cleanup with a check for t.Failed().
