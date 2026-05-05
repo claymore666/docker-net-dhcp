@@ -35,8 +35,11 @@ jobs:
 
     env:
       # GHCR is always pushed. Hub repo only pushed when secrets are set.
+      # Hub uses the shorter `net-dhcp` name (matching upstream's
+      # convention there); GHCR keeps `docker-net-dhcp` to align with
+      # the existing tag history.
       GHCR_NAME: ghcr.io/claymore666/docker-net-dhcp
-      HUB_NAME: claymore666/docker-net-dhcp
+      HUB_NAME: claymore666/net-dhcp
 
     steps:
       - name: Resolve release tag
