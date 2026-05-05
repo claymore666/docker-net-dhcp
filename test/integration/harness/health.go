@@ -93,8 +93,15 @@ func PluginHealth(ctx context.Context, cli *docker.Client) (*HealthResponse, err
 // Best-effort: missing log file or unresolvable plugin id is logged
 // as a Logf, never a Fatal — we don't want a missing log to cascade
 // into the diagnostic noise that hid the original failure.
-func DumpPluginLog(t *testing.T, ctx context.Context) {
+func DumpPluginLog(t *testing.T) {
 	t.Helper()
+	// Cleanup runs after the test's deferred cancel(), so we derive
+	// a fresh context — passing the test's ctx in would arrive
+	// already canceled and PluginInspect would fail with
+	// context.Canceled. 5s is enough for the local-socket call.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
 	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
 	if err != nil {
 		t.Logf("DumpPluginLog: docker client: %v", err)

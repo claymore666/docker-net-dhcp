@@ -28,7 +28,7 @@ func TestMTUPropagate_OptInSetsLinkMTU(t *testing.T) {
 	t.Cleanup(func() {
 		if t.Failed() {
 			fixture.DumpLogs(func(s string) { t.Log(s) })
-			harness.DumpPluginLog(t, ctx)
+			harness.DumpPluginLog(t)
 		}
 	})
 
