@@ -51,6 +51,17 @@ type DHCPClientOptions struct {
 	// stable bytes make sense (typically a hash of the Docker EndpointID).
 	ClientID []byte
 
+	// Broadcast (v4 only) makes udhcpc set the BROADCAST flag in the
+	// DHCPDISCOVER, telling the server to send the OFFER as L2
+	// broadcast rather than unicast to chaddr. Required for ipvlan-L2:
+	// every slave shares the parent's MAC, so a unicast OFFER lands
+	// on the parent and the kernel has no L3 hint to demux it to the
+	// right slave (the slave's IP isn't configured yet). For macvlan
+	// and bridge modes it's harmless — modern DHCP servers honour the
+	// flag and clients receive the broadcast on their own interface.
+	// Maps to udhcpc's `-B`.
+	Broadcast bool
+
 	HandlerScript string
 }
 
@@ -104,6 +115,10 @@ func NewDHCPClient(iface string, opts *DHCPClientOptions) (*DHCPClient, error) {
 
 	if opts.RequestedIP != "" && !opts.V6 {
 		c.cmd.Args = append(c.cmd.Args, "-r", opts.RequestedIP)
+	}
+
+	if opts.Broadcast && !opts.V6 {
+		c.cmd.Args = append(c.cmd.Args, "-B")
 	}
 
 	if opts.Hostname != "" {

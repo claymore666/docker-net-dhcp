@@ -214,6 +214,11 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 		V6:          v6,
 		Namespace:   m.nsPath,
 		RequestedIP: requestedIP,
+		// ipvlan slaves share the parent's MAC; without -B the server
+		// may unicast renewals to the parent and the kernel has no
+		// way to demux to the right slave. Setting Broadcast for
+		// every renewal in ipvlan mode keeps lease lifecycle stable.
+		Broadcast: m.opts.effectiveMode() == ModeIPvlan,
 		// Same client-id the initial DISCOVER used in CreateEndpoint,
 		// so renewals are seen as the same client by the server.
 		ClientID: clientIDFromEndpoint(m.joinReq.EndpointID),
