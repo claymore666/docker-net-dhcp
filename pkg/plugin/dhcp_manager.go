@@ -40,6 +40,25 @@ const dhcpClientReapTimeout = 5 * time.Second
 // upstream DHCP server.
 const dhcpClientFinishTimeout = 5 * time.Second
 
+// closeNsHandle / closeNetHandle log close errors at Debug instead of
+// silently dropping them. Cleanup paths can't act on a Close failure
+// (we're already on an error path or shutting down), but a recurring
+// EBADF / EIO here is the breadcrumb a future netns-leak debugging
+// session will want.
+func closeNsHandle(h netns.NsHandle) {
+	if err := h.Close(); err != nil {
+		log.WithError(err).Debug("netns handle close failed")
+	}
+}
+func closeNetHandle(h *netlink.Handle) {
+	if h == nil {
+		return
+	}
+	// netlink.Handle.Close has no return value; the wrapper exists
+	// for symmetry with closeNsHandle so call sites read uniformly.
+	h.Close()
+}
+
 type dhcpManager struct {
 	docker  *docker.Client
 	joinReq JoinRequest
@@ -273,25 +292,13 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 					return
 				}
 				switch event.Type {
-				// TODO: We can't really allow the IP in the container to be deleted, it'll delete some of our previously
-				// copied routes. Should this be handled somehow?
-				//case "deconfig":
-				//	ip := m.LastIP
-				//	if v6 {
-				//		ip = m.LastIPv6
-				//	}
-
-				//	log.
-				//		WithFields(m.logFields(v6)).
-				//		WithField("ip", ip).
-				//		Info("udhcpc deconfiguring, deleting previously acquired IP")
-				//	if err := m.netHandle.AddrDel(m.ctrLink, ip); err != nil {
-				//		log.
-				//			WithError(err).
-				//			WithFields(m.logFields(v6)).
-				//			WithField("ip", ip).
-				//			Error("Failed to delete existing udhcpc address")
-				//	}
+				// "deconfig" is intentionally not handled. Deleting the
+				// container's IP from the kernel would also wipe the
+				// static routes Join copied off the host bridge, and
+				// there's no clean way to re-derive them without
+				// re-running the bridge route copy. Better to keep
+				// the stale address until the next bound/renew
+				// overwrites it.
 				case "bound":
 					// The persistent client's first DHCPACK can land
 					// on a different IP than CreateEndpoint's initial
@@ -441,7 +448,7 @@ func (m *dhcpManager) Start(ctx context.Context) (err error) {
 
 	m.netHandle, err = netlink.NewHandleAt(m.nsHandle)
 	if err != nil {
-		m.nsHandle.Close()
+		closeNsHandle(m.nsHandle)
 		return fmt.Errorf("failed to open netlink handle in sandbox namespace: %w", err)
 	}
 
@@ -464,8 +471,8 @@ func (m *dhcpManager) Start(ctx context.Context) (err error) {
 
 		return nil
 	}(); err != nil {
-		m.netHandle.Close()
-		m.nsHandle.Close()
+		closeNetHandle(m.netHandle)
+		closeNsHandle(m.nsHandle)
 		return err
 	}
 
@@ -486,12 +493,12 @@ func (m *dhcpManager) Stop() error {
 	// value emits a noisy EBADF.
 	defer func() {
 		if m.nsHandle.IsOpen() {
-			m.nsHandle.Close()
+			closeNsHandle(m.nsHandle)
 		}
 	}()
 	defer func() {
 		if m.netHandle != nil {
-			m.netHandle.Close()
+			closeNetHandle(m.netHandle)
 		}
 	}()
 
