@@ -56,6 +56,13 @@ for the umbrella scope. Tests so far:
 - `recovery_test.go` — `docker plugin disable -f` + `enable` while
   a container is attached; asserts Plugin.Health.recovered_ok ≥ 1
   and the container's IP/MAC survive the recycle.
+- `recovery_daemon_test.go` — `systemctl restart docker` mid-suite
+  with a `--restart=always` container attached; asserts the daemon
+  comes back, the container restarts, and the IP/MAC are
+  preserved. Empirically the IP is preserved via the tombstone
+  path (graceful shutdown calls Leave) rather than recoverEndpoints
+  — the test logs both paths' counters but tests on the
+  user-visible invariant.
 
 Tests run **serially** by design. None of the current cases call
 `t.Parallel()`, even though most would be safe — the recovery and
