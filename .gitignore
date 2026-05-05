@@ -13,3 +13,18 @@ CLAUDE.md
 
 # Local code-review reports — kept on disk for follow-up but not committed
 code-review-report.md
+
+# Credential-shaped files. The release workflow injects Docker Hub /
+# GHCR tokens via repo secrets, never via tracked files; this list
+# stops a stray local `.env` or test `.key` from being `git add .`'d
+# by accident. Add to it rather than removing if a tool needs another
+# extension.
+.env
+.env.*
+*.key
+*.pem
+*.p12
+*.pfx
+.netrc
+secrets/
+credentials/

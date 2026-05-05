@@ -1,0 +1,141 @@
+name: Release
+
+# Build and publish the plugin image on a vX.Y.Z tag push. Pushes to
+# GHCR (always — built-in token) and Docker Hub (when the credentials
+# secrets are configured). Dual-pushing keeps every release reachable
+# from both registries; the README points operators at GHCR but Docker
+# Hub is where most plugin discovery still happens.
+#
+# Trigger shapes:
+#   - `git tag v0.8.0 && git push --tags` → automatic
+#   - GitHub UI → "Run workflow" → enter tag → manual dry-run
+#
+# Required secrets (Settings → Secrets and variables → Actions):
+#   - DOCKERHUB_USERNAME — Docker Hub login (e.g. `claymore666`)
+#   - DOCKERHUB_TOKEN    — Docker Hub access token (NOT password)
+# If absent, the Hub step skips with a warning instead of failing.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (e.g. v0.8.0). Must already exist on the remote."
+        required: true
+
+permissions:
+  contents: read
+  packages: write   # GHCR push needs this on GITHUB_TOKEN
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+      # GHCR is always pushed. Hub repo only pushed when secrets are set.
+      # Hub uses the shorter `net-dhcp` name (matching upstream's
+      # convention there); GHCR keeps `docker-net-dhcp` to align with
+      # the existing tag history.
+      GHCR_NAME: ghcr.io/claymore666/docker-net-dhcp
+      HUB_NAME: claymore666/net-dhcp
+
+    steps:
+      - name: Resolve release tag
+        id: tag
+        run: |
+          if [ -n "${{ inputs.tag }}" ]; then
+            TAG="${{ inputs.tag }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+            echo "Tag $TAG does not look like vX.Y.Z; refusing." >&2
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Releasing tag: $TAG"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.tag.outputs.tag }}
+          # Full history so RELEASE_NOTES.md credits / "since vX" greps
+          # behave the same as on a developer checkout.
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to Docker Hub
+        id: hub-login
+        if: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Warn if Docker Hub credentials missing
+        if: ${{ steps.hub-login.outcome == 'skipped' }}
+        run: |
+          echo "::warning::DOCKERHUB_USERNAME / DOCKERHUB_TOKEN secrets not set — skipping Docker Hub push. GHCR push proceeds normally."
+
+      # Push to GHCR. `make push` chains create → push, so the plugin
+      # is built fresh and published with the resolved tag. The Make
+      # default PLUGIN_NAME already points at GHCR — passing it
+      # explicitly here keeps the workflow self-documenting.
+      #
+      # Each registry gets two pushes: the version tag AND `:latest`,
+      # so consumers can pin (`:v0.8.0`) or just track tip (`:latest`).
+      # docker plugin doesn't support tag aliasing the way regular
+      # images do — every tag is a separate push of the same rootfs.
+      # The Make `create` target rebuilds only the plugin handle, not
+      # the underlying rootfs image, so the second push is fast.
+      - name: Push to GHCR
+        run: |
+          make PLUGIN_NAME="${GHCR_NAME}" PLUGIN_TAG="${{ steps.tag.outputs.tag }}" push
+          make PLUGIN_NAME="${GHCR_NAME}" PLUGIN_TAG="latest" push
+
+      # Same plugin to Docker Hub when credentials are present. Make
+      # rebuilds the rootfs with the Hub-prefixed name; the underlying
+      # Docker image layer cache is reused so this is cheap.
+      - name: Push to Docker Hub
+        if: ${{ steps.hub-login.outcome == 'success' }}
+        run: |
+          make PLUGIN_NAME="${HUB_NAME}" PLUGIN_TAG="${{ steps.tag.outputs.tag }}" push
+          make PLUGIN_NAME="${HUB_NAME}" PLUGIN_TAG="latest" push
+
+      # Convenience: print the install incantations operators will use,
+      # straight into the workflow summary so the release page links
+      # them prominently.
+      - name: Workflow summary
+        if: always()
+        run: |
+          {
+            echo "## Released ${{ steps.tag.outputs.tag }}"
+            echo
+            echo "Each registry receives both \`:${{ steps.tag.outputs.tag }}\` (pin) and \`:latest\` (tip)."
+            echo
+            echo "### Install from GHCR"
+            echo '```'
+            echo "docker plugin install ${GHCR_NAME}:${{ steps.tag.outputs.tag }}"
+            echo "docker plugin install ${GHCR_NAME}:latest"
+            echo '```'
+            if [ "${{ steps.hub-login.outcome }}" = "success" ]; then
+              echo "### Install from Docker Hub"
+              echo '```'
+              echo "docker plugin install ${HUB_NAME}:${{ steps.tag.outputs.tag }}"
+              echo "docker plugin install ${HUB_NAME}:latest"
+              echo '```'
+            else
+              echo "_Docker Hub push skipped — set DOCKERHUB_USERNAME / DOCKERHUB_TOKEN secrets to enable._"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
