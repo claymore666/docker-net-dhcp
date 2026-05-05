@@ -33,11 +33,11 @@ jobs:
       # forces go test to recompile stdlib's internal/coverage runtime
       # support. The runner's pre-installed Go (used unmodified by
       # integration.yml) had `compile` and `pkg/tool` versions diverge
-      # at one point, so stdlib recompiles failed with
-      # `compile: version "go1.25.9" does not match go tool version
-      // "go1.25.0"`. setup-go gives us a known-clean toolchain at
-      # the cost of ~30s — fine for a 12-minute workflow that runs
-      # only on manual dispatch.
+      # at one point, so stdlib recompiles failed with the
+      # 'compile: version "go1.25.9" does not match go tool version
+      # "go1.25.0"' error. setup-go gives us a known-clean toolchain
+      # at the cost of ~30s — fine for a 12-minute workflow that
+      # runs only on manual dispatch.
       - uses: actions/setup-go@v5
         with:
           go-version: '1.25'
