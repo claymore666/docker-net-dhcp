@@ -80,7 +80,23 @@ const (
 	TestSearchList = "corp.example,internal.example"
 	TestTFTPServer = "tftp.example.test"
 	TestBootFile   = "pxelinux.0"
+
+	// TestVendorClass / TestTaggedGateway drive the v0.9.0 / T2-3
+	// vendor_class round-trip test. dnsmasq is configured to set tag
+	// `dh-itest-vc` for clients sending option 60 = TestVendorClass,
+	// then override option 3 (router) to TestTaggedGateway only for
+	// tagged clients. Containers without the override get dnsmasq's
+	// default gateway (its own listen address, .1).
+	TestVendorClass    = "docker-net-dhcp-test-vc"
+	TestTaggedGateway  = "192.168.99.250"
+	dnsmasqVCTag       = "dh-itest-vc"
+	defaultGatewayAddr = "192.168.99.1"
 )
+
+// DefaultGateway is the gateway untagged clients receive — dnsmasq's
+// own listen address. Exposed for tests that assert vendor-class
+// tagging didn't accidentally fire on a default-config container.
+const DefaultGateway = defaultGatewayAddr
 
 // Fixture owns the lifecycle of the shared integration-test environment.
 // Use New() in TestMain; defer f.Teardown(). Re-running on a host with
@@ -203,6 +219,15 @@ func (f *Fixture) startDnsmasq() error {
 		"--dhcp-option=66,"+TestTFTPServer,  // option 66: TFTP server name
 		"--dhcp-option=67,"+TestBootFile,    // option 67: boot file
 		"--dhcp-option=119,"+TestSearchList, // option 119: domain search list
+		// Vendor-class tagging for the v0.9.0 / T2-3 round-trip test.
+		// dnsmasq sets tag `dh-itest-vc` on any DISCOVER carrying
+		// option 60 = TestVendorClass; the matching tag:... rule then
+		// overrides the gateway (option 3) only for tagged clients.
+		// Untagged clients (default `vendor_class` not set) keep
+		// dnsmasq's default gateway (its own listen IP), so existing
+		// tests that don't opt-in are unaffected.
+		"--dhcp-vendorclass=set:"+dnsmasqVCTag+","+TestVendorClass,
+		"--dhcp-option=tag:"+dnsmasqVCTag+",3,"+TestTaggedGateway,
 		// dhcp-broadcast forces OFFER/ACK to be sent as L2 broadcast
 		// regardless of the client's broadcast flag. Required for
 		// ipvlan-L2 mode: the slave's IP isn't registered with the
