@@ -39,11 +39,16 @@ wiring, the udhcpc client wrapper.
 
 Twelve active tests, suite-wall-clock ~3:30 on the runner:
 
-- **Lifecycle** — full create→run→inspect→leave→delete in macvlan
-  and bridge modes. ipvlan parity test exists but is currently
-  skipped because broadcast `OFFER` delivery to the slave doesn't
-  work when the parent is a veth (real LAN parents work; tracked in
-  the v0.7.0 follow-up issue).
+- **Lifecycle** — full create→run→inspect→leave→delete in macvlan,
+  bridge, and ipvlan-L2 modes. The ipvlan path required two
+  plumbing fixes (closes #62): `udhcpc -B` so DISCOVER asks for a
+  broadcast OFFER (ipvlan slaves share the parent MAC and have no
+  way to demux a unicast OFFER addressed to that shared MAC), and
+  not echoing the link's MAC back in `CreateEndpointResponse` (the
+  kernel rejects any MAC change on ipvlan slaves with EOPNOTSUPP,
+  even setting to the current value, so libnetwork must leave the
+  link alone). Both behaviours are gated on `mode == ipvlan` and
+  don't affect macvlan or bridge.
 - **Tombstone** — `docker restart <ctr>` preserves MAC + IP via the
   v0.5.x stability mechanism.
 - **Recovery: plugin recycle** — `docker plugin disable -f` +
