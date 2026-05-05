@@ -18,9 +18,10 @@ import (
 // it expires, and that the renewal goes through (DHCPACK from
 // dnsmasq) without disturbing the container's IP.
 //
-// The fixture's lease time is 30s, so T1 (renewal trigger inside
-// udhcpc) fires at 15s. We wait ~22s — well past T1, comfortably
-// before T2 (26.25s) — and assert:
+// The fixture's lease time is 2m (dnsmasq's hard minimum, see
+// LeaseTime in harness/fixture.go), so T1 (renewal trigger inside
+// udhcpc) fires at 1m. We wait ~70s — past T1, well before T2
+// (1m45s) — and assert:
 //   - the container's IP from docker inspect hasn't changed
 //   - dnsmasq's log shows at least 2 DHCPACK lines for our MAC
 //     (one for the initial bind, one for the renewal)
@@ -30,7 +31,7 @@ import (
 // fine, then loses its IP somewhere between T2 and the next operator
 // noticing the connection dropped.
 func TestLeaseRenew_HonorsT1(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Second)
 	defer cancel()
 
 	netName := "dh-itest-renew"
@@ -48,14 +49,14 @@ func TestLeaseRenew_HonorsT1(t *testing.T) {
 
 	startACKs := countDHCPACKs(t, mac)
 
-	// Sleep past T1 (15s) but well before lease expiry (30s). Adding
-	// some slack because udhcpc's renewal jitter and dnsmasq's log
-	// flush aren't instantaneous.
-	t.Log("waiting 22s for lease renewal cycle...")
+	// Sleep past T1 (60s for a 2m lease) but well before T2 (105s)
+	// to keep the assertion clean: the only ACK we expect on top of
+	// the bind is a renewal ACK, not a rebind.
+	t.Log("waiting 70s for lease renewal cycle...")
 	select {
 	case <-ctx.Done():
 		t.Fatalf("context cancelled before renewal window: %v", ctx.Err())
-	case <-time.After(22 * time.Second):
+	case <-time.After(70 * time.Second):
 	}
 
 	// Re-poll inspect: the IP must not have changed during the
