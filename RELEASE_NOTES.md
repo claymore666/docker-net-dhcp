@@ -29,8 +29,9 @@ re-investigate. (Original report: third-pass code review, 2026-05-04.)
 ## v0.9.0
 
 DHCP-helper polish: option propagation, parent-attached parity,
-truthfulness counter, DHCP-wire health metrics. Tier 1 (#100,
-#101, #102, #104) plus T2-4 (#107) closed.
+truthfulness counter, DHCP-wire health metrics, configurable
+client-id and vendor class. Tier 1 (#100, #101, #102, #104)
+plus T2-3 (#106) and T2-4 (#107) closed.
 
 ### New driver-opts (opt-in, default off for backwards compatibility)
 
@@ -46,6 +47,21 @@ truthfulness counter, DHCP-wire health metrics. Tier 1 (#100,
   by default because some networks advertise non-standard MTUs for
   reasons unrelated to host capability; opt-in keeps the behaviour
   change visible.
+- **`client_id=<string>`** (#106) — overrides the endpoint-derived
+  DHCP option 61 (Client Identifier) for every endpoint on this
+  network. Bytes go on the wire prefixed with type byte `0x00`
+  (RFC 2132 opaque). Default empty leaves the per-endpoint stable
+  id in place, which is what makes per-container reservations
+  work upstream — operators only set this when class-based DHCP
+  policy demands a known client-id.
+- **`vendor_class=<string>`** (#106) — overrides the default
+  DHCP option 60 (Vendor Class Identifier) value of
+  `docker-net-dhcp`. Lets DHCP servers using class-based policy
+  (Cisco / Aruba / etc.) differentiate net-dhcp containers from
+  other clients on the same LAN, e.g. to issue a different gateway
+  or option set to containers tagged with a known vendor string.
+  Default empty falls back to the historical `docker-net-dhcp`
+  string. v6 unaffected — udhcpc6 doesn't accept the option.
 
 ### Behaviour change (default flipped — see compatibility note)
 

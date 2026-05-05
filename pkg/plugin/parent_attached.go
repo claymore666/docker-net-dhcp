@@ -183,7 +183,8 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 		// children can be told apart even though they all share the
 		// parent's MAC). hostname was resolved earlier for tombstone
 		// matching and is reused for the DHCP option 12 hint here.
-		clientID := clientIDFromEndpoint(r.EndpointID)
+		// Operator-supplied client_id overrides the derived value.
+		clientID := resolveClientID(opts, r.EndpointID)
 
 		runDHCP := func(v6 bool) error {
 			v6str := ""
@@ -195,10 +196,11 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 			defer cancel()
 
 			clientOpts := &udhcpc.DHCPClientOptions{
-				V6:        v6,
-				Hostname:  hostname,
-				ClientID:  clientID,
-				Broadcast: mode == ModeIPvlan,
+				V6:          v6,
+				Hostname:    hostname,
+				ClientID:    clientID,
+				VendorClass: opts.VendorClass,
+				Broadcast:   mode == ModeIPvlan,
 			}
 			if !v6 {
 				clientOpts.RequestedIP = requestedIP

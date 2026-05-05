@@ -351,7 +351,9 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 		Broadcast: m.opts.effectiveMode() == ModeIPvlan,
 		// Same client-id the initial DISCOVER used in CreateEndpoint,
 		// so renewals are seen as the same client by the server.
-		ClientID: clientIDFromEndpoint(m.joinReq.EndpointID),
+		// Honours the operator's client_id override when set.
+		ClientID:    resolveClientID(m.opts, m.joinReq.EndpointID),
+		VendorClass: m.opts.VendorClass,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create DHCP%v client: %w", v6Str, err)

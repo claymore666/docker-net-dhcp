@@ -486,7 +486,7 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 		if opts.LeaseTimeout != 0 {
 			timeout = opts.LeaseTimeout
 		}
-		clientID := clientIDFromEndpoint(r.EndpointID)
+		clientID := resolveClientID(opts, r.EndpointID)
 		initialIP := func(v6 bool) error {
 			v6str := ""
 			if v6 {
@@ -497,9 +497,10 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 			defer cancel()
 
 			clientOpts := &udhcpc.DHCPClientOptions{
-				V6:       v6,
-				Hostname: hostname,
-				ClientID: clientID,
+				V6:          v6,
+				Hostname:    hostname,
+				ClientID:    clientID,
+				VendorClass: opts.VendorClass,
 			}
 			// RequestedIP is v4-only in udhcpc; passing it for v6
 			// would be silently ignored anyway, but keep it explicit.
