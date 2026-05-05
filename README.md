@@ -11,8 +11,10 @@
 > and concurrency scenarios.
 >
 > See [`RELEASE_NOTES.md`](RELEASE_NOTES.md) for the full changelog and
-> credits, and [`docs/parent-attached-modes.md`](docs/parent-attached-modes.md)
-> for the macvlan / ipvlan how-to.
+> credits, [`docs/parent-attached-modes.md`](docs/parent-attached-modes.md)
+> for the macvlan / ipvlan how-to, and
+> [`docs/release-runbook.md`](docs/release-runbook.md) for the
+> publish-a-new-version procedure (maintainer-facing).
 >
 > Install:
 > ```bash

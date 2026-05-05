@@ -119,6 +119,27 @@ jobs:
           make PLUGIN_NAME="${HUB_NAME}" PLUGIN_TAG="${{ steps.tag.outputs.tag }}" push
           make PLUGIN_NAME="${HUB_NAME}" PLUGIN_TAG="latest" push
 
+      # Refresh the Docker Hub long description from the repo's README
+      # so the Hub page never drifts from what's on GitHub. Short
+      # description is owned here too — change it in this file when you
+      # want it to change. Idempotent: the action diffs and only PATCHes
+      # when content changed. Skipped if Hub credentials aren't set.
+      #
+      # Auth note: DOCKERHUB_TOKEN must be a Personal Access Token with
+      # Read & Write scope on this repo (not just Read & Write image
+      # push) — Docker Hub gates description-update behind admin scope.
+      # If this step 401s, regenerate the token; image-push tokens
+      # alone won't do.
+      - name: Sync Docker Hub description from README
+        if: env.HAS_HUB_CREDS == 'true'
+        uses: peter-evans/dockerhub-description@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: ${{ env.HUB_NAME }}
+          short-description: "DHCP-leased IPs for Docker containers (bridge/macvlan/ipvlan). Fork of devplayer0/docker-net-dhcp."
+          readme-filepath: ./README.md
+
       # Convenience: print the install incantations operators will use,
       # straight into the workflow summary so the release page links
       # them prominently.
