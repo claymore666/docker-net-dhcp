@@ -21,11 +21,18 @@ import (
 //
 //   - the daemon comes back up (no hang on plugin re-enable — the
 //     historical upstream failure mode this fork modernized away from)
-//   - the container is still running (RestartPolicy=always so containerd
-//     restarts it once dockerd is back)
-//   - recoverEndpoints rebuilt our endpoint's dhcpManager
-//     (Plugin.Health.recovered_ok ≥ 1)
+//   - the container is running again (RestartPolicy=always so docker
+//     brings it back once the daemon is up)
 //   - the IP and MAC are preserved across the restart
+//
+// Intentionally NOT asserted: Plugin.Health.recovered_ok ≥ 1.
+// Whether recovery or the tombstone path runs depends on whether
+// dockerd's graceful shutdown ran Leave on the container's endpoint
+// before going down. If it did, the post-restart container goes
+// through CreateEndpoint+tombstone (recovered_ok stays 0); if it
+// didn't, recoverEndpoints rebuilds the manager (recovered_ok > 0).
+// Both paths yield the same user-visible invariant — same IP and
+// MAC — so we test on that, not on which internal codepath fired.
 //
 // **Do not parallelize.** systemctl restart docker drops every docker
 // connection on the host, including those of any other test running
@@ -125,37 +132,34 @@ func TestRecovery_DaemonRestart_PreservesContainer(t *testing.T) {
 	}
 
 	// Plugin.Health socket is replaced when the plugin process is
-	// respawned by docker. Poll until the new socket answers AND
-	// recovery has run for at least one endpoint.
+	// respawned by docker. Poll until the new socket answers — that
+	// signals plugin enable + recovery have completed (recovery is
+	// synchronous inside NewPlugin before the socket starts
+	// listening, see pkg/plugin/plugin.go).
 	deadline := time.Now().Add(30 * time.Second)
 	var healthAfter *harness.HealthResponse
 	for time.Now().Before(deadline) {
 		h, err := harness.PluginHealth(ctx, cli2)
-		if err == nil && h.RecoveredOK >= 1 {
+		if err == nil {
 			healthAfter = h
 			break
 		}
 		time.Sleep(300 * time.Millisecond)
 	}
 	if healthAfter == nil {
-		t.Fatalf("Plugin.Health.recovered_ok did not reach 1 within 30s after daemon restart")
+		t.Fatalf("Plugin.Health socket did not answer within 30s after daemon restart")
 	}
-	t.Logf("after restart: recovered_ok=%d recovery_failed=%d", healthAfter.RecoveredOK, healthAfter.RecoveryFailed)
+	t.Logf("after restart: recovered_ok=%d recovery_failed=%d (either path is fine; see test header)",
+		healthAfter.RecoveredOK, healthAfter.RecoveryFailed)
 	if healthAfter.RecoveryFailed != 0 {
-		t.Errorf("recovery_failed=%d (recovery saw at least one endpoint it could not rebuild)", healthAfter.RecoveryFailed)
+		t.Errorf("recovery_failed=%d (recovery attempted but couldn't rebuild some endpoint)", healthAfter.RecoveryFailed)
 	}
 
-	ins, err := cli2.ContainerInspect(ctx, id)
-	if err != nil {
-		t.Fatalf("ContainerInspect after restart: %v", err)
-	}
-	var ipAfter, macAfter string
-	for _, ep := range ins.NetworkSettings.Networks {
-		if ep.IPAddress != "" {
-			ipAfter = ep.IPAddress
-			macAfter = ep.MacAddress
-		}
-	}
+	// In the tombstone-path case (graceful shutdown ran Leave) the
+	// container goes through a fresh CreateEndpoint+udhcpc on the
+	// way back up; the endpoint can briefly show no IP after
+	// State.Running flips. Poll on the endpoint, not just the state.
+	ipAfter, macAfter := waitForEndpoint(t, ctx, cli2, id, harness.IPAcquisitionBudget)
 	t.Logf("after restart:  ip=%s mac=%s", ipAfter, macAfter)
 	if ipAfter != ipBefore {
 		t.Errorf("IP changed across daemon restart: before=%s after=%s", ipBefore, ipAfter)
