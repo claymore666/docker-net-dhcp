@@ -142,7 +142,7 @@ func TestErrors_DriverOptIPMalformed(t *testing.T) {
 	}
 	defer cli.Close()
 
-	_, createErr := cli.ContainerCreate(ctx,
+	created, createErr := cli.ContainerCreate(ctx,
 		&container.Config{Image: harness.TestImage, Cmd: []string{"sleep", "infinity"}},
 		&container.HostConfig{},
 		&network.NetworkingConfig{
@@ -159,12 +159,23 @@ func TestErrors_DriverOptIPMalformed(t *testing.T) {
 		bg := context.Background()
 		_ = cli.ContainerRemove(bg, ctrName, container.RemoveOptions{Force: true})
 	})
-	if createErr == nil {
-		t.Fatalf("expected ContainerCreate to fail on malformed driver-opt ip, got success")
+
+	// libnetwork sometimes defers CreateEndpoint from ContainerCreate
+	// to ContainerStart; either path is fine, but the plugin must
+	// reject before the container actually runs. Capture whichever
+	// call fails.
+	var failure string
+	if createErr != nil {
+		failure = createErr.Error()
+	} else if startErr := cli.ContainerStart(ctx, created.ID, container.StartOptions{}); startErr != nil {
+		failure = startErr.Error()
 	}
-	if !strings.Contains(strings.ToLower(createErr.Error()), "invalid driver-opt ip") {
-		t.Errorf("error missing expected substring 'invalid driver-opt ip'\nactual: %s", createErr.Error())
+	if failure == "" {
+		t.Fatalf("expected ContainerCreate or ContainerStart to fail on malformed driver-opt ip, both succeeded")
+	}
+	if !strings.Contains(strings.ToLower(failure), "invalid driver-opt ip") {
+		t.Errorf("error missing expected substring 'invalid driver-opt ip'\nactual: %s", failure)
 	} else {
-		t.Logf("✓ malformed driver-opt ip rejected: %s", createErr.Error())
+		t.Logf("✓ malformed driver-opt ip rejected: %s", failure)
 	}
 }
