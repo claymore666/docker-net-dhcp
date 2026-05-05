@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
+	"testing"
 	"time"
 
 	docker "github.com/docker/docker/client"
@@ -77,6 +79,41 @@ func PluginHealth(ctx context.Context, cli *docker.Client) (*HealthResponse, err
 		return nil, fmt.Errorf("decode Plugin.Health: %w", err)
 	}
 	return &out, nil
+}
+
+// DumpPluginLog tails the plugin's /var/log/net-dhcp.log into t.Log.
+// Plugin logs live under /var/lib/docker/plugins/<plugin-id>/rootfs/
+// (Docker's standard layout for managed plugins). The plugin id comes
+// from PluginInspect; its rootfs is read directly from the host
+// filesystem (the test process runs as root). Useful as a t.Cleanup
+// hook on tests that depend on plugin-side state changes — without
+// it, a failure surfaces as "expected X, got Y" with no insight into
+// what the plugin actually did.
+//
+// Best-effort: missing log file or unresolvable plugin id is logged
+// as a Logf, never a Fatal — we don't want a missing log to cascade
+// into the diagnostic noise that hid the original failure.
+func DumpPluginLog(t *testing.T, ctx context.Context) {
+	t.Helper()
+	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	if err != nil {
+		t.Logf("DumpPluginLog: docker client: %v", err)
+		return
+	}
+	defer cli.Close()
+
+	p, _, err := cli.PluginInspectWithRaw(ctx, PluginRef)
+	if err != nil {
+		t.Logf("DumpPluginLog: PluginInspect: %v", err)
+		return
+	}
+	logPath := filepath.Join("/var/lib/docker/plugins", p.ID, "rootfs/var/log/net-dhcp.log")
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Logf("DumpPluginLog: read %s: %v", logPath, err)
+		return
+	}
+	t.Logf("--- net-dhcp plugin log (%s) ---\n%s", logPath, data)
 }
 
 // WaitPluginEnabled polls PluginInspect until p.Enabled matches want
