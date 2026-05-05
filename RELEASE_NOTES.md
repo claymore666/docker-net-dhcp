@@ -26,6 +26,58 @@ vulnerable code path is reachable from the plugin process, so no
 action is required. Recorded here so future audits don't
 re-investigate. (Original report: third-pass code review, 2026-05-04.)
 
+## v0.9.0
+
+DHCP-helper polish: option propagation, parent-attached parity,
+truthfulness counter. Four issues from v0.9.0's Tier 1 closed
+(#100, #101, #102, #104).
+
+### New driver-opts (opt-in, default off for backwards compatibility)
+
+- **`propagate_dns=true`** (#100) — write DHCP option 6 / 23 (DNS
+  server list) into the container's `/etc/resolv.conf` on every
+  bound/renew. Implemented via setns into the container's mount
+  namespace; survives until Docker rewrites the file (typically on
+  `docker network connect/disconnect`). Off by default because
+  flipping it on changes name-resolution behaviour for every
+  container on the network.
+- **`propagate_mtu=true`** (#101) — apply DHCP option 26 (Interface
+  MTU) to the container link via `LinkSetMTU` on bound/renew. Off
+  by default because some networks advertise non-standard MTUs for
+  reasons unrelated to host capability; opt-in keeps the behaviour
+  change visible.
+
+### Behaviour change (default flipped — see compatibility note)
+
+- **Static-route copy in macvlan/ipvlan** (#102) — pre-v0.9.0,
+  parent-attached modes never inherited host-side routes from the
+  parent NIC; only bridge mode did. v0.9.0 extends the bridge-mode
+  behaviour to macvlan and ipvlan for parity. The existing
+  `-o skip_routes=true` opts out for users who depended on the
+  no-copy behaviour.
+
+### Observability
+
+- **`lease_changed` counter** (#104) — new field on the
+  `Plugin.Health` JSON. Bumps when a DHCP renewal returns a
+  different IP than the manager last recorded. Docker's
+  `NetworkSettings.IPAddress` view does NOT update on lease change
+  (libnetwork has no in-place endpoint-IP swap RPC); this counter
+  is the operator-facing signal that a stale-inspect window has
+  opened. A deeper fix (forced container restart on lease change,
+  or out-of-band docker-socket update) is deferred — see #104 for
+  the design discussion.
+
+### Compatibility note
+
+The macvlan/ipvlan static-route default flipped from "don't copy"
+to "copy" in v0.9.0. If your existing macvlan setups had
+operator-added routes on the parent NIC that you specifically did
+NOT want inside containers, add `-o skip_routes=true` to the
+network's create options. The bridge-mode default is unchanged
+(it's always copied; v0.9.0 just extends the same behaviour to the
+other modes).
+
 ## v0.8.0
 
 Code-review fix sweep + automated release pipeline. No new features —

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 
 	log "github.com/sirupsen/logrus"
@@ -37,10 +38,29 @@ func main() {
 				return
 			}
 			event.Data.IP = netV6.String()
+			// dns6 is busybox udhcpc6's env-var name for option 23.
+			if dns := os.Getenv("dns6"); dns != "" {
+				event.Data.DNSServers = strings.Fields(dns)
+			}
 		} else {
 			event.Data.IP = os.Getenv("ip") + "/" + os.Getenv("mask")
 			event.Data.Gateway = os.Getenv("router")
 			event.Data.Domain = os.Getenv("domain")
+			// dns is busybox udhcpc's env-var name for option 6.
+			if dns := os.Getenv("dns"); dns != "" {
+				event.Data.DNSServers = strings.Fields(dns)
+			}
+		}
+		// MTU (option 26) applies to both v4 and v6 — udhcpc / udhcpc6
+		// both expose it as `mtu` when the server sends it. Skip on
+		// parse error rather than failing the whole event; the caller
+		// treats 0 as "no MTU info".
+		if raw := os.Getenv("mtu"); raw != "" {
+			if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+				event.Data.MTU = n
+			} else {
+				log.WithField("mtu", raw).Warn("Failed to parse mtu env; skipping MTU propagation for this event")
+			}
 		}
 	case "deconfig", "leasefail", "nak":
 	default:

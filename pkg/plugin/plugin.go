@@ -121,6 +121,20 @@ type DHCPNetworkOptions struct {
 	LeaseTimeout    time.Duration `mapstructure:"lease_timeout"`
 	IgnoreConflicts bool          `mapstructure:"ignore_conflicts"`
 	SkipRoutes      bool          `mapstructure:"skip_routes"`
+	// PropagateDNS, when true, makes the plugin write DHCP option 6
+	// (v4 DNS server list) or option 23 (v6) into the container's
+	// /etc/resolv.conf on every bind/renew with a non-empty list.
+	// Default false to preserve historical behaviour where Docker's
+	// embedded resolver handled DNS — flipping this on means LAN-DNS
+	// names suddenly resolve from inside containers.
+	PropagateDNS bool `mapstructure:"propagate_dns"`
+	// PropagateMTU, when true, makes the plugin set the container link's
+	// MTU to DHCP option 26 on every bind/renew with a non-zero value.
+	// Default false because some networks advertise non-standard MTUs
+	// for reasons unrelated to host capability (e.g. hand-rolled tunnel
+	// fragments) and silently re-MTU'ing a container could surprise an
+	// operator. Opt-in keeps the behaviour change visible.
+	PropagateMTU bool `mapstructure:"propagate_mtu"`
 }
 
 // effectiveMode returns Mode with the empty default normalized to ModeBridge.
@@ -204,6 +218,16 @@ type Plugin struct {
 	// here means one container that won't get its previous MAC/IP back
 	// on restart until the disk recovers.
 	tombstoneWriteFailures atomic.Int32
+
+	// leaseChanged counts renewals where udhcpc returned a different
+	// IP than the manager last recorded. Container's
+	// NetworkSettings.IPAddress in `docker inspect` does NOT update
+	// — libnetwork has no in-place endpoint-IP swap RPC. This counter
+	// lets operators alert on the truthfulness gap until a deeper fix
+	// (forced container restart on lease change, or an out-of-band
+	// docker-socket update) lands. See issue #104 for the design
+	// discussion deferred from v0.9.0.
+	leaseChanged atomic.Int32
 }
 
 // storeJoinHint records the state collected during CreateEndpoint so
@@ -568,7 +592,7 @@ func (p *Plugin) recoverOneEndpoint(ctx context.Context, networkID, endpointID, 
 		NetworkID:  networkID,
 		EndpointID: endpointID,
 	}
-	m := newDHCPManager(p.docker, fakeJoin, opts)
+	m := newDHCPManager(p.docker, fakeJoin, opts).withPlugin(p)
 	m.setLastIP(false, ipv4)
 	m.setLastIP(true, ipv6)
 	m.MacAddress = mac
