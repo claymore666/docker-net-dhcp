@@ -74,6 +74,34 @@ func TestNewDHCPClient_VendorIDv4Only(t *testing.T) {
 	}
 }
 
+// TestNewDHCPClient_VendorClassOverride covers the v0.9.0 / T2-3
+// driver-opt: when DHCPClientOptions.VendorClass is set, that value
+// is sent as -V instead of the package default. Empty VendorClass
+// falls back to VendorID.
+func TestNewDHCPClient_VendorClassOverride(t *testing.T) {
+	custom := "my-corp-vlan"
+
+	c, err := NewDHCPClient("eth0", &DHCPClientOptions{VendorClass: custom})
+	if err != nil {
+		t.Fatalf("NewDHCPClient: %v", err)
+	}
+	if !hasArg(c.cmd.Args, "-V") || !hasArg(c.cmd.Args, custom) {
+		t.Errorf("v4 client with VendorClass=%q should set -V %s; args: %v", custom, custom, c.cmd.Args)
+	}
+	if hasArg(c.cmd.Args, VendorID) {
+		t.Errorf("VendorClass override leaked default %q into args: %v", VendorID, c.cmd.Args)
+	}
+
+	// v6 still must not receive -V even with an override (udhcpc6 rejects it).
+	c6, err := NewDHCPClient("eth0", &DHCPClientOptions{V6: true, VendorClass: custom})
+	if err != nil {
+		t.Fatalf("NewDHCPClient v6: %v", err)
+	}
+	if hasArg(c6.cmd.Args, "-V") {
+		t.Errorf("v6 client must not set -V even with VendorClass override; args: %v", c6.cmd.Args)
+	}
+}
+
 // TestNewDHCPClient_BinarySelection asserts the v4/v6 client process
 // path lookup. Wrong binary name = silent fail-to-spawn; this test
 // catches a refactor that swapped the constants.

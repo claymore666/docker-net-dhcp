@@ -226,6 +226,38 @@ func TestClientIDFromEndpoint(t *testing.T) {
 	}
 }
 
+// TestResolveClientID pins the v0.9.0 / T2-3 override semantics:
+// operator-supplied opts.ClientID wins over the endpoint-derived
+// stable id, and an empty override falls back to derivation.
+func TestResolveClientID(t *testing.T) {
+	const eid = "0123456789abcdef0123456789abcdef"
+
+	t.Run("override wins", func(t *testing.T) {
+		got := resolveClientID(DHCPNetworkOptions{ClientID: "my-class-id"}, eid)
+		if string(got) != "my-class-id" {
+			t.Errorf("override: got %q, want %q", got, "my-class-id")
+		}
+	})
+
+	t.Run("empty override falls back to derived", func(t *testing.T) {
+		got := resolveClientID(DHCPNetworkOptions{}, eid)
+		want := clientIDFromEndpoint(eid)
+		if string(got) != string(want) {
+			t.Errorf("fallback: got %x, want %x", got, want)
+		}
+	})
+
+	t.Run("override with empty endpoint still works", func(t *testing.T) {
+		// Even if the endpoint id is too short to derive from, an
+		// explicit override should still be honoured. Prevents a
+		// regression where the fallback path swallowed the override.
+		got := resolveClientID(DHCPNetworkOptions{ClientID: "static"}, "")
+		if string(got) != "static" {
+			t.Errorf("override+empty eid: got %q, want %q", got, "static")
+		}
+	})
+}
+
 // TestListen_RemovesStaleSocket covers the I-9 fix: Listen must
 // best-effort unlink any leftover socket file before binding so a
 // previous unclean shutdown doesn't EADDRINUSE the new one. Driving

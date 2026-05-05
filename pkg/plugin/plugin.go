@@ -89,6 +89,19 @@ func clientIDFromEndpoint(endpointID string) []byte {
 	return b
 }
 
+// resolveClientID picks the option-61 payload for a fresh DHCP
+// exchange. Operator-supplied opts.ClientID wins when non-empty
+// (treated as opaque ASCII bytes; the udhcpc client adds the
+// type-byte 0x00 wrapper on the wire). Otherwise we fall back to
+// the endpoint-derived stable id, which is what makes per-container
+// reservations work upstream.
+func resolveClientID(opts DHCPNetworkOptions, endpointID string) []byte {
+	if opts.ClientID != "" {
+		return []byte(opts.ClientID)
+	}
+	return clientIDFromEndpoint(endpointID)
+}
+
 const defaultLeaseTimeout = 10 * time.Second
 
 // driverRegexp matches plugin references that this driver should treat
@@ -135,6 +148,28 @@ type DHCPNetworkOptions struct {
 	// fragments) and silently re-MTU'ing a container could surprise an
 	// operator. Opt-in keeps the behaviour change visible.
 	PropagateMTU bool `mapstructure:"propagate_mtu"`
+	// ClientID, when non-empty, overrides the endpoint-derived DHCP
+	// option 61 (Client Identifier) for every endpoint on this
+	// network. Bytes go on the wire prefixed with type byte 0x00
+	// (RFC 2132 opaque). Default empty = use the stable
+	// per-endpoint id derived from the Docker endpoint ID, which is
+	// what makes per-container reservations work upstream.
+	//
+	// Operator caveat: a static ClientID across containers means the
+	// upstream DHCP server can't differentiate them — each new
+	// container will appear to be the same logical client and may
+	// receive the same lease. Typically only useful when paired with
+	// VendorClass to drive class-based policy that doesn't depend on
+	// per-client identity.
+	ClientID string `mapstructure:"client_id"`
+	// VendorClass, when non-empty, overrides the default DHCP option
+	// 60 (Vendor Class Identifier) value of "docker-net-dhcp" for
+	// every endpoint on this network. Lets DHCP servers using
+	// class-based policy (Cisco / Aruba / etc.) differentiate
+	// net-dhcp containers from other clients on the same LAN —
+	// for example to issue a different gateway or option set to
+	// containers tagged with a known vendor string.
+	VendorClass string `mapstructure:"vendor_class"`
 }
 
 // effectiveMode returns Mode with the empty default normalized to ModeBridge.
