@@ -30,10 +30,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.25'
-          cache: true
+      # The Go toolchain is pre-installed on the runner via
+      # test/integration/install-go-runner.sh (one-time operator
+      # action). Skipping actions/setup-go saves ~30s per run on
+      # this runner since the version in go.mod (1.25) doesn't ship
+      # in apt anyway. If go is missing, fail loudly so the runner
+      # operator sees the install step they need to run.
+      - name: Verify Go toolchain
+        run: |
+          if ! command -v go >/dev/null; then
+            echo "go not in PATH on this runner."
+            echo "Run: sudo bash test/integration/install-go-runner.sh"
+            exit 1
+          fi
+          go version
 
       # Best-effort: clean any orphans from a previous run that
       # panicked mid-setup. Safe to run even on a clean state.
