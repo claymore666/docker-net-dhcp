@@ -71,6 +71,19 @@ func writeContainerResolvConf(pid int, dns []string, searchDomain string) error 
 	}
 	defer targetMnt.Close()
 
+	// Detach this thread's filesystem state (CWD, root, umask) from
+	// the rest of the Go runtime's threads BEFORE setns into the
+	// mount namespace. Linux refuses CLONE_NEWNS setns when the
+	// caller still shares fs state with another process — that's
+	// what produced "invalid argument" on the first CI run. unshare
+	// is per-thread and cheap; the locked thread is retired with
+	// the goroutine after we return so the side-effect is
+	// well-scoped.
+	if err := unix.Unshare(unix.CLONE_FS); err != nil {
+		runtime.UnlockOSThread()
+		return fmt.Errorf("unshare CLONE_FS: %w", err)
+	}
+
 	if err := unix.Setns(int(targetMnt.Fd()), unix.CLONE_NEWNS); err != nil {
 		runtime.UnlockOSThread()
 		return fmt.Errorf("setns into container mnt ns: %w", err)
