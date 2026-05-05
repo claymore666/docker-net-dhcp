@@ -157,7 +157,15 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 			return fmt.Errorf("failed to set %v link up: %w", mode, err)
 		}
 
-		if r.Interface == nil || r.Interface.MacAddress == "" {
+		// libnetwork applies res.Interface.MacAddress to the link
+		// during Join via netlink LinkSetHardwareAddr. The ipvlan
+		// driver rejects any MAC change (slaves share the parent's
+		// MAC by kernel design), even setting to the current value,
+		// with EOPNOTSUPP. So we skip the MAC response entirely for
+		// ipvlan; libnetwork leaves the link's MAC as-is, and
+		// docker inspect picks the inherited MAC up via netlink
+		// after Join finishes.
+		if mode != ModeIPvlan && (r.Interface == nil || r.Interface.MacAddress == "") {
 			res.Interface.MacAddress = mac.String()
 		}
 
@@ -182,9 +190,10 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 			defer cancel()
 
 			clientOpts := &udhcpc.DHCPClientOptions{
-				V6:       v6,
-				Hostname: hostname,
-				ClientID: clientID,
+				V6:        v6,
+				Hostname:  hostname,
+				ClientID:  clientID,
+				Broadcast: mode == ModeIPvlan,
 			}
 			if !v6 {
 				clientOpts.RequestedIP = requestedIP

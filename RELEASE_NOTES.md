@@ -26,6 +26,78 @@ vulnerable code path is reachable from the plugin process, so no
 action is required. Recorded here so future audits don't
 re-investigate. (Original report: third-pass code review, 2026-05-04.)
 
+## v0.7.0
+
+Live integration test harness running on every PR via a self-hosted
+runner with the outside-collaborator approval gate enabled. The
+plugin now has automated end-to-end coverage of the surface that
+`go test` couldn't reach before — `CreateEndpoint`, `Join`, `Leave`,
+`recoverEndpoints`, `dhcpManager.{Start,Stop}`, parent-attached link
+wiring, the udhcpc client wrapper.
+
+### What's exercised
+
+Twelve active tests, suite-wall-clock ~3:30 on the runner:
+
+- **Lifecycle** — full create→run→inspect→leave→delete in macvlan,
+  bridge, and ipvlan-L2 modes. The ipvlan path required two
+  plumbing fixes (closes #62): `udhcpc -B` so DISCOVER asks for a
+  broadcast OFFER (ipvlan slaves share the parent MAC and have no
+  way to demux a unicast OFFER addressed to that shared MAC), and
+  not echoing the link's MAC back in `CreateEndpointResponse` (the
+  kernel rejects any MAC change on ipvlan slaves with EOPNOTSUPP,
+  even setting to the current value, so libnetwork must leave the
+  link alone). Both behaviours are gated on `mode == ipvlan` and
+  don't affect macvlan or bridge.
+- **Tombstone** — `docker restart <ctr>` preserves MAC + IP via the
+  v0.5.x stability mechanism.
+- **Recovery: plugin recycle** — `docker plugin disable -f` +
+  `enable` while a container is attached; `Plugin.Health.recovered_ok`
+  ticks past zero and the container's IP/MAC survive.
+- **Recovery: daemon restart** — `systemctl restart docker` with a
+  `--restart=always` container; the daemon comes back, the container
+  comes back, the IP/MAC are preserved (empirically via the tombstone
+  path, since graceful shutdown ran `Leave`).
+- **Concurrency** — four containers attached simultaneously each get
+  a distinct lease; doubles as a deadlock smoke test against
+  per-network-lock regressions.
+- **Error paths** — option-validation rejections (invalid mode,
+  missing parent, wrong-mode options, IPAM not null) plus
+  netlink-state ones (parent down, parent is a bridge, malformed
+  driver-opt ip).
+
+### Architecture
+
+A single shared `Fixture` covers both the parent-attached path
+(`dh-itest-host` veth + dnsmasq on `192.168.99/24`) and the
+bridge-mode path (`dh-itest-br2` Linux bridge + a second dnsmasq on
+`192.168.100/24`). Distinct subnets keep the two DHCP servers from
+racing. The bridge fixture handles the two known landmines that broke
+earlier attempts: STP `forward_delay` defaulting to 15s (set to 0)
+and Docker's default-DROP `FORWARD` policy combined with
+`br_netfilter` causing bridged DHCP to be silently dropped (mitigated
+with two narrow `iptables ACCEPT` rules scoped to the bridge
+interface, removed in teardown).
+
+### CI
+
+`.github/workflows/integration.yml` runs the suite on a self-hosted
+runner. Outside-collaborator approval is required for any PR from a
+non-collaborator account, so external PRs can't get free root on the
+runner host. The Go toolchain is pre-installed via
+`test/integration/install-go-runner.sh` to skip `actions/setup-go`
+and shave ~30s off every run.
+
+### Coverage
+
+Unit-test coverage is unchanged at the bundle level (`pkg/util` 64%,
+`pkg/udhcpc` 34%, `pkg/plugin` 29%). The integration suite isn't
+reflected in those numbers because the plugin runs as a separate
+docker-installed process. Wiring up Go 1.20+ binary-coverage
+instrumentation through the plugin image, with a host `GOCOVERDIR`
+mount and an end-of-run `go tool covdata percent`, is tracked as the
+first item of v0.8.0.
+
 ## v0.6.0
 
 Bundle of code-review-driven fixes plus a unit-test coverage bump

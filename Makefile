@@ -5,7 +5,7 @@ PLATFORMS ?= linux/amd64,linux/arm64
 SOURCES = $(shell find pkg/ cmd/ -name '*.go')
 BINARY = bin/net-dhcp
 
-.PHONY: all debug build create enable disable pdebug push clean
+.PHONY: all debug build create enable disable pdebug push clean integration-test integration-cleanup
 
 all: create enable
 
@@ -53,3 +53,23 @@ clean:
 	-rm -rf multiarch/
 	-rm -rf plugin/
 	-rm bin/*
+
+# Live integration tests. Need privileges (CAP_NET_ADMIN, mount/netns
+# ops, bind UDP/67) and the plugin already enabled at PLUGIN_NAME:golang.
+# Locally: `sudo make integration-test`. CI: runner is root, target
+# detects and skips the sudo wrapper.
+integration-test:
+	@if [ "$$(id -u)" -ne 0 ]; then \
+		echo "integration-test must run as root. Re-run with sudo."; \
+		exit 1; \
+	fi
+	go test -v -tags integration -count=1 -timeout 5m ./test/integration/...
+
+# Manual orphan cleanup for when an integration test panics mid-setup
+# and leaves dh-itest-* interfaces / containers / networks behind.
+integration-cleanup:
+	@if [ "$$(id -u)" -ne 0 ]; then \
+		echo "integration-cleanup must run as root. Re-run with sudo."; \
+		exit 1; \
+	fi
+	bash test/integration/cleanup-orphans.sh

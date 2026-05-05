@@ -173,6 +173,50 @@ func TestNewDHCPClient_HostnameV6FQDNEncoding(t *testing.T) {
 
 // TestNewDHCPClient_ForegroundAndInterface covers the always-on flags.
 // `-f` (foreground) is what makes process supervision work — without
+// TestNewDHCPClient_BroadcastV4 covers the ipvlan-required broadcast
+// flag: when Broadcast is set on a v4 client, `-B` makes udhcpc set
+// the BROADCAST bit in DISCOVER so the server replies with an L2
+// broadcast OFFER. ipvlan slaves share the parent's MAC and have no
+// way to receive a unicast OFFER addressed to that shared MAC, so
+// without -B the lease handshake hangs.
+func TestNewDHCPClient_BroadcastV4(t *testing.T) {
+	c, err := NewDHCPClient("eth0", &DHCPClientOptions{Broadcast: true})
+	if err != nil {
+		t.Fatalf("NewDHCPClient: %v", err)
+	}
+	if !hasArg(c.cmd.Args, "-B") {
+		t.Errorf("expected -B for Broadcast=true; got args: %v", c.cmd.Args)
+	}
+}
+
+// TestNewDHCPClient_BroadcastNotPassedToV6 covers the v6 carve-out:
+// DHCPv6 has no equivalent client-broadcast-flag concept; passing -B
+// to udhcpc6 (which doesn't recognise it) would just confuse the
+// argv. Match the existing v4-only carve-outs (-r, -V).
+func TestNewDHCPClient_BroadcastNotPassedToV6(t *testing.T) {
+	c, err := NewDHCPClient("eth0", &DHCPClientOptions{V6: true, Broadcast: true})
+	if err != nil {
+		t.Fatalf("NewDHCPClient: %v", err)
+	}
+	if hasArg(c.cmd.Args, "-B") {
+		t.Errorf("v6 client must not get -B; got args: %v", c.cmd.Args)
+	}
+}
+
+// TestNewDHCPClient_BroadcastDefaultOff: regression guard for macvlan
+// and bridge modes. These don't need -B (their kernel paths dispatch
+// per-MAC and per-veth respectively), and we want the simpler RFC
+// default for callers that don't opt in.
+func TestNewDHCPClient_BroadcastDefaultOff(t *testing.T) {
+	c, err := NewDHCPClient("eth0", &DHCPClientOptions{})
+	if err != nil {
+		t.Fatalf("NewDHCPClient: %v", err)
+	}
+	if hasArg(c.cmd.Args, "-B") {
+		t.Errorf("-B must be off by default; got args: %v", c.cmd.Args)
+	}
+}
+
 // it udhcpc daemonises and we lose the child PID. `-i <iface>` is the
 // link to attach to. Both are non-negotiable.
 func TestNewDHCPClient_ForegroundAndInterface(t *testing.T) {
