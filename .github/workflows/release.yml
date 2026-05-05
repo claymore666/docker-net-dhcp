@@ -40,6 +40,12 @@ jobs:
       # the existing tag history.
       GHCR_NAME: ghcr.io/claymore666/docker-net-dhcp
       HUB_NAME: claymore666/net-dhcp
+      # Materialize the Docker Hub secrets-presence check at job level
+      # so steps can gate on env (allowed) rather than on the secrets
+      # context directly (rejected at parse time inside step-level
+      # `if:` expressions). Resolves to the literal string "true" or
+      # "false" — compare with `== 'true'` downstream.
+      HAS_HUB_CREDS: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
 
     steps:
       - name: Resolve release tag
@@ -77,14 +83,14 @@ jobs:
 
       - name: Log in to Docker Hub
         id: hub-login
-        if: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
+        if: env.HAS_HUB_CREDS == 'true'
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Warn if Docker Hub credentials missing
-        if: ${{ steps.hub-login.outcome == 'skipped' }}
+        if: env.HAS_HUB_CREDS != 'true'
         run: |
           echo "::warning::DOCKERHUB_USERNAME / DOCKERHUB_TOKEN secrets not set — skipping Docker Hub push. GHCR push proceeds normally."
 
@@ -108,7 +114,7 @@ jobs:
       # rebuilds the rootfs with the Hub-prefixed name; the underlying
       # Docker image layer cache is reused so this is cheap.
       - name: Push to Docker Hub
-        if: ${{ steps.hub-login.outcome == 'success' }}
+        if: env.HAS_HUB_CREDS == 'true'
         run: |
           make PLUGIN_NAME="${HUB_NAME}" PLUGIN_TAG="${{ steps.tag.outputs.tag }}" push
           make PLUGIN_NAME="${HUB_NAME}" PLUGIN_TAG="latest" push
@@ -129,7 +135,7 @@ jobs:
             echo "docker plugin install ${GHCR_NAME}:${{ steps.tag.outputs.tag }}"
             echo "docker plugin install ${GHCR_NAME}:latest"
             echo '```'
-            if [ "${{ steps.hub-login.outcome }}" = "success" ]; then
+            if [ "${HAS_HUB_CREDS}" = "true" ]; then
               echo "### Install from Docker Hub"
               echo '```'
               echo "docker plugin install ${HUB_NAME}:${{ steps.tag.outputs.tag }}"
