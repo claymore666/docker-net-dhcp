@@ -89,9 +89,13 @@ jobs:
         if: always()
         run: |
           mkdir -p coverage-unit
-          go test -count=1 -coverpkg=./... \
-              -args -test.gocoverdir="$PWD/coverage-unit" \
-              ./pkg/... ./cmd/...
+          # `go test` syntax: [flags] [packages] [-args test-args].
+          # Packages MUST come before `-args`: anything after `-args`
+          # is passed to the compiled test binary, so the previous form
+          # made go test see no packages and fall back to '.', failing
+          # with "no Go files in <repo>".
+          go test -count=1 -coverpkg=./... ./pkg/... ./cmd/... \
+              -args -test.gocoverdir="$PWD/coverage-unit"
 
       - name: Coverage summary
         if: always()
