@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"sync"
+	"time"
 
 	dNetwork "github.com/docker/docker/api/types/network"
 	"github.com/mitchellh/mapstructure"
@@ -59,6 +60,15 @@ func validateModeOptions(opts DHCPNetworkOptions) error {
 		if opts.Parent != "" {
 			return fmt.Errorf("%w: parent cannot be set in mode=bridge", util.ErrModeMismatch)
 		}
+		// validate_dhcp on bridge mode is a v0.9.0 carve-out: the
+		// probe semantics differ (parent is an existing bridge, not
+		// a NIC) and adding the bridge-mode probe path adds scope
+		// without a clear consumer. Reject loudly so an operator
+		// who set the opt understands it doesn't apply here, instead
+		// of silently no-op'ing and missing a real misconfig.
+		if opts.ValidateDHCP {
+			return fmt.Errorf("%w: validate_dhcp is not supported in mode=bridge", util.ErrModeMismatch)
+		}
 	default:
 		return fmt.Errorf("%w: %q", util.ErrInvalidMode, opts.Mode)
 	}
@@ -89,15 +99,29 @@ func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 		if _, err := validateParentForChild(opts.Parent); err != nil {
 			return err
 		}
+		// Pre-flight DHCP probe (T2-5). Runs before saveOptions so
+		// a network that fails the probe leaves no on-disk state
+		// behind — the operator's `docker network create` fails
+		// cleanly and they can re-issue once the upstream is fixed.
+		// Default off; opt-in via -o validate_dhcp=true.
+		if opts.ValidateDHCP {
+			ctx, cancel := context.WithTimeout(context.Background(), preflightProbeBudget+5*time.Second)
+			err := runDHCPProbe(ctx, opts.Parent)
+			cancel()
+			if err != nil {
+				return err
+			}
+		}
 		if err := saveOptions(r.NetworkID, opts); err != nil {
 			log.WithError(err).WithField("network", r.NetworkID).
 				Warn("Failed to persist options; daemon-restart may need API fallback")
 		}
 		log.WithFields(log.Fields{
-			"network": r.NetworkID,
-			"mode":    mode,
-			"parent":  opts.Parent,
-			"ipv6":    opts.IPv6,
+			"network":       r.NetworkID,
+			"mode":          mode,
+			"parent":        opts.Parent,
+			"ipv6":          opts.IPv6,
+			"validate_dhcp": opts.ValidateDHCP,
 		}).Info("Network created")
 		return nil
 	}
