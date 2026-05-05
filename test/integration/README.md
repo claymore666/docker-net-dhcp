@@ -40,11 +40,13 @@ for the umbrella scope. Tests so far:
 - `lifecycle_bridge_test.go` — same, in bridge mode (uses the
   bridge fixture: separate Linux bridge + second dnsmasq on
   192.168.100/24).
-- `lifecycle_ipvlan_test.go` — same, in ipvlan-L2 mode. Currently
-  `t.Skip`'d because broadcast OFFER delivery to the slave doesn't
-  work when the parent is a veth (real LAN parents work — covered
-  by manual smoke testing). Tracked as
-  [#62](https://github.com/claymore666/docker-net-dhcp/issues/62).
+- `lifecycle_ipvlan_test.go` — same, in ipvlan-L2 mode. Active as
+  of v0.7.0 — earlier it was `t.Skip`'d on a veth-parent harness
+  bug (broadcast OFFER didn't reach the slave); resolved in
+  [#62](https://github.com/claymore666/docker-net-dhcp/issues/62)
+  by setting the BROADCAST flag in the udhcpc DISCOVER (`-B`) and
+  skipping the MAC-echo at Join time on ipvlan (the kernel rejects
+  MAC changes on slaves with `EOPNOTSUPP`).
 - `tombstone_restart_test.go` — `docker restart <ctr>` preserves
   MAC + IP via the tombstone mechanism.
 - `concurrency_test.go` — N containers attached simultaneously each
@@ -82,7 +84,9 @@ test.
 The same suite runs on a self-hosted runner for every PR, with the
 **outside-collaborator approval gate** turned on so external PRs
 don't get free root on the runner host. See
-`.github/workflows/integration.yml`.
+`.github/workflows/integration.yml`. A separate manual-only
+`.github/workflows/coverage.yml` runs the same suite against a
+cover-instrumented plugin — see "Coverage harvesting" below.
 
 The workflow assumes the Go toolchain is pre-installed on the
 runner — `actions/setup-go@v5` is skipped to save ~30s/run. If
@@ -140,12 +144,28 @@ answered first.
    leftover `dh-itest-*` interfaces, networks, and the `dnsmasq`
    process if it's still running.
 
-## ipvlan + veth
+## Coverage harvesting
 
-`TestLifecycleIPvlan_GoldenPath` is currently skipped because the
-DHCP `OFFER` (broadcast — see `--dhcp-broadcast` in the fixture)
-doesn't reach the ipvlan slave inside the container netns when the
-parent is a veth. Real hardware NIC parents work fine — that path
-is covered by manual LAN smoke testing. The harness limitation is
-tracked as #62; un-skipping the test once #62 is resolved is the
-acceptance criterion.
+A second workflow, `.github/workflows/coverage.yml`, runs the same
+suite against a `go build -cover -coverpkg=./...` instrumented
+plugin (tag `:golang-cover`) and reports per-package coverage plus
+an HTML report as a workflow artifact. Manual-only
+(`workflow_dispatch`) — coverage runs aren't a PR gate.
+
+Locally:
+
+```sh
+sudo mkdir -p /var/lib/dh-cover && sudo chmod 0777 /var/lib/dh-cover
+make plugin-cover create-cover enable-cover
+sudo INTEGRATION_PLUGIN_REF=ghcr.io/claymore666/docker-net-dhcp:golang-cover make integration-test
+make disable-cover    # flushes counter files
+go tool covdata percent -i=/var/lib/dh-cover
+go tool covdata textfmt -i=/var/lib/dh-cover -o coverage.out
+go tool cover -html=coverage.out -o coverage.html
+```
+
+The plugin runtime emits `covmeta.*` on startup and `covcounters.*`
+on graceful shutdown, so the `disable-cover` step is what actually
+flushes the counters. The cover plugin is a parallel install — it
+coexists with the production `:golang` tag; `make plugin-cover`
+uses an isolated `plugin-cover/` rootfs dir.
