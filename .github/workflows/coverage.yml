@@ -15,6 +15,15 @@ name: Coverage
 # this at all).
 on:
   workflow_dispatch:
+  # TEMPORARY: smoke-test this workflow before merge. GitHub's
+  # workflow_dispatch API only sees workflows on the default
+  # branch, so a manual trigger from a feature branch isn't
+  # possible until the file lands on main. Reverted before merge
+  # to dev — if you see this `push:` trigger on dev or main, it's
+  # a bug, not a feature.
+  push:
+    branches:
+      - feat/coverage-harvesting
 
 permissions:
   contents: read
