@@ -16,7 +16,7 @@
 >
 > Install:
 > ```bash
-> docker plugin install ghcr.io/claymore666/docker-net-dhcp:v0.7.0
+> docker plugin install ghcr.io/claymore666/docker-net-dhcp:v0.8.0
 > ```
 >
 > All upstream usage below still applies — bridge mode is unchanged and
@@ -41,17 +41,17 @@ handy for home deployment.
 The plugin can be installed with the `docker plugin install` command:
 
 ```
-$ docker plugin install ghcr.io/claymore666/docker-net-dhcp:v0.7.0
-Plugin "ghcr.io/claymore666/docker-net-dhcp:v0.7.0" is requesting the following privileges:
+$ docker plugin install ghcr.io/claymore666/docker-net-dhcp:v0.8.0
+Plugin "ghcr.io/claymore666/docker-net-dhcp:v0.8.0" is requesting the following privileges:
  - network: [host]
  - host pid namespace: [true]
  - mount: [/var/run/docker.sock]
  - capabilities: [CAP_NET_ADMIN CAP_SYS_ADMIN]
 Do you grant the above permissions? [y/N] y
-v0.7.0: Pulling from ghcr.io/claymore666/docker-net-dhcp
+v0.8.0: Pulling from ghcr.io/claymore666/docker-net-dhcp
 Digest: sha256:<some hash>
 <some id>: Complete
-Installed plugin ghcr.io/claymore666/docker-net-dhcp:v0.7.0
+Installed plugin ghcr.io/claymore666/docker-net-dhcp:v0.8.0
 $
 ```
 
@@ -106,13 +106,13 @@ $ sudo dhcpcd my-bridge
 Once the bridge is ready, you can create the network:
 
 ```
-$ docker network create -d ghcr.io/claymore666/docker-net-dhcp:v0.7.0 --ipam-driver null -o bridge=my-bridge my-dhcp-net
+$ docker network create -d ghcr.io/claymore666/docker-net-dhcp:v0.8.0 --ipam-driver null -o bridge=my-bridge my-dhcp-net
 <some network id>
 $
 
 # With IPv6 enabled
 # Although `docker network create` has a `--ipv6` flag, it doesn't work with the null IPAM driver
-$ docker network create -d ghcr.io/claymore666/docker-net-dhcp:v0.7.0 --ipam-driver null -o bridge=my-bridge -o ipv6=true my-dhcp-net
+$ docker network create -d ghcr.io/claymore666/docker-net-dhcp:v0.8.0 --ipam-driver null -o bridge=my-bridge -o ipv6=true my-dhcp-net
 <some network id>
 $
 ```
@@ -173,7 +173,7 @@ services:
       - dhcp
 networks:
   dhcp:
-    driver: ghcr.io/claymore666/docker-net-dhcp:v0.7.0
+    driver: ghcr.io/claymore666/docker-net-dhcp:v0.8.0
     driver_opts:
       bridge: my-bridge
       ipv6: 'true'
@@ -202,7 +202,7 @@ Note:
 ## Debugging
 
 To read the plugin's log, do `cat /var/lib/docker/plugins/*/rootfs/var/log/net-dhcp.log` (as `root`). You can also use
-`docker plugin set ghcr.io/claymore666/docker-net-dhcp:v0.7.0 LOG_LEVEL=trace` to increase log verbosity.
+`docker plugin set ghcr.io/claymore666/docker-net-dhcp:v0.8.0 LOG_LEVEL=trace` to increase log verbosity.
 
 `/Plugin.Health` exposes liveness and recovery counters as JSON on the plugin's UNIX socket — useful as a monitoring probe. See [`docs/parent-attached-modes.md`](docs/parent-attached-modes.md#health-endpoint) for the payload schema and a sample `curl` invocation.
 
