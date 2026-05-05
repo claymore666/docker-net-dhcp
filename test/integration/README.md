@@ -37,6 +37,9 @@ for the umbrella scope. Tests so far:
 
 - `lifecycle_macvlan_test.go` — full create→run→inspect→leave→delete
   in macvlan mode.
+- `lifecycle_bridge_test.go` — same, in bridge mode (uses the
+  bridge fixture: separate Linux bridge + second dnsmasq on
+  192.168.100/24).
 - `lifecycle_ipvlan_test.go` — same, in ipvlan-L2 mode. Currently
   `t.Skip`'d because broadcast OFFER delivery to the slave doesn't
   work when the parent is a veth (real LAN parents work — covered
@@ -46,8 +49,13 @@ for the umbrella scope. Tests so far:
   MAC + IP via the tombstone mechanism.
 - `concurrency_test.go` — N containers attached simultaneously each
   get a distinct lease.
-- `errors_test.go` — invalid mode, missing parent, wrong-mode
-  options, IPAM not null. Validation-only; never reaches DHCP.
+- `errors_test.go`, `errors_netlink_test.go` — option-validation
+  rejections (invalid mode, missing parent, wrong-mode options,
+  IPAM not null) plus netlink-state ones (parent down, parent is
+  a bridge, malformed driver-opt ip).
+- `recovery_test.go` — `docker plugin disable -f` + `enable` while
+  a container is attached; asserts Plugin.Health.recovered_ok ≥ 1
+  and the container's IP/MAC survive the recycle.
 
 Tests run **serially** by design. None of the current cases call
 `t.Parallel()`, even though most would be safe — the recovery and
@@ -85,22 +93,34 @@ in. Re-running upgrades in place.
 
 ```
 [host netns]
-  dh-itest-host  <─── veth pair ───>  dh-itest-dhcp  (192.168.99.1/24)
-        │                                  │
-   parent= for                         dnsmasq listens here
-   plugin's macvlan                    pool: 192.168.99.10–99
-   children                            lease: 30s
+
+  Macvlan/ipvlan path:
+    dh-itest-host  <─ veth ─>  dh-itest-dhcp  (192.168.99.1/24)
+          │                          │
+     parent= for                dnsmasq #1
+     plugin children            pool 192.168.99.10–99
+
+  Bridge path:
+    dh-itest-br2  (192.168.100.1/24)
+          │
+     bridge= for                dnsmasq #2 bound to br2
+     plugin endpoints           pool 192.168.100.10–99
+                                + iptables FORWARD ACCEPT
+                                  (br_netfilter would otherwise
+                                  drop bridged DHCP under docker's
+                                  default-DROP FORWARD policy)
 ```
 
-A single shared `Fixture` (`test/integration/harness/fixture.go`)
-owns the veth pair and the dnsmasq subprocess for the whole `go
-test` invocation. Tests that want a network call
-`harness.CreateNetwork(t, ctx, ..., "macvlan", nil)` which uses
-`dh-itest-host` as the parent.
+A single shared `Fixture` (`test/integration/harness/fixture.go`,
+`harness/bridge.go`) owns both subnets for the whole `go test`
+invocation. Tests select a path by mode:
+`harness.CreateNetwork(t, ctx, ..., "macvlan", nil)` uses
+`dh-itest-host` as the parent; `"bridge"` uses `dh-itest-br2`.
 
-Bridge mode is not yet covered here — it needs a separate fixture
-(Linux bridge + a different subnet to avoid host-routing conflicts).
-Tracked in #56.
+Distinct subnets keep the two dnsmasq instances cleanly isolated
+from each other — without that, two DHCP servers on the same
+broadcast domain would race and tests would bind whichever
+answered first.
 
 ## Debugging a failed test
 
