@@ -1,6 +1,6 @@
 module github.com/devplayer0/docker-net-dhcp
 
-go 1.25.0
+go 1.25.9
 
 require (
 	github.com/docker/docker v28.4.0+incompatible
