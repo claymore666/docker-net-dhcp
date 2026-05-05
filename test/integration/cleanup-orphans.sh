@@ -42,14 +42,28 @@ if docker plugin inspect "$plugin_ref" >/dev/null 2>&1; then
     docker plugin enable "$plugin_ref" 2>&1 | sed 's/^/  /' || true
 fi
 
-echo "=== killing lingering dnsmasq listening on dh-itest-dhcp ==="
-# dnsmasq with --interface=dh-itest-dhcp argv signature
-pids=$(pgrep -f -- '--interface=dh-itest-dhcp' || true)
+echo "=== killing lingering dnsmasq processes started by the harness ==="
+# Both fixtures share the dh-itest-* prefix on their --interface= flag,
+# so a single pgrep pattern catches both the macvlan-side dnsmasq
+# (--interface=dh-itest-dhcp) and the bridge-side one
+# (--interface=dh-itest-br2).
+pids=$(pgrep -f -- '--interface=dh-itest-' || true)
 if [[ -n "$pids" ]]; then
     kill -TERM $pids 2>/dev/null || true
     sleep 1
     kill -KILL $pids 2>/dev/null || true
     echo "  killed: $pids"
 fi
+
+echo "=== removing harness-installed iptables FORWARD rules ==="
+# The bridge fixture inserts ACCEPT rules so docker's default-deny
+# FORWARD policy doesn't drop bridged DHCP. -D is run in a loop because
+# iptables only deletes one matching rule per call, and a panicked run
+# can leave duplicates.
+for direction in -i -o; do
+    while iptables -C FORWARD "$direction" dh-itest-br2 -j ACCEPT 2>/dev/null; do
+        iptables -D FORWARD "$direction" dh-itest-br2 -j ACCEPT 2>&1 | sed 's/^/  /'
+    done
+done
 
 echo "=== done ==="

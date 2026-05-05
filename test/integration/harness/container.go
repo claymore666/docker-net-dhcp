@@ -163,8 +163,9 @@ func ExecOutput(t *testing.T, ctx context.Context, containerID string, cmd ...st
 	return out.String()
 }
 
-// AssertIP fails the test if got is not a valid IPv4 in the DHCP pool.
-// Common helper to keep the assertion phrasing consistent.
+// AssertIP fails the test if got is not a valid IPv4 in the macvlan
+// fixture's DHCP pool. Common helper to keep the assertion phrasing
+// consistent.
 func AssertIP(t *testing.T, got string) net.IP {
 	t.Helper()
 	ip := net.ParseIP(got)
@@ -176,6 +177,22 @@ func AssertIP(t *testing.T, got string) net.IP {
 	}
 	if !IsInPool(ip) {
 		t.Fatalf("IP %q outside DHCP pool [%s, %s]", got, DHCPPoolStart, DHCPPoolEnd)
+	}
+	return ip
+}
+
+// AssertBridgeIP is the bridge-fixture analogue of AssertIP.
+func AssertBridgeIP(t *testing.T, got string) net.IP {
+	t.Helper()
+	ip := net.ParseIP(got)
+	if ip == nil {
+		t.Fatalf("not a valid IP: %q", got)
+	}
+	if ip.To4() == nil {
+		t.Fatalf("not an IPv4: %q", got)
+	}
+	if !IsInBridgePool(ip) {
+		t.Fatalf("IP %q outside bridge DHCP pool [%s, %s]", got, BridgeDHCPPoolStart, BridgeDHCPPoolEnd)
 	}
 	return ip
 }

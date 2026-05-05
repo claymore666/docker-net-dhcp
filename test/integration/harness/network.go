@@ -31,8 +31,9 @@ func CreateNetwork(t *testing.T, ctx context.Context, name, mode string, extraOp
 	switch mode {
 	case "macvlan", "ipvlan":
 		opts["parent"] = HostVeth
+	case "bridge":
+		opts["bridge"] = BridgeName
 	}
-	// Bridge mode needs its own fixture — see test/integration/README.md.
 	for k, v := range extraOpts {
 		opts[k] = v
 	}

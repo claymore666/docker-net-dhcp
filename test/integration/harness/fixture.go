@@ -50,10 +50,21 @@ const (
 // Use New() in TestMain; defer f.Teardown(). Re-running on a host with
 // leftover state from a panicked previous run is safe — Teardown is
 // idempotent and Setup tears down before creating.
+//
+// The bridge-mode fields (BridgeName, second dnsmasq, iptables rules)
+// are set up alongside the macvlan veth pair so a single fixture
+// covers every mode the suite exercises. Tests that don't touch
+// bridge mode pay only the small one-time setup cost.
 type Fixture struct {
 	dnsmasq    *exec.Cmd
 	leaseFile  string
 	dnsmasqLog string
+
+	// Bridge-mode fixture state (see bridge.go).
+	bridgeDnsmasq     *exec.Cmd
+	bridgeLeaseFile   string
+	bridgeDnsmasqLog  string
+	iptablesInstalled bool
 }
 
 // New creates the veth pair, brings both ends up, addresses the DHCP
@@ -117,6 +128,17 @@ func New() (*Fixture, error) {
 		return nil, err
 	}
 
+	// Bridge fixture comes after the veth/dnsmasq is healthy so a
+	// failure here cleanly tears the partial state back down. We
+	// log-and-skip if the bridge fixture itself fails so the whole
+	// suite isn't lost when only bridge-mode tests need it — but in
+	// practice bridge setup should be just as reliable as the
+	// macvlan path.
+	if err := f.startBridge(); err != nil {
+		_ = f.Teardown()
+		return nil, fmt.Errorf("startBridge: %w", err)
+	}
+
 	return f, nil
 }
 
@@ -165,10 +187,13 @@ func waitDnsmasqReady(budget time.Duration) error {
 	return fmt.Errorf("dnsmasq did not bind UDP/67 within %v", budget)
 }
 
-// Teardown stops dnsmasq, removes the veth pair, and cleans up the
-// per-run temp directory. Idempotent.
+// Teardown stops both dnsmasq processes, removes the veth pair and
+// the bridge, drops the iptables FORWARD rules, and cleans up the
+// per-run temp directories. Idempotent — safe to call twice or after
+// a partial setup.
 func (f *Fixture) Teardown() error {
 	var firstErr error
+	f.stopBridge()
 	if f.dnsmasq != nil && f.dnsmasq.Process != nil {
 		_ = f.dnsmasq.Process.Signal(syscall.SIGTERM)
 		done := make(chan struct{})
@@ -190,7 +215,7 @@ func (f *Fixture) Teardown() error {
 // cleanupNetlink removes any leftover fixture interfaces from a
 // previous run. Best-effort.
 func cleanupNetlink() {
-	for _, name := range []string{HostVeth, DhcpVeth} {
+	for _, name := range []string{HostVeth, DhcpVeth, BridgeName} {
 		if link, err := netlink.LinkByName(name); err == nil {
 			_ = netlink.LinkDel(link)
 		}
