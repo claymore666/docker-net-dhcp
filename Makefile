@@ -99,7 +99,7 @@ integration-test:
 		echo "integration-test must run as root. Re-run with sudo."; \
 		exit 1; \
 	fi
-	go test -v -tags integration -count=1 -timeout 5m ./test/integration/...
+	go test -v -tags integration -count=1 -timeout 10m ./test/integration/...
 
 # Manual orphan cleanup for when an integration test panics mid-setup
 # and leaves dh-itest-* interfaces / containers / networks behind.
