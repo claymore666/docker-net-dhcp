@@ -40,6 +40,13 @@ const dhcpClientReapTimeout = 5 * time.Second
 // upstream DHCP server.
 const dhcpClientFinishTimeout = 5 * time.Second
 
+// dnsPropagateTimeout caps the docker-API round-trip cost of
+// resolving the container PID for resolv.conf writes. Short because
+// it runs on every DHCP bound/renew event; a slow daemon shouldn't
+// stack up bound goroutines waiting on inspect calls. On timeout
+// we log and skip — the next renewal will retry.
+const dnsPropagateTimeout = 2 * time.Second
+
 // closeNsHandle / closeNetHandle log close errors at Debug instead of
 // silently dropping them. Cleanup paths can't act on a Close failure
 // (we're already on an error path or shutting down), but a recurring
@@ -63,6 +70,13 @@ type dhcpManager struct {
 	docker  *docker.Client
 	joinReq JoinRequest
 	opts    DHCPNetworkOptions
+
+	// plugin is a back-reference for bumping plugin-level counters
+	// (lease_changed_total, etc.) and reaching the docker client when
+	// an event handler needs to look up the container behind this
+	// endpoint. Unit tests that don't drive lease events can pass nil;
+	// every production path goes through Plugin.Join.
+	plugin *Plugin
 
 	// ipMu guards lastIP / lastIPv6. Writes happen from the udhcpc
 	// event goroutine (renew); reads happen from Leave after Stop has
@@ -108,6 +122,14 @@ func newDHCPManager(docker *docker.Client, r JoinRequest, opts DHCPNetworkOption
 	}
 }
 
+// withPlugin attaches a Plugin back-reference. Used by Plugin.Join /
+// recoverEndpoint to wire the manager to the live counters before
+// Start. Test helpers omit it; production callers always set it.
+func (m *dhcpManager) withPlugin(p *Plugin) *dhcpManager {
+	m.plugin = p
+	return m
+}
+
 func (m *dhcpManager) logFields(v6 bool) log.Fields {
 	return log.Fields{
 		"network":  shortID(m.joinReq.NetworkID),
@@ -135,6 +157,32 @@ func (m *dhcpManager) setLastIP(v6 bool, addr *netlink.Addr) {
 	}
 }
 
+// findContainerPID resolves the host PID of the container that owns
+// this manager's endpoint. Returns an error if the endpoint is not
+// found in the network's container list (rare race during teardown)
+// or if the container has no PID (not running). Mirrors
+// Plugin.lookupEndpointMAC's lookup shape.
+func (m *dhcpManager) findContainerPID(ctx context.Context) (int, error) {
+	dockerNet, err := m.docker.NetworkInspect(ctx, m.joinReq.NetworkID, dNetwork.InspectOptions{})
+	if err != nil {
+		return 0, fmt.Errorf("NetworkInspect: %w", err)
+	}
+	for ctrID, info := range dockerNet.Containers {
+		if info.EndpointID != m.joinReq.EndpointID {
+			continue
+		}
+		ins, err := m.docker.ContainerInspect(ctx, ctrID)
+		if err != nil {
+			return 0, fmt.Errorf("ContainerInspect(%s): %w", shortID(ctrID), err)
+		}
+		if ins.State == nil || ins.State.Pid == 0 {
+			return 0, fmt.Errorf("container %s has no PID (state=%+v)", shortID(ctrID), ins.State)
+		}
+		return ins.State.Pid, nil
+	}
+	return 0, fmt.Errorf("endpoint %s not found in network %s container list", shortID(m.joinReq.EndpointID), shortID(m.joinReq.NetworkID))
+}
+
 func (m *dhcpManager) renew(v6 bool, info udhcpc.Info) error {
 	v4, v6Last := m.lastIPs()
 	lastIP := v4
@@ -147,13 +195,42 @@ func (m *dhcpManager) renew(v6 bool, info udhcpc.Info) error {
 		return fmt.Errorf("failed to parse IP address: %w", err)
 	}
 
-	if lastIP == nil || !ip.Equal(*lastIP) {
-		// TODO: We can't deal with a different renewed IP for the same reason as described for `bound`
+	if lastIP != nil && !ip.Equal(*lastIP) {
+		// libnetwork has no in-place endpoint-IP swap RPC, so Docker's
+		// NetworkSettings.IPAddress still reports the previous address
+		// — `docker inspect` lies until the container is recreated.
+		// Bump the counter so operators can alert on the truthfulness
+		// gap; design discussion for a deeper fix is deferred (issue #104).
+		if m.plugin != nil {
+			m.plugin.leaseChanged.Add(1)
+		}
 		log.
 			WithFields(m.logFields(v6)).
 			WithField("old_ip", lastIP).
 			WithField("new_ip", ip).
-			Warn("udhcpc renew with changed IP")
+			Warn("udhcpc renew with changed IP — Docker's view is now stale")
+	}
+
+	// Surface DHCP options the plugin captures but doesn't auto-apply
+	// (NTP servers, TFTP server, boot-file name, search list when not
+	// propagating DNS). Operators can grep plugin logs for these
+	// without flipping LOG_LEVEL=trace. Only emits when at least one
+	// is non-empty so plain LANs don't get a noisy line per renewal.
+	if len(info.NTPServers) > 0 || info.TFTPServer != "" || info.BootFile != "" || len(info.SearchList) > 0 {
+		fields := m.logFields(v6)
+		if len(info.NTPServers) > 0 {
+			fields["ntp"] = info.NTPServers
+		}
+		if info.TFTPServer != "" {
+			fields["tftp"] = info.TFTPServer
+		}
+		if info.BootFile != "" {
+			fields["bootfile"] = info.BootFile
+		}
+		if len(info.SearchList) > 0 {
+			fields["search"] = info.SearchList
+		}
+		log.WithFields(fields).Info("DHCP options received")
 	}
 
 	// Track the freshly-bound address so Leave can hand it to the
@@ -162,6 +239,62 @@ func (m *dhcpManager) renew(v6 bool, info udhcpc.Info) error {
 	// first CreateEndpoint DISCOVER produced, even if udhcpc has
 	// moved to a different lease since.
 	m.setLastIP(v6, ip)
+
+	// Apply DHCP option 6 / 23 (DNS server list) when opt-in and the
+	// server actually supplied servers. Empty list is a no-op rather
+	// than a clobber — see resolvconf.go for the rationale. v6 path
+	// uses DHCPv6 option 23, populated by udhcpc6 into the same
+	// DNSServers slice.
+	if m.opts.PropagateDNS && len(info.DNSServers) > 0 {
+		ctx, cancel := context.WithTimeout(context.Background(), dnsPropagateTimeout)
+		pid, err := m.findContainerPID(ctx)
+		cancel()
+		if err != nil {
+			log.
+				WithError(err).
+				WithFields(m.logFields(v6)).
+				Warn("Skipping DNS propagation — could not resolve container PID")
+		} else if err := writeContainerResolvConf(pid, info.DNSServers, info.SearchList, info.Domain); err != nil {
+			log.
+				WithError(err).
+				WithFields(m.logFields(v6)).
+				WithField("dns", info.DNSServers).
+				Error("Failed to write container resolv.conf")
+		} else {
+			log.
+				WithFields(m.logFields(v6)).
+				WithField("dns", info.DNSServers).
+				Debug("Propagated DHCP DNS servers to container resolv.conf")
+		}
+	}
+
+	// Apply DHCP option 26 (Interface MTU) when both opt-in and
+	// non-zero. Skipping zero is mandatory: udhcpc-handler emits 0
+	// when the server didn't supply the option, and forcing MTU 0
+	// on a kernel link is undefined / disallowed.
+	if m.opts.PropagateMTU && info.MTU > 0 {
+		current := m.ctrLink.Attrs().MTU
+		if current != info.MTU {
+			if err := m.netHandle.LinkSetMTU(m.ctrLink, info.MTU); err != nil {
+				// Don't fail the renewal — IP/gateway are usable; MTU
+				// is a perf-correctness knob. Log loudly so operators
+				// notice; a surprise small MTU under a never-applied
+				// large MTU is exactly the kind of latent
+				// black-hole bug worth surfacing.
+				log.
+					WithError(err).
+					WithFields(m.logFields(v6)).
+					WithField("mtu", info.MTU).
+					Error("Failed to apply DHCP-supplied MTU; container link MTU unchanged")
+			} else {
+				log.
+					WithFields(m.logFields(v6)).
+					WithField("old_mtu", current).
+					WithField("new_mtu", info.MTU).
+					Info("Applied DHCP-supplied MTU")
+			}
+		}
+	}
 
 	// Skip gateway-from-DHCP renewal handling when the operator pinned a
 	// gateway override on the network — leave their override in place.
@@ -240,7 +373,9 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 		Broadcast: m.opts.effectiveMode() == ModeIPvlan,
 		// Same client-id the initial DISCOVER used in CreateEndpoint,
 		// so renewals are seen as the same client by the server.
-		ClientID: clientIDFromEndpoint(m.joinReq.EndpointID),
+		// Honours the operator's client_id override when set.
+		ClientID:    resolveClientID(m.opts, m.joinReq.EndpointID),
+		VendorClass: m.opts.VendorClass,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create DHCP%v client: %w", v6Str, err)
@@ -306,6 +441,9 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 					// hand out a fresh address per DISCOVER even for
 					// the same MAC). Reuse the renew path so LastIP
 					// reflects what's actually in the kernel.
+					if m.plugin != nil {
+						m.plugin.leasesObtained.Add(1)
+					}
 					if err := m.renew(v6, event.Data); err != nil {
 						log.
 							WithError(err).
@@ -318,6 +456,9 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 						WithFields(m.logFields(v6)).
 						Debug("udhcpc renew")
 
+					if m.plugin != nil {
+						m.plugin.leasesRenewed.Add(1)
+					}
 					if err := m.renew(v6, event.Data); err != nil {
 						log.
 							WithError(err).
@@ -327,6 +468,9 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 							Error("Failed to execute IP renewal")
 					}
 				case "leasefail":
+					if m.plugin != nil {
+						m.plugin.dhcpTimeouts.Add(1)
+					}
 					log.WithFields(m.logFields(v6)).Warn("udhcpc failed to get a lease")
 				case "nak":
 					log.WithFields(m.logFields(v6)).Warn("udhcpc client received NAK")
@@ -505,10 +649,21 @@ func (m *dhcpManager) Stop() error {
 	close(m.stopChan)
 
 	if err := <-m.errChan; err != nil {
+		// SIGTERM -> DHCPRELEASE -> exit didn't complete cleanly. The
+		// upstream server may now be holding a phantom lease against
+		// this MAC until its own expiry. Bump so operators can alert
+		// on a pattern of releases failing — typically points at
+		// upstream reachability problems mid-teardown.
+		if m.plugin != nil {
+			m.plugin.leaseReleaseFailures.Add(1)
+		}
 		return fmt.Errorf("failed shut down DHCP client: %w", err)
 	}
 	if m.opts.IPv6 {
 		if err := <-m.errChanV6; err != nil {
+			if m.plugin != nil {
+				m.plugin.leaseReleaseFailures.Add(1)
+			}
 			return fmt.Errorf("failed shut down DHCPv6 client: %w", err)
 		}
 	}

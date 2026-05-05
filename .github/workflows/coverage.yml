@@ -29,14 +29,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Verify Go toolchain
-        run: |
-          if ! command -v go >/dev/null; then
-            echo "go not in PATH on this runner."
-            echo "Run: sudo bash test/integration/install-go-runner.sh"
-            exit 1
-          fi
-          go version
+      # Coverage uses `-coverpkg=./...` for the unit-test step, which
+      # forces go test to recompile stdlib's internal/coverage runtime
+      # support. The runner's pre-installed Go (used unmodified by
+      # integration.yml) had `compile` and `pkg/tool` versions diverge
+      # at one point, so stdlib recompiles failed with the
+      # 'compile: version "go1.25.9" does not match go tool version
+      # "go1.25.0"' error. setup-go gives us a known-clean toolchain
+      # at the cost of ~30s — fine for a 12-minute workflow that
+      # runs only on manual dispatch.
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
 
       - name: Cleanup orphans from previous runs
         run: bash test/integration/cleanup-orphans.sh
@@ -89,9 +93,13 @@ jobs:
         if: always()
         run: |
           mkdir -p coverage-unit
-          go test -count=1 -coverpkg=./... \
-              -args -test.gocoverdir="$PWD/coverage-unit" \
-              ./pkg/... ./cmd/...
+          # `go test` syntax: [flags] [packages] [-args test-args].
+          # Packages MUST come before `-args`: anything after `-args`
+          # is passed to the compiled test binary, so the previous form
+          # made go test see no packages and fall back to '.', failing
+          # with "no Go files in <repo>".
+          go test -count=1 -coverpkg=./... ./pkg/... ./cmd/... \
+              -args -test.gocoverdir="$PWD/coverage-unit"
 
       - name: Coverage summary
         if: always()

@@ -26,6 +26,143 @@ vulnerable code path is reachable from the plugin process, so no
 action is required. Recorded here so future audits don't
 re-investigate. (Original report: third-pass code review, 2026-05-04.)
 
+## v0.9.0
+
+DHCP-helper polish: option propagation, parent-attached parity,
+truthfulness counter, DHCP-wire health metrics, configurable
+client-id and vendor class, NTP / search-list / TFTP capture,
+pre-flight DHCP probe. Tier 1 (#100, #101, #102, #104) plus
+T2-2 (#105), T2-3 (#106), T2-4 (#107) and T2-5 (#108) closed.
+
+### New driver-opts (opt-in, default off for backwards compatibility)
+
+- **`propagate_dns=true`** (#100) — write DHCP option 6 / 23 (DNS
+  server list) into the container's `/etc/resolv.conf` on every
+  bound/renew. Implemented via setns into the container's mount
+  namespace; survives until Docker rewrites the file (typically on
+  `docker network connect/disconnect`). Off by default because
+  flipping it on changes name-resolution behaviour for every
+  container on the network.
+- **`propagate_mtu=true`** (#101) — apply DHCP option 26 (Interface
+  MTU) to the container link via `LinkSetMTU` on bound/renew. Off
+  by default because some networks advertise non-standard MTUs for
+  reasons unrelated to host capability; opt-in keeps the behaviour
+  change visible.
+- **`client_id=<string>`** (#106) — overrides the endpoint-derived
+  DHCP option 61 (Client Identifier) for every endpoint on this
+  network. Bytes go on the wire prefixed with type byte `0x00`
+  (RFC 2132 opaque). Default empty leaves the per-endpoint stable
+  id in place, which is what makes per-container reservations
+  work upstream — operators only set this when class-based DHCP
+  policy demands a known client-id.
+- **`vendor_class=<string>`** (#106) — overrides the default
+  DHCP option 60 (Vendor Class Identifier) value of
+  `docker-net-dhcp`. Lets DHCP servers using class-based policy
+  (Cisco / Aruba / etc.) differentiate net-dhcp containers from
+  other clients on the same LAN, e.g. to issue a different gateway
+  or option set to containers tagged with a known vendor string.
+  Default empty falls back to the historical `docker-net-dhcp`
+  string. v6 unaffected — udhcpc6 doesn't accept the option.
+- **`validate_dhcp=true`** (#108) — pre-flight DHCP probe at
+  `docker network create` time. Creates a temporary macvlan child
+  on the parent NIC with a random locally-administered MAC, runs
+  one-shot udhcpc with a 5-second budget, and rejects the network
+  with `no DHCP OFFER on <parent> within 5s` if no server answers.
+  Catches misconfigurations (parent isolated, firewall blocking
+  UDP/67-68, broken VLAN) at create time rather than the first
+  `docker run`. macvlan / ipvlan modes only — bridge mode rejects
+  the opt with a clear error. Cost: one transient lease in the
+  upstream pool per probe (busybox udhcpc has no DISCOVER-only
+  mode); the lease times out naturally.
+
+### Additional captured DHCP options (#105)
+
+`udhcpc-handler` now captures four more options on every bind /
+renew event and surfaces them via the plugin log at info level
+(only when at least one is non-empty, so plain LANs see no extra
+noise):
+
+- **Option 42 (NTP servers)** — captured into `Info.NTPServers`.
+  Not auto-applied to the container; workloads needing NTP
+  consume the value via plugin logs or future tooling.
+- **Option 119 (DNS Search List)** — captured into
+  `Info.SearchList`. When `propagate_dns=true`, the plugin emits
+  every entry on the container's `search` line in
+  `/etc/resolv.conf`. RFC 3397 precedence: option 119 supersedes
+  option 15 (`Domain`) when both are present; option 15 is the
+  fallback otherwise.
+- **Option 66 (TFTP server name)** — captured into
+  `Info.TFTPServer`. Surfaced via plugin log; not auto-applied.
+- **Option 67 (Boot file name)** — captured into `Info.BootFile`.
+  Surfaced via plugin log; not auto-applied.
+
+The udhcpc command line now requests `mtu`, `search`, `tftp`,
+and `bootfile` explicitly via `-O`. Busybox already requests
+`ntpsrv` (option 42) by default. RFC-conformant servers only
+return options the client asked for; this block is always-on but
+free when the server doesn't supply them.
+
+### Behaviour change (default flipped — see compatibility note)
+
+- **Static-route copy in macvlan/ipvlan** (#102) — pre-v0.9.0,
+  parent-attached modes never inherited host-side routes from the
+  parent NIC; only bridge mode did. v0.9.0 extends the bridge-mode
+  behaviour to macvlan and ipvlan for parity. The existing
+  `-o skip_routes=true` opts out for users who depended on the
+  no-copy behaviour.
+
+### Observability
+
+- **`lease_changed` counter** (#104) — new field on the
+  `Plugin.Health` JSON. Bumps when a DHCP renewal returns a
+  different IP than the manager last recorded. Docker's
+  `NetworkSettings.IPAddress` view does NOT update on lease change
+  (libnetwork has no in-place endpoint-IP swap RPC); this counter
+  is the operator-facing signal that a stale-inspect window has
+  opened. A deeper fix (forced container restart on lease change,
+  or out-of-band docker-socket update) is deferred — see #104 for
+  the design discussion.
+- **DHCP-wire counters** (#107) — four new fields on
+  `Plugin.Health`: `leases_obtained`, `leases_renewed`,
+  `dhcp_timeouts`, `lease_release_failures`. Bumped from the
+  persistent client's event loop (`bound`, `renew`, `leasefail`)
+  and from `dhcpManager.Stop`'s `client.Finish` failure branch.
+  Operators alerting on DHCP-side regression no longer have to
+  scrape dnsmasq logs server-side or run the plugin at trace
+  level. Naming intentionally drops the Prometheus `_total`
+  suffix to stay consistent with the existing `Plugin.Health`
+  fields (`recovered_ok`, `tombstone_write_failures`, etc.).
+
+### Compatibility note
+
+The macvlan/ipvlan static-route default flipped from "don't copy"
+to "copy" in v0.9.0. If your existing macvlan setups had
+operator-added routes on the parent NIC that you specifically did
+NOT want inside containers, add `-o skip_routes=true` to the
+network's create options. The bridge-mode default is unchanged
+(it's always copied; v0.9.0 just extends the same behaviour to the
+other modes).
+
+### Coverage
+
+Combined unit + integration coverage harvested by the manual
+`Coverage` workflow on the dev branch:
+
+| package | merged |
+|---------|--------|
+| `pkg/util` | 87.7% |
+| `pkg/plugin` | 82.4% |
+| `pkg/udhcpc` | 81.3% |
+| `cmd/net-dhcp` | 75.0% |
+| `cmd/udhcpc-handler` | 50.0% |
+| **overall** | **76.5%** |
+
+`pkg/plugin` moved from 68.9% (v0.8.0) → 82.4% — the new T1 / T2
+features each shipped with their own integration tests, plus the
+`BuildEvent` extraction in pkg/udhcpc and the extensive T2-3
+vendor-class / client-id round-trip tests filled previously-
+uncovered branches. First time the combined number is published.
+
 ## v0.8.0
 
 Code-review fix sweep + automated release pipeline. No new features —

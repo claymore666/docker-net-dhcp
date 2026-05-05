@@ -53,6 +53,13 @@ type DHCPClientOptions struct {
 	// stable bytes make sense (typically a hash of the Docker EndpointID).
 	ClientID []byte
 
+	// VendorClass, when non-empty, overrides the default vendor class
+	// identifier (option 60) sent in DHCP requests. Empty falls back
+	// to the package-level VendorID constant ("docker-net-dhcp"), which
+	// is what every callsite used pre-T2-3. Has no effect for V6 — udhcpc6
+	// doesn't accept the -V flag.
+	VendorClass string
+
 	// Broadcast (v4 only) makes udhcpc set the BROADCAST flag in the
 	// DHCPDISCOVER, telling the server to send the OFFER as L2
 	// broadcast rather than unicast to chaddr. Required for ipvlan-L2:
@@ -87,8 +94,23 @@ func NewDHCPClient(iface string, opts *DHCPClientOptions) (*DHCPClient, error) {
 	}
 	c := &DHCPClient{
 		Opts: opts,
-		// Foreground, set interface and handler "script"
-		cmd: exec.Command(path, "-f", "-i", iface, "-s", opts.HandlerScript),
+		// Foreground, set interface and handler "script". Also
+		// explicitly request the options not in busybox udhcpc's
+		// default list (1, 3, 6, 12, 15, 28, 42):
+		//
+		//   - mtu     (option 26)  — applied to ctr link when PropagateMTU
+		//   - search  (option 119) — written to resolv.conf when PropagateDNS
+		//   - tftp    (option 66)  — surfaced via plugin log
+		//   - bootfile(option 67)  — surfaced via plugin log
+		//
+		// Note: busybox already requests option 42 (ntpsrv) by default,
+		// so there's no -O for it. dnsmasq / RFC-conformant servers
+		// only return options the client asked for. This block is
+		// always-on; the per-option propagate_* gates decide whether
+		// to *act* on the values, but capturing them is free and
+		// harmless if the server doesn't supply them.
+		cmd: exec.Command(path, "-f", "-i", iface, "-s", opts.HandlerScript,
+			"-O", "mtu", "-O", "search", "-O", "tftp", "-O", "bootfile"),
 	}
 
 	stderrPipe, err := c.cmd.StderrPipe()
@@ -143,7 +165,11 @@ func NewDHCPClient(iface string, opts *DHCPClientOptions) (*DHCPClient, error) {
 
 	// Vendor ID string option is not available for udhcpc6
 	if !opts.V6 {
-		c.cmd.Args = append(c.cmd.Args, "-V", VendorID)
+		vendor := opts.VendorClass
+		if vendor == "" {
+			vendor = VendorID
+		}
+		c.cmd.Args = append(c.cmd.Args, "-V", vendor)
 	}
 
 	// DHCP option 61 (client identifier). Format on the wire is

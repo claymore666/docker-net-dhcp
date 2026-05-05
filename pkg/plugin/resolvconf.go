@@ -1,0 +1,126 @@
+package plugin
+
+import (
+	"fmt"
+	"os"
+	"runtime"
+	"strings"
+
+	"golang.org/x/sys/unix"
+)
+
+// writeContainerResolvConf enters the mount namespace of the process
+// identified by pid and rewrites /etc/resolv.conf with the
+// DHCP-supplied DNS server list.
+//
+// Why setns into the mount namespace rather than writing the host's
+// /var/lib/docker/containers/<id>/resolv.conf bind source directly:
+// the plugin's filesystem only bind-mounts /var/run/docker.sock (see
+// config.json), so it can't see the host's resolv.conf bind source.
+// Adding another bind mount would prompt every existing user for
+// re-grant on upgrade. Mount-ns entry is a one-time code cost that
+// avoids any plugin-config change.
+//
+// Threading contract: setns is per-thread, so we lock the goroutine
+// to one OS thread for the duration. On the *unhappy* path (setns
+// back to host fails) we deliberately do NOT call UnlockOSThread —
+// the thread is now in the container's mount namespace and would
+// poison the next goroutine that lands on it. Go's runtime retires
+// poisoned threads when their owning goroutine exits, so callers
+// must run this from a goroutine they're willing to lose. In
+// practice this only fires if the container netns vanished mid-write
+// (i.e. the container died), which is exactly the case we already
+// have to live with on every other namespace operation.
+//
+// Caveats baked in:
+//   - Docker rewrites /etc/resolv.conf on `docker network connect`
+//     and `disconnect`. Our write survives between those events but
+//     not across them. Operators connecting/disconnecting networks
+//     will need to wait for the next DHCP renewal to re-populate.
+//   - Multi-network containers: the LAST plugin to write wins.
+//     Containers attached to two net-dhcp networks will end up with
+//     whichever network's renewal happened most recently.
+//   - search-domain handling: prefer the multi-entry DHCP option 119
+//     (Domain Search List, busybox env `search`). Falls back to the
+//     single-entry option 15 (`domain`, env `domain`) when option 119
+//     isn't supplied. RFC 3397 specifies option 119 supersedes option
+//     15 when both are present.
+func writeContainerResolvConf(pid int, dns []string, searchList []string, searchDomain string) error {
+	if len(dns) == 0 {
+		// Defensive: caller should have filtered. Writing empty
+		// resolv.conf would silently nuke name resolution.
+		return fmt.Errorf("refusing to write empty resolv.conf")
+	}
+
+	runtime.LockOSThread()
+
+	// Open self-thread's mnt ns through /proc/self/task/<tid>/ns/mnt
+	// rather than /proc/self/ns/mnt: the latter resolves to the main
+	// thread's ns, but we just locked to a *different* thread that
+	// may already have been moved by an earlier goroutine on this
+	// runtime. Always read the current thread's view.
+	origMnt, err := os.Open(fmt.Sprintf("/proc/self/task/%d/ns/mnt", unix.Gettid()))
+	if err != nil {
+		runtime.UnlockOSThread()
+		return fmt.Errorf("open self mnt ns: %w", err)
+	}
+	defer origMnt.Close()
+
+	targetMnt, err := os.Open(fmt.Sprintf("/proc/%d/ns/mnt", pid))
+	if err != nil {
+		runtime.UnlockOSThread()
+		return fmt.Errorf("open container mnt ns (pid %d): %w", pid, err)
+	}
+	defer targetMnt.Close()
+
+	// Detach this thread's filesystem state (CWD, root, umask) from
+	// the rest of the Go runtime's threads BEFORE setns into the
+	// mount namespace. Linux refuses CLONE_NEWNS setns when the
+	// caller still shares fs state with another process — that's
+	// what produced "invalid argument" on the first CI run. unshare
+	// is per-thread and cheap; the locked thread is retired with
+	// the goroutine after we return so the side-effect is
+	// well-scoped.
+	if err := unix.Unshare(unix.CLONE_FS); err != nil {
+		runtime.UnlockOSThread()
+		return fmt.Errorf("unshare CLONE_FS: %w", err)
+	}
+
+	if err := unix.Setns(int(targetMnt.Fd()), unix.CLONE_NEWNS); err != nil {
+		runtime.UnlockOSThread()
+		return fmt.Errorf("setns into container mnt ns: %w", err)
+	}
+
+	writeErr := os.WriteFile("/etc/resolv.conf", buildResolvConf(dns, searchList, searchDomain), 0644)
+
+	if err := unix.Setns(int(origMnt.Fd()), unix.CLONE_NEWNS); err != nil {
+		// Thread is now stuck in the container's mnt ns. Don't
+		// UnlockOSThread — see threading contract above.
+		return fmt.Errorf("setns back to host mnt ns failed (write was: %v): %w", writeErr, err)
+	}
+	runtime.UnlockOSThread()
+	return writeErr
+}
+
+// buildResolvConf renders the DHCP-supplied DNS list as a resolv.conf
+// file. Marker comment lets operators see at a glance that the file
+// is plugin-managed and where the values came from.
+//
+// Search-line precedence (RFC 3397): a non-empty searchList from
+// option 119 wins over the single-domain searchDomain from option 15.
+// When both are absent no `search` line is emitted — resolv.conf is
+// then equivalent to a no-search-domain configuration.
+func buildResolvConf(dns []string, searchList []string, searchDomain string) []byte {
+	var b strings.Builder
+	b.WriteString("# generated by docker-net-dhcp from DHCP options\n")
+	switch {
+	case len(searchList) > 0:
+		fmt.Fprintf(&b, "search %s\n", strings.Join(searchList, " "))
+	case searchDomain != "":
+		fmt.Fprintf(&b, "search %s\n", searchDomain)
+	}
+	for _, ns := range dns {
+		fmt.Fprintf(&b, "nameserver %s\n", ns)
+	}
+	return []byte(b.String())
+}

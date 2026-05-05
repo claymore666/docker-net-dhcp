@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"sync"
+	"time"
 
 	dNetwork "github.com/docker/docker/api/types/network"
 	"github.com/mitchellh/mapstructure"
@@ -59,6 +60,15 @@ func validateModeOptions(opts DHCPNetworkOptions) error {
 		if opts.Parent != "" {
 			return fmt.Errorf("%w: parent cannot be set in mode=bridge", util.ErrModeMismatch)
 		}
+		// validate_dhcp on bridge mode is a v0.9.0 carve-out: the
+		// probe semantics differ (parent is an existing bridge, not
+		// a NIC) and adding the bridge-mode probe path adds scope
+		// without a clear consumer. Reject loudly so an operator
+		// who set the opt understands it doesn't apply here, instead
+		// of silently no-op'ing and missing a real misconfig.
+		if opts.ValidateDHCP {
+			return fmt.Errorf("%w: validate_dhcp is not supported in mode=bridge", util.ErrModeMismatch)
+		}
 	default:
 		return fmt.Errorf("%w: %q", util.ErrInvalidMode, opts.Mode)
 	}
@@ -89,15 +99,29 @@ func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 		if _, err := validateParentForChild(opts.Parent); err != nil {
 			return err
 		}
+		// Pre-flight DHCP probe (T2-5). Runs before saveOptions so
+		// a network that fails the probe leaves no on-disk state
+		// behind — the operator's `docker network create` fails
+		// cleanly and they can re-issue once the upstream is fixed.
+		// Default off; opt-in via -o validate_dhcp=true.
+		if opts.ValidateDHCP {
+			ctx, cancel := context.WithTimeout(context.Background(), preflightProbeBudget+5*time.Second)
+			err := runDHCPProbe(ctx, opts.Parent)
+			cancel()
+			if err != nil {
+				return err
+			}
+		}
 		if err := saveOptions(r.NetworkID, opts); err != nil {
 			log.WithError(err).WithField("network", r.NetworkID).
 				Warn("Failed to persist options; daemon-restart may need API fallback")
 		}
 		log.WithFields(log.Fields{
-			"network": r.NetworkID,
-			"mode":    mode,
-			"parent":  opts.Parent,
-			"ipv6":    opts.IPv6,
+			"network":       r.NetworkID,
+			"mode":          mode,
+			"parent":        opts.Parent,
+			"ipv6":          opts.IPv6,
+			"validate_dhcp": opts.ValidateDHCP,
 		}).Info("Network created")
 		return nil
 	}
@@ -486,7 +510,7 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 		if opts.LeaseTimeout != 0 {
 			timeout = opts.LeaseTimeout
 		}
-		clientID := clientIDFromEndpoint(r.EndpointID)
+		clientID := resolveClientID(opts, r.EndpointID)
 		initialIP := func(v6 bool) error {
 			v6str := ""
 			if v6 {
@@ -497,9 +521,10 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 			defer cancel()
 
 			clientOpts := &udhcpc.DHCPClientOptions{
-				V6:       v6,
-				Hostname: hostname,
-				ClientID: clientID,
+				V6:          v6,
+				Hostname:    hostname,
+				ClientID:    clientID,
+				VendorClass: opts.VendorClass,
 			}
 			// RequestedIP is v4-only in udhcpc; passing it for v6
 			// would be silently ignored anyway, but keep it explicit.
@@ -671,14 +696,26 @@ func (p *Plugin) DeleteEndpoint(ctx context.Context, r DeleteEndpointRequest) er
 	return nil
 }
 
-func (p *Plugin) addRoutes(opts *DHCPNetworkOptions, v6 bool, bridge netlink.Link, r JoinRequest, hint joinHint, res *JoinResponse) error {
+// addRoutes copies non-default, non-kernel-protocol, non-DHCP-subnet
+// routes from a host link into the container's StaticRoutes
+// response. Used in bridge mode (link = the configured Linux bridge)
+// and in macvlan/ipvlan modes (link = the configured parent NIC) so
+// containers inherit operator-added routes the same way regardless
+// of attachment mode.
+//
+// Parent-attached parity was deferred from the macvlan rollout
+// (v0.3.0) because the original macvlan use case was "containers
+// share the LAN, no extra routes". v0.9.0's DHCP-helper polish
+// (#102) extends the bridge-mode behaviour to the parent-attached
+// modes for symmetry; `-o skip_routes=true` opts out of either.
+func (p *Plugin) addRoutes(opts *DHCPNetworkOptions, v6 bool, link netlink.Link, r JoinRequest, hint joinHint, res *JoinResponse) error {
 	family := unix.AF_INET
 	if v6 {
 		family = unix.AF_INET6
 	}
 
 	routes, err := netlink.RouteListFiltered(family, &netlink.Route{
-		LinkIndex: bridge.Attrs().Index,
+		LinkIndex: link.Attrs().Index,
 		Type:      unix.RTN_UNICAST,
 	}, netlink.RT_FILTER_OIF|netlink.RT_FILTER_TYPE)
 	if err != nil {
@@ -700,7 +737,7 @@ func (p *Plugin) addRoutes(opts *DHCPNetworkOptions, v6 bool, bridge netlink.Lin
 					log.
 						WithFields(logFields).
 						WithField("gateway", res.Gateway).
-						Info("[Join] Setting IPv4 gateway retrieved from bridge interface on host routing table")
+						Info("[Join] Setting IPv4 gateway retrieved from host parent interface routing table")
 				}
 			case unix.AF_INET6:
 				if res.GatewayIPv6 == "" {
@@ -708,7 +745,7 @@ func (p *Plugin) addRoutes(opts *DHCPNetworkOptions, v6 bool, bridge netlink.Lin
 					log.
 						WithFields(logFields).
 						WithField("gateway", res.GatewayIPv6).
-						Info("[Join] Setting IPv6 gateway retrieved from bridge interface on host routing table")
+						Info("[Join] Setting IPv6 gateway retrieved from host parent interface routing table")
 				}
 			}
 
@@ -742,12 +779,12 @@ func (p *Plugin) addRoutes(opts *DHCPNetworkOptions, v6 bool, bridge netlink.Lin
 				WithFields(logFields).
 				WithField("route", staticRoute.Destination).
 				WithField("gateway", staticRoute.NextHop).
-				Info("[Join] Adding route (via gateway) retrieved from bridge interface on host routing table")
+				Info("[Join] Adding route (via gateway) retrieved from host parent interface routing table")
 		} else {
 			log.
 				WithFields(logFields).
 				WithField("route", staticRoute.Destination).
-				Info("[Join] Adding on-link route retrieved from bridge interface on host routing table")
+				Info("[Join] Adding on-link route retrieved from host parent interface routing table")
 		}
 	}
 
@@ -824,19 +861,35 @@ func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) 
 		res.Gateway = hint.Gateway
 	}
 
-	if !parentAttached {
-		bridge, err := netlink.LinkByName(opts.Bridge)
+	// Copy non-default static routes from the host parent (bridge or
+	// macvlan/ipvlan parent NIC) into the container. Operator-added
+	// routes on the parent (e.g. "VLAN 250 reachable through the
+	// same bridge but not in the DHCP subnet") otherwise stop at the
+	// host. `-o skip_routes=true` opts out for either mode.
+	//
+	// Parent-attached parity (#102) is new in v0.9.0; bridge mode
+	// has done this since the upstream's bridge-only era. Pre-v0.9.0
+	// macvlan users who depended on the no-copy behaviour can set
+	// skip_routes=true to restore it.
+	var routeSrc netlink.Link
+	if parentAttached {
+		routeSrc, err = netlink.LinkByName(opts.Parent)
+		if err != nil {
+			return res, fmt.Errorf("failed to get parent interface for route copy: %w", err)
+		}
+	} else {
+		routeSrc, err = netlink.LinkByName(opts.Bridge)
 		if err != nil {
 			return res, fmt.Errorf("failed to get bridge interface: %w", err)
 		}
+	}
 
-		if err := p.addRoutes(&opts, false, bridge, r, hint, &res); err != nil {
+	if err := p.addRoutes(&opts, false, routeSrc, r, hint, &res); err != nil {
+		return res, err
+	}
+	if opts.IPv6 {
+		if err := p.addRoutes(&opts, true, routeSrc, r, hint, &res); err != nil {
 			return res, err
-		}
-		if opts.IPv6 {
-			if err := p.addRoutes(&opts, true, bridge, r, hint, &res); err != nil {
-				return res, err
-			}
 		}
 	}
 
@@ -844,7 +897,7 @@ func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) 
 	// fast Leave can find it. Stop blocks until Start has completed
 	// (success or failure), so it's safe to call against a manager whose
 	// Start is still in flight.
-	m := newDHCPManager(p.docker, r, opts)
+	m := newDHCPManager(p.docker, r, opts).withPlugin(p)
 	m.setLastIP(false, hint.IPv4)
 	m.setLastIP(true, hint.IPv6)
 	m.MacAddress = hint.MacAddress

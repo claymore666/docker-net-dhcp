@@ -89,6 +89,19 @@ func clientIDFromEndpoint(endpointID string) []byte {
 	return b
 }
 
+// resolveClientID picks the option-61 payload for a fresh DHCP
+// exchange. Operator-supplied opts.ClientID wins when non-empty
+// (treated as opaque ASCII bytes; the udhcpc client adds the
+// type-byte 0x00 wrapper on the wire). Otherwise we fall back to
+// the endpoint-derived stable id, which is what makes per-container
+// reservations work upstream.
+func resolveClientID(opts DHCPNetworkOptions, endpointID string) []byte {
+	if opts.ClientID != "" {
+		return []byte(opts.ClientID)
+	}
+	return clientIDFromEndpoint(endpointID)
+}
+
 const defaultLeaseTimeout = 10 * time.Second
 
 // driverRegexp matches plugin references that this driver should treat
@@ -121,6 +134,62 @@ type DHCPNetworkOptions struct {
 	LeaseTimeout    time.Duration `mapstructure:"lease_timeout"`
 	IgnoreConflicts bool          `mapstructure:"ignore_conflicts"`
 	SkipRoutes      bool          `mapstructure:"skip_routes"`
+	// PropagateDNS, when true, makes the plugin write DHCP option 6
+	// (v4 DNS server list) or option 23 (v6) into the container's
+	// /etc/resolv.conf on every bind/renew with a non-empty list.
+	// Default false to preserve historical behaviour where Docker's
+	// embedded resolver handled DNS — flipping this on means LAN-DNS
+	// names suddenly resolve from inside containers.
+	PropagateDNS bool `mapstructure:"propagate_dns"`
+	// PropagateMTU, when true, makes the plugin set the container link's
+	// MTU to DHCP option 26 on every bind/renew with a non-zero value.
+	// Default false because some networks advertise non-standard MTUs
+	// for reasons unrelated to host capability (e.g. hand-rolled tunnel
+	// fragments) and silently re-MTU'ing a container could surprise an
+	// operator. Opt-in keeps the behaviour change visible.
+	PropagateMTU bool `mapstructure:"propagate_mtu"`
+	// ClientID, when non-empty, overrides the endpoint-derived DHCP
+	// option 61 (Client Identifier) for every endpoint on this
+	// network. Bytes go on the wire prefixed with type byte 0x00
+	// (RFC 2132 opaque). Default empty = use the stable
+	// per-endpoint id derived from the Docker endpoint ID, which is
+	// what makes per-container reservations work upstream.
+	//
+	// Operator caveat: a static ClientID across containers means the
+	// upstream DHCP server can't differentiate them — each new
+	// container will appear to be the same logical client and may
+	// receive the same lease. Typically only useful when paired with
+	// VendorClass to drive class-based policy that doesn't depend on
+	// per-client identity.
+	ClientID string `mapstructure:"client_id"`
+	// VendorClass, when non-empty, overrides the default DHCP option
+	// 60 (Vendor Class Identifier) value of "docker-net-dhcp" for
+	// every endpoint on this network. Lets DHCP servers using
+	// class-based policy (Cisco / Aruba / etc.) differentiate
+	// net-dhcp containers from other clients on the same LAN —
+	// for example to issue a different gateway or option set to
+	// containers tagged with a known vendor string.
+	VendorClass string `mapstructure:"vendor_class"`
+	// ValidateDHCP, when true, makes CreateNetwork run a one-shot
+	// DHCP probe on the parent NIC before the network is created,
+	// failing fast with a clear error if no DHCP server answers
+	// within the budget (see preflightProbeBudget). Catches
+	// misconfigurations (parent isolated from any DHCP server,
+	// firewall blocking UDP/67-68, broken VLAN tag) at create time
+	// rather than the first `docker run` attempt.
+	//
+	// macvlan / ipvlan modes only — bridge mode's "parent" is an
+	// existing Linux bridge, where the probe semantics are different
+	// and not yet implemented.
+	//
+	// The probe runs a full DHCPDISCOVER → REQUEST → ACK cycle
+	// (busybox udhcpc has no DISCOVER-only mode), so the upstream
+	// pool briefly sees one extra lease per `docker network create`
+	// with this opt-in. The probe MAC is random (locally-administered
+	// bit set) so it doesn't collide with anything stable upstream;
+	// the lease times out naturally rather than dragging CreateNetwork
+	// on a slow release path.
+	ValidateDHCP bool `mapstructure:"validate_dhcp"`
 }
 
 // effectiveMode returns Mode with the empty default normalized to ModeBridge.
@@ -204,6 +273,35 @@ type Plugin struct {
 	// here means one container that won't get its previous MAC/IP back
 	// on restart until the disk recovers.
 	tombstoneWriteFailures atomic.Int32
+
+	// leaseChanged counts renewals where udhcpc returned a different
+	// IP than the manager last recorded. Container's
+	// NetworkSettings.IPAddress in `docker inspect` does NOT update
+	// — libnetwork has no in-place endpoint-IP swap RPC. This counter
+	// lets operators alert on the truthfulness gap until a deeper fix
+	// (forced container restart on lease change, or an out-of-band
+	// docker-socket update) lands. See issue #104 for the design
+	// discussion deferred from v0.9.0.
+	leaseChanged atomic.Int32
+
+	// leasesObtained / leasesRenewed / dhcpTimeouts / leaseReleaseFailures
+	// expose DHCP-wire-level counters via /Plugin.Health (T2-4). They
+	// complement the lease_changed signal and let operators alert on
+	// regressions in the DHCP exchange itself without scraping dnsmasq
+	// logs server-side or running the plugin at trace level. Bumped
+	// from dhcpManager:
+	//   - leasesObtained: udhcpc "bound" event — first successful
+	//     DHCPACK on either initial bind or after a NAK / lease loss
+	//   - leasesRenewed: udhcpc "renew" event — a renewal DHCPACK
+	//   - dhcpTimeouts: udhcpc "leasefail" event — discovery / renewal
+	//     hit udhcpc's internal timeout without an OFFER or ACK
+	//   - leaseReleaseFailures: client.Finish returned an error in
+	//     Stop, meaning the SIGTERM-driven DHCPRELEASE didn't complete
+	//     cleanly (timeout, exit code, or pipe closure)
+	leasesObtained       atomic.Int32
+	leasesRenewed        atomic.Int32
+	dhcpTimeouts         atomic.Int32
+	leaseReleaseFailures atomic.Int32
 }
 
 // storeJoinHint records the state collected during CreateEndpoint so
@@ -568,7 +666,7 @@ func (p *Plugin) recoverOneEndpoint(ctx context.Context, networkID, endpointID, 
 		NetworkID:  networkID,
 		EndpointID: endpointID,
 	}
-	m := newDHCPManager(p.docker, fakeJoin, opts)
+	m := newDHCPManager(p.docker, fakeJoin, opts).withPlugin(p)
 	m.setLastIP(false, ipv4)
 	m.setLastIP(true, ipv6)
 	m.MacAddress = mac

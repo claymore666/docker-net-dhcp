@@ -47,7 +47,56 @@ const (
 
 	// SubnetCIDR is what callers expect IP assertions to fall inside.
 	SubnetCIDR = "192.168.99.0/24"
+
+	// TestDNSServer / TestMTU are the values the macvlan-fixture
+	// dnsmasq advertises via DHCP options 6 and 26 respectively.
+	// Tests that exercise PropagateDNS / PropagateMTU assert these
+	// land on the container; tests that don't opt-in should see
+	// neither the DNS server in resolv.conf nor a non-1500 MTU.
+	// .53 is a recognisable "this is a DNS server" address but
+	// nothing on the test fixture actually serves DNS — the test
+	// only asserts the address propagation, not query resolution.
+	TestDNSServer = "192.168.99.53"
+	// TestMTU is the value the fixture's dnsmasq advertises as DHCP
+	// option 26. Chosen below the 1500 default so:
+	//   - macvlan children can come up at this MTU regardless of
+	//     parent (children can be ≤ parent, so 1400 ≤ 1500 holds);
+	//   - "unchanged default" tests can assert MTU != 1400 because
+	//     1500 is what the link inherits without propagation.
+	// Operationally 1400 is the typical VPN-reduced MTU (WireGuard,
+	// OpenVPN), so the test mirrors a real-world propagation case.
+	TestMTU = "1400"
+
+	// TestNTPServer / TestSearchList / TestTFTPServer / TestBootFile
+	// are the values the macvlan-fixture dnsmasq advertises via the
+	// extra DHCP options surfaced in v0.9.0 / T2-2:
+	//   - 42  (NTP)        — captured into Info.NTPServers, surfaced via plugin log
+	//   - 119 (search)     — written to resolv.conf when PropagateDNS=true
+	//   - 66  (TFTP)       — captured, surfaced via plugin log
+	//   - 67  (boot file)  — captured, surfaced via plugin log
+	// Values are recognisable + obviously test-only so a real-LAN
+	// leak would be immediately obvious.
+	TestNTPServer  = "192.168.99.123"
+	TestSearchList = "corp.example,internal.example"
+	TestTFTPServer = "tftp.example.test"
+	TestBootFile   = "pxelinux.0"
+
+	// TestVendorClass / TestTaggedGateway drive the v0.9.0 / T2-3
+	// vendor_class round-trip test. dnsmasq is configured to set tag
+	// `dh-itest-vc` for clients sending option 60 = TestVendorClass,
+	// then override option 3 (router) to TestTaggedGateway only for
+	// tagged clients. Containers without the override get dnsmasq's
+	// default gateway (its own listen address, .1).
+	TestVendorClass    = "docker-net-dhcp-test-vc"
+	TestTaggedGateway  = "192.168.99.250"
+	dnsmasqVCTag       = "dh-itest-vc"
+	defaultGatewayAddr = "192.168.99.1"
 )
+
+// DefaultGateway is the gateway untagged clients receive — dnsmasq's
+// own listen address. Exposed for tests that assert vendor-class
+// tagging didn't accidentally fire on a default-config container.
+const DefaultGateway = defaultGatewayAddr
 
 // Fixture owns the lifecycle of the shared integration-test environment.
 // Use New() in TestMain; defer f.Teardown(). Re-running on a host with
@@ -160,6 +209,25 @@ func (f *Fixture) startDnsmasq() error {
 		"--dhcp-range="+DHCPPoolStart+","+DHCPPoolEnd+","+LeaseTime,
 		"--dhcp-leasefile="+f.leaseFile,
 		"--dhcp-no-override",
+		// DHCP options every test gets to opt-into via PropagateDNS /
+		// PropagateMTU on the network. Tests that don't opt-in see
+		// the options on the wire (in the dnsmasq log) but the plugin
+		// ignores them, so default behaviour is unchanged.
+		"--dhcp-option=6,"+TestDNSServer,    // option 6: DNS servers
+		"--dhcp-option=26,"+TestMTU,         // option 26: Interface MTU
+		"--dhcp-option=42,"+TestNTPServer,   // option 42: NTP servers
+		"--dhcp-option=66,"+TestTFTPServer,  // option 66: TFTP server name
+		"--dhcp-option=67,"+TestBootFile,    // option 67: boot file
+		"--dhcp-option=119,"+TestSearchList, // option 119: domain search list
+		// Vendor-class tagging for the v0.9.0 / T2-3 round-trip test.
+		// dnsmasq sets tag `dh-itest-vc` on any DISCOVER carrying
+		// option 60 = TestVendorClass; the matching tag:... rule then
+		// overrides the gateway (option 3) only for tagged clients.
+		// Untagged clients (default `vendor_class` not set) keep
+		// dnsmasq's default gateway (its own listen IP), so existing
+		// tests that don't opt-in are unaffected.
+		"--dhcp-vendorclass=set:"+dnsmasqVCTag+","+TestVendorClass,
+		"--dhcp-option=tag:"+dnsmasqVCTag+",3,"+TestTaggedGateway,
 		// dhcp-broadcast forces OFFER/ACK to be sent as L2 broadcast
 		// regardless of the client's broadcast flag. Required for
 		// ipvlan-L2 mode: the slave's IP isn't registered with the
