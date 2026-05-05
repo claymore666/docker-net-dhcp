@@ -417,6 +417,9 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 					// hand out a fresh address per DISCOVER even for
 					// the same MAC). Reuse the renew path so LastIP
 					// reflects what's actually in the kernel.
+					if m.plugin != nil {
+						m.plugin.leasesObtained.Add(1)
+					}
 					if err := m.renew(v6, event.Data); err != nil {
 						log.
 							WithError(err).
@@ -429,6 +432,9 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 						WithFields(m.logFields(v6)).
 						Debug("udhcpc renew")
 
+					if m.plugin != nil {
+						m.plugin.leasesRenewed.Add(1)
+					}
 					if err := m.renew(v6, event.Data); err != nil {
 						log.
 							WithError(err).
@@ -438,6 +444,9 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 							Error("Failed to execute IP renewal")
 					}
 				case "leasefail":
+					if m.plugin != nil {
+						m.plugin.dhcpTimeouts.Add(1)
+					}
 					log.WithFields(m.logFields(v6)).Warn("udhcpc failed to get a lease")
 				case "nak":
 					log.WithFields(m.logFields(v6)).Warn("udhcpc client received NAK")
@@ -616,10 +625,21 @@ func (m *dhcpManager) Stop() error {
 	close(m.stopChan)
 
 	if err := <-m.errChan; err != nil {
+		// SIGTERM -> DHCPRELEASE -> exit didn't complete cleanly. The
+		// upstream server may now be holding a phantom lease against
+		// this MAC until its own expiry. Bump so operators can alert
+		// on a pattern of releases failing — typically points at
+		// upstream reachability problems mid-teardown.
+		if m.plugin != nil {
+			m.plugin.leaseReleaseFailures.Add(1)
+		}
 		return fmt.Errorf("failed shut down DHCP client: %w", err)
 	}
 	if m.opts.IPv6 {
 		if err := <-m.errChanV6; err != nil {
+			if m.plugin != nil {
+				m.plugin.leaseReleaseFailures.Add(1)
+			}
 			return fmt.Errorf("failed shut down DHCPv6 client: %w", err)
 		}
 	}

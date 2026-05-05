@@ -29,8 +29,8 @@ re-investigate. (Original report: third-pass code review, 2026-05-04.)
 ## v0.9.0
 
 DHCP-helper polish: option propagation, parent-attached parity,
-truthfulness counter. Four issues from v0.9.0's Tier 1 closed
-(#100, #101, #102, #104).
+truthfulness counter, DHCP-wire health metrics. Tier 1 (#100,
+#101, #102, #104) plus T2-4 (#107) closed.
 
 ### New driver-opts (opt-in, default off for backwards compatibility)
 
@@ -67,6 +67,16 @@ truthfulness counter. Four issues from v0.9.0's Tier 1 closed
   opened. A deeper fix (forced container restart on lease change,
   or out-of-band docker-socket update) is deferred — see #104 for
   the design discussion.
+- **DHCP-wire counters** (#107) — four new fields on
+  `Plugin.Health`: `leases_obtained`, `leases_renewed`,
+  `dhcp_timeouts`, `lease_release_failures`. Bumped from the
+  persistent client's event loop (`bound`, `renew`, `leasefail`)
+  and from `dhcpManager.Stop`'s `client.Finish` failure branch.
+  Operators alerting on DHCP-side regression no longer have to
+  scrape dnsmasq logs server-side or run the plugin at trace
+  level. Naming intentionally drops the Prometheus `_total`
+  suffix to stay consistent with the existing `Plugin.Health`
+  fields (`recovered_ok`, `tombstone_write_failures`, etc.).
 
 ### Compatibility note
 
