@@ -57,11 +57,15 @@ const (
 	// nothing on the test fixture actually serves DNS — the test
 	// only asserts the address propagation, not query resolution.
 	TestDNSServer = "192.168.99.53"
-	TestMTU       = "9000"
-	// ParentMTU is the MTU set on both ends of the veth pair so
-	// macvlan children with MTU up to TestMTU can come up. Must be
-	// >= TestMTU; kernel default for veth is 1500.
-	ParentMTU = 9000
+	// TestMTU is the value the fixture's dnsmasq advertises as DHCP
+	// option 26. Chosen below the 1500 default so:
+	//   - macvlan children can come up at this MTU regardless of
+	//     parent (children can be ≤ parent, so 1400 ≤ 1500 holds);
+	//   - "unchanged default" tests can assert MTU != 1400 because
+	//     1500 is what the link inherits without propagation.
+	// Operationally 1400 is the typical VPN-reduced MTU (WireGuard,
+	// OpenVPN), so the test mirrors a real-world propagation case.
+	TestMTU = "1400"
 )
 
 // Fixture owns the lifecycle of the shared integration-test environment.
@@ -116,20 +120,6 @@ func New() (*Fixture, error) {
 	}
 	if err := netlink.LinkSetUp(dhcpLink); err != nil {
 		return nil, wrapTeardown(fmt.Errorf("LinkSetUp dhcp: %w", err))
-	}
-
-	// Bump the parent's MTU above 1500 so TestMTUPropagate_OptIn can
-	// validate jumbo-frame propagation. macvlan children can't exceed
-	// their parent's MTU (kernel rejects with EINVAL), and 1500 is
-	// the veth default — without this bump the MTU=9000 test value
-	// would fail at LinkSetMTU even though the propagation logic is
-	// correct. dh-itest-dhcp peer is bumped too so the link layer is
-	// symmetric on both ends of the veth.
-	if err := netlink.LinkSetMTU(hostLink, ParentMTU); err != nil {
-		return nil, wrapTeardown(fmt.Errorf("LinkSetMTU host: %w", err))
-	}
-	if err := netlink.LinkSetMTU(dhcpLink, ParentMTU); err != nil {
-		return nil, wrapTeardown(fmt.Errorf("LinkSetMTU dhcp: %w", err))
 	}
 
 	addr, err := netlink.ParseAddr(DHCPServerAddr)
