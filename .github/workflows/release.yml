@@ -14,6 +14,16 @@ name: Release
 #   - DOCKERHUB_USERNAME — Docker Hub login (e.g. `claymore666`)
 #   - DOCKERHUB_TOKEN    — Docker Hub access token (NOT password)
 # If absent, the Hub step skips with a warning instead of failing.
+#
+# Maintainer post-release checklist (this workflow does not handle it):
+#   1. Fast-forward dev to main so the release commit lands on dev too:
+#        git checkout dev && git merge --ff-only main && git push origin dev
+#      Otherwise the next feature branched from dev starts at the
+#      previous version's README/docs and the next release PR has to
+#      re-bump them. Forgotten once after v0.9.0.
+#   2. Verify GHCR (and Docker Hub, if configured) shows the new tag.
+#   3. If a production host runs the plugin, plan the upgrade as a
+#      separate change — this workflow only publishes the image.
 on:
   push:
     tags:
