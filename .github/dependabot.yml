@@ -1,0 +1,26 @@
+# Weekly grouped dependency updates (#127). PRs target dev per the
+# branching workflow — nothing lands on main except via release PRs.
+# Grouping keeps the noise at one PR per ecosystem per week.
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    target-branch: dev
+    schedule:
+      interval: weekly
+      day: sunday
+    groups:
+      go-deps:
+        patterns:
+          - "*"
+
+  - package-ecosystem: github-actions
+    directory: /
+    target-branch: dev
+    schedule:
+      interval: weekly
+      day: sunday
+    groups:
+      actions:
+        patterns:
+          - "*"
