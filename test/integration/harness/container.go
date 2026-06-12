@@ -17,6 +17,7 @@ import (
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/network"
 	docker "github.com/docker/docker/client"
+	"github.com/docker/docker/pkg/stdcopy"
 )
 
 const (
@@ -167,16 +168,15 @@ func ExecOutput(t *testing.T, ctx context.Context, containerID string, cmd ...st
 		t.Fatalf("ExecAttach: %v", err)
 	}
 	defer att.Close()
-	buf := make([]byte, 8192)
+	// The exec has no TTY, so the attach stream is multiplexed: each
+	// frame carries an 8-byte header (stream id + payload length).
+	// Reading it raw embeds those header bytes in the returned string —
+	// line starts get garbage prefixes, which breaks any line-anchored
+	// parsing (#130). StdCopy demultiplexes; stdout and stderr both
+	// write into out to preserve the combined-output contract.
 	var out strings.Builder
-	for {
-		n, err := att.Reader.Read(buf)
-		if n > 0 {
-			out.Write(buf[:n])
-		}
-		if err != nil {
-			break
-		}
+	if _, err := stdcopy.StdCopy(&out, &out, att.Reader); err != nil {
+		t.Fatalf("demux exec output: %v", err)
 	}
 	return out.String()
 }
