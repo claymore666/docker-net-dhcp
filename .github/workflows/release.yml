@@ -43,6 +43,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+
     env:
       # GHCR is always pushed. Hub repo only pushed when secrets are set.
       # Hub uses the shorter `net-dhcp` name (matching upstream's
@@ -176,3 +179,36 @@ jobs:
               echo "_Docker Hub push skipped — set DOCKERHUB_USERNAME / DOCKERHUB_TOKEN secrets to enable._"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # Post-publish verification: install the artifact users will actually
+  # pull, from a clean GitHub-hosted runner. "We pushed bytes" is not
+  # "the deliverable works" — a plugin that 500s on install or fails to
+  # enable must turn the release run red, not surface in a user issue
+  # (#127). Exercised before each real release by the runbook's
+  # workflow_dispatch dry-run against the previous tag.
+  verify-install:
+    needs: release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GHCR_NAME: ghcr.io/claymore666/docker-net-dhcp
+    steps:
+      - name: Install released plugin from GHCR
+        run: |
+          TAG="${{ needs.release.outputs.tag }}"
+          REF="${GHCR_NAME}:${TAG}"
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker plugin install --grant-all-permissions "$REF"
+          docker plugin ls
+
+      - name: Assert plugin is enabled
+        run: |
+          TAG="${{ needs.release.outputs.tag }}"
+          REF="${GHCR_NAME}:${TAG}"
+          ENABLED="$(docker plugin inspect -f '{{.Enabled}}' "$REF")"
+          if [ "$ENABLED" != "true" ]; then
+            echo "Plugin installed but not enabled (Enabled=$ENABLED)"
+            docker plugin inspect "$REF"
+            exit 1
+          fi
+          echo "Plugin ${REF} installs and enables cleanly." >> "$GITHUB_STEP_SUMMARY"
