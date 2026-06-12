@@ -4,7 +4,6 @@ package integration
 
 import (
 	"context"
-	"os/exec"
 	"testing"
 	"time"
 
@@ -16,8 +15,9 @@ import (
 
 // TestRecovery_DaemonRestart_PreservesContainer is the integration
 // counterpart to Phase D step 9 of the manual smoke test: bounce the
-// whole docker daemon (systemctl restart docker) while a plugin-managed
-// container is attached, and verify that
+// whole docker daemon (harness.RestartDockerDaemon — systemctl on
+// systemd hosts, supervised-dockerd signal on containerized runners)
+// while a plugin-managed container is attached, and verify that
 //
 //   - the daemon comes back up (no hang on plugin re-enable — the
 //     historical upstream failure mode this fork modernized away from)
@@ -34,7 +34,7 @@ import (
 // Both paths yield the same user-visible invariant — same IP and
 // MAC — so we test on that, not on which internal codepath fired.
 //
-// **Do not parallelize.** systemctl restart docker drops every docker
+// **Do not parallelize.** Restarting the daemon drops every docker
 // connection on the host, including those of any other test running
 // concurrently. Per the rule documented in test/integration/README.md
 // the suite is serial; this test relies on that.
@@ -111,11 +111,7 @@ func TestRecovery_DaemonRestart_PreservesContainer(t *testing.T) {
 	ipBefore, macBefore := waitForEndpoint(t, ctx, cli, id, harness.IPAcquisitionBudget)
 	t.Logf("before restart: ip=%s mac=%s", ipBefore, macBefore)
 
-	t.Log("systemctl restart docker — runner host's docker daemon is going down briefly")
-	out, err := exec.CommandContext(ctx, "systemctl", "restart", "docker").CombinedOutput()
-	if err != nil {
-		t.Fatalf("systemctl restart docker: %v\n%s", err, out)
-	}
+	harness.RestartDockerDaemon(t, ctx)
 
 	// The pre-restart cli's TCP connection is dead. Build a new one.
 	_ = cli.Close()
