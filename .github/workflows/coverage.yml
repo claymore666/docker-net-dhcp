@@ -5,9 +5,12 @@ name: Coverage
 # against it, then flushes counter files via `docker plugin disable`
 # and reports per-package coverage + uploads an HTML report.
 #
-# Manual-only (`workflow_dispatch`) — coverage runs cost ~3-5 min on top
-# of the integration suite (cover plugin build + flush + report) and
-# don't gate PR merges. The production gate is `integration.yml`.
+# Triggers: manual (`workflow_dispatch`) for on-demand numbers, plus
+# pull_request into main so release PRs are gated by the coverage
+# ratchet (scripts/coverage-ratchet.sh vs .github/coverage-baseline.txt).
+# Coverage runs cost ~3-5 min on top of the integration suite (cover
+# plugin build + flush + report); the per-PR production gate stays
+# `integration.yml`.
 #
 # Same self-hosted runner as integration.yml (gpu1), same security
 # posture (outside-collaborator approval required for forked PRs —
@@ -15,6 +18,20 @@ name: Coverage
 # this at all).
 on:
   workflow_dispatch:
+  # Release PRs (dev → main) run coverage as a required check: the
+  # ratchet below guarantees no release ships with regressed coverage.
+  # Feature PRs into dev stay on-demand via workflow_dispatch — the
+  # ~15-20 min cost is a release gate, not a per-PR tax (#127).
+  pull_request:
+    branches:
+      - main
+
+# Shared group with integration.yml — both mutate the same runner's
+# docker state. See the note there about GitHub's one-pending-run
+# replacement behaviour (#127).
+concurrency:
+  group: selfhosted-docker
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -27,7 +44,7 @@ jobs:
       COVER_PLUGIN_REF: ghcr.io/claymore666/docker-net-dhcp:golang-cover
       COVER_DIR: /var/lib/dh-cover
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # Coverage uses `-coverpkg=./...` for the unit-test step, which
       # forces go test to recompile stdlib's internal/coverage runtime
@@ -38,7 +55,7 @@ jobs:
       # "go1.25.0"' error. setup-go gives us a known-clean toolchain
       # at the cost of ~30s — fine for a 12-minute workflow that
       # runs only on manual dispatch.
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: '1.25'
 
@@ -126,6 +143,21 @@ jobs:
                   echo '```'
               fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # The ratchet: merged per-package coverage must hold the floors
+      # in .github/coverage-baseline.txt. No `if: always()` on purpose —
+      # a failed suite produces partial counters and would false-alarm;
+      # the ratchet only judges complete runs (#127).
+      - name: Coverage ratchet
+        run: |
+          if ls coverage-unit/covcounters.* >/dev/null 2>&1; then
+            go tool covdata percent -i="${COVER_DIR}",coverage-unit > /tmp/covdata-percent.txt
+          else
+            echo "No unit counters found — ratcheting on integration coverage alone would false-alarm."
+            exit 1
+          fi
+          cat /tmp/covdata-percent.txt
+          bash scripts/coverage-ratchet.sh /tmp/covdata-percent.txt .github/coverage-baseline.txt
 
       - name: Generate coverage reports
         if: always()

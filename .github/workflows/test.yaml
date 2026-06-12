@@ -9,6 +9,10 @@ on:
     branches:
       - main
       - dev
+  # Weekly run so govulncheck surfaces CVEs that publish between
+  # commits — new vulnerabilities don't wait for our next push (#127).
+  schedule:
+    - cron: '23 6 * * 1'
 
 permissions:
   contents: read
@@ -16,13 +20,19 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: '1.25'
           cache: true
+
+      # Drifted go.mod/go.sum slips through silently until someone
+      # builds from a clean checkout. -diff reports without rewriting.
+      - name: go.mod tidy check
+        run: go mod tidy -diff
 
       - name: Build
         run: go build ./...
@@ -41,11 +51,19 @@ jobs:
       - name: Test (with race detector)
         run: go test -race -count=1 ./...
 
+      # The CI gate scripts are code too — their table-driven tests run
+      # here so a broken ratchet/vuln gate fails like any unit test.
+      - name: Gate script self-tests
+        run: |
+          bash scripts/test-coverage-ratchet.sh
+          bash scripts/test-govulncheck-gate.sh
+
   staticcheck:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: '1.25'
           cache: true
@@ -53,3 +71,56 @@ jobs:
         run: go install honnef.co/go/tools/cmd/staticcheck@latest
       - name: Run staticcheck
         run: staticcheck ./...
+
+  # Lints all workflow files (+ shellcheck on run: blocks). A workflow
+  # parse error doesn't fail loudly on GitHub — it produces zero-job
+  # "failed" runs and silently disables tag triggers (bit us in v0.8.0).
+  # scripts/test-actionlint.sh additionally asserts the linter still
+  # catches that exact bug class, so a toothless actionlint upgrade
+  # turns this job red instead of passing silently (#127).
+  actionlint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.25'
+          cache: true
+      - name: Install actionlint
+        run: go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
+      - name: Lint workflows
+        run: actionlint -color
+      - name: Verify actionlint catches known-bad patterns
+        run: bash scripts/test-actionlint.sh actionlint
+
+  # Reachable-vulnerability scan. Known-and-reviewed findings without a
+  # published fix live in .github/vuln-allowlist.txt; anything else
+  # fails. The gate also warns when an allowlist entry stops being
+  # reported, so stale acceptances get removed (#127).
+  govulncheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      # Keep this toolchain in sync with the Dockerfile's golang base
+      # image — stdlib findings are evaluated against the scan
+      # toolchain, which should represent what ships in the plugin.
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.25'
+          cache: true
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      - name: Scan
+        run: |
+          govulncheck ./... > vulns.txt || true
+          cat vulns.txt
+          # A crashed scan must not pass as "no findings": assert the
+          # report actually concluded one way or the other.
+          if ! grep -qE 'No vulnerabilities found|Your code is affected' vulns.txt; then
+            echo "govulncheck did not produce a conclusive report"
+            exit 1
+          fi
+      - name: Gate against allowlist
+        run: bash scripts/govulncheck-gate.sh vulns.txt .github/vuln-allowlist.txt

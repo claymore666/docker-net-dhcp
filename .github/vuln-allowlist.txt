@@ -1,0 +1,19 @@
+# govulncheck allowlist (#127) — vulnerability IDs that are KNOWN,
+# REVIEWED, and accepted, enforced by scripts/govulncheck-gate.sh.
+#
+# Rules:
+#   - An entry requires a justification comment and the PR that added
+#     it. No bare IDs.
+#   - Entries are only for findings with no fixed release available.
+#     The moment a fix ships (dependabot will surface it), the bump
+#     lands and the entry is removed.
+#   - The gate warns when an entry stops being reported — remove it then.
+#
+# GO-2026-4887: moby AuthZ plugin bypass via oversized request bodies.
+# GO-2026-4883: moby off-by-one in plugin privilege validation.
+#   Both live in github.com/docker/docker daemon-side code with no
+#   fixed release published (checked v28.5.2, 2026-06-12). This plugin
+#   only uses the client API against the local daemon socket; the
+#   vulnerable AuthZ/privilege paths run in dockerd, not in us.
+GO-2026-4887
+GO-2026-4883

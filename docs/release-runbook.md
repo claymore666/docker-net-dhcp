@@ -78,12 +78,45 @@ fail loudly — it produces a "failed" run with no jobs and silently
 `if: ${{ secrets.X != '' }}` at step level (rejected; secrets
 context isn't allowed in step-level `if`).
 
-Defence: every release.yml change should be tested with
-`gh workflow run release.yml -f tag=vEXISTING.TAG --ref main`
-**before** tagging a real release. That dispatches the workflow
-against an already-published tag and exercises the full path
-without needing a new tag — if the dispatch returns
-`HTTP 422: failed to parse workflow`, the file's broken.
+First line of defence: the `actionlint` job in the Test workflow
+lints every workflow file on every PR (and
+`scripts/test-actionlint.sh` asserts the linter still catches this
+exact bug class). Second line: the **rc-tag dry-run** (next
+section) exercises the whole publishing chain before every real
+tag. Avoid dispatching `release.yml` with a bare existing release
+tag — that *rebuilds and re-points* the tag and `:latest`
+(different toolchain ⇒ different digest), mutating artifacts users
+may have pinned.
+
+### Pre-release dry-run (rc tags)
+
+A tag with a pre-release suffix (`v1.0.0-rc1`) runs the release
+workflow in **pre-release mode**: the full chain executes — build,
+push of `:v1.0.0-rc1` to both registries, Hub description sync,
+verify-install — but **`:latest` is not moved** and no bare
+release tag is touched. Zero impact on anything a user pulls by
+default.
+
+Use it before every real release tag (step 8 below):
+
+```sh
+git checkout main && git pull --ff-only      # the release commit
+git tag v1.0.0-rc1 && git push origin v1.0.0-rc1
+```
+
+Watch the run; every step including **verify-install** must be
+green. The rc window doubles as the final **documentation
+checkpoint** (procedure step 3): confirm README, `docs/`, and the
+RELEASE_NOTES section describe the version about to ship — if
+stale text surfaces now, fix it before the real tag. Then tag the
+real release. Naming: rc of the *upcoming*
+version (`v1.0.0-rc1` before `v1.0.0`) — semver orders it before
+the release and it labels the content truthfully. Bump the rc
+number for another attempt after a fix; never reuse an rc tag.
+
+Cleanup (optional): rc plugin tags can be deleted from GHCR/Hub
+after the real release ships; the git tag stays as the audit
+trail.
 
 ## Per-release procedure
 
@@ -101,21 +134,41 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
    - `docs/parent-attached-modes.md` — the `STATE_DIR` override
      example.
    Verify with `grep -n vPREV README.md docs/parent-attached-modes.md`.
-3. **Add a `## vX.Y.Z` section** to `RELEASE_NOTES.md`, **above
+3. **Documentation review** — read everything user-visible
+   top-to-bottom against what this release actually contains, not
+   just the version pins from step 2: `README.md` (feature list,
+   driver-opt table, examples), every file under `docs/`
+   (including this runbook — process changes during the cycle land
+   here too), and the coverage table if republished. Anything
+   describing the previous version's behaviour, options, or
+   numbers gets updated on the release branch now. When the
+   project gains a GitHub wiki, it joins this review. The rc
+   dry-run (step 8) is the *last checkpoint* for catching stale
+   docs — by the real tag, text and code must agree.
+4. **Add a `## vX.Y.Z` section** to `RELEASE_NOTES.md`, **above
    the previous version's section**. Summarise what's changing in
    user-visible terms; the workflow doesn't auto-build this from
    commit messages. Include any **operator-visible compatibility
    notes** (e.g. v0.8.0 narrowed the `IsDHCPPlugin` regex — that
    needed a callout).
-4. **PR `release/vX.Y.Z` → `dev`.** Required checks: `test`,
-   `staticcheck`. Integration is informational. Merge when green.
-5. **Open the release PR `dev` → `main`** with title
+5. **PR `release/vX.Y.Z` → `dev`.** Required checks: `test`,
+   `staticcheck`, `integration` (every PR builds and exercises its
+   own plugin on the integration runner). Merge when green.
+6. **Open the release PR `dev` → `main`** with title
    `Release vX.Y.Z` and a `Closes #N` line for **every issue** in
    the milestone. The list is what auto-closes them when the PR
    merges; without it the milestone stays open after the tag.
-6. **Merge the release PR.** Squash or merge commit — both fine;
+   Release PRs additionally run the **Coverage** workflow with the
+   coverage ratchet (`scripts/coverage-ratchet.sh` vs
+   `.github/coverage-baseline.txt`): no release ships with less
+   per-package coverage than the previous one. If a package beat its
+   floor during the cycle, raise the baseline as part of the release
+   branch.
+7. **Merge the release PR.** Squash or merge commit — both fine;
    match what's in `git log`.
-7. **Pull main and tag:**
+8. **Pull main, dry-run, then tag:** first push `vX.Y.Z-rc1` and
+   confirm the workflow run is green end-to-end (pre-release mode,
+   `:latest` untouched — see "Pre-release dry-run" above). Then:
    ```sh
    git checkout main && git pull --ff-only
    git tag -a vX.Y.Z -m "vX.Y.Z — <one-liner>"
@@ -125,8 +178,12 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
    <https://github.com/claymore666/docker-net-dhcp/actions/workflows/release.yml>.
    Expected steps: Resolve tag → checkout → setup-go →
    GHCR login → Hub login (or skip) → Push to GHCR → Push to
-   Hub (or skip) → Sync Hub description → Workflow summary.
-8. **Cut the GitHub Release** — points the Releases page at the
+   Hub (or skip) → Sync Hub description → Workflow summary →
+   **verify-install** (separate job: installs the just-published
+   plugin from GHCR on a clean hosted runner and asserts it
+   enables — a red verify-install means users can't install what
+   we just shipped).
+9. **Cut the GitHub Release** — points the Releases page at the
    right artefact. Either:
    ```sh
    awk '/^## vX\.Y\.Z$/{flag=1; next} /^## v/{flag=0} flag' \
@@ -141,7 +198,7 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
    Don't skip this — Hub and the GitHub Releases page diverge
    without it, and downstream consumers checking the Releases tag
    for "is this the real release?" will get confused.
-9. **Fast-forward `dev` to `main`** so the release commit (version
+10. **Fast-forward `dev` to `main`** so the release commit (version
    pins, RELEASE_NOTES section) lands on `dev` too:
    ```sh
    git checkout dev && git merge --ff-only main && git push origin dev

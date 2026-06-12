@@ -1,0 +1,6 @@
+# actionlint config (#127). The integration/coverage workflows run on a
+# self-hosted runner with a custom label; declare it so actionlint
+# doesn't flag `runs-on: [self-hosted, gpu1]` as an unknown runner.
+self-hosted-runner:
+  labels:
+    - gpu1
