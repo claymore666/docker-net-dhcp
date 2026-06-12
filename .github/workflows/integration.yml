@@ -20,6 +20,17 @@ on:
       - main
       - dev
 
+# Serialize against every other workflow that touches the self-hosted
+# runner's shared docker state (the :integration / :golang-cover plugin
+# refs and the dnsmasq fixture ports). Shared group with coverage.yml.
+# Note GitHub keeps at most one running + one pending run per group: a
+# third run replaces the pending one (it shows as cancelled — re-run it
+# if its PR still needs the check). cancel-in-progress stays false so a
+# running suite is never killed mid-test (#127).
+concurrency:
+  group: selfhosted-docker
+  cancel-in-progress: false
+
 permissions:
   contents: read
 
