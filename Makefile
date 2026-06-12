@@ -101,6 +101,9 @@ integration-test:
 		exit 1; \
 	fi
 	go test -v -tags integration -count=1 -timeout 20m -skip 'TestFailure_' ./test/integration/...
+# (20m, not #146's 15m: the suite measured 558s on runner-class
+# hardware before the v1.0.0 additions; 20m keeps the same headroom
+# ratio with them.)
 
 # Failure-injection suite (#128): crosses real DHCP timing boundaries
 # (lease expiry, NAK at T1) against per-test ephemeral DHCP servers —

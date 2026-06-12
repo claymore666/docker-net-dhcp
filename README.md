@@ -4,6 +4,8 @@
 [![Integration](https://github.com/claymore666/docker-net-dhcp/actions/workflows/integration.yml/badge.svg)](https://github.com/claymore666/docker-net-dhcp/actions/workflows/integration.yml)
 [![Dependencies](https://img.shields.io/badge/dependencies-Dependabot%20%2B%20govulncheck-brightgreen?logo=dependabot)](https://github.com/claymore666/docker-net-dhcp/network/updates)
 [![Release](https://img.shields.io/github/v/release/claymore666/docker-net-dhcp?sort=semver)](https://github.com/claymore666/docker-net-dhcp/releases)
+[![Go Report Card](https://goreportcard.com/badge/github.com/claymore666/docker-net-dhcp)](https://goreportcard.com/report/github.com/claymore666/docker-net-dhcp)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/claymore666/docker-net-dhcp/badge)](https://scorecard.dev/viewer/?uri=github.com/claymore666/docker-net-dhcp)
 
 > **This is a maintained fork** of [`devplayer0/docker-net-dhcp`][upstream].
 > The upstream repository has been quiet since 2021 and no longer builds on
@@ -15,7 +17,9 @@
 > exchanges through all three modes plus recovery, tombstone-stability,
 > and concurrency scenarios.
 >
-> See [`RELEASE_NOTES.md`](RELEASE_NOTES.md) for the full changelog and
+> See [`docs/reference.md`](docs/reference.md) for the complete driver
+> reference (all options, settings, observability, troubleshooting),
+> [`RELEASE_NOTES.md`](RELEASE_NOTES.md) for the full changelog and
 > credits, [`docs/parent-attached-modes.md`](docs/parent-attached-modes.md)
 > for the macvlan / ipvlan how-to, and
 > [`docs/release-runbook.md`](docs/release-runbook.md) for the
