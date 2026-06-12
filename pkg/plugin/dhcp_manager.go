@@ -627,6 +627,34 @@ func (m *dhcpManager) locateContainerLink(ctx context.Context) error {
 	}, pollTime)
 }
 
+// linkLocalDADTimeout caps the wait for the container link's IPv6
+// link-local address to clear duplicate address detection. DAD with
+// kernel defaults is one solicit + 1s; the budget is generous because
+// the only cost of waiting is delaying the first SOLICIT.
+const linkLocalDADTimeout = 10 * time.Second
+
+// awaitLinkLocal blocks until the container-side link has a usable
+// (non-tentative, non-failed) IPv6 link-local address — the
+// precondition for any DHCPv6 exchange in the netns.
+func (m *dhcpManager) awaitLinkLocal(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, linkLocalDADTimeout)
+	defer cancel()
+	return util.AwaitCondition(ctx, func() (bool, error) {
+		addrs, err := m.netHandle.AddrList(m.ctrLink, unix.AF_INET6)
+		if err != nil {
+			return false, fmt.Errorf("failed to list IPv6 addresses: %w", err)
+		}
+		for _, a := range addrs {
+			if a.Scope == unix.RT_SCOPE_LINK &&
+				a.Flags&unix.IFA_F_TENTATIVE == 0 &&
+				a.Flags&unix.IFA_F_DADFAILED == 0 {
+				return true, nil
+			}
+		}
+		return false, nil
+	}, pollTime)
+}
+
 func (m *dhcpManager) Start(ctx context.Context) (err error) {
 	defer func() {
 		m.startErr = err
@@ -686,6 +714,20 @@ func (m *dhcpManager) Start(ctx context.Context) (err error) {
 		}
 
 		if m.opts.IPv6 {
+			// DHCPv6 needs a usable link-local source address. The
+			// link just landed in this netns, so its LL is typically
+			// still DAD-tentative — and a host must NOT answer
+			// neighbor solicitations for a tentative address, so the
+			// server's unicast ADVERTISE/REPLY can never be
+			// delivered: udhcpc6 SOLICITs forever while the server's
+			// neighbor cache records an unreachable client (#103,
+			// found by TestLeaseRenewIPv6_HonorsT1). Wait for DAD to
+			// finish before starting the client. Timeout degrades to
+			// a warn-and-try — DAD normally completes in ~1s.
+			if err := m.awaitLinkLocal(ctx); err != nil {
+				log.WithError(err).WithFields(m.logFields(true)).
+					Warn("No usable link-local address; starting DHCPv6 client anyway")
+			}
 			if m.errChanV6, err = m.setupClient(true); err != nil {
 				close(m.stopChan)
 				return err
