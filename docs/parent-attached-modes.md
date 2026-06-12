@@ -341,6 +341,14 @@ What you get, and the boundaries (v1.0.0 audit, #103):
 - `propagate_dns=true` also covers v6: the DHCPv6 option-23 server
   list is written to `resolv.conf` on v6 bind/renew. The two
   families are last-writer-wins on that file.
+- **Known boundary (v1.0.0): the v6 address Docker reports is not
+  yet renewed.** The initial-lease client and the persistent renewal
+  client negotiate separate identity associations (same DUID,
+  different IAID), so the persistent client maintains a second lease
+  rather than renewing the one on the container's interface. The
+  initial v6 lease and addressing work; on networks with short v6
+  lease times, be aware the interface address can outlive its
+  server-side lease. IA unification is tracked in #152.
 - DHCPv6-PD (prefix delegation) is out of scope (tracked separately).
 
 ## DHCP identity
