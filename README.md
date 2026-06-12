@@ -15,7 +15,9 @@
 > exchanges through all three modes plus recovery, tombstone-stability,
 > and concurrency scenarios.
 >
-> See [`RELEASE_NOTES.md`](RELEASE_NOTES.md) for the full changelog and
+> See [`docs/reference.md`](docs/reference.md) for the complete driver
+> reference (all options, settings, observability, troubleshooting),
+> [`RELEASE_NOTES.md`](RELEASE_NOTES.md) for the full changelog and
 > credits, [`docs/parent-attached-modes.md`](docs/parent-attached-modes.md)
 > for the macvlan / ipvlan how-to, and
 > [`docs/release-runbook.md`](docs/release-runbook.md) for the
