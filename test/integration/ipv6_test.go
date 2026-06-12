@@ -269,11 +269,11 @@ func TestLeaseRenewIPv6_HonorsT1(t *testing.T) {
 		}
 	})
 
-	// TEMPORARY CI diagnostics (#103): the persistent udhcpc6 SOLICITs
-	// forever in the container netns while dnsmasq logs matching
-	// ADVERTISEs that never arrive — local replication of the exact
-	// topology works, so capture the wire + neighbor state in the real
-	// environment. Dumped only on failure; remove once root-caused.
+	// Wire + neighbor diagnostics, dumped only on failure. These are
+	// what root-caused the udev MACAddressPolicy neighbor-cache
+	// poisoning (#103) — DHCPv6 failures in this environment tend to
+	// be L2-delivery problems that no application log can show, so
+	// the capture stays.
 	var dumps []*os.File
 	for _, iface := range []string{harness.HostVeth, harness.DhcpVeth} {
 		f, err := os.CreateTemp("", "v6dbg-"+iface+"-*.txt")
