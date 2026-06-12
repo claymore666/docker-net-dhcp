@@ -89,7 +89,7 @@ The host's NIC config (IP, routes, netplan/`systemd-networkd`,
 | `parent`            | macvlan, ipvlan  | yes      | Host NIC to use as the parent (e.g. `ens18`, `eno1`). Must exist and be `UP`. |
 | `bridge`            | bridge           | yes      | Existing Linux bridge to plug veths into.                     |
 | `gateway`           | all              | no       | Override the IPv4 gateway returned by DHCP (e.g. when egress should go through a VPN router instead of the LAN's default gateway). |
-| `ipv6`              | all              | no       | Also run DHCPv6 in addition to DHCPv4.                        |
+| `ipv6`              | all              | no       | Also run stateful DHCPv6 (udhcpc6) in addition to DHCPv4 — see "DHCPv6" below for semantics, DUID identity, and boundaries. |
 | `lease_timeout`     | both      | no       | Initial-lease timeout for the up-front DHCP exchange (default `10s`). |
 | `ignore_conflicts`  | bridge    | no       | Skip the bridge-already-in-use check. No-op in macvlan mode.  |
 | `skip_routes`       | all       | no       | Don't copy non-default static routes from the parent (bridge / macvlan parent NIC / ipvlan parent NIC) into the container. v0.9.0 extended this from bridge-only to all modes for parity (#102) — set `true` to restore pre-v0.9.0 macvlan/ipvlan no-copy behaviour. |
@@ -300,6 +300,56 @@ told apart when the hostname is known on both sides; only when
 neither side knows the hostname does the network-wide
 "exactly one match" rule apply. Sequential restarts (the typical
 case) always satisfy the rule.
+
+## DHCPv6 (`ipv6=true`)
+
+Enabling `-o ipv6=true` runs a second persistent client (busybox
+`udhcpc6`) alongside the v4 one — **stateful DHCPv6**, not SLAAC. The
+exact create incantation (note: the Docker-level `--ipv6` flag does
+NOT work with the null IPAM driver and is not what you want):
+
+```bash
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v0.9.0 \
+    --ipam-driver null \
+    -o mode=macvlan -o parent=eth0 -o ipv6=true \
+    lan-dhcp6
+```
+
+What you get, and the boundaries (v1.0.0 audit, #103):
+
+- The container's interface carries the DHCPv6-leased address as a
+  `/128` alongside its v4 address; `docker inspect` reports it as
+  `GlobalIPv6Address`. Renewal follows the server's T1 like v4.
+- **The default gateway stays RA-delegated**: DHCPv6 carries no
+  router option by design; the container netns kernel honors Router
+  Advertisements on its own (`accept_ra` default). The plugin's
+  `gateway` override option is v4-only.
+- **Client identity is the DUID, and it's stable.** busybox udhcpc6
+  derives a DUID-LL (type 3) from the interface MAC — no timestamp,
+  so the same MAC always produces the same DUID. Server-side v6
+  reservations therefore stick exactly as far as MAC stability
+  reaches: across plugin restarts/upgrades (the container link keeps
+  its MAC) and across container restarts (tombstones, see "Restart
+  stability"). **ipvlan caveat:** all ipvlan children share the
+  parent's MAC, so they share one DUID too — v6 servers tell them
+  apart only by IAID, and per-container v6 reservations are not
+  practical in ipvlan mode (same shape as the v4 MAC limitation).
+- **No static-v6 hint:** udhcpc6 has no v4-style `-r` request flag,
+  so `--ip6` / static v6 requests are accepted-but-ignored (logged);
+  the lease always arrives server-chosen. Use a DUID-keyed
+  reservation upstream when you need a fixed v6 address.
+- `propagate_dns=true` also covers v6: the DHCPv6 option-23 server
+  list is written to `resolv.conf` on v6 bind/renew. The two
+  families are last-writer-wins on that file.
+- **Known boundary (v1.0.0): the v6 address Docker reports is not
+  yet renewed.** The initial-lease client and the persistent renewal
+  client negotiate separate identity associations (same DUID,
+  different IAID), so the persistent client maintains a second lease
+  rather than renewing the one on the container's interface. The
+  initial v6 lease and addressing work; on networks with short v6
+  lease times, be aware the interface address can outlive its
+  server-side lease. IA unification is tracked in #152.
+- DHCPv6-PD (prefix delegation) is out of scope (tracked separately).
 
 ## DHCP identity
 

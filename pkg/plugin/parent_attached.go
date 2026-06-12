@@ -158,6 +158,27 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 		}
 		mac := fresh.Attrs().HardwareAddr
 
+		// Pin the kernel-assigned MAC (macvlan only — ipvlan rejects
+		// any MAC set with EOPNOTSUPP, and its children share the
+		// parent's MAC anyway). The bridge path has pinned its veth
+		// MACs for ages; macvlan never did, and the gap finally
+		// surfaced (#103): systemd-udevd's MACAddressPolicy=persistent
+		// (Debian default) replaces a *randomly assigned* MAC moments
+		// after link creation, so the initial DHCP exchange ran from
+		// udev's MAC while the link-local kept deriving from ours —
+		// and libnetwork re-applies our reported MAC at Join. v4
+		// survives by client-id matching, but the one-shot DHCPv6
+		// poisons the server's neighbor cache (link-local -> udev's
+		// MAC), blackholing the container's persistent client for the
+		// cache lifetime (~45s on the wire capture). Explicitly
+		// setting the MAC — even to its current value — flips
+		// addr_assign_type to "set", which the udev policy respects.
+		if mode != ModeIPvlan && effectiveMAC == "" {
+			if err := netlink.LinkSetHardwareAddr(fresh, mac); err != nil {
+				return fmt.Errorf("failed to pin %v link MAC: %w", mode, err)
+			}
+		}
+
 		if err := netlink.LinkSetUp(fresh); err != nil {
 			return fmt.Errorf("failed to set %v link up: %w", mode, err)
 		}

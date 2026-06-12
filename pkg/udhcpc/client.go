@@ -89,28 +89,40 @@ func NewDHCPClient(iface string, opts *DHCPClientOptions) (*DHCPClient, error) {
 	}
 
 	path := "udhcpc"
+	// The two busybox clients accept DIFFERENT -O vocabularies, and an
+	// unknown option name is a hard startup error (`udhcpc6: unknown
+	// option 'mtu'` → exit 1), not a warning — passing the v4 list to
+	// udhcpc6 broke every `ipv6=true` exchange from v0.9.0 until the
+	// first v6 integration test caught it (#103).
+	//
+	// v4 (beyond udhcpc's default request list 1, 3, 6, 12, 15, 28, 42):
+	//   - mtu     (option 26)  — applied to ctr link when PropagateMTU
+	//   - search  (option 119) — written to resolv.conf when PropagateDNS
+	//   - tftp    (option 66)  — surfaced via plugin log
+	//   - bootfile(option 67)  — surfaced via plugin log
+	//
+	// v6 (udhcpc6 knows: dns search fqdn tz timezone bootfile_url
+	// bootfile_param pxeconffile pxepathprefix; dns/option 23 is
+	// requested by default):
+	//   - search  (option 24, domain search list) — resolv.conf when
+	//     PropagateDNS. There is no DHCPv6 MTU option (MTU comes from
+	//     RA) and no v6 equivalents of tftp/bootfile in udhcpc6's
+	//     vocabulary.
+	//
+	// dnsmasq / RFC-conformant servers only return options the client
+	// asked for. Always-on; the per-option propagate_* gates decide
+	// whether to *act* on the values.
+	reqOpts := []string{"-O", "mtu", "-O", "search", "-O", "tftp", "-O", "bootfile"}
 	if opts.V6 {
 		path = "udhcpc6"
+		reqOpts = []string{"-O", "search"}
 	}
+	args := append([]string{"-f", "-i", iface, "-s", opts.HandlerScript}, reqOpts...)
 	c := &DHCPClient{
 		Opts: opts,
-		// Foreground, set interface and handler "script". Also
-		// explicitly request the options not in busybox udhcpc's
-		// default list (1, 3, 6, 12, 15, 28, 42):
-		//
-		//   - mtu     (option 26)  — applied to ctr link when PropagateMTU
-		//   - search  (option 119) — written to resolv.conf when PropagateDNS
-		//   - tftp    (option 66)  — surfaced via plugin log
-		//   - bootfile(option 67)  — surfaced via plugin log
-		//
-		// Note: busybox already requests option 42 (ntpsrv) by default,
-		// so there's no -O for it. dnsmasq / RFC-conformant servers
-		// only return options the client asked for. This block is
-		// always-on; the per-option propagate_* gates decide whether
-		// to *act* on the values, but capturing them is free and
-		// harmless if the server doesn't supply them.
-		cmd: exec.Command(path, "-f", "-i", iface, "-s", opts.HandlerScript,
-			"-O", "mtu", "-O", "search", "-O", "tftp", "-O", "bootfile"),
+		// Foreground, set interface and handler "script", plus the
+		// family-specific option requests above.
+		cmd: exec.Command(path, args...),
 	}
 
 	stderrPipe, err := c.cmd.StderrPipe()
