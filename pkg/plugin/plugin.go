@@ -241,6 +241,12 @@ type joinHint struct {
 	// MacAddress is set in macvlan mode so the persistent DHCP client can
 	// re-find the (renamed) macvlan link inside the container netns by MAC.
 	MacAddress net.HardwareAddr
+	// Ifname is the validated custom container-side interface name from
+	// the ifnameOption endpoint option (#125). The option only arrives
+	// in CreateEndpoint — libnetwork's remote proxy passes sandbox
+	// labels, not endpoint options, to Join — so it rides the hint to
+	// become the Join response's DstName.
+	Ifname string
 }
 
 // Plugin is the DHCP network plugin
@@ -422,6 +428,10 @@ type endpointFingerprint struct {
 	IPv4     string // bare IPv4, e.g. "192.168.0.166" (no /mask). May be empty.
 	IPv6     string // bare IPv6, e.g. "2001:db8::1" (no /prefix). May be empty.
 	Hostname string // container hostname; used to narrow tombstone match.
+	// Ifname preserves the custom interface name (#125) across the
+	// Leave -> Join cycle of a container restart, where the join hint
+	// is gone and libnetwork does not re-send endpoint options.
+	Ifname string
 }
 
 // rememberEndpoint stashes the fingerprint of an endpoint we just
@@ -460,6 +470,24 @@ func (p *Plugin) updateEndpointIPs(endpointID, ipv4, ipv6 string) {
 		fp.IPv6 = ipv6
 	}
 	p.endpointFingerprints[endpointID] = fp
+}
+
+// hintIfname returns the custom interface name recorded in the join
+// hint for endpointID, or "" — used to copy it into the endpoint
+// fingerprint without widening function signatures.
+func (p *Plugin) hintIfname(endpointID string) string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.joinHints[endpointID].Ifname
+}
+
+// fingerprintIfname returns the custom interface name remembered for
+// a live endpoint, or "" — the restart-path fallback for Join when
+// the hint has already been consumed.
+func (p *Plugin) fingerprintIfname(endpointID string) string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.endpointFingerprints[endpointID].Ifname
 }
 
 // takeEndpoint atomically retrieves and deletes the remembered

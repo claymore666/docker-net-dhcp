@@ -156,6 +156,7 @@ Passed per container via `docker network connect --driver-opt`, or as
 | option | description |
 | ------ | ----------- |
 | `ip` | Request a specific IPv4 address (bare IP, no CIDR — the netmask comes from DHCP). Equivalent to `docker run --ip`; setting both to different values is an error. The address is *requested* from the DHCP server (DHCPREQUEST for it); the server still has final say. |
+| `com.docker.network.endpoint.ifname` | (v1.0.0+) Request a specific interface name inside the container (Compose `interface_name`, engine 28+; or this key under `driver_opts`, any engine). The plugin validates the name (≤15 bytes, kernel charset — invalid names fail the attach with a clear error) and returns it in its Join response. **Current engine limitation:** moby's remote-driver layer discards the returned name (`drivers/remote/driver.go` passes an empty `DstName`), so engines do not yet apply it for *plugin* drivers — built-in drivers only. The plugin side is ready; the rename activates as soon as the upstream pass-through ships. Until then interfaces stay `ethN` in attach order. |
 
 A static IPv6 request (`--ip6` / Interface.AddressIPv6) is currently
 accepted but logged-and-skipped — busybox udhcpc6 has no
@@ -270,8 +271,10 @@ networks:
 ```
 
 Multi-network containers work (one plugin network per container is
-the *supported* shape; multiple attach but interface naming order is
-engine-determined — see the known-limitations note in issue #125).
+the *supported* shape; multiple attach, but interface naming order is
+engine-determined until moby's remote-driver `interface_name`
+pass-through ships — see the `com.docker.network.endpoint.ifname` row
+above and issue #125).
 
 ---
 
