@@ -1,0 +1,14 @@
+# Coverage ratchet baseline (#127) — per-package merged
+# (unit + integration) coverage floors in percent, enforced by
+# scripts/coverage-ratchet.sh in the Coverage workflow.
+#
+# Rules:
+#   - Raise a floor in the same PR that earns the improvement.
+#   - Never lower a floor without a recorded decision in the PR body.
+#
+# Seeded from the v0.9.0 published numbers (RELEASE_NOTES.md).
+github.com/devplayer0/docker-net-dhcp/pkg/util 87.7
+github.com/devplayer0/docker-net-dhcp/pkg/plugin 82.4
+github.com/devplayer0/docker-net-dhcp/pkg/udhcpc 81.3
+github.com/devplayer0/docker-net-dhcp/cmd/net-dhcp 75.0
+github.com/devplayer0/docker-net-dhcp/cmd/udhcpc-handler 50.0
