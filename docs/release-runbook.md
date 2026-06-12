@@ -78,7 +78,11 @@ fail loudly — it produces a "failed" run with no jobs and silently
 `if: ${{ secrets.X != '' }}` at step level (rejected; secrets
 context isn't allowed in step-level `if`).
 
-Defence: every release.yml change should be tested with
+First line of defence: the `actionlint` job in the Test workflow
+lints every workflow file on every PR (and
+`scripts/test-actionlint.sh` asserts the linter still catches this
+exact bug class). Second line: every release.yml change should be
+tested with
 `gh workflow run release.yml -f tag=vEXISTING.TAG --ref main`
 **before** tagging a real release. That dispatches the workflow
 against an already-published tag and exercises the full path
@@ -108,11 +112,18 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
    notes** (e.g. v0.8.0 narrowed the `IsDHCPPlugin` regex — that
    needed a callout).
 4. **PR `release/vX.Y.Z` → `dev`.** Required checks: `test`,
-   `staticcheck`. Integration is informational. Merge when green.
+   `staticcheck`, `integration` (every PR builds and exercises its
+   own plugin on the integration runner). Merge when green.
 5. **Open the release PR `dev` → `main`** with title
    `Release vX.Y.Z` and a `Closes #N` line for **every issue** in
    the milestone. The list is what auto-closes them when the PR
    merges; without it the milestone stays open after the tag.
+   Release PRs additionally run the **Coverage** workflow with the
+   coverage ratchet (`scripts/coverage-ratchet.sh` vs
+   `.github/coverage-baseline.txt`): no release ships with less
+   per-package coverage than the previous one. If a package beat its
+   floor during the cycle, raise the baseline as part of the release
+   branch.
 6. **Merge the release PR.** Squash or merge commit — both fine;
    match what's in `git log`.
 7. **Pull main and tag:**
@@ -125,7 +136,11 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
    <https://github.com/claymore666/docker-net-dhcp/actions/workflows/release.yml>.
    Expected steps: Resolve tag → checkout → setup-go →
    GHCR login → Hub login (or skip) → Push to GHCR → Push to
-   Hub (or skip) → Sync Hub description → Workflow summary.
+   Hub (or skip) → Sync Hub description → Workflow summary →
+   **verify-install** (separate job: installs the just-published
+   plugin from GHCR on a clean hosted runner and asserts it
+   enables — a red verify-install means users can't install what
+   we just shipped).
 8. **Cut the GitHub Release** — points the Releases page at the
    right artefact. Either:
    ```sh
