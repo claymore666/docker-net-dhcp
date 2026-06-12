@@ -58,7 +58,9 @@ for the umbrella scope. Tests so far:
 - `recovery_test.go` — `docker plugin disable -f` + `enable` while
   a container is attached; asserts Plugin.Health.recovered_ok ≥ 1
   and the container's IP/MAC survive the recycle.
-- `recovery_daemon_test.go` — `systemctl restart docker` mid-suite
+- `recovery_daemon_test.go` — full daemon restart mid-suite (via
+  `harness.RestartDockerDaemon`: `systemctl` on systemd hosts,
+  supervised-dockerd signal on containerized runners)
   with a `--restart=always` container attached; asserts the daemon
   comes back, the container restarts, and the IP/MAC are
   preserved. Empirically the IP is preserved via the tombstone
@@ -69,7 +71,7 @@ for the umbrella scope. Tests so far:
 Tests run **serially** by design. None of the current cases call
 `t.Parallel()`, even though most would be safe — the recovery and
 daemon-restart tests planned for #56 will mutate global daemon
-state (plugin disable/enable, `systemctl restart docker`), and
+state (plugin disable/enable, a full daemon restart), and
 those have to run alone. Keeping the suite serial avoids designing
 in a foot-gun where a future test inadvertently runs concurrently
 with one that drops the docker socket.

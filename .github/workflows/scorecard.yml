@@ -1,0 +1,58 @@
+name: Scorecard
+
+# OpenSSF Scorecard supply-chain self-assessment. Runs on the hosted
+# runners (zero load on the integration runner), publishes results to
+# the public Scorecard API (that's what feeds the README badge), and
+# uploads the SARIF so findings appear under Security → Code scanning.
+#
+# Actions in THIS workflow are SHA-pinned (the comment carries the
+# human-readable tag): scorecard's own Pinned-Dependencies check
+# scores tag-pinning down, and the publishing workflow that signs our
+# results should lead by example. Repo-wide SHA-pinning is tracked in
+# the hardening follow-up issue; Dependabot maintains these pins.
+on:
+  # Like Dependabot and cron triggers, only active once this file is
+  # on the default branch.
+  push:
+    branches:
+      - main
+  schedule:
+    - cron: '41 7 * * 2'
+  workflow_dispatch:
+
+permissions: read-all
+
+jobs:
+  analysis:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      # Needed to upload SARIF to code scanning.
+      security-events: write
+      # Needed by scorecard-action to publish signed results.
+      id-token: write
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Run Scorecard analysis
+        uses: ossf/scorecard-action@4eaacf0543bb3f2c246792bd56e8cdeffafb205a # v2.4.3
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          # Publish to the Scorecard REST API — feeds the README badge
+          # and https://scorecard.dev/viewer/?uri=github.com/claymore666/docker-net-dhcp
+          publish_results: true
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: SARIF file
+          path: results.sarif
+          retention-days: 5
+
+      - name: Upload to code-scanning
+        uses: github/codeql-action/upload-sarif@8aad20d150bbac5944a9f9d289da16a4b0d87c1e # v4
+        with:
+          sarif_file: results.sarif
