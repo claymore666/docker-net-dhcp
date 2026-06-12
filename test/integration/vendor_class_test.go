@@ -44,13 +44,9 @@ func TestVendorClass_OverrideRoutesViaTaggedGateway(t *testing.T) {
 	id, _, _ := harness.RunContainer(t, ctx, netName, ctrName)
 
 	out := harness.ExecOutput(t, ctx, id, "ip", "route", "show", "default")
-	if !strings.Contains(out, harness.TestTaggedGateway) {
-		t.Errorf("expected default route via %s (tagged gateway); got:\n%s",
-			harness.TestTaggedGateway, out)
-	}
-	if strings.Contains(out, harness.DefaultGateway) {
-		t.Errorf("default route still points at %s — vendor_class override didn't fire upstream:\n%s",
-			harness.DefaultGateway, out)
+	if gw := defaultRouteGateway(t, out); gw != harness.TestTaggedGateway {
+		t.Errorf("default route via %s, want tagged gateway %s — vendor_class override didn't fire upstream:\n%s",
+			gw, harness.TestTaggedGateway, out)
 	}
 	t.Logf("default route: %s", strings.TrimSpace(out))
 }
@@ -83,13 +79,9 @@ func TestVendorClass_DefaultUsesUntaggedGateway(t *testing.T) {
 	id, _, _ := harness.RunContainer(t, ctx, netName, ctrName)
 
 	out := harness.ExecOutput(t, ctx, id, "ip", "route", "show", "default")
-	if !strings.Contains(out, harness.DefaultGateway) {
-		t.Errorf("expected default route via %s (default gateway); got:\n%s",
-			harness.DefaultGateway, out)
-	}
-	if strings.Contains(out, harness.TestTaggedGateway) {
-		t.Errorf("default route points at %s — vendor_class tag fired without the override:\n%s",
-			harness.TestTaggedGateway, out)
+	if gw := defaultRouteGateway(t, out); gw != harness.DefaultGateway {
+		t.Errorf("default route via %s, want default gateway %s — vendor_class tag fired without the override:\n%s",
+			gw, harness.DefaultGateway, out)
 	}
 	t.Logf("default route: %s", strings.TrimSpace(out))
 }
@@ -120,8 +112,28 @@ func TestVendorClass_NonMatchingValueUsesDefaultGateway(t *testing.T) {
 	id, _, _ := harness.RunContainer(t, ctx, netName, ctrName)
 
 	out := harness.ExecOutput(t, ctx, id, "ip", "route", "show", "default")
-	if !strings.Contains(out, harness.DefaultGateway) {
-		t.Errorf("non-matching vendor_class should still get the default gateway %s; got:\n%s",
-			harness.DefaultGateway, out)
+	if gw := defaultRouteGateway(t, out); gw != harness.DefaultGateway {
+		t.Errorf("non-matching vendor_class should still get the default gateway %s, got %s:\n%s",
+			harness.DefaultGateway, gw, out)
 	}
+}
+
+// defaultRouteGateway extracts the gateway of the default route from
+// `ip route` output. BusyBox `ip` (alpine test containers) ignores the
+// `show default` filter and prints the whole routing table, so
+// substring assertions against the raw output false-match the leased
+// address: the default gateway "192.168.99.1" is a prefix of every
+// lease in .10–.19, which appears in the subnet route's `src` field
+// (~11% flake, #130). Parse the actual default line and compare
+// gateways exactly instead.
+func defaultRouteGateway(t *testing.T, out string) string {
+	t.Helper()
+	for _, line := range strings.Split(out, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 3 && fields[0] == "default" && fields[1] == "via" {
+			return fields[2]
+		}
+	}
+	t.Fatalf("no default route in ip route output:\n%s", out)
+	return ""
 }
