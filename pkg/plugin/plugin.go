@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -190,6 +191,18 @@ type DHCPNetworkOptions struct {
 	// the lease times out naturally rather than dragging CreateNetwork
 	// on a slow release path.
 	ValidateDHCP bool `mapstructure:"validate_dhcp"`
+	// AuditLog, when true, appends every lease-lifecycle event on
+	// this network (bound / renew / release, plus release_failed when
+	// the DHCPRELEASE didn't complete) to STATE_DIR/leases.jsonl —
+	// an append-only JSONL audit trail answering "which IP did this
+	// container hold last Tuesday?" without dnsmasq-log archaeology
+	// (#109). Rotated at 16 MB or 30 days, whichever first; one
+	// rotated generation is kept. Default false: the ledger costs a
+	// disk write per lease event, and container-ID/IP correlation on
+	// disk is privacy-relevant in some environments — operators opt
+	// in deliberately. Append failures bump ledger_write_failures on
+	// /Plugin.Health and never affect lease handling.
+	AuditLog bool `mapstructure:"audit_log"`
 }
 
 // effectiveMode returns Mode with the empty default normalized to ModeBridge.
@@ -302,6 +315,16 @@ type Plugin struct {
 	leasesRenewed        atomic.Int32
 	dhcpTimeouts         atomic.Int32
 	leaseReleaseFailures atomic.Int32
+
+	// ledger is the append-only lease audit log (#109), written by
+	// dhcpManager.audit for networks created with audit_log=true.
+	// ledgerWriteFailures counts failed appends, surfaced on
+	// /Plugin.Health. Unlike tombstone_write_failures it does NOT
+	// flip Healthy: a lost audit line degrades forensics, not
+	// networking or restart stability — operators who enable
+	// audit_log should alert on the counter instead.
+	ledger              *leaseLedger
+	ledgerWriteFailures atomic.Int32
 }
 
 // storeJoinHint records the state collected during CreateEndpoint so
@@ -820,6 +843,7 @@ func NewPlugin(awaitTimeout time.Duration) (*Plugin, error) {
 		persistentDHCP:       make(map[string]*dhcpManager),
 		endpointFingerprints: make(map[string]endpointFingerprint),
 	}
+	p.ledger = newLeaseLedger(filepath.Join(stateDir, ledgerFileName), &p.ledgerWriteFailures)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/NetworkDriver.GetCapabilities", p.apiGetCapabilities)

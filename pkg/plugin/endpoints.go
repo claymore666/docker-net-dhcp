@@ -259,6 +259,11 @@ type HealthResponse struct {
 	LeasesRenewed        int32 `json:"leases_renewed"`
 	DHCPTimeouts         int32 `json:"dhcp_timeouts"`
 	LeaseReleaseFailures int32 `json:"lease_release_failures"`
+	// LedgerWriteFailures counts failed appends to the audit_log
+	// lease ledger (#109). Not Healthy-affecting — a lost audit line
+	// degrades forensics, not networking; operators using audit_log
+	// alert on this directly.
+	LedgerWriteFailures int32 `json:"ledger_write_failures"`
 }
 
 func (p *Plugin) apiHealth(w http.ResponseWriter, r *http.Request) {
@@ -286,5 +291,6 @@ func (p *Plugin) apiHealth(w http.ResponseWriter, r *http.Request) {
 		LeasesRenewed:          p.leasesRenewed.Load(),
 		DHCPTimeouts:           p.dhcpTimeouts.Load(),
 		LeaseReleaseFailures:   p.leaseReleaseFailures.Load(),
+		LedgerWriteFailures:    p.ledgerWriteFailures.Load(),
 	}, http.StatusOK)
 }
