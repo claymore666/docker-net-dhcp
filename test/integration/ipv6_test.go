@@ -24,6 +24,7 @@ import (
 	"context"
 	"net"
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -268,8 +269,53 @@ func TestLeaseRenewIPv6_HonorsT1(t *testing.T) {
 		}
 	})
 
+	// TEMPORARY CI diagnostics (#103): the persistent udhcpc6 SOLICITs
+	// forever in the container netns while dnsmasq logs matching
+	// ADVERTISEs that never arrive — local replication of the exact
+	// topology works, so capture the wire + neighbor state in the real
+	// environment. Dumped only on failure; remove once root-caused.
+	var dumps []*os.File
+	for _, iface := range []string{harness.HostVeth, harness.DhcpVeth} {
+		f, err := os.CreateTemp("", "v6dbg-"+iface+"-*.txt")
+		if err != nil {
+			t.Fatalf("tcpdump capture file: %v", err)
+		}
+		td := exec.Command("tcpdump", "-i", iface, "-l", "-n", "-e",
+			"udp port 546 or udp port 547 or icmp6")
+		td.Stdout, td.Stderr = f, f
+		if err := td.Start(); err != nil {
+			t.Logf("tcpdump unavailable (%v); continuing without capture", err)
+			break
+		}
+		dumps = append(dumps, f)
+		t.Cleanup(func() {
+			_ = td.Process.Kill()
+			_, _ = td.Process.Wait()
+		})
+	}
+	t.Cleanup(func() {
+		for _, f := range dumps {
+			if t.Failed() {
+				data, _ := os.ReadFile(f.Name())
+				t.Logf("--- tcpdump %s ---\n%s", f.Name(), data)
+			}
+			_ = os.Remove(f.Name())
+		}
+		if t.Failed() {
+			neigh, _ := exec.Command("ip", "-6", "neigh", "show").CombinedOutput()
+			t.Logf("--- host ip -6 neigh ---\n%s", neigh)
+		}
+	})
+
 	harness.CreateNetwork(t, ctx, netName, "macvlan", map[string]string{"ipv6": "true"})
 	id, _, _ := harness.RunContainer(t, ctx, netName, "dh-itest-v6renew-ctr")
+
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("--- container ip -6 addr ---\n%s", harness.ExecOutput(t, context.Background(), id, "ip", "-6", "addr"))
+			t.Logf("--- container ip -6 neigh ---\n%s", harness.ExecOutput(t, context.Background(), id, "ip", "-6", "neigh"))
+		}
+	})
 
 	v6 := linkGlobalV6(t, ctx, id, harness.IPAcquisitionBudget)
 	if v6 == "" {
