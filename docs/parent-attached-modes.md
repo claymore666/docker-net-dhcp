@@ -407,7 +407,8 @@ user-visible outcome.
   "leases_obtained": 17,
   "leases_renewed": 42,
   "dhcp_timeouts": 0,
-  "lease_release_failures": 0
+  "lease_release_failures": 0,
+  "naks_received": 0
 }
 ```
 
@@ -448,6 +449,14 @@ DHCP-wire counters (v0.9.0+):
   hold a phantom lease against the container's MAC until natural
   expiry. A pattern of these typically points at upstream
   reachability problems mid-teardown.
+- `naks_received` (v1.0.0+) — the server NAKed a renewal/rebind
+  REQUEST (pool reconfigured, address reassigned, lease revoked).
+  udhcpc recovers by re-DISCOVERing, so each NAK is typically
+  followed by `leases_obtained` and — if the address moved —
+  `lease_changed` bumps. NAKs climbing alongside `lease_changed`
+  means containers are being re-addressed mid-life: `docker
+  inspect` goes stale (see `lease_changed` above) and anything
+  keyed on the old IPs needs attention.
 
 Sample call from a host shell:
 

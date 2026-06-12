@@ -39,7 +39,9 @@ permissions:
 jobs:
   coverage:
     runs-on: [self-hosted, gpu1]
-    timeout-minutes: 20
+    # 35 = main + failure-injection suites against the instrumented
+    # plugin (#128) + cover build + margin.
+    timeout-minutes: 35
     env:
       COVER_PLUGIN_REF: ghcr.io/claymore666/docker-net-dhcp:golang-cover
       COVER_DIR: /var/lib/dh-cover
@@ -90,6 +92,15 @@ jobs:
         env:
           INTEGRATION_PLUGIN_REF: ${{ env.COVER_PLUGIN_REF }}
         run: make integration-test
+
+      # The failure-injection suite (#128) exercises paths the main
+      # suite can't reach (NAK handling, post-expiry retry loop) — the
+      # ratchet counts both runs' coverage, so both must drive the
+      # instrumented plugin.
+      - name: Run failure-injection tests against cover plugin
+        env:
+          INTEGRATION_PLUGIN_REF: ${{ env.COVER_PLUGIN_REF }}
+        run: make integration-test-failure
 
       # Flush counter files. Go's binary coverage runtime only writes
       # `covcounters.*` on graceful exit, which `docker plugin disable`

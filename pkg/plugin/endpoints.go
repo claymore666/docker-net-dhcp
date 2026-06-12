@@ -259,6 +259,11 @@ type HealthResponse struct {
 	LeasesRenewed        int32 `json:"leases_renewed"`
 	DHCPTimeouts         int32 `json:"dhcp_timeouts"`
 	LeaseReleaseFailures int32 `json:"lease_release_failures"`
+	// NAKsReceived counts server NAKs on renewal/rebind. Not
+	// Healthy-affecting on its own — udhcpc recovers by
+	// re-DISCOVERing — but each NAK-triggered re-bind widens the
+	// docker-inspect divergence tracked by lease_changed (#128).
+	NAKsReceived int32 `json:"naks_received"`
 	// LedgerWriteFailures counts failed appends to the audit_log
 	// lease ledger (#109). Not Healthy-affecting — a lost audit line
 	// degrades forensics, not networking; operators using audit_log
@@ -291,6 +296,7 @@ func (p *Plugin) apiHealth(w http.ResponseWriter, r *http.Request) {
 		LeasesRenewed:          p.leasesRenewed.Load(),
 		DHCPTimeouts:           p.dhcpTimeouts.Load(),
 		LeaseReleaseFailures:   p.leaseReleaseFailures.Load(),
+		NAKsReceived:           p.naksReceived.Load(),
 		LedgerWriteFailures:    p.ledgerWriteFailures.Load(),
 	}, http.StatusOK)
 }

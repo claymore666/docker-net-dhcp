@@ -203,3 +203,106 @@ func TestBuildEvent_BoundV4_OmittedOptionsAreEmpty(t *testing.T) {
 		t.Errorf("missing env vars produced non-empty slices: %+v", got.Data)
 	}
 }
+
+// TestBuildEvent_BoundV4_MalformedLeaseIsSkipped pins the #128
+// hardening: a bound/renew whose `ip`/`mask` env doesn't form a valid
+// CIDR is dropped at the handler instead of flowing downstream where
+// netlink.ParseAddr would fail mid-renewal. Cases mirror the issue's
+// test design: empty ip with valid mask, non-numeric mask, junk both.
+func TestBuildEvent_BoundV4_MalformedLeaseIsSkipped(t *testing.T) {
+	cases := map[string]map[string]string{
+		"empty ip, valid mask": {"ip": "", "mask": "24"},
+		"valid ip, empty mask": {"ip": "10.0.0.5", "mask": ""},
+		"non-numeric mask":     {"ip": "10.0.0.5", "mask": "abc"},
+		"negative mask":        {"ip": "10.0.0.5", "mask": "-1"},
+		"mask out of range":    {"ip": "10.0.0.5", "mask": "33"},
+		"garbage ip":           {"ip": "not-an-ip", "mask": "24"},
+		"nothing set":          {},
+	}
+	for name, env := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, emit := BuildEvent("bound", fakeEnv(env)); emit {
+				t.Errorf("emit=true for malformed v4 lease env %v; want skipped", env)
+			}
+		})
+	}
+}
+
+// TestBuildEvent_RenewValidatesLikeBound: the validation guards both
+// event types that carry lease data.
+func TestBuildEvent_RenewValidatesLikeBound(t *testing.T) {
+	if _, emit := BuildEvent("renew", fakeEnv(map[string]string{"ip": "", "mask": "24"})); emit {
+		t.Error("emit=true for malformed renew; want skipped")
+	}
+}
+
+// TestBuildEvent_BoundV6_LinkLocalIsEmitted pins that a link-local
+// udhcpc6 lease (fe80::...) is structurally valid and flows through —
+// filtering link-local is a consumer policy decision, not the
+// handler's.
+func TestBuildEvent_BoundV6_LinkLocalIsEmitted(t *testing.T) {
+	got, emit := BuildEvent("bound", fakeEnv(map[string]string{
+		"ipv6": "fe80::42:acff:fe00:1",
+	}))
+	if !emit {
+		t.Fatal("emit=false for link-local v6 lease")
+	}
+	if got.Data.IP != "fe80::42:acff:fe00:1/128" {
+		t.Errorf("IP = %q, want canonicalised /128 link-local", got.Data.IP)
+	}
+}
+
+// TestBuildEvent_BoundV6_UncompressedIsCanonicalised: udhcpc6 emits
+// fully zero-padded addresses; the event must carry the compressed
+// canonical form so downstream string comparisons are stable.
+func TestBuildEvent_BoundV6_UncompressedIsCanonicalised(t *testing.T) {
+	got, emit := BuildEvent("bound", fakeEnv(map[string]string{
+		"ipv6": "fd00:6470:6863:0000:0000:0000:0000:0010",
+	}))
+	if !emit {
+		t.Fatal("emit=false for uncompressed v6 lease")
+	}
+	if got.Data.IP != "fd00:6470:6863::10/128" {
+		t.Errorf("IP = %q, want compressed canonical form", got.Data.IP)
+	}
+}
+
+// TestBuildEvent_BoundV6_MultipleDNS6Servers: option 23 with several
+// servers arrives space-separated; each becomes one entry.
+func TestBuildEvent_BoundV6_MultipleDNS6Servers(t *testing.T) {
+	got, emit := BuildEvent("bound", fakeEnv(map[string]string{
+		"ipv6": "fd00::10",
+		"dns6": "fd00::53 fd00::54",
+	}))
+	if !emit {
+		t.Fatal("emit=false")
+	}
+	want := []string{"fd00::53", "fd00::54"}
+	if !reflect.DeepEqual(got.Data.DNSServers, want) {
+		t.Errorf("DNSServers = %v, want %v", got.Data.DNSServers, want)
+	}
+}
+
+// TestBuildEvent_BoundV6_EmptyIPv6FallsThroughToV4Validation: an
+// empty `ipv6` env on a v6 bound routes into the v4 branch (the
+// documented contract), where empty ip/mask now skips the event
+// rather than emitting "/" as an address.
+func TestBuildEvent_BoundV6_EmptyIPv6FallsThroughToV4Validation(t *testing.T) {
+	if _, emit := BuildEvent("bound", fakeEnv(map[string]string{"ipv6": ""})); emit {
+		t.Error("emit=true for empty ipv6 + no v4 env; want skipped")
+	}
+}
+
+// TestBuildEvent_MTUNegativeIsIgnored extends the best-effort MTU
+// contract to negative numbers ("-5" parses but is not a valid MTU).
+func TestBuildEvent_MTUNegativeIsIgnored(t *testing.T) {
+	got, emit := BuildEvent("bound", fakeEnv(map[string]string{
+		"ip": "10.0.0.5", "mask": "24", "mtu": "-5",
+	}))
+	if !emit {
+		t.Fatal("emit=false; MTU problems must not kill the event")
+	}
+	if got.Data.MTU != 0 {
+		t.Errorf("MTU = %d, want 0 (negative input ignored)", got.Data.MTU)
+	}
+}

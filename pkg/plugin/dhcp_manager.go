@@ -552,6 +552,9 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 					}
 					log.WithFields(m.logFields(v6)).Warn("udhcpc failed to get a lease")
 				case "nak":
+					if m.plugin != nil {
+						m.plugin.naksReceived.Add(1)
+					}
 					log.WithFields(m.logFields(v6)).Warn("udhcpc client received NAK")
 				}
 
