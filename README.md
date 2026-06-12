@@ -1,5 +1,10 @@
 # docker-net-dhcp
 
+[![Test](https://github.com/claymore666/docker-net-dhcp/actions/workflows/test.yaml/badge.svg)](https://github.com/claymore666/docker-net-dhcp/actions/workflows/test.yaml)
+[![Integration](https://github.com/claymore666/docker-net-dhcp/actions/workflows/integration.yml/badge.svg)](https://github.com/claymore666/docker-net-dhcp/actions/workflows/integration.yml)
+[![Dependencies](https://img.shields.io/badge/dependencies-Dependabot%20%2B%20govulncheck-brightgreen?logo=dependabot)](https://github.com/claymore666/docker-net-dhcp/network/updates)
+[![Release](https://img.shields.io/github/v/release/claymore666/docker-net-dhcp?sort=semver)](https://github.com/claymore666/docker-net-dhcp/releases)
+
 > **This is a maintained fork** of [`devplayer0/docker-net-dhcp`][upstream].
 > The upstream repository has been quiet since 2021 and no longer builds on
 > current Docker. This fork modernises the toolchain (Go 1.25, docker SDK
