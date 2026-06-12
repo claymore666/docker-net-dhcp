@@ -97,7 +97,7 @@ verify-install — but **`:latest` is not moved** and no bare
 release tag is touched. Zero impact on anything a user pulls by
 default.
 
-Use it before every real release tag (step 7 below):
+Use it before every real release tag (step 8 below):
 
 ```sh
 git checkout main && git pull --ff-only      # the release commit
@@ -105,7 +105,11 @@ git tag v1.0.0-rc1 && git push origin v1.0.0-rc1
 ```
 
 Watch the run; every step including **verify-install** must be
-green. Then tag the real release. Naming: rc of the *upcoming*
+green. The rc window doubles as the final **documentation
+checkpoint** (procedure step 3): confirm README, `docs/`, and the
+RELEASE_NOTES section describe the version about to ship — if
+stale text surfaces now, fix it before the real tag. Then tag the
+real release. Naming: rc of the *upcoming*
 version (`v1.0.0-rc1` before `v1.0.0`) — semver orders it before
 the release and it labels the content truthfully. Bump the rc
 number for another attempt after a fix; never reuse an rc tag.
@@ -130,16 +134,27 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
    - `docs/parent-attached-modes.md` — the `STATE_DIR` override
      example.
    Verify with `grep -n vPREV README.md docs/parent-attached-modes.md`.
-3. **Add a `## vX.Y.Z` section** to `RELEASE_NOTES.md`, **above
+3. **Documentation review** — read everything user-visible
+   top-to-bottom against what this release actually contains, not
+   just the version pins from step 2: `README.md` (feature list,
+   driver-opt table, examples), every file under `docs/`
+   (including this runbook — process changes during the cycle land
+   here too), and the coverage table if republished. Anything
+   describing the previous version's behaviour, options, or
+   numbers gets updated on the release branch now. When the
+   project gains a GitHub wiki, it joins this review. The rc
+   dry-run (step 8) is the *last checkpoint* for catching stale
+   docs — by the real tag, text and code must agree.
+4. **Add a `## vX.Y.Z` section** to `RELEASE_NOTES.md`, **above
    the previous version's section**. Summarise what's changing in
    user-visible terms; the workflow doesn't auto-build this from
    commit messages. Include any **operator-visible compatibility
    notes** (e.g. v0.8.0 narrowed the `IsDHCPPlugin` regex — that
    needed a callout).
-4. **PR `release/vX.Y.Z` → `dev`.** Required checks: `test`,
+5. **PR `release/vX.Y.Z` → `dev`.** Required checks: `test`,
    `staticcheck`, `integration` (every PR builds and exercises its
    own plugin on the integration runner). Merge when green.
-5. **Open the release PR `dev` → `main`** with title
+6. **Open the release PR `dev` → `main`** with title
    `Release vX.Y.Z` and a `Closes #N` line for **every issue** in
    the milestone. The list is what auto-closes them when the PR
    merges; without it the milestone stays open after the tag.
@@ -149,9 +164,9 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
    per-package coverage than the previous one. If a package beat its
    floor during the cycle, raise the baseline as part of the release
    branch.
-6. **Merge the release PR.** Squash or merge commit — both fine;
+7. **Merge the release PR.** Squash or merge commit — both fine;
    match what's in `git log`.
-7. **Pull main, dry-run, then tag:** first push `vX.Y.Z-rc1` and
+8. **Pull main, dry-run, then tag:** first push `vX.Y.Z-rc1` and
    confirm the workflow run is green end-to-end (pre-release mode,
    `:latest` untouched — see "Pre-release dry-run" above). Then:
    ```sh
@@ -168,7 +183,7 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
    plugin from GHCR on a clean hosted runner and asserts it
    enables — a red verify-install means users can't install what
    we just shipped).
-8. **Cut the GitHub Release** — points the Releases page at the
+9. **Cut the GitHub Release** — points the Releases page at the
    right artefact. Either:
    ```sh
    awk '/^## vX\.Y\.Z$/{flag=1; next} /^## v/{flag=0} flag' \
@@ -183,7 +198,7 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
    Don't skip this — Hub and the GitHub Releases page diverge
    without it, and downstream consumers checking the Releases tag
    for "is this the real release?" will get confused.
-9. **Fast-forward `dev` to `main`** so the release commit (version
+10. **Fast-forward `dev` to `main`** so the release commit (version
    pins, RELEASE_NOTES section) lands on `dev` too:
    ```sh
    git checkout dev && git merge --ff-only main && git push origin dev
