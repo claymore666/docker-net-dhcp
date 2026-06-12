@@ -81,13 +81,38 @@ context isn't allowed in step-level `if`).
 First line of defence: the `actionlint` job in the Test workflow
 lints every workflow file on every PR (and
 `scripts/test-actionlint.sh` asserts the linter still catches this
-exact bug class). Second line: every release.yml change should be
-tested with
-`gh workflow run release.yml -f tag=vEXISTING.TAG --ref main`
-**before** tagging a real release. That dispatches the workflow
-against an already-published tag and exercises the full path
-without needing a new tag — if the dispatch returns
-`HTTP 422: failed to parse workflow`, the file's broken.
+exact bug class). Second line: the **rc-tag dry-run** (next
+section) exercises the whole publishing chain before every real
+tag. Avoid dispatching `release.yml` with a bare existing release
+tag — that *rebuilds and re-points* the tag and `:latest`
+(different toolchain ⇒ different digest), mutating artifacts users
+may have pinned.
+
+### Pre-release dry-run (rc tags)
+
+A tag with a pre-release suffix (`v1.0.0-rc1`) runs the release
+workflow in **pre-release mode**: the full chain executes — build,
+push of `:v1.0.0-rc1` to both registries, Hub description sync,
+verify-install — but **`:latest` is not moved** and no bare
+release tag is touched. Zero impact on anything a user pulls by
+default.
+
+Use it before every real release tag (step 7 below):
+
+```sh
+git checkout main && git pull --ff-only      # the release commit
+git tag v1.0.0-rc1 && git push origin v1.0.0-rc1
+```
+
+Watch the run; every step including **verify-install** must be
+green. Then tag the real release. Naming: rc of the *upcoming*
+version (`v1.0.0-rc1` before `v1.0.0`) — semver orders it before
+the release and it labels the content truthfully. Bump the rc
+number for another attempt after a fix; never reuse an rc tag.
+
+Cleanup (optional): rc plugin tags can be deleted from GHCR/Hub
+after the real release ships; the git tag stays as the audit
+trail.
 
 ## Per-release procedure
 
@@ -126,7 +151,9 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
    branch.
 6. **Merge the release PR.** Squash or merge commit — both fine;
    match what's in `git log`.
-7. **Pull main and tag:**
+7. **Pull main, dry-run, then tag:** first push `vX.Y.Z-rc1` and
+   confirm the workflow run is green end-to-end (pre-release mode,
+   `:latest` untouched — see "Pre-release dry-run" above). Then:
    ```sh
    git checkout main && git pull --ff-only
    git tag -a vX.Y.Z -m "vX.Y.Z — <one-liner>"

@@ -8,7 +8,12 @@ name: Release
 #
 # Trigger shapes:
 #   - `git tag v0.8.0 && git push --tags` → automatic
-#   - GitHub UI → "Run workflow" → enter tag → manual dry-run
+#   - `git tag v1.0.0-rc1 && git push --tags` → automatic, pre-release
+#     mode: full chain runs but `:latest` is NOT moved — the zero-impact
+#     end-to-end dry-run to do before every real release tag
+#   - GitHub UI → "Run workflow" → enter tag → manual re-run of an
+#     existing tag (NOTE: a bare vX.Y.Z here rebuilds and re-points
+#     that tag AND `:latest` — prefer the rc-tag dry-run)
 #
 # Required secrets (Settings → Secrets and variables → Actions):
 #   - DOCKERHUB_USERNAME — Docker Hub login (e.g. `claymore666`)
@@ -74,7 +79,19 @@ jobs:
             exit 1
           fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "Releasing tag: $TAG"
+          # Pre-release guard: a suffixed tag (vX.Y.Z-rc1 etc.) runs the
+          # full publishing chain — build, dual-registry push of the rc
+          # tag, description sync, verify-install — but must NOT move
+          # `:latest` or overwrite any bare release tag. This makes rc
+          # tags a zero-impact end-to-end dry-run of this workflow
+          # before the real vX.Y.Z tag (see docs/release-runbook.md).
+          if [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+            echo "Releasing tag: $TAG"
+          else
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+            echo "Pre-release tag: $TAG — :latest will not be moved"
+          fi
 
       - uses: actions/checkout@v4
         with:
@@ -118,19 +135,26 @@ jobs:
       # images do — every tag is a separate push of the same rootfs.
       # The Make `create` target rebuilds only the plugin handle, not
       # the underlying rootfs image, so the second push is fast.
+      # `:latest` is guarded: pre-release tags never move it (and would
+      # otherwise also let a dispatch of an OLD tag silently regress
+      # what `:latest` points at — only bare vX.Y.Z tags may move it).
       - name: Push to GHCR
-        run: |
-          make PLUGIN_NAME="${GHCR_NAME}" PLUGIN_TAG="${{ steps.tag.outputs.tag }}" push
-          make PLUGIN_NAME="${GHCR_NAME}" PLUGIN_TAG="latest" push
+        run: make PLUGIN_NAME="${GHCR_NAME}" PLUGIN_TAG="${{ steps.tag.outputs.tag }}" push
+
+      - name: Push :latest to GHCR
+        if: steps.tag.outputs.prerelease != 'true'
+        run: make PLUGIN_NAME="${GHCR_NAME}" PLUGIN_TAG="latest" push
 
       # Same plugin to Docker Hub when credentials are present. Make
       # rebuilds the rootfs with the Hub-prefixed name; the underlying
       # Docker image layer cache is reused so this is cheap.
       - name: Push to Docker Hub
         if: env.HAS_HUB_CREDS == 'true'
-        run: |
-          make PLUGIN_NAME="${HUB_NAME}" PLUGIN_TAG="${{ steps.tag.outputs.tag }}" push
-          make PLUGIN_NAME="${HUB_NAME}" PLUGIN_TAG="latest" push
+        run: make PLUGIN_NAME="${HUB_NAME}" PLUGIN_TAG="${{ steps.tag.outputs.tag }}" push
+
+      - name: Push :latest to Docker Hub
+        if: env.HAS_HUB_CREDS == 'true' && steps.tag.outputs.prerelease != 'true'
+        run: make PLUGIN_NAME="${HUB_NAME}" PLUGIN_TAG="latest" push
 
       # Refresh the Docker Hub long description from the repo's README
       # so the Hub page never drifts from what's on GitHub. Short
@@ -162,7 +186,11 @@ jobs:
           {
             echo "## Released ${{ steps.tag.outputs.tag }}"
             echo
-            echo "Each registry receives both \`:${{ steps.tag.outputs.tag }}\` (pin) and \`:latest\` (tip)."
+            if [ "${{ steps.tag.outputs.prerelease }}" = "true" ]; then
+              echo "**Pre-release dry-run** — \`:latest\` was not moved."
+            else
+              echo "Each registry receives both \`:${{ steps.tag.outputs.tag }}\` (pin) and \`:latest\` (tip)."
+            fi
             echo
             echo "### Install from GHCR"
             echo '```'
