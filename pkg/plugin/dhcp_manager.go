@@ -286,6 +286,42 @@ func (m *dhcpManager) renew(v6 bool, info udhcpc.Info) error {
 			WithField("old_ip", lastIP).
 			WithField("new_ip", ip).
 			Warn("udhcpc renew with changed IP — Docker's view is now stale")
+
+		// Apply the re-acquired lease to the link (v4). Found by
+		// TestFailure_LeaseRefusedOnRenewal (#128): without this the
+		// kernel keeps the ORIGINAL address forever — the container
+		// answers on an address the server may already have handed to
+		// someone else, and after a server-side renumbering the
+		// default-route replacement below failed with "network is
+		// unreachable" (no address in the new subnet), aborting the
+		// bind and black-holing the endpoint. Address first, routes
+		// after — same ordering the kernel itself requires.
+		//
+		// v6 is deliberately left alone for now: the persistent
+		// udhcpc6 negotiates a second IA (different IAID than
+		// CreateEndpoint's one-shot), so "changed IP" is the v6
+		// steady-state, and re-addressing would flip every ipv6=true
+		// container to the persistent IA seconds after start. That
+		// unification is its own design change, tracked with #103's
+		// follow-up.
+		//
+		// netHandle/ctrLink are always live on the production path
+		// (renew runs from the event loop, post-Start); the guard
+		// keeps pre-Start unit tests of the counter semantics valid.
+		if !v6 && m.netHandle != nil && m.ctrLink != nil {
+			if err := m.netHandle.AddrReplace(m.ctrLink, ip); err != nil {
+				return fmt.Errorf("failed to apply re-acquired address %v: %w", ip, err)
+			}
+			if err := m.netHandle.AddrDel(m.ctrLink, lastIP); err != nil {
+				// Non-fatal: a lingering stale address is strictly
+				// better than failing the bind on cleanup.
+				log.
+					WithError(err).
+					WithFields(m.logFields(v6)).
+					WithField("stale_ip", lastIP).
+					Warn("Failed to remove stale address after lease change")
+			}
+		}
 	}
 
 	// Surface DHCP options the plugin captures but doesn't auto-apply
