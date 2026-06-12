@@ -48,7 +48,7 @@ docker run --rm --privileged \
 docker run --rm --privileged ghcr.io/claymore666/dhcp-ci-runner:latest selftest
 ```
 
-Verifies: nested daemon comes up with overlay2, seed images load, and
+Verifies: nested daemon comes up with a real overlay storage driver (overlay2 or containerd overlayfs — not the vfs fallback), seed images load, and
 a SIGTERM'd dockerd is relaunched by the supervisor — the property the
 daemon-restart integration test depends on (`harness.RestartDockerDaemon`,
 #145). Run it after any change to this directory and on any new host.
