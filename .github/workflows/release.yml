@@ -39,14 +39,19 @@ on:
         description: "Tag to release (e.g. v0.8.0). Must already exist on the remote."
         required: true
 
+# Top-level token is read-only; write scopes are granted per-job below
+# (Scorecard Token-Permissions: a workflow-wide write scope leaks into
+# every job, including ones that only need to pull).
 permissions:
   contents: read
-  packages: write   # GHCR push needs this on GITHUB_TOKEN
 
 jobs:
   release:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write   # GHCR push needs this on GITHUB_TOKEN
 
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
@@ -218,6 +223,9 @@ jobs:
     needs: release
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: read   # pulls the just-published plugin from GHCR
     env:
       GHCR_NAME: ghcr.io/claymore666/docker-net-dhcp
     steps:

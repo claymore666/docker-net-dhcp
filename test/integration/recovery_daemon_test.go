@@ -4,7 +4,6 @@ package integration
 
 import (
 	"context"
-	"os/exec"
 	"testing"
 	"time"
 
@@ -16,8 +15,9 @@ import (
 
 // TestRecovery_DaemonRestart_PreservesContainer is the integration
 // counterpart to Phase D step 9 of the manual smoke test: bounce the
-// whole docker daemon (systemctl restart docker) while a plugin-managed
-// container is attached, and verify that
+// whole docker daemon (harness.RestartDockerDaemon — systemctl on
+// systemd hosts, supervised-dockerd signal on containerized runners)
+// while a plugin-managed container is attached, and verify that
 //
 //   - the daemon comes back up (no hang on plugin re-enable — the
 //     historical upstream failure mode this fork modernized away from)
@@ -34,7 +34,7 @@ import (
 // Both paths yield the same user-visible invariant — same IP and
 // MAC — so we test on that, not on which internal codepath fired.
 //
-// **Do not parallelize.** systemctl restart docker drops every docker
+// **Do not parallelize.** Restarting the daemon drops every docker
 // connection on the host, including those of any other test running
 // concurrently. Per the rule documented in test/integration/README.md
 // the suite is serial; this test relies on that.
@@ -65,6 +65,14 @@ func TestRecovery_DaemonRestart_PreservesContainer(t *testing.T) {
 		t.Fatalf("docker client: %v", err)
 	}
 	t.Cleanup(func() { _ = cli.Close() })
+
+	// Baseline before the container exists: leases_obtained is
+	// cumulative across the (serial) suite, so the wait below is
+	// relative to this snapshot.
+	healthBefore, err := harness.PluginHealth(ctx, cli)
+	if err != nil {
+		t.Fatalf("Plugin.Health before container start: %v", err)
+	}
 
 	// We can't use harness.RunContainer because it doesn't take a
 	// RestartPolicy. Inlining keeps the harness API stable.
@@ -111,11 +119,19 @@ func TestRecovery_DaemonRestart_PreservesContainer(t *testing.T) {
 	ipBefore, macBefore := waitForEndpoint(t, ctx, cli, id, harness.IPAcquisitionBudget)
 	t.Logf("before restart: ip=%s mac=%s", ipBefore, macBefore)
 
-	t.Log("systemctl restart docker — runner host's docker daemon is going down briefly")
-	out, err := exec.CommandContext(ctx, "systemctl", "restart", "docker").CombinedOutput()
-	if err != nil {
-		t.Fatalf("systemctl restart docker: %v\n%s", err, out)
-	}
+	// The IP above appears as soon as CreateEndpoint's one-shot DHCP
+	// completes — *before* Join has started the persistent client. If
+	// the daemon goes down inside that window, no client exists to
+	// RELEASE the lease on shutdown; the DHCP server then keeps the
+	// old lease (keyed on the old endpoint's client-id) and hands the
+	// post-restart endpoint a *different* IP, failing the IP-stability
+	// assertion below for reasons that have nothing to do with restart
+	// recovery. Fast hosts never see this window; slower runner-class
+	// hardware does. Wait for the persistent client's first "bound"
+	// event (leases_obtained) before pulling the daemon down.
+	waitLeaseObtained(t, ctx, cli, healthBefore.LeasesObtained, 30*time.Second)
+
+	harness.RestartDockerDaemon(t, ctx)
 
 	// The pre-restart cli's TCP connection is dead. Build a new one.
 	_ = cli.Close()
@@ -178,6 +194,28 @@ func TestRecovery_DaemonRestart_PreservesContainer(t *testing.T) {
 	if macAfter != macBefore {
 		t.Errorf("MAC changed across daemon restart: before=%s after=%s", macBefore, macAfter)
 	}
+}
+
+// waitLeaseObtained polls Plugin.Health until leases_obtained moves
+// past the pre-container baseline, i.e. the endpoint's persistent
+// DHCP client has fired its first udhcpc "bound" event and lease
+// release-on-shutdown is armed.
+func waitLeaseObtained(t *testing.T, ctx context.Context, cli *docker.Client, baseline int32, budget time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(budget)
+	last := baseline
+	for time.Now().Before(deadline) {
+		h, err := harness.PluginHealth(ctx, cli)
+		if err == nil {
+			last = h.LeasesObtained
+			if last > baseline {
+				t.Logf("persistent DHCP client bound (leases_obtained %d -> %d)", baseline, last)
+				return
+			}
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	t.Fatalf("persistent DHCP client did not bind within %v (leases_obtained stuck at %d)", budget, last)
 }
 
 // waitForEndpoint mirrors RunContainer's polling loop but works on
