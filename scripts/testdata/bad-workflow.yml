@@ -1,0 +1,29 @@
+# Deliberately broken workflow — regression fixture for actionlint.
+#
+# This file lives OUTSIDE .github/workflows/ on purpose: GitHub must
+# never parse it, it exists only so scripts/test-actionlint.sh can
+# assert that actionlint still catches the patterns that have bitten
+# this repo. If actionlint ever stops flagging these, the CI job goes
+# red and we know our linter lost its teeth.
+name: bad fixture
+on:
+  push:
+    branches: [never-runs]
+jobs:
+  bad:
+    runs-on: ubuntu-latest
+    steps:
+      # The v0.8.0 trap: secrets context in a step-level `if:` is
+      # rejected by GitHub at parse time, which silently disables ALL
+      # triggers of the workflow — including tag pushes.
+      - name: secrets in step-level if
+        if: ${{ secrets.SOME_TOKEN != '' }}
+        run: echo never
+      # Reference to an undefined step output.
+      - name: undefined needs reference
+        run: echo "${{ needs.nonexistent.outputs.foo }}"
+      # Shellcheck must fire on run: blocks (unquoted var with glob).
+      - name: shellcheck target
+        run: |
+          FILES=$(ls *.txt)
+          for f in $FILES; do echo $f; done
