@@ -44,7 +44,7 @@ jobs:
       COVER_PLUGIN_REF: ghcr.io/claymore666/docker-net-dhcp:golang-cover
       COVER_DIR: /var/lib/dh-cover
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # Coverage uses `-coverpkg=./...` for the unit-test step, which
       # forces go test to recompile stdlib's internal/coverage runtime
@@ -55,7 +55,7 @@ jobs:
       # "go1.25.0"' error. setup-go gives us a known-clean toolchain
       # at the cost of ~30s — fine for a 12-minute workflow that
       # runs only on manual dispatch.
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: '1.25'
 

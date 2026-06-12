@@ -41,7 +41,7 @@ jobs:
     env:
       INTEGRATION_PLUGIN_REF: ghcr.io/claymore666/docker-net-dhcp:integration
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # The Go toolchain is pre-installed on the runner via
       # test/integration/install-go-runner.sh (one-time operator
