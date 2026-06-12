@@ -66,6 +66,14 @@ func TestRecovery_DaemonRestart_PreservesContainer(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = cli.Close() })
 
+	// Baseline before the container exists: leases_obtained is
+	// cumulative across the (serial) suite, so the wait below is
+	// relative to this snapshot.
+	healthBefore, err := harness.PluginHealth(ctx, cli)
+	if err != nil {
+		t.Fatalf("Plugin.Health before container start: %v", err)
+	}
+
 	// We can't use harness.RunContainer because it doesn't take a
 	// RestartPolicy. Inlining keeps the harness API stable.
 	create, err := cli.ContainerCreate(ctx,
@@ -110,6 +118,18 @@ func TestRecovery_DaemonRestart_PreservesContainer(t *testing.T) {
 
 	ipBefore, macBefore := waitForEndpoint(t, ctx, cli, id, harness.IPAcquisitionBudget)
 	t.Logf("before restart: ip=%s mac=%s", ipBefore, macBefore)
+
+	// The IP above appears as soon as CreateEndpoint's one-shot DHCP
+	// completes — *before* Join has started the persistent client. If
+	// the daemon goes down inside that window, no client exists to
+	// RELEASE the lease on shutdown; the DHCP server then keeps the
+	// old lease (keyed on the old endpoint's client-id) and hands the
+	// post-restart endpoint a *different* IP, failing the IP-stability
+	// assertion below for reasons that have nothing to do with restart
+	// recovery. Fast hosts never see this window; slower runner-class
+	// hardware does. Wait for the persistent client's first "bound"
+	// event (leases_obtained) before pulling the daemon down.
+	waitLeaseObtained(t, ctx, cli, healthBefore.LeasesObtained, 30*time.Second)
 
 	harness.RestartDockerDaemon(t, ctx)
 
@@ -174,6 +194,28 @@ func TestRecovery_DaemonRestart_PreservesContainer(t *testing.T) {
 	if macAfter != macBefore {
 		t.Errorf("MAC changed across daemon restart: before=%s after=%s", macBefore, macAfter)
 	}
+}
+
+// waitLeaseObtained polls Plugin.Health until leases_obtained moves
+// past the pre-container baseline, i.e. the endpoint's persistent
+// DHCP client has fired its first udhcpc "bound" event and lease
+// release-on-shutdown is armed.
+func waitLeaseObtained(t *testing.T, ctx context.Context, cli *docker.Client, baseline int32, budget time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(budget)
+	last := baseline
+	for time.Now().Before(deadline) {
+		h, err := harness.PluginHealth(ctx, cli)
+		if err == nil {
+			last = h.LeasesObtained
+			if last > baseline {
+				t.Logf("persistent DHCP client bound (leases_obtained %d -> %d)", baseline, last)
+				return
+			}
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	t.Fatalf("persistent DHCP client did not bind within %v (leases_obtained stuck at %d)", budget, last)
 }
 
 // waitForEndpoint mirrors RunContainer's polling loop but works on
