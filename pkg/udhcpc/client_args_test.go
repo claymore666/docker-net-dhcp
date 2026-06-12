@@ -1,6 +1,7 @@
 package udhcpc
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -264,4 +265,47 @@ func TestNewDHCPClient_ForegroundAndInterface(t *testing.T) {
 		}
 	}
 	t.Errorf("no -i flag found; args: %v", c.cmd.Args)
+}
+
+// TestNewDHCPClient_OptionRequestsPerFamily pins the family-specific
+// -O vocabularies (#103). The two busybox clients accept DIFFERENT
+// option names and an unknown name is a hard startup error, not a
+// warning — the v4 list fed to udhcpc6 ("unknown option 'mtu'",
+// exit 1) silently broke every ipv6=true exchange from v0.9.0 until
+// the first v6 integration test caught it. udhcpc6's vocabulary:
+// dns search fqdn tz timezone bootfile_url bootfile_param
+// pxeconffile pxepathprefix.
+func TestNewDHCPClient_OptionRequestsPerFamily(t *testing.T) {
+	requested := func(args []string) []string {
+		var got []string
+		for i := 0; i < len(args)-1; i++ {
+			if args[i] == "-O" {
+				got = append(got, args[i+1])
+			}
+		}
+		return got
+	}
+
+	c4, err := NewDHCPClient("eth0", &DHCPClientOptions{})
+	if err != nil {
+		t.Fatalf("NewDHCPClient v4: %v", err)
+	}
+	want4 := []string{"mtu", "search", "tftp", "bootfile"}
+	if got := requested(c4.cmd.Args); !reflect.DeepEqual(got, want4) {
+		t.Errorf("v4 -O requests = %v, want %v", got, want4)
+	}
+
+	c6, err := NewDHCPClient("eth0", &DHCPClientOptions{V6: true})
+	if err != nil {
+		t.Fatalf("NewDHCPClient v6: %v", err)
+	}
+	want6 := []string{"search"}
+	if got := requested(c6.cmd.Args); !reflect.DeepEqual(got, want6) {
+		t.Errorf("v6 -O requests = %v, want %v", got, want6)
+	}
+	for _, banned := range []string{"mtu", "tftp", "bootfile"} {
+		if hasArg(c6.cmd.Args, banned) {
+			t.Errorf("udhcpc6 got -O %s, which it rejects at startup; args: %v", banned, c6.cmd.Args)
+		}
+	}
 }
