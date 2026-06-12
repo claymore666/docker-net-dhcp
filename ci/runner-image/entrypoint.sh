@@ -50,8 +50,13 @@ done
 
 # --- selftest ----------------------------------------------------------
 if [[ "${1:-}" == "selftest" ]]; then
+    # Accept either real overlay driver: classic overlay2 or the
+    # containerd snapshotter (reported as "overlayfs", docker-ce 29's
+    # default on fresh installs). The check exists to catch the vfs
+    # fallback that hits when /var/lib/docker sits on overlayfs.
     driver=$(docker info --format '{{.Driver}}')
-    [[ "$driver" == "overlay2" ]] || { log "FAIL: storage driver is $driver, want overlay2"; exit 1; }
+    [[ "$driver" == "overlay2" || "$driver" == "overlayfs" ]] \
+        || { log "FAIL: storage driver is $driver, want overlay2/overlayfs (vfs = missing volume)"; exit 1; }
     docker image inspect golang:1.25-alpine >/dev/null || { log "FAIL: golang seed missing"; exit 1; }
     docker image inspect alpine:3.20 >/dev/null || { log "FAIL: alpine seed missing"; exit 1; }
 
