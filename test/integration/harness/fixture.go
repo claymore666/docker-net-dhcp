@@ -48,6 +48,25 @@ const (
 	// SubnetCIDR is what callers expect IP assertions to fall inside.
 	SubnetCIDR = "192.168.99.0/24"
 
+	// DHCPServerAddrV6 / DHCPv6PoolStart / DHCPv6PoolEnd dual-stack
+	// the macvlan fixture (#103): the same dnsmasq serves stateful
+	// DHCPv6 from a ULA prefix alongside the v4 pool. The prefix
+	// spells "dhc"/"dhcp" in hex-ish (6470:6863) and is RFC 4193
+	// private, so a leak onto a real LAN is both unroutable and
+	// recognisable. Lease time shares LeaseTime, so DHCPv6 T1 (which
+	// dnsmasq derives as lease/2) lands at 1m like v4.
+	DHCPServerAddrV6 = "fd00:6470:6863::1/64"
+	DHCPv6PoolStart  = "fd00:6470:6863::10"
+	DHCPv6PoolEnd    = "fd00:6470:6863::99"
+	SubnetV6CIDR     = "fd00:6470:6863::/64"
+
+	// TestDNS6Server is advertised as DHCPv6 option 23 (DNS servers).
+	// busybox udhcpc6 requests option 23 by default, so it lands in
+	// the handler's `dns6` env without any -O flag. Like
+	// TestDNSServer, nothing actually serves DNS there — tests assert
+	// propagation, not resolution.
+	TestDNS6Server = "fd00:6470:6863::53"
+
 	// TestDNSServer / TestMTU are the values the macvlan-fixture
 	// dnsmasq advertises via DHCP options 6 and 26 respectively.
 	// Tests that exercise PropagateDNS / PropagateMTU assert these
@@ -159,6 +178,15 @@ func New() (*Fixture, error) {
 	if err := netlink.AddrAdd(dhcpLink, addr); err != nil {
 		return nil, wrapTeardown(fmt.Errorf("AddrAdd dhcp: %w", err))
 	}
+	// The ULA must be on the interface before dnsmasq starts, or it
+	// refuses the v6 dhcp-range with "no address range available".
+	addrV6, err := netlink.ParseAddr(DHCPServerAddrV6)
+	if err != nil {
+		return nil, wrapTeardown(fmt.Errorf("ParseAddr v6: %w", err))
+	}
+	if err := netlink.AddrAdd(dhcpLink, addrV6); err != nil {
+		return nil, wrapTeardown(fmt.Errorf("AddrAdd dhcp v6: %w", err))
+	}
 
 	// Per-run temp dir for dnsmasq lease file + log.
 	tmp, err := os.MkdirTemp("", "dh-itest-")
@@ -207,6 +235,13 @@ func (f *Fixture) startDnsmasq() error {
 		"--bind-interfaces",     // don't open sockets on others
 		"--except-interface=lo", // belt + braces
 		"--dhcp-range="+DHCPPoolStart+","+DHCPPoolEnd+","+LeaseTime,
+		// Stateful DHCPv6 on the ULA prefix (#103). --enable-ra makes
+		// dnsmasq emit Router Advertisements with the M (managed) flag
+		// for this range — RA handling stays kernel-delegated in the
+		// container netns; the plugin only drives udhcpc6.
+		"--dhcp-range="+DHCPv6PoolStart+","+DHCPv6PoolEnd+","+LeaseTime,
+		"--enable-ra",
+		"--dhcp-option=option6:dns-server,["+TestDNS6Server+"]",
 		"--dhcp-leasefile="+f.leaseFile,
 		"--dhcp-no-override",
 		// DHCP options every test gets to opt-into via PropagateDNS /
@@ -345,3 +380,26 @@ func IsInPool(ip net.IP) bool {
 
 func bytesGE(a, b net.IP) bool { return bytes.Compare(a, b) >= 0 }
 func bytesLE(a, b net.IP) bool { return bytes.Compare(a, b) <= 0 }
+
+// IsInPoolV6 returns whether ip is in the macvlan fixture's DHCPv6
+// range [DHCPv6PoolStart, DHCPv6PoolEnd]. Mirrors IsInPool's
+// stricter-than-subnet semantics: the ::1 server address is in subnet
+// but not in pool.
+func IsInPoolV6(ip net.IP) bool {
+	return inV6Range(ip, DHCPv6PoolStart, DHCPv6PoolEnd)
+}
+
+// IsInBridgePoolV6 is IsInPoolV6 for the bridge fixture's v6 range.
+func IsInBridgePoolV6(ip net.IP) bool {
+	return inV6Range(ip, BridgeDHCPv6PoolStart, BridgeDHCPv6PoolEnd)
+}
+
+func inV6Range(ip net.IP, start, end string) bool {
+	v6 := ip.To16()
+	if v6 == nil || ip.To4() != nil {
+		return false
+	}
+	s := net.ParseIP(start).To16()
+	e := net.ParseIP(end).To16()
+	return bytesGE(v6, s) && bytesLE(v6, e)
+}
