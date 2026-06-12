@@ -25,8 +25,15 @@ const (
 	ephemeralDhcpVeth = "dh-itest-edhcp"
 
 	EphemeralServerAddr = "192.168.101.1/24"
-	EphemeralPoolStart  = "192.168.101.10"
-	EphemeralPoolEnd    = "192.168.101.99"
+	// EphemeralAltServerAddr / pools: a wholly different subnet for
+	// RestartOnSubnet — the "site got renumbered" shape. A renewal
+	// REQUEST carrying the old subnet's address against this server
+	// is a wrong-network refusal; the client must re-acquire here.
+	EphemeralAltServerAddr = "192.168.102.1/24"
+	EphemeralAltPoolStart  = "192.168.102.10"
+	EphemeralAltPoolEnd    = "192.168.102.99"
+	EphemeralPoolStart     = "192.168.101.10"
+	EphemeralPoolEnd       = "192.168.101.99"
 	// EphemeralShiftedPoolStart/End are a disjoint range for
 	// Restart() in the NAK test: an address leased from the original
 	// pool is out-of-range for an authoritative server configured
@@ -54,6 +61,7 @@ type EphemeralFixture struct {
 	logFile   string
 
 	poolStart, poolEnd string
+	serverCIDR         string
 }
 
 // NewEphemeralFixture creates the veth pair and starts the
@@ -75,9 +83,10 @@ func NewEphemeralFixture(t *testing.T) *EphemeralFixture {
 	}
 
 	ef := &EphemeralFixture{
-		t:         t,
-		poolStart: EphemeralPoolStart,
-		poolEnd:   EphemeralPoolEnd,
+		t:          t,
+		poolStart:  EphemeralPoolStart,
+		poolEnd:    EphemeralPoolEnd,
+		serverCIDR: EphemeralServerAddr,
 	}
 	t.Cleanup(ef.teardown)
 
@@ -95,7 +104,7 @@ func NewEphemeralFixture(t *testing.T) *EphemeralFixture {
 	if err := netlink.LinkSetUp(dhcpLink); err != nil {
 		t.Fatalf("LinkSetUp %s: %v", ephemeralDhcpVeth, err)
 	}
-	addr, err := netlink.ParseAddr(EphemeralServerAddr)
+	addr, err := netlink.ParseAddr(ef.serverCIDR)
 	if err != nil {
 		t.Fatalf("ParseAddr: %v", err)
 	}
@@ -221,6 +230,41 @@ func (ef *EphemeralFixture) Restart(poolStart, poolEnd string) {
 	ef.start()
 }
 
+// RestartOnSubnet brings the server back on a DIFFERENT subnet with
+// a wiped lease DB — the "site got renumbered" shape. The old server
+// address disappears from the veth, so unicast renewals die silently;
+// the client's broadcast REBIND carries an address foreign to the new
+// subnet (wrong-network refusal — dnsmasq may NAK or stay silent
+// depending on the shape) and re-acquisition lands in the new pool.
+func (ef *EphemeralFixture) RestartOnSubnet(serverCIDR, poolStart, poolEnd string) {
+	ef.t.Helper()
+	ef.Stop()
+	if err := os.Remove(ef.leaseFile); err != nil && !os.IsNotExist(err) {
+		ef.t.Fatalf("wipe ephemeral lease DB: %v", err)
+	}
+	link, err := netlink.LinkByName(ephemeralDhcpVeth)
+	if err != nil {
+		ef.t.Fatalf("LinkByName %s: %v", ephemeralDhcpVeth, err)
+	}
+	old, err := netlink.ParseAddr(ef.serverCIDR)
+	if err != nil {
+		ef.t.Fatalf("ParseAddr old server CIDR: %v", err)
+	}
+	if err := netlink.AddrDel(link, old); err != nil {
+		ef.t.Fatalf("AddrDel %s: %v", ef.serverCIDR, err)
+	}
+	fresh, err := netlink.ParseAddr(serverCIDR)
+	if err != nil {
+		ef.t.Fatalf("ParseAddr new server CIDR: %v", err)
+	}
+	if err := netlink.AddrAdd(link, fresh); err != nil {
+		ef.t.Fatalf("AddrAdd %s: %v", serverCIDR, err)
+	}
+	ef.serverCIDR = serverCIDR
+	ef.poolStart, ef.poolEnd = poolStart, poolEnd
+	ef.start()
+}
+
 // SeedStolenLease overwrites the (stopped) server's lease DB with a
 // single entry assigning ip to a foreign client. On StartAgain,
 // dnsmasq loads it and treats ip as taken — the rightful client's
@@ -242,7 +286,7 @@ func (ef *EphemeralFixture) SeedStolenLease(ip string) {
 // ServerIP returns the server's bare IP (the gateway dnsmasq
 // advertises by default — its own listen address).
 func (ef *EphemeralFixture) ServerIP() string {
-	return strings.SplitN(EphemeralServerAddr, "/", 2)[0]
+	return strings.SplitN(ef.serverCIDR, "/", 2)[0]
 }
 
 // CountLogLines counts log lines containing every one of the given

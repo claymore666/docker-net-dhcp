@@ -164,22 +164,26 @@ func TestFailure_ServerLossDuringRenewal(t *testing.T) {
 	}
 }
 
-// TestFailure_NAKOnRenewal: the server reassigns a live lease to
-// another client and NAKs the rightful renewal ("address in use" —
-// dnsmasq's lease DB is seeded with the container's address held by a
-// foreign MAC; an out-of-range pool shift does NOT produce a NAK,
-// dnsmasq silently ignores those, see Restart's caveat). Intended
-// behaviour asserted:
-//   - naks_received (new in v1.0.0, #128) records the NAK — before,
-//     it was only a log line;
-//   - udhcpc re-acquires a fresh address and the container's LIVE
-//     address moves; lease_changed records the move;
+// TestFailure_LeaseRefusedOnRenewal: the site gets renumbered under a
+// live lease — the server comes back on a different subnet and the
+// container's held address is foreign to it. Two CI iterations showed
+// dnsmasq REFUSES such renewals *silently* in several shapes (out-of-
+// range REQUEST: ignored; address-taken REQUEST: ignored) rather than
+// emitting DHCPNAK, so this test asserts the *intended degraded-mode
+// semantics* rather than a specific wire message:
+//   - the client re-acquires from the new subnet's pool without
+//     operator intervention; lease_changed records the move;
 //   - `docker inspect` keeps reporting the ORIGINAL address: libnetwork
 //     has no in-place endpoint-IP swap RPC, so the inspect divergence
 //     is the DEFINED degraded mode (#104) — lease_changed is the
-//     operator's signal, and this assertion is the documentation.
-func TestFailure_NAKOnRenewal(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+//     operator's signal, and this assertion is the documentation;
+//   - the plugin stays Healthy throughout.
+//
+// The naks_received counter's contract is pinned in unit tests
+// (TestHandleEvent_Counters) — when a server does NAK, that's the
+// path that counts it; any NAK observed here is logged for interest.
+func TestFailure_LeaseRefusedOnRenewal(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
 	defer cancel()
 
 	ef := harness.NewEphemeralFixture(t)
@@ -196,46 +200,40 @@ func TestFailure_NAKOnRenewal(t *testing.T) {
 	}
 	defer cli.Close()
 
-	harness.CreateNetwork(t, ctx, "dh-itest-fnak", "macvlan", map[string]string{
+	pre, err := harness.PluginHealth(ctx, cli)
+	if err != nil {
+		t.Fatalf("Plugin.Health (pre): %v", err)
+	}
+
+	harness.CreateNetwork(t, ctx, "dh-itest-fref", "macvlan", map[string]string{
 		"parent": harness.EphemeralHostVeth,
 	})
-	id, oldIP, mac := harness.RunContainer(t, ctx, "dh-itest-fnak", "dh-itest-fnak-ctr")
-	t.Logf("bound: ip=%s mac=%s", oldIP, mac)
+	id, inspectIP, mac := harness.RunContainer(t, ctx, "dh-itest-fref", "dh-itest-fref-ctr")
+	t.Logf("bound: inspect ip=%s mac=%s", inspectIP, mac)
 
+	// Settle: wait for the persistent client's own bound (it can
+	// differ from CreateEndpoint's one-shot lease) so the baseline
+	// isn't polluted by start-up churn.
+	if _, ok := failureHealth(t, ctx, cli, 30*time.Second, func(h *harness.HealthResponse) bool {
+		return h.LeasesObtained > pre.LeasesObtained
+	}); !ok {
+		t.Fatal("persistent client never bound")
+	}
 	base, err := harness.PluginHealth(ctx, cli)
 	if err != nil {
 		t.Fatalf("Plugin.Health (baseline): %v", err)
 	}
 
-	// Reassign the container's address to a foreign client in the
-	// lease DB and bring the server back: the T1 renewal REQUEST for
-	// an address-now-owned-by-someone-else draws the DHCPNAK (~60s).
-	ef.Stop()
-	ef.SeedStolenLease(oldIP)
-	ef.StartAgain()
-	t.Log("server restarted with the lease reassigned; awaiting NAK at T1 (~60s)...")
+	// Renumber the site: new server address, new pool, wiped DB. The
+	// unicast T1 renewal dies (the old server address is gone); the
+	// T2 broadcast rebind carries a foreign address; re-acquisition
+	// follows somewhere between T2 (105s) and expiry+rediscover
+	// (~135s).
+	ef.RestartOnSubnet(harness.EphemeralAltServerAddr, harness.EphemeralAltPoolStart, harness.EphemeralAltPoolEnd)
+	t.Log("server renumbered; awaiting re-acquisition (T2 ~105s, expiry ~135s)...")
 
-	h, ok := failureHealth(t, ctx, cli, 150*time.Second, func(h *harness.HealthResponse) bool {
-		return h.NAKsReceived > base.NAKsReceived
-	})
-	if !ok {
-		t.Fatalf("naks_received never rose above %d (last: %+v); dnsmasq log NAKs for MAC: %d",
-			base.NAKsReceived, h, ef.CountLogLines("DHCPNAK", mac))
-	}
-
-	// After the NAK, udhcpc re-DISCOVERs immediately; the fresh bound
-	// lands within seconds.
-	h, ok = failureHealth(t, ctx, cli, 60*time.Second, func(h *harness.HealthResponse) bool {
-		return h.LeaseChanged > base.LeaseChanged
-	})
-	if !ok {
-		t.Fatalf("lease_changed never recorded the post-NAK re-bind (last: %+v)", h)
-	}
-
-	// The live address must move to a fresh pool address (the old one
-	// is "taken")...
 	var liveIP string
-	deadline := time.Now().Add(30 * time.Second)
+	deadline := time.Now().Add(4 * time.Minute)
 	for time.Now().Before(deadline) {
 		out := harness.ExecOutput(t, ctx, id, "ip", "-4", "addr")
 		for _, f := range strings.Fields(out) {
@@ -243,37 +241,49 @@ func TestFailure_NAKOnRenewal(t *testing.T) {
 				continue
 			}
 			bare := strings.SplitN(f, "/", 2)[0]
-			if bare != oldIP && inRange(bare, harness.EphemeralPoolStart, harness.EphemeralPoolEnd) {
+			if inRange(bare, harness.EphemeralAltPoolStart, harness.EphemeralAltPoolEnd) {
 				liveIP = bare
 			}
 		}
 		if liveIP != "" {
 			break
 		}
-		time.Sleep(time.Second)
+		time.Sleep(2 * time.Second)
 	}
 	if liveIP == "" {
-		t.Fatalf("container never showed a fresh pool address (old %s reassigned); ip -4 addr:\n%s",
-			oldIP, harness.ExecOutput(t, ctx, id, "ip", "-4", "addr"))
+		t.Fatalf("container never re-acquired from the new subnet's pool %s-%s; ip -4 addr:\n%s",
+			harness.EphemeralAltPoolStart, harness.EphemeralAltPoolEnd,
+			harness.ExecOutput(t, ctx, id, "ip", "-4", "addr"))
+	}
+	t.Logf("re-acquired: live ip=%s", liveIP)
+
+	h, ok := failureHealth(t, ctx, cli, 30*time.Second, func(h *harness.HealthResponse) bool {
+		return h.LeaseChanged > base.LeaseChanged
+	})
+	if !ok {
+		t.Errorf("lease_changed never recorded the re-acquisition (last: %+v)", h)
+	}
+	if h != nil && !h.Healthy {
+		t.Error("plugin went unhealthy over a lease re-acquisition; this is a defined, healthy flow")
+	}
+	if h != nil && h.NAKsReceived > base.NAKsReceived {
+		t.Logf("server NAKed on the wire (naks_received %d -> %d)", base.NAKsReceived, h.NAKsReceived)
 	}
 
-	// ...while docker inspect still shows the original address: the
-	// DEFINED divergence (#104). If this ever starts failing because
-	// inspect tracks the new IP, a re-Join mechanism landed — update
-	// the reference manual's troubleshooting row along with this test.
+	// docker inspect still shows the original address: the DEFINED
+	// divergence (#104). If this ever fails because inspect tracks
+	// the new IP, a re-Join mechanism landed — update the reference
+	// manual's troubleshooting row along with this test.
 	ins, err := cli.ContainerInspect(ctx, id)
 	if err != nil {
 		t.Fatalf("ContainerInspect: %v", err)
 	}
-	var inspectIP string
+	var nowInspect string
 	for _, ep := range ins.NetworkSettings.Networks {
-		inspectIP = ep.IPAddress
+		nowInspect = ep.IPAddress
 	}
-	if inspectIP != oldIP {
-		t.Errorf("docker inspect reports %s; expected the stale original %s (documented degraded mode, #104)", inspectIP, oldIP)
-	}
-	if h.Healthy != true {
-		t.Error("plugin went unhealthy over a NAK re-bind; NAK recovery is a defined, healthy flow")
+	if nowInspect != inspectIP {
+		t.Errorf("docker inspect reports %s; expected the stale original %s (documented degraded mode, #104)", nowInspect, inspectIP)
 	}
 }
 

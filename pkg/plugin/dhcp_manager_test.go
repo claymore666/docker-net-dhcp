@@ -86,3 +86,60 @@ func TestRenew_LeaseChangedCounter(t *testing.T) {
 		}
 	})
 }
+
+// TestHandleEvent_Counters pins which health counter each udhcpc
+// lifecycle event bumps (#128). The "nak" arm matters most: dnsmasq
+// silently ignores refused renewals in several shapes instead of
+// emitting DHCPNAK, so this contract cannot be pinned reliably at the
+// integration level — when a real server does NAK (busybox udhcpc
+// emits the event verbatim), this is the path that counts it.
+func TestHandleEvent_Counters(t *testing.T) {
+	addr, err := netlink.ParseAddr("192.168.0.10/24")
+	if err != nil {
+		t.Fatalf("ParseAddr: %v", err)
+	}
+
+	cases := []struct {
+		event string
+		read  func(p *Plugin) int32
+	}{
+		{"bound", func(p *Plugin) int32 { return p.leasesObtained.Load() }},
+		{"renew", func(p *Plugin) int32 { return p.leasesRenewed.Load() }},
+		{"leasefail", func(p *Plugin) int32 { return p.dhcpTimeouts.Load() }},
+		{"nak", func(p *Plugin) int32 { return p.naksReceived.Load() }},
+	}
+	for _, c := range cases {
+		t.Run(c.event, func(t *testing.T) {
+			p := &Plugin{}
+			m := &dhcpManager{plugin: p}
+			m.setLastIP(false, addr)
+
+			m.handleEvent(udhcpc.Event{Type: c.event, Data: udhcpc.Info{IP: addr.String()}}, false)
+
+			if got := c.read(p); got != 1 {
+				t.Errorf("%s counter = %d, want 1", c.event, got)
+			}
+		})
+	}
+
+	t.Run("deconfig and unknown bump nothing", func(t *testing.T) {
+		p := &Plugin{}
+		m := &dhcpManager{plugin: p}
+		for _, evt := range []string{"deconfig", "something-new"} {
+			m.handleEvent(udhcpc.Event{Type: evt}, false)
+		}
+		total := p.leasesObtained.Load() + p.leasesRenewed.Load() +
+			p.dhcpTimeouts.Load() + p.naksReceived.Load()
+		if total != 0 {
+			t.Errorf("counters moved on non-counting events: %d", total)
+		}
+	})
+
+	t.Run("nil plugin is safe for every event", func(t *testing.T) {
+		m := &dhcpManager{plugin: nil}
+		m.setLastIP(false, addr)
+		for _, evt := range []string{"bound", "renew", "leasefail", "nak", "deconfig"} {
+			m.handleEvent(udhcpc.Event{Type: evt, Data: udhcpc.Info{IP: addr.String()}}, false)
+		}
+	})
+}
