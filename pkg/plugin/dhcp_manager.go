@@ -102,6 +102,11 @@ type dhcpManager struct {
 	errChan   chan error
 	errChanV6 chan error
 
+	// ctrID caches the container ID behind this endpoint for ledger
+	// entries; resolved at most once via ctrIDOnce (see containerID).
+	ctrIDOnce sync.Once
+	ctrID     string
+
 	// startedCh is closed when Start has finished (success or failure);
 	// startErr captures the result. This lets Stop be called against a
 	// manager whose Start is still in flight (e.g. when Leave races
@@ -155,6 +160,78 @@ func (m *dhcpManager) setLastIP(v6 bool, addr *netlink.Addr) {
 	} else {
 		m.lastIP = addr
 	}
+}
+
+// audit appends a lease-lifecycle event to the plugin's ledger when
+// this network opted in via audit_log=true. Best-effort by design:
+// ledger problems are counted and logged inside Append and must never
+// affect lease handling. ip is the bare address ("192.168.0.10"),
+// derived by the caller from whatever form it has at hand.
+func (m *dhcpManager) audit(kind, ip string) {
+	if m.plugin == nil || m.plugin.ledger == nil || !m.opts.AuditLog {
+		return
+	}
+	m.plugin.ledger.Append(ledgerEntry{
+		Kind:      kind,
+		Network:   m.joinReq.NetworkID,
+		Endpoint:  m.joinReq.EndpointID,
+		Container: m.containerID(),
+		Hostname:  m.hostname,
+		IP:        ip,
+		MAC:       m.macString(),
+	})
+}
+
+// containerID resolves (once, then caches) the ID of the container
+// behind this manager's endpoint, for ledger entries. Resolution
+// failure degrades to an empty field rather than blocking the event
+// path — sync.Once keeps concurrent v4/v6 event goroutines from
+// racing the lookup.
+func (m *dhcpManager) containerID() string {
+	m.ctrIDOnce.Do(func() {
+		if m.docker == nil {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		dockerNet, err := m.docker.NetworkInspect(ctx, m.joinReq.NetworkID, dNetwork.InspectOptions{})
+		if err != nil {
+			log.WithError(err).WithFields(m.logFields(false)).Debug("ledger container lookup failed")
+			return
+		}
+		for ctrID, info := range dockerNet.Containers {
+			if info.EndpointID == m.joinReq.EndpointID {
+				m.ctrID = ctrID
+				return
+			}
+		}
+	})
+	return m.ctrID
+}
+
+// macString returns the endpoint's MAC for ledger entries: the
+// container-side link's address when Start has located it (set before
+// the event goroutines exist, so reads here are race-free), falling
+// back to the macvlan-mode MacAddress hint.
+func (m *dhcpManager) macString() string {
+	if m.ctrLink != nil {
+		if hw := m.ctrLink.Attrs().HardwareAddr; len(hw) > 0 {
+			return hw.String()
+		}
+	}
+	if len(m.MacAddress) > 0 {
+		return m.MacAddress.String()
+	}
+	return ""
+}
+
+// bareIP strips the prefix length off a CIDR-form address for ledger
+// entries, passing through anything that doesn't parse as CIDR.
+func bareIP(cidr string) string {
+	if ip, _, err := net.ParseCIDR(cidr); err == nil {
+		return ip.String()
+	}
+	return cidr
 }
 
 // findContainerPID resolves the host PID of the container that owns
@@ -444,6 +521,7 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 					if m.plugin != nil {
 						m.plugin.leasesObtained.Add(1)
 					}
+					m.audit("bound", bareIP(event.Data.IP))
 					if err := m.renew(v6, event.Data); err != nil {
 						log.
 							WithError(err).
@@ -459,6 +537,7 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 					if m.plugin != nil {
 						m.plugin.leasesRenewed.Add(1)
 					}
+					m.audit("renew", bareIP(event.Data.IP))
 					if err := m.renew(v6, event.Data); err != nil {
 						log.
 							WithError(err).
@@ -648,25 +727,41 @@ func (m *dhcpManager) Stop() error {
 
 	close(m.stopChan)
 
+	lastIP, lastIPv6 := m.lastIPs()
 	if err := <-m.errChan; err != nil {
 		// SIGTERM -> DHCPRELEASE -> exit didn't complete cleanly. The
 		// upstream server may now be holding a phantom lease against
 		// this MAC until its own expiry. Bump so operators can alert
 		// on a pattern of releases failing — typically points at
-		// upstream reachability problems mid-teardown.
+		// upstream reachability problems mid-teardown. The ledger
+		// records release_failed rather than release so the audit
+		// trail never claims a release the server may not have seen.
 		if m.plugin != nil {
 			m.plugin.leaseReleaseFailures.Add(1)
 		}
+		m.audit("release_failed", auditIP(lastIP))
 		return fmt.Errorf("failed shut down DHCP client: %w", err)
 	}
+	m.audit("release", auditIP(lastIP))
 	if m.opts.IPv6 {
 		if err := <-m.errChanV6; err != nil {
 			if m.plugin != nil {
 				m.plugin.leaseReleaseFailures.Add(1)
 			}
+			m.audit("release_failed", auditIP(lastIPv6))
 			return fmt.Errorf("failed shut down DHCPv6 client: %w", err)
 		}
+		m.audit("release", auditIP(lastIPv6))
 	}
 
 	return nil
+}
+
+// auditIP renders a netlink address for a ledger entry, tolerating
+// the nil case (endpoint never completed a bind).
+func auditIP(addr *netlink.Addr) string {
+	if addr == nil || addr.IP == nil {
+		return ""
+	}
+	return addr.IP.String()
 }
