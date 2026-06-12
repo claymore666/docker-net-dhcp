@@ -141,6 +141,15 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
    Don't skip this — Hub and the GitHub Releases page diverge
    without it, and downstream consumers checking the Releases tag
    for "is this the real release?" will get confused.
+9. **Fast-forward `dev` to `main`** so the release commit (version
+   pins, RELEASE_NOTES section) lands on `dev` too:
+   ```sh
+   git checkout dev && git merge --ff-only main && git push origin dev
+   ```
+   Skipping this leaves the next feature branch starting from the
+   previous version's README/docs, and the next release PR has to
+   re-bump them. Forgotten once after v0.9.0 — that's why
+   `release.yml`'s header comment carries the same checklist.
 
 ## Verifying
 
