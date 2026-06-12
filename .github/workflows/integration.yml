@@ -37,7 +37,10 @@ permissions:
 jobs:
   integration:
     runs-on: [self-hosted, gpu1]
-    timeout-minutes: 25
+    # 35 = main suite (~10 min here, 558s measured on runner-class
+    # hardware, #146) + failure-injection suite (~10 min of mostly
+    # deliberate DHCP-timing waits, #128) + plugin build + margin.
+    timeout-minutes: 35
     env:
       INTEGRATION_PLUGIN_REF: ghcr.io/claymore666/docker-net-dhcp:integration
     steps:
@@ -84,6 +87,13 @@ jobs:
 
       - name: Run integration tests
         run: make integration-test
+
+      # Failure-injection suite (#128): server loss, NAK on renewal,
+      # lease expiry — each against a per-test ephemeral DHCP server.
+      # Separate step so a red here is immediately distinguishable
+      # from a main-suite regression.
+      - name: Run failure-injection tests
+        run: make integration-test-failure
 
       # Tear down so a follow-up workflow on the same runner doesn't
       # find a stale `:integration` plugin pinned to the previous

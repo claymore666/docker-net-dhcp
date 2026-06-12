@@ -316,6 +316,17 @@ type Plugin struct {
 	dhcpTimeouts         atomic.Int32
 	leaseReleaseFailures atomic.Int32
 
+	// naksReceived counts udhcpc "nak" events — the server refused a
+	// REQUEST (pool reconfigured, address reassigned, lease revoked).
+	// Until v1.0.0 a NAK was only a warn-level log line, invisible to
+	// operators (#128). A NAK is followed by udhcpc re-DISCOVERing, so
+	// pair this with lease_changed: naks_received climbing while
+	// lease_changed follows means containers are being re-addressed
+	// mid-life — Docker's inspect view goes stale (see leaseChanged
+	// above / #104) and DNS or firewall rules keyed on the old IP need
+	// attention.
+	naksReceived atomic.Int32
+
 	// ledger is the append-only lease audit log (#109), written by
 	// dhcpManager.audit for networks created with audit_log=true.
 	// ledgerWriteFailures counts failed appends, surfaced on

@@ -286,6 +286,42 @@ func (m *dhcpManager) renew(v6 bool, info udhcpc.Info) error {
 			WithField("old_ip", lastIP).
 			WithField("new_ip", ip).
 			Warn("udhcpc renew with changed IP — Docker's view is now stale")
+
+		// Apply the re-acquired lease to the link (v4). Found by
+		// TestFailure_LeaseRefusedOnRenewal (#128): without this the
+		// kernel keeps the ORIGINAL address forever — the container
+		// answers on an address the server may already have handed to
+		// someone else, and after a server-side renumbering the
+		// default-route replacement below failed with "network is
+		// unreachable" (no address in the new subnet), aborting the
+		// bind and black-holing the endpoint. Address first, routes
+		// after — same ordering the kernel itself requires.
+		//
+		// v6 is deliberately left alone for now: the persistent
+		// udhcpc6 negotiates a second IA (different IAID than
+		// CreateEndpoint's one-shot), so "changed IP" is the v6
+		// steady-state, and re-addressing would flip every ipv6=true
+		// container to the persistent IA seconds after start. That
+		// unification is its own design change, tracked with #103's
+		// follow-up.
+		//
+		// netHandle/ctrLink are always live on the production path
+		// (renew runs from the event loop, post-Start); the guard
+		// keeps pre-Start unit tests of the counter semantics valid.
+		if !v6 && m.netHandle != nil && m.ctrLink != nil {
+			if err := m.netHandle.AddrReplace(m.ctrLink, ip); err != nil {
+				return fmt.Errorf("failed to apply re-acquired address %v: %w", ip, err)
+			}
+			if err := m.netHandle.AddrDel(m.ctrLink, lastIP); err != nil {
+				// Non-fatal: a lingering stale address is strictly
+				// better than failing the bind on cleanup.
+				log.
+					WithError(err).
+					WithFields(m.logFields(v6)).
+					WithField("stale_ip", lastIP).
+					Warn("Failed to remove stale address after lease change")
+			}
+		}
 	}
 
 	// Surface DHCP options the plugin captures but doesn't auto-apply
@@ -415,6 +451,71 @@ func (m *dhcpManager) renew(v6 bool, info udhcpc.Info) error {
 	return nil
 }
 
+// handleEvent dispatches one udhcpc lifecycle event from the
+// persistent client: health counters, audit-ledger entries, and the
+// kernel-facing renew work. Extracted from the consumer goroutine so
+// the counter semantics are unit-testable — wire-level NAKs in
+// particular can't be provoked deterministically (dnsmasq silently
+// ignores refused renewals in several shapes instead of NAKing), so
+// the naks_received contract is pinned here rather than in an
+// integration test (#128).
+func (m *dhcpManager) handleEvent(event udhcpc.Event, v6 bool) {
+	switch event.Type {
+	// "deconfig" is intentionally not handled. Deleting the
+	// container's IP from the kernel would also wipe the
+	// static routes Join copied off the host bridge, and
+	// there's no clean way to re-derive them without
+	// re-running the bridge route copy. Better to keep
+	// the stale address until the next bound/renew
+	// overwrites it.
+	case "bound":
+		// The persistent client's first DHCPACK can land
+		// on a different IP than CreateEndpoint's initial
+		// DISCOVER (some servers, including Fritz.Box,
+		// hand out a fresh address per DISCOVER even for
+		// the same MAC). Reuse the renew path so LastIP
+		// reflects what's actually in the kernel.
+		if m.plugin != nil {
+			m.plugin.leasesObtained.Add(1)
+		}
+		m.audit("bound", bareIP(event.Data.IP))
+		if err := m.renew(v6, event.Data); err != nil {
+			log.
+				WithError(err).
+				WithFields(m.logFields(v6)).
+				WithField("ip", event.Data.IP).
+				Error("Failed to record initial bind")
+		}
+	case "renew":
+		log.
+			WithFields(m.logFields(v6)).
+			Debug("udhcpc renew")
+
+		if m.plugin != nil {
+			m.plugin.leasesRenewed.Add(1)
+		}
+		m.audit("renew", bareIP(event.Data.IP))
+		if err := m.renew(v6, event.Data); err != nil {
+			log.
+				WithError(err).
+				WithFields(m.logFields(v6)).
+				WithField("gateway", event.Data.Gateway).
+				WithField("new_ip", event.Data.IP).
+				Error("Failed to execute IP renewal")
+		}
+	case "leasefail":
+		if m.plugin != nil {
+			m.plugin.dhcpTimeouts.Add(1)
+		}
+		log.WithFields(m.logFields(v6)).Warn("udhcpc failed to get a lease")
+	case "nak":
+		if m.plugin != nil {
+			m.plugin.naksReceived.Add(1)
+		}
+		log.WithFields(m.logFields(v6)).Warn("udhcpc client received NAK")
+	}
+}
+
 func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 	v6Str := ""
 	if v6 {
@@ -503,57 +604,7 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 					errChan <- nil
 					return
 				}
-				switch event.Type {
-				// "deconfig" is intentionally not handled. Deleting the
-				// container's IP from the kernel would also wipe the
-				// static routes Join copied off the host bridge, and
-				// there's no clean way to re-derive them without
-				// re-running the bridge route copy. Better to keep
-				// the stale address until the next bound/renew
-				// overwrites it.
-				case "bound":
-					// The persistent client's first DHCPACK can land
-					// on a different IP than CreateEndpoint's initial
-					// DISCOVER (some servers, including Fritz.Box,
-					// hand out a fresh address per DISCOVER even for
-					// the same MAC). Reuse the renew path so LastIP
-					// reflects what's actually in the kernel.
-					if m.plugin != nil {
-						m.plugin.leasesObtained.Add(1)
-					}
-					m.audit("bound", bareIP(event.Data.IP))
-					if err := m.renew(v6, event.Data); err != nil {
-						log.
-							WithError(err).
-							WithFields(m.logFields(v6)).
-							WithField("ip", event.Data.IP).
-							Error("Failed to record initial bind")
-					}
-				case "renew":
-					log.
-						WithFields(m.logFields(v6)).
-						Debug("udhcpc renew")
-
-					if m.plugin != nil {
-						m.plugin.leasesRenewed.Add(1)
-					}
-					m.audit("renew", bareIP(event.Data.IP))
-					if err := m.renew(v6, event.Data); err != nil {
-						log.
-							WithError(err).
-							WithFields(m.logFields(v6)).
-							WithField("gateway", event.Data.Gateway).
-							WithField("new_ip", event.Data.IP).
-							Error("Failed to execute IP renewal")
-					}
-				case "leasefail":
-					if m.plugin != nil {
-						m.plugin.dhcpTimeouts.Add(1)
-					}
-					log.WithFields(m.logFields(v6)).Warn("udhcpc failed to get a lease")
-				case "nak":
-					log.WithFields(m.logFields(v6)).Warn("udhcpc client received NAK")
-				}
+				m.handleEvent(event, v6)
 
 			case <-m.stopChan:
 				log.
