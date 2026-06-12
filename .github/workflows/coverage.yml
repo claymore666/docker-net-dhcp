@@ -39,7 +39,7 @@ permissions:
 jobs:
   coverage:
     runs-on: [self-hosted, gpu1]
-    timeout-minutes: 20
+    timeout-minutes: 25
     env:
       COVER_PLUGIN_REF: ghcr.io/claymore666/docker-net-dhcp:golang-cover
       COVER_DIR: /var/lib/dh-cover
