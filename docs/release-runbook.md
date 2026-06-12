@@ -133,7 +133,11 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
      install instructions.
    - `docs/parent-attached-modes.md` — the `STATE_DIR` override
      example.
-   Verify with `grep -n vPREV README.md docs/parent-attached-modes.md`.
+   - `docs/reference.md` — install/upgrade snippets, the Health
+     `curl` example, and the Compose `driver:` example all pin the
+     version.
+   Verify with
+   `grep -n vPREV README.md docs/parent-attached-modes.md docs/reference.md`.
 3. **Documentation review** — read everything user-visible
    top-to-bottom against what this release actually contains, not
    just the version pins from step 2: `README.md` (feature list,
