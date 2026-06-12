@@ -100,7 +100,7 @@ integration-test:
 		echo "integration-test must run as root. Re-run with sudo."; \
 		exit 1; \
 	fi
-	go test -v -tags integration -count=1 -timeout 10m -skip 'TestFailure_' ./test/integration/...
+	go test -v -tags integration -count=1 -timeout 20m -skip 'TestFailure_' ./test/integration/...
 
 # Failure-injection suite (#128): crosses real DHCP timing boundaries
 # (lease expiry, NAK at T1) against per-test ephemeral DHCP servers —

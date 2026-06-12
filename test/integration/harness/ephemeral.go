@@ -154,12 +154,16 @@ func (ef *EphemeralFixture) start() {
 		ef.t.Fatalf("start ephemeral dnsmasq: %v", err)
 	}
 
-	// Ready when the new instance has logged its IP range.
+	// Ready when the new instance has logged its DHCP range. Match on
+	// the pool's start address, not the surrounding words — dnsmasq
+	// localizes its log strings ("IP range" is "IP-Bereich" under a
+	// German locale, which is what the integration runner speaks),
+	// but addresses are addresses in every language.
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		data, err := os.ReadFile(ef.logFile)
 		if err == nil && len(data) > startMark &&
-			strings.Contains(string(data[startMark:]), "IP range") {
+			strings.Contains(string(data[startMark:]), ef.poolStart) {
 			return
 		}
 		time.Sleep(50 * time.Millisecond)
