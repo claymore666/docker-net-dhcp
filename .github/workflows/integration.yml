@@ -37,7 +37,7 @@ permissions:
 jobs:
   integration:
     runs-on: [self-hosted, gpu1]
-    timeout-minutes: 20
+    timeout-minutes: 25
     env:
       INTEGRATION_PLUGIN_REF: ghcr.io/claymore666/docker-net-dhcp:integration
     steps:
