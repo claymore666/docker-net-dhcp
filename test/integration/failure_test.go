@@ -164,13 +164,16 @@ func TestFailure_ServerLossDuringRenewal(t *testing.T) {
 	}
 }
 
-// TestFailure_NAKOnRenewal: the pool gets reconfigured under a live
-// lease and the authoritative server NAKs the renewal. Intended
+// TestFailure_NAKOnRenewal: the server reassigns a live lease to
+// another client and NAKs the rightful renewal ("address in use" —
+// dnsmasq's lease DB is seeded with the container's address held by a
+// foreign MAC; an out-of-range pool shift does NOT produce a NAK,
+// dnsmasq silently ignores those, see Restart's caveat). Intended
 // behaviour asserted:
 //   - naks_received (new in v1.0.0, #128) records the NAK — before,
 //     it was only a log line;
-//   - udhcpc re-acquires from the new pool and the container's LIVE
-//     address moves there; lease_changed records the move;
+//   - udhcpc re-acquires a fresh address and the container's LIVE
+//     address moves; lease_changed records the move;
 //   - `docker inspect` keeps reporting the ORIGINAL address: libnetwork
 //     has no in-place endpoint-IP swap RPC, so the inspect divergence
 //     is the DEFINED degraded mode (#104) — lease_changed is the
@@ -204,10 +207,13 @@ func TestFailure_NAKOnRenewal(t *testing.T) {
 		t.Fatalf("Plugin.Health (baseline): %v", err)
 	}
 
-	// Shift the pool out from under the lease and wipe the lease DB.
-	// The authoritative restart NAKs the T1 renewal REQUEST (~60s).
-	ef.Restart(harness.EphemeralShiftedPoolStart, harness.EphemeralShiftedPoolEnd)
-	t.Log("server restarted with shifted pool; awaiting NAK at T1 (~60s)...")
+	// Reassign the container's address to a foreign client in the
+	// lease DB and bring the server back: the T1 renewal REQUEST for
+	// an address-now-owned-by-someone-else draws the DHCPNAK (~60s).
+	ef.Stop()
+	ef.SeedStolenLease(oldIP)
+	ef.StartAgain()
+	t.Log("server restarted with the lease reassigned; awaiting NAK at T1 (~60s)...")
 
 	h, ok := failureHealth(t, ctx, cli, 150*time.Second, func(h *harness.HealthResponse) bool {
 		return h.NAKsReceived > base.NAKsReceived
@@ -226,7 +232,8 @@ func TestFailure_NAKOnRenewal(t *testing.T) {
 		t.Fatalf("lease_changed never recorded the post-NAK re-bind (last: %+v)", h)
 	}
 
-	// The live address must now be in the shifted pool...
+	// The live address must move to a fresh pool address (the old one
+	// is "taken")...
 	var liveIP string
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
@@ -236,7 +243,7 @@ func TestFailure_NAKOnRenewal(t *testing.T) {
 				continue
 			}
 			bare := strings.SplitN(f, "/", 2)[0]
-			if inRange(bare, harness.EphemeralShiftedPoolStart, harness.EphemeralShiftedPoolEnd) {
+			if bare != oldIP && inRange(bare, harness.EphemeralPoolStart, harness.EphemeralPoolEnd) {
 				liveIP = bare
 			}
 		}
@@ -246,9 +253,8 @@ func TestFailure_NAKOnRenewal(t *testing.T) {
 		time.Sleep(time.Second)
 	}
 	if liveIP == "" {
-		t.Fatalf("container never showed a live address from the shifted pool %s-%s; ip -4 addr:\n%s",
-			harness.EphemeralShiftedPoolStart, harness.EphemeralShiftedPoolEnd,
-			harness.ExecOutput(t, ctx, id, "ip", "-4", "addr"))
+		t.Fatalf("container never showed a fresh pool address (old %s reassigned); ip -4 addr:\n%s",
+			oldIP, harness.ExecOutput(t, ctx, id, "ip", "-4", "addr"))
 	}
 
 	// ...while docker inspect still shows the original address: the

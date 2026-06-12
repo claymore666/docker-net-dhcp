@@ -205,8 +205,12 @@ func (ef *EphemeralFixture) StartAgain() {
 
 // Restart brings the server back with a different pool and a wiped
 // lease DB — the "subnet got renumbered / pool reconfigured" shape.
-// Being authoritative, the new instance NAKs renewal REQUESTs for
-// addresses from the old pool.
+//
+// NAK caveat (learned from the first CI run): dnsmasq 2.91 silently
+// IGNORES renewal REQUESTs for addresses outside its configured range
+// even with --dhcp-authoritative — the client recovers via expiry +
+// re-DISCOVER, but no DHCPNAK is ever emitted. To provoke an actual
+// NAK, use SeedStolenLease + StartAgain instead.
 func (ef *EphemeralFixture) Restart(poolStart, poolEnd string) {
 	ef.t.Helper()
 	ef.Stop()
@@ -215,6 +219,24 @@ func (ef *EphemeralFixture) Restart(poolStart, poolEnd string) {
 	}
 	ef.poolStart, ef.poolEnd = poolStart, poolEnd
 	ef.start()
+}
+
+// SeedStolenLease overwrites the (stopped) server's lease DB with a
+// single entry assigning ip to a foreign client. On StartAgain,
+// dnsmasq loads it and treats ip as taken — the rightful client's
+// renewal REQUEST then draws the classic "address in use" DHCPNAK,
+// the scenario where a server reassigns a live lease (#128).
+// Lease-file format per dnsmasq(8): "expiry MAC IP hostname client-id".
+func (ef *EphemeralFixture) SeedStolenLease(ip string) {
+	ef.t.Helper()
+	if ef.cmd != nil {
+		ef.t.Fatal("SeedStolenLease: stop the server first; dnsmasq reads the lease DB only at startup")
+	}
+	expiry := time.Now().Add(time.Hour).Unix()
+	line := fmt.Sprintf("%d aa:bb:cc:dd:ee:ff %s stolen-by *\n", expiry, ip)
+	if err := os.WriteFile(ef.leaseFile, []byte(line), 0o644); err != nil {
+		ef.t.Fatalf("seed stolen lease: %v", err)
+	}
 }
 
 // ServerIP returns the server's bare IP (the gateway dnsmasq
