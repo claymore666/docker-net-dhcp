@@ -27,7 +27,7 @@ The plugin publishes to two registries; GHCR is primary:
 for unattended):
 
 ```bash
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v0.9.0
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.0.0
 ```
 
 Privileges requested: `network: host`, host PID namespace, the Docker
@@ -37,7 +37,7 @@ DHCP on the host's L2 segments, querying the daemon).
 
 **Pin a version.** `:latest` exists and tracks the newest release, but
 networks remember the exact driver string they were created with — a
-network created against `:v0.9.0` needs that tag present to operate.
+network created against `:v1.0.0` needs that tag present to operate.
 Pinning makes upgrades a deliberate step instead of a pull-side
 surprise.
 
@@ -87,7 +87,7 @@ You bring an existing Linux bridge that is L2-connected to the LAN
 bridge setup itself):
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v0.9.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.0.0 \
     --ipam-driver null \
     -o bridge=my-bridge \
     my-dhcp-net
@@ -99,7 +99,7 @@ No host changes — containers get per-container kernel-generated MACs
 as macvlan children of a host NIC:
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v0.9.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.0.0 \
     --ipam-driver null \
     -o mode=macvlan -o parent=eth0 \
     lan-dhcp
@@ -113,7 +113,7 @@ security, hostile vSwitches, some Wi-Fi APs). The DHCP server must
 key reservations on DHCP option 61 (client identifier), not MAC:
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v0.9.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.0.0 \
     --ipam-driver null \
     -o mode=ipvlan -o parent=eth0 \
     lan-dhcp
@@ -137,7 +137,7 @@ Passed as `-o key=value` on `docker network create`, or under
 | `bridge` | bridge | *(required)* | upstream | Existing Linux bridge to plug container veths into. |
 | `parent` | macvlan, ipvlan | *(required)* | v0.2.0 | Host NIC to attach children to (e.g. `eth0`, `ens18`). Must exist and be administratively `UP`. |
 | `gateway` | all | from DHCP | v0.3.0 | Override the IPv4 default gateway returned by the DHCP server — for split-horizon LANs where containers should egress via a different router (e.g. a VPN gateway). |
-| `ipv6` | all | `false` | upstream | Also run DHCPv6 (udhcpc6) alongside DHCPv4. |
+| `ipv6` | all | `false` | upstream; functional again in v1.0.0 | Also run stateful DHCPv6 (udhcpc6) alongside DHCPv4 — see the [DHCPv6 section](parent-attached-modes.md#dhcpv6-ipv6true) for semantics, DUID identity, and the current renewal boundary (#152). |
 | `lease_timeout` | all | `10s` | upstream | Budget for the up-front DHCP exchange at container creation. Raise on slow/relayed networks (`-o lease_timeout=60s`). |
 | `ignore_conflicts` | bridge | `false` | upstream | Skip the bridge-already-in-use check against other Docker networks. No-op in macvlan/ipvlan. |
 | `skip_routes` | all | `false` | upstream; all modes since v0.9.0 | Don't copy non-default static routes from the parent (bridge or NIC) into containers. v0.9.0 extended route-copying from bridge-only to all modes (#102); set `true` to restore the old macvlan/ipvlan no-copy behaviour. |
@@ -192,7 +192,7 @@ Set with `docker plugin set <plugin> NAME=value`; take effect after
 JSON liveness + counters on the plugin's UNIX socket:
 
 ```bash
-PLUGIN_ID=$(docker plugin inspect -f '{{.Id}}' ghcr.io/claymore666/docker-net-dhcp:v0.9.0)
+PLUGIN_ID=$(docker plugin inspect -f '{{.Id}}' ghcr.io/claymore666/docker-net-dhcp:v1.0.0)
 curl -s --unix-socket /run/docker/plugins/$PLUGIN_ID/net-dhcp.sock \
     http://localhost/Plugin.Health | jq .
 ```
@@ -211,6 +211,7 @@ curl -s --unix-socket /run/docker/plugins/$PLUGIN_ID/net-dhcp.sock \
 | `leases_renewed` | no | udhcpc `renew` events. |
 | `dhcp_timeouts` | no | udhcpc `leasefail` events (no OFFER / no ACK within budget). |
 | `lease_release_failures` | no | Teardown DHCPRELEASE didn't complete cleanly — the server may hold a phantom lease until natural expiry. A pattern points at upstream reachability problems mid-teardown. |
+| `naks_received` | no | (v1.0.0+) The server NAKed a renewal/rebind. udhcpc recovers by re-acquiring, so each NAK is typically followed by `leases_obtained` — and, if the address moved, `lease_changed` — bumps. Climbing alongside `lease_changed` means containers are being re-addressed mid-life. |
 | `ledger_write_failures` | no | Failed `audit_log` ledger appends — degrades forensics, not networking. Operators using `audit_log` alert on this. |
 
 ### Plugin log
@@ -261,7 +262,7 @@ Compose-managed alternative (network lifecycle tied to the project):
 ```yaml
 networks:
   lan:
-    driver: ghcr.io/claymore666/docker-net-dhcp:v0.9.0
+    driver: ghcr.io/claymore666/docker-net-dhcp:v1.0.0
     driver_opts:
       mode: macvlan
       parent: eth0
