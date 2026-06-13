@@ -1,0 +1,35 @@
+name: Dependency review
+
+# Block PRs that introduce a new vulnerable or disallowed-license
+# dependency, at PR time — the gap Dependabot leaves (it alerts after a
+# dep is already merged). Scans the dependency diff of the PR only.
+#
+# Hosted-runner job (zero load on the integration runner). Runs on PRs
+# into the integration branches; nothing to do on direct pushes.
+on:
+  pull_request:
+    branches:
+      - main
+      - dev
+
+permissions:
+  contents: read
+
+jobs:
+  dependency-review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Dependency review
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          # Match the govulncheck gate's posture: fail on a newly
+          # introduced high-or-critical advisory.
+          fail-on-severity: high
+          # Flag copyleft/unknown licenses for review without hard-failing
+          # the build on a license the tool can't classify.
+          comment-summary-in-pr: on-failure
