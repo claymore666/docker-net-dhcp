@@ -1,0 +1,62 @@
+name: CodeQL
+
+# Static security analysis of the Go source (the primary language — the
+# untrusted DHCP-response parsers live here) plus the workflow files.
+#
+# Advanced setup, deliberately, not GitHub's "default setup": default
+# setup's Go autobuild runs `make`, whose default target builds the
+# plugin rootfs via `docker export` and leaves root-owned files
+# (e.g. plugin/rootfs/var/run/chrony) that break CodeQL's database
+# bundling with EACCES. `build-mode: none` analyses the Go source
+# directly — no build, no docker export, and it covers all source
+# files rather than only what a partial autobuild compiled. It also
+# keeps the action SHA-pinned and the config in version control, matching
+# the rest of the workflows (#170).
+on:
+  push:
+    branches:
+      - main
+      - dev
+  pull_request:
+    branches:
+      - main
+      - dev
+  schedule:
+    # Weekly, so advisories that publish between commits still surface.
+    - cron: '29 7 * * 3'
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      security-events: write   # upload SARIF to code scanning
+      actions: read
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: go
+            build-mode: none
+          - language: actions
+            build-mode: none
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@8aad20d150bbac5944a9f9d289da16a4b0d87c1e # v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@8aad20d150bbac5944a9f9d289da16a4b0d87c1e # v4
+        with:
+          category: "/language:${{ matrix.language }}"
