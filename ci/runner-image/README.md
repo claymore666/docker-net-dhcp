@@ -33,9 +33,21 @@ docker run --rm --privileged \
   (GitHub App credential with repo-scoped **Administration: write**).
   Suggested fields: `name` unique per instance, `labels` matching the
   workflows' `runs-on`, `runner_group_id: 1`.
+- **Forced-egress proxy (optional).** On hosts that route outbound
+  traffic through an HTTP proxy, pass `-e HTTP_PROXY -e HTTPS_PROXY -e
+  NO_PROXY` (or just `-e HTTPS_PROXY=…`). The runner agent, job tooling
+  (`go`/`git`/`curl`), and the nested daemon's registry pulls inherit
+  the env directly; the entrypoint additionally writes a docker CLI
+  `proxies` config so RUN steps inside `docker build` (the plugin
+  builder's `go mod download`) honor it too — that one isn't automatic.
+  The fixture subnets (`192.168.99.0/24`, `192.168.100.0/24`) and
+  loopback are force-added to `NO_PROXY`. No proxy env → nothing is
+  written and behavior is unchanged. The proxy URL is never baked into
+  the image (issue #181).
 - **No inbound network, no LAN dependencies.** The runner long-polls
   GitHub over outbound 443; the test DHCP traffic stays on virtual
-  interfaces inside the container. Outbound allowlist: `github.com`,
+  interfaces inside the container. Outbound allowlist (direct, or via
+  the proxy above): `github.com`,
   `api.github.com`, `*.actions.githubusercontent.com`,
   `objects.githubusercontent.com`, `ghcr.io`,
   `pkg-containers.githubusercontent.com`, `registry-1.docker.io`,
@@ -71,9 +83,10 @@ directory and on any new host.
 
 - The plugin build's `go mod download` inside its builder stage still
   fetches modules from the network per job (the baked cache helps the
-  runner-side test compile, not the docker-build stage). Acceptable at
-  current module sizes; a host-side GOPROXY cache is the upgrade path
-  if it ever isn't.
+  runner-side test compile, not the docker-build stage). It honors the
+  proxy when one is injected (see the orchestrator contract above).
+  Acceptable at current module sizes; a host-side GOPROXY cache is the
+  upgrade path if it ever isn't.
 - Image rebuilds don't track `go.mod` bumps automatically — the
   workflow triggers on `ci/runner-image/**` changes and manual
   dispatch. A stale cache costs seconds, not correctness.

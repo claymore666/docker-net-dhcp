@@ -58,6 +58,18 @@ jobs:
       - name: Selftest
         run: docker run --rm --privileged "${IMAGE}:latest" selftest
 
+      # Proxy wiring (#181): a bogus proxy is never contacted — selftest
+      # does no network pulls — so this hermetically proves setup_proxy
+      # writes the docker CLI `proxies` config (the only consumer that
+      # doesn't inherit the proxy automatically) and keeps the fixture
+      # subnets in NO_PROXY.
+      - name: Selftest (proxy mode)
+        run: |
+          docker run --rm --privileged \
+            -e HTTPS_PROXY=http://proxy.invalid:3128 \
+            -e NO_PROXY=example.com \
+            "${IMAGE}:latest" selftest
+
       - name: Push
         run: |
           docker push "${IMAGE}:latest"
