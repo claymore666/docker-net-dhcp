@@ -51,8 +51,9 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: read
-      packages: write   # GHCR push needs this on GITHUB_TOKEN
-      id-token: write   # keyless cosign signing of the release artifact (OIDC)
+      packages: write       # GHCR push + image-signature/attestation upload
+      id-token: write       # keyless cosign signing + provenance (OIDC)
+      attestations: write   # actions/attest-build-provenance attestations
 
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
@@ -203,6 +204,42 @@ jobs:
       - name: Install cosign
         uses: sigstore/cosign-installer@d58896d6a1865668819e1d91763c7751a165e159 # v3.9.2
 
+      # Sign the published plugin images by digest (#173). docker plugins
+      # are OCI artifacts, so cosign signs them like any image once we
+      # resolve the registry manifest digest — `docker buildx imagetools
+      # inspect` reads it despite the plugin media type. :latest and the
+      # version tag share one digest, so one signature per registry covers
+      # both. The GHCR digest is exported for the provenance step below.
+      - name: Sign published images (cosign keyless)
+        id: signimg
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          GHCR_DIGEST=$(docker buildx imagetools inspect "${GHCR_NAME}:${TAG}" --format '{{.Manifest.Digest}}')
+          echo "ghcr_digest=${GHCR_DIGEST}" >> "$GITHUB_OUTPUT"
+          cosign sign --yes "${GHCR_NAME}@${GHCR_DIGEST}"
+          echo "Signed ${GHCR_NAME}@${GHCR_DIGEST}"
+          if [ "${HAS_HUB_CREDS}" = "true" ]; then
+            HUB_DIGEST=$(docker buildx imagetools inspect "${HUB_NAME}:${TAG}" --format '{{.Manifest.Digest}}')
+            cosign sign --yes "${HUB_NAME}@${HUB_DIGEST}"
+            echo "Signed ${HUB_NAME}@${HUB_DIGEST}"
+          fi
+
+      # SBOM over the plugin rootfs make already built (#174). syft emits
+      # SPDX and CycloneDX in one pass; both are attached to the release
+      # and folded into the signed checksum manifest below.
+      - name: Install syft
+        uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+
+      - name: Generate SBOM (SPDX + CycloneDX)
+        run: |
+          set -euo pipefail
+          syft scan dir:plugin/rootfs \
+            -o "spdx-json=sbom.spdx.json" \
+            -o "cyclonedx-json=sbom.cdx.json"
+          ls -l sbom.spdx.json sbom.cdx.json
+
       - name: Package and sign release artifact
         env:
           TAG: ${{ steps.tag.outputs.tag }}
@@ -210,17 +247,39 @@ jobs:
           set -euo pipefail
           ART="net-dhcp-plugin-${TAG}-linux-amd64.tar.gz"
           tar -czf "$ART" -C plugin .
-          sha256sum "$ART" > checksums.txt
-          # Keyless (Fulcio/OIDC) signature over the checksum manifest —
-          # one signature covers every listed artifact. Emits a detached
-          # signature and the short-lived signing certificate; both are
-          # public by design and verified against the Actions OIDC issuer.
+          # Manifest covers the tarball AND the SBOMs, so the single
+          # keyless signature below attests all release assets at once.
+          sha256sum "$ART" sbom.spdx.json sbom.cdx.json > checksums.txt
+          # Keyless (Fulcio/OIDC) signature over the checksum manifest.
+          # Emits a detached signature and the short-lived signing
+          # certificate; both are public and verified against the Actions
+          # OIDC issuer.
           cosign sign-blob --yes \
             --output-signature checksums.txt.sig \
             --output-certificate checksums.txt.pem \
             "checksums.txt"
-          echo "Signed release artifact:"
+          echo "Signed release artifacts:"
           cat checksums.txt
+
+      # SLSA build provenance (#173): GitHub-native attestations that bind
+      # each artifact to this workflow + commit, verifiable with
+      # `gh attestation verify`. One call for the file artifacts (by path)
+      # and one for the published GHCR image (by digest, pushed to the
+      # registry alongside the image).
+      - name: Attest release-artifact provenance
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        with:
+          subject-path: |
+            net-dhcp-plugin-*.tar.gz
+            sbom.spdx.json
+            sbom.cdx.json
+
+      - name: Attest image provenance (GHCR)
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        with:
+          subject-name: ${{ env.GHCR_NAME }}
+          subject-digest: ${{ steps.signimg.outputs.ghcr_digest }}
+          push-to-registry: true
 
       - name: Upload signed artifacts for the release job
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -228,6 +287,8 @@ jobs:
           name: signed-release
           path: |
             net-dhcp-plugin-*.tar.gz
+            sbom.spdx.json
+            sbom.cdx.json
             checksums.txt
             checksums.txt.sig
             checksums.txt.pem
@@ -360,6 +421,18 @@ jobs:
             checksums.txt
           sha256sum -c checksums.txt
           ```
+
+          The published plugin image is signed (cosign keyless) and carries SLSA build provenance, and an SBOM is attached (`sbom.spdx.json`, `sbom.cdx.json`):
+
+          ```sh
+          # image signature
+          cosign verify ghcr.io/claymore666/docker-net-dhcp:VERSION \
+            --certificate-identity-regexp '^https://github.com/claymore666/docker-net-dhcp/.github/workflows/release.yml@' \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com
+          # build provenance (image + release artifacts)
+          gh attestation verify oci://ghcr.io/claymore666/docker-net-dhcp:VERSION --repo claymore666/docker-net-dhcp
+          gh attestation verify net-dhcp-plugin-VERSION-linux-amd64.tar.gz --repo claymore666/docker-net-dhcp
+          ```
           EOF
 
       - name: Create or update the GitHub Release with signed artifacts
@@ -370,7 +443,7 @@ jobs:
           else
             PRE="--prerelease=false"
           fi
-          FILES="net-dhcp-plugin-${TAG}-linux-amd64.tar.gz checksums.txt checksums.txt.sig checksums.txt.pem"
+          FILES="net-dhcp-plugin-${TAG}-linux-amd64.tar.gz sbom.spdx.json sbom.cdx.json checksums.txt checksums.txt.sig checksums.txt.pem"
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             # Re-dispatch of an existing tag: refresh assets + metadata.
             # shellcheck disable=SC2086

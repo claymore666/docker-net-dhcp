@@ -101,7 +101,7 @@ Use it before every real release tag (step 8 below):
 
 ```sh
 git checkout main && git pull --ff-only      # the release commit
-git tag v1.0.0-rc1 && git push origin v1.0.0-rc1
+git tag -s v1.0.0-rc1 -m "v1.0.0-rc1" && git push origin v1.0.0-rc1
 ```
 
 Watch the run; every step including **verify-install** must be
@@ -175,15 +175,21 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
    `:latest` untouched — see "Pre-release dry-run" above). Then:
    ```sh
    git checkout main && git pull --ff-only
-   git tag -a vX.Y.Z -m "vX.Y.Z — <one-liner>"
+   git tag -s vX.Y.Z -m "vX.Y.Z — <one-liner>"   # signed (#175)
    git push origin vX.Y.Z
    ```
+   Use `-s` (signed) so the release tag shows **Verified** on GitHub —
+   the dev box has `tag.gpgsign=true` so `-a` would also sign, but spell
+   it out so it holds from any checkout. Confirm with
+   `git tag -v vX.Y.Z` (or the green "Verified" on the tag page).
    The workflow fires on `tags: v*`. Watch it at
    <https://github.com/claymore666/docker-net-dhcp/actions/workflows/release.yml>.
    Expected steps: Resolve tag → checkout → setup-go →
    GHCR login → Hub login (or skip) → Push to GHCR → Push to
-   Hub (or skip) → Sync Hub description → **Install cosign +
-   Package and sign release artifact** → Workflow summary →
+   Hub (or skip) → Sync Hub description → Install cosign →
+   **Sign published images (cosign)** → **Generate SBOM (syft)** →
+   **Package and sign release artifact** → **Attest provenance
+   (artifacts + image)** → Workflow summary →
    **verify-install** (separate job: installs the just-published
    plugin from GHCR on a clean hosted runner and asserts it
    enables — a red verify-install means users can't install what
