@@ -3,13 +3,13 @@ module github.com/devplayer0/docker-net-dhcp
 go 1.25.9
 
 require (
-	github.com/docker/docker v28.4.0+incompatible
+	github.com/docker/docker v28.5.2+incompatible
 	github.com/gorilla/handlers v1.5.2
 	github.com/mitchellh/mapstructure v1.5.0
-	github.com/sirupsen/logrus v1.9.3
-	github.com/vishvananda/netlink v1.3.0
-	github.com/vishvananda/netns v0.0.4
-	golang.org/x/sys v0.42.0
+	github.com/sirupsen/logrus v1.9.4
+	github.com/vishvananda/netlink v1.3.1
+	github.com/vishvananda/netns v0.0.5
+	golang.org/x/sys v0.46.0
 )
 
 require (
