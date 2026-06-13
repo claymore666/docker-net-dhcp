@@ -24,3 +24,19 @@ updates:
       actions:
         patterns:
           - "*"
+
+  # Keep the SHA-pinned base-image digests fresh (#159). One entry per
+  # Dockerfile directory: the plugin build at the root and the CI
+  # runner image under ci/runner-image.
+  - package-ecosystem: docker
+    directories:
+      - /
+      - /ci/runner-image
+    target-branch: dev
+    schedule:
+      interval: weekly
+      day: sunday
+    groups:
+      docker:
+        patterns:
+          - "*"

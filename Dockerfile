@@ -1,4 +1,4 @@
-FROM golang:1.25-alpine AS builder
+FROM golang:1.25-alpine@sha256:8d95af53d0d58e1759ddb4028285d9b1239067e4fbf4f544618cad0f60fbc354 AS builder
 
 # COVER_FLAGS is empty for the production build and `-cover -coverpkg=./...`
 # for the instrumented build used by the coverage workflow. Keeping the

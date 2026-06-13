@@ -12,7 +12,7 @@
 # The plugin's digest-pinned base (alpine:3.20.3@sha256:...) is NOT
 # seeded: `docker load` can't satisfy digest references, and at 3.5 MB
 # the per-job pull is noise. The golang builder is the one that hurts.
-FROM debian:trixie-slim AS seeder
+FROM debian:trixie-slim@sha256:4e401d95de7083948053197a9c3913343cd06b706bf15eb6a0c3ccd26f436a0e AS seeder
 RUN apt-get update && apt-get install -y --no-install-recommends skopeo ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 RUN mkdir /seed \
@@ -22,7 +22,7 @@ RUN mkdir /seed \
          docker-archive:/seed/alpine-testimage.tar:alpine:3.20
 
 # ---- runner image
-FROM debian:trixie-slim
+FROM debian:trixie-slim@sha256:4e401d95de7083948053197a9c3913343cd06b706bf15eb6a0c3ccd26f436a0e
 
 ARG GO_VERSION=1.25.9
 # Resolved by the build workflow from actions/runner's latest release;

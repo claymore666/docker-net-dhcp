@@ -48,7 +48,7 @@ jobs:
     env:
       INTEGRATION_PLUGIN_REF: ghcr.io/claymore666/docker-net-dhcp:integration
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
       # The Go toolchain (go.mod's version) is baked into the dhcp-ci
       # runner image, so actions/setup-go is skipped. Fail loudly if
