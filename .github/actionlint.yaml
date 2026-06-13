@@ -2,13 +2,10 @@
 # self-hosted runners with custom labels; declare them so actionlint
 # doesn't flag `runs-on: [self-hosted, <label>]` as an unknown runner.
 #
-#   gpu1     — the original bare-metal runner. Kept declared through
-#              the dhcp-ci cutover's parallel-run/soak window so a
-#              revert stays lint-clean; drop it once gpu1 is retired.
 #   dhcp-ci  — the ephemeral container-in-container runners (image
 #              ghcr.io/claymore666/dhcp-ci-runner; names dhcp-ci-<n>,
-#              pooled 2-4 by the orchestrator). Current target.
+#              pooled 2-4 by the orchestrator). The sole runner target
+#              since the gpu1 bare-metal runner was retired (#157).
 self-hosted-runner:
   labels:
-    - gpu1
     - dhcp-ci
