@@ -851,9 +851,12 @@ func (m *dhcpManager) Stop() error {
 }
 
 // auditIP renders a netlink address for a ledger entry, tolerating
-// the nil case (endpoint never completed a bind).
+// the nil case (endpoint never completed a bind). netlink.Addr
+// embeds *net.IPNet, so the IPNet pointer must be checked before
+// reaching the promoted IP field — otherwise an Addr with a nil
+// embedded IPNet panics on the guard itself.
 func auditIP(addr *netlink.Addr) string {
-	if addr == nil || addr.IP == nil {
+	if addr == nil || addr.IPNet == nil || addr.IP == nil {
 		return ""
 	}
 	return addr.IP.String()
