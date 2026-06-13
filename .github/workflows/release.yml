@@ -342,22 +342,25 @@ jobs:
             echo "Pre-release / dry-run build for \`${TAG}\`." > notes.md
           fi
           # Append cosign verification instructions for the signed manifest.
-          {
-            echo
-            echo "## Verifying the signed artifacts"
-            echo
-            echo "The \`checksums.txt\` manifest is signed keylessly with cosign (Sigstore); one signature covers every attached artifact. Verify the manifest, then check the artifacts against it:"
-            echo
-            echo '```sh'
-            echo 'cosign verify-blob \'
-            echo '  --certificate checksums.txt.pem \'
-            echo '  --signature checksums.txt.sig \'
-            echo "  --certificate-identity-regexp '^https://github.com/claymore666/docker-net-dhcp/.github/workflows/release.yml@' \\"
-            echo '  --certificate-oidc-issuer https://token.actions.githubusercontent.com \'
-            echo '  checksums.txt'
-            echo 'sha256sum -c checksums.txt'
-            echo '```'
-          } >> notes.md
+          # Heredoc (not a wall of single-quoted echos) so the literal
+          # backslash line-continuations don't trip shellcheck SC1003 in
+          # the actionlint gate (#183). Quoted 'EOF' -> emitted verbatim.
+          cat >> notes.md <<'EOF'
+
+          ## Verifying the signed artifacts
+
+          The `checksums.txt` manifest is signed keylessly with cosign (Sigstore); one signature covers every attached artifact. Verify the manifest, then check the artifacts against it:
+
+          ```sh
+          cosign verify-blob \
+            --certificate checksums.txt.pem \
+            --signature checksums.txt.sig \
+            --certificate-identity-regexp '^https://github.com/claymore666/docker-net-dhcp/.github/workflows/release.yml@' \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            checksums.txt
+          sha256sum -c checksums.txt
+          ```
+          EOF
 
       - name: Create or update the GitHub Release with signed artifacts
         run: |
