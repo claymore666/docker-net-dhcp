@@ -41,8 +41,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Go does NOT support build-mode `none` (CodeQL 2.25.x), and
+          # `autobuild` runs `make`, whose default target builds the
+          # plugin rootfs via `docker export` and leaves root-owned files
+          # that break CodeQL's DB bundling (EACCES). `manual` lets us
+          # drive a plain `go build ./...` — no make, no docker export.
           - language: go
-            build-mode: none
+            build-mode: manual
           - language: actions
             build-mode: none
     steps:
@@ -50,11 +55,24 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Set up Go
+        if: matrix.language == 'go'
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
       - name: Initialize CodeQL
         uses: github/codeql-action/init@8aad20d150bbac5944a9f9d289da16a4b0d87c1e # v4
         with:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build-mode }}
+
+      # Manual build for Go: compile every package so CodeQL's tracer
+      # sees it, without invoking make/docker (which autobuild would).
+      - name: Build Go for CodeQL tracing
+        if: matrix.build-mode == 'manual'
+        run: go build ./...
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@8aad20d150bbac5944a9f9d289da16a4b0d87c1e # v4
