@@ -32,10 +32,13 @@ ARG RUNNER_VERSION
 # Base tooling + Docker Engine from download.docker.com (Debian 13's
 # docker.io is 26.x; the nested daemon must be >= 28 — engine-gated
 # tests, #125). dnsmasq is the test fixture's DHCP server: binary
-# only, there is no init system in here to start it.
+# only, there is no init system in here to start it. iputils-ping:
+# the failure-injection suite's L2-reachability check shells out to
+# `ping` on the runner host (failure_test.go, TestFailure_LeaseExpiry);
+# the bare-metal runner had it, this slim base does not (#158).
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         ca-certificates curl git make jq procps tini xz-utils \
-        iproute2 iptables dnsmasq \
+        iproute2 iptables dnsmasq iputils-ping \
     && install -m 0755 -d /etc/apt/keyrings \
     && curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc \
     && printf 'Types: deb\nURIs: https://download.docker.com/linux/debian\nSuites: trixie\nComponents: stable\nSigned-By: /etc/apt/keyrings/docker.asc\n' \

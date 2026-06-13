@@ -48,10 +48,12 @@ docker run --rm --privileged \
 docker run --rm --privileged ghcr.io/claymore666/dhcp-ci-runner:latest selftest
 ```
 
-Verifies: nested daemon comes up with a real overlay storage driver (overlay2 or containerd overlayfs — not the vfs fallback), seed images load, and
+Verifies: nested daemon comes up with a real overlay storage driver (overlay2 or containerd overlayfs — not the vfs fallback), seed images load,
 a SIGTERM'd dockerd is relaunched by the supervisor — the property the
 daemon-restart integration test depends on (`harness.RestartDockerDaemon`,
-#145). Run it after any change to this directory and on any new host.
+#145) — and the cgroup root is a clean `domain` with no member processes
+(the cgroup-nesting precondition, #158). Run it after any change to this
+directory and on any new host.
 
 ## What's baked in, and why
 
@@ -59,6 +61,7 @@ daemon-restart integration test depends on (`harness.RestartDockerDaemon`,
 |---|---|
 | Docker Engine ≥ 28 (docker-ce) | nested daemon runs the plugin under test; ≥ 28 unblocks engine-gated tests (#125) |
 | supervised dockerd (relaunch loop under tini) | daemon-restart recovery test must be able to bounce the daemon without killing the environment (#145) |
+| cgroup v2 nesting prep (entrypoint evacuates the root cgroup into an `init` leaf, then delegates controllers) | running dockerd bare leaves every process in the cgroup-namespace root; cgroup v2's no-internal-processes rule then forces the nested daemon's plugin/container cgroups to be *threaded*, and `cgroup.kill` (runc task teardown, docker-ce ≥ 29) is unsupported on threaded cgroups → `docker plugin disable/enable` fails with EOPNOTSUPP (#158). systemd / `docker:dind` do the same evacuation |
 | Go toolchain (go.mod's version) | test compilation on the runner, mirrors `install-go-runner.sh` |
 | dnsmasq, iproute2, iptables | integration fixtures (test-spawned DHCP server on veth pairs) |
 | Go module + compile caches | ephemeral containers start cold; baking turns minutes of per-job downloads/compiles into cache hits |
