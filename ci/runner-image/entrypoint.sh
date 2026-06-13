@@ -58,6 +58,48 @@ prepare_cgroups() {
 }
 prepare_cgroups
 
+# --- proxy plumbing ----------------------------------------------------
+# The CI host forces outbound traffic through an HTTP proxy (squid). The
+# orchestrator injects HTTP(S)_PROXY/NO_PROXY via `docker run -e`. Three
+# consumers need it; only the third isn't automatic:
+#   1. the Actions runner + job tooling (go/git/curl) inherit our env.
+#   2. the nested dockerd inherits our env -> honors it for registry pulls.
+#   3. RUN steps inside `docker build` (the plugin builder's `go mod
+#      download`, repo-root Dockerfile) get a FRESH env -> the daemon's
+#      proxy is invisible to them. Docker only forwards proxy into builds
+#      when the CLI's config.json carries a `proxies` block. Materialize
+#      that here so `make plugin`'s build honors the proxy.
+# The proxy URL is never baked into the image: no proxy env -> nothing
+# written -> no behavior change on direct-egress hosts (issue #181).
+setup_proxy() {
+    local proxy="${HTTPS_PROXY:-${https_proxy:-${HTTP_PROXY:-${http_proxy:-}}}}"
+    [ -n "$proxy" ] || return 0
+    local http_p="${HTTP_PROXY:-${http_proxy:-$proxy}}"
+    local https_p="${HTTPS_PROXY:-${https_proxy:-$proxy}}"
+    # Loopback + the integration fixture subnets (dnsmasq on veth pairs)
+    # must always bypass the proxy; merge with any orchestrator-supplied
+    # NO_PROXY rather than clobbering it.
+    local fixed="localhost,127.0.0.1,::1,192.168.99.0/24,192.168.100.0/24"
+    local no_p="${NO_PROXY:-${no_proxy:-}}"
+    no_p="${no_p:+$no_p,}$fixed"
+    export HTTP_PROXY="$http_p" HTTPS_PROXY="$https_p" NO_PROXY="$no_p"
+    export http_proxy="$http_p" https_proxy="$https_p" no_proxy="$no_p"
+    mkdir -p /root/.docker
+    cat > /root/.docker/config.json <<EOF
+{
+  "proxies": {
+    "default": {
+      "httpProxy": "$http_p",
+      "httpsProxy": "$https_p",
+      "noProxy": "$no_p"
+    }
+  }
+}
+EOF
+    log "proxy: build + daemon honor httpsProxy=$https_p (NO_PROXY=$no_p)"
+}
+setup_proxy
+
 # --- supervised dockerd ------------------------------------------------
 # Plain relaunch loop. dockerd must NOT be the container's main
 # process: the daemon-restart test SIGTERMs it and expects a fresh
@@ -120,6 +162,21 @@ if [[ "${1:-}" == "selftest" ]]; then
         [ "$root_type" = "domain" ] && [ "$root_procs" -eq 0 ] \
             || { log "FAIL: cgroup root type='$root_type' procs=$root_procs (want domain/0); prepare_cgroups did not take — plugin task teardown would EOPNOTSUPP (#158)"; exit 1; }
         log "selftest: cgroup posture OK (root=domain, root procs=0)"
+    fi
+
+    # proxy wiring (#181): when selftest runs WITH a proxy env, prove
+    # setup_proxy materialized the docker CLI config that makes
+    # `docker build` honor it, and that the fixture subnets stay direct.
+    # Hermetic — selftest does no network pulls, so a bogus proxy is fine.
+    if [ -n "${HTTPS_PROXY:-}${HTTP_PROXY:-}${https_proxy:-}${http_proxy:-}" ]; then
+        cfg=/root/.docker/config.json
+        [ -f "$cfg" ] || { log "FAIL: proxy env set but $cfg not written (setup_proxy did not run)"; exit 1; }
+        grep -q '"httpsProxy"' "$cfg" || { log "FAIL: $cfg has no httpsProxy entry"; exit 1; }
+        case ",${NO_PROXY:-}," in
+            *,192.168.99.0/24,*) : ;;
+            *) log "FAIL: NO_PROXY ('${NO_PROXY:-}') missing fixture subnet 192.168.99.0/24"; exit 1 ;;
+        esac
+        log "selftest: proxy wiring OK ($cfg written, NO_PROXY keeps fixtures direct)"
     fi
 
     old_pid=$(cat /var/run/docker.pid)
