@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -401,6 +402,24 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 		return res, err
 	}
 
+	// Custom interface name (#125): the option only arrives here —
+	// libnetwork's remote proxy sends sandbox labels, not endpoint
+	// options, to Join — so validate now (rejecting a kernel-invalid
+	// name fails the attach loudly at create time) and ride the hint
+	// into Join, which returns it as DstName.
+	ifname, err := parseIfnameOption(r.Options)
+	if err != nil {
+		return res, err
+	}
+	if ifname != "" {
+		log.WithFields(log.Fields{
+			"network":  shortID(r.NetworkID),
+			"endpoint": shortID(r.EndpointID),
+			"ifname":   ifname,
+		}).Info("[CreateEndpoint] Honoring custom interface name")
+		p.updateJoinHint(r.EndpointID, func(h *joinHint) { h.Ifname = ifname })
+	}
+
 	opts, err := p.netOptions(ctx, r.NetworkID)
 	if err != nil {
 		return res, fmt.Errorf("failed to get network options: %w", err)
@@ -594,7 +613,7 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 	if mac == "" {
 		mac = res.Interface.MacAddress
 	}
-	p.rememberEndpoint(r.EndpointID, endpointFingerprint{MAC: mac, IPv4: v4IP, IPv6: v6IP, Hostname: hostname})
+	p.rememberEndpoint(r.EndpointID, endpointFingerprint{MAC: mac, IPv4: v4IP, IPv6: v6IP, Hostname: hostname, Ifname: p.hintIfname(r.EndpointID)})
 
 	log.WithFields(log.Fields{
 		"network":  shortID(r.NetworkID),
@@ -791,6 +810,32 @@ func (p *Plugin) addRoutes(opts *DHCPNetworkOptions, v6 bool, link netlink.Link,
 	return nil
 }
 
+// parseIfnameOption extracts and validates the optional custom
+// container-side interface name (Compose `interface_name`, endpoint
+// option com.docker.network.endpoint.ifname — see ifnameOption).
+// Returns "" when absent; an error when present but unusable — a name
+// the kernel would reject should fail the attach loudly at Join
+// rather than surface as an inscrutable rename error inside
+// libnetwork. Validation mirrors the kernel's dev_valid_name: 1-15
+// bytes (IFNAMSIZ-1), not "." or "..", no '/', no whitespace.
+func parseIfnameOption(options map[string]interface{}) (string, error) {
+	raw, ok := options[ifnameOption]
+	if !ok {
+		return "", nil
+	}
+	s, ok := raw.(string)
+	if !ok || s == "" {
+		return "", fmt.Errorf("invalid %s %v: expected non-empty string: %w", ifnameOption, raw, util.ErrIPAM)
+	}
+	if len(s) > 15 {
+		return "", fmt.Errorf("invalid interface_name %q: longer than 15 bytes (IFNAMSIZ): %w", s, util.ErrIPAM)
+	}
+	if s == "." || s == ".." || strings.ContainsAny(s, "/ \t\n\r") {
+		return "", fmt.Errorf("invalid interface_name %q: must not contain '/', whitespace, or be '.'/'..': %w", s, util.ErrIPAM)
+	}
+	return s, nil
+}
+
 // Join hands the per-endpoint host-side link to Docker (so it can move it
 // into the container netns) along with route information, then starts a
 // persistent DHCP client to keep the lease alive for the life of the
@@ -849,6 +894,20 @@ func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) 
 		if !ok {
 			return res, util.ErrNoHint
 		}
+	}
+
+	if hint.Ifname == "" {
+		// Container restart: the original hint went with the first
+		// Join and libnetwork doesn't re-send endpoint options; the
+		// live-endpoint fingerprint keeps the custom name alive.
+		hint.Ifname = p.fingerprintIfname(r.EndpointID)
+	}
+	if hint.Ifname != "" {
+		// The persistent DHCP client is rename-proof: it locates the
+		// container-side link by MAC (macvlan/ipvlan) or veth peer
+		// index (bridge), never by name — honoring a custom name
+		// needs no renewal-side changes (#125).
+		res.InterfaceName.DstName = hint.Ifname
 	}
 
 	if hint.Gateway != "" {

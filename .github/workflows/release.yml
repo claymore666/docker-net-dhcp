@@ -8,12 +8,27 @@ name: Release
 #
 # Trigger shapes:
 #   - `git tag v0.8.0 && git push --tags` → automatic
-#   - GitHub UI → "Run workflow" → enter tag → manual dry-run
+#   - `git tag v1.0.0-rc1 && git push --tags` → automatic, pre-release
+#     mode: full chain runs but `:latest` is NOT moved — the zero-impact
+#     end-to-end dry-run to do before every real release tag
+#   - GitHub UI → "Run workflow" → enter tag → manual re-run of an
+#     existing tag (NOTE: a bare vX.Y.Z here rebuilds and re-points
+#     that tag AND `:latest` — prefer the rc-tag dry-run)
 #
 # Required secrets (Settings → Secrets and variables → Actions):
 #   - DOCKERHUB_USERNAME — Docker Hub login (e.g. `claymore666`)
 #   - DOCKERHUB_TOKEN    — Docker Hub access token (NOT password)
 # If absent, the Hub step skips with a warning instead of failing.
+#
+# Maintainer post-release checklist (this workflow does not handle it):
+#   1. Fast-forward dev to main so the release commit lands on dev too:
+#        git checkout dev && git merge --ff-only main && git push origin dev
+#      Otherwise the next feature branched from dev starts at the
+#      previous version's README/docs and the next release PR has to
+#      re-bump them. Forgotten once after v0.9.0.
+#   2. Verify GHCR (and Docker Hub, if configured) shows the new tag.
+#   3. If a production host runs the plugin, plan the upgrade as a
+#      separate change — this workflow only publishes the image.
 on:
   push:
     tags:
@@ -24,14 +39,22 @@ on:
         description: "Tag to release (e.g. v0.8.0). Must already exist on the remote."
         required: true
 
+# Top-level token is read-only; write scopes are granted per-job below
+# (Scorecard Token-Permissions: a workflow-wide write scope leaks into
+# every job, including ones that only need to pull).
 permissions:
   contents: read
-  packages: write   # GHCR push needs this on GITHUB_TOKEN
 
 jobs:
   release:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write   # GHCR push needs this on GITHUB_TOKEN
+
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
 
     env:
       # GHCR is always pushed. Hub repo only pushed when secrets are set.
@@ -61,21 +84,33 @@ jobs:
             exit 1
           fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "Releasing tag: $TAG"
+          # Pre-release guard: a suffixed tag (vX.Y.Z-rc1 etc.) runs the
+          # full publishing chain — build, dual-registry push of the rc
+          # tag, description sync, verify-install — but must NOT move
+          # `:latest` or overwrite any bare release tag. This makes rc
+          # tags a zero-impact end-to-end dry-run of this workflow
+          # before the real vX.Y.Z tag (see docs/release-runbook.md).
+          if [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+            echo "Releasing tag: $TAG"
+          else
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+            echo "Pre-release tag: $TAG — :latest will not be moved"
+          fi
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ steps.tag.outputs.tag }}
           # Full history so RELEASE_NOTES.md credits / "since vX" greps
           # behave the same as on a developer checkout.
           fetch-depth: 0
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
 
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -84,7 +119,7 @@ jobs:
       - name: Log in to Docker Hub
         id: hub-login
         if: env.HAS_HUB_CREDS == 'true'
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
@@ -105,19 +140,47 @@ jobs:
       # images do — every tag is a separate push of the same rootfs.
       # The Make `create` target rebuilds only the plugin handle, not
       # the underlying rootfs image, so the second push is fast.
+      # `:latest` is guarded: pre-release tags never move it (and would
+      # otherwise also let a dispatch of an OLD tag silently regress
+      # what `:latest` points at — only bare vX.Y.Z tags may move it).
       - name: Push to GHCR
-        run: |
-          make PLUGIN_NAME="${GHCR_NAME}" PLUGIN_TAG="${{ steps.tag.outputs.tag }}" push
-          make PLUGIN_NAME="${GHCR_NAME}" PLUGIN_TAG="latest" push
+        run: make PLUGIN_NAME="${GHCR_NAME}" PLUGIN_TAG="${{ steps.tag.outputs.tag }}" push
+
+      - name: Push :latest to GHCR
+        if: steps.tag.outputs.prerelease != 'true'
+        run: make PLUGIN_NAME="${GHCR_NAME}" PLUGIN_TAG="latest" push
 
       # Same plugin to Docker Hub when credentials are present. Make
       # rebuilds the rootfs with the Hub-prefixed name; the underlying
       # Docker image layer cache is reused so this is cheap.
       - name: Push to Docker Hub
         if: env.HAS_HUB_CREDS == 'true'
-        run: |
-          make PLUGIN_NAME="${HUB_NAME}" PLUGIN_TAG="${{ steps.tag.outputs.tag }}" push
-          make PLUGIN_NAME="${HUB_NAME}" PLUGIN_TAG="latest" push
+        run: make PLUGIN_NAME="${HUB_NAME}" PLUGIN_TAG="${{ steps.tag.outputs.tag }}" push
+
+      - name: Push :latest to Docker Hub
+        if: env.HAS_HUB_CREDS == 'true' && steps.tag.outputs.prerelease != 'true'
+        run: make PLUGIN_NAME="${HUB_NAME}" PLUGIN_TAG="latest" push
+
+      # Refresh the Docker Hub long description from the repo's README
+      # so the Hub page never drifts from what's on GitHub. Short
+      # description is owned here too — change it in this file when you
+      # want it to change. Idempotent: the action diffs and only PATCHes
+      # when content changed. Skipped if Hub credentials aren't set.
+      #
+      # Auth note: DOCKERHUB_TOKEN must be a Personal Access Token with
+      # Read & Write scope on this repo (not just Read & Write image
+      # push) — Docker Hub gates description-update behind admin scope.
+      # If this step 401s, regenerate the token; image-push tokens
+      # alone won't do.
+      - name: Sync Docker Hub description from README
+        if: env.HAS_HUB_CREDS == 'true'
+        uses: peter-evans/dockerhub-description@v5
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: ${{ env.HUB_NAME }}
+          short-description: "DHCP-leased IPs for Docker containers (bridge/macvlan/ipvlan). Fork of devplayer0/docker-net-dhcp."
+          readme-filepath: ./README.md
 
       # Convenience: print the install incantations operators will use,
       # straight into the workflow summary so the release page links
@@ -128,7 +191,11 @@ jobs:
           {
             echo "## Released ${{ steps.tag.outputs.tag }}"
             echo
-            echo "Each registry receives both \`:${{ steps.tag.outputs.tag }}\` (pin) and \`:latest\` (tip)."
+            if [ "${{ steps.tag.outputs.prerelease }}" = "true" ]; then
+              echo "**Pre-release dry-run** — \`:latest\` was not moved."
+            else
+              echo "Each registry receives both \`:${{ steps.tag.outputs.tag }}\` (pin) and \`:latest\` (tip)."
+            fi
             echo
             echo "### Install from GHCR"
             echo '```'
@@ -145,3 +212,39 @@ jobs:
               echo "_Docker Hub push skipped — set DOCKERHUB_USERNAME / DOCKERHUB_TOKEN secrets to enable._"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # Post-publish verification: install the artifact users will actually
+  # pull, from a clean GitHub-hosted runner. "We pushed bytes" is not
+  # "the deliverable works" — a plugin that 500s on install or fails to
+  # enable must turn the release run red, not surface in a user issue
+  # (#127). Exercised before each real release by the runbook's
+  # workflow_dispatch dry-run against the previous tag.
+  verify-install:
+    needs: release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: read   # pulls the just-published plugin from GHCR
+    env:
+      GHCR_NAME: ghcr.io/claymore666/docker-net-dhcp
+    steps:
+      - name: Install released plugin from GHCR
+        run: |
+          TAG="${{ needs.release.outputs.tag }}"
+          REF="${GHCR_NAME}:${TAG}"
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker plugin install --grant-all-permissions "$REF"
+          docker plugin ls
+
+      - name: Assert plugin is enabled
+        run: |
+          TAG="${{ needs.release.outputs.tag }}"
+          REF="${GHCR_NAME}:${TAG}"
+          ENABLED="$(docker plugin inspect -f '{{.Enabled}}' "$REF")"
+          if [ "$ENABLED" != "true" ]; then
+            echo "Plugin installed but not enabled (Enabled=$ENABLED)"
+            docker plugin inspect "$REF"
+            exit 1
+          fi
+          echo "Plugin ${REF} installs and enables cleanly." >> "$GITHUB_STEP_SUMMARY"

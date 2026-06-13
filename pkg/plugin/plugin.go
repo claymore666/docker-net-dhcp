@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -190,6 +191,18 @@ type DHCPNetworkOptions struct {
 	// the lease times out naturally rather than dragging CreateNetwork
 	// on a slow release path.
 	ValidateDHCP bool `mapstructure:"validate_dhcp"`
+	// AuditLog, when true, appends every lease-lifecycle event on
+	// this network (bound / renew / release, plus release_failed when
+	// the DHCPRELEASE didn't complete) to STATE_DIR/leases.jsonl —
+	// an append-only JSONL audit trail answering "which IP did this
+	// container hold last Tuesday?" without dnsmasq-log archaeology
+	// (#109). Rotated at 16 MB or 30 days, whichever first; one
+	// rotated generation is kept. Default false: the ledger costs a
+	// disk write per lease event, and container-ID/IP correlation on
+	// disk is privacy-relevant in some environments — operators opt
+	// in deliberately. Append failures bump ledger_write_failures on
+	// /Plugin.Health and never affect lease handling.
+	AuditLog bool `mapstructure:"audit_log"`
 }
 
 // effectiveMode returns Mode with the empty default normalized to ModeBridge.
@@ -228,6 +241,12 @@ type joinHint struct {
 	// MacAddress is set in macvlan mode so the persistent DHCP client can
 	// re-find the (renamed) macvlan link inside the container netns by MAC.
 	MacAddress net.HardwareAddr
+	// Ifname is the validated custom container-side interface name from
+	// the ifnameOption endpoint option (#125). The option only arrives
+	// in CreateEndpoint — libnetwork's remote proxy passes sandbox
+	// labels, not endpoint options, to Join — so it rides the hint to
+	// become the Join response's DstName.
+	Ifname string
 }
 
 // Plugin is the DHCP network plugin
@@ -302,6 +321,27 @@ type Plugin struct {
 	leasesRenewed        atomic.Int32
 	dhcpTimeouts         atomic.Int32
 	leaseReleaseFailures atomic.Int32
+
+	// naksReceived counts udhcpc "nak" events — the server refused a
+	// REQUEST (pool reconfigured, address reassigned, lease revoked).
+	// Until v1.0.0 a NAK was only a warn-level log line, invisible to
+	// operators (#128). A NAK is followed by udhcpc re-DISCOVERing, so
+	// pair this with lease_changed: naks_received climbing while
+	// lease_changed follows means containers are being re-addressed
+	// mid-life — Docker's inspect view goes stale (see leaseChanged
+	// above / #104) and DNS or firewall rules keyed on the old IP need
+	// attention.
+	naksReceived atomic.Int32
+
+	// ledger is the append-only lease audit log (#109), written by
+	// dhcpManager.audit for networks created with audit_log=true.
+	// ledgerWriteFailures counts failed appends, surfaced on
+	// /Plugin.Health. Unlike tombstone_write_failures it does NOT
+	// flip Healthy: a lost audit line degrades forensics, not
+	// networking or restart stability — operators who enable
+	// audit_log should alert on the counter instead.
+	ledger              *leaseLedger
+	ledgerWriteFailures atomic.Int32
 }
 
 // storeJoinHint records the state collected during CreateEndpoint so
@@ -388,6 +428,10 @@ type endpointFingerprint struct {
 	IPv4     string // bare IPv4, e.g. "192.168.0.166" (no /mask). May be empty.
 	IPv6     string // bare IPv6, e.g. "2001:db8::1" (no /prefix). May be empty.
 	Hostname string // container hostname; used to narrow tombstone match.
+	// Ifname preserves the custom interface name (#125) across the
+	// Leave -> Join cycle of a container restart, where the join hint
+	// is gone and libnetwork does not re-send endpoint options.
+	Ifname string
 }
 
 // rememberEndpoint stashes the fingerprint of an endpoint we just
@@ -426,6 +470,24 @@ func (p *Plugin) updateEndpointIPs(endpointID, ipv4, ipv6 string) {
 		fp.IPv6 = ipv6
 	}
 	p.endpointFingerprints[endpointID] = fp
+}
+
+// hintIfname returns the custom interface name recorded in the join
+// hint for endpointID, or "" — used to copy it into the endpoint
+// fingerprint without widening function signatures.
+func (p *Plugin) hintIfname(endpointID string) string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.joinHints[endpointID].Ifname
+}
+
+// fingerprintIfname returns the custom interface name remembered for
+// a live endpoint, or "" — the restart-path fallback for Join when
+// the hint has already been consumed.
+func (p *Plugin) fingerprintIfname(endpointID string) string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.endpointFingerprints[endpointID].Ifname
 }
 
 // takeEndpoint atomically retrieves and deletes the remembered
@@ -820,6 +882,7 @@ func NewPlugin(awaitTimeout time.Duration) (*Plugin, error) {
 		persistentDHCP:       make(map[string]*dhcpManager),
 		endpointFingerprints: make(map[string]endpointFingerprint),
 	}
+	p.ledger = newLeaseLedger(filepath.Join(stateDir, ledgerFileName), &p.ledgerWriteFailures)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/NetworkDriver.GetCapabilities", p.apiGetCapabilities)

@@ -1,0 +1,60 @@
+name: Runner image
+
+# Build + publish the ephemeral CI runner image (ci/runner-image/).
+# Runs on the GitHub-hosted pool — this is a plain docker build, none
+# of the privileged self-hosted requirements apply. The image is
+# consumed by the runner orchestrator, not by workflows in this repo.
+on:
+  push:
+    branches:
+      - dev
+    paths:
+      - ci/runner-image/**
+      - .github/workflows/runner-image.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/claymore666/dhcp-ci-runner
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      # Pin-by-resolution: always build with the current runner agent
+      # release. Outdated agents refuse jobs after GitHub's grace
+      # window, so "latest at build time" + rebuild-on-dispatch is the
+      # right freshness model for an agent we ship inside an image.
+      - name: Resolve runner agent version
+        id: agent
+        run: |
+          ver=$(curl -fsSL https://api.github.com/repos/actions/runner/releases/latest | jq -r '.tag_name[1:]')
+          echo "version=${ver}" >> "$GITHUB_OUTPUT"
+          echo "Building with actions/runner v${ver}"
+
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Build
+        run: |
+          docker build -f ci/runner-image/Dockerfile \
+            --build-arg RUNNER_VERSION="${{ steps.agent.outputs.version }}" \
+            -t "${IMAGE}:latest" \
+            -t "${IMAGE}:${GITHUB_SHA::7}" \
+            .
+
+      # The selftest needs --privileged, which GitHub-hosted runners
+      # allow for containers started by the job itself.
+      - name: Selftest
+        run: docker run --rm --privileged "${IMAGE}:latest" selftest
+
+      - name: Push
+        run: |
+          docker push "${IMAGE}:latest"
+          docker push "${IMAGE}:${GITHUB_SHA::7}"

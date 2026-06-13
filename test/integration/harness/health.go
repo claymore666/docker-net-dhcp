@@ -31,6 +31,8 @@ type HealthResponse struct {
 	LeasesRenewed          int32   `json:"leases_renewed"`
 	DHCPTimeouts           int32   `json:"dhcp_timeouts"`
 	LeaseReleaseFailures   int32   `json:"lease_release_failures"`
+	NAKsReceived           int32   `json:"naks_received"`
+	LedgerWriteFailures    int32   `json:"ledger_write_failures"`
 }
 
 // PluginSocketPath returns the absolute path to PluginRef's UNIX

@@ -55,7 +55,18 @@ func BuildEvent(eventType string, getenv Getenv) (Event, bool) {
 				event.Data.DNSServers = strings.Fields(dns)
 			}
 		} else {
-			event.Data.IP = getenv("ip") + "/" + getenv("mask")
+			// Validate the v4 lease the same way the v6 branch does:
+			// a bound/renew with a missing/garbage `ip` or `mask` env
+			// (handler invoked by hand, or a future busybox shape
+			// change) must not emit "1.2.3.4/abc" downstream, where
+			// netlink.ParseAddr would fail deep inside the renewal
+			// path. Malformed input skips the event (#128).
+			ipMask := getenv("ip") + "/" + getenv("mask")
+			if _, _, err := net.ParseCIDR(ipMask); err != nil {
+				log.WithError(err).WithField("ip", ipMask).Error("Failed to parse IPv4 lease; skipping event")
+				return Event{}, false
+			}
+			event.Data.IP = ipMask
 			event.Data.Gateway = getenv("router")
 			event.Data.Domain = getenv("domain")
 			// dns is busybox udhcpc's env-var name for option 6.

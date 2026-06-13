@@ -7,7 +7,8 @@ BINARY = bin/net-dhcp
 
 PLUGIN_COVER_TAG ?= golang-cover
 
-.PHONY: all debug build create enable disable pdebug push clean integration-test integration-cleanup \
+.PHONY: all debug build create enable disable pdebug push clean integration-test \
+        integration-test-failure integration-cleanup \
         build-cover plugin-cover create-cover enable-cover disable-cover
 
 all: create enable
@@ -99,7 +100,21 @@ integration-test:
 		echo "integration-test must run as root. Re-run with sudo."; \
 		exit 1; \
 	fi
-	go test -v -tags integration -count=1 -timeout 10m ./test/integration/...
+	go test -v -tags integration -count=1 -timeout 20m -skip 'TestFailure_' ./test/integration/...
+# (20m, not #146's 15m: the suite measured 558s on runner-class
+# hardware before the v1.0.0 additions; 20m keeps the same headroom
+# ratio with them.)
+
+# Failure-injection suite (#128): crosses real DHCP timing boundaries
+# (lease expiry, NAK at T1) against per-test ephemeral DHCP servers —
+# ~9 serial minutes of mostly deliberate waiting, so it runs as its
+# own step instead of inflating the main suite's feedback loop.
+integration-test-failure:
+	@if [ "$$(id -u)" -ne 0 ]; then \
+		echo "integration-test-failure must run as root. Re-run with sudo."; \
+		exit 1; \
+	fi
+	go test -v -tags integration -count=1 -timeout 15m -run 'TestFailure_' ./test/integration/...
 
 # Manual orphan cleanup for when an integration test panics mid-setup
 # and leaves dh-itest-* interfaces / containers / networks behind.

@@ -26,6 +26,142 @@ vulnerable code path is reachable from the plugin process, so no
 action is required. Recorded here so future audits don't
 re-investigate. (Original report: third-pass code review, 2026-05-04.)
 
+## v1.0.0
+
+The 1.0 milestone: the fork's quality infrastructure is now mechanical
+(coverage ratchet, failure-injection suite, option-docs drift gate,
+dependency automation, supply-chain scanning), runtime failure
+behaviour is asserted rather than assumed, DHCPv6 gets its first test
+coverage — which immediately found and fixed real bugs — and the
+audit/observability surface grew. No breaking changes; bridge-mode
+defaults and all existing options are unchanged.
+
+### New features
+
+- **`audit_log=true` driver option (#109)** — append-only lease ledger
+  (`STATE_DIR/leases.jsonl`, one JSON object per line: timestamp, kind
+  `bound`/`renew`/`release`/`release_failed`, network, endpoint,
+  container, hostname, IP, MAC). Answers "which IP did this container
+  hold last Tuesday?" without DHCP-server-log archaeology. Rotated at
+  16 MB / 30 days, one rotated generation kept (≤ ~32 MB). Off by
+  default (privacy: container↔IP correlation on disk). Append failures
+  bump the new `ledger_write_failures` health counter and never affect
+  lease handling.
+- **`interface_name` support, plugin side (#125)** — the
+  `com.docker.network.endpoint.ifname` endpoint option (Compose
+  `services.*.networks.*.interface_name`, engine 28+) is validated and
+  honored: the plugin returns the requested name as `DstName` in its
+  Join response; kernel-invalid names fail the attach with a clear
+  error. **Engine limitation:** moby's remote-driver layer currently
+  discards both the option (in Join) and the returned name, so the
+  rename does not yet take effect for *plugin* drivers on any engine —
+  built-in drivers only. The plugin side activates automatically once
+  the upstream pass-through ships; acceptance tests are probe-gated
+  and self-activating.
+- **`naks_received` health counter (#128)** — a DHCPNAK was previously
+  a log line only; now it's an operator-visible counter. Climbing
+  alongside `lease_changed` means containers are being re-addressed
+  mid-life.
+
+### Fixes (all found by this release's new test coverage)
+
+- **`ipv6=true` was non-functional in v0.9.0** (#103): the
+  option-request flags added in v0.9.0 (`-O mtu` …) are a v4-only
+  vocabulary; udhcpc6 treats unknown option names as a hard startup
+  error, so every DHCPv6 exchange exited immediately. Option requests
+  are now family-specific.
+- **systemd-udevd MAC rewrites broke DHCP identity** (#103/#128): on
+  hosts with `MACAddressPolicy=persistent` (the Debian default), udev
+  replaced a freshly created macvlan child's randomly-assigned MAC
+  moments after creation — so the initial DHCP exchange ran from a
+  MAC the container never uses (MAC-keyed server reservations could
+  not match the first lease) and the DHCPv6 one-shot poisoned the
+  server's neighbor cache, blackholing the container's v6 client for
+  ~45 s. The plugin now pins the child's MAC at creation
+  (administratively-set MACs are exempt from the udev policy), as the
+  bridge path always did for its veths.
+- **A changed lease was never applied to the container link** (#128):
+  `renew()` updated counters, DNS/MTU, and routes, but not the
+  address itself. After a NAK re-acquisition or a server-side
+  renumbering, the container kept answering on the old (possibly
+  reassigned) address, and the default-route replacement failed with
+  "network is unreachable", black-holing the endpoint. v4 re-binds
+  now apply the new address (then routes); the v6 arm is deliberately
+  deferred to the IA unification (#152).
+- **Test-harness exec output demux** (#130): `docker exec` streams are
+  multiplexed; raw reads embedded frame headers in line-anchored
+  parsing and caused a ~11% golden-path flake.
+
+### DHCPv6 (#103)
+
+- First v6 coverage in the integration suite: dual-stack dnsmasq
+  fixtures (ULA prefixes, RA enabled), golden paths for macvlan and
+  bridge wiring, DNS6 propagation default-off, failure-only
+  wire-capture diagnostics (tcpdump + neighbor tables) that
+  root-caused the udev bug above.
+- Audit finding (premise correction): busybox udhcpc6's DUID is a
+  **DUID-LL derived from the interface MAC** — stable across
+  restarts, so v6 reservations stick wherever MACs are stable (which
+  the plugin guarantees via the new MAC pin + tombstones). No
+  STATE_DIR DUID store needed. New docs section covers the exact
+  create incantation, RA-delegated gateways, the ipvlan shared-DUID
+  caveat, and the no-static-v6 boundary.
+- **Known boundary:** the initial-lease and renewal clients negotiate
+  separate identity associations, so the v6 address Docker reports is
+  not yet the one being renewed. Documented in the DHCPv6 section;
+  unification tracked in #152 with three suite tests skipped-with-
+  reference until then.
+
+### Failure-injection test suite (#128)
+
+Three `TestFailure_*` scenarios against per-test ephemeral DHCP
+servers assert *intended* degraded-mode behaviour: server loss during
+renewal (address retained, Healthy, self-recovery on server return),
+lease refusal on renewal via server renumbering (unattended
+re-acquisition; stale-`docker inspect` as the documented #104
+divergence), and full lease expiry (deliberate retention, endpoint
+stays reachable). Split behind `make integration-test-failure` so
+main-suite feedback speed is unchanged. The udhcpc handler now
+validates v4 lease env (malformed input skips the event instead of
+failing mid-renewal), and every udhcpc lifecycle event's counter
+semantics are pinned in unit tests.
+
+### CI / process / supply chain (#127, #132, #144–#148)
+
+- actionlint + govulncheck (allowlisted findings carry justification
+  + review date) + weekly cron + Dependabot (grouped, weekly) +
+  CodeQL + OpenSSF Scorecard (published results, README badge) +
+  SECURITY.md with private-advisory reporting.
+- **Coverage ratchet**: per-package floors enforced on every release
+  PR; the baseline only moves up.
+- **verify-install**: every release run installs the just-published
+  plugin from GHCR on a clean runner and asserts it enables.
+- **Pre-release rc tags**: `vX.Y.Z-rcN` runs the full publish chain
+  without touching `:latest` — every release is preceded by a
+  zero-impact dry-run.
+- **Driver reference manual** (`docs/reference.md`) — every option,
+  setting, health field, and a troubleshooting table; CI fails if a
+  parsed option key is missing from it.
+- `integration` is a required PR check; the suite is
+  containerized-runner-ready (supervisor-agnostic daemon restart,
+  #145) with timeout budgets sized from slow-hardware measurements
+  (#146) plus the failure suite.
+- Release workflow `GITHUB_TOKEN` narrowed to job-scoped permissions.
+
+### Operator-visible compatibility notes
+
+- `/Plugin.Health` gains `naks_received` and `ledger_write_failures`
+  (neither affects `healthy`).
+- macvlan children now carry an administratively-set MAC (same value
+  the kernel assigned; pinned against udev rewrites). If you run
+  custom `.link` rules keyed on `addr_assign_type`, note the change.
+- v4 re-binds that change the lease now re-address the container link
+  (previously the link silently kept the stale address).
+- The shipped binary is built with the current Go 1.25.x toolchain,
+  curing four stdlib CVEs that affected the v0.9.0 build; two
+  moby-daemon-side advisories remain allowlisted with justification
+  (no fixed release exists) — see `.github/vuln-allowlist.txt`.
+
 ## v0.9.0
 
 DHCP-helper polish: option propagation, parent-attached parity,

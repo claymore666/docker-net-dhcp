@@ -40,6 +40,14 @@ const (
 	BridgeDHCPPoolStart = "192.168.100.10"
 	BridgeDHCPPoolEnd   = "192.168.100.99"
 	BridgeSubnetCIDR    = "192.168.100.0/24"
+
+	// Dual-stack constants for the bridge fixture (#103) — a distinct
+	// ULA prefix from the macvlan fixture's fd00:6470:6863::/64, same
+	// isolation rationale as the distinct v4 subnets above.
+	BridgeAddrV6          = "fd00:6470:6864::1/64"
+	BridgeDHCPv6PoolStart = "fd00:6470:6864::10"
+	BridgeDHCPv6PoolEnd   = "fd00:6470:6864::99"
+	BridgeSubnetV6CIDR    = "fd00:6470:6864::/64"
 )
 
 // startBridge brings up the bridge fixture: a Linux bridge with a
@@ -84,6 +92,13 @@ func (f *Fixture) startBridge() error {
 	if err := netlink.AddrAdd(link, addr); err != nil {
 		return fmt.Errorf("AddrAdd bridge: %w", err)
 	}
+	addrV6, err := netlink.ParseAddr(BridgeAddrV6)
+	if err != nil {
+		return fmt.Errorf("ParseAddr bridge v6: %w", err)
+	}
+	if err := netlink.AddrAdd(link, addrV6); err != nil {
+		return fmt.Errorf("AddrAdd bridge v6: %w", err)
+	}
 
 	// docker's default FORWARD policy is DROP. With br_netfilter
 	// loaded, even pure-bridge DHCP traffic (UDP 67/68 broadcast on
@@ -93,8 +108,14 @@ func (f *Fixture) startBridge() error {
 		{"-I", "FORWARD", "-i", BridgeName, "-j", "ACCEPT"},
 		{"-I", "FORWARD", "-o", BridgeName, "-j", "ACCEPT"},
 	} {
+		// Both families: bridge-nf-call-ip6tables routes bridged
+		// DHCPv6 (UDP 546/547) through ip6tables FORWARD the same
+		// way bridge-nf-call-iptables does for v4 (#103).
 		if out, err := exec.Command("iptables", args...).CombinedOutput(); err != nil {
 			return fmt.Errorf("iptables %v: %w (%s)", args, err, out)
+		}
+		if out, err := exec.Command("ip6tables", args...).CombinedOutput(); err != nil {
+			return fmt.Errorf("ip6tables %v: %w (%s)", args, err, out)
 		}
 	}
 	f.iptablesInstalled = true
@@ -119,6 +140,9 @@ func (f *Fixture) startBridge() error {
 		"--bind-interfaces",
 		"--except-interface=lo",
 		"--dhcp-range="+BridgeDHCPPoolStart+","+BridgeDHCPPoolEnd+","+LeaseTime,
+		"--dhcp-range="+BridgeDHCPv6PoolStart+","+BridgeDHCPv6PoolEnd+","+LeaseTime,
+		"--enable-ra",
+		"--dhcp-option=option6:dns-server,["+TestDNS6Server+"]",
 		"--dhcp-leasefile="+f.bridgeLeaseFile,
 		"--dhcp-no-override",
 		"--dhcp-broadcast",
@@ -192,6 +216,7 @@ func (f *Fixture) stopBridge() {
 			{"-D", "FORWARD", "-o", BridgeName, "-j", "ACCEPT"},
 		} {
 			_ = exec.Command("iptables", args...).Run()
+			_ = exec.Command("ip6tables", args...).Run()
 		}
 		f.iptablesInstalled = false
 	}

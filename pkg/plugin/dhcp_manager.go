@@ -102,6 +102,11 @@ type dhcpManager struct {
 	errChan   chan error
 	errChanV6 chan error
 
+	// ctrID caches the container ID behind this endpoint for ledger
+	// entries; resolved at most once via ctrIDOnce (see containerID).
+	ctrIDOnce sync.Once
+	ctrID     string
+
 	// startedCh is closed when Start has finished (success or failure);
 	// startErr captures the result. This lets Stop be called against a
 	// manager whose Start is still in flight (e.g. when Leave races
@@ -157,6 +162,78 @@ func (m *dhcpManager) setLastIP(v6 bool, addr *netlink.Addr) {
 	}
 }
 
+// audit appends a lease-lifecycle event to the plugin's ledger when
+// this network opted in via audit_log=true. Best-effort by design:
+// ledger problems are counted and logged inside Append and must never
+// affect lease handling. ip is the bare address ("192.168.0.10"),
+// derived by the caller from whatever form it has at hand.
+func (m *dhcpManager) audit(kind, ip string) {
+	if m.plugin == nil || m.plugin.ledger == nil || !m.opts.AuditLog {
+		return
+	}
+	m.plugin.ledger.Append(ledgerEntry{
+		Kind:      kind,
+		Network:   m.joinReq.NetworkID,
+		Endpoint:  m.joinReq.EndpointID,
+		Container: m.containerID(),
+		Hostname:  m.hostname,
+		IP:        ip,
+		MAC:       m.macString(),
+	})
+}
+
+// containerID resolves (once, then caches) the ID of the container
+// behind this manager's endpoint, for ledger entries. Resolution
+// failure degrades to an empty field rather than blocking the event
+// path — sync.Once keeps concurrent v4/v6 event goroutines from
+// racing the lookup.
+func (m *dhcpManager) containerID() string {
+	m.ctrIDOnce.Do(func() {
+		if m.docker == nil {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		dockerNet, err := m.docker.NetworkInspect(ctx, m.joinReq.NetworkID, dNetwork.InspectOptions{})
+		if err != nil {
+			log.WithError(err).WithFields(m.logFields(false)).Debug("ledger container lookup failed")
+			return
+		}
+		for ctrID, info := range dockerNet.Containers {
+			if info.EndpointID == m.joinReq.EndpointID {
+				m.ctrID = ctrID
+				return
+			}
+		}
+	})
+	return m.ctrID
+}
+
+// macString returns the endpoint's MAC for ledger entries: the
+// container-side link's address when Start has located it (set before
+// the event goroutines exist, so reads here are race-free), falling
+// back to the macvlan-mode MacAddress hint.
+func (m *dhcpManager) macString() string {
+	if m.ctrLink != nil {
+		if hw := m.ctrLink.Attrs().HardwareAddr; len(hw) > 0 {
+			return hw.String()
+		}
+	}
+	if len(m.MacAddress) > 0 {
+		return m.MacAddress.String()
+	}
+	return ""
+}
+
+// bareIP strips the prefix length off a CIDR-form address for ledger
+// entries, passing through anything that doesn't parse as CIDR.
+func bareIP(cidr string) string {
+	if ip, _, err := net.ParseCIDR(cidr); err == nil {
+		return ip.String()
+	}
+	return cidr
+}
+
 // findContainerPID resolves the host PID of the container that owns
 // this manager's endpoint. Returns an error if the endpoint is not
 // found in the network's container list (rare race during teardown)
@@ -209,6 +286,42 @@ func (m *dhcpManager) renew(v6 bool, info udhcpc.Info) error {
 			WithField("old_ip", lastIP).
 			WithField("new_ip", ip).
 			Warn("udhcpc renew with changed IP — Docker's view is now stale")
+
+		// Apply the re-acquired lease to the link (v4). Found by
+		// TestFailure_LeaseRefusedOnRenewal (#128): without this the
+		// kernel keeps the ORIGINAL address forever — the container
+		// answers on an address the server may already have handed to
+		// someone else, and after a server-side renumbering the
+		// default-route replacement below failed with "network is
+		// unreachable" (no address in the new subnet), aborting the
+		// bind and black-holing the endpoint. Address first, routes
+		// after — same ordering the kernel itself requires.
+		//
+		// v6 is deliberately left alone for now: the persistent
+		// udhcpc6 negotiates a second IA (different IAID than
+		// CreateEndpoint's one-shot), so "changed IP" is the v6
+		// steady-state, and re-addressing would flip every ipv6=true
+		// container to the persistent IA seconds after start. That
+		// unification is its own design change, tracked with #103's
+		// follow-up.
+		//
+		// netHandle/ctrLink are always live on the production path
+		// (renew runs from the event loop, post-Start); the guard
+		// keeps pre-Start unit tests of the counter semantics valid.
+		if !v6 && m.netHandle != nil && m.ctrLink != nil {
+			if err := m.netHandle.AddrReplace(m.ctrLink, ip); err != nil {
+				return fmt.Errorf("failed to apply re-acquired address %v: %w", ip, err)
+			}
+			if err := m.netHandle.AddrDel(m.ctrLink, lastIP); err != nil {
+				// Non-fatal: a lingering stale address is strictly
+				// better than failing the bind on cleanup.
+				log.
+					WithError(err).
+					WithFields(m.logFields(v6)).
+					WithField("stale_ip", lastIP).
+					Warn("Failed to remove stale address after lease change")
+			}
+		}
 	}
 
 	// Surface DHCP options the plugin captures but doesn't auto-apply
@@ -338,6 +451,71 @@ func (m *dhcpManager) renew(v6 bool, info udhcpc.Info) error {
 	return nil
 }
 
+// handleEvent dispatches one udhcpc lifecycle event from the
+// persistent client: health counters, audit-ledger entries, and the
+// kernel-facing renew work. Extracted from the consumer goroutine so
+// the counter semantics are unit-testable — wire-level NAKs in
+// particular can't be provoked deterministically (dnsmasq silently
+// ignores refused renewals in several shapes instead of NAKing), so
+// the naks_received contract is pinned here rather than in an
+// integration test (#128).
+func (m *dhcpManager) handleEvent(event udhcpc.Event, v6 bool) {
+	switch event.Type {
+	// "deconfig" is intentionally not handled. Deleting the
+	// container's IP from the kernel would also wipe the
+	// static routes Join copied off the host bridge, and
+	// there's no clean way to re-derive them without
+	// re-running the bridge route copy. Better to keep
+	// the stale address until the next bound/renew
+	// overwrites it.
+	case "bound":
+		// The persistent client's first DHCPACK can land
+		// on a different IP than CreateEndpoint's initial
+		// DISCOVER (some servers, including Fritz.Box,
+		// hand out a fresh address per DISCOVER even for
+		// the same MAC). Reuse the renew path so LastIP
+		// reflects what's actually in the kernel.
+		if m.plugin != nil {
+			m.plugin.leasesObtained.Add(1)
+		}
+		m.audit("bound", bareIP(event.Data.IP))
+		if err := m.renew(v6, event.Data); err != nil {
+			log.
+				WithError(err).
+				WithFields(m.logFields(v6)).
+				WithField("ip", event.Data.IP).
+				Error("Failed to record initial bind")
+		}
+	case "renew":
+		log.
+			WithFields(m.logFields(v6)).
+			Debug("udhcpc renew")
+
+		if m.plugin != nil {
+			m.plugin.leasesRenewed.Add(1)
+		}
+		m.audit("renew", bareIP(event.Data.IP))
+		if err := m.renew(v6, event.Data); err != nil {
+			log.
+				WithError(err).
+				WithFields(m.logFields(v6)).
+				WithField("gateway", event.Data.Gateway).
+				WithField("new_ip", event.Data.IP).
+				Error("Failed to execute IP renewal")
+		}
+	case "leasefail":
+		if m.plugin != nil {
+			m.plugin.dhcpTimeouts.Add(1)
+		}
+		log.WithFields(m.logFields(v6)).Warn("udhcpc failed to get a lease")
+	case "nak":
+		if m.plugin != nil {
+			m.plugin.naksReceived.Add(1)
+		}
+		log.WithFields(m.logFields(v6)).Warn("udhcpc client received NAK")
+	}
+}
+
 func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 	v6Str := ""
 	if v6 {
@@ -426,55 +604,7 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 					errChan <- nil
 					return
 				}
-				switch event.Type {
-				// "deconfig" is intentionally not handled. Deleting the
-				// container's IP from the kernel would also wipe the
-				// static routes Join copied off the host bridge, and
-				// there's no clean way to re-derive them without
-				// re-running the bridge route copy. Better to keep
-				// the stale address until the next bound/renew
-				// overwrites it.
-				case "bound":
-					// The persistent client's first DHCPACK can land
-					// on a different IP than CreateEndpoint's initial
-					// DISCOVER (some servers, including Fritz.Box,
-					// hand out a fresh address per DISCOVER even for
-					// the same MAC). Reuse the renew path so LastIP
-					// reflects what's actually in the kernel.
-					if m.plugin != nil {
-						m.plugin.leasesObtained.Add(1)
-					}
-					if err := m.renew(v6, event.Data); err != nil {
-						log.
-							WithError(err).
-							WithFields(m.logFields(v6)).
-							WithField("ip", event.Data.IP).
-							Error("Failed to record initial bind")
-					}
-				case "renew":
-					log.
-						WithFields(m.logFields(v6)).
-						Debug("udhcpc renew")
-
-					if m.plugin != nil {
-						m.plugin.leasesRenewed.Add(1)
-					}
-					if err := m.renew(v6, event.Data); err != nil {
-						log.
-							WithError(err).
-							WithFields(m.logFields(v6)).
-							WithField("gateway", event.Data.Gateway).
-							WithField("new_ip", event.Data.IP).
-							Error("Failed to execute IP renewal")
-					}
-				case "leasefail":
-					if m.plugin != nil {
-						m.plugin.dhcpTimeouts.Add(1)
-					}
-					log.WithFields(m.logFields(v6)).Warn("udhcpc failed to get a lease")
-				case "nak":
-					log.WithFields(m.logFields(v6)).Warn("udhcpc client received NAK")
-				}
+				m.handleEvent(event, v6)
 
 			case <-m.stopChan:
 				log.
@@ -548,6 +678,34 @@ func (m *dhcpManager) locateContainerLink(ctx context.Context) error {
 	}, pollTime)
 }
 
+// linkLocalDADTimeout caps the wait for the container link's IPv6
+// link-local address to clear duplicate address detection. DAD with
+// kernel defaults is one solicit + 1s; the budget is generous because
+// the only cost of waiting is delaying the first SOLICIT.
+const linkLocalDADTimeout = 10 * time.Second
+
+// awaitLinkLocal blocks until the container-side link has a usable
+// (non-tentative, non-failed) IPv6 link-local address — the
+// precondition for any DHCPv6 exchange in the netns.
+func (m *dhcpManager) awaitLinkLocal(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, linkLocalDADTimeout)
+	defer cancel()
+	return util.AwaitCondition(ctx, func() (bool, error) {
+		addrs, err := m.netHandle.AddrList(m.ctrLink, unix.AF_INET6)
+		if err != nil {
+			return false, fmt.Errorf("failed to list IPv6 addresses: %w", err)
+		}
+		for _, a := range addrs {
+			if a.Scope == unix.RT_SCOPE_LINK &&
+				a.Flags&unix.IFA_F_TENTATIVE == 0 &&
+				a.Flags&unix.IFA_F_DADFAILED == 0 {
+				return true, nil
+			}
+		}
+		return false, nil
+	}, pollTime)
+}
+
 func (m *dhcpManager) Start(ctx context.Context) (err error) {
 	defer func() {
 		m.startErr = err
@@ -607,6 +765,20 @@ func (m *dhcpManager) Start(ctx context.Context) (err error) {
 		}
 
 		if m.opts.IPv6 {
+			// DHCPv6 needs a usable link-local source address. The
+			// link just landed in this netns, so its LL is typically
+			// still DAD-tentative — and a host must NOT answer
+			// neighbor solicitations for a tentative address, so the
+			// server's unicast ADVERTISE/REPLY can never be
+			// delivered: udhcpc6 SOLICITs forever while the server's
+			// neighbor cache records an unreachable client (#103,
+			// found by TestLeaseRenewIPv6_HonorsT1). Wait for DAD to
+			// finish before starting the client. Timeout degrades to
+			// a warn-and-try — DAD normally completes in ~1s.
+			if err := m.awaitLinkLocal(ctx); err != nil {
+				log.WithError(err).WithFields(m.logFields(true)).
+					Warn("No usable link-local address; starting DHCPv6 client anyway")
+			}
 			if m.errChanV6, err = m.setupClient(true); err != nil {
 				close(m.stopChan)
 				return err
@@ -648,25 +820,44 @@ func (m *dhcpManager) Stop() error {
 
 	close(m.stopChan)
 
+	lastIP, lastIPv6 := m.lastIPs()
 	if err := <-m.errChan; err != nil {
 		// SIGTERM -> DHCPRELEASE -> exit didn't complete cleanly. The
 		// upstream server may now be holding a phantom lease against
 		// this MAC until its own expiry. Bump so operators can alert
 		// on a pattern of releases failing — typically points at
-		// upstream reachability problems mid-teardown.
+		// upstream reachability problems mid-teardown. The ledger
+		// records release_failed rather than release so the audit
+		// trail never claims a release the server may not have seen.
 		if m.plugin != nil {
 			m.plugin.leaseReleaseFailures.Add(1)
 		}
+		m.audit("release_failed", auditIP(lastIP))
 		return fmt.Errorf("failed shut down DHCP client: %w", err)
 	}
+	m.audit("release", auditIP(lastIP))
 	if m.opts.IPv6 {
 		if err := <-m.errChanV6; err != nil {
 			if m.plugin != nil {
 				m.plugin.leaseReleaseFailures.Add(1)
 			}
+			m.audit("release_failed", auditIP(lastIPv6))
 			return fmt.Errorf("failed shut down DHCPv6 client: %w", err)
 		}
+		m.audit("release", auditIP(lastIPv6))
 	}
 
 	return nil
+}
+
+// auditIP renders a netlink address for a ledger entry, tolerating
+// the nil case (endpoint never completed a bind). netlink.Addr
+// embeds *net.IPNet, so the IPNet pointer must be checked before
+// reaching the promoted IP field — otherwise an Addr with a nil
+// embedded IPNet panics on the guard itself.
+func auditIP(addr *netlink.Addr) string {
+	if addr == nil || addr.IPNet == nil || addr.IP == nil {
+		return ""
+	}
+	return addr.IP.String()
 }

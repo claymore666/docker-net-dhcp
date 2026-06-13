@@ -160,11 +160,31 @@ type JoinRequest struct {
 	Options    map[string]interface{}
 }
 
+// ifnameOption is the endpoint option carrying a user-requested
+// container-side interface name. Compose's
+// `services.*.networks.*.interface_name` (engine 28+ / API 1.48+)
+// ships as this key; `docker network connect --driver-opt` can set it
+// on any engine version. The plugin honors it by returning DstName in
+// the Join response (#125).
+const ifnameOption = "com.docker.network.endpoint.ifname"
+
 // InterfaceName consists of the name of the interface in the global netns and
-// the desired prefix to be appended to the interface inside the container netns
+// the desired prefix to be appended to the interface inside the container netns.
+//
+// DstName, when non-empty, asks libnetwork for that exact name inside
+// the container instead of DstPrefix+index. The remote-driver API has
+// carried the field for years, but as of moby master the remote proxy
+// drops it (drivers/remote/driver.go calls
+// `iface.SetNames(SrcName, DstPrefix, "")`), so engines do not yet
+// apply it for plugin drivers — built-in drivers got per-driver
+// interface_name support in engine 28, remote drivers were left out.
+// We return it anyway: it is the documented response shape, costs
+// nothing on engines that ignore it, and activates the moment the
+// upstream pass-through lands (#125).
 type InterfaceName struct {
 	SrcName   string
 	DstPrefix string
+	DstName   string
 }
 
 // libnetwork's route-type encoding for StaticRoute.RouteType.
@@ -259,6 +279,16 @@ type HealthResponse struct {
 	LeasesRenewed        int32 `json:"leases_renewed"`
 	DHCPTimeouts         int32 `json:"dhcp_timeouts"`
 	LeaseReleaseFailures int32 `json:"lease_release_failures"`
+	// NAKsReceived counts server NAKs on renewal/rebind. Not
+	// Healthy-affecting on its own — udhcpc recovers by
+	// re-DISCOVERing — but each NAK-triggered re-bind widens the
+	// docker-inspect divergence tracked by lease_changed (#128).
+	NAKsReceived int32 `json:"naks_received"`
+	// LedgerWriteFailures counts failed appends to the audit_log
+	// lease ledger (#109). Not Healthy-affecting — a lost audit line
+	// degrades forensics, not networking; operators using audit_log
+	// alert on this directly.
+	LedgerWriteFailures int32 `json:"ledger_write_failures"`
 }
 
 func (p *Plugin) apiHealth(w http.ResponseWriter, r *http.Request) {
@@ -286,5 +316,7 @@ func (p *Plugin) apiHealth(w http.ResponseWriter, r *http.Request) {
 		LeasesRenewed:          p.leasesRenewed.Load(),
 		DHCPTimeouts:           p.dhcpTimeouts.Load(),
 		LeaseReleaseFailures:   p.leaseReleaseFailures.Load(),
+		NAKsReceived:           p.naksReceived.Load(),
+		LedgerWriteFailures:    p.ledgerWriteFailures.Load(),
 	}, http.StatusOK)
 }
