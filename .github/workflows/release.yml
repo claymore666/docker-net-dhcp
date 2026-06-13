@@ -52,9 +52,11 @@ jobs:
     permissions:
       contents: read
       packages: write   # GHCR push needs this on GITHUB_TOKEN
+      id-token: write   # keyless cosign signing of the release artifact (OIDC)
 
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
+      prerelease: ${{ steps.tag.outputs.prerelease }}
 
     env:
       # GHCR is always pushed. Hub repo only pushed when secrets are set.
@@ -192,6 +194,46 @@ jobs:
           short-description: "DHCP-leased IPs for Docker containers (bridge/macvlan/ipvlan). Fork of devplayer0/docker-net-dhcp."
           readme-filepath: ./README.md
 
+      # Sign a release artifact and hand it to the github-release job.
+      # Scorecard's Signed-Releases check inspects artifacts attached to
+      # the GitHub Release — signing the registry images alone does not
+      # satisfy it (#163). `make push` above already built plugin/
+      # (rootfs + config.json), the exact tree `docker plugin create`
+      # consumed, so packaging that reconstructs the published plugin.
+      - name: Install cosign
+        uses: sigstore/cosign-installer@d58896d6a1865668819e1d91763c7751a165e159 # v3.9.2
+
+      - name: Package and sign release artifact
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          ART="net-dhcp-plugin-${TAG}-linux-amd64.tar.gz"
+          tar -czf "$ART" -C plugin .
+          sha256sum "$ART" > checksums.txt
+          # Keyless (Fulcio/OIDC) signature over the checksum manifest —
+          # one signature covers every listed artifact. Emits a detached
+          # signature and the short-lived signing certificate; both are
+          # public by design and verified against the Actions OIDC issuer.
+          cosign sign-blob --yes \
+            --output-signature checksums.txt.sig \
+            --output-certificate checksums.txt.pem \
+            "checksums.txt"
+          echo "Signed release artifact:"
+          cat checksums.txt
+
+      - name: Upload signed artifacts for the release job
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: signed-release
+          path: |
+            net-dhcp-plugin-*.tar.gz
+            checksums.txt
+            checksums.txt.sig
+            checksums.txt.pem
+          retention-days: 7
+          if-no-files-found: error
+
       # Convenience: print the install incantations operators will use,
       # straight into the workflow summary so the release page links
       # them prominently.
@@ -258,3 +300,86 @@ jobs:
             exit 1
           fi
           echo "Plugin ${REF} installs and enables cleanly." >> "$GITHUB_STEP_SUMMARY"
+
+  # Cut the GitHub Release with the signed artifacts attached. Gated on
+  # verify-install so a plugin that doesn't install/enable never gets an
+  # advertised Releases page pointing users at it — the same ordering
+  # the runbook's manual step 9 followed (cut the release only after the
+  # workflow, incl. verify-install, is green). Satisfies Scorecard
+  # Signed-Releases: every tag (incl. rc dry-runs) produces a Release
+  # carrying the cosign-signed checksum manifest (#163).
+  github-release:
+    needs: [release, verify-install]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write   # create the GitHub Release and upload assets
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAG: ${{ needs.release.outputs.tag }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ needs.release.outputs.tag }}
+          fetch-depth: 0
+
+      - name: Download signed artifacts
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: signed-release
+
+      - name: Assemble release notes
+        run: |
+          set -euo pipefail
+          # Per-version section from RELEASE_NOTES.md (the extraction the
+          # runbook documents). Exact-match the header so version dots
+          # aren't treated as regex. Empty for rc/suffixed tags that have
+          # no notes section — fall back to a short body so the dry-run
+          # still produces a release.
+          awk -v hdr="## ${TAG}" '$0==hdr{flag=1; next} /^## v/{flag=0} flag' \
+            RELEASE_NOTES.md > notes.md || true
+          if [ ! -s notes.md ]; then
+            echo "Pre-release / dry-run build for \`${TAG}\`." > notes.md
+          fi
+          # Append cosign verification instructions for the signed manifest.
+          {
+            echo
+            echo "## Verifying the signed artifacts"
+            echo
+            echo "The \`checksums.txt\` manifest is signed keylessly with cosign (Sigstore); one signature covers every attached artifact. Verify the manifest, then check the artifacts against it:"
+            echo
+            echo '```sh'
+            echo 'cosign verify-blob \'
+            echo '  --certificate checksums.txt.pem \'
+            echo '  --signature checksums.txt.sig \'
+            echo "  --certificate-identity-regexp '^https://github.com/claymore666/docker-net-dhcp/.github/workflows/release.yml@' \\"
+            echo '  --certificate-oidc-issuer https://token.actions.githubusercontent.com \'
+            echo '  checksums.txt'
+            echo 'sha256sum -c checksums.txt'
+            echo '```'
+          } >> notes.md
+
+      - name: Create or update the GitHub Release with signed artifacts
+        run: |
+          set -euo pipefail
+          if [ "${{ needs.release.outputs.prerelease }}" = "true" ]; then
+            PRE="--prerelease=true"
+          else
+            PRE="--prerelease=false"
+          fi
+          FILES="net-dhcp-plugin-${TAG}-linux-amd64.tar.gz checksums.txt checksums.txt.sig checksums.txt.pem"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            # Re-dispatch of an existing tag: refresh assets + metadata.
+            # shellcheck disable=SC2086
+            gh release upload "$TAG" $FILES --repo "$GITHUB_REPOSITORY" --clobber
+            # shellcheck disable=SC2086
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file notes.md $PRE
+          else
+            # shellcheck disable=SC2086
+            gh release create "$TAG" $FILES \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "$TAG" \
+              --notes-file notes.md \
+              --verify-tag $PRE
+          fi
+          echo "GitHub Release $TAG published with signed artifacts." >> "$GITHUB_STEP_SUMMARY"
