@@ -107,6 +107,19 @@ jobs:
         with:
           go-version: '1.25'
           cache: true
+      # actionlint shells out to shellcheck for `run:` blocks. The agent
+      # itself is pinned (above), but the runner-supplied shellcheck is
+      # not — a hosted-image bump silently changes what the gate reports
+      # and can redden unrelated PRs (#183). Pin it so the gate is
+      # deterministic; bump deliberately alongside actionlint.
+      - name: Install shellcheck (pinned)
+        env:
+          SHELLCHECK_VERSION: v0.10.0
+        run: |
+          curl -fsSL "https://github.com/koalaman/shellcheck/releases/download/${SHELLCHECK_VERSION}/shellcheck-${SHELLCHECK_VERSION}.linux.x86_64.tar.xz" \
+            | tar -xJ
+          sudo install -m 0755 "shellcheck-${SHELLCHECK_VERSION}/shellcheck" /usr/local/bin/shellcheck
+          shellcheck --version
       - name: Install actionlint
         run: go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
       - name: Lint workflows
