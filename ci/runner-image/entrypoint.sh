@@ -104,6 +104,11 @@ if [[ "${1:-}" == "selftest" ]]; then
     docker image inspect golang:1.25-alpine >/dev/null || { log "FAIL: golang seed missing"; exit 1; }
     docker image inspect alpine:3.20 >/dev/null || { log "FAIL: alpine seed missing"; exit 1; }
 
+    # Host tooling the suites shell out to. The failure-injection suite's
+    # L2-reachability check runs `ping` on the runner itself (not in a
+    # container) — failure_test.go, TestFailure_LeaseExpiry (#158).
+    command -v ping >/dev/null || { log "FAIL: ping missing (failure-injection L2 check needs it on the runner)"; exit 1; }
+
     # cgroup-nesting guard (#158): prepare_cgroups must have evacuated the
     # namespace-root so the nested daemon makes *domain* (not threaded)
     # cgroups — the precondition for runc's cgroup.kill task teardown. An
