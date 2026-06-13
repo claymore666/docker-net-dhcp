@@ -33,40 +33,64 @@ here, so the unit-test cadence stays fast.
 ## What's covered
 
 See [#56](https://github.com/claymore666/docker-net-dhcp/issues/56)
-for the umbrella scope. Tests so far:
+for the original umbrella scope. 22 test files, run serially (see
+below). Grouped by what they prove:
 
-- `lifecycle_macvlan_test.go` — full create→run→inspect→leave→delete
-  in macvlan mode.
-- `lifecycle_bridge_test.go` — same, in bridge mode (uses the
-  bridge fixture: separate Linux bridge + second dnsmasq on
-  192.168.100/24).
-- `lifecycle_ipvlan_test.go` — same, in ipvlan-L2 mode. Active as
-  of v0.7.0 — earlier it was `t.Skip`'d on a veth-parent harness
-  bug (broadcast OFFER didn't reach the slave); resolved in
-  [#62](https://github.com/claymore666/docker-net-dhcp/issues/62)
-  by setting the BROADCAST flag in the udhcpc DISCOVER (`-B`) and
-  skipping the MAC-echo at Join time on ipvlan (the kernel rejects
-  MAC changes on slaves with `EOPNOTSUPP`).
-- `tombstone_restart_test.go` — `docker restart <ctr>` preserves
-  MAC + IP via the tombstone mechanism.
-- `concurrency_test.go` — N containers attached simultaneously each
-  get a distinct lease.
-- `errors_test.go`, `errors_netlink_test.go` — option-validation
-  rejections (invalid mode, missing parent, wrong-mode options,
-  IPAM not null) plus netlink-state ones (parent down, parent is
-  a bridge, malformed driver-opt ip).
-- `recovery_test.go` — `docker plugin disable -f` + `enable` while
-  a container is attached; asserts Plugin.Health.recovered_ok ≥ 1
-  and the container's IP/MAC survive the recycle.
-- `recovery_daemon_test.go` — full daemon restart mid-suite (via
-  `harness.RestartDockerDaemon`: `systemctl` on systemd hosts,
-  supervised-dockerd signal on containerized runners)
-  with a `--restart=always` container attached; asserts the daemon
-  comes back, the container restarts, and the IP/MAC are
-  preserved. Empirically the IP is preserved via the tombstone
-  path (graceful shutdown calls Leave) rather than recoverEndpoints
-  — the test logs both paths' counters but tests on the
-  user-visible invariant.
+**Golden paths (per mode)**
+- `lifecycle_macvlan_test.go`, `lifecycle_bridge_test.go`,
+  `lifecycle_ipvlan_test.go` — full create→run→inspect→leave→delete
+  in each attachment mode. ipvlan active since v0.7.0 (#62: `-B`
+  broadcast flag + no MAC-echo on ipvlan).
+- `ipv6_test.go` — dual-stack golden paths (macvlan + bridge) with
+  `ipv6=true`, DNS6 default-off, and failure-only wire diagnostics
+  (tcpdump + neighbor tables). Three deeper tests (v6 renewal,
+  DNS6 opt-in, DUID persistence across plugin restart) are
+  `t.Skip`'d pending the IA unification (#152).
+- `concurrency_test.go` — N simultaneous containers, distinct leases.
+
+**Lease lifecycle & identity**
+- `lease_renew_test.go` — the persistent client renews at T1 without
+  disturbing the address (2m fixture lease floor ⇒ ~70s waits).
+- `tombstone_restart_test.go` — `docker restart` preserves MAC + IP.
+- `static_ip_test.go` — `--ip` / `--driver-opt ip=` request hints.
+- `client_id_test.go` — option 61 stability + `client_id` override.
+- `vendor_class_test.go` — option 60 round-trip via dnsmasq
+  class-tagged gateway override (exact-match route parsing, #130).
+- `audit_log_test.go` — `audit_log=true` ledger lifecycle
+  (bound→release), default-off absence (#109).
+
+**Option propagation**
+- `dns_propagate_test.go`, `mtu_propagate_test.go` — opt-in writes,
+  default-off pairs.
+- `extra_options_test.go` — captured-but-not-applied options (NTP,
+  TFTP, bootfile, search list).
+- `interface_name_test.go` — plugin honors the ifname endpoint
+  option + invalid names rejected at attach; the engine-applied
+  rename tests are capability-probe-gated (engine support pending
+  upstream, #125).
+
+**Failure injection (#128, separate step: `make integration-test-failure`)**
+- `failure_test.go` — `TestFailure_*` against per-test ephemeral
+  DHCP servers (`harness/ephemeral.go`): server loss during renewal
+  (retention + self-recovery), lease refused on renewal via server
+  renumbering (unattended re-acquisition, stale-inspect as the
+  documented #104 divergence), full lease expiry (deliberate
+  retention, endpoint stays reachable).
+
+**Recovery & restart**
+- `recovery_test.go` — plugin disable/enable with a live container.
+- `recovery_daemon_test.go` — daemon restart (supervisor-agnostic:
+  systemctl on bare metal, direct dockerd supervision in
+  containerized runners, #145) with a `--restart=always` container.
+- `preflight_probe_test.go` — `validate_dhcp=true` probe accept/
+  reject + bridge-mode rejection.
+
+**Error surfaces**
+- `errors_test.go`, `errors_netlink_test.go` — create-time
+  validation (modes, options, IPAM) and netlink-state rejections.
+- `health_counters_test.go` — /Plugin.Health counter movement.
+- `static_routes_bridge_test.go`, `static_routes_macvlan_test.go` —
+  route copying + `skip_routes` opt-out.
 
 Tests run **serially** by design. None of the current cases call
 `t.Parallel()`, even though most would be safe — the recovery and
@@ -107,21 +131,25 @@ in. Re-running upgrades in place.
 ```
 [host netns]
 
+
   Macvlan/ipvlan path:
-    dh-itest-host  <─ veth ─>  dh-itest-dhcp  (192.168.99.1/24)
-          │                          │
-     parent= for                dnsmasq #1
-     plugin children            pool 192.168.99.10–99
+    dh-itest-host  <─ veth ─>  dh-itest-dhcp  (192.168.99.1/24 +
+          │                          │          fd00:6470:6863::1/64)
+     parent= for                dnsmasq #1 (dual-stack + RA)
+     plugin children            v4 pool .10–.99, v6 ::10–::99
 
   Bridge path:
-    dh-itest-br2  (192.168.100.1/24)
+    dh-itest-br2  (192.168.100.1/24 + fd00:6470:6864::1/64)
           │
-     bridge= for                dnsmasq #2 bound to br2
-     plugin endpoints           pool 192.168.100.10–99
-                                + iptables FORWARD ACCEPT
-                                  (br_netfilter would otherwise
-                                  drop bridged DHCP under docker's
-                                  default-DROP FORWARD policy)
+     bridge= for                dnsmasq #2 (dual-stack + RA)
+     plugin endpoints           + ip(6)tables FORWARD ACCEPT
+
+  Failure-injection path (per-test, created/destroyed by each
+  TestFailure_*):
+    dh-itest-ehost <─ veth ─>  dh-itest-edhcp (192.168.101.1/24;
+          │                          │          renumbered to
+     parent= for                ephemeral dnsmasq (authoritative)
+     the test's network         Stop/StartAgain/RestartOnSubnet
 ```
 
 A single shared `Fixture` (`test/integration/harness/fixture.go`,
@@ -151,8 +179,10 @@ answered first.
 A second workflow, `.github/workflows/coverage.yml`, runs the same
 suite against a `go build -cover -coverpkg=./...` instrumented
 plugin (tag `:golang-cover`) and reports per-package coverage plus
-an HTML report as a workflow artifact. Manual-only
-(`workflow_dispatch`) — coverage runs aren't a PR gate.
+an HTML report as a workflow artifact. Runs on demand
+(`workflow_dispatch`) and on every release PR into `main`, where the
+coverage ratchet (`scripts/coverage-ratchet.sh` against
+`.github/coverage-baseline.txt`) is a required gate.
 
 Locally:
 
