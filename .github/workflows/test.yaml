@@ -51,6 +51,20 @@ jobs:
       - name: Test (with race detector)
         run: go test -race -count=1 ./...
 
+      # Native fuzzing over the untrusted DHCP-response parsers (#162):
+      # BuildEvent's env-var path (DHCP-server-controlled) and the
+      # handler-pipe JSON decoder. Time-boxed so regressions surface
+      # per-PR without a long-running job; the committed seed corpora
+      # also run unconditionally in the race step above. Scorecard's
+      # Fuzzing check is satisfied by the presence of these targets.
+      - name: Fuzz (short)
+        run: |
+          for target in FuzzBuildEvent FuzzEventUnmarshal; do
+            echo "::group::${target}"
+            go test ./pkg/udhcpc/ -run '^$' -fuzz "^${target}$" -fuzztime 20s
+            echo "::endgroup::"
+          done
+
       # The CI gate scripts are code too — their table-driven tests run
       # here so a broken ratchet/vuln gate fails like any unit test.
       - name: Gate script self-tests
