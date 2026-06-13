@@ -16,15 +16,15 @@ FROM debian:trixie-slim@sha256:4e401d95de7083948053197a9c3913343cd06b706bf15eb6a
 RUN apt-get update && apt-get install -y --no-install-recommends skopeo ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 RUN mkdir /seed \
-    && skopeo copy docker://docker.io/library/golang:1.25-alpine \
-         docker-archive:/seed/golang-builder.tar:golang:1.25-alpine \
+    && skopeo copy docker://docker.io/library/golang:1.26-alpine \
+         docker-archive:/seed/golang-builder.tar:golang:1.26-alpine \
     && skopeo copy docker://docker.io/library/alpine:3.20 \
          docker-archive:/seed/alpine-testimage.tar:alpine:3.20
 
 # ---- runner image
 FROM debian:trixie-slim@sha256:4e401d95de7083948053197a9c3913343cd06b706bf15eb6a0c3ccd26f436a0e
 
-ARG GO_VERSION=1.25.9
+ARG GO_VERSION=1.26.4
 # Resolved by the build workflow from actions/runner's latest release;
 # no default on purpose so a stale pin can't hide in this file.
 ARG RUNNER_VERSION
