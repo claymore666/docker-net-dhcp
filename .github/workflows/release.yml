@@ -170,10 +170,20 @@ jobs:
       # Auth note: DOCKERHUB_TOKEN must be a Personal Access Token with
       # Read & Write scope on this repo (not just Read & Write image
       # push) — Docker Hub gates description-update behind admin scope.
-      # If this step 401s, regenerate the token; image-push tokens
+      # If this step 401s/403s, regenerate the token; image-push tokens
       # alone won't do.
+      #
+      # continue-on-error: the long description is auxiliary metadata —
+      # the published plugin (both registries) is what users pull, and
+      # the runbook already treats the whole Hub path as optional
+      # (GHCR alone still publishes). A description-sync auth failure
+      # (e.g. a rotated / under-scoped token) must NOT fail the release
+      # job or block verify-install; it surfaces as a red step to fix
+      # out-of-band and re-syncs on the next release once the token is
+      # restored. v1.0.0-rc1 caught exactly this: Hub 403 on PATCH.
       - name: Sync Docker Hub description from README
         if: env.HAS_HUB_CREDS == 'true'
+        continue-on-error: true
         uses: peter-evans/dockerhub-description@v5
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
