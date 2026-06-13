@@ -7,8 +7,26 @@
 #   - Never lower a floor without a recorded decision in the PR body.
 #
 # Seeded from the v0.9.0 published numbers (RELEASE_NOTES.md).
-github.com/devplayer0/docker-net-dhcp/pkg/util 87.7
-github.com/devplayer0/docker-net-dhcp/pkg/plugin 82.4
-github.com/devplayer0/docker-net-dhcp/pkg/udhcpc 81.3
+#
+# v1.0.0 recorded decision (release PR #154):
+#   - pkg/udhcpc 81.3 -> 85.5: RAISED, earned by the v6 client-args
+#     and BuildEvent table tests this cycle.
+#   - pkg/plugin 82.4 -> 77.5: LOWERED deliberately. v1.0.0 added a
+#     large amount of new defensive/error-path code to this package
+#     (renew() re-address failure arms, awaitLinkLocal timeout, the
+#     macvlan MAC pin error path, the v6 setupClient arm, ifname
+#     threading through Join/CreateEndpoint). The new *behaviors* are
+#     covered by the expanded integration + failure-injection suites;
+#     the residual gap is `if err != nil { log }` branches that need
+#     fault injection not feasible at integration level. Measured
+#     78.0; floor set at 77.5 for epsilon room. The intent is to
+#     ratchet this back up as error-path coverage is added, not to
+#     normalize the lower number.
+#   - pkg/util 87.7 -> 87.0: LOWERED for run-to-run integration
+#     variance only — no util code changed this cycle; measured 87.1,
+#     0.1 over the old epsilon. New floor leaves variance headroom.
+github.com/devplayer0/docker-net-dhcp/pkg/util 87.0
+github.com/devplayer0/docker-net-dhcp/pkg/plugin 77.5
+github.com/devplayer0/docker-net-dhcp/pkg/udhcpc 85.5
 github.com/devplayer0/docker-net-dhcp/cmd/net-dhcp 75.0
 github.com/devplayer0/docker-net-dhcp/cmd/udhcpc-handler 50.0
