@@ -1,6 +1,11 @@
-# actionlint config (#127). The integration/coverage workflows run on a
-# self-hosted runner with a custom label; declare it so actionlint
-# doesn't flag `runs-on: [self-hosted, gpu1]` as an unknown runner.
+# actionlint config (#127). The integration/coverage workflows run on
+# self-hosted runners with custom labels; declare them so actionlint
+# doesn't flag `runs-on: [self-hosted, <label>]` as an unknown runner.
+#
+#   dhcp-ci  — the ephemeral container-in-container runners (image
+#              ghcr.io/claymore666/dhcp-ci-runner; names dhcp-ci-<n>,
+#              pooled 2-4 by the orchestrator). The sole runner target
+#              since the gpu1 bare-metal runner was retired (#157).
 self-hosted-runner:
   labels:
-    - gpu1
+    - dhcp-ci

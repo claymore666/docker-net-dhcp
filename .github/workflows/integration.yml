@@ -1,11 +1,17 @@
 name: Integration
 
 # Live integration tests against the plugin. Run on the self-hosted
-# `gpu1` runner because they need privileges (CAP_NET_ADMIN, mount/
-# netns ops, bind UDP/67) and a real DHCP server (dnsmasq) — neither
-# is feasible on free GitHub-hosted runners.
+# `dhcp-ci` runners because they need privileges (CAP_NET_ADMIN,
+# mount/netns ops, bind UDP/67) and a real DHCP server (dnsmasq) —
+# neither is feasible on free GitHub-hosted runners.
 #
-# SECURITY: this workflow runs as root on the maintainer's hardware.
+# The `dhcp-ci` runners are ephemeral: one container = one job, each
+# with its own nested Docker daemon (image ghcr.io/claymore666/
+# dhcp-ci-runner, Docker Engine >= 28). An orchestrator pools 2-4 of
+# them (names dhcp-ci-<n>), so jobs run in PARALLEL and in full
+# isolation — replacing the single serial bare-metal runner.
+#
+# SECURITY: this workflow runs as root inside the runner container.
 # Repo Settings → Actions → General → "Fork pull request workflows
 # from outside collaborators" is set to "Require approval for all
 # outside collaborators" so external PRs sit in pending until manually
@@ -20,23 +26,21 @@ on:
       - main
       - dev
 
-# Serialize against every other workflow that touches the self-hosted
-# runner's shared docker state (the :integration / :golang-cover plugin
-# refs and the dnsmasq fixture ports). Shared group with coverage.yml.
-# Note GitHub keeps at most one running + one pending run per group: a
-# third run replaces the pending one (it shows as cancelled — re-run it
-# if its PR still needs the check). cancel-in-progress stays false so a
-# running suite is never killed mid-test (#127).
-concurrency:
-  group: selfhosted-docker
-  cancel-in-progress: false
+# No concurrency group (intentional — do not re-add). The gpu1-era
+# `selfhosted-docker` group serialized jobs because they shared one
+# bare-metal Docker daemon (the :integration / :golang-cover plugin
+# refs, the dnsmasq fixture's fixed veth names + UDP/67). Each
+# `dhcp-ci` job now runs in its own ephemeral container with an
+# isolated nested daemon, so those collisions can't happen — parallel
+# jobs are safe, and serializing them would throw away the whole point
+# of the move.
 
 permissions:
   contents: read
 
 jobs:
   integration:
-    runs-on: [self-hosted, gpu1]
+    runs-on: [self-hosted, dhcp-ci]
     # 35 = main suite (~10 min here, 558s measured on runner-class
     # hardware, #146) + failure-injection suite (~10 min of mostly
     # deliberate DHCP-timing waits, #128) + plugin build + margin.
@@ -44,19 +48,16 @@ jobs:
     env:
       INTEGRATION_PLUGIN_REF: ghcr.io/claymore666/docker-net-dhcp:integration
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
-      # The Go toolchain is pre-installed on the runner via
-      # test/integration/install-go-runner.sh (one-time operator
-      # action). Skipping actions/setup-go saves ~30s per run on
-      # this runner since the version in go.mod (1.25) doesn't ship
-      # in apt anyway. If go is missing, fail loudly so the runner
-      # operator sees the install step they need to run.
+      # The Go toolchain (go.mod's version) is baked into the dhcp-ci
+      # runner image, so actions/setup-go is skipped. Fail loudly if
+      # it's ever missing — that means the runner image drifted from
+      # go.mod and needs a rebuild (ci/runner-image/).
       - name: Verify Go toolchain
         run: |
           if ! command -v go >/dev/null; then
-            echo "go not in PATH on this runner."
-            echo "Run: sudo bash test/integration/install-go-runner.sh"
+            echo "go not in PATH — dhcp-ci runner image is stale vs go.mod; rebuild ci/runner-image/"
             exit 1
           fi
           go version
