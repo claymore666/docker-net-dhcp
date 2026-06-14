@@ -24,6 +24,14 @@ updates:
       actions:
         patterns:
           - "*"
+    ignore:
+      # Hold actions/download-artifact at v7 until actions/upload-artifact
+      # ships a v8. download-artifact v8 defaults a download digest
+      # mismatch to a hard failure, and pairing upload v7 (its current
+      # latest) with download v8 mixes majors on the release artifacts.
+      # Remove this once upload-artifact v8 exists so both bump together.
+      - dependency-name: "actions/download-artifact"
+        versions: [">= 8"]
 
   # Keep the SHA-pinned base-image digests fresh (#159). One entry per
   # Dockerfile directory: the plugin build at the root and the CI
