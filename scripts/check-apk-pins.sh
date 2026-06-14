@@ -53,17 +53,30 @@ echo
 # Run apk inside the alpine image once and ask for each pinned pkg.
 # `apk policy` lists installed/available versions; we grep for the head
 # of the indexed candidate. Cleaner than parsing the apk index by hand.
-LATEST=$(docker run --rm "$ALPINE_REF" sh -c '
-    apk update -q >/dev/null
-    for p in "$@"; do
-        name="${p%%=*}"
-        printf "%s\t" "$name"
-        apk policy "$name" 2>/dev/null | awk "/^[[:space:]]+[0-9]/ {print \$1; exit}"
-    done
-' -- "${PINS[@]}")
+#
+# Test seam (#169): when APK_AVAIL_FILE is set, read pre-canned
+# `name<TAB>version` lines from it instead of querying the registry, so
+# the parse/compare logic is exercisable by scripts/test-check-apk-pins.sh
+# without docker or network.
+if [[ -n "${APK_AVAIL_FILE:-}" ]]; then
+    LATEST=$(cat "$APK_AVAIL_FILE")
+else
+    LATEST=$(docker run --rm "$ALPINE_REF" sh -c '
+        apk update -q >/dev/null
+        for p in "$@"; do
+            name="${p%%=*}"
+            printf "%s\t" "$name"
+            apk policy "$name" 2>/dev/null | awk "/^[[:space:]]+[0-9]/ {print \$1; exit}"
+        done
+    ' -- "${PINS[@]}")
+fi
 
 drift=0
 while IFS=$'\t' read -r name avail; do
+    # `apk policy` prints the candidate version with a trailing colon
+    # (e.g. `1.36.1-r31:`); strip it so a current pin compares equal
+    # instead of being falsely flagged as drifted (#169).
+    avail="${avail%:}"
     pinned=""
     for p in "${PINS[@]}"; do
         if [[ "${p%%=*}" == "$name" ]]; then pinned="${p#*=}"; fi
