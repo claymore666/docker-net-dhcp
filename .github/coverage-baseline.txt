@@ -25,8 +25,23 @@
 #   - pkg/util 87.7 -> 87.0: LOWERED for run-to-run integration
 #     variance only — no util code changed this cycle; measured 87.1,
 #     0.1 over the old epsilon. New floor leaves variance headroom.
-github.com/devplayer0/docker-net-dhcp/pkg/util 87.0
-github.com/devplayer0/docker-net-dhcp/pkg/plugin 77.5
+#
+# v1.2.0 recorded decision (PR #220, #206 — error-path coverage):
+#   - pkg/plugin 77.5 -> 82.0: RAISED. This is the follow-through on the
+#     v1.0.0 intent above. New docker-client interface + netlink
+#     function-var seams made the previously integration-only / wholly
+#     unreachable error arms unit-testable (netOptions fallback,
+#     recoverEndpoints, lookup/initialDHCP/reacquire docker arms,
+#     validateParentForChild, deleteParentAttachedEndpoint, addRoutes,
+#     findLinkByMAC). Measured merged 82.3; floor 82.0 for epsilon room.
+#     Restores the pre-v1.0.0 level (was 82.4).
+#   - pkg/util 87.0 -> 88.0: RAISED, earned by the JSONErrResponse
+#     log-severity branch tests. Measured 88.7; floor 88.0.
+#   - pkg/udhcpc / cmd/net-dhcp left at floor: their +0.3/+0.4 this run
+#     is integration run-to-run variance, not earned by this PR (no
+#     udhcpc/cmd code or tests changed) — not ratcheted.
+github.com/devplayer0/docker-net-dhcp/pkg/util 88.0
+github.com/devplayer0/docker-net-dhcp/pkg/plugin 82.0
 github.com/devplayer0/docker-net-dhcp/pkg/udhcpc 85.5
 github.com/devplayer0/docker-net-dhcp/cmd/net-dhcp 75.0
 github.com/devplayer0/docker-net-dhcp/cmd/udhcpc-handler 50.0
