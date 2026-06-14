@@ -283,10 +283,15 @@ Contributions are welcome.
   mode (`bridge`, `macvlan`, or `ipvlan`), and the relevant output from
   `docker plugin logs <plugin>`.
 - **Code changes:** open a pull request against the `dev` branch (not `main`).
-  Every PR must pass the required CI checks — unit tests, `staticcheck`, the
-  live integration suite, `govulncheck`, and `actionlint` — before it can be
-  merged. New functionality is expected to ship with tests; a coverage ratchet
-  enforces this at release time.
+  Requirements for an acceptable contribution:
+  - **Coding standard:** Go code must be formatted with `gofmt` and pass
+    `go vet` and [`staticcheck`](https://staticcheck.dev/); shell and workflow
+    files must pass `shellcheck`/`actionlint`. These are enforced in CI.
+  - **Tests:** new functionality is expected to ship with tests; a coverage
+    ratchet enforces this at release time.
+  - **Green CI:** every PR must pass the required checks — unit tests,
+    `staticcheck`, the live integration suite, `govulncheck`, and `actionlint` —
+    before it can be merged.
 - **Security vulnerabilities:** do **not** open a public issue — follow the
   private process described in [SECURITY.md](SECURITY.md).
 
