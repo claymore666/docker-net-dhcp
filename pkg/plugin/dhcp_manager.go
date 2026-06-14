@@ -286,7 +286,7 @@ func (m *dhcpManager) renew(v6 bool, info udhcpc.Info) error {
 			WithField("new_ip", ip).
 			Warn("udhcpc renew with changed IP — Docker's view is now stale")
 
-		// Apply the re-acquired lease to the link (v4). Found by
+		// Apply the re-acquired lease to the link. Found by
 		// TestFailure_LeaseRefusedOnRenewal (#128): without this the
 		// kernel keeps the ORIGINAL address forever — the container
 		// answers on an address the server may already have handed to
@@ -296,18 +296,19 @@ func (m *dhcpManager) renew(v6 bool, info udhcpc.Info) error {
 		// bind and black-holing the endpoint. Address first, routes
 		// after — same ordering the kernel itself requires.
 		//
-		// v6 is deliberately left alone for now: the persistent
-		// udhcpc6 negotiates a second IA (different IAID than
-		// CreateEndpoint's one-shot), so "changed IP" is the v6
-		// steady-state, and re-addressing would flip every ipv6=true
-		// container to the persistent IA seconds after start. That
-		// unification is its own design change, tracked with #103's
-		// follow-up.
+		// Applies to both families now (#152): dhcpcd pins the same
+		// DUID-LL/IAID for the one-shot and persistent clients, so the
+		// persistent v6 client renews the SAME address Docker was told
+		// — a "changed IP" is therefore a genuine renumber to re-apply,
+		// not the old IA-split steady state. (Previously the v6 arm was
+		// disabled because busybox's per-process random IAID made every
+		// ipv6=true container look like it changed address seconds after
+		// start.)
 		//
 		// netHandle/ctrLink are always live on the production path
 		// (renew runs from the event loop, post-Start); the guard
 		// keeps pre-Start unit tests of the counter semantics valid.
-		if !v6 && m.netHandle != nil && m.ctrLink != nil {
+		if m.netHandle != nil && m.ctrLink != nil {
 			if err := m.netHandle.AddrReplace(m.ctrLink, ip); err != nil {
 				return fmt.Errorf("failed to apply re-acquired address %v: %w", ip, err)
 			}
@@ -539,9 +540,14 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 		}
 	}
 	client, err := udhcpc.NewDHCPClient(m.ctrLink.Attrs().Name, &udhcpc.DHCPClientOptions{
-		Hostname:    m.hostname,
-		V6:          v6,
-		Namespace:   m.nsPath,
+		Hostname:  m.hostname,
+		V6:        v6,
+		Namespace: m.nsPath,
+		// Same MAC the CreateEndpoint one-shot used (this is the same
+		// link, moved into the netns), so dhcpcd derives the identical
+		// DUID-LL/IAID and the persistent client renews the very lease
+		// Docker was told about (#152).
+		MAC:         m.ctrLink.Attrs().HardwareAddr,
 		RequestedIP: requestedIP,
 		// ipvlan slaves share the parent's MAC; without -B the server
 		// may unicast renewals to the parent and the kernel has no

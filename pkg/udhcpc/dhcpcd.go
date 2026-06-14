@@ -27,6 +27,13 @@ import (
 
 const dhcpcdBin = "dhcpcd"
 
+// EventFIFOEnv is the environment variable, pushed to dhcpcd's hook via
+// the `env` config directive, that tells the handler where to write its
+// JSON events. dhcpcd's hook stdout is unusable as a data channel
+// (/dev/null once daemonised, interleaved with dhcpcd's log in
+// foreground), so the parent opens a FIFO and passes its path here.
+const EventFIFOEnv = "NETDHCP_EVENT_FIFO"
+
 // duidLL renders a DUID-LL (RFC 8415 §11.4) for mac in the colon-hex
 // "value" form dhcpcd's `duid` directive accepts (dhcpcd.conf(5): "If
 // not ll, lt or uuid then value will be converted from 00:11:22:33
@@ -93,6 +100,7 @@ type dhcpcdParams struct {
 
 	Handler    string // hook script path (-c)
 	ConfigPath string // where the rendered config will be written (-f)
+	EventFIFO  string // FIFO the handler writes events to (env directive); "" omits
 }
 
 // renderConfig produces the dhcpcd.conf text for p. Only directives
@@ -115,6 +123,13 @@ func renderConfig(p dhcpcdParams) string {
 
 	// Pinned identity (the core of the IA unification).
 	fmt.Fprintf(&b, "duid %s\n", duidLL(p.MAC))
+
+	// Tell the hook where to deliver events (dhcpcd scrubs the
+	// environment, so this rides the `env` directive rather than the
+	// process environment).
+	if p.EventFIFO != "" {
+		fmt.Fprintf(&b, "env %s=%s\n", EventFIFOEnv, p.EventFIFO)
+	}
 
 	// Keep dhcpcd off host/system files.
 	for _, h := range []string{"resolv.conf", "hostname", "ntp.conf", "yp.conf"} {
@@ -173,7 +188,13 @@ func renderArgs(p dhcpcdParams) []string {
 		"-f", p.ConfigPath,
 	}
 	if p.Once {
-		args = append(args, "-1")
+		// One-shot acquisition (CreateEndpoint): exit after the first
+		// lease, and -p (persistent) so the binding is NOT released on
+		// that exit — the persistent client claims the same address
+		// moments later. The persistent client omits -p so it releases
+		// the lease when the plugin stops it (the old busybox -R
+		// behaviour).
+		args = append(args, "-1", "-p")
 	}
 	if p.V6 {
 		args = append(args, "-6")

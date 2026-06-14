@@ -185,6 +185,20 @@ func TestRenderConfig_OmitsAbsentOptionals(t *testing.T) {
 	}
 }
 
+func TestRenderConfig_EventFIFO(t *testing.T) {
+	mac := mustMAC(t, "de:ad:be:ef:00:01")
+	// present → emitted as an `env` directive (dhcpcd scrubs the process
+	// environment, so this is how the hook learns the FIFO path).
+	conf := renderConfig(dhcpcdParams{Iface: "eth0", MAC: mac, EventFIFO: "/run/net-dhcp/x/events"})
+	if !hasLine(conf, "env NETDHCP_EVENT_FIFO=/run/net-dhcp/x/events") {
+		t.Errorf("config missing env FIFO directive:\n%s", conf)
+	}
+	// absent → no env line.
+	if strings.Contains(renderConfig(dhcpcdParams{Iface: "eth0", MAC: mac}), "env ") {
+		t.Error("config emitted an env directive with no FIFO set")
+	}
+}
+
 func TestRenderArgs_OneShotV4(t *testing.T) {
 	got := renderArgs(dhcpcdParams{
 		Iface:      "eth0",
@@ -196,7 +210,7 @@ func TestRenderArgs_OneShotV4(t *testing.T) {
 		"dhcpcd", "-B", "--noconfigure", "-L",
 		"-c", "/usr/lib/net-dhcp/udhcpc-handler",
 		"-f", "/run/net-dhcp/eth0-v4.conf",
-		"-1", "-4", "eth0",
+		"-1", "-p", "-4", "eth0",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("args mismatch:\ngot:  %v\nwant: %v", got, want)
@@ -217,9 +231,13 @@ func TestRenderArgs_PersistentV6(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("args mismatch:\ngot:  %v\nwant: %v", got, want)
 	}
-	// Persistent client must not get the one-shot flag.
+	// Persistent client must not get the one-shot flag, and must NOT be
+	// -p (it should release its lease when the plugin stops it).
 	if hasArg(got, "-1") {
 		t.Errorf("persistent client got -1: %v", got)
+	}
+	if hasArg(got, "-p") {
+		t.Errorf("persistent client got -p; it must release on stop: %v", got)
 	}
 }
 

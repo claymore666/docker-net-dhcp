@@ -18,12 +18,17 @@ RUN mkdir bin/ && go build $COVER_FLAGS -o bin/ ./cmd/...
 
 FROM alpine:3.24.0@sha256:a2d49ea686c2adfe3c992e47dc3b5e7fa6e6b5055609400dc2acaeb241c829f4
 
-# Pin both the Alpine minor and the apk package versions: busybox supplies
-# udhcpc (the entire DHCP exchange), so a silent regression in busybox-extras
-# would land in plugin builds without warning. Bump together when refreshing.
+# Pin both the Alpine minor and the apk package versions: dhcpcd performs
+# the entire DHCP/DHCPv6 exchange (#152 — it replaced busybox udhcpc/udhcpc6
+# so the DHCPv6 IAID can be pinned and the one-shot + persistent clients
+# share one identity association). A silent regression here would land in
+# plugin builds without warning, so pin and bump deliberately. dhcpcd 10.x
+# is required (the per-interface model used here is removed in dhcpcd 11).
+# `sh`, `mount`, and `unshare` (per-client mount-namespace isolation of
+# dhcpcd's state dir) come from the base Alpine busybox.
 RUN mkdir -p /run/docker/plugins /var/lib/net-dhcp && \
     apk add --no-cache \
-        busybox-extras=1.37.0-r31 \
+        dhcpcd=10.3.2-r0 \
         iproute2=7.0.0-r0
 
 COPY --from=builder /usr/local/src/docker-net-dhcp/bin/net-dhcp /usr/sbin/

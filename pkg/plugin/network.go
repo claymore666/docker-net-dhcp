@@ -544,6 +544,11 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 				Hostname:    hostname,
 				ClientID:    clientID,
 				VendorClass: opts.VendorClass,
+				// Pin the dhcpcd DUID-LL/IAID off the container veth's
+				// MAC so this one-shot and the persistent client (same
+				// link, same MAC, post-move) share one identity and the
+				// server returns a single binding (#152).
+				MAC: ctrLink.Attrs().HardwareAddr,
 			}
 			// RequestedIP is v4-only in udhcpc; passing it for v6
 			// would be silently ignored anyway, but keep it explicit.

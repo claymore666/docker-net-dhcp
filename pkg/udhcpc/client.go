@@ -2,16 +2,14 @@ package udhcpc
 
 import (
 	"bufio"
-	"bytes"
 	"context"
-	"encoding/binary"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
+	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"syscall"
 
@@ -24,6 +22,15 @@ import (
 const (
 	DefaultHandler = "/usr/lib/net-dhcp/udhcpc-handler"
 	VendorID       = "docker-net-dhcp"
+
+	// dhcpcdStateDir is dhcpcd's compile-time database directory (DUID +
+	// lease files). dhcpcd offers no runtime override and keys files by
+	// interface name, so two containers whose container-side link is the
+	// default `eth0` would collide on the host-shared directory. Each
+	// client therefore runs in a private mount namespace with a tmpfs
+	// mounted here (see Start). Identity (DUID/IAID) is pinned via
+	// literal config, so a fresh empty state dir is harmless.
+	dhcpcdStateDir = "/var/lib/dhcpcd"
 )
 
 type DHCPClientOptions struct {
@@ -32,192 +39,149 @@ type DHCPClientOptions struct {
 	Once      bool
 	Namespace string
 
-	// RequestedIP, when non-empty, is passed to udhcpc as `-r ADDR`,
-	// which makes the client send DHCPREQUEST for that specific IP
-	// before falling back to DISCOVER. Used on plugin-restart
-	// recovery to keep the same lease the container is already using
-	// (the server ACKs if the lease is still valid; on NAK udhcpc
-	// transparently falls back to a fresh DISCOVER).
-	//
-	// Format: a bare dotted-quad IPv4 address. No effect for V6.
+	// MAC is the endpoint's (pinned) hardware address. It is the sole
+	// input to the DUID-LL and IAID pinned in the generated config, so
+	// the one-shot (host netns) and persistent (container netns) clients
+	// derive an identical identity and the DHCP server returns a single
+	// binding (#152).
+	MAC net.HardwareAddr
+
+	// RequestedIP, when non-empty, becomes dhcpcd's `request ADDR`
+	// (DHCPv4): the client asks for that specific address, the server
+	// ACKs if the lease is still valid and otherwise falls back to a
+	// fresh offer. Used on plugin-restart recovery and container restart
+	// to keep the same lease. v4 only — for v6 use PreferredV6.
 	RequestedIP string
 
-	// ClientID, when non-empty, is sent as DHCP option 61 (RFC 2132).
-	// Servers that key reservations on client-id (rather than MAC) can
-	// then track the same logical client across MAC changes — including
-	// the kernel-randomised MACs Docker assigns when a container is
-	// recreated, and the shared-MAC scenario inherent to ipvlan L2.
-	//
-	// The wire format is one type byte followed by an opaque identifier.
-	// We use type 0 (per-client opaque) and let the caller pass whatever
-	// stable bytes make sense (typically a hash of the Docker EndpointID).
+	// PreferredV6, when non-empty, becomes the address in dhcpcd's
+	// `ia_na <iaid> / ADDR` (DHCPv6): a preferred-address hint in the
+	// pinned IA_NA. v6 only.
+	PreferredV6 string
+
+	// ClientID, when non-empty, is sent as DHCPv4 option 61 (dhcpcd
+	// `clientid`), prefixed with the type-0 ("opaque") byte the busybox
+	// path used so existing server reservations keyed on it keep
+	// matching. v6 identity is carried by DUID+IAID, so this is ignored
+	// for v6.
 	ClientID []byte
 
-	// VendorClass, when non-empty, overrides the default vendor class
-	// identifier (option 60) sent in DHCP requests. Empty falls back
-	// to the package-level VendorID constant ("docker-net-dhcp"), which
-	// is what every callsite used pre-T2-3. Has no effect for V6 — udhcpc6
-	// doesn't accept the -V flag.
+	// VendorClass overrides DHCPv4 option 60 (dhcpcd `vendorclassid`).
+	// Empty falls back to the VendorID constant. v4 only.
 	VendorClass string
 
-	// Broadcast (v4 only) makes udhcpc set the BROADCAST flag in the
-	// DHCPDISCOVER, telling the server to send the OFFER as L2
-	// broadcast rather than unicast to chaddr. Required for ipvlan-L2:
-	// every slave shares the parent's MAC, so a unicast OFFER lands
-	// on the parent and the kernel has no L3 hint to demux it to the
-	// right slave (the slave's IP isn't configured yet). For macvlan
-	// and bridge modes it's harmless — modern DHCP servers honour the
-	// flag and clients receive the broadcast on their own interface.
-	// Maps to udhcpc's `-B`.
+	// Broadcast requests an L2-broadcast reply (ipvlan-L2, where every
+	// slave shares the parent MAC). NOTE: dhcpcd broadcast handling is
+	// not yet wired here — tracked for the ipvlan path; see #152.
 	Broadcast bool
 
 	HandlerScript string
 }
 
-// DHCPClient represents a udhcpc(6) client
+// DHCPClient represents a dhcpcd client managing one interface/family.
 type DHCPClient struct {
 	Opts *DHCPClientOptions
 
-	cmd       *exec.Cmd
-	eventPipe io.ReadCloser
+	cmd     *exec.Cmd
+	workDir string   // per-client temp dir: generated config + event FIFO
+	fifo    *os.File // read+keep-alive (O_RDWR) end of the event FIFO
+
+	waitErr  error
+	waitDone chan struct{} // closed when cmd.Wait() returns
 }
 
-// NewDHCPClient creates a new udhcpc(6) client
+// NewDHCPClient creates a dhcpcd client for iface. It allocates a
+// per-client working directory, generates the dhcpcd config (pinned
+// identity + observe-only + the event FIFO) and the event FIFO itself,
+// and builds the (mount-namespace-wrapped) command. Start runs it.
 func NewDHCPClient(iface string, opts *DHCPClientOptions) (*DHCPClient, error) {
-	if opts.HandlerScript == "" {
-		opts.HandlerScript = DefaultHandler
+	handler := opts.HandlerScript
+	if handler == "" {
+		handler = DefaultHandler
+	}
+	vendor := opts.VendorClass
+	if vendor == "" && !opts.V6 {
+		vendor = VendorID
 	}
 
-	path := "udhcpc"
-	// The two busybox clients accept DIFFERENT -O vocabularies, and an
-	// unknown option name is a hard startup error (`udhcpc6: unknown
-	// option 'mtu'` → exit 1), not a warning — passing the v4 list to
-	// udhcpc6 broke every `ipv6=true` exchange from v0.9.0 until the
-	// first v6 integration test caught it (#103).
-	//
-	// v4 (beyond udhcpc's default request list 1, 3, 6, 12, 15, 28, 42):
-	//   - mtu     (option 26)  — applied to ctr link when PropagateMTU
-	//   - search  (option 119) — written to resolv.conf when PropagateDNS
-	//   - tftp    (option 66)  — surfaced via plugin log
-	//   - bootfile(option 67)  — surfaced via plugin log
-	//
-	// v6 (udhcpc6 knows: dns search fqdn tz timezone bootfile_url
-	// bootfile_param pxeconffile pxepathprefix; dns/option 23 is
-	// requested by default):
-	//   - search  (option 24, domain search list) — resolv.conf when
-	//     PropagateDNS. There is no DHCPv6 MTU option (MTU comes from
-	//     RA) and no v6 equivalents of tftp/bootfile in udhcpc6's
-	//     vocabulary.
-	//
-	// dnsmasq / RFC-conformant servers only return options the client
-	// asked for. Always-on; the per-option propagate_* gates decide
-	// whether to *act* on the values.
-	reqOpts := []string{"-O", "mtu", "-O", "search", "-O", "tftp", "-O", "bootfile"}
-	if opts.V6 {
-		path = "udhcpc6"
-		reqOpts = []string{"-O", "search"}
-	}
-	args := append([]string{"-f", "-i", iface, "-s", opts.HandlerScript}, reqOpts...)
-	c := &DHCPClient{
-		Opts: opts,
-		// Foreground, set interface and handler "script", plus the
-		// family-specific option requests above.
-		cmd: exec.Command(path, args...),
-	}
-
-	stderrPipe, err := c.cmd.StderrPipe()
+	workDir, err := os.MkdirTemp("", "net-dhcp-dhcpcd-")
 	if err != nil {
-		return nil, fmt.Errorf("failed to set up udhcpc stderr pipe: %w", err)
-	}
-	// Pipe udhcpc stderr (logs) to logrus at debug level. io.Copy returns
-	// io.EOF as nil; any non-nil error means the pipe broke unexpectedly.
-	go func() {
-		if _, err := io.Copy(log.StandardLogger().WriterLevel(log.DebugLevel), stderrPipe); err != nil {
-			log.WithError(err).Debug("udhcpc stderr pipe closed with error")
-		}
-	}()
-
-	if c.eventPipe, err = c.cmd.StdoutPipe(); err != nil {
-		return nil, fmt.Errorf("failed to set up udhcpc stdout pipe: %w", err)
+		return nil, fmt.Errorf("failed to create dhcpcd work dir: %w", err)
 	}
 
-	if opts.Once {
-		// Exit after obtaining lease
-		c.cmd.Args = append(c.cmd.Args, "-q")
-	} else {
-		// Release IP address on exit
-		c.cmd.Args = append(c.cmd.Args, "-R")
+	cleanup := func(e error) (*DHCPClient, error) {
+		_ = os.RemoveAll(workDir)
+		return nil, e
 	}
 
-	if opts.RequestedIP != "" && !opts.V6 {
-		c.cmd.Args = append(c.cmd.Args, "-r", opts.RequestedIP)
+	fifoPath := filepath.Join(workDir, "events")
+	if err := syscall.Mkfifo(fifoPath, 0o600); err != nil {
+		return cleanup(fmt.Errorf("failed to create event FIFO: %w", err))
 	}
 
-	if opts.Broadcast && !opts.V6 {
-		c.cmd.Args = append(c.cmd.Args, "-B")
+	configPath := filepath.Join(workDir, "dhcpcd.conf")
+	params := dhcpcdParams{
+		Iface:       iface,
+		MAC:         opts.MAC,
+		V6:          opts.V6,
+		Once:        opts.Once,
+		Hostname:    opts.Hostname,
+		VendorClass: vendor,
+		ClientID:    opts.ClientID,
+		RequestedIP: opts.RequestedIP,
+		PreferredV6: opts.PreferredV6,
+		Handler:     handler,
+		ConfigPath:  configPath,
+		EventFIFO:   fifoPath,
+	}
+	if err := os.WriteFile(configPath, []byte(renderConfig(params)), 0o600); err != nil {
+		return cleanup(fmt.Errorf("failed to write dhcpcd config: %w", err))
 	}
 
-	if opts.Hostname != "" {
-		hostnameOpt := "hostname:" + opts.Hostname
-		if opts.V6 {
-			// TODO: We encode the fqdn for DHCPv6 because udhcpc6 seems to be broken
-			var data bytes.Buffer
-
-			// flags: S bit set (see RFC4704). binary.Write to a bytes.Buffer
-			// can only fail on out-of-memory, which we'd never recover from.
-			_ = binary.Write(&data, binary.BigEndian, uint8(0b0001))
-			_ = binary.Write(&data, binary.BigEndian, uint8(len(opts.Hostname)))
-			data.WriteString(opts.Hostname)
-
-			hostnameOpt = "0x27:" + hex.EncodeToString(data.Bytes())
-		}
-
-		c.cmd.Args = append(c.cmd.Args, "-x", hostnameOpt)
+	// Open the read end now (and keep it open with O_RDWR so the FIFO
+	// never reports EOF between the short-lived hook processes that write
+	// to it). The reaper closes it on process exit to end the scanner.
+	fifo, err := os.OpenFile(fifoPath, os.O_RDWR, 0)
+	if err != nil {
+		return cleanup(fmt.Errorf("failed to open event FIFO: %w", err))
 	}
 
-	// Vendor ID string option is not available for udhcpc6
-	if !opts.V6 {
-		vendor := opts.VendorClass
-		if vendor == "" {
-			vendor = VendorID
-		}
-		c.cmd.Args = append(c.cmd.Args, "-V", vendor)
+	// dhcpcd has no runtime state-dir override, so isolate per client in
+	// a private mount namespace with a tmpfs over the state dir. unshare
+	// execs (no fork) so the resulting process IS dhcpcd — signals and
+	// Wait target it directly. `sh -c '... exec "$0" "$@"'` passes the
+	// dhcpcd argv as $0/$@, avoiding any quoting of paths.
+	dargs := renderArgs(params)
+	mountExec := fmt.Sprintf("mount -t tmpfs tmpfs %s 2>/dev/null; exec \"$0\" \"$@\"", dhcpcdStateDir)
+	wrapped := append([]string{"unshare", "-m", "/bin/sh", "-c", mountExec}, dargs...)
+
+	c := &DHCPClient{
+		Opts:    opts,
+		cmd:     exec.Command(wrapped[0], wrapped[1:]...),
+		workDir: workDir,
+		fifo:    fifo,
 	}
+	// dhcpcd's own logs (stdout/stderr) go to logrus at debug level; the
+	// structured events come over the FIFO, not these streams.
+	c.cmd.Stdout = log.StandardLogger().WriterLevel(log.DebugLevel)
+	c.cmd.Stderr = log.StandardLogger().WriterLevel(log.DebugLevel)
 
-	// DHCP option 61 (client identifier). Format on the wire is
-	// 1 byte type + N bytes id. udhcpc takes hex via -x 0x3d:HEX,
-	// where HEX is the literal hex of the option payload — so we
-	// prefix with our type byte and hex-encode the rest.
-	if len(opts.ClientID) > 0 && !opts.V6 {
-		const clientIDType = 0x00 // RFC 2132: type 0 = opaque, no DUID
-		var b bytes.Buffer
-		b.WriteByte(clientIDType)
-		b.Write(opts.ClientID)
-		c.cmd.Args = append(c.cmd.Args, "-x", "0x3d:"+hex.EncodeToString(b.Bytes()))
-	}
-
-	log.WithField("cmd", c.cmd).Trace("new udhcpc client")
-
+	log.WithField("cmd", c.cmd.Args).Trace("new dhcpcd client")
 	return c, nil
 }
 
-// Start starts udhcpc(6).
+// Start starts dhcpcd and returns a channel of lease events read from
+// the FIFO. The channel is closed when the dhcpcd process exits (on its
+// own for one-shot, or via Finish for the persistent client).
 //
 // Concurrency contract: when Opts.Namespace is non-empty, Start enters
 // the target netns by locking the calling goroutine to its OS thread,
-// switching netns, spawning the child, and switching back. It is *not*
-// re-entrant on the same goroutine (a nested Start on the same g would
-// double-LockOSThread). Concurrent Starts on *different* goroutines
-// are safe — each goroutine flips its own thread independently.
-//
-// On netns-restore failure the calling thread is deliberately leaked
-// (a second LockOSThread pins it so Go's runtime won't reuse it for
-// other goroutines). That's the safer choice than letting the wrong-
-// netns state leak into the runtime's thread pool — the OS scheduler
-// reaps the thread when the process exits, which is soon enough.
+// switching netns, spawning the child (which inherits the netns), and
+// switching back. It is *not* re-entrant on the same goroutine.
+// Concurrent Starts on *different* goroutines are safe. On netns-restore
+// failure the calling thread is deliberately leaked so the wrong-netns
+// state never re-enters Go's thread pool.
 func (c *DHCPClient) Start() (chan Event, error) {
 	if c.Opts.Namespace != "" {
-		// Lock the OS Thread so we don't accidentally switch namespaces
 		runtime.LockOSThread()
 		defer runtime.UnlockOSThread()
 
@@ -245,12 +209,10 @@ func (c *DHCPClient) Start() (chan Event, error) {
 			return nil, fmt.Errorf("failed to enter network namespace: %w", err)
 		}
 
-		// Make sure we go back to the old namespace when we return.
-		// If restoration fails the goroutine is locked to a thread that is
-		// now in the wrong netns; we deliberately keep it locked (and a
-		// second Lock call ensures the Unlock above doesn't pair) so the
-		// thread dies rather than leak the wrong-netns state into the Go
-		// runtime's thread pool.
+		// Restore the original netns on return. If restoration fails the
+		// goroutine is locked to a thread now in the wrong netns; keep it
+		// locked (a second Lock so the deferred Unlock doesn't pair) so
+		// the thread dies rather than leak the wrong-netns state.
 		defer func() {
 			if err := netns.Set(origNS); err != nil {
 				log.WithError(err).Error("Failed to restore original netns; pinning thread for kill")
@@ -260,97 +222,98 @@ func (c *DHCPClient) Start() (chan Event, error) {
 	}
 
 	if err := c.cmd.Start(); err != nil {
+		c.fifo.Close()
+		_ = os.RemoveAll(c.workDir)
 		return nil, err
 	}
 
-	// Buffered + non-blocking send: after Finish runs, the consumer
-	// goroutine in dhcpManager has already taken the stop branch and
-	// will never read events again. A final event line emitted by
-	// udhcpc between SIGTERM and exit must not deadlock the scanner
-	// goroutine on an unbuffered send.
+	c.waitDone = make(chan struct{})
 	events := make(chan Event, 16)
+
+	// Scanner: read newline-delimited JSON events off the FIFO and hand
+	// them downstream. Owns the events channel: closes it when the FIFO
+	// read ends (the reaper closes the FIFO once dhcpcd exits). A full
+	// channel drops events rather than blocking the DHCP exchange.
 	go func() {
 		defer close(events)
-		scanner := bufio.NewScanner(c.eventPipe)
+		scanner := bufio.NewScanner(c.fifo)
 		for scanner.Scan() {
-			log.WithField("line", string(scanner.Bytes())).Trace("udhcpc handler line")
-
-			// Each line is a JSON-encoded event
+			log.WithField("line", string(scanner.Bytes())).Trace("dhcpcd handler line")
 			var event Event
 			if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
-				log.WithError(err).Warn("Failed to decode udhcpc event")
+				log.WithError(err).Warn("Failed to decode dhcpcd event")
 				continue
 			}
-
 			select {
 			case events <- event:
 			default:
-				log.WithField("event", event.Type).Warn("udhcpc event dropped: consumer slow or finished")
+				log.WithField("event", event.Type).Warn("dhcpcd event dropped: consumer slow or finished")
 			}
 		}
+	}()
+
+	// Reaper: the single owner of cmd.Wait(). When dhcpcd exits it closes
+	// the FIFO (ending the scanner, which closes events) and records the
+	// exit status for Finish/Wait.
+	go func() {
+		c.waitErr = c.cmd.Wait()
+		c.fifo.Close()
+		close(c.waitDone)
 	}()
 
 	return events, nil
 }
 
-// Finish sends SIGTERM to udhcpc(6) and waits for it to exit. SIGTERM
-// will not be sent if `Opts.Once` is set.
+// Finish stops the client and waits for it to exit. For the persistent
+// client it sends SIGTERM (dhcpcd releases its lease and exits); the
+// one-shot client exits on its own (-1), so Finish only awaits it.
 func (c *DHCPClient) Finish(ctx context.Context) error {
-	// If only running to get an IP once, udhcpc will terminate on its own
 	if !c.Opts.Once {
 		if err := c.cmd.Process.Signal(syscall.SIGTERM); err != nil {
-			// The process can self-exit between Start and here (NAK,
-			// parent NIC vanished, netns torn down). os.ErrProcessDone
-			// is the wrapped sentinel for that race; treat as success
-			// and let Wait reap so we don't leak a zombie.
-			if errors.Is(err, os.ErrProcessDone) {
-				log.WithFields(log.Fields{"v6": c.Opts.V6}).
-					Debug("udhcpc already exited before SIGTERM; reaping")
-				return c.Wait(ctx)
+			// The process can self-exit between Start and here (lease
+			// failure, parent NIC vanished, netns torn down). Treat the
+			// "already done" sentinel as success and just reap.
+			if !errors.Is(err, os.ErrProcessDone) {
+				return fmt.Errorf("failed to send SIGTERM to dhcpcd: %w", err)
 			}
-			return fmt.Errorf("failed to send SIGTERM to udhcpc: %w", err)
+			log.WithField("v6", c.Opts.V6).Debug("dhcpcd already exited before SIGTERM; reaping")
 		}
 	}
-
-	return c.Wait(ctx)
+	return c.await(ctx)
 }
 
-// Wait reaps the udhcpc(6) child without signalling it. Use this when the
-// process has already exited on its own (e.g. the consumer noticed the
-// event pipe close): if cmd.Wait is never called the kernel keeps the
-// child as a zombie. Bounded by ctx so a stuck Wait can't block teardown.
+// Wait reaps the dhcpcd process without signalling it. Use when the
+// process has already exited on its own (the consumer noticed the event
+// channel close). Bounded by ctx so a stuck exit can't block teardown.
 func (c *DHCPClient) Wait(ctx context.Context) error {
-	// Buffered: on ctx.Done we Kill and return without reading errChan,
-	// so the Wait goroutine must not block forever trying to send. With
-	// the buffer, Wait completes and the goroutine exits, no zombie.
-	errChan := make(chan error, 1)
-	go func() {
-		errChan <- c.cmd.Wait()
-	}()
+	return c.await(ctx)
+}
 
+// await blocks until the reaper has reaped the process (or ctx fires, in
+// which case it kills the process and still drains the reaper), then
+// removes the per-client working directory.
+func (c *DHCPClient) await(ctx context.Context) error {
+	if c.waitDone == nil {
+		// Start never ran / failed; nothing to reap.
+		_ = os.RemoveAll(c.workDir)
+		return nil
+	}
 	select {
-	case err := <-errChan:
-		return err
+	case <-c.waitDone:
+		_ = os.RemoveAll(c.workDir)
+		return c.waitErr
 	case <-ctx.Done():
-		// Best-effort kill; if it fails the process is already gone.
 		_ = c.cmd.Process.Kill()
+		<-c.waitDone
+		_ = os.RemoveAll(c.workDir)
 		return ctx.Err()
 	}
 }
 
-// GetIP is a convenience function that runs udhcpc(6) once and returns
-// the IP info obtained. The caller's opts is not mutated — we work on a
-// local copy so a caller that reuses the options struct between persistent
-// and one-shot calls doesn't get its Once flag flipped on.
-//
-// Implementation note (W-5 in the 2026-05-05 review): the previous form
-// shared a `*Info` pointer between the events-collector goroutine and
-// the main goroutine without synchronisation, and busy-looped on the
-// closed events channel because the receive didn't check `ok`. The
-// `range events` loop here drains until the scanner closes the channel,
-// then hands the final lease back through `ch` — which is the
-// happens-before edge between the goroutine's last write and the main
-// goroutine's read.
+// GetIP runs dhcpcd once and returns the lease info obtained. The
+// caller's opts is not mutated — we work on a local copy so a caller
+// that reuses the options struct between persistent and one-shot calls
+// doesn't get its Once flag flipped on.
 func GetIP(ctx context.Context, iface string, opts *DHCPClientOptions) (Info, error) {
 	dummy := Info{}
 
@@ -366,9 +329,9 @@ func GetIP(ctx context.Context, iface string, opts *DHCPClientOptions) (Info, er
 		return dummy, fmt.Errorf("failed to start DHCP client: %w", err)
 	}
 
-	// ch carries the final lease seen, or stays unsent if no
-	// bound/renew event arrived before the scanner closed events.
-	// Buffered=1 so the goroutine never blocks on send.
+	// ch carries the final lease seen, or stays unsent if no bound/renew
+	// event arrived before the events channel closed. Buffered=1 so the
+	// goroutine never blocks on send.
 	ch := make(chan Info, 1)
 	go func() {
 		var last *Info
