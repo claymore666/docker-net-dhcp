@@ -16,7 +16,7 @@ COPY pkg/ ./pkg/
 RUN mkdir bin/ && go build $COVER_FLAGS -o bin/ ./cmd/...
 
 
-FROM alpine:3.20.3@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
+FROM alpine:3.24.0@sha256:a2d49ea686c2adfe3c992e47dc3b5e7fa6e6b5055609400dc2acaeb241c829f4
 
 # Pin both the Alpine minor and the apk package versions: busybox supplies
 # udhcpc (the entire DHCP exchange), so a silent regression in busybox-extras
