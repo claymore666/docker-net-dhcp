@@ -202,7 +202,7 @@ jobs:
       # (rootfs + config.json), the exact tree `docker plugin create`
       # consumed, so packaging that reconstructs the published plugin.
       - name: Install cosign
-        uses: sigstore/cosign-installer@d58896d6a1865668819e1d91763c7751a165e159 # v3.9.2
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
       # Sign the published plugin images by digest (#173). docker plugins
       # are OCI artifacts, so cosign signs them like any image once we
