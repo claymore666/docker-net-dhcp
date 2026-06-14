@@ -22,11 +22,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
         with:
-          go-version: '1.25'
+          go-version: '1.26'
           cache: true
 
       # Drifted go.mod/go.sum slips through silently until someone
@@ -51,6 +51,20 @@ jobs:
       - name: Test (with race detector)
         run: go test -race -count=1 ./...
 
+      # Native fuzzing over the untrusted DHCP-response parsers (#162):
+      # BuildEvent's env-var path (DHCP-server-controlled) and the
+      # handler-pipe JSON decoder. Time-boxed so regressions surface
+      # per-PR without a long-running job; the committed seed corpora
+      # also run unconditionally in the race step above. Scorecard's
+      # Fuzzing check is satisfied by the presence of these targets.
+      - name: Fuzz (short)
+        run: |
+          for target in FuzzBuildEvent FuzzEventUnmarshal; do
+            echo "::group::${target}"
+            go test ./pkg/udhcpc/ -run '^$' -fuzz "^${target}$" -fuzztime 20s
+            echo "::endgroup::"
+          done
+
       # The CI gate scripts are code too — their table-driven tests run
       # here so a broken ratchet/vuln gate fails like any unit test.
       - name: Gate script self-tests
@@ -58,6 +72,7 @@ jobs:
           bash scripts/test-coverage-ratchet.sh
           bash scripts/test-govulncheck-gate.sh
           bash scripts/test-check-option-docs.sh
+          bash scripts/test-check-apk-pins.sh
 
       # Every driver-option key the code parses must be documented in
       # docs/reference.md — an undocumented option turns CI red (#132).
@@ -68,13 +83,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
         with:
-          go-version: '1.25'
+          go-version: '1.26'
           cache: true
       - name: Install staticcheck
-        run: go install honnef.co/go/tools/cmd/staticcheck@latest
+        run: go install honnef.co/go/tools/cmd/staticcheck@v0.7.0
       - name: Run staticcheck
         run: staticcheck ./...
 
@@ -88,13 +103,26 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
         with:
-          go-version: '1.25'
+          go-version: '1.26'
           cache: true
+      # actionlint shells out to shellcheck for `run:` blocks. The agent
+      # itself is pinned (above), but the runner-supplied shellcheck is
+      # not — a hosted-image bump silently changes what the gate reports
+      # and can redden unrelated PRs (#183). Pin it so the gate is
+      # deterministic; bump deliberately alongside actionlint.
+      - name: Install shellcheck (pinned)
+        env:
+          SHELLCHECK_VERSION: v0.10.0
+        run: |
+          curl -fsSL "https://github.com/koalaman/shellcheck/releases/download/${SHELLCHECK_VERSION}/shellcheck-${SHELLCHECK_VERSION}.linux.x86_64.tar.xz" \
+            | tar -xJ
+          sudo install -m 0755 "shellcheck-${SHELLCHECK_VERSION}/shellcheck" /usr/local/bin/shellcheck
+          shellcheck --version
       - name: Install actionlint
-        run: go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
+        run: go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
       - name: Lint workflows
         run: actionlint -color
       - name: Verify actionlint catches known-bad patterns
@@ -108,16 +136,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       # Keep this toolchain in sync with the Dockerfile's golang base
       # image — stdlib findings are evaluated against the scan
       # toolchain, which should represent what ships in the plugin.
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
         with:
-          go-version: '1.25'
+          go-version: '1.26'
           cache: true
       - name: Install govulncheck
-        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.3.0
       - name: Scan
         run: |
           govulncheck ./... > vulns.txt || true

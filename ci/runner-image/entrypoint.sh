@@ -14,6 +14,92 @@ set -euo pipefail
 
 log() { echo "[entrypoint] $*" >&2; }
 
+# --- cgroup v2 nesting prep --------------------------------------------
+# We run dockerd bare (no systemd, no docker:dind entrypoint), so without
+# this every container process lands directly in the cgroup-namespace root.
+# cgroup v2's "no internal processes" rule then forbids that root from being
+# a clean domain parent, so the nested daemon is forced to create plugin /
+# container cgroups as *threaded*. runc (docker-ce >= 29) tears tasks down
+# with cgroup.kill, which the kernel rejects on threaded cgroups with
+# EOPNOTSUPP — breaking `docker plugin disable && enable` and any task whose
+# teardown needs a kill (issue #158, caught by
+# TestRecovery_PluginDisableEnable_PreservesEndpoint on the dhcp-ci runner).
+#
+# Fix, the same move systemd / docker:dind make: evacuate the root cgroup
+# into a leaf so it holds no processes, then delegate every controller to
+# child subtrees. The nested daemon's cgroups are then proper *domain*
+# cgroups and cgroup.kill works. Idempotent; cgroup v2 only.
+prepare_cgroups() {
+    [ "$(stat -fc %T /sys/fs/cgroup 2>/dev/null)" = "cgroup2fs" ] || return 0
+    mkdir -p /sys/fs/cgroup/init
+    # Move our own shell into the leaf FIRST: every command we fork below
+    # (cat, wc, dockerd...) then inherits the leaf instead of repopulating
+    # the root we are trying to empty.
+    echo $$ > /sys/fs/cgroup/init/cgroup.procs 2>/dev/null || true
+    # Sweep the remaining processes (tini, strays) out of the root. The
+    # proc list is a live kernel file, so snapshot it with $(cat) rather
+    # than streaming it, and repeat until the root is empty — a single
+    # pass can miss PIDs that move/fork mid-sweep. Root must be empty
+    # before delegation: a cgroup with member processes can't enable
+    # controllers for its children (cgroup v2 "no internal processes").
+    for _ in 1 2 3 4 5; do
+        moved=0
+        for pid in $(cat /sys/fs/cgroup/cgroup.procs 2>/dev/null); do
+            echo "$pid" > /sys/fs/cgroup/init/cgroup.procs 2>/dev/null || true
+            moved=1
+        done
+        [ "$moved" -eq 0 ] && break
+    done
+    # Delegate all available controllers down to child cgroups.
+    for c in $(cat /sys/fs/cgroup/cgroup.controllers); do
+        echo "+$c" > /sys/fs/cgroup/cgroup.subtree_control 2>/dev/null || true
+    done
+    log "cgroup prep: root type=$(cat /sys/fs/cgroup/cgroup.type), root procs=$(wc -l < /sys/fs/cgroup/cgroup.procs), subtree=[$(cat /sys/fs/cgroup/cgroup.subtree_control)]"
+}
+prepare_cgroups
+
+# --- proxy plumbing ----------------------------------------------------
+# The CI host forces outbound traffic through an HTTP proxy (squid). The
+# orchestrator injects HTTP(S)_PROXY/NO_PROXY via `docker run -e`. Three
+# consumers need it; only the third isn't automatic:
+#   1. the Actions runner + job tooling (go/git/curl) inherit our env.
+#   2. the nested dockerd inherits our env -> honors it for registry pulls.
+#   3. RUN steps inside `docker build` (the plugin builder's `go mod
+#      download`, repo-root Dockerfile) get a FRESH env -> the daemon's
+#      proxy is invisible to them. Docker only forwards proxy into builds
+#      when the CLI's config.json carries a `proxies` block. Materialize
+#      that here so `make plugin`'s build honors the proxy.
+# The proxy URL is never baked into the image: no proxy env -> nothing
+# written -> no behavior change on direct-egress hosts (issue #181).
+setup_proxy() {
+    local proxy="${HTTPS_PROXY:-${https_proxy:-${HTTP_PROXY:-${http_proxy:-}}}}"
+    [ -n "$proxy" ] || return 0
+    local http_p="${HTTP_PROXY:-${http_proxy:-$proxy}}"
+    local https_p="${HTTPS_PROXY:-${https_proxy:-$proxy}}"
+    # Loopback + the integration fixture subnets (dnsmasq on veth pairs)
+    # must always bypass the proxy; merge with any orchestrator-supplied
+    # NO_PROXY rather than clobbering it.
+    local fixed="localhost,127.0.0.1,::1,192.168.99.0/24,192.168.100.0/24"
+    local no_p="${NO_PROXY:-${no_proxy:-}}"
+    no_p="${no_p:+$no_p,}$fixed"
+    export HTTP_PROXY="$http_p" HTTPS_PROXY="$https_p" NO_PROXY="$no_p"
+    export http_proxy="$http_p" https_proxy="$https_p" no_proxy="$no_p"
+    mkdir -p /root/.docker
+    cat > /root/.docker/config.json <<EOF
+{
+  "proxies": {
+    "default": {
+      "httpProxy": "$http_p",
+      "httpsProxy": "$https_p",
+      "noProxy": "$no_p"
+    }
+  }
+}
+EOF
+    log "proxy: build + daemon honor httpsProxy=$https_p (NO_PROXY=$no_p)"
+}
+setup_proxy
+
 # --- supervised dockerd ------------------------------------------------
 # Plain relaunch loop. dockerd must NOT be the container's main
 # process: the daemon-restart test SIGTERMs it and expects a fresh
@@ -57,8 +143,41 @@ if [[ "${1:-}" == "selftest" ]]; then
     driver=$(docker info --format '{{.Driver}}')
     [[ "$driver" == "overlay2" || "$driver" == "overlayfs" ]] \
         || { log "FAIL: storage driver is $driver, want overlay2/overlayfs (vfs = missing volume)"; exit 1; }
-    docker image inspect golang:1.25-alpine >/dev/null || { log "FAIL: golang seed missing"; exit 1; }
+    docker image inspect golang:1.26-alpine >/dev/null || { log "FAIL: golang seed missing"; exit 1; }
     docker image inspect alpine:3.20 >/dev/null || { log "FAIL: alpine seed missing"; exit 1; }
+
+    # Host tooling the suites shell out to. The failure-injection suite's
+    # L2-reachability check runs `ping` on the runner itself (not in a
+    # container) — failure_test.go, TestFailure_LeaseExpiry (#158).
+    command -v ping >/dev/null || { log "FAIL: ping missing (failure-injection L2 check needs it on the runner)"; exit 1; }
+
+    # cgroup-nesting guard (#158): prepare_cgroups must have evacuated the
+    # namespace-root so the nested daemon makes *domain* (not threaded)
+    # cgroups — the precondition for runc's cgroup.kill task teardown. An
+    # unprepped root shows "domain threaded" with the container's processes
+    # still in it; that is exactly what made plugin disable/enable EOPNOTSUPP.
+    if [ "$(stat -fc %T /sys/fs/cgroup 2>/dev/null)" = "cgroup2fs" ]; then
+        root_type=$(cat /sys/fs/cgroup/cgroup.type 2>/dev/null || echo unknown)
+        root_procs=$(wc -l < /sys/fs/cgroup/cgroup.procs)
+        [ "$root_type" = "domain" ] && [ "$root_procs" -eq 0 ] \
+            || { log "FAIL: cgroup root type='$root_type' procs=$root_procs (want domain/0); prepare_cgroups did not take — plugin task teardown would EOPNOTSUPP (#158)"; exit 1; }
+        log "selftest: cgroup posture OK (root=domain, root procs=0)"
+    fi
+
+    # proxy wiring (#181): when selftest runs WITH a proxy env, prove
+    # setup_proxy materialized the docker CLI config that makes
+    # `docker build` honor it, and that the fixture subnets stay direct.
+    # Hermetic — selftest does no network pulls, so a bogus proxy is fine.
+    if [ -n "${HTTPS_PROXY:-}${HTTP_PROXY:-}${https_proxy:-}${http_proxy:-}" ]; then
+        cfg=/root/.docker/config.json
+        [ -f "$cfg" ] || { log "FAIL: proxy env set but $cfg not written (setup_proxy did not run)"; exit 1; }
+        grep -q '"httpsProxy"' "$cfg" || { log "FAIL: $cfg has no httpsProxy entry"; exit 1; }
+        case ",${NO_PROXY:-}," in
+            *,192.168.99.0/24,*) : ;;
+            *) log "FAIL: NO_PROXY ('${NO_PROXY:-}') missing fixture subnet 192.168.99.0/24"; exit 1 ;;
+        esac
+        log "selftest: proxy wiring OK ($cfg written, NO_PROXY keeps fixtures direct)"
+    fi
 
     old_pid=$(cat /var/run/docker.pid)
     log "selftest: SIGTERM dockerd (pid ${old_pid}), expecting supervised relaunch"
@@ -72,7 +191,7 @@ if [[ "${1:-}" == "selftest" ]]; then
         ((SECONDS >= deadline)) && { log "FAIL: no relaunched daemon within 45s"; exit 1; }
         sleep 1
     done
-    docker image inspect golang:1.25-alpine >/dev/null || { log "FAIL: seed lost across restart"; exit 1; }
+    docker image inspect golang:1.26-alpine >/dev/null || { log "FAIL: seed lost across restart"; exit 1; }
     log "selftest OK: driver=overlay2, seeds present, supervised restart ${old_pid} -> ${new_pid}"
     exit 0
 fi

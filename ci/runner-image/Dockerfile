@@ -12,19 +12,19 @@
 # The plugin's digest-pinned base (alpine:3.20.3@sha256:...) is NOT
 # seeded: `docker load` can't satisfy digest references, and at 3.5 MB
 # the per-job pull is noise. The golang builder is the one that hurts.
-FROM debian:trixie-slim AS seeder
+FROM debian:trixie-slim@sha256:4e401d95de7083948053197a9c3913343cd06b706bf15eb6a0c3ccd26f436a0e AS seeder
 RUN apt-get update && apt-get install -y --no-install-recommends skopeo ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 RUN mkdir /seed \
-    && skopeo copy docker://docker.io/library/golang:1.25-alpine \
-         docker-archive:/seed/golang-builder.tar:golang:1.25-alpine \
+    && skopeo copy docker://docker.io/library/golang:1.26-alpine \
+         docker-archive:/seed/golang-builder.tar:golang:1.26-alpine \
     && skopeo copy docker://docker.io/library/alpine:3.20 \
          docker-archive:/seed/alpine-testimage.tar:alpine:3.20
 
 # ---- runner image
-FROM debian:trixie-slim
+FROM debian:trixie-slim@sha256:4e401d95de7083948053197a9c3913343cd06b706bf15eb6a0c3ccd26f436a0e
 
-ARG GO_VERSION=1.25.9
+ARG GO_VERSION=1.26.4
 # Resolved by the build workflow from actions/runner's latest release;
 # no default on purpose so a stale pin can't hide in this file.
 ARG RUNNER_VERSION
@@ -32,10 +32,13 @@ ARG RUNNER_VERSION
 # Base tooling + Docker Engine from download.docker.com (Debian 13's
 # docker.io is 26.x; the nested daemon must be >= 28 — engine-gated
 # tests, #125). dnsmasq is the test fixture's DHCP server: binary
-# only, there is no init system in here to start it.
+# only, there is no init system in here to start it. iputils-ping:
+# the failure-injection suite's L2-reachability check shells out to
+# `ping` on the runner host (failure_test.go, TestFailure_LeaseExpiry);
+# the bare-metal runner had it, this slim base does not (#158).
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         ca-certificates curl git make jq procps tini xz-utils \
-        iproute2 iptables dnsmasq \
+        iproute2 iptables dnsmasq iputils-ping \
     && install -m 0755 -d /etc/apt/keyrings \
     && curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc \
     && printf 'Types: deb\nURIs: https://download.docker.com/linux/debian\nSuites: trixie\nComponents: stable\nSigned-By: /etc/apt/keyrings/docker.asc\n' \

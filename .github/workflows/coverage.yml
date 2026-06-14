@@ -12,7 +12,7 @@ name: Coverage
 # plugin build + flush + report); the per-PR production gate stays
 # `integration.yml`.
 #
-# Same self-hosted runner as integration.yml (gpu1), same security
+# Same ephemeral `dhcp-ci` runners as integration.yml, same security
 # posture (outside-collaborator approval required for forked PRs —
 # though only `workflow_dispatch` is wired here, so forks can't trigger
 # this at all).
@@ -26,19 +26,17 @@ on:
     branches:
       - main
 
-# Shared group with integration.yml — both mutate the same runner's
-# docker state. See the note there about GitHub's one-pending-run
-# replacement behaviour (#127).
-concurrency:
-  group: selfhosted-docker
-  cancel-in-progress: false
+# No concurrency group (intentional). Each dhcp-ci job runs in its own
+# ephemeral container with an isolated nested daemon, so coverage and
+# integration no longer contend for one bare-metal Docker state — they
+# run in parallel. See integration.yml for the full rationale.
 
 permissions:
   contents: read
 
 jobs:
   coverage:
-    runs-on: [self-hosted, gpu1]
+    runs-on: [self-hosted, dhcp-ci]
     # 35 = main + failure-injection suites against the instrumented
     # plugin (#128) + cover build + margin.
     timeout-minutes: 35
@@ -46,7 +44,7 @@ jobs:
       COVER_PLUGIN_REF: ghcr.io/claymore666/docker-net-dhcp:golang-cover
       COVER_DIR: /var/lib/dh-cover
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       # Coverage uses `-coverpkg=./...` for the unit-test step, which
       # forces go test to recompile stdlib's internal/coverage runtime
@@ -57,9 +55,9 @@ jobs:
       # "go1.25.0"' error. setup-go gives us a known-clean toolchain
       # at the cost of ~30s — fine for a 12-minute workflow that
       # runs only on manual dispatch.
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
         with:
-          go-version: '1.25'
+          go-version: '1.26'
 
       - name: Cleanup orphans from previous runs
         run: bash test/integration/cleanup-orphans.sh
@@ -188,7 +186,7 @@ jobs:
 
       - name: Upload coverage artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: coverage-${{ github.run_id }}
           path: |

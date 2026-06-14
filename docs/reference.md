@@ -27,7 +27,7 @@ The plugin publishes to two registries; GHCR is primary:
 for unattended):
 
 ```bash
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.0.0
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.1.0
 ```
 
 Privileges requested: `network: host`, host PID namespace, the Docker
@@ -35,9 +35,16 @@ socket mount, `CAP_NET_ADMIN` + `CAP_SYS_ADMIN`. All four are inherent
 to what the plugin does (creating links in arbitrary netns, driving
 DHCP on the host's L2 segments, querying the daemon).
 
+**Verify the signature (v1.1.0+).** The published image is cosign-signed
+(keyless) and carries SLSA build provenance; release artifacts ship a
+cosign-signed `checksums.txt` and an SBOM. Per-release, copy-pasteable
+verification commands live under **Verifying the signed artifacts** on
+each [GitHub Release](https://github.com/claymore666/docker-net-dhcp/releases);
+the [README](../README.md#verifying-releases) has the short form.
+
 **Pin a version.** `:latest` exists and tracks the newest release, but
 networks remember the exact driver string they were created with — a
-network created against `:v1.0.0` needs that tag present to operate.
+network created against `:v1.1.0` needs that tag present to operate.
 Pinning makes upgrades a deliberate step instead of a pull-side
 surprise.
 
@@ -87,7 +94,7 @@ You bring an existing Linux bridge that is L2-connected to the LAN
 bridge setup itself):
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.0.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.1.0 \
     --ipam-driver null \
     -o bridge=my-bridge \
     my-dhcp-net
@@ -99,7 +106,7 @@ No host changes — containers get per-container kernel-generated MACs
 as macvlan children of a host NIC:
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.0.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.1.0 \
     --ipam-driver null \
     -o mode=macvlan -o parent=eth0 \
     lan-dhcp
@@ -113,7 +120,7 @@ security, hostile vSwitches, some Wi-Fi APs). The DHCP server must
 key reservations on DHCP option 61 (client identifier), not MAC:
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.0.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.1.0 \
     --ipam-driver null \
     -o mode=ipvlan -o parent=eth0 \
     lan-dhcp
@@ -192,7 +199,7 @@ Set with `docker plugin set <plugin> NAME=value`; take effect after
 JSON liveness + counters on the plugin's UNIX socket:
 
 ```bash
-PLUGIN_ID=$(docker plugin inspect -f '{{.Id}}' ghcr.io/claymore666/docker-net-dhcp:v1.0.0)
+PLUGIN_ID=$(docker plugin inspect -f '{{.Id}}' ghcr.io/claymore666/docker-net-dhcp:v1.1.0)
 curl -s --unix-socket /run/docker/plugins/$PLUGIN_ID/net-dhcp.sock \
     http://localhost/Plugin.Health | jq .
 ```
@@ -262,7 +269,7 @@ Compose-managed alternative (network lifecycle tied to the project):
 ```yaml
 networks:
   lan:
-    driver: ghcr.io/claymore666/docker-net-dhcp:v1.0.0
+    driver: ghcr.io/claymore666/docker-net-dhcp:v1.1.0
     driver_opts:
       mode: macvlan
       parent: eth0

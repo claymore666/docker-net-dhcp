@@ -26,6 +26,87 @@ vulnerable code path is reachable from the plugin process, so no
 action is required. Recorded here so future audits don't
 re-investigate. (Original report: third-pass code review, 2026-05-04.)
 
+The v1.1.0 Dependency Review gate (#193) surfaced two further
+`github.com/docker/docker` advisories at v28.5.2:
+
+- **GHSA-x86f-5xw2-fm2r** — `PUT /containers/{id}/archive` executes a
+  container binary on the host.
+- **GHSA-rg2x-37c3-w2rh** — race condition in `docker cp` allows
+  bind-mount redirection to a host path.
+
+Both are `docker cp` / archive-extraction paths in the Moby daemon and
+CLI. The plugin invokes none of them — its only client calls remain the
+three inspect/list APIs above — so neither is reachable; `govulncheck`
+confirms (green). No fix is published on the frozen
+`github.com/docker/docker` module path (successor `moby/moby/v2`
+migration tracked in #178). They are accepted at the advisory level in
+`.github/dependency-review-config.yml` with a review date, alongside the
+older AuthZ finding (GHSA-x744-4wpc-v9h2 = GO-2026-4887), and will be
+re-evaluated when the module migration lands.
+
+## v1.1.0
+
+A security, supply-chain, and toolchain-maintenance release. **There are
+no functional plugin changes** — bridge / macvlan / ipvlan behaviour,
+every driver option, and the on-disk and `/Plugin.Health` surfaces are
+identical to v1.0.0. A network created against v1.0.0 behaves exactly the
+same on v1.1.0; what changed is how the artifacts are built, signed, and
+verified, and the security posture of the CI that produces them. This
+release takes the project's OpenSSF Scorecard to a clean sheet.
+
+### Supply chain & release integrity
+
+- **Signed images** — published plugin images are now signed with cosign
+  (keyless / Sigstore) by digest, on both GHCR and Docker Hub (#173).
+- **Build provenance** — SLSA build-provenance attestations for the image
+  and for every release artifact, verifiable with `gh attestation verify`
+  (#173).
+- **SBOM** — an SBOM in both SPDX and CycloneDX formats is generated over
+  the plugin rootfs and attached to each release (#174).
+- **Signed checksums & tags** — the release `checksums.txt` manifest is
+  cosign-signed so a single signature covers every attached artifact, and
+  release tags are now GPG/SSH-signed (#163, #175).
+- Each GitHub Release now carries copy-pasteable verification commands
+  under *Verifying the signed artifacts*; the README has a short-form
+  [Verifying releases](README.md#verifying-releases) section.
+
+### CI security hardening
+
+- **CodeQL** advanced setup analysing Go (the primary language, previously
+  unscanned) and the Actions workflows, wired in as a required check
+  (#170).
+- **Dependency Review** action blocks PRs that introduce high-severity
+  vulnerable dependencies at review time (#171).
+- **GitHub security toggles** — Dependabot security updates, secret-scanning
+  push protection, and private vulnerability reporting are enabled; the
+  Dependabot and CodeQL checks are required on `dev`/`main` (#172).
+- **Native fuzzing** — Go fuzz targets over the untrusted DHCP-response
+  parsers (the env-var event path and the handler-pipe JSON decoder) run
+  time-boxed on every PR and satisfy Scorecard's Fuzzing check (#162).
+- **Scorecard to 10** — all GitHub Actions and container images are
+  SHA-pinned, workflow tokens are scoped to least privilege, and the
+  remaining OSV advisories were triaged (unreachable client-library
+  findings dismissed with rationale; migration off the frozen
+  `github.com/docker/docker` module tracked separately) (#159, #160,
+  #161).
+
+### Toolchain & CI fixes
+
+- **Go 1.26.4** across the runner image, `go.mod`, the plugin Dockerfile,
+  and all workflow toolchains; actionlint bumped to v1.7.12 (#177).
+- **Runner image honors `HTTP(S)_PROXY`** for the nested plugin docker
+  build behind a forced-egress proxy (#181).
+- **`check-apk-pins.sh` false positive fixed** — `apk policy` emits
+  candidate versions with a trailing colon, which the drift check now
+  strips before comparing, so current pins are no longer flagged as
+  drifted; a table-driven self-test guards the regression (#169).
+- **actionlint determinism** — shellcheck is pinned in the actionlint job
+  so a hosted-image bump can't silently redden unrelated PRs; the SC1003
+  false-positive in the cosign block was resolved (#183).
+- Earlier in the cycle, the nested-dockerd `plugin disable/enable`
+  failure on the ephemeral CI runner (cgroup.kill `EOPNOTSUPP`) and the
+  Scorecard badge were addressed (#158, #176).
+
 ## v1.0.0
 
 The 1.0 milestone: the fork's quality infrastructure is now mechanical

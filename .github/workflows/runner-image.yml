@@ -13,9 +13,10 @@ on:
       - .github/workflows/runner-image.yml
   workflow_dispatch:
 
+# Top-level is read-only; the write scope GHCR push needs is granted
+# only on the build job below (least privilege — Scorecard #160).
 permissions:
   contents: read
-  packages: write
 
 env:
   IMAGE: ghcr.io/claymore666/dhcp-ci-runner
@@ -24,8 +25,11 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       # Pin-by-resolution: always build with the current runner agent
       # release. Outdated agents refuse jobs after GitHub's grace
@@ -53,6 +57,18 @@ jobs:
       # allow for containers started by the job itself.
       - name: Selftest
         run: docker run --rm --privileged "${IMAGE}:latest" selftest
+
+      # Proxy wiring (#181): a bogus proxy is never contacted — selftest
+      # does no network pulls — so this hermetically proves setup_proxy
+      # writes the docker CLI `proxies` config (the only consumer that
+      # doesn't inherit the proxy automatically) and keeps the fixture
+      # subnets in NO_PROXY.
+      - name: Selftest (proxy mode)
+        run: |
+          docker run --rm --privileged \
+            -e HTTPS_PROXY=http://proxy.invalid:3128 \
+            -e NO_PROXY=example.com \
+            "${IMAGE}:latest" selftest
 
       - name: Push
         run: |

@@ -101,7 +101,7 @@ Use it before every real release tag (step 8 below):
 
 ```sh
 git checkout main && git pull --ff-only      # the release commit
-git tag v1.0.0-rc1 && git push origin v1.0.0-rc1
+git tag -s v1.0.0-rc1 -m "v1.0.0-rc1" && git push origin v1.0.0-rc1
 ```
 
 Watch the run; every step including **verify-install** must be
@@ -175,33 +175,48 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
    `:latest` untouched — see "Pre-release dry-run" above). Then:
    ```sh
    git checkout main && git pull --ff-only
-   git tag -a vX.Y.Z -m "vX.Y.Z — <one-liner>"
+   git tag -s vX.Y.Z -m "vX.Y.Z — <one-liner>"   # signed (#175)
    git push origin vX.Y.Z
    ```
+   Use `-s` (signed) so the release tag shows **Verified** on GitHub —
+   the dev box has `tag.gpgsign=true` so `-a` would also sign, but spell
+   it out so it holds from any checkout. Confirm with
+   `git tag -v vX.Y.Z` (or the green "Verified" on the tag page).
    The workflow fires on `tags: v*`. Watch it at
    <https://github.com/claymore666/docker-net-dhcp/actions/workflows/release.yml>.
    Expected steps: Resolve tag → checkout → setup-go →
    GHCR login → Hub login (or skip) → Push to GHCR → Push to
-   Hub (or skip) → Sync Hub description → Workflow summary →
+   Hub (or skip) → Sync Hub description → Install cosign →
+   **Sign published images (cosign)** → **Generate SBOM (syft)** →
+   **Package and sign release artifact** → **Attest provenance
+   (artifacts + image)** → Workflow summary →
    **verify-install** (separate job: installs the just-published
    plugin from GHCR on a clean hosted runner and asserts it
    enables — a red verify-install means users can't install what
-   we just shipped).
-9. **Cut the GitHub Release** — points the Releases page at the
-   right artefact. Either:
+   we just shipped) → **github-release**.
+9. **Confirm the GitHub Release** — the `github-release` job now cuts
+   it automatically once `verify-install` is green (so a plugin that
+   doesn't install never gets an advertised Releases page). It attaches
+   the cosign-signed artifacts and uses the `## vX.Y.Z` section of
+   `RELEASE_NOTES.md` as the body, so step 4's notes must already be in
+   place at tag time. No manual `gh release create` — instead verify:
    ```sh
-   awk '/^## vX\.Y\.Z$/{flag=1; next} /^## v/{flag=0} flag' \
-       RELEASE_NOTES.md > /tmp/notes.md
-   gh release create vX.Y.Z \
-       --title "vX.Y.Z — <one-liner>" \
-       --notes-file /tmp/notes.md \
-       --verify-tag
+   gh release view vX.Y.Z   # body = the RELEASE_NOTES section; assets:
+                            #   net-dhcp-plugin-vX.Y.Z-linux-amd64.tar.gz
+                            #   checksums.txt{,.sig,.pem}
+   # Re-verify the signature the way a downstream consumer would:
+   cosign verify-blob \
+     --certificate checksums.txt.pem --signature checksums.txt.sig \
+     --certificate-identity-regexp '^https://github.com/claymore666/docker-net-dhcp/.github/workflows/release.yml@' \
+     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+     checksums.txt
    ```
-   …or via the UI at
-   <https://github.com/claymore666/docker-net-dhcp/releases/new?tag=vX.Y.Z>.
-   Don't skip this — Hub and the GitHub Releases page diverge
-   without it, and downstream consumers checking the Releases tag
-   for "is this the real release?" will get confused.
+   Adjust the title/notes in the UI if the one-liner needs polish.
+   The job is idempotent on a tag re-dispatch (re-uploads assets with
+   `--clobber`). This satisfies OpenSSF Scorecard **Signed-Releases**;
+   an rc dry-run produces an equivalent **pre-release** with the same
+   signed assets, which is how this path is exercised before the real
+   tag (rc releases never move `:latest` and are marked pre-release).
 10. **Fast-forward `dev` to `main`** so the release commit (version
    pins, RELEASE_NOTES section) lands on `dev` too:
    ```sh
