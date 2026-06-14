@@ -438,12 +438,14 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 	// to the same container (prevents identity swap during sequential
 	// `compose restart`). Best-effort: if the lookup misses or returns
 	// empty, consumeTombstone falls back to network-only matching.
-	hostname := p.initialDHCPHostname(ctx, r.NetworkID, r.EndpointID)
+	identity := p.initialContainerIdentity(ctx, r.NetworkID, r.EndpointID)
+	hostname := identity.Hostname
 
 	// MAC/IP selection priority:
 	//   1. Explicit values from libnetwork (`--mac-address`, `--ip`)
 	//   2. Tombstone (recently-deleted endpoint on the same network)
-	//   3. Kernel-picked MAC, server-picked IP
+	//   3. Deterministic stable MAC (when stable_mac=true; #218)
+	//   4. Kernel-picked MAC, server-picked IP
 	// Tombstones are only consumed when no explicit MAC was supplied
 	// — explicit MAC means the operator is taking responsibility for
 	// identity, and we don't want to surprise-mix in a stale neighbor.
@@ -468,6 +470,22 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 				"requested_ip": requestedIP,
 				"prior_ipv6":   ipv6,
 			}).Info("Inherited MAC/IP from recent endpoint on same network (likely container restart)")
+		}
+	}
+
+	// Tier 3: deterministic stable MAC. Only when neither an explicit MAC
+	// nor a tombstone supplied one — a tombstone is a stronger, freshly-
+	// observed identity for the in-flight restart case and already gives
+	// lease stability; the stable MAC is what carries that stability
+	// across recreates the tombstone TTL doesn't cover.
+	if effectiveMAC == "" {
+		if mac := p.resolveStableMAC(identity, r.NetworkID, opts); mac != "" {
+			effectiveMAC = mac
+			log.WithFields(log.Fields{
+				"network":     shortID(r.NetworkID),
+				"endpoint":    shortID(r.EndpointID),
+				"mac_address": mac,
+			}).Info("Using deterministic stable MAC derived from container identity (stable_mac)")
 		}
 	}
 
@@ -529,7 +547,16 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 		if opts.LeaseTimeout != 0 {
 			timeout = opts.LeaseTimeout
 		}
-		clientID := resolveClientID(opts, r.EndpointID)
+		// linkMAC is the endpoint's actual MAC: the stable MAC when
+		// stable_mac set one, otherwise the kernel-picked MAC recorded on
+		// the response. The renewal manager reads the same link MAC, so a
+		// stable_mac client-id derived from it stays consistent for renewal
+		// and stable across recreate when the MAC is stable.
+		linkMAC := effectiveMAC
+		if linkMAC == "" {
+			linkMAC = res.Interface.MacAddress
+		}
+		clientID := resolveClientID(opts, r.EndpointID, stableClientIDMAC(opts, opts.effectiveMode(), linkMAC))
 		initialIP := func(v6 bool) error {
 			v6str := ""
 			if v6 {

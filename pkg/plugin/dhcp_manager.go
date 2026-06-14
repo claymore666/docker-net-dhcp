@@ -551,8 +551,12 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 		Broadcast: m.opts.effectiveMode() == ModeIPvlan,
 		// Same client-id the initial DISCOVER used in CreateEndpoint,
 		// so renewals are seen as the same client by the server.
-		// Honours the operator's client_id override when set.
-		ClientID:    resolveClientID(m.opts, m.joinReq.EndpointID),
+		// Honours the operator's client_id override when set, and on
+		// stable_mac networks derives it from the endpoint's own link
+		// MAC (m.macString) — the same MAC the initial bind used — so
+		// option 61 tracks the stable chaddr. ipvlan is excluded inside
+		// stableClientIDMAC.
+		ClientID:    resolveClientID(m.opts, m.joinReq.EndpointID, stableClientIDMAC(m.opts, m.opts.effectiveMode(), m.macString())),
 		VendorClass: m.opts.VendorClass,
 	})
 	if err != nil {

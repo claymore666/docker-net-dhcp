@@ -101,7 +101,8 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 	// to the same container (prevents identity swap during sequential
 	// `compose restart`). Best-effort: if the lookup misses or returns
 	// empty, consumeTombstone falls back to network-only matching.
-	hostname := p.initialDHCPHostname(ctx, r.NetworkID, r.EndpointID)
+	identity := p.initialContainerIdentity(ctx, r.NetworkID, r.EndpointID)
+	hostname := identity.Hostname
 
 	requestedIP := explicitV4
 	if mode == ModeMacvlan && effectiveMAC == "" {
@@ -122,6 +123,31 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 				"requested_ip": requestedIP,
 				"prior_ipv6":   tombIPv6,
 			}).Debug("Tombstone inheritance details")
+		}
+	}
+
+	// Deterministic stable MAC (#218). macvlan only: each macvlan child
+	// has its own on-wire MAC, so a stable MAC ⇒ a stable upstream lease.
+	// ipvlan children share the parent's MAC on the wire, so a per-child
+	// MAC can't influence the server's view — it's a documented no-op
+	// here (the client-id arm that would cover ipvlan is #219). Setting a
+	// custom MAC in ipvlan mode also errors below by design, so we must
+	// not populate effectiveMAC for it.
+	if effectiveMAC == "" {
+		if mode == ModeIPvlan {
+			if opts.StableMAC {
+				log.WithFields(log.Fields{
+					"network":  shortID(r.NetworkID),
+					"endpoint": shortID(r.EndpointID),
+				}).Debug("stable_mac is a no-op for ipvlan (children share the parent MAC); see #219")
+			}
+		} else if mac := p.resolveStableMAC(identity, r.NetworkID, opts); mac != "" {
+			effectiveMAC = mac
+			log.WithFields(log.Fields{
+				"network":     shortID(r.NetworkID),
+				"endpoint":    shortID(r.EndpointID),
+				"mac_address": mac,
+			}).Info("Using deterministic stable MAC derived from container identity (stable_mac)")
 		}
 	}
 
@@ -199,13 +225,22 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 		if opts.LeaseTimeout != 0 {
 			timeout = opts.LeaseTimeout
 		}
-		// Stable client-id derived from the endpoint ID (so reservations
-		// keyed on option 61 survive container recreation, and so ipvlan
-		// children can be told apart even though they all share the
-		// parent's MAC). hostname was resolved earlier for tombstone
-		// matching and is reused for the DHCP option 12 hint here.
-		// Operator-supplied client_id overrides the derived value.
-		clientID := resolveClientID(opts, r.EndpointID)
+		// Client-id (option 61). By default it's derived from the endpoint
+		// ID — stable for the life of one endpoint (renewals match the
+		// initial bind) and distinct per ipvlan child even though they
+		// share the parent's MAC, but NOT stable across a recreate (the
+		// endpoint ID is randomized then). On stable_mac networks the
+		// macvlan child's own stable MAC seeds the client-id instead, so
+		// option 61 is stable across recreate too (#218); ipvlan keeps the
+		// endpoint-derived id (its stable-client-id arm is #219).
+		// Operator-supplied client_id overrides either. hostname was
+		// resolved earlier for tombstone matching and is reused for the
+		// DHCP option 12 hint here.
+		linkMAC := effectiveMAC
+		if linkMAC == "" {
+			linkMAC = res.Interface.MacAddress
+		}
+		clientID := resolveClientID(opts, r.EndpointID, stableClientIDMAC(opts, mode, linkMAC))
 
 		runDHCP := func(v6 bool) error {
 			v6str := ""

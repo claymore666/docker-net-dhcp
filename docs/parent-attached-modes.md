@@ -99,6 +99,8 @@ The host's NIC config (IP, routes, netplan/`systemd-networkd`,
 | `vendor_class`      | all       | no       | (v0.9.0+) Override DHCP option 60 (Vendor Class Identifier). Default `docker-net-dhcp`. Lets DHCP servers running class-based policy (Cisco / Aruba / etc.) issue different gateways or option sets to containers tagged with a known vendor string. v6 unaffected — udhcpc6 doesn't accept this option. |
 | `validate_dhcp`     | macvlan, ipvlan | no | (v0.9.0+) Pre-flight DHCP probe at `docker network create` time. Creates a temporary macvlan child on the parent NIC with a random locally-administered MAC, runs one-shot udhcpc with a 5-second budget, and rejects the network with `no DHCP OFFER on <parent> within 5s` if no server answers. Catches misconfigurations (parent isolated, firewall blocking UDP/67-68, broken VLAN tag) at create time rather than the first `docker run`. Cost: one transient lease per probe in the upstream pool. Bridge mode rejects the opt with a clear error. |
 | `audit_log`         | all       | no       | (v1.0.0+) Append every lease-lifecycle event on this network (`bound` / `renew` / `release`, plus `release_failed` when the DHCPRELEASE didn't complete cleanly) to `STATE_DIR/leases.jsonl` — one JSON object per line with timestamp, network, endpoint, container ID, hostname, IP, and MAC. Answers "which IP did this container hold last Tuesday?" without DHCP-server-log archaeology. Rotated at 16 MB or 30 days (whichever first), one rotated generation kept (≤ ~32 MB total). Off by default: it costs a disk write per lease event, and container↔IP correlation on disk is privacy-relevant in some environments. Append failures bump `ledger_write_failures` on `/Plugin.Health` and never affect lease handling. |
+| `stable_mac`        | macvlan   | no       | (v1.2.0+) Derive each child's MAC deterministically from the container's stable identity (Compose project + service + replica number, else container name) so a `compose up -d` recreate gets the same upstream lease — and IP — back without a static pin or server-side reservation. The matching DHCP client-id (option 61) is derived from the same MAC. **No-op for ipvlan**, where children share the parent's MAC on the wire and a per-child MAC can't influence the server (the stable-client-id arm for ipvlan is tracked as #219). Anonymous containers fall back to a kernel-random MAC. Off by default. |
+| `mac_seed`          | macvlan   | no       | (v1.2.0+) Pin the identity `stable_mac` hashes (`hash(networkID + seed)`) instead of inferring it. Only consulted when `stable_mac=true`. |
 
 ## Constraints
 
@@ -458,7 +460,9 @@ user-visible outcome.
   "leases_renewed": 42,
   "dhcp_timeouts": 0,
   "lease_release_failures": 0,
-  "naks_received": 0
+  "naks_received": 0,
+  "ledger_write_failures": 0,
+  "stable_mac_collisions": 0
 }
 ```
 
@@ -507,6 +511,14 @@ DHCP-wire counters (v0.9.0+):
   means containers are being re-addressed mid-life: `docker
   inspect` goes stale (see `lease_changed` above) and anything
   keyed on the old IPs needs attention.
+- `ledger_write_failures` — failed `audit_log` ledger appends.
+  Degrades forensics, not networking; does not flip `healthy`.
+- `stable_mac_collisions` (v1.2.0+) — deterministic-MAC
+  perturbations on `stable_mac` networks. Expected to stay `0`;
+  the perturbed MAC is still valid and unique, so a non-zero value
+  is a signal to investigate (a hash collision in the ~46-bit MAC
+  space, or a seed-input bug), not an outage. Does not flip
+  `healthy`.
 
 Sample call from a host shell:
 
