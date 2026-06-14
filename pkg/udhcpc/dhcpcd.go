@@ -104,8 +104,8 @@ type dhcpcdParams struct {
 }
 
 // renderConfig produces the dhcpcd.conf text for p. Only directives
-// confirmed against dhcpcd.conf(5) are emitted: duid, nohook, hostname,
-// vendorclassid, clientid, interface, iaid, request, ia_na.
+// confirmed against dhcpcd.conf(5) are emitted: duid, nohook, release,
+// hostname, vendorclassid, clientid, interface, iaid, request, ia_na.
 //
 // dhcpcd runs observe-only (--noconfigure) so it never touches the
 // link; the nohook lines are belt-and-braces in case --noconfigure is
@@ -113,6 +113,15 @@ type dhcpcdParams struct {
 // IA_NA — optionally with a preferred address); the v4 preferred
 // address rides the `request` directive (the dhcpcd equivalent of the
 // old busybox `-r`).
+//
+// The persistent client emits `release` so a graceful stop (Leave /
+// daemon shutdown sends SIGTERM) sends a DHCPRELEASE, freeing the lease
+// — the busybox `-R` behaviour the docker-restart / daemon-restart
+// IP-stability tests depend on. Without it, the server keeps the old
+// lease (keyed on the now-stale endpoint-derived client-id) and hands
+// the post-restart endpoint a different address. The one-shot client
+// must NOT release: it exits with `-1 -p` precisely to KEEP the lease
+// so the persistent client can re-claim the same address moments later.
 func renderConfig(p dhcpcdParams) string {
 	iaid := iaidFromMAC(p.MAC)
 
@@ -134,6 +143,12 @@ func renderConfig(p dhcpcdParams) string {
 	// Keep dhcpcd off host/system files.
 	for _, h := range []string{"resolv.conf", "hostname", "ntp.conf", "yp.conf"} {
 		fmt.Fprintf(&b, "nohook %s\n", h)
+	}
+
+	// Persistent client only: release the lease on graceful stop (busybox
+	// `-R`). The one-shot acquisition deliberately keeps its lease (-1 -p).
+	if !p.Once {
+		fmt.Fprintf(&b, "release\n")
 	}
 
 	if p.Hostname != "" {

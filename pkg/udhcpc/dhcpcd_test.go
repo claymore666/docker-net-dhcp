@@ -199,6 +199,31 @@ func TestRenderConfig_EventFIFO(t *testing.T) {
 	}
 }
 
+// TestRenderConfig_ReleaseOnlyForPersistent: the persistent client emits
+// `release` (busybox -R: DHCPRELEASE on graceful stop, which the
+// docker-restart / daemon-restart IP-stability tests rely on); the
+// one-shot client must NOT, since -1 -p deliberately keeps the lease for
+// the persistent client to re-claim.
+func TestRenderConfig_ReleaseOnlyForPersistent(t *testing.T) {
+	mac := mustMAC(t, "de:ad:be:ef:00:01")
+
+	persistent := renderConfig(dhcpcdParams{Iface: "eth0", MAC: mac})
+	if !hasLine(persistent, "release") {
+		t.Errorf("persistent config missing release directive:\n%s", persistent)
+	}
+
+	oneShot := renderConfig(dhcpcdParams{Iface: "eth0", MAC: mac, Once: true})
+	if hasLine(oneShot, "release") {
+		t.Errorf("one-shot config must not release (it keeps the lease via -1 -p):\n%s", oneShot)
+	}
+
+	// True for both families: a persistent v6 client should also release.
+	persistentV6 := renderConfig(dhcpcdParams{Iface: "eth0", MAC: mac, V6: true})
+	if !hasLine(persistentV6, "release") {
+		t.Errorf("persistent v6 config missing release directive:\n%s", persistentV6)
+	}
+}
+
 func TestRenderArgs_OneShotV4(t *testing.T) {
 	got := renderArgs(dhcpcdParams{
 		Iface:      "eth0",
