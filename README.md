@@ -273,3 +273,27 @@ this point `udhcpc` must be stopped
 5. `net-dhcp` starts `udhcpc` on the container end of the `veth` pair in the container's **network namespace** (but
 still in the plugin **PID namespace** - this means that the container can't see the DHCP client)
 6. `udhcpc` continues to run, renewing the lease when required, until the container shuts down
+
+# Contributing
+
+Contributions are welcome.
+
+- **Questions, bugs, and feature requests:** open a [GitHub issue](https://github.com/claymore666/docker-net-dhcp/issues).
+  For bugs, please include the plugin version, your Docker version, the network
+  mode (`bridge`, `macvlan`, or `ipvlan`), and the relevant output from
+  `docker plugin logs <plugin>`.
+- **Code changes:** open a pull request against the `dev` branch (not `main`).
+  Requirements for an acceptable contribution:
+  - **Coding standard:** Go code must be formatted with `gofmt` and pass
+    `go vet` and [`staticcheck`](https://staticcheck.dev/); shell and workflow
+    files must pass `shellcheck`/`actionlint`. These are enforced in CI.
+  - **Tests:** new functionality is expected to ship with tests; a coverage
+    ratchet enforces this at release time.
+  - **Green CI:** every PR must pass the required checks — unit tests,
+    `staticcheck`, the live integration suite, `govulncheck`, and `actionlint` —
+    before it can be merged.
+- **Security vulnerabilities:** do **not** open a public issue — follow the
+  private process described in [SECURITY.md](SECURITY.md).
+
+This is an actively maintained fork. It is solo-maintained, so please allow a
+few days for a response.
