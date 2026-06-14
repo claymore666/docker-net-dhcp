@@ -10,9 +10,9 @@ the code parses appears in this document
 stale silently.
 
 Deeper-dive companions: [`parent-attached-modes.md`](parent-attached-modes.md)
-(macvlan/ipvlan concepts, DHCP identity, recovery semantics) and the
-top-level [`README.md`](../README.md) (bridge-mode walkthrough,
-implementation notes).
+(macvlan/ipvlan concepts, DHCP identity, recovery semantics),
+[`bridge-mode.md`](bridge-mode.md) (the bridge-mode walkthrough), and
+[`internals.md`](internals.md) (implementation notes).
 
 ---
 
@@ -90,8 +90,7 @@ All modes share two invariants:
 ### bridge (default)
 
 You bring an existing Linux bridge that is L2-connected to the LAN
-(see the [README](../README.md#network-creation-bridge-mode) for the
-bridge setup itself):
+(see [`bridge-mode.md`](bridge-mode.md) for the bridge setup itself):
 
 ```bash
 docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.1.1 \
