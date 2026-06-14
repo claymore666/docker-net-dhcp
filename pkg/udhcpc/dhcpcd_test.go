@@ -224,6 +224,43 @@ func TestRenderConfig_ReleaseOnlyForPersistent(t *testing.T) {
 	}
 }
 
+// TestRenderConfig_RequestsPropagatedOptions: because `-f <config>`
+// bypasses /etc/dhcpcd.conf, the config must explicitly request every
+// option the plugin propagates, or dhcpcd never learns them (the busybox
+// `-O` set). The same v4-style names serve both families — dhcpcd maps
+// them to the right per-protocol codes (e.g. domain_name_servers ->
+// option 6 on v4, option 23 on v6).
+func TestRenderConfig_RequestsPropagatedOptions(t *testing.T) {
+	mac := mustMAC(t, "de:ad:be:ef:00:01")
+	wantOpts := []string{
+		"interface_mtu",       // option 26 (MTU propagation)
+		"domain_name_servers", // option 6 / v6 23 (DNS)
+		"domain_search",       // option 119 / v6 24 (search list)
+		"ntp_servers",         // option 42
+		"tftp_server_name",    // option 66
+		"bootfile_name",       // option 67
+		"routers",             // option 3 (gateway)
+	}
+	for _, v6 := range []bool{false, true} {
+		conf := renderConfig(dhcpcdParams{Iface: "eth0", MAC: mac, V6: v6})
+		var optLine string
+		for _, ln := range strings.Split(conf, "\n") {
+			if strings.HasPrefix(ln, "option ") {
+				optLine = ln
+				break
+			}
+		}
+		if optLine == "" {
+			t.Fatalf("v6=%v: config has no `option` request line:\n%s", v6, conf)
+		}
+		for _, o := range wantOpts {
+			if !strings.Contains(optLine, o) {
+				t.Errorf("v6=%v: option request line missing %q\n%s", v6, o, optLine)
+			}
+		}
+	}
+}
+
 func TestRenderArgs_OneShotV4(t *testing.T) {
 	got := renderArgs(dhcpcdParams{
 		Iface:      "eth0",

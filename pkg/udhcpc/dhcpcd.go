@@ -105,7 +105,8 @@ type dhcpcdParams struct {
 
 // renderConfig produces the dhcpcd.conf text for p. Only directives
 // confirmed against dhcpcd.conf(5) are emitted: duid, nohook, release,
-// hostname, vendorclassid, clientid, interface, iaid, request, ia_na.
+// option, hostname, vendorclassid, clientid, interface, iaid, request,
+// ia_na.
 //
 // dhcpcd runs observe-only (--noconfigure) so it never touches the
 // link; the nohook lines are belt-and-braces in case --noconfigure is
@@ -144,6 +145,32 @@ func renderConfig(p dhcpcdParams) string {
 	for _, h := range []string{"resolv.conf", "hostname", "ntp.conf", "yp.conf"} {
 		fmt.Fprintf(&b, "nohook %s\n", h)
 	}
+
+	// Explicitly request the options the plugin propagates. Passing
+	// `-f <config>` bypasses the distro /etc/dhcpcd.conf, so dhcpcd would
+	// otherwise fall back to a minimal built-in request set and never
+	// learn the MTU / DNS / domain-search / NTP / TFTP values — the
+	// busybox client requested these via `-O`. dhcpcd maps these names to
+	// the right per-protocol option codes (e.g. domain_name_servers ->
+	// option 6 on v4 and option 23 on v6), so one list serves both
+	// families; options that don't apply to the active protocol are
+	// ignored. Routers/subnet/classless-static-routes are in dhcpcd's
+	// defaults but are listed for explicitness and to be robust to a
+	// default change.
+	fmt.Fprintf(&b, "option %s\n", strings.Join([]string{
+		"subnet_mask",
+		"broadcast_address",
+		"routers",
+		"domain_name_servers",
+		"domain_name",
+		"host_name",
+		"domain_search",
+		"interface_mtu",
+		"ntp_servers",
+		"tftp_server_name",
+		"bootfile_name",
+		"classless_static_routes",
+	}, ", "))
 
 	// Persistent client only: release the lease on graceful stop (busybox
 	// `-R`). The one-shot acquisition deliberately keeps its lease (-1 -p).
