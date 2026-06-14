@@ -72,6 +72,7 @@ jobs:
           bash scripts/test-coverage-ratchet.sh
           bash scripts/test-govulncheck-gate.sh
           bash scripts/test-check-option-docs.sh
+          bash scripts/test-check-apk-pins.sh
 
       # Every driver-option key the code parses must be documented in
       # docs/reference.md — an undocumented option turns CI red (#132).
