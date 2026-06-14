@@ -207,7 +207,7 @@ func TestRenderArgs_OneShotV4(t *testing.T) {
 		ConfigPath: "/run/net-dhcp/eth0-v4.conf",
 	})
 	want := []string{
-		"dhcpcd", "-B", "--noconfigure", "-L",
+		"dhcpcd", "-B", "--noconfigure", "-L", "-A",
 		"-c", "/usr/lib/net-dhcp/udhcpc-handler",
 		"-f", "/run/net-dhcp/eth0-v4.conf",
 		"-1", "-p", "-4", "eth0",
@@ -225,7 +225,7 @@ func TestRenderArgs_PersistentV6(t *testing.T) {
 		ConfigPath: "/c",
 	})
 	want := []string{
-		"dhcpcd", "-B", "--noconfigure", "-L",
+		"dhcpcd", "-B", "--noconfigure", "-L", "-A",
 		"-c", "/h", "-f", "/c", "-6", "eth0",
 	}
 	if !reflect.DeepEqual(got, want) {

@@ -172,6 +172,14 @@ func renderConfig(p dhcpcdParams) string {
 //	-B           foreground (the Go process owns the lifecycle)
 //	--noconfigure observe-only (plugin owns interface config)
 //	-L           no IPv4LL/APIPA fallback
+//	-A           no ARP claim/conflict-detection on the offered address.
+//	             dhcpcd's RFC 5227 ACD adds ~5s between offer and lease,
+//	             which busybox udhcpc never did and which pushed the
+//	             one-shot CreateEndpoint acquisition over its lease
+//	             deadline. The DHCP server is authoritative for allocation
+//	             and the plugin runs its own preflight probe, so the
+//	             client-side ARP claim is redundant latency. (v4-only flag;
+//	             a no-op under -6.)
 //	-c <handler> hook script (emits events to the parent FIFO)
 //	-f <config>  the rendered per-endpoint config
 //	-1           one-shot: exit after the first lease (acquisition only)
@@ -184,6 +192,7 @@ func renderArgs(p dhcpcdParams) []string {
 		"-B",
 		"--noconfigure",
 		"-L",
+		"-A",
 		"-c", p.Handler,
 		"-f", p.ConfigPath,
 	}
