@@ -34,6 +34,11 @@ func TestValidateModeOptions(t *testing.T) {
 			wantErr: util.ErrModeMismatch,
 		},
 		{
+			name:    "bridge_mode_validate_dhcp_rejected",
+			opts:    DHCPNetworkOptions{Mode: ModeBridge, Bridge: "br0", ValidateDHCP: true},
+			wantErr: util.ErrModeMismatch,
+		},
+		{
 			name:    "default_mode_missing_bridge",
 			opts:    DHCPNetworkOptions{},
 			wantErr: util.ErrBridgeRequired,
@@ -237,6 +242,16 @@ func TestResolveExplicitV4(t *testing.T) {
 				Interface: &EndpointInterface{Address: "192.168.0.50/24"},
 				Options:   map[string]interface{}{"ip": "192.168.0.51"},
 			},
+			wantErr: true,
+		},
+		{
+			name:    "invalid_iface_address",
+			r:       CreateEndpointRequest{Interface: &EndpointInterface{Address: "not-an-ip"}},
+			wantErr: true,
+		},
+		{
+			name:    "invalid_driver_opt_ip",
+			r:       CreateEndpointRequest{Options: map[string]interface{}{"ip": "not-an-ip"}},
 			wantErr: true,
 		},
 	}

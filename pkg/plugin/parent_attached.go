@@ -44,7 +44,7 @@ func subLinkName(endpointID string) string {
 // a bridge or another macvlan/ipvlan). We do not change the parent's
 // state — the host's NIC config is off-limits.
 func validateParentForChild(name string) (netlink.Link, error) {
-	link, err := netlink.LinkByName(name)
+	link, err := nlLinkByName(name)
 	if err != nil {
 		return nil, fmt.Errorf("failed to lookup parent interface %v: %w", name, err)
 	}
@@ -315,7 +315,7 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 // and ipvlan since they live under the same name.
 func (p *Plugin) deleteParentAttachedEndpoint(r DeleteEndpointRequest) error {
 	name := subLinkName(r.EndpointID)
-	link, err := netlink.LinkByName(name)
+	link, err := nlLinkByName(name)
 	if err != nil {
 		// Expected: the link is gone with the container netns.
 		log.WithFields(log.Fields{
@@ -324,7 +324,7 @@ func (p *Plugin) deleteParentAttachedEndpoint(r DeleteEndpointRequest) error {
 		}).Debug("Child link already gone (expected)")
 		return nil
 	}
-	if err := netlink.LinkDel(link); err != nil {
+	if err := nlLinkDel(link); err != nil {
 		return fmt.Errorf("failed to delete leftover child link %v: %w", name, err)
 	}
 	log.WithFields(log.Fields{
