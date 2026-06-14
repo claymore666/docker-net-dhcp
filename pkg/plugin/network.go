@@ -733,7 +733,7 @@ func (p *Plugin) addRoutes(opts *DHCPNetworkOptions, v6 bool, link netlink.Link,
 		family = unix.AF_INET6
 	}
 
-	routes, err := netlink.RouteListFiltered(family, &netlink.Route{
+	routes, err := nlRouteListFiltered(family, &netlink.Route{
 		LinkIndex: link.Attrs().Index,
 		Type:      unix.RTN_UNICAST,
 	}, netlink.RT_FILTER_OIF|netlink.RT_FILTER_TYPE)

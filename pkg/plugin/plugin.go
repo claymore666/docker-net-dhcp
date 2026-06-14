@@ -254,7 +254,7 @@ type Plugin struct {
 	awaitTimeout time.Duration
 	startTime    time.Time
 
-	docker *docker.Client
+	docker dockerClient
 	server http.Server
 
 	// mu guards joinHints, persistentDHCP, and endpointFingerprints.

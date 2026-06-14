@@ -9,7 +9,6 @@ import (
 	"time"
 
 	dNetwork "github.com/docker/docker/api/types/network"
-	docker "github.com/docker/docker/client"
 	log "github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
@@ -67,7 +66,7 @@ func closeNetHandle(h *netlink.Handle) {
 }
 
 type dhcpManager struct {
-	docker  *docker.Client
+	docker  dockerClient
 	joinReq JoinRequest
 	opts    DHCPNetworkOptions
 
@@ -116,7 +115,7 @@ type dhcpManager struct {
 	startErr  error
 }
 
-func newDHCPManager(docker *docker.Client, r JoinRequest, opts DHCPNetworkOptions) *dhcpManager {
+func newDHCPManager(docker dockerClient, r JoinRequest, opts DHCPNetworkOptions) *dhcpManager {
 	return &dhcpManager{
 		docker:  docker,
 		joinReq: r,

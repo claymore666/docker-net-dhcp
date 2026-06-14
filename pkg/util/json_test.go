@@ -80,6 +80,38 @@ func TestJSONErrResponse_ExplicitStatusOverrides(t *testing.T) {
 	}
 }
 
+// The log-severity switch picks Error/Warn/Info by status class; these
+// two cover the >=500 and <400 arms (the 4xx arm is covered above).
+func TestJSONErrResponse_ServerErrorClass(t *testing.T) {
+	rec := httptest.NewRecorder()
+	JSONErrResponse(rec, errors.New("boom"), http.StatusInternalServerError)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status: got %d want 500", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/problem+json" {
+		t.Fatalf("content-type: got %q", ct)
+	}
+	var out struct {
+		Err string `json:"Err"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.Err != "boom" {
+		t.Fatalf("err body: got %q", out.Err)
+	}
+}
+
+func TestJSONErrResponse_NonErrorClass(t *testing.T) {
+	rec := httptest.NewRecorder()
+	JSONErrResponse(rec, errors.New("informational"), http.StatusOK)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: got %d want 200", rec.Code)
+	}
+}
+
 func TestParseJSONOrErrorResponse_OK(t *testing.T) {
 	body := strings.NewReader(`{"name":"foo"}`)
 	req := httptest.NewRequest(http.MethodPost, "/", body)
