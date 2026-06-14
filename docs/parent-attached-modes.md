@@ -309,7 +309,7 @@ exact create incantation (note: the Docker-level `--ipv6` flag does
 NOT work with the null IPAM driver and is not what you want):
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.1.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.1.1 \
     --ipam-driver null \
     -o mode=macvlan -o parent=eth0 -o ipv6=true \
     lan-dhcp6
@@ -539,7 +539,7 @@ endpoint operation everything is back to disk-served.
 Override the location via the `STATE_DIR` env var on the plugin:
 
 ```bash
-docker plugin set ghcr.io/<your-namespace>/docker-net-dhcp:v1.1.0 STATE_DIR=/some/other/path
+docker plugin set ghcr.io/<your-namespace>/docker-net-dhcp:v1.1.1 STATE_DIR=/some/other/path
 ```
 
 ## Plugin env vars
