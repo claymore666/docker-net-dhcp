@@ -234,6 +234,21 @@ func TestLookupEndpointMAC(t *testing.T) {
 	}
 }
 
+func TestReacquireEndpoint_MACLookupError(t *testing.T) {
+	// Non-ipvlan mode looks up the original MAC first; a docker failure
+	// there must abort before the CreateEndpoint replay (which needs a
+	// live netns and is integration-covered).
+	f := &fakeDocker{inspectErr: errors.New("inspect boom")}
+	p := &Plugin{docker: f}
+
+	err := p.reacquireEndpoint(context.Background(),
+		JoinRequest{NetworkID: "n1", EndpointID: "ep1"},
+		DHCPNetworkOptions{Bridge: "br0"})
+	if err == nil {
+		t.Fatal("expected error when endpoint MAC lookup fails")
+	}
+}
+
 func TestInitialDHCPHostname_Success(t *testing.T) {
 	const netID, epID = "n1", "ep1"
 	f := &fakeDocker{

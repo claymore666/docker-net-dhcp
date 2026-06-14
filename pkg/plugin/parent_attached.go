@@ -338,7 +338,7 @@ func (p *Plugin) deleteParentAttachedEndpoint(r DeleteEndpointRequest) error {
 // container's netns handle) and returns the link with the given hardware
 // address. Used to re-discover a macvlan child after Docker has moved and
 // renamed it inside the container.
-func findLinkByMAC(handle *netlink.Handle, mac net.HardwareAddr) (netlink.Link, error) {
+func findLinkByMAC(handle linkLister, mac net.HardwareAddr) (netlink.Link, error) {
 	links, err := handle.LinkList()
 	if err != nil {
 		return nil, fmt.Errorf("failed to list links: %w", err)

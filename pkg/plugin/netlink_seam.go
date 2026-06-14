@@ -13,3 +13,11 @@ var (
 	nlLinkDel           = netlink.LinkDel
 	nlRouteListFiltered = netlink.RouteListFiltered
 )
+
+// linkLister is the subset of *netlink.Handle that findLinkByMAC needs.
+// Taking the interface (not the concrete handle) lets the MAC-walk logic
+// be unit-tested without a live netns handle; *netlink.Handle satisfies
+// it as-is.
+type linkLister interface {
+	LinkList() ([]netlink.Link, error)
+}
