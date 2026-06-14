@@ -143,7 +143,7 @@ if [[ "${1:-}" == "selftest" ]]; then
     driver=$(docker info --format '{{.Driver}}')
     [[ "$driver" == "overlay2" || "$driver" == "overlayfs" ]] \
         || { log "FAIL: storage driver is $driver, want overlay2/overlayfs (vfs = missing volume)"; exit 1; }
-    docker image inspect golang:1.25-alpine >/dev/null || { log "FAIL: golang seed missing"; exit 1; }
+    docker image inspect golang:1.26-alpine >/dev/null || { log "FAIL: golang seed missing"; exit 1; }
     docker image inspect alpine:3.20 >/dev/null || { log "FAIL: alpine seed missing"; exit 1; }
 
     # Host tooling the suites shell out to. The failure-injection suite's
@@ -191,7 +191,7 @@ if [[ "${1:-}" == "selftest" ]]; then
         ((SECONDS >= deadline)) && { log "FAIL: no relaunched daemon within 45s"; exit 1; }
         sleep 1
     done
-    docker image inspect golang:1.25-alpine >/dev/null || { log "FAIL: seed lost across restart"; exit 1; }
+    docker image inspect golang:1.26-alpine >/dev/null || { log "FAIL: seed lost across restart"; exit 1; }
     log "selftest OK: driver=overlay2, seeds present, supervised restart ${old_pid} -> ${new_pid}"
     exit 0
 fi
