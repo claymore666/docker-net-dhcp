@@ -226,6 +226,20 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
    previous version's README/docs, and the next release PR has to
    re-bump them. Forgotten once after v0.9.0 — that's why
    `release.yml`'s header comment carries the same checklist.
+11. **Prune merged branches.** The repo has *Automatically delete head
+   branches* enabled, so merged PR head branches are removed on merge.
+   Two things that setting doesn't cover, so clean them now:
+   ```sh
+   # the release branch is merged but was never a PR head:
+   git push origin --delete release/vX.Y.Z
+   # sweep for any other branch already merged into dev that lingered:
+   git fetch --prune origin
+   git branch -r --merged origin/dev | grep -vE 'origin/(dev|main|HEAD)$'
+   ```
+   Delete what that sweep lists. Leave alone: open-PR branches,
+   Dependabot branches (it recreates its own — close via the PR), and
+   the `upstream/*` refs (those are the original fork's remote, not
+   ours).
 
 ## Verifying
 

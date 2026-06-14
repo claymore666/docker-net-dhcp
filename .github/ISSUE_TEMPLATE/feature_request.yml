@@ -1,0 +1,31 @@
+name: Feature request
+description: Suggest an enhancement
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        The guiding principle for this plugin is: one `docker network create`
+        line, then plain `networks: [...]` in any compose file — no static IPs,
+        sidecars, or per-container plumbing. Please frame requests against that.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / use case
+      description: What are you trying to do that the plugin doesn't support today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What would you like the plugin to do?
+    validations:
+      required: false
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Workarounds you've tried or other approaches you weighed.
+    validations:
+      required: false

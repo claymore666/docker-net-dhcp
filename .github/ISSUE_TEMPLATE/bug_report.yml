@@ -1,0 +1,63 @@
+name: Bug report
+description: Report a problem with the plugin
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        Thanks for filing a bug. **Do not use this form for security
+        vulnerabilities** — follow the private process in
+        [SECURITY.md](https://github.com/claymore666/docker-net-dhcp/blob/main/SECURITY.md).
+  - type: input
+    id: plugin-version
+    attributes:
+      label: Plugin version
+      description: From `docker plugin ls` (e.g. v1.1.0).
+      placeholder: v1.1.0
+    validations:
+      required: true
+  - type: input
+    id: docker-version
+    attributes:
+      label: Docker version
+      description: "Output of `docker version --format '{{.Server.Version}}'`."
+      placeholder: "26.1.5"
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Network mode
+      description: The `mode` driver option of the affected network.
+      options:
+        - bridge
+        - macvlan
+        - ipvlan
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you expect to happen, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: >-
+        Include the `docker network create` line and any `docker run` /
+        compose snippet needed to reproduce.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Plugin logs
+      description: >-
+        Relevant output from `docker plugin logs <plugin>`. Automatically
+        rendered as code, so no backticks needed.
+      render: shell
+    validations:
+      required: false

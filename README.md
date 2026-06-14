@@ -6,6 +6,7 @@
 [![Release](https://img.shields.io/github/v/release/claymore666/docker-net-dhcp?sort=semver)](https://github.com/claymore666/docker-net-dhcp/releases)
 [![Go Report Card](https://goreportcard.com/badge/github.com/claymore666/docker-net-dhcp)](https://goreportcard.com/report/github.com/claymore666/docker-net-dhcp)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/claymore666/docker-net-dhcp/badge)](https://scorecard.dev/viewer/?uri=github.com/claymore666/docker-net-dhcp)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/13229/badge)](https://www.bestpractices.dev/projects/13229)
 
 > **This is a maintained fork** of [`devplayer0/docker-net-dhcp`][upstream].
 > The upstream repository has been quiet since 2021 and no longer builds on
@@ -30,7 +31,7 @@
 >
 > Install:
 > ```bash
-> docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.1.0
+> docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.1.1
 > ```
 >
 > All upstream usage below still applies — bridge mode is unchanged and
@@ -55,17 +56,17 @@ handy for home deployment.
 The plugin can be installed with the `docker plugin install` command:
 
 ```
-$ docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.1.0
-Plugin "ghcr.io/claymore666/docker-net-dhcp:v1.1.0" is requesting the following privileges:
+$ docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.1.1
+Plugin "ghcr.io/claymore666/docker-net-dhcp:v1.1.1" is requesting the following privileges:
  - network: [host]
  - host pid namespace: [true]
  - mount: [/var/run/docker.sock]
  - capabilities: [CAP_NET_ADMIN CAP_SYS_ADMIN]
 Do you grant the above permissions? [y/N] y
-v1.1.0: Pulling from ghcr.io/claymore666/docker-net-dhcp
+v1.1.1: Pulling from ghcr.io/claymore666/docker-net-dhcp
 Digest: sha256:<some hash>
 <some id>: Complete
-Installed plugin ghcr.io/claymore666/docker-net-dhcp:v1.1.0
+Installed plugin ghcr.io/claymore666/docker-net-dhcp:v1.1.1
 $
 ```
 
@@ -140,13 +141,13 @@ $ sudo dhcpcd my-bridge
 Once the bridge is ready, you can create the network:
 
 ```
-$ docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.1.0 --ipam-driver null -o bridge=my-bridge my-dhcp-net
+$ docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.1.1 --ipam-driver null -o bridge=my-bridge my-dhcp-net
 <some network id>
 $
 
 # With IPv6 enabled
 # Although `docker network create` has a `--ipv6` flag, it doesn't work with the null IPAM driver
-$ docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.1.0 --ipam-driver null -o bridge=my-bridge -o ipv6=true my-dhcp-net
+$ docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.1.1 --ipam-driver null -o bridge=my-bridge -o ipv6=true my-dhcp-net
 <some network id>
 $
 ```
@@ -207,7 +208,7 @@ services:
       - dhcp
 networks:
   dhcp:
-    driver: ghcr.io/claymore666/docker-net-dhcp:v1.1.0
+    driver: ghcr.io/claymore666/docker-net-dhcp:v1.1.1
     driver_opts:
       bridge: my-bridge
       ipv6: 'true'
@@ -236,7 +237,7 @@ Note:
 ## Debugging
 
 To read the plugin's log, do `cat /var/lib/docker/plugins/*/rootfs/var/log/net-dhcp.log` (as `root`). You can also use
-`docker plugin set ghcr.io/claymore666/docker-net-dhcp:v1.1.0 LOG_LEVEL=trace` to increase log verbosity.
+`docker plugin set ghcr.io/claymore666/docker-net-dhcp:v1.1.1 LOG_LEVEL=trace` to increase log verbosity.
 
 `/Plugin.Health` exposes liveness and recovery counters as JSON on the plugin's UNIX socket — useful as a monitoring probe. See [`docs/parent-attached-modes.md`](docs/parent-attached-modes.md#health-endpoint) for the payload schema and a sample `curl` invocation.
 
@@ -273,3 +274,27 @@ this point `udhcpc` must be stopped
 5. `net-dhcp` starts `udhcpc` on the container end of the `veth` pair in the container's **network namespace** (but
 still in the plugin **PID namespace** - this means that the container can't see the DHCP client)
 6. `udhcpc` continues to run, renewing the lease when required, until the container shuts down
+
+# Contributing
+
+Contributions are welcome.
+
+- **Questions, bugs, and feature requests:** open a [GitHub issue](https://github.com/claymore666/docker-net-dhcp/issues).
+  For bugs, please include the plugin version, your Docker version, the network
+  mode (`bridge`, `macvlan`, or `ipvlan`), and the relevant output from
+  `docker plugin logs <plugin>`.
+- **Code changes:** open a pull request against the `dev` branch (not `main`).
+  Requirements for an acceptable contribution:
+  - **Coding standard:** Go code must be formatted with `gofmt` and pass
+    `go vet` and [`staticcheck`](https://staticcheck.dev/); shell and workflow
+    files must pass `shellcheck`/`actionlint`. These are enforced in CI.
+  - **Tests:** new functionality is expected to ship with tests; a coverage
+    ratchet enforces this at release time.
+  - **Green CI:** every PR must pass the required checks — unit tests,
+    `staticcheck`, the live integration suite, `govulncheck`, and `actionlint` —
+    before it can be merged.
+- **Security vulnerabilities:** do **not** open a public issue — follow the
+  private process described in [SECURITY.md](SECURITY.md).
+
+This is an actively maintained fork. It is solo-maintained, so please allow a
+few days for a response.

@@ -41,6 +41,11 @@ jobs:
         with:
           results_file: results.sarif
           results_format: sarif
+          # Read-only, single-repo fine-grained PAT (Administration: read).
+          # The default GITHUB_TOKEN cannot read branch-protection settings,
+          # so the Branch-Protection check scores -1 (inconclusive) without
+          # it. Stored as a repo secret; renew before its expiry.
+          repo_token: ${{ secrets.SCORECARD_TOKEN }}
           # Publish to the Scorecard REST API — feeds the README badge
           # and https://scorecard.dev/viewer/?uri=github.com/claymore666/docker-net-dhcp
           publish_results: true

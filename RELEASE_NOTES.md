@@ -44,6 +44,29 @@ migration tracked in #178). They are accepted at the advisory level in
 older AuthZ finding (GHSA-x744-4wpc-v9h2 = GO-2026-4887), and will be
 re-evaluated when the module migration lands.
 
+## v1.1.1
+
+A compliance and project-hygiene release. **There are no functional
+plugin changes** — bridge / macvlan / ipvlan behaviour, every driver
+option, and the on-disk and `/Plugin.Health` surfaces are identical to
+v1.1.0; the published image is functionally the same (a new digest, as
+expected for a new tag). What changed:
+
+- **OpenSSF Best Practices passing badge** earned and added to the
+  README ([project 13229](https://www.bestpractices.dev/projects/13229)).
+- **OpenSSF Scorecard Branch-Protection** is now evaluable: the Scorecard
+  workflow is given a read-only, single-repo token so the check can read
+  branch-protection settings (it previously scored as inconclusive). With
+  this and the badge, all three previously-open Scorecard checks resolve.
+- **Contributing documentation**: a `Contributing` section in the README
+  covering how to report issues, the pull-request flow and required CI
+  checks, the coding standard, and the tests-with-changes policy.
+- **Issue and pull-request templates**: structured bug-report and
+  feature-request forms (with a private security-advisory link) and a PR
+  checklist.
+- Maintainer-facing: the release runbook now documents post-release
+  branch cleanup, and the repository auto-deletes merged PR branches.
+
 ## v1.1.0
 
 A security, supply-chain, and toolchain-maintenance release. **There are
