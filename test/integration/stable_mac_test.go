@@ -46,8 +46,18 @@ func TestStableMAC_BridgeRecreatePastTombstone(t *testing.T) {
 		}
 	})
 
-	harness.CreateNetwork(t, ctx, stableNet, "bridge", map[string]string{"stable_mac": "true"})
-	harness.CreateNetwork(t, ctx, plainNet, "bridge", nil)
+	// The bridge fixture exposes a single Linux bridge, and the plugin
+	// enforces one network per bridge — so the two networks share it via
+	// ignore_conflicts. They land on the same bridge and the same dnsmasq
+	// (one DHCP pool), which is exactly what lets the control container
+	// be compared against the stable one under identical server behaviour.
+	harness.CreateNetwork(t, ctx, stableNet, "bridge", map[string]string{
+		"stable_mac":       "true",
+		"ignore_conflicts": "true",
+	})
+	harness.CreateNetwork(t, ctx, plainNet, "bridge", map[string]string{
+		"ignore_conflicts": "true",
+	})
 
 	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
 	if err != nil {
