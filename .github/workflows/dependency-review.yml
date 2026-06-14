@@ -27,9 +27,9 @@ jobs:
       - name: Dependency review
         uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
         with:
-          # Match the govulncheck gate's posture: fail on a newly
-          # introduced high-or-critical advisory.
-          fail-on-severity: high
-          # Flag copyleft/unknown licenses for review without hard-failing
-          # the build on a license the tool can't classify.
-          comment-summary-in-pr: on-failure
+          # Posture (fail-on-severity: high) and the allow-ghsas list of
+          # known-unreachable daemon-side docker/docker advisories live in
+          # the config file — the advisory-level counterpart of
+          # .github/vuln-allowlist.txt (#193). Keep accepted findings
+          # there with justification + review date, not inline here.
+          config-file: ./.github/dependency-review-config.yml
