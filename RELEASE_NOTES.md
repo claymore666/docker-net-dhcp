@@ -26,6 +26,24 @@ vulnerable code path is reachable from the plugin process, so no
 action is required. Recorded here so future audits don't
 re-investigate. (Original report: third-pass code review, 2026-05-04.)
 
+The v1.1.0 Dependency Review gate (#193) surfaced two further
+`github.com/docker/docker` advisories at v28.5.2:
+
+- **GHSA-x86f-5xw2-fm2r** — `PUT /containers/{id}/archive` executes a
+  container binary on the host.
+- **GHSA-rg2x-37c3-w2rh** — race condition in `docker cp` allows
+  bind-mount redirection to a host path.
+
+Both are `docker cp` / archive-extraction paths in the Moby daemon and
+CLI. The plugin invokes none of them — its only client calls remain the
+three inspect/list APIs above — so neither is reachable; `govulncheck`
+confirms (green). No fix is published on the frozen
+`github.com/docker/docker` module path (successor `moby/moby/v2`
+migration tracked in #178). They are accepted at the advisory level in
+`.github/dependency-review-config.yml` with a review date, alongside the
+older AuthZ finding (GHSA-x744-4wpc-v9h2 = GO-2026-4887), and will be
+re-evaluated when the module migration lands.
+
 ## v1.1.0
 
 A security, supply-chain, and toolchain-maintenance release. **There are

@@ -1,0 +1,36 @@
+# Config for the Dependency Review gate (.github/workflows/dependency-review.yml).
+#
+# Posture mirrors the govulncheck gate: fail a PR that introduces a new
+# high-or-critical advisory. The allow-ghsas list below is the
+# advisory-level counterpart of .github/vuln-allowlist.txt and follows
+# the same rules:
+#   - Every entry needs a justification and a review date. No bare IDs.
+#   - Entries are only for findings with no fixed release available on
+#     the module path we depend on. The moment a fix ships, the bump
+#     lands and the entry is removed.
+#   - Reachability is the arbiter: an entry is only acceptable while
+#     govulncheck (scripts/govulncheck-gate.sh) reports the path
+#     unreachable. If govulncheck ever flags it, the acceptance is void.
+
+fail-on-severity: high
+comment-summary-in-pr: on-failure
+
+# All three are daemon-side / `docker cp`-side Moby vulnerabilities in
+# github.com/docker/docker. This plugin uses that module only as a
+# CLIENT library; its sole call-sites are NetworkList, NetworkInspect,
+# and ContainerInspect. It never invokes the AuthZ, archive-PUT, or
+# `docker cp` handlers where these live, so none are reachable from the
+# plugin process — govulncheck confirms (green on the same PRs). No fix
+# is available: the github.com/docker/docker module is frozen at
+# v28.5.2; the successor github.com/moby/moby/v2 migration is tracked in
+# #178, at which point these acceptances are re-evaluated. Reviewed
+# 2026-06-14 (#193).
+allow-ghsas:
+  # AuthZ plugin bypass on oversized request bodies (= GO-2026-4887,
+  # also in vuln-allowlist.txt for the govulncheck gate).
+  - GHSA-x744-4wpc-v9h2
+  # `PUT /containers/{id}/archive` executes container binary on the host.
+  - GHSA-x86f-5xw2-fm2r
+  # Race condition in `docker cp` allows bind-mount redirection to a
+  # host path.
+  - GHSA-rg2x-37c3-w2rh
