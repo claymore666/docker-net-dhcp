@@ -40,7 +40,7 @@ DHCP on the host's L2 segments, querying the daemon).
 cosign-signed `checksums.txt` and an SBOM. Per-release, copy-pasteable
 verification commands live under **Verifying the signed artifacts** on
 each [GitHub Release](https://github.com/claymore666/docker-net-dhcp/releases);
-the [README](../README.md#verifying-releases) has the short form.
+the [home page](index.md#verifying-releases) has the short form.
 
 **Pin a version.** `:latest` exists and tracks the newest release, but
 networks remember the exact driver string they were created with — a

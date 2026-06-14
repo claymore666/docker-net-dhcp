@@ -4,6 +4,10 @@
 /plugin-cover/
 /multiarch/
 
+# mkdocs-material build output (docs site, #133) — published to gh-pages
+# by .github/workflows/pages.yml, never committed to a source branch.
+/site/
+
 .vscode/
 .claude/
 __pycache__/

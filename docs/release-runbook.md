@@ -36,6 +36,26 @@ https://ghcr.io/v2/.../blobs/uploads/: 403 Forbidden` at the **Push
 to GHCR** step. The fix takes effect for the next workflow run; no
 re-tag needed.
 
+### GitHub Pages — enable the docs site
+
+The versioned documentation site (mkdocs-material + mike, `#133`) is
+built and published by `.github/workflows/pages.yml`. That workflow
+pushes the rendered site to the `gh-pages` branch; GitHub Pages has to
+be told to serve from it — once, after the branch first exists.
+
+The first run on `dev` (or the first tag) creates `gh-pages`. Then, at
+<https://github.com/claymore666/docker-net-dhcp/settings/pages>:
+
+1. **Build and deployment → Source** = **Deploy from a branch**.
+2. **Branch** = `gh-pages` / `(root)`. Save.
+
+The site then resolves at <https://claymore666.github.io/docker-net-dhcp/>.
+No per-release action: each `vX.Y.Z` tag publishes its own docs version
+and moves the `latest` alias automatically (rc tags publish a preview
+without moving `latest` — same guard as the image `:latest`). Until the
+first release, the workflow points the site root at the moving `dev`
+version so it isn't a 404.
+
 ### Docker Hub — secrets and scopes
 
 The workflow's Hub steps are gated on a job-level
@@ -145,10 +165,13 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
    (including this runbook — process changes during the cycle land
    here too), and the coverage table if republished. Anything
    describing the previous version's behaviour, options, or
-   numbers gets updated on the release branch now. When the
-   project gains a GitHub wiki, it joins this review. The rc
-   dry-run (step 8) is the *last checkpoint* for catching stale
-   docs — by the real tag, text and code must agree.
+   numbers gets updated on the release branch now. Everything under
+   `docs/` (plus `docs/index.md`, the site home) is what the
+   versioned documentation site publishes for this tag, so the
+   review *is* the site review — there's no separate wiki to
+   reconcile. The rc dry-run (step 8) is the *last checkpoint* for
+   catching stale docs — by the real tag, text and code (and the
+   published site) must agree.
 4. **Add a `## vX.Y.Z` section** to `RELEASE_NOTES.md`, **above
    the previous version's section**. Summarise what's changing in
    user-visible terms; the workflow doesn't auto-build this from
