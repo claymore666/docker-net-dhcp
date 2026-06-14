@@ -7,15 +7,15 @@ import (
 )
 
 // FuzzBuildEvent exercises the env-var parsing path that turns a
-// busybox udhcpc(6) handler invocation into a downstream Event.
+// dhcpcd hook invocation into a downstream Event.
 //
 // This is the project's primary untrusted-input surface: every field
-// here is data the *DHCP server* put on the wire (busybox just relays
-// it into env vars), so a malformed-input crash or a bad-but-emitted
+// here is data the *DHCP server* put on the wire (dhcpcd just relays it
+// into new_* env vars), so a malformed-input crash or a bad-but-emitted
 // lease is an attacker-influenced fault. The fuzzer drives the highest
-// -value fields — the v4 ip/mask, the v6 address, MTU, and the
-// space-separated list options — across the bound/renew/lifecycle
-// event types.
+// -value fields — the v4 address/mask, the v6 IA_NA address, MTU, and
+// the space-separated list options — across the bound/renew/lease-loss
+// reasons.
 //
 // Invariant under test (stronger than "doesn't panic"): when
 // BuildEvent says "emit this", any IP it put on the Event MUST be
@@ -26,33 +26,35 @@ func FuzzBuildEvent(f *testing.F) {
 	// Seeds mirror the shapes the integration fixtures produce
 	// (192.168.99.0/24 macvlan, 192.168.100.0/24 bridge) plus the
 	// degenerate inputs the unit tests already pin: missing fields,
-	// the v6 branch, the lifecycle types, and known-malformed values.
-	// args: eventType, ip, mask, ipv6, mtu, dns, router, search
-	f.Add("bound", "192.168.99.16", "24", "", "1500", "192.168.99.1", "192.168.99.1", "corp.example")
-	f.Add("renew", "192.168.100.5", "24", "", "", "", "192.168.100.1", "")
-	f.Add("bound", "", "", "fe80::1", "1280", "2001:db8::53", "", "")
-	f.Add("deconfig", "", "", "", "", "", "", "")
-	f.Add("nak", "", "", "", "", "", "", "")
-	f.Add("leasefail", "", "", "", "", "", "", "")
-	f.Add("bogus-type", "", "", "", "", "", "", "")
-	f.Add("bound", "not-an-ip", "abc", "", "not-an-int", "", "", "")
-	f.Add("bound", "192.168.0.1", "255.255.255.0", "", "0", "", "", "") // dotted mask: ParseCIDR rejects → skip
+	// the v6 branch, the lease-loss reasons, and known-malformed values.
+	// args: reason, ip, cidr, ipv6, mtu, dns, router, search
+	f.Add("BOUND", "192.168.99.16", "24", "", "1500", "192.168.99.1", "192.168.99.1", "corp.example")
+	f.Add("RENEW", "192.168.100.5", "24", "", "", "", "192.168.100.1", "")
+	f.Add("BOUND6", "", "", "fe80::1", "1280", "2001:db8::53", "", "")
+	f.Add("RENEW6", "", "", "fd00::10", "", "fd00::53", "", "")
+	f.Add("NAK", "", "", "", "", "", "", "")
+	f.Add("EXPIRE", "", "", "", "", "", "", "")
+	f.Add("PREINIT", "", "", "", "", "", "", "")
+	f.Add("bogus-reason", "", "", "", "", "", "", "")
+	f.Add("BOUND", "not-an-ip", "abc", "", "not-an-int", "", "", "")
+	f.Add("BOUND", "192.168.0.1", "255.255.255.0", "", "0", "", "", "") // dotted mask in cidr slot
 
-	f.Fuzz(func(t *testing.T, eventType, ip, mask, ipv6, mtu, dns, router, search string) {
+	f.Fuzz(func(t *testing.T, reason, ip, cidr, ipv6, mtu, dns, router, search string) {
 		env := fakeEnv(map[string]string{
-			"ip":     ip,
-			"mask":   mask,
-			"ipv6":   ipv6,
-			"mtu":    mtu,
-			"dns":    dns,
-			"dns6":   dns,
-			"router": router,
-			"domain": search,
-			"search": search,
-			"ntpsrv": dns,
+			"new_ip_address":            ip,
+			"new_subnet_cidr":           cidr,
+			"new_subnet_mask":           cidr, // also drive the dotted-mask derivation path
+			"new_dhcp6_ia_na1_ia_addr1": ipv6,
+			"new_interface_mtu":         mtu,
+			"new_domain_name_servers":   dns,
+			"new_dhcp6_name_servers":    dns,
+			"new_routers":               router,
+			"new_domain_name":           search,
+			"new_domain_search":         search,
+			"new_ntp_servers":           dns,
 		})
 
-		event, emit := BuildEvent(eventType, env)
+		event, emit := BuildEvent(reason, env)
 		if !emit {
 			// A suppressed event carries no contract beyond "don't crash",
 			// which we already got here by not panicking.
@@ -63,8 +65,8 @@ func FuzzBuildEvent(f *testing.F) {
 		// downstream netlink parsing would reject (#128).
 		if event.Data.IP != "" {
 			if _, _, err := net.ParseCIDR(event.Data.IP); err != nil {
-				t.Fatalf("BuildEvent emitted unparseable IP %q (eventType=%q ip=%q mask=%q ipv6=%q)",
-					event.Data.IP, eventType, ip, mask, ipv6)
+				t.Fatalf("BuildEvent emitted unparseable IP %q (reason=%q ip=%q cidr=%q ipv6=%q)",
+					event.Data.IP, reason, ip, cidr, ipv6)
 			}
 		}
 
