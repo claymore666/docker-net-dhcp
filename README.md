@@ -6,6 +6,7 @@
 [![Release](https://img.shields.io/github/v/release/claymore666/docker-net-dhcp?sort=semver)](https://github.com/claymore666/docker-net-dhcp/releases)
 [![Go Report Card](https://goreportcard.com/badge/github.com/claymore666/docker-net-dhcp)](https://goreportcard.com/report/github.com/claymore666/docker-net-dhcp)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/claymore666/docker-net-dhcp/badge)](https://scorecard.dev/viewer/?uri=github.com/claymore666/docker-net-dhcp)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/13229/badge)](https://www.bestpractices.dev/projects/13229)
 
 > **This is a maintained fork** of [`devplayer0/docker-net-dhcp`][upstream].
 > The upstream repository has been quiet since 2021 and no longer builds on
