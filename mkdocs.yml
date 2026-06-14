@@ -1,0 +1,98 @@
+site_name: docker-net-dhcp
+site_description: >-
+  Docker network plugin that leases container IPs from an existing DHCP
+  server — bridge, macvlan, and ipvlan modes.
+site_url: https://claymore666.github.io/docker-net-dhcp/
+site_author: claymore666
+
+repo_url: https://github.com/claymore666/docker-net-dhcp
+repo_name: claymore666/docker-net-dhcp
+edit_uri: edit/dev/docs/
+
+# Single source of truth stays in-repo: the site is built from the same
+# docs/ tree that ships in the repository. Maintained per #133.
+docs_dir: docs
+
+# Treat every kind of broken reference as a warning so `mkdocs build
+# --strict` (run on every docs PR) fails on dead internal links AND dead
+# heading anchors — the cross-page #fragment links between these docs are
+# load-bearing.
+validation:
+  omitted_files: warn
+  absolute_links: warn
+  unrecognized_links: warn
+  links:
+    anchors: warn
+
+theme:
+  name: material
+  icon:
+    repo: fontawesome/brands/github
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - navigation.instant
+    - navigation.tracking
+    - content.code.copy
+    - content.action.edit
+    - search.suggest
+    - search.highlight
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+
+plugins:
+  - search
+  # Per-release versioned docs, driven by the deploy workflow (.github/
+  # workflows/pages.yml): each release publishes its vX.Y.Z docs and moves
+  # the `latest` alias, mirroring the registry `:vX.Y.Z` / `:latest` scheme.
+  - mike:
+      alias_type: symlink
+      canonical_version: latest
+
+extra:
+  version:
+    provider: mike
+    default: latest
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/claymore666/docker-net-dhcp
+    - icon: fontawesome/brands/docker
+      link: https://github.com/claymore666/docker-net-dhcp/pkgs/container/docker-net-dhcp
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+
+nav:
+  - Home: index.md
+  - Bridge mode: bridge-mode.md
+  - macvlan / ipvlan: parent-attached-modes.md
+  - Driver reference: reference.md
+  - How it works: internals.md
+  - Maintainer:
+      - Release runbook: release-runbook.md

@@ -7,6 +7,7 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/claymore666/docker-net-dhcp)](https://goreportcard.com/report/github.com/claymore666/docker-net-dhcp)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/claymore666/docker-net-dhcp/badge)](https://scorecard.dev/viewer/?uri=github.com/claymore666/docker-net-dhcp)
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/13229/badge)](https://www.bestpractices.dev/projects/13229)
+[![Docs](https://img.shields.io/badge/docs-claymore666.github.io-blue?logo=materialformkdocs&logoColor=white)](https://claymore666.github.io/docker-net-dhcp/)
 
 A Docker network plugin that allocates container IP addresses (IPv4 and
 optionally IPv6) from an **existing DHCP server** — your router, a
@@ -65,6 +66,10 @@ macvlan/ipvlan attach directly to a host NIC without a bridge — the
 right pick when you don't want to reconfigure the host's networking.
 
 ## Documentation
+
+A versioned documentation site is published at
+**<https://claymore666.github.io/docker-net-dhcp/>** (pick your plugin
+version from the selector). The same content lives in `docs/` in the repo:
 
 - **[Driver reference](docs/reference.md)** — every option, plugin
   setting, the `/Plugin.Health` observability endpoint, and
