@@ -1,0 +1,87 @@
+name: Trivy rootfs scan
+
+# CVE scan of the plugin's runtime rootfs (#143). Division of labour:
+#
+#   - govulncheck (test workflow)  → Go module/stdlib vulns, reachable
+#                                     from our code; the blocking gate.
+#   - APK pin drift (apk-pin-check) → signals when a newer busybox-extras
+#                                     / iproute2 is available; not CVEs.
+#   - THIS workflow                → CVEs in the OS packages actually
+#                                     installed in the shipped rootfs
+#                                     (the pinned apk versions + the
+#                                     Alpine base), which pin-drift can't
+#                                     see. `--pkg-types os` keeps it off
+#                                     Go packages so it doesn't double up
+#                                     with (or contradict) govulncheck's
+#                                     reachability-based verdicts.
+#
+# Informational, like apk-pin-check: it doesn't fail the run (exit-code
+# 0). The actionable artefact is the SARIF uploaded to Security → Code
+# scanning. Accepted-but-unfixed findings get a reviewed entry in
+# .trivyignore.yaml (justification + review date, never a bare ID) — the
+# same discipline as .github/vuln-allowlist.txt.
+#
+# Actions are SHA-pinned (tag in the trailing comment); Dependabot's
+# github-actions group maintains them.
+
+on:
+  schedule:
+    - cron: '23 6 * * 1'
+  # Also scan whenever the rootfs recipe or this scan's own config
+  # changes — catches a base-image / apk bump pulling in fresh CVEs at
+  # PR time (informational, not a required check).
+  pull_request:
+    paths:
+      - 'Dockerfile'
+      - '.trivyignore.yaml'
+      - '.github/workflows/trivy.yml'
+  push:
+    branches:
+      - dev
+    paths:
+      - 'Dockerfile'
+      - '.trivyignore.yaml'
+      - '.github/workflows/trivy.yml'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      # Upload the SARIF to code scanning (Security tab).
+      security-events: write
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      # Build the exact runtime rootfs the plugin ships (same Dockerfile
+      # the release builds), so the scan sees the real installed apk set.
+      - name: Build plugin rootfs image
+        run: docker build -t docker-net-dhcp:scan .
+
+      - name: Trivy scan (OS packages)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: docker-net-dhcp:scan
+          scanners: vuln
+          pkg-types: os
+          format: sarif
+          output: trivy-results.sarif
+          trivyignores: .trivyignore.yaml
+          # Report everything (including unfixed); reviewed acceptances
+          # live in .trivyignore.yaml. Never fail the run — see header.
+          ignore-unfixed: false
+          exit-code: '0'
+
+      - name: Upload SARIF to code scanning
+        uses: github/codeql-action/upload-sarif@8aad20d150bbac5944a9f9d289da16a4b0d87c1e # v4
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy

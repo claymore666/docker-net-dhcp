@@ -1,0 +1,23 @@
+# Trivy ignore list (#143) — OS-package CVEs that are KNOWN, REVIEWED,
+# and accepted for the plugin rootfs scan (.github/workflows/trivy.yml).
+#
+# Same discipline as .github/vuln-allowlist.txt (the govulncheck gate):
+#   - Every entry needs a `statement` (justification) and the PR that
+#     added it. No bare IDs — an unexplained suppression is a bug.
+#   - Entries are for findings with no fixed apk available, or where the
+#     fix is pending an Alpine base bump. When a fix ships, bump the pin
+#     (apk-pin-check / Dependabot surface it) and remove the entry.
+#   - `expired_at` is the review date: Trivy re-surfaces the finding past
+#     that date so stale acceptances don't accumulate silently. Re-review
+#     and either re-justify with a new date or drop it.
+#
+# Template (copy, fill in, keep the comment block above your entry):
+#
+#   vulnerabilities:
+#     - id: CVE-YYYY-NNNNN
+#       # <why this is accepted; which apk package; added in PR #NNN>
+#       statement: "no fixed apk in Alpine 3.24; daemon-side only, not reachable"
+#       expired_at: 2026-09-01
+#
+# No accepted findings at present.
+vulnerabilities: []
