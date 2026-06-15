@@ -879,7 +879,7 @@ The maintained image lives at <code>ghcr.io/claymore666/docker-net-dhcp</code>.<
 </div>
 <h2 id="quick-start">Quick start<a class="headerlink" href="#quick-start" title="Permanent link">&para;</a></h2>
 <p>Install the plugin:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>docker<span class="w"> </span>plugin<span class="w"> </span>install<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v1.1.1
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>docker<span class="w"> </span>plugin<span class="w"> </span>install<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v1.2.0
 </code></pre></div>
 <p>It requests <code>host</code> networking, the host PID namespace, the Docker
 socket, and <code>CAP_NET_ADMIN</code>/<code>CAP_SYS_ADMIN</code> — grant them to proceed.
@@ -887,7 +887,7 @@ socket, and <code>CAP_NET_ADMIN</code>/<code>CAP_SYS_ADMIN</code> — grant them
 <p>Create a bridge-mode network and run a container on it (assumes you
 already have a host bridge <code>my-bridge</code> on your LAN — see
 <a href="bridge-mode/">Bridge mode</a> for that one-time setup):</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>docker<span class="w"> </span>network<span class="w"> </span>create<span class="w"> </span>-d<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v1.1.1<span class="w"> </span><span class="se">\</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>docker<span class="w"> </span>network<span class="w"> </span>create<span class="w"> </span>-d<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v1.2.0<span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span>--ipam-driver<span class="w"> </span>null<span class="w"> </span>-o<span class="w"> </span><span class="nv">bridge</span><span class="o">=</span>my-bridge<span class="w"> </span>my-dhcp-net
 <a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>
 <a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>docker<span class="w"> </span>run<span class="w"> </span>--rm<span class="w"> </span>-ti<span class="w"> </span>--network<span class="w"> </span>my-dhcp-net<span class="w"> </span>alpine<span class="w"> </span>ip<span class="w"> </span>address<span class="w"> </span>show

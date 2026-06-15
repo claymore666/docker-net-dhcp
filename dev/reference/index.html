@@ -1061,7 +1061,7 @@ stale silently.</p>
 </ul>
 <p><strong>Install</strong> (interactive privilege grant, or <code>--grant-all-permissions</code>
 for unattended):</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>docker<span class="w"> </span>plugin<span class="w"> </span>install<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v1.1.1
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>docker<span class="w"> </span>plugin<span class="w"> </span>install<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v1.2.0
 </code></pre></div>
 <p>Privileges requested: <code>network: host</code>, host PID namespace, the Docker
 socket mount, <code>CAP_NET_ADMIN</code> + <code>CAP_SYS_ADMIN</code>. All four are inherent
@@ -1110,7 +1110,7 @@ first (<code>docker network ls</code>, <code>docker network rm ...</code>).</p>
 <h3 id="bridge-default">bridge (default)<a class="headerlink" href="#bridge-default" title="Permanent link">&para;</a></h3>
 <p>You bring an existing Linux bridge that is L2-connected to the LAN
 (see <a href="../bridge-mode/"><code>bridge-mode.md</code></a> for the bridge setup itself):</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>docker<span class="w"> </span>network<span class="w"> </span>create<span class="w"> </span>-d<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v1.1.1<span class="w"> </span><span class="se">\</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>docker<span class="w"> </span>network<span class="w"> </span>create<span class="w"> </span>-d<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v1.2.0<span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">    </span>--ipam-driver<span class="w"> </span>null<span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w">    </span>-o<span class="w"> </span><span class="nv">bridge</span><span class="o">=</span>my-bridge<span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="w">    </span>my-dhcp-net
@@ -1118,7 +1118,7 @@ first (<code>docker network ls</code>, <code>docker network rm ...</code>).</p>
 <h3 id="macvlan">macvlan<a class="headerlink" href="#macvlan" title="Permanent link">&para;</a></h3>
 <p>No host changes — containers get per-container kernel-generated MACs
 as macvlan children of a host NIC:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>docker<span class="w"> </span>network<span class="w"> </span>create<span class="w"> </span>-d<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v1.1.1<span class="w"> </span><span class="se">\</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>docker<span class="w"> </span>network<span class="w"> </span>create<span class="w"> </span>-d<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v1.2.0<span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">    </span>--ipam-driver<span class="w"> </span>null<span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="w">    </span>-o<span class="w"> </span><span class="nv">mode</span><span class="o">=</span>macvlan<span class="w"> </span>-o<span class="w"> </span><span class="nv">parent</span><span class="o">=</span>eth0<span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="w">    </span>lan-dhcp
@@ -1128,7 +1128,7 @@ as macvlan children of a host NIC:</p>
 or hypervisors that refuse multiple MACs per port (sticky-MAC port
 security, hostile vSwitches, some Wi-Fi APs). The DHCP server must
 key reservations on DHCP option 61 (client identifier), not MAC:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>docker<span class="w"> </span>network<span class="w"> </span>create<span class="w"> </span>-d<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v1.1.1<span class="w"> </span><span class="se">\</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>docker<span class="w"> </span>network<span class="w"> </span>create<span class="w"> </span>-d<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v1.2.0<span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w">    </span>--ipam-driver<span class="w"> </span>null<span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="w">    </span>-o<span class="w"> </span><span class="nv">mode</span><span class="o">=</span>ipvlan<span class="w"> </span>-o<span class="w"> </span><span class="nv">parent</span><span class="o">=</span>eth0<span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="w">    </span>lan-dhcp
@@ -1322,7 +1322,7 @@ is no <code>ip6</code> <em>driver-opt</em> channel — use <code>--ip6</code> / 
 <h2 id="observability">Observability<a class="headerlink" href="#observability" title="Permanent link">&para;</a></h2>
 <h3 id="pluginhealth"><code>/Plugin.Health</code><a class="headerlink" href="#pluginhealth" title="Permanent link">&para;</a></h3>
 <p>JSON liveness + counters on the plugin's UNIX socket:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="nv">PLUGIN_ID</span><span class="o">=</span><span class="k">$(</span>docker<span class="w"> </span>plugin<span class="w"> </span>inspect<span class="w"> </span>-f<span class="w"> </span><span class="s1">&#39;{{.Id}}&#39;</span><span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v1.1.1<span class="k">)</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="nv">PLUGIN_ID</span><span class="o">=</span><span class="k">$(</span>docker<span class="w"> </span>plugin<span class="w"> </span>inspect<span class="w"> </span>-f<span class="w"> </span><span class="s1">&#39;{{.Id}}&#39;</span><span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v1.2.0<span class="k">)</span>
 <a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>curl<span class="w"> </span>-s<span class="w"> </span>--unix-socket<span class="w"> </span>/run/docker/plugins/<span class="nv">$PLUGIN_ID</span>/net-dhcp.sock<span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="w">    </span>http://localhost/Plugin.Health<span class="w"> </span><span class="p">|</span><span class="w"> </span>jq<span class="w"> </span>.
 </code></pre></div>
@@ -1410,11 +1410,6 @@ is no <code>ip6</code> <em>driver-opt</em> channel — use <code>--ip6</code> / 
 <td>no</td>
 <td>(v1.2.0+) The IPv6-only share of the matching aggregate above (#212). Each counts only the v6 client's events; the v4 share is the aggregate minus its <code>*_v6</code>. On a dual-stack host this isolates the v6-specific NAK/timeout signal the aggregate hides. <code>lease_release_failures</code> and <code>ledger_write_failures</code> have no per-family split.</td>
 </tr>
-<tr>
-<td><code>lease_changed_v6</code>, <code>leases_obtained_v6</code>, <code>leases_renewed_v6</code>, <code>dhcp_timeouts_v6</code>, <code>naks_received_v6</code></td>
-<td>no</td>
-<td>(v1.2.0+) Per-family breakdown: the IPv6 share of the matching aggregate above. The un-suffixed counters stay v4+v6 totals, so the IPv4 share is <code>&lt;counter&gt; − &lt;counter&gt;_v6</code>. On a dual-stack host this isolates a v6-specific NAK or timeout that the aggregate alone would hide.</td>
-</tr>
 </tbody>
 </table>
 <h3 id="plugin-log">Plugin log<a class="headerlink" href="#plugin-log" title="Permanent link">&para;</a></h3>
@@ -1449,7 +1444,7 @@ external (shareable across projects, survives <code>compose down</code>):</p>
 <p>Compose-managed alternative (network lifecycle tied to the project):</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="nt">networks</span><span class="p">:</span>
 <a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="w">  </span><span class="nt">lan</span><span class="p">:</span>
-<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="w">    </span><span class="nt">driver</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ghcr.io/claymore666/docker-net-dhcp:v1.1.1</span>
+<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="w">    </span><span class="nt">driver</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ghcr.io/claymore666/docker-net-dhcp:v1.2.0</span>
 <a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="w">    </span><span class="nt">driver_opts</span><span class="p">:</span>
 <a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a><span class="w">      </span><span class="nt">mode</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">macvlan</span>
 <a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a><span class="w">      </span><span class="nt">parent</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">eth0</span>
