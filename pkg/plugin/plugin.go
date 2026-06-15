@@ -333,6 +333,20 @@ type Plugin struct {
 	// attention.
 	naksReceived atomic.Int32
 
+	// Per-family (IPv6) breakdown of the wire counters above (#212).
+	// handleEvent/renew already receive a `v6 bool`; these atoms count
+	// only the v6 client's events. The fields above stay aggregates
+	// (v4+v6) so existing operator alerts keep their meaning — the v4
+	// share is the aggregate minus the matching *V6 atom. On a dual-
+	// stack host this is the only way to tell a v6-specific NAK or
+	// timeout (the signal #152 is landing against) from a v4 one on
+	// /Plugin.Health without scraping logs.
+	leaseChangedV6   atomic.Int32
+	leasesObtainedV6 atomic.Int32
+	leasesRenewedV6  atomic.Int32
+	dhcpTimeoutsV6   atomic.Int32
+	naksReceivedV6   atomic.Int32
+
 	// ledger is the append-only lease audit log (#109), written by
 	// dhcpManager.audit for networks created with audit_log=true.
 	// ledgerWriteFailures counts failed appends, surfaced on
