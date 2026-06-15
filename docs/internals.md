@@ -34,6 +34,19 @@ namespace to it. Two things differ:
 6. `dhcpcd` keeps running, renewing the lease when required, until the
    container shuts down.
 
+Two architectural notes about how the plugin drives `dhcpcd`:
+
+- **Events come over a FIFO, not the client's stdout.** A `dhcpcd` hook
+  script reports each lease event (bind, renew, expiry, NAK) as JSON
+  through a pipe the plugin opened — which is why the plugin ships a
+  small handler binary rather than parsing client output. The plugin
+  applies the resulting address/routes via netlink itself.
+- **Each client runs in a private mount namespace.** `dhcpcd` keys its
+  on-disk state by interface name and has no runtime override for that
+  location, so two containers whose link is the default `eth0` would
+  otherwise collide on the host's shared state directory. Isolating each
+  client in its own mount namespace keeps them independent.
+
 ## See also
 
 - [Driver reference](reference.md) — options, `/Plugin.Health`, troubleshooting
