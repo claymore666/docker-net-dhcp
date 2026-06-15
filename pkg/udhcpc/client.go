@@ -220,6 +220,10 @@ func NewDHCPClient(iface string, opts *DHCPClientOptions) (*DHCPClient, error) {
 		Handler:     handler,
 		ConfigPath:  configPath,
 		EventFIFO:   fifoPath,
+		// Forward our own GOCOVERDIR to the hook so its coverage counters
+		// survive dhcpcd's environment scrub (cover build only; unset and
+		// thus omitted in production). See renderConfig.
+		CoverDir: os.Getenv("GOCOVERDIR"),
 	}
 	if err := os.WriteFile(configPath, []byte(renderConfig(params)), 0o600); err != nil {
 		return cleanup(fmt.Errorf("failed to write dhcpcd config: %w", err))

@@ -199,6 +199,20 @@ func TestRenderConfig_EventFIFO(t *testing.T) {
 	}
 }
 
+func TestRenderConfig_CoverDir(t *testing.T) {
+	mac := mustMAC(t, "de:ad:be:ef:00:01")
+	// present → GOCOVERDIR rides the `env` directive so the hook's -cover
+	// counters survive dhcpcd's environment scrub (cover build only).
+	conf := renderConfig(dhcpcdParams{Iface: "eth0", MAC: mac, CoverDir: "/coverage"})
+	if !hasLine(conf, "env GOCOVERDIR=/coverage") {
+		t.Errorf("config missing env GOCOVERDIR directive:\n%s", conf)
+	}
+	// absent (production) → no GOCOVERDIR line.
+	if strings.Contains(renderConfig(dhcpcdParams{Iface: "eth0", MAC: mac}), "GOCOVERDIR") {
+		t.Error("config emitted GOCOVERDIR with no CoverDir set")
+	}
+}
+
 // TestRenderConfig_ReleaseOnlyForPersistent: the persistent client emits
 // `release` (busybox -R: DHCPRELEASE on graceful stop, which the
 // docker-restart / daemon-restart IP-stability tests rely on); the
