@@ -44,6 +44,41 @@ func readConf(t *testing.T, c *DHCPClient) string {
 	return string(b)
 }
 
+func TestNewDHCPClient_RejectsInvalidIface(t *testing.T) {
+	// Names that must be rejected before they can reach the dhcpcd argv
+	// that runs under `unshare -m /bin/sh -c …` (go/command-injection):
+	// shell metacharacters, whitespace, path separators, flag-shaped
+	// leading dashes, over-length names, and the empty string.
+	bad := []string{
+		"",
+		"-rf",                // flag-shaped
+		"eth0; rm -rf /",     // shell injection attempt
+		"eth0 rm",            // whitespace
+		"eth/0",              // path separator
+		"eth0$(whoami)",      // command substitution
+		"`reboot`",           // backticks
+		"toolonginterface00", // > 15 chars
+	}
+	for _, name := range bad {
+		if _, err := NewDHCPClient(name, &DHCPClientOptions{MAC: mustMAC(t, "de:ad:be:ef:00:01")}); err == nil {
+			t.Errorf("NewDHCPClient(%q) accepted an invalid interface name", name)
+		}
+	}
+
+	// Realistic names that must be accepted.
+	for _, name := range []string{"eth0", "eth0.100", "veth_a1-b2", "en0"} {
+		c, err := NewDHCPClient(name, &DHCPClientOptions{MAC: mustMAC(t, "de:ad:be:ef:00:01")})
+		if err != nil {
+			t.Errorf("NewDHCPClient(%q) rejected a valid interface name: %v", name, err)
+			continue
+		}
+		if c.fifo != nil {
+			_ = c.fifo.Close()
+		}
+		_ = os.RemoveAll(c.workDir)
+	}
+}
+
 func TestNewDHCPClient_V4CommandAndConfig(t *testing.T) {
 	c := newTestClient(t, "eth0", &DHCPClientOptions{
 		MAC:         mustMAC(t, "de:ad:be:ef:00:01"),

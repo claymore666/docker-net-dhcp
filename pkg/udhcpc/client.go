@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"syscall"
 
@@ -32,6 +33,18 @@ const (
 	// literal config, so a fresh empty state dir is harmless.
 	dhcpcdStateDir = "/var/lib/dhcpcd"
 )
+
+// validIfaceName accepts only a kernel-legal network interface name: 1–15
+// characters (IFNAMSIZ-1), starting with an alphanumeric (so it can never
+// be mistaken for a dhcpcd flag) and otherwise limited to alphanumerics,
+// dot, dash and underscore. The interface name originates from the driver
+// request and is interpolated into the dhcpcd argv that runs under
+// `unshare -m /bin/sh -c '… exec "$0" "$@"'`; validating it here keeps any
+// shell-meaningful or flag-shaped value from ever reaching that command
+// (go/command-injection, CWE-78). The `"$@"` quoting already prevents
+// re-splitting, so this is defence-in-depth, but it is also simply the
+// correct contract — these names are never anything but flat tokens.
+var validIfaceName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,14}$`).MatchString
 
 type DHCPClientOptions struct {
 	Hostname  string
@@ -94,6 +107,9 @@ type DHCPClient struct {
 // identity + observe-only + the event FIFO) and the event FIFO itself,
 // and builds the (mount-namespace-wrapped) command. Start runs it.
 func NewDHCPClient(iface string, opts *DHCPClientOptions) (*DHCPClient, error) {
+	if !validIfaceName(iface) {
+		return nil, fmt.Errorf("invalid interface name %q", iface)
+	}
 	handler := opts.HandlerScript
 	if handler == "" {
 		handler = DefaultHandler
