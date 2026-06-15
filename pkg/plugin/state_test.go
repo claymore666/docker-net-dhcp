@@ -345,3 +345,53 @@ func TestUpdateEndpointIPs_PreservesUnsetField(t *testing.T) {
 		t.Errorf("v6-only update lost v4: %+v", fp)
 	}
 }
+
+// TestStateFilePath_RejectsPathInjection pins the go/path-injection
+// (CWE-22) guard: a networkID with separators / traversal must be
+// rejected before it reaches the filesystem, and the resolved path for a
+// valid ID must stay within stateDir.
+func TestStateFilePath_RejectsPathInjection(t *testing.T) {
+	withStateDir(t, t.TempDir())
+
+	for _, bad := range []string{
+		"", "..", "../../etc/passwd", "a/b", `a\b`, "foo.bar",
+		"net id", "with/slash", "./rel",
+	} {
+		if _, err := stateFilePath(bad); err == nil {
+			t.Errorf("stateFilePath(%q) = nil error, want rejection", bad)
+		}
+	}
+
+	for _, ok := range []string{"net123", "never-saved", "net_many", "abcDEF0123"} {
+		p, err := stateFilePath(ok)
+		if err != nil {
+			t.Errorf("stateFilePath(%q) unexpectedly rejected: %v", ok, err)
+			continue
+		}
+		if filepath.Dir(p) != filepath.Clean(stateDir) {
+			t.Errorf("stateFilePath(%q) = %q, not directly under stateDir %q", ok, p, stateDir)
+		}
+	}
+}
+
+// TestOptionsOps_RejectInvalidNetworkID: the public save/load/delete entry
+// points refuse a malicious ID rather than touching an out-of-bounds path.
+func TestOptionsOps_RejectInvalidNetworkID(t *testing.T) {
+	withStateDir(t, t.TempDir())
+
+	bad := "../../escape"
+	if err := saveOptions(bad, DHCPNetworkOptions{Bridge: "br0"}); err == nil {
+		t.Error("saveOptions accepted a traversal network id")
+	}
+	if _, err := loadOptions(bad); err == nil {
+		t.Error("loadOptions accepted a traversal network id")
+	}
+	if err := deleteOptions(bad); err == nil {
+		t.Error("deleteOptions accepted a traversal network id")
+	}
+	// Nothing should have been written anywhere under the temp stateDir.
+	entries, _ := os.ReadDir(stateDir)
+	if len(entries) != 0 {
+		t.Errorf("expected empty stateDir after rejected ops, found %d entries", len(entries))
+	}
+}

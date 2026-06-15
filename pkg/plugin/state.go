@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"time"
 )
 
@@ -23,9 +25,24 @@ var stateDir = func() string {
 	return "/var/lib/net-dhcp"
 }()
 
+// validNetworkID accepts only a flat token — the shape of a libnetwork
+// network ID (hex). It rejects path separators and traversal elements
+// before networkID is ever interpolated into a filesystem path.
+var validNetworkID = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`).MatchString
+
 // stateFilePath returns the on-disk path for a given network's options.
-func stateFilePath(networkID string) string {
-	return filepath.Join(stateDir, networkID+".json")
+// networkID originates from the driver request, so it is validated and
+// the resolved path is confirmed to stay within stateDir before it
+// reaches any os.* call — closing the go/path-injection vector (CWE-22).
+func stateFilePath(networkID string) (string, error) {
+	if !validNetworkID(networkID) {
+		return "", fmt.Errorf("invalid network id %q", networkID)
+	}
+	p := filepath.Clean(filepath.Join(stateDir, networkID+".json"))
+	if !strings.HasPrefix(p, filepath.Clean(stateDir)+string(os.PathSeparator)) {
+		return "", fmt.Errorf("state path for network %q escapes %s", networkID, stateDir)
+	}
+	return p, nil
 }
 
 // tombstoneTTL bounds how long a recently-deleted endpoint's MAC is
@@ -172,12 +189,18 @@ func saveOptions(networkID string, opts DHCPNetworkOptions) error {
 	if err := os.MkdirAll(stateDir, 0o755); err != nil {
 		return fmt.Errorf("failed to create state dir %v: %w", stateDir, err)
 	}
+	final, err := stateFilePath(networkID)
+	if err != nil {
+		return err
+	}
 	data, err := json.Marshal(opts)
 	if err != nil {
 		return fmt.Errorf("failed to encode options: %w", err)
 	}
-	final := stateFilePath(networkID)
-	tmp, err := os.CreateTemp(stateDir, "."+networkID+".*.tmp")
+	// The temp name carries no networkID — CreateTemp's "*" already
+	// guarantees uniqueness, and keeping caller-supplied input out of the
+	// pattern removes it as a path-injection sink.
+	tmp, err := os.CreateTemp(stateDir, ".state-*.tmp")
 	if err != nil {
 		return fmt.Errorf("failed to create temp options file: %w", err)
 	}
@@ -207,7 +230,11 @@ func saveOptions(networkID string, opts DHCPNetworkOptions) error {
 // fall back to other sources (e.g. the docker API).
 func loadOptions(networkID string) (DHCPNetworkOptions, error) {
 	var opts DHCPNetworkOptions
-	data, err := os.ReadFile(stateFilePath(networkID))
+	path, err := stateFilePath(networkID)
+	if err != nil {
+		return opts, err
+	}
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return opts, err
 	}
@@ -222,7 +249,11 @@ func loadOptions(networkID string) (DHCPNetworkOptions, error) {
 // just means we never persisted state for this network in the first
 // place (e.g. created before we shipped persistence).
 func deleteOptions(networkID string) error {
-	if err := os.Remove(stateFilePath(networkID)); err != nil && !os.IsNotExist(err) {
+	path, err := stateFilePath(networkID)
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("failed to remove options file: %w", err)
 	}
 	return nil
