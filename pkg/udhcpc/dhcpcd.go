@@ -102,6 +102,7 @@ type dhcpcdParams struct {
 	Handler    string // hook script path (-c)
 	ConfigPath string // where the rendered config will be written (-f)
 	EventFIFO  string // FIFO the handler writes events to (env directive); "" omits
+	CoverDir   string // GOCOVERDIR to forward to the hook (cover build only); "" omits
 }
 
 // renderConfig produces the dhcpcd.conf text for p. Only directives
@@ -140,6 +141,17 @@ func renderConfig(p dhcpcdParams) string {
 	// process environment).
 	if p.EventFIFO != "" {
 		fmt.Fprintf(&b, "env %s=%s\n", EventFIFOEnv, p.EventFIFO)
+	}
+
+	// Forward GOCOVERDIR to the hook in the coverage-instrumented build
+	// so cmd/udhcpc-handler's `-cover` counters are written and merged.
+	// dhcpcd scrubs the environment, so — like the FIFO above — it has to
+	// ride the `env` directive; otherwise the handler (a separate process
+	// dhcpcd execs per event) loses GOCOVERDIR and emits nothing, and the
+	// package drops out of the coverage ratchet entirely. Empty in
+	// production (GOCOVERDIR unset), so this is a no-op there.
+	if p.CoverDir != "" {
+		fmt.Fprintf(&b, "env GOCOVERDIR=%s\n", p.CoverDir)
 	}
 
 	// Keep dhcpcd off host/system files.
