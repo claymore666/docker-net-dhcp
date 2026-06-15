@@ -23,14 +23,14 @@ import (
 // same MAC the daemon reported.
 //
 // Earlier this test was `t.Skip`'d because the OFFER never reached
-// the slave through a veth parent. The original fix forced the
-// BROADCAST flag in DISCOVER (busybox `udhcpc -B`) for ipvlan mode so
-// the OFFER was L2-broadcast at the wire level and the kernel flooded
-// it to all slaves of the parent. NOTE: since the dhcpcd migration
-// (#152) the client's Broadcast option is not yet wired (see
-// pkg/udhcpc DHCPClientOptions.Broadcast), so dnsmasq's
-// `--dhcp-broadcast` in our fixture is currently what keeps ipvlan
-// honest on the test path.
+// the slave through a veth parent. The fix forces the BROADCAST flag
+// in DISCOVER for ipvlan mode so the OFFER is L2-broadcast at the wire
+// level and the kernel floods it to all slaves of the parent — the
+// plugin sets this via the dhcpcd `broadcast` directive (#243; was
+// busybox `udhcpc -B` before the #152 migration). The fixture
+// deliberately does NOT pass dnsmasq `--dhcp-broadcast`, so this test
+// genuinely exercises that client-side flag: if it regressed, ipvlan
+// acquisition here would hang.
 func TestLifecycleIPvlan_GoldenPath(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()

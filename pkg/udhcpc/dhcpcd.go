@@ -97,6 +97,7 @@ type dhcpcdParams struct {
 	ClientID    []byte // v4 option 61 raw payload; nil/empty omits (v4 only)
 	RequestedIP string // v4 preferred address (request directive); "" omits
 	PreferredV6 string // v6 IA_NA preferred address; "" omits
+	Broadcast   bool   // request a broadcast reply (v4 only; ipvlan-L2 shared MAC)
 
 	Handler    string // hook script path (-c)
 	ConfigPath string // where the rendered config will be written (-f)
@@ -176,6 +177,17 @@ func renderConfig(p dhcpcdParams) string {
 	// `-R`). The one-shot acquisition deliberately keeps its lease (-1 -p).
 	if !p.Once {
 		fmt.Fprintf(&b, "release\n")
+	}
+
+	// ipvlan-L2 slaves all share the parent NIC's MAC, so a unicast
+	// OFFER/ACK addressed to that MAC during initial acquisition can't be
+	// demuxed to the right slave (the slave's IP isn't on the link yet).
+	// The `broadcast` directive sets the DHCP BROADCAST flag so the server
+	// replies via L2 broadcast — the dhcpcd equivalent of busybox `-B`
+	// (#243). v4-only: the flag is a DHCPv4 concept. dhcpcd only auto-sets
+	// it for non-Ethernet links, so ipvlan needs it forced.
+	if p.Broadcast && !p.V6 {
+		fmt.Fprintf(&b, "broadcast\n")
 	}
 
 	if p.Hostname != "" {
