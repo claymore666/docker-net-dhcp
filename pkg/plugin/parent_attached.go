@@ -97,6 +97,10 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 	if err != nil {
 		return res, err
 	}
+	explicitV6, err := resolveExplicitV6(r)
+	if err != nil {
+		return res, err
+	}
 	// Look up the hostname up front so we can scope tombstone matching
 	// to the same container (prevents identity swap during sequential
 	// `compose restart`). Best-effort: if the lookup misses or returns
@@ -104,11 +108,18 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 	hostname := p.initialDHCPHostname(ctx, r.NetworkID, r.EndpointID)
 
 	requestedIP := explicitV4
+	requestedV6 := explicitV6
 	if mode == ModeMacvlan && effectiveMAC == "" {
 		if tombMAC, tombIP, tombIPv6, ok := p.consumeTombstone(r.NetworkID, hostname); ok {
 			effectiveMAC = tombMAC
 			if requestedIP == "" {
 				requestedIP = tombIP
+			}
+			// Inherit the prior v6 as the DHCPv6 preferred address too,
+			// so a restarting macvlan container keeps its v6 lease the
+			// same way it keeps v4 (#213).
+			if requestedV6 == "" {
+				requestedV6 = tombIPv6
 			}
 			log.WithFields(log.Fields{
 				"network":  shortID(r.NetworkID),
@@ -230,7 +241,9 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 				// tombstone-preserved MACs).
 				MAC: mac,
 			}
-			if !v6 {
+			if v6 {
+				clientOpts.PreferredV6 = requestedV6
+			} else {
 				clientOpts.RequestedIP = requestedIP
 			}
 			info, err := udhcpc.GetIP(tCtx, la.Name, clientOpts)
