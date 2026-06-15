@@ -1,9 +1,13 @@
 name: Integration
 
 # Live integration tests against the plugin. Run on the self-hosted
-# `dhcp-ci` runners because they need privileges (CAP_NET_ADMIN,
-# mount/netns ops, bind UDP/67) and a real DHCP server (dnsmasq) —
-# neither is feasible on free GitHub-hosted runners.
+# `dhcp-ci` runners: they need privileges (CAP_NET_ADMIN, mount/netns
+# ops, bind UDP/67) and a real DHCP server (dnsmasq). Those work on a
+# GitHub-hosted VM too (full root via sudo) — the reason this lane is
+# self-hosted is control and parity: a purpose-built image pinning the
+# toolchain and Docker Engine >=28, pooled for parallelism, gives a
+# stable per-PR gate. A stock hosted runner is exercised separately and
+# non-gating by integration-hosted.yml (#238) as a portability check.
 #
 # The `dhcp-ci` runners are ephemeral: one container = one job, each
 # with its own nested Docker daemon (image ghcr.io/claymore666/

@@ -1,0 +1,104 @@
+name: Integration (hosted cross-check)
+
+# OPT-IN portability cross-check — NOT a gate and NOT a fallback.
+#
+# This runs the live integration suite on a stock GitHub-hosted
+# `ubuntu-latest` runner to answer one question the self-hosted
+# `dhcp-ci` pool can't: does the plugin work against a vanilla distro's
+# Docker, on a runner we don't build or control? It surfaces
+# assumptions baked into our purpose-built runner image (the pre-baked
+# Go toolchain, the nested-daemon model, host config) that
+# integration.yml is blind to by construction.
+#
+# It is deliberately:
+#   * NOT wired to push / pull_request — never gates a PR or a release.
+#   * NOT a required status check — a red here is an FYI about the
+#     hosted environment, not a regression signal against our code.
+#   * NOT a substitute for an offline self-hosted runner. GitHub
+#     Actions has no label-based failover; outage resilience is the
+#     second-runner-VM track, not this lane.
+#
+# Feasibility note (corrects the old "infeasible on hosted" lore): a
+# hosted runner is a full VM with passwordless sudo, so CAP_NET_ADMIN,
+# veth/netns ops, dnsmasq and binding UDP/67 all work. The historical
+# blocker was Docker Engine version — our runner image pins Engine >=28
+# and hosted used to lag. As of ubuntu-24.04 the hosted image ships
+# Docker Server 28.x (same engine major), so a hosted run is now on a
+# COMPARABLE engine and its results are meaningful rather than noise.
+# See integration.yml for the self-hosted rationale this mirrors.
+#
+# SECURITY: the test steps run as root via sudo. Only workflow_dispatch
+# and schedule trigger this — forks cannot start it, so there is no
+# untrusted-PR-as-root exposure.
+on:
+  workflow_dispatch:
+  schedule:
+    # Weekly, Monday 04:17 UTC. Off-peak, odd minute to avoid the
+    # top-of-hour cron stampede on GitHub's scheduler.
+    - cron: '17 4 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  integration-hosted:
+    runs-on: ubuntu-latest
+    # Same 35m budget as integration.yml: main suite + failure-injection
+    # suite (~9 min of deliberate DHCP-timing waits) + plugin build +
+    # margin. Hosted hardware is unproven for this suite — the first
+    # dispatch runs calibrate whether this holds (see #238).
+    timeout-minutes: 35
+    env:
+      # Distinct tag from :integration (self-hosted) and :golang-cover
+      # (coverage). The VM is ephemeral so collisions can't happen, but
+      # a self-describing ref keeps logs unambiguous.
+      INTEGRATION_PLUGIN_REF: ghcr.io/claymore666/docker-net-dhcp:integration-hosted
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      # Hosted runners have no pre-baked toolchain (unlike the dhcp-ci
+      # image, which bakes go.mod's Go and skips setup-go). Pin to the
+      # go.mod minor so the cross-check tracks our real toolchain.
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        with:
+          go-version: '1.26'
+
+      # Record the environment under test — the whole point of this lane
+      # is to know exactly which hosted Docker/Go a green (or red) ran
+      # against. Fail loudly if the engine ever regresses below 28.
+      - name: Show environment under test
+        run: |
+          go version
+          docker version
+          server_major="$(docker version -f '{{.Server.Version}}' | cut -d. -f1)"
+          if [ "${server_major}" -lt 28 ]; then
+            echo "::warning::hosted Docker Engine ${server_major}.x < 28 — below our pinned floor; results may diverge from self-hosted"
+          fi
+
+      # Build + install the plugin from THIS tree, exactly as
+      # integration.yml does, just under a hosted-specific tag.
+      - name: Build + install integration plugin
+        run: |
+          make PLUGIN_NAME=ghcr.io/claymore666/docker-net-dhcp PLUGIN_TAG=integration-hosted plugin
+          docker plugin rm -f "${INTEGRATION_PLUGIN_REF}" 2>/dev/null || true
+          docker plugin create "${INTEGRATION_PLUGIN_REF}" plugin
+          docker plugin set "${INTEGRATION_PLUGIN_REF}" LOG_LEVEL=trace
+          docker plugin enable "${INTEGRATION_PLUGIN_REF}"
+
+      # The Makefile targets require root (netns/veth/UDP-67). Hosted
+      # runs as the `runner` user with passwordless sudo, so wrap with
+      # sudo — and forward PATH (for the setup-go toolchain) and the
+      # plugin ref explicitly, since sudo resets the environment.
+      - name: Run integration tests
+        run: sudo env "PATH=$PATH" "INTEGRATION_PLUGIN_REF=$INTEGRATION_PLUGIN_REF" make integration-test
+
+      - name: Run failure-injection tests
+        run: sudo env "PATH=$PATH" "INTEGRATION_PLUGIN_REF=$INTEGRATION_PLUGIN_REF" make integration-test-failure
+
+      # Belt-and-braces on an ephemeral VM, kept for parity with
+      # integration.yml so the two workflows read the same.
+      - name: Tear down integration plugin
+        if: always()
+        run: |
+          docker plugin disable "${INTEGRATION_PLUGIN_REF}" 2>/dev/null || true
+          docker plugin rm -f "${INTEGRATION_PLUGIN_REF}" 2>/dev/null || true

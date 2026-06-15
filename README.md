@@ -140,6 +140,11 @@ Contributions are welcome.
   - **Green CI:** every PR must pass the required checks — unit tests,
     `staticcheck`, the live integration suite, `govulncheck`, and `actionlint` —
     before it can be merged.
+  - **Hosted cross-check:** a separate, *non-required* workflow runs the
+    integration suite on a stock GitHub-hosted runner on a weekly schedule
+    (and on demand) to validate the plugin against a vanilla distro's Docker.
+    It is a portability probe, not a PR gate — a red there flags the hosted
+    environment, not your change.
 - **Security vulnerabilities:** do **not** open a public issue — follow the
   private process described in [SECURITY.md](SECURITY.md).
 
