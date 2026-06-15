@@ -164,9 +164,13 @@ Passed per container via `docker network connect --driver-opt`, or as
 | `ip` | Request a specific IPv4 address (bare IP, no CIDR — the netmask comes from DHCP). Equivalent to `docker run --ip`; setting both to different values is an error. The address is *requested* from the DHCP server (DHCPREQUEST for it); the server still has final say. |
 | `com.docker.network.endpoint.ifname` | (v1.0.0+) Request a specific interface name inside the container (Compose `interface_name`, engine 28+; or this key under `driver_opts`, any engine). The plugin validates the name (≤15 bytes, kernel charset — invalid names fail the attach with a clear error) and returns it in its Join response. **Current engine limitation:** moby's remote-driver layer discards the returned name (`drivers/remote/driver.go` passes an empty `DstName`), so engines do not yet apply it for *plugin* drivers — built-in drivers only. The plugin side is ready; the rename activates as soon as the upstream pass-through ships. Until then interfaces stay `ethN` in attach order. |
 
-A static IPv6 request (`--ip6` / Interface.AddressIPv6) is currently
-accepted but logged-and-skipped — busybox udhcpc6 has no
-request-this-address flag. The v6 lease comes unhinted.
+A static IPv6 request (`--ip6` / Interface.AddressIPv6) is honored
+(v1.2.0+): it is sent to the DHCPv6 client as the IA_NA preferred
+address, mirroring `--ip` for v4. The same applies to the v6 address a
+container held before a restart — it is inherited from the tombstone
+and re-requested — so a dual-stack container keeps both addresses
+across `docker restart`. As with v4, the server has final say. (There
+is no `ip6` *driver-opt* channel — use `--ip6` / `AddressIPv6`.)
 
 Container-level knobs that interact with the plugin:
 

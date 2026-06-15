@@ -274,6 +274,63 @@ func TestResolveExplicitV4(t *testing.T) {
 	}
 }
 
+func TestResolveExplicitV6(t *testing.T) {
+	cases := []struct {
+		name    string
+		r       CreateEndpointRequest
+		wantIP  string
+		wantErr bool
+	}{
+		{name: "nil_interface", wantIP: ""},
+		{name: "empty_address", r: CreateEndpointRequest{Interface: &EndpointInterface{}}, wantIP: ""},
+		{
+			name:   "valid_v6_cidr",
+			r:      CreateEndpointRequest{Interface: &EndpointInterface{AddressIPv6: "fd00:dead:beef::5/64"}},
+			wantIP: "fd00:dead:beef::5",
+		},
+		{
+			name:    "v4_rejected",
+			r:       CreateEndpointRequest{Interface: &EndpointInterface{AddressIPv6: "192.168.0.50/24"}},
+			wantErr: true,
+		},
+		{
+			name:    "bare_addr_no_mask_rejected",
+			r:       CreateEndpointRequest{Interface: &EndpointInterface{AddressIPv6: "fd00::5"}},
+			wantErr: true,
+		},
+		{
+			name:    "garbage",
+			r:       CreateEndpointRequest{Interface: &EndpointInterface{AddressIPv6: "not-an-ip"}},
+			wantErr: true,
+		},
+		{
+			name:    "unspecified_v6_rejected",
+			r:       CreateEndpointRequest{Interface: &EndpointInterface{AddressIPv6: "::/0"}},
+			wantErr: true,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			ip, err := resolveExplicitV6(c.r)
+			if c.wantErr {
+				if err == nil {
+					t.Errorf("expected error, got nil (ip=%q)", ip)
+				}
+				if err != nil && !errors.Is(err, util.ErrIPAM) {
+					t.Errorf("expected ErrIPAM, got %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+			if ip != c.wantIP {
+				t.Errorf("ip mismatch: got %q want %q", ip, c.wantIP)
+			}
+		})
+	}
+}
+
 func TestValidateIPAMData(t *testing.T) {
 	cases := []struct {
 		name    string

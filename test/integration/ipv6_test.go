@@ -15,9 +15,12 @@
 //     PluginRestart asserts this end-to-end.
 //   - option 23 (DNS servers) is requested by default — the `dns6`
 //     env arrives without any -O flag.
-//   - there is no "request this address" flag for v6 (`-r` is v4
-//     only), so v6 leases always come unhinted; continuity relies on
-//     the server recognising the stable DUID.
+//
+// Since #152 the v6 client is dhcpcd (not busybox udhcpc6), and #213
+// wires a preferred-address request: a requested v6 (`--ip6` or
+// tombstone-inherited) is sent as the IA_NA preferred address
+// (`ia_na <iaid> / ADDR`), so v6 stickiness no longer relies on the
+// server's DUID memory alone.
 package integration
 
 import (
@@ -217,6 +220,75 @@ func TestLifecycleMacvlan_IPv6_GoldenPath(t *testing.T) {
 	if after.LeaseReleaseFailures != before.LeaseReleaseFailures {
 		t.Errorf("lease_release_failures moved %d -> %d over a dual-stack lifecycle; the v6 Stop path is failing",
 			before.LeaseReleaseFailures, after.LeaseReleaseFailures)
+	}
+}
+
+// TestTombstoneRestart_PreservesIPv6 is the #213 acceptance test — the
+// v6 sibling of TestTombstoneRestart_PreservesMACAndIP. On Leave the
+// plugin tombstones the endpoint's v6 address; on the restart's
+// CreateEndpoint that address is requested back as the DHCPv6 preferred
+// address (dhcpcd `ia_na <iaid> / ADDR`), so a dual-stack container
+// keeps its v6 lease across `docker restart` exactly as it keeps v4.
+func TestTombstoneRestart_PreservesIPv6(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	netName := "dh-itest-v6tomb"
+	ctrName := "dh-itest-v6tomb-ctr"
+
+	t.Cleanup(func() {
+		if t.Failed() {
+			fixture.DumpLogs(func(s string) { t.Log(s) })
+			harness.DumpPluginLog(t)
+		}
+	})
+
+	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	if err != nil {
+		t.Fatalf("docker client: %v", err)
+	}
+	defer cli.Close()
+
+	harness.CreateNetwork(t, ctx, netName, "macvlan", map[string]string{"ipv6": "true"})
+	id, v4Before, macBefore := harness.RunContainer(t, ctx, netName, ctrName)
+	v6Before := linkGlobalV6(t, ctx, id, harness.IPAcquisitionBudget)
+	if v6Before == "" {
+		t.Fatal("no global IPv6 appeared before restart")
+	}
+	t.Logf("before restart: v4=%s v6=%s mac=%s", v4Before, v6Before, macBefore)
+
+	if err := cli.ContainerRestart(ctx, id, container.StopOptions{}); err != nil {
+		t.Fatalf("ContainerRestart: %v", err)
+	}
+
+	// The endpoint is torn down and recreated; wait for the v6 to
+	// reappear on the link before reading the settled values.
+	v6After := linkGlobalV6(t, ctx, id, harness.IPAcquisitionBudget)
+	if v6After == "" {
+		t.Fatalf("container did not re-acquire a global IPv6 within %v after restart", harness.IPAcquisitionBudget)
+	}
+	insV6 := inspectV6(t, ctx, cli, id, netName)
+	ins, err := cli.ContainerInspect(ctx, id)
+	if err != nil {
+		t.Fatalf("ContainerInspect: %v", err)
+	}
+	var v4After, macAfter string
+	if ep := ins.NetworkSettings.Networks[netName]; ep != nil {
+		v4After, macAfter = ep.IPAddress, ep.MacAddress
+	}
+	t.Logf("after restart:  v4=%s v6=%s (inspect v6=%s) mac=%s", v4After, v6After, insV6, macAfter)
+
+	if macAfter != macBefore {
+		t.Errorf("MAC changed across restart: before=%s after=%s (tombstone not honored)", macBefore, macAfter)
+	}
+	if v6After != v6Before {
+		t.Errorf("IPv6 changed across restart: before=%s after=%s (tombstone v6 not requested as preferred address)", v6Before, v6After)
+	}
+	if v4After != v4Before {
+		t.Errorf("IPv4 changed across restart: before=%s after=%s", v4Before, v4After)
+	}
+	if insV6 != "" && !net.ParseIP(insV6).Equal(net.ParseIP(v6After)) {
+		t.Errorf("inspect IPv6 %s != live link IPv6 %s after restart", insV6, v6After)
 	}
 }
 

@@ -260,8 +260,9 @@ do; Fritz.Box does **not** unless you also configure a UI-side static
 reservation for the container's MAC. With a stable MAC (which the
 plugin gives you across restarts), that reservation persists.
 
-`ip` must be a bare IPv4 address. IPv6 driver-opt is not yet wired
-through to `udhcpc6`.
+`ip` must be a bare IPv4 address. There is no `ip6` driver-opt; request
+a specific v6 address with `--ip6` / `Interface.AddressIPv6` instead
+(honored since v1.2.0 — see the v6 hint note below).
 
 ## Restart stability (MAC and IP)
 
@@ -334,10 +335,13 @@ What you get, and the boundaries (v1.0.0 audit, #103):
   parent's MAC, so they share one DUID too — v6 servers tell them
   apart only by IAID, and per-container v6 reservations are not
   practical in ipvlan mode (same shape as the v4 MAC limitation).
-- **No static-v6 hint:** udhcpc6 has no v4-style `-r` request flag,
-  so `--ip6` / static v6 requests are accepted-but-ignored (logged);
-  the lease always arrives server-chosen. Use a DUID-keyed
-  reservation upstream when you need a fixed v6 address.
+- **Static-v6 hint (v1.2.0+):** a requested v6 address — `--ip6` /
+  `Interface.AddressIPv6`, or the address inherited from a tombstone on
+  restart — is sent to dhcpcd as the IA_NA preferred address
+  (`ia_na <iaid> / ADDR`), the v6 counterpart of `--ip`. The server
+  still has final say, but a dual-stack container now keeps its v6
+  address across `docker restart` like it keeps v4. (DUID-keyed
+  upstream reservations still work and stack with this.)
 - `propagate_dns=true` also covers v6: the DHCPv6 option-23 server
   list is written to `resolv.conf` on v6 bind/renew. The two
   families are last-writer-wins on that file.

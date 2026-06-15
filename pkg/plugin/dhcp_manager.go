@@ -578,9 +578,19 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 	// no-op (server still ACKs the same address). On recovery it's
 	// what makes the lease "sticky".
 	requestedIP := ""
+	preferredV6 := ""
 	if !v6 {
 		if v4Addr, _ := m.lastIPs(); v4Addr != nil && v4Addr.IP != nil {
 			requestedIP = v4Addr.IP.String()
+		}
+	} else {
+		// Same stickiness for v6: on recovery ask for the IA_NA address
+		// the container already holds (lastIPv6 is seeded from the
+		// recovered state) rather than risk a fresh one. In the normal
+		// create->Join path it's a no-op — dhcpcd's pinned IA already
+		// returns the same address (#213).
+		if _, v6Addr := m.lastIPs(); v6Addr != nil && v6Addr.IP != nil {
+			preferredV6 = v6Addr.IP.String()
 		}
 	}
 	client, err := udhcpc.NewDHCPClient(m.ctrLink.Attrs().Name, &udhcpc.DHCPClientOptions{
@@ -593,6 +603,7 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 		// Docker was told about (#152).
 		MAC:         m.ctrLink.Attrs().HardwareAddr,
 		RequestedIP: requestedIP,
+		PreferredV6: preferredV6,
 		// ipvlan slaves share the parent's MAC; without -B the server
 		// may unicast renewals to the parent and the kernel has no
 		// way to demux to the right slave. Setting Broadcast for
