@@ -98,6 +98,8 @@ func runDHCPProbe(ctx context.Context, parent string) error {
 	defer cancel()
 
 	info, err := udhcpc.GetIP(probeCtx, probeName, &udhcpc.DHCPClientOptions{
+		// MAC is the probe link's (random) address; dhcpcd derives its
+		// DUID-LL from it. Identity-neutral otherwise:
 		// Hostname intentionally empty — the probe shouldn't
 		// register any name in the upstream's lease table.
 		// VendorClass / ClientID likewise omitted: the goal is
@@ -105,6 +107,7 @@ func runDHCPProbe(ctx context.Context, parent string) error {
 		// lease?" — keeping the probe identity-neutral avoids
 		// false negatives when class-based policy denies the
 		// probe but would accept the real container.
+		MAC: probeMAC,
 	})
 	if err != nil {
 		if errors.Is(err, util.ErrNoLease) || errors.Is(err, context.DeadlineExceeded) {

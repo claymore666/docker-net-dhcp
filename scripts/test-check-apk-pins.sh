@@ -3,7 +3,7 @@
 # seam to feed synthetic `apk policy` output (no docker/network), against a
 # synthetic Dockerfile, and asserts the drift verdict. The first case is
 # the regression guard: `apk policy` emits versions with a trailing colon
-# (`1.36.1-r31:`), which the checker must strip so a current pin is NOT
+# (`10.0.6-r1:`), which the checker must strip so a current pin is NOT
 # falsely reported as an upgrade candidate.
 set -u
 
@@ -17,7 +17,7 @@ cat > "$DF" <<'EOF'
 FROM golang:1.26-alpine AS builder
 FROM alpine:3.20
 RUN apk add --no-cache \
-        busybox-extras=1.36.1-r31 \
+        dhcpcd=10.0.6-r1 \
         iproute2=6.9.0-r0
 EOF
 
@@ -43,22 +43,22 @@ check() {
 
 # Regression guard: trailing-colon versions equal to the pins => no drift.
 check "current pins (trailing colon) report OK, exit 0" 0 "--strict" \
-$'busybox-extras\t1.36.1-r31:\niproute2\t6.9.0-r0:\n' \
+$'dhcpcd\t10.0.6-r1:\niproute2\t6.9.0-r0:\n' \
 "All apk pins current."
 
 # A genuinely newer available version => drift, --strict exits 1.
 check "behind pin flagged, --strict exits 1" 1 "--strict" \
-$'busybox-extras\t1.36.1-r32:\niproute2\t6.9.0-r0:\n' \
+$'dhcpcd\t10.0.6-r2:\niproute2\t6.9.0-r0:\n' \
 "upgrade candidate"
 
 # Same drift without --strict is report-only (exit 0).
 check "behind pin is report-only without --strict" 0 "" \
-$'busybox-extras\t1.36.1-r32:\niproute2\t6.9.0-r0:\n' \
+$'dhcpcd\t10.0.6-r2:\niproute2\t6.9.0-r0:\n' \
 "upgrade candidate"
 
 # Empty available (pkg not in index / bad pin) => drift.
 check "missing-from-index flagged, --strict exits 1" 1 "--strict" \
-$'busybox-extras\t\niproute2\t6.9.0-r0:\n' \
+$'dhcpcd\t\niproute2\t6.9.0-r0:\n' \
 "not found in index"
 
 # No FROM alpine: => usage error (exit 2).

@@ -257,7 +257,6 @@ func TestLifecycleBridge_IPv6_GoldenPath(t *testing.T) {
 // idle 75s and assert the address survived and a renewal DHCPREPLY
 // landed on top of the bind's.
 func TestLeaseRenewIPv6_HonorsT1(t *testing.T) {
-	t.Skip("DHCPv6 IA unification pending (#152): the persistent client negotiates a second IA, so the Docker-visible v6 address is never renewed — this test asserts the intended post-unification semantics")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Second)
 	defer cancel()
@@ -360,7 +359,6 @@ func TestIPv6_DNS6Propagation(t *testing.T) {
 	})
 
 	t.Run("opt-in writes dns6", func(t *testing.T) {
-		t.Skip("DHCPv6 IA unification pending (#152): the persistent client negotiates a second IA, so the Docker-visible v6 address is never renewed — this test asserts the intended post-unification semantics")
 
 		netName := "dh-itest-v6dns"
 		harness.CreateNetwork(t, ctx, netName, "macvlan", map[string]string{
@@ -398,16 +396,15 @@ func TestIPv6_DNS6Propagation(t *testing.T) {
 }
 
 // TestDUID_PersistsAcrossPluginRestart: the acceptance test for
-// #103's "persistent DUID" item, resolved by the audit: busybox
-// udhcpc6 derives a DUID-LL from the interface MAC (d6_dhcpc.c), so
-// the DUID is stable as long as the MAC is — and the container link's
-// MAC survives a plugin disable/enable. The dnsmasq lease DB must
-// show the SAME client DUID for the container's address after the
-// plugin restarts and its recovered udhcpc6 re-binds. This is what
-// makes server-side v6 reservations stick across plugin upgrades.
+// #103's "persistent DUID" item. The plugin pins dhcpcd's DUID-LL from
+// the interface MAC (#152: a literal `duid 00:03:00:01:<MAC>` in the
+// generated config), so the DUID is stable as long as the MAC is — and
+// the container link's MAC survives a plugin disable/enable. The
+// dnsmasq lease DB must show the SAME client DUID for the container's
+// address after the plugin restarts and its recovered dhcpcd re-binds.
+// This is what makes server-side v6 reservations stick across plugin
+// upgrades.
 func TestDUID_PersistsAcrossPluginRestart(t *testing.T) {
-	t.Skip("DHCPv6 IA unification pending (#152): the persistent client negotiates a second IA, so the Docker-visible v6 address is never renewed — this test asserts the intended post-unification semantics")
-
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
 

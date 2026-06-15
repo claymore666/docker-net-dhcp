@@ -143,3 +143,33 @@ func TestHandleEvent_Counters(t *testing.T) {
 		}
 	})
 }
+
+// TestNextAcquiring pins the DHCP-outage watchdog state machine. dhcpcd
+// emits no per-attempt failure hook, so the persistent-client goroutine
+// derives an "acquiring" flag from the event stream: a bound/renew means
+// we hold a lease; a leasefail (dhcpcd EXPIRE/TIMEOUT) drops back to
+// acquiring; anything else (NAK) is left unchanged.
+func TestNextAcquiring(t *testing.T) {
+	cases := []struct {
+		name      string
+		prev      bool
+		eventType string
+		want      bool
+	}{
+		{"bound clears acquiring", true, "bound", false},
+		{"renew clears acquiring", true, "renew", false},
+		{"leasefail sets acquiring", false, "leasefail", true},
+		{"leasefail while acquiring stays acquiring", true, "leasefail", true},
+		{"bound while bound stays bound", false, "bound", false},
+		{"nak leaves acquiring=true unchanged", true, "nak", true},
+		{"nak leaves acquiring=false unchanged", false, "nak", false},
+		{"unknown leaves state unchanged", true, "carrier", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := nextAcquiring(tc.prev, tc.eventType); got != tc.want {
+				t.Errorf("nextAcquiring(%v, %q) = %v, want %v", tc.prev, tc.eventType, got, tc.want)
+			}
+		})
+	}
+}

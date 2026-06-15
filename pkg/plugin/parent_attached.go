@@ -222,6 +222,13 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 				ClientID:    clientID,
 				VendorClass: opts.VendorClass,
 				Broadcast:   mode == ModeIPvlan,
+				// MAC pins the dhcpcd DUID-LL/IAID so the one-shot and
+				// persistent clients share one identity (#152). NOTE:
+				// ipvlan-L2 slaves share the parent MAC, so v6 identity
+				// is not unique per endpoint in that mode — a known
+				// limitation for ipvlan+ipv6 (bridge/macvlan have unique,
+				// tombstone-preserved MACs).
+				MAC: mac,
 			}
 			if !v6 {
 				clientOpts.RequestedIP = requestedIP
