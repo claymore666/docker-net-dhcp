@@ -1065,19 +1065,17 @@ the <code>vX.Y.Z</code> milestone (the workflow leans on this for the
 "Closes" list in the release PR).</p>
 <ol>
 <li><strong>Branch off <code>dev</code>:</strong> <code>git checkout -b release/vX.Y.Z origin/dev</code></li>
-<li><strong>Bump install pins</strong> in:</li>
-<li><code>README.md</code> — every <code>docker plugin install ghcr.io/...:vPREV</code>
-     and <code>docker network create -d ghcr.io/...:vPREV</code> snippet.
-     Leave historical references like <code>As of vPREV every PR...</code>
-     alone — those are facts about when something started, not
-     install instructions.</li>
-<li><code>docs/parent-attached-modes.md</code> — the <code>STATE_DIR</code> override
-     example.</li>
-<li><code>docs/reference.md</code> — install/upgrade snippets, the Health
-     <code>curl</code> example, and the Compose <code>driver:</code> example all pin the
-     version.
-   Verify with
-   <code>grep -n vPREV README.md docs/parent-attached-modes.md docs/reference.md</code>.</li>
+<li><strong>Bump install pins:</strong> <code>scripts/bump-version.sh vX.Y.Z</code> (#251). It
+   rewrites every published-image pin
+   (<code>ghcr.io/.../docker-net-dhcp:vPREV</code> in the <code>plugin install</code> /
+   <code>network create</code> / <code>driver:</code> / <code>plugin inspect</code> snippets across
+   <code>README.md</code> and <code>docs/</code>) to the new tag, and leaves bare <code>vX.Y.Z</code>
+   feature markers and historical prose (<code>As of vPREV every PR...</code>,
+   <code>v1.1.0 onward</code>) alone — the image ref is what tells a pin from
+   prose. Verify with <code>git diff</code> and <code>scripts/check-version-pins.sh</code>
+   (the same gate <code>test.yaml</code> runs: every pin must agree on one
+   version). The gate also fails CI if a future hand-edit leaves the
+   pins inconsistent.</li>
 <li><strong>Documentation review — PR-driven against the milestone.</strong> Don't
    review from memory; review from the change set. List every PR on the
    <code>vX.Y.Z</code> milestone and reconcile each one's user-visible change
