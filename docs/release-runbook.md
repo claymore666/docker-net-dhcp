@@ -125,11 +125,12 @@ git tag -s v1.0.0-rc1 -m "v1.0.0-rc1" && git push origin v1.0.0-rc1
 ```
 
 Watch the run; every step including **verify-install** must be
-green. The rc window doubles as the final **documentation
-checkpoint** (procedure step 3): confirm README, `docs/`, and the
-RELEASE_NOTES section describe the version about to ship — if
-stale text surfaces now, fix it before the real tag. Then tag the
-real release. Naming: rc of the *upcoming*
+green. The rc window is the **enforcement gate** for the
+documentation review (procedure step 3): every PR on the milestone
+must be reconciled against README, `docs/`, and the RELEASE_NOTES
+section, and they must describe the version about to ship — if
+stale text or an undocumented behaviour change surfaces now, fix it
+before the real tag. Then tag the real release. Naming: rc of the *upcoming*
 version (`v1.0.0-rc1` before `v1.0.0`) — semver orders it before
 the release and it labels the content truthfully. Bump the rc
 number for another attempt after a fix; never reuse an rc tag.
@@ -158,20 +159,42 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
      version.
    Verify with
    `grep -n vPREV README.md docs/parent-attached-modes.md docs/reference.md`.
-3. **Documentation review** — read everything user-visible
-   top-to-bottom against what this release actually contains, not
-   just the version pins from step 2: `README.md` (feature list,
-   driver-opt table, examples), every file under `docs/`
-   (including this runbook — process changes during the cycle land
-   here too), and the coverage table if republished. Anything
-   describing the previous version's behaviour, options, or
-   numbers gets updated on the release branch now. Everything under
-   `docs/` (plus `docs/index.md`, the site home) is what the
-   versioned documentation site publishes for this tag, so the
-   review *is* the site review — there's no separate wiki to
-   reconcile. The rc dry-run (step 8) is the *last checkpoint* for
-   catching stale docs — by the real tag, text and code (and the
-   published site) must agree.
+3. **Documentation review — PR-driven against the milestone.** Don't
+   review from memory; review from the change set. List every PR on the
+   `vX.Y.Z` milestone and reconcile each one's user-visible change
+   against the docs:
+
+   ```sh
+   gh pr list --state merged --limit 200 \
+     --json number,title,milestone \
+     --jq '.[] | select(.milestone.title=="vX.Y.Z") | "#\(.number) \(.title)"'
+   ```
+
+   For **each** merged PR, confirm the docs reflect what it changed:
+   new/changed driver-opts land in the option tables (`README.md`,
+   `docs/reference.md`, `docs/parent-attached-modes.md`); behaviour
+   changes (Health counters, DHCP-client behaviour, identity, recovery)
+   land in `reference.md` / `parent-attached-modes.md` / `internals.md`;
+   examples and numbers match. **A milestone PR that changed
+   user-visible behaviour but carries no doc delta is the signal to look
+   harder, not to wave through** — that is exactly the drift that the
+   #205↔#152 case (busybox→dhcpcd prose surviving a docs restructure;
+   fixed in #234/#237) slipped through a memory-based read.
+
+   Then still read everything user-visible top-to-bottom for anything
+   the per-PR pass misses — `README.md` (feature list, driver-opt table,
+   examples), every file under `docs/` (including this runbook — process
+   changes during the cycle land here too), and the coverage table if
+   republished. Anything describing the previous version's behaviour,
+   options, or numbers gets updated on the release branch now.
+   Everything under `docs/` (plus `docs/index.md`, the site home) is
+   what the versioned documentation site publishes for this tag, so the
+   review *is* the site review — there's no separate wiki to reconcile.
+
+   The work happens here, on the release branch. The rc dry-run (step 8)
+   is the **enforcement gate**: the real `vX.Y.Z` tag does not ship
+   until every milestone PR is ticked off against the docs — by the real
+   tag, text and code (and the published site) must agree.
 4. **Add a `## vX.Y.Z` section** to `RELEASE_NOTES.md`, **above
    the previous version's section**. Summarise what's changing in
    user-visible terms; the workflow doesn't auto-build this from
