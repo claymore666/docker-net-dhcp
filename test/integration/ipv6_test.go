@@ -2,7 +2,8 @@
 
 // DHCPv6 coverage (#103) — the suite's first v6 tests. The fixture
 // dnsmasq instances are dual-stack (stateful DHCPv6 on ULA prefixes,
-// --enable-ra); `ipv6=true` networks run udhcpc6 alongside udhcpc.
+// --enable-ra); `ipv6=true` networks run a v6 dhcpcd client alongside
+// the v4 one.
 //
 // Audit findings these tests encode (from the busybox source,
 // networking/udhcp/d6_dhcpc.c):
@@ -196,7 +197,7 @@ func TestLifecycleMacvlan_IPv6_GoldenPath(t *testing.T) {
 	}
 
 	// ...and inspect must agree with reality. CreateEndpoint returns
-	// AddressIPv6 from the initial one-shot udhcpc6 exchange; the
+	// AddressIPv6 from the initial one-shot dhcpcd exchange; the
 	// persistent client re-binds with the same DUID, so the server
 	// must hand back the same address. A mismatch here is the v6
 	// flavour of the #104 divergence — if this fires, the audit found
@@ -410,7 +411,7 @@ func TestLeaseRenewIPv6_HonorsT1(t *testing.T) {
 	endReplies := countDHCPv6Replies(t, fixture.DnsmasqLog(), v6)
 	t.Logf("DHCPREPLYs for %s: start=%d end=%d", v6, startReplies, endReplies)
 	if endReplies-startReplies < 1 {
-		t.Errorf("no renewal DHCPREPLY for %s after crossing T1 — udhcpc6 renewal appears stuck", v6)
+		t.Errorf("no renewal DHCPREPLY for %s after crossing T1 — dhcpcd v6 renewal appears stuck", v6)
 	}
 }
 
@@ -541,7 +542,7 @@ func TestDUID_PersistsAcrossPluginRestart(t *testing.T) {
 	if err := harness.WaitPluginEnabled(ctx, cli, true, 30*time.Second); err != nil {
 		t.Fatalf("plugin did not re-enable: %v", err)
 	}
-	t.Log("plugin restarted; awaiting the recovered udhcpc6's re-bind...")
+	t.Log("plugin restarted; awaiting the recovered dhcpcd v6 client's re-bind...")
 
 	// The recovered persistent client SOLICITs immediately; a fresh
 	// DHCPREPLY for our address proves the post-restart exchange
@@ -557,7 +558,7 @@ func TestDUID_PersistsAcrossPluginRestart(t *testing.T) {
 		time.Sleep(time.Second)
 	}
 	if !rebound {
-		t.Fatalf("no post-restart DHCPREPLY for %s within 90s — recovered udhcpc6 never re-bound", v6)
+		t.Fatalf("no post-restart DHCPREPLY for %s within 90s — recovered dhcpcd v6 client never re-bound", v6)
 	}
 
 	duidAfter := leaseDUIDForV6(t, fixture.LeaseFile(), v6)

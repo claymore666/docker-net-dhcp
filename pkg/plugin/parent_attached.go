@@ -71,7 +71,7 @@ func newChildLink(mode string, la netlink.LinkAttrs) netlink.Link {
 
 // createParentAttachedEndpoint creates the per-endpoint child link on
 // the host's parent NIC (macvlan or ipvlan depending on mode), runs
-// udhcpc on it (still in host netns) to acquire an initial lease, and
+// dhcpcd on it (still in host netns) to acquire an initial lease, and
 // stashes the result for Join. Docker will move the link into the
 // container's netns when it acts on our Join response.
 func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpointRequest, opts DHCPNetworkOptions) (CreateEndpointResponse, error) {
@@ -88,7 +88,8 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 	// HardwareAddr, so the tombstone path doesn't apply there (and an
 	// explicit MAC is rejected loudly to avoid silent misconfiguration).
 	// Static IPs (`docker run --ip`) are accepted in both modes — they
-	// pass through to udhcpc as a `-r ADDR` hint.
+	// pass through to dhcpcd as a `request`-directive (DHCP option 50)
+	// hint.
 	effectiveMAC := ""
 	if r.Interface != nil {
 		effectiveMAC = r.Interface.MacAddress
