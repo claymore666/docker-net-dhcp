@@ -28,21 +28,17 @@ name: Integration (hosted cross-check)
 # See integration.yml for the self-hosted rationale this mirrors.
 #
 # SECURITY: the test steps run as root via sudo. Only workflow_dispatch
-# and schedule trigger this — forks cannot start it, so there is no
+# triggers this — forks cannot start it, so there is no
 # untrusted-PR-as-root exposure.
 on:
-  # TEMPORARY (reverted before merge): branch-scoped push trigger so the
-  # lane can be validated on a real hosted runner pre-merge —
-  # workflow_dispatch only fires for workflows already on the default
-  # branch, so it cannot be dispatched from a feature branch.
-  push:
-    branches:
-      - ci/238-hosted-integration-crosscheck
+  # On-demand only for now. The weekly schedule is intentionally NOT
+  # enabled yet: this lane currently fails on #247 (dhcpcd writes kernel
+  # sysctls on interface setup, which EROFS on a read-only /proc/sys),
+  # so a cron would be a weekly red alarm with no new signal. The #247
+  # fix re-enables the schedule once the lane goes green:
+  #   schedule:
+  #     - cron: '17 4 * * 1'   # weekly Mon 04:17 UTC, off-peak odd minute
   workflow_dispatch:
-  schedule:
-    # Weekly, Monday 04:17 UTC. Off-peak, odd minute to avoid the
-    # top-of-hour cron stampede on GitHub's scheduler.
-    - cron: '17 4 * * 1'
 
 permissions:
   contents: read
