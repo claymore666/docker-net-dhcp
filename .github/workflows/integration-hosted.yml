@@ -82,6 +82,23 @@ jobs:
             echo "::warning::hosted Docker Engine ${server_major}.x < 28 — below our pinned floor; results may diverge from self-hosted"
           fi
 
+      # Host-side fixture dependencies the dhcp-ci runner image bakes in
+      # but a stock hosted runner lacks: dnsmasq (the test-spawned DHCP
+      # server on veth pairs) and ping (the failure-injection suite's
+      # L2-reachability check). Use dnsmasq-BASE, not the dnsmasq
+      # package: it ships the /usr/sbin/dnsmasq binary the fixtures exec
+      # directly, WITHOUT the systemd service that would otherwise start
+      # on this (systemd-having) host and contend for UDP/53+67 with the
+      # per-test dnsmasq instances. iputils-ping is usually preinstalled;
+      # listed for parity with the runner image and to fail loud if not.
+      - name: Install integration fixture dependencies
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            dnsmasq-base iputils-ping
+          # The harness execs this absolute path (test/integration/harness)
+          test -x /usr/sbin/dnsmasq && /usr/sbin/dnsmasq --version | head -1
+
       # Build + install the plugin from THIS tree, exactly as
       # integration.yml does, just under a hosted-specific tag.
       - name: Build + install integration plugin
