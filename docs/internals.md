@@ -19,16 +19,19 @@ namespace to it. Two things differ:
 1. A container-creation request is made.
 2. A `veth` pair is created and the host end is connected to the bridge
    (both interfaces are still in the host namespace at this point).
-3. A DHCP client (BusyBox `udhcpc`) is started on the container end
-   (still in the host namespace) — the initial IP address is provided to
-   Docker by the plugin.
+3. A DHCP client (`dhcpcd`) is started on the container end (still in
+   the host namespace) — the initial IP address is provided to Docker by
+   the plugin.
 4. Docker moves the container end of the `veth` pair into the
    container's network namespace and sets the IP address — at this point
-   `udhcpc` must be stopped.
-5. `net-dhcp` restarts `udhcpc` on the container end of the `veth` pair
-   in the container's **network namespace** (but still in the plugin's
-   **PID namespace**, so the container can't see the DHCP client).
-6. `udhcpc` keeps running, renewing the lease when required, until the
+   that first client is stopped.
+5. `net-dhcp` starts a persistent `dhcpcd` on the container end of the
+   `veth` pair in the container's **network namespace** (but still in the
+   plugin's **PID namespace**, so the container can't see the DHCP
+   client). It runs observe-only (`--noconfigure`): the plugin applies
+   the lease to the link via netlink rather than letting the client
+   reconfigure the interface.
+6. `dhcpcd` keeps running, renewing the lease when required, until the
    container shuts down.
 
 ## See also

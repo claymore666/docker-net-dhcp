@@ -66,13 +66,15 @@ docker inspect app | jq '.[0].NetworkSettings.Networks'
 2. The plugin creates a macvlan child on the parent NIC (submode = bridge,
    so children on the same parent can talk to each other), still in the
    host netns.
-3. `udhcpc` runs once on the new link — DHCPDISCOVER → REQUEST → ACK from
-   your LAN's DHCP server. The lease (IP, mask, gateway) is captured.
+3. A one-shot `dhcpcd` runs on the new link — DHCPDISCOVER → REQUEST →
+   ACK from your LAN's DHCP server. The lease (IP, mask, gateway) is
+   captured.
 4. The plugin returns the link name to libnetwork via `Join`. Docker moves
    the link into the container's netns and renames it (typically `eth0`).
-5. A persistent `udhcpc -R` runs inside the container netns to renew the
-   lease for the lifetime of the endpoint.
-6. On `docker stop`, libnetwork calls `Leave` → the persistent `udhcpc`
+5. A persistent `dhcpcd` runs inside the container netns to renew the
+   lease for the lifetime of the endpoint. It runs observe-only
+   (`--noconfigure`); the plugin applies lease changes via netlink.
+6. On `docker stop`, libnetwork calls `Leave` → the persistent `dhcpcd`
    gets `SIGTERM` → it sends `DHCPRELEASE` so the upstream server's
    lease table doesn't accumulate stale entries.
 7. The macvlan link is reaped automatically when the container netns is
@@ -89,15 +91,15 @@ The host's NIC config (IP, routes, netplan/`systemd-networkd`,
 | `parent`            | macvlan, ipvlan  | yes      | Host NIC to use as the parent (e.g. `ens18`, `eno1`). Must exist and be `UP`. |
 | `bridge`            | bridge           | yes      | Existing Linux bridge to plug veths into.                     |
 | `gateway`           | all              | no       | Override the IPv4 gateway returned by DHCP (e.g. when egress should go through a VPN router instead of the LAN's default gateway). |
-| `ipv6`              | all              | no       | Also run stateful DHCPv6 (udhcpc6) in addition to DHCPv4 — see "DHCPv6" below for semantics, DUID identity, and boundaries. |
+| `ipv6`              | all              | no       | Also run stateful DHCPv6 (a second `dhcpcd` with `-6`) in addition to DHCPv4 — see "DHCPv6" below for semantics and DUID/IAID identity. |
 | `lease_timeout`     | both      | no       | Initial-lease timeout for the up-front DHCP exchange (default `10s`). |
 | `ignore_conflicts`  | bridge    | no       | Skip the bridge-already-in-use check. No-op in macvlan mode.  |
 | `skip_routes`       | all       | no       | Don't copy non-default static routes from the parent (bridge / macvlan parent NIC / ipvlan parent NIC) into the container. v0.9.0 extended this from bridge-only to all modes for parity (#102) — set `true` to restore pre-v0.9.0 macvlan/ipvlan no-copy behaviour. |
 | `propagate_dns`     | all       | no       | (v0.9.0+) Write DHCP option 6 / 23 (DNS server list) into the container's `/etc/resolv.conf` on bind/renew. Off by default; turning it on overrides Docker's embedded resolver for this network. The `search` line uses option 119 (Domain Search List) when supplied, falling back to option 15 (`Domain`) otherwise. |
 | `propagate_mtu`     | all       | no       | (v0.9.0+) Apply DHCP option 26 (Interface MTU) to the container link on bind/renew. Off by default; useful for jumbo-frame networks (9000) and VPN-reduced ones (~1450). |
 | `client_id`         | all       | no       | (v0.9.0+) Override DHCP option 61 (Client Identifier) for every endpoint on this network. Bytes go on the wire prefixed with type byte `0x00` (RFC 2132 opaque). Default empty keeps the per-endpoint stable id derived from the Docker endpoint ID, which is what makes per-container reservations work upstream. **Caveat:** a static `client_id` across containers means the DHCP server can't differentiate them. Typically only useful when paired with `vendor_class` to drive class-based policy. |
-| `vendor_class`      | all       | no       | (v0.9.0+) Override DHCP option 60 (Vendor Class Identifier). Default `docker-net-dhcp`. Lets DHCP servers running class-based policy (Cisco / Aruba / etc.) issue different gateways or option sets to containers tagged with a known vendor string. v6 unaffected — udhcpc6 doesn't accept this option. |
-| `validate_dhcp`     | macvlan, ipvlan | no | (v0.9.0+) Pre-flight DHCP probe at `docker network create` time. Creates a temporary macvlan child on the parent NIC with a random locally-administered MAC, runs one-shot udhcpc with a 5-second budget, and rejects the network with `no DHCP OFFER on <parent> within 5s` if no server answers. Catches misconfigurations (parent isolated, firewall blocking UDP/67-68, broken VLAN tag) at create time rather than the first `docker run`. Cost: one transient lease per probe in the upstream pool. Bridge mode rejects the opt with a clear error. |
+| `vendor_class`      | all       | no       | (v0.9.0+) Override DHCP option 60 (Vendor Class Identifier). Default `docker-net-dhcp`. Lets DHCP servers running class-based policy (Cisco / Aruba / etc.) issue different gateways or option sets to containers tagged with a known vendor string. v6 unaffected — the DHCPv6 client sends no vendor-class option. |
+| `validate_dhcp`     | macvlan, ipvlan | no | (v0.9.0+) Pre-flight DHCP probe at `docker network create` time. Creates a temporary macvlan child on the parent NIC with a random locally-administered MAC, runs a one-shot `dhcpcd` with a 5-second budget, and rejects the network with `no DHCP OFFER on <parent> within 5s` if no server answers. Catches misconfigurations (parent isolated, firewall blocking UDP/67-68, broken VLAN tag) at create time rather than the first `docker run`. Cost: one transient lease per probe in the upstream pool. Bridge mode rejects the opt with a clear error. |
 | `audit_log`         | all       | no       | (v1.0.0+) Append every lease-lifecycle event on this network (`bound` / `renew` / `release`, plus `release_failed` when the DHCPRELEASE didn't complete cleanly) to `STATE_DIR/leases.jsonl` — one JSON object per line with timestamp, network, endpoint, container ID, hostname, IP, and MAC. Answers "which IP did this container hold last Tuesday?" without DHCP-server-log archaeology. Rotated at 16 MB or 30 days (whichever first), one rotated generation kept (≤ ~32 MB total). Off by default: it costs a disk write per lease event, and container↔IP correlation on disk is privacy-relevant in some environments. Append failures bump `ledger_write_failures` on `/Plugin.Health` and never affect lease handling. |
 
 ## Constraints
@@ -228,8 +230,8 @@ Fixes (consumer-side; the plugin can't influence Compose's merge logic):
 Plugin networks use `--ipam-driver=null`, which means `docker run --ip=`
 is rejected by the daemon before it ever reaches the plugin. To pin an
 IP per container, use the per-endpoint driver option instead — the
-plugin reads it as a hint and passes it to `udhcpc` as `-r ADDR` on the
-initial DISCOVER:
+plugin reads it as a hint and passes it to `dhcpcd` as a `request`
+directive (DHCP option 50) on the initial DISCOVER:
 
 ```bash
 docker create --name app alpine sleep 600
@@ -277,15 +279,16 @@ The mechanism is a short-lived tombstone written at
 `DeleteEndpoint` and consumed at the next `CreateEndpoint` on the
 same network within 60 seconds. It carries the previous MAC and
 the most-recent leased IP. The next initial DISCOVER passes the
-IP to `udhcpc` as `-r ADDR` (a hint). The TTL is generous enough
+IP to `dhcpcd` via the `request` directive (DHCP option 50, a hint).
+The TTL is generous enough
 to cover both `docker restart <ctr>` (sub-second) and
 `systemctl restart docker` (typically 15–30 s while the daemon
 re-attaches all containers).
 
 - **MAC stability**: works always. `docker inspect` and the LAN
   see the same MAC across restarts.
-- **IP stability via the `-r` hint**: works on DHCP servers that
-  honor option 50 (Requested IP). Fritz.Box specifically does
+- **IP stability via the requested-IP hint**: works on DHCP servers
+  that honor option 50 (Requested IP). Fritz.Box specifically does
   **not** honor it without a UI-side reservation; it walks the
   pool and hands out the next free address even when the same MAC
   is presented. The fix is to configure a Fritz.Box static
@@ -304,8 +307,8 @@ case) always satisfy the rule.
 
 ## DHCPv6 (`ipv6=true`)
 
-Enabling `-o ipv6=true` runs a second persistent client (busybox
-`udhcpc6`) alongside the v4 one — **stateful DHCPv6**, not SLAAC. The
+Enabling `-o ipv6=true` runs a second persistent client (a `dhcpcd`
+with `-6`) alongside the v4 one — **stateful DHCPv6**, not SLAAC. The
 exact create incantation (note: the Docker-level `--ipv6` flag does
 NOT work with the null IPAM driver and is not what you want):
 
@@ -325,16 +328,19 @@ What you get, and the boundaries (v1.0.0 audit, #103):
   router option by design; the container netns kernel honors Router
   Advertisements on its own (`accept_ra` default). The plugin's
   `gateway` override option is v4-only.
-- **Client identity is the DUID, and it's stable.** busybox udhcpc6
-  derives a DUID-LL (type 3) from the interface MAC — no timestamp,
-  so the same MAC always produces the same DUID. Server-side v6
-  reservations therefore stick exactly as far as MAC stability
-  reaches: across plugin restarts/upgrades (the container link keeps
-  its MAC) and across container restarts (tombstones, see "Restart
-  stability"). **ipvlan caveat:** all ipvlan children share the
-  parent's MAC, so they share one DUID too — v6 servers tell them
-  apart only by IAID, and per-container v6 reservations are not
-  practical in ipvlan mode (same shape as the v4 MAC limitation).
+- **Client identity is the DUID, and it's stable.** `dhcpcd` is given
+  a DUID-LL (type 3) derived from the interface MAC via pinned literal
+  config — no timestamp, so the same MAC always produces the same DUID.
+  The **IAID is pinned from the MAC too** (this is the v1.2.0 #152 fix:
+  the previous client set the IAID randomly per process, so the
+  one-shot and persistent clients disagreed and the leased address was
+  never renewed). Server-side v6 reservations therefore stick exactly
+  as far as MAC stability reaches: across plugin restarts/upgrades (the
+  container link keeps its MAC) and across container restarts
+  (tombstones, see "Restart stability"). **ipvlan caveat:** all ipvlan
+  children share the parent's MAC, so they share one DUID *and* one
+  IAID — per-container v6 reservations are not practical in ipvlan mode
+  (same shape as the v4 MAC limitation).
 - **Static-v6 hint (v1.2.0+):** a requested v6 address — `--ip6` /
   `Interface.AddressIPv6`, or the address inherited from a tombstone on
   restart — is sent to dhcpcd as the IA_NA preferred address
@@ -345,15 +351,15 @@ What you get, and the boundaries (v1.0.0 audit, #103):
 - `propagate_dns=true` also covers v6: the DHCPv6 option-23 server
   list is written to `resolv.conf` on v6 bind/renew. The two
   families are last-writer-wins on that file.
-- **Known boundary (v1.0.0): the v6 address Docker reports is not
-  yet renewed.** The initial-lease client and the persistent renewal
-  client negotiate separate identity associations (same DUID,
-  different IAID), so the persistent client maintains a second lease
-  rather than renewing the one on the container's interface. The
-  initial v6 lease and addressing work; on networks with short v6
-  lease times, be aware the interface address can outlive its
-  server-side lease. IA unification is tracked in #152.
-- DHCPv6-PD (prefix delegation) is out of scope (tracked separately).
+- **The Docker-visible v6 address is renewed (v1.2.0, #152).** The
+  one-shot and persistent clients now share one pinned identity
+  association (same DUID *and* IAID), so the persistent client renews
+  the very lease that sits on the container's interface — there is no
+  longer a second, divergent lease. (Before v1.2.0 the two clients drew
+  different IAIDs, so the interface address could outlive its
+  server-side lease on networks with short v6 lease times.)
+- DHCPv6-PD (prefix delegation) is out of scope (tracked separately,
+  #214).
 
 ## DHCP identity
 
@@ -428,9 +434,9 @@ the container would lose its IP.
 
 The plugin now walks Docker's network list at startup, finds the
 endpoints attached to plugin-served networks, and rebuilds an
-in-memory DHCP manager for each. The first `udhcpc` call uses
-`-r LAST_IP` so the upstream server ACKs the lease the container
-is already using rather than handing out a fresh address.
+in-memory DHCP manager for each. The first `dhcpcd` acquisition
+requests `LAST_IP` (option 50) so the upstream server ACKs the lease
+the container is already using rather than handing out a fresh address.
 
 Recovery runs synchronously inside `NewPlugin` before the plugin
 socket starts accepting requests, so a fresh `CreateEndpoint`
@@ -498,11 +504,16 @@ DHCP-wire counters (v0.9.0+):
   endpoint-IP swap RPC); this counter is the operator-facing signal
   that a stale-inspect window has opened. Worth alerting on for
   long-running containers.
-- `leases_obtained` — udhcpc `bound` event count: initial bind or
-  re-bind after a NAK / lease loss from the persistent client.
-- `leases_renewed` — udhcpc `renew` event count.
-- `dhcp_timeouts` — udhcpc `leasefail` event count (no OFFER /
-  no ACK in budget).
+- `leases_obtained` — `dhcpcd` bind-event count (`BOUND`/`REBOOT` and
+  the v6 equivalents): initial bind or re-bind after a NAK / lease loss
+  from the persistent client.
+- `leases_renewed` — `dhcpcd` `RENEW`/`REBIND` event count (v4 and v6).
+- `dhcp_timeouts` — DHCP-acquisition-failure count. `dhcpcd` only fires
+  a hook when a *bound* lease lapses (`EXPIRE`) and stays silent while
+  it re-discovers, so this counter is driven both by those `EXPIRE`
+  events and by a periodic outage watchdog that bumps it while the
+  client is unbound and still trying — it keeps climbing for the whole
+  duration of an upstream outage.
 - `lease_release_failures` — `dhcpManager.Stop`'s SIGTERM →
   DHCPRELEASE → exit didn't complete cleanly. The upstream may now
   hold a phantom lease against the container's MAC until natural
@@ -510,7 +521,7 @@ DHCP-wire counters (v0.9.0+):
   reachability problems mid-teardown.
 - `naks_received` (v1.0.0+) — the server NAKed a renewal/rebind
   REQUEST (pool reconfigured, address reassigned, lease revoked).
-  udhcpc recovers by re-DISCOVERing, so each NAK is typically
+  `dhcpcd` recovers by re-DISCOVERing, so each NAK is typically
   followed by `leases_obtained` and — if the address moved —
   `lease_changed` bumps. NAKs climbing alongside `lease_changed`
   means containers are being re-addressed mid-life: `docker
@@ -568,6 +579,6 @@ plugin restart — `docker plugin disable && enable` picks them up.
 
 | name            | default            | meaning |
 | --------------- | ------------------ | ------- |
-| `LOG_LEVEL`     | `info`             | logrus level (`trace`, `debug`, `info`, `warn`, `error`). `trace` includes per-event udhcpc lines and full HTTP-RPC bodies. |
+| `LOG_LEVEL`     | `info`             | logrus level (`trace`, `debug`, `info`, `warn`, `error`). `trace` includes per-event `dhcpcd` lines and full HTTP-RPC bodies. |
 | `AWAIT_TIMEOUT` | `10s`              | Cap on the polling helpers (waits for sandbox readiness, container hostname lookup, link rename, netns appearance). Bump if a slow Docker restore window starves the per-endpoint Start. |
 | `STATE_DIR`     | `/var/lib/net-dhcp` | Where per-network options and the tombstone file live. Override if you want them on a tmpfs or a different volume. |
