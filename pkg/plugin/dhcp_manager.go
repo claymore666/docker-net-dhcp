@@ -46,6 +46,39 @@ const dhcpClientFinishTimeout = 5 * time.Second
 // we log and skip — the next renewal will retry.
 const dnsPropagateTimeout = 2 * time.Second
 
+// dhcpOutageTick / dhcpOutageGrace drive the DHCP-outage watchdog.
+//
+// busybox udhcpc ran the handler with "leasefail" on every failed
+// acquisition/renewal cycle, so dhcp_timeouts climbed steadily while a
+// DHCP server was unreachable. dhcpcd has no equivalent: it fires the
+// hook exactly once (EXPIRE) when a *bound* lease finally lapses, and
+// nothing at all while it silently re-DISCOVERs (confirmed against
+// dhcpcd 10.0.6 — neither the default config nor a `timeout` directive
+// produces a per-attempt hook). We synthesise the recurring signal: a
+// ticker increments dhcp_timeouts while the client is in the "acquiring"
+// state (never bound, or bound-then-EXPIRE'd) and has stayed there past
+// the grace. Crucially it is silent during a healthy bound lease no
+// matter how long (renewals only fire at T1), so it never false-counts
+// the quiet gap between renewals on a long lease.
+const dhcpOutageTick = 30 * time.Second
+const dhcpOutageGrace = 25 * time.Second
+
+// nextAcquiring returns the post-event acquisition state. A bound/renew
+// means we hold a lease (not acquiring); a leasefail (dhcpcd EXPIRE /
+// TIMEOUT) drops us back to acquiring. Other event types (nak) leave the
+// state unchanged — a NAK is usually followed immediately by a fresh
+// bound, and EXPIRE is the authoritative "lease lost" signal.
+func nextAcquiring(prev bool, eventType string) bool {
+	switch eventType {
+	case "bound", "renew":
+		return false
+	case "leasefail":
+		return true
+	default:
+		return prev
+	}
+}
+
 // closeNsHandle / closeNetHandle log close errors at Debug instead of
 // silently dropping them. Cleanup paths can't act on a Close failure
 // (we're already on an error path or shutting down), but a recurring
@@ -574,8 +607,28 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 	// the goroutine here would block forever on the final write below.
 	errChan := make(chan error, 1)
 	go func() {
+		// DHCP-outage watchdog: dhcpcd emits no per-attempt failure hook,
+		// so synthesise the recurring dhcp_timeouts signal busybox gave us
+		// (see dhcpOutageTick). "acquiring" starts true — the persistent
+		// client has not confirmed its own lease yet — and flips with each
+		// bound/renew/leasefail event.
+		acquiring := true
+		acquiringSince := time.Now()
+		ticker := time.NewTicker(dhcpOutageTick)
+		defer ticker.Stop()
+
 		for {
 			select {
+			case <-ticker.C:
+				if acquiring && time.Since(acquiringSince) >= dhcpOutageGrace {
+					if m.plugin != nil {
+						m.plugin.dhcpTimeouts.Add(1)
+					}
+					log.
+						WithFields(m.logFields(v6)).
+						Warn("DHCP server still unreachable; lease not (re)acquired")
+				}
+
 			case event, ok := <-events:
 				if !ok {
 					// udhcpc exited on its own (NAK, parent NIC vanished,
@@ -608,6 +661,14 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 					// calls close(stopChan) and reads it.
 					errChan <- nil
 					return
+				}
+				prev := acquiring
+				acquiring = nextAcquiring(prev, event.Type)
+				if acquiring && !prev {
+					// Just lost the lease (EXPIRE): restart the grace so the
+					// first post-expiry timeout isn't counted until a full
+					// interval of continued failure.
+					acquiringSince = time.Now()
 				}
 				m.handleEvent(event, v6)
 
