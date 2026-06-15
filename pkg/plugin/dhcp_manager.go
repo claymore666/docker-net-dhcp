@@ -6,6 +6,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	dNetwork "github.com/docker/docker/api/types/network"
@@ -311,7 +312,7 @@ func (m *dhcpManager) renew(v6 bool, info udhcpc.Info) error {
 		// Bump the counter so operators can alert on the truthfulness
 		// gap; design discussion for a deeper fix is deferred (issue #104).
 		if m.plugin != nil {
-			m.plugin.leaseChanged.Add(1)
+			bumpFamily(&m.plugin.leaseChanged, &m.plugin.leaseChangedV6, v6)
 		}
 		log.
 			WithFields(m.logFields(v6)).
@@ -492,6 +493,16 @@ func (m *dhcpManager) renew(v6 bool, info udhcpc.Info) error {
 // ignores refused renewals in several shapes instead of NAKing), so
 // the naks_received contract is pinned here rather than in an
 // integration test (#128).
+// bumpFamily increments the aggregate counter (always) and its IPv6
+// sibling (only for v6 events), so /Plugin.Health exposes a per-family
+// breakdown while the aggregate stays a true v4+v6 total (#212).
+func bumpFamily(total, v6Counter *atomic.Int32, v6 bool) {
+	total.Add(1)
+	if v6 {
+		v6Counter.Add(1)
+	}
+}
+
 func (m *dhcpManager) handleEvent(event udhcpc.Event, v6 bool) {
 	switch event.Type {
 	// "deconfig" is intentionally not handled. Deleting the
@@ -509,7 +520,7 @@ func (m *dhcpManager) handleEvent(event udhcpc.Event, v6 bool) {
 		// the same MAC). Reuse the renew path so LastIP
 		// reflects what's actually in the kernel.
 		if m.plugin != nil {
-			m.plugin.leasesObtained.Add(1)
+			bumpFamily(&m.plugin.leasesObtained, &m.plugin.leasesObtainedV6, v6)
 		}
 		m.audit("bound", bareIP(event.Data.IP))
 		if err := m.renew(v6, event.Data); err != nil {
@@ -525,7 +536,7 @@ func (m *dhcpManager) handleEvent(event udhcpc.Event, v6 bool) {
 			Debug("udhcpc renew")
 
 		if m.plugin != nil {
-			m.plugin.leasesRenewed.Add(1)
+			bumpFamily(&m.plugin.leasesRenewed, &m.plugin.leasesRenewedV6, v6)
 		}
 		m.audit("renew", bareIP(event.Data.IP))
 		if err := m.renew(v6, event.Data); err != nil {
@@ -538,12 +549,12 @@ func (m *dhcpManager) handleEvent(event udhcpc.Event, v6 bool) {
 		}
 	case "leasefail":
 		if m.plugin != nil {
-			m.plugin.dhcpTimeouts.Add(1)
+			bumpFamily(&m.plugin.dhcpTimeouts, &m.plugin.dhcpTimeoutsV6, v6)
 		}
 		log.WithFields(m.logFields(v6)).Warn("udhcpc failed to get a lease")
 	case "nak":
 		if m.plugin != nil {
-			m.plugin.naksReceived.Add(1)
+			bumpFamily(&m.plugin.naksReceived, &m.plugin.naksReceivedV6, v6)
 		}
 		log.WithFields(m.logFields(v6)).Warn("udhcpc client received NAK")
 	}
@@ -622,7 +633,7 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 			case <-ticker.C:
 				if acquiring && time.Since(acquiringSince) >= dhcpOutageGrace {
 					if m.plugin != nil {
-						m.plugin.dhcpTimeouts.Add(1)
+						bumpFamily(&m.plugin.dhcpTimeouts, &m.plugin.dhcpTimeoutsV6, v6)
 					}
 					log.
 						WithFields(m.logFields(v6)).

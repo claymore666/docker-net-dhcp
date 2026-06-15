@@ -219,6 +219,7 @@ curl -s --unix-socket /run/docker/plugins/$PLUGIN_ID/net-dhcp.sock \
 | `lease_release_failures` | no | Teardown DHCPRELEASE didn't complete cleanly — the server may hold a phantom lease until natural expiry. A pattern points at upstream reachability problems mid-teardown. |
 | `naks_received` | no | (v1.0.0+) The server NAKed a renewal/rebind. udhcpc recovers by re-acquiring, so each NAK is typically followed by `leases_obtained` — and, if the address moved, `lease_changed` — bumps. Climbing alongside `lease_changed` means containers are being re-addressed mid-life. |
 | `ledger_write_failures` | no | Failed `audit_log` ledger appends — degrades forensics, not networking. Operators using `audit_log` alert on this. |
+| `lease_changed_v6`, `leases_obtained_v6`, `leases_renewed_v6`, `dhcp_timeouts_v6`, `naks_received_v6` | no | (v1.2.0+) Per-family breakdown: the IPv6 share of the matching aggregate above. The un-suffixed counters stay v4+v6 totals, so the IPv4 share is `<counter> − <counter>_v6`. On a dual-stack host this isolates a v6-specific NAK or timeout that the aggregate alone would hide. |
 
 ### Plugin log
 

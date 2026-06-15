@@ -458,7 +458,12 @@ user-visible outcome.
   "leases_renewed": 42,
   "dhcp_timeouts": 0,
   "lease_release_failures": 0,
-  "naks_received": 0
+  "naks_received": 0,
+  "lease_changed_v6": 0,
+  "leases_obtained_v6": 4,
+  "leases_renewed_v6": 11,
+  "dhcp_timeouts_v6": 0,
+  "naks_received_v6": 0
 }
 ```
 
@@ -507,6 +512,16 @@ DHCP-wire counters (v0.9.0+):
   means containers are being re-addressed mid-life: `docker
   inspect` goes stale (see `lease_changed` above) and anything
   keyed on the old IPs needs attention.
+
+Per-family breakdown (v1.2.0+):
+
+- `lease_changed_v6`, `leases_obtained_v6`, `leases_renewed_v6`,
+  `dhcp_timeouts_v6`, `naks_received_v6` — the IPv6 share of the
+  matching aggregate above. The un-suffixed counters remain v4+v6
+  totals, so the IPv4 share is `<counter> − <counter>_v6`. On a
+  dual-stack host these isolate the v6-specific failure signal (a
+  v6 NAK or timeout) that the aggregate alone would mask — the
+  view you want while watching the DHCPv6 client.
 
 Sample call from a host shell:
 
