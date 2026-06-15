@@ -110,6 +110,18 @@ const (
 	TestTaggedGateway  = "192.168.99.250"
 	dnsmasqVCTag       = "dh-itest-vc"
 	defaultGatewayAddr = "192.168.99.1"
+
+	// TestClasslessVendorClass / TestClasslessRoute drive the option-121
+	// classless-static-routes test (#260). dnsmasq sets tag
+	// `dh-itest-csr` for clients sending option 60 =
+	// TestClasslessVendorClass, then pushes a non-default classless route
+	// (TestClasslessRoute via TestClasslessRouteGW) only to tagged
+	// clients — so default-config containers never see option 121 and
+	// existing route assertions are unaffected.
+	TestClasslessVendorClass = "docker-net-dhcp-test-csr"
+	TestClasslessRoute       = "192.168.123.0/24"
+	TestClasslessRouteGW     = "192.168.99.249"
+	dnsmasqCSRTag            = "dh-itest-csr"
 )
 
 // DefaultGateway is the gateway untagged clients receive — dnsmasq's
@@ -263,6 +275,12 @@ func (f *Fixture) startDnsmasq() error {
 		// tests that don't opt-in are unaffected.
 		"--dhcp-vendorclass=set:"+dnsmasqVCTag+","+TestVendorClass,
 		"--dhcp-option=tag:"+dnsmasqVCTag+",3,"+TestTaggedGateway,
+		// Option-121 classless static route, pushed only to clients
+		// tagged via TestClasslessVendorClass (#260). Non-default
+		// destination, so it never alters the default-route assertions
+		// of other suites.
+		"--dhcp-vendorclass=set:"+dnsmasqCSRTag+","+TestClasslessVendorClass,
+		"--dhcp-option=tag:"+dnsmasqCSRTag+",121,"+TestClasslessRoute+","+TestClasslessRouteGW,
 		// NOTE: this fixture deliberately does NOT pass --dhcp-broadcast.
 		// dnsmasq honours the client's BROADCAST flag, so it broadcasts
 		// OFFER/ACK only when the client asks. ipvlan-L2 needs that

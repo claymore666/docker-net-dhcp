@@ -268,6 +268,10 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 					if opts.Gateway != "" {
 						hint.Gateway = opts.Gateway
 					}
+					// DHCP option-121 classless static routes (RFC 3442);
+					// any default route was already folded into
+					// info.Gateway by the parser.
+					hint.Routes = dhcpStaticRoutes(info.Routes)
 				}
 			})
 			return nil
