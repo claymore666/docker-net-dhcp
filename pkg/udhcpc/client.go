@@ -83,8 +83,9 @@ type DHCPClientOptions struct {
 	VendorClass string
 
 	// Broadcast requests an L2-broadcast reply (ipvlan-L2, where every
-	// slave shares the parent MAC). NOTE: dhcpcd broadcast handling is
-	// not yet wired here — tracked for the ipvlan path; see #152.
+	// slave shares the parent MAC). Emitted as the dhcpcd `broadcast`
+	// directive (v4 only) — the busybox `-B` equivalent; see renderConfig
+	// and #243.
 	Broadcast bool
 
 	HandlerScript string
@@ -145,6 +146,7 @@ func NewDHCPClient(iface string, opts *DHCPClientOptions) (*DHCPClient, error) {
 		ClientID:    opts.ClientID,
 		RequestedIP: opts.RequestedIP,
 		PreferredV6: opts.PreferredV6,
+		Broadcast:   opts.Broadcast,
 		Handler:     handler,
 		ConfigPath:  configPath,
 		EventFIFO:   fifoPath,

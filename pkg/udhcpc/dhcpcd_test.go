@@ -224,6 +224,33 @@ func TestRenderConfig_ReleaseOnlyForPersistent(t *testing.T) {
 	}
 }
 
+// TestRenderConfig_BroadcastOnlyForIPvlanV4 covers the ipvlan-required
+// broadcast directive (#243): when Broadcast is set on a v4 client the
+// config emits the standalone `broadcast` directive (the dhcpcd
+// equivalent of busybox `-B`), so the server replies with an L2
+// broadcast OFFER that all ipvlan slaves on the shared parent MAC can
+// receive. It must be absent when Broadcast is unset, and absent for v6
+// (the BROADCAST flag is a DHCPv4 concept). Uses hasLine so the always-
+// present `broadcast_address` option-request line can't false-positive.
+func TestRenderConfig_BroadcastOnlyForIPvlanV4(t *testing.T) {
+	mac := mustMAC(t, "de:ad:be:ef:00:01")
+
+	withBcast := renderConfig(dhcpcdParams{Iface: "eth0", MAC: mac, Broadcast: true})
+	if !hasLine(withBcast, "broadcast") {
+		t.Errorf("v4 broadcast client missing `broadcast` directive:\n%s", withBcast)
+	}
+
+	noBcast := renderConfig(dhcpcdParams{Iface: "eth0", MAC: mac})
+	if hasLine(noBcast, "broadcast") {
+		t.Errorf("non-broadcast client must not emit `broadcast`:\n%s", noBcast)
+	}
+
+	v6Bcast := renderConfig(dhcpcdParams{Iface: "eth0", MAC: mac, V6: true, Broadcast: true})
+	if hasLine(v6Bcast, "broadcast") {
+		t.Errorf("v6 client must not emit `broadcast` (v4-only flag):\n%s", v6Bcast)
+	}
+}
+
 // TestRenderConfig_RequestsPropagatedOptions: because `-f <config>`
 // bypasses /etc/dhcpcd.conf, the config must explicitly request every
 // option the plugin propagates, or dhcpcd never learns them (the busybox

@@ -263,14 +263,16 @@ func (f *Fixture) startDnsmasq() error {
 		// tests that don't opt-in are unaffected.
 		"--dhcp-vendorclass=set:"+dnsmasqVCTag+","+TestVendorClass,
 		"--dhcp-option=tag:"+dnsmasqVCTag+",3,"+TestTaggedGateway,
-		// dhcp-broadcast forces OFFER/ACK to be sent as L2 broadcast
-		// regardless of the client's broadcast flag. Required for
-		// ipvlan-L2 mode: the slave's IP isn't registered with the
-		// parent's ipvlan until the lease is configured (chicken &
-		// egg), so unicast OFFERs addressed to parent MAC can't be
-		// routed to the slave during initial DHCP. Real LAN DHCP
-		// servers typically broadcast anyway; this matches that.
-		"--dhcp-broadcast",
+		// NOTE: this fixture deliberately does NOT pass --dhcp-broadcast.
+		// dnsmasq honours the client's BROADCAST flag, so it broadcasts
+		// OFFER/ACK only when the client asks. ipvlan-L2 needs that
+		// (shared parent MAC ⇒ a unicast OFFER can't be demuxed to the
+		// right slave during initial acquisition), and the plugin now
+		// sets it via the dhcpcd `broadcast` directive for ipvlan (#243).
+		// Forcing --dhcp-broadcast here would mask a regression in that
+		// client-side flag — so the ipvlan lifecycle test exercises the
+		// real path. bridge/macvlan use distinct MACs and get unicast
+		// replies, which is fine.
 		"--log-dhcp",
 		"--log-facility=-",
 	)

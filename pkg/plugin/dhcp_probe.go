@@ -109,6 +109,12 @@ func runDHCPProbe(ctx context.Context, parent string) error {
 		// false negatives when class-based policy denies the
 		// probe but would accept the real container.
 		MAC: probeMAC,
+		// Request a broadcast reply (#243). The probe is a transient
+		// reachability check from a brand-new random MAC; asking the
+		// server to broadcast its OFFER makes the probe robust whether
+		// or not the server unicasts back to an unconfigured client,
+		// so a reachable server is never reported as unreachable.
+		Broadcast: true,
 	})
 	if err != nil {
 		if errors.Is(err, util.ErrNoLease) || errors.Is(err, context.DeadlineExceeded) {
