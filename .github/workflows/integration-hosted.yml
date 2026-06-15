@@ -31,6 +31,13 @@ name: Integration (hosted cross-check)
 # and schedule trigger this — forks cannot start it, so there is no
 # untrusted-PR-as-root exposure.
 on:
+  # TEMPORARY (reverted before merge): branch-scoped push trigger so the
+  # lane can be validated on a real hosted runner pre-merge —
+  # workflow_dispatch only fires for workflows already on the default
+  # branch, so it cannot be dispatched from a feature branch.
+  push:
+    branches:
+      - ci/238-hosted-integration-crosscheck
   workflow_dispatch:
   schedule:
     # Weekly, Monday 04:17 UTC. Off-peak, odd minute to avoid the
