@@ -1185,7 +1185,7 @@ limitations) are catalogued in
 <td>all</td>
 <td><code>false</code></td>
 <td>upstream; functional again in v1.0.0</td>
-<td>Also run stateful DHCPv6 (udhcpc6) alongside DHCPv4 — see the <a href="../parent-attached-modes/#dhcpv6-ipv6true">DHCPv6 section</a> for semantics, DUID identity, and the current renewal boundary (#152).</td>
+<td>Also run stateful DHCPv6 (a second <code>dhcpcd</code> with <code>-6</code>) alongside DHCPv4 — see the <a href="../parent-attached-modes/#dhcpv6-ipv6true">DHCPv6 section</a> for semantics and DUID/IAID identity. The Docker-visible v6 address is renewed as of v1.2.0 (#152).</td>
 </tr>
 <tr>
 <td><code>lease_timeout</code></td>
@@ -1234,7 +1234,7 @@ limitations) are catalogued in
 <td>all</td>
 <td><code>docker-net-dhcp</code></td>
 <td>v0.9.0</td>
-<td>Override DHCP option 60 (Vendor Class Identifier), for DHCP servers running class-based policy (different gateway/option sets per class). v4 only — udhcpc6 doesn't take this option.</td>
+<td>Override DHCP option 60 (Vendor Class Identifier), for DHCP servers running class-based policy (different gateway/option sets per class). v4 only — the DHCPv6 client sends no vendor-class option.</td>
 </tr>
 <tr>
 <td><code>validate_dhcp</code></td>
@@ -1304,7 +1304,7 @@ is no <code>ip6</code> <em>driver-opt</em> channel — use <code>--ip6</code> / 
 <tr>
 <td><code>LOG_LEVEL</code></td>
 <td><code>info</code></td>
-<td>logrus level (<code>trace</code>, <code>debug</code>, <code>info</code>, <code>warn</code>, <code>error</code>). <code>trace</code> includes per-event udhcpc lines and full HTTP-RPC bodies.</td>
+<td>logrus level (<code>trace</code>, <code>debug</code>, <code>info</code>, <code>warn</code>, <code>error</code>). <code>trace</code> includes per-event <code>dhcpcd</code> lines and full HTTP-RPC bodies.</td>
 </tr>
 <tr>
 <td><code>AWAIT_TIMEOUT</code></td>
@@ -1373,22 +1373,22 @@ is no <code>ip6</code> <em>driver-opt</em> channel — use <code>--ip6</code> / 
 <tr>
 <td><code>lease_changed</code></td>
 <td>no</td>
-<td>Renewals that returned a different IP than last recorded. Docker's <code>inspect</code> view does <strong>not</strong> update on lease change (libnetwork has no in-place endpoint-IP swap), so this is the stale-inspect-window signal — alert on it for long-running containers.</td>
+<td>Renewals that returned a different IP than last recorded (v4+v6 aggregate). Docker's <code>inspect</code> view does <strong>not</strong> update on lease change (libnetwork has no in-place endpoint-IP swap), so this is the stale-inspect-window signal — alert on it for long-running containers.</td>
 </tr>
 <tr>
 <td><code>leases_obtained</code></td>
 <td>no</td>
-<td>udhcpc <code>bound</code> events (initial bind or re-bind after NAK/lease loss).</td>
+<td><code>dhcpcd</code> bind events (<code>BOUND</code>/<code>REBOOT</code>, and the v6 equivalents): initial bind or re-bind after NAK/lease loss. v4+v6 aggregate.</td>
 </tr>
 <tr>
 <td><code>leases_renewed</code></td>
 <td>no</td>
-<td>udhcpc <code>renew</code> events.</td>
+<td><code>dhcpcd</code> <code>RENEW</code>/<code>REBIND</code> events. v4+v6 aggregate.</td>
 </tr>
 <tr>
 <td><code>dhcp_timeouts</code></td>
 <td>no</td>
-<td>udhcpc <code>leasefail</code> events (no OFFER / no ACK within budget).</td>
+<td>DHCP-acquisition failures (v4+v6 aggregate). <code>dhcpcd</code> only fires a hook when a <em>bound</em> lease lapses (<code>EXPIRE</code>) and is silent while it re-discovers, so this counter is bumped both by those <code>EXPIRE</code> events and by a periodic outage watchdog while the client is unbound and still trying — it keeps climbing for the duration of a server outage.</td>
 </tr>
 <tr>
 <td><code>lease_release_failures</code></td>
@@ -1398,12 +1398,17 @@ is no <code>ip6</code> <em>driver-opt</em> channel — use <code>--ip6</code> / 
 <tr>
 <td><code>naks_received</code></td>
 <td>no</td>
-<td>(v1.0.0+) The server NAKed a renewal/rebind. udhcpc recovers by re-acquiring, so each NAK is typically followed by <code>leases_obtained</code> — and, if the address moved, <code>lease_changed</code> — bumps. Climbing alongside <code>lease_changed</code> means containers are being re-addressed mid-life.</td>
+<td>(v1.0.0+) The server NAKed a renewal/rebind (v4+v6 aggregate). <code>dhcpcd</code> recovers by re-acquiring, so each NAK is typically followed by <code>leases_obtained</code> — and, if the address moved, <code>lease_changed</code> — bumps. Climbing alongside <code>lease_changed</code> means containers are being re-addressed mid-life.</td>
 </tr>
 <tr>
 <td><code>ledger_write_failures</code></td>
 <td>no</td>
 <td>Failed <code>audit_log</code> ledger appends — degrades forensics, not networking. Operators using <code>audit_log</code> alert on this.</td>
+</tr>
+<tr>
+<td><code>lease_changed_v6</code>, <code>leases_obtained_v6</code>, <code>leases_renewed_v6</code>, <code>dhcp_timeouts_v6</code>, <code>naks_received_v6</code></td>
+<td>no</td>
+<td>(v1.2.0+) The IPv6-only share of the matching aggregate above (#212). Each counts only the v6 client's events; the v4 share is the aggregate minus its <code>*_v6</code>. On a dual-stack host this isolates the v6-specific NAK/timeout signal the aggregate hides. <code>lease_release_failures</code> and <code>ledger_write_failures</code> have no per-family split.</td>
 </tr>
 <tr>
 <td><code>lease_changed_v6</code>, <code>leases_obtained_v6</code>, <code>leases_renewed_v6</code>, <code>dhcp_timeouts_v6</code>, <code>naks_received_v6</code></td>
@@ -1516,7 +1521,7 @@ above and issue #125).</p>
 <tr>
 <td>Renewals failing after a server outage</td>
 <td>—</td>
-<td>Containers keep their address and udhcpc keeps retrying; <code>dhcp_timeouts</code> climbs while the server is gone and <code>leases_renewed</code> resumes after it returns</td>
+<td>Containers keep their address and <code>dhcpcd</code> keeps retrying; <code>dhcp_timeouts</code> climbs while the server is gone and <code>leases_renewed</code> resumes after it returns</td>
 </tr>
 </tbody>
 </table>

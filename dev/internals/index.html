@@ -771,18 +771,34 @@ namespace to it. Two things differ:</p>
 <li>A container-creation request is made.</li>
 <li>A <code>veth</code> pair is created and the host end is connected to the bridge
    (both interfaces are still in the host namespace at this point).</li>
-<li>A DHCP client (BusyBox <code>udhcpc</code>) is started on the container end
-   (still in the host namespace) — the initial IP address is provided to
-   Docker by the plugin.</li>
+<li>A DHCP client (<code>dhcpcd</code>) is started on the container end (still in
+   the host namespace) — the initial IP address is provided to Docker by
+   the plugin.</li>
 <li>Docker moves the container end of the <code>veth</code> pair into the
    container's network namespace and sets the IP address — at this point
-   <code>udhcpc</code> must be stopped.</li>
-<li><code>net-dhcp</code> restarts <code>udhcpc</code> on the container end of the <code>veth</code> pair
-   in the container's <strong>network namespace</strong> (but still in the plugin's
-   <strong>PID namespace</strong>, so the container can't see the DHCP client).</li>
-<li><code>udhcpc</code> keeps running, renewing the lease when required, until the
+   that first client is stopped.</li>
+<li><code>net-dhcp</code> starts a persistent <code>dhcpcd</code> on the container end of the
+   <code>veth</code> pair in the container's <strong>network namespace</strong> (but still in the
+   plugin's <strong>PID namespace</strong>, so the container can't see the DHCP
+   client). It runs observe-only (<code>--noconfigure</code>): the plugin applies
+   the lease to the link via netlink rather than letting the client
+   reconfigure the interface.</li>
+<li><code>dhcpcd</code> keeps running, renewing the lease when required, until the
    container shuts down.</li>
 </ol>
+<p>Two architectural notes about how the plugin drives <code>dhcpcd</code>:</p>
+<ul>
+<li><strong>Events come over a FIFO, not the client's stdout.</strong> A <code>dhcpcd</code> hook
+  script reports each lease event (bind, renew, expiry, NAK) as JSON
+  through a pipe the plugin opened — which is why the plugin ships a
+  small handler binary rather than parsing client output. The plugin
+  applies the resulting address/routes via netlink itself.</li>
+<li><strong>Each client runs in a private mount namespace.</strong> <code>dhcpcd</code> keys its
+  on-disk state by interface name and has no runtime override for that
+  location, so two containers whose link is the default <code>eth0</code> would
+  otherwise collide on the host's shared state directory. Isolating each
+  client in its own mount namespace keeps them independent.</li>
+</ul>
 <h2 id="see-also">See also<a class="headerlink" href="#see-also" title="Permanent link">&para;</a></h2>
 <ul>
 <li><a href="../reference/">Driver reference</a> — options, <code>/Plugin.Health</code>, troubleshooting</li>
