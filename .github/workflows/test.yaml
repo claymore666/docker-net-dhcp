@@ -73,11 +73,18 @@ jobs:
           bash scripts/test-govulncheck-gate.sh
           bash scripts/test-check-option-docs.sh
           bash scripts/test-check-apk-pins.sh
+          bash scripts/test-check-version-pins.sh
 
       # Every driver-option key the code parses must be documented in
       # docs/reference.md — an undocumented option turns CI red (#132).
       - name: Option-docs drift check
         run: bash scripts/check-option-docs.sh
+
+      # Every published-image pin in README/docs must agree on one
+      # version — catches a partial release bump (#251). Bump them with
+      # scripts/bump-version.sh vX.Y.Z.
+      - name: Version-pin consistency check
+        run: bash scripts/check-version-pins.sh
 
   staticcheck:
     runs-on: ubuntu-latest

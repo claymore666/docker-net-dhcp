@@ -146,19 +146,17 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
 "Closes" list in the release PR).
 
 1. **Branch off `dev`:** `git checkout -b release/vX.Y.Z origin/dev`
-2. **Bump install pins** in:
-   - `README.md` — every `docker plugin install ghcr.io/...:vPREV`
-     and `docker network create -d ghcr.io/...:vPREV` snippet.
-     Leave historical references like `As of vPREV every PR...`
-     alone — those are facts about when something started, not
-     install instructions.
-   - `docs/parent-attached-modes.md` — the `STATE_DIR` override
-     example.
-   - `docs/reference.md` — install/upgrade snippets, the Health
-     `curl` example, and the Compose `driver:` example all pin the
-     version.
-   Verify with
-   `grep -n vPREV README.md docs/parent-attached-modes.md docs/reference.md`.
+2. **Bump install pins:** `scripts/bump-version.sh vX.Y.Z` (#251). It
+   rewrites every published-image pin
+   (`ghcr.io/.../docker-net-dhcp:vPREV` in the `plugin install` /
+   `network create` / `driver:` / `plugin inspect` snippets across
+   `README.md` and `docs/`) to the new tag, and leaves bare `vX.Y.Z`
+   feature markers and historical prose (`As of vPREV every PR...`,
+   `v1.1.0 onward`) alone — the image ref is what tells a pin from
+   prose. Verify with `git diff` and `scripts/check-version-pins.sh`
+   (the same gate `test.yaml` runs: every pin must agree on one
+   version). The gate also fails CI if a future hand-edit leaves the
+   pins inconsistent.
 3. **Documentation review — PR-driven against the milestone.** Don't
    review from memory; review from the change set. List every PR on the
    `vX.Y.Z` milestone and reconcile each one's user-visible change
