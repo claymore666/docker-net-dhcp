@@ -19,7 +19,7 @@ import (
 // last-known IP, keyed by (network, endpoint). On the subsequent
 // CreateEndpoint Docker hands the same endpoint ID back, so the
 // plugin reuses the tombstoned MAC for the new macvlan child and
-// asks udhcpc to renew the same IP. tombstoneTTL was bumped to 60s
+// asks dhcpcd to renew the same IP. tombstoneTTL was bumped to 60s
 // in v0.6.1 (see #55) so a slow `systemctl restart docker` doesn't
 // drop the entry — but `docker restart <ctr>` itself completes in
 // well under that window.

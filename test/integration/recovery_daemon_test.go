@@ -183,7 +183,7 @@ func TestRecovery_DaemonRestart_PreservesContainer(t *testing.T) {
 	// pass in CI.)
 
 	// In the tombstone-path case (graceful shutdown ran Leave) the
-	// container goes through a fresh CreateEndpoint+udhcpc on the
+	// container goes through a fresh CreateEndpoint+dhcpcd on the
 	// way back up; the endpoint can briefly show no IP after
 	// State.Running flips. Poll on the endpoint, not just the state.
 	ipAfter, macAfter := waitForEndpoint(t, ctx, cli2, id, harness.IPAcquisitionBudget)
@@ -198,7 +198,7 @@ func TestRecovery_DaemonRestart_PreservesContainer(t *testing.T) {
 
 // waitLeaseObtained polls Plugin.Health until leases_obtained moves
 // past the pre-container baseline, i.e. the endpoint's persistent
-// DHCP client has fired its first udhcpc "bound" event and lease
+// DHCP client has fired its first dhcpcd "bound" event and lease
 // release-on-shutdown is armed.
 func waitLeaseObtained(t *testing.T, ctx context.Context, cli *docker.Client, baseline int32, budget time.Duration) {
 	t.Helper()

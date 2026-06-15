@@ -209,7 +209,7 @@ func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 // containers when the network is removed, so without this prune they
 // linger as ghost entries in /Plugin.Health.active_endpoints. Stop is
 // safe to call against a manager whose underlying netns is gone — it
-// just unblocks the udhcpc-events loop and returns; udhcpc itself may
+// just unblocks the dhcpcd-events loop and returns; dhcpcd itself may
 // have already self-exited because its netns vanished.
 func (p *Plugin) DeleteNetwork(r DeleteNetworkRequest) error {
 	if err := deleteOptions(r.NetworkID); err != nil {
@@ -259,8 +259,8 @@ func vethPairNames(id string) (string, string) {
 // libnetwork-supplied Interface.Address (CIDR form, e.g. set by
 // `docker run --ip=192.168.0.50`). Returns "" when the field is
 // absent; an ErrIPAM-wrapped error when set but malformed or v6.
-// The bare-IP form is what udhcpc wants for `-r ADDR`; the mask is
-// supplied by the DHCP ACK, not the operator.
+// The bare-IP form is what dhcpcd's `request` directive (DHCP option
+// 50) wants; the mask is supplied by the DHCP ACK, not the operator.
 //
 // Note: docker-engine itself rejects `--ip` for null-IPAM networks,
 // so this path only fires when the operator has wired up a non-null
@@ -336,9 +336,10 @@ func resolveExplicitV6(r CreateEndpointRequest) (string, error) {
 // `ip` driver-option. libnetwork places per-endpoint driver-opts
 // (from `docker network connect --driver-opt KEY=VAL`) as flat keys
 // in r.Options. Bare-IP form here, since that's how operators type
-// it on the command line; netmask comes from DHCP regardless. A v4
-// driver-opt `ip6` is also accepted but currently logged-and-skipped
-// because busybox udhcpc6 has no equivalent of `-r`.
+// it on the command line; netmask comes from DHCP regardless. There
+// is no `ip6` driver-opt channel: a requested v6 address arrives via
+// `--ip6` (Interface.AddressIPv6) and is honoured through dhcpcd's
+// `ia_na <iaid> / ADDR` preferred address (see resolveExplicitV6, #213).
 func parseDriverOptIP(options map[string]interface{}) (string, error) {
 	raw, ok := options["ip"]
 	if !ok {
@@ -399,7 +400,7 @@ func (p *Plugin) netOptions(ctx context.Context, id string) (DHCPNetworkOptions,
 }
 
 // CreateEndpoint creates the per-endpoint host-side network plumbing
-// (veth pair in bridge mode, macvlan child in macvlan mode), runs udhcpc
+// (veth pair in bridge mode, macvlan child in macvlan mode), runs dhcpcd
 // once to acquire an initial lease, and stashes the result for Join.
 // Docker moves the link into the container's netns when it acts on our
 // Join response.
@@ -1036,7 +1037,7 @@ func (p *Plugin) Leave(ctx context.Context, r LeaveRequest) error {
 	// the read here is sequenced after every renew that's going to
 	// happen — but go through ipMu anyway so the race detector doesn't
 	// have to reason through `select`. Doing this on the error path too
-	// means a wedged-udhcpc shutdown still produces a tombstone with
+	// means a wedged-dhcpcd shutdown still produces a tombstone with
 	// the latest known lease (W-4) — otherwise DeleteEndpoint would
 	// lay down a tombstone with the stale initial-DISCOVER IPs.
 	v4Addr, v6Addr := manager.lastIPs()

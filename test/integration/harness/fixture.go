@@ -39,7 +39,7 @@ const (
 	// --dhcp-range. 2 minutes is dnsmasq's hard floor — anything
 	// shorter is silently rounded up, which made an earlier "30s"
 	// constant lie about the actual lease. T1 (renewal trigger
-	// inside udhcpc) lands at half-lease = 1m, so renewal-tests
+	// inside dhcpcd) lands at half-lease = 1m, so renewal-tests
 	// have a ~1m floor on wait time.
 	DHCPPoolStart = "192.168.99.10"
 	DHCPPoolEnd   = "192.168.99.99"
@@ -61,8 +61,8 @@ const (
 	SubnetV6CIDR     = "fd00:6470:6863::/64"
 
 	// TestDNS6Server is advertised as DHCPv6 option 23 (DNS servers).
-	// busybox udhcpc6 requests option 23 by default, so it lands in
-	// the handler's `dns6` env without any -O flag. Like
+	// dhcpcd requests option 23 (via the config `option` list), so it
+	// lands in the handler's `new_dhcp6_name_servers` env. Like
 	// TestDNSServer, nothing actually serves DNS there — tests assert
 	// propagation, not resolution.
 	TestDNS6Server = "fd00:6470:6863::53"
@@ -238,7 +238,7 @@ func (f *Fixture) startDnsmasq() error {
 		// Stateful DHCPv6 on the ULA prefix (#103). --enable-ra makes
 		// dnsmasq emit Router Advertisements with the M (managed) flag
 		// for this range — RA handling stays kernel-delegated in the
-		// container netns; the plugin only drives udhcpc6.
+		// container netns; the plugin only drives dhcpcd.
 		"--dhcp-range="+DHCPv6PoolStart+","+DHCPv6PoolEnd+","+LeaseTime,
 		"--enable-ra",
 		"--dhcp-option=option6:dns-server,["+TestDNS6Server+"]",

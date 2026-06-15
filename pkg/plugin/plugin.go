@@ -54,7 +54,7 @@ const initialDHCPHostnameLookupTimeout = 2 * time.Second
 
 // recoveryBudget caps the wall-time the plugin spends rebuilding its
 // in-memory state for already-attached endpoints on startup. Each
-// endpoint's recovery does its own DHCP DISCOVER through udhcpc with
+// endpoint's recovery does its own DHCP DISCOVER through dhcpcd with
 // network-IO timeouts; this is the umbrella above all of them. Beyond
 // it, recovery is abandoned and the affected endpoints surface as
 // recovery_failed on /Plugin.Health.
@@ -92,7 +92,7 @@ func clientIDFromEndpoint(endpointID string) []byte {
 
 // resolveClientID picks the option-61 payload for a fresh DHCP
 // exchange. Operator-supplied opts.ClientID wins when non-empty
-// (treated as opaque ASCII bytes; the udhcpc client adds the
+// (treated as opaque ASCII bytes; the dhcpcd client adds the
 // type-byte 0x00 wrapper on the wire). Otherwise we fall back to
 // the endpoint-derived stable id, which is what makes per-container
 // reservations work upstream.
@@ -184,7 +184,7 @@ type DHCPNetworkOptions struct {
 	// and not yet implemented.
 	//
 	// The probe runs a full DHCPDISCOVER → REQUEST → ACK cycle
-	// (busybox udhcpc has no DISCOVER-only mode), so the upstream
+	// (dhcpcd has no DISCOVER-only mode), so the upstream
 	// pool briefly sees one extra lease per `docker network create`
 	// with this opt-in. The probe MAC is random (locally-administered
 	// bit set) so it doesn't collide with anything stable upstream;
@@ -293,7 +293,7 @@ type Plugin struct {
 	// on restart until the disk recovers.
 	tombstoneWriteFailures atomic.Int32
 
-	// leaseChanged counts renewals where udhcpc returned a different
+	// leaseChanged counts renewals where dhcpcd returned a different
 	// IP than the manager last recorded. Container's
 	// NetworkSettings.IPAddress in `docker inspect` does NOT update
 	// — libnetwork has no in-place endpoint-IP swap RPC. This counter
@@ -309,11 +309,12 @@ type Plugin struct {
 	// regressions in the DHCP exchange itself without scraping dnsmasq
 	// logs server-side or running the plugin at trace level. Bumped
 	// from dhcpManager:
-	//   - leasesObtained: udhcpc "bound" event — first successful
+	//   - leasesObtained: "bound" event — first successful
 	//     DHCPACK on either initial bind or after a NAK / lease loss
-	//   - leasesRenewed: udhcpc "renew" event — a renewal DHCPACK
-	//   - dhcpTimeouts: udhcpc "leasefail" event — discovery / renewal
-	//     hit udhcpc's internal timeout without an OFFER or ACK
+	//   - leasesRenewed: "renew" event — a renewal DHCPACK
+	//   - dhcpTimeouts: "leasefail" event — a bound lease lapsed
+	//     (dhcpcd EXPIRE) or the outage watchdog fired without an
+	//     OFFER or ACK
 	//   - leaseReleaseFailures: client.Finish returned an error in
 	//     Stop, meaning the SIGTERM-driven DHCPRELEASE didn't complete
 	//     cleanly (timeout, exit code, or pipe closure)
@@ -322,10 +323,10 @@ type Plugin struct {
 	dhcpTimeouts         atomic.Int32
 	leaseReleaseFailures atomic.Int32
 
-	// naksReceived counts udhcpc "nak" events — the server refused a
+	// naksReceived counts "nak" events — the server refused a
 	// REQUEST (pool reconfigured, address reassigned, lease revoked).
 	// Until v1.0.0 a NAK was only a warn-level log line, invisible to
-	// operators (#128). A NAK is followed by udhcpc re-DISCOVERing, so
+	// operators (#128). A NAK is followed by dhcpcd re-DISCOVERing, so
 	// pair this with lease_changed: naks_received climbing while
 	// lease_changed follows means containers are being re-addressed
 	// mid-life — Docker's inspect view goes stale (see leaseChanged
@@ -635,9 +636,10 @@ func (p *Plugin) consumeTombstone(networkID, hostname string) (mac, ipv4, ipv6 s
 // Recovery sources state from Docker rather than persisting our own
 // per-endpoint files: NetworkInspect gives us the MAC and IP of each
 // attached endpoint, ContainerInspect gives the hostname and the
-// container's PID for netns access. udhcpc is invoked with `-r <IP>`
-// so the upstream DHCP server can ACK the lease the container is
-// already using rather than handing out a fresh one.
+// container's PID for netns access. dhcpcd is invoked with that IP set
+// as its `request` directive (DHCP option 50) so the upstream DHCP
+// server can ACK the lease the container is already using rather than
+// handing out a fresh one.
 func (p *Plugin) recoverEndpoints(ctx context.Context) {
 	// recordSyncFailure bumps both the local counter (used for the
 	// summary log line) and the atomic surfaced on /Plugin.Health.
@@ -954,7 +956,7 @@ func (p *Plugin) Listen(bindSock string) error {
 // pluginShutdownTimeout caps how long Close waits for each persistent
 // DHCP client to send DHCPRELEASE and exit. Short enough to keep a
 // plugin upgrade snappy on hosts with many endpoints; long enough that
-// a typical udhcpc release-and-exit cycle completes well within it.
+// a typical dhcpcd release-and-exit cycle completes well within it.
 const pluginShutdownTimeout = 5 * time.Second
 
 // Close stops the plugin server. Persistent DHCP clients are stopped
@@ -964,7 +966,7 @@ const pluginShutdownTimeout = 5 * time.Second
 // release-on-stop contract Leave normally honors.
 func (p *Plugin) Close() error {
 	// Snapshot the live managers under the lock, then drop the lock
-	// before calling Stop on each (Stop blocks on udhcpc Wait and we
+	// before calling Stop on each (Stop blocks on dhcpcd Wait and we
 	// don't want to hold p.mu across that).
 	p.mu.Lock()
 	managers := make([]*dhcpManager, 0, len(p.persistentDHCP))
@@ -976,7 +978,7 @@ func (p *Plugin) Close() error {
 
 	if len(managers) > 0 {
 		log.WithField("count", len(managers)).Info("Stopping persistent DHCP clients before shutdown")
-		// Stop in parallel — each udhcpc release is independent and
+		// Stop in parallel — each dhcpcd release is independent and
 		// we don't want N×timeout wall time.
 		var wg sync.WaitGroup
 		for _, m := range managers {
@@ -988,7 +990,7 @@ func (p *Plugin) Close() error {
 				}
 			}(m)
 		}
-		// Bound wall time: we can't let one wedged udhcpc hold up the
+		// Bound wall time: we can't let one wedged dhcpcd hold up the
 		// whole shutdown.
 		//
 		// Known leak (W-8 in the 2026-05-05 review): if the timeout

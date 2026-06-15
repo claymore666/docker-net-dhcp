@@ -80,7 +80,7 @@ func TestHealthCounters_ObtainedAndReleased(t *testing.T) {
 
 	// Wait for the persistent client's `bound` event — that's what
 	// bumps leases_obtained. CreateEndpoint's initial DISCOVER runs
-	// a one-shot udhcpc that doesn't go through the event handler;
+	// a one-shot dhcpcd whose events don't feed the plugin's counters;
 	// the persistent client started in Join is what we're testing.
 	deadline := time.Now().Add(harness.IPAcquisitionBudget + 5*time.Second)
 	var afterStart *harness.HealthResponse

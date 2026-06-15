@@ -263,7 +263,7 @@ type HealthResponse struct {
 	RecoveredOK            int32   `json:"recovered_ok"`
 	RecoveryFailed         int32   `json:"recovery_failed"`
 	TombstoneWriteFailures int32   `json:"tombstone_write_failures"`
-	// LeaseChanged counts renewals where udhcpc returned a different
+	// LeaseChanged counts renewals where dhcpcd returned a different
 	// IP than the manager last recorded. Not Healthy-affecting (it
 	// doesn't break Docker's view fatally — see plugin.go for the
 	// truthfulness-gap discussion), but worth alerting on for
@@ -280,7 +280,7 @@ type HealthResponse struct {
 	DHCPTimeouts         int32 `json:"dhcp_timeouts"`
 	LeaseReleaseFailures int32 `json:"lease_release_failures"`
 	// NAKsReceived counts server NAKs on renewal/rebind. Not
-	// Healthy-affecting on its own — udhcpc recovers by
+	// Healthy-affecting on its own — dhcpcd recovers by
 	// re-DISCOVERing — but each NAK-triggered re-bind widens the
 	// docker-inspect divergence tracked by lease_changed (#128).
 	NAKsReceived int32 `json:"naks_received"`

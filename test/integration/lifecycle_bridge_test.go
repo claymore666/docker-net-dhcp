@@ -16,7 +16,7 @@ import (
 // the macvlan/ipvlan additions and goes through a structurally
 // different code path: per-endpoint veth pair, host side attached to
 // a user-provided Linux bridge, container side moved into the
-// container netns. udhcpc still runs in the container netns, but the
+// container netns. dhcpcd still runs in the container netns, but the
 // DHCP server it talks to here is the second dnsmasq the bridge
 // fixture starts on the bridge interface (192.168.100/24, distinct
 // from the macvlan path's 192.168.99/24 to avoid lease cross-talk).

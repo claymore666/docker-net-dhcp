@@ -18,7 +18,7 @@ import (
 // happy path: validate_dhcp=true on the standard fixture (dnsmasq
 // on the other end of HostVeth) succeeds and the network is created.
 //
-// Indirectly exercises the macvlan probe-link create + udhcpc
+// Indirectly exercises the macvlan probe-link create + dhcpcd
 // one-shot DORA + cleanup paths in pkg/plugin/dhcp_probe.go.
 func TestPreflightProbe_PassesOnReachableServer(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -49,7 +49,7 @@ func TestPreflightProbe_PassesOnReachableServer(t *testing.T) {
 //
 // Uses a dummy interface as the parent — dummies don't carry L2
 // traffic to anywhere, so the DHCPDISCOVER vanishes into the void
-// and udhcpc times out. Cheaper to set up than a fresh veth pair
+// and dhcpcd times out. Cheaper to set up than a fresh veth pair
 // with no peer-side dnsmasq, and the test doesn't exercise the
 // peer-side code anyway.
 func TestPreflightProbe_FailsWhenServerUnreachable(t *testing.T) {
@@ -107,7 +107,7 @@ func TestPreflightProbe_FailsWhenServerUnreachable(t *testing.T) {
 	}
 
 	// The probe budget is 5s; harness allowed ~10s including
-	// the udhcpc setup overhead. If we waited ~30s it means the
+	// the dhcpcd setup overhead. If we waited ~30s it means the
 	// budget is being ignored somewhere.
 	if elapsed > 15*time.Second {
 		t.Errorf("probe took %v; should have failed within ~6-10s", elapsed)

@@ -12,19 +12,18 @@
 // minutes — they are split out of the main suite into
 // `make integration-test-failure` (second CI step).
 //
-// busybox-udhcpc timing facts the asserts below lean on (defaults:
-// -t 3 -T 3 -A 20, see pkg/udhcpc/client.go — no overrides):
-//   - a dead server produces NO udhcpc event at T1/T2 (silent unicast
-//     /broadcast retries); the first observable event is "leasefail",
-//     emitted ~10s after lease EXPIRY when re-DISCOVER times out
-//     (3 tries × 3s). dhcp_timeouts therefore moves at ~t+130s, not
-//     at T1.
-//   - after "leasefail", udhcpc sleeps 20s (-A) and re-DISCOVERs
-//     forever — so recovery after the server returns lands within
-//     ~30s, and while it's gone, dhcp_timeouts keeps climbing on a
-//     ~30s period.
-//   - at expiry udhcpc emits "deconfig", which the plugin DELIBERATELY
-//     ignores (would wipe copied routes, see dhcp_manager.go) — the
+// dhcpcd timing facts the asserts below lean on (see pkg/udhcpc):
+//   - a dead server produces NO event at T1/T2 (dhcpcd retries silently
+//     while re-discovering); the first internal "leasefail" comes from
+//     dhcpcd's EXPIRE when the bound lease finally lapses (at expiry),
+//     and the plugin's outage watchdog then increments dhcp_timeouts on
+//     a recurring ~30s period (dhcpOutageTick/Grace) while still
+//     acquiring. dhcp_timeouts therefore moves around expiry, not at T1.
+//   - dhcpcd keeps re-DISCOVERing forever, so recovery after the server
+//     returns lands within ~30s, and while it's gone dhcp_timeouts keeps
+//     climbing on the watchdog's ~30s period.
+//   - at expiry the plugin DELIBERATELY does NOT tear down the address
+//     on EXPIRE (would wipe copied routes, see dhcp_manager.go) — the
 //     container keeps its address through an outage.
 package integration
 
@@ -82,7 +81,7 @@ func inRange(ip, start, end string) bool {
 // TestFailure_ServerLossDuringRenewal: the "router rebooted at 3am"
 // scenario. Intended behaviour asserted:
 //   - while the server is gone, the container KEEPS its address (the
-//     deconfig no-op), the plugin stays Healthy, and dhcp_timeouts
+//     EXPIRE no-op), the plugin stays Healthy, and dhcp_timeouts
 //     records the failure;
 //   - when the server returns with its lease DB intact, the client
 //     re-binds to the SAME address (lease_changed stays flat) without
@@ -131,10 +130,10 @@ func TestFailure_ServerLossDuringRenewal(t *testing.T) {
 		t.Error("plugin went unhealthy during a server outage; a dead DHCP server is a degraded mode, not a plugin failure")
 	}
 	if !containerHasIP(t, ctx, id, ip) {
-		t.Errorf("container lost %s during the outage; the deconfig no-op should retain the address", ip)
+		t.Errorf("container lost %s during the outage; the EXPIRE no-op should retain the address", ip)
 	}
 
-	// Server returns, lease DB intact: the udhcpc retry loop must
+	// Server returns, lease DB intact: the dhcpcd retry loop must
 	// re-bind to the same address within ~30s (poll 90s for margin).
 	acksBefore := ef.CountLogLines("DHCPACK", mac)
 	ef.StartAgain()

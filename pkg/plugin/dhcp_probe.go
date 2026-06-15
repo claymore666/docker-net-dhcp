@@ -20,7 +20,7 @@ import (
 // for an OFFER + ACK from the upstream server before declaring the
 // parent NIC unreachable. Five seconds is enough for a healthy LAN
 // (Fritz.Box-class servers respond in under 100ms) plus retry once
-// at udhcpc's default ~3s discover timeout. Tight on purpose: the
+// at dhcpcd's discover timeout. Tight on purpose: the
 // operator is blocked in `docker network create` while it runs.
 const preflightProbeBudget = 5 * time.Second
 
@@ -40,14 +40,15 @@ const preflightProbeBudget = 5 * time.Second
 //     MAC, and the probe goal (verifying DHCP reachability of the
 //     parent) is mode-agnostic.
 //  3. Bring it up and run udhcpc.GetIP one-shot with the probe budget.
-//     Busybox has no DISCOVER-only flag; we accept the full DORA and
+//     dhcpcd has no DISCOVER-only flag; we accept the full DORA and
 //     let the upstream server briefly hold a lease that times out
-//     naturally (no -R sent). The cost is one transient pool entry
+//     naturally (no `release` directive sent). The cost is one
+//     transient pool entry
 //     per `docker network create -o validate_dhcp=true`.
 //  4. Tear down the macvlan child unconditionally on return.
 //
 // On success returns nil. On failure wraps the underlying error
-// (link-create failed, udhcpc timeout, malformed lease, etc.) with
+// (link-create failed, dhcpcd timeout, malformed lease, etc.) with
 // a parent-aware prefix so the operator's docker CLI surfaces a
 // clear "no DHCP OFFER on <parent> within 5s" message instead of
 // the generic CreateNetwork failure shape.

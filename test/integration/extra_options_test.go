@@ -18,7 +18,7 @@ import (
 // option 15 per RFC 3397.
 //
 // Pairs with the unit test TestBuildResolvConf_SearchListPrecedence —
-// this one validates the udhcpc → handler → plugin → mount-ns
+// this one validates the dhcpcd → handler → plugin → mount-ns
 // pipeline actually produces the rendered file the unit test pins.
 func TestExtraOptions_SearchListInResolvConf(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -59,7 +59,7 @@ func TestExtraOptions_SearchListInResolvConf(t *testing.T) {
 }
 
 // hasAllDomains reports whether every entry in want appears on a
-// `search` line in resolvConf. Order is not asserted — busybox /
+// `search` line in resolvConf. Order is not asserted — dhcpcd /
 // dnsmasq are free to reorder, but every element must be present.
 func hasAllDomains(resolvConf string, want []string) bool {
 	var searchLine string
