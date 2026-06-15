@@ -27,7 +27,7 @@ The plugin publishes to two registries; GHCR is primary:
 for unattended):
 
 ```bash
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.1.1
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.2.0
 ```
 
 Privileges requested: `network: host`, host PID namespace, the Docker
@@ -93,7 +93,7 @@ You bring an existing Linux bridge that is L2-connected to the LAN
 (see [`bridge-mode.md`](bridge-mode.md) for the bridge setup itself):
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.1.1 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.2.0 \
     --ipam-driver null \
     -o bridge=my-bridge \
     my-dhcp-net
@@ -105,7 +105,7 @@ No host changes — containers get per-container kernel-generated MACs
 as macvlan children of a host NIC:
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.1.1 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.2.0 \
     --ipam-driver null \
     -o mode=macvlan -o parent=eth0 \
     lan-dhcp
@@ -119,7 +119,7 @@ security, hostile vSwitches, some Wi-Fi APs). The DHCP server must
 key reservations on DHCP option 61 (client identifier), not MAC:
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.1.1 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.2.0 \
     --ipam-driver null \
     -o mode=ipvlan -o parent=eth0 \
     lan-dhcp
@@ -202,7 +202,7 @@ Set with `docker plugin set <plugin> NAME=value`; take effect after
 JSON liveness + counters on the plugin's UNIX socket:
 
 ```bash
-PLUGIN_ID=$(docker plugin inspect -f '{{.Id}}' ghcr.io/claymore666/docker-net-dhcp:v1.1.1)
+PLUGIN_ID=$(docker plugin inspect -f '{{.Id}}' ghcr.io/claymore666/docker-net-dhcp:v1.2.0)
 curl -s --unix-socket /run/docker/plugins/$PLUGIN_ID/net-dhcp.sock \
     http://localhost/Plugin.Health | jq .
 ```
@@ -224,7 +224,6 @@ curl -s --unix-socket /run/docker/plugins/$PLUGIN_ID/net-dhcp.sock \
 | `naks_received` | no | (v1.0.0+) The server NAKed a renewal/rebind (v4+v6 aggregate). `dhcpcd` recovers by re-acquiring, so each NAK is typically followed by `leases_obtained` — and, if the address moved, `lease_changed` — bumps. Climbing alongside `lease_changed` means containers are being re-addressed mid-life. |
 | `ledger_write_failures` | no | Failed `audit_log` ledger appends — degrades forensics, not networking. Operators using `audit_log` alert on this. |
 | `lease_changed_v6`, `leases_obtained_v6`, `leases_renewed_v6`, `dhcp_timeouts_v6`, `naks_received_v6` | no | (v1.2.0+) The IPv6-only share of the matching aggregate above (#212). Each counts only the v6 client's events; the v4 share is the aggregate minus its `*_v6`. On a dual-stack host this isolates the v6-specific NAK/timeout signal the aggregate hides. `lease_release_failures` and `ledger_write_failures` have no per-family split. |
-| `lease_changed_v6`, `leases_obtained_v6`, `leases_renewed_v6`, `dhcp_timeouts_v6`, `naks_received_v6` | no | (v1.2.0+) Per-family breakdown: the IPv6 share of the matching aggregate above. The un-suffixed counters stay v4+v6 totals, so the IPv4 share is `<counter> − <counter>_v6`. On a dual-stack host this isolates a v6-specific NAK or timeout that the aggregate alone would hide. |
 
 ### Plugin log
 
@@ -274,7 +273,7 @@ Compose-managed alternative (network lifecycle tied to the project):
 ```yaml
 networks:
   lan:
-    driver: ghcr.io/claymore666/docker-net-dhcp:v1.1.1
+    driver: ghcr.io/claymore666/docker-net-dhcp:v1.2.0
     driver_opts:
       mode: macvlan
       parent: eth0
