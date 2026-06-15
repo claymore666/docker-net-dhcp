@@ -233,17 +233,43 @@ func TestResolveClientID(t *testing.T) {
 	const eid = "0123456789abcdef0123456789abcdef"
 
 	t.Run("override wins", func(t *testing.T) {
-		got := resolveClientID(DHCPNetworkOptions{ClientID: "my-class-id"}, eid)
+		got := resolveClientID(DHCPNetworkOptions{ClientID: "my-class-id"}, eid, "")
 		if string(got) != "my-class-id" {
 			t.Errorf("override: got %q, want %q", got, "my-class-id")
 		}
 	})
 
+	t.Run("override wins over stable MAC", func(t *testing.T) {
+		// An explicit client_id outranks the stable-MAC-derived id.
+		got := resolveClientID(DHCPNetworkOptions{ClientID: "static"}, eid, "02:00:00:11:22:33")
+		if string(got) != "static" {
+			t.Errorf("override over stable: got %q, want %q", got, "static")
+		}
+	})
+
 	t.Run("empty override falls back to derived", func(t *testing.T) {
-		got := resolveClientID(DHCPNetworkOptions{}, eid)
+		got := resolveClientID(DHCPNetworkOptions{}, eid, "")
 		want := clientIDFromEndpoint(eid)
 		if string(got) != string(want) {
 			t.Errorf("fallback: got %x, want %x", got, want)
+		}
+	})
+
+	t.Run("stable MAC seeds the client id", func(t *testing.T) {
+		// On a stable_mac network the client-id is the MAC bytes, not
+		// the endpoint-derived id, so option 61 tracks the stable chaddr.
+		got := resolveClientID(DHCPNetworkOptions{}, eid, "02:00:00:11:22:33")
+		want, _ := net.ParseMAC("02:00:00:11:22:33")
+		if string(got) != string(want) {
+			t.Errorf("stable MAC: got %x, want %x", got, want)
+		}
+	})
+
+	t.Run("malformed stable MAC falls back to derived", func(t *testing.T) {
+		got := resolveClientID(DHCPNetworkOptions{}, eid, "not-a-mac")
+		want := clientIDFromEndpoint(eid)
+		if string(got) != string(want) {
+			t.Errorf("bad stable MAC: got %x, want %x", got, want)
 		}
 	})
 
@@ -251,7 +277,7 @@ func TestResolveClientID(t *testing.T) {
 		// Even if the endpoint id is too short to derive from, an
 		// explicit override should still be honoured. Prevents a
 		// regression where the fallback path swallowed the override.
-		got := resolveClientID(DHCPNetworkOptions{ClientID: "static"}, "")
+		got := resolveClientID(DHCPNetworkOptions{ClientID: "static"}, "", "")
 		if string(got) != "static" {
 			t.Errorf("override+empty eid: got %q, want %q", got, "static")
 		}

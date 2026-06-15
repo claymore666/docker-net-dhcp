@@ -289,6 +289,12 @@ type HealthResponse struct {
 	// degrades forensics, not networking; operators using audit_log
 	// alert on this directly.
 	LedgerWriteFailures int32 `json:"ledger_write_failures"`
+	// StableMACCollisions counts deterministic-MAC perturbations on
+	// networks created with stable_mac=true (#218). Expected to stay 0;
+	// a non-zero value means two endpoints' identity hashes collided (or
+	// a seed-input bug) — not Healthy-affecting, the perturbed MAC is
+	// still valid and unique, but worth investigating.
+	StableMACCollisions int32 `json:"stable_mac_collisions"`
 }
 
 func (p *Plugin) apiHealth(w http.ResponseWriter, r *http.Request) {
@@ -318,5 +324,6 @@ func (p *Plugin) apiHealth(w http.ResponseWriter, r *http.Request) {
 		LeaseReleaseFailures:   p.leaseReleaseFailures.Load(),
 		NAKsReceived:           p.naksReceived.Load(),
 		LedgerWriteFailures:    p.ledgerWriteFailures.Load(),
+		StableMACCollisions:    p.stableMACCollisions.Load(),
 	}, http.StatusOK)
 }

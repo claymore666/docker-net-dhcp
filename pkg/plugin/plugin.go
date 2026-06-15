@@ -91,16 +91,50 @@ func clientIDFromEndpoint(endpointID string) []byte {
 }
 
 // resolveClientID picks the option-61 payload for a fresh DHCP
-// exchange. Operator-supplied opts.ClientID wins when non-empty
-// (treated as opaque ASCII bytes; the udhcpc client adds the
-// type-byte 0x00 wrapper on the wire). Otherwise we fall back to
-// the endpoint-derived stable id, which is what makes per-container
-// reservations work upstream.
-func resolveClientID(opts DHCPNetworkOptions, endpointID string) []byte {
+// exchange. Precedence:
+//
+//  1. Operator-supplied opts.ClientID (opaque ASCII bytes; the udhcpc
+//     client adds the type-byte 0x00 wrapper on the wire).
+//  2. stableMAC, when non-empty: the client-id is derived from the
+//     endpoint's stable MAC so option 61 stays constant across recreates
+//     too. Without this, the endpoint-derived fallback below would send a
+//     fresh client-id every recreate (the endpoint ID is randomized per
+//     recreate) and defeat the stable chaddr on servers that key leases
+//     on client-id — RFC 2131 has the server prefer client-id over
+//     chaddr when both are present. Only stable_mac networks pass a
+//     non-empty value here (see stableClientIDMAC), so default behaviour
+//     is unchanged.
+//  3. the endpoint-derived id — stable for the life of one endpoint,
+//     which is what makes per-container reservations work upstream within
+//     a container's life.
+func resolveClientID(opts DHCPNetworkOptions, endpointID, stableMAC string) []byte {
 	if opts.ClientID != "" {
 		return []byte(opts.ClientID)
 	}
+	if stableMAC != "" {
+		if hw, err := net.ParseMAC(stableMAC); err == nil {
+			return hw
+		}
+	}
 	return clientIDFromEndpoint(endpointID)
+}
+
+// stableClientIDMAC returns the MAC string whose bytes should seed the
+// DHCP client-id so option 61 tracks the stable chaddr, or "" to keep the
+// legacy endpoint-derived client-id. It returns linkMAC only on
+// stable_mac networks and only when the endpoint has its own MAC: ipvlan
+// children share the parent's MAC, which can't identify the child, so a
+// MAC-derived client-id there would be the same for every child (the
+// stable per-child client-id for ipvlan is the separate #219 arm).
+// Because both the initial bind and the renewal manager pass the
+// endpoint's actual link MAC, the derived client-id is identical across
+// the endpoint's life, and stable across recreate exactly when the MAC
+// itself is stable.
+func stableClientIDMAC(opts DHCPNetworkOptions, mode, linkMAC string) string {
+	if opts.StableMAC && mode != ModeIPvlan {
+		return linkMAC
+	}
+	return ""
 }
 
 const defaultLeaseTimeout = 10 * time.Second
@@ -203,6 +237,23 @@ type DHCPNetworkOptions struct {
 	// in deliberately. Append failures bump ledger_write_failures on
 	// /Plugin.Health and never affect lease handling.
 	AuditLog bool `mapstructure:"audit_log"`
+	// StableMAC, when true, gives every endpoint on this network a
+	// deterministic MAC derived from the container's stable identity
+	// (Compose project/service, else container name) instead of a
+	// kernel-random one. A stable MAC ⇒ the upstream DHCP server's
+	// normal MAC-based matching hands back the same lease across a
+	// `compose up -d` recreate, closing the recreate IP-drift gap with
+	// no per-container plumbing or server-side reservation (#218).
+	// Default false: current kernel-random behaviour is unchanged unless
+	// opted in. No-op for ipvlan, where children share the parent's MAC
+	// on the wire (see #219 for the client-id arm that would cover it).
+	StableMAC bool `mapstructure:"stable_mac"`
+	// MACSeed, when non-empty, overrides the identity used to derive the
+	// StableMAC for every endpoint on this network — `hash(networkID +
+	// seed)`. Lets an operator pin lease identity explicitly rather than
+	// relying on Compose/container-name inference. Only consulted when
+	// StableMAC is true.
+	MACSeed string `mapstructure:"mac_seed"`
 }
 
 // effectiveMode returns Mode with the empty default normalized to ModeBridge.
@@ -332,6 +383,17 @@ type Plugin struct {
 	// above / #104) and DNS or firewall rules keyed on the old IP need
 	// attention.
 	naksReceived atomic.Int32
+
+	// stableMACCollisions counts how many times a deterministic stable
+	// MAC (#218, stable_mac=true) had to be perturbed because its first
+	// candidate was already in use on the same network. In the ~46-bit
+	// MAC space this is a should-never-happen, so a non-zero value is a
+	// signal worth investigating (a seed-input bug, or two containers
+	// resolving to the same identity), not normal operation. Not
+	// Healthy-affecting: the perturbed MAC is still valid and unique, so
+	// networking is unaffected — it only means a container's MAC is not
+	// the pure hash of its identity. Bumped from createEndpoint paths.
+	stableMACCollisions atomic.Int32
 
 	// ledger is the append-only lease audit log (#109), written by
 	// dhcpManager.audit for networks created with audit_log=true.
@@ -803,17 +865,20 @@ func (p *Plugin) reacquireEndpoint(ctx context.Context, r JoinRequest, opts DHCP
 	return nil
 }
 
-// initialDHCPHostname makes a best-effort attempt to find the hostname
-// of the container we're about to attach an endpoint to, so we can pass
-// it in the initial DHCPDISCOVER. Polls the network's Containers map
-// for up to initialDHCPHostnameLookupTimeout; if the container hasn't
-// been registered yet (it's a race; sometimes Docker calls
-// CreateEndpoint before the container appears in the network's
-// container list), we fall through with an empty hostname. The
-// persistent renewal client populates the hostname later regardless,
-// so the worst case is "first lease appears in the upstream DHCP
-// server's UI without a hostname for a few minutes".
-func (p *Plugin) initialDHCPHostname(ctx context.Context, networkID, endpointID string) string {
+// initialContainerIdentity resolves the best-effort stable identity of
+// the container an endpoint is being created for, in a single
+// NetworkInspect → ContainerInspect round-trip. The hostname feeds the
+// initial DHCPDISCOVER (option 12); the name and Compose labels feed the
+// deterministic stable MAC (#218). Polls the network's Containers map for
+// up to initialDHCPHostnameLookupTimeout; if the container hasn't been
+// registered yet (it's a race; sometimes Docker calls CreateEndpoint
+// before the container appears in the network's container list), we fall
+// through with a zero identity. The persistent renewal client populates
+// the hostname later regardless, so the worst case is "first lease
+// appears in the upstream DHCP server's UI without a hostname for a few
+// minutes"; the stable MAC is decided once at create time and a zero
+// identity simply means we fall back to a kernel-random MAC.
+func (p *Plugin) initialContainerIdentity(ctx context.Context, networkID, endpointID string) containerIdentity {
 	ctx, cancel := context.WithTimeout(ctx, initialDHCPHostnameLookupTimeout)
 	defer cancel()
 
@@ -826,15 +891,15 @@ func (p *Plugin) initialDHCPHostname(ctx context.Context, networkID, endpointID 
 	// retry interval. Cap the inner ctx at the poll interval.
 	const dockerCallTimeout = 200 * time.Millisecond
 
-	var hostname string
+	var id containerIdentity
 	_ = util.AwaitCondition(ctx, func() (bool, error) {
 		inner, innerCancel := context.WithTimeout(ctx, dockerCallTimeout)
 		defer innerCancel()
 		dockerNet, err := p.docker.NetworkInspect(inner, networkID, dNetwork.InspectOptions{})
 		if err != nil {
 			// Don't propagate the error — we want to keep retrying
-			// while the timeout has time. The caller treats an empty
-			// hostname as "not yet known" and lets renewal handle it.
+			// while the timeout has time. The caller treats a zero
+			// identity as "not yet known" and lets renewal handle it.
 			return false, nil
 		}
 		for ctrID, info := range dockerNet.Containers {
@@ -850,12 +915,18 @@ func (p *Plugin) initialDHCPHostname(ctx context.Context, networkID, endpointID 
 			if err != nil {
 				return false, nil
 			}
-			hostname = ctr.Config.Hostname
+			id.Name = ctr.Name
+			if ctr.Config != nil {
+				id.Hostname = ctr.Config.Hostname
+				id.ComposeProject = ctr.Config.Labels[composeProjectLabel]
+				id.ComposeService = ctr.Config.Labels[composeServiceLabel]
+				id.ComposeNumber = ctr.Config.Labels[composeNumberLabel]
+			}
 			return true, nil
 		}
 		return false, nil
 	}, 100*time.Millisecond)
-	return hostname
+	return id
 }
 
 // NewPlugin creates a new Plugin
