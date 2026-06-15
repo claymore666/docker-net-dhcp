@@ -52,7 +52,7 @@ func TestMain(m *testing.M) {
 //
 // This single test exercises CreateNetwork (mode=macvlan branch),
 // validateParentForChild, createParentAttachedEndpoint,
-// dhcpManager.Start (initial lease via udhcpc -q), Join (move link
+// dhcpManager.Start (initial lease via one-shot dhcpcd), Join (move link
 // into netns), Leave (Stop the manager → DHCPRELEASE), DeleteEndpoint
 // (parent-attached cleanup branch), and DeleteNetwork — covering
 // the macvlan path end-to-end.

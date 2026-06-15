@@ -17,8 +17,8 @@ import (
 // TestStaticIP_DriverOpt drives the `--driver-opt ip=<addr>` static-IP
 // override path: the container is connected with an explicit
 // per-endpoint driver opt, and the plugin must propagate that to
-// udhcpc's DHCPDISCOVER as a `requested IP` so dnsmasq hands out the
-// caller-chosen lease rather than picking from the pool.
+// dhcpcd's `request` directive (DHCP option 50) so dnsmasq hands out
+// the caller-chosen lease rather than picking from the pool.
 //
 // Exercises pkg/plugin/network.go::parseDriverOptIP (whose only
 // not-trivial branch was a 0%-coverage gap in v0.7.0) and

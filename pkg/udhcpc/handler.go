@@ -18,8 +18,8 @@ type Info struct {
 	// re-apply on change.
 	MTU int `json:",omitempty"`
 
-	// NTPServers is the NTP server list from DHCP option 42 (busybox
-	// env var `ntpsrv`). Empty when the server didn't supply the
+	// NTPServers is the NTP server list from DHCP option 42 (dhcpcd
+	// env var `new_ntp_servers`). Empty when the server didn't supply the
 	// option. Surfaced to operators via plugin logs at info level on
 	// bind/renew; not auto-applied to the container — workloads
 	// needing NTP should consume the value themselves (typically via
@@ -27,7 +27,7 @@ type Info struct {
 	NTPServers []string `json:",omitempty"`
 
 	// SearchList is the DNS Domain Search List from DHCP option 119
-	// (busybox env var `search`). Empty when the server didn't supply
+	// (dhcpcd env var `new_domain_search`). Empty when the server didn't supply
 	// the option. When PropagateDNS=true the plugin emits this as the
 	// `search` line in the container's /etc/resolv.conf; falls back
 	// to the single-domain `Domain` (option 15) when SearchList is
@@ -35,13 +35,13 @@ type Info struct {
 	SearchList []string `json:",omitempty"`
 
 	// TFTPServer is the TFTP server hostname from DHCP option 66
-	// (busybox env var `tftp`). Empty when not supplied. Used for
+	// (dhcpcd env var `new_tftp_server_name`). Empty when not supplied. Used for
 	// PXE-boot-style scenarios; surfaced to operators via plugin
 	// logs, not auto-applied to the container.
 	TFTPServer string `json:",omitempty"`
 
-	// BootFile is the boot file name from DHCP option 67 (busybox env
-	// var `bootfile`). Same surfacing semantics as TFTPServer.
+	// BootFile is the boot file name from DHCP option 67 (dhcpcd env
+	// var `new_bootfile_name`). Same surfacing semantics as TFTPServer.
 	BootFile string `json:",omitempty"`
 }
 

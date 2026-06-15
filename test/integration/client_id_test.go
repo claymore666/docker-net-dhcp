@@ -28,8 +28,8 @@ import (
 // chase log-stream timing.
 //
 // Closes the integration-coverage gap noted in the post-T2-3 audit:
-// the existing TestNewDHCPClient_VendorClassOverride only checks
-// the udhcpc argv shape; this test proves the bytes also reach
+// the dhcpcd config-shape unit tests only check that the `clientid`
+// directive is emitted; this test proves the bytes also reach
 // the upstream server.
 func TestClientID_OverrideAppearsInLeaseFile(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)

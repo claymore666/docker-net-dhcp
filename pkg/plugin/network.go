@@ -209,7 +209,7 @@ func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 // containers when the network is removed, so without this prune they
 // linger as ghost entries in /Plugin.Health.active_endpoints. Stop is
 // safe to call against a manager whose underlying netns is gone — it
-// just unblocks the udhcpc-events loop and returns; udhcpc itself may
+// just unblocks the dhcpcd-events loop and returns; dhcpcd itself may
 // have already self-exited because its netns vanished.
 func (p *Plugin) DeleteNetwork(r DeleteNetworkRequest) error {
 	if err := deleteOptions(r.NetworkID); err != nil {
@@ -259,8 +259,8 @@ func vethPairNames(id string) (string, string) {
 // libnetwork-supplied Interface.Address (CIDR form, e.g. set by
 // `docker run --ip=192.168.0.50`). Returns "" when the field is
 // absent; an ErrIPAM-wrapped error when set but malformed or v6.
-// The bare-IP form is what udhcpc wants for `-r ADDR`; the mask is
-// supplied by the DHCP ACK, not the operator.
+// The bare-IP form is what dhcpcd's `request` directive (DHCP option
+// 50) wants; the mask is supplied by the DHCP ACK, not the operator.
 //
 // Note: docker-engine itself rejects `--ip` for null-IPAM networks,
 // so this path only fires when the operator has wired up a non-null
@@ -308,13 +308,38 @@ func resolveExplicitV4(r CreateEndpointRequest) (string, error) {
 	return fromOpt, nil
 }
 
+// resolveExplicitV6 returns the bare IPv6 address the user requested via
+// `docker run --ip6` (libnetwork Interface.AddressIPv6), or "" when none
+// was supplied. The v6 counterpart of resolveExplicitV4, minus the
+// driver-opt channel (there is no `ip6` driver-opt — #213 scope is
+// `--ip6` and the tombstone v6 hint). libnetwork passes AddressIPv6 in
+// CIDR form; we hand the bare address to dhcpcd's `ia_na / ADDR`
+// preferred-address request (#213).
+func resolveExplicitV6(r CreateEndpointRequest) (string, error) {
+	if r.Interface == nil || r.Interface.AddressIPv6 == "" {
+		return "", nil
+	}
+	addr, err := netlink.ParseAddr(r.Interface.AddressIPv6)
+	if err != nil {
+		return "", fmt.Errorf("invalid Interface.AddressIPv6 %q (want CIDR): %w", r.Interface.AddressIPv6, util.ErrIPAM)
+	}
+	if addr.IP.To4() != nil {
+		return "", fmt.Errorf("Interface.AddressIPv6 must be IPv6: got %q: %w", r.Interface.AddressIPv6, util.ErrIPAM)
+	}
+	if addr.IP.IsUnspecified() {
+		return "", fmt.Errorf("Interface.AddressIPv6 must be a unicast IPv6: got %q: %w", r.Interface.AddressIPv6, util.ErrIPAM)
+	}
+	return addr.IP.String(), nil
+}
+
 // parseDriverOptIP extracts the bare IPv4 address from an optional
 // `ip` driver-option. libnetwork places per-endpoint driver-opts
 // (from `docker network connect --driver-opt KEY=VAL`) as flat keys
 // in r.Options. Bare-IP form here, since that's how operators type
-// it on the command line; netmask comes from DHCP regardless. A v4
-// driver-opt `ip6` is also accepted but currently logged-and-skipped
-// because busybox udhcpc6 has no equivalent of `-r`.
+// it on the command line; netmask comes from DHCP regardless. There
+// is no `ip6` driver-opt channel: a requested v6 address arrives via
+// `--ip6` (Interface.AddressIPv6) and is honoured through dhcpcd's
+// `ia_na <iaid> / ADDR` preferred address (see resolveExplicitV6, #213).
 func parseDriverOptIP(options map[string]interface{}) (string, error) {
 	raw, ok := options["ip"]
 	if !ok {
@@ -375,7 +400,7 @@ func (p *Plugin) netOptions(ctx context.Context, id string) (DHCPNetworkOptions,
 }
 
 // CreateEndpoint creates the per-endpoint host-side network plumbing
-// (veth pair in bridge mode, macvlan child in macvlan mode), runs udhcpc
+// (veth pair in bridge mode, macvlan child in macvlan mode), runs dhcpcd
 // once to acquire an initial lease, and stashes the result for Join.
 // Docker moves the link into the container's netns when it acts on our
 // Join response.
@@ -385,19 +410,15 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 		Interface: &EndpointInterface{},
 	}
 
-	// libnetwork passes Interface.AddressIPv6 when the user supplied
-	// `--ip6` on `docker run`. We don't yet wire that through to
-	// udhcpc6 (RequestedIP is v4-only in busybox), so honor it on a
-	// best-effort basis: warn loudly but don't fail the endpoint.
-	if r.Interface != nil && r.Interface.AddressIPv6 != "" {
-		log.WithFields(log.Fields{
-			"network":  shortID(r.NetworkID),
-			"endpoint": shortID(r.EndpointID),
-			"ipv6":     r.Interface.AddressIPv6,
-		}).Warn("Static IPv6 address requested but not yet wired through to udhcpc6; lease will come unhinted")
-	}
-
 	explicitV4, err := resolveExplicitV4(r)
+	if err != nil {
+		return res, err
+	}
+	// `docker run --ip6` arrives as Interface.AddressIPv6. Since #152
+	// pins the dhcpcd IA_NA we can now request it as the DHCPv6
+	// preferred address, so validate it here and ride it into the
+	// one-shot below (mirrors explicitV4 / RequestedIP for v4) (#213).
+	explicitV6, err := resolveExplicitV6(r)
 	if err != nil {
 		return res, err
 	}
@@ -449,17 +470,21 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 	// identity, and we don't want to surprise-mix in a stale neighbor.
 	effectiveMAC := r.Interface.MacAddress
 	requestedIP := explicitV4
+	requestedV6 := explicitV6
 	if effectiveMAC == "" {
 		if mac, ip, ipv6, ok := p.consumeTombstone(r.NetworkID, hostname); ok {
 			effectiveMAC = mac
 			if requestedIP == "" {
 				requestedIP = ip
 			}
-			// IPv6 from the tombstone is logged but not yet wired to
-			// udhcpc6 (busybox has no `-r` equivalent for v6). The
-			// data is preserved through the full lifecycle so a
-			// future change can request preferred-address from a
-			// DHCPv6 client without a wire-format change.
+			// Inherit the prior endpoint's IPv6 as the DHCPv6
+			// preferred address too, unless `--ip6` already named one,
+			// so a restarting container keeps its v6 lease the same
+			// way it keeps its v4 lease (#213). The tombstone preserves
+			// the bare address end-to-end for exactly this.
+			if requestedV6 == "" {
+				requestedV6 = ipv6
+			}
 			log.WithFields(log.Fields{
 				"network":      shortID(r.NetworkID),
 				"endpoint":     shortID(r.EndpointID),
@@ -550,9 +575,12 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 				// server returns a single binding (#152).
 				MAC: ctrLink.Attrs().HardwareAddr,
 			}
-			// RequestedIP is v4-only in udhcpc; passing it for v6
-			// would be silently ignored anyway, but keep it explicit.
-			if !v6 {
+			// Hint the preferred address per family: `request ADDR`
+			// for v4, `ia_na / ADDR` for v6 (#213). Empty values omit
+			// the directive, so an unhinted endpoint behaves as before.
+			if v6 {
+				clientOpts.PreferredV6 = requestedV6
+			} else {
 				clientOpts.RequestedIP = requestedIP
 			}
 			info, err := udhcpc.GetIP(timeoutCtx, ctrName, clientOpts)
@@ -1009,7 +1037,7 @@ func (p *Plugin) Leave(ctx context.Context, r LeaveRequest) error {
 	// the read here is sequenced after every renew that's going to
 	// happen — but go through ipMu anyway so the race detector doesn't
 	// have to reason through `select`. Doing this on the error path too
-	// means a wedged-udhcpc shutdown still produces a tombstone with
+	// means a wedged-dhcpcd shutdown still produces a tombstone with
 	// the latest known lease (W-4) — otherwise DeleteEndpoint would
 	// lay down a tombstone with the stale initial-DISCOVER IPs.
 	v4Addr, v6Addr := manager.lastIPs()

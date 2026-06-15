@@ -41,8 +41,8 @@ import (
 //     Containers attached to two net-dhcp networks will end up with
 //     whichever network's renewal happened most recently.
 //   - search-domain handling: prefer the multi-entry DHCP option 119
-//     (Domain Search List, busybox env `search`). Falls back to the
-//     single-entry option 15 (`domain`, env `domain`) when option 119
+//     (Domain Search List, dhcpcd env `new_domain_search`). Falls back to the
+//     single-entry option 15 (`domain`, dhcpcd env `new_domain_name`) when option 119
 //     isn't supplied. RFC 3397 specifies option 119 supersedes option
 //     15 when both are present.
 func writeContainerResolvConf(pid int, dns []string, searchList []string, searchDomain string) error {

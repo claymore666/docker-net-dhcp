@@ -27,14 +27,14 @@ const linkAwaitTimeout = 30 * time.Second
 
 const pollTime = 100 * time.Millisecond
 
-// dhcpClientReapTimeout caps how long the udhcpc consumer waits to
+// dhcpClientReapTimeout caps how long the dhcpcd consumer waits to
 // reap a self-exited child process before giving up and letting it
 // linger as a zombie. The kernel's eventual reaping by init handles
 // the worst case; this just bounds wall time on the cleanup path.
 const dhcpClientReapTimeout = 5 * time.Second
 
 // dhcpClientFinishTimeout caps how long Stop waits for SIGTERM ->
-// DHCPRELEASE -> exit on the persistent udhcpc child. Long enough
+// DHCPRELEASE -> exit on the persistent dhcpcd child. Long enough
 // for a DHCPRELEASE round-trip on a healthy LAN; short enough that
 // plugin shutdown / Leave isn't held hostage by an unresponsive
 // upstream DHCP server.
@@ -111,7 +111,7 @@ type dhcpManager struct {
 	// every production path goes through Plugin.Join.
 	plugin *Plugin
 
-	// ipMu guards lastIP / lastIPv6. Writes happen from the udhcpc
+	// ipMu guards lastIP / lastIPv6. Writes happen from the dhcpcd
 	// event goroutine (renew); reads happen from Leave after Stop has
 	// drained that goroutine. The drain establishes happens-before in
 	// practice, but the race detector doesn't always see the channel
@@ -381,17 +381,17 @@ func (m *dhcpManager) renew(v6 bool, info udhcpc.Info) error {
 	}
 
 	// Track the freshly-bound address so Leave can hand it to the
-	// tombstone (and thus the next CreateEndpoint's `-r` hint).
-	// Without this the manager keeps reporting whatever the very
-	// first CreateEndpoint DISCOVER produced, even if udhcpc has
+	// tombstone (and thus the next CreateEndpoint's `request`-directive
+	// hint). Without this the manager keeps reporting whatever the very
+	// first CreateEndpoint DISCOVER produced, even if dhcpcd has
 	// moved to a different lease since.
 	m.setLastIP(v6, ip)
 
 	// Apply DHCP option 6 / 23 (DNS server list) when opt-in and the
 	// server actually supplied servers. Empty list is a no-op rather
 	// than a clobber — see resolvconf.go for the rationale. v6 path
-	// uses DHCPv6 option 23, populated by udhcpc6 into the same
-	// DNSServers slice.
+	// uses DHCPv6 option 23, populated by the dhcpcd handler into the
+	// same DNSServers slice.
 	if m.opts.PropagateDNS && len(info.DNSServers) > 0 {
 		ctx, cancel := context.WithTimeout(context.Background(), dnsPropagateTimeout)
 		pid, err := m.findContainerPID(ctx)
@@ -485,7 +485,7 @@ func (m *dhcpManager) renew(v6 bool, info udhcpc.Info) error {
 	return nil
 }
 
-// handleEvent dispatches one udhcpc lifecycle event from the
+// handleEvent dispatches one dhcpcd lifecycle event from the
 // persistent client: health counters, audit-ledger entries, and the
 // kernel-facing renew work. Extracted from the consumer goroutine so
 // the counter semantics are unit-testable — wire-level NAKs in
@@ -574,13 +574,24 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 	// DHCP server for the IP the container is already using, instead
 	// of doing a fresh DISCOVER that might return something different.
 	// In the normal CreateEndpoint -> Join path lastIP / lastIPv6
-	// already point at the IP we just acquired; passing it as -r is a
-	// no-op (server still ACKs the same address). On recovery it's
+	// already point at the IP we just acquired; passing it via the
+	// dhcpcd `request` directive (DHCP option 50) is a no-op (server
+	// still ACKs the same address). On recovery it's
 	// what makes the lease "sticky".
 	requestedIP := ""
+	preferredV6 := ""
 	if !v6 {
 		if v4Addr, _ := m.lastIPs(); v4Addr != nil && v4Addr.IP != nil {
 			requestedIP = v4Addr.IP.String()
+		}
+	} else {
+		// Same stickiness for v6: on recovery ask for the IA_NA address
+		// the container already holds (lastIPv6 is seeded from the
+		// recovered state) rather than risk a fresh one. In the normal
+		// create->Join path it's a no-op — dhcpcd's pinned IA already
+		// returns the same address (#213).
+		if _, v6Addr := m.lastIPs(); v6Addr != nil && v6Addr.IP != nil {
+			preferredV6 = v6Addr.IP.String()
 		}
 	}
 	client, err := udhcpc.NewDHCPClient(m.ctrLink.Attrs().Name, &udhcpc.DHCPClientOptions{
@@ -593,10 +604,14 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 		// Docker was told about (#152).
 		MAC:         m.ctrLink.Attrs().HardwareAddr,
 		RequestedIP: requestedIP,
-		// ipvlan slaves share the parent's MAC; without -B the server
-		// may unicast renewals to the parent and the kernel has no
-		// way to demux to the right slave. Setting Broadcast for
-		// every renewal in ipvlan mode keeps lease lifecycle stable.
+		PreferredV6: preferredV6,
+		// ipvlan slaves share the parent's MAC; without a broadcast
+		// reply the server may unicast renewals to the parent and the
+		// kernel has no way to demux to the right slave. Requesting the
+		// broadcast flag in ipvlan mode keeps lease lifecycle stable.
+		// NOTE: dhcpcd broadcast handling is not yet wired in the client
+		// (DHCPClientOptions.Broadcast, #243) — this flag is set for the
+		// ipvlan path but currently has no effect.
 		Broadcast: m.opts.effectiveMode() == ModeIPvlan,
 		// Same client-id the initial DISCOVER used in CreateEndpoint,
 		// so renewals are seen as the same client by the server.
@@ -642,7 +657,7 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 
 			case event, ok := <-events:
 				if !ok {
-					// udhcpc exited on its own (NAK, parent NIC vanished,
+					// dhcpcd exited on its own (NAK, parent NIC vanished,
 					// container netns torn down out from under us, etc.).
 					// The scanner goroutine in udhcpc.Start closes events
 					// when its read pipe hits EOF. Without this branch,
@@ -847,7 +862,7 @@ func (m *dhcpManager) Start(ctx context.Context) (err error) {
 			// still DAD-tentative — and a host must NOT answer
 			// neighbor solicitations for a tentative address, so the
 			// server's unicast ADVERTISE/REPLY can never be
-			// delivered: udhcpc6 SOLICITs forever while the server's
+			// delivered: dhcpcd SOLICITs forever while the server's
 			// neighbor cache records an unreachable client (#103,
 			// found by TestLeaseRenewIPv6_HonorsT1). Wait for DAD to
 			// finish before starting the client. Timeout degrades to

@@ -27,7 +27,7 @@ const (
 	TestImage = "alpine:3.20"
 	// IPAcquisitionBudget caps how long Run waits for a container to
 	// have a non-empty IP after start. The plugin's CreateEndpoint
-	// returns synchronously after udhcpc gets a lease, so the docker
+	// returns synchronously after dhcpcd gets a lease, so the docker
 	// inspect should reflect the IP within milliseconds; the budget
 	// is generous to absorb real-world dnsmasq RTTs and image pulls.
 	IPAcquisitionBudget = 15 * time.Second

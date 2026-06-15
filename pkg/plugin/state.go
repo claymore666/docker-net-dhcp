@@ -85,16 +85,16 @@ type tombstone struct {
 	Hostname string `json:"hostname,omitempty"`
 	// IPAddress, when non-empty, is the bare IPv4 address (no /mask)
 	// from the previous endpoint's lease. The next CreateEndpoint
-	// passes it to udhcpc as `-r ADDR` so the upstream DHCP server
-	// can ACK the same lease back to the same MAC. Empty means
+	// passes it to dhcpcd via the `request` directive (DHCP option 50)
+	// so the upstream DHCP server can ACK the same lease back to the
+	// same MAC. Empty means
 	// "do an unhinted DISCOVER".
 	IPAddress string `json:"ip_address,omitempty"`
 	// IPv6Address, when non-empty, is the bare IPv6 address from the
-	// previous lease. busybox udhcpc6 has no `-r` equivalent so this
-	// isn't surfaced as a request hint today, but it's persisted so
-	// (a) operators can correlate disk-state with leases and (b) a
-	// future change to a DHCPv6 client that supports preferred-
-	// address requests can read it without a wire-format change.
+	// previous lease. Since #152 (dhcpcd) and #213 it is requested as
+	// the DHCPv6 preferred address (IA_NA) on the next CreateEndpoint,
+	// so a restarting container keeps its v6 lease the same way the
+	// IPAddress hint keeps its v4 lease.
 	IPv6Address string    `json:"ipv6_address,omitempty"`
 	DeletedAt   time.Time `json:"deleted_at"`
 }

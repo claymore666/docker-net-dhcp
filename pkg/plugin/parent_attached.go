@@ -71,7 +71,7 @@ func newChildLink(mode string, la netlink.LinkAttrs) netlink.Link {
 
 // createParentAttachedEndpoint creates the per-endpoint child link on
 // the host's parent NIC (macvlan or ipvlan depending on mode), runs
-// udhcpc on it (still in host netns) to acquire an initial lease, and
+// dhcpcd on it (still in host netns) to acquire an initial lease, and
 // stashes the result for Join. Docker will move the link into the
 // container's netns when it acts on our Join response.
 func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpointRequest, opts DHCPNetworkOptions) (CreateEndpointResponse, error) {
@@ -88,12 +88,17 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 	// HardwareAddr, so the tombstone path doesn't apply there (and an
 	// explicit MAC is rejected loudly to avoid silent misconfiguration).
 	// Static IPs (`docker run --ip`) are accepted in both modes — they
-	// pass through to udhcpc as a `-r ADDR` hint.
+	// pass through to dhcpcd as a `request`-directive (DHCP option 50)
+	// hint.
 	effectiveMAC := ""
 	if r.Interface != nil {
 		effectiveMAC = r.Interface.MacAddress
 	}
 	explicitV4, err := resolveExplicitV4(r)
+	if err != nil {
+		return res, err
+	}
+	explicitV6, err := resolveExplicitV6(r)
 	if err != nil {
 		return res, err
 	}
@@ -104,11 +109,18 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 	hostname := p.initialDHCPHostname(ctx, r.NetworkID, r.EndpointID)
 
 	requestedIP := explicitV4
+	requestedV6 := explicitV6
 	if mode == ModeMacvlan && effectiveMAC == "" {
 		if tombMAC, tombIP, tombIPv6, ok := p.consumeTombstone(r.NetworkID, hostname); ok {
 			effectiveMAC = tombMAC
 			if requestedIP == "" {
 				requestedIP = tombIP
+			}
+			// Inherit the prior v6 as the DHCPv6 preferred address too,
+			// so a restarting macvlan container keeps its v6 lease the
+			// same way it keeps v4 (#213).
+			if requestedV6 == "" {
+				requestedV6 = tombIPv6
 			}
 			log.WithFields(log.Fields{
 				"network":  shortID(r.NetworkID),
@@ -230,7 +242,9 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 				// tombstone-preserved MACs).
 				MAC: mac,
 			}
-			if !v6 {
+			if v6 {
+				clientOpts.PreferredV6 = requestedV6
+			} else {
 				clientOpts.RequestedIP = requestedIP
 			}
 			info, err := udhcpc.GetIP(tCtx, la.Name, clientOpts)

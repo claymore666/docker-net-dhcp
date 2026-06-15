@@ -186,3 +186,57 @@ func TestNewDHCPClient_FIFOWiredIntoConfig(t *testing.T) {
 		t.Errorf("event FIFO not created: %v", err)
 	}
 }
+
+func TestMountPrep_RemountsProcSysRW(t *testing.T) {
+	script := mountPrep()
+	// dhcpcd's interface setup writes /proc/sys, which is ro in the
+	// managed-plugin rootfs; the wrapper must flip it rw in the private
+	// mount namespace before exec (#247). It must still mount the
+	// per-client tmpfs state dir and exec dhcpcd via $0/$@.
+	for _, want := range []string{
+		"mount -t tmpfs tmpfs " + dhcpcdStateDir,
+		"mount -o remount,bind,rw " + procSysPath,
+		`exec "$0" "$@"`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("mountPrep missing %q\n---\n%s", want, script)
+		}
+	}
+	// The remount must precede exec, or dhcpcd starts before /proc/sys is
+	// writable.
+	if strings.Index(script, "remount,bind,rw") > strings.Index(script, `exec "$0"`) {
+		t.Errorf("remount must run before exec\n---\n%s", script)
+	}
+}
+
+func TestNewDHCPClient_WrapsRemountIntoCommand(t *testing.T) {
+	c := newTestClient(t, "eth0", &DHCPClientOptions{MAC: mustMAC(t, "de:ad:be:ef:00:01")})
+	// The mount-prep script rides as the `sh -c` argument; assert the
+	// /proc/sys remount actually reaches the spawned command.
+	if !hasArg(c.cmd.Args, mountPrep()) {
+		t.Errorf("mount-prep script not wired into command; args: %v", c.cmd.Args)
+	}
+}
+
+func TestTailWriter_CapsAndCondenses(t *testing.T) {
+	w := &tailWriter{max: 8}
+	// Writes beyond max retain only the trailing bytes.
+	for _, s := range []string{"hello\n", "world\n"} {
+		if _, err := w.Write([]byte(s)); err != nil {
+			t.Fatalf("Write: %v", err)
+		}
+	}
+	if got := string(w.buf); got != "o\nworld\n" {
+		t.Errorf("tail not capped to last %d bytes: %q", w.max, got)
+	}
+
+	// condense drops blank lines and joins the rest with "; ".
+	w2 := &tailWriter{max: stderrTailMax}
+	_, _ = w2.Write([]byte("dhcpcd: eth0: if_init: Read-only file system\n\n  \nexiting\n"))
+	if got, want := w2.condense(), "dhcpcd: eth0: if_init: Read-only file system; exiting"; got != want {
+		t.Errorf("condense() = %q, want %q", got, want)
+	}
+	if (&tailWriter{max: stderrTailMax}).condense() != "" {
+		t.Errorf("empty tail should condense to empty string")
+	}
+}

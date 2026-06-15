@@ -9,7 +9,7 @@ import (
 )
 
 // TestRenew_LeaseChangedCounter pins the v0.9.0 / T1-4 counter
-// behaviour: when udhcpc returns a different IP than the manager's
+// behaviour: when dhcpcd returns a different IP than the manager's
 // recorded lastIP, p.leaseChanged.Add(1) fires.
 //
 // We don't need a live netlink/netns fixture — the counter bump
@@ -121,12 +121,12 @@ func TestRenew_LeaseChangedCounter(t *testing.T) {
 	})
 }
 
-// TestHandleEvent_Counters pins which health counter each udhcpc
+// TestHandleEvent_Counters pins which health counter each dhcpcd
 // lifecycle event bumps (#128). The "nak" arm matters most: dnsmasq
 // silently ignores refused renewals in several shapes instead of
 // emitting DHCPNAK, so this contract cannot be pinned reliably at the
-// integration level — when a real server does NAK (busybox udhcpc
-// emits the event verbatim), this is the path that counts it.
+// integration level — when a real server does NAK (dhcpcd maps the
+// NAK reason to the event), this is the path that counts it.
 func TestHandleEvent_Counters(t *testing.T) {
 	addr, err := netlink.ParseAddr("192.168.0.10/24")
 	if err != nil {

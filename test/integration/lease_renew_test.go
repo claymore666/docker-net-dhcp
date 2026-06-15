@@ -20,14 +20,14 @@ import (
 //
 // The fixture's lease time is 2m (dnsmasq's hard minimum, see
 // LeaseTime in harness/fixture.go), so T1 (renewal trigger inside
-// udhcpc) fires at 1m. We wait ~70s — past T1, well before T2
+// dhcpcd) fires at 1m. We wait ~70s — past T1, well before T2
 // (1m45s) — and assert:
 //   - the container's IP from docker inspect hasn't changed
 //   - dnsmasq's log shows at least 2 DHCPACK lines for our MAC
 //     (one for the initial bind, one for the renewal)
 //
 // Without this test, a regression in dhcpManager.renew or the
-// long-lived udhcpc client would be silent: the container starts
+// long-lived dhcpcd client would be silent: the container starts
 // fine, then loses its IP somewhere between T2 and the next operator
 // noticing the connection dropped.
 func TestLeaseRenew_HonorsT1(t *testing.T) {

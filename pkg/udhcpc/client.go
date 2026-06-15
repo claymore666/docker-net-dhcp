@@ -6,12 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strings"
 	"syscall"
 
 	log "github.com/sirupsen/logrus"
@@ -32,7 +34,74 @@ const (
 	// mounted here (see Start). Identity (DUID/IAID) is pinned via
 	// literal config, so a fresh empty state dir is harmless.
 	dhcpcdStateDir = "/var/lib/dhcpcd"
+
+	// procSysPath is the kernel sysctl tree dhcpcd writes during
+	// interface setup — net/ipv4/conf/<if>/promote_secondaries (v4,
+	// fatal if it fails) and net/ipv6/conf/<if>/{autoconf,accept_ra}
+	// (v6). It is mounted read-only in the managed-plugin rootfs (and in
+	// stock Docker containers, where runc remounts it ro), so those
+	// writes returned EROFS and dhcpcd's if_init aborted with a
+	// misleading "interface not found", failing every lease (#247).
+	// `--noconfigure` does not suppress the writes — dhcpcd does them
+	// regardless of observe-only mode. We remount it read-write inside
+	// the client's private mount namespace (see mountPrep), which is
+	// invisible to the host and to other containers.
+	procSysPath = "/proc/sys"
+
+	// stderrTailMax caps the dhcpcd stderr retained to fold into a
+	// non-zero exit error — enough for the operative diagnostic line(s)
+	// without unbounded growth from a chatty trace.
+	stderrTailMax = 4 << 10
 )
+
+// mountPrep is the shell run inside the `unshare -m` mount namespace
+// before exec'ing dhcpcd. It (1) shadows the host-shared dhcpcd state
+// dir with a private tmpfs (see dhcpcdStateDir) and (2) flips /proc/sys
+// read-write so dhcpcd's interface-setup sysctl writes succeed (see
+// procSysPath, #247). Both mounts are local to this client's mount
+// namespace. Their stderr is swallowed: each can legitimately be a
+// no-op (state dir already private, /proc/sys already rw) or refused
+// (userns-locked mount) — a genuinely blocked sysctl write still
+// surfaces via dhcpcd's own stderr, captured into the exit error.
+func mountPrep() string {
+	return fmt.Sprintf(
+		"mount -t tmpfs tmpfs %s 2>/dev/null; "+
+			"mount -o remount,bind,rw %s 2>/dev/null; "+
+			"exec \"$0\" \"$@\"",
+		dhcpcdStateDir, procSysPath)
+}
+
+// tailWriter retains the last up-to-max bytes written to it. dhcpcd's
+// stderr is teed to the debug log and to one of these, so a non-zero
+// exit can surface the real cause (e.g. "Read-only file system")
+// instead of a bare "exit status 1" (#247). It is written only by the
+// os/exec output-copy goroutine and read only after cmd.Wait returns
+// (which joins that goroutine), so no locking is needed.
+type tailWriter struct {
+	max int
+	buf []byte
+}
+
+func (w *tailWriter) Write(p []byte) (int, error) {
+	w.buf = append(w.buf, p...)
+	if len(w.buf) > w.max {
+		w.buf = w.buf[len(w.buf)-w.max:]
+	}
+	return len(p), nil
+}
+
+// condense renders the retained stderr as a compact single line: blank
+// lines dropped, the rest joined with "; ", suitable for folding into
+// an error message.
+func (w *tailWriter) condense() string {
+	var lines []string
+	for _, ln := range strings.Split(string(w.buf), "\n") {
+		if ln = strings.TrimSpace(ln); ln != "" {
+			lines = append(lines, ln)
+		}
+	}
+	return strings.Join(lines, "; ")
+}
 
 // validIfaceName accepts only a kernel-legal network interface name: 1–15
 // characters (IFNAMSIZ-1), starting with an alphanumeric (so it can never
@@ -83,8 +152,9 @@ type DHCPClientOptions struct {
 	VendorClass string
 
 	// Broadcast requests an L2-broadcast reply (ipvlan-L2, where every
-	// slave shares the parent MAC). NOTE: dhcpcd broadcast handling is
-	// not yet wired here — tracked for the ipvlan path; see #152.
+	// slave shares the parent MAC). Emitted as the dhcpcd `broadcast`
+	// directive (v4 only) — the busybox `-B` equivalent; see renderConfig
+	// and #243.
 	Broadcast bool
 
 	HandlerScript string
@@ -95,8 +165,9 @@ type DHCPClient struct {
 	Opts *DHCPClientOptions
 
 	cmd     *exec.Cmd
-	workDir string   // per-client temp dir: generated config + event FIFO
-	fifo    *os.File // read+keep-alive (O_RDWR) end of the event FIFO
+	workDir string      // per-client temp dir: generated config + event FIFO
+	fifo    *os.File    // read+keep-alive (O_RDWR) end of the event FIFO
+	stderr  *tailWriter // last bytes of dhcpcd stderr, for the exit error
 
 	waitErr  error
 	waitDone chan struct{} // closed when cmd.Wait() returns
@@ -145,6 +216,7 @@ func NewDHCPClient(iface string, opts *DHCPClientOptions) (*DHCPClient, error) {
 		ClientID:    opts.ClientID,
 		RequestedIP: opts.RequestedIP,
 		PreferredV6: opts.PreferredV6,
+		Broadcast:   opts.Broadcast,
 		Handler:     handler,
 		ConfigPath:  configPath,
 		EventFIFO:   fifoPath,
@@ -167,19 +239,21 @@ func NewDHCPClient(iface string, opts *DHCPClientOptions) (*DHCPClient, error) {
 	// Wait target it directly. `sh -c '... exec "$0" "$@"'` passes the
 	// dhcpcd argv as $0/$@, avoiding any quoting of paths.
 	dargs := renderArgs(params)
-	mountExec := fmt.Sprintf("mount -t tmpfs tmpfs %s 2>/dev/null; exec \"$0\" \"$@\"", dhcpcdStateDir)
-	wrapped := append([]string{"unshare", "-m", "/bin/sh", "-c", mountExec}, dargs...)
+	wrapped := append([]string{"unshare", "-m", "/bin/sh", "-c", mountPrep()}, dargs...)
 
 	c := &DHCPClient{
 		Opts:    opts,
 		cmd:     exec.Command(wrapped[0], wrapped[1:]...),
 		workDir: workDir,
 		fifo:    fifo,
+		stderr:  &tailWriter{max: stderrTailMax},
 	}
 	// dhcpcd's own logs (stdout/stderr) go to logrus at debug level; the
-	// structured events come over the FIFO, not these streams.
+	// structured events come over the FIFO, not these streams. stderr is
+	// additionally tee'd into a bounded tail buffer so a non-zero exit
+	// can report dhcpcd's real diagnostic, not just "exit status 1" (#247).
 	c.cmd.Stdout = log.StandardLogger().WriterLevel(log.DebugLevel)
-	c.cmd.Stderr = log.StandardLogger().WriterLevel(log.DebugLevel)
+	c.cmd.Stderr = io.MultiWriter(log.StandardLogger().WriterLevel(log.DebugLevel), c.stderr)
 
 	log.WithField("cmd", c.cmd.Args).Trace("new dhcpcd client")
 	return c, nil
@@ -272,7 +346,16 @@ func (c *DHCPClient) Start() (chan Event, error) {
 	// the FIFO (ending the scanner, which closes events) and records the
 	// exit status for Finish/Wait.
 	go func() {
-		c.waitErr = c.cmd.Wait()
+		werr := c.cmd.Wait()
+		// Wait has joined the stderr-copy goroutine, so the tail buffer is
+		// complete and safe to read here. Fold dhcpcd's own diagnostic into
+		// the error so callers see the real cause (#247).
+		if werr != nil {
+			if tail := c.stderr.condense(); tail != "" {
+				werr = fmt.Errorf("%w: %s", werr, tail)
+			}
+		}
+		c.waitErr = werr
 		c.fifo.Close()
 		close(c.waitDone)
 	}()

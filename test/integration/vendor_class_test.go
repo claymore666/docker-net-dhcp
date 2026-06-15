@@ -21,9 +21,8 @@ import (
 // the tagged gateway (.250) instead of dnsmasq's default
 // listen-address gateway (.1). End-to-end proof that the operator's
 // vendor_class override actually reaches the wire and class-based
-// policy fires upstream — the unit test
-// TestNewDHCPClient_VendorClassOverride only verified the udhcpc
-// argv shape.
+// policy fires upstream — the dhcpcd config-shape unit tests only
+// verify that the `vendorclassid` directive is emitted.
 func TestVendorClass_OverrideRoutesViaTaggedGateway(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()

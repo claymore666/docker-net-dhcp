@@ -16,12 +16,12 @@ import (
 // macvlan network in parallel and asserts each gets a distinct IP
 // from the DHCP pool. Doubles as a deadlock smoke test:
 // CreateEndpoint takes networkLock per-network, so a regression that
-// upgraded that to a global lock or held it across the udhcpc -q call
-// would serialize starts and quickly blow the timeout.
+// upgraded that to a global lock or held it across the one-shot dhcpcd
+// acquisition would serialize starts and quickly blow the timeout.
 //
 // N=4 keeps the test fast (one short-lease dnsmasq, one veth) while
 // being enough to surface a serialization regression: 4 sequential
-// 5-second udhcpc roundtrips would already exceed the per-container
+// 5-second dhcpcd roundtrips would already exceed the per-container
 // IPAcquisitionBudget if the lock were held wrong.
 func TestConcurrency_DistinctLeases(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
