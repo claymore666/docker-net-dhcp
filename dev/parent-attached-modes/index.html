@@ -1397,8 +1397,9 @@ the server. Most enterprise DHCP servers (ISC, dnsmasq, Windows DHCP)
 do; Fritz.Box does <strong>not</strong> unless you also configure a UI-side static
 reservation for the container's MAC. With a stable MAC (which the
 plugin gives you across restarts), that reservation persists.</p>
-<p><code>ip</code> must be a bare IPv4 address. IPv6 driver-opt is not yet wired
-through to <code>udhcpc6</code>.</p>
+<p><code>ip</code> must be a bare IPv4 address. There is no <code>ip6</code> driver-opt; request
+a specific v6 address with <code>--ip6</code> / <code>Interface.AddressIPv6</code> instead
+(honored since v1.2.0 — see the v6 hint note below).</p>
 <h2 id="restart-stability-mac-and-ip">Restart stability (MAC and IP)<a class="headerlink" href="#restart-stability-mac-and-ip" title="Permanent link">&para;</a></h2>
 <p>The plugin keeps the container's MAC stable across <code>docker restart</code>
 so the upstream DHCP server (Fritz.Box, pfSense, etc.) sees one
@@ -1463,10 +1464,13 @@ NOT work with the null IPAM driver and is not what you want):</p>
   parent's MAC, so they share one DUID too — v6 servers tell them
   apart only by IAID, and per-container v6 reservations are not
   practical in ipvlan mode (same shape as the v4 MAC limitation).</li>
-<li><strong>No static-v6 hint:</strong> udhcpc6 has no v4-style <code>-r</code> request flag,
-  so <code>--ip6</code> / static v6 requests are accepted-but-ignored (logged);
-  the lease always arrives server-chosen. Use a DUID-keyed
-  reservation upstream when you need a fixed v6 address.</li>
+<li><strong>Static-v6 hint (v1.2.0+):</strong> a requested v6 address — <code>--ip6</code> /
+  <code>Interface.AddressIPv6</code>, or the address inherited from a tombstone on
+  restart — is sent to dhcpcd as the IA_NA preferred address
+  (<code>ia_na &lt;iaid&gt; / ADDR</code>), the v6 counterpart of <code>--ip</code>. The server
+  still has final say, but a dual-stack container now keeps its v6
+  address across <code>docker restart</code> like it keeps v4. (DUID-keyed
+  upstream reservations still work and stack with this.)</li>
 <li><code>propagate_dns=true</code> also covers v6: the DHCPv6 option-23 server
   list is written to <code>resolv.conf</code> on v6 bind/renew. The two
   families are last-writer-wins on that file.</li>

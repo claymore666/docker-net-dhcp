@@ -1273,9 +1273,13 @@ limitations) are catalogued in
 </tr>
 </tbody>
 </table>
-<p>A static IPv6 request (<code>--ip6</code> / Interface.AddressIPv6) is currently
-accepted but logged-and-skipped — busybox udhcpc6 has no
-request-this-address flag. The v6 lease comes unhinted.</p>
+<p>A static IPv6 request (<code>--ip6</code> / Interface.AddressIPv6) is honored
+(v1.2.0+): it is sent to the DHCPv6 client as the IA_NA preferred
+address, mirroring <code>--ip</code> for v4. The same applies to the v6 address a
+container held before a restart — it is inherited from the tombstone
+and re-requested — so a dual-stack container keeps both addresses
+across <code>docker restart</code>. As with v4, the server has final say. (There
+is no <code>ip6</code> <em>driver-opt</em> channel — use <code>--ip6</code> / <code>AddressIPv6</code>.)</p>
 <p>Container-level knobs that interact with the plugin:</p>
 <ul>
 <li><code>--mac-address</code> / Compose <code>mac_address</code> — fix the MAC so the DHCP
