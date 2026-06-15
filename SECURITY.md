@@ -26,8 +26,8 @@ welcome for:
 
 - container → host or container → plugin escapes through the netns /
   mount-ns handling (`pkg/plugin`, `pkg/udhcpc`);
-- parsing of untrusted DHCP-server responses (the udhcpc event path:
-  `cmd/udhcpc-handler`, `pkg/udhcpc.BuildEvent`, lease/option
+- parsing of untrusted DHCP-server responses (the `dhcpcd` hook-event
+  path: `cmd/udhcpc-handler`, `pkg/udhcpc.BuildEvent`, lease/option
   propagation into containers);
 - anything that lets one container influence another container's
   lease, address, or DNS (cross-endpoint identity confusion).
