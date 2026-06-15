@@ -28,16 +28,20 @@ name: Integration (hosted cross-check)
 # See integration.yml for the self-hosted rationale this mirrors.
 #
 # SECURITY: the test steps run as root via sudo. Only workflow_dispatch
-# triggers this — forks cannot start it, so there is no
-# untrusted-PR-as-root exposure.
+# and schedule trigger this — never push/pull_request, so a fork PR
+# can't start it and there is no untrusted-PR-as-root exposure (the
+# scheduled run executes the default branch's own code).
 on:
-  # On-demand only for now. The weekly schedule is intentionally NOT
-  # enabled yet: this lane currently fails on #247 (dhcpcd writes kernel
-  # sysctls on interface setup, which EROFS on a read-only /proc/sys),
-  # so a cron would be a weekly red alarm with no new signal. The #247
-  # fix re-enables the schedule once the lane goes green:
-  #   schedule:
-  #     - cron: '17 4 * * 1'   # weekly Mon 04:17 UTC, off-peak odd minute
+  # Weekly cron + on-demand. The schedule was held until #247 landed:
+  # the lane fell over on a read-only /proc/sys (dhcpcd writes kernel
+  # sysctls on interface setup), so a cron would have been a weekly red
+  # alarm with no new signal. #247 is fixed (the client remounts
+  # /proc/sys rw in its private mount namespace) and this lane was
+  # validated green against the fix, so the cron is now live. Note: a
+  # scheduled trigger only fires once this file is on the default
+  # branch, so it starts running after the next release reaches main.
+  schedule:
+    - cron: '17 4 * * 1'   # weekly Mon 04:17 UTC, off-peak odd minute
   workflow_dispatch:
 
 permissions:
