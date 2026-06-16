@@ -16,21 +16,21 @@ func fakeEnv(m map[string]string) Getenv {
 
 func TestBuildEvent_BoundV4_AllOptions(t *testing.T) {
 	env := fakeEnv(map[string]string{
-		"ip":       "192.168.99.10",
-		"mask":     "24",
-		"router":   "192.168.99.1",
-		"domain":   "corp.example",
-		"dns":      "192.168.99.53 192.168.99.54",
-		"ntpsrv":   "192.168.99.123 192.168.99.124",
-		"search":   "corp.example internal.example",
-		"tftp":     "tftp.example.test",
-		"bootfile": "pxelinux.0",
-		"mtu":      "1400",
+		"new_ip_address":          "192.168.99.10",
+		"new_subnet_cidr":         "24",
+		"new_routers":             "192.168.99.1",
+		"new_domain_name":         "corp.example",
+		"new_domain_name_servers": "192.168.99.53 192.168.99.54",
+		"new_ntp_servers":         "192.168.99.123 192.168.99.124",
+		"new_domain_search":       "corp.example internal.example",
+		"new_tftp_server_name":    "tftp.example.test",
+		"new_bootfile_name":       "pxelinux.0",
+		"new_interface_mtu":       "1400",
 	})
 
-	got, emit := BuildEvent("bound", env)
+	got, emit := BuildEvent("BOUND", env)
 	if !emit {
-		t.Fatalf("emit=false on a well-formed bound event")
+		t.Fatalf("emit=false on a well-formed BOUND event")
 	}
 	want := Event{
 		Type: "bound",
@@ -51,31 +51,77 @@ func TestBuildEvent_BoundV4_AllOptions(t *testing.T) {
 	}
 }
 
+// TestBuildEvent_BoundV4_DottedMaskDerivesPrefix: when dhcpcd omits
+// new_subnet_cidr, the prefix length is derived from the dotted-quad
+// new_subnet_mask.
+func TestBuildEvent_BoundV4_DottedMaskDerivesPrefix(t *testing.T) {
+	got, emit := BuildEvent("BOUND", fakeEnv(map[string]string{
+		"new_ip_address":  "192.168.99.10",
+		"new_subnet_mask": "255.255.255.0",
+		"new_routers":     "192.168.99.1",
+	}))
+	if !emit {
+		t.Fatalf("emit=false deriving prefix from dotted mask")
+	}
+	if got.Data.IP != "192.168.99.10/24" {
+		t.Errorf("IP = %q, want 192.168.99.10/24 derived from dotted mask", got.Data.IP)
+	}
+}
+
+// TestBuildEvent_BoundV4_MultipleRoutersTakesFirst: dhcpcd exports the
+// routers option as a space-separated list; the plugin applies one
+// default route, so the first entry wins.
+func TestBuildEvent_BoundV4_MultipleRoutersTakesFirst(t *testing.T) {
+	got, _ := BuildEvent("BOUND", fakeEnv(map[string]string{
+		"new_ip_address":  "10.0.0.5",
+		"new_subnet_cidr": "24",
+		"new_routers":     "10.0.0.1 10.0.0.2",
+	}))
+	if got.Data.Gateway != "10.0.0.1" {
+		t.Errorf("Gateway = %q, want first of the routers list", got.Data.Gateway)
+	}
+}
+
 func TestBuildEvent_RenewBehavesAsBound(t *testing.T) {
 	env := fakeEnv(map[string]string{
-		"ip":     "10.0.0.5",
-		"mask":   "16",
-		"router": "10.0.0.1",
+		"new_ip_address":  "10.0.0.5",
+		"new_subnet_cidr": "16",
+		"new_routers":     "10.0.0.1",
 	})
 
-	got, emit := BuildEvent("renew", env)
+	got, emit := BuildEvent("RENEW", env)
 	if !emit {
-		t.Fatalf("emit=false on renew")
+		t.Fatalf("emit=false on RENEW")
 	}
 	if got.Type != "renew" || got.Data.IP != "10.0.0.5/16" || got.Data.Gateway != "10.0.0.1" {
-		t.Errorf("renew should populate the same v4 fields as bound; got %+v", got)
+		t.Errorf("RENEW should populate the same v4 fields as BOUND; got %+v", got)
+	}
+}
+
+// TestBuildEvent_RebindMapsToRenew: a REBIND re-applies a possibly
+// changed address, which is exactly the renew path's job.
+func TestBuildEvent_RebindMapsToRenew(t *testing.T) {
+	got, emit := BuildEvent("REBIND", fakeEnv(map[string]string{
+		"new_ip_address":  "10.0.0.9",
+		"new_subnet_cidr": "24",
+	}))
+	if !emit || got.Type != "renew" {
+		t.Errorf("REBIND should map to renew; got type=%q emit=%v", got.Type, emit)
 	}
 }
 
 func TestBuildEvent_BoundV6_CanonicalisesIPAndCapturesDNS6(t *testing.T) {
 	env := fakeEnv(map[string]string{
-		"ipv6": "2001:db8::1",
-		"dns6": "2001:db8::53 2001:db8::54",
+		"new_dhcp6_ia_na1_ia_addr1": "2001:db8::1",
+		"new_dhcp6_name_servers":    "2001:db8::53 2001:db8::54",
 	})
 
-	got, emit := BuildEvent("bound", env)
+	got, emit := BuildEvent("BOUND6", env)
 	if !emit {
-		t.Fatalf("emit=false on bound v6")
+		t.Fatalf("emit=false on BOUND6")
+	}
+	if got.Type != "bound" {
+		t.Errorf("BOUND6 Type = %q, want bound", got.Type)
 	}
 	if got.Data.IP != "2001:db8::1/128" {
 		t.Errorf("v6 IP not canonicalised to /128: got %q", got.Data.IP)
@@ -85,20 +131,27 @@ func TestBuildEvent_BoundV6_CanonicalisesIPAndCapturesDNS6(t *testing.T) {
 	}
 	// v6 path must not populate any of the v4-only fields.
 	if got.Data.Gateway != "" || got.Data.Domain != "" || len(got.Data.NTPServers) > 0 ||
-		got.Data.TFTPServer != "" || got.Data.BootFile != "" || len(got.Data.SearchList) > 0 {
+		got.Data.TFTPServer != "" || got.Data.BootFile != "" || len(got.Data.SearchList) > 0 || got.Data.MTU != 0 {
 		t.Errorf("v6 path leaked v4-only fields: %+v", got.Data)
 	}
 }
 
-func TestBuildEvent_BoundV6_StripsExistingMaskBeforeCanonicalising(t *testing.T) {
-	// Defensive against a future busybox that emits CIDR form.
-	env := fakeEnv(map[string]string{
-		"ipv6": "2001:db8::42/64",
-	})
+func TestBuildEvent_RenewV6MapsToRenew(t *testing.T) {
+	got, emit := BuildEvent("RENEW6", fakeEnv(map[string]string{
+		"new_dhcp6_ia_na1_ia_addr1": "fd00::10",
+	}))
+	if !emit || got.Type != "renew" || got.Data.IP != "fd00::10/128" {
+		t.Errorf("RENEW6 should renew the v6 address; got %+v emit=%v", got, emit)
+	}
+}
 
-	got, emit := BuildEvent("bound", env)
+func TestBuildEvent_BoundV6_StripsExistingMaskBeforeCanonicalising(t *testing.T) {
+	// Defensive against a dhcpcd build that emits CIDR form.
+	got, emit := BuildEvent("BOUND6", fakeEnv(map[string]string{
+		"new_dhcp6_ia_na1_ia_addr1": "2001:db8::42/64",
+	}))
 	if !emit {
-		t.Fatalf("emit=false on CIDR-form ipv6")
+		t.Fatalf("emit=false on CIDR-form v6 address")
 	}
 	if got.Data.IP != "2001:db8::42/128" {
 		t.Errorf("v6 with embedded mask should be canonicalised to /128: got %q", got.Data.IP)
@@ -106,29 +159,32 @@ func TestBuildEvent_BoundV6_StripsExistingMaskBeforeCanonicalising(t *testing.T)
 }
 
 func TestBuildEvent_BoundV6_MalformedSkipsEvent(t *testing.T) {
-	// udhcpc6 misbehaviour or hostile input shouldn't bring down the
-	// whole renewal path — the handler skips the event and the
-	// persistent client retries on the next one.
-	env := fakeEnv(map[string]string{
-		"ipv6": "not-an-ip",
-	})
+	// A misbehaving client or hostile lease must not bring down the
+	// renewal path — the handler skips the event and the persistent
+	// client retries on the next one.
+	if _, emit := BuildEvent("BOUND6", fakeEnv(map[string]string{
+		"new_dhcp6_ia_na1_ia_addr1": "not-an-ip",
+	})); emit {
+		t.Errorf("emit=true on a malformed v6 address — should have been skipped")
+	}
+}
 
-	if _, emit := BuildEvent("bound", env); emit {
-		t.Errorf("emit=true on a malformed ipv6 — should have been skipped")
+func TestBuildEvent_BoundV6_MissingAddressSkipsEvent(t *testing.T) {
+	if _, emit := BuildEvent("BOUND6", fakeEnv(map[string]string{
+		"new_dhcp6_name_servers": "2001:db8::53",
+	})); emit {
+		t.Errorf("emit=true on a v6 event with no IA_NA address — should have been skipped")
 	}
 }
 
 func TestBuildEvent_MTUParseFailureIsBestEffort(t *testing.T) {
-	// A garbage mtu env from a misbehaving udhcpc must not block
-	// IP propagation; the rest of the event still flows through
-	// with MTU == 0 (which the consumer treats as "no MTU info").
-	env := fakeEnv(map[string]string{
-		"ip":   "192.168.0.10",
-		"mask": "24",
-		"mtu":  "not-a-number",
-	})
-
-	got, emit := BuildEvent("bound", env)
+	// A garbage MTU must not block IP propagation; the rest of the
+	// event still flows through with MTU == 0.
+	got, emit := BuildEvent("BOUND", fakeEnv(map[string]string{
+		"new_ip_address":    "192.168.0.10",
+		"new_subnet_cidr":   "24",
+		"new_interface_mtu": "not-a-number",
+	}))
 	if !emit {
 		t.Fatalf("emit=false on garbage-mtu — should still emit IP info")
 	}
@@ -141,87 +197,117 @@ func TestBuildEvent_MTUParseFailureIsBestEffort(t *testing.T) {
 }
 
 func TestBuildEvent_MTUZeroIsTreatedAsAbsent(t *testing.T) {
-	// Some servers send option 26 with value 0 (broken config). The
-	// consumer's contract is "0 = do not change link MTU" so the
-	// handler reflects that — never set MTU=0 from a present-but-zero
-	// raw value.
-	env := fakeEnv(map[string]string{
-		"ip":   "192.168.0.10",
-		"mask": "24",
-		"mtu":  "0",
-	})
-
-	got, _ := BuildEvent("bound", env)
+	got, _ := BuildEvent("BOUND", fakeEnv(map[string]string{
+		"new_ip_address":    "192.168.0.10",
+		"new_subnet_cidr":   "24",
+		"new_interface_mtu": "0",
+	}))
 	if got.Data.MTU != 0 {
 		t.Errorf("MTU=%d, want 0 for present-but-zero raw value", got.Data.MTU)
 	}
 }
 
-func TestBuildEvent_LifecycleEvents_EmitTypeOnly(t *testing.T) {
-	for _, evt := range []string{"deconfig", "leasefail", "nak"} {
-		t.Run(evt, func(t *testing.T) {
-			got, emit := BuildEvent(evt, fakeEnv(map[string]string{
-				// These should be ignored — the lifecycle path
-				// must not pull v4/v6 fields off env.
-				"ip":   "192.168.0.10",
-				"ipv6": "2001:db8::1",
+func TestBuildEvent_MTUNegativeIsIgnored(t *testing.T) {
+	got, emit := BuildEvent("BOUND", fakeEnv(map[string]string{
+		"new_ip_address": "10.0.0.5", "new_subnet_cidr": "24", "new_interface_mtu": "-5",
+	}))
+	if !emit {
+		t.Fatal("emit=false; MTU problems must not kill the event")
+	}
+	if got.Data.MTU != 0 {
+		t.Errorf("MTU = %d, want 0 (negative input ignored)", got.Data.MTU)
+	}
+}
+
+func TestBuildEvent_LeaseLossEvents_EmitTypeOnly(t *testing.T) {
+	cases := map[string]string{
+		"NAK":      "nak",
+		"EXPIRE":   "leasefail",
+		"TIMEOUT":  "leasefail",
+		"EXPIRE6":  "leasefail",
+		"TIMEOUT6": "leasefail",
+	}
+	for reason, wantType := range cases {
+		t.Run(reason, func(t *testing.T) {
+			got, emit := BuildEvent(reason, fakeEnv(map[string]string{
+				// These should be ignored — the lease-loss path must
+				// not pull v4/v6 fields off env.
+				"new_ip_address":            "192.168.0.10",
+				"new_subnet_cidr":           "24",
+				"new_dhcp6_ia_na1_ia_addr1": "2001:db8::1",
 			}))
 			if !emit {
-				t.Fatalf("emit=false on lifecycle event %q", evt)
+				t.Fatalf("emit=false on lease-loss event %q", reason)
 			}
-			if got.Type != evt {
-				t.Errorf("Type = %q, want %q", got.Type, evt)
+			if got.Type != wantType {
+				t.Errorf("Type = %q, want %q", got.Type, wantType)
 			}
 			if !reflect.DeepEqual(got.Data, Info{}) {
-				t.Errorf("lifecycle event leaked Data: %+v", got.Data)
+				t.Errorf("lease-loss event leaked Data: %+v", got.Data)
 			}
 		})
 	}
 }
 
-func TestBuildEvent_UnknownTypeIsSkipped(t *testing.T) {
-	if _, emit := BuildEvent("definitely-not-a-real-udhcpc-event", fakeEnv(nil)); emit {
-		t.Errorf("emit=true on unknown event type — should have been skipped")
+// TestBuildEvent_UnactionedReasonsSkipped: dhcpcd fires the hook for
+// many transitions we don't act on; all must be suppressed.
+func TestBuildEvent_UnactionedReasonsSkipped(t *testing.T) {
+	for _, reason := range []string{
+		"PREINIT", "CARRIER", "NOCARRIER", "ROUTERADVERT", "STOP", "STOP6",
+		"STOPPED", "DEPARTED", "FAIL", "TEST", "IPV4LL", "STATIC", "3RDPARTY",
+		"DELEGATED6", "RECONFIGURE", "INFORM", "INFORM6", "",
+		"definitely-not-a-real-reason",
+	} {
+		t.Run(reason, func(t *testing.T) {
+			if _, emit := BuildEvent(reason, fakeEnv(map[string]string{
+				"new_ip_address":  "10.0.0.5",
+				"new_subnet_cidr": "24",
+			})); emit {
+				t.Errorf("emit=true on un-actioned reason %q — should have been skipped", reason)
+			}
+		})
 	}
 }
 
 func TestBuildEvent_BoundV4_OmittedOptionsAreEmpty(t *testing.T) {
-	// A minimal lease — only ip + mask. Every other field stays at
+	// A minimal lease — only address + mask. Every other field stays at
 	// zero/empty, json:",omitempty" then keeps them out of the
 	// downstream JSON. Pins that Getenv("missing") returning "" doesn't
 	// accidentally insert an empty-string entry into a slice via
 	// strings.Fields.
-	env := fakeEnv(map[string]string{
-		"ip":   "10.0.0.5",
-		"mask": "8",
-	})
-	got, emit := BuildEvent("bound", env)
+	got, emit := BuildEvent("BOUND", fakeEnv(map[string]string{
+		"new_ip_address":  "10.0.0.5",
+		"new_subnet_cidr": "8",
+	}))
 	if !emit {
-		t.Fatalf("emit=false on minimal bound")
+		t.Fatalf("emit=false on minimal BOUND")
 	}
 	if len(got.Data.DNSServers) != 0 || len(got.Data.NTPServers) != 0 || len(got.Data.SearchList) != 0 {
 		t.Errorf("missing env vars produced non-empty slices: %+v", got.Data)
 	}
+	if got.Data.Gateway != "" {
+		t.Errorf("absent new_routers should leave Gateway empty; got %q", got.Data.Gateway)
+	}
 }
 
 // TestBuildEvent_BoundV4_MalformedLeaseIsSkipped pins the #128
-// hardening: a bound/renew whose `ip`/`mask` env doesn't form a valid
+// hardening: a BOUND/RENEW whose address/mask doesn't form a valid
 // CIDR is dropped at the handler instead of flowing downstream where
-// netlink.ParseAddr would fail mid-renewal. Cases mirror the issue's
-// test design: empty ip with valid mask, non-numeric mask, junk both.
+// netlink.ParseAddr would fail mid-renewal.
 func TestBuildEvent_BoundV4_MalformedLeaseIsSkipped(t *testing.T) {
 	cases := map[string]map[string]string{
-		"empty ip, valid mask": {"ip": "", "mask": "24"},
-		"valid ip, empty mask": {"ip": "10.0.0.5", "mask": ""},
-		"non-numeric mask":     {"ip": "10.0.0.5", "mask": "abc"},
-		"negative mask":        {"ip": "10.0.0.5", "mask": "-1"},
-		"mask out of range":    {"ip": "10.0.0.5", "mask": "33"},
-		"garbage ip":           {"ip": "not-an-ip", "mask": "24"},
+		"empty ip, valid cidr": {"new_ip_address": "", "new_subnet_cidr": "24"},
+		"valid ip, no mask":    {"new_ip_address": "10.0.0.5"},
+		"non-numeric cidr":     {"new_ip_address": "10.0.0.5", "new_subnet_cidr": "abc"},
+		"cidr out of range":    {"new_ip_address": "10.0.0.5", "new_subnet_cidr": "33"},
+		"garbage ip":           {"new_ip_address": "not-an-ip", "new_subnet_cidr": "24"},
+		"garbage dotted mask":  {"new_ip_address": "10.0.0.5", "new_subnet_mask": "not-a-mask"},
+		"non-contiguous mask":  {"new_ip_address": "10.0.0.5", "new_subnet_mask": "255.0.255.0"},
 		"nothing set":          {},
 	}
 	for name, env := range cases {
 		t.Run(name, func(t *testing.T) {
-			if _, emit := BuildEvent("bound", fakeEnv(env)); emit {
+			if _, emit := BuildEvent("BOUND", fakeEnv(env)); emit {
 				t.Errorf("emit=true for malformed v4 lease env %v; want skipped", env)
 			}
 		})
@@ -231,18 +317,17 @@ func TestBuildEvent_BoundV4_MalformedLeaseIsSkipped(t *testing.T) {
 // TestBuildEvent_RenewValidatesLikeBound: the validation guards both
 // event types that carry lease data.
 func TestBuildEvent_RenewValidatesLikeBound(t *testing.T) {
-	if _, emit := BuildEvent("renew", fakeEnv(map[string]string{"ip": "", "mask": "24"})); emit {
-		t.Error("emit=true for malformed renew; want skipped")
+	if _, emit := BuildEvent("RENEW", fakeEnv(map[string]string{"new_ip_address": "", "new_subnet_cidr": "24"})); emit {
+		t.Error("emit=true for malformed RENEW; want skipped")
 	}
 }
 
-// TestBuildEvent_BoundV6_LinkLocalIsEmitted pins that a link-local
-// udhcpc6 lease (fe80::...) is structurally valid and flows through —
-// filtering link-local is a consumer policy decision, not the
-// handler's.
+// TestBuildEvent_BoundV6_LinkLocalIsEmitted pins that a link-local v6
+// lease flows through — filtering link-local is a consumer policy
+// decision, not the handler's.
 func TestBuildEvent_BoundV6_LinkLocalIsEmitted(t *testing.T) {
-	got, emit := BuildEvent("bound", fakeEnv(map[string]string{
-		"ipv6": "fe80::42:acff:fe00:1",
+	got, emit := BuildEvent("BOUND6", fakeEnv(map[string]string{
+		"new_dhcp6_ia_na1_ia_addr1": "fe80::42:acff:fe00:1",
 	}))
 	if !emit {
 		t.Fatal("emit=false for link-local v6 lease")
@@ -252,12 +337,12 @@ func TestBuildEvent_BoundV6_LinkLocalIsEmitted(t *testing.T) {
 	}
 }
 
-// TestBuildEvent_BoundV6_UncompressedIsCanonicalised: udhcpc6 emits
-// fully zero-padded addresses; the event must carry the compressed
-// canonical form so downstream string comparisons are stable.
+// TestBuildEvent_BoundV6_UncompressedIsCanonicalised: an uncompressed
+// address must canonicalise to the compressed form so downstream string
+// comparisons are stable.
 func TestBuildEvent_BoundV6_UncompressedIsCanonicalised(t *testing.T) {
-	got, emit := BuildEvent("bound", fakeEnv(map[string]string{
-		"ipv6": "fd00:6470:6863:0000:0000:0000:0000:0010",
+	got, emit := BuildEvent("BOUND6", fakeEnv(map[string]string{
+		"new_dhcp6_ia_na1_ia_addr1": "fd00:6470:6863:0000:0000:0000:0000:0010",
 	}))
 	if !emit {
 		t.Fatal("emit=false for uncompressed v6 lease")
@@ -270,9 +355,9 @@ func TestBuildEvent_BoundV6_UncompressedIsCanonicalised(t *testing.T) {
 // TestBuildEvent_BoundV6_MultipleDNS6Servers: option 23 with several
 // servers arrives space-separated; each becomes one entry.
 func TestBuildEvent_BoundV6_MultipleDNS6Servers(t *testing.T) {
-	got, emit := BuildEvent("bound", fakeEnv(map[string]string{
-		"ipv6": "fd00::10",
-		"dns6": "fd00::53 fd00::54",
+	got, emit := BuildEvent("BOUND6", fakeEnv(map[string]string{
+		"new_dhcp6_ia_na1_ia_addr1": "fd00::10",
+		"new_dhcp6_name_servers":    "fd00::53 fd00::54",
 	}))
 	if !emit {
 		t.Fatal("emit=false")
@@ -280,29 +365,5 @@ func TestBuildEvent_BoundV6_MultipleDNS6Servers(t *testing.T) {
 	want := []string{"fd00::53", "fd00::54"}
 	if !reflect.DeepEqual(got.Data.DNSServers, want) {
 		t.Errorf("DNSServers = %v, want %v", got.Data.DNSServers, want)
-	}
-}
-
-// TestBuildEvent_BoundV6_EmptyIPv6FallsThroughToV4Validation: an
-// empty `ipv6` env on a v6 bound routes into the v4 branch (the
-// documented contract), where empty ip/mask now skips the event
-// rather than emitting "/" as an address.
-func TestBuildEvent_BoundV6_EmptyIPv6FallsThroughToV4Validation(t *testing.T) {
-	if _, emit := BuildEvent("bound", fakeEnv(map[string]string{"ipv6": ""})); emit {
-		t.Error("emit=true for empty ipv6 + no v4 env; want skipped")
-	}
-}
-
-// TestBuildEvent_MTUNegativeIsIgnored extends the best-effort MTU
-// contract to negative numbers ("-5" parses but is not a valid MTU).
-func TestBuildEvent_MTUNegativeIsIgnored(t *testing.T) {
-	got, emit := BuildEvent("bound", fakeEnv(map[string]string{
-		"ip": "10.0.0.5", "mask": "24", "mtu": "-5",
-	}))
-	if !emit {
-		t.Fatal("emit=false; MTU problems must not kill the event")
-	}
-	if got.Data.MTU != 0 {
-		t.Errorf("MTU = %d, want 0 (negative input ignored)", got.Data.MTU)
 	}
 }

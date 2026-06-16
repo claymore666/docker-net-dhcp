@@ -263,7 +263,7 @@ type HealthResponse struct {
 	RecoveredOK            int32   `json:"recovered_ok"`
 	RecoveryFailed         int32   `json:"recovery_failed"`
 	TombstoneWriteFailures int32   `json:"tombstone_write_failures"`
-	// LeaseChanged counts renewals where udhcpc returned a different
+	// LeaseChanged counts renewals where dhcpcd returned a different
 	// IP than the manager last recorded. Not Healthy-affecting (it
 	// doesn't break Docker's view fatally — see plugin.go for the
 	// truthfulness-gap discussion), but worth alerting on for
@@ -280,7 +280,7 @@ type HealthResponse struct {
 	DHCPTimeouts         int32 `json:"dhcp_timeouts"`
 	LeaseReleaseFailures int32 `json:"lease_release_failures"`
 	// NAKsReceived counts server NAKs on renewal/rebind. Not
-	// Healthy-affecting on its own — udhcpc recovers by
+	// Healthy-affecting on its own — dhcpcd recovers by
 	// re-DISCOVERing — but each NAK-triggered re-bind widens the
 	// docker-inspect divergence tracked by lease_changed (#128).
 	NAKsReceived int32 `json:"naks_received"`
@@ -289,6 +289,17 @@ type HealthResponse struct {
 	// degrades forensics, not networking; operators using audit_log
 	// alert on this directly.
 	LedgerWriteFailures int32 `json:"ledger_write_failures"`
+
+	// Per-family (IPv6) breakdown of the wire counters (#212). Each
+	// counts only the v6 client's events; the un-suffixed fields above
+	// remain v4+v6 aggregates, so the v4 share is the aggregate minus
+	// the matching *_v6 value. On a dual-stack host this isolates the
+	// v6-specific failure signal (NAK/timeout) the aggregate hides.
+	LeaseChangedV6   int32 `json:"lease_changed_v6"`
+	LeasesObtainedV6 int32 `json:"leases_obtained_v6"`
+	LeasesRenewedV6  int32 `json:"leases_renewed_v6"`
+	DHCPTimeoutsV6   int32 `json:"dhcp_timeouts_v6"`
+	NAKsReceivedV6   int32 `json:"naks_received_v6"`
 }
 
 func (p *Plugin) apiHealth(w http.ResponseWriter, r *http.Request) {
@@ -318,5 +329,10 @@ func (p *Plugin) apiHealth(w http.ResponseWriter, r *http.Request) {
 		LeaseReleaseFailures:   p.leaseReleaseFailures.Load(),
 		NAKsReceived:           p.naksReceived.Load(),
 		LedgerWriteFailures:    p.ledgerWriteFailures.Load(),
+		LeaseChangedV6:         p.leaseChangedV6.Load(),
+		LeasesObtainedV6:       p.leasesObtainedV6.Load(),
+		LeasesRenewedV6:        p.leasesRenewedV6.Load(),
+		DHCPTimeoutsV6:         p.dhcpTimeoutsV6.Load(),
+		NAKsReceivedV6:         p.naksReceivedV6.Load(),
 	}, http.StatusOK)
 }

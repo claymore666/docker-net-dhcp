@@ -2,7 +2,8 @@
 
 // DHCPv6 coverage (#103) — the suite's first v6 tests. The fixture
 // dnsmasq instances are dual-stack (stateful DHCPv6 on ULA prefixes,
-// --enable-ra); `ipv6=true` networks run udhcpc6 alongside udhcpc.
+// --enable-ra); `ipv6=true` networks run a v6 dhcpcd client alongside
+// the v4 one.
 //
 // Audit findings these tests encode (from the busybox source,
 // networking/udhcp/d6_dhcpc.c):
@@ -15,9 +16,12 @@
 //     PluginRestart asserts this end-to-end.
 //   - option 23 (DNS servers) is requested by default — the `dns6`
 //     env arrives without any -O flag.
-//   - there is no "request this address" flag for v6 (`-r` is v4
-//     only), so v6 leases always come unhinted; continuity relies on
-//     the server recognising the stable DUID.
+//
+// Since #152 the v6 client is dhcpcd (not busybox udhcpc6), and #213
+// wires a preferred-address request: a requested v6 (`--ip6` or
+// tombstone-inherited) is sent as the IA_NA preferred address
+// (`ia_na <iaid> / ADDR`), so v6 stickiness no longer relies on the
+// server's DUID memory alone.
 package integration
 
 import (
@@ -193,7 +197,7 @@ func TestLifecycleMacvlan_IPv6_GoldenPath(t *testing.T) {
 	}
 
 	// ...and inspect must agree with reality. CreateEndpoint returns
-	// AddressIPv6 from the initial one-shot udhcpc6 exchange; the
+	// AddressIPv6 from the initial one-shot dhcpcd exchange; the
 	// persistent client re-binds with the same DUID, so the server
 	// must hand back the same address. A mismatch here is the v6
 	// flavour of the #104 divergence — if this fires, the audit found
@@ -217,6 +221,75 @@ func TestLifecycleMacvlan_IPv6_GoldenPath(t *testing.T) {
 	if after.LeaseReleaseFailures != before.LeaseReleaseFailures {
 		t.Errorf("lease_release_failures moved %d -> %d over a dual-stack lifecycle; the v6 Stop path is failing",
 			before.LeaseReleaseFailures, after.LeaseReleaseFailures)
+	}
+}
+
+// TestTombstoneRestart_PreservesIPv6 is the #213 acceptance test — the
+// v6 sibling of TestTombstoneRestart_PreservesMACAndIP. On Leave the
+// plugin tombstones the endpoint's v6 address; on the restart's
+// CreateEndpoint that address is requested back as the DHCPv6 preferred
+// address (dhcpcd `ia_na <iaid> / ADDR`), so a dual-stack container
+// keeps its v6 lease across `docker restart` exactly as it keeps v4.
+func TestTombstoneRestart_PreservesIPv6(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	netName := "dh-itest-v6tomb"
+	ctrName := "dh-itest-v6tomb-ctr"
+
+	t.Cleanup(func() {
+		if t.Failed() {
+			fixture.DumpLogs(func(s string) { t.Log(s) })
+			harness.DumpPluginLog(t)
+		}
+	})
+
+	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	if err != nil {
+		t.Fatalf("docker client: %v", err)
+	}
+	defer cli.Close()
+
+	harness.CreateNetwork(t, ctx, netName, "macvlan", map[string]string{"ipv6": "true"})
+	id, v4Before, macBefore := harness.RunContainer(t, ctx, netName, ctrName)
+	v6Before := linkGlobalV6(t, ctx, id, harness.IPAcquisitionBudget)
+	if v6Before == "" {
+		t.Fatal("no global IPv6 appeared before restart")
+	}
+	t.Logf("before restart: v4=%s v6=%s mac=%s", v4Before, v6Before, macBefore)
+
+	if err := cli.ContainerRestart(ctx, id, container.StopOptions{}); err != nil {
+		t.Fatalf("ContainerRestart: %v", err)
+	}
+
+	// The endpoint is torn down and recreated; wait for the v6 to
+	// reappear on the link before reading the settled values.
+	v6After := linkGlobalV6(t, ctx, id, harness.IPAcquisitionBudget)
+	if v6After == "" {
+		t.Fatalf("container did not re-acquire a global IPv6 within %v after restart", harness.IPAcquisitionBudget)
+	}
+	insV6 := inspectV6(t, ctx, cli, id, netName)
+	ins, err := cli.ContainerInspect(ctx, id)
+	if err != nil {
+		t.Fatalf("ContainerInspect: %v", err)
+	}
+	var v4After, macAfter string
+	if ep := ins.NetworkSettings.Networks[netName]; ep != nil {
+		v4After, macAfter = ep.IPAddress, ep.MacAddress
+	}
+	t.Logf("after restart:  v4=%s v6=%s (inspect v6=%s) mac=%s", v4After, v6After, insV6, macAfter)
+
+	if macAfter != macBefore {
+		t.Errorf("MAC changed across restart: before=%s after=%s (tombstone not honored)", macBefore, macAfter)
+	}
+	if v6After != v6Before {
+		t.Errorf("IPv6 changed across restart: before=%s after=%s (tombstone v6 not requested as preferred address)", v6Before, v6After)
+	}
+	if v4After != v4Before {
+		t.Errorf("IPv4 changed across restart: before=%s after=%s", v4Before, v4After)
+	}
+	if insV6 != "" && !net.ParseIP(insV6).Equal(net.ParseIP(v6After)) {
+		t.Errorf("inspect IPv6 %s != live link IPv6 %s after restart", insV6, v6After)
 	}
 }
 
@@ -257,7 +330,6 @@ func TestLifecycleBridge_IPv6_GoldenPath(t *testing.T) {
 // idle 75s and assert the address survived and a renewal DHCPREPLY
 // landed on top of the bind's.
 func TestLeaseRenewIPv6_HonorsT1(t *testing.T) {
-	t.Skip("DHCPv6 IA unification pending (#152): the persistent client negotiates a second IA, so the Docker-visible v6 address is never renewed — this test asserts the intended post-unification semantics")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Second)
 	defer cancel()
@@ -339,7 +411,7 @@ func TestLeaseRenewIPv6_HonorsT1(t *testing.T) {
 	endReplies := countDHCPv6Replies(t, fixture.DnsmasqLog(), v6)
 	t.Logf("DHCPREPLYs for %s: start=%d end=%d", v6, startReplies, endReplies)
 	if endReplies-startReplies < 1 {
-		t.Errorf("no renewal DHCPREPLY for %s after crossing T1 — udhcpc6 renewal appears stuck", v6)
+		t.Errorf("no renewal DHCPREPLY for %s after crossing T1 — dhcpcd v6 renewal appears stuck", v6)
 	}
 }
 
@@ -360,7 +432,6 @@ func TestIPv6_DNS6Propagation(t *testing.T) {
 	})
 
 	t.Run("opt-in writes dns6", func(t *testing.T) {
-		t.Skip("DHCPv6 IA unification pending (#152): the persistent client negotiates a second IA, so the Docker-visible v6 address is never renewed — this test asserts the intended post-unification semantics")
 
 		netName := "dh-itest-v6dns"
 		harness.CreateNetwork(t, ctx, netName, "macvlan", map[string]string{
@@ -398,16 +469,15 @@ func TestIPv6_DNS6Propagation(t *testing.T) {
 }
 
 // TestDUID_PersistsAcrossPluginRestart: the acceptance test for
-// #103's "persistent DUID" item, resolved by the audit: busybox
-// udhcpc6 derives a DUID-LL from the interface MAC (d6_dhcpc.c), so
-// the DUID is stable as long as the MAC is — and the container link's
-// MAC survives a plugin disable/enable. The dnsmasq lease DB must
-// show the SAME client DUID for the container's address after the
-// plugin restarts and its recovered udhcpc6 re-binds. This is what
-// makes server-side v6 reservations stick across plugin upgrades.
+// #103's "persistent DUID" item. The plugin pins dhcpcd's DUID-LL from
+// the interface MAC (#152: a literal `duid 00:03:00:01:<MAC>` in the
+// generated config), so the DUID is stable as long as the MAC is — and
+// the container link's MAC survives a plugin disable/enable. The
+// dnsmasq lease DB must show the SAME client DUID for the container's
+// address after the plugin restarts and its recovered dhcpcd re-binds.
+// This is what makes server-side v6 reservations stick across plugin
+// upgrades.
 func TestDUID_PersistsAcrossPluginRestart(t *testing.T) {
-	t.Skip("DHCPv6 IA unification pending (#152): the persistent client negotiates a second IA, so the Docker-visible v6 address is never renewed — this test asserts the intended post-unification semantics")
-
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
 
@@ -472,7 +542,7 @@ func TestDUID_PersistsAcrossPluginRestart(t *testing.T) {
 	if err := harness.WaitPluginEnabled(ctx, cli, true, 30*time.Second); err != nil {
 		t.Fatalf("plugin did not re-enable: %v", err)
 	}
-	t.Log("plugin restarted; awaiting the recovered udhcpc6's re-bind...")
+	t.Log("plugin restarted; awaiting the recovered dhcpcd v6 client's re-bind...")
 
 	// The recovered persistent client SOLICITs immediately; a fresh
 	// DHCPREPLY for our address proves the post-restart exchange
@@ -488,7 +558,7 @@ func TestDUID_PersistsAcrossPluginRestart(t *testing.T) {
 		time.Sleep(time.Second)
 	}
 	if !rebound {
-		t.Fatalf("no post-restart DHCPREPLY for %s within 90s — recovered udhcpc6 never re-bound", v6)
+		t.Fatalf("no post-restart DHCPREPLY for %s within 90s — recovered dhcpcd v6 client never re-bound", v6)
 	}
 
 	duidAfter := leaseDUIDForV6(t, fixture.LeaseFile(), v6)

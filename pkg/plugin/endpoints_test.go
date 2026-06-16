@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -78,5 +79,48 @@ func TestApiHealth_TombstoneWriteFailureUnhealthy(t *testing.T) {
 	}
 	if got.TombstoneWriteFailures != 2 {
 		t.Errorf("expected 2 tombstone failures reported, got %d", got.TombstoneWriteFailures)
+	}
+}
+
+// TestApiHealth_PerFamilyCounters pins the #212 contract on the wire:
+// the un-suffixed counters stay v4+v6 aggregates while the *_v6 siblings
+// carry the v6 subset, and both surface under their snake_case keys.
+func TestApiHealth_PerFamilyCounters(t *testing.T) {
+	p := &Plugin{
+		startTime:      time.Now(),
+		joinHints:      make(map[string]joinHint),
+		persistentDHCP: make(map[string]*dhcpManager),
+	}
+	// Aggregates are totals; the v6 siblings are a subset of them.
+	p.naksReceived.Add(5)
+	p.naksReceivedV6.Add(2)
+	p.dhcpTimeouts.Add(3)
+	p.dhcpTimeoutsV6.Add(1)
+	p.leaseChanged.Add(4)
+	p.leaseChangedV6.Add(4)
+
+	req := httptest.NewRequest(http.MethodGet, "/Plugin.Health", nil)
+	rec := httptest.NewRecorder()
+	p.apiHealth(rec, req)
+
+	var got HealthResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.NAKsReceived != 5 || got.NAKsReceivedV6 != 2 {
+		t.Errorf("naks: aggregate=%d v6=%d, want 5 and 2", got.NAKsReceived, got.NAKsReceivedV6)
+	}
+	if got.DHCPTimeouts != 3 || got.DHCPTimeoutsV6 != 1 {
+		t.Errorf("timeouts: aggregate=%d v6=%d, want 3 and 1", got.DHCPTimeouts, got.DHCPTimeoutsV6)
+	}
+	if got.LeaseChanged != 4 || got.LeaseChangedV6 != 4 {
+		t.Errorf("lease_changed: aggregate=%d v6=%d, want 4 and 4", got.LeaseChanged, got.LeaseChangedV6)
+	}
+
+	// Pin the wire keys so the field names don't silently drift.
+	for _, key := range []string{"naks_received_v6", "dhcp_timeouts_v6", "leases_obtained_v6", "leases_renewed_v6", "lease_changed_v6"} {
+		if !strings.Contains(rec.Body.String(), key) {
+			t.Errorf("Health JSON missing %q field", key)
+		}
 	}
 }

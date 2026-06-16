@@ -131,7 +131,7 @@ func TestUpdateJoinHint_Concurrent(t *testing.T) {
 }
 
 // TestDHCPManager_LastIPsAndSetter covers the ipMu-guarded accessor
-// pair. Writes happen on the udhcpc renew goroutine; reads happen on
+// pair. Writes happen on the dhcpcd renew goroutine; reads happen on
 // the Leave path. Without the mutex (or with a partial implementation
 // that updated only one side) the race detector would flag — and
 // stale-read bugs would silently feed wrong IPs into the tombstone.

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"time"
 )
 
@@ -23,9 +25,24 @@ var stateDir = func() string {
 	return "/var/lib/net-dhcp"
 }()
 
+// validNetworkID accepts only a flat token — the shape of a libnetwork
+// network ID (hex). It rejects path separators and traversal elements
+// before networkID is ever interpolated into a filesystem path.
+var validNetworkID = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`).MatchString
+
 // stateFilePath returns the on-disk path for a given network's options.
-func stateFilePath(networkID string) string {
-	return filepath.Join(stateDir, networkID+".json")
+// networkID originates from the driver request, so it is validated and
+// the resolved path is confirmed to stay within stateDir before it
+// reaches any os.* call — closing the go/path-injection vector (CWE-22).
+func stateFilePath(networkID string) (string, error) {
+	if !validNetworkID(networkID) {
+		return "", fmt.Errorf("invalid network id %q", networkID)
+	}
+	p := filepath.Clean(filepath.Join(stateDir, networkID+".json"))
+	if !strings.HasPrefix(p, filepath.Clean(stateDir)+string(os.PathSeparator)) {
+		return "", fmt.Errorf("state path for network %q escapes %s", networkID, stateDir)
+	}
+	return p, nil
 }
 
 // tombstoneTTL bounds how long a recently-deleted endpoint's MAC is
@@ -68,16 +85,16 @@ type tombstone struct {
 	Hostname string `json:"hostname,omitempty"`
 	// IPAddress, when non-empty, is the bare IPv4 address (no /mask)
 	// from the previous endpoint's lease. The next CreateEndpoint
-	// passes it to udhcpc as `-r ADDR` so the upstream DHCP server
-	// can ACK the same lease back to the same MAC. Empty means
+	// passes it to dhcpcd via the `request` directive (DHCP option 50)
+	// so the upstream DHCP server can ACK the same lease back to the
+	// same MAC. Empty means
 	// "do an unhinted DISCOVER".
 	IPAddress string `json:"ip_address,omitempty"`
 	// IPv6Address, when non-empty, is the bare IPv6 address from the
-	// previous lease. busybox udhcpc6 has no `-r` equivalent so this
-	// isn't surfaced as a request hint today, but it's persisted so
-	// (a) operators can correlate disk-state with leases and (b) a
-	// future change to a DHCPv6 client that supports preferred-
-	// address requests can read it without a wire-format change.
+	// previous lease. Since #152 (dhcpcd) and #213 it is requested as
+	// the DHCPv6 preferred address (IA_NA) on the next CreateEndpoint,
+	// so a restarting container keeps its v6 lease the same way the
+	// IPAddress hint keeps its v4 lease.
 	IPv6Address string    `json:"ipv6_address,omitempty"`
 	DeletedAt   time.Time `json:"deleted_at"`
 }
@@ -172,12 +189,18 @@ func saveOptions(networkID string, opts DHCPNetworkOptions) error {
 	if err := os.MkdirAll(stateDir, 0o755); err != nil {
 		return fmt.Errorf("failed to create state dir %v: %w", stateDir, err)
 	}
+	final, err := stateFilePath(networkID)
+	if err != nil {
+		return err
+	}
 	data, err := json.Marshal(opts)
 	if err != nil {
 		return fmt.Errorf("failed to encode options: %w", err)
 	}
-	final := stateFilePath(networkID)
-	tmp, err := os.CreateTemp(stateDir, "."+networkID+".*.tmp")
+	// The temp name carries no networkID — CreateTemp's "*" already
+	// guarantees uniqueness, and keeping caller-supplied input out of the
+	// pattern removes it as a path-injection sink.
+	tmp, err := os.CreateTemp(stateDir, ".state-*.tmp")
 	if err != nil {
 		return fmt.Errorf("failed to create temp options file: %w", err)
 	}
@@ -207,7 +230,11 @@ func saveOptions(networkID string, opts DHCPNetworkOptions) error {
 // fall back to other sources (e.g. the docker API).
 func loadOptions(networkID string) (DHCPNetworkOptions, error) {
 	var opts DHCPNetworkOptions
-	data, err := os.ReadFile(stateFilePath(networkID))
+	path, err := stateFilePath(networkID)
+	if err != nil {
+		return opts, err
+	}
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return opts, err
 	}
@@ -222,7 +249,11 @@ func loadOptions(networkID string) (DHCPNetworkOptions, error) {
 // just means we never persisted state for this network in the first
 // place (e.g. created before we shipped persistence).
 func deleteOptions(networkID string) error {
-	if err := os.Remove(stateFilePath(networkID)); err != nil && !os.IsNotExist(err) {
+	path, err := stateFilePath(networkID)
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("failed to remove options file: %w", err)
 	}
 	return nil

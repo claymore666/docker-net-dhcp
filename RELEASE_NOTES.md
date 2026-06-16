@@ -44,6 +44,48 @@ migration tracked in #178). They are accepted at the advisory level in
 older AuthZ finding (GHSA-x744-4wpc-v9h2 = GO-2026-4887), and will be
 re-evaluated when the module migration lands.
 
+## v1.2.0
+
+A DHCP-client modernization release. The plugin's DHCP client changes
+from BusyBox `udhcpc`/`udhcpc6` to **`dhcpcd`**, run observe-only
+(`--noconfigure`) so the plugin keeps sole ownership of interface
+configuration. This unblocks DHCPv6 feature parity and adds per-family
+observability. **Driver options and the plugin manifest are unchanged**;
+bridge / macvlan / ipvlan UX is identical to v1.1.x.
+
+What changed:
+
+- **dhcpcd replaces busybox udhcpc/udhcpc6** (#152). The DHCPv6 IA is now
+  unified across the one-shot acquisition and the persistent client (both
+  present an identical DUID-LL + IAID derived from the endpoint's stable
+  MAC), so the **Docker-visible IPv6 address is renewed** instead of being
+  acquired once and left to expire.
+- **Requested/preferred IPv6 address** (#213): a recorded or
+  `--ip6` / `AddressIPv6`-requested address is surfaced to the DHCPv6
+  client as an IA_NA preferred-address hint, and carried across restarts
+  in the tombstone — the v6 counterpart of the existing v4 behaviour.
+- **Per-family health counters** (#212): `lease_changed_v6`,
+  `leases_obtained_v6`, `leases_renewed_v6`, `dhcp_timeouts_v6`,
+  `naks_received_v6` on `/Plugin.Health`. The un-suffixed counters remain
+  v4+v6 totals, so the v4 share is the aggregate minus its `*_v6`.
+- **ipvlan DHCP broadcast** (#243): the broadcast flag is now actually
+  emitted for ipvlan-L2 initial acquisition (where slaves share the parent
+  MAC). The dhcpcd port had declared the option but dropped it — a
+  regression vs v1.1.x, fixed before release.
+- **Robustness**: dhcpcd's interface-setup sysctl writes now succeed on
+  hosts where the plugin's `/proc/sys` is read-only (#247), and network
+  IDs are validated before they reach state-file paths (#232,
+  path-injection hardening).
+- **Project**: a versioned documentation site (#133), governance /
+  code-of-conduct / security-assurance docs (#216), a Trivy rootfs CVE
+  scan and an opt-in hosted CI cross-check lane (#143, #238), and an
+  automated release version-pin bump with a consistency gate (#251).
+
+Operator-visible compatibility: the v4 client-id is still sent with the
+type-0 ("opaque") prefix the busybox path used, so existing DHCP server
+reservations keyed on it keep matching after the upgrade. No action is
+required to upgrade from v1.1.x.
+
 ## v1.1.1
 
 A compliance and project-hygiene release. **There are no functional
@@ -1074,9 +1116,9 @@ docker network create \
 
 In `mode=macvlan` the plugin creates a macvlan child on the named
 parent NIC (submode `bridge`, so children on the same parent can talk to
-each other), runs `udhcpc` on it to acquire a lease from the LAN's DHCP
+each other), runs `dhcpcd` on it to acquire a lease from the LAN's DHCP
 server, and hands the link to libnetwork. Docker moves the link into the
-container's network namespace; a persistent `udhcpc` keeps the lease
+container's network namespace; a persistent `dhcpcd` keeps the lease
 alive for the life of the endpoint and sends `DHCPRELEASE` on container
 stop so the upstream server doesn't accumulate stale leases.
 
@@ -1138,7 +1180,7 @@ The plugin requests the following privileges (same as upstream):
 - network: `host`
 - host pid namespace: `true`
 - mount: `/var/run/docker.sock`
-- capabilities: `CAP_NET_ADMIN`, `CAP_SYS_ADMIN`, `CAP_SYS_PTRACE`
+- capabilities: `CAP_NET_ADMIN`, `CAP_SYS_ADMIN`
 
 ## Backward compatibility
 
@@ -1210,9 +1252,10 @@ changes to include `daemon.*`. New vulnerabilities reported in
 
 ## Known limitations
 
-- The DHCP exchange uses BusyBox `udhcpc` / `udhcpc6`. Anything that
-  requires a fuller DHCP client (vendor extensions beyond `-V`,
-  RFC3315 reconfigure, etc.) is not supported.
+- The DHCP exchange uses `dhcpcd` (one process per family), run
+  observe-only (`--noconfigure`) so the plugin keeps sole ownership of
+  interface configuration. Features outside what dhcpcd performs in that
+  mode (e.g. RFC 3315 reconfigure handling) are not surfaced.
 - One DHCP-served network per container. Joining additional bridges
   works but may interact in surprising ways with the routing rules
   installed by the persistent client.
@@ -1223,13 +1266,13 @@ changes to include `daemon.*`. New vulnerabilities reported in
   a renewal cycle. The renewed IP is at least surfaced to the
   next restart's tombstone, so it isn't lost.
 - IPv6 lease tracking lands in tombstones (so the data flows through
-  CreateEndpoint/Leave/DeleteEndpoint), but the request hint isn't
-  surfaced to `udhcpc6` — busybox has no `-r` equivalent for v6.
-  IPv6 endpoints get whatever the DHCPv6 server assigns; with a
-  stable MAC and a server that keys reservations on
-  client-id/MAC, that's typically the same address. Switching to a
-  DHCPv6 client that supports preferred-address requests is a
-  future enhancement.
+  CreateEndpoint/Leave/DeleteEndpoint), and as of v1.2.0 the recorded
+  address is surfaced to the DHCPv6 client as an IA_NA preferred-address
+  hint (the dhcpcd migration, #152, replaced busybox `udhcpc6`, which had
+  no `-r` equivalent for v6). A `--ip6` / `AddressIPv6` request is honored
+  the same way. The server is still free to assign a different address;
+  with a stable MAC and reservation-keyed server that is typically the
+  same one.
 - Concurrent `docker restart` of multiple containers on the same
   DHCP network within ~10 seconds falls back to fresh MACs (the
   tombstone mechanism requires exactly one match to avoid swapping

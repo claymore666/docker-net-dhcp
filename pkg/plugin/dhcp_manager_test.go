@@ -9,7 +9,7 @@ import (
 )
 
 // TestRenew_LeaseChangedCounter pins the v0.9.0 / T1-4 counter
-// behaviour: when udhcpc returns a different IP than the manager's
+// behaviour: when dhcpcd returns a different IP than the manager's
 // recorded lastIP, p.leaseChanged.Add(1) fires.
 //
 // We don't need a live netlink/netns fixture — the counter bump
@@ -74,6 +74,40 @@ func TestRenew_LeaseChangedCounter(t *testing.T) {
 		}
 	})
 
+	t.Run("v6 changed IP bumps aggregate and v6 sibling", func(t *testing.T) {
+		p := &Plugin{}
+		m := &dhcpManager{plugin: p}
+		m.setLastIP(true, addr1)
+
+		if err := m.renew(true, udhcpc.Info{IP: addr2.String()}); err != nil {
+			t.Fatalf("renew: %v", err)
+		}
+
+		if got := p.leaseChanged.Load(); got != 1 {
+			t.Errorf("leaseChanged aggregate = %d, want 1", got)
+		}
+		if got := p.leaseChangedV6.Load(); got != 1 {
+			t.Errorf("leaseChangedV6 = %d, want 1", got)
+		}
+	})
+
+	t.Run("v4 changed IP leaves v6 sibling at zero", func(t *testing.T) {
+		p := &Plugin{}
+		m := &dhcpManager{plugin: p}
+		m.setLastIP(false, addr1)
+
+		if err := m.renew(false, udhcpc.Info{IP: addr2.String()}); err != nil {
+			t.Fatalf("renew: %v", err)
+		}
+
+		if got := p.leaseChanged.Load(); got != 1 {
+			t.Errorf("leaseChanged aggregate = %d, want 1", got)
+		}
+		if got := p.leaseChangedV6.Load(); got != 0 {
+			t.Errorf("leaseChangedV6 = %d, want 0 (v4 change must not touch the v6 sibling)", got)
+		}
+	})
+
 	t.Run("nil plugin is safe", func(t *testing.T) {
 		// Tests that drive renew without wiring a Plugin (pre-v0.9.0
 		// shape) must keep working — production callers always set
@@ -87,12 +121,12 @@ func TestRenew_LeaseChangedCounter(t *testing.T) {
 	})
 }
 
-// TestHandleEvent_Counters pins which health counter each udhcpc
+// TestHandleEvent_Counters pins which health counter each dhcpcd
 // lifecycle event bumps (#128). The "nak" arm matters most: dnsmasq
 // silently ignores refused renewals in several shapes instead of
 // emitting DHCPNAK, so this contract cannot be pinned reliably at the
-// integration level — when a real server does NAK (busybox udhcpc
-// emits the event verbatim), this is the path that counts it.
+// integration level — when a real server does NAK (dhcpcd maps the
+// NAK reason to the event), this is the path that counts it.
 func TestHandleEvent_Counters(t *testing.T) {
 	addr, err := netlink.ParseAddr("192.168.0.10/24")
 	if err != nil {
@@ -100,26 +134,42 @@ func TestHandleEvent_Counters(t *testing.T) {
 	}
 
 	cases := []struct {
-		event string
-		read  func(p *Plugin) int32
+		event     string
+		aggregate func(p *Plugin) int32
+		v6        func(p *Plugin) int32
 	}{
-		{"bound", func(p *Plugin) int32 { return p.leasesObtained.Load() }},
-		{"renew", func(p *Plugin) int32 { return p.leasesRenewed.Load() }},
-		{"leasefail", func(p *Plugin) int32 { return p.dhcpTimeouts.Load() }},
-		{"nak", func(p *Plugin) int32 { return p.naksReceived.Load() }},
+		{"bound", func(p *Plugin) int32 { return p.leasesObtained.Load() }, func(p *Plugin) int32 { return p.leasesObtainedV6.Load() }},
+		{"renew", func(p *Plugin) int32 { return p.leasesRenewed.Load() }, func(p *Plugin) int32 { return p.leasesRenewedV6.Load() }},
+		{"leasefail", func(p *Plugin) int32 { return p.dhcpTimeouts.Load() }, func(p *Plugin) int32 { return p.dhcpTimeoutsV6.Load() }},
+		{"nak", func(p *Plugin) int32 { return p.naksReceived.Load() }, func(p *Plugin) int32 { return p.naksReceivedV6.Load() }},
 	}
+	// Each event under both families: the aggregate always moves; the v6
+	// sibling moves only for v6 events and stays put for v4 ones (#212).
 	for _, c := range cases {
-		t.Run(c.event, func(t *testing.T) {
-			p := &Plugin{}
-			m := &dhcpManager{plugin: p}
-			m.setLastIP(false, addr)
-
-			m.handleEvent(udhcpc.Event{Type: c.event, Data: udhcpc.Info{IP: addr.String()}}, false)
-
-			if got := c.read(p); got != 1 {
-				t.Errorf("%s counter = %d, want 1", c.event, got)
+		for _, v6 := range []bool{false, true} {
+			family := "v4"
+			if v6 {
+				family = "v6"
 			}
-		})
+			t.Run(c.event+"/"+family, func(t *testing.T) {
+				p := &Plugin{}
+				m := &dhcpManager{plugin: p}
+				m.setLastIP(v6, addr)
+
+				m.handleEvent(udhcpc.Event{Type: c.event, Data: udhcpc.Info{IP: addr.String()}}, v6)
+
+				if got := c.aggregate(p); got != 1 {
+					t.Errorf("%s aggregate = %d, want 1", c.event, got)
+				}
+				wantV6 := int32(0)
+				if v6 {
+					wantV6 = 1
+				}
+				if got := c.v6(p); got != wantV6 {
+					t.Errorf("%s v6 sibling = %d, want %d", c.event, got, wantV6)
+				}
+			})
+		}
 	}
 
 	t.Run("deconfig and unknown bump nothing", func(t *testing.T) {
@@ -142,4 +192,34 @@ func TestHandleEvent_Counters(t *testing.T) {
 			m.handleEvent(udhcpc.Event{Type: evt, Data: udhcpc.Info{IP: addr.String()}}, false)
 		}
 	})
+}
+
+// TestNextAcquiring pins the DHCP-outage watchdog state machine. dhcpcd
+// emits no per-attempt failure hook, so the persistent-client goroutine
+// derives an "acquiring" flag from the event stream: a bound/renew means
+// we hold a lease; a leasefail (dhcpcd EXPIRE/TIMEOUT) drops back to
+// acquiring; anything else (NAK) is left unchanged.
+func TestNextAcquiring(t *testing.T) {
+	cases := []struct {
+		name      string
+		prev      bool
+		eventType string
+		want      bool
+	}{
+		{"bound clears acquiring", true, "bound", false},
+		{"renew clears acquiring", true, "renew", false},
+		{"leasefail sets acquiring", false, "leasefail", true},
+		{"leasefail while acquiring stays acquiring", true, "leasefail", true},
+		{"bound while bound stays bound", false, "bound", false},
+		{"nak leaves acquiring=true unchanged", true, "nak", true},
+		{"nak leaves acquiring=false unchanged", false, "nak", false},
+		{"unknown leaves state unchanged", true, "carrier", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := nextAcquiring(tc.prev, tc.eventType); got != tc.want {
+				t.Errorf("nextAcquiring(%v, %q) = %v, want %v", tc.prev, tc.eventType, got, tc.want)
+			}
+		})
+	}
 }

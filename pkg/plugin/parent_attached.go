@@ -44,7 +44,7 @@ func subLinkName(endpointID string) string {
 // a bridge or another macvlan/ipvlan). We do not change the parent's
 // state — the host's NIC config is off-limits.
 func validateParentForChild(name string) (netlink.Link, error) {
-	link, err := netlink.LinkByName(name)
+	link, err := nlLinkByName(name)
 	if err != nil {
 		return nil, fmt.Errorf("failed to lookup parent interface %v: %w", name, err)
 	}
@@ -71,7 +71,7 @@ func newChildLink(mode string, la netlink.LinkAttrs) netlink.Link {
 
 // createParentAttachedEndpoint creates the per-endpoint child link on
 // the host's parent NIC (macvlan or ipvlan depending on mode), runs
-// udhcpc on it (still in host netns) to acquire an initial lease, and
+// dhcpcd on it (still in host netns) to acquire an initial lease, and
 // stashes the result for Join. Docker will move the link into the
 // container's netns when it acts on our Join response.
 func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpointRequest, opts DHCPNetworkOptions) (CreateEndpointResponse, error) {
@@ -88,12 +88,17 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 	// HardwareAddr, so the tombstone path doesn't apply there (and an
 	// explicit MAC is rejected loudly to avoid silent misconfiguration).
 	// Static IPs (`docker run --ip`) are accepted in both modes — they
-	// pass through to udhcpc as a `-r ADDR` hint.
+	// pass through to dhcpcd as a `request`-directive (DHCP option 50)
+	// hint.
 	effectiveMAC := ""
 	if r.Interface != nil {
 		effectiveMAC = r.Interface.MacAddress
 	}
 	explicitV4, err := resolveExplicitV4(r)
+	if err != nil {
+		return res, err
+	}
+	explicitV6, err := resolveExplicitV6(r)
 	if err != nil {
 		return res, err
 	}
@@ -104,11 +109,18 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 	hostname := p.initialDHCPHostname(ctx, r.NetworkID, r.EndpointID)
 
 	requestedIP := explicitV4
+	requestedV6 := explicitV6
 	if mode == ModeMacvlan && effectiveMAC == "" {
 		if tombMAC, tombIP, tombIPv6, ok := p.consumeTombstone(r.NetworkID, hostname); ok {
 			effectiveMAC = tombMAC
 			if requestedIP == "" {
 				requestedIP = tombIP
+			}
+			// Inherit the prior v6 as the DHCPv6 preferred address too,
+			// so a restarting macvlan container keeps its v6 lease the
+			// same way it keeps v4 (#213).
+			if requestedV6 == "" {
+				requestedV6 = tombIPv6
 			}
 			log.WithFields(log.Fields{
 				"network":  shortID(r.NetworkID),
@@ -222,8 +234,17 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 				ClientID:    clientID,
 				VendorClass: opts.VendorClass,
 				Broadcast:   mode == ModeIPvlan,
+				// MAC pins the dhcpcd DUID-LL/IAID so the one-shot and
+				// persistent clients share one identity (#152). NOTE:
+				// ipvlan-L2 slaves share the parent MAC, so v6 identity
+				// is not unique per endpoint in that mode — a known
+				// limitation for ipvlan+ipv6 (bridge/macvlan have unique,
+				// tombstone-preserved MACs).
+				MAC: mac,
 			}
-			if !v6 {
+			if v6 {
+				clientOpts.PreferredV6 = requestedV6
+			} else {
 				clientOpts.RequestedIP = requestedIP
 			}
 			info, err := udhcpc.GetIP(tCtx, la.Name, clientOpts)
@@ -315,7 +336,7 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 // and ipvlan since they live under the same name.
 func (p *Plugin) deleteParentAttachedEndpoint(r DeleteEndpointRequest) error {
 	name := subLinkName(r.EndpointID)
-	link, err := netlink.LinkByName(name)
+	link, err := nlLinkByName(name)
 	if err != nil {
 		// Expected: the link is gone with the container netns.
 		log.WithFields(log.Fields{
@@ -324,7 +345,7 @@ func (p *Plugin) deleteParentAttachedEndpoint(r DeleteEndpointRequest) error {
 		}).Debug("Child link already gone (expected)")
 		return nil
 	}
-	if err := netlink.LinkDel(link); err != nil {
+	if err := nlLinkDel(link); err != nil {
 		return fmt.Errorf("failed to delete leftover child link %v: %w", name, err)
 	}
 	log.WithFields(log.Fields{
@@ -338,7 +359,7 @@ func (p *Plugin) deleteParentAttachedEndpoint(r DeleteEndpointRequest) error {
 // container's netns handle) and returns the link with the given hardware
 // address. Used to re-discover a macvlan child after Docker has moved and
 // renamed it inside the container.
-func findLinkByMAC(handle *netlink.Handle, mac net.HardwareAddr) (netlink.Link, error) {
+func findLinkByMAC(handle linkLister, mac net.HardwareAddr) (netlink.Link, error) {
 	links, err := handle.LinkList()
 	if err != nil {
 		return nil, fmt.Errorf("failed to list links: %w", err)

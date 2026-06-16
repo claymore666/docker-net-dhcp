@@ -6,10 +6,10 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	dNetwork "github.com/docker/docker/api/types/network"
-	docker "github.com/docker/docker/client"
 	log "github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
@@ -27,14 +27,14 @@ const linkAwaitTimeout = 30 * time.Second
 
 const pollTime = 100 * time.Millisecond
 
-// dhcpClientReapTimeout caps how long the udhcpc consumer waits to
+// dhcpClientReapTimeout caps how long the dhcpcd consumer waits to
 // reap a self-exited child process before giving up and letting it
 // linger as a zombie. The kernel's eventual reaping by init handles
 // the worst case; this just bounds wall time on the cleanup path.
 const dhcpClientReapTimeout = 5 * time.Second
 
 // dhcpClientFinishTimeout caps how long Stop waits for SIGTERM ->
-// DHCPRELEASE -> exit on the persistent udhcpc child. Long enough
+// DHCPRELEASE -> exit on the persistent dhcpcd child. Long enough
 // for a DHCPRELEASE round-trip on a healthy LAN; short enough that
 // plugin shutdown / Leave isn't held hostage by an unresponsive
 // upstream DHCP server.
@@ -46,6 +46,39 @@ const dhcpClientFinishTimeout = 5 * time.Second
 // stack up bound goroutines waiting on inspect calls. On timeout
 // we log and skip — the next renewal will retry.
 const dnsPropagateTimeout = 2 * time.Second
+
+// dhcpOutageTick / dhcpOutageGrace drive the DHCP-outage watchdog.
+//
+// busybox udhcpc ran the handler with "leasefail" on every failed
+// acquisition/renewal cycle, so dhcp_timeouts climbed steadily while a
+// DHCP server was unreachable. dhcpcd has no equivalent: it fires the
+// hook exactly once (EXPIRE) when a *bound* lease finally lapses, and
+// nothing at all while it silently re-DISCOVERs (confirmed against
+// dhcpcd 10.0.6 — neither the default config nor a `timeout` directive
+// produces a per-attempt hook). We synthesise the recurring signal: a
+// ticker increments dhcp_timeouts while the client is in the "acquiring"
+// state (never bound, or bound-then-EXPIRE'd) and has stayed there past
+// the grace. Crucially it is silent during a healthy bound lease no
+// matter how long (renewals only fire at T1), so it never false-counts
+// the quiet gap between renewals on a long lease.
+const dhcpOutageTick = 30 * time.Second
+const dhcpOutageGrace = 25 * time.Second
+
+// nextAcquiring returns the post-event acquisition state. A bound/renew
+// means we hold a lease (not acquiring); a leasefail (dhcpcd EXPIRE /
+// TIMEOUT) drops us back to acquiring. Other event types (nak) leave the
+// state unchanged — a NAK is usually followed immediately by a fresh
+// bound, and EXPIRE is the authoritative "lease lost" signal.
+func nextAcquiring(prev bool, eventType string) bool {
+	switch eventType {
+	case "bound", "renew":
+		return false
+	case "leasefail":
+		return true
+	default:
+		return prev
+	}
+}
 
 // closeNsHandle / closeNetHandle log close errors at Debug instead of
 // silently dropping them. Cleanup paths can't act on a Close failure
@@ -67,7 +100,7 @@ func closeNetHandle(h *netlink.Handle) {
 }
 
 type dhcpManager struct {
-	docker  *docker.Client
+	docker  dockerClient
 	joinReq JoinRequest
 	opts    DHCPNetworkOptions
 
@@ -78,7 +111,7 @@ type dhcpManager struct {
 	// every production path goes through Plugin.Join.
 	plugin *Plugin
 
-	// ipMu guards lastIP / lastIPv6. Writes happen from the udhcpc
+	// ipMu guards lastIP / lastIPv6. Writes happen from the dhcpcd
 	// event goroutine (renew); reads happen from Leave after Stop has
 	// drained that goroutine. The drain establishes happens-before in
 	// practice, but the race detector doesn't always see the channel
@@ -116,7 +149,7 @@ type dhcpManager struct {
 	startErr  error
 }
 
-func newDHCPManager(docker *docker.Client, r JoinRequest, opts DHCPNetworkOptions) *dhcpManager {
+func newDHCPManager(docker dockerClient, r JoinRequest, opts DHCPNetworkOptions) *dhcpManager {
 	return &dhcpManager{
 		docker:  docker,
 		joinReq: r,
@@ -279,7 +312,7 @@ func (m *dhcpManager) renew(v6 bool, info udhcpc.Info) error {
 		// Bump the counter so operators can alert on the truthfulness
 		// gap; design discussion for a deeper fix is deferred (issue #104).
 		if m.plugin != nil {
-			m.plugin.leaseChanged.Add(1)
+			bumpFamily(&m.plugin.leaseChanged, &m.plugin.leaseChangedV6, v6)
 		}
 		log.
 			WithFields(m.logFields(v6)).
@@ -287,7 +320,7 @@ func (m *dhcpManager) renew(v6 bool, info udhcpc.Info) error {
 			WithField("new_ip", ip).
 			Warn("udhcpc renew with changed IP — Docker's view is now stale")
 
-		// Apply the re-acquired lease to the link (v4). Found by
+		// Apply the re-acquired lease to the link. Found by
 		// TestFailure_LeaseRefusedOnRenewal (#128): without this the
 		// kernel keeps the ORIGINAL address forever — the container
 		// answers on an address the server may already have handed to
@@ -297,18 +330,19 @@ func (m *dhcpManager) renew(v6 bool, info udhcpc.Info) error {
 		// bind and black-holing the endpoint. Address first, routes
 		// after — same ordering the kernel itself requires.
 		//
-		// v6 is deliberately left alone for now: the persistent
-		// udhcpc6 negotiates a second IA (different IAID than
-		// CreateEndpoint's one-shot), so "changed IP" is the v6
-		// steady-state, and re-addressing would flip every ipv6=true
-		// container to the persistent IA seconds after start. That
-		// unification is its own design change, tracked with #103's
-		// follow-up.
+		// Applies to both families now (#152): dhcpcd pins the same
+		// DUID-LL/IAID for the one-shot and persistent clients, so the
+		// persistent v6 client renews the SAME address Docker was told
+		// — a "changed IP" is therefore a genuine renumber to re-apply,
+		// not the old IA-split steady state. (Previously the v6 arm was
+		// disabled because busybox's per-process random IAID made every
+		// ipv6=true container look like it changed address seconds after
+		// start.)
 		//
 		// netHandle/ctrLink are always live on the production path
 		// (renew runs from the event loop, post-Start); the guard
 		// keeps pre-Start unit tests of the counter semantics valid.
-		if !v6 && m.netHandle != nil && m.ctrLink != nil {
+		if m.netHandle != nil && m.ctrLink != nil {
 			if err := m.netHandle.AddrReplace(m.ctrLink, ip); err != nil {
 				return fmt.Errorf("failed to apply re-acquired address %v: %w", ip, err)
 			}
@@ -347,17 +381,17 @@ func (m *dhcpManager) renew(v6 bool, info udhcpc.Info) error {
 	}
 
 	// Track the freshly-bound address so Leave can hand it to the
-	// tombstone (and thus the next CreateEndpoint's `-r` hint).
-	// Without this the manager keeps reporting whatever the very
-	// first CreateEndpoint DISCOVER produced, even if udhcpc has
+	// tombstone (and thus the next CreateEndpoint's `request`-directive
+	// hint). Without this the manager keeps reporting whatever the very
+	// first CreateEndpoint DISCOVER produced, even if dhcpcd has
 	// moved to a different lease since.
 	m.setLastIP(v6, ip)
 
 	// Apply DHCP option 6 / 23 (DNS server list) when opt-in and the
 	// server actually supplied servers. Empty list is a no-op rather
 	// than a clobber — see resolvconf.go for the rationale. v6 path
-	// uses DHCPv6 option 23, populated by udhcpc6 into the same
-	// DNSServers slice.
+	// uses DHCPv6 option 23, populated by the dhcpcd handler into the
+	// same DNSServers slice.
 	if m.opts.PropagateDNS && len(info.DNSServers) > 0 {
 		ctx, cancel := context.WithTimeout(context.Background(), dnsPropagateTimeout)
 		pid, err := m.findContainerPID(ctx)
@@ -451,7 +485,7 @@ func (m *dhcpManager) renew(v6 bool, info udhcpc.Info) error {
 	return nil
 }
 
-// handleEvent dispatches one udhcpc lifecycle event from the
+// handleEvent dispatches one dhcpcd lifecycle event from the
 // persistent client: health counters, audit-ledger entries, and the
 // kernel-facing renew work. Extracted from the consumer goroutine so
 // the counter semantics are unit-testable — wire-level NAKs in
@@ -459,6 +493,16 @@ func (m *dhcpManager) renew(v6 bool, info udhcpc.Info) error {
 // ignores refused renewals in several shapes instead of NAKing), so
 // the naks_received contract is pinned here rather than in an
 // integration test (#128).
+// bumpFamily increments the aggregate counter (always) and its IPv6
+// sibling (only for v6 events), so /Plugin.Health exposes a per-family
+// breakdown while the aggregate stays a true v4+v6 total (#212).
+func bumpFamily(total, v6Counter *atomic.Int32, v6 bool) {
+	total.Add(1)
+	if v6 {
+		v6Counter.Add(1)
+	}
+}
+
 func (m *dhcpManager) handleEvent(event udhcpc.Event, v6 bool) {
 	switch event.Type {
 	// "deconfig" is intentionally not handled. Deleting the
@@ -476,7 +520,7 @@ func (m *dhcpManager) handleEvent(event udhcpc.Event, v6 bool) {
 		// the same MAC). Reuse the renew path so LastIP
 		// reflects what's actually in the kernel.
 		if m.plugin != nil {
-			m.plugin.leasesObtained.Add(1)
+			bumpFamily(&m.plugin.leasesObtained, &m.plugin.leasesObtainedV6, v6)
 		}
 		m.audit("bound", bareIP(event.Data.IP))
 		if err := m.renew(v6, event.Data); err != nil {
@@ -492,7 +536,7 @@ func (m *dhcpManager) handleEvent(event udhcpc.Event, v6 bool) {
 			Debug("udhcpc renew")
 
 		if m.plugin != nil {
-			m.plugin.leasesRenewed.Add(1)
+			bumpFamily(&m.plugin.leasesRenewed, &m.plugin.leasesRenewedV6, v6)
 		}
 		m.audit("renew", bareIP(event.Data.IP))
 		if err := m.renew(v6, event.Data); err != nil {
@@ -505,12 +549,12 @@ func (m *dhcpManager) handleEvent(event udhcpc.Event, v6 bool) {
 		}
 	case "leasefail":
 		if m.plugin != nil {
-			m.plugin.dhcpTimeouts.Add(1)
+			bumpFamily(&m.plugin.dhcpTimeouts, &m.plugin.dhcpTimeoutsV6, v6)
 		}
 		log.WithFields(m.logFields(v6)).Warn("udhcpc failed to get a lease")
 	case "nak":
 		if m.plugin != nil {
-			m.plugin.naksReceived.Add(1)
+			bumpFamily(&m.plugin.naksReceived, &m.plugin.naksReceivedV6, v6)
 		}
 		log.WithFields(m.logFields(v6)).Warn("udhcpc client received NAK")
 	}
@@ -530,24 +574,44 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 	// DHCP server for the IP the container is already using, instead
 	// of doing a fresh DISCOVER that might return something different.
 	// In the normal CreateEndpoint -> Join path lastIP / lastIPv6
-	// already point at the IP we just acquired; passing it as -r is a
-	// no-op (server still ACKs the same address). On recovery it's
+	// already point at the IP we just acquired; passing it via the
+	// dhcpcd `request` directive (DHCP option 50) is a no-op (server
+	// still ACKs the same address). On recovery it's
 	// what makes the lease "sticky".
 	requestedIP := ""
+	preferredV6 := ""
 	if !v6 {
 		if v4Addr, _ := m.lastIPs(); v4Addr != nil && v4Addr.IP != nil {
 			requestedIP = v4Addr.IP.String()
 		}
+	} else {
+		// Same stickiness for v6: on recovery ask for the IA_NA address
+		// the container already holds (lastIPv6 is seeded from the
+		// recovered state) rather than risk a fresh one. In the normal
+		// create->Join path it's a no-op — dhcpcd's pinned IA already
+		// returns the same address (#213).
+		if _, v6Addr := m.lastIPs(); v6Addr != nil && v6Addr.IP != nil {
+			preferredV6 = v6Addr.IP.String()
+		}
 	}
 	client, err := udhcpc.NewDHCPClient(m.ctrLink.Attrs().Name, &udhcpc.DHCPClientOptions{
-		Hostname:    m.hostname,
-		V6:          v6,
-		Namespace:   m.nsPath,
+		Hostname:  m.hostname,
+		V6:        v6,
+		Namespace: m.nsPath,
+		// Same MAC the CreateEndpoint one-shot used (this is the same
+		// link, moved into the netns), so dhcpcd derives the identical
+		// DUID-LL/IAID and the persistent client renews the very lease
+		// Docker was told about (#152).
+		MAC:         m.ctrLink.Attrs().HardwareAddr,
 		RequestedIP: requestedIP,
-		// ipvlan slaves share the parent's MAC; without -B the server
-		// may unicast renewals to the parent and the kernel has no
-		// way to demux to the right slave. Setting Broadcast for
-		// every renewal in ipvlan mode keeps lease lifecycle stable.
+		PreferredV6: preferredV6,
+		// ipvlan slaves share the parent's MAC; without a broadcast
+		// reply the server may unicast renewals to the parent and the
+		// kernel has no way to demux to the right slave. Requesting the
+		// broadcast flag in ipvlan mode keeps lease lifecycle stable.
+		// NOTE: dhcpcd broadcast handling is not yet wired in the client
+		// (DHCPClientOptions.Broadcast, #243) — this flag is set for the
+		// ipvlan path but currently has no effect.
 		Broadcast: m.opts.effectiveMode() == ModeIPvlan,
 		// Same client-id the initial DISCOVER used in CreateEndpoint,
 		// so renewals are seen as the same client by the server.
@@ -569,11 +633,31 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 	// the goroutine here would block forever on the final write below.
 	errChan := make(chan error, 1)
 	go func() {
+		// DHCP-outage watchdog: dhcpcd emits no per-attempt failure hook,
+		// so synthesise the recurring dhcp_timeouts signal busybox gave us
+		// (see dhcpOutageTick). "acquiring" starts true — the persistent
+		// client has not confirmed its own lease yet — and flips with each
+		// bound/renew/leasefail event.
+		acquiring := true
+		acquiringSince := time.Now()
+		ticker := time.NewTicker(dhcpOutageTick)
+		defer ticker.Stop()
+
 		for {
 			select {
+			case <-ticker.C:
+				if acquiring && time.Since(acquiringSince) >= dhcpOutageGrace {
+					if m.plugin != nil {
+						bumpFamily(&m.plugin.dhcpTimeouts, &m.plugin.dhcpTimeoutsV6, v6)
+					}
+					log.
+						WithFields(m.logFields(v6)).
+						Warn("DHCP server still unreachable; lease not (re)acquired")
+				}
+
 			case event, ok := <-events:
 				if !ok {
-					// udhcpc exited on its own (NAK, parent NIC vanished,
+					// dhcpcd exited on its own (NAK, parent NIC vanished,
 					// container netns torn down out from under us, etc.).
 					// The scanner goroutine in udhcpc.Start closes events
 					// when its read pipe hits EOF. Without this branch,
@@ -603,6 +687,14 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 					// calls close(stopChan) and reads it.
 					errChan <- nil
 					return
+				}
+				prev := acquiring
+				acquiring = nextAcquiring(prev, event.Type)
+				if acquiring && !prev {
+					// Just lost the lease (EXPIRE): restart the grace so the
+					// first post-expiry timeout isn't counted until a full
+					// interval of continued failure.
+					acquiringSince = time.Now()
 				}
 				m.handleEvent(event, v6)
 
@@ -770,7 +862,7 @@ func (m *dhcpManager) Start(ctx context.Context) (err error) {
 			// still DAD-tentative — and a host must NOT answer
 			// neighbor solicitations for a tentative address, so the
 			// server's unicast ADVERTISE/REPLY can never be
-			// delivered: udhcpc6 SOLICITs forever while the server's
+			// delivered: dhcpcd SOLICITs forever while the server's
 			// neighbor cache records an unreachable client (#103,
 			// found by TestLeaseRenewIPv6_HonorsT1). Wait for DAD to
 			// finish before starting the client. Timeout degrades to

@@ -15,7 +15,7 @@ import (
 // mode=ipvlan. ipvlan-L2 is the default in newChildLink and the only
 // mode that can carry DHCP (which needs L2 broadcast) — this test
 // guards that invariant; an accidental switch to L3 mode would fail
-// here with udhcpc never seeing an OFFER.
+// here with dhcpcd never seeing an OFFER.
 //
 // One observable mode-specific difference: ipvlan children inherit
 // the parent's MAC, so docker inspect shows the HostVeth MAC instead
@@ -23,12 +23,14 @@ import (
 // same MAC the daemon reported.
 //
 // Earlier this test was `t.Skip`'d because the OFFER never reached
-// the slave through a veth parent. The fix landed in pkg/udhcpc:
-// setting the BROADCAST flag in DISCOVER (`udhcpc -B`) for ipvlan
-// mode forces the OFFER to be L2-broadcast at the wire level, which
-// the kernel then floods correctly to all slaves of the parent.
-// dnsmasq's `--dhcp-broadcast` in our fixture is now belt-and-braces
-// rather than the only thing keeping ipvlan honest.
+// the slave through a veth parent. The fix forces the BROADCAST flag
+// in DISCOVER for ipvlan mode so the OFFER is L2-broadcast at the wire
+// level and the kernel floods it to all slaves of the parent — the
+// plugin sets this via the dhcpcd `broadcast` directive (#243; was
+// busybox `udhcpc -B` before the #152 migration). The fixture
+// deliberately does NOT pass dnsmasq `--dhcp-broadcast`, so this test
+// genuinely exercises that client-side flag: if it regressed, ipvlan
+// acquisition here would hang.
 func TestLifecycleIPvlan_GoldenPath(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()

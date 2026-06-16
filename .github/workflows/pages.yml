@@ -1,0 +1,147 @@
+name: Docs site
+
+# Build and publish the versioned documentation site (#133).
+#
+# Single source of truth is the in-repo docs/ tree; mkdocs-material renders
+# it and mike publishes per-version snapshots to the `gh-pages` branch, which
+# GitHub Pages serves. Versioning mirrors the registry tagging scheme:
+#
+#   - real release tag vX.Y.Z   → publish that version AND move the `latest`
+#                                 alias + site default (the docs users land on)
+#   - pre-release tag vX.Y.Z-rcN → publish a preview version only; `latest` and
+#                                 the default are NOT moved (same zero-impact
+#                                 dry-run guarantee release.yml gives images)
+#   - push to dev               → publish/refresh the moving `dev` version
+#                                 (and, until the first release exists, point
+#                                 the site default at it so the root isn't a 404)
+#   - workflow_dispatch         → re-publish docs for an existing tag, or, with
+#                                 no input, the current dev
+#
+# Pull requests touching the docs only get a `mkdocs build --strict` check —
+# they never publish. actionlint gates this file like every other workflow.
+#
+# One-time setup (maintainer, after the first run creates gh-pages):
+#   Settings → Pages → Build and deployment → Source = "Deploy from a branch",
+#   Branch = gh-pages / (root). See docs/release-runbook.md.
+on:
+  push:
+    branches: [dev]
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - docs/**
+      - mkdocs.yml
+      - .github/workflows/pages.yml
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to (re)publish docs for (e.g. v1.2.0). Blank = publish current dev."
+        required: false
+
+# Read-only by default; the deploy job grants itself contents: write to push
+# the built site to gh-pages.
+permissions:
+  contents: read
+
+# Serialise deploys so concurrent runs don't race on the gh-pages branch.
+# Don't cancel an in-flight deploy mid-push — let it finish cleanly.
+concurrency:
+  group: docs-site
+  cancel-in-progress: false
+
+jobs:
+  # Always-on validation: the site must build cleanly (no broken internal
+  # links, no bad config) before anything is published. This is the only
+  # job that runs on pull requests.
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13"
+
+      - name: Install doc toolchain
+        run: pip install -r docs/requirements.txt
+
+      - name: Build site (strict)
+        run: mkdocs build --strict
+
+  # Publish a versioned snapshot to gh-pages. Skipped on pull requests.
+  deploy:
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # mike commits + pushes the built site to gh-pages
+    steps:
+      - name: Resolve docs ref
+        id: ref
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [ -n "${INPUT_TAG}" ]; then
+            REF="${INPUT_TAG}"
+          elif [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            REF="${GITHUB_REF_NAME}"
+          else
+            REF="dev"
+          fi
+          echo "ref=${REF}" >> "$GITHUB_OUTPUT"
+          echo "Publishing docs for: ${REF}"
+
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ steps.ref.outputs.ref }}
+          # Full history so mike can read and rewrite the gh-pages branch.
+          fetch-depth: 0
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13"
+
+      - name: Install doc toolchain
+        run: pip install -r docs/requirements.txt
+
+      - name: Configure git identity for mike
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Make gh-pages available to mike
+        run: git fetch origin gh-pages --depth=1 || echo "no gh-pages branch yet — mike will create it"
+
+      # Map the resolved ref to a mike version + alias, mirroring the
+      # release.yml prerelease guard. Only a bare vX.Y.Z moves `latest`
+      # and the site default; rc tags publish a preview; dev publishes the
+      # moving dev version (and bootstraps the default until a release exists).
+      - name: Publish with mike
+        env:
+          REF: ${{ steps.ref.outputs.ref }}
+        run: |
+          set -euo pipefail
+          if [ "${REF}" = "dev" ]; then
+            mike deploy --push --update-aliases dev
+            # Bootstrap: before the first release there is no `latest`, so
+            # point the site root at dev. Once a release sets latest, this
+            # guard stops firing and dev pushes leave the default alone.
+            if ! mike list 2>/dev/null | grep -q '\[latest\]'; then
+              mike set-default --push dev
+            fi
+          elif [[ "${REF}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            # Real release: publish this version and move latest + default.
+            mike deploy --push --update-aliases "${REF}" latest
+            mike set-default --push latest
+          elif [[ "${REF}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+            # Pre-release (vX.Y.Z-rcN): preview only — no alias, no default move.
+            mike deploy --push "${REF}"
+          else
+            echo "Ref '${REF}' is neither dev nor a vX.Y.Z[-rcN] tag; refusing." >&2
+            exit 1
+          fi
+          echo "## Docs published for ${REF}" >> "$GITHUB_STEP_SUMMARY"
+          mike list >> "$GITHUB_STEP_SUMMARY" || true
