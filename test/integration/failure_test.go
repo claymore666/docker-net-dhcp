@@ -54,7 +54,11 @@ func failureHealth(t *testing.T, ctx context.Context, cli *docker.Client, budget
 				return h, true
 			}
 		}
-		time.Sleep(time.Second)
+		// Pure poll-until-condition: a tighter interval just returns
+		// closer to the moment the health state flips, without
+		// touching the caller's budget (#254). 250ms floor keeps the
+		// extra CPU off the timing-sensitive preflight probe.
+		time.Sleep(250 * time.Millisecond)
 	}
 	return last, false
 }
@@ -146,7 +150,9 @@ func TestFailure_ServerLossDuringRenewal(t *testing.T) {
 			recovered = true
 			break
 		}
-		time.Sleep(time.Second)
+		// 90s deadline unchanged; tighter poll only shrinks the
+		// overshoot past the re-bind ACK (#254).
+		time.Sleep(250 * time.Millisecond)
 	}
 	if !recovered {
 		t.Fatal("no DHCPACK for the container's MAC within 90s of the server returning")
@@ -247,7 +253,10 @@ func TestFailure_LeaseRefusedOnRenewal(t *testing.T) {
 		if liveIP != "" {
 			break
 		}
-		time.Sleep(2 * time.Second)
+		// Each iteration is a docker exec, so hold a 500ms floor
+		// rather than the 250ms used for cheap log/health polls —
+		// still a quarter of the old 2s overshoot (#254).
+		time.Sleep(500 * time.Millisecond)
 	}
 	if liveIP == "" {
 		t.Fatalf("container never re-acquired from the new subnet's pool %s-%s; ip -4 addr:\n%s",
