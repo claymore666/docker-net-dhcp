@@ -153,4 +153,6 @@ few days for a response.
 
 ## License
 
-MIT — see [LICENSE.md](LICENSE.md).
+GPL-3.0 — see [LICENSE.md](LICENSE.md). This is a fork of
+[`devplayer0/docker-net-dhcp`][upstream], which is GPL-3.0; as a
+derivative work it stays under the same license.

@@ -117,5 +117,8 @@ gh attestation verify oci://ghcr.io/claymore666/docker-net-dhcp:VERSION --repo c
 
 ## License
 
-MIT — see
+GPL-3.0 — see
 [LICENSE.md](https://github.com/claymore666/docker-net-dhcp/blob/dev/LICENSE.md).
+This is a fork of
+[`devplayer0/docker-net-dhcp`](https://github.com/devplayer0/docker-net-dhcp),
+which is GPL-3.0; as a derivative work it stays under the same license.
