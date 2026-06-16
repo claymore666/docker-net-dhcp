@@ -74,6 +74,7 @@ jobs:
           bash scripts/test-check-option-docs.sh
           bash scripts/test-check-apk-pins.sh
           bash scripts/test-check-version-pins.sh
+          bash scripts/test-integration-timing.sh
 
       # Every driver-option key the code parses must be documented in
       # docs/reference.md — an undocumented option turns CI red (#132).
