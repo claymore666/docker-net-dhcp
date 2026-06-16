@@ -112,6 +112,15 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # crane retags `:latest` onto the version manifest's exact digest
+      # (#267) — `docker buildx imagetools create` re-wraps a plugin
+      # manifest in a new index, changing the digest; crane preserves it.
+      # Go is already set up above, so install pinned from source.
+      - name: Install crane
+        run: |
+          go install github.com/google/go-containerregistry/cmd/crane@v0.21.6
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
       - name: Log in to GHCR
         uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4
         with:
@@ -137,21 +146,23 @@ jobs:
       # default PLUGIN_NAME already points at GHCR — passing it
       # explicitly here keeps the workflow self-documenting.
       #
-      # Each registry gets two pushes: the version tag AND `:latest`,
-      # so consumers can pin (`:v0.8.0`) or just track tip (`:latest`).
-      # docker plugin doesn't support tag aliasing the way regular
-      # images do — every tag is a separate push of the same rootfs.
-      # The Make `create` target rebuilds only the plugin handle, not
-      # the underlying rootfs image, so the second push is fast.
-      # `:latest` is guarded: pre-release tags never move it (and would
-      # otherwise also let a dispatch of an OLD tag silently regress
-      # what `:latest` points at — only bare vX.Y.Z tags may move it).
+      # `:latest` is published by RETAGGING the version tag's pushed
+      # manifest, not by a second build (#267). A separate `make push`
+      # re-ran `docker plugin create`, which re-tars the rootfs
+      # non-reproducibly — so the old `:latest` got its own digest,
+      # distinct from `:vX.Y.Z` AND uncovered by the cosign signature
+      # (cosign signs by digest). `imagetools create --tag` points
+      # `:latest` at the exact manifest `:vX.Y.Z` already has, so the two
+      # share one digest and the single signature below covers both.
+      # `:latest` is guarded: pre-release tags never move it (and this
+      # also stops a dispatch of an OLD tag from silently regressing what
+      # `:latest` points at — only bare vX.Y.Z tags may move it).
       - name: Push to GHCR
         run: make PLUGIN_NAME="${GHCR_NAME}" PLUGIN_TAG="${{ steps.tag.outputs.tag }}" push
 
-      - name: Push :latest to GHCR
+      - name: Tag :latest to the published GHCR digest
         if: steps.tag.outputs.prerelease != 'true'
-        run: make PLUGIN_NAME="${GHCR_NAME}" PLUGIN_TAG="latest" push
+        run: crane tag "${GHCR_NAME}:${{ steps.tag.outputs.tag }}" latest
 
       # Same plugin to Docker Hub when credentials are present. Make
       # rebuilds the rootfs with the Hub-prefixed name; the underlying
@@ -160,9 +171,29 @@ jobs:
         if: env.HAS_HUB_CREDS == 'true'
         run: make PLUGIN_NAME="${HUB_NAME}" PLUGIN_TAG="${{ steps.tag.outputs.tag }}" push
 
-      - name: Push :latest to Docker Hub
+      - name: Tag :latest to the published Docker Hub digest
         if: env.HAS_HUB_CREDS == 'true' && steps.tag.outputs.prerelease != 'true'
-        run: make PLUGIN_NAME="${HUB_NAME}" PLUGIN_TAG="latest" push
+        run: crane tag "${HUB_NAME}:${{ steps.tag.outputs.tag }}" latest
+
+      # Guard against #267 ever regressing: a real release must leave
+      # `:latest` resolving to the exact digest the version tag (and the
+      # cosign signature) carries. Hard-fail the release otherwise.
+      - name: Verify :latest resolves to the signed version digest
+        if: steps.tag.outputs.prerelease != 'true'
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          v=$(crane digest "${GHCR_NAME}:${TAG}")
+          l=$(crane digest "${GHCR_NAME}:latest")
+          [ "$v" = "$l" ] || { echo "::error::GHCR :latest ($l) != :${TAG} ($v)"; exit 1; }
+          echo "GHCR  :latest == :${TAG}  ($v)"
+          if [ "${HAS_HUB_CREDS}" = "true" ]; then
+            hv=$(crane digest "${HUB_NAME}:${TAG}")
+            hl=$(crane digest "${HUB_NAME}:latest")
+            [ "$hv" = "$hl" ] || { echo "::error::Hub :latest ($hl) != :${TAG} ($hv)"; exit 1; }
+            echo "Hub   :latest == :${TAG}  ($hv)"
+          fi
 
       # Refresh the Docker Hub long description from the repo's README
       # so the Hub page never drifts from what's on GitHub. Short
@@ -207,9 +238,10 @@ jobs:
       # Sign the published plugin images by digest (#173). docker plugins
       # are OCI artifacts, so cosign signs them like any image once we
       # resolve the registry manifest digest — `docker buildx imagetools
-      # inspect` reads it despite the plugin media type. :latest and the
-      # version tag share one digest, so one signature per registry covers
-      # both. The GHCR digest is exported for the provenance step below.
+      # inspect` reads it despite the plugin media type. Because `:latest`
+      # is retagged to the version manifest above (#267), the two share one
+      # digest, so this one signature per registry covers both. The GHCR
+      # digest is exported for the provenance step below.
       - name: Sign published images (cosign keyless)
         id: signimg
         env:
