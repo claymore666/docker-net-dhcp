@@ -596,6 +596,7 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 	}
 	client, err := udhcpc.NewDHCPClient(m.ctrLink.Attrs().Name, &udhcpc.DHCPClientOptions{
 		Hostname:  m.hostname,
+		FQDN:      m.opts.fqdnMode(),
 		V6:        v6,
 		Namespace: m.nsPath,
 		// Same MAC the CreateEndpoint one-shot used (this is the same

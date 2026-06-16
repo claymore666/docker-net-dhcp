@@ -567,6 +567,7 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 			clientOpts := &udhcpc.DHCPClientOptions{
 				V6:          v6,
 				Hostname:    hostname,
+				FQDN:        opts.fqdnMode(),
 				ClientID:    clientID,
 				VendorClass: opts.VendorClass,
 				// Pin the dhcpcd DUID-LL/IAID off the container veth's

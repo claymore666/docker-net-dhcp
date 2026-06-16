@@ -93,6 +93,9 @@ type dhcpcdParams struct {
 	Once  bool // one-shot acquisition (CreateEndpoint) vs persistent daemon
 
 	Hostname    string // hostname directive; "" omits
+	FQDN        string // fqdn directive mode (e.g. "both"); "" omits. Sends
+	//            the DHCP FQDN option (81 v4 / 39 v6) using Hostname, asking
+	//            the server to register it in DNS (#261).
 	VendorClass string // v4 option 60; "" omits (v4 only)
 	ClientID    []byte // v4 option 61 raw payload; nil/empty omits (v4 only)
 	RequestedIP string // v4 preferred address (request directive); "" omits
@@ -204,6 +207,15 @@ func renderConfig(p dhcpcdParams) string {
 
 	if p.Hostname != "" {
 		fmt.Fprintf(&b, "hostname %s\n", p.Hostname)
+	}
+	// FQDN option (81 v4 / 39 v6): opt-in dynamic-DNS registration (#261).
+	// dhcpcd sends the FQDN built from the hostname directive above and,
+	// per RFC 4702, sends it *instead of* option 12 — same name, plus the
+	// server-update request. Applies to both families, so it sits outside
+	// the v4-only block below. "both" asks the server to update forward
+	// (A/AAAA) and reverse (PTR); the client runs no DNS updater of its own.
+	if p.FQDN != "" {
+		fmt.Fprintf(&b, "fqdn %s\n", p.FQDN)
 	}
 	// vendorclassid / clientid are DHCPv4 concepts (option 60 / 61);
 	// the v6 identity is carried entirely by DUID + IAID.

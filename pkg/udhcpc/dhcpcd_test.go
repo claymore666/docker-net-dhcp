@@ -178,7 +178,7 @@ func TestRenderConfig_V6_NoPreferredOmitsIANaButKeepsIAID(t *testing.T) {
 // identity + nohooks + the interface/iaid block.
 func TestRenderConfig_OmitsAbsentOptionals(t *testing.T) {
 	conf := renderConfig(dhcpcdParams{Iface: "eth0", MAC: mustMAC(t, "de:ad:be:ef:00:01")})
-	for _, banned := range []string{"hostname ", "vendorclassid", "clientid", "request", "ia_na"} {
+	for _, banned := range []string{"hostname ", "fqdn ", "vendorclassid", "clientid", "request", "ia_na"} {
 		if strings.Contains(conf, banned) {
 			t.Errorf("minimal config contains unexpected directive %q:\n%s", banned, conf)
 		}
@@ -262,6 +262,30 @@ func TestRenderConfig_BroadcastOnlyForIPvlanV4(t *testing.T) {
 	v6Bcast := renderConfig(dhcpcdParams{Iface: "eth0", MAC: mac, V6: true, Broadcast: true})
 	if hasLine(v6Bcast, "broadcast") {
 		t.Errorf("v6 client must not emit `broadcast` (v4-only flag):\n%s", v6Bcast)
+	}
+}
+
+// TestRenderConfig_FQDN: the `fqdn` directive (opt-in DDNS, #261) is
+// emitted exactly when FQDN is set, for BOTH families (option 81 v4 /
+// option 39 v6 — one directive covers both), and omitted otherwise.
+func TestRenderConfig_FQDN(t *testing.T) {
+	mac := mustMAC(t, "de:ad:be:ef:00:01")
+
+	for _, v6 := range []bool{false, true} {
+		conf := renderConfig(dhcpcdParams{Iface: "eth0", MAC: mac, V6: v6, Hostname: "web1", FQDN: "both"})
+		if !hasLine(conf, "fqdn both") {
+			t.Errorf("v6=%v: FQDN set but `fqdn both` not emitted:\n%s", v6, conf)
+		}
+		// The name rides the hostname directive — both must be present.
+		if !hasLine(conf, "hostname web1") {
+			t.Errorf("v6=%v: fqdn directive without the hostname it names:\n%s", v6, conf)
+		}
+	}
+
+	// Absent → no fqdn directive (default off).
+	noFQDN := renderConfig(dhcpcdParams{Iface: "eth0", MAC: mac, Hostname: "web1"})
+	if strings.Contains(noFQDN, "fqdn ") {
+		t.Errorf("FQDN unset must not emit a `fqdn` directive:\n%s", noFQDN)
 	}
 }
 
