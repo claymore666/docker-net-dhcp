@@ -1,0 +1,6 @@
+# Documentation site toolchain (#133). Installed by .github/workflows/pages.yml
+# to build and version-deploy the mkdocs-material site. Compatible-release
+# pins (~=) track patch/minor fixes while holding the major; Dependabot's
+# pip ecosystem bumps them like any other dependency.
+mkdocs-material~=9.5
+mike~=2.1
