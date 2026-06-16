@@ -569,7 +569,7 @@ endpoint operation everything is back to disk-served.
 Override the location via the `STATE_DIR` env var on the plugin:
 
 ```bash
-docker plugin set ghcr.io/<your-namespace>/docker-net-dhcp:v1.1.1 STATE_DIR=/some/other/path
+docker plugin set ghcr.io/<your-namespace>/docker-net-dhcp:v1.2.0 STATE_DIR=/some/other/path
 ```
 
 ## Plugin env vars
