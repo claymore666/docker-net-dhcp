@@ -1,0 +1,1798 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Docker network plugin that leases container IPs from an existing DHCP server — bridge, macvlan, and ipvlan modes.">
+      
+      
+        <meta name="author" content="claymore666">
+      
+      
+        <link rel="canonical" href="https://claymore666.github.io/docker-net-dhcp/latest/parent-attached-modes/">
+      
+      
+        <link rel="prev" href="../bridge-mode/">
+      
+      
+        <link rel="next" href="../reference/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>macvlan / ipvlan - docker-net-dhcp</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#parent-attached-modes-macvlan-and-ipvlan" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="docker-net-dhcp" class="md-header__button md-logo" aria-label="docker-net-dhcp" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            docker-net-dhcp
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              macvlan / ipvlan
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/claymore666/docker-net-dhcp" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    claymore666/docker-net-dhcp
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href=".." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../bridge-mode/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Bridge mode
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    <li class="md-tabs__item md-tabs__item--active">
+      <a href="./" class="md-tabs__link">
+        
+  
+  
+    
+  
+  macvlan / ipvlan
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../reference/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Driver reference
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../internals/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  How it works
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../release-runbook/" class="md-tabs__link">
+          
+  
+  
+  Maintainer
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="docker-net-dhcp" class="md-nav__button md-logo" aria-label="docker-net-dhcp" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    docker-net-dhcp
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/claymore666/docker-net-dhcp" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    claymore666/docker-net-dhcp
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../bridge-mode/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Bridge mode
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    macvlan / ipvlan
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    macvlan / ipvlan
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#picking-between-macvlan-and-ipvlan" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Picking between macvlan and ipvlan
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#quick-start" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Quick start
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-happens-under-the-hood" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What happens under the hood
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#driver-options" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Driver options
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#constraints" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Constraints
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#verifying" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Verifying
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#troubleshooting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Troubleshooting
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#static-ip-requests" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Static IP requests
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#restart-stability-mac-and-ip" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Restart stability (MAC and IP)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#dhcpv6-ipv6true" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        DHCPv6 (ipv6=true)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#dhcp-identity" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        DHCP identity
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="DHCP identity">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#captured-dhcp-options" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Captured DHCP options
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#plugin-restart-recovery" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Plugin-restart recovery
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#health-endpoint" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Health endpoint
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#state-persistence" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        State persistence
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#plugin-env-vars" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Plugin env vars
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Driver reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../internals/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    How it works
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Maintainer
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Maintainer
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../release-runbook/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Release runbook
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#picking-between-macvlan-and-ipvlan" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Picking between macvlan and ipvlan
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#quick-start" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Quick start
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-happens-under-the-hood" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What happens under the hood
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#driver-options" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Driver options
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#constraints" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Constraints
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#verifying" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Verifying
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#troubleshooting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Troubleshooting
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#static-ip-requests" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Static IP requests
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#restart-stability-mac-and-ip" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Restart stability (MAC and IP)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#dhcpv6-ipv6true" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        DHCPv6 (ipv6=true)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#dhcp-identity" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        DHCP identity
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="DHCP identity">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#captured-dhcp-options" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Captured DHCP options
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#plugin-restart-recovery" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Plugin-restart recovery
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#health-endpoint" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Health endpoint
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#state-persistence" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        State persistence
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#plugin-env-vars" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Plugin env vars
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+    <a href="https://github.com/claymore666/docker-net-dhcp/edit/dev/docs/parent-attached-modes.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
+    </a>
+  
+  
+
+
+<h1 id="parent-attached-modes-macvlan-and-ipvlan">Parent-attached modes (macvlan and ipvlan)<a class="headerlink" href="#parent-attached-modes-macvlan-and-ipvlan" title="Permanent link">&para;</a></h1>
+<p><code>docker-net-dhcp</code> supports three attachment modes:</p>
+<table>
+<thead>
+<tr>
+<th>mode</th>
+<th>how containers reach the LAN</th>
+<th>each child's MAC</th>
+<th>host changes required</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>bridge</code></td>
+<td>a veth pair plugged into a Linux bridge you maintain</td>
+<td>random per veth</td>
+<td>yes — you bring the bridge</td>
+</tr>
+<tr>
+<td><code>macvlan</code></td>
+<td>a per-container macvlan child of one of the host's NICs</td>
+<td><strong>distinct</strong> (kernel-generated)</td>
+<td><strong>none</strong> — the host NIC is untouched</td>
+</tr>
+<tr>
+<td><code>ipvlan</code></td>
+<td>a per-container ipvlan child (L2 mode) of one of the host's NICs</td>
+<td><strong>shared with parent</strong></td>
+<td><strong>none</strong> — the host NIC is untouched</td>
+</tr>
+</tbody>
+</table>
+<h3 id="picking-between-macvlan-and-ipvlan">Picking between macvlan and ipvlan<a class="headerlink" href="#picking-between-macvlan-and-ipvlan" title="Permanent link">&para;</a></h3>
+<p>Both modes attach directly to a host NIC and require no Linux bridge.
+The difference is at L2: each container's MAC.</p>
+<ul>
+<li><strong><code>macvlan</code></strong> is the default choice. Each container gets its own MAC,
+  which is what most LANs and DHCP servers expect. The Fritz.Box (or
+  any home/SOHO router) sees each container as a fully distinct
+  device.</li>
+<li><strong><code>ipvlan</code></strong> (L2 mode) is the right pick when the upstream switch or
+  hypervisor refuses to bridge multiple MACs from one port. Common
+  triggers: managed switches with sticky-MAC port-security enabled,
+  Wi-Fi access points that refuse multi-MAC bridging, hypervisor
+  vSwitches with strict port policies. Children share the parent's
+  MAC; the LAN distinguishes containers by IP only.</li>
+</ul>
+<p>If macvlan works on your LAN, use macvlan. ipvlan is the escape hatch
+for hostile L2.</p>
+<h2 id="quick-start">Quick start<a class="headerlink" href="#quick-start" title="Permanent link">&para;</a></h2>
+<p>Create a network attached to one of the host's NICs:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>docker<span class="w"> </span>network<span class="w"> </span>create<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="w">    </span>--driver<span class="o">=</span>ghcr.io/&lt;your-namespace&gt;/docker-net-dhcp:latest<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">    </span>--ipam-driver<span class="o">=</span>null<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w">    </span>-o<span class="w"> </span><span class="nv">mode</span><span class="o">=</span>macvlan<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="w">    </span>-o<span class="w"> </span><span class="nv">parent</span><span class="o">=</span>ens18<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="w">    </span>lan-dhcp
+</code></pre></div>
+<p>Then attach any container the usual way — no static IP, no labels, no
+sidecar, no <code>cap_add</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nt">services</span><span class="p">:</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span><span class="nt">app</span><span class="p">:</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">    </span><span class="nt">image</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">nginx</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">    </span><span class="nt">networks</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">lan-dhcp</span><span class="p p-Indicator">]</span>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="nt">networks</span><span class="p">:</span>
+<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="w">  </span><span class="nt">lan-dhcp</span><span class="p">:</span>
+<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="w">    </span><span class="nt">external</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+</code></pre></div>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>docker<span class="w"> </span>compose<span class="w"> </span>up<span class="w"> </span>-d
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>docker<span class="w"> </span>inspect<span class="w"> </span>app<span class="w"> </span><span class="p">|</span><span class="w"> </span>jq<span class="w"> </span><span class="s1">&#39;.[0].NetworkSettings.Networks&#39;</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="c1"># IPAddress is the lease your DHCP server handed out</span>
+</code></pre></div>
+<h2 id="what-happens-under-the-hood">What happens under the hood<a class="headerlink" href="#what-happens-under-the-hood" title="Permanent link">&para;</a></h2>
+<ol>
+<li><code>docker run</code> triggers libnetwork's <code>CreateEndpoint</code> against the plugin.</li>
+<li>The plugin creates a macvlan child on the parent NIC (submode = bridge,
+   so children on the same parent can talk to each other), still in the
+   host netns.</li>
+<li>A one-shot <code>dhcpcd</code> runs on the new link — DHCPDISCOVER → REQUEST →
+   ACK from your LAN's DHCP server. The lease (IP, mask, gateway) is
+   captured.</li>
+<li>The plugin returns the link name to libnetwork via <code>Join</code>. Docker moves
+   the link into the container's netns and renames it (typically <code>eth0</code>).</li>
+<li>A persistent <code>dhcpcd</code> runs inside the container netns to renew the
+   lease for the lifetime of the endpoint. It runs observe-only
+   (<code>--noconfigure</code>); the plugin applies lease changes via netlink.</li>
+<li>On <code>docker stop</code>, libnetwork calls <code>Leave</code> → the persistent <code>dhcpcd</code>
+   gets <code>SIGTERM</code> → it sends <code>DHCPRELEASE</code> so the upstream server's
+   lease table doesn't accumulate stale entries.</li>
+<li>The macvlan link is reaped automatically when the container netns is
+   destroyed.</li>
+</ol>
+<p>The host's NIC config (IP, routes, netplan/<code>systemd-networkd</code>,
+<code>/etc/network/interfaces</code>) is <strong>never touched</strong>.</p>
+<h2 id="driver-options">Driver options<a class="headerlink" href="#driver-options" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>option</th>
+<th>mode</th>
+<th>required</th>
+<th>meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>mode</code></td>
+<td>all</td>
+<td>no</td>
+<td><code>bridge</code> (default), <code>macvlan</code>, or <code>ipvlan</code></td>
+</tr>
+<tr>
+<td><code>parent</code></td>
+<td>macvlan, ipvlan</td>
+<td>yes</td>
+<td>Host NIC to use as the parent (e.g. <code>ens18</code>, <code>eno1</code>). Must exist and be <code>UP</code>.</td>
+</tr>
+<tr>
+<td><code>bridge</code></td>
+<td>bridge</td>
+<td>yes</td>
+<td>Existing Linux bridge to plug veths into.</td>
+</tr>
+<tr>
+<td><code>gateway</code></td>
+<td>all</td>
+<td>no</td>
+<td>Override the IPv4 gateway returned by DHCP (e.g. when egress should go through a VPN router instead of the LAN's default gateway).</td>
+</tr>
+<tr>
+<td><code>ipv6</code></td>
+<td>all</td>
+<td>no</td>
+<td>Also run stateful DHCPv6 (a second <code>dhcpcd</code> with <code>-6</code>) in addition to DHCPv4 — see "DHCPv6" below for semantics and DUID/IAID identity.</td>
+</tr>
+<tr>
+<td><code>lease_timeout</code></td>
+<td>both</td>
+<td>no</td>
+<td>Initial-lease timeout for the up-front DHCP exchange (default <code>10s</code>).</td>
+</tr>
+<tr>
+<td><code>ignore_conflicts</code></td>
+<td>bridge</td>
+<td>no</td>
+<td>Skip the bridge-already-in-use check. No-op in macvlan mode.</td>
+</tr>
+<tr>
+<td><code>skip_routes</code></td>
+<td>all</td>
+<td>no</td>
+<td>Don't copy non-default static routes from the parent (bridge / macvlan parent NIC / ipvlan parent NIC) into the container. v0.9.0 extended this from bridge-only to all modes for parity (#102) — set <code>true</code> to restore pre-v0.9.0 macvlan/ipvlan no-copy behaviour.</td>
+</tr>
+<tr>
+<td><code>propagate_dns</code></td>
+<td>all</td>
+<td>no</td>
+<td>(v0.9.0+) Write DHCP option 6 / 23 (DNS server list) into the container's <code>/etc/resolv.conf</code> on bind/renew. Off by default; turning it on overrides Docker's embedded resolver for this network. The <code>search</code> line uses option 119 (Domain Search List) when supplied, falling back to option 15 (<code>Domain</code>) otherwise.</td>
+</tr>
+<tr>
+<td><code>propagate_mtu</code></td>
+<td>all</td>
+<td>no</td>
+<td>(v0.9.0+) Apply DHCP option 26 (Interface MTU) to the container link on bind/renew. Off by default; useful for jumbo-frame networks (9000) and VPN-reduced ones (~1450).</td>
+</tr>
+<tr>
+<td><code>client_id</code></td>
+<td>all</td>
+<td>no</td>
+<td>(v0.9.0+) Override DHCP option 61 (Client Identifier) for every endpoint on this network. Bytes go on the wire prefixed with type byte <code>0x00</code> (RFC 2132 opaque). Default empty keeps the per-endpoint stable id derived from the Docker endpoint ID, which is what makes per-container reservations work upstream. <strong>Caveat:</strong> a static <code>client_id</code> across containers means the DHCP server can't differentiate them. Typically only useful when paired with <code>vendor_class</code> to drive class-based policy.</td>
+</tr>
+<tr>
+<td><code>vendor_class</code></td>
+<td>all</td>
+<td>no</td>
+<td>(v0.9.0+) Override DHCP option 60 (Vendor Class Identifier). Default <code>docker-net-dhcp</code>. Lets DHCP servers running class-based policy (Cisco / Aruba / etc.) issue different gateways or option sets to containers tagged with a known vendor string. v6 unaffected — the DHCPv6 client sends no vendor-class option.</td>
+</tr>
+<tr>
+<td><code>validate_dhcp</code></td>
+<td>macvlan, ipvlan</td>
+<td>no</td>
+<td>(v0.9.0+) Pre-flight DHCP probe at <code>docker network create</code> time. Creates a temporary macvlan child on the parent NIC with a random locally-administered MAC, runs a one-shot <code>dhcpcd</code> with a 5-second budget, and rejects the network with <code>no DHCP OFFER on &lt;parent&gt; within 5s</code> if no server answers. Catches misconfigurations (parent isolated, firewall blocking UDP/67-68, broken VLAN tag) at create time rather than the first <code>docker run</code>. Cost: one transient lease per probe in the upstream pool. Bridge mode rejects the opt with a clear error.</td>
+</tr>
+<tr>
+<td><code>audit_log</code></td>
+<td>all</td>
+<td>no</td>
+<td>(v1.0.0+) Append every lease-lifecycle event on this network (<code>bound</code> / <code>renew</code> / <code>release</code>, plus <code>release_failed</code> when the DHCPRELEASE didn't complete cleanly) to <code>STATE_DIR/leases.jsonl</code> — one JSON object per line with timestamp, network, endpoint, container ID, hostname, IP, and MAC. Answers "which IP did this container hold last Tuesday?" without DHCP-server-log archaeology. Rotated at 16 MB or 30 days (whichever first), one rotated generation kept (≤ ~32 MB total). Off by default: it costs a disk write per lease event, and container↔IP correlation on disk is privacy-relevant in some environments. Append failures bump <code>ledger_write_failures</code> on <code>/Plugin.Health</code> and never affect lease handling.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="constraints">Constraints<a class="headerlink" href="#constraints" title="Permanent link">&para;</a></h2>
+<ul>
+<li>The parent NIC must support macvlan/ipvlan children. Physical
+  Ethernet, VLAN sub-interfaces, and bonds work; bridges, macvlans,
+  and ipvlans do not (you can't stack these on top of each other).</li>
+<li>The parent NIC must be administratively <code>UP</code> before you create the
+  network — the plugin won't bring it up for you (host config is
+  off-limits).</li>
+<li>Like any macvlan/ipvlan setup: a container on a child interface
+  cannot reach the parent NIC's own host IP, and vice-versa. This is a
+  kernel-level rule, not a plugin restriction. For host↔container
+  traffic you'd need bridge mode or a second NIC.</li>
+<li><strong>ipvlan-specific:</strong> custom MAC addresses are unsupported (children
+  share the parent's MAC). Passing <code>--mac-address</code> on <code>docker run</code>
+  with an ipvlan network will fail with <code>invalid MAC address</code>.</li>
+<li><strong>ipvlan-specific:</strong> only L2 mode is supported. ipvlan L3 / L3S
+  modes are not used because they'd break DHCP (DHCP requires L2
+  broadcast).</li>
+<li><strong>ipvlan-specific:</strong> if your DHCP server keys reservations solely
+  on MAC and ignores DHCP option 61 (client identifier), ipvlan
+  won't work as a stability mechanism — every ipvlan slave shares
+  the parent's MAC, so the server has no way to tell them apart.
+  Use <code>mode=macvlan</code> if your server is MAC-only. (See "DHCP
+  identity" below for what the plugin sends.)</li>
+<li><strong>ipvlan-specific:</strong> only one of macvlan or ipvlan can be active on
+  a given parent NIC at a time. The kernel rejects mixing them with
+  <code>EBUSY</code>. Use one mode per parent.</li>
+<li>The plugin requires <code>--ipam-driver=null</code> because the LAN's DHCP
+  server is the address source of truth, not Docker's IPAM.</li>
+<li>One DHCP-served network per container. If a container also joins a
+  bridge or other Docker network, that's its problem to coordinate.</li>
+</ul>
+<h2 id="verifying">Verifying<a class="headerlink" href="#verifying" title="Permanent link">&para;</a></h2>
+<p>After creating a container on the network:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="c1"># Container&#39;s view</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>docker<span class="w"> </span><span class="nb">exec</span><span class="w"> </span>&lt;container&gt;<span class="w"> </span>ip<span class="w"> </span>-4<span class="w"> </span>addr<span class="w"> </span>show
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>docker<span class="w"> </span><span class="nb">exec</span><span class="w"> </span>&lt;container&gt;<span class="w"> </span>ip<span class="w"> </span>-4<span class="w"> </span>route<span class="w"> </span>show
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="c1"># Host&#39;s view of the lease</span>
+<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>docker<span class="w"> </span>inspect<span class="w"> </span>&lt;container&gt;<span class="w"> </span><span class="p">|</span><span class="w"> </span>jq<span class="w"> </span><span class="s1">&#39;.[0].NetworkSettings.Networks&#39;</span>
+<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a>
+<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="c1"># Upstream DHCP server&#39;s view (Fritz.Box, pfSense, etc.)</span>
+<a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a><span class="c1"># — check the active leases page in your router&#39;s UI; the container&#39;s</span>
+<a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a><span class="c1"># MAC and hostname should appear.</span>
+</code></pre></div>
+<p>A container on a macvlan should be pingable from any other host on the LAN
+on the IP its DHCP server handed it.</p>
+<h2 id="troubleshooting">Troubleshooting<a class="headerlink" href="#troubleshooting" title="Permanent link">&para;</a></h2>
+<p><strong>"parent interface is unsuitable for macvlan"</strong> — you passed a bridge,
+macvlan, or ipvlan as <code>parent</code>. Use a real NIC, a VLAN sub-interface,
+or a bond.</p>
+<p><strong>"ipvlan does not support a custom MAC address"</strong> — <code>docker run --mac-address</code>
+isn't compatible with <code>mode=ipvlan</code> because ipvlan children share the
+parent's MAC. Drop the <code>--mac-address</code> flag, or switch the network to
+<code>mode=macvlan</code> if you need distinct MACs.</p>
+<p><strong>"parent interface is down"</strong> — <code>ip link set &lt;parent&gt; up</code> and try again.
+The plugin won't toggle host link state.</p>
+<p><strong>Container gets no IP</strong> — check that the parent NIC is on the right L2
+segment, that DHCP traffic isn't being filtered (some managed switches
+have DHCP snooping or storm-control turned on), and that the upstream
+DHCP server has a free lease in its pool.</p>
+<p><strong><code>docker plugin install</code> reports "invalid rootfs"</strong> — your Docker daemon
+is too old. Plugin requires Docker 23+.</p>
+<p><strong>Compose silently doesn't attach the container to the DHCP network.</strong>
+Compose merges base and override files at the top-level <code>networks:</code> map
+<em>key by key</em>, not file by file. A common deployment shape with this
+plugin is "use built-in macvlan in dev, switch to an external pre-created
+DHCP network in prod" — written as:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="c1"># docker-compose.yml (base)</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="nt">networks</span><span class="p">:</span>
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="w">  </span><span class="nt">lan</span><span class="p">:</span>
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="w">    </span><span class="nt">driver</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">macvlan</span>
+<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="w">    </span><span class="nt">driver_opts</span><span class="p">:</span>
+<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="w">      </span><span class="nt">parent</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">${LAN_INTERFACE:-eth0}</span>
+<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="w">    </span><span class="nt">ipam</span><span class="p">:</span>
+<a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a><span class="w">      </span><span class="nt">config</span><span class="p">:</span>
+<a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a><span class="w">        </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">subnet</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">192.168.0.0/24</span>
+<a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a><span class="w">          </span><span class="nt">gateway</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">192.168.0.1</span>
+<a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a><span class="w">          </span><span class="nt">ip_range</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">192.168.0.200/30</span>
+<a id="__codelineno-4-12" name="__codelineno-4-12" href="#__codelineno-4-12"></a>
+<a id="__codelineno-4-13" name="__codelineno-4-13" href="#__codelineno-4-13"></a><span class="c1"># docker-compose.prod.yml (override)</span>
+<a id="__codelineno-4-14" name="__codelineno-4-14" href="#__codelineno-4-14"></a><span class="nt">networks</span><span class="p">:</span>
+<a id="__codelineno-4-15" name="__codelineno-4-15" href="#__codelineno-4-15"></a><span class="w">  </span><span class="nt">lan</span><span class="p">:</span>
+<a id="__codelineno-4-16" name="__codelineno-4-16" href="#__codelineno-4-16"></a><span class="w">    </span><span class="nt">external</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+<a id="__codelineno-4-17" name="__codelineno-4-17" href="#__codelineno-4-17"></a><span class="w">    </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">lan-shared</span>
+</code></pre></div>
+<p>Compose merges these into a hybrid: <code>external: true</code> AND <code>driver: macvlan</code>
+AND <code>ipam.config: [...]</code>. At runtime Compose silently skips attaching
+your service to <code>lan</code> because the merged result doesn't match either
+contract (pure-external attach vs internal-create). The container comes
+up attached only to the other networks listed in <code>services.&lt;name&gt;.networks</code>.</p>
+<p>Diagnostic: run <code>docker compose -f docker-compose.yml -f docker-compose.prod.yml config</code>
+and check the merged <code>networks.lan</code> block. If you see <code>external: true</code>
+alongside <code>driver</code> or <code>ipam</code>, you've hit this trap.</p>
+<p>Fixes (consumer-side; the plugin can't influence Compose's merge logic):</p>
+<ul>
+<li><strong>Best</strong>: don't define <code>lan</code> in the base file at all. Move the dev
+  definition into <code>docker-compose.dev.yml</code> and the prod override into
+  <code>docker-compose.prod.yml</code>. Each file then <em>replaces</em> <code>lan</code> entirely.</li>
+<li><strong>Acceptable</strong>: keep base, but in the override redefine <code>lan</code> with
+  every key the base sets to <code>null</code> to wipe them: <code>driver: null</code>,
+  <code>driver_opts: null</code>, <code>ipam: null</code>, <code>external: true</code>, <code>name: lan-shared</code>.
+  Brittle — each new key in base needs a matching null in override.</li>
+<li><strong>Workaround for stuck operators</strong>: <code>docker network connect lan-shared
+  &lt;container&gt;</code> after <code>docker compose up</code>. One-shot fix; doesn't survive
+  recreate.</li>
+</ul>
+<h2 id="static-ip-requests">Static IP requests<a class="headerlink" href="#static-ip-requests" title="Permanent link">&para;</a></h2>
+<p>Plugin networks use <code>--ipam-driver=null</code>, which means <code>docker run --ip=</code>
+is rejected by the daemon before it ever reaches the plugin. To pin an
+IP per container, use the per-endpoint driver option instead — the
+plugin reads it as a hint and passes it to <code>dhcpcd</code> as a <code>request</code>
+directive (DHCP option 50) on the initial DISCOVER:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>docker<span class="w"> </span>create<span class="w"> </span>--name<span class="w"> </span>app<span class="w"> </span>alpine<span class="w"> </span>sleep<span class="w"> </span><span class="m">600</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>docker<span class="w"> </span>network<span class="w"> </span>connect<span class="w"> </span>--driver-opt<span class="w"> </span><span class="nv">ip</span><span class="o">=</span><span class="m">192</span>.168.0.55<span class="w"> </span>lan-dhcp<span class="w"> </span>app
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>docker<span class="w"> </span>start<span class="w"> </span>app
+</code></pre></div>
+<p>Compose:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="nt">services</span><span class="p">:</span>
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="w">  </span><span class="nt">app</span><span class="p">:</span>
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="w">    </span><span class="nt">image</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">alpine</span>
+<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="w">    </span><span class="nt">command</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">sleep 600</span>
+<a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="w">    </span><span class="nt">networks</span><span class="p">:</span>
+<a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a><span class="w">      </span><span class="nt">lan-dhcp</span><span class="p">:</span>
+<a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a><span class="w">        </span><span class="nt">driver_opts</span><span class="p">:</span>
+<a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a><span class="w">          </span><span class="nt">ip</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">192.168.0.55</span>
+<a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a>
+<a id="__codelineno-6-10" name="__codelineno-6-10" href="#__codelineno-6-10"></a><span class="nt">networks</span><span class="p">:</span>
+<a id="__codelineno-6-11" name="__codelineno-6-11" href="#__codelineno-6-11"></a><span class="w">  </span><span class="nt">lan-dhcp</span><span class="p">:</span>
+<a id="__codelineno-6-12" name="__codelineno-6-12" href="#__codelineno-6-12"></a><span class="w">    </span><span class="nt">external</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+</code></pre></div>
+<p>Whether the upstream DHCP server actually honors the request is up to
+the server. Most enterprise DHCP servers (ISC, dnsmasq, Windows DHCP)
+do; Fritz.Box does <strong>not</strong> unless you also configure a UI-side static
+reservation for the container's MAC. With a stable MAC (which the
+plugin gives you across restarts), that reservation persists.</p>
+<p><code>ip</code> must be a bare IPv4 address. There is no <code>ip6</code> driver-opt; request
+a specific v6 address with <code>--ip6</code> / <code>Interface.AddressIPv6</code> instead
+(honored since v1.2.0 — see the v6 hint note below).</p>
+<h2 id="restart-stability-mac-and-ip">Restart stability (MAC and IP)<a class="headerlink" href="#restart-stability-mac-and-ip" title="Permanent link">&para;</a></h2>
+<p>The plugin keeps the container's MAC stable across <code>docker restart</code>
+so the upstream DHCP server (Fritz.Box, pfSense, etc.) sees one
+device, not a new one per restart. This matters because most
+home-grade DHCP servers key reservations on MAC — without
+stability the lease table fills up with stale (MAC, IP) pairs and
+fragments the pool.</p>
+<p>The mechanism is a short-lived tombstone written at
+<code>DeleteEndpoint</code> and consumed at the next <code>CreateEndpoint</code> on the
+same network within 60 seconds. It carries the previous MAC and
+the most-recent leased IP. The next initial DISCOVER passes the
+IP to <code>dhcpcd</code> via the <code>request</code> directive (DHCP option 50, a hint).
+The TTL is generous enough
+to cover both <code>docker restart &lt;ctr&gt;</code> (sub-second) and
+<code>systemctl restart docker</code> (typically 15–30 s while the daemon
+re-attaches all containers).</p>
+<ul>
+<li><strong>MAC stability</strong>: works always. <code>docker inspect</code> and the LAN
+  see the same MAC across restarts.</li>
+<li><strong>IP stability via the requested-IP hint</strong>: works on DHCP servers
+  that honor option 50 (Requested IP). Fritz.Box specifically does
+  <strong>not</strong> honor it without a UI-side reservation; it walks the
+  pool and hands out the next free address even when the same MAC
+  is presented. The fix is to configure a Fritz.Box static
+  reservation on the now-stable MAC: Heimnetz → Netzwerk → pick
+  the device → "Diesem Netzwerkgerät immer die gleiche IPv4-Adresse
+  zuweisen". Once set, every subsequent restart gets that IP.</li>
+</ul>
+<p>Concurrent restarts of multiple containers on the same network
+within the 60-second window fall back to fresh MACs to avoid
+swapping identities between containers. Tombstones also carry the
+container's hostname so that two restarts in flight can be
+told apart when the hostname is known on both sides; only when
+neither side knows the hostname does the network-wide
+"exactly one match" rule apply. Sequential restarts (the typical
+case) always satisfy the rule.</p>
+<h2 id="dhcpv6-ipv6true">DHCPv6 (<code>ipv6=true</code>)<a class="headerlink" href="#dhcpv6-ipv6true" title="Permanent link">&para;</a></h2>
+<p>Enabling <code>-o ipv6=true</code> runs a second persistent client (a <code>dhcpcd</code>
+with <code>-6</code>) alongside the v4 one — <strong>stateful DHCPv6</strong>, not SLAAC. The
+exact create incantation (note: the Docker-level <code>--ipv6</code> flag does
+NOT work with the null IPAM driver and is not what you want):</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>docker<span class="w"> </span>network<span class="w"> </span>create<span class="w"> </span>-d<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v1.2.0<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="w">    </span>--ipam-driver<span class="w"> </span>null<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="w">    </span>-o<span class="w"> </span><span class="nv">mode</span><span class="o">=</span>macvlan<span class="w"> </span>-o<span class="w"> </span><span class="nv">parent</span><span class="o">=</span>eth0<span class="w"> </span>-o<span class="w"> </span><span class="nv">ipv6</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="w">    </span>lan-dhcp6
+</code></pre></div>
+<p>What you get, and the boundaries (v1.0.0 audit, #103):</p>
+<ul>
+<li>The container's interface carries the DHCPv6-leased address as a
+  <code>/128</code> alongside its v4 address; <code>docker inspect</code> reports it as
+  <code>GlobalIPv6Address</code>. Renewal follows the server's T1 like v4.</li>
+<li><strong>The default gateway stays RA-delegated</strong>: DHCPv6 carries no
+  router option by design; the container netns kernel honors Router
+  Advertisements on its own (<code>accept_ra</code> default). The plugin's
+  <code>gateway</code> override option is v4-only.</li>
+<li><strong>Client identity is the DUID, and it's stable.</strong> <code>dhcpcd</code> is given
+  a DUID-LL (type 3) derived from the interface MAC via pinned literal
+  config — no timestamp, so the same MAC always produces the same DUID.
+  The <strong>IAID is pinned from the MAC too</strong> (this is the v1.2.0 #152 fix:
+  the previous client set the IAID randomly per process, so the
+  one-shot and persistent clients disagreed and the leased address was
+  never renewed). Server-side v6 reservations therefore stick exactly
+  as far as MAC stability reaches: across plugin restarts/upgrades (the
+  container link keeps its MAC) and across container restarts
+  (tombstones, see "Restart stability"). <strong>ipvlan caveat:</strong> all ipvlan
+  children share the parent's MAC, so they share one DUID <em>and</em> one
+  IAID — per-container v6 reservations are not practical in ipvlan mode
+  (same shape as the v4 MAC limitation).</li>
+<li><strong>Static-v6 hint (v1.2.0+):</strong> a requested v6 address — <code>--ip6</code> /
+  <code>Interface.AddressIPv6</code>, or the address inherited from a tombstone on
+  restart — is sent to dhcpcd as the IA_NA preferred address
+  (<code>ia_na &lt;iaid&gt; / ADDR</code>), the v6 counterpart of <code>--ip</code>. The server
+  still has final say, but a dual-stack container now keeps its v6
+  address across <code>docker restart</code> like it keeps v4. (DUID-keyed
+  upstream reservations still work and stack with this.)</li>
+<li><code>propagate_dns=true</code> also covers v6: the DHCPv6 option-23 server
+  list is written to <code>resolv.conf</code> on v6 bind/renew. The two
+  families are last-writer-wins on that file.</li>
+<li><strong>The Docker-visible v6 address is renewed (v1.2.0, #152).</strong> The
+  one-shot and persistent clients now share one pinned identity
+  association (same DUID <em>and</em> IAID), so the persistent client renews
+  the very lease that sits on the container's interface — there is no
+  longer a second, divergent lease. (Before v1.2.0 the two clients drew
+  different IAIDs, so the interface address could outlive its
+  server-side lease on networks with short v6 lease times.)</li>
+<li>DHCPv6-PD (prefix delegation) is out of scope (tracked separately,
+  #214).</li>
+</ul>
+<h2 id="dhcp-identity">DHCP identity<a class="headerlink" href="#dhcp-identity" title="Permanent link">&para;</a></h2>
+<p>Every DHCP exchange the plugin runs on a container's behalf carries
+the same identity fields, regardless of attachment mode:</p>
+<ul>
+<li><strong>Hostname (option 12)</strong> — taken from the container's
+  <code>hostname</code> (Compose <code>hostname:</code>, <code>docker run --hostname</code>). DHCP
+  servers that auto-update DNS (<code>dnsmasq</code> with
+  <code>--dhcp-hostsfile</code>, the typical SOHO-router behaviour) will
+  publish the container under that name. Best-effort on the
+  initial DISCOVER (we wait up to 2 s for libnetwork to bind the
+  endpoint to a container ID); the persistent renewal client
+  always sends it.</li>
+<li><strong>Vendor class (option 60)</strong> — the literal string
+  <code>docker-net-dhcp</code>. Lets DHCP servers gate behaviour (e.g. a
+  separate pool for plugin-managed containers) without parsing
+  hostname conventions. v4 only — DHCPv6 has no equivalent.
+  Override per-network with <code>-o vendor_class=&lt;string&gt;</code> (v0.9.0+)
+  for sites running class-based DHCP policy (Cisco / Aruba style).</li>
+<li><strong>Client identifier (option 61)</strong> — eight bytes derived from
+  the Docker endpoint ID, prefixed by the type byte 0
+  (per-client opaque, RFC 2132). Stable across container
+  restarts on the same network because the EndpointID is —
+  meaning DHCP servers that key reservations on option 61
+  (rather than MAC) keep handing the same lease back. This is
+  the mechanism that makes ipvlan stability work, since every
+  ipvlan slave shares the parent's MAC; for macvlan and bridge
+  it's a redundant safety net. Override per-network with
+  <code>-o client_id=&lt;string&gt;</code> (v0.9.0+); rarely useful since a static
+  ID across containers means the server can't differentiate them.</li>
+</ul>
+<h3 id="captured-dhcp-options">Captured DHCP options<a class="headerlink" href="#captured-dhcp-options" title="Permanent link">&para;</a></h3>
+<p>The plugin captures every option the upstream server returns and
+surfaces them in two ways:</p>
+<ul>
+<li><strong>Auto-applied</strong> when the network has the corresponding opt-in:</li>
+<li>Option 6 / 23 (DNS server list) → <code>/etc/resolv.conf</code> when
+    <code>propagate_dns=true</code></li>
+<li>Option 26 (Interface MTU) → container link MTU when
+    <code>propagate_mtu=true</code></li>
+<li>Option 119 (DNS Search List) → resolv.conf <code>search</code> line when
+    <code>propagate_dns=true</code>. Falls back to option 15 (<code>Domain</code>)
+    when 119 is absent.</li>
+<li><strong>Surfaced via plugin log</strong> at info level on every bound /
+  renew, gated on at least one being non-empty so plain LANs see
+  no extra noise:</li>
+<li>Option 42 (NTP servers, env <code>ntpsrv</code>)</li>
+<li>Option 66 (TFTP server name, env <code>tftp</code>)</li>
+<li>Option 67 (Boot file name, env <code>bootfile</code>)</li>
+<li>Option 119 (when <code>propagate_dns=false</code>)</li>
+</ul>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>level=info msg=&quot;DHCP options received&quot; ntp=[192.168.0.123]
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>  tftp=tftp.example.test bootfile=pxelinux.0
+<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a>  search=[corp.example internal.example] ...
+</code></pre></div>
+<p>Workloads needing NTP / TFTP / boot-file can grep the plugin log
+or wire a sidecar to it. The plugin doesn't auto-apply these
+because (a) the consuming application owns the config file, not
+the plugin, and (b) writing into <code>/etc/ntp.conf</code> etc. would mean
+yet more setns into the container's mount namespace per renewal.</p>
+<h2 id="plugin-restart-recovery">Plugin-restart recovery<a class="headerlink" href="#plugin-restart-recovery" title="Permanent link">&para;</a></h2>
+<p><code>docker plugin disable &amp;&amp; enable</code>, plugin upgrade, and plugin
+crashes used to leave running containers on the plugin's networks
+without a renewal client — the lease would silently expire and
+the container would lose its IP.</p>
+<p>The plugin now walks Docker's network list at startup, finds the
+endpoints attached to plugin-served networks, and rebuilds an
+in-memory DHCP manager for each. The first <code>dhcpcd</code> acquisition
+requests <code>LAST_IP</code> (option 50) so the upstream server ACKs the lease
+the container is already using rather than handing out a fresh address.</p>
+<p>Recovery runs synchronously inside <code>NewPlugin</code> before the plugin
+socket starts accepting requests, so a fresh <code>CreateEndpoint</code>
+arriving during enable can't race the recovery path. Per-endpoint
+results land on <code>/Plugin.Health</code> as <code>recovered_ok</code> / <code>recovery_failed</code>.</p>
+<p>The same recovery path also covers <code>systemctl restart docker</code> —
+the daemon brings every plugin back as part of its startup. In
+practice MAC/IP is preserved either via this path (when the
+daemon's graceful shutdown didn't get to call <code>Leave</code>) or via the
+tombstone path (when it did), and both produce the same
+user-visible outcome.</p>
+<h2 id="health-endpoint">Health endpoint<a class="headerlink" href="#health-endpoint" title="Permanent link">&para;</a></h2>
+<p><code>/Plugin.Health</code> on the plugin's Unix socket returns:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="p">{</span>
+<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="w">  </span><span class="nt">&quot;healthy&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
+<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="w">  </span><span class="nt">&quot;uptime_seconds&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">12345.6</span><span class="p">,</span>
+<a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="w">  </span><span class="nt">&quot;active_endpoints&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">3</span><span class="p">,</span>
+<a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a><span class="w">  </span><span class="nt">&quot;pending_hints&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span>
+<a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a><span class="w">  </span><span class="nt">&quot;recovered_ok&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span>
+<a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a><span class="w">  </span><span class="nt">&quot;recovery_failed&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span>
+<a id="__codelineno-9-8" name="__codelineno-9-8" href="#__codelineno-9-8"></a><span class="w">  </span><span class="nt">&quot;tombstone_write_failures&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span>
+<a id="__codelineno-9-9" name="__codelineno-9-9" href="#__codelineno-9-9"></a><span class="w">  </span><span class="nt">&quot;lease_changed&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span>
+<a id="__codelineno-9-10" name="__codelineno-9-10" href="#__codelineno-9-10"></a><span class="w">  </span><span class="nt">&quot;leases_obtained&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">17</span><span class="p">,</span>
+<a id="__codelineno-9-11" name="__codelineno-9-11" href="#__codelineno-9-11"></a><span class="w">  </span><span class="nt">&quot;leases_renewed&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">42</span><span class="p">,</span>
+<a id="__codelineno-9-12" name="__codelineno-9-12" href="#__codelineno-9-12"></a><span class="w">  </span><span class="nt">&quot;dhcp_timeouts&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span>
+<a id="__codelineno-9-13" name="__codelineno-9-13" href="#__codelineno-9-13"></a><span class="w">  </span><span class="nt">&quot;lease_release_failures&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span>
+<a id="__codelineno-9-14" name="__codelineno-9-14" href="#__codelineno-9-14"></a><span class="w">  </span><span class="nt">&quot;naks_received&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span>
+<a id="__codelineno-9-15" name="__codelineno-9-15" href="#__codelineno-9-15"></a><span class="w">  </span><span class="nt">&quot;lease_changed_v6&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span>
+<a id="__codelineno-9-16" name="__codelineno-9-16" href="#__codelineno-9-16"></a><span class="w">  </span><span class="nt">&quot;leases_obtained_v6&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">4</span><span class="p">,</span>
+<a id="__codelineno-9-17" name="__codelineno-9-17" href="#__codelineno-9-17"></a><span class="w">  </span><span class="nt">&quot;leases_renewed_v6&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">11</span><span class="p">,</span>
+<a id="__codelineno-9-18" name="__codelineno-9-18" href="#__codelineno-9-18"></a><span class="w">  </span><span class="nt">&quot;dhcp_timeouts_v6&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span>
+<a id="__codelineno-9-19" name="__codelineno-9-19" href="#__codelineno-9-19"></a><span class="w">  </span><span class="nt">&quot;naks_received_v6&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span>
+<a id="__codelineno-9-20" name="__codelineno-9-20" href="#__codelineno-9-20"></a><span class="p">}</span>
+</code></pre></div>
+<p>Field meanings:</p>
+<ul>
+<li><code>healthy</code> — <code>false</code> when at least one of <code>recovery_failed</code> or
+  <code>tombstone_write_failures</code> is non-zero. The plugin keeps serving
+  fresh attaches in either case, but <code>false</code> means an operator
+  should look: a recovery failure means a previously-attached
+  container is now running without lease renewal, and a tombstone
+  write failure means the next restart of some container will pick
+  a fresh MAC/IP rather than inheriting the previous one.</li>
+<li><code>active_endpoints</code> — count of DHCP managers currently registered
+  (post-<code>Join</code>, pre-<code>Leave</code>).</li>
+<li><code>pending_hints</code> — count of <code>joinHint</code> entries waiting to be
+  consumed by a <code>Join</code> (steady-state should be ~0).</li>
+<li><code>recovered_ok</code> / <code>recovery_failed</code> — counters bumped by the
+  plugin-restart recovery path (running endpoints rebuilt vs.
+  endpoints whose rebuild failed).</li>
+<li><code>tombstone_write_failures</code> — counter bumped on any
+  <code>addTombstone</code> save failure (disk full, EROFS, etc.).</li>
+</ul>
+<p>DHCP-wire counters (v0.9.0+):</p>
+<ul>
+<li><code>lease_changed</code> — bumps when a renewal returns a different IP
+  than the manager last recorded. Docker's <code>NetworkSettings.IPAddress</code>
+  view does NOT update on lease change (libnetwork has no in-place
+  endpoint-IP swap RPC); this counter is the operator-facing signal
+  that a stale-inspect window has opened. Worth alerting on for
+  long-running containers.</li>
+<li><code>leases_obtained</code> — <code>dhcpcd</code> bind-event count (<code>BOUND</code>/<code>REBOOT</code> and
+  the v6 equivalents): initial bind or re-bind after a NAK / lease loss
+  from the persistent client.</li>
+<li><code>leases_renewed</code> — <code>dhcpcd</code> <code>RENEW</code>/<code>REBIND</code> event count (v4 and v6).</li>
+<li><code>dhcp_timeouts</code> — DHCP-acquisition-failure count. <code>dhcpcd</code> only fires
+  a hook when a <em>bound</em> lease lapses (<code>EXPIRE</code>) and stays silent while
+  it re-discovers, so this counter is driven both by those <code>EXPIRE</code>
+  events and by a periodic outage watchdog that bumps it while the
+  client is unbound and still trying — it keeps climbing for the whole
+  duration of an upstream outage.</li>
+<li><code>lease_release_failures</code> — <code>dhcpManager.Stop</code>'s SIGTERM →
+  DHCPRELEASE → exit didn't complete cleanly. The upstream may now
+  hold a phantom lease against the container's MAC until natural
+  expiry. A pattern of these typically points at upstream
+  reachability problems mid-teardown.</li>
+<li><code>naks_received</code> (v1.0.0+) — the server NAKed a renewal/rebind
+  REQUEST (pool reconfigured, address reassigned, lease revoked).
+  <code>dhcpcd</code> recovers by re-DISCOVERing, so each NAK is typically
+  followed by <code>leases_obtained</code> and — if the address moved —
+  <code>lease_changed</code> bumps. NAKs climbing alongside <code>lease_changed</code>
+  means containers are being re-addressed mid-life: <code>docker
+  inspect</code> goes stale (see <code>lease_changed</code> above) and anything
+  keyed on the old IPs needs attention.</li>
+</ul>
+<p>Per-family breakdown (v1.2.0+):</p>
+<ul>
+<li><code>lease_changed_v6</code>, <code>leases_obtained_v6</code>, <code>leases_renewed_v6</code>,
+  <code>dhcp_timeouts_v6</code>, <code>naks_received_v6</code> — the IPv6 share of the
+  matching aggregate above. The un-suffixed counters remain v4+v6
+  totals, so the IPv4 share is <code>&lt;counter&gt; − &lt;counter&gt;_v6</code>. On a
+  dual-stack host these isolate the v6-specific failure signal (a
+  v6 NAK or timeout) that the aggregate alone would mask — the
+  view you want while watching the DHCPv6 client.</li>
+</ul>
+<p>Sample call from a host shell:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a>sudo<span class="w"> </span>curl<span class="w"> </span>--unix-socket<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="w">  </span>/run/docker/plugins/&lt;plugin-id&gt;/net-dhcp.sock<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="w">  </span>http://./Plugin.Health
+</code></pre></div>
+<p>Where <code>&lt;plugin-id&gt;</code> is the long ID from <code>docker plugin inspect</code>.
+Use it as a liveness check from your monitoring stack; anything
+that can talk to the plugin socket can poll it.</p>
+<h2 id="state-persistence">State persistence<a class="headerlink" href="#state-persistence" title="Permanent link">&para;</a></h2>
+<p>Per-network options are persisted inside the plugin to
+<code>/var/lib/net-dhcp/&lt;network_id&gt;.json</code> on <code>docker network create</code>. This
+exists so the per-endpoint handlers (<code>CreateEndpoint</code>, <code>Join</code>,
+<code>EndpointOperInfo</code>, <code>DeleteEndpoint</code>) don't need to call back into the
+docker API to learn the mode/parent/etc — which is what made the
+upstream plugin deadlock during <code>dockerd</code> startup when it was being
+asked to restore containers using its own networks.</p>
+<p>State survives plugin enable/disable cycles. It is reset on
+<code>docker plugin rm</code> or <code>docker plugin upgrade</code>. After an upgrade,
+existing networks transparently fall back to the docker API on first
+read, which then back-fills the persisted state — so by the second
+endpoint operation everything is back to disk-served.</p>
+<p>Override the location via the <code>STATE_DIR</code> env var on the plugin:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a>docker<span class="w"> </span>plugin<span class="w"> </span><span class="nb">set</span><span class="w"> </span>ghcr.io/&lt;your-namespace&gt;/docker-net-dhcp:v1.1.1<span class="w"> </span><span class="nv">STATE_DIR</span><span class="o">=</span>/some/other/path
+</code></pre></div>
+<h2 id="plugin-env-vars">Plugin env vars<a class="headerlink" href="#plugin-env-vars" title="Permanent link">&para;</a></h2>
+<p>All settable via <code>docker plugin set &lt;ref&gt; KEY=VALUE</code>. None require a
+plugin restart — <code>docker plugin disable &amp;&amp; enable</code> picks them up.</p>
+<table>
+<thead>
+<tr>
+<th>name</th>
+<th>default</th>
+<th>meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>LOG_LEVEL</code></td>
+<td><code>info</code></td>
+<td>logrus level (<code>trace</code>, <code>debug</code>, <code>info</code>, <code>warn</code>, <code>error</code>). <code>trace</code> includes per-event <code>dhcpcd</code> lines and full HTTP-RPC bodies.</td>
+</tr>
+<tr>
+<td><code>AWAIT_TIMEOUT</code></td>
+<td><code>10s</code></td>
+<td>Cap on the polling helpers (waits for sandbox readiness, container hostname lookup, link rename, netns appearance). Bump if a slow Docker restore window starves the per-endpoint Start.</td>
+</tr>
+<tr>
+<td><code>STATE_DIR</code></td>
+<td><code>/var/lib/net-dhcp</code></td>
+<td>Where per-network options and the tombstone file live. Override if you want them on a tmpfs or a different volume.</td>
+</tr>
+</tbody>
+</table>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+        
+<div class="md-social">
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://github.com/claymore666/docker-net-dhcp" target="_blank" rel="noopener" title="github.com" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+    </a>
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://github.com/claymore666/docker-net-dhcp/pkgs/container/docker-net-dhcp" target="_blank" rel="noopener" title="github.com" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M349.9 236.3h-66.1v-59.4h66.1zm0-204.3h-66.1v60.7h66.1zm78.2 144.8H362v59.4h66.1zm-156.3-72.1h-66.1v60.1h66.1zm78.1 0h-66.1v60.1h66.1zm276.8 100c-14.4-9.7-47.6-13.2-73.1-8.4-3.3-24-16.7-44.9-41.1-63.7l-14-9.3-9.3 14c-18.4 27.8-23.4 73.6-3.7 103.8-8.7 4.7-25.8 11.1-48.4 10.7H2.4c-8.7 50.8 5.8 116.8 44 162.1 37.1 43.9 92.7 66.2 165.4 66.2 157.4 0 273.9-72.5 328.4-204.2 21.4.4 67.6.1 91.3-45.2 1.5-2.5 6.6-13.2 8.5-17.1zm-511.1-27.9h-66v59.4h66.1v-59.4zm78.1 0h-66.1v59.4h66.1zm78.1 0h-66.1v59.4h66.1zm-78.1-72.1h-66.1v60.1h66.1z"/></svg>
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.tabs", "navigation.sections", "navigation.top", "navigation.instant", "navigation.tracking", "content.code.copy", "content.action.edit", "search.suggest", "search.highlight"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"default": "latest", "provider": "mike"}}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>
