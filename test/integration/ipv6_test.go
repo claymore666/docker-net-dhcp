@@ -512,7 +512,9 @@ func TestDUID_PersistsAcrossPluginRestart(t *testing.T) {
 		if duidBefore = leaseDUIDForV6(t, fixture.LeaseFile(), v6); duidBefore != "" {
 			break
 		}
-		time.Sleep(time.Second)
+		// Cheap lease-file read; 250ms poll trims overshoot, 30s
+		// deadline unchanged (#254).
+		time.Sleep(250 * time.Millisecond)
 	}
 	if duidBefore == "" {
 		t.Fatalf("no v6 lease entry for %s in the dnsmasq lease DB", v6)
@@ -555,7 +557,9 @@ func TestDUID_PersistsAcrossPluginRestart(t *testing.T) {
 			rebound = true
 			break
 		}
-		time.Sleep(time.Second)
+		// Cheap log read; 250ms poll trims overshoot past the
+		// post-restart REPLY, 90s deadline unchanged (#254).
+		time.Sleep(250 * time.Millisecond)
 	}
 	if !rebound {
 		t.Fatalf("no post-restart DHCPREPLY for %s within 90s — recovered dhcpcd v6 client never re-bound", v6)
