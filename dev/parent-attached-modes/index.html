@@ -1675,7 +1675,7 @@ existing networks transparently fall back to the docker API on first
 read, which then back-fills the persisted state — so by the second
 endpoint operation everything is back to disk-served.</p>
 <p>Override the location via the <code>STATE_DIR</code> env var on the plugin:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a>docker<span class="w"> </span>plugin<span class="w"> </span><span class="nb">set</span><span class="w"> </span>ghcr.io/&lt;your-namespace&gt;/docker-net-dhcp:v1.1.1<span class="w"> </span><span class="nv">STATE_DIR</span><span class="o">=</span>/some/other/path
+<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a>docker<span class="w"> </span>plugin<span class="w"> </span><span class="nb">set</span><span class="w"> </span>ghcr.io/&lt;your-namespace&gt;/docker-net-dhcp:v1.2.0<span class="w"> </span><span class="nv">STATE_DIR</span><span class="o">=</span>/some/other/path
 </code></pre></div>
 <h2 id="plugin-env-vars">Plugin env vars<a class="headerlink" href="#plugin-env-vars" title="Permanent link">&para;</a></h2>
 <p>All settable via <code>docker plugin set &lt;ref&gt; KEY=VALUE</code>. None require a
