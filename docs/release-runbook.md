@@ -247,10 +247,10 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
    ```sh
    gh release view vX.Y.Z   # body = the RELEASE_NOTES section; assets:
                             #   net-dhcp-plugin-vX.Y.Z-linux-amd64.tar.gz
-                            #   checksums.txt{,.sig,.pem}
+                            #   checksums.txt + checksums.txt.sigstore.json
    # Re-verify the signature the way a downstream consumer would:
    cosign verify-blob \
-     --certificate checksums.txt.pem --signature checksums.txt.sig \
+     --bundle checksums.txt.sigstore.json \
      --certificate-identity-regexp '^https://github.com/claymore666/docker-net-dhcp/.github/workflows/release.yml@' \
      --certificate-oidc-issuer https://token.actions.githubusercontent.com \
      checksums.txt

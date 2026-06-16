@@ -4,12 +4,16 @@
 # branch (runbook step 2) instead of hand-editing each snippet.
 #
 # Only occurrences of the plugin image reference
-#   ghcr.io/claymore666/docker-net-dhcp:vX.Y.Z
+#   ghcr.io/<namespace>/docker-net-dhcp:vX.Y.Z
 # are rewritten, so install/usage snippets (plugin install, network
 # create, driver:, plugin inspect) all move to the new version while
 # bare "vX.Y.Z" feature markers and historical prose ("as of v1.2.0",
 # "v1.1.0 onward") are left untouched — the image ref is the thing that
-# distinguishes a pin from prose.
+# distinguishes a pin from prose. The namespace is matched generically
+# (not just claymore666) so placeholder examples like
+# "ghcr.io/<your-namespace>/docker-net-dhcp:vX.Y.Z" bump too — that
+# placeholder surviving a release at the old tag was the drift this
+# generalisation closes.
 #
 # Idempotent and old-version-agnostic: it rewrites whatever version each
 # pin currently carries, so a partially-bumped tree self-heals.
@@ -26,10 +30,11 @@ case "$VER" in
         ;;
 esac
 
-IMAGE="ghcr.io/claymore666/docker-net-dhcp"
-# Escape dots for the regex (the image ref has none beyond the host, but
-# keep it correct if the constant ever changes).
-IMAGE_RE="${IMAGE//./\\.}"
+# Match the plugin image at any namespace: ghcr.io/<ns>/docker-net-dhcp.
+# The namespace is one path segment (the real claymore666 or a doc
+# placeholder like <your-namespace>); the distinctive suffix is the
+# image name, which is what separates a pin from prose.
+IMAGE_RE='ghcr\.io/[^/[:space:]]+/docker-net-dhcp'
 
 files=()
 for f in README.md docs/*.md; do
