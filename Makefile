@@ -20,7 +20,7 @@ debug: $(BINARY)
 	sudo $< -log debug
 
 build: $(SOURCES)
-	docker build -t $(PLUGIN_NAME):rootfs .
+	DOCKER_BUILDKIT=1 docker build -t $(PLUGIN_NAME):rootfs .
 
 plugin/rootfs: build
 	mkdir -p plugin/rootfs
@@ -58,7 +58,7 @@ push: create
 # installs continue to use `make create enable` / the unparameterized
 # image. The two tags coexist on the same host without conflicting.
 build-cover: $(SOURCES)
-	docker build --build-arg COVER_FLAGS="-cover -coverpkg=./..." -t $(PLUGIN_NAME):rootfs-cover .
+	DOCKER_BUILDKIT=1 docker build --build-arg COVER_FLAGS="-cover -coverpkg=./..." -t $(PLUGIN_NAME):rootfs-cover .
 
 plugin-cover/rootfs: build-cover
 	mkdir -p plugin-cover/rootfs

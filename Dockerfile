@@ -1,3 +1,9 @@
+# syntax=docker/dockerfile:1
+# The syntax directive enables BuildKit's RUN --mount=type=cache below.
+# Docker >= 23 (the runner is 26.1.5) defaults to BuildKit; the Makefile
+# also exports DOCKER_BUILDKIT=1 so the classic builder can never be
+# picked up and choke on the mount flags.
+
 FROM golang:1.26-alpine@sha256:7a3e50096189ad57c9f9f865e7e4aa8585ed1585248513dc5cda498e2f41812c AS builder
 
 # COVER_FLAGS is empty for the production build and `-cover -coverpkg=./...`
@@ -9,11 +15,22 @@ ARG COVER_FLAGS=
 
 WORKDIR /usr/local/src/docker-net-dhcp
 COPY go.* ./
-RUN go mod download
+# Persist the module cache across builds: unchanged go.* means no
+# re-download, and the modules survive even when the build layer is
+# invalidated by a code change (#255).
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download
 
 COPY cmd/ ./cmd/
 COPY pkg/ ./pkg/
-RUN mkdir bin/ && go build $COVER_FLAGS -o bin/ ./cmd/...
+# The COPY above invalidates this layer on every code change, so go build
+# re-runs each PR — but the mounted build cache makes it INCREMENTAL:
+# only the packages that actually changed recompile, the rest are reused.
+# Go's build cache is keyed on source + flags, so the production and
+# -cover builds never reuse each other's objects (no stale-digest hazard).
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    mkdir bin/ && go build $COVER_FLAGS -o bin/ ./cmd/...
 
 
 FROM alpine:3.24.0@sha256:a2d49ea686c2adfe3c992e47dc3b5e7fa6e6b5055609400dc2acaeb241c829f4
