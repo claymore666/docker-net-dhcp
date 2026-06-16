@@ -1,4 +1,4 @@
-package udhcpc
+package dhcp
 
 import (
 	"net"
@@ -339,12 +339,12 @@ func TestRenderArgs_OneShotV4(t *testing.T) {
 	got := renderArgs(dhcpcdParams{
 		Iface:      "eth0",
 		Once:       true,
-		Handler:    "/usr/lib/net-dhcp/udhcpc-handler",
+		Handler:    "/usr/lib/net-dhcp/dhcp-handler",
 		ConfigPath: "/run/net-dhcp/eth0-v4.conf",
 	})
 	want := []string{
 		"dhcpcd", "-B", "--noconfigure", "-L", "-A",
-		"-c", "/usr/lib/net-dhcp/udhcpc-handler",
+		"-c", "/usr/lib/net-dhcp/dhcp-handler",
 		"-f", "/run/net-dhcp/eth0-v4.conf",
 		"-1", "-p", "-4", "eth0",
 	}

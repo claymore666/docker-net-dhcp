@@ -1,4 +1,4 @@
-package udhcpc
+package dhcp
 
 import (
 	"encoding/binary"
@@ -147,7 +147,7 @@ func renderConfig(p dhcpcdParams) string {
 	}
 
 	// Forward GOCOVERDIR to the hook in the coverage-instrumented build
-	// so cmd/udhcpc-handler's `-cover` counters are written and merged.
+	// so cmd/dhcp-handler's `-cover` counters are written and merged.
 	// dhcpcd scrubs the environment, so — like the FIFO above — it has to
 	// ride the `env` directive; otherwise the handler (a separate process
 	// dhcpcd execs per event) loses GOCOVERDIR and emits nothing, and the

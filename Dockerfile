@@ -49,6 +49,6 @@ RUN mkdir -p /run/docker/plugins /var/lib/net-dhcp && \
         iproute2=7.0.0-r0
 
 COPY --from=builder /usr/local/src/docker-net-dhcp/bin/net-dhcp /usr/sbin/
-COPY --from=builder /usr/local/src/docker-net-dhcp/bin/udhcpc-handler /usr/lib/net-dhcp/udhcpc-handler
+COPY --from=builder /usr/local/src/docker-net-dhcp/bin/dhcp-handler /usr/lib/net-dhcp/dhcp-handler
 
 ENTRYPOINT ["/usr/sbin/net-dhcp"]

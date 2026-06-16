@@ -6,14 +6,14 @@ import (
 
 	log "github.com/sirupsen/logrus"
 
-	"github.com/devplayer0/docker-net-dhcp/pkg/udhcpc"
+	"github.com/devplayer0/docker-net-dhcp/pkg/dhcp"
 )
 
 // main is a thin shim invoked by dhcpcd as its --script hook on every
 // network event. dhcpcd passes the event in the $reason environment
 // variable (not argv) along with the lease as new_*/old_* variables;
 // the env-parsing logic that turns those into a structured Event lives
-// in pkg/udhcpc.BuildEvent so it can be unit-tested without involving
+// in pkg/dhcp.BuildEvent so it can be unit-tested without involving
 // os.Setenv / os.Exit. Anything more than reason lookup, getenv
 // passthrough, FIFO selection, and JSON encoding belongs in the library.
 //
@@ -23,7 +23,7 @@ import (
 // channel (it's /dev/null once dhcpcd daemonises and is interleaved
 // with dhcpcd's own log in foreground), so events go to the FIFO whose
 // path the plugin passes in via the dhcpcd `env` directive
-// (udhcpc.EventFIFOEnv). When that var is unset we fall back to stdout
+// (dhcp.EventFIFOEnv). When that var is unset we fall back to stdout
 // so the handler stays runnable by hand for debugging.
 func main() {
 	reason := os.Getenv("reason")
@@ -32,13 +32,13 @@ func main() {
 		return
 	}
 
-	event, emit := udhcpc.BuildEvent(reason, os.Getenv)
+	event, emit := dhcp.BuildEvent(reason, os.Getenv)
 	if !emit {
 		return
 	}
 
 	out := os.Stdout
-	if fifo := os.Getenv(udhcpc.EventFIFOEnv); fifo != "" {
+	if fifo := os.Getenv(dhcp.EventFIFOEnv); fifo != "" {
 		// The plugin holds the read end open (O_RDWR), so this open
 		// succeeds immediately. One short JSON line per event; close
 		// after writing so the line is flushed and we don't hold the

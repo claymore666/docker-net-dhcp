@@ -12,7 +12,7 @@
 // minutes — they are split out of the main suite into
 // `make integration-test-failure` (second CI step).
 //
-// dhcpcd timing facts the asserts below lean on (see pkg/udhcpc):
+// dhcpcd timing facts the asserts below lean on (see pkg/dhcp):
 //   - a dead server produces NO event at T1/T2 (dhcpcd retries silently
 //     while re-discovering); the first internal "leasefail" comes from
 //     dhcpcd's EXPIRE when the bound lease finally lapses (at expiry),

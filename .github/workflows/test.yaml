@@ -61,7 +61,7 @@ jobs:
         run: |
           for target in FuzzBuildEvent FuzzEventUnmarshal; do
             echo "::group::${target}"
-            go test ./pkg/udhcpc/ -run '^$' -fuzz "^${target}$" -fuzztime 20s
+            go test ./pkg/dhcp/ -run '^$' -fuzz "^${target}$" -fuzztime 20s
             echo "::endgroup::"
           done
 

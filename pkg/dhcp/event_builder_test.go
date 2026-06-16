@@ -1,4 +1,4 @@
-package udhcpc
+package dhcp
 
 import (
 	"reflect"

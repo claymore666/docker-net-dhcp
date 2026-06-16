@@ -1,4 +1,4 @@
-package udhcpc
+package dhcp
 
 import (
 	"encoding/json"
@@ -79,7 +79,7 @@ func FuzzBuildEvent(f *testing.F) {
 }
 
 // FuzzEventUnmarshal exercises the other untrusted boundary: the
-// newline-delimited JSON the udhcpc-handler binary writes into the
+// newline-delimited JSON the dhcp-handler binary writes into the
 // event pipe, which DHCPClient.Start decodes one line at a time
 // (client.go: json.Unmarshal(scanner.Bytes(), &event)). The bytes
 // cross a process boundary, so the decoder must tolerate any input
