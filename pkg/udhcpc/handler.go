@@ -44,6 +44,19 @@ type Info struct {
 	// var `new_bootfile_name`). Same surfacing semantics as TFTPServer.
 	BootFile string `json:",omitempty"`
 
+	// WPAD is the Web Proxy Auto-Discovery URL from DHCP option 252
+	// (dhcpcd env var `new_wpad`; option 252 is non-standard, so the
+	// config `define`s it). PosixTimezone / TZDBTimezone come from the
+	// RFC 4833 timezone options 100 (PCode, `new_posix_timezone`) and
+	// 101 (TCode, `new_tzdb_timezone`); TimeOffset is the legacy option 2
+	// (seconds from UTC, `new_time_offset`). All observe-only, like
+	// TFTPServer/BootFile: surfaced to operators via plugin logs, never
+	// pushed into the container (the no-plumbing bar, #262).
+	WPAD          string `json:",omitempty"`
+	PosixTimezone string `json:",omitempty"`
+	TZDBTimezone  string `json:",omitempty"`
+	TimeOffset    string `json:",omitempty"`
+
 	// Routes are the classless static routes from DHCP option 121
 	// (RFC 3442, dhcpcd env var `new_classless_static_routes`). v4 only —
 	// DHCPv6 carries no route option (routes come from RAs). Empty when

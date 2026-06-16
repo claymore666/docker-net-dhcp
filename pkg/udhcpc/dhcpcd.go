@@ -92,8 +92,8 @@ type dhcpcdParams struct {
 	V6    bool
 	Once  bool // one-shot acquisition (CreateEndpoint) vs persistent daemon
 
-	Hostname    string // hostname directive; "" omits
-	FQDN        string // fqdn directive mode (e.g. "both"); "" omits. Sends
+	Hostname string // hostname directive; "" omits
+	FQDN     string // fqdn directive mode (e.g. "both"); "" omits. Sends
 	//            the DHCP FQDN option (81 v4 / 39 v6) using Hostname, asking
 	//            the server to register it in DNS (#261).
 	VendorClass string // v4 option 60; "" omits (v4 only)
@@ -162,6 +162,13 @@ func renderConfig(p dhcpcdParams) string {
 		fmt.Fprintf(&b, "nohook %s\n", h)
 	}
 
+	// WPAD (option 252) is non-standard, so dhcpcd has no built-in name
+	// for it — define one (as a string) before requesting it below.
+	// dhcpcd 10.x does not pre-define 252, so this never conflicts
+	// (verified against the image's dhcpcd; bare `option wpad` is rejected
+	// without this). #262.
+	fmt.Fprintf(&b, "define 252 string wpad\n")
+
 	// Explicitly request the options the plugin propagates. Passing
 	// `-f <config>` bypasses the distro /etc/dhcpcd.conf, so dhcpcd would
 	// otherwise fall back to a minimal built-in request set and never
@@ -172,7 +179,10 @@ func renderConfig(p dhcpcdParams) string {
 	// families; options that don't apply to the active protocol are
 	// ignored. Routers/subnet/classless-static-routes are in dhcpcd's
 	// defaults but are listed for explicitness and to be robust to a
-	// default change.
+	// default change. posix_timezone/tzdb_timezone/time_offset/wpad
+	// (options 100/101/2/252) are observe-only informational extras
+	// surfaced in logs (#262) — these are dhcpcd's actual names for
+	// those codes (NOT pcode/tcode, which dhcpcd rejects).
 	fmt.Fprintf(&b, "option %s\n", strings.Join([]string{
 		"subnet_mask",
 		"broadcast_address",
@@ -186,6 +196,10 @@ func renderConfig(p dhcpcdParams) string {
 		"tftp_server_name",
 		"bootfile_name",
 		"classless_static_routes",
+		"time_offset",
+		"posix_timezone",
+		"tzdb_timezone",
+		"wpad",
 	}, ", "))
 
 	// Persistent client only: release the lease on graceful stop (busybox

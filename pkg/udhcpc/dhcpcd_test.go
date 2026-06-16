@@ -305,6 +305,10 @@ func TestRenderConfig_RequestsPropagatedOptions(t *testing.T) {
 		"tftp_server_name",    // option 66
 		"bootfile_name",       // option 67
 		"routers",             // option 3 (gateway)
+		"time_offset",         // option 2 (#262)
+		"posix_timezone",      // option 100 (#262)
+		"tzdb_timezone",       // option 101 (#262)
+		"wpad",                // option 252 (#262, requires the define below)
 	}
 	for _, v6 := range []bool{false, true} {
 		conf := renderConfig(dhcpcdParams{Iface: "eth0", MAC: mac, V6: v6})
@@ -322,6 +326,11 @@ func TestRenderConfig_RequestsPropagatedOptions(t *testing.T) {
 			if !strings.Contains(optLine, o) {
 				t.Errorf("v6=%v: option request line missing %q\n%s", v6, o, optLine)
 			}
+		}
+		// WPAD (252) is non-standard: dhcpcd rejects bare `option wpad`
+		// without an explicit define first (#262).
+		if !hasLine(conf, "define 252 string wpad") {
+			t.Errorf("v6=%v: config requests `wpad` but is missing `define 252 string wpad`:\n%s", v6, conf)
 		}
 	}
 }

@@ -412,14 +412,20 @@ surfaces them in two ways:
   - Option 66 (TFTP server name, env `tftp`)
   - Option 67 (Boot file name, env `bootfile`)
   - Option 119 (when `propagate_dns=false`)
+  - Option 252 (WPAD proxy-autoconfig URL, log field `wpad`)
+  - Options 100 / 101 (RFC 4833 timezone, log fields `posix_tz` /
+    `tzdb_tz`) and option 2 (legacy time offset in seconds,
+    `time_offset`)
 
 ```text
 level=info msg="DHCP options received" ntp=[192.168.0.123]
   tftp=tftp.example.test bootfile=pxelinux.0
-  search=[corp.example internal.example] ...
+  search=[corp.example internal.example]
+  wpad=http://wpad.example/wpad.dat posix_tz=PST8PDT
+  tzdb_tz=Europe/Berlin time_offset=3600 ...
 ```
 
-Workloads needing NTP / TFTP / boot-file can grep the plugin log
+Workloads needing NTP / TFTP / boot-file / WPAD / timezone can grep the plugin log
 or wire a sidecar to it. The plugin doesn't auto-apply these
 because (a) the consuming application owns the config file, not
 the plugin, and (b) writing into `/etc/ntp.conf` etc. would mean

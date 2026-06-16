@@ -26,6 +26,10 @@ func TestBuildEvent_BoundV4_AllOptions(t *testing.T) {
 		"new_tftp_server_name":    "tftp.example.test",
 		"new_bootfile_name":       "pxelinux.0",
 		"new_interface_mtu":       "1400",
+		"new_wpad":                "http://wpad.corp.example/wpad.dat",
+		"new_posix_timezone":      "CET-1CEST,M3.5.0,M10.5.0/3",
+		"new_tzdb_timezone":       "Europe/Berlin",
+		"new_time_offset":         "3600",
 	})
 
 	got, emit := BuildEvent("BOUND", env)
@@ -35,19 +39,40 @@ func TestBuildEvent_BoundV4_AllOptions(t *testing.T) {
 	want := Event{
 		Type: "bound",
 		Data: Info{
-			IP:         "192.168.99.10/24",
-			Gateway:    "192.168.99.1",
-			Domain:     "corp.example",
-			DNSServers: []string{"192.168.99.53", "192.168.99.54"},
-			MTU:        1400,
-			NTPServers: []string{"192.168.99.123", "192.168.99.124"},
-			SearchList: []string{"corp.example", "internal.example"},
-			TFTPServer: "tftp.example.test",
-			BootFile:   "pxelinux.0",
+			IP:            "192.168.99.10/24",
+			Gateway:       "192.168.99.1",
+			Domain:        "corp.example",
+			DNSServers:    []string{"192.168.99.53", "192.168.99.54"},
+			MTU:           1400,
+			NTPServers:    []string{"192.168.99.123", "192.168.99.124"},
+			SearchList:    []string{"corp.example", "internal.example"},
+			TFTPServer:    "tftp.example.test",
+			BootFile:      "pxelinux.0",
+			WPAD:          "http://wpad.corp.example/wpad.dat",
+			PosixTimezone: "CET-1CEST,M3.5.0,M10.5.0/3",
+			TZDBTimezone:  "Europe/Berlin",
+			TimeOffset:    "3600",
 		},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("Event mismatch:\ngot:  %+v\nwant: %+v", got, want)
+	}
+}
+
+// TestBuildEvent_BoundV4_InformationalOptionsAbsent: the WPAD/timezone
+// extras (#262) are observe-only and optional — absent env vars leave
+// them empty, never blocking the event.
+func TestBuildEvent_BoundV4_InformationalOptionsAbsent(t *testing.T) {
+	got, emit := BuildEvent("BOUND", fakeEnv(map[string]string{
+		"new_ip_address":  "192.168.99.10",
+		"new_subnet_cidr": "24",
+		"new_routers":     "192.168.99.1",
+	}))
+	if !emit {
+		t.Fatalf("emit=false on a minimal BOUND event")
+	}
+	if got.Data.WPAD != "" || got.Data.PosixTimezone != "" || got.Data.TZDBTimezone != "" || got.Data.TimeOffset != "" {
+		t.Errorf("informational extras should be empty when unset, got %+v", got.Data)
 	}
 }
 
