@@ -1,4 +1,4 @@
-package udhcpc
+package dhcp
 
 import (
 	"bufio"
@@ -23,7 +23,7 @@ import (
 )
 
 const (
-	DefaultHandler = "/usr/lib/net-dhcp/udhcpc-handler"
+	DefaultHandler = "/usr/lib/net-dhcp/dhcp-handler"
 	VendorID       = "docker-net-dhcp"
 
 	// dhcpcdStateDir is dhcpcd's compile-time database directory (DUID +

@@ -5,12 +5,12 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/devplayer0/docker-net-dhcp/pkg/udhcpc"
+	"github.com/devplayer0/docker-net-dhcp/pkg/dhcp"
 	"github.com/devplayer0/docker-net-dhcp/pkg/util"
 )
 
 func TestDHCPStaticRoutes(t *testing.T) {
-	got := dhcpStaticRoutes([]udhcpc.Route{
+	got := dhcpStaticRoutes([]dhcp.Route{
 		{Destination: "10.0.0.0/8", Gateway: "192.168.99.2"}, // next-hop
 		{Destination: "172.16.0.0/12"},                       // on-link (empty gateway)
 	})

@@ -23,7 +23,7 @@ import (
 	log "github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
 
-	"github.com/devplayer0/docker-net-dhcp/pkg/udhcpc"
+	"github.com/devplayer0/docker-net-dhcp/pkg/dhcp"
 	"github.com/devplayer0/docker-net-dhcp/pkg/util"
 )
 
@@ -228,7 +228,7 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 			tCtx, cancel := context.WithTimeout(ctx, timeout)
 			defer cancel()
 
-			clientOpts := &udhcpc.DHCPClientOptions{
+			clientOpts := &dhcp.DHCPClientOptions{
 				V6:          v6,
 				Hostname:    hostname,
 				FQDN:        opts.fqdnMode(),
@@ -248,7 +248,7 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 			} else {
 				clientOpts.RequestedIP = requestedIP
 			}
-			info, err := udhcpc.GetIP(tCtx, la.Name, clientOpts)
+			info, err := dhcp.GetIP(tCtx, la.Name, clientOpts)
 			if err != nil {
 				return fmt.Errorf("failed to get initial IP%v address via DHCP%v: %w", v6str, v6str, err)
 			}

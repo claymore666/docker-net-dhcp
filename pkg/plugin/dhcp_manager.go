@@ -15,7 +15,7 @@ import (
 	"github.com/vishvananda/netns"
 	"golang.org/x/sys/unix"
 
-	"github.com/devplayer0/docker-net-dhcp/pkg/udhcpc"
+	"github.com/devplayer0/docker-net-dhcp/pkg/dhcp"
 	"github.com/devplayer0/docker-net-dhcp/pkg/util"
 )
 
@@ -293,7 +293,7 @@ func (m *dhcpManager) findContainerPID(ctx context.Context) (int, error) {
 	return 0, fmt.Errorf("endpoint %s not found in network %s container list", shortID(m.joinReq.EndpointID), shortID(m.joinReq.NetworkID))
 }
 
-func (m *dhcpManager) renew(v6 bool, info udhcpc.Info) error {
+func (m *dhcpManager) renew(v6 bool, info dhcp.Info) error {
 	v4, v6Last := m.lastIPs()
 	lastIP := v4
 	if v6 {
@@ -318,7 +318,7 @@ func (m *dhcpManager) renew(v6 bool, info udhcpc.Info) error {
 			WithFields(m.logFields(v6)).
 			WithField("old_ip", lastIP).
 			WithField("new_ip", ip).
-			Warn("udhcpc renew with changed IP — Docker's view is now stale")
+			Warn("dhcp renew with changed IP — Docker's view is now stale")
 
 		// Apply the re-acquired lease to the link. Found by
 		// TestFailure_LeaseRefusedOnRenewal (#128): without this the
@@ -431,7 +431,7 @@ func (m *dhcpManager) renew(v6 bool, info udhcpc.Info) error {
 	}
 
 	// Apply DHCP option 26 (Interface MTU) when both opt-in and
-	// non-zero. Skipping zero is mandatory: udhcpc-handler emits 0
+	// non-zero. Skipping zero is mandatory: dhcp-handler emits 0
 	// when the server didn't supply the option, and forcing MTU 0
 	// on a kernel link is undefined / disallowed.
 	if m.opts.PropagateMTU && info.MTU > 0 {
@@ -475,7 +475,7 @@ func (m *dhcpManager) renew(v6 bool, info udhcpc.Info) error {
 			log.
 				WithFields(m.logFields(v6)).
 				WithField("gateway", newGateway).
-				Info("udhcpc renew adding default route")
+				Info("dhcp renew adding default route")
 
 			if err := m.netHandle.RouteAdd(&netlink.Route{
 				LinkIndex: m.ctrLink.Attrs().Index,
@@ -488,7 +488,7 @@ func (m *dhcpManager) renew(v6 bool, info udhcpc.Info) error {
 				WithFields(m.logFields(v6)).
 				WithField("old_gateway", routes[0].Gw).
 				WithField("new_gateway", newGateway).
-				Info("udhcpc renew replacing default route")
+				Info("dhcp renew replacing default route")
 
 			routes[0].Gw = newGateway
 			if err := m.netHandle.RouteReplace(&routes[0]); err != nil {
@@ -518,7 +518,7 @@ func bumpFamily(total, v6Counter *atomic.Int32, v6 bool) {
 	}
 }
 
-func (m *dhcpManager) handleEvent(event udhcpc.Event, v6 bool) {
+func (m *dhcpManager) handleEvent(event dhcp.Event, v6 bool) {
 	switch event.Type {
 	// "deconfig" is intentionally not handled. Deleting the
 	// container's IP from the kernel would also wipe the
@@ -548,7 +548,7 @@ func (m *dhcpManager) handleEvent(event udhcpc.Event, v6 bool) {
 	case "renew":
 		log.
 			WithFields(m.logFields(v6)).
-			Debug("udhcpc renew")
+			Debug("dhcp renew")
 
 		if m.plugin != nil {
 			bumpFamily(&m.plugin.leasesRenewed, &m.plugin.leasesRenewedV6, v6)
@@ -566,12 +566,12 @@ func (m *dhcpManager) handleEvent(event udhcpc.Event, v6 bool) {
 		if m.plugin != nil {
 			bumpFamily(&m.plugin.dhcpTimeouts, &m.plugin.dhcpTimeoutsV6, v6)
 		}
-		log.WithFields(m.logFields(v6)).Warn("udhcpc failed to get a lease")
+		log.WithFields(m.logFields(v6)).Warn("dhcp failed to get a lease")
 	case "nak":
 		if m.plugin != nil {
 			bumpFamily(&m.plugin.naksReceived, &m.plugin.naksReceivedV6, v6)
 		}
-		log.WithFields(m.logFields(v6)).Warn("udhcpc client received NAK")
+		log.WithFields(m.logFields(v6)).Warn("dhcp client received NAK")
 	}
 }
 
@@ -609,7 +609,7 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 			preferredV6 = v6Addr.IP.String()
 		}
 	}
-	client, err := udhcpc.NewDHCPClient(m.ctrLink.Attrs().Name, &udhcpc.DHCPClientOptions{
+	client, err := dhcp.NewDHCPClient(m.ctrLink.Attrs().Name, &dhcp.DHCPClientOptions{
 		Hostname:  m.hostname,
 		FQDN:      m.opts.fqdnMode(),
 		V6:        v6,
@@ -675,14 +675,14 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 				if !ok {
 					// dhcpcd exited on its own (NAK, parent NIC vanished,
 					// container netns torn down out from under us, etc.).
-					// The scanner goroutine in udhcpc.Start closes events
+					// The scanner goroutine in dhcp.Start closes events
 					// when its read pipe hits EOF. Without this branch,
 					// `<-events` on a closed channel returns the zero
 					// Event{} every iteration, the switch matches nothing,
 					// and we burn a CPU thread forever.
 					log.
 						WithFields(m.logFields(v6)).
-						Warn("udhcpc event stream closed; client process exited")
+						Warn("dhcp event stream closed; client process exited")
 
 					// Reap the child so it doesn't linger as a zombie:
 					// cmd.Wait must be called exactly once per process,
@@ -693,7 +693,7 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 						log.
 							WithError(err).
 							WithFields(m.logFields(v6)).
-							Debug("udhcpc reap returned error")
+							Debug("dhcp reap returned error")
 					}
 					reapCancel()
 
