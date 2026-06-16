@@ -1539,12 +1539,18 @@ surfaces them in two ways:</p>
 <li>Option 66 (TFTP server name, env <code>tftp</code>)</li>
 <li>Option 67 (Boot file name, env <code>bootfile</code>)</li>
 <li>Option 119 (when <code>propagate_dns=false</code>)</li>
+<li>Option 252 (WPAD proxy-autoconfig URL, log field <code>wpad</code>)</li>
+<li>Options 100 / 101 (RFC 4833 timezone, log fields <code>posix_tz</code> /
+    <code>tzdb_tz</code>) and option 2 (legacy time offset in seconds,
+    <code>time_offset</code>)</li>
 </ul>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>level=info msg=&quot;DHCP options received&quot; ntp=[192.168.0.123]
 <a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>  tftp=tftp.example.test bootfile=pxelinux.0
-<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a>  search=[corp.example internal.example] ...
+<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a>  search=[corp.example internal.example]
+<a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a>  wpad=http://wpad.example/wpad.dat posix_tz=PST8PDT
+<a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a>  tzdb_tz=Europe/Berlin time_offset=3600 ...
 </code></pre></div>
-<p>Workloads needing NTP / TFTP / boot-file can grep the plugin log
+<p>Workloads needing NTP / TFTP / boot-file / WPAD / timezone can grep the plugin log
 or wire a sidecar to it. The plugin doesn't auto-apply these
 because (a) the consuming application owns the config file, not
 the plugin, and (b) writing into <code>/etc/ntp.conf</code> etc. would mean
