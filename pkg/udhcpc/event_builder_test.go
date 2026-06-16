@@ -367,3 +367,78 @@ func TestBuildEvent_BoundV6_MultipleDNS6Servers(t *testing.T) {
 		t.Errorf("DNSServers = %v, want %v", got.Data.DNSServers, want)
 	}
 }
+
+// Option 121 (classless static routes, RFC 3442).
+
+func TestBuildEvent_ClasslessRoutes_NextHopAndOnLink(t *testing.T) {
+	got, emit := BuildEvent("BOUND", fakeEnv(map[string]string{
+		"new_ip_address":  "192.168.99.10",
+		"new_subnet_cidr": "24",
+		"new_routers":     "192.168.99.1",
+		// next-hop route, then an on-link route (gateway 0.0.0.0).
+		"new_classless_static_routes": "10.0.0.0/8 192.168.99.2 172.16.0.0/12 0.0.0.0",
+	}))
+	if !emit {
+		t.Fatal("emit=false on a well-formed BOUND event")
+	}
+	want := []Route{
+		{Destination: "10.0.0.0/8", Gateway: "192.168.99.2"},
+		{Destination: "172.16.0.0/12"}, // on-link: empty gateway
+	}
+	if !reflect.DeepEqual(got.Data.Routes, want) {
+		t.Errorf("Routes = %+v, want %+v", got.Data.Routes, want)
+	}
+	// No opt-121 default route present, so option 3 still sets the gateway.
+	if got.Data.Gateway != "192.168.99.1" {
+		t.Errorf("Gateway = %q, want the option-3 router", got.Data.Gateway)
+	}
+}
+
+func TestBuildEvent_ClasslessDefaultRoute_SupersedesRouters(t *testing.T) {
+	got, _ := BuildEvent("BOUND", fakeEnv(map[string]string{
+		"new_ip_address":  "192.168.99.10",
+		"new_subnet_cidr": "24",
+		"new_routers":     "192.168.99.1",
+		// A 0.0.0.0/0 entry must win over new_routers per RFC 3442, and
+		// must NOT appear among the static routes.
+		"new_classless_static_routes": "0.0.0.0/0 192.168.99.254 10.0.0.0/8 192.168.99.2",
+	}))
+	if got.Data.Gateway != "192.168.99.254" {
+		t.Errorf("Gateway = %q, want the opt-121 default route to supersede routers", got.Data.Gateway)
+	}
+	want := []Route{{Destination: "10.0.0.0/8", Gateway: "192.168.99.2"}}
+	if !reflect.DeepEqual(got.Data.Routes, want) {
+		t.Errorf("Routes = %+v, want only the non-default route %+v", got.Data.Routes, want)
+	}
+}
+
+func TestBuildEvent_ClasslessRoutes_MalformedEntriesSkippedBestEffort(t *testing.T) {
+	got, emit := BuildEvent("BOUND", fakeEnv(map[string]string{
+		"new_ip_address":  "192.168.99.10",
+		"new_subnet_cidr": "24",
+		// bad destination, bad gateway, then a valid route, then an odd
+		// trailing token — none may drop the event or the valid route.
+		"new_classless_static_routes": "not-a-cidr 192.168.99.2 10.0.0.0/8 not-an-ip 192.168.50.0/24 192.168.99.3 192.168.60.0/24",
+	}))
+	if !emit {
+		t.Fatal("a malformed route must not drop the whole lease event")
+	}
+	want := []Route{{Destination: "192.168.50.0/24", Gateway: "192.168.99.3"}}
+	if !reflect.DeepEqual(got.Data.Routes, want) {
+		t.Errorf("Routes = %+v, want only the one valid route %+v", got.Data.Routes, want)
+	}
+}
+
+func TestBuildEvent_NoClasslessRoutes_LeavesRoutesNilAndKeepsRouters(t *testing.T) {
+	got, _ := BuildEvent("BOUND", fakeEnv(map[string]string{
+		"new_ip_address":  "192.168.99.10",
+		"new_subnet_cidr": "24",
+		"new_routers":     "192.168.99.1",
+	}))
+	if got.Data.Routes != nil {
+		t.Errorf("Routes = %+v, want nil when option 121 is absent", got.Data.Routes)
+	}
+	if got.Data.Gateway != "192.168.99.1" {
+		t.Errorf("Gateway = %q, want the option-3 router unchanged", got.Data.Gateway)
+	}
+}

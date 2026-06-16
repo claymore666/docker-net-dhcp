@@ -146,13 +146,26 @@ Passed as `-o key=value` on `docker network create`, or under
 | `ipv6` | all | `false` | upstream; functional again in v1.0.0 | Also run stateful DHCPv6 (a second `dhcpcd` with `-6`) alongside DHCPv4 — see the [DHCPv6 section](parent-attached-modes.md#dhcpv6-ipv6true) for semantics and DUID/IAID identity. The Docker-visible v6 address is renewed as of v1.2.0 (#152). |
 | `lease_timeout` | all | `10s` | upstream | Budget for the up-front DHCP exchange at container creation. Raise on slow/relayed networks (`-o lease_timeout=60s`). |
 | `ignore_conflicts` | bridge | `false` | upstream | Skip the bridge-already-in-use check against other Docker networks. No-op in macvlan/ipvlan. |
-| `skip_routes` | all | `false` | upstream; all modes since v0.9.0 | Don't copy non-default static routes from the parent (bridge or NIC) into containers. v0.9.0 extended route-copying from bridge-only to all modes (#102); set `true` to restore the old macvlan/ipvlan no-copy behaviour. |
+| `skip_routes` | all | `false` | upstream; all modes since v0.9.0 | Don't copy non-default static routes from the parent (bridge or NIC) into containers, **and** don't apply DHCP-supplied classless static routes (option 121, see below). v0.9.0 extended parent route-copying from bridge-only to all modes (#102); set `true` to restore the old macvlan/ipvlan no-copy behaviour. The default gateway is unaffected either way. |
 | `propagate_dns` | all | `false` | v0.9.0 | Write the DHCP-supplied DNS server list (option 6 / v6 option 23) into the container's `/etc/resolv.conf` on every bind/renew. Overrides Docker's embedded resolver for this network; the `search` line uses option 119 with fallback to option 15. |
 | `propagate_mtu` | all | `false` | v0.9.0 | Apply DHCP option 26 (Interface MTU) to the container link on bind/renew. For jumbo-frame (9000) and VPN-reduced (~1450) networks. |
 | `client_id` | all | per-endpoint id | v0.9.0 | Override DHCP option 61 (Client Identifier) for every endpoint on this network; sent as RFC 2132 opaque bytes (type `0x00`). The default per-endpoint id is what makes per-container reservations work — a fixed `client_id` makes all containers look like one client to the server. Pair with `vendor_class` for class-based policy. |
 | `vendor_class` | all | `docker-net-dhcp` | v0.9.0 | Override DHCP option 60 (Vendor Class Identifier), for DHCP servers running class-based policy (different gateway/option sets per class). v4 only — the DHCPv6 client sends no vendor-class option. |
 | `validate_dhcp` | macvlan, ipvlan | `false` | v0.9.0 | Pre-flight probe at `docker network create`: one-shot DHCP exchange on the parent with a random locally-administered MAC, rejecting the network if no server answers within 5s. Catches isolated parents / blocked UDP 67-68 / broken VLAN tags at create time. Costs one transient lease per probe. Bridge mode rejects the option. |
 | `audit_log` | all | `false` | v1.0.0 | Append every lease-lifecycle event (`bound` / `renew` / `release` / `release_failed`) to `STATE_DIR/leases.jsonl` — one JSON object per line with timestamp, network, endpoint, container, hostname, IP, MAC. Rotated at 16 MB or 30 days (one rotated generation kept, ≤ ~32 MB total). Append failures bump `ledger_write_failures` on `/Plugin.Health`, never affecting lease handling. Off by default: per-event disk write, and container↔IP correlation on disk is privacy-relevant in some environments. |
+
+### DHCP classless static routes (option 121)
+
+When the DHCP server hands out classless static routes (option 121,
+RFC 3442 — and the identically-formatted Microsoft option 249), the
+plugin applies them inside the container alongside the routes copied
+from the parent. Routes are captured from the initial v4 lease and
+programmed at `Join`. A `0.0.0.0/0` entry in option 121 is treated as
+the default route and **supersedes the option-3 router** per RFC 3442
+(an explicit `gateway=` override still wins over both). `skip_routes=true`
+opts out of option-121 routes as well as parent-copied ones. v4 only —
+IPv6 routes come from Router Advertisements. (Legacy option 33 is not
+honored; modern servers send option 121.)
 
 ## Driver options (per-endpoint)
 

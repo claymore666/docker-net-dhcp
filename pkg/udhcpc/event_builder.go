@@ -90,6 +90,54 @@ func v4PrefixLen(getenv Getenv) (string, bool) {
 	return strconv.Itoa(ones), true
 }
 
+// parseClasslessRoutes parses a dhcpcd classless-static-routes value
+// (DHCP option 121, RFC 3442) — a space-separated sequence of
+// "destination/prefix gateway" pairs, e.g.
+// "10.0.0.0/8 192.168.99.1 0.0.0.0/0 192.168.99.254". It returns the
+// non-default routes plus, separately, the gateway of a 0.0.0.0/0
+// default entry ("" when absent) so the caller can apply RFC 3442
+// default-route supersession over option 3.
+//
+// dhcpcd reports an on-link route with the gateway 0.0.0.0; that becomes
+// a Route with an empty Gateway. Malformed entries (unparseable
+// destination or gateway) are skipped best-effort — mirroring the MTU
+// guard, a single bad route must not drop the whole lease event — as is
+// a trailing unpaired token.
+func parseClasslessRoutes(raw string) (routes []Route, defaultGW string) {
+	fields := strings.Fields(raw)
+	for i := 0; i+1 < len(fields); i += 2 {
+		dest, gw := fields[i], fields[i+1]
+		_, ipNet, err := net.ParseCIDR(dest)
+		if err != nil {
+			log.WithField("route", dest).Warn("Skipping classless static route with unparseable destination")
+			continue
+		}
+		if net.ParseIP(gw) == nil {
+			log.WithField("gateway", gw).Warn("Skipping classless static route with unparseable gateway")
+			continue
+		}
+		onlink := gw == "0.0.0.0"
+
+		// A 0.0.0.0/0 destination is the default route: its gateway
+		// supersedes option 3 (RFC 3442) and is returned separately, not
+		// added as a static route. An on-link default (gw 0.0.0.0) is
+		// meaningless, so it is simply dropped.
+		if ones, bits := ipNet.Mask.Size(); ones == 0 && bits == 32 && ipNet.IP.Equal(net.IPv4zero) {
+			if !onlink {
+				defaultGW = gw
+			}
+			continue
+		}
+
+		r := Route{Destination: ipNet.String()}
+		if !onlink {
+			r.Gateway = gw
+		}
+		routes = append(routes, r)
+	}
+	return routes, defaultGW
+}
+
 // BuildEvent assembles an Event from a dhcpcd hook invocation: the
 // `$reason` string plus the `new_*` lease variables dhcpcd exports to
 // its --script. Returns (event, true) when the caller should emit the
@@ -168,10 +216,19 @@ func BuildEvent(reason string, getenv Getenv) (Event, bool) {
 	}
 	event.Data.IP = ipMask
 
-	// Default gateway: dhcpcd exports the routers option as a
-	// space-separated list; the plugin applies a single default route,
+	// Option 121 (classless static routes, RFC 3442). Parsed before the
+	// routers gateway below so an opt-121 default route (0.0.0.0/0) can
+	// supersede option 3, as RFC 3442 requires.
+	routes, classlessDefaultGW := parseClasslessRoutes(getenv("new_classless_static_routes"))
+	event.Data.Routes = routes
+
+	// Default gateway: an opt-121 default route supersedes the routers
+	// option (opt 3) per RFC 3442; otherwise dhcpcd exports routers as a
+	// space-separated list and the plugin applies a single default route,
 	// so take the first.
-	if routers := strings.Fields(getenv("new_routers")); len(routers) > 0 {
+	if classlessDefaultGW != "" {
+		event.Data.Gateway = classlessDefaultGW
+	} else if routers := strings.Fields(getenv("new_routers")); len(routers) > 0 {
 		event.Data.Gateway = routers[0]
 	}
 	event.Data.Domain = getenv("new_domain_name")

@@ -238,6 +238,11 @@ type joinHint struct {
 	IPv4    *netlink.Addr
 	IPv6    *netlink.Addr
 	Gateway string
+	// Routes are DHCP option-121 classless static routes (RFC 3442)
+	// captured from the initial v4 DHCP exchange in CreateEndpoint. Like
+	// Gateway, they only arrive in CreateEndpoint, so they ride the hint
+	// to be appended to the Join response's StaticRoutes.
+	Routes []*StaticRoute
 	// MacAddress is set in macvlan mode so the persistent DHCP client can
 	// re-find the (renamed) macvlan link inside the container netns by MAC.
 	MacAddress net.HardwareAddr

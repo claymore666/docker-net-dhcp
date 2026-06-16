@@ -43,6 +43,24 @@ type Info struct {
 	// BootFile is the boot file name from DHCP option 67 (dhcpcd env
 	// var `new_bootfile_name`). Same surfacing semantics as TFTPServer.
 	BootFile string `json:",omitempty"`
+
+	// Routes are the classless static routes from DHCP option 121
+	// (RFC 3442, dhcpcd env var `new_classless_static_routes`). v4 only —
+	// DHCPv6 carries no route option (routes come from RAs). Empty when
+	// the server didn't supply the option. A 0.0.0.0/0 entry is NOT
+	// included here: per RFC 3442 its gateway supersedes option 3 and is
+	// folded into Gateway during parsing. Applied at Join as additional
+	// container StaticRoutes; `skip_routes=true` opts out.
+	Routes []Route `json:",omitempty"`
+}
+
+// Route is a single classless static route from DHCP option 121.
+type Route struct {
+	// Destination is the canonical CIDR (e.g. "10.0.0.0/8").
+	Destination string
+	// Gateway is the next hop. Empty means the route is on-link (dhcpcd
+	// reported the gateway as 0.0.0.0).
+	Gateway string `json:",omitempty"`
 }
 
 type Event struct {

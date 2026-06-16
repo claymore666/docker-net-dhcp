@@ -2,10 +2,32 @@ package plugin
 
 import (
 	"errors"
+	"reflect"
 	"testing"
 
+	"github.com/devplayer0/docker-net-dhcp/pkg/udhcpc"
 	"github.com/devplayer0/docker-net-dhcp/pkg/util"
 )
+
+func TestDHCPStaticRoutes(t *testing.T) {
+	got := dhcpStaticRoutes([]udhcpc.Route{
+		{Destination: "10.0.0.0/8", Gateway: "192.168.99.2"}, // next-hop
+		{Destination: "172.16.0.0/12"},                       // on-link (empty gateway)
+	})
+	want := []*StaticRoute{
+		{Destination: "10.0.0.0/8", RouteType: RouteTypeNextHop, NextHop: "192.168.99.2"},
+		{Destination: "172.16.0.0/12", RouteType: RouteTypeOnLink},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("dhcpStaticRoutes mismatch:\ngot:  %+v\nwant: %+v", got, want)
+	}
+}
+
+func TestDHCPStaticRoutes_Empty(t *testing.T) {
+	if got := dhcpStaticRoutes(nil); len(got) != 0 {
+		t.Errorf("dhcpStaticRoutes(nil) = %+v, want empty", got)
+	}
+}
 
 func TestValidateModeOptions(t *testing.T) {
 	cases := []struct {
