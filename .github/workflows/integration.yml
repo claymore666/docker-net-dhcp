@@ -90,15 +90,28 @@ jobs:
           docker plugin set "${INTEGRATION_PLUGIN_REF}" LOG_LEVEL=trace
           docker plugin enable "${INTEGRATION_PLUGIN_REF}"
 
+      # tee the verbose output so the timing-summary step below can
+      # report where the wall-clock went. The default Actions bash runs
+      # with `-o pipefail`, so a test failure still fails the step
+      # despite the pipe into tee.
       - name: Run integration tests
-        run: make integration-test
+        run: make integration-test 2>&1 | tee /tmp/itest-main.log
 
       # Failure-injection suite (#128): server loss, NAK on renewal,
       # lease expiry — each against a per-test ephemeral DHCP server.
       # Separate step so a red here is immediately distinguishable
       # from a main-suite regression.
       - name: Run failure-injection tests
-        run: make integration-test-failure
+        run: make integration-test-failure 2>&1 | tee /tmp/itest-failure.log
+
+      # Surface the slowest tests + total in the job log and step
+      # summary, so speedup work can target the biggest waits without
+      # digging through verbose output. Informational, always-run: it
+      # owns no pass/fail and tolerates a missing log (e.g. the failure
+      # step was skipped because the main suite already failed).
+      - name: Test timing summary
+        if: always()
+        run: scripts/integration-timing.sh /tmp/itest-main.log /tmp/itest-failure.log
 
       # Tear down so a follow-up workflow on the same runner doesn't
       # find a stale `:integration` plugin pinned to the previous
