@@ -604,6 +604,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Driver options (network-level)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#dhcp-classless-static-routes-option-121" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        DHCP classless static routes (option 121)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -918,6 +935,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Driver options (network-level)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#dhcp-classless-static-routes-option-121" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        DHCP classless static routes (option 121)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -1206,7 +1240,7 @@ limitations) are catalogued in
 <td>all</td>
 <td><code>false</code></td>
 <td>upstream; all modes since v0.9.0</td>
-<td>Don't copy non-default static routes from the parent (bridge or NIC) into containers. v0.9.0 extended route-copying from bridge-only to all modes (#102); set <code>true</code> to restore the old macvlan/ipvlan no-copy behaviour.</td>
+<td>Don't copy non-default static routes from the parent (bridge or NIC) into containers, <strong>and</strong> don't apply DHCP-supplied classless static routes (option 121, see below). v0.9.0 extended parent route-copying from bridge-only to all modes (#102); set <code>true</code> to restore the old macvlan/ipvlan no-copy behaviour. The default gateway is unaffected either way.</td>
 </tr>
 <tr>
 <td><code>propagate_dns</code></td>
@@ -1252,6 +1286,17 @@ limitations) are catalogued in
 </tr>
 </tbody>
 </table>
+<h3 id="dhcp-classless-static-routes-option-121">DHCP classless static routes (option 121)<a class="headerlink" href="#dhcp-classless-static-routes-option-121" title="Permanent link">&para;</a></h3>
+<p>When the DHCP server hands out classless static routes (option 121,
+RFC 3442 — and the identically-formatted Microsoft option 249), the
+plugin applies them inside the container alongside the routes copied
+from the parent. Routes are captured from the initial v4 lease and
+programmed at <code>Join</code>. A <code>0.0.0.0/0</code> entry in option 121 is treated as
+the default route and <strong>supersedes the option-3 router</strong> per RFC 3442
+(an explicit <code>gateway=</code> override still wins over both). <code>skip_routes=true</code>
+opts out of option-121 routes as well as parent-copied ones. v4 only —
+IPv6 routes come from Router Advertisements. (Legacy option 33 is not
+honored; modern servers send option 121.)</p>
 <h2 id="driver-options-per-endpoint">Driver options (per-endpoint)<a class="headerlink" href="#driver-options-per-endpoint" title="Permanent link">&para;</a></h2>
 <p>Passed per container via <code>docker network connect --driver-opt</code>, or as
 <code>driver_opts:</code> under a service's network attachment in Compose:</p>
