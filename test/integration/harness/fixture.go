@@ -100,6 +100,24 @@ const (
 	TestTFTPServer = "tftp.example.test"
 	TestBootFile   = "pxelinux.0"
 
+	// TestWPAD / TestPosixTZ / TestTZDBTZ / TestTimeOffset are the
+	// observe-only informational extras the fixture advertises (#262),
+	// surfaced via the plugin log like NTP/TFTP:
+	//   - 252 (WPAD URL)       — Info.WPAD
+	//   - 100 (RFC 4833 PCode) — Info.PosixTimezone (dhcpcd: posix_timezone)
+	//   - 101 (RFC 4833 TCode) — Info.TZDBTimezone  (dhcpcd: tzdb_timezone)
+	//   - 2   (time offset, s) — Info.TimeOffset
+	// Recognisably test-only values.
+	// TestPosixTZ is deliberately comma-free: dnsmasq's --dhcp-option
+	// treats commas as value separators, and a full POSIX TZ with DST
+	// rules (CET-1CEST,M3.5.0,...) would be split. This is a valid
+	// comma-free POSIX TZ; the test exercises option plumbing, not TZ
+	// syntax.
+	TestWPAD       = "http://wpad.corp.example/wpad.dat"
+	TestPosixTZ    = "PST8PDT"
+	TestTZDBTZ     = "Europe/Berlin"
+	TestTimeOffset = "3600"
+
 	// TestVendorClass / TestTaggedGateway drive the v0.9.0 / T2-3
 	// vendor_class round-trip test. dnsmasq is configured to set tag
 	// `dh-itest-vc` for clients sending option 60 = TestVendorClass,
@@ -266,6 +284,13 @@ func (f *Fixture) startDnsmasq() error {
 		"--dhcp-option=66,"+TestTFTPServer,  // option 66: TFTP server name
 		"--dhcp-option=67,"+TestBootFile,    // option 67: boot file
 		"--dhcp-option=119,"+TestSearchList, // option 119: domain search list
+		// Observe-only informational extras (#262): surfaced in the plugin
+		// log, never applied to the container. Sent when the client
+		// requests them (dhcpcd's option list now does).
+		"--dhcp-option=2,"+TestTimeOffset, // option 2: time offset (seconds)
+		"--dhcp-option=100,"+TestPosixTZ,  // option 100: RFC 4833 PCode
+		"--dhcp-option=101,"+TestTZDBTZ,   // option 101: RFC 4833 TCode
+		"--dhcp-option=252,"+TestWPAD,     // option 252: WPAD URL
 		// Vendor-class tagging for the v0.9.0 / T2-3 round-trip test.
 		// dnsmasq sets tag `dh-itest-vc` on any DISCOVER carrying
 		// option 60 = TestVendorClass; the matching tag:... rule then

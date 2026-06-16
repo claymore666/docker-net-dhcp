@@ -249,6 +249,16 @@ func BuildEvent(reason string, getenv Getenv) (Event, bool) {
 	event.Data.TFTPServer = getenv("new_tftp_server_name")
 	event.Data.BootFile = getenv("new_bootfile_name")
 
+	// Option 252 (WPAD URL), 100/101 (RFC 4833 timezone PCode/TCode) and
+	// the legacy option 2 (time offset, seconds from UTC) — observe-only,
+	// surfaced via plugin logs like TFTP/bootfile, never pushed into the
+	// container (#262). Raw string values; dhcpcd already validated the
+	// option types, so no parsing/guard is needed here.
+	event.Data.WPAD = getenv("new_wpad")
+	event.Data.PosixTimezone = getenv("new_posix_timezone")
+	event.Data.TZDBTimezone = getenv("new_tzdb_timezone")
+	event.Data.TimeOffset = getenv("new_time_offset")
+
 	// Option 26 (interface MTU). Best-effort: a garbage or non-positive
 	// value must not block IP propagation — the consumer treats 0 as
 	// "no MTU info".

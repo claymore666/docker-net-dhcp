@@ -363,7 +363,8 @@ func (m *dhcpManager) renew(v6 bool, info udhcpc.Info) error {
 	// propagating DNS). Operators can grep plugin logs for these
 	// without flipping LOG_LEVEL=trace. Only emits when at least one
 	// is non-empty so plain LANs don't get a noisy line per renewal.
-	if len(info.NTPServers) > 0 || info.TFTPServer != "" || info.BootFile != "" || len(info.SearchList) > 0 {
+	if len(info.NTPServers) > 0 || info.TFTPServer != "" || info.BootFile != "" || len(info.SearchList) > 0 ||
+		info.WPAD != "" || info.PosixTimezone != "" || info.TZDBTimezone != "" || info.TimeOffset != "" {
 		fields := m.logFields(v6)
 		if len(info.NTPServers) > 0 {
 			fields["ntp"] = info.NTPServers
@@ -376,6 +377,20 @@ func (m *dhcpManager) renew(v6 bool, info udhcpc.Info) error {
 		}
 		if len(info.SearchList) > 0 {
 			fields["search"] = info.SearchList
+		}
+		// Observe-only informational extras (#262): WPAD URL (opt 252),
+		// RFC 4833 timezone (opt 100/101), legacy time offset (opt 2).
+		if info.WPAD != "" {
+			fields["wpad"] = info.WPAD
+		}
+		if info.PosixTimezone != "" {
+			fields["posix_tz"] = info.PosixTimezone
+		}
+		if info.TZDBTimezone != "" {
+			fields["tzdb_tz"] = info.TZDBTimezone
+		}
+		if info.TimeOffset != "" {
+			fields["time_offset"] = info.TimeOffset
 		}
 		log.WithFields(fields).Info("DHCP options received")
 	}
