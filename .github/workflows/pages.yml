@@ -64,7 +64,7 @@ jobs:
           python-version: "3.13"
 
       - name: Install doc toolchain
-        run: pip install -r docs/requirements.txt
+        run: pip install --require-hashes -r docs/requirements.txt
 
       - name: Build site (strict)
         run: mkdocs build --strict
@@ -105,7 +105,7 @@ jobs:
           python-version: "3.13"
 
       - name: Install doc toolchain
-        run: pip install -r docs/requirements.txt
+        run: pip install --require-hashes -r docs/requirements.txt
 
       - name: Configure git identity for mike
         run: |
