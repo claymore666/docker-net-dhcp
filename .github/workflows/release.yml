@@ -250,13 +250,13 @@ jobs:
           # Manifest covers the tarball AND the SBOMs, so the single
           # keyless signature below attests all release assets at once.
           sha256sum "$ART" sbom.spdx.json sbom.cdx.json > checksums.txt
-          # Keyless (Fulcio/OIDC) signature over the checksum manifest.
-          # Emits a detached signature and the short-lived signing
-          # certificate; both are public and verified against the Actions
-          # OIDC issuer.
+          # Keyless (Fulcio/OIDC) signature over the checksum manifest,
+          # emitted as a Sigstore bundle (cosign v3 default; the v2
+          # --output-signature/--output-certificate pair was removed —
+          # the bundle carries signature + short-lived cert in one public
+          # file, verified against the Actions OIDC issuer).
           cosign sign-blob --yes \
-            --output-signature checksums.txt.sig \
-            --output-certificate checksums.txt.pem \
+            --bundle checksums.txt.sigstore.json \
             "checksums.txt"
           echo "Signed release artifacts:"
           cat checksums.txt
@@ -290,8 +290,7 @@ jobs:
             sbom.spdx.json
             sbom.cdx.json
             checksums.txt
-            checksums.txt.sig
-            checksums.txt.pem
+            checksums.txt.sigstore.json
           retention-days: 7
           if-no-files-found: error
 
@@ -414,8 +413,7 @@ jobs:
 
           ```sh
           cosign verify-blob \
-            --certificate checksums.txt.pem \
-            --signature checksums.txt.sig \
+            --bundle checksums.txt.sigstore.json \
             --certificate-identity-regexp '^https://github.com/claymore666/docker-net-dhcp/.github/workflows/release.yml@' \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
             checksums.txt
@@ -443,7 +441,7 @@ jobs:
           else
             PRE="--prerelease=false"
           fi
-          FILES="net-dhcp-plugin-${TAG}-linux-amd64.tar.gz sbom.spdx.json sbom.cdx.json checksums.txt checksums.txt.sig checksums.txt.pem"
+          FILES="net-dhcp-plugin-${TAG}-linux-amd64.tar.gz sbom.spdx.json sbom.cdx.json checksums.txt checksums.txt.sigstore.json"
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             # Re-dispatch of an existing tag: refresh assets + metadata.
             # shellcheck disable=SC2086
