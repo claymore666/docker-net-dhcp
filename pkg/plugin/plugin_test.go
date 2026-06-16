@@ -67,6 +67,18 @@ func TestEffectiveMode(t *testing.T) {
 	}
 }
 
+// TestFQDNMode pins the register_dns → dhcpcd directive mapping (#261):
+// opt-in yields "both" (server updates A/AAAA + PTR), default yields ""
+// (no fqdn directive — DDNS is opt-in).
+func TestFQDNMode(t *testing.T) {
+	if got := (DHCPNetworkOptions{RegisterDNS: true}).fqdnMode(); got != "both" {
+		t.Errorf("register_dns=true → fqdnMode()=%q, want \"both\"", got)
+	}
+	if got := (DHCPNetworkOptions{}).fqdnMode(); got != "" {
+		t.Errorf("default → fqdnMode()=%q, want \"\" (omit)", got)
+	}
+}
+
 func TestDecodeOpts(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -123,6 +135,15 @@ func TestDecodeOpts(t *testing.T) {
 				IgnoreConflicts: true,
 				SkipRoutes:      true,
 			},
+		},
+		{
+			name: "register_dns",
+			input: map[string]interface{}{
+				"mode":         "macvlan",
+				"parent":       "eth0",
+				"register_dns": "true",
+			},
+			want: DHCPNetworkOptions{Mode: ModeMacvlan, Parent: "eth0", RegisterDNS: true},
 		},
 		{
 			name: "lease_timeout_invalid",

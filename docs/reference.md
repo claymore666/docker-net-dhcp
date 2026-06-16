@@ -152,6 +152,7 @@ Passed as `-o key=value` on `docker network create`, or under
 | `client_id` | all | per-endpoint id | v0.9.0 | Override DHCP option 61 (Client Identifier) for every endpoint on this network; sent as RFC 2132 opaque bytes (type `0x00`). The default per-endpoint id is what makes per-container reservations work — a fixed `client_id` makes all containers look like one client to the server. Pair with `vendor_class` for class-based policy. |
 | `vendor_class` | all | `docker-net-dhcp` | v0.9.0 | Override DHCP option 60 (Vendor Class Identifier), for DHCP servers running class-based policy (different gateway/option sets per class). v4 only — the DHCPv6 client sends no vendor-class option. |
 | `validate_dhcp` | macvlan, ipvlan | `false` | v0.9.0 | Pre-flight probe at `docker network create`: one-shot DHCP exchange on the parent with a random locally-administered MAC, rejecting the network if no server answers within 5s. Catches isolated parents / blocked UDP 67-68 / broken VLAN tags at create time. Costs one transient lease per probe. Bridge mode rejects the option. |
+| `register_dns` | all | `false` | v1.3.0 | Send the DHCP FQDN option (81 on v4 / 39 on v6, via `dhcpcd fqdn both`) built from the container's hostname, asking the DHCP server to register that name in DNS (forward A/AAAA + reverse PTR). Reuses the same hostname already sent as the option-12 hint. Best-effort and advisory — many consumer routers ignore option 81, so this *requests* registration, it does not guarantee resolution. Off by default: dynamic-DNS registration is a network-policy decision. See below. |
 | `audit_log` | all | `false` | v1.0.0 | Append every lease-lifecycle event (`bound` / `renew` / `release` / `release_failed`) to `STATE_DIR/leases.jsonl` — one JSON object per line with timestamp, network, endpoint, container, hostname, IP, MAC. Rotated at 16 MB or 30 days (one rotated generation kept, ≤ ~32 MB total). Append failures bump `ledger_write_failures` on `/Plugin.Health`, never affecting lease handling. Off by default: per-event disk write, and container↔IP correlation on disk is privacy-relevant in some environments. |
 
 ### DHCP classless static routes (option 121)
@@ -166,6 +167,29 @@ the default route and **supersedes the option-3 router** per RFC 3442
 opts out of option-121 routes as well as parent-copied ones. v4 only —
 IPv6 routes come from Router Advertisements. (Legacy option 33 is not
 honored; modern servers send option 121.)
+
+### Dynamic-DNS registration (`register_dns`, option 81 / 39)
+
+With `-o register_dns=true`, every endpoint on the network sends the DHCP
+**FQDN option** — option 81 on v4 (RFC 4702) and option 39 on v6
+(RFC 4704) — built from the container's hostname, asking the server to
+publish that name in DNS. This pairs with the option-12 hostname hint the
+plugin already sends: the hostname says *who we are*, the FQDN option asks
+the server to *publish it*. One `dhcpcd fqdn both` directive covers both
+families, requesting forward (A/AAAA) **and** reverse (PTR) updates; the
+container runs no DNS updater of its own, so the server does all the work.
+
+The payoff is on-mission: a container becomes resolvable **by name** on
+the LAN, not just reachable by its DHCP-leased IP — with no per-container
+plumbing. The name source is the same one used for the hostname hint and
+tombstone matching (the container's hostname; the server supplies the
+domain).
+
+It is **best-effort and advisory**, like the preferred-address hint: many
+consumer routers ignore option 81 entirely, and registration depends on
+the server being configured for dynamic DNS. The plugin's contract is
+"send the option when asked" — not "the name will resolve." Off by
+default because DDNS registration is a deliberate network-policy choice.
 
 ## Driver options (per-endpoint)
 

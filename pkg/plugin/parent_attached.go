@@ -231,6 +231,7 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 			clientOpts := &udhcpc.DHCPClientOptions{
 				V6:          v6,
 				Hostname:    hostname,
+				FQDN:        opts.fqdnMode(),
 				ClientID:    clientID,
 				VendorClass: opts.VendorClass,
 				Broadcast:   mode == ModeIPvlan,

@@ -157,6 +157,12 @@ type DHCPClientOptions struct {
 	// and #243.
 	Broadcast bool
 
+	// FQDN, when non-empty, sets dhcpcd's `fqdn` directive mode (e.g.
+	// "both"), making the client send the DHCP FQDN option (81 v4 / 39 v6)
+	// built from Hostname and ask the server to register it in DNS (#261).
+	// Empty omits it (the default — DDNS registration is opt-in).
+	FQDN string
+
 	HandlerScript string
 }
 
@@ -212,6 +218,7 @@ func NewDHCPClient(iface string, opts *DHCPClientOptions) (*DHCPClient, error) {
 		V6:          opts.V6,
 		Once:        opts.Once,
 		Hostname:    opts.Hostname,
+		FQDN:        opts.FQDN,
 		VendorClass: vendor,
 		ClientID:    opts.ClientID,
 		RequestedIP: opts.RequestedIP,
