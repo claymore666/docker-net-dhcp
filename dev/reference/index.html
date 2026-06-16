@@ -618,6 +618,17 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#dynamic-dns-registration-register_dns-option-81-39" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Dynamic-DNS registration (register_dns, option 81 / 39)
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -943,6 +954,17 @@
     <span class="md-ellipsis">
       
         DHCP classless static routes (option 121)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#dynamic-dns-registration-register_dns-option-81-39" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Dynamic-DNS registration (register_dns, option 81 / 39)
       
     </span>
   </a>
@@ -1278,6 +1300,13 @@ limitations) are catalogued in
 <td>Pre-flight probe at <code>docker network create</code>: one-shot DHCP exchange on the parent with a random locally-administered MAC, rejecting the network if no server answers within 5s. Catches isolated parents / blocked UDP 67-68 / broken VLAN tags at create time. Costs one transient lease per probe. Bridge mode rejects the option.</td>
 </tr>
 <tr>
+<td><code>register_dns</code></td>
+<td>all</td>
+<td><code>false</code></td>
+<td>v1.3.0</td>
+<td>Send the DHCP FQDN option (81 on v4 / 39 on v6, via <code>dhcpcd fqdn both</code>) built from the container's hostname, asking the DHCP server to register that name in DNS (forward A/AAAA + reverse PTR). Reuses the same hostname already sent as the option-12 hint. Best-effort and advisory — many consumer routers ignore option 81, so this <em>requests</em> registration, it does not guarantee resolution. Off by default: dynamic-DNS registration is a network-policy decision. See below.</td>
+</tr>
+<tr>
 <td><code>audit_log</code></td>
 <td>all</td>
 <td><code>false</code></td>
@@ -1297,6 +1326,25 @@ the default route and <strong>supersedes the option-3 router</strong> per RFC 34
 opts out of option-121 routes as well as parent-copied ones. v4 only —
 IPv6 routes come from Router Advertisements. (Legacy option 33 is not
 honored; modern servers send option 121.)</p>
+<h3 id="dynamic-dns-registration-register_dns-option-81-39">Dynamic-DNS registration (<code>register_dns</code>, option 81 / 39)<a class="headerlink" href="#dynamic-dns-registration-register_dns-option-81-39" title="Permanent link">&para;</a></h3>
+<p>With <code>-o register_dns=true</code>, every endpoint on the network sends the DHCP
+<strong>FQDN option</strong> — option 81 on v4 (RFC 4702) and option 39 on v6
+(RFC 4704) — built from the container's hostname, asking the server to
+publish that name in DNS. This pairs with the option-12 hostname hint the
+plugin already sends: the hostname says <em>who we are</em>, the FQDN option asks
+the server to <em>publish it</em>. One <code>dhcpcd fqdn both</code> directive covers both
+families, requesting forward (A/AAAA) <strong>and</strong> reverse (PTR) updates; the
+container runs no DNS updater of its own, so the server does all the work.</p>
+<p>The payoff is on-mission: a container becomes resolvable <strong>by name</strong> on
+the LAN, not just reachable by its DHCP-leased IP — with no per-container
+plumbing. The name source is the same one used for the hostname hint and
+tombstone matching (the container's hostname; the server supplies the
+domain).</p>
+<p>It is <strong>best-effort and advisory</strong>, like the preferred-address hint: many
+consumer routers ignore option 81 entirely, and registration depends on
+the server being configured for dynamic DNS. The plugin's contract is
+"send the option when asked" — not "the name will resolve." Off by
+default because DDNS registration is a deliberate network-policy choice.</p>
 <h2 id="driver-options-per-endpoint">Driver options (per-endpoint)<a class="headerlink" href="#driver-options-per-endpoint" title="Permanent link">&para;</a></h2>
 <p>Passed per container via <code>docker network connect --driver-opt</code>, or as
 <code>driver_opts:</code> under a service's network attachment in Compose:</p>
