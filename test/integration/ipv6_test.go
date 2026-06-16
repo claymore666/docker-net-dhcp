@@ -75,8 +75,9 @@ func linkGlobalV6(t *testing.T, ctx context.Context, ctrID string, budget time.D
 }
 
 // countDHCPv6Replies counts DHCPREPLY lines mentioning addr in the
-// given dnsmasq log — the v6 sibling of countDHCPACKs. dnsmasq logs
-// one DHCPREPLY per blessed REQUEST/RENEW, so bind=1, renewal=2.
+// given dnsmasq log — the v6 sibling of the DHCPACK counting in the
+// lease-renew test. dnsmasq logs one DHCPREPLY per blessed
+// REQUEST/RENEW, so bind=1, renewal=2.
 func countDHCPv6Replies(t *testing.T, logPath, addr string) int {
 	t.Helper()
 	data, err := os.ReadFile(logPath)
