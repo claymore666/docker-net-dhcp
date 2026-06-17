@@ -54,12 +54,23 @@ func validateModeOptions(opts DHCPNetworkOptions) error {
 		if opts.Bridge != "" {
 			return fmt.Errorf("%w: bridge cannot be set in mode=%v", util.ErrModeMismatch, opts.effectiveMode())
 		}
+		// stable_lease derives a stable client-id, which only stabilizes
+		// leases for ipvlan (where children share the parent MAC and the
+		// client-id is the only per-container handle). macvlan lease
+		// stability comes from the deterministic-MAC work, not yet
+		// available — reject loudly rather than accept-but-ignore.
+		if opts.StableLease && opts.effectiveMode() == ModeMacvlan {
+			return fmt.Errorf("%w: got mode=macvlan", util.ErrStableLeaseMode)
+		}
 	case ModeBridge:
 		if opts.Bridge == "" {
 			return util.ErrBridgeRequired
 		}
 		if opts.Parent != "" {
 			return fmt.Errorf("%w: parent cannot be set in mode=bridge", util.ErrModeMismatch)
+		}
+		if opts.StableLease {
+			return fmt.Errorf("%w: got mode=bridge", util.ErrStableLeaseMode)
 		}
 		// validate_dhcp on bridge mode is a v0.9.0 carve-out: the
 		// probe semantics differ (parent is an existing bridge, not
@@ -459,7 +470,9 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 	// to the same container (prevents identity swap during sequential
 	// `compose restart`). Best-effort: if the lookup misses or returns
 	// empty, consumeTombstone falls back to network-only matching.
-	hostname := p.initialDHCPHostname(ctx, r.NetworkID, r.EndpointID)
+	// stable_lease is rejected for bridge at CreateNetwork, so only the
+	// hostname (option-12 hint) is consumed here.
+	hostname := p.initialContainerIdentity(ctx, r.NetworkID, r.EndpointID).Hostname
 
 	// MAC/IP selection priority:
 	//   1. Explicit values from libnetwork (`--mac-address`, `--ip`)

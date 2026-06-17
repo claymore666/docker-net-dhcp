@@ -125,8 +125,13 @@ type dhcpManager struct {
 	// bridge mode.
 	MacAddress net.HardwareAddr
 
-	nsPath    string
+	nsPath string
+	// hostname feeds the option-12 hint; identity carries the full stable
+	// identity (name/Compose labels) so the persistent client re-derives
+	// the same stable_lease client-id the CreateEndpoint one-shot used —
+	// deterministically, from the same container, no cross-stage plumbing.
 	hostname  string
+	identity  containerIdentity
 	nsHandle  netns.NsHandle
 	netHandle *netlink.Handle
 	ctrLink   netlink.Link
@@ -630,9 +635,13 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 		// ipvlan path but currently has no effect.
 		Broadcast: m.opts.effectiveMode() == ModeIPvlan,
 		// Same client-id the initial DISCOVER used in CreateEndpoint,
-		// so renewals are seen as the same client by the server.
+		// so renewals are seen as the same client by the server. Under
+		// stable_lease it re-derives from the same container identity
+		// (deterministic — identical id, no cross-stage plumbing) and on
+		// recovery too; nil onFallback keeps the renewal/recovery path
+		// from re-counting the anonymous fallback the create path logged.
 		// Honours the operator's client_id override when set.
-		ClientID:    resolveClientID(m.opts, m.joinReq.EndpointID),
+		ClientID:    resolveEndpointClientID(m.opts, m.joinReq.NetworkID, m.joinReq.EndpointID, m.identity, nil),
 		VendorClass: m.opts.VendorClass,
 	})
 	if err != nil {
@@ -849,7 +858,8 @@ func (m *dhcpManager) Start(ctx context.Context) (err error) {
 
 	// Using the "sandbox key" directly causes issues on some platforms
 	m.nsPath = fmt.Sprintf("/proc/%v/ns/net", ctr.State.Pid)
-	m.hostname = ctr.Config.Hostname
+	m.identity = containerIdentityFromInspect(ctr)
+	m.hostname = m.identity.Hostname
 
 	m.nsHandle, err = util.AwaitNetNS(ctx, m.nsPath, pollTime)
 	if err != nil {

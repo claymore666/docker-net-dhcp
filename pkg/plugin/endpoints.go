@@ -289,6 +289,14 @@ type HealthResponse struct {
 	// degrades forensics, not networking; operators using audit_log
 	// alert on this directly.
 	LedgerWriteFailures int32 `json:"ledger_write_failures"`
+	// StableLeaseNoIdentity counts endpoints created on a stable_lease
+	// network that had no stable identity to derive a client-id from and
+	// fell back to the endpoint-derived (recreate-unstable) id (#219). Not
+	// Healthy-affecting — the lease is acquired, it just won't survive a
+	// recreate — but an operator who enabled stable_lease should alert on
+	// it: a non-zero value means the flag isn't doing anything for those
+	// containers (give them a --name, Compose labels, or a lease_seed).
+	StableLeaseNoIdentity int32 `json:"stable_lease_no_identity"`
 
 	// Per-family (IPv6) breakdown of the wire counters (#212). Each
 	// counts only the v6 client's events; the un-suffixed fields above
@@ -334,5 +342,6 @@ func (p *Plugin) apiHealth(w http.ResponseWriter, r *http.Request) {
 		LeasesRenewedV6:        p.leasesRenewedV6.Load(),
 		DHCPTimeoutsV6:         p.dhcpTimeoutsV6.Load(),
 		NAKsReceivedV6:         p.naksReceivedV6.Load(),
+		StableLeaseNoIdentity:  p.stableLeaseNoIdentity.Load(),
 	}, http.StatusOK)
 }

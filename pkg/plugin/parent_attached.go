@@ -102,11 +102,15 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 	if err != nil {
 		return res, err
 	}
-	// Look up the hostname up front so we can scope tombstone matching
-	// to the same container (prevents identity swap during sequential
-	// `compose restart`). Best-effort: if the lookup misses or returns
-	// empty, consumeTombstone falls back to network-only matching.
-	hostname := p.initialDHCPHostname(ctx, r.NetworkID, r.EndpointID)
+	// Resolve the container's stable identity up front. The hostname
+	// scopes tombstone matching to the same container (prevents identity
+	// swap during sequential `compose restart`) and feeds the option-12
+	// DHCP hint; the name/Compose labels seed the stable_lease client-id
+	// (#219). Best-effort: if the lookup misses, consumeTombstone falls
+	// back to network-only matching and the client-id falls back to the
+	// endpoint-derived id.
+	identity := p.initialContainerIdentity(ctx, r.NetworkID, r.EndpointID)
+	hostname := identity.Hostname
 
 	requestedIP := explicitV4
 	requestedV6 := explicitV6
@@ -211,13 +215,21 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 		if opts.LeaseTimeout != 0 {
 			timeout = opts.LeaseTimeout
 		}
-		// Stable client-id derived from the endpoint ID (so reservations
-		// keyed on option 61 survive container recreation, and so ipvlan
-		// children can be told apart even though they all share the
-		// parent's MAC). hostname was resolved earlier for tombstone
-		// matching and is reused for the DHCP option 12 hint here.
-		// Operator-supplied client_id overrides the derived value.
-		clientID := resolveClientID(opts, r.EndpointID)
+		// Client-id for the initial exchange. With stable_lease=true
+		// (ipvlan only) it's derived from the container's stable identity
+		// so reservations keyed on option 61 survive recreate even though
+		// ipvlan children all share the parent's MAC; otherwise it's the
+		// endpoint-derived id (stable across restarts of the same
+		// endpoint). Operator-supplied client_id overrides either. An
+		// anonymous container under stable_lease can't be hashed to a
+		// stable id, so it falls back and bumps the health counter.
+		clientID := resolveEndpointClientID(opts, r.NetworkID, r.EndpointID, identity, func() {
+			p.stableLeaseNoIdentity.Add(1)
+			log.WithFields(log.Fields{
+				"network":  shortID(r.NetworkID),
+				"endpoint": shortID(r.EndpointID),
+			}).Warn("stable_lease is enabled but the container has no stable identity (no lease_seed, Compose labels, or --name); the lease will not survive a recreate")
+		})
 
 		runDHCP := func(v6 bool) error {
 			v6str := ""

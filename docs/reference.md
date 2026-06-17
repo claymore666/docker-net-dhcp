@@ -151,6 +151,8 @@ Passed as `-o key=value` on `docker network create`, or under
 | `propagate_mtu` | all | `false` | v0.9.0 | Apply DHCP option 26 (Interface MTU) to the container link on bind/renew. For jumbo-frame (9000) and VPN-reduced (~1450) networks. |
 | `client_id` | all | per-endpoint id | v0.9.0 | Override DHCP option 61 (Client Identifier) for every endpoint on this network; sent as RFC 2132 opaque bytes (type `0x00`). The default per-endpoint id is what makes per-container reservations work — a fixed `client_id` makes all containers look like one client to the server. Pair with `vendor_class` for class-based policy. |
 | `vendor_class` | all | `docker-net-dhcp` | v0.9.0 | Override DHCP option 60 (Vendor Class Identifier), for DHCP servers running class-based policy (different gateway/option sets per class). v4 only — the DHCPv6 client sends no vendor-class option. |
+| `stable_lease` | ipvlan | `false` | v1.3.0 | Derive the DHCP option-61 client-id from the container's **stable identity** instead of the per-recreate endpoint id, so a server that keys leases on the client-id (dnsmasq does by default) hands the same container the same IP across `stop` / `rm` / recreate. ipvlan-only: ipvlan children share the parent's MAC, so the client-id is the only per-container handle — bridge/macvlan reject this option (their lease stability is delivered by the deterministic-MAC work, not yet available). Identity is taken from, most-specific first: `lease_seed`, then Compose `project`+`service`+`container-number`, then the container `--name`. An anonymous container (none of these) falls back to the endpoint-derived id and bumps `stable_lease_no_identity` on `/Plugin.Health`. See below. |
+| `lease_seed` | ipvlan | *(none)* | v1.3.0 | Explicit highest-precedence identity for `stable_lease`: the derived client-id is a hash of the network plus this value, so two containers sharing a `lease_seed` on one network collapse onto one lease, and one container keeps its lease across recreate regardless of name or Compose labels. Only consulted when `stable_lease=true` (inert otherwise). |
 | `validate_dhcp` | macvlan, ipvlan | `false` | v0.9.0 | Pre-flight probe at `docker network create`: one-shot DHCP exchange on the parent with a random locally-administered MAC, rejecting the network if no server answers within 5s. Catches isolated parents / blocked UDP 67-68 / broken VLAN tags at create time. Costs one transient lease per probe. Bridge mode rejects the option. |
 | `register_dns` | all | `false` | v1.3.0 | Send the DHCP FQDN option (81 on v4 / 39 on v6, via `dhcpcd fqdn both`) built from the container's hostname, asking the DHCP server to register that name in DNS (forward A/AAAA + reverse PTR). Reuses the same hostname already sent as the option-12 hint. Best-effort and advisory — many consumer routers ignore option 81, so this *requests* registration, it does not guarantee resolution. Off by default: dynamic-DNS registration is a network-policy decision. See below. |
 | `audit_log` | all | `false` | v1.0.0 | Append every lease-lifecycle event (`bound` / `renew` / `release` / `release_failed`) to `STATE_DIR/leases.jsonl` — one JSON object per line with timestamp, network, endpoint, container, hostname, IP, MAC. Rotated at 16 MB or 30 days (one rotated generation kept, ≤ ~32 MB total). Append failures bump `ledger_write_failures` on `/Plugin.Health`, never affecting lease handling. Off by default: per-event disk write, and container↔IP correlation on disk is privacy-relevant in some environments. |
@@ -190,6 +192,48 @@ consumer routers ignore option 81 entirely, and registration depends on
 the server being configured for dynamic DNS. The plugin's contract is
 "send the option when asked" — not "the name will resolve." Off by
 default because DDNS registration is a deliberate network-policy choice.
+
+### Stable leases across recreate (`stable_lease`, ipvlan)
+
+By default each endpoint's DHCP client-id (option 61) is derived from the
+Docker **endpoint ID**, which is random and minted fresh every time a
+container is created. So a container that is stopped, removed, and
+recreated comes back as a *new* client to the DHCP server and may get a
+different IP. For **bridge** and **macvlan** networks the plugin already
+keeps the IP stable across a *restart* by inheriting the previous MAC
+(tombstones), and the upcoming deterministic-MAC work extends that to
+recreate. **ipvlan** has no such handle: all ipvlan children share the
+parent NIC's MAC on the wire, so the server cannot tell them apart by MAC
+at all.
+
+`-o stable_lease=true` closes that gap for ipvlan by deriving the client-id
+from the container's **stable identity** instead of the endpoint ID. The
+same logical container then presents the same option 61 on every recreate,
+and a server that keys leases on the client-id — dnsmasq does so by default
+(the client-identifier takes precedence over the MAC) — returns the same
+lease. Two *different* containers on the same network still get distinct
+client-ids and therefore distinct IPs, which is exactly the per-container
+distinction the shared parent MAC otherwise destroys.
+
+The identity is resolved most-specific first:
+
+1. `lease_seed=<key>` — an explicit operator-supplied key (full control;
+    share it deliberately to collapse containers onto one lease).
+2. Compose `project` + `service` + `container-number` — survives
+   `compose up -d`, and the per-replica number keeps `--scale` replicas
+   distinct.
+3. The container `--name`.
+4. *(none)* — an anonymous container with no `--name`, no Compose labels,
+   and no `lease_seed`. There is no stable identity to hash, so the
+   endpoint-derived id is used (no crash, lease still acquired) and
+   `stable_lease_no_identity` is incremented on `/Plugin.Health`. A
+   non-zero counter means `stable_lease` isn't doing anything for those
+   containers — give them a name, Compose labels, or a `lease_seed`.
+
+The network ID is folded into the derivation, so the same container on two
+DHCP networks gets a distinct client-id on each. An explicit `client_id`
+still overrides everything. bridge/macvlan reject `stable_lease` at
+`docker network create` rather than silently ignoring it.
 
 ## Driver options (per-endpoint)
 
@@ -260,6 +304,7 @@ curl -s --unix-socket /run/docker/plugins/$PLUGIN_ID/net-dhcp.sock \
 | `lease_release_failures` | no | Teardown DHCPRELEASE didn't complete cleanly — the server may hold a phantom lease until natural expiry. A pattern points at upstream reachability problems mid-teardown. |
 | `naks_received` | no | (v1.0.0+) The server NAKed a renewal/rebind (v4+v6 aggregate). `dhcpcd` recovers by re-acquiring, so each NAK is typically followed by `leases_obtained` — and, if the address moved, `lease_changed` — bumps. Climbing alongside `lease_changed` means containers are being re-addressed mid-life. |
 | `ledger_write_failures` | no | Failed `audit_log` ledger appends — degrades forensics, not networking. Operators using `audit_log` alert on this. |
+| `stable_lease_no_identity` | no | (v1.3.0+) Endpoints created on a `stable_lease` network that had no stable identity to derive a client-id from and fell back to the recreate-unstable endpoint-derived id (#219). Not networking-affecting — the lease is acquired — but a non-zero value means `stable_lease` isn't applying to those containers; give them a `--name`, Compose labels, or a `lease_seed`. |
 | `lease_changed_v6`, `leases_obtained_v6`, `leases_renewed_v6`, `dhcp_timeouts_v6`, `naks_received_v6` | no | (v1.2.0+) The IPv6-only share of the matching aggregate above (#212). Each counts only the v6 client's events; the v4 share is the aggregate minus its `*_v6`. On a dual-stack host this isolates the v6-specific NAK/timeout signal the aggregate hides. `lease_release_failures` and `ledger_write_failures` have no per-family split. |
 
 ### Plugin log
