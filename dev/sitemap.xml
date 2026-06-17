@@ -2,26 +2,26 @@
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
     <url>
          <loc>https://claymore666.github.io/docker-net-dhcp/latest/</loc>
-         <lastmod>2026-06-16</lastmod>
+         <lastmod>2026-06-17</lastmod>
     </url>
     <url>
          <loc>https://claymore666.github.io/docker-net-dhcp/latest/bridge-mode/</loc>
-         <lastmod>2026-06-16</lastmod>
+         <lastmod>2026-06-17</lastmod>
     </url>
     <url>
          <loc>https://claymore666.github.io/docker-net-dhcp/latest/internals/</loc>
-         <lastmod>2026-06-16</lastmod>
+         <lastmod>2026-06-17</lastmod>
     </url>
     <url>
          <loc>https://claymore666.github.io/docker-net-dhcp/latest/parent-attached-modes/</loc>
-         <lastmod>2026-06-16</lastmod>
+         <lastmod>2026-06-17</lastmod>
     </url>
     <url>
          <loc>https://claymore666.github.io/docker-net-dhcp/latest/reference/</loc>
-         <lastmod>2026-06-16</lastmod>
+         <lastmod>2026-06-17</lastmod>
     </url>
     <url>
          <loc>https://claymore666.github.io/docker-net-dhcp/latest/release-runbook/</loc>
-         <lastmod>2026-06-16</lastmod>
+         <lastmod>2026-06-17</lastmod>
     </url>
 </urlset>
