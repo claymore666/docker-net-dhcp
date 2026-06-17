@@ -629,6 +629,17 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#stable-leases-across-recreate-stable_lease-ipvlan" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Stable leases across recreate (stable_lease, ipvlan)
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -971,6 +982,17 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#stable-leases-across-recreate-stable_lease-ipvlan" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Stable leases across recreate (stable_lease, ipvlan)
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -1293,6 +1315,20 @@ limitations) are catalogued in
 <td>Override DHCP option 60 (Vendor Class Identifier), for DHCP servers running class-based policy (different gateway/option sets per class). v4 only — the DHCPv6 client sends no vendor-class option.</td>
 </tr>
 <tr>
+<td><code>stable_lease</code></td>
+<td>ipvlan</td>
+<td><code>false</code></td>
+<td>v1.3.0</td>
+<td>Derive the DHCP option-61 client-id from the container's <strong>stable identity</strong> instead of the per-recreate endpoint id, so a server that keys leases on the client-id (dnsmasq does by default) hands the same container the same IP across <code>stop</code> / <code>rm</code> / recreate. ipvlan-only: ipvlan children share the parent's MAC, so the client-id is the only per-container handle — bridge/macvlan reject this option (their lease stability is delivered by the deterministic-MAC work, not yet available). Identity is taken from, most-specific first: <code>lease_seed</code>, then Compose <code>project</code>+<code>service</code>+<code>container-number</code>, then the container <code>--name</code>. An anonymous container (none of these) falls back to the endpoint-derived id and bumps <code>stable_lease_no_identity</code> on <code>/Plugin.Health</code>. See below.</td>
+</tr>
+<tr>
+<td><code>lease_seed</code></td>
+<td>ipvlan</td>
+<td><em>(none)</em></td>
+<td>v1.3.0</td>
+<td>Explicit highest-precedence identity for <code>stable_lease</code>: the derived client-id is a hash of the network plus this value, so two containers sharing a <code>lease_seed</code> on one network collapse onto one lease, and one container keeps its lease across recreate regardless of name or Compose labels. Only consulted when <code>stable_lease=true</code> (inert otherwise).</td>
+</tr>
+<tr>
 <td><code>validate_dhcp</code></td>
 <td>macvlan, ipvlan</td>
 <td><code>false</code></td>
@@ -1345,6 +1381,44 @@ consumer routers ignore option 81 entirely, and registration depends on
 the server being configured for dynamic DNS. The plugin's contract is
 "send the option when asked" — not "the name will resolve." Off by
 default because DDNS registration is a deliberate network-policy choice.</p>
+<h3 id="stable-leases-across-recreate-stable_lease-ipvlan">Stable leases across recreate (<code>stable_lease</code>, ipvlan)<a class="headerlink" href="#stable-leases-across-recreate-stable_lease-ipvlan" title="Permanent link">&para;</a></h3>
+<p>By default each endpoint's DHCP client-id (option 61) is derived from the
+Docker <strong>endpoint ID</strong>, which is random and minted fresh every time a
+container is created. So a container that is stopped, removed, and
+recreated comes back as a <em>new</em> client to the DHCP server and may get a
+different IP. For <strong>bridge</strong> and <strong>macvlan</strong> networks the plugin already
+keeps the IP stable across a <em>restart</em> by inheriting the previous MAC
+(tombstones), and the upcoming deterministic-MAC work extends that to
+recreate. <strong>ipvlan</strong> has no such handle: all ipvlan children share the
+parent NIC's MAC on the wire, so the server cannot tell them apart by MAC
+at all.</p>
+<p><code>-o stable_lease=true</code> closes that gap for ipvlan by deriving the client-id
+from the container's <strong>stable identity</strong> instead of the endpoint ID. The
+same logical container then presents the same option 61 on every recreate,
+and a server that keys leases on the client-id — dnsmasq does so by default
+(the client-identifier takes precedence over the MAC) — returns the same
+lease. Two <em>different</em> containers on the same network still get distinct
+client-ids and therefore distinct IPs, which is exactly the per-container
+distinction the shared parent MAC otherwise destroys.</p>
+<p>The identity is resolved most-specific first:</p>
+<ol>
+<li><code>lease_seed=&lt;key&gt;</code> — an explicit operator-supplied key (full control;
+    share it deliberately to collapse containers onto one lease).</li>
+<li>Compose <code>project</code> + <code>service</code> + <code>container-number</code> — survives
+   <code>compose up -d</code>, and the per-replica number keeps <code>--scale</code> replicas
+   distinct.</li>
+<li>The container <code>--name</code>.</li>
+<li><em>(none)</em> — an anonymous container with no <code>--name</code>, no Compose labels,
+   and no <code>lease_seed</code>. There is no stable identity to hash, so the
+   endpoint-derived id is used (no crash, lease still acquired) and
+   <code>stable_lease_no_identity</code> is incremented on <code>/Plugin.Health</code>. A
+   non-zero counter means <code>stable_lease</code> isn't doing anything for those
+   containers — give them a name, Compose labels, or a <code>lease_seed</code>.</li>
+</ol>
+<p>The network ID is folded into the derivation, so the same container on two
+DHCP networks gets a distinct client-id on each. An explicit <code>client_id</code>
+still overrides everything. bridge/macvlan reject <code>stable_lease</code> at
+<code>docker network create</code> rather than silently ignoring it.</p>
 <h2 id="driver-options-per-endpoint">Driver options (per-endpoint)<a class="headerlink" href="#driver-options-per-endpoint" title="Permanent link">&para;</a></h2>
 <p>Passed per container via <code>docker network connect --driver-opt</code>, or as
 <code>driver_opts:</code> under a service's network attachment in Compose:</p>
@@ -1497,6 +1571,11 @@ is no <code>ip6</code> <em>driver-opt</em> channel — use <code>--ip6</code> / 
 <td><code>ledger_write_failures</code></td>
 <td>no</td>
 <td>Failed <code>audit_log</code> ledger appends — degrades forensics, not networking. Operators using <code>audit_log</code> alert on this.</td>
+</tr>
+<tr>
+<td><code>stable_lease_no_identity</code></td>
+<td>no</td>
+<td>(v1.3.0+) Endpoints created on a <code>stable_lease</code> network that had no stable identity to derive a client-id from and fell back to the recreate-unstable endpoint-derived id (#219). Not networking-affecting — the lease is acquired — but a non-zero value means <code>stable_lease</code> isn't applying to those containers; give them a <code>--name</code>, Compose labels, or a <code>lease_seed</code>.</td>
 </tr>
 <tr>
 <td><code>lease_changed_v6</code>, <code>leases_obtained_v6</code>, <code>leases_renewed_v6</code>, <code>dhcp_timeouts_v6</code>, <code>naks_received_v6</code></td>
