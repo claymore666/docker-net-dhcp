@@ -163,6 +163,35 @@ type DHCPNetworkOptions struct {
 	// VendorClass to drive class-based policy that doesn't depend on
 	// per-client identity.
 	ClientID string `mapstructure:"client_id"`
+	// StableLease, when true, makes every endpoint on this network present
+	// a DHCP client-id (option 61) derived from the container's *stable*
+	// identity instead of the per-endpoint default (which is keyed off the
+	// random Docker endpoint ID and so changes on every recreate). With a
+	// server that keys leases on the client-id (dnsmasq does by default),
+	// this returns the same IP to the same logical container across
+	// stop/remove/recreate. Default false.
+	//
+	// mode=ipvlan only: ipvlan children share the parent's MAC on the
+	// wire, so the client-id is the only L7 handle that lets the server
+	// tell recreated containers apart and hand back the same lease (#219).
+	// bridge/macvlan reject stable_lease at CreateNetwork (their lease
+	// stability is delivered by the deterministic-MAC work, not yet
+	// available) rather than silently no-op'ing. The stable identity is
+	// resolved from, most-specific first: LeaseSeed, then Compose
+	// project+service+container-number, then the container --name; an
+	// anonymous container with none of these falls back to the
+	// endpoint-derived id and bumps stable_lease_no_identity on
+	// /Plugin.Health.
+	StableLease bool `mapstructure:"stable_lease"`
+	// LeaseSeed, when non-empty, is the highest-precedence stable-identity
+	// source for the StableLease client-id: the derived option 61 is a
+	// hash of (scheme-tag ‖ network ‖ LeaseSeed), so two containers sharing
+	// a LeaseSeed on one network present the same client-id and share a
+	// lease, and one container keeps its lease across recreate regardless
+	// of name/Compose labels. Only consulted when StableLease is true
+	// (inert otherwise). Pair distinct values per logical container; a
+	// shared value deliberately collapses them onto one lease.
+	LeaseSeed string `mapstructure:"lease_seed"`
 	// VendorClass, when non-empty, overrides the default DHCP option
 	// 60 (Vendor Class Identifier) value of "docker-net-dhcp" for
 	// every endpoint on this network. Lets DHCP servers using
@@ -382,6 +411,17 @@ type Plugin struct {
 	// audit_log should alert on the counter instead.
 	ledger              *leaseLedger
 	ledgerWriteFailures atomic.Int32
+
+	// stableLeaseNoIdentity counts CreateEndpoint calls on a stable_lease
+	// network where no stable identity could be resolved (an anonymous
+	// container: no lease_seed, no Compose labels, no --name), so the
+	// endpoint fell back to the endpoint-derived client-id — which is NOT
+	// stable across recreate. Surfaced on /Plugin.Health so an operator
+	// who turned on stable_lease can see it silently not applying to some
+	// containers. Not Healthy-affecting: the lease is still acquired, it
+	// just won't survive a recreate. Counted once per create (the renewal
+	// and recovery paths re-derive the same fallback silently).
+	stableLeaseNoIdentity atomic.Int32
 }
 
 // storeJoinHint records the state collected during CreateEndpoint so
@@ -844,17 +884,21 @@ func (p *Plugin) reacquireEndpoint(ctx context.Context, r JoinRequest, opts DHCP
 	return nil
 }
 
-// initialDHCPHostname makes a best-effort attempt to find the hostname
-// of the container we're about to attach an endpoint to, so we can pass
-// it in the initial DHCPDISCOVER. Polls the network's Containers map
-// for up to initialDHCPHostnameLookupTimeout; if the container hasn't
-// been registered yet (it's a race; sometimes Docker calls
-// CreateEndpoint before the container appears in the network's
-// container list), we fall through with an empty hostname. The
-// persistent renewal client populates the hostname later regardless,
-// so the worst case is "first lease appears in the upstream DHCP
-// server's UI without a hostname for a few minutes".
-func (p *Plugin) initialDHCPHostname(ctx context.Context, networkID, endpointID string) string {
+// initialContainerIdentity makes a best-effort attempt to resolve the
+// stable identity of the container we're about to attach an endpoint to,
+// in a single NetworkInspect → ContainerInspect round-trip. The hostname
+// feeds the initial DHCPDISCOVER (option 12); the name and Compose labels
+// feed the stable-lease client-id (#219, and the deterministic MAC #218).
+// Polls the network's Containers map for up to
+// initialDHCPHostnameLookupTimeout; if the container hasn't been
+// registered yet (it's a race; sometimes Docker calls CreateEndpoint
+// before the container appears in the network's container list), we fall
+// through with a zero identity. The persistent renewal client populates
+// the hostname later regardless, so the worst case for the hint is "first
+// lease appears in the upstream DHCP server's UI without a hostname for a
+// few minutes"; for the stable-lease client-id a zero identity simply
+// means we fall back to the endpoint-derived id.
+func (p *Plugin) initialContainerIdentity(ctx context.Context, networkID, endpointID string) containerIdentity {
 	ctx, cancel := context.WithTimeout(ctx, initialDHCPHostnameLookupTimeout)
 	defer cancel()
 
@@ -867,15 +911,15 @@ func (p *Plugin) initialDHCPHostname(ctx context.Context, networkID, endpointID 
 	// retry interval. Cap the inner ctx at the poll interval.
 	const dockerCallTimeout = 200 * time.Millisecond
 
-	var hostname string
+	var id containerIdentity
 	_ = util.AwaitCondition(ctx, func() (bool, error) {
 		inner, innerCancel := context.WithTimeout(ctx, dockerCallTimeout)
 		defer innerCancel()
 		dockerNet, err := p.docker.NetworkInspect(inner, networkID, dNetwork.InspectOptions{})
 		if err != nil {
 			// Don't propagate the error — we want to keep retrying
-			// while the timeout has time. The caller treats an empty
-			// hostname as "not yet known" and lets renewal handle it.
+			// while the timeout has time. The caller treats a zero
+			// identity as "not yet known" and lets renewal handle it.
 			return false, nil
 		}
 		for ctrID, info := range dockerNet.Containers {
@@ -891,12 +935,12 @@ func (p *Plugin) initialDHCPHostname(ctx context.Context, networkID, endpointID 
 			if err != nil {
 				return false, nil
 			}
-			hostname = ctr.Config.Hostname
+			id = containerIdentityFromInspect(ctr)
 			return true, nil
 		}
 		return false, nil
 	}, 100*time.Millisecond)
-	return hostname
+	return id
 }
 
 // NewPlugin creates a new Plugin

@@ -249,7 +249,7 @@ func TestReacquireEndpoint_MACLookupError(t *testing.T) {
 	}
 }
 
-func TestInitialDHCPHostname_Success(t *testing.T) {
+func TestInitialContainerIdentity_HostnameSuccess(t *testing.T) {
 	const netID, epID = "n1", "ep1"
 	f := &fakeDocker{
 		inspectResult: map[string]dNetwork.Inspect{
@@ -263,12 +263,12 @@ func TestInitialDHCPHostname_Success(t *testing.T) {
 	}
 	p := &Plugin{docker: f}
 
-	if got := p.initialDHCPHostname(context.Background(), netID, epID); got != "myhost" {
+	if got := p.initialContainerIdentity(context.Background(), netID, epID).Hostname; got != "myhost" {
 		t.Fatalf("hostname: got %q want myhost", got)
 	}
 }
 
-func TestInitialDHCPHostname_EmptyOnFailure(t *testing.T) {
+func TestInitialContainerIdentity_EmptyOnFailure(t *testing.T) {
 	const netID, epID = "n1", "ep1"
 	cases := []struct {
 		name string
@@ -303,7 +303,7 @@ func TestInitialDHCPHostname_EmptyOnFailure(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
 			defer cancel()
 			p := &Plugin{docker: c.f}
-			if got := p.initialDHCPHostname(ctx, netID, epID); got != "" {
+			if got := p.initialContainerIdentity(ctx, netID, epID).Hostname; got != "" {
 				t.Fatalf("hostname: got %q want empty", got)
 			}
 		})

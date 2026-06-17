@@ -24,6 +24,11 @@ var (
 	ErrParentDown = errors.New("parent interface is down")
 	// ErrModeMismatch indicates an option that doesn't apply to the chosen mode was set
 	ErrModeMismatch = errors.New("option does not apply to selected mode")
+	// ErrStableLeaseMode indicates stable_lease was requested in a mode
+	// that can't yet honor it (only mode=ipvlan derives a stable client-id;
+	// bridge/macvlan lease stability rides the deterministic-MAC work,
+	// which is not yet available).
+	ErrStableLeaseMode = errors.New("stable_lease is only supported in mode=ipvlan")
 	// ErrMACAddress indicates an invalid MAC address
 	ErrMACAddress = errors.New("invalid MAC address")
 	// ErrNoLease indicates a DHCP lease was not obtained from dhcpcd
@@ -55,7 +60,7 @@ func ErrToStatus(err error) int {
 		errors.Is(err, ErrBridgeUsed), errors.Is(err, ErrMACAddress),
 		errors.Is(err, ErrInvalidMode), errors.Is(err, ErrParentRequired),
 		errors.Is(err, ErrParentInvalid), errors.Is(err, ErrParentDown),
-		errors.Is(err, ErrModeMismatch):
+		errors.Is(err, ErrModeMismatch), errors.Is(err, ErrStableLeaseMode):
 		return http.StatusBadRequest
 
 	// Upstream DHCP server didn't respond — not our fault, not the
