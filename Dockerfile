@@ -4,7 +4,7 @@
 # also exports DOCKER_BUILDKIT=1 so the classic builder can never be
 # picked up and choke on the mount flags.
 
-FROM golang:1.26-alpine@sha256:7a3e50096189ad57c9f9f865e7e4aa8585ed1585248513dc5cda498e2f41812c AS builder
+FROM golang:1.26-alpine@sha256:f1ddd9fe14fffc091dd98cb4bfa999f32c5fc77d2f2305ea9f0e2595c5437c14 AS builder
 
 # COVER_FLAGS is empty for the production build and `-cover -coverpkg=./...`
 # for the instrumented build used by the coverage workflow. Keeping the
@@ -33,7 +33,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     mkdir bin/ && go build $COVER_FLAGS -o bin/ ./cmd/...
 
 
-FROM alpine:3.24.0@sha256:a2d49ea686c2adfe3c992e47dc3b5e7fa6e6b5055609400dc2acaeb241c829f4
+FROM alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
 
 # Pin both the Alpine minor and the apk package versions: dhcpcd performs
 # the entire DHCP/DHCPv6 exchange (#152 — it replaced busybox udhcpc/udhcpc6
