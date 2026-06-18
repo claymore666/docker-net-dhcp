@@ -44,6 +44,57 @@ migration tracked in #178). They are accepted at the advisory level in
 older AuthZ finding (GHSA-x744-4wpc-v9h2 = GO-2026-4887), and will be
 re-evaluated when the module migration lands.
 
+## v1.3.0
+
+A feature release that builds new DHCP capabilities on the dhcpcd client
+shipped in v1.2.0: lease stability for ipvlan, opt-in dynamic-DNS
+registration, classless static routes, and more captured DHCP options.
+The plugin manifest is unchanged; all new behaviour is opt-in except the
+classless-routes default (see the compatibility note below).
+
+What changed:
+
+- **Stable leases for ipvlan** (#219). New `-o stable_lease=true` derives
+  the DHCP option-61 client-id from the container's *stable* identity
+  instead of the per-recreate endpoint id, so a server that keys leases on
+  the client-id (`dnsmasq` by default) hands the same logical container the
+  same IP across `stop` / `rm` / recreate — closing the gap that ipvlan
+  otherwise can't, since ipvlan slaves all share the parent's MAC. Identity
+  is taken, most-specific first, from `-o lease_seed=<key>`, then Compose
+  `project`+`service`+`container-number`, then the container `--name`; an
+  anonymous container with none of these bumps the new
+  `stable_lease_no_identity` counter on `/Plugin.Health`. bridge/macvlan
+  reject the option (their stability is delivered by the not-yet-available
+  deterministic-MAC work).
+- **Opt-in dynamic-DNS registration** (#261). New `-o register_dns=true`
+  sends the DHCP FQDN option (81 on v4 / 39 on v6) built from the container
+  hostname, asking the server to register forward (A/AAAA) + reverse (PTR)
+  DNS. Best-effort and advisory — many consumer routers ignore option 81 —
+  and off by default, since DDNS registration is a network-policy decision.
+- **Classless static routes** (#260). DHCPv4 option 121 (RFC 3442, plus the
+  legacy option 33 and MS option 249 encodings) is now honored: routes the
+  server pushes are programmed into the container at `Join`. `-o
+  skip_routes=true` suppresses them along with parent route-copying.
+- **More captured DHCP options** (#262). The observe-only log line now also
+  surfaces WPAD (option 252) and timezone (options 100/101 and legacy
+  option 2), alongside the existing NTP / TFTP / boot-file fields.
+- **Supply chain**: the image `:latest` tag is now a crane retag of the
+  signed version digest rather than a separate unsigned rebuild (#267), so
+  `:latest` and the matching `vX.Y.Z` share one signed digest. The docs
+  toolchain in the Pages workflow is hash-pinned (#268).
+- **Project**: the internal DHCP packages were renamed off their busybox
+  origins (`pkg/udhcpc` → `pkg/dhcp`, `cmd/udhcpc-handler` →
+  `cmd/dhcp-handler`, #245), and the integration suite gained a per-test
+  timing summary plus several runtime cuts (#253, #254, #255, #276).
+
+Operator-visible compatibility: classless static routes (option 121) are
+honored **by default** (`skip_routes` defaults to `false`). If your DHCP
+server pushes option-121 routes, containers will pick them up after the
+upgrade where previously they were ignored; set `-o skip_routes=true` to
+keep the old behaviour. All other new features (`stable_lease`,
+`lease_seed`, `register_dns`) are off by default — no action is required to
+upgrade from v1.2.x.
+
 ## v1.2.0
 
 A DHCP-client modernization release. The plugin's DHCP client changes
