@@ -36,13 +36,22 @@ The v1.1.0 Dependency Review gate (#193) surfaced two further
 
 Both are `docker cp` / archive-extraction paths in the Moby daemon and
 CLI. The plugin invokes none of them — its only client calls remain the
-three inspect/list APIs above — so neither is reachable; `govulncheck`
-confirms (green). No fix is published on the frozen
+three inspect/list APIs above. No fix is published on the frozen
 `github.com/docker/docker` module path (successor `moby/moby/v2`
 migration tracked in #178). They are accepted at the advisory level in
 `.github/dependency-review-config.yml` with a review date, alongside the
 older AuthZ finding (GHSA-x744-4wpc-v9h2 = GO-2026-4887), and will be
 re-evaluated when the module migration lands.
+
+During the v1.3.0 window (2026-06-28) the Go vulnerability database
+imported these advisories, so `govulncheck` now reports them through
+module-init symbol traces — the assessment above is unchanged, but
+"govulncheck is green" no longer holds. All three (GO-2026-5746 =
+GHSA-x86f-5xw2-fm2r, GO-2026-5617 = GHSA-rg2x-37c3-w2rh, plus the
+newly published GO-2026-5668 = GHSA-vp62-88p7-qqf5, a `docker cp`
+symlink-swap empty-file race, also daemon-side) are accepted with
+justification in `.github/vuln-allowlist.txt` (#291, #292) until a
+fixed release ships on the module path we depend on.
 
 ## v1.3.0
 
