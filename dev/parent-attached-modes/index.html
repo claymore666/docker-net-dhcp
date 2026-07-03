@@ -1223,7 +1223,7 @@ sidecar, no <code>cap_add</code>:</p>
 <td><code>skip_routes</code></td>
 <td>all</td>
 <td>no</td>
-<td>Don't copy non-default static routes from the parent (bridge / macvlan parent NIC / ipvlan parent NIC) into the container. v0.9.0 extended this from bridge-only to all modes for parity (#102) — set <code>true</code> to restore pre-v0.9.0 macvlan/ipvlan no-copy behaviour.</td>
+<td>Don't copy non-default static routes from the parent (bridge / macvlan parent NIC / ipvlan parent NIC) into the container. v0.9.0 extended this from bridge-only to all modes for parity (#102) — set <code>true</code> to restore pre-v0.9.0 macvlan/ipvlan no-copy behaviour. Since v1.3.0 it also suppresses DHCP-supplied classless static routes (option 121, #260 — see <code>reference.md</code>).</td>
 </tr>
 <tr>
 <td><code>propagate_dns</code></td>
@@ -1242,6 +1242,24 @@ sidecar, no <code>cap_add</code>:</p>
 <td>all</td>
 <td>no</td>
 <td>(v0.9.0+) Override DHCP option 61 (Client Identifier) for every endpoint on this network. Bytes go on the wire prefixed with type byte <code>0x00</code> (RFC 2132 opaque). Default empty keeps the per-endpoint stable id derived from the Docker endpoint ID, which is what makes per-container reservations work upstream. <strong>Caveat:</strong> a static <code>client_id</code> across containers means the DHCP server can't differentiate them. Typically only useful when paired with <code>vendor_class</code> to drive class-based policy.</td>
+</tr>
+<tr>
+<td><code>stable_lease</code></td>
+<td>ipvlan</td>
+<td>no</td>
+<td>(v1.3.0+) Derive the option-61 client-id from the container's <strong>stable identity</strong> instead of the per-recreate endpoint id, so a server that keys leases on option 61 (<code>dnsmasq</code> by default) returns the same IP across <code>stop</code> / <code>rm</code> / recreate. ipvlan-only — ipvlan slaves share the parent's MAC, so the client-id is the only per-container handle; bridge/macvlan reject the opt (their lease stability comes from the deterministic-MAC work, not yet available). Identity resolves most-specific-first: <code>lease_seed</code>, then Compose <code>project</code>+<code>service</code>+<code>container-number</code>, then <code>--name</code>; an anonymous container falls back to the endpoint id and bumps <code>stable_lease_no_identity</code> on <code>/Plugin.Health</code>. See <code>reference.md</code> for the full treatment (#219).</td>
+</tr>
+<tr>
+<td><code>lease_seed</code></td>
+<td>ipvlan</td>
+<td>no</td>
+<td>(v1.3.0+) Highest-precedence identity source for <code>stable_lease</code>: the client-id is a hash of the network plus this value. Two containers sharing a <code>lease_seed</code> collapse onto one lease; one container keeps its lease across recreate regardless of name or Compose labels. Inert unless <code>stable_lease=true</code>.</td>
+</tr>
+<tr>
+<td><code>register_dns</code></td>
+<td>all</td>
+<td>no</td>
+<td>(v1.3.0+) Send the DHCP FQDN option (81 on v4 / 39 on v6) built from the container hostname, asking the server to register forward (A/AAAA) + reverse (PTR) DNS. Best-effort and advisory — many consumer routers ignore option 81. Off by default: dynamic-DNS registration is a network-policy decision (#261).</td>
 </tr>
 <tr>
 <td><code>vendor_class</code></td>
@@ -1443,7 +1461,7 @@ case) always satisfy the rule.</p>
 with <code>-6</code>) alongside the v4 one — <strong>stateful DHCPv6</strong>, not SLAAC. The
 exact create incantation (note: the Docker-level <code>--ipv6</code> flag does
 NOT work with the null IPAM driver and is not what you want):</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>docker<span class="w"> </span>network<span class="w"> </span>create<span class="w"> </span>-d<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v1.2.0<span class="w"> </span><span class="se">\</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>docker<span class="w"> </span>network<span class="w"> </span>create<span class="w"> </span>-d<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v1.3.0<span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="w">    </span>--ipam-driver<span class="w"> </span>null<span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="w">    </span>-o<span class="w"> </span><span class="nv">mode</span><span class="o">=</span>macvlan<span class="w"> </span>-o<span class="w"> </span><span class="nv">parent</span><span class="o">=</span>eth0<span class="w"> </span>-o<span class="w"> </span><span class="nv">ipv6</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="w">    </span>lan-dhcp6
@@ -1516,9 +1534,16 @@ the same identity fields, regardless of attachment mode:</p>
   (rather than MAC) keep handing the same lease back. This is
   the mechanism that makes ipvlan stability work, since every
   ipvlan slave shares the parent's MAC; for macvlan and bridge
-  it's a redundant safety net. Override per-network with
-  <code>-o client_id=&lt;string&gt;</code> (v0.9.0+); rarely useful since a static
-  ID across containers means the server can't differentiate them.</li>
+  it's a redundant safety net. The endpoint id survives container
+  <em>restart</em> but not <em>recreate</em> (<code>docker rm</code> + <code>run</code> mints a fresh
+  endpoint, hence a fresh id) — so by default an ipvlan container
+  can change IP across a recreate. For ipvlan, <code>-o stable_lease=true</code>
+  (v1.3.0+) derives this id from the container's stable identity
+  instead, keeping the same lease across recreate too (see the
+  <code>stable_lease</code> / <code>lease_seed</code> options above and <code>reference.md</code>).
+  Override the id outright per-network with <code>-o client_id=&lt;string&gt;</code>
+  (v0.9.0+); rarely useful since a static ID across containers means
+  the server can't differentiate them.</li>
 </ul>
 <h3 id="captured-dhcp-options">Captured DHCP options<a class="headerlink" href="#captured-dhcp-options" title="Permanent link">&para;</a></h3>
 <p>The plugin captures every option the upstream server returns and
@@ -1681,7 +1706,7 @@ existing networks transparently fall back to the docker API on first
 read, which then back-fills the persisted state — so by the second
 endpoint operation everything is back to disk-served.</p>
 <p>Override the location via the <code>STATE_DIR</code> env var on the plugin:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a>docker<span class="w"> </span>plugin<span class="w"> </span><span class="nb">set</span><span class="w"> </span>ghcr.io/&lt;your-namespace&gt;/docker-net-dhcp:v1.2.0<span class="w"> </span><span class="nv">STATE_DIR</span><span class="o">=</span>/some/other/path
+<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a>docker<span class="w"> </span>plugin<span class="w"> </span><span class="nb">set</span><span class="w"> </span>ghcr.io/&lt;your-namespace&gt;/docker-net-dhcp:v1.3.0<span class="w"> </span><span class="nv">STATE_DIR</span><span class="o">=</span>/some/other/path
 </code></pre></div>
 <h2 id="plugin-env-vars">Plugin env vars<a class="headerlink" href="#plugin-env-vars" title="Permanent link">&para;</a></h2>
 <p>All settable via <code>docker plugin set &lt;ref&gt; KEY=VALUE</code>. None require a
