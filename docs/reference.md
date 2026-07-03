@@ -27,7 +27,7 @@ The plugin publishes to two registries; GHCR is primary:
 for unattended):
 
 ```bash
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.2.0
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.3.0
 ```
 
 Privileges requested: `network: host`, host PID namespace, the Docker
@@ -93,7 +93,7 @@ You bring an existing Linux bridge that is L2-connected to the LAN
 (see [`bridge-mode.md`](bridge-mode.md) for the bridge setup itself):
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.2.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.3.0 \
     --ipam-driver null \
     -o bridge=my-bridge \
     my-dhcp-net
@@ -105,7 +105,7 @@ No host changes — containers get per-container kernel-generated MACs
 as macvlan children of a host NIC:
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.2.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.3.0 \
     --ipam-driver null \
     -o mode=macvlan -o parent=eth0 \
     lan-dhcp
@@ -119,7 +119,7 @@ security, hostile vSwitches, some Wi-Fi APs). The DHCP server must
 key reservations on DHCP option 61 (client identifier), not MAC:
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.2.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.3.0 \
     --ipam-driver null \
     -o mode=ipvlan -o parent=eth0 \
     lan-dhcp
@@ -283,7 +283,7 @@ Set with `docker plugin set <plugin> NAME=value`; take effect after
 JSON liveness + counters on the plugin's UNIX socket:
 
 ```bash
-PLUGIN_ID=$(docker plugin inspect -f '{{.Id}}' ghcr.io/claymore666/docker-net-dhcp:v1.2.0)
+PLUGIN_ID=$(docker plugin inspect -f '{{.Id}}' ghcr.io/claymore666/docker-net-dhcp:v1.3.0)
 curl -s --unix-socket /run/docker/plugins/$PLUGIN_ID/net-dhcp.sock \
     http://localhost/Plugin.Health | jq .
 ```
@@ -355,7 +355,7 @@ Compose-managed alternative (network lifecycle tied to the project):
 ```yaml
 networks:
   lan:
-    driver: ghcr.io/claymore666/docker-net-dhcp:v1.2.0
+    driver: ghcr.io/claymore666/docker-net-dhcp:v1.3.0
     driver_opts:
       mode: macvlan
       parent: eth0
