@@ -91,10 +91,12 @@ jobs:
           docker plugin enable "${INTEGRATION_PLUGIN_REF}"
 
       # tee the verbose output so the timing-summary step below can
-      # report where the wall-clock went. The default Actions bash runs
-      # with `-o pipefail`, so a test failure still fails the step
-      # despite the pipe into tee.
+      # report where the wall-clock went. `shell: bash` is LOAD-BEARING:
+      # only the explicit form runs `bash -eo pipefail`; the implicit
+      # default is `bash -e` WITHOUT pipefail, which let tee's exit 0
+      # swallow go-test failures and pass the gate green (#297).
       - name: Run integration tests
+        shell: bash
         run: make integration-test 2>&1 | tee /tmp/itest-main.log
 
       # Failure-injection suite (#128): server loss, NAK on renewal,
@@ -102,6 +104,7 @@ jobs:
       # Separate step so a red here is immediately distinguishable
       # from a main-suite regression.
       - name: Run failure-injection tests
+        shell: bash
         run: make integration-test-failure 2>&1 | tee /tmp/itest-failure.log
 
       # Surface the slowest tests + total in the job log and step
