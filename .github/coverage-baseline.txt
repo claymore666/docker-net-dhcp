@@ -46,8 +46,24 @@
 #   Floors carry over unchanged under the new import paths; the
 #   historical decision notes above keep the names they had at the
 #   time. Same code, same floors.
+#
+# v1.4.0 recorded decision (#303 — reconcile floors with measured):
+#   The pkg/dhcp and cmd/dhcp-handler floors were still the carried-over
+#   udhcpc-era numbers; the dhcpcd migration (#152) and the v1.3.0 test
+#   work earned coverage on top that no PR ratcheted in, leaving up to
+#   25 points of silent-regression headroom. Measured merged coverage
+#   (Coverage runs #22 + #23, identical to 0.1%):
+#   - pkg/dhcp 85.5 -> 89.5: RAISED. Measured 90.0; 0.5 under.
+#   - cmd/dhcp-handler 50.0 -> 74.0: RAISED. Measured 75.0; 1.0 under
+#     because the package is one ~16-statement main() and granularity
+#     is coarse.
+#   - pkg/plugin 82.0 -> 83.5: RAISED. Measured 83.8; 0.3 under, the
+#     same margin the v1.2.0 decision used for this package.
+#   - pkg/util (88.7 meas.) and cmd/net-dhcp (75.4 meas.) left at
+#     floor: their deltas are within the documented variance band,
+#     not earned by any identifiable change.
 github.com/devplayer0/docker-net-dhcp/pkg/util 88.0
-github.com/devplayer0/docker-net-dhcp/pkg/plugin 82.0
-github.com/devplayer0/docker-net-dhcp/pkg/dhcp 85.5
+github.com/devplayer0/docker-net-dhcp/pkg/plugin 83.5
+github.com/devplayer0/docker-net-dhcp/pkg/dhcp 89.5
 github.com/devplayer0/docker-net-dhcp/cmd/net-dhcp 75.0
-github.com/devplayer0/docker-net-dhcp/cmd/dhcp-handler 50.0
+github.com/devplayer0/docker-net-dhcp/cmd/dhcp-handler 74.0
