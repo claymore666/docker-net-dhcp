@@ -13,9 +13,9 @@ name: Coverage
 # `integration.yml`.
 #
 # Same ephemeral `dhcp-ci` runners as integration.yml, same security
-# posture (outside-collaborator approval required for forked PRs —
-# though only `workflow_dispatch` is wired here, so forks can't trigger
-# this at all).
+# posture: a forked PR into main would trigger this (the pull_request
+# trigger below, added in #127), so the outside-collaborator approval
+# requirement is what keeps untrusted code off the privileged runners.
 on:
   workflow_dispatch:
   # Release PRs (dev → main) run coverage as a required check: the
@@ -53,8 +53,8 @@ jobs:
       # at one point, so stdlib recompiles failed with the
       # 'compile: version "go1.25.9" does not match go tool version
       # "go1.25.0"' error. setup-go gives us a known-clean toolchain
-      # at the cost of ~30s — fine for a 12-minute workflow that
-      # runs only on manual dispatch.
+      # at the cost of ~30s — fine for a workflow that runs only on
+      # release PRs and manual dispatch, not per feature PR.
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: '1.26'
