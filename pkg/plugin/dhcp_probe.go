@@ -12,7 +12,7 @@ import (
 	log "github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
 
-	"github.com/devplayer0/docker-net-dhcp/pkg/udhcpc"
+	"github.com/devplayer0/docker-net-dhcp/pkg/dhcp"
 	"github.com/devplayer0/docker-net-dhcp/pkg/util"
 )
 
@@ -39,7 +39,7 @@ const preflightProbeBudget = 5 * time.Second
 //     share the parent MAC, which would clash with the random probe
 //     MAC, and the probe goal (verifying DHCP reachability of the
 //     parent) is mode-agnostic.
-//  3. Bring it up and run udhcpc.GetIP one-shot with the probe budget.
+//  3. Bring it up and run dhcp.GetIP one-shot with the probe budget.
 //     dhcpcd has no DISCOVER-only flag; we accept the full DORA and
 //     let the upstream server briefly hold a lease that times out
 //     naturally (no `release` directive sent). The cost is one
@@ -98,7 +98,7 @@ func runDHCPProbe(ctx context.Context, parent string) error {
 	probeCtx, cancel := context.WithTimeout(ctx, preflightProbeBudget)
 	defer cancel()
 
-	info, err := udhcpc.GetIP(probeCtx, probeName, &udhcpc.DHCPClientOptions{
+	info, err := dhcp.GetIP(probeCtx, probeName, &dhcp.DHCPClientOptions{
 		// MAC is the probe link's (random) address; dhcpcd derives its
 		// DUID-LL from it. Identity-neutral otherwise:
 		// Hostname intentionally empty — the probe shouldn't

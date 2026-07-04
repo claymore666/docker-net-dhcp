@@ -36,13 +36,60 @@ The v1.1.0 Dependency Review gate (#193) surfaced two further
 
 Both are `docker cp` / archive-extraction paths in the Moby daemon and
 CLI. The plugin invokes none of them — its only client calls remain the
-three inspect/list APIs above — so neither is reachable; `govulncheck`
-confirms (green). No fix is published on the frozen
+three inspect/list APIs above. No fix is published on the frozen
 `github.com/docker/docker` module path (successor `moby/moby/v2`
 migration tracked in #178). They are accepted at the advisory level in
 `.github/dependency-review-config.yml` with a review date, alongside the
 older AuthZ finding (GHSA-x744-4wpc-v9h2 = GO-2026-4887), and will be
 re-evaluated when the module migration lands.
+
+During the v1.3.0 window (2026-06-28) the Go vulnerability database
+imported these advisories, so `govulncheck` now reports them through
+module-init symbol traces — the assessment above is unchanged, but
+"govulncheck is green" no longer holds. All three (GO-2026-5746 =
+GHSA-x86f-5xw2-fm2r, GO-2026-5617 = GHSA-rg2x-37c3-w2rh, plus the
+newly published GO-2026-5668 = GHSA-vp62-88p7-qqf5, a `docker cp`
+symlink-swap empty-file race, also daemon-side) are accepted with
+justification in `.github/vuln-allowlist.txt` (#291, #292) until a
+fixed release ships on the module path we depend on.
+
+## v1.3.0
+
+A feature release that builds new DHCP capabilities on the dhcpcd client
+shipped in v1.2.0: opt-in dynamic-DNS registration, classless static
+routes, and more captured DHCP options.
+The plugin manifest is unchanged; all new behaviour is opt-in except the
+classless-routes default (see the compatibility note below).
+
+What changed:
+
+- **Opt-in dynamic-DNS registration** (#261). New `-o register_dns=true`
+  sends the DHCP FQDN option (81 on v4 / 39 on v6) built from the container
+  hostname, asking the server to register forward (A/AAAA) + reverse (PTR)
+  DNS. Best-effort and advisory — many consumer routers ignore option 81 —
+  and off by default, since DDNS registration is a network-policy decision.
+- **Classless static routes** (#260). DHCPv4 option 121 (RFC 3442, plus the
+  legacy option 33 and MS option 249 encodings) is now honored: routes the
+  server pushes are programmed into the container at `Join`. `-o
+  skip_routes=true` suppresses them along with parent route-copying.
+- **More captured DHCP options** (#262). The observe-only log line now also
+  surfaces WPAD (option 252) and timezone (options 100/101 and legacy
+  option 2), alongside the existing NTP / TFTP / boot-file fields.
+- **Supply chain**: the image `:latest` tag is now a crane retag of the
+  signed version digest rather than a separate unsigned rebuild (#267), so
+  `:latest` and the matching `vX.Y.Z` share one signed digest. The docs
+  toolchain in the Pages workflow is hash-pinned (#268).
+- **Project**: the internal DHCP packages were renamed off their busybox
+  origins (`pkg/udhcpc` → `pkg/dhcp`, `cmd/udhcpc-handler` →
+  `cmd/dhcp-handler`, #245), and the integration suite gained a per-test
+  timing summary plus several runtime cuts (#253, #254, #255, #276).
+
+Operator-visible compatibility: classless static routes (option 121) are
+honored **by default** (`skip_routes` defaults to `false`). If your DHCP
+server pushes option-121 routes, containers will pick them up after the
+upgrade where previously they were ignored; set `-o skip_routes=true` to
+keep the old behaviour. The other new feature (`register_dns`) is off by
+default — no action is required to upgrade from v1.2.x.
 
 ## v1.2.0
 

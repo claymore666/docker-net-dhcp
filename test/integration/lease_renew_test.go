@@ -4,8 +4,6 @@ package integration
 
 import (
 	"context"
-	"os"
-	"strings"
 	"testing"
 	"time"
 
@@ -18,45 +16,64 @@ import (
 // it expires, and that the renewal goes through (DHCPACK from
 // dnsmasq) without disturbing the container's IP.
 //
-// The fixture's lease time is 2m (dnsmasq's hard minimum, see
-// LeaseTime in harness/fixture.go), so T1 (renewal trigger inside
-// dhcpcd) fires at 1m. We wait ~70s — past T1, well before T2
-// (1m45s) — and assert:
+// dnsmasq's minimum *lease* is a hard 2m, so we can't shorten the
+// lease to make renewal fire sooner. Instead this test runs on a
+// dedicated ephemeral fixture that advertises DHCP option 58 (T1,
+// renewal) / 59 (T2, rebind) explicitly — independent of the lease
+// length — via WithRenewTimes. dhcpcd honours the server-supplied
+// T1, so renewal fires at renewT1 (~12s) instead of half of a 2m
+// lease (~60s). We wait past T1, well before T2, and assert:
 //   - the container's IP from docker inspect hasn't changed
-//   - dnsmasq's log shows at least 2 DHCPACK lines for our MAC
-//     (one for the initial bind, one for the renewal)
+//   - the fixture's dnsmasq log shows at least 2 DHCPACK lines for
+//     our MAC (one for the initial bind, one for the renewal)
+//
+// The shared suite fixture's 2m lease is left untouched — every other
+// test depends on its stability (#253).
+//
+// The mechanism is self-validating: if dnsmasq doesn't honour the
+// advertised T1 (or dhcpcd floors it), no renewal ACK lands in the
+// shortened window and the assertions below fail — it never silently
+// passes.
 //
 // Without this test, a regression in dhcpManager.renew or the
 // long-lived dhcpcd client would be silent: the container starts
 // fine, then loses its IP somewhere between T2 and the next operator
 // noticing the connection dropped.
 func TestLeaseRenew_HonorsT1(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Second)
+	const (
+		renewT1 = 12 // seconds; dhcpcd renews here, above its floor
+		renewT2 = 25 // seconds; rebind — kept past the wait window
+		// Wait past T1 but comfortably before T2, so the only ACK we
+		// expect on top of the bind is a renewal ACK, not a rebind.
+		waitFor = 18 * time.Second
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
 	netName := "dh-itest-renew"
 	ctrName := "dh-itest-renew-ctr"
 
+	ef := harness.NewEphemeralFixture(t, harness.WithRenewTimes(renewT1, renewT2))
 	t.Cleanup(func() {
 		if t.Failed() {
-			fixture.DumpLogs(func(s string) { t.Log(s) })
+			ef.DumpLogs(func(s string) { t.Log(s) })
 		}
 	})
 
-	harness.CreateNetwork(t, ctx, netName, "macvlan", nil)
+	harness.CreateNetwork(t, ctx, netName, "macvlan", map[string]string{
+		"parent": harness.EphemeralHostVeth,
+	})
 	id, ipBefore, mac := harness.RunContainer(t, ctx, netName, ctrName)
 	t.Logf("initial: ip=%s mac=%s", ipBefore, mac)
 
-	startACKs := countDHCPACKs(t, mac)
+	startACKs := ef.CountLogLines("DHCPACK", mac)
 
-	// Sleep past T1 (60s for a 2m lease) but well before T2 (105s)
-	// to keep the assertion clean: the only ACK we expect on top of
-	// the bind is a renewal ACK, not a rebind.
-	t.Log("waiting 70s for lease renewal cycle...")
+	t.Logf("waiting %s for lease renewal cycle (T1=%ds, T2=%ds)...", waitFor, renewT1, renewT2)
 	select {
 	case <-ctx.Done():
 		t.Fatalf("context cancelled before renewal window: %v", ctx.Err())
-	case <-time.After(70 * time.Second):
+	case <-time.After(waitFor):
 	}
 
 	// Re-poll inspect: the IP must not have changed during the
@@ -79,38 +96,16 @@ func TestLeaseRenew_HonorsT1(t *testing.T) {
 		t.Errorf("IP changed during renewal window: before=%s after=%s (renewal client did not preserve lease)", ipBefore, ipAfter)
 	}
 
-	endACKs := countDHCPACKs(t, mac)
+	endACKs := ef.CountLogLines("DHCPACK", mac)
 	t.Logf("DHCPACKs for %s: start=%d, after=%d", mac, startACKs, endACKs)
 
 	// The initial bind is one ACK; a renewal is one more. We've
 	// waited past T1, so we expect at least one renewal ACK on top
 	// of the bind. Strictly: endACKs - startACKs >= 1, and total >= 2.
 	if endACKs-startACKs < 1 {
-		t.Errorf("no renewal DHCPACK observed for %s in the 22s wait window — renewal client appears stuck or dnsmasq is not handling the renewal request", mac)
+		t.Errorf("no renewal DHCPACK observed for %s in the %s wait window — renewal client appears stuck or dnsmasq is not handling the renewal request", mac, waitFor)
 	}
 	if endACKs < 2 {
 		t.Errorf("expected at least 2 DHCPACKs for %s (bind + renewal), got %d", mac, endACKs)
 	}
-}
-
-// countDHCPACKs reads the macvlan-fixture dnsmasq log and counts
-// "DHCPACK" lines that mention `mac`. dnsmasq emits one ACK line per
-// successful bind/renewal/rebind, so the count is a clean monotonic
-// proxy for "how many times has dnsmasq blessed a request from this
-// MAC". MAC matching is case-insensitive and substring-based — the
-// log format prints lowercase MAC late in the line.
-func countDHCPACKs(t *testing.T, mac string) int {
-	t.Helper()
-	data, err := os.ReadFile(fixture.DnsmasqLog())
-	if err != nil {
-		t.Fatalf("read dnsmasq log: %v", err)
-	}
-	macLower := strings.ToLower(mac)
-	count := 0
-	for _, line := range strings.Split(string(data), "\n") {
-		if strings.Contains(line, "DHCPACK") && strings.Contains(strings.ToLower(line), macLower) {
-			count++
-		}
-	}
-	return count
 }

@@ -25,9 +25,9 @@ networking, and the Docker socket mounted. Reports are especially
 welcome for:
 
 - container → host or container → plugin escapes through the netns /
-  mount-ns handling (`pkg/plugin`, `pkg/udhcpc`);
+  mount-ns handling (`pkg/plugin`, `pkg/dhcp`);
 - parsing of untrusted DHCP-server responses (the `dhcpcd` hook-event
-  path: `cmd/udhcpc-handler`, `pkg/udhcpc.BuildEvent`, lease/option
+  path: `cmd/dhcp-handler`, `pkg/dhcp.BuildEvent`, lease/option
   propagation into containers);
 - anything that lets one container influence another container's
   lease, address, or DNS (cross-endpoint identity confusion).
@@ -71,7 +71,7 @@ attacker tampering with distributed images.
 
 **Mitigations and why they suffice.**
 - *Memory safety / injection:* the plugin is written in Go (memory-safe)
-  and the untrusted DHCP-response parsers (`pkg/udhcpc.BuildEvent`, the
+  and the untrusted DHCP-response parsers (`pkg/dhcp.BuildEvent`, the
   handler-pipe JSON decoder) have native fuzz targets plus seed corpora
   run on every PR, so malformed server input is exercised, not assumed
   safe.

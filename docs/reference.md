@@ -27,7 +27,7 @@ The plugin publishes to two registries; GHCR is primary:
 for unattended):
 
 ```bash
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.2.0
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.3.0
 ```
 
 Privileges requested: `network: host`, host PID namespace, the Docker
@@ -93,7 +93,7 @@ You bring an existing Linux bridge that is L2-connected to the LAN
 (see [`bridge-mode.md`](bridge-mode.md) for the bridge setup itself):
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.2.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.3.0 \
     --ipam-driver null \
     -o bridge=my-bridge \
     my-dhcp-net
@@ -105,7 +105,7 @@ No host changes — containers get per-container kernel-generated MACs
 as macvlan children of a host NIC:
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.2.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.3.0 \
     --ipam-driver null \
     -o mode=macvlan -o parent=eth0 \
     lan-dhcp
@@ -119,7 +119,7 @@ security, hostile vSwitches, some Wi-Fi APs). The DHCP server must
 key reservations on DHCP option 61 (client identifier), not MAC:
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.2.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.3.0 \
     --ipam-driver null \
     -o mode=ipvlan -o parent=eth0 \
     lan-dhcp
@@ -146,13 +146,50 @@ Passed as `-o key=value` on `docker network create`, or under
 | `ipv6` | all | `false` | upstream; functional again in v1.0.0 | Also run stateful DHCPv6 (a second `dhcpcd` with `-6`) alongside DHCPv4 — see the [DHCPv6 section](parent-attached-modes.md#dhcpv6-ipv6true) for semantics and DUID/IAID identity. The Docker-visible v6 address is renewed as of v1.2.0 (#152). |
 | `lease_timeout` | all | `10s` | upstream | Budget for the up-front DHCP exchange at container creation. Raise on slow/relayed networks (`-o lease_timeout=60s`). |
 | `ignore_conflicts` | bridge | `false` | upstream | Skip the bridge-already-in-use check against other Docker networks. No-op in macvlan/ipvlan. |
-| `skip_routes` | all | `false` | upstream; all modes since v0.9.0 | Don't copy non-default static routes from the parent (bridge or NIC) into containers. v0.9.0 extended route-copying from bridge-only to all modes (#102); set `true` to restore the old macvlan/ipvlan no-copy behaviour. |
+| `skip_routes` | all | `false` | upstream; all modes since v0.9.0 | Don't copy non-default static routes from the parent (bridge or NIC) into containers, **and** don't apply DHCP-supplied classless static routes (option 121, see below). v0.9.0 extended parent route-copying from bridge-only to all modes (#102); set `true` to restore the old macvlan/ipvlan no-copy behaviour. The default gateway is unaffected either way. |
 | `propagate_dns` | all | `false` | v0.9.0 | Write the DHCP-supplied DNS server list (option 6 / v6 option 23) into the container's `/etc/resolv.conf` on every bind/renew. Overrides Docker's embedded resolver for this network; the `search` line uses option 119 with fallback to option 15. |
 | `propagate_mtu` | all | `false` | v0.9.0 | Apply DHCP option 26 (Interface MTU) to the container link on bind/renew. For jumbo-frame (9000) and VPN-reduced (~1450) networks. |
 | `client_id` | all | per-endpoint id | v0.9.0 | Override DHCP option 61 (Client Identifier) for every endpoint on this network; sent as RFC 2132 opaque bytes (type `0x00`). The default per-endpoint id is what makes per-container reservations work — a fixed `client_id` makes all containers look like one client to the server. Pair with `vendor_class` for class-based policy. |
 | `vendor_class` | all | `docker-net-dhcp` | v0.9.0 | Override DHCP option 60 (Vendor Class Identifier), for DHCP servers running class-based policy (different gateway/option sets per class). v4 only — the DHCPv6 client sends no vendor-class option. |
 | `validate_dhcp` | macvlan, ipvlan | `false` | v0.9.0 | Pre-flight probe at `docker network create`: one-shot DHCP exchange on the parent with a random locally-administered MAC, rejecting the network if no server answers within 5s. Catches isolated parents / blocked UDP 67-68 / broken VLAN tags at create time. Costs one transient lease per probe. Bridge mode rejects the option. |
+| `register_dns` | all | `false` | v1.3.0 | Send the DHCP FQDN option (81 on v4 / 39 on v6, via `dhcpcd fqdn both`) built from the container's hostname, asking the DHCP server to register that name in DNS (forward A/AAAA + reverse PTR). Reuses the same hostname already sent as the option-12 hint. Best-effort and advisory — many consumer routers ignore option 81, so this *requests* registration, it does not guarantee resolution. Off by default: dynamic-DNS registration is a network-policy decision. See below. |
 | `audit_log` | all | `false` | v1.0.0 | Append every lease-lifecycle event (`bound` / `renew` / `release` / `release_failed`) to `STATE_DIR/leases.jsonl` — one JSON object per line with timestamp, network, endpoint, container, hostname, IP, MAC. Rotated at 16 MB or 30 days (one rotated generation kept, ≤ ~32 MB total). Append failures bump `ledger_write_failures` on `/Plugin.Health`, never affecting lease handling. Off by default: per-event disk write, and container↔IP correlation on disk is privacy-relevant in some environments. |
+
+### DHCP classless static routes (option 121)
+
+When the DHCP server hands out classless static routes (option 121,
+RFC 3442 — and the identically-formatted Microsoft option 249), the
+plugin applies them inside the container alongside the routes copied
+from the parent. Routes are captured from the initial v4 lease and
+programmed at `Join`. A `0.0.0.0/0` entry in option 121 is treated as
+the default route and **supersedes the option-3 router** per RFC 3442
+(an explicit `gateway=` override still wins over both). `skip_routes=true`
+opts out of option-121 routes as well as parent-copied ones. v4 only —
+IPv6 routes come from Router Advertisements. (Legacy option 33 is not
+honored; modern servers send option 121.)
+
+### Dynamic-DNS registration (`register_dns`, option 81 / 39)
+
+With `-o register_dns=true`, every endpoint on the network sends the DHCP
+**FQDN option** — option 81 on v4 (RFC 4702) and option 39 on v6
+(RFC 4704) — built from the container's hostname, asking the server to
+publish that name in DNS. This pairs with the option-12 hostname hint the
+plugin already sends: the hostname says *who we are*, the FQDN option asks
+the server to *publish it*. One `dhcpcd fqdn both` directive covers both
+families, requesting forward (A/AAAA) **and** reverse (PTR) updates; the
+container runs no DNS updater of its own, so the server does all the work.
+
+The payoff is on-mission: a container becomes resolvable **by name** on
+the LAN, not just reachable by its DHCP-leased IP — with no per-container
+plumbing. The name source is the same one used for the hostname hint and
+tombstone matching (the container's hostname; the server supplies the
+domain).
+
+It is **best-effort and advisory**, like the preferred-address hint: many
+consumer routers ignore option 81 entirely, and registration depends on
+the server being configured for dynamic DNS. The plugin's contract is
+"send the option when asked" — not "the name will resolve." Off by
+default because DDNS registration is a deliberate network-policy choice.
 
 ## Driver options (per-endpoint)
 
@@ -202,7 +239,7 @@ Set with `docker plugin set <plugin> NAME=value`; take effect after
 JSON liveness + counters on the plugin's UNIX socket:
 
 ```bash
-PLUGIN_ID=$(docker plugin inspect -f '{{.Id}}' ghcr.io/claymore666/docker-net-dhcp:v1.2.0)
+PLUGIN_ID=$(docker plugin inspect -f '{{.Id}}' ghcr.io/claymore666/docker-net-dhcp:v1.3.0)
 curl -s --unix-socket /run/docker/plugins/$PLUGIN_ID/net-dhcp.sock \
     http://localhost/Plugin.Health | jq .
 ```
@@ -273,7 +310,7 @@ Compose-managed alternative (network lifecycle tied to the project):
 ```yaml
 networks:
   lan:
-    driver: ghcr.io/claymore666/docker-net-dhcp:v1.2.0
+    driver: ghcr.io/claymore666/docker-net-dhcp:v1.3.0
     driver_opts:
       mode: macvlan
       parent: eth0

@@ -75,8 +75,9 @@ func linkGlobalV6(t *testing.T, ctx context.Context, ctrID string, budget time.D
 }
 
 // countDHCPv6Replies counts DHCPREPLY lines mentioning addr in the
-// given dnsmasq log — the v6 sibling of countDHCPACKs. dnsmasq logs
-// one DHCPREPLY per blessed REQUEST/RENEW, so bind=1, renewal=2.
+// given dnsmasq log — the v6 sibling of the DHCPACK counting in the
+// lease-renew test. dnsmasq logs one DHCPREPLY per blessed
+// REQUEST/RENEW, so bind=1, renewal=2.
 func countDHCPv6Replies(t *testing.T, logPath, addr string) int {
 	t.Helper()
 	data, err := os.ReadFile(logPath)
@@ -512,7 +513,9 @@ func TestDUID_PersistsAcrossPluginRestart(t *testing.T) {
 		if duidBefore = leaseDUIDForV6(t, fixture.LeaseFile(), v6); duidBefore != "" {
 			break
 		}
-		time.Sleep(time.Second)
+		// Cheap lease-file read; 250ms poll trims overshoot, 30s
+		// deadline unchanged (#254).
+		time.Sleep(250 * time.Millisecond)
 	}
 	if duidBefore == "" {
 		t.Fatalf("no v6 lease entry for %s in the dnsmasq lease DB", v6)
@@ -555,7 +558,9 @@ func TestDUID_PersistsAcrossPluginRestart(t *testing.T) {
 			rebound = true
 			break
 		}
-		time.Sleep(time.Second)
+		// Cheap log read; 250ms poll trims overshoot past the
+		// post-restart REPLY, 90s deadline unchanged (#254).
+		time.Sleep(250 * time.Millisecond)
 	}
 	if !rebound {
 		t.Fatalf("no post-restart DHCPREPLY for %s within 90s — recovered dhcpcd v6 client never re-bound", v6)

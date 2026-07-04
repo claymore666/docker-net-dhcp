@@ -6,7 +6,7 @@ real parent NIC (one end of a veth pair), a real DHCP server (host
 through libnetwork. These cover the integration surface that `go
 test` can't reach without privileges — `CreateEndpoint`, `Join`,
 `Leave`, `recoverEndpoints`, `dhcpManager.{Start,Stop}`,
-parent-attached link wiring, `udhcpc.{Start,Finish,Wait,GetIP}`.
+parent-attached link wiring, `dhcp.{Start,Finish,Wait,GetIP}`.
 
 ## Running locally
 

@@ -5,7 +5,7 @@ import (
 
 	"github.com/vishvananda/netlink"
 
-	"github.com/devplayer0/docker-net-dhcp/pkg/udhcpc"
+	"github.com/devplayer0/docker-net-dhcp/pkg/dhcp"
 )
 
 // TestRenew_LeaseChangedCounter pins the v0.9.0 / T1-4 counter
@@ -32,7 +32,7 @@ func TestRenew_LeaseChangedCounter(t *testing.T) {
 		m := &dhcpManager{plugin: p}
 		m.setLastIP(false, addr1)
 
-		if err := m.renew(false, udhcpc.Info{IP: addr2.String()}); err != nil {
+		if err := m.renew(false, dhcp.Info{IP: addr2.String()}); err != nil {
 			t.Fatalf("renew: %v", err)
 		}
 
@@ -46,7 +46,7 @@ func TestRenew_LeaseChangedCounter(t *testing.T) {
 		m := &dhcpManager{plugin: p}
 		m.setLastIP(false, addr1)
 
-		if err := m.renew(false, udhcpc.Info{IP: addr1.String()}); err != nil {
+		if err := m.renew(false, dhcp.Info{IP: addr1.String()}); err != nil {
 			t.Fatalf("renew: %v", err)
 		}
 
@@ -65,7 +65,7 @@ func TestRenew_LeaseChangedCounter(t *testing.T) {
 		m := &dhcpManager{plugin: p}
 		// no setLastIP — lastIP is nil
 
-		if err := m.renew(false, udhcpc.Info{IP: addr1.String()}); err != nil {
+		if err := m.renew(false, dhcp.Info{IP: addr1.String()}); err != nil {
 			t.Fatalf("renew: %v", err)
 		}
 
@@ -79,7 +79,7 @@ func TestRenew_LeaseChangedCounter(t *testing.T) {
 		m := &dhcpManager{plugin: p}
 		m.setLastIP(true, addr1)
 
-		if err := m.renew(true, udhcpc.Info{IP: addr2.String()}); err != nil {
+		if err := m.renew(true, dhcp.Info{IP: addr2.String()}); err != nil {
 			t.Fatalf("renew: %v", err)
 		}
 
@@ -96,7 +96,7 @@ func TestRenew_LeaseChangedCounter(t *testing.T) {
 		m := &dhcpManager{plugin: p}
 		m.setLastIP(false, addr1)
 
-		if err := m.renew(false, udhcpc.Info{IP: addr2.String()}); err != nil {
+		if err := m.renew(false, dhcp.Info{IP: addr2.String()}); err != nil {
 			t.Fatalf("renew: %v", err)
 		}
 
@@ -115,7 +115,7 @@ func TestRenew_LeaseChangedCounter(t *testing.T) {
 		m := &dhcpManager{plugin: nil}
 		m.setLastIP(false, addr1)
 
-		if err := m.renew(false, udhcpc.Info{IP: addr2.String()}); err != nil {
+		if err := m.renew(false, dhcp.Info{IP: addr2.String()}); err != nil {
 			t.Fatalf("renew: %v", err)
 		}
 	})
@@ -156,7 +156,7 @@ func TestHandleEvent_Counters(t *testing.T) {
 				m := &dhcpManager{plugin: p}
 				m.setLastIP(v6, addr)
 
-				m.handleEvent(udhcpc.Event{Type: c.event, Data: udhcpc.Info{IP: addr.String()}}, v6)
+				m.handleEvent(dhcp.Event{Type: c.event, Data: dhcp.Info{IP: addr.String()}}, v6)
 
 				if got := c.aggregate(p); got != 1 {
 					t.Errorf("%s aggregate = %d, want 1", c.event, got)
@@ -176,7 +176,7 @@ func TestHandleEvent_Counters(t *testing.T) {
 		p := &Plugin{}
 		m := &dhcpManager{plugin: p}
 		for _, evt := range []string{"deconfig", "something-new"} {
-			m.handleEvent(udhcpc.Event{Type: evt}, false)
+			m.handleEvent(dhcp.Event{Type: evt}, false)
 		}
 		total := p.leasesObtained.Load() + p.leasesRenewed.Load() +
 			p.dhcpTimeouts.Load() + p.naksReceived.Load()
@@ -189,7 +189,7 @@ func TestHandleEvent_Counters(t *testing.T) {
 		m := &dhcpManager{plugin: nil}
 		m.setLastIP(false, addr)
 		for _, evt := range []string{"bound", "renew", "leasefail", "nak", "deconfig"} {
-			m.handleEvent(udhcpc.Event{Type: evt, Data: udhcpc.Info{IP: addr.String()}}, false)
+			m.handleEvent(dhcp.Event{Type: evt, Data: dhcp.Info{IP: addr.String()}}, false)
 		}
 	})
 }

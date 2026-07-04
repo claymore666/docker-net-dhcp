@@ -124,3 +124,54 @@ func TestExtraOptions_NTPAndTFTPLogged(t *testing.T) {
 	t.Errorf("plugin log did not surface NTP=%s / TFTP=%s within 5s",
 		harness.TestNTPServer, harness.TestTFTPServer)
 }
+
+// TestExtraOptions_WPADAndTimezoneLogged is the #262 round-trip: the
+// fixture advertises WPAD (252), RFC 4833 timezone (100/101) and the
+// legacy time offset (2); dhcpcd must request and export them (under
+// its real names posix_timezone/tzdb_timezone — NOT pcode/tcode — and
+// via the `define`d wpad), and the plugin must surface them in the
+// "DHCP options received" log line. Observe-only: nothing is applied to
+// the container. Proves the dhcpcd option names are correct end-to-end.
+func TestExtraOptions_WPADAndTimezoneLogged(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	netName := "dh-itest-extra-wpad"
+	ctrName := "dh-itest-extra-wpad-ctr"
+
+	t.Cleanup(func() {
+		if t.Failed() {
+			fixture.DumpLogs(func(s string) { t.Log(s) })
+			harness.DumpPluginLog(t)
+		}
+	})
+
+	harness.CreateNetwork(t, ctx, netName, "macvlan", nil)
+	harness.RunContainer(t, ctx, netName, ctrName)
+
+	want := []string{harness.TestWPAD, harness.TestPosixTZ, harness.TestTZDBTZ, harness.TestTimeOffset}
+	deadline := time.Now().Add(5 * time.Second)
+	var got string
+	for time.Now().Before(deadline) {
+		got = harness.ReadPluginLog(t, ctx)
+		if strings.Contains(got, "DHCP options received") && containsAll(got, want) {
+			t.Logf("plugin log surfaced WPAD/timezone extras: %v", want)
+			return
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	for _, w := range want {
+		if !strings.Contains(got, w) {
+			t.Errorf("plugin log did not surface %q within 5s", w)
+		}
+	}
+}
+
+func containsAll(haystack string, needles []string) bool {
+	for _, n := range needles {
+		if !strings.Contains(haystack, n) {
+			return false
+		}
+	}
+	return true
+}

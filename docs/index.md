@@ -22,7 +22,7 @@ like any other machine. Bridge, macvlan, and ipvlan attachment modes.
 Install the plugin:
 
 ```bash
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.2.0
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.3.0
 ```
 
 It requests `host` networking, the host PID namespace, the Docker
@@ -34,7 +34,7 @@ already have a host bridge `my-bridge` on your LAN — see
 [Bridge mode](bridge-mode.md) for that one-time setup):
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.2.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.3.0 \
   --ipam-driver null -o bridge=my-bridge my-dhcp-net
 
 docker run --rm -ti --network my-dhcp-net alpine ip address show
@@ -117,5 +117,8 @@ gh attestation verify oci://ghcr.io/claymore666/docker-net-dhcp:VERSION --repo c
 
 ## License
 
-MIT — see
+GPL-3.0 — see
 [LICENSE.md](https://github.com/claymore666/docker-net-dhcp/blob/dev/LICENSE.md).
+This is a fork of
+[`devplayer0/docker-net-dhcp`](https://github.com/devplayer0/docker-net-dhcp),
+which is GPL-3.0; as a derivative work it stays under the same license.

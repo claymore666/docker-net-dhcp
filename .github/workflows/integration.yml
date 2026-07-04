@@ -52,7 +52,7 @@ jobs:
     env:
       INTEGRATION_PLUGIN_REF: ghcr.io/claymore666/docker-net-dhcp:integration
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       # The Go toolchain (go.mod's version) is baked into the dhcp-ci
       # runner image, so actions/setup-go is skipped. Fail loudly if
@@ -90,15 +90,31 @@ jobs:
           docker plugin set "${INTEGRATION_PLUGIN_REF}" LOG_LEVEL=trace
           docker plugin enable "${INTEGRATION_PLUGIN_REF}"
 
+      # tee the verbose output so the timing-summary step below can
+      # report where the wall-clock went. `shell: bash` is LOAD-BEARING:
+      # only the explicit form runs `bash -eo pipefail`; the implicit
+      # default is `bash -e` WITHOUT pipefail, which let tee's exit 0
+      # swallow go-test failures and pass the gate green (#297).
       - name: Run integration tests
-        run: make integration-test
+        shell: bash
+        run: make integration-test 2>&1 | tee /tmp/itest-main.log
 
       # Failure-injection suite (#128): server loss, NAK on renewal,
       # lease expiry — each against a per-test ephemeral DHCP server.
       # Separate step so a red here is immediately distinguishable
       # from a main-suite regression.
       - name: Run failure-injection tests
-        run: make integration-test-failure
+        shell: bash
+        run: make integration-test-failure 2>&1 | tee /tmp/itest-failure.log
+
+      # Surface the slowest tests + total in the job log and step
+      # summary, so speedup work can target the biggest waits without
+      # digging through verbose output. Informational, always-run: it
+      # owns no pass/fail and tolerates a missing log (e.g. the failure
+      # step was skipped because the main suite already failed).
+      - name: Test timing summary
+        if: always()
+        run: scripts/integration-timing.sh /tmp/itest-main.log /tmp/itest-failure.log
 
       # Tear down so a follow-up workflow on the same runner doesn't
       # find a stale `:integration` plugin pinned to the previous

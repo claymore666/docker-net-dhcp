@@ -94,10 +94,11 @@ The host's NIC config (IP, routes, netplan/`systemd-networkd`,
 | `ipv6`              | all              | no       | Also run stateful DHCPv6 (a second `dhcpcd` with `-6`) in addition to DHCPv4 — see "DHCPv6" below for semantics and DUID/IAID identity. |
 | `lease_timeout`     | both      | no       | Initial-lease timeout for the up-front DHCP exchange (default `10s`). |
 | `ignore_conflicts`  | bridge    | no       | Skip the bridge-already-in-use check. No-op in macvlan mode.  |
-| `skip_routes`       | all       | no       | Don't copy non-default static routes from the parent (bridge / macvlan parent NIC / ipvlan parent NIC) into the container. v0.9.0 extended this from bridge-only to all modes for parity (#102) — set `true` to restore pre-v0.9.0 macvlan/ipvlan no-copy behaviour. |
+| `skip_routes`       | all       | no       | Don't copy non-default static routes from the parent (bridge / macvlan parent NIC / ipvlan parent NIC) into the container. v0.9.0 extended this from bridge-only to all modes for parity (#102) — set `true` to restore pre-v0.9.0 macvlan/ipvlan no-copy behaviour. Since v1.3.0 it also suppresses DHCP-supplied classless static routes (option 121, #260 — see `reference.md`). |
 | `propagate_dns`     | all       | no       | (v0.9.0+) Write DHCP option 6 / 23 (DNS server list) into the container's `/etc/resolv.conf` on bind/renew. Off by default; turning it on overrides Docker's embedded resolver for this network. The `search` line uses option 119 (Domain Search List) when supplied, falling back to option 15 (`Domain`) otherwise. |
 | `propagate_mtu`     | all       | no       | (v0.9.0+) Apply DHCP option 26 (Interface MTU) to the container link on bind/renew. Off by default; useful for jumbo-frame networks (9000) and VPN-reduced ones (~1450). |
 | `client_id`         | all       | no       | (v0.9.0+) Override DHCP option 61 (Client Identifier) for every endpoint on this network. Bytes go on the wire prefixed with type byte `0x00` (RFC 2132 opaque). Default empty keeps the per-endpoint stable id derived from the Docker endpoint ID, which is what makes per-container reservations work upstream. **Caveat:** a static `client_id` across containers means the DHCP server can't differentiate them. Typically only useful when paired with `vendor_class` to drive class-based policy. |
+| `register_dns`      | all       | no       | (v1.3.0+) Send the DHCP FQDN option (81 on v4 / 39 on v6) built from the container hostname, asking the server to register forward (A/AAAA) + reverse (PTR) DNS. Best-effort and advisory — many consumer routers ignore option 81. Off by default: dynamic-DNS registration is a network-policy decision (#261). |
 | `vendor_class`      | all       | no       | (v0.9.0+) Override DHCP option 60 (Vendor Class Identifier). Default `docker-net-dhcp`. Lets DHCP servers running class-based policy (Cisco / Aruba / etc.) issue different gateways or option sets to containers tagged with a known vendor string. v6 unaffected — the DHCPv6 client sends no vendor-class option. |
 | `validate_dhcp`     | macvlan, ipvlan | no | (v0.9.0+) Pre-flight DHCP probe at `docker network create` time. Creates a temporary macvlan child on the parent NIC with a random locally-administered MAC, runs a one-shot `dhcpcd` with a 5-second budget, and rejects the network with `no DHCP OFFER on <parent> within 5s` if no server answers. Catches misconfigurations (parent isolated, firewall blocking UDP/67-68, broken VLAN tag) at create time rather than the first `docker run`. Cost: one transient lease per probe in the upstream pool. Bridge mode rejects the opt with a clear error. |
 | `audit_log`         | all       | no       | (v1.0.0+) Append every lease-lifecycle event on this network (`bound` / `renew` / `release`, plus `release_failed` when the DHCPRELEASE didn't complete cleanly) to `STATE_DIR/leases.jsonl` — one JSON object per line with timestamp, network, endpoint, container ID, hostname, IP, and MAC. Answers "which IP did this container hold last Tuesday?" without DHCP-server-log archaeology. Rotated at 16 MB or 30 days (whichever first), one rotated generation kept (≤ ~32 MB total). Off by default: it costs a disk write per lease event, and container↔IP correlation on disk is privacy-relevant in some environments. Append failures bump `ledger_write_failures` on `/Plugin.Health` and never affect lease handling. |
@@ -313,7 +314,7 @@ exact create incantation (note: the Docker-level `--ipv6` flag does
 NOT work with the null IPAM driver and is not what you want):
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.2.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.3.0 \
     --ipam-driver null \
     -o mode=macvlan -o parent=eth0 -o ipv6=true \
     lan-dhcp6
@@ -388,9 +389,16 @@ the same identity fields, regardless of attachment mode:
   (rather than MAC) keep handing the same lease back. This is
   the mechanism that makes ipvlan stability work, since every
   ipvlan slave shares the parent's MAC; for macvlan and bridge
-  it's a redundant safety net. Override per-network with
-  `-o client_id=<string>` (v0.9.0+); rarely useful since a static
-  ID across containers means the server can't differentiate them.
+  it's a redundant safety net. The endpoint id survives container
+  *restart* but not *recreate* (`docker rm` + `run` mints a fresh
+  endpoint, hence a fresh id) — so an ipvlan container
+  can change IP across a recreate. Fixing that needs a per-container
+  identity the plugin can see when the address is chosen, which
+  Docker's driver API doesn't provide today; lease stability across
+  recreate is tracked with the deterministic-MAC work (#218, #219).
+  Override the id outright per-network with `-o client_id=<string>`
+  (v0.9.0+); rarely useful since a static ID across containers means
+  the server can't differentiate them.
 
 ### Captured DHCP options
 
@@ -412,14 +420,20 @@ surfaces them in two ways:
   - Option 66 (TFTP server name, env `tftp`)
   - Option 67 (Boot file name, env `bootfile`)
   - Option 119 (when `propagate_dns=false`)
+  - Option 252 (WPAD proxy-autoconfig URL, log field `wpad`)
+  - Options 100 / 101 (RFC 4833 timezone, log fields `posix_tz` /
+    `tzdb_tz`) and option 2 (legacy time offset in seconds,
+    `time_offset`)
 
 ```text
 level=info msg="DHCP options received" ntp=[192.168.0.123]
   tftp=tftp.example.test bootfile=pxelinux.0
-  search=[corp.example internal.example] ...
+  search=[corp.example internal.example]
+  wpad=http://wpad.example/wpad.dat posix_tz=PST8PDT
+  tzdb_tz=Europe/Berlin time_offset=3600 ...
 ```
 
-Workloads needing NTP / TFTP / boot-file can grep the plugin log
+Workloads needing NTP / TFTP / boot-file / WPAD / timezone can grep the plugin log
 or wire a sidecar to it. The plugin doesn't auto-apply these
 because (a) the consuming application owns the config file, not
 the plugin, and (b) writing into `/etc/ntp.conf` etc. would mean
@@ -569,7 +583,7 @@ endpoint operation everything is back to disk-served.
 Override the location via the `STATE_DIR` env var on the plugin:
 
 ```bash
-docker plugin set ghcr.io/<your-namespace>/docker-net-dhcp:v1.2.0 STATE_DIR=/some/other/path
+docker plugin set ghcr.io/<your-namespace>/docker-net-dhcp:v1.3.0 STATE_DIR=/some/other/path
 ```
 
 ## Plugin env vars

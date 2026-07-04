@@ -62,12 +62,63 @@ type EphemeralFixture struct {
 
 	poolStart, poolEnd string
 	serverCIDR         string
+
+	// renewT1 / renewT2 are server-advertised DHCP option 58
+	// (renewal) / 59 (rebind) times in seconds. dnsmasq's minimum
+	// *lease* is a hard 2m, so a renewal test can't ride a short
+	// lease — but the server may advertise T1/T2 explicitly,
+	// independent of lease length, and dhcpcd honours them. Zero
+	// means "don't set the option" (dhcpcd then derives T1/T2 from
+	// the lease as usual). See WithRenewTimes (#253).
+	renewT1, renewT2 int
+
+	// dnsDomain, when set, enables dnsmasq's DNS resolver (instead of
+	// the default --port=0) on dnsPort with this domain and --dhcp-fqdn,
+	// so a client that sends the DHCP FQDN option (81) gets its
+	// <hostname>.<domain> registered and resolvable. --dhcp-fqdn makes
+	// registration require the FQDN option, so a plain option-12
+	// hostname is NOT registered — which is exactly what lets the FQDN
+	// test distinguish register_dns on/off. See WithDNS (#261).
+	dnsDomain string
+	dnsPort   int
+}
+
+// EphemeralOption configures an EphemeralFixture before its dnsmasq
+// starts. Options are applied in NewEphemeralFixture.
+type EphemeralOption func(*EphemeralFixture)
+
+// WithRenewTimes makes the fixture's dnsmasq advertise DHCP option 58
+// (T1, renewal) and option 59 (T2, rebind) at the given seconds,
+// regardless of the 2m lease floor. This lets a renewal test drive a
+// real DHCPACK-renewal on a fast clock (T1 small) instead of waiting
+// out half of a 2m lease. t1 must stay above dhcpcd's internal
+// renewal flooring to round-trip; t2 should exceed t1 so the test
+// observes a renewal, not a rebind (#253).
+func WithRenewTimes(t1, t2 int) EphemeralOption {
+	return func(ef *EphemeralFixture) {
+		ef.renewT1 = t1
+		ef.renewT2 = t2
+	}
+}
+
+// WithDNS turns on the fixture dnsmasq's DNS resolver (on a dedicated
+// high port, bound to the fixture interface) with the given domain and
+// --dhcp-fqdn. A client that sends the DHCP FQDN option (81/39) then has
+// its <hostname>.<domain> registered in this DNS; query it via DNSAddr.
+// --dhcp-fqdn deliberately ignores plain option-12 hostnames, so a
+// container WITHOUT register_dns does not resolve — the on/off proof for
+// the FQDN test (#261).
+func WithDNS(domain string) EphemeralOption {
+	return func(ef *EphemeralFixture) {
+		ef.dnsDomain = domain
+		ef.dnsPort = 15353
+	}
 }
 
 // NewEphemeralFixture creates the veth pair and starts the
 // authoritative dnsmasq. Teardown is registered via t.Cleanup and is
 // idempotent against a previous panicked run's leftovers.
-func NewEphemeralFixture(t *testing.T) *EphemeralFixture {
+func NewEphemeralFixture(t *testing.T, opts ...EphemeralOption) *EphemeralFixture {
 	t.Helper()
 	if os.Geteuid() != 0 {
 		t.Fatalf("EphemeralFixture needs root (got uid=%d)", os.Geteuid())
@@ -87,6 +138,9 @@ func NewEphemeralFixture(t *testing.T) *EphemeralFixture {
 		poolStart:  EphemeralPoolStart,
 		poolEnd:    EphemeralPoolEnd,
 		serverCIDR: EphemeralServerAddr,
+	}
+	for _, opt := range opts {
+		opt(ef)
 	}
 	t.Cleanup(ef.teardown)
 
@@ -137,15 +191,17 @@ func (ef *EphemeralFixture) start() {
 	defer logF.Close()
 
 	startMark := ef.logSize()
-	ef.cmd = exec.Command("/usr/sbin/dnsmasq",
+	// DNS off by default (--port=0). WithDNS turns the resolver on with a
+	// domain + --dhcp-fqdn so FQDN-option clients become resolvable (#261).
+	portArg := "--port=0"
+	args := []string{
 		"--no-daemon",
 		"--conf-file=/dev/null",
-		"--port=0",
-		"--interface="+ephemeralDhcpVeth,
+		"--interface=" + ephemeralDhcpVeth,
 		"--bind-interfaces",
 		"--except-interface=lo",
-		"--dhcp-range="+ef.poolStart+","+ef.poolEnd+","+LeaseTime,
-		"--dhcp-leasefile="+ef.leaseFile,
+		"--dhcp-range=" + ef.poolStart + "," + ef.poolEnd + "," + LeaseTime,
+		"--dhcp-leasefile=" + ef.leaseFile,
 		"--dhcp-no-override",
 		// Authoritative: NAK requests for leases this instance
 		// doesn't recognise, like a real production server that owns
@@ -155,7 +211,26 @@ func (ef *EphemeralFixture) start() {
 		"--dhcp-broadcast",
 		"--log-dhcp",
 		"--log-facility=-",
-	)
+	}
+	// Explicit renewal/rebind times (options 58/59), independent of the
+	// 2m lease floor: lets a renewal test drive a fast DHCPACK-renewal
+	// instead of waiting out half the lease (#253). dnsmasq encodes
+	// these known options as 32-bit seconds.
+	if ef.renewT1 > 0 {
+		args = append(args, fmt.Sprintf("--dhcp-option=58,%d", ef.renewT1))
+	}
+	if ef.renewT2 > 0 {
+		args = append(args, fmt.Sprintf("--dhcp-option=59,%d", ef.renewT2))
+	}
+	if ef.dnsDomain != "" {
+		portArg = fmt.Sprintf("--port=%d", ef.dnsPort)
+		args = append(args,
+			"--domain="+ef.dnsDomain,
+			"--dhcp-fqdn",
+		)
+	}
+	args = append(args, portArg)
+	ef.cmd = exec.Command("/usr/sbin/dnsmasq", args...)
 	ef.cmd.Stdout = logF
 	ef.cmd.Stderr = logF
 	ef.cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -288,6 +363,17 @@ func (ef *EphemeralFixture) SeedStolenLease(ip string) {
 func (ef *EphemeralFixture) ServerIP() string {
 	return strings.SplitN(ef.serverCIDR, "/", 2)[0]
 }
+
+// DNSAddr returns the "ip:port" of the fixture's DNS resolver, for use
+// as a custom net.Resolver target. Only meaningful when the fixture was
+// built WithDNS; empty port otherwise (#261).
+func (ef *EphemeralFixture) DNSAddr() string {
+	return fmt.Sprintf("%s:%d", ef.ServerIP(), ef.dnsPort)
+}
+
+// DNSDomain returns the domain the fixture resolver appends to DHCP
+// hostnames (set via WithDNS).
+func (ef *EphemeralFixture) DNSDomain() string { return ef.dnsDomain }
 
 // CountLogLines counts log lines containing every one of the given
 // substrings (case-insensitive), e.g. ("DHCPACK", mac) or

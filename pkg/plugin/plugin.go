@@ -191,6 +191,15 @@ type DHCPNetworkOptions struct {
 	// the lease times out naturally rather than dragging CreateNetwork
 	// on a slow release path.
 	ValidateDHCP bool `mapstructure:"validate_dhcp"`
+	// RegisterDNS, when true, makes every endpoint on this network send
+	// the DHCP FQDN option (81 v4 / 39 v6, dhcpcd `fqdn both`) built from
+	// its resolved hostname, asking the DHCP server to register that name
+	// in DNS (forward + reverse). Default false: dynamic-DNS registration
+	// is a network-policy decision, never silent. Best-effort and advisory
+	// — many consumer routers ignore option 81, so this requests
+	// registration, it does not guarantee resolution. Reuses the same
+	// hostname already sent as the option-12 hint (#261).
+	RegisterDNS bool `mapstructure:"register_dns"`
 	// AuditLog, when true, appends every lease-lifecycle event on
 	// this network (bound / renew / release, plus release_failed when
 	// the DHCPRELEASE didn't complete) to STATE_DIR/leases.jsonl —
@@ -211,6 +220,17 @@ func (o DHCPNetworkOptions) effectiveMode() string {
 		return ModeBridge
 	}
 	return o.Mode
+}
+
+// fqdnMode maps the register_dns opt-in to the dhcpcd `fqdn` directive
+// mode passed to the client. "both" asks the server to update forward
+// (A/AAAA) and reverse (PTR); "" omits the directive (the default). See
+// DHCPNetworkOptions.RegisterDNS (#261).
+func (o DHCPNetworkOptions) fqdnMode() string {
+	if o.RegisterDNS {
+		return "both"
+	}
+	return ""
 }
 
 func decodeOpts(input interface{}) (DHCPNetworkOptions, error) {
@@ -238,6 +258,11 @@ type joinHint struct {
 	IPv4    *netlink.Addr
 	IPv6    *netlink.Addr
 	Gateway string
+	// Routes are DHCP option-121 classless static routes (RFC 3442)
+	// captured from the initial v4 DHCP exchange in CreateEndpoint. Like
+	// Gateway, they only arrive in CreateEndpoint, so they ride the hint
+	// to be appended to the Join response's StaticRoutes.
+	Routes []*StaticRoute
 	// MacAddress is set in macvlan mode so the persistent DHCP client can
 	// re-find the (renamed) macvlan link inside the container netns by MAC.
 	MacAddress net.HardwareAddr

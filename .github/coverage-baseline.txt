@@ -40,8 +40,14 @@
 #   - pkg/udhcpc / cmd/net-dhcp left at floor: their +0.3/+0.4 this run
 #     is integration run-to-run variance, not earned by this PR (no
 #     udhcpc/cmd code or tests changed) — not ratcheted.
+#
+# v1.3.0 (#245): pkg/udhcpc → pkg/dhcp and cmd/udhcpc-handler →
+#   cmd/dhcp-handler (post-dhcpcd misnomer rename, no code change).
+#   Floors carry over unchanged under the new import paths; the
+#   historical decision notes above keep the names they had at the
+#   time. Same code, same floors.
 github.com/devplayer0/docker-net-dhcp/pkg/util 88.0
 github.com/devplayer0/docker-net-dhcp/pkg/plugin 82.0
-github.com/devplayer0/docker-net-dhcp/pkg/udhcpc 85.5
+github.com/devplayer0/docker-net-dhcp/pkg/dhcp 85.5
 github.com/devplayer0/docker-net-dhcp/cmd/net-dhcp 75.0
-github.com/devplayer0/docker-net-dhcp/cmd/udhcpc-handler 50.0
+github.com/devplayer0/docker-net-dhcp/cmd/dhcp-handler 50.0

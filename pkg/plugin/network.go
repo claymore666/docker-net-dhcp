@@ -16,7 +16,7 @@ import (
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 
-	"github.com/devplayer0/docker-net-dhcp/pkg/udhcpc"
+	"github.com/devplayer0/docker-net-dhcp/pkg/dhcp"
 	"github.com/devplayer0/docker-net-dhcp/pkg/util"
 )
 
@@ -564,9 +564,10 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 			timeoutCtx, cancel := context.WithTimeout(ctx, timeout)
 			defer cancel()
 
-			clientOpts := &udhcpc.DHCPClientOptions{
+			clientOpts := &dhcp.DHCPClientOptions{
 				V6:          v6,
 				Hostname:    hostname,
+				FQDN:        opts.fqdnMode(),
 				ClientID:    clientID,
 				VendorClass: opts.VendorClass,
 				// Pin the dhcpcd DUID-LL/IAID off the container veth's
@@ -583,7 +584,7 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 			} else {
 				clientOpts.RequestedIP = requestedIP
 			}
-			info, err := udhcpc.GetIP(timeoutCtx, ctrName, clientOpts)
+			info, err := dhcp.GetIP(timeoutCtx, ctrName, clientOpts)
 			if err != nil {
 				return fmt.Errorf("failed to get initial IP%v address via DHCP%v: %w", v6str, v6str, err)
 			}
@@ -604,6 +605,10 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 					if opts.Gateway != "" {
 						hint.Gateway = opts.Gateway
 					}
+					// DHCP option-121 classless static routes (RFC 3442);
+					// the parser already folded any default route into
+					// info.Gateway, so these are non-default routes only.
+					hint.Routes = dhcpStaticRoutes(info.Routes)
 				}
 			})
 
@@ -746,6 +751,24 @@ func (p *Plugin) DeleteEndpoint(ctx context.Context, r DeleteEndpointRequest) er
 	}).Info("Endpoint deleted")
 
 	return nil
+}
+
+// dhcpStaticRoutes converts DHCP option-121 classless static routes
+// (dhcp.Route, captured at CreateEndpoint) into libnetwork
+// StaticRoute responses. An empty Gateway means the route is on-link
+// (dhcpcd reported the gateway as 0.0.0.0); otherwise it is a next-hop
+// route. Destinations are already canonical CIDRs from the parser.
+func dhcpStaticRoutes(routes []dhcp.Route) []*StaticRoute {
+	out := make([]*StaticRoute, 0, len(routes))
+	for _, r := range routes {
+		sr := &StaticRoute{Destination: r.Destination, RouteType: RouteTypeOnLink}
+		if r.Gateway != "" {
+			sr.RouteType = RouteTypeNextHop
+			sr.NextHop = r.Gateway
+		}
+		out = append(out, sr)
+	}
+	return out
 }
 
 // addRoutes copies non-default, non-kernel-protocol, non-DHCP-subnet
@@ -983,6 +1006,22 @@ func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) 
 		if err := p.addRoutes(&opts, true, routeSrc, r, hint, &res); err != nil {
 			return res, err
 		}
+	}
+
+	// Append DHCP option-121 classless static routes (RFC 3442) captured
+	// from the initial v4 exchange in CreateEndpoint. These ride the hint
+	// alongside the gateway; `skip_routes=true` opts out, matching the
+	// host-link copy in addRoutes (the opt-121 default route, folded into
+	// res.Gateway, is unaffected — skip_routes governs static routes, not
+	// the default gateway).
+	if !opts.SkipRoutes && len(hint.Routes) > 0 {
+		res.StaticRoutes = append(res.StaticRoutes, hint.Routes...)
+		log.WithFields(log.Fields{
+			"network":  shortID(r.NetworkID),
+			"endpoint": shortID(r.EndpointID),
+			"sandbox":  r.SandboxKey,
+			"count":    len(hint.Routes),
+		}).Info("[Join] Adding DHCP classless static routes (option 121)")
 	}
 
 	// Register the manager BEFORE spawning the start goroutine so that a
