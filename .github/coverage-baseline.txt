@@ -62,8 +62,15 @@
 #   - pkg/util (88.7 meas.) and cmd/net-dhcp (75.4 meas.) left at
 #     floor: their deltas are within the documented variance band,
 #     not earned by any identifiable change.
+#
+# v1.4.0 (#305, PR #306): pkg/plugin 83.5 -> 83.8. RAISED, earned by
+#   the state-persistence error-arm tests (saveOptions/saveTombstones
+#   CreateTemp + Rename injection). Measured merged 84.1 on this PR's
+#   coverage dispatch; all other packages identical to the decimal
+#   across four runs now, so the +0.3 is attributable, not variance.
+#   Floor 0.3 under measured, same margin as the prior two decisions.
 github.com/devplayer0/docker-net-dhcp/pkg/util 88.0
-github.com/devplayer0/docker-net-dhcp/pkg/plugin 83.5
+github.com/devplayer0/docker-net-dhcp/pkg/plugin 83.8
 github.com/devplayer0/docker-net-dhcp/pkg/dhcp 89.5
 github.com/devplayer0/docker-net-dhcp/cmd/net-dhcp 75.0
 github.com/devplayer0/docker-net-dhcp/cmd/dhcp-handler 74.0
