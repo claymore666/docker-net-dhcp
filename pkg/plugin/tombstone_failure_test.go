@@ -102,3 +102,104 @@ func TestDeleteOptions_PermissionError(t *testing.T) {
 		t.Fatal("expected error when state dir is read-only")
 	}
 }
+
+// TestSaveOptions_CreateTempFailure covers the CreateTemp error arm of
+// the atomic-write pipeline (#305): the state dir exists but is not
+// writable, the operational shape of EROFS / disk-full at temp-file
+// creation time. The Write/Close/Chmod arms downstream share this
+// cause and stay uncovered on purpose — see #305.
+//
+// Skipped under root because chmod 0o555 doesn't prevent writes for
+// privileged users.
+func TestSaveOptions_CreateTempFailure(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("chmod-based DAC tests don't apply to root")
+	}
+	dir := t.TempDir()
+	withStateDir(t, dir)
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+
+	if err := saveOptions("net-tmpfail", DHCPNetworkOptions{Bridge: "br0"}); err == nil {
+		t.Fatal("expected error when state dir is not writable")
+	}
+}
+
+// TestSaveTombstones_CreateTempFailure is the tombstone-writer
+// analogue: same read-only-dir injection, same skip rationale.
+func TestSaveTombstones_CreateTempFailure(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("chmod-based DAC tests don't apply to root")
+	}
+	dir := t.TempDir()
+	withStateDir(t, dir)
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+
+	if err := saveTombstones([]tombstone{{NetworkID: "net-A"}}); err == nil {
+		t.Fatal("expected error when state dir is not writable")
+	}
+}
+
+// TestSaveOptions_RenameFailure covers the final arm of the pipeline:
+// os.Rename onto a path occupied by a non-empty directory fails for
+// any uid (ENOTEMPTY/EISDIR), so unlike the chmod tests this one also
+// runs in the coverage workflow's root unit-test pass. Beyond the
+// error itself it pins the two cleanup contracts of a failed save:
+// no stray temp file left in the state dir, and the occupying path
+// untouched (a crash mid-save must never destroy existing state).
+func TestSaveOptions_RenameFailure(t *testing.T) {
+	dir := t.TempDir()
+	withStateDir(t, dir)
+	// Occupy the final path with a non-empty directory.
+	final := filepath.Join(dir, "net-rename.json")
+	if err := os.MkdirAll(filepath.Join(final, "occupant"), 0o755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	if err := saveOptions("net-rename", DHCPNetworkOptions{Bridge: "br0"}); err == nil {
+		t.Fatal("expected error when final path is a non-empty directory")
+	}
+
+	leftovers, err := filepath.Glob(filepath.Join(dir, ".state-*.tmp"))
+	if err != nil {
+		t.Fatalf("glob: %v", err)
+	}
+	if len(leftovers) != 0 {
+		t.Errorf("failed save must remove its temp file, found %v", leftovers)
+	}
+	if _, err := os.Stat(filepath.Join(final, "occupant")); err != nil {
+		t.Errorf("failed save must leave the occupying path untouched: %v", err)
+	}
+}
+
+// TestSaveTombstones_RenameFailure is the tombstone-writer analogue,
+// asserting the same error-plus-cleanup contract for the shared
+// tombstones.json path.
+func TestSaveTombstones_RenameFailure(t *testing.T) {
+	dir := t.TempDir()
+	withStateDir(t, dir)
+	final := filepath.Join(dir, "tombstones.json")
+	if err := os.MkdirAll(filepath.Join(final, "occupant"), 0o755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	if err := saveTombstones([]tombstone{{NetworkID: "net-A"}}); err == nil {
+		t.Fatal("expected error when tombstones.json is a non-empty directory")
+	}
+
+	leftovers, err := filepath.Glob(filepath.Join(dir, ".tombstones.*.tmp"))
+	if err != nil {
+		t.Fatalf("glob: %v", err)
+	}
+	if len(leftovers) != 0 {
+		t.Errorf("failed save must remove its temp file, found %v", leftovers)
+	}
+	if _, err := os.Stat(filepath.Join(final, "occupant")); err != nil {
+		t.Errorf("failed save must leave the occupying path untouched: %v", err)
+	}
+}
