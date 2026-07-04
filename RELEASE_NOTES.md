@@ -53,6 +53,39 @@ symlink-swap empty-file race, also daemon-side) are accepted with
 justification in `.github/vuln-allowlist.txt` (#291, #292) until a
 fixed release ships on the module path we depend on.
 
+## v1.3.1
+
+A patch release: one bug fix in the `validate_dhcp` pre-flight probe,
+plus test-pipeline hardening. No new features, no manifest changes, no
+new options.
+
+What changed:
+
+- **`validate_dhcp` no longer misreports live DHCP servers as
+  unreachable on slow hosts** (#307). The probe's time budget assumed
+  sub-second client startup; on slower or virtualized hosts (SBCs, NAS
+  boxes, nested Docker), dhcpcd startup plus one lost-and-retransmitted
+  DISCOVER could exceed it, failing `docker network create -o
+  validate_dhcp=true` against a perfectly working server. The budget is
+  now sized for that worst case (5s → 8s). Successful probes are
+  unaffected (they return as soon as the lease lands, typically 1–2s);
+  only the genuine-failure path reports ~3s later. The error message now
+  reads `no DHCP OFFER on <parent> within 8s`.
+- **CI: privileged integration and coverage jobs are serialized**
+  (#296). Parallel runs on the shared runner host stretched
+  DHCP-timing-sensitive tests past their budgets; a shared concurrency
+  group restores one-at-a-time execution.
+- **Coverage floors reconciled and ratcheted** (#303, #305). Two
+  per-package coverage floors were stale carry-overs from the pre-dhcpcd
+  client (one 25 points below what the suite delivers), leaving room for
+  silent regressions; floors now match measured reality. New unit tests
+  cover the state-persistence failure paths (temp-file creation and
+  atomic-rename errors), raising and re-pinning the plugin package
+  floor.
+- **CI workflow audit** (#207). All workflows reconfirmed as earning
+  their keep; a stale comment misdescribing the coverage workflow's
+  fork-trigger security posture was corrected.
+
 ## v1.3.0
 
 A feature release that builds new DHCP capabilities on the dhcpcd client
