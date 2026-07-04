@@ -56,25 +56,13 @@ fixed release ships on the module path we depend on.
 ## v1.3.0
 
 A feature release that builds new DHCP capabilities on the dhcpcd client
-shipped in v1.2.0: lease stability for ipvlan, opt-in dynamic-DNS
-registration, classless static routes, and more captured DHCP options.
+shipped in v1.2.0: opt-in dynamic-DNS registration, classless static
+routes, and more captured DHCP options.
 The plugin manifest is unchanged; all new behaviour is opt-in except the
 classless-routes default (see the compatibility note below).
 
 What changed:
 
-- **Stable leases for ipvlan** (#219). New `-o stable_lease=true` derives
-  the DHCP option-61 client-id from the container's *stable* identity
-  instead of the per-recreate endpoint id, so a server that keys leases on
-  the client-id (`dnsmasq` by default) hands the same logical container the
-  same IP across `stop` / `rm` / recreate — closing the gap that ipvlan
-  otherwise can't, since ipvlan slaves all share the parent's MAC. Identity
-  is taken, most-specific first, from `-o lease_seed=<key>`, then Compose
-  `project`+`service`+`container-number`, then the container `--name`; an
-  anonymous container with none of these bumps the new
-  `stable_lease_no_identity` counter on `/Plugin.Health`. bridge/macvlan
-  reject the option (their stability is delivered by the not-yet-available
-  deterministic-MAC work).
 - **Opt-in dynamic-DNS registration** (#261). New `-o register_dns=true`
   sends the DHCP FQDN option (81 on v4 / 39 on v6) built from the container
   hostname, asking the server to register forward (A/AAAA) + reverse (PTR)
@@ -100,9 +88,8 @@ Operator-visible compatibility: classless static routes (option 121) are
 honored **by default** (`skip_routes` defaults to `false`). If your DHCP
 server pushes option-121 routes, containers will pick them up after the
 upgrade where previously they were ignored; set `-o skip_routes=true` to
-keep the old behaviour. All other new features (`stable_lease`,
-`lease_seed`, `register_dns`) are off by default — no action is required to
-upgrade from v1.2.x.
+keep the old behaviour. The other new feature (`register_dns`) is off by
+default — no action is required to upgrade from v1.2.x.
 
 ## v1.2.0
 
