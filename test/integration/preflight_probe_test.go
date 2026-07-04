@@ -44,7 +44,7 @@ func TestPreflightProbe_PassesOnReachableServer(t *testing.T) {
 
 // TestPreflightProbe_FailsWhenServerUnreachable is the negative
 // guard: validate_dhcp=true with a parent that has no DHCP server
-// reachable must fail within the probe budget (5s + harness slack)
+// reachable must fail within the probe budget (8s + harness slack)
 // with a clear error mentioning the parent NIC.
 //
 // Uses a dummy interface as the parent — dummies don't carry L2
@@ -106,11 +106,11 @@ func TestPreflightProbe_FailsWhenServerUnreachable(t *testing.T) {
 		t.Fatalf("NetworkCreate succeeded against an isolated dummy parent; probe didn't reject")
 	}
 
-	// The probe budget is 5s; harness allowed ~10s including
-	// the dhcpcd setup overhead. If we waited ~30s it means the
+	// The probe budget is 8s (#307); allow ~10s of harness and
+	// dhcpcd setup overhead on top. If we waited ~30s it means the
 	// budget is being ignored somewhere.
-	if elapsed > 15*time.Second {
-		t.Errorf("probe took %v; should have failed within ~6-10s", elapsed)
+	if elapsed > 18*time.Second {
+		t.Errorf("probe took %v; should have failed within ~9-13s", elapsed)
 	}
 
 	msg := createErr.Error()

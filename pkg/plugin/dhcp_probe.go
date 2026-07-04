@@ -18,11 +18,24 @@ import (
 
 // preflightProbeBudget caps how long the validate_dhcp probe waits
 // for an OFFER + ACK from the upstream server before declaring the
-// parent NIC unreachable. Five seconds is enough for a healthy LAN
-// (Fritz.Box-class servers respond in under 100ms) plus retry once
-// at dhcpcd's discover timeout. Tight on purpose: the
-// operator is blocked in `docker network create` while it runs.
-const preflightProbeBudget = 5 * time.Second
+// parent NIC unreachable. Sized so that losing the FIRST discover
+// still passes (#307) — the probe interface is a freshly-created
+// macvlan child that solicits immediately, and that first broadcast
+// is not reliably delivered:
+//
+//	dhcpcd startup (unshare/mounts/DUID/carrier)   ≤ ~2s on slow or
+//	                                               virtualized hosts
+//	initial DISCOVER lost + jittered retransmit    ~3–4s
+//	server response + handler round-trip           < 0.5s
+//
+// 8s covers that worst case with margin. The old 5s value satisfied
+// this same one-retry intent only with subsecond startup and failed
+// against live servers on the CI runner class (#307 has two full
+// timelines). Note the budget is a cap, not a wait: a successful
+// probe returns as soon as the lease lands (typically < 2s), so the
+// full duration is only ever paid when the parent is genuinely
+// unreachable and the operator is about to get an error anyway.
+const preflightProbeBudget = 8 * time.Second
 
 // runDHCPProbe verifies that the parent NIC can reach a working DHCP
 // server on the local segment. Implements the validate_dhcp=true
@@ -50,7 +63,7 @@ const preflightProbeBudget = 5 * time.Second
 // On success returns nil. On failure wraps the underlying error
 // (link-create failed, dhcpcd timeout, malformed lease, etc.) with
 // a parent-aware prefix so the operator's docker CLI surfaces a
-// clear "no DHCP OFFER on <parent> within 5s" message instead of
+// clear "no DHCP OFFER on <parent> within 8s" message instead of
 // the generic CreateNetwork failure shape.
 func runDHCPProbe(ctx context.Context, parent string) error {
 	if parent == "" {
