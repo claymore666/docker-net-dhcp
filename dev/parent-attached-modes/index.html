@@ -1259,7 +1259,7 @@ sidecar, no <code>cap_add</code>:</p>
 <td><code>validate_dhcp</code></td>
 <td>macvlan, ipvlan</td>
 <td>no</td>
-<td>(v0.9.0+) Pre-flight DHCP probe at <code>docker network create</code> time. Creates a temporary macvlan child on the parent NIC with a random locally-administered MAC, runs a one-shot <code>dhcpcd</code> with a 5-second budget, and rejects the network with <code>no DHCP OFFER on &lt;parent&gt; within 5s</code> if no server answers. Catches misconfigurations (parent isolated, firewall blocking UDP/67-68, broken VLAN tag) at create time rather than the first <code>docker run</code>. Cost: one transient lease per probe in the upstream pool. Bridge mode rejects the opt with a clear error.</td>
+<td>(v0.9.0+) Pre-flight DHCP probe at <code>docker network create</code> time. Creates a temporary macvlan child on the parent NIC with a random locally-administered MAC, runs a one-shot <code>dhcpcd</code> with an 8-second budget (sized to survive a lost first DISCOVER plus dhcpcd startup on slow hosts, #307), and rejects the network with <code>no DHCP OFFER on &lt;parent&gt; within 8s</code> if no server answers. Catches misconfigurations (parent isolated, firewall blocking UDP/67-68, broken VLAN tag) at create time rather than the first <code>docker run</code>. Cost: one transient lease per probe in the upstream pool. Bridge mode rejects the opt with a clear error.</td>
 </tr>
 <tr>
 <td><code>audit_log</code></td>

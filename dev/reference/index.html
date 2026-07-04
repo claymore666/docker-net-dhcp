@@ -1297,7 +1297,7 @@ limitations) are catalogued in
 <td>macvlan, ipvlan</td>
 <td><code>false</code></td>
 <td>v0.9.0</td>
-<td>Pre-flight probe at <code>docker network create</code>: one-shot DHCP exchange on the parent with a random locally-administered MAC, rejecting the network if no server answers within 5s. Catches isolated parents / blocked UDP 67-68 / broken VLAN tags at create time. Costs one transient lease per probe. Bridge mode rejects the option.</td>
+<td>Pre-flight probe at <code>docker network create</code>: one-shot DHCP exchange on the parent with a random locally-administered MAC, rejecting the network if no server answers within 8s. Catches isolated parents / blocked UDP 67-68 / broken VLAN tags at create time. Costs one transient lease per probe. Bridge mode rejects the option.</td>
 </tr>
 <tr>
 <td><code>register_dns</code></td>
