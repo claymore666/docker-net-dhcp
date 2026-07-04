@@ -26,10 +26,14 @@ on:
     branches:
       - main
 
-# No concurrency group (intentional). Each dhcp-ci job runs in its own
-# ephemeral container with an isolated nested daemon, so coverage and
-# integration no longer contend for one bare-metal Docker state — they
-# run in parallel. See integration.yml for the full rationale.
+# Serialize all privileged self-hosted jobs (shared with
+# integration.yml, #296): the ephemeral runners isolate Docker state
+# but share one host's CPU/IO, and parallel privileged runs flaked
+# timing-sensitive tests on the v1.3.0 release PR. See integration.yml
+# for the full rationale and the pending-run-cancellation caveat.
+concurrency:
+  group: selfhosted-privileged
+  cancel-in-progress: false
 
 permissions:
   contents: read

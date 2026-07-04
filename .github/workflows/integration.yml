@@ -12,8 +12,8 @@ name: Integration
 # The `dhcp-ci` runners are ephemeral: one container = one job, each
 # with its own nested Docker daemon (image ghcr.io/claymore666/
 # dhcp-ci-runner, Docker Engine >= 28). An orchestrator pools 2-4 of
-# them (names dhcp-ci-<n>), so jobs run in PARALLEL and in full
-# isolation — replacing the single serial bare-metal runner.
+# them (names dhcp-ci-<n>) for full isolation — but privileged jobs
+# are serialized via the concurrency group below (#296).
 #
 # SECURITY: this workflow runs as root inside the runner container.
 # Repo Settings → Actions → General → "Fork pull request workflows
@@ -30,14 +30,19 @@ on:
       - main
       - dev
 
-# No concurrency group (intentional — do not re-add). The gpu1-era
-# `selfhosted-docker` group serialized jobs because they shared one
-# bare-metal Docker daemon (the :integration / :golang-cover plugin
-# refs, the dnsmasq fixture's fixed veth names + UDP/67). Each
-# `dhcp-ci` job now runs in its own ephemeral container with an
-# isolated nested daemon, so those collisions can't happen — parallel
-# jobs are safe, and serializing them would throw away the whole point
-# of the move.
+# Serialize all privileged self-hosted jobs (shared with coverage.yml,
+# #296). The ephemeral runners isolate Docker *state* (plugin refs,
+# veth names, UDP/67), so the old bare-metal collisions can't happen —
+# but they still share one host's CPU/IO, and the suite has real-time
+# DHCP timing in it: parallel privileged runs flaked the 5s preflight
+# probe and stalled recreates past lease timing on the v1.3.0 release
+# PR. One group restores the serialization the pool cutover dropped.
+# Caveat: GitHub keeps at most one *pending* run per group — a third
+# concurrent run cancels the queued one, which then needs a manual
+# re-run. Acceptable at this repo's volume.
+concurrency:
+  group: selfhosted-privileged
+  cancel-in-progress: false
 
 permissions:
   contents: read
