@@ -47,7 +47,7 @@
 #   historical decision notes above keep the names they had at the
 #   time. Same code, same floors.
 #
-# v1.4.0 recorded decision (#303 — reconcile floors with measured):
+# v1.3.1 recorded decision (#303 — reconcile floors with measured):
 #   The pkg/dhcp and cmd/dhcp-handler floors were still the carried-over
 #   udhcpc-era numbers; the dhcpcd migration (#152) and the v1.3.0 test
 #   work earned coverage on top that no PR ratcheted in, leaving up to
@@ -63,7 +63,7 @@
 #     floor: their deltas are within the documented variance band,
 #     not earned by any identifiable change.
 #
-# v1.4.0 (#305, PR #306): pkg/plugin 83.5 -> 83.8. RAISED, earned by
+# v1.3.1 (#305, PR #306): pkg/plugin 83.5 -> 83.8. RAISED, earned by
 #   the state-persistence error-arm tests (saveOptions/saveTombstones
 #   CreateTemp + Rename injection). Measured merged 84.1 on this PR's
 #   coverage dispatch; all other packages identical to the decimal
