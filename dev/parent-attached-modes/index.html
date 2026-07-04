@@ -1244,18 +1244,6 @@ sidecar, no <code>cap_add</code>:</p>
 <td>(v0.9.0+) Override DHCP option 61 (Client Identifier) for every endpoint on this network. Bytes go on the wire prefixed with type byte <code>0x00</code> (RFC 2132 opaque). Default empty keeps the per-endpoint stable id derived from the Docker endpoint ID, which is what makes per-container reservations work upstream. <strong>Caveat:</strong> a static <code>client_id</code> across containers means the DHCP server can't differentiate them. Typically only useful when paired with <code>vendor_class</code> to drive class-based policy.</td>
 </tr>
 <tr>
-<td><code>stable_lease</code></td>
-<td>ipvlan</td>
-<td>no</td>
-<td>(v1.3.0+) Derive the option-61 client-id from the container's <strong>stable identity</strong> instead of the per-recreate endpoint id, so a server that keys leases on option 61 (<code>dnsmasq</code> by default) returns the same IP across <code>stop</code> / <code>rm</code> / recreate. ipvlan-only — ipvlan slaves share the parent's MAC, so the client-id is the only per-container handle; bridge/macvlan reject the opt (their lease stability comes from the deterministic-MAC work, not yet available). Identity resolves most-specific-first: <code>lease_seed</code>, then Compose <code>project</code>+<code>service</code>+<code>container-number</code>, then <code>--name</code>; an anonymous container falls back to the endpoint id and bumps <code>stable_lease_no_identity</code> on <code>/Plugin.Health</code>. See <code>reference.md</code> for the full treatment (#219).</td>
-</tr>
-<tr>
-<td><code>lease_seed</code></td>
-<td>ipvlan</td>
-<td>no</td>
-<td>(v1.3.0+) Highest-precedence identity source for <code>stable_lease</code>: the client-id is a hash of the network plus this value. Two containers sharing a <code>lease_seed</code> collapse onto one lease; one container keeps its lease across recreate regardless of name or Compose labels. Inert unless <code>stable_lease=true</code>.</td>
-</tr>
-<tr>
 <td><code>register_dns</code></td>
 <td>all</td>
 <td>no</td>
@@ -1536,11 +1524,11 @@ the same identity fields, regardless of attachment mode:</p>
   ipvlan slave shares the parent's MAC; for macvlan and bridge
   it's a redundant safety net. The endpoint id survives container
   <em>restart</em> but not <em>recreate</em> (<code>docker rm</code> + <code>run</code> mints a fresh
-  endpoint, hence a fresh id) — so by default an ipvlan container
-  can change IP across a recreate. For ipvlan, <code>-o stable_lease=true</code>
-  (v1.3.0+) derives this id from the container's stable identity
-  instead, keeping the same lease across recreate too (see the
-  <code>stable_lease</code> / <code>lease_seed</code> options above and <code>reference.md</code>).
+  endpoint, hence a fresh id) — so an ipvlan container
+  can change IP across a recreate. Fixing that needs a per-container
+  identity the plugin can see when the address is chosen, which
+  Docker's driver API doesn't provide today; lease stability across
+  recreate is tracked with the deterministic-MAC work (#218, #219).
   Override the id outright per-network with <code>-o client_id=&lt;string&gt;</code>
   (v0.9.0+); rarely useful since a static ID across containers means
   the server can't differentiate them.</li>
