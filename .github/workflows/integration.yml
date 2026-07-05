@@ -46,6 +46,9 @@ concurrency:
 
 permissions:
   contents: read
+  # actions:read — the gate step below lists this workflow's own past
+  # runs to dedupe identical trees (#312).
+  actions: read
 
 jobs:
   integration:
@@ -59,11 +62,34 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
+      # Decide whether this event needs the suite at all: docs-only PR
+      # diffs (#311) and post-merge pushes whose tree already passed
+      # (#312) exit in seconds instead of holding the serialized pool
+      # slot for ~22 minutes. Deliberately a job STEP, not a workflow
+      # paths filter — `integration` is a required check, and a
+      # workflow that never triggers leaves PRs stuck on "Expected".
+      # The script fails open (any API error → run); its meta-test
+      # runs in test.yaml's gate-script step.
+      - name: Suite-needed gate
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GATE_REPO: ${{ github.repository }}
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            decision=$(bash scripts/integration-run-gate.sh pr "${{ github.event.pull_request.number }}") || decision=run
+          else
+            decision=$(bash scripts/integration-run-gate.sh push "$(git rev-parse 'HEAD^{tree}')") || decision=run
+          fi
+          echo "decision=${decision}" >> "$GITHUB_OUTPUT"
+          echo "gate decision: ${decision}"
+
       # The Go toolchain (go.mod's version) is baked into the dhcp-ci
       # runner image, so actions/setup-go is skipped. Fail loudly if
       # it's ever missing — that means the runner image drifted from
       # go.mod and needs a rebuild (ci/runner-image/).
       - name: Verify Go toolchain
+        if: steps.gate.outputs.decision == 'run'
         run: |
           if ! command -v go >/dev/null; then
             echo "go not in PATH — dhcp-ci runner image is stale vs go.mod; rebuild ci/runner-image/"
@@ -74,6 +100,7 @@ jobs:
       # Best-effort: clean any orphans from a previous run that
       # panicked mid-setup. Safe to run even on a clean state.
       - name: Cleanup orphans from previous runs
+        if: steps.gate.outputs.decision == 'run'
         run: bash test/integration/cleanup-orphans.sh
 
       # Build + install the plugin from THIS PR's source tree, tagged
@@ -88,6 +115,7 @@ jobs:
       # tests its own plugin code". Same shape as coverage.yml's
       # plugin-cover step, just without the -cover instrumentation.
       - name: Build + install integration plugin
+        if: steps.gate.outputs.decision == 'run'
         run: |
           make PLUGIN_NAME=ghcr.io/claymore666/docker-net-dhcp PLUGIN_TAG=integration plugin
           docker plugin rm -f "${INTEGRATION_PLUGIN_REF}" 2>/dev/null || true
@@ -101,6 +129,7 @@ jobs:
       # default is `bash -e` WITHOUT pipefail, which let tee's exit 0
       # swallow go-test failures and pass the gate green (#297).
       - name: Run integration tests
+        if: steps.gate.outputs.decision == 'run'
         shell: bash
         run: make integration-test 2>&1 | tee /tmp/itest-main.log
 
@@ -109,6 +138,7 @@ jobs:
       # Separate step so a red here is immediately distinguishable
       # from a main-suite regression.
       - name: Run failure-injection tests
+        if: steps.gate.outputs.decision == 'run'
         shell: bash
         run: make integration-test-failure 2>&1 | tee /tmp/itest-failure.log
 
@@ -118,7 +148,7 @@ jobs:
       # owns no pass/fail and tolerates a missing log (e.g. the failure
       # step was skipped because the main suite already failed).
       - name: Test timing summary
-        if: always()
+        if: always() && steps.gate.outputs.decision == 'run'
         run: scripts/integration-timing.sh /tmp/itest-main.log /tmp/itest-failure.log
 
       # Tear down so a follow-up workflow on the same runner doesn't
@@ -126,7 +156,7 @@ jobs:
       # PR's source. Always-run; failure of the test step shouldn't
       # leave global state behind.
       - name: Tear down integration plugin
-        if: always()
+        if: always() && steps.gate.outputs.decision == 'run'
         run: |
           docker plugin disable "${INTEGRATION_PLUGIN_REF}" 2>/dev/null || true
           docker plugin rm -f "${INTEGRATION_PLUGIN_REF}" 2>/dev/null || true

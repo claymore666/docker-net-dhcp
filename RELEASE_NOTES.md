@@ -53,6 +53,27 @@ symlink-swap empty-file race, also daemon-side) are accepted with
 justification in `.github/vuln-allowlist.txt` (#291, #292) until a
 fixed release ships on the module path we depend on.
 
+## v1.3.2
+
+A CI-only patch release: the plugin's runtime code is identical to
+v1.3.1 — no functional changes, no new options, no manifest changes.
+Published so the version tag, docs pins, and CI behaviour stay in
+lockstep.
+
+What changed:
+
+- **The integration suite skips runs that add no signal** (#311, #312).
+  Two event shapes previously held the serialized privileged CI slot
+  for ~22 minutes each without exercising anything: PRs whose diff
+  touches nothing but `*.md`, and post-merge pushes whose source tree
+  is byte-identical to a tree that already passed the suite (the PR's
+  own pre-merge run). An in-job gate now detects both and exits in
+  seconds — the required check still reports, so nothing gets stuck
+  waiting on a workflow that never triggers. The gate fails open: any
+  API error or ambiguity runs the full suite. Any code, script,
+  workflow, or Dockerfile change is unaffected and always runs
+  everything.
+
 ## v1.3.1
 
 A patch release: one bug fix in the `validate_dhcp` pre-flight probe,
