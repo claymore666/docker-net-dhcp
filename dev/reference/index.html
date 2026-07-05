@@ -1431,7 +1431,7 @@ is no <code>ip6</code> <em>driver-opt</em> channel — use <code>--ip6</code> / 
 <tr>
 <td><code>healthy</code></td>
 <td>—</td>
-<td><code>false</code> when <code>recovery_failed</code> or <code>tombstone_write_failures</code> is non-zero — an operator should look. The plugin keeps serving fresh attaches either way.</td>
+<td><code>false</code> when <code>recovery_failed</code>, <code>join_start_failures</code>, or <code>tombstone_write_failures</code> is non-zero — an operator should look. The plugin keeps serving fresh attaches either way.</td>
 </tr>
 <tr>
 <td><code>uptime_seconds</code></td>
@@ -1457,6 +1457,11 @@ is no <code>ip6</code> <em>driver-opt</em> channel — use <code>--ip6</code> / 
 <td><code>recovery_failed</code></td>
 <td>yes</td>
 <td>Endpoints whose post-restart rebuild failed — those containers run without lease renewal and lose their IP at expiry; restart them.</td>
+</tr>
+<tr>
+<td><code>join_start_failures</code></td>
+<td>yes</td>
+<td>(v1.3.3+) Persistent-client start failures at attach time — the container got its initial lease but runs without renewal, and the lease is never released on disconnect (#317). The plugin log carries the cause; fix it and restart the container.</td>
 </tr>
 <tr>
 <td><code>tombstone_write_failures</code></td>
