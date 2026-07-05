@@ -3,6 +3,7 @@ package plugin
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestNewProbeMAC pins the LAA + unicast bit semantics. Stable
@@ -59,5 +60,25 @@ func TestNewProbeLinkName(t *testing.T) {
 	b, _ := newProbeLinkName()
 	if a == b {
 		t.Errorf("two consecutive newProbeLinkName calls returned identical name %q — randomness broken", a)
+	}
+}
+
+// TestPreflightProbeBudget_CoversOneLostDiscover pins the budget
+// against the arithmetic that sized it (#307): dhcpcd startup on a
+// slow or virtualized host (~2s) + a lost first DISCOVER retransmitted
+// after dhcpcd's jittered ~4s discover interval + response and
+// handler round-trip (~0.5s). The 5s value this replaced satisfied
+// the same "one retry must fit" intent only with subsecond startup
+// and produced false "no DHCP OFFER" errors against live servers.
+// Lowering the budget below this floor needs #307-grade evidence,
+// not a tidy round number.
+func TestPreflightProbeBudget_CoversOneLostDiscover(t *testing.T) {
+	const (
+		worstStartup      = 2 * time.Second
+		discoverRetry     = 4 * time.Second // dhcpcd default, jittered
+		responseRoundTrip = 500 * time.Millisecond
+	)
+	if floor := worstStartup + discoverRetry + responseRoundTrip; preflightProbeBudget < floor {
+		t.Errorf("preflightProbeBudget %v is below the lost-first-DISCOVER floor %v (see #307)", preflightProbeBudget, floor)
 	}
 }

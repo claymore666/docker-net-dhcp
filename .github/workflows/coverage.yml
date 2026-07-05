@@ -13,9 +13,9 @@ name: Coverage
 # `integration.yml`.
 #
 # Same ephemeral `dhcp-ci` runners as integration.yml, same security
-# posture (outside-collaborator approval required for forked PRs —
-# though only `workflow_dispatch` is wired here, so forks can't trigger
-# this at all).
+# posture: a forked PR into main would trigger this (the pull_request
+# trigger below, added in #127), so the outside-collaborator approval
+# requirement is what keeps untrusted code off the privileged runners.
 on:
   workflow_dispatch:
   # Release PRs (dev → main) run coverage as a required check: the
@@ -26,10 +26,14 @@ on:
     branches:
       - main
 
-# No concurrency group (intentional). Each dhcp-ci job runs in its own
-# ephemeral container with an isolated nested daemon, so coverage and
-# integration no longer contend for one bare-metal Docker state — they
-# run in parallel. See integration.yml for the full rationale.
+# Serialize all privileged self-hosted jobs (shared with
+# integration.yml, #296): the ephemeral runners isolate Docker state
+# but share one host's CPU/IO, and parallel privileged runs flaked
+# timing-sensitive tests on the v1.3.0 release PR. See integration.yml
+# for the full rationale and the pending-run-cancellation caveat.
+concurrency:
+  group: selfhosted-privileged
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -53,8 +57,8 @@ jobs:
       # at one point, so stdlib recompiles failed with the
       # 'compile: version "go1.25.9" does not match go tool version
       # "go1.25.0"' error. setup-go gives us a known-clean toolchain
-      # at the cost of ~30s — fine for a 12-minute workflow that
-      # runs only on manual dispatch.
+      # at the cost of ~30s — fine for a workflow that runs only on
+      # release PRs and manual dispatch, not per feature PR.
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: '1.26'
