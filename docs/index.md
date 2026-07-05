@@ -22,11 +22,12 @@ like any other machine. Bridge, macvlan, and ipvlan attachment modes.
 Install the plugin:
 
 ```bash
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.3.2
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.3.3
 ```
 
 It requests `host` networking, the host PID namespace, the Docker
-socket, and `CAP_NET_ADMIN`/`CAP_SYS_ADMIN` — grant them to proceed.
+socket, and `CAP_NET_ADMIN`/`CAP_SYS_ADMIN`/`CAP_SYS_PTRACE` — grant
+them to proceed.
 (If you hit `invalid rootfs in image configuration`, upgrade Docker.)
 
 Create a bridge-mode network and run a container on it (assumes you
@@ -34,7 +35,7 @@ already have a host bridge `my-bridge` on your LAN — see
 [Bridge mode](bridge-mode.md) for that one-time setup):
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.3.2 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.3.3 \
   --ipam-driver null -o bridge=my-bridge my-dhcp-net
 
 docker run --rm -ti --network my-dhcp-net alpine ip address show
