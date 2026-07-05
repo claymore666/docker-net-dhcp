@@ -1449,7 +1449,7 @@ case) always satisfy the rule.</p>
 with <code>-6</code>) alongside the v4 one — <strong>stateful DHCPv6</strong>, not SLAAC. The
 exact create incantation (note: the Docker-level <code>--ipv6</code> flag does
 NOT work with the null IPAM driver and is not what you want):</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>docker<span class="w"> </span>network<span class="w"> </span>create<span class="w"> </span>-d<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v1.3.2<span class="w"> </span><span class="se">\</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>docker<span class="w"> </span>network<span class="w"> </span>create<span class="w"> </span>-d<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v1.3.3<span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="w">    </span>--ipam-driver<span class="w"> </span>null<span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="w">    </span>-o<span class="w"> </span><span class="nv">mode</span><span class="o">=</span>macvlan<span class="w"> </span>-o<span class="w"> </span><span class="nv">parent</span><span class="o">=</span>eth0<span class="w"> </span>-o<span class="w"> </span><span class="nv">ipv6</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="w">    </span>lan-dhcp6
@@ -1694,7 +1694,7 @@ existing networks transparently fall back to the docker API on first
 read, which then back-fills the persisted state — so by the second
 endpoint operation everything is back to disk-served.</p>
 <p>Override the location via the <code>STATE_DIR</code> env var on the plugin:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a>docker<span class="w"> </span>plugin<span class="w"> </span><span class="nb">set</span><span class="w"> </span>ghcr.io/&lt;your-namespace&gt;/docker-net-dhcp:v1.3.2<span class="w"> </span><span class="nv">STATE_DIR</span><span class="o">=</span>/some/other/path
+<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a>docker<span class="w"> </span>plugin<span class="w"> </span><span class="nb">set</span><span class="w"> </span>ghcr.io/&lt;your-namespace&gt;/docker-net-dhcp:v1.3.3<span class="w"> </span><span class="nv">STATE_DIR</span><span class="o">=</span>/some/other/path
 </code></pre></div>
 <h2 id="plugin-env-vars">Plugin env vars<a class="headerlink" href="#plugin-env-vars" title="Permanent link">&para;</a></h2>
 <p>All settable via <code>docker plugin set &lt;ref&gt; KEY=VALUE</code>. None require a
