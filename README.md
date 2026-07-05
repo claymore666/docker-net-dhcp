@@ -31,7 +31,7 @@ like any other machine. Bridge, macvlan, and ipvlan attachment modes.
 Install the plugin:
 
 ```bash
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.3.1
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.3.2
 ```
 
 It requests `host` networking, the host PID namespace, the Docker
@@ -43,7 +43,7 @@ already have a host bridge `my-bridge` on your LAN — see
 [bridge mode](docs/bridge-mode.md) for that one-time setup):
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.3.1 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.3.2 \
   --ipam-driver null -o bridge=my-bridge my-dhcp-net
 
 docker run --rm -ti --network my-dhcp-net alpine ip address show
@@ -139,7 +139,9 @@ Contributions are welcome.
     ratchet enforces this at release time.
   - **Green CI:** every PR must pass the required checks — unit tests,
     `staticcheck`, the live integration suite, `govulncheck`, and `actionlint` —
-    before it can be merged.
+    before it can be merged. (Docs-only PRs — diffs touching nothing but
+    `*.md` — satisfy the integration check via a fast in-job skip; any code,
+    script, or workflow change runs the full suite.)
   - **Hosted cross-check:** a separate, *non-required* workflow runs the
     integration suite on a stock GitHub-hosted runner on a weekly schedule
     (and on demand) to validate the plugin against a vanilla distro's Docker.
