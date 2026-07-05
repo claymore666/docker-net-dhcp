@@ -311,6 +311,18 @@ type Plugin struct {
 	recoveredOK    atomic.Int32
 	recoveryFailed atomic.Int32
 
+	// joinStartFailures counts persistent-DHCP-client Start failures
+	// at Join time (#317). Each bump is a running container that got
+	// its initial lease but has NO renewal client: the lease silently
+	// ages toward expiry and is never released on disconnect. The
+	// canonical cause was the missing CAP_SYS_PTRACE (netns open on a
+	// non-root container's /proc/<pid>/ns/net); the counter exists so
+	// the next cause is visible on /Plugin.Health instead of only in
+	// the plugin log. Healthy-affecting, same operator semantics as
+	// recovery_failed: restart the affected container once the cause
+	// is fixed.
+	joinStartFailures atomic.Int32
+
 	// tombstoneWriteFailures counts saveTombstones failures (disk full,
 	// EROFS) from addTombstone. Reported on /Plugin.Health so operators
 	// can detect a degraded restart-stability window — every failure
