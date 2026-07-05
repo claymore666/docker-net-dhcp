@@ -82,6 +82,35 @@ func TestApiHealth_TombstoneWriteFailureUnhealthy(t *testing.T) {
 	}
 }
 
+// TestApiHealth_JoinStartFailureUnhealthy verifies that a non-zero
+// joinStartFailures counter flips the response to unhealthy and is
+// reported under join_start_failures (#317). The counter is bumped from
+// Join's Start-failure goroutine; as with the tombstone sibling above,
+// the surface under test is what /Plugin.Health reports.
+func TestApiHealth_JoinStartFailureUnhealthy(t *testing.T) {
+	p := &Plugin{
+		startTime:      time.Now(),
+		joinHints:      make(map[string]joinHint),
+		persistentDHCP: make(map[string]*dhcpManager),
+	}
+	p.joinStartFailures.Add(1)
+
+	req := httptest.NewRequest(http.MethodGet, "/Plugin.Health", nil)
+	rec := httptest.NewRecorder()
+	p.apiHealth(rec, req)
+
+	var got HealthResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Healthy {
+		t.Error("join-start failures must mark plugin unhealthy — a running container has no renewal client")
+	}
+	if got.JoinStartFailures != 1 {
+		t.Errorf("expected 1 join-start failure reported, got %d", got.JoinStartFailures)
+	}
+}
+
 // TestApiHealth_PerFamilyCounters pins the #212 contract on the wire:
 // the un-suffixed counters stay v4+v6 aggregates while the *_v6 siblings
 // carry the v6 subset, and both surface under their snake_case keys.
