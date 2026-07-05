@@ -76,6 +76,7 @@ jobs:
           bash scripts/test-check-version-pins.sh
           bash scripts/test-integration-timing.sh
           bash scripts/test-integration-run-gate.sh
+          bash scripts/test-check-manifest-parity.sh
 
       # Every driver-option key the code parses must be documented in
       # docs/reference.md — an undocumented option turns CI red (#132).
@@ -87,6 +88,13 @@ jobs:
       # scripts/bump-version.sh vX.Y.Z.
       - name: Version-pin consistency check
         run: bash scripts/check-version-pins.sh
+
+      # config.json and config-cover.json must agree on privilege
+      # fields — a capability landing in only one means coverage runs
+      # test a different plugin than the one that ships (#317's
+      # CAP_SYS_PTRACE did exactly that on the v1.3.3 release PR).
+      - name: Plugin-manifest parity check
+        run: bash scripts/check-manifest-parity.sh
 
   staticcheck:
     runs-on: ubuntu-latest
