@@ -1039,6 +1039,7 @@ func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) 
 		defer cancel()
 
 		if err := m.Start(ctx); err != nil {
+			p.joinStartFailures.Add(1)
 			log.WithError(err).WithFields(log.Fields{
 				"network":  shortID(r.NetworkID),
 				"endpoint": shortID(r.EndpointID),

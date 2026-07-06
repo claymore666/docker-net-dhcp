@@ -53,6 +53,34 @@ symlink-swap empty-file race, also daemon-side) are accepted with
 justification in `.github/vuln-allowlist.txt` (#291, #292) until a
 fixed release ships on the module path we depend on.
 
+## v1.3.3
+
+A patch release fixing a bug as old as the fork: containers running as
+a **non-root user** never got a working renewal client.
+
+What changed:
+
+- **Persistent DHCP client now starts for non-root containers** (#317).
+  The client enters the container's network namespace via
+  `/proc/<pid>/ns/net`, which the kernel guards with a ptrace check:
+  the opener must share the container's uid or hold `CAP_SYS_PTRACE`.
+  The plugin manifest granted neither for non-root containers, so any
+  service with a Dockerfile `USER` (or compose `user:`) kept its
+  initial lease but was silently never renewed and never released —
+  addresses leaked server-side on every recreate, and per-endpoint
+  `ip=` requests for a previous address were declined while its stale
+  lease lived. The manifest now requests `CAP_SYS_PTRACE`; **the fix
+  takes effect on plugin (re-)install** (a `docker plugin upgrade` or
+  the remove-and-recreate flow — see the Upgrade section of the
+  reference).
+- **New `join_start_failures` health counter** (#317). A persistent-
+  client start failure at attach time now flips `/Plugin.Health` to
+  unhealthy instead of hiding in the plugin's log file. The underlying
+  await errors also carry their real cause now (the EACCES above
+  spent weeks disguised as `context deadline exceeded`).
+- Housekeeping: the Go Report Card badge is gone — goreportcard.com is
+  end-of-life; staticcheck/gofmt remain required CI gates (#318).
+
 ## v1.3.2
 
 A CI-only patch release: the plugin's runtime code is identical to

@@ -85,6 +85,16 @@ func EnsureImage(ctx context.Context) error {
 // different entrypoint shape.
 func RunContainer(t *testing.T, ctx context.Context, networkName, containerName string) (id, ipv4, mac string) {
 	t.Helper()
+	return RunContainerUser(t, ctx, networkName, containerName, "")
+}
+
+// RunContainerUser is RunContainer with an explicit container user
+// (docker run --user). A non-root user changes the kernel's ptrace
+// check on /proc/<pid>/ns/net, which the plugin's persistent client
+// must pass at Join — root test containers can't exercise that path
+// (#317).
+func RunContainerUser(t *testing.T, ctx context.Context, networkName, containerName, user string) (id, ipv4, mac string) {
+	t.Helper()
 	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
@@ -97,6 +107,7 @@ func RunContainer(t *testing.T, ctx context.Context, networkName, containerName 
 			Cmd:   []string{"sleep", "infinity"},
 			// Hostname surfaces in the tombstone for restart-stability tests.
 			Hostname: containerName,
+			User:     user,
 		},
 		&container.HostConfig{
 			AutoRemove: false, // we remove explicitly in cleanup

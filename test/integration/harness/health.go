@@ -25,6 +25,7 @@ type HealthResponse struct {
 	PendingHints           int     `json:"pending_hints"`
 	RecoveredOK            int32   `json:"recovered_ok"`
 	RecoveryFailed         int32   `json:"recovery_failed"`
+	JoinStartFailures      int32   `json:"join_start_failures"`
 	TombstoneWriteFailures int32   `json:"tombstone_write_failures"`
 	LeaseChanged           int32   `json:"lease_changed"`
 	LeasesObtained         int32   `json:"leases_obtained"`

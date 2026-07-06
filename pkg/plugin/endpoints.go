@@ -256,13 +256,18 @@ func (p *Plugin) apiLeave(w http.ResponseWriter, r *http.Request) {
 // expiry. Operators should restart those containers (which produces a
 // fresh CreateEndpoint and gets them back into the persistent map).
 type HealthResponse struct {
-	Healthy                bool    `json:"healthy"`
-	UptimeSeconds          float64 `json:"uptime_seconds"`
-	ActiveEndpoints        int     `json:"active_endpoints"`
-	PendingHints           int     `json:"pending_hints"`
-	RecoveredOK            int32   `json:"recovered_ok"`
-	RecoveryFailed         int32   `json:"recovery_failed"`
-	TombstoneWriteFailures int32   `json:"tombstone_write_failures"`
+	Healthy         bool    `json:"healthy"`
+	UptimeSeconds   float64 `json:"uptime_seconds"`
+	ActiveEndpoints int     `json:"active_endpoints"`
+	PendingHints    int     `json:"pending_hints"`
+	RecoveredOK     int32   `json:"recovered_ok"`
+	RecoveryFailed  int32   `json:"recovery_failed"`
+	// JoinStartFailures counts persistent-client Start failures at
+	// Join time (#317): a running container with no renewal client.
+	// Healthy-affecting — same operator action as recovery_failed
+	// (find the cause in the plugin log, restart the container).
+	JoinStartFailures      int32 `json:"join_start_failures"`
+	TombstoneWriteFailures int32 `json:"tombstone_write_failures"`
 	// LeaseChanged counts renewals where dhcpcd returned a different
 	// IP than the manager last recorded. Not Healthy-affecting (it
 	// doesn't break Docker's view fatally — see plugin.go for the
@@ -309,18 +314,21 @@ func (p *Plugin) apiHealth(w http.ResponseWriter, r *http.Request) {
 	p.mu.Unlock()
 
 	failed := p.recoveryFailed.Load()
+	joinFails := p.joinStartFailures.Load()
 	tsFails := p.tombstoneWriteFailures.Load()
 	util.JSONResponse(w, HealthResponse{
 		// Healthy is false on any condition that means an operator
-		// should look: a recovery failure means a running container has
-		// no renewal goroutine; a tombstone-write failure means the
-		// next restart of some container will pick a new MAC/IP.
-		Healthy:                failed == 0 && tsFails == 0,
+		// should look: a recovery or join-start failure means a running
+		// container has no renewal goroutine; a tombstone-write failure
+		// means the next restart of some container will pick a new
+		// MAC/IP.
+		Healthy:                failed == 0 && joinFails == 0 && tsFails == 0,
 		UptimeSeconds:          time.Since(p.startTime).Seconds(),
 		ActiveEndpoints:        active,
 		PendingHints:           pending,
 		RecoveredOK:            p.recoveredOK.Load(),
 		RecoveryFailed:         failed,
+		JoinStartFailures:      joinFails,
 		TombstoneWriteFailures: tsFails,
 		LeaseChanged:           p.leaseChanged.Load(),
 		LeasesObtained:         p.leasesObtained.Load(),

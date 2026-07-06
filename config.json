@@ -51,7 +51,8 @@
     "linux": {
         "capabilities": [
             "CAP_NET_ADMIN",
-            "CAP_SYS_ADMIN"
+            "CAP_SYS_ADMIN",
+            "CAP_SYS_PTRACE"
         ]
     }
 }

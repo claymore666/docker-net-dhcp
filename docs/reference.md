@@ -27,13 +27,16 @@ The plugin publishes to two registries; GHCR is primary:
 for unattended):
 
 ```bash
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.3.2
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.3.3
 ```
 
 Privileges requested: `network: host`, host PID namespace, the Docker
-socket mount, `CAP_NET_ADMIN` + `CAP_SYS_ADMIN`. All four are inherent
-to what the plugin does (creating links in arbitrary netns, driving
-DHCP on the host's L2 segments, querying the daemon).
+socket mount, `CAP_NET_ADMIN` + `CAP_SYS_ADMIN` + `CAP_SYS_PTRACE`
+(v1.3.3+). All are inherent to what the plugin does: creating links in
+arbitrary netns, driving DHCP on the host's L2 segments, querying the
+daemon — and entering a container's netns via `/proc/<pid>/ns/net`,
+which the kernel ptrace-gates when the container runs as a non-root
+user (#317).
 
 **Verify the signature (v1.1.0+).** The published image is cosign-signed
 (keyless) and carries SLSA build provenance; release artifacts ship a
@@ -93,7 +96,7 @@ You bring an existing Linux bridge that is L2-connected to the LAN
 (see [`bridge-mode.md`](bridge-mode.md) for the bridge setup itself):
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.3.2 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.3.3 \
     --ipam-driver null \
     -o bridge=my-bridge \
     my-dhcp-net
@@ -105,7 +108,7 @@ No host changes — containers get per-container kernel-generated MACs
 as macvlan children of a host NIC:
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.3.2 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.3.3 \
     --ipam-driver null \
     -o mode=macvlan -o parent=eth0 \
     lan-dhcp
@@ -119,7 +122,7 @@ security, hostile vSwitches, some Wi-Fi APs). The DHCP server must
 key reservations on DHCP option 61 (client identifier), not MAC:
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.3.2 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.3.3 \
     --ipam-driver null \
     -o mode=ipvlan -o parent=eth0 \
     lan-dhcp
@@ -239,19 +242,20 @@ Set with `docker plugin set <plugin> NAME=value`; take effect after
 JSON liveness + counters on the plugin's UNIX socket:
 
 ```bash
-PLUGIN_ID=$(docker plugin inspect -f '{{.Id}}' ghcr.io/claymore666/docker-net-dhcp:v1.3.2)
+PLUGIN_ID=$(docker plugin inspect -f '{{.Id}}' ghcr.io/claymore666/docker-net-dhcp:v1.3.3)
 curl -s --unix-socket /run/docker/plugins/$PLUGIN_ID/net-dhcp.sock \
     http://localhost/Plugin.Health | jq .
 ```
 
 | field | healthy-affecting | meaning |
 | ----- | ----------------- | ------- |
-| `healthy` | — | `false` when `recovery_failed` or `tombstone_write_failures` is non-zero — an operator should look. The plugin keeps serving fresh attaches either way. |
+| `healthy` | — | `false` when `recovery_failed`, `join_start_failures`, or `tombstone_write_failures` is non-zero — an operator should look. The plugin keeps serving fresh attaches either way. |
 | `uptime_seconds` | — | Seconds since the plugin process started. |
 | `active_endpoints` | — | DHCP managers currently registered (post-Join, pre-Leave). |
 | `pending_hints` | — | Join hints awaiting consumption; steady-state ~0. |
 | `recovered_ok` | — | Endpoints successfully rebuilt by plugin-restart recovery. |
 | `recovery_failed` | yes | Endpoints whose post-restart rebuild failed — those containers run without lease renewal and lose their IP at expiry; restart them. |
+| `join_start_failures` | yes | (v1.3.3+) Persistent-client start failures at attach time — the container got its initial lease but runs without renewal, and the lease is never released on disconnect (#317). The plugin log carries the cause; fix it and restart the container. |
 | `tombstone_write_failures` | yes | Failed tombstone saves (disk full, EROFS) — the next restart of some container will pick a fresh MAC/IP instead of inheriting. |
 | `lease_changed` | no | Renewals that returned a different IP than last recorded (v4+v6 aggregate). Docker's `inspect` view does **not** update on lease change (libnetwork has no in-place endpoint-IP swap), so this is the stale-inspect-window signal — alert on it for long-running containers. |
 | `leases_obtained` | no | `dhcpcd` bind events (`BOUND`/`REBOOT`, and the v6 equivalents): initial bind or re-bind after NAK/lease loss. v4+v6 aggregate. |
@@ -310,7 +314,7 @@ Compose-managed alternative (network lifecycle tied to the project):
 ```yaml
 networks:
   lan:
-    driver: ghcr.io/claymore666/docker-net-dhcp:v1.3.2
+    driver: ghcr.io/claymore666/docker-net-dhcp:v1.3.3
     driver_opts:
       mode: macvlan
       parent: eth0
