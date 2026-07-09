@@ -15,6 +15,7 @@ import (
 	"runtime"
 	"strings"
 	"syscall"
+	"time"
 
 	log "github.com/sirupsen/logrus"
 	"github.com/vishvananda/netns"
@@ -52,6 +53,12 @@ const (
 	// non-zero exit error — enough for the operative diagnostic line(s)
 	// without unbounded growth from a chatty trace.
 	stderrTailMax = 4 << 10
+)
+
+// Indirection over the internal lease acquisition call so unit tests can mock
+// results without running a real dhcpcd process.
+var (
+	attemptGetIPFunc = attemptGetIP
 )
 
 // mountPrep is the shell run inside the `unshare -m` mount namespace
@@ -420,16 +427,9 @@ func (c *DHCPClient) await(ctx context.Context) error {
 	}
 }
 
-// GetIP runs dhcpcd once and returns the lease info obtained. The
-// caller's opts is not mutated — we work on a local copy so a caller
-// that reuses the options struct between persistent and one-shot calls
-// doesn't get its Once flag flipped on.
-func GetIP(ctx context.Context, iface string, opts *DHCPClientOptions) (Info, error) {
+func attemptGetIP(ctx context.Context, iface string, opts *DHCPClientOptions) (Info, error) {
 	dummy := Info{}
-
-	optsCopy := *opts
-	optsCopy.Once = true
-	client, err := NewDHCPClient(iface, &optsCopy)
+	client, err := NewDHCPClient(iface, opts)
 	if err != nil {
 		return dummy, fmt.Errorf("failed to create DHCP client: %w", err)
 	}
@@ -469,5 +469,42 @@ func GetIP(ctx context.Context, iface string, opts *DHCPClientOptions) (Info, er
 		return info, nil
 	case <-ctx.Done():
 		return dummy, ctx.Err()
+	}
+}
+
+// GetIP runs dhcpcd and returns the lease info obtained. It retries
+// automatically if the lease acquisition fails, up to the deadline
+// of the passed context.
+// The caller's opts is not mutated — we work on a local copy so a caller
+// that reuses the options struct between persistent and one-shot calls
+// doesn't get its Once flag flipped on.
+func GetIP(ctx context.Context, iface string, opts *DHCPClientOptions) (Info, error) {
+	dummy := Info{}
+
+	optsCopy := *opts
+	optsCopy.Once = true
+
+	var lastErr error
+	for {
+		if err := ctx.Err(); err != nil {
+			if lastErr != nil {
+				return dummy, fmt.Errorf("%w (last attempt error: %v)", err, lastErr)
+			}
+			return dummy, err
+		}
+
+		info, err := attemptGetIPFunc(ctx, iface, &optsCopy)
+		if err == nil {
+			return info, nil
+		}
+
+		lastErr = err
+		log.WithError(err).WithField("iface", iface).Warn("DHCP lease acquisition attempt failed...")
+
+		select {
+		case <-time.After(500 * time.Millisecond):
+		case <-ctx.Done():
+			return dummy, fmt.Errorf("%w (last attempt error: %v)", ctx.Err(), lastErr)
+		}
 	}
 }

@@ -1,10 +1,13 @@
 package dhcp
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // hasArg returns whether args contains exactly target.
@@ -238,5 +241,82 @@ func TestTailWriter_CapsAndCondenses(t *testing.T) {
 	}
 	if (&tailWriter{max: stderrTailMax}).condense() != "" {
 		t.Errorf("empty tail should condense to empty string")
+	}
+}
+
+// stubAttemptGetIP swaps attemptGetIPFunc for the test's duration.
+func stubAttemptGetIP(t *testing.T, fn func(context.Context, string, *DHCPClientOptions) (Info, error)) {
+	t.Helper()
+	prev := attemptGetIPFunc
+	attemptGetIPFunc = fn
+	t.Cleanup(func() { attemptGetIPFunc = prev })
+}
+
+func TestGetIP_RetriesAndSucceeds(t *testing.T) {
+	attempts := 0
+	expectedIP := "192.168.1.100/24"
+	expectedGateway := "192.168.1.1"
+
+	stubAttemptGetIP(t, func(ctx context.Context, iface string, opts *DHCPClientOptions) (Info, error) {
+		attempts++
+		if attempts < 3 {
+			// First two attempts fail.
+			return Info{}, errors.New("lease request failed")
+		}
+		// Third attempt succeeds.
+		return Info{
+			IP:      expectedIP,
+			Gateway: expectedGateway,
+		}, nil
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	opts := &DHCPClientOptions{
+		MAC: mustMAC(t, "de:ad:be:ef:00:01"),
+	}
+
+	info, err := GetIP(ctx, "eth0", opts)
+	if err != nil {
+		t.Fatalf("GetIP failed: %v", err)
+	}
+
+	if attempts != 3 {
+		t.Errorf("Expected 3 attempts, got %d", attempts)
+	}
+
+	if info.IP != expectedIP || info.Gateway != expectedGateway {
+		t.Errorf("Expected IP %q and Gateway %q, got IP %q and Gateway %q", expectedIP, expectedGateway, info.IP, info.Gateway)
+	}
+}
+
+func TestGetIP_ContextCancelledStopRetries(t *testing.T) {
+	attempts := 0
+	ctx, cancel := context.WithCancel(context.Background())
+
+	stubAttemptGetIP(t, func(ctx context.Context, iface string, opts *DHCPClientOptions) (Info, error) {
+		attempts++
+		if attempts == 2 {
+			cancel()
+		}
+		return Info{}, errors.New("lease request failed")
+	})
+
+	opts := &DHCPClientOptions{
+		MAC: mustMAC(t, "de:ad:be:ef:00:01"),
+	}
+
+	_, err := GetIP(ctx, "eth0", opts)
+	if err == nil {
+		t.Fatal("Expected GetIP to fail with context cancelled, but got no error")
+	}
+
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("Expected error to be context.Canceled, got %v", err)
+	}
+
+	if attempts != 2 {
+		t.Errorf("Expected 2 attempts before cancellation, got %d", attempts)
 	}
 }
