@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net"
 	"os"
 	"os/exec"
@@ -15,6 +16,7 @@ import (
 	"runtime"
 	"strings"
 	"syscall"
+	"time"
 
 	log "github.com/sirupsen/logrus"
 	"github.com/vishvananda/netns"
@@ -170,10 +172,11 @@ type DHCPClientOptions struct {
 type DHCPClient struct {
 	Opts *DHCPClientOptions
 
-	cmd     *exec.Cmd
-	workDir string      // per-client temp dir: generated config + event FIFO
-	fifo    *os.File    // read+keep-alive (O_RDWR) end of the event FIFO
-	stderr  *tailWriter // last bytes of dhcpcd stderr, for the exit error
+	cmd      *exec.Cmd
+	workDir  string      // per-client temp dir: generated config + event FIFO
+	fifoRead *os.File    // read end of the event FIFO (scanner side)
+	fifoKeep *os.File    // write keep-alive (O_RDWR) end of the event FIFO
+	stderr   *tailWriter // last bytes of dhcpcd stderr, for the exit error
 
 	waitErr  error
 	waitDone chan struct{} // closed when cmd.Wait() returns
@@ -236,12 +239,25 @@ func NewDHCPClient(iface string, opts *DHCPClientOptions) (*DHCPClient, error) {
 		return cleanup(fmt.Errorf("failed to write dhcpcd config: %w", err))
 	}
 
-	// Open the read end now (and keep it open with O_RDWR so the FIFO
-	// never reports EOF between the short-lived hook processes that write
-	// to it). The reaper closes it on process exit to end the scanner.
-	fifo, err := os.OpenFile(fifoPath, os.O_RDWR, 0)
+	// The FIFO is opened twice, and the order matters. fifoKeep (O_RDWR,
+	// opened first so neither open can block) acts as a permanently-open
+	// writer: it keeps the FIFO from reporting EOF between the
+	// short-lived hook processes that write to it. fifoRead is the
+	// scanner's dedicated read end. On process exit the reaper closes
+	// ONLY fifoKeep — the scanner then drains whatever is still buffered
+	// in the FIFO and terminates on natural EOF. Closing the read end
+	// directly instead would discard any not-yet-scanned event, losing
+	// the final `bound` under scheduler contention: dhcpcd -1 exits
+	// right after the hook writes it, so the reaper's close raced the
+	// scanner's read and CreateEndpoint failed with ErrNoLease (#325).
+	fifoKeep, err := os.OpenFile(fifoPath, os.O_RDWR, 0)
 	if err != nil {
 		return cleanup(fmt.Errorf("failed to open event FIFO: %w", err))
+	}
+	fifoRead, err := os.OpenFile(fifoPath, os.O_RDONLY, 0)
+	if err != nil {
+		_ = fifoKeep.Close()
+		return cleanup(fmt.Errorf("failed to open event FIFO read end: %w", err))
 	}
 
 	// dhcpcd has no runtime state-dir override, so isolate per client in
@@ -253,11 +269,12 @@ func NewDHCPClient(iface string, opts *DHCPClientOptions) (*DHCPClient, error) {
 	wrapped := append([]string{"unshare", "-m", "/bin/sh", "-c", mountPrep()}, dargs...)
 
 	c := &DHCPClient{
-		Opts:    opts,
-		cmd:     exec.Command(wrapped[0], wrapped[1:]...),
-		workDir: workDir,
-		fifo:    fifo,
-		stderr:  &tailWriter{max: stderrTailMax},
+		Opts:     opts,
+		cmd:      exec.Command(wrapped[0], wrapped[1:]...),
+		workDir:  workDir,
+		fifoRead: fifoRead,
+		fifoKeep: fifoKeep,
+		stderr:   &tailWriter{max: stderrTailMax},
 	}
 	// dhcpcd's own logs (stdout/stderr) go to logrus at debug level; the
 	// structured events come over the FIFO, not these streams. stderr is
@@ -323,7 +340,8 @@ func (c *DHCPClient) Start() (chan Event, error) {
 	}
 
 	if err := c.cmd.Start(); err != nil {
-		c.fifo.Close()
+		c.fifoRead.Close()
+		c.fifoKeep.Close()
 		_ = os.RemoveAll(c.workDir)
 		return nil, err
 	}
@@ -332,12 +350,15 @@ func (c *DHCPClient) Start() (chan Event, error) {
 	events := make(chan Event, 16)
 
 	// Scanner: read newline-delimited JSON events off the FIFO and hand
-	// them downstream. Owns the events channel: closes it when the FIFO
-	// read ends (the reaper closes the FIFO once dhcpcd exits). A full
-	// channel drops events rather than blocking the DHCP exchange.
+	// them downstream. Owns the events channel (and the FIFO read end):
+	// once the reaper closes the keep-alive writer after dhcpcd exits,
+	// the scanner drains any still-buffered events, hits EOF, and closes
+	// both. A full channel drops events rather than blocking the DHCP
+	// exchange.
 	go func() {
 		defer close(events)
-		scanner := bufio.NewScanner(c.fifo)
+		defer c.fifoRead.Close()
+		scanner := bufio.NewScanner(c.fifoRead)
 		for scanner.Scan() {
 			log.WithField("line", string(scanner.Bytes())).Trace("dhcpcd handler line")
 			var event Event
@@ -354,8 +375,10 @@ func (c *DHCPClient) Start() (chan Event, error) {
 	}()
 
 	// Reaper: the single owner of cmd.Wait(). When dhcpcd exits it closes
-	// the FIFO (ending the scanner, which closes events) and records the
-	// exit status for Finish/Wait.
+	// the FIFO's keep-alive writer — NOT the read end — so the scanner
+	// drains any events still buffered in the FIFO before ending on EOF
+	// (#325: closing the read end here raced the scanner and could drop
+	// the final bound event), and records the exit status for Finish/Wait.
 	go func() {
 		werr := c.cmd.Wait()
 		// Wait has joined the stderr-copy goroutine, so the tail buffer is
@@ -367,7 +390,7 @@ func (c *DHCPClient) Start() (chan Event, error) {
 			}
 		}
 		c.waitErr = werr
-		c.fifo.Close()
+		c.fifoKeep.Close()
 		close(c.waitDone)
 	}()
 
@@ -420,16 +443,14 @@ func (c *DHCPClient) await(ctx context.Context) error {
 	}
 }
 
-// GetIP runs dhcpcd once and returns the lease info obtained. The
-// caller's opts is not mutated — we work on a local copy so a caller
-// that reuses the options struct between persistent and one-shot calls
-// doesn't get its Once flag flipped on.
-func GetIP(ctx context.Context, iface string, opts *DHCPClientOptions) (Info, error) {
+// attemptGetIP runs dhcpcd once (opts must already carry Once=true)
+// and returns the lease info obtained. GetIP wraps it in a retry loop;
+// the indirection through attemptGetIPFunc lets unit tests exercise
+// that loop without running a real dhcpcd.
+func attemptGetIP(ctx context.Context, iface string, opts *DHCPClientOptions) (Info, error) {
 	dummy := Info{}
 
-	optsCopy := *opts
-	optsCopy.Once = true
-	client, err := NewDHCPClient(iface, &optsCopy)
+	client, err := NewDHCPClient(iface, opts)
 	if err != nil {
 		return dummy, fmt.Errorf("failed to create DHCP client: %w", err)
 	}
@@ -469,5 +490,81 @@ func GetIP(ctx context.Context, iface string, opts *DHCPClientOptions) (Info, er
 		return info, nil
 	case <-ctx.Done():
 		return dummy, ctx.Err()
+	}
+}
+
+var attemptGetIPFunc = attemptGetIP
+
+// Retry pacing for GetIP. The base delay keeps a failing endpoint from
+// hammering the DHCP server; the jitter de-synchronises the many
+// one-shot clients a `docker-compose up` starts at once, so their
+// retries don't land in lockstep.
+const (
+	leaseRetryDelay  = 500 * time.Millisecond
+	leaseRetryJitter = 250 * time.Millisecond
+)
+
+// isRetryableLeaseErr reports whether an attemptGetIP failure is worth
+// retrying: dhcpcd ran and the exchange failed (exited zero with no
+// lease event, or exited non-zero — e.g. its own internal timeout).
+// Everything else — client construction, exec, netns entry, the
+// caller's context firing — is deterministic or terminal, and
+// retrying it would only convert a fast, well-diagnosed failure into
+// a slow one (#247 diagnostics must surface immediately).
+func isRetryableLeaseErr(err error) bool {
+	var exitErr *exec.ExitError
+	return errors.Is(err, util.ErrNoLease) || errors.As(err, &exitErr)
+}
+
+// GetIP obtains a lease via one-shot dhcpcd runs, retrying transient
+// acquisition failures until the passed context's deadline. Retries
+// exist because a failed exchange is often momentary (#325: lost
+// server response under boot-time load, slow upstream) while the
+// price of giving up — Docker refusing to start the container — is
+// high. Permanent failures are returned immediately, unwrapped, so
+// errors.Is/As classification (and the #247 stderr diagnostics) keep
+// working; on deadline the last attempt's error is chained with %w
+// for the same reason (ErrToStatus's 502, the probe's ErrNoLease
+// branch).
+//
+// The caller's opts is not mutated — we work on a local copy so a
+// caller that reuses the options struct between persistent and
+// one-shot calls doesn't get its Once flag flipped on.
+func GetIP(ctx context.Context, iface string, opts *DHCPClientOptions) (Info, error) {
+	dummy := Info{}
+
+	optsCopy := *opts
+	optsCopy.Once = true
+
+	var lastErr error
+	for {
+		if err := ctx.Err(); err != nil {
+			if lastErr != nil {
+				return dummy, fmt.Errorf("%w (last attempt error: %w)", err, lastErr)
+			}
+			return dummy, err
+		}
+
+		info, err := attemptGetIPFunc(ctx, iface, &optsCopy)
+		if err == nil {
+			return info, nil
+		}
+		if !isRetryableLeaseErr(err) {
+			// A context error mid-attempt is the deadline, not a new
+			// failure — report what we were retrying when it hit.
+			if lastErr != nil && ctx.Err() != nil {
+				return dummy, fmt.Errorf("%w (last attempt error: %w)", err, lastErr)
+			}
+			return dummy, err
+		}
+
+		lastErr = err
+		log.WithError(err).WithField("iface", iface).Warn("DHCP lease acquisition attempt failed; retrying")
+
+		select {
+		case <-time.After(leaseRetryDelay + rand.N(leaseRetryJitter)):
+		case <-ctx.Done():
+			return dummy, fmt.Errorf("%w (last attempt error: %w)", ctx.Err(), lastErr)
+		}
 	}
 }
