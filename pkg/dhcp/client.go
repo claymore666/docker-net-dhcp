@@ -177,6 +177,7 @@ type DHCPClient struct {
 	fifoRead *os.File    // read end of the event FIFO (scanner side)
 	fifoKeep *os.File    // write keep-alive (O_RDWR) end of the event FIFO
 	stderr   *tailWriter // last bytes of dhcpcd stderr, for the exit error
+	logPipes []io.Closer // logrus WriterLevel pipe writers; closed by the reaper
 
 	waitErr  error
 	waitDone chan struct{} // closed when cmd.Wait() returns
@@ -280,8 +281,17 @@ func NewDHCPClient(iface string, opts *DHCPClientOptions) (*DHCPClient, error) {
 	// structured events come over the FIFO, not these streams. stderr is
 	// additionally tee'd into a bounded tail buffer so a non-zero exit
 	// can report dhcpcd's real diagnostic, not just "exit status 1" (#247).
-	c.cmd.Stdout = log.StandardLogger().WriterLevel(log.DebugLevel)
-	c.cmd.Stderr = io.MultiWriter(log.StandardLogger().WriterLevel(log.DebugLevel), c.stderr)
+	// WriterLevel spawns a goroutine reading an io.Pipe that only exits
+	// when the writer is closed — and exec never closes cmd.Stdout/Stderr
+	// writers — so the pipes are retained and closed by the reaper (after
+	// Wait has joined exec's copy goroutines, so nothing writes to them
+	// anymore). Without that close every dhcpcd run leaked two goroutines
+	// and pipe pairs for the daemon's lifetime.
+	outPipe := log.StandardLogger().WriterLevel(log.DebugLevel)
+	errPipe := log.StandardLogger().WriterLevel(log.DebugLevel)
+	c.cmd.Stdout = outPipe
+	c.cmd.Stderr = io.MultiWriter(errPipe, c.stderr)
+	c.logPipes = []io.Closer{outPipe, errPipe}
 
 	log.WithField("cmd", c.cmd.Args).Trace("new dhcpcd client")
 	return c, nil
@@ -342,6 +352,7 @@ func (c *DHCPClient) Start() (chan Event, error) {
 	if err := c.cmd.Start(); err != nil {
 		c.fifoRead.Close()
 		c.fifoKeep.Close()
+		c.closeLogPipes()
 		_ = os.RemoveAll(c.workDir)
 		return nil, err
 	}
@@ -391,10 +402,20 @@ func (c *DHCPClient) Start() (chan Event, error) {
 		}
 		c.waitErr = werr
 		c.fifoKeep.Close()
+		c.closeLogPipes()
 		close(c.waitDone)
 	}()
 
 	return events, nil
+}
+
+// closeLogPipes closes the logrus WriterLevel pipe writers so their
+// reader goroutines exit. Called once nothing can write to them anymore:
+// by the reaper after cmd.Wait, or on a failed Start.
+func (c *DHCPClient) closeLogPipes() {
+	for _, p := range c.logPipes {
+		_ = p.Close()
+	}
 }
 
 // Finish stops the client and waits for it to exit. For the persistent
