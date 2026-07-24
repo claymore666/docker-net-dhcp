@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -442,5 +443,44 @@ func TestGetIP_ContextCancelledStopsRetries(t *testing.T) {
 	}
 	if attempts != 2 {
 		t.Errorf("attempts: got %d, want 2 (must stop on cancellation)", attempts)
+	}
+}
+
+// TestStart_NoGoroutineLeakPerClient pins the log-pipe lifecycle: each
+// client wires dhcpcd's stdout/stderr into logrus via WriterLevel, whose
+// pipe-reader goroutines only exit when the writers are closed. The
+// reaper must close them after Wait, or every dhcpcd run (including each
+// GetIP retry) permanently leaks two goroutines and pipe pairs in the
+// long-running plugin daemon.
+func TestStart_NoGoroutineLeakPerClient(t *testing.T) {
+	const cycles = 50
+
+	baseline := runtime.NumGoroutine()
+	for i := 0; i < cycles; i++ {
+		c := newTestClient(t, "eth0", &DHCPClientOptions{Once: true, MAC: mustMAC(t, "de:ad:be:ef:00:01")})
+		swapCmd(c, "exit 0")
+		events, err := c.Start()
+		if err != nil {
+			t.Fatalf("cycle %d: Start: %v", i, err)
+		}
+		for range events {
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		_ = c.Wait(ctx)
+		cancel()
+	}
+
+	// The WriterLevel reader goroutines exit asynchronously after the
+	// reaper closes their writers; poll briefly for the count to settle.
+	// Pre-fix this leaked 2*cycles goroutines, far above the slack.
+	const slack = 10
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if growth := runtime.NumGoroutine() - baseline; growth <= slack {
+			return
+		} else if time.Now().After(deadline) {
+			t.Fatalf("goroutines grew by %d after %d client cycles (want <= %d): log pipes not closed?", growth, cycles, slack)
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }
