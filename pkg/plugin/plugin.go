@@ -432,10 +432,35 @@ func (p *Plugin) takeJoinHint(endpointID string) (joinHint, bool) {
 // can find it. Caller registers the manager *before* spawning the
 // goroutine that runs dhcpManager.Start; dhcpManager.Stop is safe to
 // call against a manager whose Start is still in flight.
-func (p *Plugin) registerDHCPManager(endpointID string, m *dhcpManager) {
+//
+// Returns the manager this registration displaced, or nil. A displaced
+// manager happens when Join lands on an endpoint the recovery path
+// already registered (plugin restart while the container restarts:
+// Docker sends Join with no preceding Leave to this plugin instance).
+// Silently dropping it from the map would leak its running dhcpcd —
+// unstoppable forever, and colliding with the new client on the same
+// interface — so the caller must Stop it.
+func (p *Plugin) registerDHCPManager(endpointID string, m *dhcpManager) *dhcpManager {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	old := p.persistentDHCP[endpointID]
 	p.persistentDHCP[endpointID] = m
+	return old
+}
+
+// removeDHCPManagerIfSame deletes the registry entry for endpointID only
+// if it still holds m. The failed-Start goroutines use this instead of
+// takeDHCPManager: between Start failing (which unblocks a pending
+// Leave) and the goroutine reaching its deregistration, a fast
+// Leave+Join cycle can install a NEW healthy manager under the same
+// key — deleting by key alone would evict that successor, leaking its
+// running dhcpcd.
+func (p *Plugin) removeDHCPManagerIfSame(endpointID string, m *dhcpManager) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.persistentDHCP[endpointID] == m {
+		delete(p.persistentDHCP, endpointID)
+	}
 }
 
 // takeDHCPManager atomically retrieves and deletes the DHCP manager for
@@ -796,7 +821,9 @@ func (p *Plugin) recoverOneEndpoint(ctx context.Context, networkID, endpointID, 
 				"network":  shortID(networkID),
 				"endpoint": shortID(endpointID),
 			}).Error("recovery: persistent DHCP client Start failed; lease will not renew until container restart")
-			p.takeDHCPManager(endpointID)
+			// Identity-checked: a Join for this endpoint may already
+			// have displaced us with a fresh manager we must not evict.
+			p.removeDHCPManagerIfSame(endpointID, m)
 			return
 		}
 		p.recoveredOK.Add(1)
@@ -996,24 +1023,35 @@ func (p *Plugin) Listen(bindSock string) error {
 // a typical dhcpcd release-and-exit cycle completes well within it.
 const pluginShutdownTimeout = 5 * time.Second
 
-// Close stops the plugin server. Persistent DHCP clients are stopped
-// first so they get a chance to send DHCPRELEASE for their leases —
-// otherwise plugin upgrade or `docker plugin disable` would orphan
-// every active lease at the upstream DHCP server, defeating the
-// release-on-stop contract Leave normally honors.
+// Close stops the plugin. The HTTP server is closed FIRST so no new
+// Join can register a manager while (or after) we stop the existing
+// ones — with the old ordering a Join dispatched during the up-to-5s
+// stop fan-out installed a manager into the fresh registry that nobody
+// ever stopped, orphaning its lease (no DHCPRELEASE) and its dhcpcd.
+// Persistent DHCP clients are then stopped before process exit so they
+// get a chance to send DHCPRELEASE for their leases — otherwise plugin
+// upgrade or `docker plugin disable` would orphan every active lease at
+// the upstream DHCP server, defeating the release-on-stop contract
+// Leave normally honors.
 func (p *Plugin) Close() error {
-	// Snapshot the live managers under the lock, then drop the lock
-	// before calling Stop on each (Stop blocks on dhcpcd Wait and we
-	// don't want to hold p.mu across that).
-	p.mu.Lock()
-	managers := make([]*dhcpManager, 0, len(p.persistentDHCP))
-	for _, m := range p.persistentDHCP {
-		managers = append(managers, m)
-	}
-	p.persistentDHCP = make(map[string]*dhcpManager)
-	p.mu.Unlock()
+	serverErr := p.server.Close()
 
-	if len(managers) > 0 {
+	// stopSnapshot drains the current registry once: snapshot under the
+	// lock, then Stop each manager in parallel outside it (Stop blocks
+	// on dhcpcd Wait and we don't want to hold p.mu across that).
+	// Returns how many managers it stopped.
+	stopSnapshot := func() int {
+		p.mu.Lock()
+		managers := make([]*dhcpManager, 0, len(p.persistentDHCP))
+		for _, m := range p.persistentDHCP {
+			managers = append(managers, m)
+		}
+		p.persistentDHCP = make(map[string]*dhcpManager)
+		p.mu.Unlock()
+
+		if len(managers) == 0 {
+			return 0
+		}
 		log.WithField("count", len(managers)).Info("Stopping persistent DHCP clients before shutdown")
 		// Stop in parallel — each dhcpcd release is independent and
 		// we don't want N×timeout wall time.
@@ -1044,14 +1082,27 @@ func (p *Plugin) Close() error {
 		case <-time.After(pluginShutdownTimeout):
 			log.Warn("Timeout waiting for persistent DHCP clients to stop; continuing shutdown")
 		}
+		return len(managers)
+	}
+
+	// Two passes: server.Close doesn't wait for in-flight handlers, so
+	// a Join already past the listener when we closed it can register a
+	// manager after the first snapshot. Those handlers finish in
+	// milliseconds while the first fan-out runs; a second sweep catches
+	// them. (A handler still running after BOTH passes would need to
+	// outlast an entire release fan-out — at that point we're at the
+	// same process-exit backstop as W-8.)
+	stopSnapshot()
+	if n := stopSnapshot(); n > 0 {
+		log.WithField("count", n).Info("Stopped late-registered DHCP clients in shutdown sweep")
 	}
 
 	if err := p.docker.Close(); err != nil {
 		return fmt.Errorf("failed to close docker client: %w", err)
 	}
 
-	if err := p.server.Close(); err != nil {
-		return fmt.Errorf("failed to close http server: %w", err)
+	if serverErr != nil {
+		return fmt.Errorf("failed to close http server: %w", serverErr)
 	}
 
 	return nil

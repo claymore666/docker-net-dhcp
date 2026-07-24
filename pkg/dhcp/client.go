@@ -50,6 +50,26 @@ const (
 	// invisible to the host and to other containers.
 	procSysPath = "/proc/sys"
 
+	// dhcpcdRunDir is dhcpcd's compile-time runtime directory: the
+	// per-interface pidfile (<iface>-4.pid) and control sockets
+	// (<iface>-4.sock etc.). Like the state dir these are keyed by
+	// interface name with NO netns component, and /run is shared across
+	// the plugin's mount view — but unlike the state dir the collision
+	// here is not merely stale data. dhcpcd's startup first tries the
+	// per-interface control socket, and if a live instance answers it
+	// FORWARDS its argv to that instance and exits 0 without doing any
+	// DHCP work. Two containers whose container-side link is the default
+	// `eth0` therefore collide deterministically: the second container's
+	// persistent client becomes a no-op (lease never renewed or
+	// released) and the first container's dhcpcd is reconfigured with
+	// the second's config (verified against dhcpcd 10.x: "sending
+	// commands to dhcpcd process"). dhcpcd has no flag to suppress the
+	// pidfile/control socket, so this dir gets the same private-tmpfs
+	// treatment as the state dir (see mountPrep). Alpine's /var/run is a
+	// symlink to /run, so this canonical path covers either compile-time
+	// spelling.
+	dhcpcdRunDir = "/run/dhcpcd"
+
 	// stderrTailMax caps the dhcpcd stderr retained to fold into a
 	// non-zero exit error — enough for the operative diagnostic line(s)
 	// without unbounded growth from a chatty trace.
@@ -58,19 +78,25 @@ const (
 
 // mountPrep is the shell run inside the `unshare -m` mount namespace
 // before exec'ing dhcpcd. It (1) shadows the host-shared dhcpcd state
-// dir with a private tmpfs (see dhcpcdStateDir) and (2) flips /proc/sys
-// read-write so dhcpcd's interface-setup sysctl writes succeed (see
-// procSysPath, #247). Both mounts are local to this client's mount
-// namespace. Their stderr is swallowed: each can legitimately be a
-// no-op (state dir already private, /proc/sys already rw) or refused
-// (userns-locked mount) — a genuinely blocked sysctl write still
-// surfaces via dhcpcd's own stderr, captured into the exit error.
+// dir with a private tmpfs (see dhcpcdStateDir), (2) shadows dhcpcd's
+// runtime dir the same way so per-interface pidfiles/control sockets
+// can't collide across containers (see dhcpcdRunDir — without this the
+// second same-named-interface client forwards its argv into the first
+// container's dhcpcd and exits without acquiring anything), and
+// (3) flips /proc/sys read-write so dhcpcd's interface-setup sysctl
+// writes succeed (see procSysPath, #247). All mounts are local to this
+// client's mount namespace. Their stderr is swallowed: each can
+// legitimately be a no-op (dir already private, /proc/sys already rw)
+// or refused (userns-locked mount) — a genuinely blocked sysctl write
+// still surfaces via dhcpcd's own stderr, captured into the exit error.
 func mountPrep() string {
 	return fmt.Sprintf(
 		"mount -t tmpfs tmpfs %s 2>/dev/null; "+
+			"mkdir -p %s 2>/dev/null; "+
+			"mount -t tmpfs tmpfs %s 2>/dev/null; "+
 			"mount -o remount,bind,rw %s 2>/dev/null; "+
 			"exec \"$0\" \"$@\"",
-		dhcpcdStateDir, procSysPath)
+		dhcpcdStateDir, dhcpcdRunDir, dhcpcdRunDir, procSysPath)
 }
 
 // tailWriter retains the last up-to-max bytes written to it. dhcpcd's
@@ -422,6 +448,14 @@ func (c *DHCPClient) closeLogPipes() {
 // client it sends SIGTERM (dhcpcd releases its lease and exits); the
 // one-shot client exits on its own (-1), so Finish only awaits it.
 func (c *DHCPClient) Finish(ctx context.Context) error {
+	if c.cmd.Process == nil {
+		// Start was never called (or its cmd.Start failed): nothing to
+		// signal. await handles the not-started case; without this
+		// guard the Signal below would nil-panic for persistent
+		// clients. No production path hits this today — it hardens the
+		// contract await already advertises.
+		return c.await(ctx)
+	}
 	if !c.Opts.Once {
 		if err := c.cmd.Process.Signal(syscall.SIGTERM); err != nil {
 			// The process can self-exit between Start and here (lease
@@ -532,9 +566,19 @@ const (
 // caller's context firing — is deterministic or terminal, and
 // retrying it would only convert a fast, well-diagnosed failure into
 // a slow one (#247 diagnostics must surface immediately).
+//
+// One dhcpcd exit IS terminal: "interface not found" means the link
+// was deleted out from under us (DeleteEndpoint racing a slow
+// CreateEndpoint). Retrying would spawn dhcpcd against a nonexistent
+// interface every cycle until the lease timeout, then blame the DHCP
+// server. Matched best-effort on the stderr tail #247 folds into the
+// exit error — a miss merely retries as before.
 func isRetryableLeaseErr(err error) bool {
 	var exitErr *exec.ExitError
-	return errors.Is(err, util.ErrNoLease) || errors.As(err, &exitErr)
+	if !errors.Is(err, util.ErrNoLease) && !errors.As(err, &exitErr) {
+		return false
+	}
+	return !strings.Contains(err.Error(), "interface not found")
 }
 
 // GetIP obtains a lease via one-shot dhcpcd runs, retrying transient

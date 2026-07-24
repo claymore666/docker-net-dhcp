@@ -306,3 +306,50 @@ func TestListen_RemovesStaleSocket(t *testing.T) {
 	_ = l.Close()
 	_ = os.Remove(sockPath)
 }
+
+// TestRegisterDHCPManager_ReturnsDisplaced pins the displacement
+// contract: registering over an existing entry (Join landing on a
+// recovery-registered endpoint) must hand the old manager back so the
+// caller can Stop it instead of silently leaking its running dhcpcd.
+func TestRegisterDHCPManager_ReturnsDisplaced(t *testing.T) {
+	p := &Plugin{persistentDHCP: make(map[string]*dhcpManager)}
+	m1 := &dhcpManager{}
+	m2 := &dhcpManager{}
+
+	if got := p.registerDHCPManager("ep1", m1); got != nil {
+		t.Errorf("first registration displaced %v, want nil", got)
+	}
+	if got := p.registerDHCPManager("ep1", m2); got != m1 {
+		t.Errorf("second registration displaced %v, want the first manager", got)
+	}
+	if got, ok := p.takeDHCPManager("ep1"); !ok || got != m2 {
+		t.Errorf("registry holds %v (ok=%v), want the second manager", got, ok)
+	}
+}
+
+// TestRemoveDHCPManagerIfSame pins the identity-checked deregistration
+// used by the failed-Start goroutines: between a Start failure and its
+// late cleanup, a fast Leave+Join can install a NEW manager under the
+// same endpoint key — the cleanup must not evict that successor.
+func TestRemoveDHCPManagerIfSame(t *testing.T) {
+	p := &Plugin{persistentDHCP: make(map[string]*dhcpManager)}
+	failed := &dhcpManager{}
+	successor := &dhcpManager{}
+
+	// Normal case: entry still ours -> removed.
+	p.registerDHCPManager("ep1", failed)
+	p.removeDHCPManagerIfSame("ep1", failed)
+	if _, ok := p.takeDHCPManager("ep1"); ok {
+		t.Errorf("entry not removed when identity matches")
+	}
+
+	// Race case: successor already installed -> must survive.
+	p.registerDHCPManager("ep1", successor)
+	p.removeDHCPManagerIfSame("ep1", failed)
+	if got, ok := p.takeDHCPManager("ep1"); !ok || got != successor {
+		t.Errorf("successor manager evicted by stale cleanup (got %v, ok=%v)", got, ok)
+	}
+
+	// Missing entry: no-op, no panic.
+	p.removeDHCPManagerIfSame("ep-gone", failed)
+}
