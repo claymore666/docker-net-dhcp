@@ -210,6 +210,12 @@ func TestMountPrep_RemountsProcSysRW(t *testing.T) {
 	// per-client tmpfs state dir and exec dhcpcd via $0/$@.
 	for _, want := range []string{
 		"mount -t tmpfs tmpfs " + dhcpcdStateDir,
+		// dhcpcd's runtime dir (pidfile + control sockets, keyed by
+		// interface name only) must be private per client, or the
+		// second same-named-interface client forwards its argv into
+		// the first container's dhcpcd and exits without doing DHCP.
+		"mkdir -p " + dhcpcdRunDir,
+		"mount -t tmpfs tmpfs " + dhcpcdRunDir,
 		"mount -o remount,bind,rw " + procSysPath,
 		`exec "$0" "$@"`,
 	} {
@@ -482,5 +488,30 @@ func TestStart_NoGoroutineLeakPerClient(t *testing.T) {
 			t.Fatalf("goroutines grew by %d after %d client cycles (want <= %d): log pipes not closed?", growth, cycles, slack)
 		}
 		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// A dhcpcd exit whose stderr tail says the interface is gone is
+// terminal (link deleted under us), not retryable.
+func TestIsRetryableLeaseErr_InterfaceVanished(t *testing.T) {
+	exitErr := exec.Command("/bin/sh", "-c", "exit 1").Run()
+	if exitErr == nil {
+		t.Skip("cannot produce an ExitError on this system")
+	}
+	vanished := fmt.Errorf("%w: eth0: interface not found or invalid", exitErr)
+	if isRetryableLeaseErr(vanished) {
+		t.Errorf("interface-not-found exit must be terminal, got retryable")
+	}
+}
+
+// Finish without Start must not panic (persistent clients would
+// otherwise nil-deref cmd.Process on the SIGTERM path) and must clean
+// up like await does.
+func TestFinish_WithoutStartIsSafe(t *testing.T) {
+	c := newTestClient(t, "eth0", &DHCPClientOptions{Once: false, MAC: mustMAC(t, "de:ad:be:ef:00:01")})
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := c.Finish(ctx); err != nil {
+		t.Fatalf("Finish without Start: %v", err)
 	}
 }
