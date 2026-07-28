@@ -92,7 +92,7 @@ The host's NIC config (IP, routes, netplan/`systemd-networkd`,
 | `bridge`            | bridge           | yes      | Existing Linux bridge to plug veths into.                     |
 | `gateway`           | all              | no       | Override the IPv4 gateway returned by DHCP (e.g. when egress should go through a VPN router instead of the LAN's default gateway). |
 | `ipv6`              | all              | no       | Also run stateful DHCPv6 (a second `dhcpcd` with `-6`) in addition to DHCPv4 — see "DHCPv6" below for semantics and DUID/IAID identity. |
-| `lease_timeout`     | both      | no       | Initial-lease timeout for the up-front DHCP exchange (default `10s`). |
+| `lease_timeout`     | both      | no       | Budget for the up-front DHCP exchange (default `10s`). Since v1.3.4 this is a *retry* budget: transient failures are retried within it, so a hard timeout means the exchange never succeeded, not that one attempt was unlucky. |
 | `ignore_conflicts`  | bridge    | no       | Skip the bridge-already-in-use check. No-op in macvlan mode.  |
 | `skip_routes`       | all       | no       | Don't copy non-default static routes from the parent (bridge / macvlan parent NIC / ipvlan parent NIC) into the container. v0.9.0 extended this from bridge-only to all modes for parity (#102) — set `true` to restore pre-v0.9.0 macvlan/ipvlan no-copy behaviour. Since v1.3.0 it also suppresses DHCP-supplied classless static routes (option 121, #260 — see `reference.md`). |
 | `propagate_dns`     | all       | no       | (v0.9.0+) Write DHCP option 6 / 23 (DNS server list) into the container's `/etc/resolv.conf` on bind/renew. Off by default; turning it on overrides Docker's embedded resolver for this network. The `search` line uses option 119 (Domain Search List) when supplied, falling back to option 15 (`Domain`) otherwise. |
@@ -314,7 +314,7 @@ exact create incantation (note: the Docker-level `--ipv6` flag does
 NOT work with the null IPAM driver and is not what you want):
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.3.3 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.3.4 \
     --ipam-driver null \
     -o mode=macvlan -o parent=eth0 -o ipv6=true \
     lan-dhcp6
@@ -583,7 +583,7 @@ endpoint operation everything is back to disk-served.
 Override the location via the `STATE_DIR` env var on the plugin:
 
 ```bash
-docker plugin set ghcr.io/<your-namespace>/docker-net-dhcp:v1.3.3 STATE_DIR=/some/other/path
+docker plugin set ghcr.io/<your-namespace>/docker-net-dhcp:v1.3.4 STATE_DIR=/some/other/path
 ```
 
 ## Plugin env vars

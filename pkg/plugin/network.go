@@ -3,6 +3,7 @@ package plugin
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -738,6 +739,21 @@ func (p *Plugin) DeleteEndpoint(ctx context.Context, r DeleteEndpointRequest) er
 	hostName, _ := vethPairNames(r.EndpointID)
 	link, err := netlink.LinkByName(hostName)
 	if err != nil {
+		// A veth pair dies whole when the container-side end's netns is
+		// destroyed (OOM-kill, `docker rm -f`, host reboot race), so a
+		// missing host-side link means the cleanup already happened —
+		// the same happy-path treatment the macvlan/ipvlan delete path
+		// gives it. Hard-failing here 500s the DeleteEndpoint and can
+		// wedge `docker network rm`. Anything other than not-found is
+		// still a real error.
+		var lnf netlink.LinkNotFoundError
+		if errors.As(err, &lnf) {
+			log.WithFields(log.Fields{
+				"network":  shortID(r.NetworkID),
+				"endpoint": shortID(r.EndpointID),
+			}).Debug("Host veth already gone (expected on forced teardown)")
+			return nil
+		}
 		return fmt.Errorf("failed to lookup host veth interface %v: %w", hostName, err)
 	}
 
@@ -1032,7 +1048,22 @@ func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) 
 	m.setLastIP(false, hint.IPv4)
 	m.setLastIP(true, hint.IPv6)
 	m.MacAddress = hint.MacAddress
-	p.registerDHCPManager(r.EndpointID, m)
+	if displaced := p.registerDHCPManager(r.EndpointID, m); displaced != nil {
+		// A recovery-registered manager for this endpoint was still in
+		// the registry (Join with no preceding Leave to this plugin
+		// instance — plugin restart racing a container restart). Stop
+		// it so its dhcpcd doesn't run untracked forever and collide
+		// with the new client on the same interface. Asynchronously:
+		// Stop blocks on the dhcpcd release cycle and Join shouldn't.
+		go func() {
+			if err := displaced.Stop(); err != nil {
+				log.WithError(err).WithFields(log.Fields{
+					"network":  shortID(r.NetworkID),
+					"endpoint": shortID(r.EndpointID),
+				}).Warn("Failed to stop displaced DHCP manager")
+			}
+		}()
+	}
 
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), p.awaitTimeout)
@@ -1048,8 +1079,11 @@ func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) 
 			// If Start failed, take ourselves out of the registry so a
 			// later Leave doesn't try to Stop() us. Stop() is safe to
 			// call against a failed-Start manager (it returns the start
-			// error), but de-registering keeps the map tidy.
-			p.takeDHCPManager(r.EndpointID)
+			// error), but de-registering keeps the map tidy. Identity-
+			// checked: a fast Leave+Join can already have installed a
+			// new healthy manager under this key, which we must not
+			// evict.
+			p.removeDHCPManagerIfSame(r.EndpointID, m)
 		}
 	}()
 

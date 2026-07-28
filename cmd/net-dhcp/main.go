@@ -69,7 +69,13 @@ func main() {
 		logFileMu.Lock()
 		old := currentLogFd
 		currentLogFd = f
-		log.StandardLogger().Out = f
+		// SetOutput (not a bare `.Out =`) takes logrus's own mutex, which
+		// every write also holds: the swap can't race a concurrent log
+		// write, and once it returns no writer can still be mid-write on
+		// the old fd — making the Close below safe. A direct field
+		// assignment had both problems (data race on Out; a SIGHUP close
+		// could yank the fd out from under an in-flight write).
+		log.StandardLogger().SetOutput(f)
 		logFileMu.Unlock()
 		if old != nil {
 			_ = old.Close()
