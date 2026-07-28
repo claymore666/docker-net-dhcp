@@ -199,9 +199,17 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
    commit messages. Include any **operator-visible compatibility
    notes** (e.g. v0.8.0 narrowed the `IsDHCPPlugin` regex — that
    needed a callout).
-5. **PR `release/vX.Y.Z` → `dev`.** Required checks: `test`,
-   `staticcheck`, `integration` (every PR builds and exercises its
-   own plugin on the integration runner). Merge when green.
+5. **PR `release/vX.Y.Z` → `dev`.** Required checks on `dev` are
+   `test`, `staticcheck`, `integration` (every PR builds and exercises
+   its own plugin on the integration runner), `actionlint`,
+   `govulncheck`, `attribution`, and CodeQL's `Analyze (go)` +
+   `Analyze (actions)` — eight in total. Merge when green.
+
+   `main` requires those eight **plus `coverage`**, which is why the
+   ratchet first bites at the release PR in the next step and not
+   before. Branch protection is the authority here; if this list and
+   the settings disagree, the settings win and this list is the thing
+   to fix.
 6. **Open the release PR `dev` → `main`** with title
    `Release vX.Y.Z` and a `Closes #N` line for **every issue** in
    the milestone. The list is what auto-closes them when the PR
