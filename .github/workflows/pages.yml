@@ -136,6 +136,21 @@ jobs:
             # Real release: publish this version and move latest + default.
             mike deploy --push --update-aliases "${REF}" latest
             mike set-default --push latest
+            # An rc's docs exist to be read during its dry-run window and
+            # are superseded the moment the real tag ships — but nothing
+            # used to remove them, so every rc since v1.2.0-rc1 stayed in
+            # the version selector forever, inviting someone to read (and
+            # pin) a build that was thrown away. Retire this release's own
+            # rcs; other versions are untouched.
+            # `mike list` prints "<version> [aliases]"; field 1 is the
+            # version. Anchored to this release's own rcs so an unrelated
+            # version can never match.
+            rcs=$(mike list 2>/dev/null | awk '{print $1}' \
+                    | grep -E "^${REF}-rc[0-9]+$" || true)
+            for rc in ${rcs}; do
+              echo "Retiring superseded pre-release docs: ${rc}"
+              mike delete --push "${rc}"
+            done
           elif [[ "${REF}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]]; then
             # Pre-release (vX.Y.Z-rcN): preview only — no alias, no default move.
             mike deploy --push "${REF}"
