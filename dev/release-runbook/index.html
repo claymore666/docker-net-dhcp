@@ -1114,9 +1114,16 @@ the <code>vX.Y.Z</code> milestone (the workflow leans on this for the
    commit messages. Include any <strong>operator-visible compatibility
    notes</strong> (e.g. v0.8.0 narrowed the <code>IsDHCPPlugin</code> regex — that
    needed a callout).
-5. <strong>PR <code>release/vX.Y.Z</code> → <code>dev</code>.</strong> Required checks: <code>test</code>,
-   <code>staticcheck</code>, <code>integration</code> (every PR builds and exercises its
-   own plugin on the integration runner). Merge when green.
+5. <strong>PR <code>release/vX.Y.Z</code> → <code>dev</code>.</strong> Required checks on <code>dev</code> are
+   <code>test</code>, <code>staticcheck</code>, <code>integration</code> (every PR builds and exercises
+   its own plugin on the integration runner), <code>actionlint</code>,
+   <code>govulncheck</code>, <code>attribution</code>, and CodeQL's <code>Analyze (go)</code> +
+   <code>Analyze (actions)</code> — eight in total. Merge when green.</p>
+<p><code>main</code> requires those eight <strong>plus <code>coverage</code></strong>, which is why the
+   ratchet first bites at the release PR in the next step and not
+   before. Branch protection is the authority here; if this list and
+   the settings disagree, the settings win and this list is the thing
+   to fix.
 6. <strong>Open the release PR <code>dev</code> → <code>main</code></strong> with title
    <code>Release vX.Y.Z</code> and a <code>Closes #N</code> line for <strong>every issue</strong> in
    the milestone. The list is what auto-closes them when the PR
