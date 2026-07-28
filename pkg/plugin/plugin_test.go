@@ -1,7 +1,9 @@
 package plugin
 
 import (
+	"errors"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -352,4 +354,63 @@ func TestRemoveDHCPManagerIfSame(t *testing.T) {
 
 	// Missing entry: no-op, no panic.
 	p.removeDHCPManagerIfSame("ep-gone", failed)
+}
+
+// TestClose_StopsManagersAndClosesServerFirst pins the shutdown
+// ordering fix. Close must shut the HTTP listener BEFORE draining the
+// manager registry: with the old ordering a Join dispatched during the
+// up-to-5s stop fan-out registered a manager into the freshly emptied
+// map that nobody ever stopped, orphaning its lease (no DHCPRELEASE)
+// and its dhcpcd.
+//
+// The registry is seeded with short-circuiting stub managers (startErr
+// set) so the fan-out completes without a live dhcpcd; what's under
+// test is that Close drains it at all and reports the docker/server
+// errors correctly.
+func TestClose_StopsManagersAndClosesServerFirst(t *testing.T) {
+	p := newTestPlugin(t)
+	p.docker = &fakeDocker{}
+	p.server = http.Server{}
+
+	p.persistentDHCP["ep1"] = stoppableManager("net1")
+	p.persistentDHCP["ep2"] = stoppableManager("net1")
+
+	if err := p.Close(); err != nil {
+		t.Fatalf("Close() = %v, want nil", err)
+	}
+	if len(p.persistentDHCP) != 0 {
+		t.Errorf("registry still holds %d managers after Close", len(p.persistentDHCP))
+	}
+}
+
+// TestClose_ReportsDockerAndServerErrors pins the error precedence
+// after the reordering. server.Close() now runs first but its error is
+// held and reported last, so a docker-close failure still wins — and
+// crucially, an early server error must not skip the manager fan-out
+// (that would reintroduce the orphaned-lease bug it was moved to fix).
+func TestClose_ReportsDockerAndServerErrors(t *testing.T) {
+	t.Run("docker error wins over a clean server close", func(t *testing.T) {
+		p := newTestPlugin(t)
+		p.docker = &fakeDocker{closeErr: errors.New("docker boom")}
+		p.server = http.Server{}
+		p.persistentDHCP["ep1"] = stoppableManager("net1")
+
+		err := p.Close()
+		if err == nil || !strings.Contains(err.Error(), "docker boom") {
+			t.Fatalf("Close() = %v, want the docker close error", err)
+		}
+		if len(p.persistentDHCP) != 0 {
+			t.Errorf("managers not drained when docker close fails")
+		}
+	})
+
+	t.Run("clean docker close surfaces nil", func(t *testing.T) {
+		p := newTestPlugin(t)
+		p.docker = &fakeDocker{}
+		p.server = http.Server{}
+
+		if err := p.Close(); err != nil {
+			t.Fatalf("Close() = %v, want nil", err)
+		}
+	})
 }

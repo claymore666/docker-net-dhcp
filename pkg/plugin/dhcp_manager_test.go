@@ -1,9 +1,13 @@
 package plugin
 
 import (
+	"errors"
+	"os"
+	"sync/atomic"
 	"testing"
 
 	"github.com/vishvananda/netlink"
+	"github.com/vishvananda/netns"
 
 	"github.com/devplayer0/docker-net-dhcp/pkg/dhcp"
 )
@@ -221,5 +225,168 @@ func TestNextAcquiring(t *testing.T) {
 				t.Errorf("nextAcquiring(%v, %q) = %v, want %v", tc.prev, tc.eventType, got, tc.want)
 			}
 		})
+	}
+}
+
+// releasingManager builds a dhcpManager that Stop() can run against
+// without a live netns/netlink fixture: Start is marked complete with
+// no error, and the two consumer goroutines are simulated by
+// pre-filling their exit channels.
+//
+// nsHandle is set to netns.None() deliberately. NsHandle.IsOpen() is
+// `ns != -1`, so the zero value (0) reports *open* and Stop's deferred
+// cleanup would close file descriptor 0 — the test process's stdin.
+// Real managers can't hit that (Start sets the handle, and a Start that
+// failed earlier short-circuits Stop via startErr), but a test that
+// hand-builds the struct has to say so.
+func releasingManager(t *testing.T, p *Plugin, opts DHCPNetworkOptions, errV4, errV6 error) *dhcpManager {
+	t.Helper()
+
+	m := newDHCPManager(nil, JoinRequest{NetworkID: "net1", EndpointID: "ep1"}, opts).withPlugin(p)
+	m.nsHandle = netns.None()
+	close(m.startedCh)
+
+	v4, err := netlink.ParseAddr("192.168.99.50/24")
+	if err != nil {
+		t.Fatalf("ParseAddr v4: %v", err)
+	}
+	m.setLastIP(false, v4)
+
+	m.errChan = make(chan error, 1)
+	m.errChan <- errV4
+
+	if opts.IPv6 {
+		v6, err := netlink.ParseAddr("fd00::50/64")
+		if err != nil {
+			t.Fatalf("ParseAddr v6: %v", err)
+		}
+		m.setLastIP(true, v6)
+
+		m.errChanV6 = make(chan error, 1)
+		m.errChanV6 <- errV6
+	}
+	return m
+}
+
+// TestStop_AuditsBothFamiliesIndependently pins the dual-drain contract
+// (#325/#330). Stop must read BOTH consumer channels before returning —
+// the old code returned early on a v4 release failure, which left the
+// v6 consumer live and mid-renew on m.netHandle while the deferred
+// closeNetHandle nilled the socket out from under it, and additionally
+// hid the v6 outcome from the audit ledger.
+//
+// The v4-fails-v6-succeeds row is the regression the old code failed:
+// it recorded release_failed for v4 and nothing at all for v6.
+func TestStop_AuditsBothFamiliesIndependently(t *testing.T) {
+	errV4 := errors.New("v4 release boom")
+	errV6 := errors.New("v6 release boom")
+
+	cases := []struct {
+		name         string
+		ipv6         bool
+		errV4, errV6 error
+		wantKinds    []string
+		wantFailures int32
+		wantErr      error
+	}{
+		{
+			name: "v4 only, clean release", ipv6: false,
+			wantKinds: []string{"release"},
+		},
+		{
+			name: "v4 only, failed release", ipv6: false,
+			errV4:     errV4,
+			wantKinds: []string{"release_failed"}, wantFailures: 1, wantErr: errV4,
+		},
+		{
+			name: "dual stack, both clean", ipv6: true,
+			wantKinds: []string{"release", "release"},
+		},
+		{
+			name: "dual stack, v4 fails — v6 outcome still audited", ipv6: true,
+			errV4:     errV4,
+			wantKinds: []string{"release_failed", "release"}, wantFailures: 1, wantErr: errV4,
+		},
+		{
+			name: "dual stack, v6 fails", ipv6: true,
+			errV6:     errV6,
+			wantKinds: []string{"release", "release_failed"}, wantFailures: 1, wantErr: errV6,
+		},
+		{
+			name: "dual stack, both fail — v4 error takes precedence", ipv6: true,
+			errV4: errV4, errV6: errV6,
+			wantKinds: []string{"release_failed", "release_failed"}, wantFailures: 2, wantErr: errV4,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var ledgerFailures atomic.Int32
+			p := &Plugin{}
+			p.ledger = testLedger(t, &ledgerFailures)
+
+			opts := DHCPNetworkOptions{AuditLog: true, IPv6: tc.ipv6}
+			m := releasingManager(t, p, opts, tc.errV4, tc.errV6)
+
+			err := m.Stop()
+
+			if tc.wantErr == nil && err != nil {
+				t.Fatalf("Stop() = %v, want nil", err)
+			}
+			if tc.wantErr != nil && !errors.Is(err, tc.wantErr) {
+				t.Fatalf("Stop() = %v, want an error wrapping %v", err, tc.wantErr)
+			}
+
+			if got := p.leaseReleaseFailures.Load(); got != tc.wantFailures {
+				t.Errorf("leaseReleaseFailures = %d, want %d", got, tc.wantFailures)
+			}
+
+			entries := readLedgerLines(t, p.ledger.path)
+			var kinds []string
+			for _, e := range entries {
+				kinds = append(kinds, e.Kind)
+			}
+			if len(kinds) != len(tc.wantKinds) {
+				t.Fatalf("ledger kinds = %v, want %v", kinds, tc.wantKinds)
+			}
+			for i := range kinds {
+				if kinds[i] != tc.wantKinds[i] {
+					t.Fatalf("ledger kinds = %v, want %v", kinds, tc.wantKinds)
+				}
+			}
+
+			// Each family's entry must carry its own address — the
+			// point of auditing them separately.
+			if entries[0].IP != "192.168.99.50" {
+				t.Errorf("v4 entry IP = %q, want 192.168.99.50", entries[0].IP)
+			}
+			if tc.ipv6 && entries[1].IP != "fd00::50" {
+				t.Errorf("v6 entry IP = %q, want fd00::50", entries[1].IP)
+			}
+		})
+	}
+}
+
+// TestStop_FailedStartIsANoOp pins the short-circuit: a manager whose
+// Start errored has nothing to release, so Stop must not touch the
+// ledger, the counters, or the (never-populated) exit channels.
+func TestStop_FailedStartIsANoOp(t *testing.T) {
+	var ledgerFailures atomic.Int32
+	p := &Plugin{}
+	p.ledger = testLedger(t, &ledgerFailures)
+
+	m := newDHCPManager(nil, JoinRequest{NetworkID: "net1", EndpointID: "ep1"},
+		DHCPNetworkOptions{AuditLog: true}).withPlugin(p)
+	m.startErr = errors.New("start boom")
+	close(m.startedCh)
+
+	if err := m.Stop(); err != nil {
+		t.Fatalf("Stop() on a failed-Start manager = %v, want nil", err)
+	}
+	if got := p.leaseReleaseFailures.Load(); got != 0 {
+		t.Errorf("leaseReleaseFailures = %d, want 0", got)
+	}
+	if _, err := os.Stat(p.ledger.path); !os.IsNotExist(err) {
+		t.Errorf("ledger written for a manager that never held a lease (stat err: %v)", err)
 	}
 }
