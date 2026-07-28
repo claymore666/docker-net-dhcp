@@ -27,7 +27,7 @@ The plugin publishes to two registries; GHCR is primary:
 for unattended):
 
 ```bash
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.3.3
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.3.4
 ```
 
 Privileges requested: `network: host`, host PID namespace, the Docker
@@ -96,7 +96,7 @@ You bring an existing Linux bridge that is L2-connected to the LAN
 (see [`bridge-mode.md`](bridge-mode.md) for the bridge setup itself):
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.3.3 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.3.4 \
     --ipam-driver null \
     -o bridge=my-bridge \
     my-dhcp-net
@@ -108,7 +108,7 @@ No host changes — containers get per-container kernel-generated MACs
 as macvlan children of a host NIC:
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.3.3 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.3.4 \
     --ipam-driver null \
     -o mode=macvlan -o parent=eth0 \
     lan-dhcp
@@ -122,7 +122,7 @@ security, hostile vSwitches, some Wi-Fi APs). The DHCP server must
 key reservations on DHCP option 61 (client identifier), not MAC:
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.3.3 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.3.4 \
     --ipam-driver null \
     -o mode=ipvlan -o parent=eth0 \
     lan-dhcp
@@ -147,7 +147,7 @@ Passed as `-o key=value` on `docker network create`, or under
 | `parent` | macvlan, ipvlan | *(required)* | v0.2.0 | Host NIC to attach children to (e.g. `eth0`, `ens18`). Must exist and be administratively `UP`. |
 | `gateway` | all | from DHCP | v0.3.0 | Override the IPv4 default gateway returned by the DHCP server — for split-horizon LANs where containers should egress via a different router (e.g. a VPN gateway). |
 | `ipv6` | all | `false` | upstream; functional again in v1.0.0 | Also run stateful DHCPv6 (a second `dhcpcd` with `-6`) alongside DHCPv4 — see the [DHCPv6 section](parent-attached-modes.md#dhcpv6-ipv6true) for semantics and DUID/IAID identity. The Docker-visible v6 address is renewed as of v1.2.0 (#152). |
-| `lease_timeout` | all | `10s` | upstream | Budget for the up-front DHCP exchange at container creation. Raise on slow/relayed networks (`-o lease_timeout=60s`). |
+| `lease_timeout` | all | `10s` | upstream | Budget for the up-front DHCP exchange at container creation. Since v1.3.4 it is a *retry* budget (#332): transient failures are retried inside it (500 ms plus jitter between attempts) until it expires, while permanent ones — a missing interface, a malformed option — still fail immediately. Raise on slow/relayed networks (`-o lease_timeout=60s`). |
 | `ignore_conflicts` | bridge | `false` | upstream | Skip the bridge-already-in-use check against other Docker networks. No-op in macvlan/ipvlan. |
 | `skip_routes` | all | `false` | upstream; all modes since v0.9.0 | Don't copy non-default static routes from the parent (bridge or NIC) into containers, **and** don't apply DHCP-supplied classless static routes (option 121, see below). v0.9.0 extended parent route-copying from bridge-only to all modes (#102); set `true` to restore the old macvlan/ipvlan no-copy behaviour. The default gateway is unaffected either way. |
 | `propagate_dns` | all | `false` | v0.9.0 | Write the DHCP-supplied DNS server list (option 6 / v6 option 23) into the container's `/etc/resolv.conf` on every bind/renew. Overrides Docker's embedded resolver for this network; the `search` line uses option 119 with fallback to option 15. |
@@ -242,7 +242,7 @@ Set with `docker plugin set <plugin> NAME=value`; take effect after
 JSON liveness + counters on the plugin's UNIX socket:
 
 ```bash
-PLUGIN_ID=$(docker plugin inspect -f '{{.Id}}' ghcr.io/claymore666/docker-net-dhcp:v1.3.3)
+PLUGIN_ID=$(docker plugin inspect -f '{{.Id}}' ghcr.io/claymore666/docker-net-dhcp:v1.3.4)
 curl -s --unix-socket /run/docker/plugins/$PLUGIN_ID/net-dhcp.sock \
     http://localhost/Plugin.Health | jq .
 ```
@@ -314,7 +314,7 @@ Compose-managed alternative (network lifecycle tied to the project):
 ```yaml
 networks:
   lan:
-    driver: ghcr.io/claymore666/docker-net-dhcp:v1.3.3
+    driver: ghcr.io/claymore666/docker-net-dhcp:v1.3.4
     driver_opts:
       mode: macvlan
       parent: eth0
@@ -335,7 +335,7 @@ above and issue #125).
 
 | symptom | likely cause | fix |
 | ------- | ------------ | --- |
-| `docker run` hangs then fails with a lease timeout | No DHCP reply on the parent L2 (isolated NIC, firewall on UDP 67/68, wrong VLAN) | Verify with `-o validate_dhcp=true` at create time; check the parent's connectivity; raise `-o lease_timeout` for slow/relayed networks |
+| `docker run` hangs then fails with a lease timeout | No DHCP reply on the parent L2 (isolated NIC, firewall on UDP 67/68, wrong VLAN). Since v1.3.4 transient failures are retried within `lease_timeout`, so reaching the timeout points at a persistent problem, not a one-off blip | Verify with `-o validate_dhcp=true` at create time; check the parent's connectivity; raise `-o lease_timeout` for slow/relayed networks |
 | `invalid rootfs in image configuration` at install | Old Docker engine | Upgrade Docker |
 | Network create fails `Bridge already in use` | Another Docker network owns the bridge | Use a dedicated bridge, or `-o ignore_conflicts=true` if the detection is wrong |
 | Container has an IP but `docker inspect` shows a different one | Mid-life re-acquisition after NAK/lease change | Expected degraded mode; watch `lease_changed` on `/Plugin.Health`; restart the container to resync Docker's view |

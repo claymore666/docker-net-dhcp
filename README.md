@@ -30,7 +30,7 @@ like any other machine. Bridge, macvlan, and ipvlan attachment modes.
 Install the plugin:
 
 ```bash
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.3.3
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.3.4
 ```
 
 It requests `host` networking, the host PID namespace, the Docker
@@ -43,7 +43,7 @@ already have a host bridge `my-bridge` on your LAN — see
 [bridge mode](docs/bridge-mode.md) for that one-time setup):
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.3.3 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.3.4 \
   --ipam-driver null -o bridge=my-bridge my-dhcp-net
 
 docker run --rm -ti --network my-dhcp-net alpine ip address show
@@ -137,9 +137,21 @@ Contributions are welcome.
     files must pass `shellcheck`/`actionlint`. These are enforced in CI.
   - **Tests:** new functionality is expected to ship with tests; a coverage
     ratchet enforces this at release time.
+  - **Authorship:** commits and pull request descriptions must not carry
+    AI-assistant attribution — no `Co-authored-by:` trailer naming an
+    assistant or an assistant's no-reply address, no "Generated with …"
+    line, no assistant session trailer or link — and the commit author must
+    be a person. Using an assistant to help write a change is fine and needs
+    no disclosure; what the project asks is that you sign the work as its
+    author and stand behind it. This is enforced by the `attribution` check,
+    which reads every commit in your PR — message *and* author identity,
+    since a rebase preserves authorship — plus the PR description. In the
+    description, code blocks and inline code are stripped before scanning,
+    so you can quote a trailer to discuss one, as here; commit messages are
+    scanned in full and have no such escape.
   - **Green CI:** every PR must pass the required checks — unit tests,
-    `staticcheck`, the live integration suite, `govulncheck`, and `actionlint` —
-    before it can be merged. (Docs-only PRs — diffs touching nothing but
+    `staticcheck`, the live integration suite, `govulncheck`, `actionlint`,
+    and `attribution` — before it can be merged. (Docs-only PRs — diffs touching nothing but
     `*.md` — satisfy the integration check via a fast in-job skip; any code,
     script, or workflow change runs the full suite.)
   - **Hosted cross-check:** a separate, *non-required* workflow runs the
