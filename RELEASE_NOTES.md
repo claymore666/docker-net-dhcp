@@ -53,6 +53,90 @@ symlink-swap empty-file race, also daemon-side) are accepted with
 justification in `.github/vuln-allowlist.txt` (#291, #292) until a
 fixed release ships on the module path we depend on.
 
+As of v1.3.4 (#333), GO-2026-5746 is no longer reported by
+`govulncheck` and its allowlist entry has been removed — the
+assessment above is retained here as the audit trail. If it becomes
+reachable again the gate fails loudly rather than silently
+re-accepting it.
+
+## v1.3.4
+
+A patch release fixing three lease-lifecycle defects, one of which
+broke DHCP renewal outright whenever two containers shared an
+interface name — the ordinary case for anything using the default
+`eth0`. No new options, no manifest changes; existing networks keep
+working unchanged.
+
+What changed:
+
+- **Lease events could be lost between the client and the plugin**
+  (#332). The one-shot `dhcpcd` reports each lease over a FIFO. The
+  goroutine that reaped the exited client closed that FIFO
+  immediately, racing the goroutine still reading a `bound` event
+  sitting in the kernel pipe buffer. Under CPU load — a multi-service
+  `docker compose up` is the realistic trigger — the event was lost
+  about 4% of the time per acquisition (0% on an idle host), and the
+  container failed to start with `dhcpcd did not output a lease` even
+  though the server had granted one. The FIFO now has a dedicated
+  keep-alive writer: the reaper closes only the writer, and the reader
+  drains to a natural EOF, so the event cannot be dropped.
+- **`lease_timeout` is now a retry budget** (#332). Transient
+  acquisition failures are retried within it (500 ms plus jitter
+  between attempts) instead of aborting the container start on the
+  first one. Permanent failures — a missing interface, a malformed
+  option — still fail immediately rather than burning the whole
+  budget, and the error chain is preserved, so the existing 502
+  mapping, probe diagnostics, and stderr tails are unchanged. Reaching
+  the timeout now means the exchange genuinely never succeeded.
+- **Two containers on the same interface name broke each other's
+  renewals** (#332). `dhcpcd` keys both its state directory *and* its
+  runtime directory (pidfile, control socket) by interface name, with
+  no runtime override for either. The plugin isolated only the state
+  directory, so with two containers both on `eth0` the second client
+  found the first's control socket, forwarded its arguments to that
+  process and exited 0 — silently, with status 0 — without ever
+  running a client of its own. Its lease was then never renewed and
+  never released, while the first client reloaded the wrong
+  configuration. Both directories are now shadowed by a private
+  `tmpfs` in each client's own mount namespace. A new integration test
+  runs two containers past their renewal deadline and asserts each
+  gets its own ACKs; it fails on the pre-fix code.
+- **Concurrency and shutdown audit** (#332). Also fixed in the same
+  pass: two drain races where a `Start`/`Stop` error path closed the
+  netns and netlink handles while an event consumer was still live;
+  a failed start's late cleanup that could evict a newer healthy
+  manager from the registry (removal is now identity-checked); a
+  displaced manager left running when `Join` arrived over a recovered
+  endpoint; `Plugin.Close` now closes the HTTP server before draining
+  managers, so a `Join` arriving during shutdown cannot leak an
+  unstopped client; bridge-mode `DeleteEndpoint` tolerates an
+  already-vanished veth, matching macvlan; `interface not found` exits
+  are treated as terminal instead of retried; and `Finish` without a
+  preceding `Start` no longer panics.
+- **Goroutine and file-descriptor leak per DHCP client** (#332). The
+  logrus writer pipes wired to the client's stdout and stderr were
+  never closed, leaking two goroutines and a pipe pair per run. The
+  `SIGHUP` log-reopen path also swapped the logger's output without
+  logrus's mutex — a data race that could close the writer under an
+  active write; it uses `SetOutput` now.
+- Documentation: `docs/internals.md` now describes both directories
+  the private mount namespace shadows and why the runtime one matters,
+  and the `lease_timeout` entries in the reference and macvlan/ipvlan
+  docs describe the retry semantics. The contribution requirements in
+  the README now state the project's authorship rule, which has been a
+  required CI check since #335/#336 but was documented nowhere (#335).
+- CI and dependencies: the `govulncheck` gate now rejects an
+  inconclusive scan instead of passing on a verdict-less report, and
+  the stale `GO-2026-5746` allowlist entry is dropped now that it is
+  no longer reported (#333); dependency bumps for the Go toolchain
+  image, `golang.org/x/sys`, and eight pinned GitHub Actions (#326,
+  #327, #331).
+
+Thanks to **@jridgewell** for reporting the `dhcpcd did not output a
+lease` failures (#325) and for the initial retry patch — the retry
+behaviour above is that idea, reworked to keep permanent failures
+fast and the error chain intact.
+
 ## v1.3.3
 
 A patch release fixing a bug as old as the fork: containers running as

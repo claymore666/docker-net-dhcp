@@ -41,11 +41,17 @@ Two architectural notes about how the plugin drives `dhcpcd`:
   through a pipe the plugin opened — which is why the plugin ships a
   small handler binary rather than parsing client output. The plugin
   applies the resulting address/routes via netlink itself.
-- **Each client runs in a private mount namespace.** `dhcpcd` keys its
-  on-disk state by interface name and has no runtime override for that
-  location, so two containers whose link is the default `eth0` would
-  otherwise collide on the host's shared state directory. Isolating each
-  client in its own mount namespace keeps them independent.
+- **Each client runs in a private mount namespace.** `dhcpcd` keys *two*
+  on-disk locations by interface name, with no runtime override for
+  either: its **state** directory (lease files, DUID) and its **runtime**
+  directory (pidfile and control socket). Two containers whose link is
+  the default `eth0` would otherwise collide on both. The state collision
+  corrupts lease bookkeeping; the runtime collision is worse and silent —
+  the second client finds the first one's control socket, forwards its
+  arguments to that process and exits 0, so it never runs a client of its
+  own and its lease is never renewed or released (#332). The plugin
+  shadows both directories with a private `tmpfs` in each client's own
+  mount namespace, which keeps them fully independent.
 
 ## See also
 
