@@ -927,15 +927,17 @@ addresses that would collide with the real LAN.</p>
 right pick when you don't want to reconfigure the host's networking.</p>
 <h2 id="documentation">Documentation<a class="headerlink" href="#documentation" title="Permanent link">&para;</a></h2>
 <ul>
-<li><strong><a href="reference/">Driver reference</a></strong> — every option, plugin setting,
-  the <code>/Plugin.Health</code> observability endpoint, and troubleshooting.</li>
+<li><strong><a href="reference/">Driver reference</a></strong> — <strong>the manual.</strong> Every option,
+  setting, and counter, plus lease behaviour, observability, Compose
+  usage, and troubleshooting. Start at
+  <a href="reference/#at-a-glance">At a glance</a> for the one-screen list of
+  everything you can set.</li>
 <li><strong><a href="bridge-mode/">Bridge mode</a></strong> — host bridge setup + end-to-end
   walkthrough.</li>
-<li><strong><a href="parent-attached-modes/">macvlan / ipvlan modes</a></strong> — NIC
-  attachment, DHCP identity (hostname / option 60 / 61), restart
-  stability, recovery.</li>
-<li><strong><a href="internals/">How it works</a></strong> — the veth + DHCP-client mechanism
-  and lease flow.</li>
+<li><strong><a href="parent-attached-modes/">macvlan / ipvlan modes</a></strong> — choosing
+  between the two, quick start, and the mode-specific constraints.</li>
+<li><strong><a href="internals/">How it works</a></strong> — the mechanism, for contributors:
+  the veth + DHCP-client flow, and how state survives a restart.</li>
 <li><strong><a href="release-runbook/">Release runbook</a></strong> — maintainer-facing publish
   procedure.</li>
 </ul>
