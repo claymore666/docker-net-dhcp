@@ -2129,6 +2129,11 @@ Anything that can reach the socket can poll this as a liveness check.</p>
 <td>(v1.0.0+) The server NAKed a renewal/rebind (v4+v6 aggregate). <code>dhcpcd</code> recovers by re-acquiring, so each NAK is typically followed by <code>leases_obtained</code> — and, if the address moved, <code>lease_changed</code> — bumps. Climbing alongside <code>lease_changed</code> means containers are being re-addressed mid-life.</td>
 </tr>
 <tr>
+<td><code>displaced_stops</code></td>
+<td>no</td>
+<td>(v1.3.5+) Attaches that found a manager already registered for the same endpoint and stopped it — a container restarting into a plugin that had already recovered it (#338). The displaced client is released cleanly and the new one takes over, so a few are normal after a plugin restart. Climbing steadily alongside <code>recovered_ok</code> means a container is in a restart loop.</td>
+</tr>
+<tr>
 <td><code>ledger_write_failures</code></td>
 <td>no</td>
 <td>Failed <code>audit_log</code> ledger appends — degrades forensics, not networking. Operators using <code>audit_log</code> alert on this.</td>
