@@ -1,10 +1,19 @@
 package dhcp
 
 import (
+	"context"
+	"errors"
+	"fmt"
+	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/devplayer0/docker-net-dhcp/pkg/util"
 )
 
 // hasArg returns whether args contains exactly target.
@@ -27,8 +36,11 @@ func newTestClient(t *testing.T, iface string, opts *DHCPClientOptions) *DHCPCli
 		t.Fatalf("NewDHCPClient: %v", err)
 	}
 	t.Cleanup(func() {
-		if c.fifo != nil {
-			_ = c.fifo.Close()
+		if c.fifoRead != nil {
+			_ = c.fifoRead.Close()
+		}
+		if c.fifoKeep != nil {
+			_ = c.fifoKeep.Close()
 		}
 		_ = os.RemoveAll(c.workDir)
 	})
@@ -72,8 +84,11 @@ func TestNewDHCPClient_RejectsInvalidIface(t *testing.T) {
 			t.Errorf("NewDHCPClient(%q) rejected a valid interface name: %v", name, err)
 			continue
 		}
-		if c.fifo != nil {
-			_ = c.fifo.Close()
+		if c.fifoRead != nil {
+			_ = c.fifoRead.Close()
+		}
+		if c.fifoKeep != nil {
+			_ = c.fifoKeep.Close()
 		}
 		_ = os.RemoveAll(c.workDir)
 	}
@@ -195,6 +210,12 @@ func TestMountPrep_RemountsProcSysRW(t *testing.T) {
 	// per-client tmpfs state dir and exec dhcpcd via $0/$@.
 	for _, want := range []string{
 		"mount -t tmpfs tmpfs " + dhcpcdStateDir,
+		// dhcpcd's runtime dir (pidfile + control sockets, keyed by
+		// interface name only) must be private per client, or the
+		// second same-named-interface client forwards its argv into
+		// the first container's dhcpcd and exits without doing DHCP.
+		"mkdir -p " + dhcpcdRunDir,
+		"mount -t tmpfs tmpfs " + dhcpcdRunDir,
 		"mount -o remount,bind,rw " + procSysPath,
 		`exec "$0" "$@"`,
 	} {
@@ -238,5 +259,259 @@ func TestTailWriter_CapsAndCondenses(t *testing.T) {
 	}
 	if (&tailWriter{max: stderrTailMax}).condense() != "" {
 		t.Errorf("empty tail should condense to empty string")
+	}
+}
+
+// swapCmd replaces the client's dhcpcd command with an arbitrary shell
+// script standing in for the real process, so Start/scanner/reaper can
+// be exercised without dhcpcd.
+func swapCmd(c *DHCPClient, script string) {
+	c.cmd = exec.Command("/bin/sh", "-c", script)
+}
+
+// TestStart_BoundEventSurvivesFastExit is the regression test for the
+// reaper/scanner FIFO race (#325): a one-shot dhcpcd exits immediately
+// after its hook writes the bound event, and the reaper's FIFO close
+// could discard the event before the scanner read it, surfacing as a
+// spurious ErrNoLease under scheduler load. With the keep-alive-only
+// close the bound event must survive every time; repeated trials keep
+// the race window exercised.
+func TestStart_BoundEventSurvivesFastExit(t *testing.T) {
+	for i := 0; i < 300; i++ {
+		c := newTestClient(t, "eth0", &DHCPClientOptions{Once: true, MAC: mustMAC(t, "de:ad:be:ef:00:01")})
+		// Stand-in for dhcpcd -1: write the bound event to the FIFO
+		// (as the hook does) and exit immediately.
+		swapCmd(c, `printf '{"Type":"bound","Data":{"IP":"10.99.0.2/24","Gateway":"10.99.0.1"}}\n' > `+filepath.Join(c.workDir, "events"))
+
+		events, err := c.Start()
+		if err != nil {
+			t.Fatalf("trial %d: Start: %v", i, err)
+		}
+
+		bound := false
+		consumed := make(chan struct{})
+		go func() {
+			defer close(consumed)
+			for event := range events {
+				if event.Type == "bound" {
+					bound = true
+				}
+			}
+		}()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if err := c.Wait(ctx); err != nil {
+			cancel()
+			t.Fatalf("trial %d: Wait: %v", i, err)
+		}
+		cancel()
+		<-consumed
+
+		if !bound {
+			t.Fatalf("trial %d: bound event lost between hook write and process exit", i)
+		}
+	}
+}
+
+// stubAttemptGetIP swaps attemptGetIPFunc for the test's duration.
+func stubAttemptGetIP(t *testing.T, fn func(context.Context, string, *DHCPClientOptions) (Info, error)) {
+	t.Helper()
+	prev := attemptGetIPFunc
+	attemptGetIPFunc = fn
+	t.Cleanup(func() { attemptGetIPFunc = prev })
+}
+
+func TestGetIP_RetriesTransientAndSucceeds(t *testing.T) {
+	attempts := 0
+	stubAttemptGetIP(t, func(ctx context.Context, iface string, opts *DHCPClientOptions) (Info, error) {
+		attempts++
+		if !opts.Once {
+			t.Errorf("attempt %d: opts.Once not set", attempts)
+		}
+		if attempts < 3 {
+			return Info{}, util.ErrNoLease
+		}
+		return Info{IP: "192.168.1.100/24", Gateway: "192.168.1.1"}, nil
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	opts := &DHCPClientOptions{MAC: mustMAC(t, "de:ad:be:ef:00:01")}
+	info, err := GetIP(ctx, "eth0", opts)
+	if err != nil {
+		t.Fatalf("GetIP: %v", err)
+	}
+	if attempts != 3 {
+		t.Errorf("attempts: got %d, want 3", attempts)
+	}
+	if info.IP != "192.168.1.100/24" || info.Gateway != "192.168.1.1" {
+		t.Errorf("lease: got %+v", info)
+	}
+	if opts.Once {
+		t.Errorf("caller's opts.Once was mutated")
+	}
+}
+
+func TestGetIP_PermanentErrorFailsFast(t *testing.T) {
+	attempts := 0
+	permanent := errors.New("failed to create DHCP client: invalid interface name")
+	stubAttemptGetIP(t, func(ctx context.Context, iface string, opts *DHCPClientOptions) (Info, error) {
+		attempts++
+		return Info{}, permanent
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	_, err := GetIP(ctx, "eth0", &DHCPClientOptions{MAC: mustMAC(t, "de:ad:be:ef:00:01")})
+	if !errors.Is(err, permanent) {
+		t.Fatalf("error: got %v, want the permanent error unwrapped", err)
+	}
+	if attempts != 1 {
+		t.Errorf("attempts: got %d, want 1 (no retries on permanent errors)", attempts)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Errorf("permanent failure took %v; must fail fast", elapsed)
+	}
+}
+
+// A non-zero dhcpcd exit (wrapped with its stderr tail, as the reaper
+// does) is transient from the caller's perspective and must be retried;
+// client-construction errors must not be.
+func TestIsRetryableLeaseErr(t *testing.T) {
+	exitErr := exec.Command("/bin/sh", "-c", "exit 1").Run()
+	if exitErr == nil {
+		t.Skip("cannot produce an ExitError on this system")
+	}
+	wrapped := fmt.Errorf("%w: dhcpcd: timed out", exitErr)
+
+	for _, tc := range []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"no lease", util.ErrNoLease, true},
+		{"wrapped no lease", fmt.Errorf("x: %w", util.ErrNoLease), true},
+		{"dhcpcd exit + stderr tail", wrapped, true},
+		{"client setup", errors.New("failed to create DHCP client: x"), false},
+		{"context deadline", context.DeadlineExceeded, false},
+	} {
+		if got := isRetryableLeaseErr(tc.err); got != tc.want {
+			t.Errorf("%s: isRetryableLeaseErr = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// On deadline the error must keep BOTH sentinels intact: the context
+// error (probe's "no DHCP OFFER" classification) and the last attempt's
+// error (ErrToStatus's 502 mapping for ErrNoLease).
+func TestGetIP_DeadlinePreservesErrorChain(t *testing.T) {
+	stubAttemptGetIP(t, func(ctx context.Context, iface string, opts *DHCPClientOptions) (Info, error) {
+		return Info{}, util.ErrNoLease
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	_, err := GetIP(ctx, "eth0", &DHCPClientOptions{MAC: mustMAC(t, "de:ad:be:ef:00:01")})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("error lost context.DeadlineExceeded: %v", err)
+	}
+	if !errors.Is(err, util.ErrNoLease) {
+		t.Errorf("error lost util.ErrNoLease sentinel: %v", err)
+	}
+	if got := util.ErrToStatus(err); got != http.StatusBadGateway {
+		t.Errorf("ErrToStatus: got %d, want 502 (ErrNoLease must survive the retry loop)", got)
+	}
+}
+
+func TestGetIP_ContextCancelledStopsRetries(t *testing.T) {
+	attempts := 0
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	stubAttemptGetIP(t, func(ctx context.Context, iface string, opts *DHCPClientOptions) (Info, error) {
+		attempts++
+		if attempts == 2 {
+			cancel()
+		}
+		return Info{}, util.ErrNoLease
+	})
+
+	_, err := GetIP(ctx, "eth0", &DHCPClientOptions{MAC: mustMAC(t, "de:ad:be:ef:00:01")})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error: got %v, want context.Canceled", err)
+	}
+	if attempts != 2 {
+		t.Errorf("attempts: got %d, want 2 (must stop on cancellation)", attempts)
+	}
+}
+
+// TestStart_NoGoroutineLeakPerClient pins the log-pipe lifecycle: each
+// client wires dhcpcd's stdout/stderr into logrus via WriterLevel, whose
+// pipe-reader goroutines only exit when the writers are closed. The
+// reaper must close them after Wait, or every dhcpcd run (including each
+// GetIP retry) permanently leaks two goroutines and pipe pairs in the
+// long-running plugin daemon.
+func TestStart_NoGoroutineLeakPerClient(t *testing.T) {
+	const cycles = 50
+
+	baseline := runtime.NumGoroutine()
+	for i := 0; i < cycles; i++ {
+		c := newTestClient(t, "eth0", &DHCPClientOptions{Once: true, MAC: mustMAC(t, "de:ad:be:ef:00:01")})
+		swapCmd(c, "exit 0")
+		events, err := c.Start()
+		if err != nil {
+			t.Fatalf("cycle %d: Start: %v", i, err)
+		}
+		for range events {
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		_ = c.Wait(ctx)
+		cancel()
+	}
+
+	// The WriterLevel reader goroutines exit asynchronously after the
+	// reaper closes their writers; poll briefly for the count to settle.
+	// Pre-fix this leaked 2*cycles goroutines, far above the slack.
+	const slack = 10
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if growth := runtime.NumGoroutine() - baseline; growth <= slack {
+			return
+		} else if time.Now().After(deadline) {
+			t.Fatalf("goroutines grew by %d after %d client cycles (want <= %d): log pipes not closed?", growth, cycles, slack)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// A dhcpcd exit whose stderr tail says the interface is gone is
+// terminal (link deleted under us), not retryable.
+func TestIsRetryableLeaseErr_InterfaceVanished(t *testing.T) {
+	exitErr := exec.Command("/bin/sh", "-c", "exit 1").Run()
+	if exitErr == nil {
+		t.Skip("cannot produce an ExitError on this system")
+	}
+	vanished := fmt.Errorf("%w: eth0: interface not found or invalid", exitErr)
+	if isRetryableLeaseErr(vanished) {
+		t.Errorf("interface-not-found exit must be terminal, got retryable")
+	}
+}
+
+// Finish without Start must not panic (persistent clients would
+// otherwise nil-deref cmd.Process on the SIGTERM path) and must clean
+// up like await does.
+func TestFinish_WithoutStartIsSafe(t *testing.T) {
+	c := newTestClient(t, "eth0", &DHCPClientOptions{Once: false, MAC: mustMAC(t, "de:ad:be:ef:00:01")})
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := c.Finish(ctx); err != nil {
+		t.Fatalf("Finish without Start: %v", err)
 	}
 }

@@ -889,6 +889,12 @@ func (m *dhcpManager) Start(ctx context.Context) (err error) {
 			}
 			if m.errChanV6, err = m.setupClient(true); err != nil {
 				close(m.stopChan)
+				// The v4 consumer goroutine is already live and may be
+				// mid-renew on m.netHandle; stopChan only signals it.
+				// Drain its exit ack so the outer cleanup can't close
+				// the netlink/netns handles out from under it (and so
+				// the v4 dhcpcd is reaped, not orphaned).
+				<-m.errChan
 				return err
 			}
 		}
@@ -928,33 +934,53 @@ func (m *dhcpManager) Stop() error {
 
 	close(m.stopChan)
 
+	// Drain BOTH consumer goroutines before doing anything else — in
+	// particular before this function can return and run the deferred
+	// handle closes. A v4 release failure must not leave the v6
+	// consumer live and mid-renew on m.netHandle while the deferred
+	// closeNetHandle nils the netlink socket out from under it (the
+	// netlink Handle's Close is unsynchronized against requests).
 	lastIP, lastIPv6 := m.lastIPs()
-	if err := <-m.errChan; err != nil {
-		// SIGTERM -> DHCPRELEASE -> exit didn't complete cleanly. The
-		// upstream server may now be holding a phantom lease against
-		// this MAC until its own expiry. Bump so operators can alert
-		// on a pattern of releases failing — typically points at
-		// upstream reachability problems mid-teardown. The ledger
-		// records release_failed rather than release so the audit
-		// trail never claims a release the server may not have seen.
+	errV4 := <-m.errChan
+	var errV6 error
+	if m.opts.IPv6 {
+		errV6 = <-m.errChanV6
+	}
+
+	// SIGTERM -> DHCPRELEASE -> exit didn't complete cleanly. The
+	// upstream server may now be holding a phantom lease against
+	// this MAC until its own expiry. Bump so operators can alert
+	// on a pattern of releases failing — typically points at
+	// upstream reachability problems mid-teardown. The ledger
+	// records release_failed rather than release so the audit
+	// trail never claims a release the server may not have seen.
+	// Both families are audited independently: a failed v4 release
+	// no longer hides the v6 outcome from the ledger.
+	if errV4 != nil {
 		if m.plugin != nil {
 			m.plugin.leaseReleaseFailures.Add(1)
 		}
 		m.audit("release_failed", auditIP(lastIP))
-		return fmt.Errorf("failed shut down DHCP client: %w", err)
+	} else {
+		m.audit("release", auditIP(lastIP))
 	}
-	m.audit("release", auditIP(lastIP))
 	if m.opts.IPv6 {
-		if err := <-m.errChanV6; err != nil {
+		if errV6 != nil {
 			if m.plugin != nil {
 				m.plugin.leaseReleaseFailures.Add(1)
 			}
 			m.audit("release_failed", auditIP(lastIPv6))
-			return fmt.Errorf("failed shut down DHCPv6 client: %w", err)
+		} else {
+			m.audit("release", auditIP(lastIPv6))
 		}
-		m.audit("release", auditIP(lastIPv6))
 	}
 
+	if errV4 != nil {
+		return fmt.Errorf("failed shut down DHCP client: %w", errV4)
+	}
+	if errV6 != nil {
+		return fmt.Errorf("failed shut down DHCPv6 client: %w", errV6)
+	}
 	return nil
 }
 
