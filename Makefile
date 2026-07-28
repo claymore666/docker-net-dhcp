@@ -109,12 +109,18 @@ integration-test:
 # (lease expiry, NAK at T1) against per-test ephemeral DHCP servers —
 # ~9 serial minutes of mostly deliberate waiting, so it runs as its
 # own step instead of inflating the main suite's feedback loop.
+#
+# 20m, not 15m (#278): each test now waits for the persistent client's
+# own bind BEFORE killing the server, so the outage it injects has to
+# be detected the slow way — a bound 2m lease lapsing, plus up to one
+# 30s watchdog period. Three tests at a ~300s worst case each sat
+# exactly on the old 15m ceiling.
 integration-test-failure:
 	@if [ "$$(id -u)" -ne 0 ]; then \
 		echo "integration-test-failure must run as root. Re-run with sudo."; \
 		exit 1; \
 	fi
-	go test -v -tags integration -count=1 -timeout 15m -run 'TestFailure_' ./test/integration/...
+	go test -v -tags integration -count=1 -timeout 20m -run 'TestFailure_' ./test/integration/...
 
 # Manual orphan cleanup for when an integration test panics mid-setup
 # and leaves dh-itest-* interfaces / containers / networks behind.

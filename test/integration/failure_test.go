@@ -25,6 +25,27 @@
 //   - at expiry the plugin DELIBERATELY does NOT tear down the address
 //     on EXPIRE (would wipe copied routes, see dhcp_manager.go) — the
 //     container keeps its address through an outage.
+//
+// TWO RULES THIS FILE LEARNED THE HARD WAY (#278). Both cost almost
+// nothing to keep, and dropping either one silently guts these tests:
+//
+//  1. Establish that the persistent client is BOUND before injecting
+//     the failure. RunContainer returns as soon as docker reports an
+//     address, and that address comes from CreateEndpoint's one-shot
+//     lease — the long-lived client Join starts may not have confirmed
+//     its own lease yet. Kill the server inside that window and the
+//     client never leaves the "acquiring" state it starts in; the
+//     watchdog then fires within ~30s and the test goes green having
+//     never crossed the expiry it claims to exercise. Measured: both
+//     outage tests used to finish in ~77s, which is less than the one
+//     120s lease they were supposedly waiting out.
+//  2. Assert endpoint-scoped, not plugin-wide. Every health counter is
+//     a plugin-level total, so "dhcp_timeouts went up" is satisfied by
+//     ANY manager in the plugin, including an orphan left by an earlier
+//     test. Pair each counter assertion with the plugin's own
+//     endpoint=<short id> log line for the same event
+//     (harness.CountPluginLogLines), and assert it as a delta across
+//     the window so start-up churn cannot stand in for the real event.
 package integration
 
 import (
@@ -38,6 +59,17 @@ import (
 
 	"github.com/devplayer0/docker-net-dhcp/test/integration/harness"
 	docker "github.com/docker/docker/client"
+)
+
+// Plugin log messages that record a DHCP outage against ONE endpoint.
+// These sit next to the counter bumps in pkg/plugin — handleEvent's
+// "leasefail" and "renew"-with-changed-IP arms, and the outage
+// watchdog — and carry the manager's endpoint field, which the
+// counters themselves do not.
+const (
+	logLeaseFail = "dhcp failed to get a lease"
+	logWatchdog  = "DHCP server still unreachable"
+	logIPChanged = "dhcp renew with changed IP"
 )
 
 // failureHealth polls /Plugin.Health until cond is true or the budget
@@ -63,6 +95,30 @@ func failureHealth(t *testing.T, ctx context.Context, cli *docker.Client, budget
 	return last, false
 }
 
+// awaitBoundPersistentClient blocks until the plugin records a bind
+// beyond the pre-test baseline — i.e. the long-lived client started in
+// Join holds its OWN lease and the lease clock these tests wait out is
+// actually running. Rule 1 in this file's header.
+func awaitBoundPersistentClient(t *testing.T, ctx context.Context, cli *docker.Client, pre *harness.HealthResponse) {
+	t.Helper()
+	if _, ok := failureHealth(t, ctx, cli, 45*time.Second, func(h *harness.HealthResponse) bool {
+		return h.LeasesObtained > pre.LeasesObtained
+	}); !ok {
+		t.Fatal("persistent client never confirmed its own bind; the failure below would land on an acquiring client, not a bound one (#278)")
+	}
+}
+
+// outageLines counts, for one endpoint, the plugin-log records of the
+// two events that bump dhcp_timeouts: a leasefail (dhcpcd EXPIRE or
+// TIMEOUT) and an outage-watchdog tick. Returned separately because
+// which of the two fires is the diagnostic — a leasefail means dhcpcd
+// spoke, a watchdog line means the plugin synthesised the signal.
+func outageLines(t *testing.T, ctx context.Context, endpoint string) (leasefail, watchdog int) {
+	t.Helper()
+	return harness.CountPluginLogLines(t, ctx, endpoint, logLeaseFail),
+		harness.CountPluginLogLines(t, ctx, endpoint, logWatchdog)
+}
+
 // containerHasIP reports whether `ip -4 addr` inside the container
 // still shows the given address.
 func containerHasIP(t *testing.T, ctx context.Context, ctrID, ip string) bool {
@@ -86,13 +142,19 @@ func inRange(ip, start, end string) bool {
 // scenario. Intended behaviour asserted:
 //   - while the server is gone, the container KEEPS its address (the
 //     EXPIRE no-op), the plugin stays Healthy, and dhcp_timeouts
-//     records the failure;
+//     records the failure — for THIS endpoint, proven from the
+//     plugin's own log rather than from the plugin-wide counter alone;
 //   - when the server returns with its lease DB intact, the client
 //     re-binds to the SAME address (lease_changed stays flat) without
 //     operator intervention.
 func TestFailure_ServerLossDuringRenewal(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
+	// 8m, not 6m: the outage is only detectable after a bound lease
+	// lapses (~120s) plus up to one watchdog period, and the re-bind
+	// poll after the server returns adds up to 90s on top of that.
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
 	defer cancel()
+
+	const netName = "dh-itest-floss"
 
 	ef := harness.NewEphemeralFixture(t)
 	t.Cleanup(func() {
@@ -108,27 +170,50 @@ func TestFailure_ServerLossDuringRenewal(t *testing.T) {
 	}
 	defer cli.Close()
 
-	harness.CreateNetwork(t, ctx, "dh-itest-floss", "macvlan", map[string]string{
+	pre, err := harness.PluginHealth(ctx, cli)
+	if err != nil {
+		t.Fatalf("Plugin.Health (pre): %v", err)
+	}
+
+	harness.CreateNetwork(t, ctx, netName, "macvlan", map[string]string{
 		"parent": harness.EphemeralHostVeth,
 	})
-	id, ip, mac := harness.RunContainer(t, ctx, "dh-itest-floss", "dh-itest-floss-ctr")
+	id, ip, mac := harness.RunContainer(t, ctx, netName, "dh-itest-floss-ctr")
 	t.Logf("bound: ip=%s mac=%s", ip, mac)
+
+	awaitBoundPersistentClient(t, ctx, cli, pre)
+	ep := harness.EndpointShortID(t, ctx, cli, id, netName)
 
 	base, err := harness.PluginHealth(ctx, cli)
 	if err != nil {
 		t.Fatalf("Plugin.Health (baseline): %v", err)
 	}
+	baseFail, baseWatch := outageLines(t, ctx, ep)
+	if baseFail+baseWatch > 0 {
+		// Not fatal: one dhcpcd TIMEOUT during initial acquisition on a
+		// loaded runner is plausible and harmless. Asserting the delta
+		// below keeps the proof intact either way.
+		t.Logf("endpoint %s carried %d leasefail / %d watchdog line(s) from start-up; asserting on the delta", ep, baseFail, baseWatch)
+	}
 
-	// Kill the server uncleanly. The persistent client now faces
-	// silent T1/T2 retries, expiry, and a failing re-DISCOVER.
+	// Kill the server uncleanly. The persistent client — now provably
+	// holding its own lease — faces silent T1/T2 retries, expiry, and
+	// a failing re-DISCOVER.
+	killed := time.Now()
 	ef.Stop()
-	t.Log("server killed; waiting for the post-expiry leasefail (~130s)...")
+	t.Logf("server killed; a BOUND lease (fixture lease %s) has to lapse before the plugin can report a timeout", harness.LeaseTime)
 
-	h, ok := failureHealth(t, ctx, cli, 170*time.Second, func(h *harness.HealthResponse) bool {
+	h, ok := failureHealth(t, ctx, cli, 200*time.Second, func(h *harness.HealthResponse) bool {
 		return h.DHCPTimeouts > base.DHCPTimeouts
 	})
 	if !ok {
-		t.Fatalf("dhcp_timeouts never rose above %d during server outage (last: %+v)", base.DHCPTimeouts, h)
+		t.Fatalf("dhcp_timeouts never rose above %d within 200s of the server dying (last: %+v)", base.DHCPTimeouts, h)
+	}
+	nowFail, nowWatch := outageLines(t, ctx, ep)
+	t.Logf("dhcp_timeouts %d -> %d at t+%.0fs after the kill; endpoint %s logged +%d leasefail / +%d watchdog line(s)",
+		base.DHCPTimeouts, h.DHCPTimeouts, time.Since(killed).Seconds(), ep, nowFail-baseFail, nowWatch-baseWatch)
+	if (nowFail-baseFail)+(nowWatch-baseWatch) == 0 {
+		t.Errorf("dhcp_timeouts rose but the plugin logged no outage line for endpoint %s: the counter is plugin-wide, so this rise belongs to some other client and says nothing about the endpoint under test (#278)", ep)
 	}
 	if !h.Healthy {
 		t.Error("plugin went unhealthy during a server outage; a dead DHCP server is a degraded mode, not a plugin failure")
@@ -140,6 +225,7 @@ func TestFailure_ServerLossDuringRenewal(t *testing.T) {
 	// Server returns, lease DB intact: the dhcpcd retry loop must
 	// re-bind to the same address within ~30s (poll 90s for margin).
 	acksBefore := ef.CountLogLines("DHCPACK", mac)
+	restarted := time.Now()
 	ef.StartAgain()
 	t.Log("server restarted with preserved lease DB; awaiting re-bind...")
 
@@ -157,6 +243,7 @@ func TestFailure_ServerLossDuringRenewal(t *testing.T) {
 	if !recovered {
 		t.Fatal("no DHCPACK for the container's MAC within 90s of the server returning")
 	}
+	t.Logf("re-bound at t+%.0fs after the server came back", time.Since(restarted).Seconds())
 	if !containerHasIP(t, ctx, id, ip) {
 		t.Errorf("container's address changed across the outage; with a preserved lease DB it must re-bind to %s", ip)
 	}
@@ -188,8 +275,10 @@ func TestFailure_ServerLossDuringRenewal(t *testing.T) {
 // (TestHandleEvent_Counters) — when a server does NAK, that's the
 // path that counts it; any NAK observed here is logged for interest.
 func TestFailure_LeaseRefusedOnRenewal(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
 	defer cancel()
+
+	const netName = "dh-itest-fref"
 
 	ef := harness.NewEphemeralFixture(t)
 	t.Cleanup(func() {
@@ -210,30 +299,30 @@ func TestFailure_LeaseRefusedOnRenewal(t *testing.T) {
 		t.Fatalf("Plugin.Health (pre): %v", err)
 	}
 
-	harness.CreateNetwork(t, ctx, "dh-itest-fref", "macvlan", map[string]string{
+	harness.CreateNetwork(t, ctx, netName, "macvlan", map[string]string{
 		"parent": harness.EphemeralHostVeth,
 	})
-	id, inspectIP, mac := harness.RunContainer(t, ctx, "dh-itest-fref", "dh-itest-fref-ctr")
+	id, inspectIP, mac := harness.RunContainer(t, ctx, netName, "dh-itest-fref-ctr")
 	t.Logf("bound: inspect ip=%s mac=%s", inspectIP, mac)
 
 	// Settle: wait for the persistent client's own bound (it can
 	// differ from CreateEndpoint's one-shot lease) so the baseline
 	// isn't polluted by start-up churn.
-	if _, ok := failureHealth(t, ctx, cli, 30*time.Second, func(h *harness.HealthResponse) bool {
-		return h.LeasesObtained > pre.LeasesObtained
-	}); !ok {
-		t.Fatal("persistent client never bound")
-	}
+	awaitBoundPersistentClient(t, ctx, cli, pre)
+	ep := harness.EndpointShortID(t, ctx, cli, id, netName)
+
 	base, err := harness.PluginHealth(ctx, cli)
 	if err != nil {
 		t.Fatalf("Plugin.Health (baseline): %v", err)
 	}
+	baseChanged := harness.CountPluginLogLines(t, ctx, ep, logIPChanged)
 
 	// Renumber the site: new server address, new pool, wiped DB. The
 	// unicast T1 renewal dies (the old server address is gone); the
 	// T2 broadcast rebind carries a foreign address; re-acquisition
 	// follows somewhere between T2 (105s) and expiry+rediscover
 	// (~135s).
+	renumbered := time.Now()
 	ef.RestartOnSubnet(harness.EphemeralAltServerAddr, harness.EphemeralAltPoolStart, harness.EphemeralAltPoolEnd)
 	t.Log("server renumbered; awaiting re-acquisition (T2 ~105s, expiry ~135s)...")
 
@@ -263,13 +352,20 @@ func TestFailure_LeaseRefusedOnRenewal(t *testing.T) {
 			harness.EphemeralAltPoolStart, harness.EphemeralAltPoolEnd,
 			harness.ExecOutput(t, ctx, id, "ip", "-4", "addr"))
 	}
-	t.Logf("re-acquired: live ip=%s", liveIP)
+	t.Logf("re-acquired: live ip=%s at t+%.0fs after the renumbering", liveIP, time.Since(renumbered).Seconds())
 
 	h, ok := failureHealth(t, ctx, cli, 30*time.Second, func(h *harness.HealthResponse) bool {
 		return h.LeaseChanged > base.LeaseChanged
 	})
 	if !ok {
 		t.Errorf("lease_changed never recorded the re-acquisition (last: %+v)", h)
+	}
+	// lease_changed is plugin-wide like every other counter. The
+	// address observed inside THIS container above is already
+	// endpoint-scoped evidence; the plugin's own log line for this
+	// endpoint is what ties the counter to it (#278).
+	if nowChanged := harness.CountPluginLogLines(t, ctx, ep, logIPChanged); nowChanged == baseChanged {
+		t.Errorf("endpoint %s re-addressed to %s but the plugin logged no lease-change line for it (%d before, %d after)", ep, liveIP, baseChanged, nowChanged)
 	}
 	if h != nil && !h.Healthy {
 		t.Error("plugin went unhealthy over a lease re-acquisition; this is a defined, healthy flow")
@@ -287,8 +383,8 @@ func TestFailure_LeaseRefusedOnRenewal(t *testing.T) {
 		t.Fatalf("ContainerInspect: %v", err)
 	}
 	var nowInspect string
-	for _, ep := range ins.NetworkSettings.Networks {
-		nowInspect = ep.IPAddress
+	for _, epView := range ins.NetworkSettings.Networks {
+		nowInspect = epView.IPAddress
 	}
 	if nowInspect != inspectIP {
 		t.Errorf("docker inspect reports %s; expected the stale original %s (documented degraded mode, #104)", nowInspect, inspectIP)
@@ -301,9 +397,15 @@ func TestFailure_LeaseRefusedOnRenewal(t *testing.T) {
 // the stale address, dhcp_timeouts keeps climbing as the retry loop
 // spins, and the plugin reports Healthy — "server gone" is a defined
 // degraded mode, not undefined behaviour.
+//
+// This is the test that leans hardest on rule 1 in the file header: a
+// lease that was never held cannot expire, so the bind wait below is
+// not hygiene, it is the entire premise.
 func TestFailure_LeaseExpiry(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
 	defer cancel()
+
+	const netName = "dh-itest-fexp"
 
 	ef := harness.NewEphemeralFixture(t)
 	t.Cleanup(func() {
@@ -319,33 +421,60 @@ func TestFailure_LeaseExpiry(t *testing.T) {
 	}
 	defer cli.Close()
 
-	harness.CreateNetwork(t, ctx, "dh-itest-fexp", "macvlan", map[string]string{
+	pre, err := harness.PluginHealth(ctx, cli)
+	if err != nil {
+		t.Fatalf("Plugin.Health (pre): %v", err)
+	}
+
+	harness.CreateNetwork(t, ctx, netName, "macvlan", map[string]string{
 		"parent": harness.EphemeralHostVeth,
 	})
-	id, ip, mac := harness.RunContainer(t, ctx, "dh-itest-fexp", "dh-itest-fexp-ctr")
+	id, ip, mac := harness.RunContainer(t, ctx, netName, "dh-itest-fexp-ctr")
 	t.Logf("bound: ip=%s mac=%s", ip, mac)
+
+	awaitBoundPersistentClient(t, ctx, cli, pre)
+	ep := harness.EndpointShortID(t, ctx, cli, id, netName)
 
 	base, err := harness.PluginHealth(ctx, cli)
 	if err != nil {
 		t.Fatalf("Plugin.Health (baseline): %v", err)
 	}
+	baseFail, baseWatch := outageLines(t, ctx, ep)
+	if baseFail+baseWatch > 0 {
+		t.Logf("endpoint %s carried %d leasefail / %d watchdog line(s) from start-up; asserting on the delta", ep, baseFail, baseWatch)
+	}
 
+	killed := time.Now()
 	ef.Stop()
-	t.Log("server killed permanently; crossing T2 and full expiry (~130s)...")
+	t.Logf("server killed permanently; a BOUND lease (fixture lease %s) now has to cross T2 and full expiry", harness.LeaseTime)
 
-	first, ok := failureHealth(t, ctx, cli, 170*time.Second, func(h *harness.HealthResponse) bool {
+	first, ok := failureHealth(t, ctx, cli, 200*time.Second, func(h *harness.HealthResponse) bool {
 		return h.DHCPTimeouts > base.DHCPTimeouts
 	})
 	if !ok {
-		t.Fatalf("dhcp_timeouts never rose above %d after lease expiry (last: %+v)", base.DHCPTimeouts, first)
+		t.Fatalf("dhcp_timeouts never rose above %d within 200s of the kill (last: %+v)", base.DHCPTimeouts, first)
+	}
+	firstFail, firstWatch := outageLines(t, ctx, ep)
+	t.Logf("first dhcp_timeouts rise %d -> %d at t+%.0fs after the kill; endpoint %s logged +%d leasefail / +%d watchdog line(s)",
+		base.DHCPTimeouts, first.DHCPTimeouts, time.Since(killed).Seconds(), ep, firstFail-baseFail, firstWatch-baseWatch)
+	if (firstFail-baseFail)+(firstWatch-baseWatch) == 0 {
+		t.Errorf("dhcp_timeouts rose but the plugin logged no outage line for endpoint %s: the counter is plugin-wide, so this rise belongs to some other client (#278)", ep)
 	}
 
-	// The retry loop must keep recording failures (~30s period).
+	// The retry loop must keep recording failures (~30s period), and
+	// keep recording them AGAINST THIS ENDPOINT — a watchdog that
+	// stalled on our client is invisible in the plugin-wide total.
 	second, ok := failureHealth(t, ctx, cli, 80*time.Second, func(h *harness.HealthResponse) bool {
 		return h.DHCPTimeouts > first.DHCPTimeouts
 	})
 	if !ok {
 		t.Errorf("dhcp_timeouts stalled at %d; the re-DISCOVER loop should keep recording failures (last: %+v)", first.DHCPTimeouts, second)
+	}
+	secondFail, secondWatch := outageLines(t, ctx, ep)
+	t.Logf("second dhcp_timeouts rise at t+%.0fs after the kill; endpoint %s now +%d leasefail / +%d watchdog line(s) since baseline",
+		time.Since(killed).Seconds(), ep, secondFail-baseFail, secondWatch-baseWatch)
+	if (secondFail-firstFail)+(secondWatch-firstWatch) == 0 {
+		t.Errorf("endpoint %s logged no further outage line while the server stayed down; the recurring signal is not recurring for this client (#278)", ep)
 	}
 	if second != nil && !second.Healthy {
 		t.Error("plugin went unhealthy on a permanent server loss; this is a defined degraded mode")
