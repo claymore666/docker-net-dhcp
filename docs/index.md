@@ -59,15 +59,17 @@ right pick when you don't want to reconfigure the host's networking.
 
 ## Documentation
 
-- **[Driver reference](reference.md)** — every option, plugin setting,
-  the `/Plugin.Health` observability endpoint, and troubleshooting.
+- **[Driver reference](reference.md)** — **the manual.** Every option,
+  setting, and counter, plus lease behaviour, observability, Compose
+  usage, and troubleshooting. Start at
+  [At a glance](reference.md#at-a-glance) for the one-screen list of
+  everything you can set.
 - **[Bridge mode](bridge-mode.md)** — host bridge setup + end-to-end
   walkthrough.
-- **[macvlan / ipvlan modes](parent-attached-modes.md)** — NIC
-  attachment, DHCP identity (hostname / option 60 / 61), restart
-  stability, recovery.
-- **[How it works](internals.md)** — the veth + DHCP-client mechanism
-  and lease flow.
+- **[macvlan / ipvlan modes](parent-attached-modes.md)** — choosing
+  between the two, quick start, and the mode-specific constraints.
+- **[How it works](internals.md)** — the mechanism, for contributors:
+  the veth + DHCP-client flow, and how state survives a restart.
 - **[Release runbook](release-runbook.md)** — maintainer-facing publish
   procedure.
 

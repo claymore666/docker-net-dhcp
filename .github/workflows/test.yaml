@@ -78,11 +78,20 @@ jobs:
           bash scripts/test-integration-run-gate.sh
           bash scripts/test-check-manifest-parity.sh
           bash scripts/test-check-no-ai-attribution.sh
+          bash scripts/test-check-docs-drift.sh
 
       # Every driver-option key the code parses must be documented in
       # docs/reference.md — an undocumented option turns CI red (#132).
       - name: Option-docs drift check
         run: bash scripts/check-option-docs.sh
+
+      # The companion check (#345): every health counter and settable
+      # env var must be documented too, and none of them — nor any
+      # driver option — may be documented a second time on another page.
+      # Duplicated tables are how the macvlan page's counter list went a
+      # release stale without anyone noticing.
+      - name: Docs-drift check
+        run: bash scripts/check-docs-drift.sh
 
       # Every published-image pin in README/docs must agree on one
       # version — catches a partial release bump (#251). Bump them with

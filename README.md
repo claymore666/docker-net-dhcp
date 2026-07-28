@@ -71,16 +71,18 @@ A versioned documentation site is published at
 **<https://claymore666.github.io/docker-net-dhcp/>** (pick your plugin
 version from the selector). The same content lives in `docs/` in the repo:
 
-- **[Driver reference](docs/reference.md)** — every option, plugin
-  setting, the `/Plugin.Health` observability endpoint, and
-  troubleshooting.
+- **[Driver reference](docs/reference.md)** — **the manual.** Every
+  option, setting, and counter, plus lease behaviour, observability,
+  Compose usage, and troubleshooting. Its
+  [At a glance](docs/reference.md#at-a-glance) section lists everything
+  you can set on one screen.
 - **[Bridge mode](docs/bridge-mode.md)** — host bridge setup +
   end-to-end walkthrough.
-- **[macvlan / ipvlan modes](docs/parent-attached-modes.md)** — NIC
-  attachment, DHCP identity (hostname / option 60 / 61), restart
-  stability, recovery.
-- **[How it works](docs/internals.md)** — the veth + DHCP-client
-  mechanism and lease flow.
+- **[macvlan / ipvlan modes](docs/parent-attached-modes.md)** — choosing
+  between the two, quick start, and the mode-specific constraints.
+- **[How it works](docs/internals.md)** — the mechanism, for
+  contributors: the veth + DHCP-client flow, and how state survives a
+  restart.
 - **[Changelog](RELEASE_NOTES.md)** — per-release notes and credits.
 - **[Release runbook](docs/release-runbook.md)** — maintainer-facing
   publish procedure.
