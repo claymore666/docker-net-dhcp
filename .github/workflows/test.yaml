@@ -77,6 +77,7 @@ jobs:
           bash scripts/test-integration-timing.sh
           bash scripts/test-integration-run-gate.sh
           bash scripts/test-check-manifest-parity.sh
+          bash scripts/test-check-no-ai-attribution.sh
 
       # Every driver-option key the code parses must be documented in
       # docs/reference.md — an undocumented option turns CI red (#132).
@@ -149,6 +150,35 @@ jobs:
   # published fix live in .github/vuln-allowlist.txt; anything else
   # fails. The gate also warns when an allowlist entry stops being
   # reported, so stale acceptances get removed (#127).
+  # This fork is published as the maintainer's own work, so no commit
+  # or PR may credit an AI assistant. The rule predates the repo's CI
+  # and still reached a public branch twice — enforcing it mechanically
+  # is the only version that holds on a bad day.
+  #
+  # pull_request only: the gate needs a base..head range and the PR
+  # description, neither of which a push event supplies.
+  attribution:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          # The gate walks base..head; a shallow clone cannot resolve it.
+          fetch-depth: 0
+      - name: Check commits and PR body for AI attribution
+        env:
+          # Through env, never inlined into run: — a PR description is
+          # attacker-controlled text, and interpolating it directly
+          # would paste it into the shell.
+          PR_BODY: ${{ github.event.pull_request.body }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          printf '%s' "$PR_BODY" > "$RUNNER_TEMP/pr-body.md"
+          bash scripts/check-no-ai-attribution.sh \
+            "$BASE_SHA..$HEAD_SHA" "$RUNNER_TEMP/pr-body.md"
+
   govulncheck:
     runs-on: ubuntu-latest
     timeout-minutes: 10
