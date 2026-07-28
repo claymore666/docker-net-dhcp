@@ -1055,7 +1055,16 @@ func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) 
 		// it so its dhcpcd doesn't run untracked forever and collide
 		// with the new client on the same interface. Asynchronously:
 		// Stop blocks on the dhcpcd release cycle and Join shouldn't.
+		//
+		// Tracked on p.displacedStops so Close can wait for the release
+		// to finish rather than let process exit cut it short (#338).
+		// Add() runs HERE, synchronously — adding from inside the
+		// goroutine would let Close observe an empty group and return
+		// before this stop was ever accounted for.
+		p.displacedStops.Add(1)
+		p.displacedStopsTotal.Add(1)
 		go func() {
+			defer p.displacedStops.Done()
 			if err := displaced.Stop(); err != nil {
 				log.WithError(err).WithFields(log.Fields{
 					"network":  shortID(r.NetworkID),
