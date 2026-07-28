@@ -21,15 +21,18 @@ GO-2026-4883
 # GO-2026-5617: docker cp race — bind mount redirection to host path.
 # GO-2026-5668: docker cp race — arbitrary empty file creation via
 #   symlink swap.
-# GO-2026-5746: PUT /containers/{id}/archive executes container binary
-#   on the host.
-#   All three live in github.com/docker/docker daemon-side code
-#   (docker cp / container archive handling in dockerd). This plugin
-#   only uses the client API against the local daemon socket; the
-#   vulnerable paths never execute in us. Fixed only in
-#   github.com/moby/moby/v2@v2.0.0-beta.14 — no fixed release exists
-#   for the legacy github.com/docker/docker module line (checked
-#   v28.5.2, 2026-07-03). Added in #292 (issue #291).
+#   Both live in github.com/docker/docker daemon-side code (docker cp
+#   handling in dockerd). This plugin only uses the client API against
+#   the local daemon socket; the vulnerable paths never execute in us.
+#   Fixed only in github.com/moby/moby/v2@v2.0.0-beta.14 — no fixed
+#   release exists for the legacy github.com/docker/docker module line
+#   (checked v28.5.2, 2026-07-03). Added in #292 (issue #291).
+#
+#   GO-2026-5746 (PUT /containers/{id}/archive executes container
+#   binary on the host) was accepted here by the same #292 review, and
+#   removed on 2026-07-28: govulncheck stopped reporting it as
+#   reachable from our call graph, which is the documented trigger for
+#   dropping an entry. Should it become reachable again the gate fails
+#   loudly rather than silently re-accepting it.
 GO-2026-5617
 GO-2026-5668
-GO-2026-5746
