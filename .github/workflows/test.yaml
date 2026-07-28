@@ -146,10 +146,6 @@ jobs:
       - name: Verify actionlint catches known-bad patterns
         run: bash scripts/test-actionlint.sh actionlint
 
-  # Reachable-vulnerability scan. Known-and-reviewed findings without a
-  # published fix live in .github/vuln-allowlist.txt; anything else
-  # fails. The gate also warns when an allowlist entry stops being
-  # reported, so stale acceptances get removed (#127).
   # This fork is published as the maintainer's own work, so no commit
   # or PR may credit an AI assistant. The rule predates the repo's CI
   # and still reached a public branch twice — enforcing it mechanically
@@ -179,6 +175,10 @@ jobs:
           bash scripts/check-no-ai-attribution.sh \
             "$BASE_SHA..$HEAD_SHA" "$RUNNER_TEMP/pr-body.md"
 
+  # Reachable-vulnerability scan. Known-and-reviewed findings without a
+  # published fix live in .github/vuln-allowlist.txt; anything else
+  # fails. The gate also warns when an allowlist entry stops being
+  # reported, so stale acceptances get removed (#127).
   govulncheck:
     runs-on: ubuntu-latest
     timeout-minutes: 10
