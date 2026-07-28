@@ -289,6 +289,14 @@ type HealthResponse struct {
 	// re-DISCOVERing — but each NAK-triggered re-bind widens the
 	// docker-inspect divergence tracked by lease_changed (#128).
 	NAKsReceived int32 `json:"naks_received"`
+	// DisplacedStops counts managers displaced at Join — a Join that
+	// found a recovery-registered manager still in the registry for
+	// the same endpoint (plugin restart racing a container restart).
+	// Not Healthy-affecting: the displaced client is stopped and
+	// released, and the new one takes over. A climbing value means
+	// containers are restarting into a plugin that had recovered them,
+	// so pair it with recovered_ok when diagnosing a restart loop.
+	DisplacedStops int32 `json:"displaced_stops"`
 	// LedgerWriteFailures counts failed appends to the audit_log
 	// lease ledger (#109). Not Healthy-affecting — a lost audit line
 	// degrades forensics, not networking; operators using audit_log
@@ -336,6 +344,7 @@ func (p *Plugin) apiHealth(w http.ResponseWriter, r *http.Request) {
 		DHCPTimeouts:           p.dhcpTimeouts.Load(),
 		LeaseReleaseFailures:   p.leaseReleaseFailures.Load(),
 		NAKsReceived:           p.naksReceived.Load(),
+		DisplacedStops:         p.displacedStopsTotal.Load(),
 		LedgerWriteFailures:    p.ledgerWriteFailures.Load(),
 		LeaseChangedV6:         p.leaseChangedV6.Load(),
 		LeasesObtainedV6:       p.leasesObtainedV6.Load(),

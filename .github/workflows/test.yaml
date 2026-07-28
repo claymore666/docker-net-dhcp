@@ -57,11 +57,20 @@ jobs:
       # per-PR without a long-running job; the committed seed corpora
       # also run unconditionally in the race step above. Scorecard's
       # Fuzzing check is satisfied by the presence of these targets.
+      # -parallel 2 caps the fuzzing WORKER PROCESSES (#324). Default is
+      # GOMAXPROCS, i.e. one worker per vCPU, which leaves the
+      # coordinator no scheduling headroom on a contended hosted runner:
+      # at -fuzztime expiry it asks each worker to stop and waits on a
+      # context, and if a worker can't be scheduled to answer in time
+      # the run fails with a bare "context deadline exceeded" and no
+      # crashing input. Seen twice consecutively on a release PR, both
+      # times exactly at the 20s boundary while the runner crawled at
+      # 7-45k execs/s against ~500k unloaded.
       - name: Fuzz (short)
         run: |
           for target in FuzzBuildEvent FuzzEventUnmarshal; do
             echo "::group::${target}"
-            go test ./pkg/dhcp/ -run '^$' -fuzz "^${target}$" -fuzztime 20s
+            go test ./pkg/dhcp/ -run '^$' -fuzz "^${target}$" -fuzztime 20s -parallel 2
             echo "::endgroup::"
           done
 
