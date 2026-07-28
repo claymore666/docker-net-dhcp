@@ -67,6 +67,30 @@ else
     failures=$((failures + 1))
 fi
 
+# A scan that never concluded must not gate as "clean". Callers capture
+# govulncheck's output with `|| true`, so a crashed scan reaches the
+# gate as a report with no verdict line — historically a silent pass.
+: > "$TMP/empty.txt"
+check "empty report cannot gate" 2 "$TMP/empty.txt"
+
+cat > "$TMP/crashed.txt" <<'EOF'
+govulncheck: loading packages:
+There are errors with the provided package patterns:
+
+/src/pkg/plugin/plugin.go:1:1: package requires newer Go version go1.26 (application built with go1.25)
+EOF
+check "errored scan cannot gate" 2 "$TMP/crashed.txt"
+grep -q 'did not conclude' "$TMP/out" || { echo "FAIL: missing inconclusive-scan diagnostic"; failures=$((failures + 1)); }
+
+# The conclusiveness check must not shadow a real finding: a report that
+# concluded AND lists an unaccepted vulnerability still exits 1, not 2.
+cat > "$TMP/conclusive-new.txt" <<'EOF'
+Vulnerability #1: GO-2099-0003
+    Something new and scary
+Your code is affected by 1 vulnerability from 1 module.
+EOF
+check "conclusive report with new finding still exits 1" 1 "$TMP/conclusive-new.txt"
+
 if [ "$failures" -ne 0 ]; then
     echo "$failures gate test(s) failed"
     exit 1

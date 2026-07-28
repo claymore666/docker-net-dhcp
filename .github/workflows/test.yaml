@@ -197,11 +197,8 @@ jobs:
         run: |
           govulncheck ./... > vulns.txt || true
           cat vulns.txt
-          # A crashed scan must not pass as "no findings": assert the
-          # report actually concluded one way or the other.
-          if ! grep -qE 'No vulnerabilities found|Your code is affected' vulns.txt; then
-            echo "govulncheck did not produce a conclusive report"
-            exit 1
-          fi
+          # No conclusiveness check here on purpose: the gate below owns
+          # that invariant, so it holds for every caller of the script
+          # rather than only for this workflow.
       - name: Gate against allowlist
         run: bash scripts/govulncheck-gate.sh vulns.txt .github/vuln-allowlist.txt

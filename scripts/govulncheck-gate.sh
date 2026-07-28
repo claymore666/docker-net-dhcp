@@ -7,8 +7,12 @@
 # Usage: govulncheck-gate.sh <govulncheck-text-output> <allowlist-file>
 #   <govulncheck-text-output>: captured stdout of `govulncheck ./...`
 #       (exit 3 from govulncheck means "findings exist" — capture the
-#       output and let this gate decide).
+#       output and let this gate decide). Must carry a govulncheck
+#       verdict line; see the conclusiveness check below.
 #   <allowlist-file>: one GO-XXXX-XXXX ID per line, '#' comments ok.
+#
+# Exit: 0 gate passed, 1 unaccepted vulnerability reported, 2 cannot
+# gate (bad usage, or a report the scan never concluded).
 set -u
 
 if [ "$#" -ne 2 ]; then
@@ -19,6 +23,19 @@ fi
 REPORT="$1"
 ALLOWLIST="$2"
 fail=0
+
+# A scan that never concluded must not gate as "nothing found". Every
+# finding this script acts on is a *positive* match in the report, so
+# an empty or error-only report — govulncheck refusing to load packages
+# on a toolchain skew is the realistic case, and callers capture its
+# output with `|| true` — would sail through as a clean pass and turn a
+# required check green while scanning nothing. Demand the verdict line
+# govulncheck emits either way, and exit 2 (cannot gate) rather than 1
+# (found something unaccepted) so the two are distinguishable.
+if ! grep -qE 'No vulnerabilities found|Your code is affected' "$REPORT"; then
+    echo "FAIL  $REPORT holds no govulncheck verdict — the scan did not conclude, so there is nothing to gate" >&2
+    exit 2
+fi
 
 # IDs govulncheck reports as affecting our code (default text output
 # lists only reachable findings as "Vulnerability #N: GO-...").
