@@ -1,0 +1,1361 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Docker network plugin that leases container IPs from an existing DHCP server — bridge, macvlan, and ipvlan modes.">
+      
+      
+        <meta name="author" content="claymore666">
+      
+      
+        <link rel="canonical" href="https://claymore666.github.io/docker-net-dhcp/latest/release-runbook/">
+      
+      
+        <link rel="prev" href="../internals/">
+      
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>Release runbook - docker-net-dhcp</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#release-runbook" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="docker-net-dhcp" class="md-header__button md-logo" aria-label="docker-net-dhcp" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            docker-net-dhcp
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Release runbook
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/claymore666/docker-net-dhcp" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    claymore666/docker-net-dhcp
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href=".." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../bridge-mode/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Bridge mode
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../parent-attached-modes/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  macvlan / ipvlan
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../reference/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Driver reference
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../internals/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  How it works
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="./" class="md-tabs__link">
+          
+  
+  
+  Maintainer
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="docker-net-dhcp" class="md-nav__button md-logo" aria-label="docker-net-dhcp" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    docker-net-dhcp
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/claymore666/docker-net-dhcp" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    claymore666/docker-net-dhcp
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../bridge-mode/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Bridge mode
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../parent-attached-modes/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    macvlan / ipvlan
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Driver reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../internals/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    How it works
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Maintainer
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Maintainer
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Release runbook
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Release runbook
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#one-time-prerequisites" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        One-time prerequisites
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="One-time prerequisites">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#ghcr-package-must-be-linked-to-the-repo" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GHCR — package must be linked to the repo
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#github-pages-enable-the-docs-site" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GitHub Pages — enable the docs site
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#docker-hub-secrets-and-scopes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Docker Hub — secrets and scopes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#workflow-file-must-parse" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Workflow file must parse
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#pre-release-dry-run-rc-tags" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Pre-release dry-run (rc tags)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#per-release-procedure" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Per-release procedure
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#verifying" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Verifying
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#troubleshooting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Troubleshooting
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#backports-between-dev-and-main" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Backports between dev and main
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#one-time-prerequisites" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        One-time prerequisites
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="One-time prerequisites">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#ghcr-package-must-be-linked-to-the-repo" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GHCR — package must be linked to the repo
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#github-pages-enable-the-docs-site" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GitHub Pages — enable the docs site
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#docker-hub-secrets-and-scopes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Docker Hub — secrets and scopes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#workflow-file-must-parse" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Workflow file must parse
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#pre-release-dry-run-rc-tags" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Pre-release dry-run (rc tags)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#per-release-procedure" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Per-release procedure
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#verifying" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Verifying
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#troubleshooting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Troubleshooting
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#backports-between-dev-and-main" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Backports between dev and main
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+    <a href="https://github.com/claymore666/docker-net-dhcp/edit/dev/docs/release-runbook.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
+    </a>
+  
+  
+
+
+<h1 id="release-runbook">Release runbook<a class="headerlink" href="#release-runbook" title="Permanent link">&para;</a></h1>
+<p>How to publish a <code>vX.Y.Z</code> of <code>docker-net-dhcp</code>. Written from the
+v0.8.0 cycle, where we hit two operator-side gotchas (GHCR
+package-link, Docker Hub token scope) that aren't reproducible
+from the workflow file alone — capturing them here so the next
+release isn't another archaeology session.</p>
+<p>The goal: a clean release is one tag push, no manual steps.</p>
+<h2 id="one-time-prerequisites">One-time prerequisites<a class="headerlink" href="#one-time-prerequisites" title="Permanent link">&para;</a></h2>
+<p>These are per-account / per-Hub-repo setup, <strong>not</strong> per-release.
+Done once when the publishing chain is first wired up.</p>
+<h3 id="ghcr-package-must-be-linked-to-the-repo">GHCR — package must be linked to the repo<a class="headerlink" href="#ghcr-package-must-be-linked-to-the-repo" title="Permanent link">&para;</a></h3>
+<p>By default a workflow's <code>GITHUB_TOKEN</code> can push to GHCR packages it
+<strong>created</strong> but not packages that already exist under the user/org.
+This fork's <code>ghcr.io/claymore666/docker-net-dhcp</code> package was first
+published manually before the release workflow existed, so on first
+tag push the workflow gets <code>403 Forbidden</code> from GHCR even though
+<code>permissions: packages: write</code> is set.</p>
+<p>Fix it once at
+<a href="https://github.com/users/claymore666/packages/container/docker-net-dhcp/settings">https://github.com/users/claymore666/packages/container/docker-net-dhcp/settings</a>:</p>
+<ol>
+<li><strong>Manage Actions access</strong> → <strong>Add Repository</strong> → pick
+   <code>claymore666/docker-net-dhcp</code>.</li>
+<li>Set role to <strong>Write</strong>.</li>
+<li>Save.</li>
+</ol>
+<p>Symptom if missed: workflow run logs show <code>error pushing plugin:
+unexpected status from POST request to
+https://ghcr.io/v2/.../blobs/uploads/: 403 Forbidden</code> at the <strong>Push
+to GHCR</strong> step. The fix takes effect for the next workflow run; no
+re-tag needed.</p>
+<h3 id="github-pages-enable-the-docs-site">GitHub Pages — enable the docs site<a class="headerlink" href="#github-pages-enable-the-docs-site" title="Permanent link">&para;</a></h3>
+<p>The versioned documentation site (mkdocs-material + mike, <code>#133</code>) is
+built and published by <code>.github/workflows/pages.yml</code>. That workflow
+pushes the rendered site to the <code>gh-pages</code> branch; GitHub Pages has to
+be told to serve from it — once, after the branch first exists.</p>
+<p>The first run on <code>dev</code> (or the first tag) creates <code>gh-pages</code>. Then, at
+<a href="https://github.com/claymore666/docker-net-dhcp/settings/pages">https://github.com/claymore666/docker-net-dhcp/settings/pages</a>:</p>
+<ol>
+<li><strong>Build and deployment → Source</strong> = <strong>Deploy from a branch</strong>.</li>
+<li><strong>Branch</strong> = <code>gh-pages</code> / <code>(root)</code>. Save.</li>
+</ol>
+<p>The site then resolves at <a href="https://claymore666.github.io/docker-net-dhcp/">https://claymore666.github.io/docker-net-dhcp/</a>.
+No per-release action: each <code>vX.Y.Z</code> tag publishes its own docs version
+and moves the <code>latest</code> alias automatically (rc tags publish a preview
+without moving <code>latest</code> — same guard as the image <code>:latest</code>). Until the
+first release, the workflow points the site root at the moving <code>dev</code>
+version so it isn't a 404.</p>
+<h3 id="docker-hub-secrets-and-scopes">Docker Hub — secrets and scopes<a class="headerlink" href="#docker-hub-secrets-and-scopes" title="Permanent link">&para;</a></h3>
+<p>The workflow's Hub steps are gated on a job-level
+<code>HAS_HUB_CREDS</code> check. They skip cleanly when credentials are
+absent (GHCR alone still publishes), so initial setup can be
+deferred.</p>
+<p>When you <strong>do</strong> want Hub published:</p>
+<ol>
+<li>Create the repo on Hub (free): <a href="https://hub.docker.com/repository/create">https://hub.docker.com/repository/create</a>
+   — name <code>net-dhcp</code>, namespace <code>claymore666</code>, visibility <strong>Public</strong>.
+   The Hub UI doesn't auto-create plugin repos on first push the
+   way it does for image repos; create it manually first.</li>
+<li>Generate an access token at
+   <a href="https://app.docker.com/settings/personal-access-tokens">https://app.docker.com/settings/personal-access-tokens</a>:</li>
+<li>Description: something descriptive (<code>docker-net-dhcp release CI</code>).</li>
+<li><strong>Access permissions: Read &amp; Write</strong> at minimum, but the
+     description-sync step needs <strong>admin</strong> scope on the repo —
+     read+write alone gets <code>401</code> on description PATCH. Picking
+     "Read, Write &amp; Delete" (the broadest permission level Hub
+     offers personal tokens) covers both image push and
+     description sync.</li>
+<li>Add two repo secrets at
+   <a href="https://github.com/claymore666/docker-net-dhcp/settings/secrets/actions">https://github.com/claymore666/docker-net-dhcp/settings/secrets/actions</a>:</li>
+<li><code>DOCKERHUB_USERNAME</code> = <code>claymore666</code></li>
+<li><code>DOCKERHUB_TOKEN</code> = the token from step 2.</li>
+</ol>
+<p>Symptom if scope is wrong: image push works, but the <strong>Sync Docker
+Hub description from README</strong> step ends with
+<code>401 Unauthorized</code> calling <code>PATCH /v2/repositories/...</code>. Regenerate
+the token with the broader scope and re-run the workflow with
+<code>gh workflow run release.yml -f tag=vX.Y.Z</code>.</p>
+<h3 id="workflow-file-must-parse">Workflow file must parse<a class="headerlink" href="#workflow-file-must-parse" title="Permanent link">&para;</a></h3>
+<p>GitHub Actions parses every workflow on every push, including
+branch pushes that don't match the trigger. A parse error doesn't
+fail loudly — it produces a "failed" run with no jobs and silently
+<strong>doesn't</strong> trigger on tag pushes either. v0.8.0 hit this with
+<code>if: ${{ secrets.X != '' }}</code> at step level (rejected; secrets
+context isn't allowed in step-level <code>if</code>).</p>
+<p>First line of defence: the <code>actionlint</code> job in the Test workflow
+lints every workflow file on every PR (and
+<code>scripts/test-actionlint.sh</code> asserts the linter still catches this
+exact bug class). Second line: the <strong>rc-tag dry-run</strong> (next
+section) exercises the whole publishing chain before every real
+tag. Avoid dispatching <code>release.yml</code> with a bare existing release
+tag — that <em>rebuilds and re-points</em> the tag and <code>:latest</code>
+(different toolchain ⇒ different digest), mutating artifacts users
+may have pinned.</p>
+<h3 id="pre-release-dry-run-rc-tags">Pre-release dry-run (rc tags)<a class="headerlink" href="#pre-release-dry-run-rc-tags" title="Permanent link">&para;</a></h3>
+<p>A tag with a pre-release suffix (<code>v1.0.0-rc1</code>) runs the release
+workflow in <strong>pre-release mode</strong>: the full chain executes — build,
+push of <code>:v1.0.0-rc1</code> to both registries, Hub description sync,
+verify-install — but <strong><code>:latest</code> is not moved</strong> and no bare
+release tag is touched. Zero impact on anything a user pulls by
+default.</p>
+<p>Use it before every real release tag (step 8 below):</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>git<span class="w"> </span>checkout<span class="w"> </span>main<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>pull<span class="w"> </span>--ff-only<span class="w">      </span><span class="c1"># the release commit</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>git<span class="w"> </span>tag<span class="w"> </span>-s<span class="w"> </span>v1.0.0-rc1<span class="w"> </span>-m<span class="w"> </span><span class="s2">&quot;v1.0.0-rc1&quot;</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>push<span class="w"> </span>origin<span class="w"> </span>v1.0.0-rc1
+</code></pre></div>
+<p>Watch the run; every step including <strong>verify-install</strong> must be
+green. The rc window is the <strong>enforcement gate</strong> for the
+documentation review (procedure step 3): every PR on the milestone
+must be reconciled against README, <code>docs/</code>, and the RELEASE_NOTES
+section, and they must describe the version about to ship — if
+stale text or an undocumented behaviour change surfaces now, fix it
+before the real tag. Then tag the real release. Naming: rc of the <em>upcoming</em>
+version (<code>v1.0.0-rc1</code> before <code>v1.0.0</code>) — semver orders it before
+the release and it labels the content truthfully. Bump the rc
+number for another attempt after a fix; never reuse an rc tag.</p>
+<p>Cleanup (optional): rc plugin tags can be deleted from GHCR/Hub
+after the real release ships; the git tag stays as the audit
+trail.</p>
+<h2 id="per-release-procedure">Per-release procedure<a class="headerlink" href="#per-release-procedure" title="Permanent link">&para;</a></h2>
+<p>Pre-flight: every issue / PR going into the release should be on
+the <code>vX.Y.Z</code> milestone (the workflow leans on this for the
+"Closes" list in the release PR).</p>
+<ol>
+<li><strong>Branch off <code>dev</code>:</strong> <code>git checkout -b release/vX.Y.Z origin/dev</code></li>
+<li><strong>Bump install pins:</strong> <code>scripts/bump-version.sh vX.Y.Z</code> (#251). It
+   rewrites every published-image pin
+   (<code>ghcr.io/.../docker-net-dhcp:vPREV</code> in the <code>plugin install</code> /
+   <code>network create</code> / <code>driver:</code> / <code>plugin inspect</code> snippets across
+   <code>README.md</code> and <code>docs/</code>) to the new tag, and leaves bare <code>vX.Y.Z</code>
+   feature markers and historical prose (<code>As of vPREV every PR...</code>,
+   <code>v1.1.0 onward</code>) alone — the image ref is what tells a pin from
+   prose. Verify with <code>git diff</code> and <code>scripts/check-version-pins.sh</code>
+   (the same gate <code>test.yaml</code> runs: every pin must agree on one
+   version). The gate also fails CI if a future hand-edit leaves the
+   pins inconsistent.</li>
+<li><strong>Documentation review — PR-driven against the milestone.</strong> Don't
+   review from memory; review from the change set. List every PR on the
+   <code>vX.Y.Z</code> milestone and reconcile each one's user-visible change
+   against the docs:</li>
+</ol>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>gh<span class="w"> </span>pr<span class="w"> </span>list<span class="w"> </span>--state<span class="w"> </span>merged<span class="w"> </span>--limit<span class="w"> </span><span class="m">200</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span>--json<span class="w"> </span>number,title,milestone<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">  </span>--jq<span class="w"> </span><span class="s1">&#39;.[] | select(.milestone.title==&quot;vX.Y.Z&quot;) | &quot;#\(.number) \(.title)&quot;&#39;</span>
+</code></pre></div>
+<p>For <strong>each</strong> merged PR, confirm the docs reflect what it changed:
+   new/changed driver-opts land in the option tables (<code>README.md</code>,
+   <code>docs/reference.md</code>, <code>docs/parent-attached-modes.md</code>); behaviour
+   changes (Health counters, DHCP-client behaviour, identity, recovery)
+   land in <code>reference.md</code> / <code>parent-attached-modes.md</code> / <code>internals.md</code>;
+   examples and numbers match. <strong>A milestone PR that changed
+   user-visible behaviour but carries no doc delta is the signal to look
+   harder, not to wave through</strong> — that is exactly the drift that the
+   #205↔#152 case (busybox→dhcpcd prose surviving a docs restructure;
+   fixed in #234/#237) slipped through a memory-based read.</p>
+<p>Then still read everything user-visible top-to-bottom for anything
+   the per-PR pass misses — <code>README.md</code> (feature list, driver-opt table,
+   examples), every file under <code>docs/</code> (including this runbook — process
+   changes during the cycle land here too), and the coverage table if
+   republished. Anything describing the previous version's behaviour,
+   options, or numbers gets updated on the release branch now.
+   Everything under <code>docs/</code> (plus <code>docs/index.md</code>, the site home) is
+   what the versioned documentation site publishes for this tag, so the
+   review <em>is</em> the site review — there's no separate wiki to reconcile.</p>
+<p>The work happens here, on the release branch. The rc dry-run (step 8)
+   is the <strong>enforcement gate</strong>: the real <code>vX.Y.Z</code> tag does not ship
+   until every milestone PR is ticked off against the docs — by the real
+   tag, text and code (and the published site) must agree.
+4. <strong>Add a <code>## vX.Y.Z</code> section</strong> to <code>RELEASE_NOTES.md</code>, <strong>above
+   the previous version's section</strong>. Summarise what's changing in
+   user-visible terms; the workflow doesn't auto-build this from
+   commit messages. Include any <strong>operator-visible compatibility
+   notes</strong> (e.g. v0.8.0 narrowed the <code>IsDHCPPlugin</code> regex — that
+   needed a callout).
+5. <strong>PR <code>release/vX.Y.Z</code> → <code>dev</code>.</strong> Required checks: <code>test</code>,
+   <code>staticcheck</code>, <code>integration</code> (every PR builds and exercises its
+   own plugin on the integration runner). Merge when green.
+6. <strong>Open the release PR <code>dev</code> → <code>main</code></strong> with title
+   <code>Release vX.Y.Z</code> and a <code>Closes #N</code> line for <strong>every issue</strong> in
+   the milestone. The list is what auto-closes them when the PR
+   merges; without it the milestone stays open after the tag.
+   Release PRs additionally run the <strong>Coverage</strong> workflow with the
+   coverage ratchet (<code>scripts/coverage-ratchet.sh</code> vs
+   <code>.github/coverage-baseline.txt</code>): no release ships with less
+   per-package coverage than the previous one. If a package beat its
+   floor during the cycle, raise the baseline as part of the release
+   branch.
+7. <strong>Merge the release PR.</strong> Squash or merge commit — both fine;
+   match what's in <code>git log</code>.
+8. <strong>Pull main, dry-run, then tag:</strong> first push <code>vX.Y.Z-rc1</code> and
+   confirm the workflow run is green end-to-end (pre-release mode,
+   <code>:latest</code> untouched — see "Pre-release dry-run" above). Then:
+   <div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>git<span class="w"> </span>checkout<span class="w"> </span>main<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>pull<span class="w"> </span>--ff-only
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>git<span class="w"> </span>tag<span class="w"> </span>-s<span class="w"> </span>vX.Y.Z<span class="w"> </span>-m<span class="w"> </span><span class="s2">&quot;vX.Y.Z — &lt;one-liner&gt;&quot;</span><span class="w">   </span><span class="c1"># signed (#175)</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>git<span class="w"> </span>push<span class="w"> </span>origin<span class="w"> </span>vX.Y.Z
+</code></pre></div>
+   Use <code>-s</code> (signed) so the release tag shows <strong>Verified</strong> on GitHub —
+   the dev box has <code>tag.gpgsign=true</code> so <code>-a</code> would also sign, but spell
+   it out so it holds from any checkout. Confirm with
+   <code>git tag -v vX.Y.Z</code> (or the green "Verified" on the tag page).
+   The workflow fires on <code>tags: v*</code>. Watch it at
+   <a href="https://github.com/claymore666/docker-net-dhcp/actions/workflows/release.yml">https://github.com/claymore666/docker-net-dhcp/actions/workflows/release.yml</a>.
+   Expected steps: Resolve tag → checkout → setup-go →
+   GHCR login → Hub login (or skip) → Push to GHCR → Push to
+   Hub (or skip) → Sync Hub description → Install cosign →
+   <strong>Sign published images (cosign)</strong> → <strong>Generate SBOM (syft)</strong> →
+   <strong>Package and sign release artifact</strong> → <strong>Attest provenance
+   (artifacts + image)</strong> → Workflow summary →
+   <strong>verify-install</strong> (separate job: installs the just-published
+   plugin from GHCR on a clean hosted runner and asserts it
+   enables — a red verify-install means users can't install what
+   we just shipped) → <strong>github-release</strong>.
+9. <strong>Confirm the GitHub Release</strong> — the <code>github-release</code> job now cuts
+   it automatically once <code>verify-install</code> is green (so a plugin that
+   doesn't install never gets an advertised Releases page). It attaches
+   the cosign-signed artifacts and uses the <code>## vX.Y.Z</code> section of
+   <code>RELEASE_NOTES.md</code> as the body, so step 4's notes must already be in
+   place at tag time. No manual <code>gh release create</code> — instead verify:
+   <div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>gh<span class="w"> </span>release<span class="w"> </span>view<span class="w"> </span>vX.Y.Z<span class="w">   </span><span class="c1"># body = the RELEASE_NOTES section; assets:</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">                         </span><span class="c1">#   net-dhcp-plugin-vX.Y.Z-linux-amd64.tar.gz</span>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w">                         </span><span class="c1">#   checksums.txt + checksums.txt.sigstore.json</span>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="c1"># Re-verify the signature the way a downstream consumer would:</span>
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>cosign<span class="w"> </span>verify-blob<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="w">  </span>--bundle<span class="w"> </span>checksums.txt.sigstore.json<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="w">  </span>--certificate-identity-regexp<span class="w"> </span><span class="s1">&#39;^https://github.com/claymore666/docker-net-dhcp/.github/workflows/release.yml@&#39;</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="w">  </span>--certificate-oidc-issuer<span class="w"> </span>https://token.actions.githubusercontent.com<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a><span class="w">  </span>checksums.txt
+</code></pre></div>
+   Adjust the title/notes in the UI if the one-liner needs polish.
+   The job is idempotent on a tag re-dispatch (re-uploads assets with
+   <code>--clobber</code>). This satisfies OpenSSF Scorecard <strong>Signed-Releases</strong>;
+   an rc dry-run produces an equivalent <strong>pre-release</strong> with the same
+   signed assets, which is how this path is exercised before the real
+   tag (rc releases never move <code>:latest</code> and are marked pre-release).
+10. <strong>Fast-forward <code>dev</code> to <code>main</code></strong> so the release commit (version
+   pins, RELEASE_NOTES section) lands on <code>dev</code> too:
+   <div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>git<span class="w"> </span>checkout<span class="w"> </span>dev<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>merge<span class="w"> </span>--ff-only<span class="w"> </span>main<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>push<span class="w"> </span>origin<span class="w"> </span>dev
+</code></pre></div>
+   Skipping this leaves the next feature branch starting from the
+   previous version's README/docs, and the next release PR has to
+   re-bump them. Forgotten once after v0.9.0 — that's why
+   <code>release.yml</code>'s header comment carries the same checklist.
+11. <strong>Prune merged branches.</strong> The repo has <em>Automatically delete head
+   branches</em> enabled, so merged PR head branches are removed on merge.
+   Two things that setting doesn't cover, so clean them now:
+   <div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="c1"># the release branch is merged but was never a PR head:</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>git<span class="w"> </span>push<span class="w"> </span>origin<span class="w"> </span>--delete<span class="w"> </span>release/vX.Y.Z
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="c1"># sweep for any other branch already merged into dev that lingered:</span>
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>git<span class="w"> </span>fetch<span class="w"> </span>--prune<span class="w"> </span>origin
+<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>git<span class="w"> </span>branch<span class="w"> </span>-r<span class="w"> </span>--merged<span class="w"> </span>origin/dev<span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span>-vE<span class="w"> </span><span class="s1">&#39;origin/(dev|main|HEAD)$&#39;</span>
+</code></pre></div>
+   Delete what that sweep lists. Leave alone: open-PR branches,
+   Dependabot branches (it recreates its own — close via the PR), and
+   the <code>upstream/*</code> refs (those are the original fork's remote, not
+   ours).</p>
+<h2 id="verifying">Verifying<a class="headerlink" href="#verifying" title="Permanent link">&para;</a></h2>
+<p>After the workflow succeeds:</p>
+<ul>
+<li><code>curl -sI https://hub.docker.com/v2/repositories/claymore666/net-dhcp/tags/vX.Y.Z/</code>
+  returns <code>HTTP/2 200</code>.</li>
+<li><code>curl -sI https://ghcr.io/v2/claymore666/docker-net-dhcp/manifests/vX.Y.Z</code>
+  returns <code>HTTP/2 401</code> (auth required) — the manifest IS there,
+  GHCR just won't expose it anonymously. To confirm presence
+  authenticated: <code>gh auth token | docker login ghcr.io -u &lt;you&gt;
+  --password-stdin &amp;&amp; docker plugin install
+  ghcr.io/claymore666/docker-net-dhcp:vX.Y.Z</code>.</li>
+<li>The Docker Hub page (<a href="https://hub.docker.com/r/claymore666/net-dhcp">https://hub.docker.com/r/claymore666/net-dhcp</a>)
+  shows the new tag in the Tags tab and the README content
+  matches GitHub.</li>
+<li>The milestone is closed (every issue moved to Done by the
+  release PR's <code>Closes</code> list). Verify with
+  <code>gh issue list --milestone vX.Y.Z --state open</code> — should be
+  empty.</li>
+</ul>
+<h2 id="troubleshooting">Troubleshooting<a class="headerlink" href="#troubleshooting" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Symptom</th>
+<th>Likely cause</th>
+<th>Fix</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Workflow shows zero-job "failed" runs on every push, tag push doesn't trigger anything</td>
+<td>release.yml parse error (often <code>secrets</code> context in step-level <code>if</code>)</td>
+<td>Fix the YAML, dispatch via <code>gh workflow run release.yml -f tag=&lt;existing&gt; --ref main</code> to verify, then retry</td>
+</tr>
+<tr>
+<td><code>Push to GHCR</code> step ends <code>403 Forbidden</code></td>
+<td>GHCR package not linked to repo with Write</td>
+<td>One-time fix in package settings (see prerequisites)</td>
+</tr>
+<tr>
+<td><code>Push to Docker Hub</code> step ends <code>unauthorized: incorrect username or password</code></td>
+<td>Token revoked / expired / wrong scope</td>
+<td>Regenerate at hub.docker.com, update <code>DOCKERHUB_TOKEN</code> repo secret</td>
+</tr>
+<tr>
+<td><code>Sync Docker Hub description from README</code> step ends <code>401</code></td>
+<td>Token scope is image-push only, not admin</td>
+<td>Regenerate token with broader scope (see prerequisites)</td>
+</tr>
+<tr>
+<td>Hub page README is stale after a release</td>
+<td>Description-sync step skipped (no Hub creds) or 401'd</td>
+<td>Check the workflow run; either set creds or fix the token</td>
+</tr>
+<tr>
+<td>Tag push succeeded but no Hub publish</td>
+<td><code>HAS_HUB_CREDS</code> evaluated false (secrets blank)</td>
+<td>Set the secrets, dispatch the workflow against the existing tag</td>
+</tr>
+</tbody>
+</table>
+<h2 id="backports-between-dev-and-main">Backports between <code>dev</code> and <code>main</code><a class="headerlink" href="#backports-between-dev-and-main" title="Permanent link">&para;</a></h2>
+<p>When a release-blocking hotfix has to land on <code>main</code> without
+going through dev (e.g. v0.8.0's release.yml parser bug), the
+flow is:</p>
+<ol>
+<li>Branch off <code>main</code>, fix, PR to <code>main</code>, merge. Don't push to
+   <code>main</code> directly — branch protection and the audit trail.</li>
+<li>Cherry-pick the same commit onto a branch off <code>dev</code>, PR to
+   <code>dev</code>. This keeps <code>dev</code> from regressing on the next release
+   PR.</li>
+</ol>
+<p>The v0.8.0 cycle uses #97 (main hotfix) and #98 (dev backport) as
+the canonical example.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+        
+<div class="md-social">
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://github.com/claymore666/docker-net-dhcp" target="_blank" rel="noopener" title="github.com" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+    </a>
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://github.com/claymore666/docker-net-dhcp/pkgs/container/docker-net-dhcp" target="_blank" rel="noopener" title="github.com" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M349.9 236.3h-66.1v-59.4h66.1zm0-204.3h-66.1v60.7h66.1zm78.2 144.8H362v59.4h66.1zm-156.3-72.1h-66.1v60.1h66.1zm78.1 0h-66.1v60.1h66.1zm276.8 100c-14.4-9.7-47.6-13.2-73.1-8.4-3.3-24-16.7-44.9-41.1-63.7l-14-9.3-9.3 14c-18.4 27.8-23.4 73.6-3.7 103.8-8.7 4.7-25.8 11.1-48.4 10.7H2.4c-8.7 50.8 5.8 116.8 44 162.1 37.1 43.9 92.7 66.2 165.4 66.2 157.4 0 273.9-72.5 328.4-204.2 21.4.4 67.6.1 91.3-45.2 1.5-2.5 6.6-13.2 8.5-17.1zm-511.1-27.9h-66v59.4h66.1v-59.4zm78.1 0h-66.1v59.4h66.1zm78.1 0h-66.1v59.4h66.1zm-78.1-72.1h-66.1v60.1h66.1z"/></svg>
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.tabs", "navigation.sections", "navigation.top", "navigation.instant", "navigation.tracking", "content.code.copy", "content.action.edit", "search.suggest", "search.highlight"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"default": "latest", "provider": "mike"}}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>
