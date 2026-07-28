@@ -92,11 +92,9 @@ const (
 func mountPrep() string {
 	return fmt.Sprintf(
 		"mount -t tmpfs tmpfs %s 2>/dev/null; "+
-			"mkdir -p %s 2>/dev/null; "+
-			"mount -t tmpfs tmpfs %s 2>/dev/null; "+
 			"mount -o remount,bind,rw %s 2>/dev/null; "+
 			"exec \"$0\" \"$@\"",
-		dhcpcdStateDir, dhcpcdRunDir, dhcpcdRunDir, procSysPath)
+		dhcpcdStateDir, procSysPath)
 }
 
 // tailWriter retains the last up-to-max bytes written to it. dhcpcd's

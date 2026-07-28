@@ -214,8 +214,6 @@ func TestMountPrep_RemountsProcSysRW(t *testing.T) {
 		// interface name only) must be private per client, or the
 		// second same-named-interface client forwards its argv into
 		// the first container's dhcpcd and exits without doing DHCP.
-		"mkdir -p " + dhcpcdRunDir,
-		"mount -t tmpfs tmpfs " + dhcpcdRunDir,
 		"mount -o remount,bind,rw " + procSysPath,
 		`exec "$0" "$@"`,
 	} {
