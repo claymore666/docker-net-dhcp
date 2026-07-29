@@ -71,6 +71,14 @@ Each recipe disables STP explicitly. That is not cosmetic here — see
 
 Needs `bridge-utils` (`sudo apt install bridge-utils`).
 
+Note that `networking.service` runs `ifup -a` **synchronously**, so the
+boot blocks until the bridge's DHCP request completes or `dhclient`
+gives up — around a minute if the DHCP server is slow or absent.
+Measured at ~2 minutes to reach a settled state on a bridge whose
+lease was delayed. That is normal for this stack, not a fault; if a
+fast boot matters more than having the address ready at boot, the
+networkd or netplan recipes do not have this property.
+
 ```ini
 # /etc/network/interfaces
 auto lo
@@ -158,6 +166,22 @@ sudo systemctl enable --now systemd-networkd
 ```
 
 #### NetworkManager (nmcli)
+
+!!! warning "Not on Ubuntu — netplan owns ethernet there"
+    Ubuntu ships NetworkManager restricted to wireless devices:
+
+    ```ini
+    # /usr/lib/NetworkManager/conf.d/10-globally-managed-devices.conf
+    [keyfile]
+    unmanaged-devices=*,except:type:wifi,except:type:gsm,except:type:cdma
+    ```
+
+    Every ethernet device is therefore **unmanaged**, and `nmcli con up`
+    fails with *"No suitable device found for this connection"* no
+    matter how correct the profile is. Use the netplan recipe above on
+    Ubuntu. This recipe is for distributions where NetworkManager
+    manages ethernet — Fedora, RHEL and derivatives, and Debian
+    installs that chose it.
 
 The existing standalone profile for the NIC has to stop autoconnecting,
 or it will race the bridge for `eth0`. Find its name with
