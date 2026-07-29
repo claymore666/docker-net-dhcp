@@ -2116,7 +2116,7 @@ Anything that can reach the socket can poll this as a liveness check.</p>
 <tr>
 <td><code>dhcp_timeouts</code></td>
 <td>no</td>
-<td>DHCP-acquisition failures (v4+v6 aggregate). <code>dhcpcd</code> only fires a hook when a <em>bound</em> lease lapses (<code>EXPIRE</code>) and is silent while it re-discovers, so this counter is bumped both by those <code>EXPIRE</code> events and by a periodic outage watchdog while the client is unbound and still trying — it keeps climbing for the duration of a server outage.</td>
+<td>DHCP-acquisition failures (v4+v6 aggregate). Bumped by an explicit <code>dhcpcd</code> lease-loss hook when there is one, and — since v1.3.5 (#353) — by a periodic outage watchdog that compares the lease lifetime the server granted against the time since the client was last served. It keeps climbing for the duration of a server outage. <strong>Detection is not immediate:</strong> a bound endpoint's outage surfaces only once its lease would have run out (plus one watchdog period), because until then the client holds a valid address and <code>dhcpcd</code> reports nothing. On a 24-hour lease that is up to ~24 hours; a client that never binds at all is counted within ~30s.</td>
 </tr>
 <tr>
 <td><code>lease_release_failures</code></td>
@@ -2331,7 +2331,7 @@ consumer-side:</p>
 <tr>
 <td>Renewals failing after a server outage</td>
 <td>—</td>
-<td>Containers keep their address and <code>dhcpcd</code> keeps retrying; <code>dhcp_timeouts</code> climbs while the server is gone and <code>leases_renewed</code> resumes after it returns</td>
+<td>Containers keep their address and <code>dhcpcd</code> keeps retrying; <code>dhcp_timeouts</code> climbs once the lease would have lapsed (see the counter's note on detection delay) and <code>leases_renewed</code> resumes after the server returns</td>
 </tr>
 </tbody>
 </table>
