@@ -489,6 +489,106 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="1. Prepare a host bridge">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#try-it-now-does-not-survive-a-reboot" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Try it now (does not survive a reboot)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#make-the-bridge-persistent" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Make the bridge persistent
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Make the bridge persistent">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#debian-ifupdown" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Debian / ifupdown
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ubuntu-netplan" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Ubuntu / netplan
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#systemd-networkd" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        systemd-networkd
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#networkmanager-nmcli" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        NetworkManager (nmcli)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#leave-stp-off-unless-you-need-it" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Leave STP off unless you need it
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#persist-the-firewall-rule-too" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Persist the firewall rule too
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -735,6 +835,106 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="1. Prepare a host bridge">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#try-it-now-does-not-survive-a-reboot" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Try it now (does not survive a reboot)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#make-the-bridge-persistent" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Make the bridge persistent
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Make the bridge persistent">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#debian-ifupdown" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Debian / ifupdown
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ubuntu-netplan" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Ubuntu / netplan
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#systemd-networkd" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        systemd-networkd
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#networkmanager-nmcli" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        NetworkManager (nmcli)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#leave-stp-off-unless-you-need-it" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Leave STP off unless you need it
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#persist-the-firewall-rule-too" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Persist the firewall rule too
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -805,9 +1005,29 @@ bridged onto the LAN where the DHCP server lives.</p>
 <a href="../reference/">driver reference</a>. This page is the end-to-end
 walkthrough.</p>
 <h2 id="1-prepare-a-host-bridge">1. Prepare a host bridge<a class="headerlink" href="#1-prepare-a-host-bridge" title="Permanent link">&para;</a></h2>
-<p>You need a pre-configured bridge interface on the host. How you set this
-up depends on your distro; the following manual steps work on most Linux
-systems:</p>
+<p>You need a pre-configured bridge interface on the host. Enslaving the
+NIC to a bridge changes how the <strong>host itself</strong> is addressed, so read
+the warning below before running anything on a machine you cannot walk
+up to.</p>
+<div class="admonition danger">
+<p class="admonition-title">The host's own address moves to the bridge</p>
+<p>Once <code>eth0</code> is enslaved it must be left <strong>address-less</strong>, and DHCP
+has to run on the bridge instead. Applying this over SSH with the
+NIC still configured — or with a typo in the bridge stanza — drops
+the connection and does not give it back.</p>
+<p>Have console or out-of-band access (IPMI, iDRAC, the hypervisor
+console) before you start. On Ubuntu, <code>sudo netplan try</code> gives you
+an automatic revert if you lose the session; the other stacks have
+no equivalent safety net.</p>
+<p>The bridge normally inherits the NIC's MAC, but not on every
+driver. If your DHCP server pins the host's address by MAC
+reservation, the host may come back on a <strong>different</strong> address —
+set the bridge MAC explicitly if that matters.</p>
+</div>
+<h3 id="try-it-now-does-not-survive-a-reboot">Try it now (does not survive a reboot)<a class="headerlink" href="#try-it-now-does-not-survive-a-reboot" title="Permanent link">&para;</a></h3>
+<p>These manual steps work on most Linux systems and are the fastest way
+to confirm the plugin does what you want. They are lost on the next
+reboot — make them permanent with one of the stanzas below.</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="c1"># Create the bridge</span>
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>sudo<span class="w"> </span>ip<span class="w"> </span>link<span class="w"> </span>add<span class="w"> </span>my-bridge<span class="w"> </span><span class="nb">type</span><span class="w"> </span>bridge
 <a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>sudo<span class="w"> </span>ip<span class="w"> </span>link<span class="w"> </span><span class="nb">set</span><span class="w"> </span>my-bridge<span class="w"> </span>up
@@ -824,14 +1044,180 @@ systems:</p>
 <a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a><span class="c1"># attached to the bridge). Replace with whatever config you used for eth0.</span>
 <a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>sudo<span class="w"> </span>dhcpcd<span class="w"> </span>my-bridge
 </code></pre></div>
+<h3 id="make-the-bridge-persistent">Make the bridge persistent<a class="headerlink" href="#make-the-bridge-persistent" title="Permanent link">&para;</a></h3>
+<p>Pick the one stanza that matches whatever manages networking on the
+host. In every case the pattern is identical: the NIC carries <strong>no</strong>
+address and is listed as a bridge port, and the bridge is the thing
+that runs DHCP.</p>
+<p>Each recipe disables STP explicitly. That is not cosmetic here — see
+<a href="#leave-stp-off-unless-you-need-it">Leave STP off</a> below.</p>
+<h4 id="debian-ifupdown">Debian / ifupdown<a class="headerlink" href="#debian-ifupdown" title="Permanent link">&para;</a></h4>
+<p>Needs <code>bridge-utils</code> (<code>sudo apt install bridge-utils</code>).</p>
+<p>Note that <code>networking.service</code> runs <code>ifup -a</code> <strong>synchronously</strong>, so the
+boot blocks until the bridge's DHCP request completes or <code>dhclient</code>
+gives up — around a minute if the DHCP server is slow or absent.
+Measured at ~2 minutes to reach a settled state on a bridge whose
+lease was delayed. That is normal for this stack, not a fault; if a
+fast boot matters more than having the address ready at boot, the
+networkd or netplan recipes do not have this property.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="c1"># /etc/network/interfaces</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="na">auto lo</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="na">iface lo inet loopback</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="c1"># Enslaved: no address of its own.</span>
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="na">iface eth0 inet manual</span>
+<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>
+<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="na">auto my-bridge</span>
+<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="na">iface my-bridge inet dhcp</span>
+<a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="w">    </span><span class="na">bridge_ports eth0</span>
+<a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a><span class="w">    </span><span class="na">bridge_stp off</span>
+<a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a><span class="w">    </span><span class="na">bridge_fd 0</span>
+</code></pre></div>
+<h4 id="ubuntu-netplan">Ubuntu / netplan<a class="headerlink" href="#ubuntu-netplan" title="Permanent link">&para;</a></h4>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="c1"># /etc/netplan/60-dhcp-bridge.yaml   (chmod 600)</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="nt">network</span><span class="p">:</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">  </span><span class="nt">version</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">  </span><span class="nt">renderer</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">networkd</span>
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="w">  </span><span class="nt">ethernets</span><span class="p">:</span>
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="w">    </span><span class="nt">eth0</span><span class="p">:</span>
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="w">      </span><span class="nt">dhcp4</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">false</span>
+<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="w">      </span><span class="nt">dhcp6</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">false</span>
+<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="w">  </span><span class="nt">bridges</span><span class="p">:</span>
+<a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="w">    </span><span class="nt">my-bridge</span><span class="p">:</span>
+<a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a><span class="w">      </span><span class="nt">interfaces</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">eth0</span><span class="p p-Indicator">]</span>
+<a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a><span class="w">      </span><span class="nt">dhcp4</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+<a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a><span class="w">      </span><span class="nt">parameters</span><span class="p">:</span>
+<a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a><span class="w">        </span><span class="nt">stp</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">false</span>
+<a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a><span class="w">        </span><span class="nt">forward-delay</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0</span>
+</code></pre></div>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>sudo<span class="w"> </span>chmod<span class="w"> </span><span class="m">600</span><span class="w"> </span>/etc/netplan/60-dhcp-bridge.yaml
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>sudo<span class="w"> </span>netplan<span class="w"> </span>try<span class="w">      </span><span class="c1"># auto-reverts in 120s if you lose the session</span>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>sudo<span class="w"> </span>netplan<span class="w"> </span>apply
+</code></pre></div>
+<h4 id="systemd-networkd">systemd-networkd<a class="headerlink" href="#systemd-networkd" title="Permanent link">&para;</a></h4>
+<p>Three files — the bridge device, the port, and the bridge's own
+addressing:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="c1"># /etc/systemd/network/10-my-bridge.netdev</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="k">[NetDev]</span>
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="na">Name</span><span class="o">=</span><span class="s">my-bridge</span>
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="na">Kind</span><span class="o">=</span><span class="s">bridge</span>
+<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>
+<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="k">[Bridge]</span>
+<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="na">STP</span><span class="o">=</span><span class="s">false</span>
+<a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a><span class="na">ForwardDelaySec</span><span class="o">=</span><span class="s">0</span>
+</code></pre></div>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="c1"># /etc/systemd/network/20-eth0.network</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="k">[Match]</span>
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="na">Name</span><span class="o">=</span><span class="s">eth0</span>
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>
+<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="k">[Network]</span>
+<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a><span class="na">Bridge</span><span class="o">=</span><span class="s">my-bridge</span>
+</code></pre></div>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="c1"># /etc/systemd/network/30-my-bridge.network</span>
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="k">[Match]</span>
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="na">Name</span><span class="o">=</span><span class="s">my-bridge</span>
+<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>
+<a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="k">[Network]</span>
+<a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a><span class="na">DHCP</span><span class="o">=</span><span class="s">ipv4</span>
+<a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a><span class="na">ConfigureWithoutCarrier</span><span class="o">=</span><span class="s">yes</span>
+</code></pre></div>
+<p><code>ConfigureWithoutCarrier=yes</code> matters at boot: a bridge with no port up
+yet has no carrier, and without it <code>networkd</code> can decline to start DHCP
+on the bridge at all. This is what <code>netplan</code> emits for the equivalent
+bridge, so it is the reference implementation's own answer rather than
+a workaround.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>sudo<span class="w"> </span>systemctl<span class="w"> </span><span class="nb">enable</span><span class="w"> </span>--now<span class="w"> </span>systemd-networkd
+</code></pre></div>
+<h4 id="networkmanager-nmcli">NetworkManager (nmcli)<a class="headerlink" href="#networkmanager-nmcli" title="Permanent link">&para;</a></h4>
+<div class="admonition warning">
+<p class="admonition-title">Not on Ubuntu — netplan owns ethernet there</p>
+<p>Ubuntu ships NetworkManager restricted to wireless devices:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="c1"># /usr/lib/NetworkManager/conf.d/10-globally-managed-devices.conf</span>
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="k">[keyfile]</span>
+<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="na">unmanaged-devices</span><span class="o">=</span><span class="s">*,except:type:wifi,except:type:gsm,except:type:cdma</span>
+</code></pre></div>
+<p>Every ethernet device is therefore <strong>unmanaged</strong>, and <code>nmcli con up</code>
+fails with <em>"No suitable device found for this connection"</em> no
+matter how correct the profile is. Use the netplan recipe above on
+Ubuntu. This recipe is for distributions where NetworkManager
+manages ethernet — Fedora, RHEL and derivatives, and Debian
+installs that chose it.</p>
+</div>
+<p>The existing standalone profile for the NIC has to stop autoconnecting,
+or it will race the bridge for <code>eth0</code>. Find its name with
+<code>nmcli con show</code>.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>sudo<span class="w"> </span>nmcli<span class="w"> </span>con<span class="w"> </span>add<span class="w"> </span><span class="nb">type</span><span class="w"> </span>bridge<span class="w"> </span>ifname<span class="w"> </span>my-bridge<span class="w"> </span>con-name<span class="w"> </span>my-bridge<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="w">    </span>ipv4.method<span class="w"> </span>auto<span class="w"> </span>bridge.stp<span class="w"> </span>no<span class="w"> </span>bridge.forward-delay<span class="w"> </span><span class="m">0</span>
+<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a>sudo<span class="w"> </span>nmcli<span class="w"> </span>con<span class="w"> </span>add<span class="w"> </span><span class="nb">type</span><span class="w"> </span>ethernet<span class="w"> </span>ifname<span class="w"> </span>eth0<span class="w"> </span>con-name<span class="w"> </span>my-bridge-port<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="w">    </span>master<span class="w"> </span>my-bridge<span class="w"> </span>slave-type<span class="w"> </span>bridge
+<a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a>
+<a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a><span class="c1"># Stop the old profile from grabbing the NIC on boot</span>
+<a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a>sudo<span class="w"> </span>nmcli<span class="w"> </span>con<span class="w"> </span>mod<span class="w"> </span><span class="s2">&quot;Wired connection 1&quot;</span><span class="w"> </span>connection.autoconnect<span class="w"> </span>no
+<a id="__codelineno-9-8" name="__codelineno-9-8" href="#__codelineno-9-8"></a>sudo<span class="w"> </span>nmcli<span class="w"> </span>con<span class="w"> </span>down<span class="w"> </span><span class="s2">&quot;Wired connection 1&quot;</span>
+<a id="__codelineno-9-9" name="__codelineno-9-9" href="#__codelineno-9-9"></a>
+<a id="__codelineno-9-10" name="__codelineno-9-10" href="#__codelineno-9-10"></a>sudo<span class="w"> </span>nmcli<span class="w"> </span>con<span class="w"> </span>up<span class="w"> </span>my-bridge
+</code></pre></div>
+<h3 id="leave-stp-off-unless-you-need-it">Leave STP off unless you need it<a class="headerlink" href="#leave-stp-off-unless-you-need-it" title="Permanent link">&para;</a></h3>
+<p>With STP <strong>enabled</strong>, a bridge puts every newly added port through
+listening and learning states before it forwards — two forwarding
+delays, 30 seconds at the stock 15s setting. Container <code>veth</code>s are
+added at attach time, so a bridge with STP on <strong>breaks DHCP for every
+container</strong>: the client broadcasts into a port that is not forwarding
+yet, gets no answer, and the attach fails or falls back.</p>
+<p>A bridge created with plain <code>ip link add ... type bridge</code> has STP off
+already, which is why the imperative recipe above works as written.
+Managed stacks are the risk — they apply their own default, and it is
+not always off. That is why every stanza above sets it explicitly
+rather than relying on one.</p>
+<p>If containers only get addresses when you attach them slowly, or
+<code>leases_obtained</code> sits flat while <code>dhcp_timeouts</code> climbs, check STP
+first:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="gp">$ </span>ip<span class="w"> </span>-d<span class="w"> </span>link<span class="w"> </span>show<span class="w"> </span>my-bridge<span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span>-o<span class="w"> </span><span class="s1">&#39;stp_state [0-9]*&#39;</span>
+<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="go">stp_state 0</span>
+</code></pre></div>
+<p><code>stp_state 0</code> is what you want. Note that a non-zero <code>forward_delay</code> in
+the same output is harmless while STP is off — and that it is reported
+in <strong>centiseconds</strong>, so the stock 15 seconds reads as <code>1500</code>.</p>
+<h3 id="persist-the-firewall-rule-too">Persist the firewall rule too<a class="headerlink" href="#persist-the-firewall-rule-too" title="Permanent link">&para;</a></h3>
+<p>The <code>FORWARD -i my-bridge -j ACCEPT</code> rule from the imperative recipe is
+as temporary as the bridge was. Whichever stanza you used above, the
+rule needs the distro's own persistence mechanism:</p>
+<table>
+<thead>
+<tr>
+<th>Stack</th>
+<th>How</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>iptables</td>
+<td><code>sudo apt install iptables-persistent</code>, then <code>sudo netfilter-persistent save</code></td>
+</tr>
+<tr>
+<td>nftables</td>
+<td>add the rule to <code>/etc/nftables.conf</code>, <code>sudo systemctl enable nftables</code></td>
+</tr>
+<tr>
+<td>firewalld</td>
+<td><code>sudo firewall-cmd --permanent --direct --add-rule ipv4 filter FORWARD 0 -i my-bridge -j ACCEPT &amp;&amp; sudo firewall-cmd --reload</code></td>
+</tr>
+<tr>
+<td>ufw</td>
+<td>set <code>DEFAULT_FORWARD_POLICY="ACCEPT"</code> in <code>/etc/default/ufw</code>, then <code>sudo ufw reload</code></td>
+</tr>
+</tbody>
+</table>
+<p>You only need this if the forwarding policy is <code>DROP</code> — check with
+<code>sudo iptables -S FORWARD | head -1</code>.</p>
 <h2 id="2-create-the-network">2. Create the network<a class="headerlink" href="#2-create-the-network" title="Permanent link">&para;</a></h2>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>docker<span class="w"> </span>network<span class="w"> </span>create<span class="w"> </span>-d<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v1.3.4<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span>--ipam-driver<span class="w"> </span>null<span class="w"> </span>-o<span class="w"> </span><span class="nv">bridge</span><span class="o">=</span>my-bridge<span class="w"> </span>my-dhcp-net
+<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a>docker<span class="w"> </span>network<span class="w"> </span>create<span class="w"> </span>-d<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v1.3.4<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a><span class="w">  </span>--ipam-driver<span class="w"> </span>null<span class="w"> </span>-o<span class="w"> </span><span class="nv">bridge</span><span class="o">=</span>my-bridge<span class="w"> </span>my-dhcp-net
 </code></pre></div>
 <p>With IPv6 as well (the <code>docker network create --ipv6</code> flag does <strong>not</strong>
 work with the null IPAM driver; use the <code>ipv6</code> driver option instead):</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>docker<span class="w"> </span>network<span class="w"> </span>create<span class="w"> </span>-d<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v1.3.4<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span>--ipam-driver<span class="w"> </span>null<span class="w"> </span>-o<span class="w"> </span><span class="nv">bridge</span><span class="o">=</span>my-bridge<span class="w"> </span>-o<span class="w"> </span><span class="nv">ipv6</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span>my-dhcp-net
+<div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a>docker<span class="w"> </span>network<span class="w"> </span>create<span class="w"> </span>-d<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v1.3.4<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a><span class="w">  </span>--ipam-driver<span class="w"> </span>null<span class="w"> </span>-o<span class="w"> </span><span class="nv">bridge</span><span class="o">=</span>my-bridge<span class="w"> </span>-o<span class="w"> </span><span class="nv">ipv6</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span>my-dhcp-net
 </code></pre></div>
 <blockquote>
 <p><strong>The <code>null</code> IPAM driver is mandatory.</strong> Without it Docker allocates
@@ -842,46 +1228,46 @@ bridge is attached to.</p>
 for every network-level option (<code>lease_timeout</code>, <code>ignore_conflicts</code>,
 <code>skip_routes</code>, <code>gateway</code>, <code>propagate_dns</code>, …).</p>
 <h2 id="3-run-containers">3. Run containers<a class="headerlink" href="#3-run-containers" title="Permanent link">&para;</a></h2>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="gp">$ </span>docker<span class="w"> </span>run<span class="w"> </span>--rm<span class="w"> </span>-ti<span class="w"> </span>--network<span class="w"> </span>my-dhcp-net<span class="w"> </span>alpine
-<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="go">/ # ip address show</span>
-<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="go">159: my-bridge0@if160: &lt;BROADCAST,MULTICAST,UP,LOWER_UP,M-DOWN&gt; mtu 1500 ...</span>
-<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="go">    link/ether 86:41:68:f8:85:b9 brd ff:ff:ff:ff:ff:ff</span>
-<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="go">    inet 10.255.0.246/24 brd 10.255.0.255 scope global my-bridge0</span>
-<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="go">/ # ip route show</span>
-<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="go">default via 10.255.0.123 dev my-bridge0</span>
-<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="go">10.255.0.0/24 dev my-bridge0 scope link src 10.255.0.246</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a><span class="gp">$ </span>docker<span class="w"> </span>run<span class="w"> </span>--rm<span class="w"> </span>-ti<span class="w"> </span>--network<span class="w"> </span>my-dhcp-net<span class="w"> </span>alpine
+<a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a><span class="go">/ # ip address show</span>
+<a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a><span class="go">159: my-bridge0@if160: &lt;BROADCAST,MULTICAST,UP,LOWER_UP,M-DOWN&gt; mtu 1500 ...</span>
+<a id="__codelineno-13-4" name="__codelineno-13-4" href="#__codelineno-13-4"></a><span class="go">    link/ether 86:41:68:f8:85:b9 brd ff:ff:ff:ff:ff:ff</span>
+<a id="__codelineno-13-5" name="__codelineno-13-5" href="#__codelineno-13-5"></a><span class="go">    inet 10.255.0.246/24 brd 10.255.0.255 scope global my-bridge0</span>
+<a id="__codelineno-13-6" name="__codelineno-13-6" href="#__codelineno-13-6"></a><span class="go">/ # ip route show</span>
+<a id="__codelineno-13-7" name="__codelineno-13-7" href="#__codelineno-13-7"></a><span class="go">default via 10.255.0.123 dev my-bridge0</span>
+<a id="__codelineno-13-8" name="__codelineno-13-8" href="#__codelineno-13-8"></a><span class="go">10.255.0.0/24 dev my-bridge0 scope link src 10.255.0.246</span>
 </code></pre></div>
 <p>Or in Docker Compose, against a network created out-of-band (the
 <strong>recommended</strong> approach — the network is shared across compose projects
 and survives <code>compose down</code>):</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="nt">services</span><span class="p">:</span>
-<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">  </span><span class="nt">app</span><span class="p">:</span>
-<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="w">    </span><span class="nt">hostname</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">my-http</span>
-<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="w">    </span><span class="nt">image</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">nginx</span>
-<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="w">    </span><span class="nt">mac_address</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">86:41:68:f8:85:b9</span>
-<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="w">    </span><span class="nt">networks</span><span class="p">:</span>
-<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">dhcp</span>
-<a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a><span class="nt">networks</span><span class="p">:</span>
-<a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a><span class="w">  </span><span class="nt">dhcp</span><span class="p">:</span>
-<a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a><span class="w">    </span><span class="nt">external</span><span class="p">:</span>
-<a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a><span class="w">      </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">my-dhcp-net</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a><span class="nt">services</span><span class="p">:</span>
+<a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a><span class="w">  </span><span class="nt">app</span><span class="p">:</span>
+<a id="__codelineno-14-3" name="__codelineno-14-3" href="#__codelineno-14-3"></a><span class="w">    </span><span class="nt">hostname</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">my-http</span>
+<a id="__codelineno-14-4" name="__codelineno-14-4" href="#__codelineno-14-4"></a><span class="w">    </span><span class="nt">image</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">nginx</span>
+<a id="__codelineno-14-5" name="__codelineno-14-5" href="#__codelineno-14-5"></a><span class="w">    </span><span class="nt">mac_address</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">86:41:68:f8:85:b9</span>
+<a id="__codelineno-14-6" name="__codelineno-14-6" href="#__codelineno-14-6"></a><span class="w">    </span><span class="nt">networks</span><span class="p">:</span>
+<a id="__codelineno-14-7" name="__codelineno-14-7" href="#__codelineno-14-7"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">dhcp</span>
+<a id="__codelineno-14-8" name="__codelineno-14-8" href="#__codelineno-14-8"></a><span class="nt">networks</span><span class="p">:</span>
+<a id="__codelineno-14-9" name="__codelineno-14-9" href="#__codelineno-14-9"></a><span class="w">  </span><span class="nt">dhcp</span><span class="p">:</span>
+<a id="__codelineno-14-10" name="__codelineno-14-10" href="#__codelineno-14-10"></a><span class="w">    </span><span class="nt">external</span><span class="p">:</span>
+<a id="__codelineno-14-11" name="__codelineno-14-11" href="#__codelineno-14-11"></a><span class="w">      </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">my-dhcp-net</span>
 </code></pre></div>
 <p>You can also have Compose manage the network itself (it is then deleted
 on <code>compose down</code>):</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="nt">services</span><span class="p">:</span>
-<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w">  </span><span class="nt">app</span><span class="p">:</span>
-<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="w">    </span><span class="nt">image</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">nginx</span>
-<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="w">    </span><span class="nt">hostname</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">my-server</span>
-<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="w">    </span><span class="nt">networks</span><span class="p">:</span>
-<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">dhcp</span>
-<a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a><span class="nt">networks</span><span class="p">:</span>
-<a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a><span class="w">  </span><span class="nt">dhcp</span><span class="p">:</span>
-<a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a><span class="w">    </span><span class="nt">driver</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ghcr.io/claymore666/docker-net-dhcp:v1.3.4</span>
-<a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a><span class="w">    </span><span class="nt">driver_opts</span><span class="p">:</span>
-<a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a><span class="w">      </span><span class="nt">bridge</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">my-bridge</span>
-<a id="__codelineno-5-12" name="__codelineno-5-12" href="#__codelineno-5-12"></a><span class="w">      </span><span class="nt">ipv6</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;true&#39;</span>
-<a id="__codelineno-5-13" name="__codelineno-5-13" href="#__codelineno-5-13"></a><span class="w">    </span><span class="nt">ipam</span><span class="p">:</span>
-<a id="__codelineno-5-14" name="__codelineno-5-14" href="#__codelineno-5-14"></a><span class="w">      </span><span class="nt">driver</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;null&#39;</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a><span class="nt">services</span><span class="p">:</span>
+<a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a><span class="w">  </span><span class="nt">app</span><span class="p">:</span>
+<a id="__codelineno-15-3" name="__codelineno-15-3" href="#__codelineno-15-3"></a><span class="w">    </span><span class="nt">image</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">nginx</span>
+<a id="__codelineno-15-4" name="__codelineno-15-4" href="#__codelineno-15-4"></a><span class="w">    </span><span class="nt">hostname</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">my-server</span>
+<a id="__codelineno-15-5" name="__codelineno-15-5" href="#__codelineno-15-5"></a><span class="w">    </span><span class="nt">networks</span><span class="p">:</span>
+<a id="__codelineno-15-6" name="__codelineno-15-6" href="#__codelineno-15-6"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">dhcp</span>
+<a id="__codelineno-15-7" name="__codelineno-15-7" href="#__codelineno-15-7"></a><span class="nt">networks</span><span class="p">:</span>
+<a id="__codelineno-15-8" name="__codelineno-15-8" href="#__codelineno-15-8"></a><span class="w">  </span><span class="nt">dhcp</span><span class="p">:</span>
+<a id="__codelineno-15-9" name="__codelineno-15-9" href="#__codelineno-15-9"></a><span class="w">    </span><span class="nt">driver</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ghcr.io/claymore666/docker-net-dhcp:v1.3.4</span>
+<a id="__codelineno-15-10" name="__codelineno-15-10" href="#__codelineno-15-10"></a><span class="w">    </span><span class="nt">driver_opts</span><span class="p">:</span>
+<a id="__codelineno-15-11" name="__codelineno-15-11" href="#__codelineno-15-11"></a><span class="w">      </span><span class="nt">bridge</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">my-bridge</span>
+<a id="__codelineno-15-12" name="__codelineno-15-12" href="#__codelineno-15-12"></a><span class="w">      </span><span class="nt">ipv6</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;true&#39;</span>
+<a id="__codelineno-15-13" name="__codelineno-15-13" href="#__codelineno-15-13"></a><span class="w">    </span><span class="nt">ipam</span><span class="p">:</span>
+<a id="__codelineno-15-14" name="__codelineno-15-14" href="#__codelineno-15-14"></a><span class="w">      </span><span class="nt">driver</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;null&#39;</span>
 </code></pre></div>
 <p>Notes:</p>
 <ul>

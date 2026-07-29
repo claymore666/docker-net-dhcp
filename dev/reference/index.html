@@ -2313,6 +2313,16 @@ consumer-side:</p>
 <td>Use a dedicated bridge, or <code>-o ignore_conflicts=true</code> if the detection is wrong</td>
 </tr>
 <tr>
+<td>Bridge mode: containers time out getting a lease, but the host itself has one</td>
+<td>STP is enabled on the bridge, so each new container <code>veth</code> waits out two forwarding delays (~30s) before it forwards</td>
+<td>Check <code>ip -d link show &lt;bridge&gt; \| grep -o 'stp_state [0-9]*'</code>; see <a href="../bridge-mode/#leave-stp-off-unless-you-need-it">Leave STP off</a></td>
+</tr>
+<tr>
+<td>Bridge mode: everything works until the host reboots, then no container can attach</td>
+<td>The bridge was created with imperative <code>ip link</code> commands, which do not persist</td>
+<td>Use one of the <a href="../bridge-mode/#make-the-bridge-persistent">persistent stanzas</a> for your distro</td>
+</tr>
+<tr>
 <td>Container has an IP but <code>docker inspect</code> shows a different one</td>
 <td>Mid-life re-acquisition after NAK/lease change</td>
 <td>Expected degraded mode; watch <code>lease_changed</code> on <code>/Plugin.Health</code>; restart the container to resync Docker's view</td>
