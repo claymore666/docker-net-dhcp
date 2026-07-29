@@ -2049,6 +2049,12 @@ which looks exactly like a dead endpoint:</p>
 </code></pre></div>
 <p>A plain <code>GET</code> is correct; no request body or method override is needed.
 Anything that can reach the socket can poll this as a liveness check.</p>
+<p>Every counter below is a <strong>plugin-wide total</strong>, not a per-endpoint one.
+A rise tells you <em>some</em> client on this host saw the event, never which
+one — so when a counter moves, the plugin log is what attributes it:
+each bump is emitted alongside a line carrying that endpoint's
+<code>endpoint=&lt;short id&gt;</code> field. Alerting on the counters is right;
+diagnosing a specific container from them alone is not.</p>
 <table>
 <thead>
 <tr>
