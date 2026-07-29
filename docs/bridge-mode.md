@@ -125,7 +125,7 @@ Kind=bridge
 
 [Bridge]
 STP=false
-ForwardDelay=0
+ForwardDelaySec=0
 ```
 
 ```ini
@@ -144,7 +144,14 @@ Name=my-bridge
 
 [Network]
 DHCP=ipv4
+ConfigureWithoutCarrier=yes
 ```
+
+`ConfigureWithoutCarrier=yes` matters at boot: a bridge with no port up
+yet has no carrier, and without it `networkd` can decline to start DHCP
+on the bridge at all. This is what `netplan` emits for the equivalent
+bridge, so it is the reference implementation's own answer rather than
+a workaround.
 
 ```bash
 sudo systemctl enable --now systemd-networkd
