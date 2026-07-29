@@ -8,7 +8,7 @@
 // are decided here rather than discovered in production.
 //
 // These tests cross real DHCP timing boundaries (the fixture lease
-// floor is 2m, so T1=60s, T2=105s, expiry=120s) and add ~9 serial
+// floor is 2m, so T1=60s, T2=105s, expiry=120s) and add ~11 serial
 // minutes — they are split out of the main suite into
 // `make integration-test-failure` (second CI step).
 //
@@ -143,6 +143,22 @@ func outageLines(t *testing.T, ctx context.Context, endpoint string) (leasefail,
 			harness.CountPluginLogLines(t, ctx, endpoint, logLapse)
 }
 
+// containerIPv4 returns the container's first non-loopback IPv4
+// address as seen inside its own netns, or "" if it has none.
+func containerIPv4(t *testing.T, ctx context.Context, ctrID string) string {
+	t.Helper()
+	for _, f := range strings.Fields(harness.ExecOutput(t, ctx, ctrID, "ip", "-4", "addr")) {
+		if !strings.Contains(f, "/") {
+			continue
+		}
+		bare := strings.SplitN(f, "/", 2)[0]
+		if ip := net.ParseIP(bare); ip != nil && ip.To4() != nil && !ip.IsLoopback() {
+			return bare
+		}
+	}
+	return ""
+}
+
 // containerHasIP reports whether `ip -4 addr` inside the container
 // still shows the given address.
 func containerHasIP(t *testing.T, ctx context.Context, ctrID, ip string) bool {
@@ -163,14 +179,30 @@ func inRange(ip, start, end string) bool {
 }
 
 // TestFailure_ServerLossDuringRenewal: the "router rebooted at 3am"
-// scenario. Intended behaviour asserted:
+// scenario, for an outage LONGER than the lease. Intended behaviour
+// asserted:
 //   - while the server is gone, the container KEEPS its address (the
 //     lapse no-op), the plugin stays Healthy, and dhcp_timeouts
 //     records the failure — for THIS endpoint, proven from the
 //     plugin's own log rather than from the plugin-wide counter alone;
-//   - when the server returns with its lease DB intact, the client
-//     re-binds to the SAME address (lease_changed stays flat) without
-//     operator intervention.
+//   - when the server returns, the client re-binds without operator
+//     intervention.
+//
+// It does NOT assert that the address survives, and cannot: the
+// outage is only detectable once the lease has lapsed (rise at
+// lease+grace = 145s, expiry at 120s), so by the time this test has
+// proven an outage the server's lease DB no longer holds the client's
+// address. Worse, the plugin's own retain-through-outage behaviour
+// makes the old address look occupied: the container is still
+// answering on it, dnsmasq pings before offering a freshly allocated
+// address, and hands out a different one. Observed exactly that —
+// DISCOVER requesting .21, OFFER .22.
+//
+// The same-address contract is real, but it belongs to an outage the
+// lease OUTLIVES; TestFailure_ServerReturnsBeforeExpiry owns it.
+// Asserting it here is what made the pre-#278 version of this test
+// green for the wrong reason: it finished in ~77s, inside the 120s
+// lease, so the server still held the entry and re-ACKed it.
 func TestFailure_ServerLossDuringRenewal(t *testing.T) {
 	// 8m, not 6m: the outage is only detectable after a bound lease
 	// lapses (~120s) plus up to one watchdog period, and the re-bind
@@ -268,15 +300,141 @@ func TestFailure_ServerLossDuringRenewal(t *testing.T) {
 		t.Fatal("no DHCPACK for the container's MAC within 90s of the server returning")
 	}
 	t.Logf("re-bound at t+%.0fs after the server came back", time.Since(restarted).Seconds())
-	if !containerHasIP(t, ctx, id, ip) {
-		t.Errorf("container's address changed across the outage; with a preserved lease DB it must re-bind to %s", ip)
+
+	// The address may or may not be the original one (see this test's
+	// header) — but whichever it is, the container and the server must
+	// agree on it. A re-bind that leaves the container holding an
+	// address the server has since given away is the failure mode worth
+	// catching here, and it is what the dropped same-address assertion
+	// was accidentally standing in for.
+	live := containerIPv4(t, ctx, id)
+	if live == "" {
+		t.Fatal("container has no IPv4 address after the server returned; the client did not recover")
 	}
+	if live != ip {
+		t.Logf("address changed across the outage: %s -> %s (expected when the outage outlives the lease)", ip, live)
+	}
+	if acked := ef.LastACKAddress(mac); acked != "" && acked != live {
+		t.Errorf("container holds %s but the server's last DHCPACK for %s was %s; the two have diverged", live, mac, acked)
+	}
+
+	after, err := harness.PluginHealth(ctx, cli)
+	if err != nil {
+		t.Fatalf("Plugin.Health (after): %v", err)
+	}
+	if !after.Healthy {
+		t.Error("plugin still unhealthy after the server returned and the client re-bound")
+	}
+}
+
+// TestFailure_ServerReturnsBeforeExpiry: the same outage, but SHORT —
+// the server is back while the lease is still live. This is where the
+// address-stability contract belongs, and it is the common real case
+// (a router reboot takes well under a lease). Intended behaviour:
+//   - the client re-binds to the SAME address, because the server's
+//     lease DB still holds it;
+//   - lease_changed stays flat — no consumer sees a renumbering;
+//   - dhcp_timeouts stays flat for this endpoint: the outage never
+//     reached lease+grace, so there was nothing to report.
+//
+// Together with TestFailure_ServerLossDuringRenewal this pins both
+// sides of the boundary: inside the lease the address is guaranteed,
+// past it only recovery is.
+func TestFailure_ServerReturnsBeforeExpiry(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
+	defer cancel()
+
+	const netName = "dh-itest-fshort"
+
+	ef := harness.NewEphemeralFixture(t)
+	t.Cleanup(func() {
+		if t.Failed() {
+			ef.DumpLogs(func(s string) { t.Log(s) })
+			harness.DumpPluginLog(t)
+		}
+	})
+
+	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	if err != nil {
+		t.Fatalf("docker client: %v", err)
+	}
+	defer cli.Close()
+
+	pre, err := harness.PluginHealth(ctx, cli)
+	if err != nil {
+		t.Fatalf("Plugin.Health (pre): %v", err)
+	}
+
+	harness.CreateNetwork(t, ctx, netName, "macvlan", map[string]string{
+		"parent": harness.EphemeralHostVeth,
+	})
+	id, ip, mac := harness.RunContainer(t, ctx, netName, "dh-itest-fshort-ctr")
+	t.Logf("bound: ip=%s mac=%s", ip, mac)
+
+	awaitBoundPersistentClient(t, ctx, cli, pre)
+	ep := harness.EndpointShortID(t, ctx, cli, id, netName)
+
+	base, err := harness.PluginHealth(ctx, cli)
+	if err != nil {
+		t.Fatalf("Plugin.Health (baseline): %v", err)
+	}
+	baseFail, baseWatch := outageLines(t, ctx, ep)
+
+	// Down and back up well inside the 120s lease. 60s is long enough
+	// to cross T1 (the renewal the client will fail) and short enough
+	// that the server's entry is still live when it returns.
+	acksBefore := ef.CountLogLines("DHCPACK", mac)
+	killed := time.Now()
+	ef.Stop()
+	t.Log("server stopped inside the lease; restarting in 60s (lease stays live throughout)")
+
+	select {
+	case <-time.After(60 * time.Second):
+	case <-ctx.Done():
+		t.Fatal("context expired during the short outage")
+	}
+	ef.StartAgain()
+	t.Logf("server back at t+%.0fs, still inside the lease; awaiting the renewal ACK...", time.Since(killed).Seconds())
+
+	deadline := time.Now().Add(90 * time.Second)
+	recovered := false
+	for time.Now().Before(deadline) {
+		if ef.CountLogLines("DHCPACK", mac) > acksBefore {
+			recovered = true
+			break
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	if !recovered {
+		t.Fatal("no DHCPACK for the container's MAC within 90s of the server returning inside the lease")
+	}
+	t.Logf("re-ACKed at t+%.0fs after the kill", time.Since(killed).Seconds())
+
+	// Both halves matter: the server must have handed the SAME address
+	// back (its own ACK is the authority), and the container must still
+	// be holding it. Checking only the container would pass on the
+	// plugin's retain-through-outage behaviour alone, without the
+	// server ever having agreed.
+	if acked := ef.LastACKAddress(mac); acked != ip {
+		t.Errorf("server's last DHCPACK for %s was %s, want %s; the lease was still live and must have been returned", mac, acked, ip)
+	}
+	if !containerHasIP(t, ctx, id, ip) {
+		t.Errorf("container's address changed across an outage the lease outlived; the server still held %s and must have returned it", ip)
+	}
+
 	after, err := harness.PluginHealth(ctx, cli)
 	if err != nil {
 		t.Fatalf("Plugin.Health (after): %v", err)
 	}
 	if after.LeaseChanged != base.LeaseChanged {
-		t.Errorf("lease_changed moved %d -> %d across an outage with a preserved lease DB; want flat", base.LeaseChanged, after.LeaseChanged)
+		t.Errorf("lease_changed moved %d -> %d across an outage shorter than the lease; want flat", base.LeaseChanged, after.LeaseChanged)
+	}
+	nowFail, nowWatch := outageLines(t, ctx, ep)
+	if d := (nowFail - baseFail) + (nowWatch - baseWatch); d != 0 {
+		t.Errorf("endpoint %s logged %d outage line(s) for an outage that never reached lease+grace; the watchdog fired early", ep, d)
+	}
+	if !after.Healthy {
+		t.Error("plugin unhealthy after an outage it should have ridden out silently")
 	}
 }
 
