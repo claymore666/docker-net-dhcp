@@ -13,18 +13,25 @@
 // `make integration-test-failure` (second CI step).
 //
 // dhcpcd timing facts the asserts below lean on (see pkg/dhcp):
-//   - a dead server produces NO event at T1/T2 (dhcpcd retries silently
-//     while re-discovering); the first internal "leasefail" comes from
-//     dhcpcd's EXPIRE when the bound lease finally lapses (at expiry),
-//     and the plugin's outage watchdog then increments dhcp_timeouts on
-//     a recurring ~30s period (dhcpOutageTick/Grace) while still
-//     acquiring. dhcp_timeouts therefore moves around expiry, not at T1.
+//   - a dead server produces NO event at T1/T2, and — the part this
+//     file originally got wrong, see #353 — no usable event at expiry
+//     either. Under `--noconfigure` dhcpcd reports a lapsed lease as
+//     RELEASE, which is indistinguishable from the one a graceful stop
+//     emits and so can never be counted as a loss. From the kill
+//     onward dhcpcd may say nothing at all.
+//   - dhcp_timeouts therefore moves on the plugin's OWN reckoning: the
+//     outage watchdog knows the granted lease lifetime
+//     (dhcp.Info.LeaseSeconds) and calls the outage once
+//     lastAffirmed + lease + grace has passed, re-checking on a ~30s
+//     tick (dhcpOutageTick/Grace). On the fixture's 120s lease that is
+//     145s after the last bind/renew, and up to ~175s because the tick
+//     phase is arbitrary. The budgets below are sized from that.
 //   - dhcpcd keeps re-DISCOVERing forever, so recovery after the server
 //     returns lands within ~30s, and while it's gone dhcp_timeouts keeps
 //     climbing on the watchdog's ~30s period.
-//   - at expiry the plugin DELIBERATELY does NOT tear down the address
-//     on EXPIRE (would wipe copied routes, see dhcp_manager.go) — the
-//     container keeps its address through an outage.
+//   - the plugin DELIBERATELY does NOT tear down the address when the
+//     lease lapses (would wipe copied routes, see dhcp_manager.go) —
+//     the container keeps its address through an outage.
 //
 // TWO RULES THIS FILE LEARNED THE HARD WAY (#278). Both cost almost
 // nothing to keep, and dropping either one silently guts these tests:
@@ -68,8 +75,21 @@ import (
 // counters themselves do not.
 const (
 	logLeaseFail = "dhcp failed to get a lease"
+	// The watchdog has two wordings and a bound client hits the second
+	// one FIRST: a lease that lapses unheard is reported as the
+	// deadline line, and only the repeat ticks after it say "still
+	// unreachable". Matching just one of the two would make these
+	// tests race the wording (#353).
 	logWatchdog  = "DHCP server still unreachable"
+	logLapse     = "passed its renewal deadline"
 	logIPChanged = "dhcp renew with changed IP"
+
+	// outageRiseBudget bounds the wait for the first dhcp_timeouts rise
+	// after a BOUND client's server dies. The plugin calls the outage at
+	// lastAffirmed + lease + grace (120s + 25s on the fixture) and only
+	// notices on its next ~30s tick, so the true worst case is ~175s;
+	// the rest is runner-load headroom.
+	outageRiseBudget = 240 * time.Second
 )
 
 // failureHealth polls /Plugin.Health until cond is true or the budget
@@ -109,14 +129,18 @@ func awaitBoundPersistentClient(t *testing.T, ctx context.Context, cli *docker.C
 }
 
 // outageLines counts, for one endpoint, the plugin-log records of the
-// two events that bump dhcp_timeouts: a leasefail (dhcpcd EXPIRE or
-// TIMEOUT) and an outage-watchdog tick. Returned separately because
-// which of the two fires is the diagnostic — a leasefail means dhcpcd
-// spoke, a watchdog line means the plugin synthesised the signal.
+// two events that bump dhcp_timeouts: a leasefail (a dhcpcd TIMEOUT
+// while acquiring) and an outage-watchdog tick. Returned separately
+// because which of the two fires is the diagnostic — a leasefail means
+// dhcpcd spoke, a watchdog line means the plugin synthesised the
+// signal from the lease deadline. For a client that was BOUND before
+// the server died, expect the watchdog: dhcpcd's lapse report is a
+// RELEASE and is deliberately dropped (#353).
 func outageLines(t *testing.T, ctx context.Context, endpoint string) (leasefail, watchdog int) {
 	t.Helper()
 	return harness.CountPluginLogLines(t, ctx, endpoint, logLeaseFail),
-		harness.CountPluginLogLines(t, ctx, endpoint, logWatchdog)
+		harness.CountPluginLogLines(t, ctx, endpoint, logWatchdog) +
+			harness.CountPluginLogLines(t, ctx, endpoint, logLapse)
 }
 
 // containerHasIP reports whether `ip -4 addr` inside the container
@@ -141,7 +165,7 @@ func inRange(ip, start, end string) bool {
 // TestFailure_ServerLossDuringRenewal: the "router rebooted at 3am"
 // scenario. Intended behaviour asserted:
 //   - while the server is gone, the container KEEPS its address (the
-//     EXPIRE no-op), the plugin stays Healthy, and dhcp_timeouts
+//     lapse no-op), the plugin stays Healthy, and dhcp_timeouts
 //     records the failure — for THIS endpoint, proven from the
 //     plugin's own log rather than from the plugin-wide counter alone;
 //   - when the server returns with its lease DB intact, the client
@@ -203,11 +227,11 @@ func TestFailure_ServerLossDuringRenewal(t *testing.T) {
 	ef.Stop()
 	t.Logf("server killed; a BOUND lease (fixture lease %s) has to lapse before the plugin can report a timeout", harness.LeaseTime)
 
-	h, ok := failureHealth(t, ctx, cli, 200*time.Second, func(h *harness.HealthResponse) bool {
+	h, ok := failureHealth(t, ctx, cli, outageRiseBudget, func(h *harness.HealthResponse) bool {
 		return h.DHCPTimeouts > base.DHCPTimeouts
 	})
 	if !ok {
-		t.Fatalf("dhcp_timeouts never rose above %d within 200s of the server dying (last: %+v)", base.DHCPTimeouts, h)
+		t.Fatalf("dhcp_timeouts never rose above %d within %s of the server dying (last: %+v)", base.DHCPTimeouts, outageRiseBudget, h)
 	}
 	nowFail, nowWatch := outageLines(t, ctx, ep)
 	t.Logf("dhcp_timeouts %d -> %d at t+%.0fs after the kill; endpoint %s logged +%d leasefail / +%d watchdog line(s)",
@@ -219,7 +243,7 @@ func TestFailure_ServerLossDuringRenewal(t *testing.T) {
 		t.Error("plugin went unhealthy during a server outage; a dead DHCP server is a degraded mode, not a plugin failure")
 	}
 	if !containerHasIP(t, ctx, id, ip) {
-		t.Errorf("container lost %s during the outage; the EXPIRE no-op should retain the address", ip)
+		t.Errorf("container lost %s during the outage; a lapsed lease is deliberately a no-op and should retain the address", ip)
 	}
 
 	// Server returns, lease DB intact: the dhcpcd retry loop must
@@ -448,11 +472,11 @@ func TestFailure_LeaseExpiry(t *testing.T) {
 	ef.Stop()
 	t.Logf("server killed permanently; a BOUND lease (fixture lease %s) now has to cross T2 and full expiry", harness.LeaseTime)
 
-	first, ok := failureHealth(t, ctx, cli, 200*time.Second, func(h *harness.HealthResponse) bool {
+	first, ok := failureHealth(t, ctx, cli, outageRiseBudget, func(h *harness.HealthResponse) bool {
 		return h.DHCPTimeouts > base.DHCPTimeouts
 	})
 	if !ok {
-		t.Fatalf("dhcp_timeouts never rose above %d within 200s of the kill (last: %+v)", base.DHCPTimeouts, first)
+		t.Fatalf("dhcp_timeouts never rose above %d within %s of the kill (last: %+v)", base.DHCPTimeouts, outageRiseBudget, first)
 	}
 	firstFail, firstWatch := outageLines(t, ctx, ep)
 	t.Logf("first dhcp_timeouts rise %d -> %d at t+%.0fs after the kill; endpoint %s logged +%d leasefail / +%d watchdog line(s)",
