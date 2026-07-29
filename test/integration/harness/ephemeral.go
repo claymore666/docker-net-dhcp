@@ -4,6 +4,7 @@ package harness
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -396,6 +397,34 @@ func (ef *EphemeralFixture) CountLogLines(substrings ...string) int {
 		}
 	}
 	return count
+}
+
+// LastACKAddress returns the address in the most recent DHCPACK the
+// server logged for mac, or "" if it never ACKed one. dnsmasq writes
+// these as `DHCPACK(<iface>) <ip> <mac> [<hostname>]`, so the address
+// is the field after the DHCPACK token. Use it to check that the
+// container and the server agree on which address the container holds
+// — the container's own view alone cannot catch a divergence.
+func (ef *EphemeralFixture) LastACKAddress(mac string) string {
+	ef.t.Helper()
+	last := ""
+	for _, line := range strings.Split(ef.readLog(), "\n") {
+		l := strings.ToLower(line)
+		if !strings.Contains(l, "dhcpack") || !strings.Contains(l, strings.ToLower(mac)) {
+			continue
+		}
+		fields := strings.Fields(line)
+		for i, f := range fields {
+			if !strings.HasPrefix(f, "DHCPACK") || i+1 >= len(fields) {
+				continue
+			}
+			if ip := net.ParseIP(fields[i+1]); ip != nil && ip.To4() != nil {
+				last = fields[i+1]
+			}
+			break
+		}
+	}
+	return last
 }
 
 func (ef *EphemeralFixture) readLog() string {

@@ -155,6 +155,33 @@ func RunContainerUser(t *testing.T, ctx context.Context, networkName, containerN
 	return // unreachable
 }
 
+// EndpointShortID returns the first 12 characters of the container's
+// libnetwork endpoint id on networkName — the exact form the plugin
+// puts in its `endpoint=` log field (pkg/plugin.shortID).
+//
+// This is the join key between a test and the plugin's own record of
+// what it did to that endpoint, which is what makes an assertion
+// endpoint-scoped rather than plugin-wide (#278). See
+// CountPluginLogLines.
+func EndpointShortID(t *testing.T, ctx context.Context, cli *docker.Client, containerID, networkName string) string {
+	t.Helper()
+	ins, err := cli.ContainerInspect(ctx, containerID)
+	if err != nil {
+		t.Fatalf("ContainerInspect(%s): %v", containerID, err)
+	}
+	ep, ok := ins.NetworkSettings.Networks[networkName]
+	if !ok {
+		t.Fatalf("container %s is not attached to network %q", containerID, networkName)
+	}
+	if ep.EndpointID == "" {
+		t.Fatalf("container %s has no endpoint id on network %q", containerID, networkName)
+	}
+	if len(ep.EndpointID) < 12 {
+		return ep.EndpointID
+	}
+	return ep.EndpointID[:12]
+}
+
 // ExecOutput runs `docker exec` with the given args and returns
 // combined stdout+stderr as a string. Use for quick assertions like
 // `ip -4 addr show eth0` from inside a test container.

@@ -524,6 +524,13 @@ sudo curl -s --unix-socket /run/docker/plugins/$PLUGIN_ID/net-dhcp.sock \
 A plain `GET` is correct; no request body or method override is needed.
 Anything that can reach the socket can poll this as a liveness check.
 
+Every counter below is a **plugin-wide total**, not a per-endpoint one.
+A rise tells you *some* client on this host saw the event, never which
+one — so when a counter moves, the plugin log is what attributes it:
+each bump is emitted alongside a line carrying that endpoint's
+`endpoint=<short id>` field. Alerting on the counters is right;
+diagnosing a specific container from them alone is not.
+
 | field | healthy-affecting | meaning |
 | ----- | ----------------- | ------- |
 | `healthy` | — | `false` when `recovery_failed`, `join_start_failures`, or `tombstone_write_failures` is non-zero — an operator should look. The plugin keeps serving fresh attaches either way. |
