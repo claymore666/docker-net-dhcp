@@ -175,6 +175,6 @@ documented once, in the [driver reference](reference.md):
 - [DHCPv6](reference.md#dhcpv6-ipv6true)
 - [Recovery after a plugin restart](reference.md#recovery-after-a-plugin-restart)
 - [`/Plugin.Health` and the counters](reference.md#pluginhealth)
-- [Plugin settings](reference.md#plugin-settings) — `LOG_LEVEL`, `AWAIT_TIMEOUT`, `STATE_DIR`
+- [Plugin settings](reference.md#plugin-settings) — `LOG_LEVEL`, `AWAIT_TIMEOUT`, `STATE_DIR`, `OUTAGE_TICK`, `OUTAGE_GRACE`
 
 For how it works under the hood, see [How it works](internals.md).
