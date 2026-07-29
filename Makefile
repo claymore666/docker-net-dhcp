@@ -7,6 +7,18 @@ BINARY = bin/net-dhcp
 
 PLUGIN_COVER_TAG ?= golang-cover
 
+# Outage-watchdog cadence for locally built / test plugins (#278). The
+# shipped defaults are 30s/25s; the failure suite pays them on top of a
+# fixture lease it cannot shorten below dnsmasq's 2-minute floor, so a
+# tighter cadence buys back most of that wait. The grace stays well
+# above a healthy client's acquisition time — drop it near zero and
+# ordinary start-up registers as an outage.
+#
+# These are set on locally created plugins only. Released images carry
+# config.json's defaults, and nothing here reaches them.
+TEST_OUTAGE_TICK ?= 2s
+TEST_OUTAGE_GRACE ?= 10s
+
 .PHONY: all debug build create enable disable pdebug push clean integration-test \
         integration-test-failure integration-cleanup \
         build-cover plugin-cover create-cover enable-cover disable-cover
@@ -34,7 +46,8 @@ plugin: plugin/rootfs config.json
 create: plugin
 	docker plugin rm -f $(PLUGIN_NAME):$(PLUGIN_TAG) || true
 	docker plugin create $(PLUGIN_NAME):$(PLUGIN_TAG) $<
-	docker plugin set $(PLUGIN_NAME):$(PLUGIN_TAG) LOG_LEVEL=trace
+	docker plugin set $(PLUGIN_NAME):$(PLUGIN_TAG) LOG_LEVEL=trace \
+	    OUTAGE_TICK=$(TEST_OUTAGE_TICK) OUTAGE_GRACE=$(TEST_OUTAGE_GRACE)
 
 enable: plugin
 	docker plugin enable $(PLUGIN_NAME):$(PLUGIN_TAG)
@@ -72,7 +85,8 @@ plugin-cover: plugin-cover/rootfs config-cover.json
 create-cover: plugin-cover
 	docker plugin rm -f $(PLUGIN_NAME):$(PLUGIN_COVER_TAG) || true
 	docker plugin create $(PLUGIN_NAME):$(PLUGIN_COVER_TAG) $<
-	docker plugin set $(PLUGIN_NAME):$(PLUGIN_COVER_TAG) LOG_LEVEL=trace
+	docker plugin set $(PLUGIN_NAME):$(PLUGIN_COVER_TAG) LOG_LEVEL=trace \
+	    OUTAGE_TICK=$(TEST_OUTAGE_TICK) OUTAGE_GRACE=$(TEST_OUTAGE_GRACE)
 
 enable-cover:
 	docker plugin enable $(PLUGIN_NAME):$(PLUGIN_COVER_TAG)
@@ -110,11 +124,13 @@ integration-test:
 # ~9 serial minutes of mostly deliberate waiting, so it runs as its
 # own step instead of inflating the main suite's feedback loop.
 #
-# 20m, not 15m (#278): each test now waits for the persistent client's
-# own bind BEFORE killing the server, so the outage it injects has to
-# be detected the slow way — a bound 2m lease lapsing, plus up to one
-# 30s watchdog period. Three tests at a ~300s worst case each sat
-# exactly on the old 15m ceiling.
+# 20m, not 15m (#278): each test waits for the persistent client's own
+# bind BEFORE killing the server, so the outage it injects has to be
+# detected the slow way — a bound 2m lease lapsing, plus the watchdog
+# grace and up to one tick. TEST_OUTAGE_* above trims the plugin-side
+# part of that; the 2m lease floor is dnsmasq's and stays (#356). The
+# ceiling is kept sized for the shipped 30s/25s cadence so the suite
+# still passes against a default-configured plugin.
 integration-test-failure:
 	@if [ "$$(id -u)" -ne 0 ]; then \
 		echo "integration-test-failure must run as root. Re-run with sudo."; \

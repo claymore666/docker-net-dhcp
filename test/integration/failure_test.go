@@ -13,22 +13,32 @@
 // `make integration-test-failure` (second CI step).
 //
 // dhcpcd timing facts the asserts below lean on (see pkg/dhcp):
+//
 //   - a dead server produces NO event at T1/T2, and — the part this
 //     file originally got wrong, see #353 — no usable event at expiry
 //     either. Under `--noconfigure` dhcpcd reports a lapsed lease as
 //     RELEASE, which is indistinguishable from the one a graceful stop
 //     emits and so can never be counted as a loss. From the kill
 //     onward dhcpcd may say nothing at all.
+//
 //   - dhcp_timeouts therefore moves on the plugin's OWN reckoning: the
 //     outage watchdog knows the granted lease lifetime
 //     (dhcp.Info.LeaseSeconds) and calls the outage once
-//     lastAffirmed + lease + grace has passed, re-checking on a ~30s
-//     tick (dhcpOutageTick/Grace). On the fixture's 120s lease that is
-//     145s after the last bind/renew, and up to ~175s because the tick
-//     phase is arbitrary. The budgets below are sized from that.
+//     lastAffirmed + lease + grace has passed, re-checking on each
+//     tick. CI installs the plugin with OUTAGE_TICK=2s /
+//     OUTAGE_GRACE=10s (#278), so on the fixture's 120s lease the rise
+//     lands ~132s after the last bind/renew. Against a plugin left on
+//     the shipped 30s/25s defaults it is 145–175s instead.
+//
+//     The budgets below are sized for the SLOWER of the two on purpose.
+//     They are poll deadlines, not waits: each test returns as soon as
+//     the counter moves, so a generous budget costs nothing and keeps
+//     these tests correct when run against a default-cadence plugin.
+//
 //   - dhcpcd keeps re-DISCOVERing forever, so recovery after the server
 //     returns lands within ~30s, and while it's gone dhcp_timeouts keeps
-//     climbing on the watchdog's ~30s period.
+//     climbing once per watchdog tick.
+//
 //   - the plugin DELIBERATELY does NOT tear down the address when the
 //     lease lapses (would wipe copied routes, see dhcp_manager.go) —
 //     the container keeps its address through an outage.
@@ -42,8 +52,8 @@
 //     lease — the long-lived client Join starts may not have confirmed
 //     its own lease yet. Kill the server inside that window and the
 //     client never leaves the "acquiring" state it starts in; the
-//     watchdog then fires within ~30s and the test goes green having
-//     never crossed the expiry it claims to exercise. Measured: both
+//     watchdog then fires one grace later and the test goes green
+//     having never crossed the expiry it claims to exercise. Both
 //     outage tests used to finish in ~77s, which is less than the one
 //     120s lease they were supposedly waiting out.
 //  2. Assert endpoint-scoped, not plugin-wide. Every health counter is
@@ -85,10 +95,12 @@ const (
 	logIPChanged = "dhcp renew with changed IP"
 
 	// outageRiseBudget bounds the wait for the first dhcp_timeouts rise
-	// after a BOUND client's server dies. The plugin calls the outage at
-	// lastAffirmed + lease + grace (120s + 25s on the fixture) and only
-	// notices on its next ~30s tick, so the true worst case is ~175s;
-	// the rest is runner-load headroom.
+	// after a BOUND client's server dies. Sized for the shipped 30s/25s
+	// cadence — lease + grace (120s + 25s) plus up to one 30s tick,
+	// ~175s worst case — not for the tighter cadence CI installs, so
+	// the same test is valid either way. It is a deadline, not a wait:
+	// under CI's 2s/10s the rise arrives at ~132s and the poll returns
+	// there.
 	outageRiseBudget = 240 * time.Second
 )
 
@@ -189,10 +201,10 @@ func inRange(ip, start, end string) bool {
 //     intervention.
 //
 // It does NOT assert that the address survives, and cannot: the
-// outage is only detectable once the lease has lapsed (rise at
-// lease+grace = 145s, expiry at 120s), so by the time this test has
-// proven an outage the server's lease DB no longer holds the client's
-// address. Worse, the plugin's own retain-through-outage behaviour
+// outage is only detectable once the lease has lapsed (the rise is at
+// lease+grace, expiry at 120s — true at any grace, since the grace is
+// added ON TOP of the lease), so by the time this test has proven an
+// outage the server's lease DB no longer holds the client's address. Worse, the plugin's own retain-through-outage behaviour
 // makes the old address look occupied: the container is still
 // answering on it, dnsmasq pings before offering a freshly allocated
 // address, and hands out a different one. Observed exactly that —
@@ -643,9 +655,11 @@ func TestFailure_LeaseExpiry(t *testing.T) {
 		t.Errorf("dhcp_timeouts rose but the plugin logged no outage line for endpoint %s: the counter is plugin-wide, so this rise belongs to some other client (#278)", ep)
 	}
 
-	// The retry loop must keep recording failures (~30s period), and
-	// keep recording them AGAINST THIS ENDPOINT — a watchdog that
-	// stalled on our client is invisible in the plugin-wide total.
+	// The retry loop must keep recording failures — once per watchdog
+	// tick — and keep recording them AGAINST THIS ENDPOINT: a watchdog
+	// that stalled on our client is invisible in the plugin-wide total.
+	// 80s covers one full 30s tick with headroom for a default-cadence
+	// plugin; under CI's 2s tick the second rise lands almost at once.
 	second, ok := failureHealth(t, ctx, cli, 80*time.Second, func(h *harness.HealthResponse) bool {
 		return h.DHCPTimeouts > first.DHCPTimeouts
 	})

@@ -50,6 +50,11 @@ const (
 // the lookup misses, the persistent client will fill in the hostname
 // on first renewal, so the worst case is "first lease appears in the
 // upstream DHCP server's table without a hostname for a few minutes".
+// defaultAwaitTimeout is the fallback for Options.AwaitTimeout and is
+// the single source of truth for the value config.json ships as
+// AWAIT_TIMEOUT's default.
+const defaultAwaitTimeout = 10 * time.Second
+
 const initialDHCPHostnameLookupTimeout = 2 * time.Second
 
 // recoveryBudget caps the wall-time the plugin spends rebuilding its
@@ -274,9 +279,32 @@ type joinHint struct {
 	Ifname string
 }
 
+// Options carries the plugin's runtime knobs. Every field is sourced
+// from an environment variable declared in config.json and parsed in
+// cmd/net-dhcp; a zero field means "unset", and NewPlugin substitutes
+// the documented default. Grouping them beats growing NewPlugin's
+// parameter list one knob at a time.
+type Options struct {
+	// AwaitTimeout caps the polling helpers (sandbox readiness, link
+	// rename, netns appearance). AWAIT_TIMEOUT, default 10s.
+	AwaitTimeout time.Duration
+
+	// OutageTick is how often the DHCP-outage watchdog re-checks, and
+	// so the resolution of dhcp_timeouts. OUTAGE_TICK, default 30s.
+	OutageTick time.Duration
+
+	// OutageGrace is the settling time before the watchdog will call an
+	// outage. It must stay comfortably above how long a healthy client
+	// takes to acquire its first lease — below that, ordinary start-up
+	// registers as an outage. OUTAGE_GRACE, default 25s.
+	OutageGrace time.Duration
+}
+
 // Plugin is the DHCP network plugin
 type Plugin struct {
 	awaitTimeout time.Duration
+	outageTick   time.Duration
+	outageGrace  time.Duration
 	startTime    time.Time
 
 	docker dockerClient
@@ -953,8 +981,19 @@ func (p *Plugin) initialDHCPHostname(ctx context.Context, networkID, endpointID 
 	return hostname
 }
 
-// NewPlugin creates a new Plugin
-func NewPlugin(awaitTimeout time.Duration) (*Plugin, error) {
+// NewPlugin creates a new Plugin. Zero-valued Options fields take the
+// documented defaults, so NewPlugin(Options{}) is a valid production
+// configuration.
+func NewPlugin(opts Options) (*Plugin, error) {
+	if opts.AwaitTimeout <= 0 {
+		opts.AwaitTimeout = defaultAwaitTimeout
+	}
+	if opts.OutageTick <= 0 {
+		opts.OutageTick = defaultOutageTick
+	}
+	if opts.OutageGrace <= 0 {
+		opts.OutageGrace = defaultOutageGrace
+	}
 	client, err := docker.NewClientWithOpts(
 		docker.WithHost("unix:///run/docker.sock"),
 		docker.WithAPIVersionNegotiation(),
@@ -968,7 +1007,9 @@ func NewPlugin(awaitTimeout time.Duration) (*Plugin, error) {
 	}
 
 	p := Plugin{
-		awaitTimeout: awaitTimeout,
+		awaitTimeout: opts.AwaitTimeout,
+		outageTick:   opts.OutageTick,
+		outageGrace:  opts.OutageGrace,
 		startTime:    time.Now(),
 
 		docker: client,

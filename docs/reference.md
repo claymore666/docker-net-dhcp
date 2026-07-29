@@ -64,6 +64,8 @@ each group.
 | `LOG_LEVEL` | `info` |
 | `AWAIT_TIMEOUT` | `10s` |
 | `STATE_DIR` | `/var/lib/net-dhcp` |
+| `OUTAGE_TICK` | `30s` |
+| `OUTAGE_GRACE` | `25s` |
 
 **[Health counters](#pluginhealth)** — `/Plugin.Health` on the plugin socket. Three flip `healthy` to `false`: `recovery_failed`, `join_start_failures`, `tombstone_write_failures`.
 
@@ -306,6 +308,17 @@ Set with `docker plugin set <plugin> NAME=value`; take effect after
 | `LOG_LEVEL` | `info` | logrus level (`trace`, `debug`, `info`, `warn`, `error`). `trace` includes per-event `dhcpcd` lines and full HTTP-RPC bodies. |
 | `AWAIT_TIMEOUT` | `10s` | Cap on the polling helpers (sandbox readiness, link rename, netns appearance). Bump if a slow daemon-restore window starves endpoint setup. |
 | `STATE_DIR` | `/var/lib/net-dhcp` | Where per-network options, the tombstone file, and the `audit_log` ledger persist (inside the plugin rootfs). |
+| `OUTAGE_TICK` | `30s` | How often the DHCP-outage watchdog re-checks each client, and so the resolution of `dhcp_timeouts` — the counter climbs about once per tick while a server is unreachable. Lower it for a finer-grained signal at the cost of a little more wakeup churn. |
+| `OUTAGE_GRACE` | `25s` | Settling time before the watchdog will call an outage, added **on top of** the lease lifetime, so detection lands at `lease + grace`. Also the window a never-yet-bound client gets before its first failure is reported. |
+
+> **`OUTAGE_GRACE` must stay above your clients' normal acquisition
+> time.** The grace is what stops one slow DHCP exchange from
+> registering as an outage; set it below how long a healthy container
+> takes to get its first lease and ordinary start-up will report
+> failures. The defaults suit a normal LAN — these two exist mainly so
+> the integration suite can detect an outage without waiting out the
+> production cadence on top of its fixture's lease, and most
+> deployments should leave them alone.
 
 ---
 
