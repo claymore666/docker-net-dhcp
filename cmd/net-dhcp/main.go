@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"flag"
+	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
@@ -107,15 +108,42 @@ func main() {
 		}()
 	}
 
-	awaitTimeout := 10 * time.Second // matches config.json default
-	if t, ok := os.LookupEnv("AWAIT_TIMEOUT"); ok {
-		awaitTimeout, err = time.ParseDuration(t)
-		if err != nil {
-			fatalCleanup(err, "Failed to parse await timeout")
+	// Each knob is left at zero when unset so plugin.NewPlugin applies
+	// the documented default — the defaults live there, not here, and
+	// config.json's declared values must match them.
+	var opts plugin.Options
+	durationEnv := func(name string, into *time.Duration) {
+		raw, ok := os.LookupEnv(name)
+		if !ok || raw == "" {
+			return
 		}
+		d, perr := time.ParseDuration(raw)
+		if perr != nil {
+			fatalCleanup(perr, "Failed to parse "+name)
+		}
+		if d <= 0 {
+			fatalCleanup(fmt.Errorf("%s must be positive, got %s", name, raw), "Invalid "+name)
+		}
+		*into = d
+	}
+	durationEnv("AWAIT_TIMEOUT", &opts.AwaitTimeout)
+	durationEnv("OUTAGE_TICK", &opts.OutageTick)
+	durationEnv("OUTAGE_GRACE", &opts.OutageGrace)
+
+	// The outage knobs exist for the integration suite, where the
+	// fixture's lease floor makes the production cadence expensive
+	// (#278). A production deployment should not normally carry them,
+	// and a grace below a healthy client's acquisition time turns
+	// ordinary start-up into a reported outage — so say so at startup
+	// rather than leaving it to be discovered from the counters.
+	if opts.OutageTick > 0 || opts.OutageGrace > 0 {
+		log.WithFields(log.Fields{
+			"outage_tick":  opts.OutageTick,
+			"outage_grace": opts.OutageGrace,
+		}).Warn("DHCP-outage watchdog cadence overridden; defaults are 30s/25s")
 	}
 
-	p, err := plugin.NewPlugin(awaitTimeout)
+	p, err := plugin.NewPlugin(opts)
 	if err != nil {
 		fatalCleanup(err, "Failed to create plugin")
 	}

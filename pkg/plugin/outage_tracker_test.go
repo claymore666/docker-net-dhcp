@@ -65,7 +65,7 @@ func TestOutageTracker_HealthyRenewalNeverCounts(t *testing.T) {
 	now := t0
 	for cycle := 0; cycle < 20; cycle++ {
 		// Tick across the whole cycle at the real watchdog cadence.
-		for at := 1 * time.Second; at < 105*time.Second; at += dhcpOutageTick {
+		for at := 1 * time.Second; at < 105*time.Second; at += defaultOutageTick {
 			if count, _ := o.due(now.Add(at), testGrace); count {
 				t.Fatalf("cycle %d: counted a timeout at t+%v on a client that renews at T2", cycle, at)
 			}

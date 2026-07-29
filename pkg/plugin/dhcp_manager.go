@@ -61,8 +61,42 @@ const dnsPropagateTimeout = 2 * time.Second
 //
 // The tick is also the resolution of the signal: dhcp_timeouts climbs
 // about once per tick for as long as the outage lasts.
-const dhcpOutageTick = 30 * time.Second
-const dhcpOutageGrace = 25 * time.Second
+//
+// Both are overridable per-plugin (OUTAGE_TICK / OUTAGE_GRACE, see
+// Options) because these two numbers are the only part of outage
+// detection that is ours: the rest of the wait is the DHCP lease, and
+// the integration fixture's lease has a hard 2-minute floor imposed by
+// dnsmasq (#356). Lowering them is what makes the failure suite
+// affordable. The defaults are the production values and are what any
+// deployment that doesn't set the variables gets.
+const defaultOutageTick = 30 * time.Second
+const defaultOutageGrace = 25 * time.Second
+
+// minOutageTick floors the ticker period. time.NewTicker panics on a
+// non-positive duration, so a misconfigured OUTAGE_TICK must never
+// reach it; this also stops a near-zero value from spinning the
+// watchdog goroutine.
+const minOutageTick = 100 * time.Millisecond
+
+// outageCadence returns the tick and grace this manager's watchdog
+// should use. m.plugin is nil in unit tests that drive a manager
+// directly, and a zero field means "not configured", so both fall back
+// to the production defaults.
+func (m *dhcpManager) outageCadence() (tick, grace time.Duration) {
+	tick, grace = defaultOutageTick, defaultOutageGrace
+	if m.plugin != nil {
+		if m.plugin.outageTick > 0 {
+			tick = m.plugin.outageTick
+		}
+		if m.plugin.outageGrace > 0 {
+			grace = m.plugin.outageGrace
+		}
+	}
+	if tick < minOutageTick {
+		tick = minOutageTick
+	}
+	return tick, grace
+}
 
 // outageTracker decides when a persistent client counts as "no longer
 // getting DHCP service". It is a plain value with no clock of its own —
@@ -755,13 +789,14 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 		// client has not confirmed its own lease yet — and flips with each
 		// bound/renew/leasefail event.
 		tracker := newOutageTracker(time.Now())
-		ticker := time.NewTicker(dhcpOutageTick)
+		outageTick, outageGrace := m.outageCadence()
+		ticker := time.NewTicker(outageTick)
 		defer ticker.Stop()
 
 		for {
 			select {
 			case <-ticker.C:
-				if count, silentLapse := tracker.due(time.Now(), dhcpOutageGrace); count {
+				if count, silentLapse := tracker.due(time.Now(), outageGrace); count {
 					if m.plugin != nil {
 						bumpFamily(&m.plugin.dhcpTimeouts, &m.plugin.dhcpTimeoutsV6, v6)
 					}

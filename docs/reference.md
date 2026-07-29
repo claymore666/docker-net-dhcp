@@ -64,6 +64,8 @@ each group.
 | `LOG_LEVEL` | `info` |
 | `AWAIT_TIMEOUT` | `10s` |
 | `STATE_DIR` | `/var/lib/net-dhcp` |
+| `OUTAGE_TICK` | `30s` |
+| `OUTAGE_GRACE` | `25s` |
 
 **[Health counters](#pluginhealth)** — `/Plugin.Health` on the plugin socket. Three flip `healthy` to `false`: `recovery_failed`, `join_start_failures`, `tombstone_write_failures`.
 
@@ -306,6 +308,17 @@ Set with `docker plugin set <plugin> NAME=value`; take effect after
 | `LOG_LEVEL` | `info` | logrus level (`trace`, `debug`, `info`, `warn`, `error`). `trace` includes per-event `dhcpcd` lines and full HTTP-RPC bodies. |
 | `AWAIT_TIMEOUT` | `10s` | Cap on the polling helpers (sandbox readiness, link rename, netns appearance). Bump if a slow daemon-restore window starves endpoint setup. |
 | `STATE_DIR` | `/var/lib/net-dhcp` | Where per-network options, the tombstone file, and the `audit_log` ledger persist (inside the plugin rootfs). |
+| `OUTAGE_TICK` | `30s` | How often the DHCP-outage watchdog re-checks each client, and so the resolution of `dhcp_timeouts` — the counter climbs about once per tick while a server is unreachable. Lower it for a finer-grained signal at the cost of a little more wakeup churn. |
+| `OUTAGE_GRACE` | `25s` | Settling time before the watchdog will call an outage, added **on top of** the lease lifetime, so detection lands at `lease + grace`. Also the window a never-yet-bound client gets before its first failure is reported. |
+
+> **`OUTAGE_GRACE` must stay above your clients' normal acquisition
+> time.** The grace is what stops one slow DHCP exchange from
+> registering as an outage; set it below how long a healthy container
+> takes to get its first lease and ordinary start-up will report
+> failures. The defaults suit a normal LAN — these two exist mainly so
+> the integration suite can detect an outage without waiting out the
+> production cadence on top of its fixture's lease, and most
+> deployments should leave them alone.
 
 ---
 
@@ -544,7 +557,7 @@ diagnosing a specific container from them alone is not.
 | `lease_changed` | no | Renewals that returned a different IP than last recorded (v4+v6 aggregate). Docker's `inspect` view does **not** update on lease change (libnetwork has no in-place endpoint-IP swap), so this is the stale-inspect-window signal — alert on it for long-running containers. |
 | `leases_obtained` | no | `dhcpcd` bind events (`BOUND`/`REBOOT`, and the v6 equivalents): initial bind or re-bind after NAK/lease loss. v4+v6 aggregate. |
 | `leases_renewed` | no | `dhcpcd` `RENEW`/`REBIND` events. v4+v6 aggregate. |
-| `dhcp_timeouts` | no | DHCP-acquisition failures (v4+v6 aggregate). Bumped by an explicit `dhcpcd` lease-loss hook when there is one, and — since v1.3.5 (#353) — by a periodic outage watchdog that compares the lease lifetime the server granted against the time since the client was last served. It keeps climbing for the duration of a server outage. **Detection is not immediate:** a bound endpoint's outage surfaces only once its lease would have run out (plus one watchdog period), because until then the client holds a valid address and `dhcpcd` reports nothing. On a 24-hour lease that is up to ~24 hours; a client that never binds at all is counted within ~30s. |
+| `dhcp_timeouts` | no | DHCP-acquisition failures (v4+v6 aggregate). Bumped by an explicit `dhcpcd` lease-loss hook when there is one, and — since v1.3.5 (#353) — by a periodic outage watchdog that compares the lease lifetime the server granted against the time since the client was last served. It keeps climbing for the duration of a server outage. **Detection is not immediate:** a bound endpoint's outage surfaces only once its lease would have run out (plus one watchdog period), because until then the client holds a valid address and `dhcpcd` reports nothing. On a 24-hour lease that is up to ~24 hours; a client that never binds at all is counted within `OUTAGE_GRACE` (~25s by default). The watchdog period and settling time are [`OUTAGE_TICK` / `OUTAGE_GRACE`](#plugin-settings) — note that lowering them shortens the fixed part of the delay only, never the lease itself. |
 | `lease_release_failures` | no | Teardown DHCPRELEASE didn't complete cleanly — the server may hold a phantom lease until natural expiry. A pattern points at upstream reachability problems mid-teardown. |
 | `naks_received` | no | (v1.0.0+) The server NAKed a renewal/rebind (v4+v6 aggregate). `dhcpcd` recovers by re-acquiring, so each NAK is typically followed by `leases_obtained` — and, if the address moved, `lease_changed` — bumps. Climbing alongside `lease_changed` means containers are being re-addressed mid-life. |
 | `displaced_stops` | no | (v1.3.5+) Attaches that found a manager already registered for the same endpoint and stopped it — a container restarting into a plugin that had already recovered it (#338). The displaced client is released cleanly and the new one takes over, so a few are normal after a plugin restart. Climbing steadily alongside `recovered_ok` means a container is in a restart loop. |
@@ -703,6 +716,7 @@ consumer-side:
 | `--mac-address` fails on an ipvlan network | ipvlan children share the parent MAC (kernel design) | Use `mode=macvlan`, or drop the custom MAC |
 | Reservations don't stick on ipvlan | DHCP server keys on MAC only, ignores option 61 | Use `mode=macvlan`, or configure the server to honor client identifiers |
 | Container can't reach the Docker host (or vice versa) | macvlan/ipvlan kernel rule: children can't talk to the parent NIC's host IP | Bridge mode, or a second NIC — not a plugin setting |
+| `dhcp_timeouts` climbs on a healthy network, often just after containers start | `OUTAGE_GRACE` is set below the time a client needs to acquire its first lease, so ordinary start-up is being reported as an outage | Raise `OUTAGE_GRACE`, or unset both outage variables to return to the defaults. The plugin logs a warning at startup whenever either is overridden — check the log's first lines |
 | `healthy: false` on `/Plugin.Health` | Recovery or tombstone-write failure | See the field table above; restart affected containers; check disk space under the plugin rootfs |
 | Container came back on a **different IP** after a plugin upgrade | Recreating the network minted a new child MAC; the server keys the old lease to the old MAC and declines the re-request | Expected — see the callout under [Upgrade](#install-upgrade-uninstall). Pin the endpoint MAC and reserve it server-side to make the address survive future upgrades |
 | `/Plugin.Health` prints nothing and exits 0 | `curl` run without `sudo`; `/run/docker/plugins` is root-only and `-s` hides the error | Re-run with `sudo` — see [`/Plugin.Health`](#pluginhealth) |

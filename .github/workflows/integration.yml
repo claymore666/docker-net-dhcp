@@ -123,7 +123,12 @@ jobs:
           make PLUGIN_NAME=ghcr.io/claymore666/docker-net-dhcp PLUGIN_TAG=integration plugin
           docker plugin rm -f "${INTEGRATION_PLUGIN_REF}" 2>/dev/null || true
           docker plugin create "${INTEGRATION_PLUGIN_REF}" plugin
-          docker plugin set "${INTEGRATION_PLUGIN_REF}" LOG_LEVEL=trace
+          # Tighten the outage-watchdog cadence (#278). The failure
+          # suite otherwise pays the production 30s/25s on top of a
+          # fixture lease that cannot go below dnsmasq's 2m floor.
+          # Test-only: released images ship config.json's defaults.
+          docker plugin set "${INTEGRATION_PLUGIN_REF}" LOG_LEVEL=trace \
+            OUTAGE_TICK=2s OUTAGE_GRACE=10s
           docker plugin enable "${INTEGRATION_PLUGIN_REF}"
 
       # tee the verbose output so the timing-summary step below can
