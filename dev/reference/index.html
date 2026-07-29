@@ -1544,6 +1544,14 @@ each group.</p>
 <td><code>STATE_DIR</code></td>
 <td><code>/var/lib/net-dhcp</code></td>
 </tr>
+<tr>
+<td><code>OUTAGE_TICK</code></td>
+<td><code>30s</code></td>
+</tr>
+<tr>
+<td><code>OUTAGE_GRACE</code></td>
+<td><code>25s</code></td>
+</tr>
 </tbody>
 </table>
 <p><strong><a href="#pluginhealth">Health counters</a></strong> — <code>/Plugin.Health</code> on the plugin socket. Three flip <code>healthy</code> to <code>false</code>: <code>recovery_failed</code>, <code>join_start_failures</code>, <code>tombstone_write_failures</code>.</p>
@@ -1871,8 +1879,28 @@ is no <code>ip6</code> <em>driver-opt</em> channel — use <code>--ip6</code> / 
 <td><code>/var/lib/net-dhcp</code></td>
 <td>Where per-network options, the tombstone file, and the <code>audit_log</code> ledger persist (inside the plugin rootfs).</td>
 </tr>
+<tr>
+<td><code>OUTAGE_TICK</code></td>
+<td><code>30s</code></td>
+<td>How often the DHCP-outage watchdog re-checks each client, and so the resolution of <code>dhcp_timeouts</code> — the counter climbs about once per tick while a server is unreachable. Lower it for a finer-grained signal at the cost of a little more wakeup churn.</td>
+</tr>
+<tr>
+<td><code>OUTAGE_GRACE</code></td>
+<td><code>25s</code></td>
+<td>Settling time before the watchdog will call an outage, added <strong>on top of</strong> the lease lifetime, so detection lands at <code>lease + grace</code>. Also the window a never-yet-bound client gets before its first failure is reported.</td>
+</tr>
 </tbody>
 </table>
+<blockquote>
+<p><strong><code>OUTAGE_GRACE</code> must stay above your clients' normal acquisition
+time.</strong> The grace is what stops one slow DHCP exchange from
+registering as an outage; set it below how long a healthy container
+takes to get its first lease and ordinary start-up will report
+failures. The defaults suit a normal LAN — these two exist mainly so
+the integration suite can detect an outage without waiting out the
+production cadence on top of its fixture's lease, and most
+deployments should leave them alone.</p>
+</blockquote>
 <hr />
 <h2 id="behaviour">Behaviour<a class="headerlink" href="#behaviour" title="Permanent link">&para;</a></h2>
 <p>What the plugin does with leases, identity, and state. All of it applies
@@ -2122,7 +2150,7 @@ diagnosing a specific container from them alone is not.</p>
 <tr>
 <td><code>dhcp_timeouts</code></td>
 <td>no</td>
-<td>DHCP-acquisition failures (v4+v6 aggregate). Bumped by an explicit <code>dhcpcd</code> lease-loss hook when there is one, and — since v1.3.5 (#353) — by a periodic outage watchdog that compares the lease lifetime the server granted against the time since the client was last served. It keeps climbing for the duration of a server outage. <strong>Detection is not immediate:</strong> a bound endpoint's outage surfaces only once its lease would have run out (plus one watchdog period), because until then the client holds a valid address and <code>dhcpcd</code> reports nothing. On a 24-hour lease that is up to ~24 hours; a client that never binds at all is counted within ~30s.</td>
+<td>DHCP-acquisition failures (v4+v6 aggregate). Bumped by an explicit <code>dhcpcd</code> lease-loss hook when there is one, and — since v1.3.5 (#353) — by a periodic outage watchdog that compares the lease lifetime the server granted against the time since the client was last served. It keeps climbing for the duration of a server outage. <strong>Detection is not immediate:</strong> a bound endpoint's outage surfaces only once its lease would have run out (plus one watchdog period), because until then the client holds a valid address and <code>dhcpcd</code> reports nothing. On a 24-hour lease that is up to ~24 hours; a client that never binds at all is counted within <code>OUTAGE_GRACE</code> (~25s by default). The watchdog period and settling time are <a href="#plugin-settings"><code>OUTAGE_TICK</code> / <code>OUTAGE_GRACE</code></a> — note that lowering them shortens the fixed part of the delay only, never the lease itself.</td>
 </tr>
 <tr>
 <td><code>lease_release_failures</code></td>
@@ -2303,6 +2331,11 @@ consumer-side:</p>
 <td>Container can't reach the Docker host (or vice versa)</td>
 <td>macvlan/ipvlan kernel rule: children can't talk to the parent NIC's host IP</td>
 <td>Bridge mode, or a second NIC — not a plugin setting</td>
+</tr>
+<tr>
+<td><code>dhcp_timeouts</code> climbs on a healthy network, often just after containers start</td>
+<td><code>OUTAGE_GRACE</code> is set below the time a client needs to acquire its first lease, so ordinary start-up is being reported as an outage</td>
+<td>Raise <code>OUTAGE_GRACE</code>, or unset both outage variables to return to the defaults. The plugin logs a warning at startup whenever either is overridden — check the log's first lines</td>
 </tr>
 <tr>
 <td><code>healthy: false</code> on <code>/Plugin.Health</code></td>
