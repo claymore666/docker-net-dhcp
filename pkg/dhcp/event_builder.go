@@ -37,6 +37,18 @@ type Getenv func(string) string
 // exactly that case. dhcpcd's man page says NAK "should be treated as
 // EXPIRE" — we keep them distinct only so the naks_received counter can
 // separate a server refusal from a quiet timeout (#128 / #212).
+//
+// RELEASE is deliberately NOT mapped, and that is load-bearing (#353).
+// Under `--noconfigure` — which this plugin always runs — dhcpcd reports
+// a lease that lapsed with the server unreachable as RELEASE, not
+// EXPIRE. Verified against dhcpcd 10.3.2: two identical clients, one
+// with `--noconfigure` and one without, both bound to a 2m lease with
+// the server then killed; at the expiry instant the first fired RELEASE
+// and the second EXPIRE. Mapping RELEASE to a lease loss would be wrong
+// anyway, because a graceful stop (Leave / plugin shutdown → SIGTERM →
+// `release` directive) fires the SAME reason, so every clean teardown
+// would count as a DHCP failure. The consumer therefore detects a
+// silent lapse from the lease deadline instead — see LeaseSeconds.
 func mapReason(reason string) (eventType string, v6 bool, emit bool) {
 	switch reason {
 	case "BOUND", "REBOOT":
@@ -195,6 +207,11 @@ func BuildEvent(reason string, getenv Getenv) (Event, bool) {
 		if dns := getenv("new_dhcp6_name_servers"); dns != "" {
 			event.Data.DNSServers = strings.Fields(dns)
 		}
+		// IA_NA valid lifetime — the v6 lease clock the outage detector
+		// uses (#353). DHCPv6 exposes no separate T1 through dhcpcd's
+		// variables, so RenewSeconds stays 0 and the consumer falls back
+		// to the lease itself.
+		event.Data.LeaseSeconds = envSeconds(getenv, "new_dhcp6_ia_na1_ia_addr1_vltime")
 		// No gateway in DHCPv6 (it comes from Router Advertisements,
 		// sourced from the host routing table at Join) and no DHCPv6
 		// MTU option — both are intentionally left zero.
@@ -270,5 +287,29 @@ func BuildEvent(reason string, getenv Getenv) (Event, bool) {
 		}
 	}
 
+	// Option 51 (lease time). Drives the plugin's outage detection, which
+	// cannot rely on a lease-loss hook (#353). Option 58 (T1) is
+	// deliberately not read — see Info.LeaseSeconds for why it is not a
+	// usable deadline under --noconfigure.
+	event.Data.LeaseSeconds = envSeconds(getenv, "new_dhcp_lease_time")
+
 	return event, true
+}
+
+// envSeconds reads a positive integer seconds value from a dhcpcd lease
+// variable, returning 0 when absent or unusable. Best-effort by design:
+// a server that omits or mangles a lifetime must not cost us the lease
+// event itself — the consumer treats 0 as "no deadline known" and falls
+// back to event-driven detection alone.
+func envSeconds(getenv Getenv, name string) int {
+	raw := getenv(name)
+	if raw == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		log.WithField(name, raw).Debug("Unusable lease-lifetime variable; outage deadline will fall back")
+		return 0
+	}
+	return n
 }

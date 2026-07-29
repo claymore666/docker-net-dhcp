@@ -467,3 +467,77 @@ func TestBuildEvent_NoClasslessRoutes_LeavesRoutesNilAndKeepsRouters(t *testing.
 		t.Errorf("Gateway = %q, want the option-3 router unchanged", got.Data.Gateway)
 	}
 }
+
+// Lease lifetime capture (#353). The plugin's outage detection derives
+// its deadline from these, because dhcpcd under --noconfigure never
+// tells us a lease lapsed.
+
+func TestBuildEvent_BoundV4_CapturesLeaseSeconds(t *testing.T) {
+	got, emit := BuildEvent("BOUND", fakeEnv(map[string]string{
+		"new_ip_address":        "192.168.99.10",
+		"new_subnet_cidr":       "24",
+		"new_dhcp_lease_time":   "86400",
+		"new_dhcp_renewal_time": "43200",
+	}))
+	if !emit {
+		t.Fatal("emit=false on a well-formed BOUND event")
+	}
+	if got.Data.LeaseSeconds != 86400 {
+		t.Errorf("LeaseSeconds = %d, want 86400", got.Data.LeaseSeconds)
+	}
+}
+
+func TestBuildEvent_BoundV6_CapturesValidLifetime(t *testing.T) {
+	got, emit := BuildEvent("BOUND6", fakeEnv(map[string]string{
+		"new_dhcp6_ia_na1_ia_addr1":        "fd00:9::1f",
+		"new_dhcp6_ia_na1_ia_addr1_vltime": "120",
+	}))
+	if !emit {
+		t.Fatal("emit=false on a well-formed BOUND6 event")
+	}
+	if got.Data.LeaseSeconds != 120 {
+		t.Errorf("LeaseSeconds = %d, want the IA_NA valid lifetime 120", got.Data.LeaseSeconds)
+	}
+}
+
+func TestBuildEvent_UnusableLeaseTimeIsZeroNotFatal(t *testing.T) {
+	// A server that omits or mangles the lifetime must cost us the
+	// deadline, never the lease event itself — the consumer treats 0 as
+	// "no deadline known" and falls back to event-driven detection.
+	for _, raw := range []string{"", "not-a-number", "0", "-5"} {
+		t.Run("lease="+raw, func(t *testing.T) {
+			env := map[string]string{
+				"new_ip_address":  "192.168.99.10",
+				"new_subnet_cidr": "24",
+			}
+			if raw != "" {
+				env["new_dhcp_lease_time"] = raw
+			}
+			got, emit := BuildEvent("BOUND", fakeEnv(env))
+			if !emit {
+				t.Fatalf("emit=false — an unusable lease time dropped the whole event")
+			}
+			if got.Data.LeaseSeconds != 0 {
+				t.Errorf("LeaseSeconds = %d, want 0 for %q", got.Data.LeaseSeconds, raw)
+			}
+		})
+	}
+}
+
+func TestBuildEvent_ReleaseIsNotALeaseLoss(t *testing.T) {
+	// Load-bearing, and the reason #353 needed a deadline instead of a
+	// hook: under --noconfigure dhcpcd reports a LAPSED lease as RELEASE,
+	// but a graceful stop fires the very same reason. Counting it would
+	// turn every clean teardown into a DHCP failure, so RELEASE must stay
+	// unmapped and the lapse must be caught from the lease deadline.
+	for _, reason := range []string{"RELEASE", "RELEASE6"} {
+		t.Run(reason, func(t *testing.T) {
+			if _, emit := BuildEvent(reason, fakeEnv(map[string]string{
+				"new_ip_address":  "10.0.0.5",
+				"new_subnet_cidr": "24",
+			})); emit {
+				t.Errorf("emit=true on %q — a release is ambiguous and must not count as a lease loss", reason)
+			}
+		})
+	}
+}

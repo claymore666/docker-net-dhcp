@@ -65,6 +65,31 @@ type Info struct {
 	// folded into Gateway during parsing. Applied at Join as additional
 	// container StaticRoutes; `skip_routes=true` opts out.
 	Routes []Route `json:",omitempty"`
+
+	// LeaseSeconds is the lease lifetime the server granted, in seconds
+	// (v4 `new_dhcp_lease_time`; v6 the IA_NA valid lifetime
+	// `new_dhcp6_ia_na1_ia_addr1_vltime`). 0 when the server didn't
+	// supply it.
+	//
+	// It exists so the plugin can tell "healthy client, quietly holding a
+	// long lease" apart from "client that stopped getting service"
+	// WITHOUT depending on a lease-loss hook (#353). dhcpcd does not
+	// reliably deliver one: under `--noconfigure`, which this plugin
+	// always runs, a lapsed lease fires the hook as RELEASE rather than
+	// EXPIRE — and RELEASE is indistinguishable from the one a graceful
+	// stop produces, so it can never be counted as a failure. The lease
+	// deadline carries no such ambiguity.
+	//
+	// The renewal time (T1, option 58) is deliberately NOT carried here
+	// even though dhcpcd exports it, because under `--noconfigure` it is
+	// not a deadline anything meets: with no address configured on the
+	// link, dhcpcd's T1 unicast renewal always fails ("failed to renew
+	// DHCP, rebinding") and the lease is actually renewed at T2 by
+	// broadcast rebind. Verified against dhcpcd 10.3.2 with a healthy
+	// server: on a 120s lease the only post-bind hook was REBIND at
+	// t+105s. A T1-derived deadline would therefore fire on every
+	// healthy client.
+	LeaseSeconds int `json:",omitempty"`
 }
 
 // Route is a single classless static route from DHCP option 121.
