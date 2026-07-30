@@ -35,9 +35,18 @@ on:
       - 'Dockerfile'
       - '.trivyignore.yaml'
       - '.github/workflows/trivy.yml'
+  # `main` is here for a reason that is easy to miss: the Security tab
+  # and the alert list show the **default branch**. Scanning only `dev`
+  # meant a release merge never refreshed main's alerts, so findings
+  # already fixed on dev stayed visible on main until the Monday cron —
+  # up to a week of stale HIGH/MEDIUM alerts, and the week right after a
+  # release is exactly when someone looks. v1.3.4 shipped the Go 1.26.5
+  # base image that fixed CVE-2026-39822 and CVE-2026-42505; dev went
+  # clean immediately while main kept reporting both.
   push:
     branches:
       - dev
+      - main
     paths:
       - 'Dockerfile'
       - '.trivyignore.yaml'

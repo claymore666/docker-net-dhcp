@@ -1,22 +1,77 @@
 # docker-net-dhcp — driver reference
 
-The complete operator reference for the plugin: installation, network
-creation in every mode, all driver options, plugin settings,
-observability, Compose usage, and troubleshooting. This file is
-versioned with the code — the copy in your installed version's tag is
-the truth for that version. CI enforces that every driver-option key
-the code parses appears in this document
-(`scripts/check-option-docs.sh`), so the options table cannot go
-stale silently.
+**This is the manual.** Every knob the plugin has, and every behaviour
+you can observe, is documented here and only here — installation,
+network creation in every mode, all options and settings, lease
+behaviour, observability, Compose usage, and troubleshooting.
 
-Deeper-dive companions: [`parent-attached-modes.md`](parent-attached-modes.md)
-(macvlan/ipvlan concepts, DHCP identity, recovery semantics),
-[`bridge-mode.md`](bridge-mode.md) (the bridge-mode walkthrough), and
-[`internals.md`](internals.md) (implementation notes).
+This file is versioned with the code: the copy in your installed
+version's tag is the truth for that version. CI enforces that every
+driver-option key the code parses, every health counter the plugin
+emits, and every plugin setting it accepts appears in this document —
+and that none of them is documented a second time somewhere else
+(`scripts/check-option-docs.sh`, `scripts/check-docs-drift.sh`). Neither
+staleness nor a divergent copy is possible without turning CI red.
+
+The other pages are deliberately narrow:
+
+| page | for | what's there |
+| ---- | --- | ------------ |
+| [`bridge-mode.md`](bridge-mode.md) | getting started | one-time host-bridge setup, then a worked example |
+| [`parent-attached-modes.md`](parent-attached-modes.md) | getting started | choosing macvlan vs ipvlan, quick start, mode-specific constraints |
+| [`internals.md`](internals.md) | contributors | how the plugin is built — mechanism, not policy |
 
 ---
 
-## Install / upgrade / uninstall
+## At a glance
+
+Every setting in one place. Details follow in the sections linked from
+each group.
+
+**[Network options](#driver-options-network-level)** — `docker network create -o key=value`, or `driver_opts:` in Compose:
+
+| option | modes | default |
+| ------ | ----- | ------- |
+| `mode` | all | `bridge` |
+| `bridge` | bridge | *(required)* |
+| `parent` | macvlan, ipvlan | *(required)* |
+| `gateway` | all | from DHCP |
+| `ipv6` | all | `false` |
+| `lease_timeout` | all | `10s` |
+| `ignore_conflicts` | bridge | `false` |
+| `skip_routes` | all | `false` |
+| `propagate_dns` | all | `false` |
+| `propagate_mtu` | all | `false` |
+| `client_id` | all | per-endpoint id |
+| `vendor_class` | all | `docker-net-dhcp` |
+| `validate_dhcp` | macvlan, ipvlan | `false` |
+| `register_dns` | all | `false` |
+| `audit_log` | all | `false` |
+
+**[Per-endpoint options](#driver-options-per-endpoint)** — `docker network connect --driver-opt`, or `driver_opts:` under a service's network attachment:
+
+| option | default |
+| ------ | ------- |
+| `ip` | from DHCP |
+| `com.docker.network.endpoint.ifname` | engine-assigned |
+
+**[Container-level flags](#driver-options-per-endpoint)** that change what the plugin sends: `--mac-address`, `--hostname`, `--ip6`.
+
+**[Plugin settings](#plugin-settings)** — `docker plugin set <plugin> NAME=value`:
+
+| name | default |
+| ---- | ------- |
+| `LOG_LEVEL` | `info` |
+| `AWAIT_TIMEOUT` | `10s` |
+| `STATE_DIR` | `/var/lib/net-dhcp` |
+| `OUTAGE_TICK` | `30s` |
+| `OUTAGE_GRACE` | `25s` |
+
+**[Health counters](#pluginhealth)** — `/Plugin.Health` on the plugin socket. Three flip `healthy` to `false`: `recovery_failed`, `join_start_failures`, `tombstone_write_failures`.
+
+---
+
+## Install, upgrade, uninstall
 
 The plugin publishes to two registries; GHCR is primary:
 
@@ -27,7 +82,7 @@ The plugin publishes to two registries; GHCR is primary:
 for unattended):
 
 ```bash
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.3.4
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.3.5
 ```
 
 Privileges requested: `network: host`, host PID namespace, the Docker
@@ -69,6 +124,27 @@ docker plugin install ghcr.io/claymore666/docker-net-dhcp:vNEW
 exist risk a driver-reference mismatch; the remove/recreate path is
 the supported one.)
 
+> **Expect the container's IP to change on `macvlan` and `ipvlan`.**
+> Recreating the network builds a **new** child interface with a fresh
+> kernel-generated MAC. DHCP servers key leases and reservations on MAC,
+> so the previous address does not follow — and re-requesting it with
+> `--driver-opt ip=<old address>` is *declined* while the server still
+> holds that address against the old MAC. The container comes back on a
+> different address.
+>
+> This is not the same as a container restart, which *does* preserve the
+> address — see [Restart stability](#restart-stability-mac-and-ip). That
+> mechanism is keyed by network ID, so removing the network loses it by
+> construction.
+>
+> To keep an address across upgrades, give the endpoint a fixed MAC
+> (`--mac-address` / Compose `mac_address` — an explicit MAC takes
+> priority over everything else) and reserve **that MAC** on the DHCP
+> server. Note that `docker network connect` has no `--mac-address`
+> flag, so the MAC has to come from the container definition: an
+> already-running container needs recreating once, after which the
+> address is stable across every future upgrade.
+
 **Uninstall:**
 
 ```bash
@@ -96,7 +172,7 @@ You bring an existing Linux bridge that is L2-connected to the LAN
 (see [`bridge-mode.md`](bridge-mode.md) for the bridge setup itself):
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.3.4 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.3.5 \
     --ipam-driver null \
     -o bridge=my-bridge \
     my-dhcp-net
@@ -108,7 +184,7 @@ No host changes — containers get per-container kernel-generated MACs
 as macvlan children of a host NIC:
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.3.4 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.3.5 \
     --ipam-driver null \
     -o mode=macvlan -o parent=eth0 \
     lan-dhcp
@@ -122,7 +198,7 @@ security, hostile vSwitches, some Wi-Fi APs). The DHCP server must
 key reservations on DHCP option 61 (client identifier), not MAC:
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.3.4 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.3.5 \
     --ipam-driver null \
     -o mode=ipvlan -o parent=eth0 \
     lan-dhcp
@@ -146,7 +222,7 @@ Passed as `-o key=value` on `docker network create`, or under
 | `bridge` | bridge | *(required)* | upstream | Existing Linux bridge to plug container veths into. |
 | `parent` | macvlan, ipvlan | *(required)* | v0.2.0 | Host NIC to attach children to (e.g. `eth0`, `ens18`). Must exist and be administratively `UP`. |
 | `gateway` | all | from DHCP | v0.3.0 | Override the IPv4 default gateway returned by the DHCP server — for split-horizon LANs where containers should egress via a different router (e.g. a VPN gateway). |
-| `ipv6` | all | `false` | upstream; functional again in v1.0.0 | Also run stateful DHCPv6 (a second `dhcpcd` with `-6`) alongside DHCPv4 — see the [DHCPv6 section](parent-attached-modes.md#dhcpv6-ipv6true) for semantics and DUID/IAID identity. The Docker-visible v6 address is renewed as of v1.2.0 (#152). |
+| `ipv6` | all | `false` | upstream; functional again in v1.0.0 | Also run stateful DHCPv6 (a second `dhcpcd` with `-6`) alongside DHCPv4 — see [DHCPv6](#dhcpv6-ipv6true) for semantics and DUID/IAID identity. The Docker-visible v6 address is renewed as of v1.2.0 (#152). |
 | `lease_timeout` | all | `10s` | upstream | Budget for the up-front DHCP exchange at container creation. Since v1.3.4 it is a *retry* budget (#332): transient failures are retried inside it (500 ms plus jitter between attempts) until it expires, while permanent ones — a missing interface, a malformed option — still fail immediately. Raise on slow/relayed networks (`-o lease_timeout=60s`). |
 | `ignore_conflicts` | bridge | `false` | upstream | Skip the bridge-already-in-use check against other Docker networks. No-op in macvlan/ipvlan. |
 | `skip_routes` | all | `false` | upstream; all modes since v0.9.0 | Don't copy non-default static routes from the parent (bridge or NIC) into containers, **and** don't apply DHCP-supplied classless static routes (option 121, see below). v0.9.0 extended parent route-copying from bridge-only to all modes (#102); set `true` to restore the old macvlan/ipvlan no-copy behaviour. The default gateway is unaffected either way. |
@@ -232,6 +308,214 @@ Set with `docker plugin set <plugin> NAME=value`; take effect after
 | `LOG_LEVEL` | `info` | logrus level (`trace`, `debug`, `info`, `warn`, `error`). `trace` includes per-event `dhcpcd` lines and full HTTP-RPC bodies. |
 | `AWAIT_TIMEOUT` | `10s` | Cap on the polling helpers (sandbox readiness, link rename, netns appearance). Bump if a slow daemon-restore window starves endpoint setup. |
 | `STATE_DIR` | `/var/lib/net-dhcp` | Where per-network options, the tombstone file, and the `audit_log` ledger persist (inside the plugin rootfs). |
+| `OUTAGE_TICK` | `30s` | How often the DHCP-outage watchdog re-checks each client, and so the resolution of `dhcp_timeouts` — the counter climbs about once per tick while a server is unreachable. Lower it for a finer-grained signal at the cost of a little more wakeup churn. |
+| `OUTAGE_GRACE` | `25s` | Settling time before the watchdog will call an outage, added **on top of** the lease lifetime, so detection lands at `lease + grace`. Also the window a never-yet-bound client gets before its first failure is reported. |
+
+> **`OUTAGE_GRACE` must stay above your clients' normal acquisition
+> time.** The grace is what stops one slow DHCP exchange from
+> registering as an outage; set it below how long a healthy container
+> takes to get its first lease and ordinary start-up will report
+> failures. The defaults suit a normal LAN — these two exist mainly so
+> the integration suite can detect an outage without waiting out the
+> production cadence on top of its fixture's lease, and most
+> deployments should leave them alone.
+
+---
+
+## Behaviour
+
+What the plugin does with leases, identity, and state. All of it applies
+to **every** attachment mode unless a paragraph says otherwise.
+
+### Requesting a specific address
+
+`--ipam-driver=null` means `docker run --ip=` is rejected by the daemon
+before it ever reaches the plugin. Pin an address with the per-endpoint
+driver option instead; the plugin passes it to `dhcpcd` as a `request`
+directive (DHCP option 50) on the initial DISCOVER:
+
+```bash
+docker create --name app alpine sleep 600
+docker network connect --driver-opt ip=192.168.0.55 lan-dhcp app
+docker start app
+```
+
+```yaml
+services:
+  app:
+    image: alpine
+    networks:
+      lan-dhcp:
+        driver_opts:
+          ip: 192.168.0.55
+networks:
+  lan-dhcp:
+    external: true
+```
+
+Whether the request is honoured is the **server's** decision. Most
+enterprise servers (ISC, dnsmasq, Windows DHCP) respect option 50; many
+consumer routers, the Fritz.Box among them, ignore it and hand out the
+next free pool address unless a UI-side reservation exists for that MAC.
+
+For IPv6 use `--ip6` / `Interface.AddressIPv6` — there is no `ip6`
+driver-opt. It became a real request in v1.2.0: the address is sent as
+the IA_NA preferred address, the v6 counterpart of `--ip`.
+
+### Restart stability (MAC and IP)
+
+Across `docker restart`, the plugin keeps the container's **MAC** stable
+so the DHCP server sees one device rather than a new one each time —
+without this, MAC-keyed reservations break and the server's lease table
+fills with stale pairs.
+
+The mechanism is a short-lived **tombstone**, written at `DeleteEndpoint`
+and consumed by the next `CreateEndpoint` on the same network within 60
+seconds. It carries the previous MAC, the last leased v4 address, and
+the last v6 address. The successor endpoint reuses the MAC and re-requests
+both addresses as hints. The TTL covers `docker restart` (sub-second) and
+`systemctl restart docker` (15–30s while the daemon re-attaches
+everything).
+
+- **MAC stability always works** — `docker inspect` and the LAN see the
+  same MAC across restarts.
+- **IP stability depends on the server** honouring option 50, exactly as
+  for an explicit request above. Where it doesn't, configure a
+  reservation against the now-stable MAC and every restart gets that
+  address.
+
+Two things it deliberately does not do. Concurrent restarts of several
+containers on one network inside the 60-second window fall back to fresh
+MACs rather than risk swapping identities between containers — tombstones
+carry the container hostname so restarts in flight can be told apart when
+the hostname is known, and only when neither side knows it does the
+network-wide "exactly one match" rule apply. Sequential restarts, the
+normal case, always satisfy it.
+
+And the tombstone is keyed by **network ID**, so it survives a container
+restart but not the removal of the network itself — which is why a plugin
+upgrade changes the address (see the callout under
+[Upgrade](#install-upgrade-uninstall)).
+
+### DHCP identity
+
+Every exchange the plugin runs carries the same three identity fields,
+in every mode:
+
+- **Hostname (option 12)** — the container's hostname (Compose
+  `hostname:`, `docker run --hostname`). Servers that auto-update DNS
+  publish the container under that name. Best-effort on the initial
+  DISCOVER (the plugin waits up to 2s for libnetwork to bind the endpoint
+  to a container ID); the renewal client always sends it.
+- **Vendor class (option 60)** — the literal `docker-net-dhcp`, so a
+  server can gate behaviour on "this is a plugin-managed container"
+  without parsing hostname conventions. v4 only; override with
+  `vendor_class`.
+- **Client identifier (option 61)** — eight bytes derived from the Docker
+  endpoint ID, type-byte `0x00` (RFC 2132 opaque). Stable across
+  container *restart* because the endpoint ID is. This is what makes
+  reservations work in ipvlan, where every child shares the parent's MAC.
+  It does **not** survive `docker rm` + `run`, which mints a fresh
+  endpoint ID — lease stability across recreate needs a per-container
+  identity the driver API doesn't currently expose (#218, #219). Override
+  with `client_id`, though a fixed value makes every container look like
+  one client.
+
+#### Options captured from the server
+
+Everything the server returns is captured. Some is applied, the rest is
+logged:
+
+**Applied**, when the matching option is enabled — option 6 / v6 option 23
+(DNS servers) and option 119 (search list, falling back to option 15) into
+`/etc/resolv.conf` with `propagate_dns`; option 26 into the link MTU with
+`propagate_mtu`; option 121 as routes (see
+[classless static routes](#dhcp-classless-static-routes-option-121)).
+
+**Logged** at info level on every bind and renew, and only when at least
+one is present, so plain LANs get no extra noise — option 42 (NTP),
+66 (TFTP server), 67 (boot file), 119 (when `propagate_dns` is off),
+252 (WPAD), 100/101 (RFC 4833 timezone) and 2 (legacy time offset):
+
+```text
+level=info msg="DHCP options received" ntp=[192.168.0.123]
+  tftp=tftp.example.test bootfile=pxelinux.0
+  search=[corp.example internal.example]
+  wpad=http://wpad.example/wpad.dat posix_tz=PST8PDT
+  tzdb_tz=Europe/Berlin time_offset=3600 ...
+```
+
+These are not auto-applied because the consuming application owns those
+config files, and writing into them would mean another setns into the
+container's mount namespace on every renewal.
+
+### DHCPv6 (`ipv6=true`)
+
+Runs a second persistent client (`dhcpcd -6`) alongside the v4 one —
+**stateful DHCPv6**, not SLAAC. Note that Docker's own `--ipv6` flag does
+not work with the null IPAM driver and is not what you want:
+
+```bash
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.3.5 \
+    --ipam-driver null \
+    -o mode=macvlan -o parent=eth0 -o ipv6=true \
+    lan-dhcp6
+```
+
+- The leased address lands on the interface as a `/128` next to the v4
+  address; `docker inspect` reports it as `GlobalIPv6Address`.
+- **The default route stays RA-delegated.** DHCPv6 carries no router
+  option by design, and the container's kernel honours Router
+  Advertisements itself. The `gateway` option is v4-only.
+- **Identity is a stable DUID-LL** (type 3) derived from the interface
+  MAC via pinned config — no timestamp, so the same MAC always yields the
+  same DUID. **The IAID is pinned from the MAC too** (v1.2.0, #152): the
+  earlier client randomised it per process, so the one-shot and persistent
+  clients disagreed and the leased address was never renewed. Server-side
+  v6 reservations therefore stick exactly as far as MAC stability reaches.
+  *ipvlan caveat:* children share the parent MAC, hence one DUID and one
+  IAID for all of them — per-container v6 reservations aren't practical
+  there.
+- **The Docker-visible v6 address is renewed** as of v1.2.0. Before that
+  the two clients drew different IAIDs, so the interface address could
+  outlive its server-side lease on networks with short v6 lease times.
+- `propagate_dns` covers v6 as well, via option 23. The two families are
+  last-writer-wins on `resolv.conf`.
+- Prefix delegation (DHCPv6-PD) is out of scope (#214).
+
+### Recovery after a plugin restart
+
+`docker plugin disable && enable`, a plugin upgrade, or a plugin crash
+used to leave running containers without a renewal client — the lease
+would quietly expire and the container would lose its address.
+
+The plugin now walks Docker's network list at startup, finds every
+endpoint on a plugin-served network, and rebuilds a DHCP manager for
+each. The first acquisition requests the address the container is already
+using (option 50) so the server ACKs it rather than allocating a new one.
+
+Recovery runs synchronously inside plugin startup, before the socket
+accepts requests, so a fresh `CreateEndpoint` arriving during enable
+cannot race it. Results land on `/Plugin.Health` as `recovered_ok` and
+`recovery_failed`.
+
+The same path covers `systemctl restart docker`. In practice the address
+is preserved either by recovery (when the daemon's shutdown never called
+`Leave`) or by the tombstone (when it did) — the outcome is the same
+either way.
+
+### State persistence
+
+Per-network options are written to `STATE_DIR/<network_id>.json` at
+`docker network create`, so the per-endpoint handlers never have to call
+back into the Docker API to learn the mode or parent. That callback is
+what deadlocked the upstream plugin during `dockerd` startup, when it was
+asked to restore containers using its own networks.
+
+State survives enable/disable cycles and is reset by `docker plugin rm`
+or `docker plugin upgrade`. After an upgrade, existing networks fall back
+to the Docker API on first read, which back-fills the file — so by the
+second endpoint operation everything is served from disk again.
 
 ---
 
@@ -239,13 +523,26 @@ Set with `docker plugin set <plugin> NAME=value`; take effect after
 
 ### `/Plugin.Health`
 
-JSON liveness + counters on the plugin's UNIX socket:
+JSON liveness + counters on the plugin's UNIX socket. **`sudo` is
+required** — `/run/docker/plugins` is `drwx------ root root`, and
+without it `curl -s` swallows the permission error and prints nothing,
+which looks exactly like a dead endpoint:
 
 ```bash
-PLUGIN_ID=$(docker plugin inspect -f '{{.Id}}' ghcr.io/claymore666/docker-net-dhcp:v1.3.4)
-curl -s --unix-socket /run/docker/plugins/$PLUGIN_ID/net-dhcp.sock \
+PLUGIN_ID=$(docker plugin inspect -f '{{.Id}}' ghcr.io/claymore666/docker-net-dhcp:v1.3.5)
+sudo curl -s --unix-socket /run/docker/plugins/$PLUGIN_ID/net-dhcp.sock \
     http://localhost/Plugin.Health | jq .
 ```
+
+A plain `GET` is correct; no request body or method override is needed.
+Anything that can reach the socket can poll this as a liveness check.
+
+Every counter below is a **plugin-wide total**, not a per-endpoint one.
+A rise tells you *some* client on this host saw the event, never which
+one — so when a counter moves, the plugin log is what attributes it:
+each bump is emitted alongside a line carrying that endpoint's
+`endpoint=<short id>` field. Alerting on the counters is right;
+diagnosing a specific container from them alone is not.
 
 | field | healthy-affecting | meaning |
 | ----- | ----------------- | ------- |
@@ -260,11 +557,42 @@ curl -s --unix-socket /run/docker/plugins/$PLUGIN_ID/net-dhcp.sock \
 | `lease_changed` | no | Renewals that returned a different IP than last recorded (v4+v6 aggregate). Docker's `inspect` view does **not** update on lease change (libnetwork has no in-place endpoint-IP swap), so this is the stale-inspect-window signal — alert on it for long-running containers. |
 | `leases_obtained` | no | `dhcpcd` bind events (`BOUND`/`REBOOT`, and the v6 equivalents): initial bind or re-bind after NAK/lease loss. v4+v6 aggregate. |
 | `leases_renewed` | no | `dhcpcd` `RENEW`/`REBIND` events. v4+v6 aggregate. |
-| `dhcp_timeouts` | no | DHCP-acquisition failures (v4+v6 aggregate). `dhcpcd` only fires a hook when a *bound* lease lapses (`EXPIRE`) and is silent while it re-discovers, so this counter is bumped both by those `EXPIRE` events and by a periodic outage watchdog while the client is unbound and still trying — it keeps climbing for the duration of a server outage. |
+| `dhcp_timeouts` | no | DHCP-acquisition failures (v4+v6 aggregate). Bumped by an explicit `dhcpcd` lease-loss hook when there is one, and — since v1.3.5 (#353) — by a periodic outage watchdog that compares the lease lifetime the server granted against the time since the client was last served. It keeps climbing for the duration of a server outage. **Detection is not immediate:** a bound endpoint's outage surfaces only once its lease would have run out (plus one watchdog period), because until then the client holds a valid address and `dhcpcd` reports nothing. On a 24-hour lease that is up to ~24 hours; a client that never binds at all is counted within `OUTAGE_GRACE` (~25s by default). The watchdog period and settling time are [`OUTAGE_TICK` / `OUTAGE_GRACE`](#plugin-settings) — note that lowering them shortens the fixed part of the delay only, never the lease itself. |
 | `lease_release_failures` | no | Teardown DHCPRELEASE didn't complete cleanly — the server may hold a phantom lease until natural expiry. A pattern points at upstream reachability problems mid-teardown. |
 | `naks_received` | no | (v1.0.0+) The server NAKed a renewal/rebind (v4+v6 aggregate). `dhcpcd` recovers by re-acquiring, so each NAK is typically followed by `leases_obtained` — and, if the address moved, `lease_changed` — bumps. Climbing alongside `lease_changed` means containers are being re-addressed mid-life. |
+| `displaced_stops` | no | (v1.3.5+) Attaches that found a manager already registered for the same endpoint and stopped it — a container restarting into a plugin that had already recovered it (#338). The displaced client is released cleanly and the new one takes over, so a few are normal after a plugin restart. Climbing steadily alongside `recovered_ok` means a container is in a restart loop. |
 | `ledger_write_failures` | no | Failed `audit_log` ledger appends — degrades forensics, not networking. Operators using `audit_log` alert on this. |
 | `lease_changed_v6`, `leases_obtained_v6`, `leases_renewed_v6`, `dhcp_timeouts_v6`, `naks_received_v6` | no | (v1.2.0+) The IPv6-only share of the matching aggregate above (#212). Each counts only the v6 client's events; the v4 share is the aggregate minus its `*_v6`. On a dual-stack host this isolates the v6-specific NAK/timeout signal the aggregate hides. `lease_release_failures` and `ledger_write_failures` have no per-family split. |
+
+### Verifying that renewal works
+
+The most common question after a deployment — *is this container's lease
+actually being renewed?* — has a non-obvious answer, because **a clean
+renewal logs nothing**. It is emitted at `Debug` and the plugin runs at
+`info`, so a silent log is correct behaviour, not evidence of a problem.
+
+`leases_renewed` on `/Plugin.Health` is the cheap proof. It should be
+non-zero once the first renewal is due, with `naks_received` and
+`dhcp_timeouts` still at zero.
+
+*When* it is due comes from the lease, not from any plugin setting: DHCP
+option 58 (T1), typically half the lease time. Reading it means entering
+the client's private mount namespace, since the state directory is
+deliberately isolated (see [`internals.md`](internals.md)):
+
+```bash
+pid=$(pgrep -f '^dhcpcd: eth0 \[ip4\]' | head -1)
+sudo nsenter -t "$pid" -m -- od -An -tu1 /var/lib/dhcpcd/eth0.lease
+```
+
+Options are TLV after the `99 130 83 99` magic cookie — **51** is the
+lease time, **58** T1, **59** T2, each four bytes big-endian seconds. A
+value of `0 1 81 128` is `0x00015180` = 86400s = a 24-hour lease, so T1
+lands 12 hours after the bind.
+
+For a durable record rather than a counter, turn on
+[`audit_log`](#driver-options-network-level) — it writes a `renew` line
+per event.
 
 ### Plugin log
 
@@ -314,7 +642,7 @@ Compose-managed alternative (network lifecycle tied to the project):
 ```yaml
 networks:
   lan:
-    driver: ghcr.io/claymore666/docker-net-dhcp:v1.3.4
+    driver: ghcr.io/claymore666/docker-net-dhcp:v1.3.5
     driver_opts:
       mode: macvlan
       parent: eth0
@@ -329,6 +657,52 @@ engine-determined until moby's remote-driver `interface_name`
 pass-through ships — see the `com.docker.network.endpoint.ifname` row
 above and issue #125).
 
+### The base/override merge trap
+
+Compose merges the top-level `networks:` map **key by key**, not file by
+file, and this bites a common deployment shape: built-in macvlan in dev,
+an external pre-created DHCP network in prod.
+
+```yaml
+# docker-compose.yml (base)
+networks:
+  lan:
+    driver: macvlan
+    driver_opts:
+      parent: ${LAN_INTERFACE:-eth0}
+    ipam:
+      config:
+        - subnet: 192.168.0.0/24
+
+# docker-compose.prod.yml (override)
+networks:
+  lan:
+    external: true
+    name: lan-shared
+```
+
+The merged result is a hybrid — `external: true` **and** `driver:
+macvlan` **and** `ipam.config` — matching neither the pure-external
+attach contract nor the internal-create one. Compose then **silently
+skips** attaching the service to `lan`; the container comes up on
+whatever other networks it lists, with no error.
+
+Diagnose with `docker compose -f docker-compose.yml -f
+docker-compose.prod.yml config` and read the merged `networks.lan` block.
+`external: true` sitting next to `driver` or `ipam` means you've hit it.
+
+The plugin cannot influence Compose's merge logic, so the fixes are
+consumer-side:
+
+- **Best** — don't define `lan` in the base file at all. Put the dev
+  definition in `docker-compose.dev.yml` and the prod one in
+  `docker-compose.prod.yml`, so each file *replaces* the key outright.
+- **Acceptable** — keep the base, but null out every key it sets in the
+  override (`driver: null`, `driver_opts: null`, `ipam: null`) alongside
+  `external: true`. Brittle: each new base key needs a matching null.
+- **Escape hatch** — `docker network connect lan-shared <container>`
+  after `compose up`. One-shot; does not survive a recreate.
+
 ---
 
 ## Troubleshooting
@@ -338,13 +712,20 @@ above and issue #125).
 | `docker run` hangs then fails with a lease timeout | No DHCP reply on the parent L2 (isolated NIC, firewall on UDP 67/68, wrong VLAN). Since v1.3.4 transient failures are retried within `lease_timeout`, so reaching the timeout points at a persistent problem, not a one-off blip | Verify with `-o validate_dhcp=true` at create time; check the parent's connectivity; raise `-o lease_timeout` for slow/relayed networks |
 | `invalid rootfs in image configuration` at install | Old Docker engine | Upgrade Docker |
 | Network create fails `Bridge already in use` | Another Docker network owns the bridge | Use a dedicated bridge, or `-o ignore_conflicts=true` if the detection is wrong |
+| Bridge mode: containers time out getting a lease, but the host itself has one | STP is enabled on the bridge, so each new container `veth` waits out two forwarding delays (~30s) before it forwards | Check `ip -d link show <bridge> \| grep -o 'stp_state [0-9]*'`; see [Leave STP off](bridge-mode.md#leave-stp-off-unless-you-need-it) |
+| Bridge mode: everything works until the host reboots, then no container can attach | The bridge was created with imperative `ip link` commands, which do not persist | Use one of the [persistent stanzas](bridge-mode.md#make-the-bridge-persistent) for your distro |
 | Container has an IP but `docker inspect` shows a different one | Mid-life re-acquisition after NAK/lease change | Expected degraded mode; watch `lease_changed` on `/Plugin.Health`; restart the container to resync Docker's view |
 | `--mac-address` fails on an ipvlan network | ipvlan children share the parent MAC (kernel design) | Use `mode=macvlan`, or drop the custom MAC |
 | Reservations don't stick on ipvlan | DHCP server keys on MAC only, ignores option 61 | Use `mode=macvlan`, or configure the server to honor client identifiers |
 | Container can't reach the Docker host (or vice versa) | macvlan/ipvlan kernel rule: children can't talk to the parent NIC's host IP | Bridge mode, or a second NIC — not a plugin setting |
+| `dhcp_timeouts` climbs on a healthy network, often just after containers start | `OUTAGE_GRACE` is set below the time a client needs to acquire its first lease, so ordinary start-up is being reported as an outage | Raise `OUTAGE_GRACE`, or unset both outage variables to return to the defaults. The plugin logs a warning at startup whenever either is overridden — check the log's first lines |
 | `healthy: false` on `/Plugin.Health` | Recovery or tombstone-write failure | See the field table above; restart affected containers; check disk space under the plugin rootfs |
+| Container came back on a **different IP** after a plugin upgrade | Recreating the network minted a new child MAC; the server keys the old lease to the old MAC and declines the re-request | Expected — see the callout under [Upgrade](#install-upgrade-uninstall). Pin the endpoint MAC and reserve it server-side to make the address survive future upgrades |
+| `/Plugin.Health` prints nothing and exits 0 | `curl` run without `sudo`; `/run/docker/plugins` is root-only and `-s` hides the error | Re-run with `sudo` — see [`/Plugin.Health`](#pluginhealth) |
+| `leases_renewed` still 0 and the log looks empty | Probably nothing — clean renewals log at `Debug`, and T1 may not have arrived | [Verify renewal properly](#verifying-that-renewal-works): read T1 from the lease, then re-check the counter |
+| Compose doesn't attach the container to the DHCP network, with no error | Base/override merge produced a hybrid network definition | [The base/override merge trap](#the-baseoverride-merge-trap) |
 | `docker plugin disable` refuses | Networks still reference the plugin | `docker network rm` them first |
-| Renewals failing after a server outage | — | Containers keep their address and `dhcpcd` keeps retrying; `dhcp_timeouts` climbs while the server is gone and `leases_renewed` resumes after it returns |
+| Renewals failing after a server outage | — | Containers keep their address and `dhcpcd` keeps retrying; `dhcp_timeouts` climbs once the lease would have lapsed (see the counter's note on detection delay) and `leases_renewed` resumes after the server returns |
 
 Operator-side release/publishing issues (registry auth, Hub tokens)
 are covered in the maintainer-facing

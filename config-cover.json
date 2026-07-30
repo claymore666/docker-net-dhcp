@@ -39,6 +39,22 @@
             "settable": [
                 "value"
             ]
+        },
+        {
+            "description": "How often the DHCP-outage watchdog re-checks; also the resolution of dhcp_timeouts",
+            "name": "OUTAGE_TICK",
+            "value": "30s",
+            "settable": [
+                "value"
+            ]
+        },
+        {
+            "description": "Settling time before the watchdog reports an outage; must exceed normal lease-acquisition time",
+            "name": "OUTAGE_GRACE",
+            "value": "25s",
+            "settable": [
+                "value"
+            ]
         }
     ],
     "workdir": "/",

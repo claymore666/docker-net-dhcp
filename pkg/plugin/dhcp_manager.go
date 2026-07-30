@@ -51,18 +51,152 @@ const dnsPropagateTimeout = 2 * time.Second
 //
 // busybox udhcpc ran the handler with "leasefail" on every failed
 // acquisition/renewal cycle, so dhcp_timeouts climbed steadily while a
-// DHCP server was unreachable. dhcpcd has no equivalent: it fires the
-// hook exactly once (EXPIRE) when a *bound* lease finally lapses, and
-// nothing at all while it silently re-DISCOVERs (confirmed against
-// dhcpcd 10.0.6 — neither the default config nor a `timeout` directive
-// produces a per-attempt hook). We synthesise the recurring signal: a
-// ticker increments dhcp_timeouts while the client is in the "acquiring"
-// state (never bound, or bound-then-EXPIRE'd) and has stayed there past
-// the grace. Crucially it is silent during a healthy bound lease no
-// matter how long (renewals only fire at T1), so it never false-counts
-// the quiet gap between renewals on a long lease.
-const dhcpOutageTick = 30 * time.Second
-const dhcpOutageGrace = 25 * time.Second
+// DHCP server was unreachable. dhcpcd gives us nothing equivalent, and
+// it gives us less than this comment used to claim (#353): under
+// `--noconfigure` it does not even fire EXPIRE when a bound lease
+// lapses. So we synthesise the recurring signal ourselves — a ticker
+// asks outageTracker, on each tick, whether this client is currently
+// being served. The grace is the settling time before the first tick
+// counts, so a single slow exchange doesn't register as an outage.
+//
+// The tick is also the resolution of the signal: dhcp_timeouts climbs
+// about once per tick for as long as the outage lasts.
+//
+// Both are overridable per-plugin (OUTAGE_TICK / OUTAGE_GRACE, see
+// Options) because these two numbers are the only part of outage
+// detection that is ours: the rest of the wait is the DHCP lease, and
+// the integration fixture's lease has a hard 2-minute floor imposed by
+// dnsmasq (#356). Lowering them is what makes the failure suite
+// affordable. The defaults are the production values and are what any
+// deployment that doesn't set the variables gets.
+const defaultOutageTick = 30 * time.Second
+const defaultOutageGrace = 25 * time.Second
+
+// minOutageTick floors the ticker period. time.NewTicker panics on a
+// non-positive duration, so a misconfigured OUTAGE_TICK must never
+// reach it; this also stops a near-zero value from spinning the
+// watchdog goroutine.
+const minOutageTick = 100 * time.Millisecond
+
+// outageCadence returns the tick and grace this manager's watchdog
+// should use. m.plugin is nil in unit tests that drive a manager
+// directly, and a zero field means "not configured", so both fall back
+// to the production defaults.
+func (m *dhcpManager) outageCadence() (tick, grace time.Duration) {
+	tick, grace = defaultOutageTick, defaultOutageGrace
+	if m.plugin != nil {
+		if m.plugin.outageTick > 0 {
+			tick = m.plugin.outageTick
+		}
+		if m.plugin.outageGrace > 0 {
+			grace = m.plugin.outageGrace
+		}
+	}
+	if tick < minOutageTick {
+		tick = minOutageTick
+	}
+	return tick, grace
+}
+
+// outageTracker decides when a persistent client counts as "no longer
+// getting DHCP service". It is a plain value with no clock of its own —
+// the caller supplies `now` — so the whole state machine is unit
+// testable without waiting out real DHCP timers.
+//
+// It has two independent triggers, and the second one is why this type
+// exists (#353):
+//
+//   - the client is ACQUIRING (never bound, or bound then told the lease
+//     was lost) and has stayed that way past the grace;
+//   - the client believes it is bound, but the deadline the server
+//     itself handed us has passed with no bound/renew in between.
+//
+// The first trigger was the original design. It assumed dhcpcd would
+// announce a lapsed lease via an EXPIRE hook, flipping the client into
+// the acquiring state. It does not: under `--noconfigure` a lapsed
+// lease is reported as RELEASE (see pkg/dhcp.mapReason), which is
+// indistinguishable from a graceful stop and so cannot be counted. With
+// only the first trigger the watchdog was inert in exactly the scenario
+// it was written for — a bound endpoint whose server disappears — and
+// dhcp_timeouts stayed at zero through a total outage.
+//
+// The second trigger needs nothing from dhcpcd but the lease it already
+// reported at bind time. It cannot false-positive on a healthy client:
+// a client that is being served gets a fresh lease (as a REBIND at T2,
+// see leaseDeadline) well before the previous one runs out, and that
+// restarts the deadline.
+type outageTracker struct {
+	acquiring      bool
+	acquiringSince time.Time
+
+	// lastAffirmed is when the server last proved it was answering
+	// (bound/renew); lapseAfter is how long after that the lease runs
+	// out. Zero lapseAfter = the server told us no lifetime, so no
+	// deadline is enforced and only the acquiring trigger applies.
+	lastAffirmed time.Time
+	lapseAfter   time.Duration
+}
+
+// newOutageTracker starts in the acquiring state: a freshly started
+// persistent client has not confirmed its own lease yet.
+func newOutageTracker(now time.Time) outageTracker {
+	return outageTracker{acquiring: true, acquiringSince: now}
+}
+
+// leaseDeadline is how long after a confirmed lease the client must have
+// been served again before we call it an outage: the full lease, which
+// is the last instant the address is even valid.
+//
+// Not T1, and not any fraction of the lease. Under `--noconfigure` the
+// interface carries no address, so dhcpcd's T1 unicast renewal cannot
+// succeed and every renewal lands at T2 as a broadcast rebind — a
+// T1-derived deadline would fire on healthy clients. The lease is the
+// one instant that needs no assumption about which retry succeeded.
+// Zero when the server supplied no lifetime, in which case no deadline
+// is enforced at all.
+func leaseDeadline(data dhcp.Info) time.Duration {
+	if data.LeaseSeconds > 0 {
+		return time.Duration(data.LeaseSeconds) * time.Second
+	}
+	return 0
+}
+
+// observe folds one client event into the tracker.
+func (o *outageTracker) observe(eventType string, data dhcp.Info, now time.Time) {
+	prev := o.acquiring
+	o.acquiring = nextAcquiring(prev, eventType)
+	if o.acquiring && !prev {
+		// Just lost the lease: restart the grace so the first post-loss
+		// timeout isn't counted until a full interval of continued failure.
+		o.acquiringSince = now
+	}
+	// A bound/renew is the ONLY proof the server answered, so it is the
+	// only thing that restarts the deadline. A NAK must not: it leaves
+	// the acquiring state alone and is a refusal, not service.
+	if eventType == "bound" || eventType == "renew" {
+		o.lastAffirmed = now
+		o.lapseAfter = leaseDeadline(data)
+	}
+}
+
+// due reports whether this tick counts a DHCP timeout, and whether it is
+// the tick that first noticed a silently-lapsed lease — worth saying
+// differently in the log, because nothing failed audibly: the renewal
+// simply never happened.
+func (o *outageTracker) due(now time.Time, grace time.Duration) (count, silentLapse bool) {
+	if o.acquiring {
+		return now.Sub(o.acquiringSince) >= grace, false
+	}
+	if o.lapseAfter <= 0 || now.Sub(o.lastAffirmed) < o.lapseAfter+grace {
+		return false, false
+	}
+	// Deadline blown with no bound/renew in between. dhcpcd may never say
+	// so out loud, so say it here and drop into the recurring acquiring
+	// state from now on.
+	o.acquiring = true
+	o.acquiringSince = now
+	return true, true
+}
 
 // nextAcquiring returns the post-event acquisition state. A bound/renew
 // means we hold a lease (not acquiring); a leasefail (dhcpcd EXPIRE /
@@ -654,21 +788,29 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 		// (see dhcpOutageTick). "acquiring" starts true — the persistent
 		// client has not confirmed its own lease yet — and flips with each
 		// bound/renew/leasefail event.
-		acquiring := true
-		acquiringSince := time.Now()
-		ticker := time.NewTicker(dhcpOutageTick)
+		tracker := newOutageTracker(time.Now())
+		outageTick, outageGrace := m.outageCadence()
+		ticker := time.NewTicker(outageTick)
 		defer ticker.Stop()
 
 		for {
 			select {
 			case <-ticker.C:
-				if acquiring && time.Since(acquiringSince) >= dhcpOutageGrace {
+				if count, silentLapse := tracker.due(time.Now(), outageGrace); count {
 					if m.plugin != nil {
 						bumpFamily(&m.plugin.dhcpTimeouts, &m.plugin.dhcpTimeoutsV6, v6)
 					}
+					msg := "DHCP server still unreachable; lease not (re)acquired"
+					if silentLapse {
+						// The distinction matters when reading a log after
+						// the fact: this one means dhcpcd never reported a
+						// failure at all — the lease's own deadline is what
+						// exposed the outage (#353).
+						msg = "DHCP lease passed its renewal deadline with no server response; treating the server as unreachable"
+					}
 					log.
 						WithFields(m.logFields(v6)).
-						Warn("DHCP server still unreachable; lease not (re)acquired")
+						Warn(msg)
 				}
 
 			case event, ok := <-events:
@@ -704,14 +846,7 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 					errChan <- nil
 					return
 				}
-				prev := acquiring
-				acquiring = nextAcquiring(prev, event.Type)
-				if acquiring && !prev {
-					// Just lost the lease (EXPIRE): restart the grace so the
-					// first post-expiry timeout isn't counted until a full
-					// interval of continued failure.
-					acquiringSince = time.Now()
-				}
+				tracker.observe(event.Type, event.Data, time.Now())
 				m.handleEvent(event, v6)
 
 			case <-m.stopChan:

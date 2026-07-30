@@ -7,11 +7,12 @@ name: CodeQL
 # setup's Go autobuild runs `make`, whose default target builds the
 # plugin rootfs via `docker export` and leaves root-owned files
 # (e.g. plugin/rootfs/var/run/chrony) that break CodeQL's database
-# bundling with EACCES. `build-mode: none` analyses the Go source
-# directly — no build, no docker export, and it covers all source
-# files rather than only what a partial autobuild compiled. It also
-# keeps the action SHA-pinned and the config in version control, matching
-# the rest of the workflows (#170).
+# bundling with EACCES. Advanced setup lets us drive the build
+# ourselves — `build-mode: manual` plus a plain `go build ./...`, no
+# make and no docker export — and it keeps the action SHA-pinned with
+# the config in version control, matching the rest of the workflows
+# (#170). See the matrix below for the per-language build modes; Go
+# cannot use `none`.
 on:
   push:
     branches:

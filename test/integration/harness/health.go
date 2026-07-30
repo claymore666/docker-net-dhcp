@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -116,6 +117,40 @@ func ReadPluginLog(t *testing.T, ctx context.Context) string {
 		return ""
 	}
 	return string(data)
+}
+
+// CountPluginLogLines returns how many lines of the plugin log contain
+// every one of subs.
+//
+// The motivating use is attribution (#278). Health counters are
+// plugin-WIDE: `dhcp_timeouts` climbing proves that *some* client saw a
+// failure, not that the endpoint under test did. Every counter bump in
+// dhcpManager sits next to a log line carrying that manager's
+// `endpoint=<short id>` field, so passing an endpoint id plus the
+// message text turns a global observation into an endpoint-scoped one
+// without adding per-endpoint counters to the health surface.
+//
+// Counts, not booleans, so callers can assert on a DELTA across a
+// window and stay immune to start-up churn already in the log.
+func CountPluginLogLines(t *testing.T, ctx context.Context, subs ...string) int {
+	t.Helper()
+	if len(subs) == 0 {
+		return 0
+	}
+	n := 0
+	for _, line := range strings.Split(ReadPluginLog(t, ctx), "\n") {
+		matched := true
+		for _, sub := range subs {
+			if !strings.Contains(line, sub) {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			n++
+		}
+	}
+	return n
 }
 
 // DumpPluginLog tails the plugin's /var/log/net-dhcp.log into t.Log.

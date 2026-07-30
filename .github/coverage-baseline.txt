@@ -69,7 +69,26 @@
 #   coverage dispatch; all other packages identical to the decimal
 #   across four runs now, so the +0.3 is attributable, not variance.
 #   Floor 0.3 under measured, same margin as the prior two decisions.
-github.com/devplayer0/docker-net-dhcp/pkg/util 88.0
+# v1.3.5 (#338, PR #349): pkg/util 88.0 -> 95.0. RAISED, but NOT earned
+#   by this cycle — the gap was already there and went unclaimed. Dev
+#   measured 88.7 on 2026-07-05 (coverage run 28738787076) and 95.5 the
+#   same day (run 28753476811); the jump came with the #317 ptrace fix
+#   (d652519), which let the plugin enter non-root netns and so made
+#   util's Await* poll paths actually execute. Stable at 95.5 across
+#   every run since, including v1.3.4's release measurement. Deferred
+#   from the v1.3.4 release PR to avoid another serialized coverage run
+#   on an otherwise-ready release. Floor set 0.5 under measured, the
+#   same margin as the decisions above.
+#
+#   pkg/plugin deliberately NOT raised: it measured 83.4 against a floor
+#   of 83.8 at v1.3.4, holding only via the 0.5 ratchet epsilon. The
+#   DeleteEndpoint tests in this PR are the first repayment (that
+#   handler went 0% -> 72.7% unit, and its not-found arm is unreachable
+#   from the integration suite, so it should move the merged number too
+#   — unlike the v1.3.4 lifecycle tests, which duplicated paths
+#   integration already covered and moved it 83.3 -> 83.4). Re-measure
+#   at the release PR and raise only what the number supports.
+github.com/devplayer0/docker-net-dhcp/pkg/util 95.0
 github.com/devplayer0/docker-net-dhcp/pkg/plugin 83.8
 github.com/devplayer0/docker-net-dhcp/pkg/dhcp 89.5
 github.com/devplayer0/docker-net-dhcp/cmd/net-dhcp 75.0

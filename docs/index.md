@@ -22,7 +22,7 @@ like any other machine. Bridge, macvlan, and ipvlan attachment modes.
 Install the plugin:
 
 ```bash
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.3.4
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.3.5
 ```
 
 It requests `host` networking, the host PID namespace, the Docker
@@ -35,7 +35,7 @@ already have a host bridge `my-bridge` on your LAN — see
 [Bridge mode](bridge-mode.md) for that one-time setup):
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.3.4 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.3.5 \
   --ipam-driver null -o bridge=my-bridge my-dhcp-net
 
 docker run --rm -ti --network my-dhcp-net alpine ip address show
@@ -59,15 +59,17 @@ right pick when you don't want to reconfigure the host's networking.
 
 ## Documentation
 
-- **[Driver reference](reference.md)** — every option, plugin setting,
-  the `/Plugin.Health` observability endpoint, and troubleshooting.
+- **[Driver reference](reference.md)** — **the manual.** Every option,
+  setting, and counter, plus lease behaviour, observability, Compose
+  usage, and troubleshooting. Start at
+  [At a glance](reference.md#at-a-glance) for the one-screen list of
+  everything you can set.
 - **[Bridge mode](bridge-mode.md)** — host bridge setup + end-to-end
   walkthrough.
-- **[macvlan / ipvlan modes](parent-attached-modes.md)** — NIC
-  attachment, DHCP identity (hostname / option 60 / 61), restart
-  stability, recovery.
-- **[How it works](internals.md)** — the veth + DHCP-client mechanism
-  and lease flow.
+- **[macvlan / ipvlan modes](parent-attached-modes.md)** — choosing
+  between the two, quick start, and the mode-specific constraints.
+- **[How it works](internals.md)** — the mechanism, for contributors:
+  the veth + DHCP-client flow, and how state survives a restart.
 - **[Release runbook](release-runbook.md)** — maintainer-facing publish
   procedure.
 

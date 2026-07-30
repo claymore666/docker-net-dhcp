@@ -84,7 +84,10 @@ jobs:
           make plugin-cover
           docker plugin rm -f "${COVER_PLUGIN_REF}" 2>/dev/null || true
           docker plugin create "${COVER_PLUGIN_REF}" plugin-cover
-          docker plugin set "${COVER_PLUGIN_REF}" LOG_LEVEL=trace
+          # Same test-only cadence as integration.yml (#278) — this job
+          # runs the failure suite too, so it pays the same waits.
+          docker plugin set "${COVER_PLUGIN_REF}" LOG_LEVEL=trace \
+            OUTAGE_TICK=2s OUTAGE_GRACE=10s
           docker plugin enable "${COVER_PLUGIN_REF}"
 
       # The harness routes everything through INTEGRATION_PLUGIN_REF

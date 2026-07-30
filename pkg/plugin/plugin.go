@@ -50,6 +50,11 @@ const (
 // the lookup misses, the persistent client will fill in the hostname
 // on first renewal, so the worst case is "first lease appears in the
 // upstream DHCP server's table without a hostname for a few minutes".
+// defaultAwaitTimeout is the fallback for Options.AwaitTimeout and is
+// the single source of truth for the value config.json ships as
+// AWAIT_TIMEOUT's default.
+const defaultAwaitTimeout = 10 * time.Second
+
 const initialDHCPHostnameLookupTimeout = 2 * time.Second
 
 // recoveryBudget caps the wall-time the plugin spends rebuilding its
@@ -274,9 +279,32 @@ type joinHint struct {
 	Ifname string
 }
 
+// Options carries the plugin's runtime knobs. Every field is sourced
+// from an environment variable declared in config.json and parsed in
+// cmd/net-dhcp; a zero field means "unset", and NewPlugin substitutes
+// the documented default. Grouping them beats growing NewPlugin's
+// parameter list one knob at a time.
+type Options struct {
+	// AwaitTimeout caps the polling helpers (sandbox readiness, link
+	// rename, netns appearance). AWAIT_TIMEOUT, default 10s.
+	AwaitTimeout time.Duration
+
+	// OutageTick is how often the DHCP-outage watchdog re-checks, and
+	// so the resolution of dhcp_timeouts. OUTAGE_TICK, default 30s.
+	OutageTick time.Duration
+
+	// OutageGrace is the settling time before the watchdog will call an
+	// outage. It must stay comfortably above how long a healthy client
+	// takes to acquire its first lease — below that, ordinary start-up
+	// registers as an outage. OUTAGE_GRACE, default 25s.
+	OutageGrace time.Duration
+}
+
 // Plugin is the DHCP network plugin
 type Plugin struct {
 	awaitTimeout time.Duration
+	outageTick   time.Duration
+	outageGrace  time.Duration
 	startTime    time.Time
 
 	docker dockerClient
@@ -384,6 +412,21 @@ type Plugin struct {
 	leasesRenewedV6  atomic.Int32
 	dhcpTimeoutsV6   atomic.Int32
 	naksReceivedV6   atomic.Int32
+
+	// displacedStops tracks the goroutines Join spawns to Stop a
+	// manager it displaced (#338). Join must not block on the dhcpcd
+	// release cycle, but Close must not exit while one is mid-release
+	// either — an interrupted Stop means no DHCPRELEASE, and the
+	// upstream server holds the lease until it expires on its own.
+	// Tracked rather than bounded on purpose: a semaphore here would
+	// put head-of-line blocking back into Join, which is the exact
+	// thing the goroutine exists to avoid.
+	//
+	// displacedStopsTotal is the /Plugin.Health view of the same
+	// event. A restart loop that repeatedly displaces managers is
+	// otherwise visible only as scattered log lines.
+	displacedStops      sync.WaitGroup
+	displacedStopsTotal atomic.Int32
 
 	// ledger is the append-only lease audit log (#109), written by
 	// dhcpManager.audit for networks created with audit_log=true.
@@ -938,8 +981,19 @@ func (p *Plugin) initialDHCPHostname(ctx context.Context, networkID, endpointID 
 	return hostname
 }
 
-// NewPlugin creates a new Plugin
-func NewPlugin(awaitTimeout time.Duration) (*Plugin, error) {
+// NewPlugin creates a new Plugin. Zero-valued Options fields take the
+// documented defaults, so NewPlugin(Options{}) is a valid production
+// configuration.
+func NewPlugin(opts Options) (*Plugin, error) {
+	if opts.AwaitTimeout <= 0 {
+		opts.AwaitTimeout = defaultAwaitTimeout
+	}
+	if opts.OutageTick <= 0 {
+		opts.OutageTick = defaultOutageTick
+	}
+	if opts.OutageGrace <= 0 {
+		opts.OutageGrace = defaultOutageGrace
+	}
 	client, err := docker.NewClientWithOpts(
 		docker.WithHost("unix:///run/docker.sock"),
 		docker.WithAPIVersionNegotiation(),
@@ -953,7 +1007,9 @@ func NewPlugin(awaitTimeout time.Duration) (*Plugin, error) {
 	}
 
 	p := Plugin{
-		awaitTimeout: awaitTimeout,
+		awaitTimeout: opts.AwaitTimeout,
+		outageTick:   opts.OutageTick,
+		outageGrace:  opts.OutageGrace,
 		startTime:    time.Now(),
 
 		docker: client,
@@ -1017,24 +1073,83 @@ func (p *Plugin) Listen(bindSock string) error {
 	return p.server.Serve(l)
 }
 
-// pluginShutdownTimeout caps how long Close waits for each persistent
-// DHCP client to send DHCPRELEASE and exit. Short enough to keep a
-// plugin upgrade snappy on hosts with many endpoints; long enough that
-// a typical dhcpcd release-and-exit cycle completes well within it.
-const pluginShutdownTimeout = 5 * time.Second
+// pluginShutdownTimeout caps the WHOLE shutdown: the HTTP grace
+// period, the persistent-client release fan-out, and the drain of
+// in-flight displaced-manager stops all share this one budget (#338).
+// Deliberately a total rather than a per-phase cap — phases have been
+// added twice now, and a per-phase timeout silently multiplies the
+// wall-clock an operator waits through on `docker plugin disable`.
+// Short enough to keep a plugin upgrade snappy on hosts with many
+// endpoints; long enough that a typical dhcpcd release-and-exit cycle
+// completes well within it.
+//
+// A var, not a const, solely so tests can shrink it: the forced-path
+// and timeout behaviours are only reachable by letting the budget
+// expire, and a 5s wall-clock per case is not something to pay in the
+// unit suite. Never reassigned outside tests.
+var pluginShutdownTimeout = 5 * time.Second
 
-// Close stops the plugin. The HTTP server is closed FIRST so no new
+// waitBounded waits for wg, giving up after d. Reports whether the
+// wait completed.
+//
+// Known leak (W-8 in the 2026-05-05 review): on timeout the watcher
+// goroutine and whatever the group was waiting on live until the OS
+// reaps the process. Acceptable in Close, which runs at process exit
+// — but DO NOT copy this into a long-lived caller (e.g. a future
+// SIGHUP-driven re-attach). For long-lived use, pass a ctx into the
+// work and have it abort cleanly on cancel.
+func waitBounded(wg *sync.WaitGroup, d time.Duration) bool {
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+		return true
+	case <-time.After(d):
+		return false
+	}
+}
+
+// Close stops the plugin. The HTTP server is shut down FIRST so no new
 // Join can register a manager while (or after) we stop the existing
-// ones — with the old ordering a Join dispatched during the up-to-5s
-// stop fan-out installed a manager into the fresh registry that nobody
-// ever stopped, orphaning its lease (no DHCPRELEASE) and its dhcpcd.
+// ones — with the old ordering a Join dispatched during the stop
+// fan-out installed a manager into the fresh registry that nobody ever
+// stopped, orphaning its lease (no DHCPRELEASE) and its dhcpcd.
 // Persistent DHCP clients are then stopped before process exit so they
 // get a chance to send DHCPRELEASE for their leases — otherwise plugin
 // upgrade or `docker plugin disable` would orphan every active lease at
 // the upstream DHCP server, defeating the release-on-stop contract
 // Leave normally honors.
 func (p *Plugin) Close() error {
-	serverErr := p.server.Close()
+	// One deadline for every phase below; see pluginShutdownTimeout.
+	deadline := time.Now().Add(pluginShutdownTimeout)
+	remaining := func() time.Duration {
+		if d := time.Until(deadline); d > 0 {
+			return d
+		}
+		return 0
+	}
+
+	// Shutdown, unlike Close, waits for in-flight handlers to RETURN.
+	// That is what makes a single drain below provably sufficient
+	// rather than merely likely: registerDHCPManager runs synchronously
+	// in the Join handler, before the goroutine that Starts the client
+	// (see network.go), so once no handler is running the registry is
+	// final and nothing further can register into it. The previous
+	// two-pass sweep was approximating this guarantee by racing it.
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), remaining())
+	defer cancel()
+
+	// forced records that a handler outlasted the grace period, so the
+	// guarantee above does NOT hold and we fall back to the old
+	// speculative behaviour. Rare, not impossible — keep it explicit
+	// instead of assuming it away.
+	forced := false
+	serverErr := p.server.Shutdown(shutdownCtx)
+	if serverErr != nil {
+		forced = true
+		log.WithError(serverErr).Warn("HTTP server did not shut down gracefully; forcing connections closed")
+		serverErr = p.server.Close()
+	}
 
 	// stopSnapshot drains the current registry once: snapshot under the
 	// lock, then Stop each manager in parallel outside it (Stop blocks
@@ -1067,34 +1182,31 @@ func (p *Plugin) Close() error {
 		}
 		// Bound wall time: we can't let one wedged dhcpcd hold up the
 		// whole shutdown.
-		//
-		// Known leak (W-8 in the 2026-05-05 review): if the timeout
-		// fires before wg.Wait returns, the watcher goroutine and any
-		// stuck Stop() calls live on until the OS reaps the process.
-		// That's acceptable here because Close runs at process exit
-		// — but DO NOT copy this pattern into a long-lived caller
-		// (e.g. a future SIGHUP-driven re-attach). For long-lived use,
-		// pass a ctx into Stop and have it abort cleanly on cancel.
-		done := make(chan struct{})
-		go func() { wg.Wait(); close(done) }()
-		select {
-		case <-done:
-		case <-time.After(pluginShutdownTimeout):
+		if !waitBounded(&wg, remaining()) {
 			log.Warn("Timeout waiting for persistent DHCP clients to stop; continuing shutdown")
 		}
 		return len(managers)
 	}
 
-	// Two passes: server.Close doesn't wait for in-flight handlers, so
-	// a Join already past the listener when we closed it can register a
-	// manager after the first snapshot. Those handlers finish in
-	// milliseconds while the first fan-out runs; a second sweep catches
-	// them. (A handler still running after BOTH passes would need to
-	// outlast an entire release fan-out — at that point we're at the
-	// same process-exit backstop as W-8.)
+	// One pass is enough on the graceful path: Shutdown returned, so no
+	// handler is still running and the registry cannot grow behind us.
 	stopSnapshot()
-	if n := stopSnapshot(); n > 0 {
-		log.WithField("count", n).Info("Stopped late-registered DHCP clients in shutdown sweep")
+	if forced {
+		// Degraded path only. A handler was still in flight when the
+		// grace period expired, so it may have registered a manager
+		// after the snapshot above. This is the pre-#338 behaviour,
+		// kept for exactly this case.
+		if n := stopSnapshot(); n > 0 {
+			log.WithField("count", n).Info("Stopped late-registered DHCP clients in forced-shutdown sweep")
+		}
+	}
+
+	// Drain displaced-manager stops spawned by Join (#338). Each is an
+	// in-flight DHCPRELEASE for a client this plugin displaced; without
+	// this, process exit cuts it short and orphans the lease at the
+	// server — the same failure the fan-out above exists to prevent.
+	if !waitBounded(&p.displacedStops, remaining()) {
+		log.Warn("Timeout waiting for displaced DHCP manager stops; continuing shutdown")
 	}
 
 	if err := p.docker.Close(); err != nil {

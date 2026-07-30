@@ -34,13 +34,40 @@ namespace to it. Two things differ:
 6. `dhcpcd` keeps running, renewing the lease when required, until the
    container shuts down.
 
-Two architectural notes about how the plugin drives `dhcpcd`:
+In macvlan and ipvlan mode the shape is the same, with a child interface
+on a host NIC in place of the veth pair and the bridge; the client
+lifecycle, the event plumbing, and everything below are identical.
+
+## How the plugin drives `dhcpcd`
 
 - **Events come over a FIFO, not the client's stdout.** A `dhcpcd` hook
-  script reports each lease event (bind, renew, expiry, NAK) as JSON
-  through a pipe the plugin opened — which is why the plugin ships a
-  small handler binary rather than parsing client output. The plugin
-  applies the resulting address/routes via netlink itself.
+  script reports each lease event (bind, renew, NAK) as JSON through a
+  pipe the plugin opened — which is why the plugin ships a small handler
+  binary rather than parsing client output. The plugin applies the
+  resulting address/routes via netlink itself.
+- **A lapsed lease is not one of those events.** The plugin runs
+  `dhcpcd --noconfigure`, and in that mode a lease running out is
+  reported as `RELEASE` — the same thing a graceful stop emits. The two
+  are indistinguishable, so treating either as a failure would count
+  every normal container teardown as one, and the handler drops both.
+  This is why the plugin cannot learn about a dead DHCP server by
+  waiting to be told.
+- **Outages are therefore derived, not reported.** Each bind and renew
+  records the lease lifetime the server granted, and a watchdog compares
+  it against the time since that endpoint was last served: once
+  `lease + grace` has passed with nothing heard, the server is treated as
+  unreachable and `dhcp_timeouts` starts climbing (#353). The trade-off
+  is inherent — a valid lease means a working address, so an outage
+  cannot be *proven* before that lease would have run out. Cadence is
+  [`OUTAGE_TICK` / `OUTAGE_GRACE`](reference.md#plugin-settings).
+- **The FIFO is held open by a dedicated keep-alive writer.** The reader
+  drains it to a natural EOF rather than being torn down when the client
+  exits. This is not incidental: the one-shot client writes its `bound`
+  event and exits immediately, and closing the FIFO on that exit races
+  the reader for an event still sitting in the kernel pipe buffer. Under
+  load that lost roughly 4% of acquisitions (#332). With a separate
+  writer the reaper closes only the write end, so the event cannot be
+  dropped — the guarantee is structural rather than retried around.
 - **Each client runs in a private mount namespace.** `dhcpcd` keys *two*
   on-disk locations by interface name, with no runtime override for
   either: its **state** directory (lease files, DUID) and its **runtime**
@@ -53,7 +80,46 @@ Two architectural notes about how the plugin drives `dhcpcd`:
   shadows both directories with a private `tmpfs` in each client's own
   mount namespace, which keeps them fully independent.
 
+  A side effect worth knowing when debugging: the lease file is only
+  visible from inside that namespace, so reading it means
+  `nsenter -t <dhcpcd-pid> -m` (see
+  [verifying renewal](reference.md#verifying-that-renewal-works)).
+
+## How state outlives a process
+
+Three separate mechanisms keep addresses stable across three different
+kinds of restart. Their *observable* behaviour is documented in the
+[driver reference](reference.md#behaviour); this is how they are built.
+
+- **Per-network options → `STATE_DIR/<network_id>.json`.** Written at
+  `CreateNetwork` so the per-endpoint handlers never call back into the
+  Docker API to learn the mode or parent. That callback is precisely what
+  deadlocked the upstream plugin during `dockerd` startup, when the
+  daemon asked it to restore containers using its own networks. On a
+  cache miss the handlers fall back to the API and back-fill the file.
+- **Tombstones → a single file under `STATE_DIR`.** Written at
+  `DeleteEndpoint`, consumed at the next `CreateEndpoint`, 60-second TTL.
+  Each carries the previous MAC, the last v4 and v6 addresses, and the
+  container hostname. The lookup is keyed by **network ID** plus
+  hostname — which is why an endpoint keeps its address across a
+  container restart but not across removal of the network itself, since
+  the replacement network has a different ID. Ambiguity is resolved
+  conservatively: when neither side knows the hostname, a tombstone is
+  consumed only if it is the network's single candidate, so concurrent
+  restarts fall back to fresh MACs rather than risk handing one
+  container's identity to another.
+- **Recovery → a walk of Docker's network list at startup.** For every
+  endpoint on a plugin-served network, a DHCP manager is rebuilt and its
+  first acquisition requests the address the container already holds
+  (option 50). This runs synchronously inside plugin construction,
+  before the socket accepts requests, so an incoming `CreateEndpoint`
+  cannot race it.
+
+The plugin's identity is a MAC. Both stability mechanisms exist because
+DHCP servers key on it, and everything above is in service of presenting
+the same MAC to the server across an event the container did not choose.
+
 ## See also
 
-- [Driver reference](reference.md) — options, `/Plugin.Health`, troubleshooting
+- [Driver reference](reference.md) — every option, counter, and behaviour
 - [Bridge mode](bridge-mode.md) and [macvlan / ipvlan](parent-attached-modes.md) setup
