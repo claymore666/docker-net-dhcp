@@ -50,11 +50,14 @@ permissions:
 jobs:
   integration-hosted:
     runs-on: ubuntu-latest
-    # Same 35m budget as integration.yml: main suite + failure-injection
-    # suite (~9 min of deliberate DHCP-timing waits) + plugin build +
-    # margin. Hosted hardware is unproven for this suite — the first
-    # dispatch runs calibrate whether this holds (see #238).
-    timeout-minutes: 35
+    # 40m, matching integration.yml: main suite + failure-injection
+    # suite + plugin build + margin. The failure suite grew a fourth
+    # test in #351 (~10 min of deliberate DHCP-timing waits, up from
+    # ~9), and hosted hardware is slower than the self-hosted pool for
+    # the same work — the self-hosted lane lands at ~28-29 min, so 35m
+    # left too little room here. Hosted timings are still being
+    # calibrated (see #238).
+    timeout-minutes: 40
     env:
       # Distinct tag from :integration (self-hosted) and :golang-cover
       # (coverage). The VM is ephemeral so collisions can't happen, but
@@ -106,7 +109,13 @@ jobs:
           make PLUGIN_NAME=ghcr.io/claymore666/docker-net-dhcp PLUGIN_TAG=integration-hosted plugin
           docker plugin rm -f "${INTEGRATION_PLUGIN_REF}" 2>/dev/null || true
           docker plugin create "${INTEGRATION_PLUGIN_REF}" plugin
-          docker plugin set "${INTEGRATION_PLUGIN_REF}" LOG_LEVEL=trace
+          # Same test-only outage cadence as integration.yml and
+          # coverage.yml (#278). This lane runs the failure suite too, so
+          # without it the hosted run pays the shipped 30s/25s on top of
+          # the fixture's immovable 2m lease — ~80s more than the other
+          # two lanes, against the same 35m budget.
+          docker plugin set "${INTEGRATION_PLUGIN_REF}" LOG_LEVEL=trace \
+            OUTAGE_TICK=2s OUTAGE_GRACE=10s
           docker plugin enable "${INTEGRATION_PLUGIN_REF}"
 
       # The Makefile targets require root (netns/veth/UDP-67). Hosted
