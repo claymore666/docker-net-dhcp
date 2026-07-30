@@ -37,7 +37,11 @@ func TestTombstoneRestart_PreservesMACAndIP(t *testing.T) {
 	})
 
 	harness.CreateNetwork(t, ctx, netName, "macvlan", nil)
-	id, ipBefore, macBefore := harness.RunContainer(t, ctx, netName, ctrName)
+	// #370 opt-out: no init PID 1, so the container is slow to stop.
+	// This test only passes with a slow stop — the v4 DHCPRELEASE that
+	// frees the lease comes from the persistent client, which is not
+	// bound yet when a fast container exits. See harness.HostConfigNoInit.
+	id, ipBefore, macBefore := harness.RunContainerNoInit(t, ctx, netName, ctrName)
 	t.Logf("before restart: ip=%s mac=%s", ipBefore, macBefore)
 
 	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())

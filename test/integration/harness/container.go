@@ -33,6 +33,35 @@ const (
 	IPAcquisitionBudget = 15 * time.Second
 )
 
+// HostConfig is the HostConfig every test container must be created
+// with — use it instead of a bare &container.HostConfig{} so no site
+// silently reintroduces the stop grace described below.
+//
+// Test containers run `sleep infinity` as PID 1, and the kernel
+// discards SIGTERM for PID 1 unless the process installs a handler. So
+// every `docker stop` in the suite waited out its full 10-second grace
+// and then SIGKILLed — measured at 10.16s per teardown, across 50+
+// teardowns (#367). Docker's init (tini) forwards the signal to
+// `sleep`, whose default disposition is to terminate, so the container
+// exits at once: 10.16s -> 0.18s.
+//
+// Init is deliberately not `docker stop -t 0` or a bare force-remove.
+// With init the container still exits 143 (SIGTERM), not 137
+// (SIGKILL), so the graceful Leave -> DHCPRELEASE path that
+// health_counters and audit_log assert on is preserved rather than
+// bypassed. Faster and more faithful, not faster instead of faithful.
+//
+// Everything is freshly allocated per call — including the *bool —
+// because callers needing extra fields (a restart policy, say) mutate
+// the returned struct.
+func HostConfig() *container.HostConfig {
+	init := true
+	return &container.HostConfig{
+		AutoRemove: false, // tests remove explicitly in cleanup
+		Init:       &init,
+	}
+}
+
 // EnsureImage pulls TestImage if not already present locally. Run from
 // TestMain to amortize the pull across the whole suite.
 func EnsureImage(ctx context.Context) error {
@@ -85,7 +114,39 @@ func EnsureImage(ctx context.Context) error {
 // different entrypoint shape.
 func RunContainer(t *testing.T, ctx context.Context, networkName, containerName string) (id, ipv4, mac string) {
 	t.Helper()
-	return RunContainerUser(t, ctx, networkName, containerName, "")
+	return runContainer(t, ctx, networkName, containerName, "", HostConfig())
+}
+
+// HostConfigNoInit is the #370 opt-out: no init PID 1, so `sleep
+// infinity` ignores SIGTERM and `docker stop` takes its full 10s grace.
+//
+// #370 is a race in the plugin, not in the tests. The DHCPRELEASE that
+// frees a v4 lease is emitted by the *persistent* client on SIGTERM,
+// but the address becomes visible as soon as the *one-shot* client
+// finishes — roughly 2s earlier. A container stopped inside that window
+// sends no release, the server keeps the lease under a client-id that
+// does not survive the restart, and the container comes back on a
+// different address.
+//
+// The restart-stability tests therefore only pass with a container that
+// is slow to stop. That is what they have always had, so this opt-out
+// preserves exactly the coverage that exists today — it does not weaken
+// it. It must go away when #370 is fixed; a stable v4 client-id (#219)
+// would remove the dependency on the release entirely.
+//
+// Do not reach for this to make a new test pass. If a test needs a slow
+// stop, it is very likely finding #370 again.
+func HostConfigNoInit() *container.HostConfig {
+	return &container.HostConfig{
+		AutoRemove: false,
+	}
+}
+
+// RunContainerNoInit is RunContainer with the #370 opt-out. See
+// HostConfigNoInit for why this exists and when it must be removed.
+func RunContainerNoInit(t *testing.T, ctx context.Context, networkName, containerName string) (id, ipv4, mac string) {
+	t.Helper()
+	return runContainer(t, ctx, networkName, containerName, "", HostConfigNoInit())
 }
 
 // RunContainerUser is RunContainer with an explicit container user
@@ -94,6 +155,11 @@ func RunContainer(t *testing.T, ctx context.Context, networkName, containerName 
 // must pass at Join — root test containers can't exercise that path
 // (#317).
 func RunContainerUser(t *testing.T, ctx context.Context, networkName, containerName, user string) (id, ipv4, mac string) {
+	t.Helper()
+	return runContainer(t, ctx, networkName, containerName, user, HostConfig())
+}
+
+func runContainer(t *testing.T, ctx context.Context, networkName, containerName, user string, hostCfg *container.HostConfig) (id, ipv4, mac string) {
 	t.Helper()
 	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
 	if err != nil {
@@ -109,9 +175,7 @@ func RunContainerUser(t *testing.T, ctx context.Context, networkName, containerN
 			Hostname: containerName,
 			User:     user,
 		},
-		&container.HostConfig{
-			AutoRemove: false, // we remove explicitly in cleanup
-		},
+		hostCfg,
 		&network.NetworkingConfig{
 			EndpointsConfig: map[string]*network.EndpointSettings{
 				networkName: {},

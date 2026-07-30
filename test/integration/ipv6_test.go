@@ -153,7 +153,7 @@ func TestLifecycleMacvlan_IPv6_GoldenPath(t *testing.T) {
 	// final health assertion.
 	create, err := cli.ContainerCreate(ctx,
 		&container.Config{Image: harness.TestImage, Cmd: []string{"sleep", "infinity"}, Hostname: ctrName},
-		&container.HostConfig{},
+		harness.HostConfig(),
 		&network.NetworkingConfig{EndpointsConfig: map[string]*network.EndpointSettings{netName: {}}},
 		nil, ctrName)
 	if err != nil {
@@ -252,7 +252,11 @@ func TestTombstoneRestart_PreservesIPv6(t *testing.T) {
 	defer cli.Close()
 
 	harness.CreateNetwork(t, ctx, netName, "macvlan", map[string]string{"ipv6": "true"})
-	id, v4Before, macBefore := harness.RunContainer(t, ctx, netName, ctrName)
+	// #370 opt-out: no init PID 1, so the container is slow to stop.
+	// Only the v4 half of this test needs it — the v6 address survives a
+	// fast restart because its DUID/IAID identity is MAC-derived — but
+	// the assertion covers both. See harness.HostConfigNoInit.
+	id, v4Before, macBefore := harness.RunContainerNoInit(t, ctx, netName, ctrName)
 	v6Before := linkGlobalV6(t, ctx, id, harness.IPAcquisitionBudget)
 	if v6Before == "" {
 		t.Fatal("no global IPv6 appeared before restart")

@@ -61,7 +61,7 @@ func TestStaticIP_DriverOpt(t *testing.T) {
 			Image: harness.TestImage,
 			Cmd:   []string{"sleep", "infinity"},
 		},
-		&container.HostConfig{},
+		harness.HostConfig(),
 		&network.NetworkingConfig{
 			EndpointsConfig: map[string]*network.EndpointSettings{
 				netName: {
