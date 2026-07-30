@@ -10,8 +10,34 @@ The goal: a clean release is one tag push, no manual steps.
 
 ## One-time prerequisites
 
-These are per-account / per-Hub-repo setup, **not** per-release.
-Done once when the publishing chain is first wired up.
+These are per-account / per-Hub-repo setup plus the tooling on the
+box you release from, **not** per-release. Done once when the
+publishing chain is first wired up.
+
+### Local tooling on the release box
+
+The workflow installs everything it needs itself; this is only about
+the commands **you** type. Nothing here is checked by CI, so a missing
+tool surfaces as a step you skip rather than a gate that fails — which
+is exactly how the v1.3.5 release ended up unable to run step 9's
+verification.
+
+| Tool | Needed for | Install |
+| --- | --- | --- |
+| `gh` | every step — PRs, milestones, run status, `gh release view` | distro package or <https://cli.github.com> |
+| `cosign` | step 9's `verify-blob` re-verification | `go install github.com/sigstore/cosign/v3/cmd/cosign@latest` |
+| `crane` | optional — comparing `:latest` and `:vX.Y.Z` digests by hand | `go install github.com/google/go-containerregistry/cmd/crane@latest` |
+
+**Use cosign v3.** The release signs `checksums.txt` keylessly and
+emits a **Sigstore bundle**, which is the v3 default; v2's
+`--output-signature` / `--output-certificate` pair was removed in
+favour of it. v3 is what the workflow itself installs and what the
+v1.3.5 verification was run with (v3.1.2); older majors are untested
+against `checksums.txt.sigstore.json` here.
+
+Also needed, but already true on any box that has committed here: a
+git signing key, since step 8 tags with `-s`. Confirm with
+`git config --get user.signingkey` before you get to the tag.
 
 ### GHCR — package must be linked to the repo
 
