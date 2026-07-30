@@ -836,10 +836,25 @@ lifecycle, the event plumbing, and everything below are identical.</p>
 <h2 id="how-the-plugin-drives-dhcpcd">How the plugin drives <code>dhcpcd</code><a class="headerlink" href="#how-the-plugin-drives-dhcpcd" title="Permanent link">&para;</a></h2>
 <ul>
 <li><strong>Events come over a FIFO, not the client's stdout.</strong> A <code>dhcpcd</code> hook
-  script reports each lease event (bind, renew, expiry, NAK) as JSON
-  through a pipe the plugin opened — which is why the plugin ships a
-  small handler binary rather than parsing client output. The plugin
-  applies the resulting address/routes via netlink itself.</li>
+  script reports each lease event (bind, renew, NAK) as JSON through a
+  pipe the plugin opened — which is why the plugin ships a small handler
+  binary rather than parsing client output. The plugin applies the
+  resulting address/routes via netlink itself.</li>
+<li><strong>A lapsed lease is not one of those events.</strong> The plugin runs
+  <code>dhcpcd --noconfigure</code>, and in that mode a lease running out is
+  reported as <code>RELEASE</code> — the same thing a graceful stop emits. The two
+  are indistinguishable, so treating either as a failure would count
+  every normal container teardown as one, and the handler drops both.
+  This is why the plugin cannot learn about a dead DHCP server by
+  waiting to be told.</li>
+<li><strong>Outages are therefore derived, not reported.</strong> Each bind and renew
+  records the lease lifetime the server granted, and a watchdog compares
+  it against the time since that endpoint was last served: once
+  <code>lease + grace</code> has passed with nothing heard, the server is treated as
+  unreachable and <code>dhcp_timeouts</code> starts climbing (#353). The trade-off
+  is inherent — a valid lease means a working address, so an outage
+  cannot be <em>proven</em> before that lease would have run out. Cadence is
+  <a href="../reference/#plugin-settings"><code>OUTAGE_TICK</code> / <code>OUTAGE_GRACE</code></a>.</li>
 <li><strong>The FIFO is held open by a dedicated keep-alive writer.</strong> The reader
   drains it to a natural EOF rather than being torn down when the client
   exits. This is not incidental: the one-shot client writes its <code>bound</code>
