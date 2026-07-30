@@ -656,6 +656,17 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#local-tooling-on-the-release-box" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Local tooling on the release box
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#ghcr-package-must-be-linked-to-the-repo" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -814,6 +825,17 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#local-tooling-on-the-release-box" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Local tooling on the release box
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#ghcr-package-must-be-linked-to-the-repo" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -950,8 +972,50 @@ from the workflow file alone — capturing them here so the next
 release isn't another archaeology session.</p>
 <p>The goal: a clean release is one tag push, no manual steps.</p>
 <h2 id="one-time-prerequisites">One-time prerequisites<a class="headerlink" href="#one-time-prerequisites" title="Permanent link">&para;</a></h2>
-<p>These are per-account / per-Hub-repo setup, <strong>not</strong> per-release.
-Done once when the publishing chain is first wired up.</p>
+<p>These are per-account / per-Hub-repo setup plus the tooling on the
+box you release from, <strong>not</strong> per-release. Done once when the
+publishing chain is first wired up.</p>
+<h3 id="local-tooling-on-the-release-box">Local tooling on the release box<a class="headerlink" href="#local-tooling-on-the-release-box" title="Permanent link">&para;</a></h3>
+<p>The workflow installs everything it needs itself; this is only about
+the commands <strong>you</strong> type. Nothing here is checked by CI, so a missing
+tool surfaces as a step you skip rather than a gate that fails — which
+is exactly how the v1.3.5 release ended up unable to run step 9's
+verification.</p>
+<table>
+<thead>
+<tr>
+<th>Tool</th>
+<th>Needed for</th>
+<th>Install</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>gh</code></td>
+<td>every step — PRs, milestones, run status, <code>gh release view</code></td>
+<td>distro package or <a href="https://cli.github.com">https://cli.github.com</a></td>
+</tr>
+<tr>
+<td><code>cosign</code></td>
+<td>step 9's <code>verify-blob</code> re-verification</td>
+<td><code>go install github.com/sigstore/cosign/v3/cmd/cosign@latest</code></td>
+</tr>
+<tr>
+<td><code>crane</code></td>
+<td>optional — comparing <code>:latest</code> and <code>:vX.Y.Z</code> digests by hand</td>
+<td><code>go install github.com/google/go-containerregistry/cmd/crane@latest</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Use cosign v3.</strong> The release signs <code>checksums.txt</code> keylessly and
+emits a <strong>Sigstore bundle</strong>, which is the v3 default; v2's
+<code>--output-signature</code> / <code>--output-certificate</code> pair was removed in
+favour of it. v3 is what the workflow itself installs and what the
+v1.3.5 verification was run with (v3.1.2); older majors are untested
+against <code>checksums.txt.sigstore.json</code> here.</p>
+<p>Also needed, but already true on any box that has committed here: a
+git signing key, since step 8 tags with <code>-s</code>. Confirm with
+<code>git config --get user.signingkey</code> before you get to the tag.</p>
 <h3 id="ghcr-package-must-be-linked-to-the-repo">GHCR — package must be linked to the repo<a class="headerlink" href="#ghcr-package-must-be-linked-to-the-repo" title="Permanent link">&para;</a></h3>
 <p>By default a workflow's <code>GITHUB_TOKEN</code> can push to GHCR packages it
 <strong>created</strong> but not packages that already exist under the user/org.
