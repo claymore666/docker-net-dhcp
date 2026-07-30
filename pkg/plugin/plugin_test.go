@@ -249,24 +249,76 @@ func TestClientIDFromEndpoint(t *testing.T) {
 	}
 }
 
-// TestResolveClientID pins the v0.9.0 / T2-3 override semantics:
-// operator-supplied opts.ClientID wins over the endpoint-derived
-// stable id, and an empty override falls back to derivation.
+// TestResolveClientID pins the v0.9.0 / T2-3 override semantics
+// (operator-supplied opts.ClientID always wins) and the #371 identity
+// rules: MAC-derived where the MAC is unique, endpoint-derived for
+// ipvlan where it is not.
 func TestResolveClientID(t *testing.T) {
 	const eid = "0123456789abcdef0123456789abcdef"
+	mac := net.HardwareAddr{0x02, 0x42, 0xac, 0x11, 0x00, 0x03}
 
 	t.Run("override wins", func(t *testing.T) {
-		got := resolveClientID(DHCPNetworkOptions{ClientID: "my-class-id"}, eid)
+		got := resolveClientID(DHCPNetworkOptions{ClientID: "my-class-id"}, eid, mac)
 		if string(got) != "my-class-id" {
 			t.Errorf("override: got %q, want %q", got, "my-class-id")
 		}
 	})
 
-	t.Run("empty override falls back to derived", func(t *testing.T) {
-		got := resolveClientID(DHCPNetworkOptions{}, eid)
+	t.Run("override wins in ipvlan too", func(t *testing.T) {
+		// The mode-aware branch must sit *below* the override, or an
+		// operator's explicit client_id would be silently ignored on
+		// exactly the mode that most needs manual control.
+		got := resolveClientID(DHCPNetworkOptions{ClientID: "static", Mode: "ipvlan"}, eid, mac)
+		if string(got) != "static" {
+			t.Errorf("override+ipvlan: got %q, want %q", got, "static")
+		}
+	})
+
+	t.Run("derives from MAC by default", func(t *testing.T) {
+		got := resolveClientID(DHCPNetworkOptions{}, eid, mac)
+		if string(got) != string(mac) {
+			t.Errorf("derived: got %x, want %x (the MAC is what survives a restart, #371)", got, []byte(mac))
+		}
+	})
+
+	t.Run("macvlan derives from MAC", func(t *testing.T) {
+		got := resolveClientID(DHCPNetworkOptions{Mode: "macvlan"}, eid, mac)
+		if string(got) != string(mac) {
+			t.Errorf("macvlan: got %x, want %x", got, []byte(mac))
+		}
+	})
+
+	t.Run("ipvlan stays endpoint-derived", func(t *testing.T) {
+		// ipvlan L2 slaves inherit the parent's MAC, so a MAC-derived id
+		// would be identical for every container on the network and they
+		// would fight over one lease. This is the regression the whole
+		// mode-aware design exists to prevent (#219).
+		got := resolveClientID(DHCPNetworkOptions{Mode: "ipvlan"}, eid, mac)
 		want := clientIDFromEndpoint(eid)
 		if string(got) != string(want) {
-			t.Errorf("fallback: got %x, want %x", got, want)
+			t.Errorf("ipvlan: got %x, want endpoint-derived %x", got, want)
+		}
+		if string(got) == string(mac) {
+			t.Error("ipvlan derived from the shared parent MAC; every container on the network would claim one lease")
+		}
+	})
+
+	t.Run("two ipvlan endpoints on one shared MAC stay distinct", func(t *testing.T) {
+		const other = "fedcba9876543210fedcba9876543210"
+		a := resolveClientID(DHCPNetworkOptions{Mode: "ipvlan"}, eid, mac)
+		b := resolveClientID(DHCPNetworkOptions{Mode: "ipvlan"}, other, mac)
+		if string(a) == string(b) {
+			t.Error("two ipvlan endpoints sharing the parent MAC resolved to the same client-id")
+		}
+	})
+
+	t.Run("missing MAC falls back to endpoint-derived", func(t *testing.T) {
+		// Degrade to the previous behaviour rather than to no
+		// client-id at all.
+		got := resolveClientID(DHCPNetworkOptions{}, eid, nil)
+		want := clientIDFromEndpoint(eid)
+		if string(got) != string(want) {
+			t.Errorf("no MAC: got %x, want %x", got, want)
 		}
 	})
 
@@ -274,7 +326,7 @@ func TestResolveClientID(t *testing.T) {
 		// Even if the endpoint id is too short to derive from, an
 		// explicit override should still be honoured. Prevents a
 		// regression where the fallback path swallowed the override.
-		got := resolveClientID(DHCPNetworkOptions{ClientID: "static"}, "")
+		got := resolveClientID(DHCPNetworkOptions{ClientID: "static"}, "", nil)
 		if string(got) != "static" {
 			t.Errorf("override+empty eid: got %q, want %q", got, "static")
 		}

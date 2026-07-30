@@ -5,6 +5,7 @@ package integration
 import (
 	"context"
 	"encoding/hex"
+	"net"
 	"os"
 	"strings"
 	"testing"
@@ -75,13 +76,21 @@ func TestClientID_OverrideAppearsInLeaseFile(t *testing.T) {
 		wantHex, fixture.LeaseFile(), leaseContents)
 }
 
-// TestClientID_DefaultUsesEndpointDerivedID is the negative side:
-// without the operator override, the lease file shows the
-// endpoint-derived stable ID (8 bytes hex, prefixed by 0x00) — NOT
-// the operator-set string. Pins the fallback path so a future
-// refactor that accidentally always uses opts.ClientID would
-// trigger this assertion's mismatch.
-func TestClientID_DefaultUsesEndpointDerivedID(t *testing.T) {
+// TestClientID_DefaultIsMACDerived proves on the wire what #371
+// changed: without an operator override, a macvlan endpoint's option-61
+// client-id is the container's MAC.
+//
+// This is the property the whole restart-stability fix rests on. The
+// tombstone preserves the MAC, so a MAC-derived client-id is an identity
+// the server still recognises after a restart — which is why IPv6, whose
+// DUID/IAID has always been MAC-derived, never lost its address the way
+// IPv4 did.
+//
+// Asserting the exact bytes (not just "isn't the override string") is
+// deliberate. The previous version of this test only checked that the
+// operator's string was absent, which a MAC-derived id, an
+// endpoint-derived id, and an empty id would all have satisfied equally.
+func TestClientID_DefaultIsMACDerived(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
@@ -99,10 +108,9 @@ func TestClientID_DefaultUsesEndpointDerivedID(t *testing.T) {
 	id, ipv4, mac := harness.RunContainer(t, ctx, netName, ctrName)
 	t.Logf("container %s: id=%s ip=%s mac=%s", ctrName, id[:12], ipv4, mac)
 
-	// Find the lease line for our IP. Without an override the
-	// client-id is 8 hex bytes (16 hex chars), prefixed by 00:.
-	// We assert on length rather than the exact derived value to
-	// avoid coupling the test to clientIDFromEndpoint's hash shape.
+	// Find the lease line for our IP. Without an override the client-id
+	// is the MAC, rendered by dnsmasq as 00:<mac hex> (type byte 0x00,
+	// "opaque", is what the plugin always sends).
 	deadline := time.Now().Add(5 * time.Second)
 	var lineForIP string
 	for time.Now().Before(deadline) {
@@ -126,9 +134,26 @@ func TestClientID_DefaultUsesEndpointDerivedID(t *testing.T) {
 	t.Logf("lease line: %s", lineForIP)
 
 	// Lease format: <expiry> <mac> <ip> <hostname> <client-id>.
-	// Last whitespace-separated field is the client-id. An
-	// override of "dh-itest-cid" would render as a recognisable
-	// pattern; the derived ID won't.
+	// Last whitespace-separated field is the client-id.
+	fields := strings.Fields(lineForIP)
+	if len(fields) < 5 {
+		t.Fatalf("unexpected lease line shape (want >=5 fields): %q", lineForIP)
+	}
+	gotClientID := fields[len(fields)-1]
+
+	macBytes, err := net.ParseMAC(mac)
+	if err != nil {
+		t.Fatalf("docker inspect returned an unparseable MAC %q: %v", mac, err)
+	}
+	wantClientID := "00:" + colonHex(macBytes)
+
+	if !strings.EqualFold(gotClientID, wantClientID) {
+		t.Errorf("client-id on the wire is %q, want %q (the MAC, #371).\nlease line: %s\n"+
+			"If this is the endpoint-derived id instead, IPv4 no longer survives a restart and #370 is back.",
+			gotClientID, wantClientID, lineForIP)
+	}
+
+	// The override must not leak into a network that didn't ask for it.
 	if strings.Contains(lineForIP, "dh-itest-cid") {
 		t.Errorf("default network should NOT carry the override string in client-id; got line: %s", lineForIP)
 	}

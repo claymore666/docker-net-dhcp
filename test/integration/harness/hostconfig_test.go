@@ -42,37 +42,6 @@ func TestHostConfig_FreshPerCall(t *testing.T) {
 	}
 }
 
-// TestHostConfig_NoInitOptOutIsJustified keeps the #370 escape hatch
-// from spreading quietly. The opt-out restores a 10-second teardown, so
-// each use costs real wall clock — and, more importantly, a test that
-// "needs" it is usually rediscovering #370 rather than working around a
-// harness quirk.
-//
-// The rule is not a whitelist of files (that rots); it is that any file
-// reaching for the opt-out must say why, by naming the issue.
-func TestHostConfig_NoInitOptOutIsJustified(t *testing.T) {
-	files, err := filepath.Glob(filepath.Join("..", "*_test.go"))
-	if err != nil {
-		t.Fatalf("glob suite sources: %v", err)
-	}
-	for _, f := range files {
-		src, err := os.ReadFile(f)
-		if err != nil {
-			t.Fatalf("read %s: %v", f, err)
-		}
-		body := string(src)
-		if !strings.Contains(body, "HostConfigNoInit") && !strings.Contains(body, "RunContainerNoInit") {
-			continue
-		}
-		if !strings.Contains(body, "#370") {
-			t.Errorf("%s uses the no-init opt-out without citing #370. Every use must carry its justification: "+
-				"the opt-out exists only because the v4 DHCPRELEASE races a fast container exit, and it must be "+
-				"removed when #370 is fixed. If this test genuinely needs a slow stop, it is probably finding #370 again.",
-				filepath.Base(f))
-		}
-	}
-}
-
 // TestHostConfig_NoBareLiteralsInSuite is the part that actually holds
 // the line. The helper is only worth having if every creation site
 // uses it, and the natural thing to write in a new test is

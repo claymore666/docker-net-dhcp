@@ -228,7 +228,7 @@ Passed as `-o key=value` on `docker network create`, or under
 | `skip_routes` | all | `false` | upstream; all modes since v0.9.0 | Don't copy non-default static routes from the parent (bridge or NIC) into containers, **and** don't apply DHCP-supplied classless static routes (option 121, see below). v0.9.0 extended parent route-copying from bridge-only to all modes (#102); set `true` to restore the old macvlan/ipvlan no-copy behaviour. The default gateway is unaffected either way. |
 | `propagate_dns` | all | `false` | v0.9.0 | Write the DHCP-supplied DNS server list (option 6 / v6 option 23) into the container's `/etc/resolv.conf` on every bind/renew. Overrides Docker's embedded resolver for this network; the `search` line uses option 119 with fallback to option 15. |
 | `propagate_mtu` | all | `false` | v0.9.0 | Apply DHCP option 26 (Interface MTU) to the container link on bind/renew. For jumbo-frame (9000) and VPN-reduced (~1450) networks. |
-| `client_id` | all | per-endpoint id | v0.9.0 | Override DHCP option 61 (Client Identifier) for every endpoint on this network; sent as RFC 2132 opaque bytes (type `0x00`). The default per-endpoint id is what makes per-container reservations work — a fixed `client_id` makes all containers look like one client to the server. Pair with `vendor_class` for class-based policy. |
+| `client_id` | all | per-endpoint id | v0.9.0 | Override DHCP option 61 (Client Identifier) for every endpoint on this network; sent as RFC 2132 opaque bytes (type `0x00`). The default per-endpoint id is what makes per-container reservations work — a fixed `client_id` makes all containers look like one client to the server. Pair with `vendor_class` for class-based policy. **The derived default differs by mode** (see below). |
 | `vendor_class` | all | `docker-net-dhcp` | v0.9.0 | Override DHCP option 60 (Vendor Class Identifier), for DHCP servers running class-based policy (different gateway/option sets per class). v4 only — the DHCPv6 client sends no vendor-class option. |
 | `validate_dhcp` | macvlan, ipvlan | `false` | v0.9.0 | Pre-flight probe at `docker network create`: one-shot DHCP exchange on the parent with a random locally-administered MAC, rejecting the network if no server answers within 8s. Catches isolated parents / blocked UDP 67-68 / broken VLAN tags at create time. Costs one transient lease per probe. Bridge mode rejects the option. |
 | `register_dns` | all | `false` | v1.3.0 | Send the DHCP FQDN option (81 on v4 / 39 on v6, via `dhcpcd fqdn both`) built from the container's hostname, asking the DHCP server to register that name in DNS (forward A/AAAA + reverse PTR). Reuses the same hostname already sent as the option-12 hint. Best-effort and advisory — many consumer routers ignore option 81, so this *requests* registration, it does not guarantee resolution. Off by default: dynamic-DNS registration is a network-policy decision. See below. |
@@ -411,15 +411,33 @@ in every mode:
   server can gate behaviour on "this is a plugin-managed container"
   without parsing hostname conventions. v4 only; override with
   `vendor_class`.
-- **Client identifier (option 61)** — eight bytes derived from the Docker
-  endpoint ID, type-byte `0x00` (RFC 2132 opaque). Stable across
-  container *restart* because the endpoint ID is. This is what makes
-  reservations work in ipvlan, where every child shares the parent's MAC.
-  It does **not** survive `docker rm` + `run`, which mints a fresh
-  endpoint ID — lease stability across recreate needs a per-container
-  identity the driver API doesn't currently expose (#218, #219). Override
-  with `client_id`, though a fixed value makes every container look like
-  one client.
+- **Client identifier (option 61)** — type-byte `0x00` (RFC 2132 opaque),
+  with a payload that depends on the mode:
+
+  | mode | payload | survives `docker restart`? |
+  |---|---|---|
+  | `bridge`, `macvlan` | the endpoint MAC | **yes** |
+  | `ipvlan` | eight bytes from the Docker endpoint ID | no |
+
+  In `bridge` and `macvlan` the MAC is unique per endpoint and the plugin
+  preserves it across a restart, so the server recognises the returning
+  container and renews the same address. This is the same identity IPv6
+  has always used (its DUID/IAID is MAC-derived), and it is what makes
+  IPv4 restart-stable without depending on a `DHCPRELEASE` being sent on
+  the way out — which is not always possible (`SIGKILL`, OOM, power loss).
+
+  `ipvlan` is the exception: its L2 slaves all inherit the parent's MAC,
+  so a MAC-derived id could not tell containers apart. Those keep the
+  endpoint-derived id, which is unique but **not** stable across a
+  restart — Docker mints a fresh endpoint ID each time (#219).
+
+  No mode survives `docker rm` + `run`. A recreate builds a new sandbox
+  with a new MAC and a new endpoint ID, so there is no identity to carry;
+  that needs a per-container identity the driver API doesn't currently
+  expose (#218).
+
+  Override with `client_id`, though a fixed value makes every container
+  look like one client.
 
 #### Options captured from the server
 

@@ -687,7 +687,10 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 		if opts.LeaseTimeout != 0 {
 			timeout = opts.LeaseTimeout
 		}
-		clientID := resolveClientID(opts, r.EndpointID)
+		// MAC-derived so the IPv4 lease survives a restart the way the
+		// v6 binding always has; see resolveClientID (#371). Same link,
+		// same MAC the DUID-LL/IAID below is pinned to.
+		clientID := resolveClientID(opts, r.EndpointID, ctrLink.Attrs().HardwareAddr)
 		initialIP := func(v6 bool) error {
 			v6str := ""
 			if v6 {

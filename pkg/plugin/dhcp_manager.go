@@ -805,9 +805,11 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 		// ipvlan path but currently has no effect.
 		Broadcast: m.opts.effectiveMode() == ModeIPvlan,
 		// Same client-id the initial DISCOVER used in CreateEndpoint,
-		// so renewals are seen as the same client by the server.
-		// Honours the operator's client_id override when set.
-		ClientID:    resolveClientID(m.opts, m.joinReq.EndpointID),
+		// so renewals are seen as the same client by the server. That
+		// means passing the same MAC the one-shot did — this is the
+		// same link, moved into the netns, so it is the same address
+		// (#371). Honours the operator's client_id override when set.
+		ClientID:    resolveClientID(m.opts, m.joinReq.EndpointID, m.ctrLink.Attrs().HardwareAddr),
 		VendorClass: m.opts.VendorClass,
 	})
 	if err != nil {
