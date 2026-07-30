@@ -41,10 +41,25 @@ lifecycle, the event plumbing, and everything below are identical.
 ## How the plugin drives `dhcpcd`
 
 - **Events come over a FIFO, not the client's stdout.** A `dhcpcd` hook
-  script reports each lease event (bind, renew, expiry, NAK) as JSON
-  through a pipe the plugin opened — which is why the plugin ships a
-  small handler binary rather than parsing client output. The plugin
-  applies the resulting address/routes via netlink itself.
+  script reports each lease event (bind, renew, NAK) as JSON through a
+  pipe the plugin opened — which is why the plugin ships a small handler
+  binary rather than parsing client output. The plugin applies the
+  resulting address/routes via netlink itself.
+- **A lapsed lease is not one of those events.** The plugin runs
+  `dhcpcd --noconfigure`, and in that mode a lease running out is
+  reported as `RELEASE` — the same thing a graceful stop emits. The two
+  are indistinguishable, so treating either as a failure would count
+  every normal container teardown as one, and the handler drops both.
+  This is why the plugin cannot learn about a dead DHCP server by
+  waiting to be told.
+- **Outages are therefore derived, not reported.** Each bind and renew
+  records the lease lifetime the server granted, and a watchdog compares
+  it against the time since that endpoint was last served: once
+  `lease + grace` has passed with nothing heard, the server is treated as
+  unreachable and `dhcp_timeouts` starts climbing (#353). The trade-off
+  is inherent — a valid lease means a working address, so an outage
+  cannot be *proven* before that lease would have run out. Cadence is
+  [`OUTAGE_TICK` / `OUTAGE_GRACE`](reference.md#plugin-settings).
 - **The FIFO is held open by a dedicated keep-alive writer.** The reader
   drains it to a natural EOF rather than being torn down when the client
   exits. This is not incidental: the one-shot client writes its `bound`
