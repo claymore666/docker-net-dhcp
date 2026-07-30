@@ -82,11 +82,11 @@ func validateModeOptions(opts DHCPNetworkOptions) error {
 // which is how the container's network namespace disappears when the
 // container exits.
 //
-// Deliberately a stat and not a Docker API call: the API round-trip is
-// itself what times out when a container vanishes mid-attach (the
-// `failed to get Docker container info: context deadline exceeded` in
-// #373), so asking Docker to confirm would be both slower and less
-// reliable than looking at the artifact directly.
+// Deliberately a filesystem check and not a Docker API call: the API
+// round-trip is itself what times out when a container vanishes
+// mid-attach (the `failed to get Docker container info: context deadline
+// exceeded` in #373), so asking Docker to confirm would be both slower
+// and less reliable than looking at the artifact directly.
 //
 // An empty key returns false — no evidence is not evidence of absence,
 // and the caller must fall back to treating the failure as real. The
@@ -94,16 +94,6 @@ func validateModeOptions(opts DHCPNetworkOptions) error {
 // directory: an unrecognised shape is not evidence the container went
 // away, so it degrades to the pre-#373 behaviour of counting a real
 // failure rather than silently excusing one.
-//
-// That check is also why this doesn't stat the request path directly.
-// The sandbox key is the first path the plugin has ever taken from a
-// Join request into a filesystem call — everywhere else it is only
-// logged — so it is treated as untrusted input: validated to a bare
-// filename inside a compile-time directory, then rebuilt from that
-// constant. A read-only stat driven by the local Docker daemon over a
-// root-only socket is not a plausible attack, but an unconstrained
-// path from request data into the filesystem is a shape worth not
-// having (CodeQL go/path-injection, flagged on #374).
 func sandboxGone(sandboxKey string) bool {
 	return sandboxGoneIn(sandboxNetnsDirs, sandboxKey)
 }
@@ -120,18 +110,40 @@ var sandboxNetnsDirs = []string{
 // sandboxGoneIn is sandboxGone with the permitted directories injected,
 // so both answers can be tested without root or a live Docker sandbox.
 // Production always passes sandboxNetnsDirs.
+//
+// It lists the directory and compares names rather than stat'ing the
+// key. That looks like the long way round, and it is load-bearing: the
+// sandbox key is the only path the plugin takes from a Join request into
+// a filesystem call — everywhere else it is merely logged — so no path
+// derived from it is ever handed to the filesystem. The only value that
+// reaches the OS is one of the compile-time directories above; the
+// request-supplied name is used solely in a string comparison. Rewriting
+// this as os.Stat(filepath.Join(dir, name)) reintroduces CodeQL
+// go/path-injection (flagged on #374) even with the name validated to a
+// bare filename first — filepath.Base is not treated as a barrier.
+//
+// The cost is reading one directory instead of one stat, on a path that
+// only runs when starting the persistent client has already failed.
 func sandboxGoneIn(dirs []string, sandboxKey string) bool {
 	dir, name := splitSandboxKeyIn(dirs, sandboxKey)
 	if dir == "" {
 		return false
 	}
-	_, err := os.Stat(filepath.Join(dir, name))
-	// Keyed on ErrNotExist specifically, not on "stat failed": a
-	// permission error is not evidence the container went away, and
-	// must degrade to counting a real failure. The plugin runs as root
-	// and sees ENOENT; /var/run/docker is 0700, so anything less
-	// privileged sees EACCES for every key.
-	return errors.Is(err, os.ErrNotExist)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		// No usable evidence — not a negative result. A permission
+		// error must not read as "the container went away": the plugin
+		// runs as root and sees the real listing, while /var/run/docker
+		// is 0700, so anything less privileged gets EACCES for every
+		// key and would otherwise conclude every container had vanished.
+		return false
+	}
+	for _, e := range entries {
+		if e.Name() == name {
+			return false
+		}
+	}
+	return true
 }
 
 // splitSandboxKeyIn validates a sandbox key and splits it into one of
@@ -143,8 +155,8 @@ func splitSandboxKeyIn(dirs []string, sandboxKey string) (dir, name string) {
 		return "", ""
 	}
 	clean := filepath.Clean(sandboxKey)
-	// filepath.Base strips every directory component, so the name can
-	// never carry a traversal into the Join above; filepath.Clean has
+	// filepath.Base strips every directory component, so the name is a
+	// bare entry to compare against the directory listing; Clean has
 	// already resolved any interior ".." segments.
 	name = filepath.Base(clean)
 	if name == "." || name == ".." || name == string(os.PathSeparator) {
