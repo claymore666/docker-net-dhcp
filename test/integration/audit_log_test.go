@@ -123,7 +123,7 @@ func TestAuditLog_RecordsLifecycle(t *testing.T) {
 			Cmd:      []string{"sleep", "infinity"},
 			Hostname: ctrName,
 		},
-		&container.HostConfig{},
+		harness.HostConfig(),
 		&network.NetworkingConfig{
 			EndpointsConfig: map[string]*network.EndpointSettings{netName: {}},
 		},

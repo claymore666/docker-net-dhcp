@@ -75,16 +75,19 @@ func TestRecovery_DaemonRestart_PreservesContainer(t *testing.T) {
 	}
 
 	// We can't use harness.RunContainer because it doesn't take a
-	// RestartPolicy. Inlining keeps the harness API stable.
+	// RestartPolicy. Inlining keeps the harness API stable — but the
+	// HostConfig still comes from the harness so this site keeps the
+	// init PID 1 that spares every teardown docker stop's 10s grace
+	// (#367).
+	hostCfg := harness.HostConfig()
+	hostCfg.RestartPolicy = container.RestartPolicy{Name: container.RestartPolicyAlways}
 	create, err := cli.ContainerCreate(ctx,
 		&container.Config{
 			Image:    harness.TestImage,
 			Cmd:      []string{"sleep", "infinity"},
 			Hostname: ctrName,
 		},
-		&container.HostConfig{
-			RestartPolicy: container.RestartPolicy{Name: container.RestartPolicyAlways},
-		},
+		hostCfg,
 		&network.NetworkingConfig{
 			EndpointsConfig: map[string]*network.EndpointSettings{netName: {}},
 		},

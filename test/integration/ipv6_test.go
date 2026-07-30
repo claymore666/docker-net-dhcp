@@ -153,7 +153,7 @@ func TestLifecycleMacvlan_IPv6_GoldenPath(t *testing.T) {
 	// final health assertion.
 	create, err := cli.ContainerCreate(ctx,
 		&container.Config{Image: harness.TestImage, Cmd: []string{"sleep", "infinity"}, Hostname: ctrName},
-		&container.HostConfig{},
+		harness.HostConfig(),
 		&network.NetworkingConfig{EndpointsConfig: map[string]*network.EndpointSettings{netName: {}}},
 		nil, ctrName)
 	if err != nil {

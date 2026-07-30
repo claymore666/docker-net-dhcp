@@ -38,7 +38,7 @@ func runContainerWithIfname(t *testing.T, ctx context.Context, cli *docker.Clien
 	t.Helper()
 	create, err := cli.ContainerCreate(ctx,
 		&container.Config{Image: harness.TestImage, Cmd: []string{"sleep", "infinity"}, Hostname: ctrName},
-		&container.HostConfig{},
+		harness.HostConfig(),
 		&network.NetworkingConfig{EndpointsConfig: map[string]*network.EndpointSettings{
 			netName: {DriverOpts: map[string]string{ifnameOpt: ifname}},
 		}},
@@ -149,7 +149,7 @@ func TestInterfaceName_InvalidRejected(t *testing.T) {
 
 	create, err := cli.ContainerCreate(ctx,
 		&container.Config{Image: harness.TestImage, Cmd: []string{"sleep", "infinity"}},
-		&container.HostConfig{},
+		harness.HostConfig(),
 		&network.NetworkingConfig{EndpointsConfig: map[string]*network.EndpointSettings{
 			netName: {DriverOpts: map[string]string{ifnameOpt: "way-too-long-interface-name"}},
 		}},
@@ -210,7 +210,7 @@ func TestInterfaceName_MultiNetworkDeterministic(t *testing.T) {
 
 	create, err := cli.ContainerCreate(ctx,
 		&container.Config{Image: harness.TestImage, Cmd: []string{"sleep", "infinity"}},
-		&container.HostConfig{},
+		harness.HostConfig(),
 		&network.NetworkingConfig{EndpointsConfig: map[string]*network.EndpointSettings{
 			netA: {DriverOpts: map[string]string{ifnameOpt: "wan0"}},
 			netB: {DriverOpts: map[string]string{ifnameOpt: "lan0"}},
