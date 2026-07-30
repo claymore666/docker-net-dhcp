@@ -421,6 +421,7 @@ func TestValidateIPAMData(t *testing.T) {
 // operator every time a short-lived container exits.
 func TestSandboxGone(t *testing.T) {
 	dir := t.TempDir()
+	dirs := []string{dir}
 
 	present := filepath.Join(dir, "netns-alive")
 	if err := os.WriteFile(present, nil, 0o644); err != nil {
@@ -428,13 +429,13 @@ func TestSandboxGone(t *testing.T) {
 	}
 
 	t.Run("existing sandbox is not gone", func(t *testing.T) {
-		if sandboxGone(present) {
+		if sandboxGoneIn(dirs, present) {
 			t.Error("reported gone for a sandbox that exists; a real start failure would be silently downgraded and never reach healthy")
 		}
 	})
 
 	t.Run("unlinked sandbox is gone", func(t *testing.T) {
-		if !sandboxGone(filepath.Join(dir, "netns-vanished")) {
+		if !sandboxGoneIn(dirs, filepath.Join(dir, "netns-vanished")) {
 			t.Error("reported present for a sandbox that does not exist; a normal fast container exit would flip healthy to false (#373)")
 		}
 	})
@@ -443,8 +444,100 @@ func TestSandboxGone(t *testing.T) {
 		// No evidence is not evidence of absence. An empty SandboxKey
 		// must fall back to treating the failure as real, rather than
 		// swallowing every failure on a daemon that stops sending it.
-		if sandboxGone("") {
+		if sandboxGoneIn(dirs, "") {
 			t.Error("empty sandbox key treated as gone; that would suppress every join-start failure")
 		}
 	})
+
+	t.Run("key outside the permitted dirs is not gone", func(t *testing.T) {
+		// The file genuinely does not exist, so an unvalidated stat
+		// would say "gone". Rejecting on shape must win: an
+		// unrecognised key is no evidence, not negative evidence.
+		if sandboxGoneIn(dirs, filepath.Join(t.TempDir(), "elsewhere")) {
+			t.Error("accepted a sandbox key outside the permitted netns dirs; unrecognised shapes must degrade to counting a real failure")
+		}
+	})
+
+	t.Run("production dirs are wired in", func(t *testing.T) {
+		// Guards against sandboxGone being left pointed at a test or
+		// empty list, which would make it answer false for every real
+		// Join and silently restore the pre-#373 behaviour.
+		//
+		// Asserted on the validation rather than on sandboxGone itself:
+		// the stat result depends on privilege (see the EACCES subtest
+		// below), and this test must mean the same thing whether it runs
+		// as root on the integration runner or as an ordinary user.
+		if len(sandboxNetnsDirs) == 0 {
+			t.Fatal("sandboxNetnsDirs is empty; sandboxGone can never fire")
+		}
+		dir, name := splitSandboxKeyIn(sandboxNetnsDirs, "/var/run/docker/netns/36a98db54ebf")
+		if dir == "" {
+			t.Error("production dirs rejected a well-formed libnetwork sandbox key; sandboxGone would answer 'not gone' for every real Join")
+		}
+		if name != "36a98db54ebf" {
+			t.Errorf("sandbox name = %q, want the bare netns id", name)
+		}
+	})
+
+	t.Run("unreadable parent is not gone", func(t *testing.T) {
+		// sandboxGone keys on ErrNotExist specifically, not on "stat
+		// failed". A permission error is not evidence the container
+		// went away, so it must degrade to counting a real failure.
+		//
+		// This is not hypothetical: /var/run/docker is 0700 root, so an
+		// unprivileged caller gets EACCES for every sandbox key. The
+		// plugin runs as root and sees ENOENT; anything else must not
+		// quietly read as "gone".
+		if os.Geteuid() == 0 {
+			t.Skip("running as root; EACCES is not reachable")
+		}
+		locked := filepath.Join(t.TempDir(), "locked")
+		if err := os.Mkdir(locked, 0o000); err != nil {
+			t.Fatalf("seed unreadable dir: %v", err)
+		}
+		if sandboxGoneIn([]string{locked}, filepath.Join(locked, "absent")) {
+			t.Error("a permission error was read as 'container gone'; only ErrNotExist may downgrade a start failure")
+		}
+	})
+}
+
+// TestSplitSandboxKeyIn covers the validation that keeps a Join
+// request's path data out of an unconstrained filesystem call
+// (CodeQL go/path-injection, #374). Every rejection here must return an
+// empty dir, which sandboxGoneIn turns into "not gone" — the
+// conservative answer that counts a real failure.
+func TestSplitSandboxKeyIn(t *testing.T) {
+	const okDir = "/var/run/docker/netns"
+	dirs := []string{okDir, "/run/docker/netns"}
+
+	tests := []struct {
+		name     string
+		key      string
+		wantDir  string
+		wantName string
+	}{
+		{"libnetwork sandbox key", "/var/run/docker/netns/36a98db54ebf", okDir, "36a98db54ebf"},
+		{"alternate run prefix", "/run/docker/netns/abc123", "/run/docker/netns", "abc123"},
+		{"uncleaned but equivalent", "/var/run/docker/netns/./36a98db54ebf", okDir, "36a98db54ebf"},
+		{"traversal resolving back in", "/var/run/docker/netns/sub/../36a98db54ebf", okDir, "36a98db54ebf"},
+
+		{"empty", "", "", ""},
+		{"traversal escaping the dir", "/var/run/docker/netns/../../../etc/passwd", "", ""},
+		{"unrelated absolute path", "/etc/passwd", "", ""},
+		{"relative path", "netns/abc", "", ""},
+		{"the dir itself", "/var/run/docker/netns", "", ""},
+		{"nested one level deeper", "/var/run/docker/netns/sub/abc", "", ""},
+		{"root", "/", "", ""},
+		{"prefix lookalike", "/var/run/docker/netns-evil/abc", "", ""},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir, name := splitSandboxKeyIn(dirs, tc.key)
+			if dir != tc.wantDir || name != tc.wantName {
+				t.Errorf("splitSandboxKeyIn(%q) = (%q, %q), want (%q, %q)",
+					tc.key, dir, name, tc.wantDir, tc.wantName)
+			}
+		})
+	}
 }

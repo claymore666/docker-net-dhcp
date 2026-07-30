@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -88,13 +89,74 @@ func validateModeOptions(opts DHCPNetworkOptions) error {
 // reliable than looking at the artifact directly.
 //
 // An empty key returns false — no evidence is not evidence of absence,
-// and the caller must fall back to treating the failure as real.
+// and the caller must fall back to treating the failure as real. The
+// same applies to any key that isn't a plain entry in a known netns
+// directory: an unrecognised shape is not evidence the container went
+// away, so it degrades to the pre-#373 behaviour of counting a real
+// failure rather than silently excusing one.
+//
+// That check is also why this doesn't stat the request path directly.
+// The sandbox key is the first path the plugin has ever taken from a
+// Join request into a filesystem call — everywhere else it is only
+// logged — so it is treated as untrusted input: validated to a bare
+// filename inside a compile-time directory, then rebuilt from that
+// constant. A read-only stat driven by the local Docker daemon over a
+// root-only socket is not a plausible attack, but an unconstrained
+// path from request data into the filesystem is a shape worth not
+// having (CodeQL go/path-injection, flagged on #374).
 func sandboxGone(sandboxKey string) bool {
-	if sandboxKey == "" {
+	return sandboxGoneIn(sandboxNetnsDirs, sandboxKey)
+}
+
+// sandboxNetnsDirs are the only directories a Join's sandbox key is
+// expected to live in. libnetwork bind-mounts each sandbox's netns as
+// /var/run/docker/netns/<id>; hosts where /var/run is a symlink to
+// /run report the same file under the second form.
+var sandboxNetnsDirs = []string{
+	"/var/run/docker/netns",
+	"/run/docker/netns",
+}
+
+// sandboxGoneIn is sandboxGone with the permitted directories injected,
+// so both answers can be tested without root or a live Docker sandbox.
+// Production always passes sandboxNetnsDirs.
+func sandboxGoneIn(dirs []string, sandboxKey string) bool {
+	dir, name := splitSandboxKeyIn(dirs, sandboxKey)
+	if dir == "" {
 		return false
 	}
-	_, err := os.Stat(sandboxKey)
+	_, err := os.Stat(filepath.Join(dir, name))
+	// Keyed on ErrNotExist specifically, not on "stat failed": a
+	// permission error is not evidence the container went away, and
+	// must degrade to counting a real failure. The plugin runs as root
+	// and sees ENOENT; /var/run/docker is 0700, so anything less
+	// privileged sees EACCES for every key.
 	return errors.Is(err, os.ErrNotExist)
+}
+
+// splitSandboxKeyIn validates a sandbox key and splits it into one of
+// the permitted directories plus a bare filename. It returns an empty
+// dir for anything it does not recognise, which callers must treat as
+// "no usable evidence" rather than as a negative result.
+func splitSandboxKeyIn(dirs []string, sandboxKey string) (dir, name string) {
+	if sandboxKey == "" {
+		return "", ""
+	}
+	clean := filepath.Clean(sandboxKey)
+	// filepath.Base strips every directory component, so the name can
+	// never carry a traversal into the Join above; filepath.Clean has
+	// already resolved any interior ".." segments.
+	name = filepath.Base(clean)
+	if name == "." || name == ".." || name == string(os.PathSeparator) {
+		return "", ""
+	}
+	parent := filepath.Dir(clean)
+	for _, known := range dirs {
+		if parent == known {
+			return known, name
+		}
+	}
+	return "", ""
 }
 
 // CreateNetwork validates network creation: option shape (pure), then
