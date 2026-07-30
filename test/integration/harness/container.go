@@ -114,7 +114,39 @@ func EnsureImage(ctx context.Context) error {
 // different entrypoint shape.
 func RunContainer(t *testing.T, ctx context.Context, networkName, containerName string) (id, ipv4, mac string) {
 	t.Helper()
-	return RunContainerUser(t, ctx, networkName, containerName, "")
+	return runContainer(t, ctx, networkName, containerName, "", HostConfig())
+}
+
+// HostConfigNoInit is the #370 opt-out: no init PID 1, so `sleep
+// infinity` ignores SIGTERM and `docker stop` takes its full 10s grace.
+//
+// #370 is a race in the plugin, not in the tests. The DHCPRELEASE that
+// frees a v4 lease is emitted by the *persistent* client on SIGTERM,
+// but the address becomes visible as soon as the *one-shot* client
+// finishes — roughly 2s earlier. A container stopped inside that window
+// sends no release, the server keeps the lease under a client-id that
+// does not survive the restart, and the container comes back on a
+// different address.
+//
+// The restart-stability tests therefore only pass with a container that
+// is slow to stop. That is what they have always had, so this opt-out
+// preserves exactly the coverage that exists today — it does not weaken
+// it. It must go away when #370 is fixed; a stable v4 client-id (#219)
+// would remove the dependency on the release entirely.
+//
+// Do not reach for this to make a new test pass. If a test needs a slow
+// stop, it is very likely finding #370 again.
+func HostConfigNoInit() *container.HostConfig {
+	return &container.HostConfig{
+		AutoRemove: false,
+	}
+}
+
+// RunContainerNoInit is RunContainer with the #370 opt-out. See
+// HostConfigNoInit for why this exists and when it must be removed.
+func RunContainerNoInit(t *testing.T, ctx context.Context, networkName, containerName string) (id, ipv4, mac string) {
+	t.Helper()
+	return runContainer(t, ctx, networkName, containerName, "", HostConfigNoInit())
 }
 
 // RunContainerUser is RunContainer with an explicit container user
@@ -123,6 +155,11 @@ func RunContainer(t *testing.T, ctx context.Context, networkName, containerName 
 // must pass at Join — root test containers can't exercise that path
 // (#317).
 func RunContainerUser(t *testing.T, ctx context.Context, networkName, containerName, user string) (id, ipv4, mac string) {
+	t.Helper()
+	return runContainer(t, ctx, networkName, containerName, user, HostConfig())
+}
+
+func runContainer(t *testing.T, ctx context.Context, networkName, containerName, user string, hostCfg *container.HostConfig) (id, ipv4, mac string) {
 	t.Helper()
 	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
 	if err != nil {
@@ -138,7 +175,7 @@ func RunContainerUser(t *testing.T, ctx context.Context, networkName, containerN
 			Hostname: containerName,
 			User:     user,
 		},
-		HostConfig(),
+		hostCfg,
 		&network.NetworkingConfig{
 			EndpointsConfig: map[string]*network.EndpointSettings{
 				networkName: {},
