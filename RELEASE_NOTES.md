@@ -59,6 +59,76 @@ assessment above is retained here as the audit trail. If it becomes
 reachable again the gate fails loudly rather than silently
 re-accepting it.
 
+## v1.3.5
+
+A patch release whose headline is an observability defect: a DHCP
+server outage was **invisible** on a bound endpoint. `dhcp_timeouts`
+never moved, so the one counter meant to expose a dead DHCP server
+stayed at zero for the entire outage. Also adds persistent host-bridge
+setup guidance, which the bridge-mode walkthrough had been missing
+since the fork began. No new driver options, no manifest changes;
+existing networks keep working unchanged.
+
+What changed:
+
+- **A DHCP server outage never reached `dhcp_timeouts`** (#353). The
+  outage watchdog only counted while a client was in its "acquiring"
+  state, and nothing ever put a *bound* client back into it. The
+  premise was that `dhcpcd` fires a lease-loss hook when a lease
+  lapses; under `--noconfigure`, which this plugin always uses, it
+  does not — a lapsed lease is reported as `RELEASE`, which is
+  indistinguishable from the one a graceful stop emits and therefore
+  cannot be counted as a failure. So for every endpoint that had
+  successfully bound, a server outage produced no counter movement and
+  no log line, for as long as it lasted. Detection is now derived
+  rather than awaited: each bind and renew records the lease lifetime
+  the server granted, and the watchdog reports an outage once
+  `lease + grace` has passed with nothing heard.
+
+  **Operator-visible consequence:** detection is not immediate, and
+  cannot be. A valid lease means a working address, so an outage is
+  only provable once that lease would have run out — on a 24-hour
+  lease, up to ~24 hours. A client that never binds at all is still
+  reported within `OUTAGE_GRACE`. If you alert on `dhcp_timeouts`,
+  it now moves where it previously never would; alerts calibrated
+  against the old (silent) behaviour will start firing correctly.
+
+- **New settings `OUTAGE_TICK` and `OUTAGE_GRACE`** (#278), defaulting
+  to `30s` and `25s` — the watchdog's re-check period and the settling
+  time added on top of the lease before an outage is called. Most
+  deployments should leave them alone. `OUTAGE_GRACE` must stay above
+  the time a healthy client needs to acquire its first lease; below
+  that, ordinary container start-up is reported as an outage. The
+  plugin logs a warning at startup whenever either is overridden.
+
+- **Shutdown and attach races closed** (#338, #324). Paths that #330
+  left as heuristics are now deterministic, and a new
+  `displaced_stops` counter records attaches that found a manager
+  already registered for the same endpoint and stopped it — a few are
+  normal after a plugin restart; a steady climb alongside
+  `recovered_ok` means a container is in a restart loop.
+
+- **Bridge mode: the host bridge now has persistent setup guidance**
+  (#352). The walkthrough gave only imperative `ip link` commands, so
+  the bridge was lost on the next reboot — and the failure presents
+  confusingly, because `docker network create` still succeeds and only
+  container attach breaks. There are now complete stanzas for
+  ifupdown, netplan, systemd-networkd and NetworkManager, a prominent
+  warning that the host's own address moves to the bridge (applying it
+  over SSH with the NIC still configured drops the connection and does
+  not give it back), firewall-rule persistence, and why STP must stay
+  off — with STP on, every container `veth` waits out two forwarding
+  delays before it forwards, which breaks the container's DHCP while
+  leaving the host's own lease untouched. Three of the four recipes are
+  verified end-to-end through a real reboot by
+  `scripts/verify-bridge-boot.sh`; the NetworkManager one is
+  documented as unusable on Ubuntu, where netplan owns ethernet.
+
+Also in this release: the failure-injection suite now proves the
+failure it injects rather than passing on a technicality (#278), and
+the documentation was restructured by audience with an at-a-glance
+option index (#345, #344, #343).
+
 ## v1.3.4
 
 A patch release fixing three lease-lifecycle defects, one of which
