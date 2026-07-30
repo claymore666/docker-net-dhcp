@@ -77,6 +77,26 @@ func validateModeOptions(opts DHCPNetworkOptions) error {
 	return nil
 }
 
+// sandboxGone reports whether a Join's sandbox key has been unlinked,
+// which is how the container's network namespace disappears when the
+// container exits.
+//
+// Deliberately a stat and not a Docker API call: the API round-trip is
+// itself what times out when a container vanishes mid-attach (the
+// `failed to get Docker container info: context deadline exceeded` in
+// #373), so asking Docker to confirm would be both slower and less
+// reliable than looking at the artifact directly.
+//
+// An empty key returns false — no evidence is not evidence of absence,
+// and the caller must fall back to treating the failure as real.
+func sandboxGone(sandboxKey string) bool {
+	if sandboxKey == "" {
+		return false
+	}
+	_, err := os.Stat(sandboxKey)
+	return errors.Is(err, os.ErrNotExist)
+}
+
 // CreateNetwork validates network creation: option shape (pure), then
 // existence of the parent interface (bridge or NIC depending on mode),
 // the null IPAM driver requirement, and — for bridge mode — that no
@@ -1079,12 +1099,33 @@ func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) 
 		defer cancel()
 
 		if err := m.Start(ctx); err != nil {
-			p.joinStartFailures.Add(1)
-			log.WithError(err).WithFields(log.Fields{
+			fields := log.Fields{
 				"network":  shortID(r.NetworkID),
 				"endpoint": shortID(r.EndpointID),
 				"sandbox":  r.SandboxKey,
-			}).Error("Failed to start persistent DHCP client; lease will not be renewed")
+			}
+			// A container that exited while we were still attaching to it
+			// is not a plugin failure. join_start_failures means "a
+			// RUNNING container has no renewal client" and flips healthy;
+			// firing it for a container that is simply gone would page an
+			// operator over a normal exit, and nothing is missing a
+			// renewal client because nothing is there (#373).
+			//
+			// Prompt exits are the common case, not the exotic one: an
+			// application that handles SIGTERM is gone in milliseconds.
+			// The suite only stopped hiding this when its containers got
+			// an init PID 1 (#367) — `sleep infinity` ignoring SIGTERM
+			// had been holding every teardown open for 10s.
+			if sandboxGone(r.SandboxKey) {
+				p.joinAbortedContainerGone.Add(1)
+				log.WithError(err).WithFields(fields).
+					Info("Container went away during attach; no persistent client needed")
+				p.removeDHCPManagerIfSame(r.EndpointID, m)
+				return
+			}
+			p.joinStartFailures.Add(1)
+			log.WithError(err).WithFields(fields).
+				Error("Failed to start persistent DHCP client; lease will not be renewed")
 			// If Start failed, take ourselves out of the registry so a
 			// later Leave doesn't try to Stop() us. Stop() is safe to
 			// call against a failed-Start manager (it returns the start

@@ -351,6 +351,20 @@ type Plugin struct {
 	// is fixed.
 	joinStartFailures atomic.Int32
 
+	// joinAbortedContainerGone counts attaches abandoned because the
+	// container exited before the persistent client could be started
+	// (#373). Deliberately NOT healthy-affecting and deliberately not
+	// silent: nothing is wrong — there is no running container missing
+	// a renewal client — but a sudden rise still says something real
+	// about the workload (containers dying seconds after start, a
+	// crash-loop), so it stays visible on /Plugin.Health.
+	//
+	// This is the benign twin of joinStartFailures. The two are
+	// distinguished by whether the Join's sandbox key still exists;
+	// before #373 both landed in joinStartFailures and a normal fast
+	// exit could flip healthy to false.
+	joinAbortedContainerGone atomic.Int32
+
 	// tombstoneWriteFailures counts saveTombstones failures (disk full,
 	// EROFS) from addTombstone. Reported on /Plugin.Health so operators
 	// can detect a degraded restart-stability window — every failure

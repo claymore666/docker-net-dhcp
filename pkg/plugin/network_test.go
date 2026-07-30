@@ -2,6 +2,8 @@ package plugin
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 
@@ -407,4 +409,42 @@ func TestValidateIPAMData(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestSandboxGone is the discriminator behind #373: it decides whether a
+// failed persistent-client start is a plugin fault (running container
+// with no renewal client — healthy-affecting) or a container that simply
+// exited mid-attach (benign).
+//
+// Getting this backwards is expensive in both directions: false "gone"
+// hides a real fault from /Plugin.Health, false "present" pages an
+// operator every time a short-lived container exits.
+func TestSandboxGone(t *testing.T) {
+	dir := t.TempDir()
+
+	present := filepath.Join(dir, "netns-alive")
+	if err := os.WriteFile(present, nil, 0o644); err != nil {
+		t.Fatalf("seed sandbox file: %v", err)
+	}
+
+	t.Run("existing sandbox is not gone", func(t *testing.T) {
+		if sandboxGone(present) {
+			t.Error("reported gone for a sandbox that exists; a real start failure would be silently downgraded and never reach healthy")
+		}
+	})
+
+	t.Run("unlinked sandbox is gone", func(t *testing.T) {
+		if !sandboxGone(filepath.Join(dir, "netns-vanished")) {
+			t.Error("reported present for a sandbox that does not exist; a normal fast container exit would flip healthy to false (#373)")
+		}
+	})
+
+	t.Run("empty key is not gone", func(t *testing.T) {
+		// No evidence is not evidence of absence. An empty SandboxKey
+		// must fall back to treating the failure as real, rather than
+		// swallowing every failure on a daemon that stops sending it.
+		if sandboxGone("") {
+			t.Error("empty sandbox key treated as gone; that would suppress every join-start failure")
+		}
+	})
 }
