@@ -40,6 +40,15 @@ func TestMain(m *testing.M) {
 	fixture = f
 
 	rc := m.Run()
+
+	// The health floor runs before teardown, while the plugin is
+	// still serving, and unconditionally: on an already-red run its
+	// output is often what explains the red. It can turn a green run
+	// red, never the reverse. See checkHealthFloor.
+	if code := checkHealthFloor(); code != 0 && rc == 0 {
+		rc = code
+	}
+
 	if err := f.Teardown(); err != nil {
 		fmt.Fprintln(os.Stderr, "TEARDOWN:", err)
 	}
