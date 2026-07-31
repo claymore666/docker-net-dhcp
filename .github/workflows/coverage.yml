@@ -26,13 +26,18 @@ on:
     branches:
       - main
 
-# Serialize all privileged self-hosted jobs (shared with
-# integration.yml, #296): the ephemeral runners isolate Docker state
-# but share one host's CPU/IO, and parallel privileged runs flaked
-# timing-sensitive tests on the v1.3.0 release PR. See integration.yml
-# for the full rationale and the pending-run-cancellation caveat.
+# Per-ref, matching integration.yml (#390) — see there for the full
+# rationale.
+#
+# Moving in step with integration.yml is the point rather than a
+# side effect. Under the old global group this workflow was the one
+# that lost work: a coverage run on the release PR shares a queue with
+# every integration run in the repo, so a routine merge into dev would
+# silently cancel it and leave the release PR waiting on a required
+# check that was never going to arrive (#365). Different refs, different
+# groups — a dev push can no longer displace a release PR's coverage.
 concurrency:
-  group: selfhosted-privileged
+  group: selfhosted-privileged-${{ github.ref }}
   cancel-in-progress: false
 
 permissions:
