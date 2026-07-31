@@ -2125,7 +2125,12 @@ diagnosing a specific container from them alone is not.</p>
 <tr>
 <td><code>join_start_failures</code></td>
 <td>yes</td>
-<td>(v1.3.3+) Persistent-client start failures at attach time — the container got its initial lease but runs without renewal, and the lease is never released on disconnect (#317). The plugin log carries the cause; fix it and restart the container.</td>
+<td>(v1.3.3+) Persistent-client start failures at attach time <strong>for a container that is still running</strong> — it got its initial lease but runs without renewal, and the lease is never released on disconnect (#317). The plugin log carries the cause; fix it and restart the container. A container that <em>exited</em> mid-attach is counted separately and is not a fault — see below (#373).</td>
+</tr>
+<tr>
+<td><code>join_aborted_container_gone</code></td>
+<td>no</td>
+<td>(v1.4.0+) Attaches abandoned because the container exited before the persistent client was up. Not a fault: there is no running container missing a renewal client, so this never flips <code>healthy</code>. A sustained rise still says something real — containers dying seconds after start, e.g. a crash-loop (#373).</td>
 </tr>
 <tr>
 <td><code>tombstone_write_failures</code></td>
