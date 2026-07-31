@@ -238,13 +238,27 @@ func (p *Plugin) releaseLink(opts DHCPNetworkOptions, name string, mac net.Hardw
 		if err != nil {
 			return nil, fmt.Errorf("lookup parent %q: %w", opts.Parent, err)
 		}
+		mode := opts.effectiveMode()
 		la := netlink.NewLinkAttrs()
 		la.Name = name
 		la.ParentIndex = parent.Attrs().Index
-		la.HardwareAddr = mac
-		link := &netlink.Macvlan{LinkAttrs: la, Mode: netlink.MACVLAN_MODE_BRIDGE}
+		// ipvlan children inherit the parent's address and the kernel
+		// rejects any attempt to set one, so the plan's MAC is only
+		// applied where it means something. It is still the right MAC to
+		// hand the DHCP client below — what the client puts in chaddr
+		// and what the link wears are separate.
+		if mode != ModeIPvlan {
+			la.HardwareAddr = mac
+		}
+		// The same KIND of link the endpoint had, not always a macvlan.
+		// A parent NIC is a macvlan port or an ipvlan port, never both,
+		// so building a macvlan release link on an ipvlan network asks
+		// the kernel for something it will not do — which is the other
+		// half of why an ipvlan orphaned lease has never been released
+		// (#402).
+		link := newChildLink(mode, la)
 		if err := netlink.LinkAdd(link); err != nil {
-			return nil, fmt.Errorf("create release macvlan on %q: %w", opts.Parent, err)
+			return nil, fmt.Errorf("create release %v on %q: %w", mode, opts.Parent, err)
 		}
 		return link, nil
 
