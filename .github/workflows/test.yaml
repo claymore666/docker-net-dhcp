@@ -88,6 +88,7 @@ jobs:
           bash scripts/test-check-manifest-parity.sh
           bash scripts/test-check-no-ai-attribution.sh
           bash scripts/test-check-docs-drift.sh
+          bash scripts/test-makefile-tee.sh
 
       # Every driver-option key the code parses must be documented in
       # docs/reference.md — an undocumented option turns CI red (#132).
