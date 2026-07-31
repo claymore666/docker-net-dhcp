@@ -362,8 +362,14 @@ type joinHint struct {
 	// Gateway, they only arrive in CreateEndpoint, so they ride the hint
 	// to be appended to the Join response's StaticRoutes.
 	Routes []*StaticRoute
-	// MacAddress is set in macvlan mode so the persistent DHCP client can
-	// re-find the (renamed) macvlan link inside the container netns by MAC.
+	// MacAddress is the MAC CreateEndpoint ran its one-shot DHCP
+	// exchange under, and so the one this endpoint's DHCP identity is
+	// keyed to (dhcpManager.clientID, #371). Set in every mode.
+	//
+	// In macvlan mode it additionally locates the link: Docker moves the
+	// interface wholesale and renames it, so MAC is the only stable
+	// handle left inside the container netns. Bridge mode finds its link
+	// through the veth peer index instead and never consults this.
 	MacAddress net.HardwareAddr
 	// Ifname is the validated custom container-side interface name from
 	// the ifnameOption endpoint option (#125). The option only arrives

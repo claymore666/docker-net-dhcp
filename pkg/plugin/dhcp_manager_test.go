@@ -3,6 +3,7 @@ package plugin
 import (
 	"context"
 	"errors"
+	"net"
 	"os"
 	"strings"
 	"sync/atomic"
@@ -682,6 +683,54 @@ func TestStart_SurvivesADaemonThatWillNotAnswer(t *testing.T) {
 	})
 }
 
+// hintMAC / linkMAC are deliberately different so a test can tell which
+// source a derivation actually used.
+var (
+	hintMAC = net.HardwareAddr{0x02, 0x42, 0xac, 0x11, 0x00, 0x03}
+	linkMAC = net.HardwareAddr{0x02, 0x42, 0xac, 0x11, 0x00, 0x99}
+)
+
+func managerWithMACs(mode string, hint, link net.HardwareAddr) *dhcpManager {
+	m := &dhcpManager{
+		joinReq:    JoinRequest{EndpointID: "0123456789abcdef0123456789abcdef"},
+		opts:       DHCPNetworkOptions{Mode: mode},
+		MacAddress: hint,
+	}
+	if link != nil {
+		m.ctrLink = &netlink.Device{LinkAttrs: netlink.LinkAttrs{HardwareAddr: link}}
+	}
+	return m
+}
+
+// TestEndpointMAC_PrefersTheRecordedMAC is the guard against the drift
+// #371 made possible. The DHCP identity is keyed to the MAC the
+// CreateEndpoint one-shot ran under; that MAC is recorded on the join
+// hint. Reading it off whatever link happens to be in hand instead
+// would produce a different identity the moment the two disagree — and
+// the orphan-release path (#370) runs when there is no link at all.
+func TestEndpointMAC_PrefersTheRecordedMAC(t *testing.T) {
+	t.Run("recorded MAC wins over the live link", func(t *testing.T) {
+		m := managerWithMACs("", hintMAC, linkMAC)
+		if got := m.endpointMAC(); got.String() != hintMAC.String() {
+			t.Errorf("got %v, want the recorded %v — the lease is keyed to the one-shot's MAC, not the link's", got, hintMAC)
+		}
+	})
+
+	t.Run("falls back to the live link when nothing was recorded", func(t *testing.T) {
+		m := managerWithMACs("", nil, linkMAC)
+		if got := m.endpointMAC(); got.String() != linkMAC.String() {
+			t.Errorf("got %v, want fallback %v", got, linkMAC)
+		}
+	})
+
+	t.Run("nil when neither is available", func(t *testing.T) {
+		m := managerWithMACs("", nil, nil)
+		if got := m.endpointMAC(); len(got) != 0 {
+			t.Errorf("got %v, want empty", got)
+		}
+	})
+}
+
 // TestJoin_AttachBudgetIncludesTheGrace closes the gap between the two
 // tests above.
 //
@@ -707,4 +756,61 @@ func TestJoin_AttachBudgetIncludesTheGrace(t *testing.T) {
 			"leaves it without a renewal client) or it moved, and this guard needs updating "+
 			"deliberately rather than by deleting it.", want)
 	}
+}
+
+// TestManagerClientID_IsStableAcrossCallSites pins the property the
+// whole helper exists for: the renewal client (setupClient) and the
+// synthesised release of an orphaned lease (synthesiseRelease) must
+// present the SAME option-61 id, or the server treats them as
+// different clients and the lease is neither renewed nor freed. Both
+// now route through m.clientID(), so the id must not depend on whether
+// a container link is still around — which it is not, by the time an
+// orphan release runs.
+func TestManagerClientID_IsStableAcrossCallSites(t *testing.T) {
+	withLink := managerWithMACs("", hintMAC, linkMAC)
+	afterContainerGone := managerWithMACs("", hintMAC, nil)
+
+	joined := withLink.clientID()
+	releasing := afterContainerGone.clientID()
+	if string(joined) != string(releasing) {
+		t.Fatalf("id drifted once the container link was gone: join=%x release=%x", joined, releasing)
+	}
+	if string(joined) != string(hintMAC) {
+		t.Errorf("got %x, want MAC-derived %x", joined, []byte(hintMAC))
+	}
+}
+
+// TestManagerClientID_ModeAndOverride checks the manager-level helper
+// honours the same rules resolveClientID does, so routing every call
+// site through it changes no semantics.
+func TestManagerClientID_ModeAndOverride(t *testing.T) {
+	eid := "0123456789abcdef0123456789abcdef"
+
+	t.Run("macvlan derives from the MAC", func(t *testing.T) {
+		m := managerWithMACs("macvlan", hintMAC, nil)
+		if got := m.clientID(); string(got) != string(hintMAC) {
+			t.Errorf("got %x, want %x", got, []byte(hintMAC))
+		}
+	})
+
+	t.Run("ipvlan stays endpoint-derived", func(t *testing.T) {
+		// ipvlan slaves share the parent's MAC, so a MAC-derived id
+		// would be identical for every container on the network.
+		m := managerWithMACs("ipvlan", hintMAC, nil)
+		got := m.clientID()
+		if want := clientIDFromEndpoint(eid); string(got) != string(want) {
+			t.Errorf("got %x, want endpoint-derived %x", got, want)
+		}
+		if string(got) == string(hintMAC) {
+			t.Error("ipvlan derived from the shared parent MAC; every container would claim one lease")
+		}
+	})
+
+	t.Run("operator override wins", func(t *testing.T) {
+		m := managerWithMACs("", hintMAC, nil)
+		m.opts.ClientID = "my-id"
+		if got := m.clientID(); string(got) != "my-id" {
+			t.Errorf("got %q, want %q", got, "my-id")
+		}
+	})
 }

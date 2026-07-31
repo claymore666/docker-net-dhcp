@@ -687,6 +687,19 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 		if opts.LeaseTimeout != 0 {
 			timeout = opts.LeaseTimeout
 		}
+		// Record the MAC this endpoint's DHCP identity is keyed to, so
+		// Join can re-derive the same id without re-reading a link
+		// (dhcpManager.clientID). The orphan-release path needs it after
+		// the container is already gone, when there is no link left to
+		// read it from at all.
+		//
+		// Bridge mode does not use MacAddress to *locate* the container
+		// link — that is the macvlan/ipvlan branch of
+		// locateContainerLink, which bridge never enters — so populating
+		// it here changes nothing about link location.
+		p.updateJoinHint(r.EndpointID, func(hint *joinHint) {
+			hint.MacAddress = ctrLink.Attrs().HardwareAddr
+		})
 		// MAC-derived so the IPv4 lease survives a restart the way the
 		// v6 binding always has; see resolveClientID (#371). Same link,
 		// same MAC the DUID-LL/IAID below is pinned to.
