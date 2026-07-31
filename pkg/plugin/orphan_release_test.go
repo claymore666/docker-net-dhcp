@@ -1,6 +1,8 @@
 package plugin
 
 import (
+	"bytes"
+	"errors"
 	"net"
 	"strings"
 	"testing"
@@ -142,4 +144,77 @@ func TestNewProbeMAC_IsLocallyAdministeredUnicast(t *testing.T) {
 	if mac[0]&0x02 == 0 {
 		t.Errorf("MAC %v is not locally administered", net.HardwareAddr(mac))
 	}
+}
+
+// The MAC the release link wears is the whole of #402: getting it wrong
+// means the link cannot come up and the lease is never handed back.
+func TestReleaseMACPlan(t *testing.T) {
+	endpointMAC := net.HardwareAddr{0x02, 0x42, 0xac, 0x11, 0x00, 0x05}
+	synthMAC := net.HardwareAddr{0x02, 0xaa, 0xbb, 0xcc, 0xdd, 0xee}
+	synth := func() (net.HardwareAddr, error) { return synthMAC, nil }
+
+	t.Run("macvlan prefers the endpoint's own MAC, with a fallback", func(t *testing.T) {
+		got, err := releaseMACPlan(DHCPNetworkOptions{Mode: "macvlan"}, endpointMAC, synth)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 2 {
+			t.Fatalf("want the real MAC then a fallback, got %d entries", len(got))
+		}
+		if !bytes.Equal(got[0], endpointMAC) {
+			t.Errorf("first attempt = %v, want the endpoint's own MAC — a server keyed on "+
+				"the hardware address will only honour a release carrying it", got[0])
+		}
+		if !bytes.Equal(got[1], synthMAC) {
+			t.Errorf("fallback = %v, want the synthetic MAC", got[1])
+		}
+	})
+
+	t.Run("ipvlan goes straight to a synthetic MAC", func(t *testing.T) {
+		// An ipvlan child's recorded MAC IS the parent NIC's, and the
+		// kernel's duplicate check tests the parent's own address. It
+		// can never be free, so trying it first would burn the retry
+		// window on every single release and fall back anyway.
+		parentMAC := net.HardwareAddr{0x00, 0x1b, 0x21, 0x11, 0x22, 0x33}
+		got, err := releaseMACPlan(DHCPNetworkOptions{Mode: "ipvlan"}, parentMAC, synth)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 1 || !bytes.Equal(got[0], synthMAC) {
+			t.Fatalf("want exactly one synthetic attempt, got %v", got)
+		}
+	})
+
+	t.Run("nothing recorded still yields a usable plan", func(t *testing.T) {
+		for _, recorded := range []net.HardwareAddr{nil, {}} {
+			got, err := releaseMACPlan(DHCPNetworkOptions{Mode: "macvlan"}, recorded, synth)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(got) != 1 || !bytes.Equal(got[0], synthMAC) {
+				t.Errorf("recorded=%v: want one synthetic attempt, got %v", recorded, got)
+			}
+		}
+	})
+
+	t.Run("bridge behaves like macvlan", func(t *testing.T) {
+		// Bridge mode is not affected by the duplicate-MAC rule — a
+		// bridge port is not a macvlan child — but it records a MAC and
+		// there is no reason to treat it differently.
+		got, err := releaseMACPlan(DHCPNetworkOptions{Bridge: "br0"}, endpointMAC, synth)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 2 || !bytes.Equal(got[0], endpointMAC) {
+			t.Errorf("bridge plan = %v, want the endpoint MAC first", got)
+		}
+	})
+
+	t.Run("a MAC generator failure is reported, not swallowed", func(t *testing.T) {
+		boom := errors.New("no entropy")
+		if _, err := releaseMACPlan(DHCPNetworkOptions{Mode: "macvlan"}, endpointMAC,
+			func() (net.HardwareAddr, error) { return nil, boom }); !errors.Is(err, boom) {
+			t.Errorf("want the generator's error, got %v", err)
+		}
+	})
 }
