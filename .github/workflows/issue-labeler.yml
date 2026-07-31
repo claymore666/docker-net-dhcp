@@ -11,7 +11,10 @@ name: Issue labeler
 #      handles the majority of issues filed by the maintainer.
 #   2. Model pass — runs ONLY when the rule pass left the issue with no
 #      labels at all, i.e. prose reports the rules cannot read. Draws on
-#      a subscription quota, so it is deliberately the fallback.
+#      a subscription quota, so it is deliberately the fallback, and it
+#      is optional: with CLAUDE_CODE_OAUTH_TOKEN unset the workflow
+#      warns and stops rather than failing, so the rule pass keeps
+#      working on its own.
 #
 # Security note, because this is a public repository: issue titles and
 # bodies are attacker-controlled input. The model is given NO write
@@ -76,21 +79,32 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           ISSUE: ${{ github.event.issue.number }}
+          # Empty when the secret is unset. Checked here rather than in a
+          # step-level `if:`, because secrets are not readable from the
+          # `env` context in an expression.
+          HAS_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
         run: |
           set -euo pipefail
           count=$(gh issue view "$ISSUE" --json labels --jq '.labels | length')
-          if [ "$count" -eq 0 ]; then
-              echo "unlabelled=true" >> "$GITHUB_OUTPUT"
-              echo "Rule pass left #$ISSUE bare — handing to the model pass."
-          else
-              echo "unlabelled=false" >> "$GITHUB_OUTPUT"
+          if [ "$count" -ne 0 ]; then
+              echo "model=false" >> "$GITHUB_OUTPUT"
               echo "#$ISSUE now carries $count label(s) — model pass skipped."
+          elif [ "$HAS_TOKEN" != "true" ]; then
+              # Skip rather than fail. The model pass is the optional half
+              # of this workflow: without the subscription token there is
+              # nothing to fall back to, and failing here would put a red
+              # check on every prose issue a contributor files.
+              echo "model=false" >> "$GITHUB_OUTPUT"
+              echo "::warning::#$ISSUE is unlabelled, but CLAUDE_CODE_OAUTH_TOKEN is not set — model pass skipped. Label it by hand."
+          else
+              echo "model=true" >> "$GITHUB_OUTPUT"
+              echo "Rule pass left #$ISSUE bare — handing to the model pass."
           fi
 
       # Written to a file rather than interpolated into the prompt: issue
       # text must never reach a shell or a YAML expression.
       - name: Stage the issue for the model
-        if: steps.gate.outputs.unlabelled == 'true'
+        if: steps.gate.outputs.model == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           ISSUE: ${{ github.event.issue.number }}
@@ -100,7 +114,7 @@ jobs:
           printf '%s' "$ALLOWED_LABELS" > allowed-labels.txt
 
       - name: Model pass
-        if: steps.gate.outputs.unlabelled == 'true'
+        if: steps.gate.outputs.model == 'true'
         uses: anthropics/claude-code-action@be7b93b1907a4abad570368f3c74b6fe3807510b # v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -140,7 +154,7 @@ jobs:
       # The model's output is untrusted too. Only names on the allowlist
       # survive; anything else is dropped and reported.
       - name: Apply the model's labels
-        if: steps.gate.outputs.unlabelled == 'true'
+        if: steps.gate.outputs.model == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           ISSUE: ${{ github.event.issue.number }}
