@@ -254,6 +254,12 @@ type dhcpManager struct {
 	ipMu     sync.Mutex
 	lastIP   *netlink.Addr
 	lastIPv6 *netlink.Addr
+
+	// orphanReleaseOnce guards the #370 reclaim. Both abandon paths —
+	// Join's Start goroutine finding the container gone, and a Leave
+	// that got there first — can reach the same manager, and they do
+	// not serialise against each other.
+	orphanReleaseOnce sync.Once
 	// MacAddress is set in macvlan mode so we can re-find the link inside
 	// the container netns after Docker has moved and renamed it. Empty in
 	// bridge mode.
@@ -1046,9 +1052,21 @@ func (m *dhcpManager) Start(ctx context.Context) (err error) {
 
 func (m *dhcpManager) Stop() error {
 	// Wait for Start to finish so we don't tear down half-initialised
-	// state. If Start failed there's nothing to clean up.
+	// state.
 	<-m.startedCh
 	if m.startErr != nil {
+		// No persistent client ever ran, so there is no dhcpcd to
+		// signal — but that does NOT mean there is nothing to clean up.
+		// The CreateEndpoint one-shot acquired an address and kept it
+		// (`-1 -p`) precisely so this manager could take it over; with
+		// Start failed, nobody ever did, and the server holds it until
+		// it expires. Hand it back (#370).
+		//
+		// This used to read "If Start failed there's nothing to clean
+		// up" and return. That was true of the manager's own state and
+		// false of the lease, which is how 17 of 32 containers in one
+		// integration run leaked an address.
+		m.plugin.spawnOrphanRelease(m)
 		return nil
 	}
 
