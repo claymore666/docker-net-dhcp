@@ -12,6 +12,9 @@ on:
       - main
       - dev
 
+# Read-only on purpose. The action can post its summary as a PR comment,
+# but that needs pull-requests: write; the summary is reported to the job
+# summary instead (#398). Don't widen this to re-enable the comment.
 permissions:
   contents: read
 

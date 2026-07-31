@@ -21,7 +21,14 @@
 #     on them).
 
 fail-on-severity: high
-comment-summary-in-pr: on-failure
+
+# No comment-summary-in-pr here on purpose (#398). Posting the summary
+# as a PR comment needs pull-requests: write, and the workflow grants
+# contents: read only. The action downgrades the resulting 403 to a
+# warning, so the setting had been silently doing nothing. Widening the
+# token on a public repository buys nothing here: a failure is already
+# visible as a red required check, and the full report is written to the
+# job summary either way.
 
 # All three are daemon-side / `docker cp`-side Moby vulnerabilities in
 # github.com/docker/docker. This plugin uses that module only as a
