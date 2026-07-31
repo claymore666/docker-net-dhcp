@@ -266,8 +266,14 @@ type HealthResponse struct {
 	// Join time (#317): a running container with no renewal client.
 	// Healthy-affecting — same operator action as recovery_failed
 	// (find the cause in the plugin log, restart the container).
-	JoinStartFailures      int32 `json:"join_start_failures"`
-	TombstoneWriteFailures int32 `json:"tombstone_write_failures"`
+	JoinStartFailures int32 `json:"join_start_failures"`
+	// JoinAbortedContainerGone counts attaches abandoned because the
+	// container exited before the persistent client was up (#373). Not
+	// Healthy-affecting: there is no running container without a
+	// renewal client. Worth watching anyway — a rise means containers
+	// are dying seconds after start.
+	JoinAbortedContainerGone int32 `json:"join_aborted_container_gone"`
+	TombstoneWriteFailures   int32 `json:"tombstone_write_failures"`
 	// LeaseChanged counts renewals where dhcpcd returned a different
 	// IP than the manager last recorded. Not Healthy-affecting (it
 	// doesn't break Docker's view fatally — see plugin.go for the
@@ -330,26 +336,27 @@ func (p *Plugin) apiHealth(w http.ResponseWriter, r *http.Request) {
 		// container has no renewal goroutine; a tombstone-write failure
 		// means the next restart of some container will pick a new
 		// MAC/IP.
-		Healthy:                failed == 0 && joinFails == 0 && tsFails == 0,
-		UptimeSeconds:          time.Since(p.startTime).Seconds(),
-		ActiveEndpoints:        active,
-		PendingHints:           pending,
-		RecoveredOK:            p.recoveredOK.Load(),
-		RecoveryFailed:         failed,
-		JoinStartFailures:      joinFails,
-		TombstoneWriteFailures: tsFails,
-		LeaseChanged:           p.leaseChanged.Load(),
-		LeasesObtained:         p.leasesObtained.Load(),
-		LeasesRenewed:          p.leasesRenewed.Load(),
-		DHCPTimeouts:           p.dhcpTimeouts.Load(),
-		LeaseReleaseFailures:   p.leaseReleaseFailures.Load(),
-		NAKsReceived:           p.naksReceived.Load(),
-		DisplacedStops:         p.displacedStopsTotal.Load(),
-		LedgerWriteFailures:    p.ledgerWriteFailures.Load(),
-		LeaseChangedV6:         p.leaseChangedV6.Load(),
-		LeasesObtainedV6:       p.leasesObtainedV6.Load(),
-		LeasesRenewedV6:        p.leasesRenewedV6.Load(),
-		DHCPTimeoutsV6:         p.dhcpTimeoutsV6.Load(),
-		NAKsReceivedV6:         p.naksReceivedV6.Load(),
+		Healthy:                  failed == 0 && joinFails == 0 && tsFails == 0,
+		UptimeSeconds:            time.Since(p.startTime).Seconds(),
+		ActiveEndpoints:          active,
+		PendingHints:             pending,
+		RecoveredOK:              p.recoveredOK.Load(),
+		RecoveryFailed:           failed,
+		JoinStartFailures:        joinFails,
+		JoinAbortedContainerGone: p.joinAbortedContainerGone.Load(),
+		TombstoneWriteFailures:   tsFails,
+		LeaseChanged:             p.leaseChanged.Load(),
+		LeasesObtained:           p.leasesObtained.Load(),
+		LeasesRenewed:            p.leasesRenewed.Load(),
+		DHCPTimeouts:             p.dhcpTimeouts.Load(),
+		LeaseReleaseFailures:     p.leaseReleaseFailures.Load(),
+		NAKsReceived:             p.naksReceived.Load(),
+		DisplacedStops:           p.displacedStopsTotal.Load(),
+		LedgerWriteFailures:      p.ledgerWriteFailures.Load(),
+		LeaseChangedV6:           p.leaseChangedV6.Load(),
+		LeasesObtainedV6:         p.leasesObtainedV6.Load(),
+		LeasesRenewedV6:          p.leasesRenewedV6.Load(),
+		DHCPTimeoutsV6:           p.dhcpTimeoutsV6.Load(),
+		NAKsReceivedV6:           p.naksReceivedV6.Load(),
 	}, http.StatusOK)
 }

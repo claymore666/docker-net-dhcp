@@ -17,25 +17,8 @@ import (
 	docker "github.com/docker/docker/client"
 )
 
-// HealthResponse mirrors pkg/plugin.HealthResponse. Duplicated here
-// so the integration package doesn't pull on pkg/plugin internals.
-type HealthResponse struct {
-	Healthy                bool    `json:"healthy"`
-	UptimeSeconds          float64 `json:"uptime_seconds"`
-	ActiveEndpoints        int     `json:"active_endpoints"`
-	PendingHints           int     `json:"pending_hints"`
-	RecoveredOK            int32   `json:"recovered_ok"`
-	RecoveryFailed         int32   `json:"recovery_failed"`
-	JoinStartFailures      int32   `json:"join_start_failures"`
-	TombstoneWriteFailures int32   `json:"tombstone_write_failures"`
-	LeaseChanged           int32   `json:"lease_changed"`
-	LeasesObtained         int32   `json:"leases_obtained"`
-	LeasesRenewed          int32   `json:"leases_renewed"`
-	DHCPTimeouts           int32   `json:"dhcp_timeouts"`
-	LeaseReleaseFailures   int32   `json:"lease_release_failures"`
-	NAKsReceived           int32   `json:"naks_received"`
-	LedgerWriteFailures    int32   `json:"ledger_write_failures"`
-}
+// HealthResponse and the floor that reads it live in healthfloor.go,
+// which is untagged so the decision logic is unit-testable.
 
 // PluginSocketPath returns the absolute path to PluginRef's UNIX
 // socket. Docker exposes plugin sockets under

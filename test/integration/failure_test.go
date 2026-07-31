@@ -104,6 +104,37 @@ const (
 	outageRiseBudget = 240 * time.Second
 )
 
+// assertNoNewHealthFaults is what a bare `!h.Healthy` check should have
+// been all along.
+//
+// `healthy` is derived from plugin-wide, lifetime-cumulative counters,
+// and one plugin instance serves the entire job — including the main
+// suite, which runs first in a separate `go test` invocation. So a
+// single unrelated fault anywhere before these tests start would fail
+// every health assertion here and say nothing about the scenario under
+// test. That is exactly what happened in #373.
+//
+// #278 already drew this conclusion for dhcp_timeouts ("the counter is
+// plugin-wide, so this rise belongs to some other client"). The health
+// flag next to it kept the absolute form. This applies the same rule:
+// assert that THIS test introduced no new fault, not that the plugin
+// has been faultless for its whole life.
+func assertNoNewHealthFaults(t *testing.T, base, now *harness.HealthResponse, what string) {
+	t.Helper()
+	if base == nil || now == nil {
+		return
+	}
+	if d := now.RecoveryFailed - base.RecoveryFailed; d > 0 {
+		t.Errorf("%s: recovery_failed rose by %d during this test", what, d)
+	}
+	if d := now.JoinStartFailures - base.JoinStartFailures; d > 0 {
+		t.Errorf("%s: join_start_failures rose by %d during this test — a running container was left without a renewal client", what, d)
+	}
+	if d := now.TombstoneWriteFailures - base.TombstoneWriteFailures; d > 0 {
+		t.Errorf("%s: tombstone_write_failures rose by %d during this test", what, d)
+	}
+}
+
 // failureHealth polls /Plugin.Health until cond is true or the budget
 // is spent, returning the last response either way.
 func failureHealth(t *testing.T, ctx context.Context, cli *docker.Client, budget time.Duration, cond func(*harness.HealthResponse) bool) (*harness.HealthResponse, bool) {
@@ -283,9 +314,7 @@ func TestFailure_ServerLossDuringRenewal(t *testing.T) {
 	if (nowFail-baseFail)+(nowWatch-baseWatch) == 0 {
 		t.Errorf("dhcp_timeouts rose but the plugin logged no outage line for endpoint %s: the counter is plugin-wide, so this rise belongs to some other client and says nothing about the endpoint under test (#278)", ep)
 	}
-	if !h.Healthy {
-		t.Error("plugin went unhealthy during a server outage; a dead DHCP server is a degraded mode, not a plugin failure")
-	}
+	assertNoNewHealthFaults(t, base, h, "a dead DHCP server is a degraded mode, not a plugin failure")
 	if !containerHasIP(t, ctx, id, ip) {
 		t.Errorf("container lost %s during the outage; a lapsed lease is deliberately a no-op and should retain the address", ip)
 	}
@@ -334,9 +363,7 @@ func TestFailure_ServerLossDuringRenewal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Plugin.Health (after): %v", err)
 	}
-	if !after.Healthy {
-		t.Error("plugin still unhealthy after the server returned and the client re-bound")
-	}
+	assertNoNewHealthFaults(t, base, after, "the server returned and the client re-bound")
 }
 
 // TestFailure_ServerReturnsBeforeExpiry: the same outage, but SHORT —
@@ -445,9 +472,7 @@ func TestFailure_ServerReturnsBeforeExpiry(t *testing.T) {
 	if d := (nowFail - baseFail) + (nowWatch - baseWatch); d != 0 {
 		t.Errorf("endpoint %s logged %d outage line(s) for an outage that never reached lease+grace; the watchdog fired early", ep, d)
 	}
-	if !after.Healthy {
-		t.Error("plugin unhealthy after an outage it should have ridden out silently")
-	}
+	assertNoNewHealthFaults(t, base, after, "an outage the plugin should have ridden out silently")
 }
 
 // TestFailure_LeaseRefusedOnRenewal: the site gets renumbered under a
@@ -561,9 +586,7 @@ func TestFailure_LeaseRefusedOnRenewal(t *testing.T) {
 	if nowChanged := harness.CountPluginLogLines(t, ctx, ep, logIPChanged); nowChanged == baseChanged {
 		t.Errorf("endpoint %s re-addressed to %s but the plugin logged no lease-change line for it (%d before, %d after)", ep, liveIP, baseChanged, nowChanged)
 	}
-	if h != nil && !h.Healthy {
-		t.Error("plugin went unhealthy over a lease re-acquisition; this is a defined, healthy flow")
-	}
+	assertNoNewHealthFaults(t, base, h, "a lease re-acquisition is a defined, healthy flow")
 	if h != nil && h.NAKsReceived > base.NAKsReceived {
 		t.Logf("server NAKed on the wire (naks_received %d -> %d)", base.NAKsReceived, h.NAKsReceived)
 	}
@@ -672,9 +695,7 @@ func TestFailure_LeaseExpiry(t *testing.T) {
 	if (secondFail-firstFail)+(secondWatch-firstWatch) == 0 {
 		t.Errorf("endpoint %s logged no further outage line while the server stayed down; the recurring signal is not recurring for this client (#278)", ep)
 	}
-	if second != nil && !second.Healthy {
-		t.Error("plugin went unhealthy on a permanent server loss; this is a defined degraded mode")
-	}
+	assertNoNewHealthFaults(t, base, second, "a permanent server loss is a defined degraded mode")
 
 	// Address retention past expiry is deliberate...
 	if !containerHasIP(t, ctx, id, ip) {

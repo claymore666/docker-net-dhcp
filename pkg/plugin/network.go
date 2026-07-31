@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -75,6 +76,99 @@ func validateModeOptions(opts DHCPNetworkOptions) error {
 		return fmt.Errorf("%w: %q", util.ErrInvalidMode, opts.Mode)
 	}
 	return nil
+}
+
+// sandboxGone reports whether a Join's sandbox key has been unlinked,
+// which is how the container's network namespace disappears when the
+// container exits.
+//
+// Deliberately a filesystem check and not a Docker API call: the API
+// round-trip is itself what times out when a container vanishes
+// mid-attach (the `failed to get Docker container info: context deadline
+// exceeded` in #373), so asking Docker to confirm would be both slower
+// and less reliable than looking at the artifact directly.
+//
+// An empty key returns false — no evidence is not evidence of absence,
+// and the caller must fall back to treating the failure as real. The
+// same applies to any key that isn't a plain entry in a known netns
+// directory: an unrecognised shape is not evidence the container went
+// away, so it degrades to the pre-#373 behaviour of counting a real
+// failure rather than silently excusing one.
+func sandboxGone(sandboxKey string) bool {
+	return sandboxGoneIn(sandboxNetnsDirs, sandboxKey)
+}
+
+// sandboxNetnsDirs are the only directories a Join's sandbox key is
+// expected to live in. libnetwork bind-mounts each sandbox's netns as
+// /var/run/docker/netns/<id>; hosts where /var/run is a symlink to
+// /run report the same file under the second form.
+var sandboxNetnsDirs = []string{
+	"/var/run/docker/netns",
+	"/run/docker/netns",
+}
+
+// sandboxGoneIn is sandboxGone with the permitted directories injected,
+// so both answers can be tested without root or a live Docker sandbox.
+// Production always passes sandboxNetnsDirs.
+//
+// It lists the directory and compares names rather than stat'ing the
+// key. That looks like the long way round, and it is load-bearing: the
+// sandbox key is the only path the plugin takes from a Join request into
+// a filesystem call — everywhere else it is merely logged — so no path
+// derived from it is ever handed to the filesystem. The only value that
+// reaches the OS is one of the compile-time directories above; the
+// request-supplied name is used solely in a string comparison. Rewriting
+// this as os.Stat(filepath.Join(dir, name)) reintroduces CodeQL
+// go/path-injection (flagged on #374) even with the name validated to a
+// bare filename first — filepath.Base is not treated as a barrier.
+//
+// The cost is reading one directory instead of one stat, on a path that
+// only runs when starting the persistent client has already failed.
+func sandboxGoneIn(dirs []string, sandboxKey string) bool {
+	dir, name := splitSandboxKeyIn(dirs, sandboxKey)
+	if dir == "" {
+		return false
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		// No usable evidence — not a negative result. A permission
+		// error must not read as "the container went away": the plugin
+		// runs as root and sees the real listing, while /var/run/docker
+		// is 0700, so anything less privileged gets EACCES for every
+		// key and would otherwise conclude every container had vanished.
+		return false
+	}
+	for _, e := range entries {
+		if e.Name() == name {
+			return false
+		}
+	}
+	return true
+}
+
+// splitSandboxKeyIn validates a sandbox key and splits it into one of
+// the permitted directories plus a bare filename. It returns an empty
+// dir for anything it does not recognise, which callers must treat as
+// "no usable evidence" rather than as a negative result.
+func splitSandboxKeyIn(dirs []string, sandboxKey string) (dir, name string) {
+	if sandboxKey == "" {
+		return "", ""
+	}
+	clean := filepath.Clean(sandboxKey)
+	// filepath.Base strips every directory component, so the name is a
+	// bare entry to compare against the directory listing; Clean has
+	// already resolved any interior ".." segments.
+	name = filepath.Base(clean)
+	if name == "." || name == ".." || name == string(os.PathSeparator) {
+		return "", ""
+	}
+	parent := filepath.Dir(clean)
+	for _, known := range dirs {
+		if parent == known {
+			return known, name
+		}
+	}
+	return "", ""
 }
 
 // CreateNetwork validates network creation: option shape (pure), then
@@ -1079,12 +1173,33 @@ func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) 
 		defer cancel()
 
 		if err := m.Start(ctx); err != nil {
-			p.joinStartFailures.Add(1)
-			log.WithError(err).WithFields(log.Fields{
+			fields := log.Fields{
 				"network":  shortID(r.NetworkID),
 				"endpoint": shortID(r.EndpointID),
 				"sandbox":  r.SandboxKey,
-			}).Error("Failed to start persistent DHCP client; lease will not be renewed")
+			}
+			// A container that exited while we were still attaching to it
+			// is not a plugin failure. join_start_failures means "a
+			// RUNNING container has no renewal client" and flips healthy;
+			// firing it for a container that is simply gone would page an
+			// operator over a normal exit, and nothing is missing a
+			// renewal client because nothing is there (#373).
+			//
+			// Prompt exits are the common case, not the exotic one: an
+			// application that handles SIGTERM is gone in milliseconds.
+			// The suite only stopped hiding this when its containers got
+			// an init PID 1 (#367) — `sleep infinity` ignoring SIGTERM
+			// had been holding every teardown open for 10s.
+			if sandboxGone(r.SandboxKey) {
+				p.joinAbortedContainerGone.Add(1)
+				log.WithError(err).WithFields(fields).
+					Info("Container went away during attach; no persistent client needed")
+				p.removeDHCPManagerIfSame(r.EndpointID, m)
+				return
+			}
+			p.joinStartFailures.Add(1)
+			log.WithError(err).WithFields(fields).
+				Error("Failed to start persistent DHCP client; lease will not be renewed")
 			// If Start failed, take ourselves out of the registry so a
 			// later Leave doesn't try to Stop() us. Stop() is safe to
 			// call against a failed-Start manager (it returns the start
