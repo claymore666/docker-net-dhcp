@@ -20,6 +20,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -390,6 +391,36 @@ func (f *Fixture) LeaseFile() string { return f.leaseFile }
 // "did a renewal DHCPACK arrive?") can grep this file directly
 // during the test rather than waiting for the failure-path dump.
 func (f *Fixture) DnsmasqLog() string { return f.dnsmasqLog }
+
+// CountLogLines counts dnsmasq log lines containing every one of the
+// given substrings (case-insensitive), e.g. ("DHCPRELEASE", mac).
+// Mirrors EphemeralFixture.CountLogLines so an assertion reads the same
+// in either suite.
+//
+// Counts rather than booleans so callers can assert on a DELTA across a
+// window: the shared fixture accumulates every test's traffic, so an
+// absolute count says nothing about the endpoint under test.
+func (f *Fixture) CountLogLines(substrings ...string) int {
+	data, err := os.ReadFile(f.dnsmasqLog)
+	if err != nil {
+		return 0
+	}
+	count := 0
+	for _, line := range strings.Split(string(data), "\n") {
+		l := strings.ToLower(line)
+		all := true
+		for _, s := range substrings {
+			if !strings.Contains(l, strings.ToLower(s)) {
+				all = false
+				break
+			}
+		}
+		if all {
+			count++
+		}
+	}
+	return count
+}
 
 // DumpLogs prints captured dnsmasq stderr to a writer (usually
 // t.Log) so failed tests have the wire-level conversation. Tests

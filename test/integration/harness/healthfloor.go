@@ -47,6 +47,13 @@ type HealthResponse struct {
 	LeaseReleaseFailures     int32 `json:"lease_release_failures"`
 	NAKsReceived             int32 `json:"naks_received"`
 	LedgerWriteFailures      int32 `json:"ledger_write_failures"`
+	// OrphanedLeasesReleased / OrphanedLeaseReleaseFailures cover the
+	// lease acquired during endpoint setup when no persistent client
+	// ever took ownership of it — a container that exited before the
+	// attach completed (#370). Neither is healthy-affecting: a
+	// short-lived container is an ordinary lifecycle.
+	OrphanedLeasesReleased       int32 `json:"orphaned_leases_released"`
+	OrphanedLeaseReleaseFailures int32 `json:"orphaned_lease_release_failures"`
 
 	// published is the key set of the payload this value was decoded
 	// from. It exists because an absent JSON field decodes to zero,
