@@ -2,10 +2,13 @@ package plugin
 
 import (
 	"bytes"
+	"context"
 	"errors"
+	"golang.org/x/sys/unix"
 	"net"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/vishvananda/netlink"
 )
@@ -215,6 +218,70 @@ func TestReleaseMACPlan(t *testing.T) {
 		if _, err := releaseMACPlan(DHCPNetworkOptions{Mode: "macvlan"}, endpointMAC,
 			func() (net.HardwareAddr, error) { return nil, boom }); !errors.Is(err, boom) {
 			t.Errorf("want the generator's error, got %v", err)
+		}
+	})
+}
+
+// The address half of #402. Bringing the release link up contends for
+// the MAC; putting the leased address on it contends for the address.
+// Both are held by the endpoint's own link until DeleteEndpoint lands —
+// observed one second after a failed assignment in CI.
+func TestAddrAddAwaiting(t *testing.T) {
+	link := &netlink.Macvlan{LinkAttrs: netlink.LinkAttrs{Name: "dh-rel-test"}}
+	addr := &netlink.Addr{}
+
+	swap := func(t *testing.T, fn func() error) *int {
+		t.Helper()
+		calls := 0
+		prev := nlAddrAdd
+		nlAddrAdd = func(netlink.Link, *netlink.Addr) error {
+			calls++
+			return fn()
+		}
+		t.Cleanup(func() { nlAddrAdd = prev })
+		return &calls
+	}
+
+	t.Run("waits for the endpoint link to let the address go", func(t *testing.T) {
+		var n int
+		calls := swap(t, func() error {
+			n++
+			if n < 3 {
+				return unix.EADDRINUSE
+			}
+			return nil
+		})
+		if err := addrAddAwaiting(context.Background(), link, addr, time.Second); err != nil {
+			t.Fatalf("gave up on an address that became free: %v", err)
+		}
+		if *calls < 3 {
+			t.Errorf("succeeded after %d attempts; the stub only frees on the 3rd", *calls)
+		}
+	})
+
+	t.Run("gives up and explains", func(t *testing.T) {
+		swap(t, func() error { return unix.EADDRINUSE })
+		err := addrAddAwaiting(context.Background(), link, addr, 250*time.Millisecond)
+		if err == nil {
+			t.Fatal("an address that never frees must fail — the release has to be sourced " +
+				"from the address being given back, so no other address would do")
+		}
+		if !errors.Is(err, unix.EADDRINUSE) {
+			t.Errorf("kernel reason lost: %v", err)
+		}
+		if !strings.Contains(err.Error(), "still held by the endpoint link this release replaces") {
+			t.Errorf("error does not explain the wait: %v", err)
+		}
+	})
+
+	t.Run("another error is not retried", func(t *testing.T) {
+		boom := errors.New("network is down")
+		calls := swap(t, func() error { return boom })
+		if err := addrAddAwaiting(context.Background(), link, addr, time.Second); !errors.Is(err, boom) {
+			t.Errorf("want the original error, got %v", err)
+		}
+		if *calls != 1 {
+			t.Errorf("retried a non-EADDRINUSE error %d times", *calls)
 		}
 	})
 }
