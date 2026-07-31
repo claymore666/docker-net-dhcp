@@ -11,6 +11,7 @@ import "github.com/vishvananda/netlink"
 var (
 	nlLinkByName        = netlink.LinkByName
 	nlLinkDel           = netlink.LinkDel
+	nlLinkSetUp         = netlink.LinkSetUp
 	nlRouteListFiltered = netlink.RouteListFiltered
 )
 
