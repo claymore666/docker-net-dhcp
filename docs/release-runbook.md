@@ -246,6 +246,28 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
    per-package coverage than the previous one. If a package beat its
    floor during the cycle, raise the baseline as part of the release
    branch.
+
+   Coverage shares a concurrency group with the release PR's own
+   integration run, so it normally starts once integration finishes —
+   roughly twelve minutes in. A `coverage` check still showing nothing
+   after that is worth the next paragraph.
+
+   **Release PR blocked on a check that has no run.** A required check
+   that was *cancelled* looks exactly like one that is *pending*: the
+   PR sits at `BLOCKED` with nothing to click into. It is not a missing
+   trigger. GitHub keeps one running plus one pending run per
+   concurrency group, so pushing another commit to the release PR while
+   coverage is still queued displaces it. Confirm and recover with:
+
+   ```sh
+   gh run list --workflow coverage.yml --limit 5   # look for "cancelled"
+   gh run rerun <id>                               # once the group is idle
+   ```
+
+   Wait for the integration run on the same ref to finish before
+   rerunning, or it will just queue and be displaced again. This cost a
+   full debugging session on v1.3.5 (#365) — the fix is thirty seconds
+   once you know the shape of it.
 7. **Merge the release PR.** Squash or merge commit — both fine;
    match what's in `git log`.
 8. **Pull main, dry-run, then tag:** first push `vX.Y.Z-rc1` and
