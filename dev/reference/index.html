@@ -2200,7 +2200,7 @@ diagnosing a specific container from them alone is not.</p>
 <tr>
 <td><code>orphaned_lease_release_failures</code></td>
 <td>no</td>
-<td>(v1.3.6+) A reclaim above that could not be completed — the address stays held upstream until its own expiry, exactly as it did before the reclaim existed. Read as a rate against <code>orphaned_leases_released</code>: a few failures are transient upstream trouble, a ratio near 1 means the reclaim path itself is broken (no route to the segment, server refusing the synthesised client).</td>
+<td>(v1.3.6+) A reclaim above that could not be completed — the address stays held upstream until its own expiry, exactly as it did before the reclaim existed. Read as a rate against <code>orphaned_leases_released</code>: a few failures are transient upstream trouble, a ratio near 1 means the reclaim path itself is broken (no route to the segment, server refusing the synthesised client). Not <code>healthy</code>-affecting, which is worth knowing when reading it: this counter can climb on every container without turning anything red, and did (#402).</td>
 </tr>
 <tr>
 <td><code>ledger_write_failures</code></td>
