@@ -324,6 +324,20 @@ type HealthResponse struct {
 	// containers are restarting into a plugin that had recovered them,
 	// so pair it with recovered_ok when diagnosing a restart loop.
 	DisplacedStops int32 `json:"displaced_stops"`
+	// OrphanedLeasesReleased / OrphanedLeaseReleaseFailures cover the
+	// lease acquired by the CreateEndpoint one-shot when no persistent
+	// client ever took ownership of it, because the container exited
+	// before Join's async Start could attach (#370). The plugin
+	// synthesises a release rather than leaving the address held until
+	// its own expiry.
+	//
+	// Neither is Healthy-affecting. A short-lived container is an
+	// ordinary lifecycle, and a failed synthesised release costs one
+	// lease until it expires — alert on the failure rate, not on a
+	// latched unhealthy. Read the two together: releases climbing with
+	// failures flat is the mechanism working.
+	OrphanedLeasesReleased       int32 `json:"orphaned_leases_released"`
+	OrphanedLeaseReleaseFailures int32 `json:"orphaned_lease_release_failures"`
 	// LedgerWriteFailures counts failed appends to the audit_log
 	// lease ledger (#109). Not Healthy-affecting — a lost audit line
 	// degrades forensics, not networking; operators using audit_log
@@ -380,6 +394,8 @@ func (p *Plugin) apiHealth(w http.ResponseWriter, r *http.Request) {
 		LeaseReleaseFailures:         p.leaseReleaseFailures.Load(),
 		NAKsReceived:                 p.naksReceived.Load(),
 		DisplacedStops:               p.displacedStopsTotal.Load(),
+		OrphanedLeasesReleased:       p.orphanedLeasesReleased.Load(),
+		OrphanedLeaseReleaseFailures: p.orphanedLeaseReleaseFailures.Load(),
 		LedgerWriteFailures:          p.ledgerWriteFailures.Load(),
 		LeaseChangedV6:               p.leaseChangedV6.Load(),
 		LeasesObtainedV6:             p.leasesObtainedV6.Load(),

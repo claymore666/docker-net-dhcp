@@ -460,6 +460,25 @@ type Plugin struct {
 	dhcpTimeouts         atomic.Int32
 	leaseReleaseFailures atomic.Int32
 
+	// orphanedLeasesReleased / orphanedLeaseReleaseFailures cover the
+	// lease the CreateEndpoint one-shot acquired when no persistent
+	// client ever took ownership of it — a container that exited before
+	// Join's async Start could attach (#370). See releaseOrphanedLease.
+	//
+	// Deliberately separate from leaseReleaseFailures: that counter
+	// means "a client we were running failed to hand its lease back",
+	// which points at upstream reachability. These mean "no client was
+	// running at all", which points at container churn. Merging them
+	// would make the pattern each one exists to reveal unreadable.
+	//
+	// Neither participates in Healthy. A failed synthesised release
+	// leaves one lease held until it expires — worth alerting on as a
+	// rate, not worth latching a plugin unhealthy over, in the same
+	// spirit as #373/#376/#383: an ordinary container lifecycle must
+	// not read as a plugin fault.
+	orphanedLeasesReleased       atomic.Int32
+	orphanedLeaseReleaseFailures atomic.Int32
+
 	// naksReceived counts "nak" events — the server refused a
 	// REQUEST (pool reconfigured, address reassigned, lease revoked).
 	// Until v1.0.0 a NAK was only a warn-level log line, invisible to
@@ -499,6 +518,15 @@ type Plugin struct {
 	// otherwise visible only as scattered log lines.
 	displacedStops      sync.WaitGroup
 	displacedStopsTotal atomic.Int32
+
+	// orphanReleases tracks the goroutines that hand back a lease no
+	// persistent client ever owned (#370). Same reasoning as
+	// displacedStops, and the same reason it must not be bounded: the
+	// work exists to keep a release off the teardown path, so putting a
+	// semaphore in front of it would reintroduce the blocking. Close
+	// waits on it because an interrupted synthesised release leaks the
+	// very lease it was spawned to reclaim.
+	orphanReleases sync.WaitGroup
 
 	// ledger is the append-only lease audit log (#109), written by
 	// dhcpManager.audit for networks created with audit_log=true.
@@ -1433,6 +1461,13 @@ func (p *Plugin) Close() error {
 	// server — the same failure the fan-out above exists to prevent.
 	if !waitBounded(&p.displacedStops, remaining()) {
 		log.Warn("Timeout waiting for displaced DHCP manager stops; continuing shutdown")
+	}
+
+	// Same for orphan releases (#370). These reclaim a lease that no
+	// client is holding open, so cutting one short is the one case where
+	// shutdown itself causes the leak.
+	if !waitBounded(&p.orphanReleases, remaining()) {
+		log.Warn("Timeout waiting for orphaned-lease releases; continuing shutdown")
 	}
 
 	if err := p.docker.Close(); err != nil {

@@ -1195,6 +1195,12 @@ func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) 
 				log.WithError(err).WithFields(fields).
 					Info("Container went away during attach; no persistent client needed")
 				p.removeDHCPManagerIfSame(r.EndpointID, m)
+				// No persistent client is needed, but the address the
+				// CreateEndpoint one-shot took is still held upstream —
+				// it was kept on purpose for a handover that is now
+				// never happening. Nothing is using it, so give it back
+				// rather than let it sit until expiry (#370).
+				p.spawnOrphanRelease(m)
 				return
 			}
 			p.joinStartFailures.Add(1)
