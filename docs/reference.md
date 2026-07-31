@@ -496,8 +496,10 @@ using (option 50) so the server ACKs it rather than allocating a new one.
 
 Recovery runs synchronously inside plugin startup, before the socket
 accepts requests, so a fresh `CreateEndpoint` arriving during enable
-cannot race it. Results land on `/Plugin.Health` as `recovered_ok` and
-`recovery_failed`.
+cannot race it. Results land on `/Plugin.Health` as `recovered_ok`,
+`recovery_failed` and `recovery_aborted_container_gone` — the last
+covering containers that had already exited when recovery reached
+them, which is not a failure and does not flip `healthy`.
 
 One case cannot be finished there. On a daemon restart Docker respawns
 the plugin while the daemon itself is still coming up, so recovery's
@@ -560,8 +562,9 @@ diagnosing a specific container from them alone is not.
 | `active_endpoints` | — | DHCP managers currently registered (post-Join, pre-Leave). |
 | `pending_hints` | — | Join hints awaiting consumption; steady-state ~0. |
 | `recovered_ok` | — | Endpoints successfully rebuilt by plugin-restart recovery. |
-| `recovery_failed` | yes | Endpoints whose post-restart rebuild failed — those containers run without lease renewal and lose their IP at expiry; restart them. A daemon that is merely still starting is **not** counted here (see `recovery_deferred`). |
+| `recovery_failed` | yes | Post-restart rebuilds that failed **for a container that is still running** — it runs without lease renewal and loses its IP at expiry; restart it. Two things are deliberately *not* counted here, because neither leaves a running container without a renewal client: a daemon that is merely still starting (`recovery_deferred`, #383) and a container that had already exited when recovery reached it (`recovery_aborted_container_gone`, #376). |
 | `recovery_deferred` | no | (v1.4.0+) Recovery met a daemon that was not serving yet and was retried once the plugin socket came up (#383). Expected on a daemon restart. Only worth attention paired with `recovery_failed`, which together mean the retry ran out too. |
+| `recovery_aborted_container_gone` | no | (v1.4.0+) Recoveries abandoned because the container had already exited, or been removed, by the time post-restart recovery reached it. Not a fault: nothing is left running without a renewal client, so this never flips `healthy`. The recovery-side twin of `join_aborted_container_gone`, and normal after a daemon restart that outlived some containers (#376). |
 | `join_start_failures` | yes | (v1.3.3+) Persistent-client start failures at attach time **for a container that is still running** — it got its initial lease but runs without renewal, and the lease is never released on disconnect (#317). The plugin log carries the cause; fix it and restart the container. A container that *exited* mid-attach is counted separately and is not a fault — see below (#373). |
 | `join_aborted_container_gone` | no | (v1.4.0+) Attaches abandoned because the container exited before the persistent client was up. Not a fault: there is no running container missing a renewal client, so this never flips `healthy`. A sustained rise still says something real — containers dying seconds after start, e.g. a crash-loop (#373). |
 | `tombstone_write_failures` | yes | Failed tombstone saves (disk full, EROFS) — the next restart of some container will pick a fresh MAC/IP instead of inheriting. |

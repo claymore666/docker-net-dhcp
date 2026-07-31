@@ -169,26 +169,37 @@ func TestRecovery_DaemonRestart_PreservesContainer(t *testing.T) {
 	if healthAfter == nil {
 		t.Fatalf("Plugin.Health socket did not answer within 30s after daemon restart")
 	}
-	t.Logf("after restart: recovered_ok=%d recovery_failed=%d recovery_deferred=%d",
-		healthAfter.RecoveredOK, healthAfter.RecoveryFailed, healthAfter.RecoveryDeferred)
+	t.Logf("after restart: recovered_ok=%d recovery_failed=%d recovery_deferred=%d recovery_aborted_container_gone=%d",
+		healthAfter.RecoveredOK, healthAfter.RecoveryFailed,
+		healthAfter.RecoveryDeferred, healthAfter.RecoveryAbortedContainerGone)
 
-	// recovered_ok is still deliberately not asserted: the test header
-	// explains that either the recovery path or the tombstone path can
-	// run depending on whether dockerd's graceful shutdown drove Leave
-	// before going down, and both yield the same user-visible result.
+	// recovered_ok stays informational: the test header is explicit
+	// that either internal path can run depending on whether dockerd's
+	// graceful shutdown drove Leave on the endpoint before going down,
+	// and the tombstone path legitimately leaves it at 0.
 	//
-	// recovery_failed IS asserted, and this is the regression test for
-	// #383. Until that fix, this counter reached 1 on every run here:
-	// docker respawns the plugin during its own startup, recovery's
-	// first NetworkList hit the client's 2s timeout, and recovery was
-	// abandoned in full — leaving the container with no renewal client.
-	// It went unnoticed for so long precisely because the IP/MAC
-	// assertions below still passed, carried by the tombstone path.
+	// recovery_failed IS asserted, and that assertion only became sound
+	// once BOTH benign events were split out of it. Each was independently
+	// enough to make a strict check here flaky by construction:
 	//
-	// A non-zero recovery_deferred here is expected and fine: it means
-	// the daemon was not ready and the retry did its job.
+	//   #383 — recovery's first NetworkList hit the Docker client's 2s
+	//   timeout because docker respawns the plugin during its own
+	//   startup, and recovery was then abandoned for every network. This
+	//   counter reached 1 on every single run of this test. It hid for
+	//   so long because the IP/MAC assertions below still passed,
+	//   carried by the tombstone path. Now counted as recovery_deferred.
+	//
+	//   #376 — a container that had merely exited before recovery
+	//   reached it. Now counted as recovery_aborted_container_gone.
+	//
+	// What is left means exactly one thing: a RUNNING container whose
+	// renewal client could not be rebuilt. This container is running
+	// (asserted above), so the only correct value is zero.
+	//
+	// Non-zero recovery_deferred here is expected and fine — it means the
+	// daemon was not ready and the retry did its job.
 	if healthAfter.RecoveryFailed != 0 {
-		t.Errorf("recovery_failed=%d after daemon restart: a running container was left without a renewal client (#383)",
+		t.Errorf("recovery_failed=%d after daemon restart: a running container was left without a renewal client (#376, #383)",
 			healthAfter.RecoveryFailed)
 	}
 

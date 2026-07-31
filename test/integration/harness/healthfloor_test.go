@@ -52,7 +52,12 @@ func TestCheckHealthFloor(t *testing.T) {
 			want: want{counters: map[string]int32{"tombstone_write_failures": 3}, fatal: true},
 		},
 		{
-			name: "recovery_failed is reported but not fatal until #376",
+			// #376 has landed, so this counter now means only a real
+			// fault; it stays non-fatal for a few runs of evidence
+			// before the floor is tightened to a plain healthy check.
+			// When that happens this case flips to fatal, and this is
+			// the test that has to be edited to allow it.
+			name: "recovery_failed is reported but not yet fatal",
 			in:   &HealthResponse{RecoveryFailed: 2},
 			want: want{counters: map[string]int32{"recovery_failed": 2}, fatal: false},
 		},
@@ -103,10 +108,13 @@ func TestCheckHealthFloor(t *testing.T) {
 		},
 		{
 			name: "healthy:false alone does not fail the floor",
-			// The floor reads the counters, not the flag, precisely
-			// because the flag is currently unreliable (#376). If
-			// this case ever needs to become fatal, that is the
-			// signal that #376 has landed and Phase 3 is due.
+			// The floor reads the counters, not the flag. That was
+			// originally because the flag was unreliable; since #376
+			// it is because the floor is still gathering evidence
+			// before trusting it. This case flipping to fatal is the
+			// signal that the tightening has happened — which is the
+			// point at which reading the flag directly replaces this
+			// whole table.
 			in:   &HealthResponse{Healthy: false},
 			want: want{counters: map[string]int32{}, fatal: false},
 		},

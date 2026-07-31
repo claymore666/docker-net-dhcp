@@ -22,12 +22,19 @@ type HealthResponse struct {
 	PendingHints    int     `json:"pending_hints"`
 	RecoveredOK     int32   `json:"recovered_ok"`
 	RecoveryFailed  int32   `json:"recovery_failed"`
-	// RecoveryDeferred is the benign twin of RecoveryFailed at the entry
-	// gate: the daemon was not serving yet when recovery ran, so it was
-	// retried after the socket came up. Expected on any daemon restart,
-	// not healthy-affecting (#383).
-	RecoveryDeferred  int32 `json:"recovery_deferred"`
-	JoinStartFailures int32 `json:"join_start_failures"`
+	// RecoveryFailed has two benign twins, at the two points recovery
+	// can stop early for a reason that is not a plugin fault. Neither is
+	// healthy-affecting.
+	//
+	// RecoveryDeferred is the entry gate: the daemon was not serving yet
+	// when recovery ran, so it was retried after the socket came up.
+	// Expected on any daemon restart (#383).
+	RecoveryDeferred int32 `json:"recovery_deferred"`
+	// RecoveryAbortedContainerGone is the per-endpoint case: the
+	// container had already exited by the time recovery reached it
+	// (#376).
+	RecoveryAbortedContainerGone int32 `json:"recovery_aborted_container_gone"`
+	JoinStartFailures            int32 `json:"join_start_failures"`
 	// JoinAbortedContainerGone is the benign twin of JoinStartFailures:
 	// the container exited before the persistent client was up. Not
 	// healthy-affecting (#373).
@@ -115,7 +122,7 @@ var floorCounters = []floorCounter{
 		name:  "recovery_failed",
 		read:  func(h *HealthResponse) int32 { return h.RecoveryFailed },
 		fatal: false,
-		why:   "NOT failing the run: this counter still bumps when a container merely exited before post-restart recovery reached it (#376). Once that lands this becomes fatal and the floor becomes a plain healthy==true check. If you are here because something else is wrong, this counter is worth reading — it may be a real recovery failure",
+		why:   "NOT failing the run YET. Since #376 the benign case — the container had already exited when recovery reached it — is counted separately as recovery_aborted_container_gone, so this counter should now mean only a real fault: recovery could not rebuild a RUNNING container's renewal client. It stays non-fatal for a few runs so a benign path nobody anticipated shows up as a warning rather than as a mystery red. Promoting it (and collapsing this table into a plain healthy==true check) is the last step of the plan #376 belongs to",
 	},
 }
 
@@ -169,12 +176,13 @@ type FloorFinding struct {
 // follow a renamed JSON tag in CI, where the plugin is always built
 // from the branch under test, so this is not a dev-box-only guard.
 //
-// Note this is deliberately NOT `!h.Healthy`. Two of the three
-// counters behind that flag mean exactly one thing; the third,
-// recovery_failed, still double-counts a benign container-exit as a
-// plugin fault (#376), so asserting the flag itself would be flaky by
-// construction. Once #376 lands, the table above collapses into a
-// single check of h.Healthy.
+// Note this is deliberately NOT `!h.Healthy`, though it is now one
+// step away from it. All three counters behind that flag mean exactly
+// one thing since #376 split the benign container-exit out of
+// recovery_failed; what is left is wanting a few runs of evidence
+// before promoting recovery_failed to fatal, because the cost of
+// getting that wrong is a red suite nobody can explain. When it is
+// promoted, this table collapses into a single check of h.Healthy.
 func CheckHealthFloor(h *HealthResponse) []FloorFinding {
 	if h == nil {
 		return nil
