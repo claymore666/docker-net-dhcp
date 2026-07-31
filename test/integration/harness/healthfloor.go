@@ -14,6 +14,7 @@ package harness
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -348,4 +349,85 @@ func FloorCleanLine(h *HealthResponse, suiteSeconds float64) string {
 			"  says nothing about the earlier %.0fs. The per-test deltas cover that stretch.\n",
 		h.UptimeSeconds, suiteSeconds, 100*h.UptimeSeconds/suiteSeconds, h.Healthy,
 		suiteSeconds-h.UptimeSeconds)
+}
+
+// joinStartFailureMsg is the log line the plugin emits at every real
+// join_start_failures increment. The benign twin logs something else
+// ("Container went away during attach"), so counting this message counts
+// exactly the faults, with no classification logic duplicated here.
+const joinStartFailureMsg = "Failed to start persistent DHCP client"
+
+// JoinFailureCensus counts Join-start failures across the WHOLE plugin
+// log, and summarises what they were.
+//
+// This exists because the counter cannot answer the question. Counters
+// reset when the plugin process does, and the main suite recycles it
+// three times, so join_start_failures at the end of a run describes only
+// the last ~80 seconds (#385). One run showed the gap plainly: twelve of
+// these failures in the log, and a counter reading 1.
+//
+// The log has no such limit — it spans the run. So for "did this run
+// produce Join failures, and why", the log is the instrument and the
+// counter is not. Printed on every run, clean or not: this is the number
+// that says whether the Join budget is sized for the host it is running
+// on (#401), and a number you only see when something else already went
+// red is a number you cannot use to prevent anything.
+//
+// Returns an empty string when there were none, so a healthy run stays
+// quiet.
+func JoinFailureCensus(logData []byte) string {
+	reasons := map[string]int{}
+	total := 0
+	for _, l := range strings.Split(string(logData), "\n") {
+		if !strings.Contains(l, joinStartFailureMsg) {
+			continue
+		}
+		total++
+		reasons[joinFailureReason(l)]++
+	}
+	if total == 0 {
+		return ""
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "JOIN FAILURES: %d across the whole run "+
+		"(the log spans the run; join_start_failures only spans the last plugin restart)\n", total)
+	for _, r := range sortedKeys(reasons) {
+		fmt.Fprintf(&b, "  %3d  %s\n", reasons[r], r)
+	}
+	return b.String()
+}
+
+// joinFailureReason pulls the error= field out of a logrus text line, so
+// the census groups by cause rather than listing every occurrence. A
+// timeout waiting for the Docker API and a container that vanished are
+// different problems and should not be summed into one number.
+func joinFailureReason(line string) string {
+	const key = `error="`
+	i := strings.Index(line, key)
+	if i < 0 {
+		return "(no error field)"
+	}
+	rest := line[i+len(key):]
+	// logrus quotes the value and escapes any inner quote, so the first
+	// unescaped quote ends it.
+	for j := 0; j < len(rest); j++ {
+		if rest[j] == '\\' {
+			j++
+			continue
+		}
+		if rest[j] == '"' {
+			return rest[:j]
+		}
+	}
+	return rest
+}
+
+func sortedKeys(m map[string]int) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
