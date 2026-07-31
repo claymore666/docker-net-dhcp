@@ -2150,7 +2150,7 @@ diagnosing a specific container from them alone is not.</p>
 <tr>
 <td><code>join_aborted_container_gone</code></td>
 <td>no</td>
-<td>(v1.4.0+) Attaches abandoned because the container exited before the persistent client was up. Not a fault: there is no running container missing a renewal client, so this never flips <code>healthy</code>. A sustained rise still says something real — containers dying seconds after start, e.g. a crash-loop (#373).</td>
+<td>(v1.4.0+) Attaches abandoned because the container exited before the persistent client was up. Not a fault: there is no running container missing a renewal client, so this never flips <code>healthy</code>. A sustained rise still says something real — containers dying seconds after start, e.g. a crash-loop (#373). Recognised three ways: the daemon answering "no such container", the container's netns having gone, or its sandbox key being unlinked. An attach that fails for any other reason is counted as a fault, not excused (#401).</td>
 </tr>
 <tr>
 <td><code>tombstone_write_failures</code></td>
