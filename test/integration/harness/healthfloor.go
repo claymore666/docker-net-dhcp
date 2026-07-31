@@ -11,7 +11,11 @@
 
 package harness
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+)
 
 // HealthResponse mirrors pkg/plugin.HealthResponse. Duplicated here
 // so the integration package doesn't pull on pkg/plugin internals.
@@ -229,4 +233,119 @@ func FloorFailed(findings []FloorFinding) bool {
 		}
 	}
 	return false
+}
+
+// floorEvidenceMaxFaultLines bounds the fault section. A run that
+// produced more fault lines than this has a much bigger problem than
+// the one the floor is reporting, and the tail plus the on-disk path
+// still lead a reader to the rest.
+const floorEvidenceMaxFaultLines = 200
+
+// FloorEvidence picks the parts of a plugin log worth printing when the
+// floor fails, and returns them ready to write to stderr.
+//
+// The floor runs in TestMain after m.Run(), where no test's cleanup is
+// in scope and DumpPluginLog's *testing.T is not available — so before
+// this, a floor failure printed a counter and nothing else, leaving the
+// evidence sitting on disk unread (#385). On CI that disk is an
+// ephemeral runner, so "sitting on disk" means gone.
+//
+// Two sections, both bounded:
+//
+//   - every error- and warning-level line, wherever it falls in the run.
+//     This is not a heuristic: each of the three counters the floor can
+//     report is incremented next to a log.Error or log.Warn at every one
+//     of its increment sites, so the line that explains a finding is
+//     always in this section. Warnings are included as well as errors
+//     because the counter's own line is sometimes a Warn (the tombstone
+//     write failure is), and because the warning before an error is
+//     usually the half that says why.
+//   - the last tailLines lines, for the sequence leading up to the end
+//     of the run, which the fault lines alone do not give.
+//
+// The full log stays on the runner; callers print its path alongside
+// this so a reader who needs everything knows where everything is.
+func FloorEvidence(logData []byte, tailLines int) string {
+	lines := strings.Split(strings.TrimRight(string(logData), "\n"), "\n")
+	if len(lines) == 1 && lines[0] == "" {
+		return "  (plugin log is empty)\n"
+	}
+
+	var faults []string
+	for _, l := range lines {
+		if strings.Contains(l, "level=error") || strings.Contains(l, "level=warning") {
+			faults = append(faults, l)
+		}
+	}
+
+	var b strings.Builder
+	if len(faults) == 0 {
+		// Worth saying out loud rather than printing an empty heading:
+		// a counter moved but the log carries no error or warning, which
+		// means the counter and its log line have drifted apart.
+		b.WriteString("  no error- or warning-level lines in the plugin log — " +
+			"a counter moved without logging, which is itself a defect\n")
+	} else {
+		shown := faults
+		if len(shown) > floorEvidenceMaxFaultLines {
+			shown = shown[len(shown)-floorEvidenceMaxFaultLines:]
+			fmt.Fprintf(&b, "  --- last %d of %d error/warning lines ---\n",
+				len(shown), len(faults))
+		} else {
+			fmt.Fprintf(&b, "  --- %d error/warning lines ---\n", len(faults))
+		}
+		for _, l := range shown {
+			b.WriteString("  " + l + "\n")
+		}
+	}
+
+	if tailLines > 0 {
+		tail := lines
+		if len(tail) > tailLines {
+			tail = tail[len(tail)-tailLines:]
+		}
+		fmt.Fprintf(&b, "  --- last %d lines ---\n", len(tail))
+		for _, l := range tail {
+			b.WriteString("  " + l + "\n")
+		}
+	}
+	return b.String()
+}
+
+// floorFullCoverageRatio is how much of the suite the plugin's uptime
+// has to span before the floor's verdict counts as covering the run.
+// Slightly under 1 because the plugin was already up when the suite
+// started, but the two clocks are read at different moments and the
+// fixture setup between them is not free.
+const floorFullCoverageRatio = 0.98
+
+// FloorCleanLine renders the floor's verdict when nothing was found.
+//
+// It exists because "clean" on its own was a lie worth fixing. The
+// counters reset whenever the plugin process does, and three tests
+// recycle it, so on a main-suite run the floor often sees only the last
+// ~80 seconds of eleven minutes — and said `clean — no healthy-affecting
+// counter moved` regardless. Run #379 printed exactly that for a run
+// that did contain a real fault (#383), erased by a later respawn. A
+// headline that reads "clean" gets quoted as evidence, so it has to
+// carry what it actually looked at (#385).
+//
+// suite is the wall-clock the suite took. A zero or negative value
+// means the caller could not measure it, and the qualifier is dropped
+// rather than guessed at.
+func FloorCleanLine(h *HealthResponse, suiteSeconds float64) string {
+	if h == nil {
+		return ""
+	}
+	if suiteSeconds <= 0 || h.UptimeSeconds >= suiteSeconds*floorFullCoverageRatio {
+		return fmt.Sprintf(
+			"HEALTH FLOOR: clean — no healthy-affecting counter moved over the whole %.0fs run (healthy=%v)\n",
+			h.UptimeSeconds, h.Healthy)
+	}
+	return fmt.Sprintf(
+		"HEALTH FLOOR: clean over the last %.0fs of a %.0fs run — %.0f%% of it (healthy=%v).\n"+
+			"  The plugin restarted mid-suite and its counters reset with it, so this verdict\n"+
+			"  says nothing about the earlier %.0fs. The per-test deltas cover that stretch.\n",
+		h.UptimeSeconds, suiteSeconds, 100*h.UptimeSeconds/suiteSeconds, h.Healthy,
+		suiteSeconds-h.UptimeSeconds)
 }
