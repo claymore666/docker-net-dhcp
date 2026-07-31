@@ -90,14 +90,9 @@ jobs:
           docker plugin rm -f "${COVER_PLUGIN_REF}" 2>/dev/null || true
           docker plugin create "${COVER_PLUGIN_REF}" plugin-cover
           # Same test-only cadence as integration.yml (#278) — this job
-          # runs the failure suite too, so it pays the same waits — and
-          # the same raised Join budget (#401). The instrumented plugin
-          # is slower than the plain one and this job runs both suites
-          # sequentially in one runner, so if anything it needs the
-          # headroom more. See integration.yml for the full rationale,
-          # including why config.json's default stays at 10s.
+          # runs the failure suite too, so it pays the same waits.
           docker plugin set "${COVER_PLUGIN_REF}" LOG_LEVEL=trace \
-            OUTAGE_TICK=2s OUTAGE_GRACE=10s AWAIT_TIMEOUT=30s
+            OUTAGE_TICK=2s OUTAGE_GRACE=10s
           docker plugin enable "${COVER_PLUGIN_REF}"
 
       # The harness routes everything through INTEGRATION_PLUGIN_REF
