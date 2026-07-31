@@ -11,8 +11,8 @@ name: Integration
 #
 # The `dhcp-ci` runners are ephemeral: one container = one job, each
 # with its own nested Docker daemon (image ghcr.io/claymore666/
-# dhcp-ci-runner, Docker Engine >= 28). An orchestrator pools 2-4 of
-# them (names dhcp-ci-<n>).
+# dhcp-ci-runner, Docker Engine >= 28). An orchestrator pools them
+# (names dhcp-ci-<n>); the pool was 8 as of 2026-07-31.
 #
 # JOB TOPOLOGY (#375). The two suites used to run as sequential steps in
 # one job — ~10:38 then ~8:45, a ~20:20 gate. Nothing couples them: they
@@ -69,9 +69,12 @@ on:
 # reaffirms #296 with better data than it has now. Reverting is one
 # commit and leaves the required check name untouched.
 #
-# Caveat: GitHub keeps at most one *pending* run per group — a third
-# concurrent run cancels the queued one, which then needs a manual
-# re-run. Acceptable at this repo's volume.
+# Caveat: this group is GLOBAL, so every PR's run serializes behind
+# every other PR's — and GitHub keeps at most one *pending* run per
+# group, so a third concurrent run cancels the queued one, which then
+# needs a manual re-run. That queue depth is fixed; `cancel-in-progress`
+# is the only knob. #390 scopes the group per ref to fix both, and is
+# deliberately gated on this change proving out first.
 concurrency:
   group: selfhosted-privileged
   cancel-in-progress: false
