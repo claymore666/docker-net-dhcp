@@ -1,0 +1,42 @@
+# Rule pass for automatic issue labelling (#393).
+#
+# Issue titles in this repo follow conventional-commit form, so the type
+# label is derivable from the title alone — no model call needed for the
+# common case. Anything these patterns miss falls through to the model
+# pass in .github/workflows/issue-labeler.yml, which is the expensive
+# path; every rule added here is one less issue that reaches it.
+#
+# Matching semantics (github/issue-labeler v3.4, verified against its
+# source):
+#   - The workflow sets include-title=1 / include-body=0, so the match
+#     target is the title followed by "\n\n" — nothing else. Bodies are
+#     deliberately excluded: they are attacker-controlled prose on a
+#     public repo and match far too eagerly.
+#   - A bare pattern is matched with no flags; the /pattern/flags form
+#     is honoured, which is how these get case-insensitivity.
+#   - Several patterns under one label are ANDed, not ORed.
+#   - sync-labels is off, so a non-match never removes a label. Manual
+#     labels always survive.
+#
+# Only type labels live here. Area labels (lifecycle, concurrency, ...)
+# need the issue read, not pattern-matched, and are left to the model.
+
+bug:
+  - '/^fix(\([^)]*\))?!?:/i'
+
+enhancement:
+  - '/^(feat|feature|perf)(\([^)]*\))?!?:/i'
+
+documentation:
+  - '/^docs?(\([^)]*\))?!?:/i'
+
+refactor:
+  - '/^refactor(\([^)]*\))?!?:/i'
+
+# "coverage:" and "release:" are CI-gate work in this repo's history,
+# not plugin behaviour, so they land as ci rather than as their own type.
+ci:
+  - '/^(ci|build|coverage|release)(\([^)]*\))?!?:/i'
+
+testing:
+  - '/^tests?(\([^)]*\))?!?:/i'

@@ -1,0 +1,37 @@
+# Fixture for check-issue-label-map.sh (#393): <title><TAB><labels>
+# '-' means the rule pass must NOT classify it — those titles are the
+# ones that fall through to the model pass, and that fall-through is
+# just as much a behaviour worth pinning as a match is.
+# Titles are real ones from this repo's history where possible.
+
+# --- type prefixes the rule pass must catch ---
+ci: a job no runner picks up never fails — CI hangs silently instead of going red	ci
+ci(coverage): a dev merge just before the release PR silently cancels the coverage run	ci
+coverage: raise the cmd/net-dhcp floor to 76.0	ci
+release: v1.4.0	ci
+build(deps): bump actions/checkout from 7.0.0 to 7.0.1	ci
+test(integration): CI can only ever run one of RestartDockerDaemon two branches	testing
+test(harness): instrument per-phase timing	testing
+tests: add coverage for the retry budget	testing
+fix(plugin): recovery gives up when the daemon is not ready yet	bug
+fix: release the lease a container that exited early left behind	bug
+feat(plugin): derive the v4 client-id from the MAC	enhancement
+perf(harness): cut container teardown grace	enhancement
+docs: document the local integration run	documentation
+docs(internals): a lapsed lease is not an event the plugin receives	documentation
+doc: fix a stale flag name in the reference	documentation
+refactor(udhcpc): fold the event builder into the client wrapper	refactor
+
+# --- must fall through to the model pass ---
+Health floor cannot tell an absent counter from a zero one	-
+recovery_failed counts a container that exited before recovery reached it	-
+DHCPv4 lease is not released on a fast docker restart	-
+Support Compose services.*.networks.*.interface_name	-
+Local integration runs are undocumented and can silently test a stale plugin	-
+
+# --- negatives: a prefix-looking word is not a prefix ---
+# No colon, so not a conventional-commit type. These caught a naive '^fix' rule.
+fixing the docs would help newcomers	-
+citation needed for the lease-timer claim	-
+testing on the runner is slow	-
+chore(release): v1.3.5 — version pins and release notes	-
