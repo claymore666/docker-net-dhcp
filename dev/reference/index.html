@@ -2048,8 +2048,10 @@ each. The first acquisition requests the address the container is already
 using (option 50) so the server ACKs it rather than allocating a new one.</p>
 <p>Recovery runs synchronously inside plugin startup, before the socket
 accepts requests, so a fresh <code>CreateEndpoint</code> arriving during enable
-cannot race it. Results land on <code>/Plugin.Health</code> as <code>recovered_ok</code> and
-<code>recovery_failed</code>.</p>
+cannot race it. Results land on <code>/Plugin.Health</code> as <code>recovered_ok</code>,
+<code>recovery_failed</code> and <code>recovery_aborted_container_gone</code> — the last
+covering containers that had already exited when recovery reached
+them, which is not a failure and does not flip <code>healthy</code>.</p>
 <p>One case cannot be finished there. On a daemon restart Docker respawns
 the plugin while the daemon itself is still coming up, so recovery's
 first API call can time out against a daemon that is not serving yet.
@@ -2128,12 +2130,17 @@ diagnosing a specific container from them alone is not.</p>
 <tr>
 <td><code>recovery_failed</code></td>
 <td>yes</td>
-<td>Endpoints whose post-restart rebuild failed — those containers run without lease renewal and lose their IP at expiry; restart them. A daemon that is merely still starting is <strong>not</strong> counted here (see <code>recovery_deferred</code>).</td>
+<td>Post-restart rebuilds that failed <strong>for a container that is still running</strong> — it runs without lease renewal and loses its IP at expiry; restart it. Two things are deliberately <em>not</em> counted here, because neither leaves a running container without a renewal client: a daemon that is merely still starting (<code>recovery_deferred</code>, #383) and a container that had already exited when recovery reached it (<code>recovery_aborted_container_gone</code>, #376).</td>
 </tr>
 <tr>
 <td><code>recovery_deferred</code></td>
 <td>no</td>
 <td>(v1.4.0+) Recovery met a daemon that was not serving yet and was retried once the plugin socket came up (#383). Expected on a daemon restart. Only worth attention paired with <code>recovery_failed</code>, which together mean the retry ran out too.</td>
+</tr>
+<tr>
+<td><code>recovery_aborted_container_gone</code></td>
+<td>no</td>
+<td>(v1.4.0+) Recoveries abandoned because the container had already exited, or been removed, by the time post-restart recovery reached it. Not a fault: nothing is left running without a renewal client, so this never flips <code>healthy</code>. The recovery-side twin of <code>join_aborted_container_gone</code>, and normal after a daemon restart that outlived some containers (#376).</td>
 </tr>
 <tr>
 <td><code>join_start_failures</code></td>
