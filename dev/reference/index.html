@@ -2193,6 +2193,16 @@ diagnosing a specific container from them alone is not.</p>
 <td>(v1.3.5+) Attaches that found a manager already registered for the same endpoint and stopped it — a container restarting into a plugin that had already recovered it (#338). The displaced client is released cleanly and the new one takes over, so a few are normal after a plugin restart. Climbing steadily alongside <code>recovered_ok</code> means a container is in a restart loop.</td>
 </tr>
 <tr>
+<td><code>orphaned_leases_released</code></td>
+<td>no</td>
+<td>(v1.3.6+) Leases reclaimed for a container that exited before its renewal client could attach (#370). The address is acquired during endpoint setup and deliberately held for the handover; when the handover never happens, the plugin synthesises a release instead of letting the address sit until it expires. A steady trickle is normal wherever short-lived containers run.</td>
+</tr>
+<tr>
+<td><code>orphaned_lease_release_failures</code></td>
+<td>no</td>
+<td>(v1.3.6+) A reclaim above that could not be completed — the address stays held upstream until its own expiry, exactly as it did before the reclaim existed. Read as a rate against <code>orphaned_leases_released</code>: a few failures are transient upstream trouble, a ratio near 1 means the reclaim path itself is broken (no route to the segment, server refusing the synthesised client).</td>
+</tr>
+<tr>
 <td><code>ledger_write_failures</code></td>
 <td>no</td>
 <td>Failed <code>audit_log</code> ledger appends — degrades forensics, not networking. Operators using <code>audit_log</code> alert on this.</td>
