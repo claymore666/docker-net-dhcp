@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	cerrdefs "github.com/containerd/errdefs"
 	dNetwork "github.com/docker/docker/api/types/network"
 	"github.com/mitchellh/mapstructure"
 	log "github.com/sirupsen/logrus"
@@ -96,6 +98,42 @@ func validateModeOptions(opts DHCPNetworkOptions) error {
 // failure rather than silently excusing one.
 func sandboxGone(sandboxKey string) bool {
 	return sandboxGoneIn(sandboxNetnsDirs, sandboxKey)
+}
+
+// joinAbortedByVanish reports whether a failed Join failed BECAUSE the
+// container went away, rather than because the plugin could not do its
+// job for a container that was still there.
+//
+// #373 established the distinction and answered it one way: has the
+// sandbox key been unlinked. That is sound evidence when it fires, and
+// it misses the cases where the container's own resources are already
+// gone while libnetwork has not yet unlinked the key. Those turned into
+// counted plugin faults, nine to twelve per integration run, and read
+// as "the CI host is slow" for long enough to send a PR chasing a
+// regression that was not there (#401).
+//
+// The error carries the answer more directly than the filesystem does:
+//
+//   - "no such container" from the daemon. Every caller resolved the
+//     container ID moments earlier, so absence now means removed.
+//   - fs.ErrNotExist anywhere in the chain. The only paths a failing
+//     Join opens are the sandbox netns and /proc/<pid>/ns/net, both
+//     owned by the container; neither can be missing while the
+//     container is running. This is why the await helpers now keep the
+//     last attempt's error in the chain rather than only in its text.
+//
+// The sandbox-key check stays as the third answer, unchanged. An error
+// this cannot classify still counts a real fault: no usable evidence is
+// not evidence of absence, which is the stance #373 took and #376 took
+// after it.
+func joinAbortedByVanish(err error, sandboxKey string) bool {
+	if cerrdefs.IsNotFound(err) {
+		return true
+	}
+	if errors.Is(err, fs.ErrNotExist) {
+		return true
+	}
+	return sandboxGone(sandboxKey)
 }
 
 // sandboxNetnsDirs are the only directories a Join's sandbox key is
@@ -1190,7 +1228,7 @@ func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) 
 			// The suite only stopped hiding this when its containers got
 			// an init PID 1 (#367) — `sleep infinity` ignoring SIGTERM
 			// had been holding every teardown open for 10s.
-			if sandboxGone(r.SandboxKey) {
+			if joinAbortedByVanish(err, r.SandboxKey) {
 				p.joinAbortedContainerGone.Add(1)
 				log.WithError(err).WithFields(fields).
 					Info("Container went away during attach; no persistent client needed")

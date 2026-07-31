@@ -87,6 +87,11 @@ func checkHealthFloor(suite time.Duration) int {
 		return 1
 	}
 
+	// Printed before the verdict, and on every run. The census reads the
+	// whole log, so unlike the counters below it is not blinded by a
+	// mid-suite plugin restart — see JoinFailureCensus.
+	printJoinCensus(ctx)
+
 	findings := harness.CheckHealthFloor(h)
 	if len(findings) == 0 {
 		fmt.Fprint(os.Stderr, harness.FloorCleanLine(h, suite.Seconds()))
@@ -141,4 +146,25 @@ func printFloorEvidence(ctx context.Context) {
 	}
 	fmt.Fprintf(os.Stderr, "  --- plugin log evidence (full log: %s) ---\n", logPath)
 	fmt.Fprint(os.Stderr, harness.FloorEvidence(data, floorEvidenceTailLines))
+}
+
+// printJoinCensus reports how many Joins failed to start a persistent
+// client across the whole run, grouped by cause.
+//
+// Silent when there were none, so it costs a healthy run nothing. When
+// there were some, it is the only place that says so: the health floor's
+// counters reset with the plugin process and the main suite recycles it
+// three times, so a run can carry a dozen of these and still report a
+// single-digit counter (#385). Sizing the Join budget for the host
+// (#401) needs the real number, on every run, not the tail of it after
+// something else has already gone red.
+func printJoinCensus(ctx context.Context) {
+	_, data, err := harness.PluginLog(ctx)
+	if err != nil {
+		// Quiet on purpose. The census is a diagnostic; the floor's
+		// verdict below does not depend on it, and a missing log is
+		// reported there if it matters.
+		return
+	}
+	fmt.Fprint(os.Stderr, harness.JoinFailureCensus(data))
 }

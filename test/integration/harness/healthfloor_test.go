@@ -552,3 +552,61 @@ func TestFloorCleanLine(t *testing.T) {
 		}
 	})
 }
+
+// The census is what makes the Join budget observable (#401), so it is
+// pinned against real log lines rather than invented ones.
+func TestJoinFailureCensus(t *testing.T) {
+	// Verbatim from the run that #401 was filed on, trimmed to the
+	// fields that matter. Two distinct causes, one repeated.
+	const realLog = `time="2026-07-31T18:07:08Z" level=error msg="Failed to start persistent DHCP client; lease will not be renewed" endpoint=64527feea371 error="failed to get Docker container info: context deadline exceeded" network=62826ec6f0b8
+time="2026-07-31T18:07:25Z" level=error msg="Failed to start persistent DHCP client; lease will not be renewed" endpoint=f3f9d6712b9e error="failed to get Docker container info: context deadline exceeded" network=6bef7628c5ba
+time="2026-07-31T18:08:01Z" level=error msg="Failed to start persistent DHCP client; lease will not be renewed" endpoint=b4e40afce1d8 error="failed to get sandbox network namespace: context deadline exceeded (last attempt: no such file or directory)" network=bae01f6c30ef
+time="2026-07-31T18:08:02Z" level=info msg="Container went away during attach; no persistent client needed" endpoint=aaaaaaaaaaaa
+time="2026-07-31T18:09:03Z" level=warning msg="Caller error while processing request" error="parent interface is down: dh-itest-host" status=400`
+
+	got := JoinFailureCensus([]byte(realLog))
+
+	if !strings.Contains(got, "JOIN FAILURES: 3 across the whole run") {
+		t.Errorf("wrong total; want 3:\n%s", got)
+	}
+	if !strings.Contains(got, "  2  failed to get Docker container info: context deadline exceeded") {
+		t.Errorf("causes are not grouped and counted:\n%s", got)
+	}
+	// The benign twin logs a different message and must not be counted —
+	// conflating the two is the bug #373 fixed on the counter side, and
+	// it would be just as wrong here.
+	if strings.Contains(got, "went away during attach") {
+		t.Error("the benign container-gone case was counted as a failure")
+	}
+	// An unrelated warning that happens to carry an error= field must
+	// not be swept in either.
+	if strings.Contains(got, "parent interface is down") {
+		t.Error("an unrelated warning was counted as a Join failure")
+	}
+
+	t.Run("a clean run stays silent", func(t *testing.T) {
+		for _, in := range []string{"", `time="t" level=info msg="Lease acquired"`} {
+			if got := JoinFailureCensus([]byte(in)); got != "" {
+				t.Errorf("JoinFailureCensus(%q) = %q; want silence", in, got)
+			}
+		}
+	})
+
+	t.Run("a line with no error field is still counted", func(t *testing.T) {
+		got := JoinFailureCensus([]byte(`level=error msg="Failed to start persistent DHCP client"`))
+		if !strings.Contains(got, "JOIN FAILURES: 1") {
+			t.Errorf("a failure without an error field vanished from the count:\n%s", got)
+		}
+		if !strings.Contains(got, "(no error field)") {
+			t.Errorf("want an explicit placeholder rather than an empty cause:\n%s", got)
+		}
+	})
+
+	t.Run("an escaped quote inside the error does not truncate it", func(t *testing.T) {
+		line := `level=error msg="Failed to start persistent DHCP client" error="open \"/proc/1/ns/net\": no such file"`
+		got := JoinFailureCensus([]byte(line))
+		if !strings.Contains(got, `no such file`) {
+			t.Errorf("cause was truncated at the escaped quote:\n%s", got)
+		}
+	})
+}

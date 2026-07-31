@@ -31,7 +31,7 @@ func AwaitNetNS(ctx context.Context, path string, interval time.Duration) (netns
 		lastErr = err
 		select {
 		case <-ctx.Done():
-			return dummy, fmt.Errorf("%w (last attempt: %v)", ctx.Err(), lastErr)
+			return dummy, fmt.Errorf("%w (last attempt: %w)", ctx.Err(), lastErr)
 		case <-time.After(interval):
 		}
 	}
@@ -51,7 +51,7 @@ func AwaitLinkByIndex(ctx context.Context, handle *netlink.Handle, index int, in
 		lastErr = err
 		select {
 		case <-ctx.Done():
-			return nil, fmt.Errorf("%w (last attempt: %v)", ctx.Err(), lastErr)
+			return nil, fmt.Errorf("%w (last attempt: %w)", ctx.Err(), lastErr)
 		case <-time.After(interval):
 		}
 	}

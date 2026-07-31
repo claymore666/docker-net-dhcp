@@ -1,11 +1,16 @@
 package plugin
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
+	"syscall"
 	"testing"
+
+	cerrdefs "github.com/containerd/errdefs"
 
 	"github.com/devplayer0/docker-net-dhcp/pkg/dhcp"
 	"github.com/devplayer0/docker-net-dhcp/pkg/util"
@@ -540,4 +545,75 @@ func TestSplitSandboxKeyIn(t *testing.T) {
 			}
 		})
 	}
+}
+
+// The three error shapes below are verbatim from the integration run
+// that #401 was filed on. Every one of them was counted as a plugin
+// fault; every one of them means the container had already gone.
+func TestJoinAbortedByVanish(t *testing.T) {
+	// A sandbox key that does not resolve to a permitted directory, so
+	// sandboxGone answers false and cannot rescue any of these cases.
+	// That is deliberate: each subtest has to be classified by its
+	// error alone, which is the whole point of the change.
+	const unhelpfulKey = "/somewhere/else/abc123"
+
+	t.Run("daemon says no such container", func(t *testing.T) {
+		err := fmt.Errorf("failed to get Docker container info: %w",
+			fmt.Errorf("Error response from daemon: No such container: deadbeef: %w", cerrdefs.ErrNotFound))
+		if !joinAbortedByVanish(err, unhelpfulKey) {
+			t.Error("a removed container was counted as a plugin fault")
+		}
+	})
+
+	t.Run("sandbox netns is gone", func(t *testing.T) {
+		// The shape AwaitNetNS now produces: the deadline, with the
+		// last attempt kept in the chain rather than only in the text.
+		err := fmt.Errorf("failed to get sandbox network namespace: %w",
+			fmt.Errorf("%w (last attempt: %w)", context.DeadlineExceeded, syscall.ENOENT))
+		if !joinAbortedByVanish(err, unhelpfulKey) {
+			t.Error("a vanished sandbox netns was counted as a plugin fault")
+		}
+	})
+
+	t.Run("v6 client cannot open the container netns", func(t *testing.T) {
+		err := fmt.Errorf("failed to start DHCPv6 client: %w",
+			fmt.Errorf("failed to open network namespace `/proc/8783/ns/net`: %w", syscall.ENOENT))
+		if !joinAbortedByVanish(err, unhelpfulKey) {
+			t.Error("a vanished container netns was counted as a plugin fault")
+		}
+	})
+
+	// The other half of the contract, and the more important half: this
+	// must not become a blanket excuse. #373 and #376 both took the
+	// stance that no usable evidence is not evidence of absence.
+	t.Run("a real fault for a container that is still there stays a fault", func(t *testing.T) {
+		for _, tc := range []struct {
+			name string
+			err  error
+		}{
+			{"daemon unreachable", fmt.Errorf("failed to get Docker container info: %w",
+				fmt.Errorf("%w (last attempt: %w)", context.DeadlineExceeded, errors.New("connection refused")))},
+			{"permission denied on the netns", fmt.Errorf("failed to get sandbox network namespace: %w", syscall.EACCES)},
+			{"dhcpcd refused to start", errors.New("failed to start DHCP client: exec format error")},
+			{"nil error", nil},
+		} {
+			if joinAbortedByVanish(tc.err, unhelpfulKey) {
+				t.Errorf("%s: excused as a vanished container; it is a real fault", tc.name)
+			}
+		}
+	})
+
+	t.Run("the sandbox-key answer still works on its own", func(t *testing.T) {
+		dir := t.TempDir()
+		saved := sandboxNetnsDirs
+		sandboxNetnsDirs = []string{dir}
+		t.Cleanup(func() { sandboxNetnsDirs = saved })
+
+		// An error carrying no evidence either way, so only the key can
+		// decide — this is the #373 path, which must be untouched.
+		err := errors.New("failed to start DHCP client: exec format error")
+		if !joinAbortedByVanish(err, filepath.Join(dir, "vanished")) {
+			t.Error("#373's sandbox-key evidence stopped working")
+		}
+	})
 }
