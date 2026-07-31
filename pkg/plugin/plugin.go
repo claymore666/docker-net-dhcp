@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	cerrdefs "github.com/containerd/errdefs"
 	dNetwork "github.com/docker/docker/api/types/network"
 	docker "github.com/docker/docker/client"
 	"github.com/gorilla/handlers"
@@ -380,6 +381,21 @@ type Plugin struct {
 	// recoveryCancel stops the deferred-recovery goroutine at Close.
 	// nil when recovery completed synchronously, which is the norm.
 	recoveryCancel context.CancelFunc
+
+	// recoveryAbortedContainerGone counts post-restart recoveries
+	// abandoned because the container had already exited (or been
+	// removed) by the time recovery reached it (#376). Deliberately
+	// NOT healthy-affecting, for exactly the reason
+	// joinAbortedContainerGone is not: there is no running container
+	// left without a renewal client, so nothing is wrong.
+	//
+	// This is the recovery-side twin of joinAbortedContainerGone.
+	// Before #376 both outcomes landed in recoveryFailed, so a routine
+	// daemon restart with any since-exited container flipped healthy
+	// to false and paged an operator over a normal exit. The
+	// integration suite knew the counter conflated the two and
+	// declined to assert on it at all.
+	recoveryAbortedContainerGone atomic.Int32
 
 	// joinStartFailures counts persistent-DHCP-client Start failures
 	// at Join time (#317). Each bump is a running container that got
@@ -887,7 +903,7 @@ func (p *Plugin) recoverEndpoints(ctx context.Context, daemonWait time.Duration)
 			if strings.HasPrefix(cid, "ep-") {
 				continue
 			}
-			if err := p.recoverOneEndpoint(ctx, n.ID, info.EndpointID, info.MacAddress, info.IPv4Address, info.IPv6Address, opts); err != nil {
+			if err := p.recoverOneEndpoint(ctx, cid, n.ID, info.EndpointID, info.MacAddress, info.IPv4Address, info.IPv6Address, opts); err != nil {
 				log.WithError(err).WithFields(log.Fields{
 					"network":  shortID(n.ID),
 					"endpoint": shortID(info.EndpointID),
@@ -936,11 +952,52 @@ func (p *Plugin) recoverEndpointsDeferred(ctx context.Context, wait time.Duratio
 	}
 }
 
+// containerGone reports whether containerID names a container that is
+// no longer running — either the daemon has never heard of it (it was
+// removed) or it has stopped.
+//
+// This is the recovery-side counterpart to sandboxGone, deliberately
+// built on a different mechanism. sandboxGone avoids the Docker API
+// because the API round-trip is itself what times out when a container
+// vanishes mid-Join, and a Join request carries a sandbox key it can
+// look at instead. Recovery has neither constraint: it is not on any
+// container's critical path, and it already holds the container ID
+// straight from NetworkInspect, so a direct inspect is both available
+// and more accurate than inferring. recoverOneEndpoint's synthesised
+// JoinRequest has no SandboxKey, so sandboxGone is not reusable here
+// even in principle.
+//
+// An inspect error that is not "no such container" returns false. No
+// usable evidence is not evidence of absence — the same stance
+// sandboxGone takes about an unreadable netns directory — so a daemon
+// that is unreachable or erroring degrades to counting a real recovery
+// failure rather than silently excusing one.
+func (p *Plugin) containerGone(ctx context.Context, containerID string) bool {
+	if containerID == "" {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(ctx, recoveryPerNetworkTimeout)
+	defer cancel()
+
+	ctr, err := p.docker.ContainerInspect(ctx, containerID)
+	if err != nil {
+		return cerrdefs.IsNotFound(err)
+	}
+	// Restarting, paused-then-stopped, exited, dead: none of them have
+	// a live netns depending on us, and a container that comes back
+	// arrives through Join, which builds its own manager. Only
+	// State.Running means "something is relying on this recovery".
+	return ctr.State == nil || !ctr.State.Running
+}
+
 // recoverOneEndpoint synthesises a JoinRequest and dhcpManager for a
 // single existing endpoint, then spawns Start in a goroutine. Idempotent:
 // if a manager already exists for the endpoint (e.g. because libnetwork
 // raced with us and called Join concurrently), we skip.
-func (p *Plugin) recoverOneEndpoint(ctx context.Context, networkID, endpointID, macStr, ipv4Cidr, ipv6Cidr string, opts DHCPNetworkOptions) error {
+//
+// containerID is carried through solely so the async Start failure can
+// tell a real failure from a container that has since exited (#376).
+func (p *Plugin) recoverOneEndpoint(ctx context.Context, containerID, networkID, endpointID, macStr, ipv4Cidr, ipv6Cidr string, opts DHCPNetworkOptions) error {
 	p.mu.Lock()
 	_, exists := p.persistentDHCP[endpointID]
 	p.mu.Unlock()
@@ -979,11 +1036,34 @@ func (p *Plugin) recoverOneEndpoint(ctx context.Context, networkID, endpointID, 
 		startCtx, cancel := context.WithTimeout(context.Background(), p.awaitTimeout)
 		defer cancel()
 		if err := m.Start(startCtx); err != nil {
+			fields := log.Fields{
+				"network":   shortID(networkID),
+				"endpoint":  shortID(endpointID),
+				"container": shortID(containerID),
+			}
+			// A container that exited before recovery reached it is not
+			// a plugin failure. recovery_failed means "a RUNNING
+			// container has no renewal client" and flips healthy;
+			// firing it for a container that is simply gone would page
+			// an operator over a normal exit (#376) — the same defect
+			// #373 fixed on the Join side.
+			//
+			// Checked here rather than before Start: the container
+			// being present when recovery began says nothing about
+			// whether it survived the seconds Start takes, and an
+			// inspect on the success path would be pure cost. A fresh
+			// context because startCtx is already expired whenever
+			// Start failed by timing out.
+			if p.containerGone(context.Background(), containerID) {
+				p.recoveryAbortedContainerGone.Add(1)
+				log.WithError(err).WithFields(fields).
+					Info("recovery: container went away before recovery completed; no persistent client needed")
+				p.removeDHCPManagerIfSame(endpointID, m)
+				return
+			}
 			p.recoveryFailed.Add(1)
-			log.WithError(err).WithFields(log.Fields{
-				"network":  shortID(networkID),
-				"endpoint": shortID(endpointID),
-			}).Error("recovery: persistent DHCP client Start failed; lease will not renew until container restart")
+			log.WithError(err).WithFields(fields).
+				Error("recovery: persistent DHCP client Start failed; lease will not renew until container restart")
 			// Identity-checked: a Join for this endpoint may already
 			// have displaced us with a fresh manager we must not evict.
 			p.removeDHCPManagerIfSame(endpointID, m)

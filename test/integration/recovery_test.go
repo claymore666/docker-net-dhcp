@@ -114,6 +114,17 @@ func TestRecovery_PluginDisableEnable_PreservesEndpoint(t *testing.T) {
 	if healthAfter.RecoveryFailed != 0 {
 		t.Errorf("recovery_failed=%d (recovery saw at least one endpoint it could not rebuild)", healthAfter.RecoveryFailed)
 	}
+	// The other direction of the #376 classifier, and the reason this
+	// assertion is worth having: recovery_aborted_container_gone is
+	// the arm that does NOT flip healthy, so a classifier that called
+	// a running container "gone" would turn every real recovery
+	// failure into a silent one and recovered_ok/recovery_failed above
+	// would look fine. The container ran throughout this recycle, so
+	// nothing may land in the benign bucket.
+	if healthAfter.RecoveryAbortedContainerGone != 0 {
+		t.Errorf("recovery_aborted_container_gone=%d: the container ran throughout the recycle, so recovery must not have classified it as gone (#376)",
+			healthAfter.RecoveryAbortedContainerGone)
+	}
 
 	ins, err := cli.ContainerInspect(ctx, id)
 	if err != nil {
