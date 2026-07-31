@@ -19,6 +19,27 @@ PLUGIN_COVER_TAG ?= golang-cover
 TEST_OUTAGE_TICK ?= 2s
 TEST_OUTAGE_GRACE ?= 10s
 
+# Join await budget for locally built / test plugins (#401). The shipped
+# default is 10s and covers the whole of dhcpManager.Start: polling
+# NetworkInspect until Docker resolves the real container ID, then
+# ContainerInspect, opening the sandbox netns, locating the container
+# link, and spawning dhcpcd — twice when IPv6 is on.
+#
+# Ten seconds is generous on an idle host. The CI host is not one: since
+# #375 two suite jobs run concurrently, each in its own nested Docker
+# daemon, on a shared machine. Under that load the budget runs out
+# mid-Join, and a timeout where the container is still running is
+# counted as join_start_failures — a fatal health-floor finding for what
+# is actually the host being slow. Twelve such timeouts in one run is
+# what #401 was filed on.
+#
+# Raised here rather than in config.json on purpose. This is a statement
+# about the test environment, not about the right production timeout;
+# whether the shipped 10s is enough for a loaded production host is a
+# separate open question (#403) that needs measurements, not a number
+# copied from what CI happened to need.
+TEST_AWAIT_TIMEOUT ?= 30s
+
 .PHONY: all debug build create enable disable pdebug push clean integration-test \
         integration-test-failure integration-cleanup \
         build-cover plugin-cover create-cover enable-cover disable-cover
@@ -47,7 +68,8 @@ create: plugin
 	docker plugin rm -f $(PLUGIN_NAME):$(PLUGIN_TAG) || true
 	docker plugin create $(PLUGIN_NAME):$(PLUGIN_TAG) $<
 	docker plugin set $(PLUGIN_NAME):$(PLUGIN_TAG) LOG_LEVEL=trace \
-	    OUTAGE_TICK=$(TEST_OUTAGE_TICK) OUTAGE_GRACE=$(TEST_OUTAGE_GRACE)
+	    OUTAGE_TICK=$(TEST_OUTAGE_TICK) OUTAGE_GRACE=$(TEST_OUTAGE_GRACE) \
+	    AWAIT_TIMEOUT=$(TEST_AWAIT_TIMEOUT)
 
 enable: plugin
 	docker plugin enable $(PLUGIN_NAME):$(PLUGIN_TAG)
@@ -86,7 +108,8 @@ create-cover: plugin-cover
 	docker plugin rm -f $(PLUGIN_NAME):$(PLUGIN_COVER_TAG) || true
 	docker plugin create $(PLUGIN_NAME):$(PLUGIN_COVER_TAG) $<
 	docker plugin set $(PLUGIN_NAME):$(PLUGIN_COVER_TAG) LOG_LEVEL=trace \
-	    OUTAGE_TICK=$(TEST_OUTAGE_TICK) OUTAGE_GRACE=$(TEST_OUTAGE_GRACE)
+	    OUTAGE_TICK=$(TEST_OUTAGE_TICK) OUTAGE_GRACE=$(TEST_OUTAGE_GRACE) \
+	    AWAIT_TIMEOUT=$(TEST_AWAIT_TIMEOUT)
 
 enable-cover:
 	docker plugin enable $(PLUGIN_NAME):$(PLUGIN_COVER_TAG)

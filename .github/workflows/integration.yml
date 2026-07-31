@@ -209,9 +209,24 @@ jobs:
           # Tighten the outage-watchdog cadence (#278). The failure
           # suite otherwise pays the production 30s/25s on top of a
           # fixture lease that cannot go below dnsmasq's 2m floor.
-          # Test-only: released images ship config.json's defaults.
+          #
+          # AWAIT_TIMEOUT 10s -> 30s (#401). The shipped default covers
+          # the whole of a Join — network-inspect polling, container
+          # inspect, netns open, link location, dhcpcd spawn — and is
+          # generous on an idle host. This one is not: two suite jobs
+          # run concurrently in nested Docker daemons on a shared
+          # machine, and under that load the budget ran out mid-Join
+          # twelve times in a single run. A timeout where the container
+          # is still running counts as join_start_failures and fails the
+          # health floor, so the host being slow presented as a plugin
+          # fault on whichever PR was unlucky.
+          #
+          # Both are test-only: released images ship config.json's
+          # defaults. Whether the shipped 10s is enough for a loaded
+          # PRODUCTION host is a separate open question (#403) — do not
+          # change the default to match this number.
           docker plugin set "${INTEGRATION_PLUGIN_REF}" LOG_LEVEL=trace \
-            OUTAGE_TICK=2s OUTAGE_GRACE=10s
+            OUTAGE_TICK=2s OUTAGE_GRACE=10s AWAIT_TIMEOUT=30s
           docker plugin enable "${INTEGRATION_PLUGIN_REF}"
 
       # tee the verbose output so the timing-summary step below can
