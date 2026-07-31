@@ -69,14 +69,26 @@ on:
 # reaffirms #296 with better data than it has now. Reverting is one
 # commit and leaves the required check name untouched.
 #
-# Caveat: this group is GLOBAL, so every PR's run serializes behind
-# every other PR's — and GitHub keeps at most one *pending* run per
-# group, so a third concurrent run cancels the queued one, which then
-# needs a manual re-run. That queue depth is fixed; `cancel-in-progress`
-# is the only knob. #390 scopes the group per ref to fix both, and is
-# deliberately gated on this change proving out first.
+# Scoped PER REF (#390), not globally. A ref cannot race itself — two
+# pushes 30s apart still queue, which is the property worth keeping —
+# but different PRs now overlap instead of serializing.
+#
+# The global group this replaces was costing more than #375 saved:
+# every PR's run queued behind every other PR's regardless of branch,
+# observed at 7 idle runners with a run pending. It also lost work,
+# because GitHub keeps at most one *pending* run per group and that
+# depth is not configurable — a third run silently cancelled the queued
+# one. Per-ref removes that failure mode rather than mitigating it,
+# since nothing shares a queue to be displaced from.
+#
+# What made this safe to widen is topology, not optimism: #296's
+# contention was three privileged jobs on shared bare metal. The pool is
+# now ephemeral, one job per container, each with its own nested Docker
+# daemon, so the isolation the group provided by hand is provided by the
+# pool. The limit becomes capacity — 8 runners at 2 jobs per run — which
+# is the correct thing to queue on.
 concurrency:
-  group: selfhosted-privileged
+  group: selfhosted-privileged-${{ github.ref }}
   cancel-in-progress: false
 
 permissions:
