@@ -1,7 +1,13 @@
 package plugin
 
 import (
+	"context"
+	"errors"
+	"github.com/vishvananda/netlink"
+	"golang.org/x/sys/unix"
+	"strings"
 	"testing"
+	"time"
 )
 
 // TestParentAttachedEndpointOperInfo_NoLink covers the expected case:
@@ -97,4 +103,99 @@ func TestNewDHCPManager(t *testing.T) {
 		t.Error("startedCh should not be closed at construction")
 	default:
 	}
+}
+
+// #408: a restart re-applies the previous endpoint's MAC, so it collides
+// with the link it is replacing until DeleteEndpoint removes it. The
+// kernel says EADDRINUSE and the whole `docker restart` fails.
+func TestLinkUpAwaitingAddress(t *testing.T) {
+	swapSetUp := func(t *testing.T, fn func(netlink.Link) error) *int {
+		t.Helper()
+		calls := 0
+		prev := nlLinkSetUp
+		nlLinkSetUp = func(l netlink.Link) error {
+			calls++
+			return fn(l)
+		}
+		t.Cleanup(func() { nlLinkSetUp = prev })
+		return &calls
+	}
+	link := &netlink.Macvlan{LinkAttrs: netlink.LinkAttrs{Name: "dh-test"}}
+
+	t.Run("waits out the link it is replacing", func(t *testing.T) {
+		// Busy at first, then the old endpoint's link goes away — which
+		// is what DeleteEndpoint landing looks like from here.
+		var n int
+		calls := swapSetUp(t, func(netlink.Link) error {
+			n++
+			if n < 3 {
+				return unix.EADDRINUSE
+			}
+			return nil
+		})
+		if err := linkUpAwaitingAddress(context.Background(), link, time.Second); err != nil {
+			t.Fatalf("gave up on an address that became free: %v", err)
+		}
+		if *calls < 3 {
+			t.Errorf("succeeded after %d attempts; the stub only frees the address on the 3rd", *calls)
+		}
+	})
+
+	t.Run("succeeds first time without waiting", func(t *testing.T) {
+		calls := swapSetUp(t, func(netlink.Link) error { return nil })
+		start := time.Now()
+		if err := linkUpAwaitingAddress(context.Background(), link, time.Second); err != nil {
+			t.Fatal(err)
+		}
+		if *calls != 1 {
+			t.Errorf("retried %d times on a link that came up immediately", *calls)
+		}
+		if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
+			t.Errorf("took %v on the happy path", elapsed)
+		}
+	})
+
+	t.Run("gives up, and says what it was waiting for", func(t *testing.T) {
+		swapSetUp(t, func(netlink.Link) error { return unix.EADDRINUSE })
+		err := linkUpAwaitingAddress(context.Background(), link, 300*time.Millisecond)
+		if err == nil {
+			t.Fatal("an address that never frees must fail — coming up on a different one " +
+				"is the outcome restart stability exists to prevent")
+		}
+		if !errors.Is(err, unix.EADDRINUSE) {
+			t.Errorf("the kernel's reason was lost: %v", err)
+		}
+		if !strings.Contains(err.Error(), "still held by the link this one replaces") {
+			t.Errorf("error does not explain the wait: %v", err)
+		}
+	})
+
+	t.Run("any other error is immediate, not retried", func(t *testing.T) {
+		// Retrying a permission problem or a missing link just burns the
+		// budget and reports the wrong cause at the end.
+		boom := errors.New("operation not permitted")
+		calls := swapSetUp(t, func(netlink.Link) error { return boom })
+		err := linkUpAwaitingAddress(context.Background(), link, time.Second)
+		if !errors.Is(err, boom) {
+			t.Errorf("want the original error, got %v", err)
+		}
+		if *calls != 1 {
+			t.Errorf("retried a non-EADDRINUSE error %d times", *calls)
+		}
+	})
+
+	t.Run("a cancelled context stops the wait", func(t *testing.T) {
+		swapSetUp(t, func(netlink.Link) error { return unix.EADDRINUSE })
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		err := linkUpAwaitingAddress(ctx, link, time.Minute)
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("want context.Canceled, got %v", err)
+		}
+		// The kernel's reason still has to survive, or a cancelled
+		// restart reports nothing about why it was waiting.
+		if !errors.Is(err, unix.EADDRINUSE) {
+			t.Errorf("the last attempt's error was discarded: %v", err)
+		}
+	})
 }
