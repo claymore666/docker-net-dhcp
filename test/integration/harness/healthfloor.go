@@ -16,13 +16,18 @@ import "encoding/json"
 // HealthResponse mirrors pkg/plugin.HealthResponse. Duplicated here
 // so the integration package doesn't pull on pkg/plugin internals.
 type HealthResponse struct {
-	Healthy           bool    `json:"healthy"`
-	UptimeSeconds     float64 `json:"uptime_seconds"`
-	ActiveEndpoints   int     `json:"active_endpoints"`
-	PendingHints      int     `json:"pending_hints"`
-	RecoveredOK       int32   `json:"recovered_ok"`
-	RecoveryFailed    int32   `json:"recovery_failed"`
-	JoinStartFailures int32   `json:"join_start_failures"`
+	Healthy         bool    `json:"healthy"`
+	UptimeSeconds   float64 `json:"uptime_seconds"`
+	ActiveEndpoints int     `json:"active_endpoints"`
+	PendingHints    int     `json:"pending_hints"`
+	RecoveredOK     int32   `json:"recovered_ok"`
+	RecoveryFailed  int32   `json:"recovery_failed"`
+	// RecoveryDeferred is the benign twin of RecoveryFailed at the entry
+	// gate: the daemon was not serving yet when recovery ran, so it was
+	// retried after the socket came up. Expected on any daemon restart,
+	// not healthy-affecting (#383).
+	RecoveryDeferred  int32 `json:"recovery_deferred"`
+	JoinStartFailures int32 `json:"join_start_failures"`
 	// JoinAbortedContainerGone is the benign twin of JoinStartFailures:
 	// the container exited before the persistent client was up. Not
 	// healthy-affecting (#373).

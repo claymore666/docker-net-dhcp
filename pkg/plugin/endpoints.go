@@ -262,6 +262,13 @@ type HealthResponse struct {
 	PendingHints    int     `json:"pending_hints"`
 	RecoveredOK     int32   `json:"recovered_ok"`
 	RecoveryFailed  int32   `json:"recovery_failed"`
+	// RecoveryDeferred counts the times recovery met a daemon that was
+	// not serving yet and was retried once the socket came up (#383).
+	// Docker respawns the plugin during its own startup, so this is the
+	// expected state at that moment, not a fault — NOT Healthy-affecting.
+	// A rise paired with recovery_failed means the retry ran out too:
+	// that pair is the signal that endpoints really are unrecovered.
+	RecoveryDeferred int32 `json:"recovery_deferred"`
 	// JoinStartFailures counts persistent-client Start failures at
 	// Join time (#317): a running container with no renewal client.
 	// Healthy-affecting — same operator action as recovery_failed
@@ -342,6 +349,7 @@ func (p *Plugin) apiHealth(w http.ResponseWriter, r *http.Request) {
 		PendingHints:             pending,
 		RecoveredOK:              p.recoveredOK.Load(),
 		RecoveryFailed:           failed,
+		RecoveryDeferred:         p.recoveryDeferred.Load(),
 		JoinStartFailures:        joinFails,
 		JoinAbortedContainerGone: p.joinAbortedContainerGone.Load(),
 		TombstoneWriteFailures:   tsFails,

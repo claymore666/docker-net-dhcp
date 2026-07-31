@@ -18,6 +18,10 @@ const testDHCPDriver = "claymore666/docker-net-dhcp:latest"
 type fakeDocker struct {
 	listResult []dNetwork.Summary
 	listErr    error
+	// listErrUntil, when non-zero, is the call number on which
+	// NetworkList stops returning listErr and starts answering — a
+	// daemon that comes up mid-recovery (#383).
+	listErrUntil int
 
 	inspectResult map[string]dNetwork.Inspect
 	inspectErr    error
@@ -34,7 +38,13 @@ type fakeDocker struct {
 
 func (f *fakeDocker) NetworkList(_ context.Context, _ dNetwork.ListOptions) ([]dNetwork.Summary, error) {
 	f.listCalls++
-	return f.listResult, f.listErr
+	// listErrUntil models a daemon that is still starting: fail the
+	// first N-1 calls, then answer. Zero means "always fail" (the
+	// original behaviour), so existing cases are unaffected.
+	if f.listErr != nil && (f.listErrUntil == 0 || f.listCalls < f.listErrUntil) {
+		return nil, f.listErr
+	}
+	return f.listResult, nil
 }
 
 func (f *fakeDocker) NetworkInspect(_ context.Context, id string, _ dNetwork.InspectOptions) (dNetwork.Inspect, error) {
@@ -55,17 +65,67 @@ func (f *fakeDocker) ContainerInspect(_ context.Context, id string) (dContainer.
 
 func (f *fakeDocker) Close() error { return f.closeErr }
 
+// testDaemonWait keeps the entry gate's retry loop short. Real waits are
+// seconds; the unit suite only needs the loop to terminate.
+const testDaemonWait = 100 * time.Millisecond
+
+// fastRetries shrinks the gap between entry-gate attempts so a test can
+// observe several of them inside testDaemonWait without paying the real
+// half-second spacing.
+func fastRetries(t *testing.T) {
+	t.Helper()
+	prev := recoveryDaemonRetryInterval
+	recoveryDaemonRetryInterval = time.Millisecond
+	t.Cleanup(func() { recoveryDaemonRetryInterval = prev })
+}
+
+// TestRecoverEndpoints_NetworkListError pins the #383 contract: a daemon
+// that never answers is reported to the caller as "not ready" and does
+// NOT count a failure here. Counting it at this level is what made a
+// routine daemon restart look like a plugin fault — the decision belongs
+// to whoever knows whether a retry is still coming (NewPlugin/Listen).
 func TestRecoverEndpoints_NetworkListError(t *testing.T) {
+	fastRetries(t)
 	f := &fakeDocker{listErr: errors.New("list boom")}
 	p := &Plugin{docker: f}
 
-	p.recoverEndpoints(context.Background())
+	notReady := p.recoverEndpoints(context.Background(), testDaemonWait)
 
-	if got := p.recoveryFailed.Load(); got != 1 {
-		t.Fatalf("recoveryFailed: got %d want 1", got)
+	if !notReady {
+		t.Error("recoverEndpoints should report daemonNotReady when the list never succeeds")
+	}
+	if got := p.recoveryFailed.Load(); got != 0 {
+		t.Fatalf("recoveryFailed: got %d want 0 — an unreachable daemon is not a recovery failure here", got)
 	}
 	if f.inspectCalls != 0 {
 		t.Fatalf("NetworkInspect should not be called after list failure (got %d)", f.inspectCalls)
+	}
+	if f.listCalls < 2 {
+		t.Errorf("expected the entry gate to retry; got %d NetworkList calls", f.listCalls)
+	}
+}
+
+// TestRecoverEndpoints_NetworkListRecoversAfterRetry is the other half:
+// a daemon that is merely slow to start must be waited out, not skipped.
+func TestRecoverEndpoints_NetworkListRecoversAfterRetry(t *testing.T) {
+	fastRetries(t)
+	f := &fakeDocker{
+		listErr:      errors.New("daemon still starting"),
+		listErrUntil: 3, // fail the first two calls, succeed on the third
+		listResult:   []dNetwork.Summary{{ID: "n1", Driver: "bridge"}},
+	}
+	p := &Plugin{docker: f}
+
+	notReady := p.recoverEndpoints(context.Background(), testDaemonWait)
+
+	if notReady {
+		t.Error("a daemon that answers on retry must not be reported as not-ready")
+	}
+	if got := p.recoveryFailed.Load(); got != 0 {
+		t.Errorf("recoveryFailed: got %d want 0", got)
+	}
+	if f.listCalls != 3 {
+		t.Errorf("expected exactly 3 NetworkList calls, got %d", f.listCalls)
 	}
 }
 
@@ -73,7 +133,7 @@ func TestRecoverEndpoints_SkipsNonDHCPNetworks(t *testing.T) {
 	f := &fakeDocker{listResult: []dNetwork.Summary{{ID: "n1", Driver: "bridge"}}}
 	p := &Plugin{docker: f}
 
-	p.recoverEndpoints(context.Background())
+	p.recoverEndpoints(context.Background(), testDaemonWait)
 
 	if got := p.recoveryFailed.Load(); got != 0 {
 		t.Fatalf("recoveryFailed: got %d want 0", got)
@@ -90,7 +150,7 @@ func TestRecoverEndpoints_NetworkInspectError(t *testing.T) {
 	}
 	p := &Plugin{docker: f}
 
-	p.recoverEndpoints(context.Background())
+	p.recoverEndpoints(context.Background(), testDaemonWait)
 
 	if got := p.recoveryFailed.Load(); got != 1 {
 		t.Fatalf("recoveryFailed: got %d want 1", got)
@@ -107,7 +167,7 @@ func TestRecoverEndpoints_NetOptionsDecodeError(t *testing.T) {
 	}
 	p := &Plugin{docker: f}
 
-	p.recoverEndpoints(context.Background())
+	p.recoverEndpoints(context.Background(), testDaemonWait)
 
 	if got := p.recoveryFailed.Load(); got != 1 {
 		t.Fatalf("recoveryFailed: got %d want 1 (decode of unknown option should fail)", got)
