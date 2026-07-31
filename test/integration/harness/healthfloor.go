@@ -11,6 +11,8 @@
 
 package harness
 
+import "encoding/json"
+
 // HealthResponse mirrors pkg/plugin.HealthResponse. Duplicated here
 // so the integration package doesn't pull on pkg/plugin internals.
 type HealthResponse struct {
@@ -33,13 +35,99 @@ type HealthResponse struct {
 	LeaseReleaseFailures     int32 `json:"lease_release_failures"`
 	NAKsReceived             int32 `json:"naks_received"`
 	LedgerWriteFailures      int32 `json:"ledger_write_failures"`
+
+	// published is the key set of the payload this value was decoded
+	// from. It exists because an absent JSON field decodes to zero,
+	// which is indistinguishable from a counter that is genuinely at
+	// zero — so without it the floor reads "clean" for counters the
+	// plugin never sent (#377).
+	//
+	// nil means "this value was built by hand, not decoded", and the
+	// presence check is skipped. UnmarshalJSON always sets a non-nil
+	// map, including for an empty or null payload, so nil cannot occur
+	// on the path that talks to a real plugin.
+	published map[string]json.RawMessage
 }
 
-// FloorFinding is one healthy-affecting counter that moved off zero
-// during a run.
+// UnmarshalJSON decodes as usual and additionally records which keys
+// the payload actually carried.
+//
+// The `plain` alias is what stops this from recursing: an alias type
+// has the same fields but not the methods, so the inner Unmarshal uses
+// the default struct decoder. published is unexported and therefore
+// invisible to encoding/json, which is also why nothing outside this
+// package can fabricate a misleading key set.
+func (h *HealthResponse) UnmarshalJSON(b []byte) error {
+	type plain HealthResponse
+	var p plain
+	if err := json.Unmarshal(b, &p); err != nil {
+		return err
+	}
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(b, &keys); err != nil {
+		return err
+	}
+	if keys == nil {
+		// A literal `null` body unmarshals into a nil map without
+		// erroring. Normalise it: a payload that carried no keys is
+		// "published nothing", not "presence unknown".
+		keys = map[string]json.RawMessage{}
+	}
+	*h = HealthResponse(p)
+	h.published = keys
+	return nil
+}
+
+// floorCounter is one counter the floor reads.
+//
+// The table below is the single source of truth for that set: both the
+// value check and the presence check iterate it, so a counter cannot be
+// added to one and forgotten in the other. name must equal the JSON tag
+// on the field read — TestFloorCounterNamesMatchJSONTags pins that, and
+// the presence check catches the other half of the same drift, where
+// the plugin renames a key this side has not followed.
+type floorCounter struct {
+	name  string
+	read  func(*HealthResponse) int32
+	fatal bool
+	why   string
+}
+
+var floorCounters = []floorCounter{
+	{
+		name:  "join_start_failures",
+		read:  func(h *HealthResponse) int32 { return h.JoinStartFailures },
+		fatal: true,
+		why:   "a running container was left without a renewal client; since #373 the benign container-exited case is counted separately as join_aborted_container_gone, so this counter now means only a real fault",
+	},
+	{
+		name:  "tombstone_write_failures",
+		read:  func(h *HealthResponse) int32 { return h.TombstoneWriteFailures },
+		fatal: true,
+		why:   "the plugin could not persist its tombstone state to disk; an endpoint will not keep its address across a restart",
+	},
+	{
+		name:  "recovery_failed",
+		read:  func(h *HealthResponse) int32 { return h.RecoveryFailed },
+		fatal: false,
+		why:   "NOT failing the run: this counter still bumps when a container merely exited before post-restart recovery reached it (#376). Once that lands this becomes fatal and the floor becomes a plain healthy==true check. If you are here because something else is wrong, this counter is worth reading — it may be a real recovery failure",
+	},
+}
+
+// absentWhy explains a finding raised because the plugin did not
+// publish a counter at all. Fatal regardless of the counter's own
+// verdict — recovery_failed being merely noisy is a statement about
+// what its value means, not a licence to stop looking at it.
+const absentWhy = "the plugin did not publish this counter, so this run proves nothing about it — an absent JSON field decodes as zero and would otherwise read as clean. Either the plugin under test is an older build than the suite (rebuild and reinstall it), or the counter was renamed in pkg/plugin/endpoints.go without updating floorCounters in this file"
+
+// FloorFinding is one healthy-affecting counter the floor took issue
+// with — either it moved off zero, or the plugin did not report it.
 type FloorFinding struct {
 	Counter string
 	Value   int32
+	// Absent marks a counter the plugin never published. Value is
+	// meaningless for these — the point is that there was no value.
+	Absent bool
 	// Fatal distinguishes "this counter only ever means a real plugin
 	// fault" from "this counter is known to also count benign events".
 	// A non-fatal finding is still printed — loudly — because it is a
@@ -58,7 +146,8 @@ type FloorFinding struct {
 // before the failure suite even started.
 //
 // It returns findings for every healthy-affecting counter that is
-// non-zero, and nothing at all for a clean run.
+// non-zero or unreported, and nothing at all for a clean run. Each
+// counter yields at most one finding.
 //
 // The values are ABSOLUTE, not deltas from the start of the run, and
 // that is the point: an absolute floor is what notices a fault that
@@ -67,50 +156,45 @@ type FloorFinding struct {
 // several sessions) can report a counter from an earlier run, so the
 // findings say "since plugin start" out loud.
 //
-// One caveat that only shows up locally: a counter the running plugin
-// does not publish decodes as zero and so reads as clean. An old build
-// left installed on a dev box answers /Plugin.Health without
-// join_start_failures or join_aborted_container_gone at all, which
-// makes the floor quietly weaker there than in CI, where the plugin is
-// always built from the branch under test. Nothing to fix in the floor
-// — the fix is to reinstall the plugin — but worth knowing before
-// trusting a local green.
+// A counter the plugin does not publish is itself a fatal finding.
+// That case is not hypothetical: an old build left installed on a dev
+// box answers /Plugin.Health without join_start_failures at all, and
+// before #377 the floor read the resulting zero as clean — weaker
+// locally than in CI while looking identical. The same silence would
+// follow a renamed JSON tag in CI, where the plugin is always built
+// from the branch under test, so this is not a dev-box-only guard.
 //
 // Note this is deliberately NOT `!h.Healthy`. Two of the three
 // counters behind that flag mean exactly one thing; the third,
 // recovery_failed, still double-counts a benign container-exit as a
 // plugin fault (#376), so asserting the flag itself would be flaky by
-// construction. Once #376 lands, the three cases below collapse into
-// a single check of h.Healthy.
+// construction. Once #376 lands, the table above collapses into a
+// single check of h.Healthy.
 func CheckHealthFloor(h *HealthResponse) []FloorFinding {
 	if h == nil {
 		return nil
 	}
 	var out []FloorFinding
-
-	if h.JoinStartFailures > 0 {
-		out = append(out, FloorFinding{
-			Counter: "join_start_failures",
-			Value:   h.JoinStartFailures,
-			Fatal:   true,
-			Why:     "a running container was left without a renewal client; since #373 the benign container-exited case is counted separately as join_aborted_container_gone, so this counter now means only a real fault",
-		})
-	}
-	if h.TombstoneWriteFailures > 0 {
-		out = append(out, FloorFinding{
-			Counter: "tombstone_write_failures",
-			Value:   h.TombstoneWriteFailures,
-			Fatal:   true,
-			Why:     "the plugin could not persist its tombstone state to disk; an endpoint will not keep its address across a restart",
-		})
-	}
-	if h.RecoveryFailed > 0 {
-		out = append(out, FloorFinding{
-			Counter: "recovery_failed",
-			Value:   h.RecoveryFailed,
-			Fatal:   false,
-			Why:     "NOT failing the run: this counter still bumps when a container merely exited before post-restart recovery reached it (#376). Once that lands this becomes fatal and the floor becomes a plain healthy==true check. If you are here because something else is wrong, this counter is worth reading — it may be a real recovery failure",
-		})
+	for _, c := range floorCounters {
+		if h.published != nil {
+			if _, ok := h.published[c.name]; !ok {
+				out = append(out, FloorFinding{
+					Counter: c.name,
+					Absent:  true,
+					Fatal:   true,
+					Why:     absentWhy,
+				})
+				continue
+			}
+		}
+		if v := c.read(h); v > 0 {
+			out = append(out, FloorFinding{
+				Counter: c.name,
+				Value:   v,
+				Fatal:   c.fatal,
+				Why:     c.why,
+			})
+		}
 	}
 	return out
 }

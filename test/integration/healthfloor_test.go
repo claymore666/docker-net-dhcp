@@ -92,13 +92,19 @@ func checkHealthFloor() int {
 		return 0
 	}
 
-	fmt.Fprintln(os.Stderr, "HEALTH FLOOR: plugin reported faults after the suite finished.")
+	fmt.Fprintln(os.Stderr, "HEALTH FLOOR: the plugin's health surface did not come back clean.")
 	fmt.Fprintf(os.Stderr, "  values are cumulative since the plugin started %.0fs ago, not deltas for this run;\n", h.UptimeSeconds)
 	fmt.Fprintln(os.Stderr, "  against a long-lived local plugin a count may predate this run — re-check on a fresh enable.")
 	for _, f := range findings {
 		verdict := "WARN "
 		if f.Fatal {
 			verdict = "FATAL"
+		}
+		// An absent counter has no value to print, and printing its
+		// zero is exactly the confusion this finding exists to end.
+		if f.Absent {
+			fmt.Fprintf(os.Stderr, "  %s %s=<not reported>: %s\n", verdict, f.Counter, f.Why)
+			continue
 		}
 		fmt.Fprintf(os.Stderr, "  %s %s=%d: %s\n", verdict, f.Counter, f.Value, f.Why)
 	}
