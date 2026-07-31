@@ -2050,6 +2050,14 @@ using (option 50) so the server ACKs it rather than allocating a new one.</p>
 accepts requests, so a fresh <code>CreateEndpoint</code> arriving during enable
 cannot race it. Results land on <code>/Plugin.Health</code> as <code>recovered_ok</code> and
 <code>recovery_failed</code>.</p>
+<p>One case cannot be finished there. On a daemon restart Docker respawns
+the plugin while the daemon itself is still coming up, so recovery's
+first API call can time out against a daemon that is not serving yet.
+Waiting for it before the socket exists would stall plugin-enable
+against the very daemon being waited on, so recovery is instead retried
+once the socket is listening, and the wait is counted as
+<code>recovery_deferred</code> rather than a failure (v1.4.0+, #383). Only a retry
+that runs out of budget counts <code>recovery_failed</code>.</p>
 <p>The same path covers <code>systemctl restart docker</code>. In practice the address
 is preserved either by recovery (when the daemon's shutdown never called
 <code>Leave</code>) or by the tombstone (when it did) — the outcome is the same
@@ -2120,7 +2128,12 @@ diagnosing a specific container from them alone is not.</p>
 <tr>
 <td><code>recovery_failed</code></td>
 <td>yes</td>
-<td>Endpoints whose post-restart rebuild failed — those containers run without lease renewal and lose their IP at expiry; restart them.</td>
+<td>Endpoints whose post-restart rebuild failed — those containers run without lease renewal and lose their IP at expiry; restart them. A daemon that is merely still starting is <strong>not</strong> counted here (see <code>recovery_deferred</code>).</td>
+</tr>
+<tr>
+<td><code>recovery_deferred</code></td>
+<td>no</td>
+<td>(v1.4.0+) Recovery met a daemon that was not serving yet and was retried once the plugin socket came up (#383). Expected on a daemon restart. Only worth attention paired with <code>recovery_failed</code>, which together mean the retry ran out too.</td>
 </tr>
 <tr>
 <td><code>join_start_failures</code></td>
