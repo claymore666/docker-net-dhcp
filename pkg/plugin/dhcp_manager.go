@@ -955,9 +955,92 @@ func (m *dhcpManager) awaitLinkLocal(ctx context.Context) error {
 	}, pollTime)
 }
 
+// joinPhases records how long each stage of Start took, so a Join that
+// runs out of budget can say WHERE the budget went.
+//
+// Start is one deadline covering five quite different waits: resolving
+// the endpoint to a real container ID, inspecting that container,
+// opening its netns, locating its link, and spawning dhcpcd. When it
+// expires, every one of them reports the same "context deadline
+// exceeded", and the two explanations that matter are indistinguishable
+// (#406):
+//
+//   - the daemon was genuinely slow, and the container is still running
+//     with no renewal client — a real fault;
+//   - an earlier phase consumed the budget, so a later one inherited an
+//     already-expired context and failed instantly against a perfectly
+//     healthy daemon.
+//
+// Those want opposite fixes — a bigger budget, or a budget spent
+// differently — so guessing between them is how #401's first attempt
+// went wrong. This makes the next ordinary CI run answer it, rather
+// than needing a reproduction nobody has managed to build locally.
+//
+// Deliberately not a health counter. This is diagnostic detail for a
+// failure that is already being counted and logged; adding a counter
+// per phase would put five numbers on an operator's health surface to
+// answer a question only a developer asks.
+type joinPhases struct {
+	start time.Time
+	last  time.Time
+	spans []joinPhaseSpan
+}
+
+type joinPhaseSpan struct {
+	name string
+	took time.Duration
+}
+
+func newJoinPhases() *joinPhases {
+	now := time.Now()
+	return &joinPhases{start: now, last: now}
+}
+
+// mark closes the phase that has just finished.
+func (p *joinPhases) mark(name string) {
+	if p == nil {
+		return
+	}
+	now := time.Now()
+	p.spans = append(p.spans, joinPhaseSpan{name: name, took: now.Sub(p.last)})
+	p.last = now
+}
+
+// summary renders the phases as a log field: "resolve_id=8.9s inspect=1.1s".
+// The phase that ate the budget is then the obvious one to read.
+func (p *joinPhases) summary() string {
+	if p == nil || len(p.spans) == 0 {
+		return "(no phase completed)"
+	}
+	parts := make([]string, 0, len(p.spans))
+	for _, s := range p.spans {
+		parts = append(parts, fmt.Sprintf("%s=%.2fs", s.name, s.took.Seconds()))
+	}
+	return strings.Join(parts, " ")
+}
+
+// total is the whole of Start, for reading against the budget.
+func (p *joinPhases) total() time.Duration {
+	if p == nil {
+		return 0
+	}
+	return time.Since(p.start)
+}
+
 func (m *dhcpManager) Start(ctx context.Context) (err error) {
+	phases := newJoinPhases()
 	defer func() {
 		m.startErr = err
+		if err != nil {
+			// Logged here rather than at the caller so it is attached to
+			// every Start failure, including the ones the caller goes on
+			// to classify as benign — a container that vanished after
+			// nine seconds of waiting is worth seeing too (#406).
+			log.WithFields(m.logFields(false)).WithFields(log.Fields{
+				"phases": phases.summary(),
+				"total":  phases.total().Round(10 * time.Millisecond).String(),
+			}).Debug("Join phase timing at failure")
+		}
 		close(m.startedCh)
 	}()
 	var ctrID string
@@ -982,11 +1065,14 @@ func (m *dhcpManager) Start(ctx context.Context) (err error) {
 	}, pollTime); err != nil {
 		return err
 	}
+	phases.mark("resolve_container_id")
 
 	ctr, err := util.AwaitContainerInspect(ctx, m.docker, ctrID, pollTime)
 	if err != nil {
 		return fmt.Errorf("failed to get Docker container info: %w", err)
 	}
+
+	phases.mark("inspect_container")
 
 	// Using the "sandbox key" directly causes issues on some platforms
 	m.nsPath = fmt.Sprintf("/proc/%v/ns/net", ctr.State.Pid)
@@ -996,6 +1082,8 @@ func (m *dhcpManager) Start(ctx context.Context) (err error) {
 	if err != nil {
 		return fmt.Errorf("failed to get sandbox network namespace: %w", err)
 	}
+
+	phases.mark("open_netns")
 
 	m.netHandle, err = netlink.NewHandleAt(m.nsHandle)
 	if err != nil {
@@ -1007,6 +1095,8 @@ func (m *dhcpManager) Start(ctx context.Context) (err error) {
 		if err := m.locateContainerLink(ctx); err != nil {
 			return err
 		}
+
+		phases.mark("locate_link")
 
 		if m.errChan, err = m.setupClient(false); err != nil {
 			close(m.stopChan)
@@ -1040,6 +1130,7 @@ func (m *dhcpManager) Start(ctx context.Context) (err error) {
 			}
 		}
 
+		phases.mark("start_clients")
 		return nil
 	}(); err != nil {
 		closeNetHandle(m.netHandle)

@@ -3,8 +3,10 @@ package plugin
 import (
 	"errors"
 	"os"
+	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
@@ -389,4 +391,67 @@ func TestStop_FailedStartIsANoOp(t *testing.T) {
 	if _, err := os.Stat(p.ledger.path); !os.IsNotExist(err) {
 		t.Errorf("ledger written for a manager that never held a lease (stat err: %v)", err)
 	}
+}
+
+// #406: when a Join runs out of budget, every phase reports the same
+// "context deadline exceeded" and the useful question — which phase
+// consumed it — has no answer. These pin the rendering, since the
+// phases themselves are only reachable with a live daemon.
+func TestJoinPhases(t *testing.T) {
+	t.Run("renders each phase with its own time", func(t *testing.T) {
+		p := newJoinPhases()
+		p.mark("resolve_container_id")
+		p.mark("inspect_container")
+		got := p.summary()
+		for _, want := range []string{"resolve_container_id=", "inspect_container="} {
+			if !strings.Contains(got, want) {
+				t.Errorf("summary %q is missing %q", got, want)
+			}
+		}
+		if strings.Count(got, "=") != 2 {
+			t.Errorf("want exactly the two phases that completed, got %q", got)
+		}
+	})
+
+	t.Run("says so when nothing completed", func(t *testing.T) {
+		// The most interesting failure of all: the budget went entirely
+		// to the first phase. An empty string here would read as "no
+		// timing available" rather than "it never got past step one".
+		if got := newJoinPhases().summary(); !strings.Contains(got, "no phase completed") {
+			t.Errorf("summary with no marks = %q; want an explicit note", got)
+		}
+	})
+
+	t.Run("attributes elapsed time to the phase that spent it", func(t *testing.T) {
+		p := newJoinPhases()
+		time.Sleep(60 * time.Millisecond)
+		p.mark("slow_phase")
+		p.mark("fast_phase")
+		var slow, fast joinPhaseSpan
+		for _, s := range p.spans {
+			switch s.name {
+			case "slow_phase":
+				slow = s
+			case "fast_phase":
+				fast = s
+			}
+		}
+		if slow.took < 50*time.Millisecond {
+			t.Errorf("the slow phase was charged %v; the whole point is that it carries the time", slow.took)
+		}
+		if fast.took > 20*time.Millisecond {
+			t.Errorf("the fast phase was charged %v; time is being double-counted", fast.took)
+		}
+	})
+
+	t.Run("a nil tracker is inert", func(t *testing.T) {
+		var p *joinPhases
+		p.mark("x")
+		if got := p.summary(); got == "" {
+			t.Error("nil tracker should still render something rather than an empty field")
+		}
+		if p.total() != 0 {
+			t.Error("nil tracker total should be zero")
+		}
+	})
 }
