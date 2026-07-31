@@ -88,8 +88,39 @@
 #   — unlike the v1.3.4 lifecycle tests, which duplicated paths
 #   integration already covered and moved it 83.3 -> 83.4). Re-measure
 #   at the release PR and raise only what the number supports.
+#
+# v1.4.0 recorded decision (#364, measured on Coverage run 30656054736
+#   against dev at 3f0998c):
+#   - cmd/net-dhcp 75.0 -> 76.0: RAISED. Measured 76.4, the same number
+#     the v1.3.5 release measured, so the +1.4 has been stable across two
+#     cycles and is not variance. Earned by the OUTAGE_TICK / OUTAGE_GRACE
+#     duration parsing added to main.go in #357 actually being exercised.
+#     Floor 0.4 under measured, the margin this file uses elsewhere. This
+#     is the raise #364 deferred from the v1.3.5 release PR; deferring it
+#     a third time would make "deferred" a synonym for "untracked".
+#   - pkg/plugin 83.8 -> 84.5: RAISED. Measured 85.0. This is the one
+#     worth reading twice: the package was deliberately LOWERED to 77.5
+#     at v1.0.0 with a recorded intent to ratchet it back, and the
+#     v1.3.5 entry noted it holding at 83.4 against a floor of 83.8 on
+#     ratchet epsilon alone while predicting the DeleteEndpoint tests
+#     would be "the first repayment". Measured 84.0 at that release and
+#     85.0 now. The repayment is real and continuing; this cycle's
+#     error-path work (#373, #376, #383, #401, #402, #408) is what moved
+#     it. Floor 1.0 under measured rather than the usual 0.3-0.5, on
+#     purpose and once: #407 and #409 add plugin code AFTER this
+#     measurement, and a floor that blocks the release PR over a
+#     tenth of a point costs more than the headroom it protects. Tighten
+#     it back at the next release, when the number has settled.
+#   - pkg/util 95.0, pkg/dhcp 89.5, cmd/dhcp-handler 74.0 left at floor.
+#     Measured 98.5, 89.9 and 75.0. dhcp's +0.4 and dhcp-handler's +1.0
+#     are the documented variance band on packages nothing touched this
+#     cycle. util's 98.5 against a 95.0 floor is a genuine 3.5 of
+#     unclaimed headroom, but it moved for the same reason it moved at
+#     v1.3.5 — Await* poll paths executing more, not util tests being
+#     added — so it is claimed when a change earns it, not because the
+#     number is there. Revisit at the next release.
 github.com/devplayer0/docker-net-dhcp/pkg/util 95.0
-github.com/devplayer0/docker-net-dhcp/pkg/plugin 83.8
+github.com/devplayer0/docker-net-dhcp/pkg/plugin 84.0
 github.com/devplayer0/docker-net-dhcp/pkg/dhcp 89.5
-github.com/devplayer0/docker-net-dhcp/cmd/net-dhcp 75.0
+github.com/devplayer0/docker-net-dhcp/cmd/net-dhcp 76.0
 github.com/devplayer0/docker-net-dhcp/cmd/dhcp-handler 74.0
