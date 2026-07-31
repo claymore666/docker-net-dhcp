@@ -7,6 +7,7 @@ package harness
 
 import (
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -402,4 +403,152 @@ func keys(m map[string]bool) []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+// The floor's evidence section is the only thing that turns a counter
+// into something actionable, so it gets the same treatment as the floor
+// itself: exercised without a live plugin, including the cases where
+// the log is unhelpful.
+func TestFloorEvidence(t *testing.T) {
+	const (
+		errLine  = `time="2026-07-31T16:40:00Z" level=error msg="Failed to start persistent DHCP client" endpoint=abc123`
+		warnLine = `time="2026-07-31T16:40:01Z" level=warning msg="Failed to persist tombstone"`
+		infoLine = `time="2026-07-31T16:40:02Z" level=info msg="Lease acquired" ip=192.168.99.5`
+	)
+
+	t.Run("fault lines are pulled out wherever they fall", func(t *testing.T) {
+		var lines []string
+		lines = append(lines, errLine, warnLine)
+		for i := 0; i < 500; i++ {
+			lines = append(lines, infoLine)
+		}
+		got := FloorEvidence([]byte(strings.Join(lines, "\n")), 10)
+
+		// Both faults are at the very start, far outside any tail —
+		// finding them is the whole point of not just tailing the log.
+		if !strings.Contains(got, "Failed to start persistent DHCP client") {
+			t.Error("error line missing from evidence")
+		}
+		if !strings.Contains(got, "Failed to persist tombstone") {
+			t.Error("warning line missing from evidence; the tombstone counter logs at warn, so dropping warnings would hide it")
+		}
+		if !strings.Contains(got, "--- 2 error/warning lines ---") {
+			t.Errorf("fault count heading missing or wrong:\n%s", firstLines(got, 3))
+		}
+	})
+
+	t.Run("the tail is included for context", func(t *testing.T) {
+		lines := []string{errLine}
+		for i := 0; i < 50; i++ {
+			lines = append(lines, fmt.Sprintf(`time="t" level=info msg="line %d"`, i))
+		}
+		got := FloorEvidence([]byte(strings.Join(lines, "\n")), 5)
+		if !strings.Contains(got, "--- last 5 lines ---") {
+			t.Errorf("tail heading missing:\n%s", got)
+		}
+		if !strings.Contains(got, `msg="line 49"`) {
+			t.Error("last line of the log is not in the tail")
+		}
+		if strings.Contains(got, `msg="line 10"`) {
+			t.Error("tail is not bounded to tailLines")
+		}
+	})
+
+	t.Run("a flood of faults is bounded, and says so", func(t *testing.T) {
+		lines := make([]string, 0, 500)
+		for i := 0; i < 500; i++ {
+			lines = append(lines, fmt.Sprintf(`time="t" level=error msg="fault %d"`, i))
+		}
+		got := FloorEvidence([]byte(strings.Join(lines, "\n")), 0)
+		if !strings.Contains(got, fmt.Sprintf("--- last %d of 500 error/warning lines ---", floorEvidenceMaxFaultLines)) {
+			t.Errorf("truncation is not announced:\n%s", firstLines(got, 3))
+		}
+		// Truncating from the front keeps the most recent faults, which
+		// are the ones nearest the failure being diagnosed.
+		if !strings.Contains(got, `msg="fault 499"`) {
+			t.Error("truncation dropped the most recent fault")
+		}
+		if strings.Contains(got, `msg="fault 0"`) {
+			t.Error("truncation kept the oldest fault instead of the newest")
+		}
+	})
+
+	t.Run("a counter that moved without logging is called out", func(t *testing.T) {
+		got := FloorEvidence([]byte(infoLine), 0)
+		if !strings.Contains(got, "without logging") {
+			t.Errorf("a log with no error/warning lines should say so explicitly, got:\n%s", got)
+		}
+	})
+
+	t.Run("an empty log does not produce empty output", func(t *testing.T) {
+		for _, in := range [][]byte{nil, []byte(""), []byte("\n")} {
+			got := FloorEvidence(in, 10)
+			if !strings.Contains(got, "empty") {
+				t.Errorf("FloorEvidence(%q) = %q; want an explicit empty-log note", in, got)
+			}
+		}
+	})
+}
+
+func firstLines(s string, n int) string {
+	lines := strings.Split(s, "\n")
+	if len(lines) > n {
+		lines = lines[:n]
+	}
+	return strings.Join(lines, "\n")
+}
+
+// A "clean" headline gets quoted as evidence that a run was fine, so
+// what it claims has to match what the floor could actually see (#385).
+func TestFloorCleanLine(t *testing.T) {
+	t.Run("full coverage says so plainly", func(t *testing.T) {
+		got := FloorCleanLine(&HealthResponse{UptimeSeconds: 95, Healthy: true}, 92)
+		if !strings.Contains(got, "whole 95s run") {
+			t.Errorf("a plugin that outlived the suite should read as full coverage, got:\n%s", got)
+		}
+		if strings.Contains(got, "restarted mid-suite") {
+			t.Error("full coverage should not carry the partial-coverage caveat")
+		}
+	})
+
+	t.Run("a mid-suite restart is disclosed with the numbers", func(t *testing.T) {
+		// The shape of the run that motivated this: 78s of plugin uptime
+		// at the end of an 11-minute suite, previously reported as
+		// "clean" with no qualifier at all.
+		got := FloorCleanLine(&HealthResponse{UptimeSeconds: 78, Healthy: true}, 611)
+		for _, want := range []string{"last 78s", "611s run", "13%", "restarted mid-suite"} {
+			if !strings.Contains(got, want) {
+				t.Errorf("partial-coverage verdict is missing %q:\n%s", want, got)
+			}
+		}
+		if strings.Contains(got, "whole") {
+			t.Error("a partial-coverage verdict must not claim the whole run")
+		}
+	})
+
+	t.Run("an unmeasurable suite duration drops the qualifier rather than inventing one", func(t *testing.T) {
+		for _, suite := range []float64{0, -1} {
+			got := FloorCleanLine(&HealthResponse{UptimeSeconds: 78, Healthy: true}, suite)
+			if strings.Contains(got, "%") {
+				t.Errorf("FloorCleanLine(_, %v) claimed a coverage ratio it cannot know:\n%s", suite, got)
+			}
+		}
+	})
+
+	t.Run("healthy is reported either way", func(t *testing.T) {
+		// healthy=false with no finding is possible today: the floor's
+		// fatal set is narrower than the plugin's Healthy expression.
+		for _, suite := range []float64{92, 611} {
+			got := FloorCleanLine(&HealthResponse{UptimeSeconds: 78, Healthy: false}, suite)
+			if !strings.Contains(got, "healthy=false") {
+				t.Errorf("healthy=false disappeared from the clean line (suite %v):\n%s", suite, got)
+			}
+		}
+	})
+
+	t.Run("no panic on a nil response", func(t *testing.T) {
+		if got := FloorCleanLine(nil, 92); got != "" {
+			t.Errorf("FloorCleanLine(nil, _) = %q; want empty", got)
+		}
+	})
 }
