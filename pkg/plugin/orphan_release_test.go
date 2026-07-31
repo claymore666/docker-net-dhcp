@@ -1,9 +1,14 @@
 package plugin
 
 import (
+	"bytes"
+	"context"
+	"errors"
+	"golang.org/x/sys/unix"
 	"net"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/vishvananda/netlink"
 )
@@ -142,4 +147,141 @@ func TestNewProbeMAC_IsLocallyAdministeredUnicast(t *testing.T) {
 	if mac[0]&0x02 == 0 {
 		t.Errorf("MAC %v is not locally administered", net.HardwareAddr(mac))
 	}
+}
+
+// The MAC the release link wears is the whole of #402: getting it wrong
+// means the link cannot come up and the lease is never handed back.
+func TestReleaseMACPlan(t *testing.T) {
+	endpointMAC := net.HardwareAddr{0x02, 0x42, 0xac, 0x11, 0x00, 0x05}
+	synthMAC := net.HardwareAddr{0x02, 0xaa, 0xbb, 0xcc, 0xdd, 0xee}
+	synth := func() (net.HardwareAddr, error) { return synthMAC, nil }
+
+	t.Run("macvlan prefers the endpoint's own MAC, with a fallback", func(t *testing.T) {
+		got, err := releaseMACPlan(DHCPNetworkOptions{Mode: "macvlan"}, endpointMAC, synth)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 2 {
+			t.Fatalf("want the real MAC then a fallback, got %d entries", len(got))
+		}
+		if !bytes.Equal(got[0], endpointMAC) {
+			t.Errorf("first attempt = %v, want the endpoint's own MAC — a server keyed on "+
+				"the hardware address will only honour a release carrying it", got[0])
+		}
+		if !bytes.Equal(got[1], synthMAC) {
+			t.Errorf("fallback = %v, want the synthetic MAC", got[1])
+		}
+	})
+
+	t.Run("ipvlan goes straight to a synthetic MAC", func(t *testing.T) {
+		// An ipvlan child's recorded MAC IS the parent NIC's, and the
+		// kernel's duplicate check tests the parent's own address. It
+		// can never be free, so trying it first would burn the retry
+		// window on every single release and fall back anyway.
+		parentMAC := net.HardwareAddr{0x00, 0x1b, 0x21, 0x11, 0x22, 0x33}
+		got, err := releaseMACPlan(DHCPNetworkOptions{Mode: "ipvlan"}, parentMAC, synth)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 1 || !bytes.Equal(got[0], synthMAC) {
+			t.Fatalf("want exactly one synthetic attempt, got %v", got)
+		}
+	})
+
+	t.Run("nothing recorded still yields a usable plan", func(t *testing.T) {
+		for _, recorded := range []net.HardwareAddr{nil, {}} {
+			got, err := releaseMACPlan(DHCPNetworkOptions{Mode: "macvlan"}, recorded, synth)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(got) != 1 || !bytes.Equal(got[0], synthMAC) {
+				t.Errorf("recorded=%v: want one synthetic attempt, got %v", recorded, got)
+			}
+		}
+	})
+
+	t.Run("bridge behaves like macvlan", func(t *testing.T) {
+		// Bridge mode is not affected by the duplicate-MAC rule — a
+		// bridge port is not a macvlan child — but it records a MAC and
+		// there is no reason to treat it differently.
+		got, err := releaseMACPlan(DHCPNetworkOptions{Bridge: "br0"}, endpointMAC, synth)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 2 || !bytes.Equal(got[0], endpointMAC) {
+			t.Errorf("bridge plan = %v, want the endpoint MAC first", got)
+		}
+	})
+
+	t.Run("a MAC generator failure is reported, not swallowed", func(t *testing.T) {
+		boom := errors.New("no entropy")
+		if _, err := releaseMACPlan(DHCPNetworkOptions{Mode: "macvlan"}, endpointMAC,
+			func() (net.HardwareAddr, error) { return nil, boom }); !errors.Is(err, boom) {
+			t.Errorf("want the generator's error, got %v", err)
+		}
+	})
+}
+
+// The address half of #402. Bringing the release link up contends for
+// the MAC; putting the leased address on it contends for the address.
+// Both are held by the endpoint's own link until DeleteEndpoint lands —
+// observed one second after a failed assignment in CI.
+func TestAddrAddAwaiting(t *testing.T) {
+	link := &netlink.Macvlan{LinkAttrs: netlink.LinkAttrs{Name: "dh-rel-test"}}
+	addr := &netlink.Addr{}
+
+	swap := func(t *testing.T, fn func() error) *int {
+		t.Helper()
+		calls := 0
+		prev := nlAddrAdd
+		nlAddrAdd = func(netlink.Link, *netlink.Addr) error {
+			calls++
+			return fn()
+		}
+		t.Cleanup(func() { nlAddrAdd = prev })
+		return &calls
+	}
+
+	t.Run("waits for the endpoint link to let the address go", func(t *testing.T) {
+		var n int
+		calls := swap(t, func() error {
+			n++
+			if n < 3 {
+				return unix.EADDRINUSE
+			}
+			return nil
+		})
+		if err := addrAddAwaiting(context.Background(), link, addr, time.Second); err != nil {
+			t.Fatalf("gave up on an address that became free: %v", err)
+		}
+		if *calls < 3 {
+			t.Errorf("succeeded after %d attempts; the stub only frees on the 3rd", *calls)
+		}
+	})
+
+	t.Run("gives up and explains", func(t *testing.T) {
+		swap(t, func() error { return unix.EADDRINUSE })
+		err := addrAddAwaiting(context.Background(), link, addr, 250*time.Millisecond)
+		if err == nil {
+			t.Fatal("an address that never frees must fail — the release has to be sourced " +
+				"from the address being given back, so no other address would do")
+		}
+		if !errors.Is(err, unix.EADDRINUSE) {
+			t.Errorf("kernel reason lost: %v", err)
+		}
+		if !strings.Contains(err.Error(), "still held by the endpoint link this release replaces") {
+			t.Errorf("error does not explain the wait: %v", err)
+		}
+	})
+
+	t.Run("another error is not retried", func(t *testing.T) {
+		boom := errors.New("network is down")
+		calls := swap(t, func() error { return boom })
+		if err := addrAddAwaiting(context.Background(), link, addr, time.Second); !errors.Is(err, boom) {
+			t.Errorf("want the original error, got %v", err)
+		}
+		if *calls != 1 {
+			t.Errorf("retried a non-EADDRINUSE error %d times", *calls)
+		}
+	})
 }

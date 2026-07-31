@@ -4,12 +4,14 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net"
 	"time"
 
 	log "github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
+	"golang.org/x/sys/unix"
 
 	"github.com/devplayer0/docker-net-dhcp/pkg/dhcp"
 )
@@ -123,18 +125,12 @@ func (p *Plugin) synthesiseRelease(ctx context.Context, m *dhcpManager, lease *n
 		return fmt.Errorf("name generation: %w", err)
 	}
 
-	mac := m.MacAddress
-	if mac == nil {
-		// Identity for v4 rides on the client-id (option 61), which we
-		// still have, so a synthetic MAC is enough to get the link up
-		// and the binding matched. Locally-administered so it is
-		// recognisable as ephemeral if it shows up in a server's log.
-		if mac, err = newProbeMAC(); err != nil {
-			return fmt.Errorf("MAC generation: %w", err)
-		}
+	plan, err := releaseMACPlan(m.opts, m.MacAddress, newProbeMAC)
+	if err != nil {
+		return fmt.Errorf("MAC generation: %w", err)
 	}
 
-	link, err := p.releaseLink(m.opts, linkName, mac)
+	link, mac, err := p.upReleaseLink(ctx, m.opts, linkName, plan)
 	if err != nil {
 		return err
 	}
@@ -144,10 +140,6 @@ func (p *Plugin) synthesiseRelease(ctx context.Context, m *dhcpManager, lease *n
 				Warn("Orphan-release link cleanup failed")
 		}
 	}()
-
-	if err := netlink.LinkSetUp(link); err != nil {
-		return fmt.Errorf("bring release link up: %w", err)
-	}
 
 	// Put the leased address on the link, and note that this is
 	// LOAD-BEARING rather than tidiness.
@@ -168,14 +160,23 @@ func (p *Plugin) synthesiseRelease(ctx context.Context, m *dhcpManager, lease *n
 	// address is already known (it is the one we are handing back), and
 	// doing it up front means no window where dhcpcd could decide to
 	// release before the source address exists.
-	if err := netlink.AddrAdd(link, &netlink.Addr{IPNet: lease.IPNet}); err != nil {
+	//
+	// Retried on EADDRINUSE for the same reason the link-up is (#408):
+	// the endpoint's own child link is still there, still holding this
+	// address, and DeleteEndpoint is about to remove it — observed
+	// landing one second after the failed assignment. On ipvlan the
+	// kernel enforces address uniqueness across every slave of the
+	// parent, so the old child holding it blocks the new one outright;
+	// this is the address-level twin of the MAC collision above.
+	if err := addrAddAwaiting(ctx, link, &netlink.Addr{IPNet: lease.IPNet}, childLinkUpBudget); err != nil {
 		return fmt.Errorf("assign %v to release link: %w", addr, err)
 	}
 
 	client, err := dhcp.NewDHCPClient(linkName, &dhcp.DHCPClientOptions{
-		// Same identity the one-shot used, so the server matches the
-		// existing binding and hands back the same address rather than
-		// allocating a second one.
+		// Whatever MAC the link ended up wearing — the endpoint's when
+		// it was free, a synthetic one when it was not (see
+		// releaseMACPlan). The identity the server matches on is the
+		// client-id below, which is the same either way.
 		MAC:      mac,
 		ClientID: resolveClientID(m.opts, m.joinReq.EndpointID),
 		// `request ADDR`: ask for precisely the address we are trying
@@ -245,13 +246,27 @@ func (p *Plugin) releaseLink(opts DHCPNetworkOptions, name string, mac net.Hardw
 		if err != nil {
 			return nil, fmt.Errorf("lookup parent %q: %w", opts.Parent, err)
 		}
+		mode := opts.effectiveMode()
 		la := netlink.NewLinkAttrs()
 		la.Name = name
 		la.ParentIndex = parent.Attrs().Index
-		la.HardwareAddr = mac
-		link := &netlink.Macvlan{LinkAttrs: la, Mode: netlink.MACVLAN_MODE_BRIDGE}
+		// ipvlan children inherit the parent's address and the kernel
+		// rejects any attempt to set one, so the plan's MAC is only
+		// applied where it means something. It is still the right MAC to
+		// hand the DHCP client below — what the client puts in chaddr
+		// and what the link wears are separate.
+		if mode != ModeIPvlan {
+			la.HardwareAddr = mac
+		}
+		// The same KIND of link the endpoint had, not always a macvlan.
+		// A parent NIC is a macvlan port or an ipvlan port, never both,
+		// so building a macvlan release link on an ipvlan network asks
+		// the kernel for something it will not do — which is the other
+		// half of why an ipvlan orphaned lease has never been released
+		// (#402).
+		link := newChildLink(mode, la)
 		if err := netlink.LinkAdd(link); err != nil {
-			return nil, fmt.Errorf("create release macvlan on %q: %w", opts.Parent, err)
+			return nil, fmt.Errorf("create release %v on %q: %w", mode, opts.Parent, err)
 		}
 		return link, nil
 
@@ -298,4 +313,165 @@ func newReleaseLinkName() (string, error) {
 		return "", err
 	}
 	return "dh-rel-" + hex.EncodeToString(b[:]), nil
+}
+
+// releaseMACRetryWindow is how long the release path waits for the
+// endpoint's own MAC to come free before settling for a synthetic one.
+//
+// Well inside orphanReleaseBudget, which also has to cover a full DHCP
+// exchange afterwards. The thing being waited for is Docker finishing a
+// teardown it has already started, which is a matter of hundreds of
+// milliseconds; a wait much longer than this is waiting for something
+// that is not coming.
+const releaseMACRetryWindow = 3 * time.Second
+
+// releaseMACRetryInterval paces the retries within that window.
+const releaseMACRetryInterval = 200 * time.Millisecond
+
+// releaseMACPlan returns the hardware addresses to try for the release
+// link, in order.
+//
+// The link's MAC and the DHCP identity are separate things, and only the
+// second has to be faithful: the server matches the binding on the
+// client-id (option 61) and on the requested address, both of which are
+// unchanged whatever the link wears. That is what makes a fallback
+// possible at all.
+//
+// Preferring the endpoint's own MAC is still right where it can be had.
+// A server keyed on the hardware address rather than the client-id will
+// only honour a release that carries it, and the plugin cannot know
+// which kind of server it is talking to.
+//
+// Two cases skip straight to a synthetic address:
+//
+//   - Nothing was recorded. Pre-existing behaviour, unchanged.
+//   - ipvlan. Its children share the parent NIC's address by kernel
+//     design, so the recorded MAC *is* the parent's — and the kernel's
+//     duplicate check tests the parent's own address explicitly. It can
+//     never be free, so waiting for it would burn the window every time
+//     and then fall back anyway (#402).
+//
+// Locally-administered, so a synthetic address is recognisable as
+// ephemeral if it shows up in a server's log.
+func releaseMACPlan(opts DHCPNetworkOptions, recorded net.HardwareAddr, synth func() (net.HardwareAddr, error)) ([]net.HardwareAddr, error) {
+	fallback, err := synth()
+	if err != nil {
+		return nil, err
+	}
+	if len(recorded) == 0 || opts.effectiveMode() == ModeIPvlan {
+		return []net.HardwareAddr{fallback}, nil
+	}
+	return []net.HardwareAddr{recorded, fallback}, nil
+}
+
+// upReleaseLink creates the release link and brings it up, working
+// through the MAC plan until one succeeds. Returns the live link and the
+// address it ended up wearing.
+//
+// The retry is on EADDRINUSE specifically, and it is not a guess about
+// timing — it is the kernel refusing a hardware address that is still
+// live on the parent. The endpoint's own child link is what holds it:
+// created in the host netns at CreateEndpoint, removed at
+// DeleteEndpoint, and this path runs from the failed-Join goroutine,
+// which is not ordered against either. So the release routinely arrives
+// while Docker is still tearing the endpoint down (#402).
+//
+// Asking the kernel rather than predicting the answer is deliberate. A
+// scan of the host's links cannot see a child that Docker has already
+// moved into a netns that is itself being destroyed, and that child
+// still holds the address on the parent's port. Only the attempt is
+// authoritative.
+// This deliberately does not reuse linkUpAwaitingAddress (#408), which
+// retries LinkSetUp on one link. A link's MAC is fixed when it is
+// created, so working through a plan of addresses means destroying and
+// rebuilding the link on each attempt — a different operation that only
+// looks like the same one.
+func (p *Plugin) upReleaseLink(ctx context.Context, opts DHCPNetworkOptions, linkName string, plan []net.HardwareAddr) (netlink.Link, net.HardwareAddr, error) {
+	var lastErr error
+	for i, mac := range plan {
+		// Every MAC but the last gets the retry window; the last is the
+		// fallback and there is nothing further to fall back to.
+		deadline := time.Now()
+		if i < len(plan)-1 {
+			deadline = deadline.Add(releaseMACRetryWindow)
+		}
+
+		for {
+			link, err := p.releaseLink(opts, linkName, mac)
+			if err != nil {
+				return nil, nil, err
+			}
+			if err := netlink.LinkSetUp(link); err == nil {
+				if i > 0 {
+					log.WithFields(log.Fields{"link": linkName, "mac": mac.String()}).
+						Debug("Release link using a synthetic MAC; the endpoint's own was still in use")
+				}
+				return link, mac, nil
+			} else {
+				lastErr = err
+				// Always remove the link we just made, whatever the
+				// failure — a half-created link would collide with the
+				// next attempt on its NAME rather than its MAC, turning
+				// a recoverable problem into a stuck one.
+				if delErr := netlink.LinkDel(link); delErr != nil {
+					log.WithError(delErr).WithField("link", linkName).
+						Debug("Could not remove a release link that failed to come up")
+				}
+				if !errors.Is(err, unix.EADDRINUSE) {
+					return nil, nil, fmt.Errorf("bring release link up: %w", err)
+				}
+			}
+
+			if !time.Now().Before(deadline) {
+				break
+			}
+			select {
+			case <-ctx.Done():
+				return nil, nil, fmt.Errorf("bring release link up: %w (last attempt: %w)", ctx.Err(), lastErr)
+			case <-time.After(releaseMACRetryInterval):
+			}
+		}
+	}
+	return nil, nil, fmt.Errorf("bring release link up: %w", lastErr)
+}
+
+// addrAddAwaiting assigns an address to a link, waiting out the window
+// where the link being replaced still holds it.
+//
+// The mirror of linkUpAwaitingAddress, one step later in the same
+// sequence and for the same reason. Bringing the release link up
+// contends for the MAC; putting the leased address on it contends for
+// the address. Both are held by the endpoint's own child link, both are
+// released when DeleteEndpoint removes it, and the reclaim runs from a
+// goroutine that is ordered against neither.
+//
+// ipvlan makes this the harder half. Its slaves share the parent's MAC,
+// so the kernel keeps them apart by address instead and enforces
+// uniqueness across every slave of the port — the old child holding the
+// address blocks the new one outright rather than occasionally.
+//
+// No fallback: the release has to be sourced FROM the address being
+// given back, so there is no other address that would do. If the wait
+// expires the reclaim fails and the lease sits until it expires, which
+// is where it was before any of this existed.
+func addrAddAwaiting(ctx context.Context, link netlink.Link, addr *netlink.Addr, budget time.Duration) error {
+	deadline := time.Now().Add(budget)
+	for {
+		err := nlAddrAdd(link, addr)
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, unix.EADDRINUSE) {
+			return err
+		}
+		if !time.Now().Before(deadline) {
+			return fmt.Errorf("%w (still held by the endpoint link this release replaces, "+
+				"after waiting %v)", err, budget)
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("%w (last attempt: %w)", ctx.Err(), err)
+		case <-time.After(childLinkUpInterval):
+		}
+	}
 }
