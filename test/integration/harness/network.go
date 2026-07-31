@@ -6,6 +6,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/docker/docker/api/types/network"
 	docker "github.com/docker/docker/client"
@@ -38,18 +39,26 @@ func CreateNetwork(t *testing.T, ctx context.Context, name, mode string, extraOp
 		opts[k] = v
 	}
 
+	// This span covers the plugin's whole CreateNetwork RPC, which
+	// includes the preflight DHCP probe — an 8s budget that should
+	// return on the first OFFER (#368).
+	createStart := time.Now()
 	res, err := cli.NetworkCreate(ctx, name, network.CreateOptions{
 		Driver:  DriverName,
 		IPAM:    &network.IPAM{Driver: "null"},
 		Options: opts,
 	})
+	EndPhase(t, PhaseNetworkCreate, createStart)
 	if err != nil {
 		t.Fatalf("NetworkCreate(%s, mode=%s, opts=%v): %v", name, mode, opts, err)
 	}
 	t.Cleanup(func() {
 		// Use a fresh context so a parent ctx-cancel during a
 		// failure doesn't skip cleanup.
-		if err := cli.NetworkRemove(context.Background(), res.ID); err != nil && !isNotFound(err) {
+		removeStart := time.Now()
+		err := cli.NetworkRemove(context.Background(), res.ID)
+		EndPhase(t, PhaseNetworkRemove, removeStart)
+		if err != nil && !isNotFound(err) {
 			t.Logf("WARN: NetworkRemove(%s): %v", res.ID, err)
 		}
 	})

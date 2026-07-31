@@ -167,6 +167,7 @@ func runContainer(t *testing.T, ctx context.Context, networkName, containerName,
 	}
 	t.Cleanup(func() { _ = cli.Close() })
 
+	createStart := time.Now()
 	create, err := cli.ContainerCreate(ctx,
 		&container.Config{
 			Image: TestImage,
@@ -184,24 +185,41 @@ func runContainer(t *testing.T, ctx context.Context, networkName, containerName,
 		nil,
 		containerName,
 	)
+	EndPhase(t, PhaseContainerCreate, createStart)
 	if err != nil {
 		t.Fatalf("ContainerCreate(%s): %v", containerName, err)
 	}
 	id = create.ID
 	t.Cleanup(func() {
 		// Best-effort kill+remove; logs the error but doesn't fail the test.
+		// Timed separately (#368): stop is the signal round-trip that
+		// #367's Init:true was meant to collapse, remove is disk work.
+		// One combined number would hide a regression in either.
 		bg := context.Background()
+		stopStart := time.Now()
 		_ = cli.ContainerStop(bg, id, container.StopOptions{})
-		if err := cli.ContainerRemove(bg, id, container.RemoveOptions{Force: true}); err != nil && !isNotFound(err) {
+		EndPhase(t, PhaseContainerStop, stopStart)
+
+		removeStart := time.Now()
+		err := cli.ContainerRemove(bg, id, container.RemoveOptions{Force: true})
+		EndPhase(t, PhaseContainerRemove, removeStart)
+		if err != nil && !isNotFound(err) {
 			t.Logf("WARN: ContainerRemove(%s): %v", id, err)
 		}
 	})
 
-	if err := cli.ContainerStart(ctx, id, container.StartOptions{}); err != nil {
+	startStart := time.Now()
+	err = cli.ContainerStart(ctx, id, container.StartOptions{})
+	EndPhase(t, PhaseContainerStart, startStart)
+	if err != nil {
 		t.Fatalf("ContainerStart(%s): %v", id, err)
 	}
 
 	// Poll docker inspect until the network endpoint reports an IP.
+	// This span is the DHCP acquisition proper — the one phase here
+	// that is protocol time rather than daemon bookkeeping, and so the
+	// one where "nothing to reclaim" is the likeliest honest answer.
+	acquireStart := time.Now()
 	deadline := time.Now().Add(IPAcquisitionBudget)
 	for time.Now().Before(deadline) {
 		ins, err := cli.ContainerInspect(ctx, id)
@@ -210,11 +228,16 @@ func runContainer(t *testing.T, ctx context.Context, networkName, containerName,
 		}
 		for _, ep := range ins.NetworkSettings.Networks {
 			if ep.IPAddress != "" {
+				EndPhase(t, PhaseIPAcquisition, acquireStart)
 				return id, ep.IPAddress, ep.MacAddress
 			}
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+	// Emitted on the timeout path too: a run that exhausted the budget
+	// is precisely the one whose acquisition time you want in the
+	// table, and t.Fatalf below stops this goroutine.
+	EndPhase(t, PhaseIPAcquisition, acquireStart)
 	t.Fatalf("container %s did not get an IP within %v", containerName, IPAcquisitionBudget)
 	return // unreachable
 }
