@@ -73,6 +73,30 @@ const recoveryBudget = 30 * time.Second
 // either return promptly or are wedged.
 const recoveryPerNetworkTimeout = 3 * time.Second
 
+// recoverySyncDaemonWait caps how long recovery will wait for the daemon
+// to answer *before* the plugin socket is listening (#383). Docker
+// respawns us during its own startup and calls into us while it comes
+// up, so this window is added directly to plugin-enable latency and to
+// any deadlock risk — keep it short. When it expires, recovery is
+// deferred to the post-Listen retry rather than abandoned.
+const recoverySyncDaemonWait = 3 * time.Second
+
+// recoveryDeferredDaemonWait caps the post-Listen retry. Generous
+// because it costs nothing: the socket is already serving, so a plugin
+// waiting here is fully responsive. When *this* expires the daemon is
+// genuinely unreachable, which is a real recovery_failed.
+const recoveryDeferredDaemonWait = 60 * time.Second
+
+// recoveryDaemonRetryInterval spaces the retries. The Docker client's
+// own 2s timeout dominates each failed attempt, so this only controls
+// the gap between them.
+//
+// A var, not a const, solely so tests can shrink it — the same reason
+// as pluginShutdownTimeout below. Exercising the retry loop at the real
+// interval would cost seconds per case for no added confidence. Never
+// reassigned outside tests.
+var recoveryDaemonRetryInterval = 500 * time.Millisecond
+
 // clientIDFromEndpoint derives a stable DHCP option-61 client identifier
 // from a Docker endpoint ID. Docker's endpoint IDs are 64 hex chars
 // (32 bytes). We take the first 8 bytes — long enough to be unique
@@ -338,6 +362,24 @@ type Plugin struct {
 	// are now running without renewal.
 	recoveredOK    atomic.Int32
 	recoveryFailed atomic.Int32
+
+	// recoveryDeferred counts the times recovery could not start because
+	// the daemon was not answering yet and had to be retried after the
+	// socket came up (#383). Docker respawns us during its own startup,
+	// so meeting a not-yet-ready daemon is the expected state at that
+	// moment — not a fault. NOT healthy-affecting, same reasoning as
+	// join_aborted_container_gone: only an exhausted retry budget is a
+	// real failure, and that still lands on recovery_failed.
+	recoveryDeferred atomic.Int32
+
+	// recoveryPending is set by NewPlugin when the synchronous attempt
+	// met a daemon that was not serving yet, and consumed by Listen.
+	// Written before Listen and read there; never concurrent.
+	recoveryPending bool
+
+	// recoveryCancel stops the deferred-recovery goroutine at Close.
+	// nil when recovery completed synchronously, which is the norm.
+	recoveryCancel context.CancelFunc
 
 	// joinStartFailures counts persistent-DHCP-client Start failures
 	// at Join time (#317). Each bump is a running container that got
@@ -759,7 +801,41 @@ func (p *Plugin) consumeTombstone(networkID, hostname string) (mac, ipv4, ipv6 s
 // as its `request` directive (DHCP option 50) so the upstream DHCP
 // server can ACK the lease the container is already using rather than
 // handing out a fresh one.
-func (p *Plugin) recoverEndpoints(ctx context.Context) {
+// listNetworksWhenReady is recovery's entry gate. It retries NetworkList
+// until the daemon answers or ctx expires.
+//
+// Retrying rather than pinging first is deliberate: NetworkList is the
+// capability recovery actually needs, and a daemon can answer /_ping
+// before its network store is ready. Retrying the real call closes that
+// gap instead of trading one race for another.
+func (p *Plugin) listNetworksWhenReady(ctx context.Context) ([]dNetwork.Summary, error) {
+	var lastErr error
+	for {
+		nets, err := p.docker.NetworkList(ctx, dNetwork.ListOptions{})
+		if err == nil {
+			return nets, nil
+		}
+		lastErr = err
+		// ctx is the wait budget; the client's own timeout is what makes
+		// each individual attempt return promptly.
+		select {
+		case <-ctx.Done():
+			return nil, lastErr
+		case <-time.After(recoveryDaemonRetryInterval):
+		}
+	}
+}
+
+// ctx bounds the whole of recovery; daemonWait is the slice of it the
+// entry gate may spend waiting for the daemon to answer. They are
+// separate on purpose — time spent waiting must not come out of the
+// budget the endpoints themselves need to re-DISCOVER.
+//
+// recoverEndpoints returns daemonNotReady=true when it could not even
+// reach the daemon within daemonWait. That is a "try again later", not a
+// failure: the caller decides whether a retry is still possible (see
+// NewPlugin / Listen) and only the last attempt counts a real failure.
+func (p *Plugin) recoverEndpoints(ctx context.Context, daemonWait time.Duration) (daemonNotReady bool) {
 	// recordSyncFailure bumps both the local counter (used for the
 	// summary log line) and the atomic surfaced on /Plugin.Health.
 	// The async Start failure path bumps p.recoveryFailed directly;
@@ -771,13 +847,13 @@ func (p *Plugin) recoverEndpoints(ctx context.Context) {
 		failed++
 		p.recoveryFailed.Add(1)
 	}
-	nets, err := p.docker.NetworkList(ctx, dNetwork.ListOptions{})
+	waitCtx, waitCancel := context.WithTimeout(ctx, daemonWait)
+	nets, err := p.listNetworksWhenReady(waitCtx)
+	waitCancel()
 	if err != nil {
-		log.WithError(err).Warn("recovery: failed to list networks; skipping")
-		// We don't know how many endpoints we missed; at least flip
-		// Healthy=false so an operator notices.
-		p.recoveryFailed.Add(1)
-		return
+		log.WithError(err).WithField("waited", daemonWait).
+			Warn("recovery: daemon did not answer within the wait budget")
+		return true
 	}
 	for _, n := range nets {
 		if !IsDHCPPlugin(n.Driver) {
@@ -827,6 +903,36 @@ func (p *Plugin) recoverEndpoints(ctx context.Context) {
 			"recovered": recovered,
 			"failed":    failed,
 		}).Info("Plugin recovery complete")
+	}
+	return false
+}
+
+// recoverEndpointsDeferred is the second half of #383. The synchronous
+// attempt in NewPlugin met a daemon that was still starting; this runs
+// once the socket is listening, so the plugin stays responsive to the
+// very daemon it is waiting for.
+//
+// Safe to run late: recoverOneEndpoint bails when a manager already
+// exists, so any endpoint a Join has meanwhile claimed is left alone
+// (TestPlugin_RecoverOneEndpointIsIdempotent pins that).
+// wait is a parameter rather than a constant read so tests can drive the
+// exhausted-budget arm without a minute of wall clock.
+func (p *Plugin) recoverEndpointsDeferred(ctx context.Context, wait time.Duration) {
+	p.recoveryDeferred.Add(1)
+	log.WithField("wait", wait).
+		Info("recovery: daemon not ready yet; retrying after the socket comes up")
+
+	// The overall budget has to cover the wait *and* the recovery work
+	// that follows it, so it is the sum of the two.
+	runCtx, cancel := context.WithTimeout(ctx, wait+recoveryBudget)
+	defer cancel()
+
+	if notReady := p.recoverEndpoints(runCtx, wait); notReady {
+		// Budget exhausted with the daemon still unreachable. Now it is
+		// a real failure: nothing else is going to retry, so every
+		// previously-attached endpoint is running without renewal.
+		log.Error("recovery: daemon never became reachable; endpoints are running without a renewal client")
+		p.recoveryFailed.Add(1)
 	}
 }
 
@@ -1062,9 +1168,15 @@ func NewPlugin(opts Options) (*Plugin, error) {
 	// where a fresh CreateEndpoint could race recovery's Start for the
 	// same endpoint: the map check is mutex-protected, but Start runs
 	// outside the mutex. recoveryBudget bounds plugin-enable latency.
+	//
+	// The one case we do NOT finish here is a daemon that has not
+	// started serving yet (#383). Docker respawns us during its own
+	// startup, so blocking for it would add latency to plugin-enable
+	// against the very daemon we are waiting on. Recovery is handed to
+	// Listen instead, which runs it once the socket is up.
 	{
 		ctx, cancel := context.WithTimeout(context.Background(), recoveryBudget)
-		p.recoverEndpoints(ctx)
+		p.recoveryPending = p.recoverEndpoints(ctx, recoverySyncDaemonWait)
 		cancel()
 	}
 
@@ -1082,6 +1194,17 @@ func (p *Plugin) Listen(bindSock string) error {
 	l, err := net.Listen("unix", bindSock)
 	if err != nil {
 		return err
+	}
+
+	// The socket exists now, so the daemon can reach us even while we
+	// are still waiting on it. Start the deferred recovery here rather
+	// than in NewPlugin (#383) — before this point, waiting would make
+	// us unreachable to the daemon whose readiness we are waiting for.
+	if p.recoveryPending {
+		p.recoveryPending = false
+		ctx, cancel := context.WithCancel(context.Background())
+		p.recoveryCancel = cancel
+		go p.recoverEndpointsDeferred(ctx, recoveryDeferredDaemonWait)
 	}
 
 	return p.server.Serve(l)
@@ -1134,6 +1257,15 @@ func waitBounded(wg *sync.WaitGroup, d time.Duration) bool {
 // the upstream DHCP server, defeating the release-on-stop contract
 // Leave normally honors.
 func (p *Plugin) Close() error {
+	// Stop the deferred-recovery retry first (#383). It can be sitting
+	// in a 60s wait for a daemon that is going away with us, and a
+	// recovery that registers a manager after the drain below would
+	// orphan that manager's lease — exactly the ordering bug the
+	// server-first shutdown is written to prevent.
+	if p.recoveryCancel != nil {
+		p.recoveryCancel()
+	}
+
 	// One deadline for every phase below; see pluginShutdownTimeout.
 	deadline := time.Now().Add(pluginShutdownTimeout)
 	remaining := func() time.Duration {

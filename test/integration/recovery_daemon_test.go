@@ -169,21 +169,28 @@ func TestRecovery_DaemonRestart_PreservesContainer(t *testing.T) {
 	if healthAfter == nil {
 		t.Fatalf("Plugin.Health socket did not answer within 30s after daemon restart")
 	}
-	t.Logf("after restart: recovered_ok=%d recovery_failed=%d (informational; either path is fine — see test header)",
-		healthAfter.RecoveredOK, healthAfter.RecoveryFailed)
-	// Don't assert on recovered_ok or recovery_failed here. The test
-	// header is explicit that either internal path can run depending
-	// on whether dockerd's graceful shutdown drove Leave on the
-	// endpoint before going down. The failure mode the test cares
-	// about — same-IP-and-MAC after restart, no leftover unhealthy
-	// endpoint — is asserted on the user-visible IP/MAC below. A
-	// recovery_failed bump that's masked by the tombstone path
-	// preserving IP/MAC is informational, not test-failing. (W-2
-	// in v0.8.0 made recovery_failed track real Start failures
-	// instead of silently discarding them; before that fix this
-	// counter never advanced even when recovery genuinely failed,
-	// which is what made the previous strict assertion appear to
-	// pass in CI.)
+	t.Logf("after restart: recovered_ok=%d recovery_failed=%d recovery_deferred=%d",
+		healthAfter.RecoveredOK, healthAfter.RecoveryFailed, healthAfter.RecoveryDeferred)
+
+	// recovered_ok is still deliberately not asserted: the test header
+	// explains that either the recovery path or the tombstone path can
+	// run depending on whether dockerd's graceful shutdown drove Leave
+	// before going down, and both yield the same user-visible result.
+	//
+	// recovery_failed IS asserted, and this is the regression test for
+	// #383. Until that fix, this counter reached 1 on every run here:
+	// docker respawns the plugin during its own startup, recovery's
+	// first NetworkList hit the client's 2s timeout, and recovery was
+	// abandoned in full — leaving the container with no renewal client.
+	// It went unnoticed for so long precisely because the IP/MAC
+	// assertions below still passed, carried by the tombstone path.
+	//
+	// A non-zero recovery_deferred here is expected and fine: it means
+	// the daemon was not ready and the retry did its job.
+	if healthAfter.RecoveryFailed != 0 {
+		t.Errorf("recovery_failed=%d after daemon restart: a running container was left without a renewal client (#383)",
+			healthAfter.RecoveryFailed)
+	}
 
 	// In the tombstone-path case (graceful shutdown ran Leave) the
 	// container goes through a fresh CreateEndpoint+dhcpcd on the
