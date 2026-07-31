@@ -59,8 +59,15 @@ on:
 # was misdiagnosed (#307 reproduced it running solo — a 5s probe budget
 # undersized against dhcpcd's retransmit timing, now 8s and stable since)
 # and the other left the suite with the #219 revert. The dose is also
-# smaller: #296 saw three privileged jobs overlap, this is two, and
-# coverage.yml is manual-only.
+# smaller: #296 saw three privileged jobs overlap, this is two.
+#
+# Coverage is the reason it stays two. coverage.yml is not manual-only —
+# it also runs on `pull_request` into main, i.e. on the release PR, and
+# it shares this group. Keeping it in the same group means the release
+# PR's coverage run queues behind this one instead of adding a third
+# concurrent privileged job on the same host. That costs ~12 minutes
+# once per release, which is the cheaper side of the trade against
+# flaking the one gate that cannot be waved through (#365).
 #
 # EXIT CONDITION, if you are here because CI got flaky: any
 # contention-signature failure — `context deadline exceeded` on the
