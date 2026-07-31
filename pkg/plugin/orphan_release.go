@@ -80,7 +80,7 @@ func (p *Plugin) releaseOrphanedLease(m *dhcpManager, endpointID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), orphanReleaseBudget)
 	defer cancel()
 
-	if err := p.synthesiseRelease(ctx, m, addr); err != nil {
+	if err := p.synthesiseRelease(ctx, m, v4); err != nil {
 		p.orphanedLeaseReleaseFailures.Add(1)
 		log.WithError(err).WithFields(fields).
 			Warn("Could not release orphaned lease; it will be held until it expires")
@@ -115,7 +115,9 @@ func (p *Plugin) spawnOrphanRelease(m *dhcpManager) {
 
 // synthesiseRelease does the work described on releaseOrphanedLease:
 // temporary link -> reacquire under the endpoint's identity -> release.
-func (p *Plugin) synthesiseRelease(ctx context.Context, m *dhcpManager, addr string) error {
+func (p *Plugin) synthesiseRelease(ctx context.Context, m *dhcpManager, lease *netlink.Addr) error {
+	addr := lease.IP.String()
+
 	linkName, err := newReleaseLinkName()
 	if err != nil {
 		return fmt.Errorf("name generation: %w", err)
@@ -145,6 +147,29 @@ func (p *Plugin) synthesiseRelease(ctx context.Context, m *dhcpManager, addr str
 
 	if err := netlink.LinkSetUp(link); err != nil {
 		return fmt.Errorf("bring release link up: %w", err)
+	}
+
+	// Put the leased address on the link, and note that this is
+	// LOAD-BEARING rather than tidiness.
+	//
+	// A DHCPRELEASE is unicast to the server sourced FROM the address
+	// being given back — an unsourced release is not a release. dhcpcd
+	// runs `--noconfigure` here as everywhere in this plugin, so it
+	// never assigns anything itself; on a normal endpoint the plugin
+	// has already configured the address inside the container, which is
+	// why those releases reach the server. This link is brand new and
+	// has nothing, so without this the whole sequence completes and
+	// logs happily — solicit, offer, lease, "releasing lease of X" —
+	// while the server sees no RELEASE at all. Observed exactly that on
+	// the first CI run of this code: dnsmasq logged zero DHCPRELEASE
+	// lines against a plugin that had counted three.
+	//
+	// Added before the client starts rather than after the bind: the
+	// address is already known (it is the one we are handing back), and
+	// doing it up front means no window where dhcpcd could decide to
+	// release before the source address exists.
+	if err := netlink.AddrAdd(link, &netlink.Addr{IPNet: lease.IPNet}); err != nil {
+		return fmt.Errorf("assign %v to release link: %w", addr, err)
 	}
 
 	client, err := dhcp.NewDHCPClient(linkName, &dhcp.DHCPClientOptions{
