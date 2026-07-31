@@ -105,6 +105,33 @@ clean:
 	-rm -rf plugin-cover/
 	-rm bin/*
 
+# Both suite targets tee their output to a timestamped file under
+# $(ITEST_LOG_DIR) (#378). A local run is ~20 minutes and its output
+# previously existed only in terminal scrollback, so the evidence for
+# a run was gone the moment the window scrolled or the session ended —
+# which is exactly when you want it. CI tees separately in
+# integration.yml; this makes the local path recoverable without
+# depending on the workflow.
+#
+# ITEST_STAMP is expanded once at parse time (`:=`, not `=`), so both
+# suites in one `make integration-test integration-test-failure`
+# invocation land under the same stamp and are trivially correlated.
+ITEST_LOG_DIR ?= logs
+ITEST_STAMP := $(shell date +%Y%m%d-%H%M%S)
+ITEST_MAIN_LOG = $(ITEST_LOG_DIR)/integration-main-$(ITEST_STAMP).log
+ITEST_FAILURE_LOG = $(ITEST_LOG_DIR)/integration-failure-$(ITEST_STAMP).log
+
+# The `bash -o pipefail` wrapper below is LOAD-BEARING, for exactly the
+# reason `shell: bash` is load-bearing on integration.yml's tee step.
+# make runs recipes under /bin/sh — dash on Debian, which has no
+# pipefail — so a bare `go test ... | tee` reports *tee's* exit 0 and
+# turns a failing suite green. That is the precise mechanism that hid
+# a broken feature behind a green gate for a month (#297). The paths
+# are echoed BEFORE the run, not after, because make stops at the
+# failing recipe line and a trailing echo would never print on the one
+# outcome where you need the log. scripts/test-makefile-tee.sh pins
+# both properties.
+
 # Live integration tests. Need privileges (CAP_NET_ADMIN, mount/netns
 # ops, bind UDP/67) and the plugin already enabled at PLUGIN_NAME:golang.
 # Locally: `sudo make integration-test`. CI: runner is root, target
@@ -114,7 +141,13 @@ integration-test:
 		echo "integration-test must run as root. Re-run with sudo."; \
 		exit 1; \
 	fi
-	go test -v -tags integration -count=1 -timeout 20m -skip 'TestFailure_' ./test/integration/...
+	@mkdir -p $(ITEST_LOG_DIR)
+	@echo "==> test output: $(ITEST_MAIN_LOG)"
+	@id=$$(docker plugin inspect $(PLUGIN_NAME):$(PLUGIN_TAG) --format '{{.Id}}' 2>/dev/null); \
+	 if [ -n "$$id" ]; then \
+		echo "==> plugin log:  /var/lib/docker/plugins/$$id/rootfs/var/log/net-dhcp.log"; \
+	 fi
+	@bash -o pipefail -c 'go test -v -tags integration -count=1 -timeout 20m -skip "TestFailure_" ./test/integration/... 2>&1 | tee $(ITEST_MAIN_LOG)'
 # (20m, not #146's 15m: the suite measured 558s on runner-class
 # hardware before the v1.0.0 additions; 20m keeps the same headroom
 # ratio with them.)
@@ -136,7 +169,13 @@ integration-test-failure:
 		echo "integration-test-failure must run as root. Re-run with sudo."; \
 		exit 1; \
 	fi
-	go test -v -tags integration -count=1 -timeout 20m -run 'TestFailure_' ./test/integration/...
+	@mkdir -p $(ITEST_LOG_DIR)
+	@echo "==> test output: $(ITEST_FAILURE_LOG)"
+	@id=$$(docker plugin inspect $(PLUGIN_NAME):$(PLUGIN_TAG) --format '{{.Id}}' 2>/dev/null); \
+	 if [ -n "$$id" ]; then \
+		echo "==> plugin log:  /var/lib/docker/plugins/$$id/rootfs/var/log/net-dhcp.log"; \
+	 fi
+	@bash -o pipefail -c 'go test -v -tags integration -count=1 -timeout 20m -run "TestFailure_" ./test/integration/... 2>&1 | tee $(ITEST_FAILURE_LOG)'
 
 # Manual orphan cleanup for when an integration test panics mid-setup
 # and leaves dh-itest-* interfaces / containers / networks behind.
