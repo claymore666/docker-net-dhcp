@@ -75,7 +75,11 @@ const defaultAwaitTimeout = 10 * time.Second
 // a container that leaves during the grace does not pay for it, and the
 // only cost of the ceiling being generous is a goroutine that outlives
 // its usefulness on a daemon that never recovers.
-const attachDaemonBusyGrace = 60 * time.Second
+// A var, not a const, so a test can shrink it: proving the grace changes
+// the outcome otherwise costs 70s of real waiting per run, and a unit
+// test nobody wants to run is a unit test that stops being run. Same
+// seam as recoveryDaemonRetryInterval.
+var attachDaemonBusyGrace = 60 * time.Second
 
 const initialDHCPHostnameLookupTimeout = 2 * time.Second
 

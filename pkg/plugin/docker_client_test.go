@@ -28,6 +28,11 @@ type fakeDocker struct {
 
 	containerResult map[string]dContainer.InspectResponse
 	containerErr    error
+	// containerDelay models the daemon not answering while it holds the
+	// container it is being asked about — the #406 condition. Blocks
+	// rather than erroring, because that is what the real daemon does:
+	// the connection is accepted and no response header ever arrives.
+	containerDelay time.Duration
 
 	closeErr error
 
@@ -55,8 +60,15 @@ func (f *fakeDocker) NetworkInspect(_ context.Context, id string, _ dNetwork.Ins
 	return f.inspectResult[id], nil
 }
 
-func (f *fakeDocker) ContainerInspect(_ context.Context, id string) (dContainer.InspectResponse, error) {
+func (f *fakeDocker) ContainerInspect(ctx context.Context, id string) (dContainer.InspectResponse, error) {
 	f.containerCalls++
+	if f.containerDelay > 0 {
+		select {
+		case <-time.After(f.containerDelay):
+		case <-ctx.Done():
+			return dContainer.InspectResponse{}, ctx.Err()
+		}
+	}
 	if f.containerErr != nil {
 		return dContainer.InspectResponse{}, f.containerErr
 	}

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	dContainer "github.com/docker/docker/api/types/container"
 	dNetwork "github.com/docker/docker/api/types/network"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
@@ -601,5 +602,109 @@ func TestJoin_AttachCancelIsSetBeforeRegistration(t *testing.T) {
 	if assign > register {
 		t.Error("m.attachCancel is assigned AFTER registerDHCPManager publishes the manager. " +
 			"A Leave arriving in between reads a nil cancel and blocks for the whole attach grace.")
+	}
+}
+
+// TestStart_SurvivesADaemonThatWillNotAnswer makes the #406 condition
+// happen on demand instead of waiting for CI to be unlucky.
+//
+// Every integration run so far has been a sample: unchanged code has
+// scored 6, 5, 4, 3 and 0 Join failures, and a run that scores 0 says
+// only that the condition did not arise. That is not a basis for
+// deciding whether the grace earns its place, and hoping the next run
+// hits it is not a method.
+//
+// So the fake daemon stalls the way the real one does — accepting the
+// call and never answering — and the two budgets are compared directly.
+// The measured window was 10s (five Docker client requests, each giving
+// up at its own 2s timeout); 15s here is comfortably past it.
+func TestStart_SurvivesADaemonThatWillNotAnswer(t *testing.T) {
+	const (
+		netID     = "net-1"
+		epID      = "ep-abcdef"
+		ctrID     = "container-1"
+		stall     = 120 * time.Millisecond
+		oldBudget = 40 * time.Millisecond
+	)
+	// Scaled down through the same seam the recovery tests use. The
+	// ratio is what is being tested — a stall that outlasts the old
+	// budget and not the new one — and it holds at any scale. That the
+	// SHIPPED constant clears the measured 10s window is a separate
+	// assertion, in TestAttachBudget_ExceedsTheDaemonBusyWindow, so
+	// shrinking it here cannot quietly weaken that.
+	prev := attachDaemonBusyGrace
+	attachDaemonBusyGrace = 400 * time.Millisecond
+	t.Cleanup(func() { attachDaemonBusyGrace = prev })
+	newDocker := func() *fakeDocker {
+		return &fakeDocker{
+			inspectResult: map[string]dNetwork.Inspect{
+				netID: {Containers: map[string]dNetwork.EndpointResource{
+					ctrID: {EndpointID: epID},
+				}},
+			},
+			containerResult: map[string]dContainer.InspectResponse{
+				ctrID: {ContainerJSONBase: &dContainer.ContainerJSONBase{
+					State: &dContainer.State{Pid: 1},
+				}, Config: &dContainer.Config{Hostname: "h"}},
+			},
+			containerDelay: stall,
+		}
+	}
+
+	t.Run("the old budget gives up on it", func(t *testing.T) {
+		m := newDHCPManager(newDocker(), JoinRequest{NetworkID: netID, EndpointID: epID}, DHCPNetworkOptions{})
+		ctx, cancel := context.WithTimeout(context.Background(), oldBudget)
+		defer cancel()
+		err := m.Start(ctx)
+		if err == nil {
+			t.Fatal("Start succeeded on the pre-#406 budget; the stall is not reproducing the condition")
+		}
+		if !strings.Contains(err.Error(), "Docker container info") {
+			t.Errorf("failed somewhere other than the inspect: %v", err)
+		}
+	})
+
+	t.Run("the grace outlasts it", func(t *testing.T) {
+		d := newDocker()
+		m := newDHCPManager(d, JoinRequest{NetworkID: netID, EndpointID: epID}, DHCPNetworkOptions{})
+		ctx, cancel := context.WithTimeout(context.Background(), oldBudget+attachDaemonBusyGrace)
+		defer cancel()
+		err := m.Start(ctx)
+		// Start goes on to open a netns and locate a link, neither of
+		// which exists here, so it still fails — but it must get PAST
+		// the inspect. Reaching a later phase is the whole claim.
+		if err != nil && strings.Contains(err.Error(), "Docker container info") {
+			t.Fatalf("still gave up at the inspect with the grace applied: %v", err)
+		}
+		if d.containerCalls == 0 {
+			t.Error("the inspect was never attempted")
+		}
+	})
+}
+
+// TestJoin_AttachBudgetIncludesTheGrace closes the gap between the two
+// tests above.
+//
+// TestStart_SurvivesADaemonThatWillNotAnswer proves a longer budget
+// outlasts a stalled daemon, but it builds its own context, so deleting
+// the grace from the Join path would not make it fail.
+// TestAttachBudget_ExceedsTheDaemonBusyWindow proves the constant is
+// large enough, but not that anything uses it. Between them sits the
+// line that actually matters, and neither covers it.
+//
+// Static, like the ordering guard: the budget is built inside a
+// goroutine in a handler that needs a live libnetwork request, and a
+// check this cheap should not need one.
+func TestJoin_AttachBudgetIncludesTheGrace(t *testing.T) {
+	src, err := os.ReadFile("network.go")
+	if err != nil {
+		t.Fatalf("read network.go: %v", err)
+	}
+	const want = "p.awaitTimeout+attachDaemonBusyGrace"
+	if !strings.Contains(string(src), want) {
+		t.Errorf("the Join attach budget is no longer %s. Either the grace was removed "+
+			"(in which case #406 is back: a daemon busy with the container being joined "+
+			"leaves it without a renewal client) or it moved, and this guard needs updating "+
+			"deliberately rather than by deleting it.", want)
 	}
 }
