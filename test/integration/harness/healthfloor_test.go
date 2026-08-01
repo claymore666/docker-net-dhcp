@@ -652,3 +652,42 @@ func TestJoinFailureCount_ZeroIsZero(t *testing.T) {
 		})
 	}
 }
+
+// TestAttachGraceLine_DistinguishesQuietFromFixed is the point of the
+// line existing at all.
+//
+// The #406 failures are intermittent — unchanged code has scored 6, 5,
+// 3 and 0 across runs — so a run with no Join failures is ambiguous:
+// either the grace carried the attaches, or the daemon-busy window
+// never opened. Reporting both as "clean" would let the fix be declared
+// working by a run that never tested it, which is the n=1 reasoning
+// this whole issue has already cost a day to.
+func TestAttachGraceLine_DistinguishesQuietFromFixed(t *testing.T) {
+	t.Run("grace used and nothing failed is evidence", func(t *testing.T) {
+		got := AttachGraceLine(&HealthResponse{JoinAttachSlow: 4}, 0)
+		if !strings.Contains(got, "This is the fix working") {
+			t.Errorf("a run where the grace carried 4 attaches should say so; got %q", got)
+		}
+	})
+
+	t.Run("quiet run is explicitly not evidence", func(t *testing.T) {
+		got := AttachGraceLine(&HealthResponse{JoinAttachSlow: 0}, 0)
+		if !strings.Contains(got, "not evidence either way") {
+			t.Errorf("a run where the condition never arose must not read as a pass; got %q", got)
+		}
+	})
+
+	t.Run("failures without the grace point elsewhere", func(t *testing.T) {
+		got := AttachGraceLine(&HealthResponse{JoinAttachSlow: 0}, 3)
+		if !strings.Contains(got, "look elsewhere") {
+			t.Errorf("failures with no slow attach means a different mechanism; got %q", got)
+		}
+	})
+
+	t.Run("grace used but failures remain says the fix is partial", func(t *testing.T) {
+		got := AttachGraceLine(&HealthResponse{JoinAttachSlow: 2}, 1)
+		if !strings.Contains(got, "not\n  sufficient") && !strings.Contains(got, "not sufficient") {
+			t.Errorf("a partially working grace must not read as success; got %q", got)
+		}
+	})
+}

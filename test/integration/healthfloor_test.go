@@ -100,6 +100,14 @@ func checkHealthFloor(suite time.Duration) int {
 	// nothing (#385, #406).
 	censusFailures := printJoinCensus(ctx)
 
+	// Printed before the verdict either way. The census answers "did
+	// anything break"; this answers "did the #406 grace carry attaches
+	// that would otherwise have broken", which a clean census cannot —
+	// these failures are intermittent, so a zero can mean the fix
+	// worked or that the condition never arose, and only this
+	// distinguishes them.
+	fmt.Fprint(os.Stderr, harness.AttachGraceLine(h, censusFailures))
+
 	findings := harness.CheckHealthFloor(h)
 	if len(findings) == 0 {
 		fmt.Fprint(os.Stderr, harness.FloorCleanLine(h, suite.Seconds()))

@@ -352,6 +352,44 @@ func FloorCleanLine(h *HealthResponse, suiteSeconds float64) string {
 		suiteSeconds-h.UptimeSeconds)
 }
 
+// AttachGraceLine reports how many attaches finished only because of
+// the daemon-busy grace (#406), and is printed on every run.
+//
+// It exists because the census going to zero does not, on its own, mean
+// the grace is what did it: these failures are intermittent — runs have
+// scored 6, 5, 3 and 0 against unchanged code — so one clean run proves
+// nothing. join_attach_slow moving is positive evidence of the
+// mechanism rather than an absence of failures, and the two together
+// are what an argument for the fix rests on.
+//
+// A run with zero failures AND zero slow attaches says only that the
+// condition did not arise; it is not a pass, and the wording says so
+// rather than leaving a reader to assume.
+func AttachGraceLine(h *HealthResponse, joinFailures int) string {
+	if h == nil {
+		return ""
+	}
+	switch {
+	case h.JoinAttachSlow > 0 && joinFailures == 0:
+		return fmt.Sprintf(
+			"ATTACH GRACE: %d attach(es) finished only after outlasting AWAIT_TIMEOUT, and none\n"+
+				"  were abandoned. Before #406 each of those was a running container left with no\n"+
+				"  renewal client. This is the fix working, observed rather than inferred.\n",
+			h.JoinAttachSlow)
+	case h.JoinAttachSlow > 0:
+		return fmt.Sprintf(
+			"ATTACH GRACE: %d attach(es) needed the grace, and %d still failed. The grace is not\n"+
+				"  sufficient for every case (#406).\n", h.JoinAttachSlow, joinFailures)
+	case joinFailures == 0:
+		return "ATTACH GRACE: no attach needed the grace this run. The daemon-busy window did not\n" +
+			"  arise, so this run is not evidence either way about #406.\n"
+	default:
+		return fmt.Sprintf(
+			"ATTACH GRACE: %d Join failure(s) and no attach used the grace. The failures are not\n"+
+				"  the daemon-busy mechanism #406 describes — look elsewhere.\n", joinFailures)
+	}
+}
+
 // joinStartFailureMsg is the log line the plugin emits at every real
 // join_start_failures increment. The benign twin logs something else
 // ("Container went away during attach"), so counting this message counts
