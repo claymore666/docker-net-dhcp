@@ -2296,9 +2296,24 @@ per event.</p>
 </code></pre></div>
 <p>Raise verbosity with <code>docker plugin set &lt;plugin&gt; LOG_LEVEL=trace</code>
 (plus a disable/enable cycle).</p>
+<p><strong>That file does not survive an upgrade.</strong> It lives in the plugin
+rootfs, which Docker destroys and recreates on <code>docker plugin rm</code> /
+<code>install</code> — the supported upgrade path — so the previous version's
+history is gone at exactly the point you are most likely to want it.</p>
+<p>Since v1.5.0 every line also goes to the plugin's stdout, which dockerd
+captures into the <strong>daemon</strong> log on the host filesystem. That copy
+outlives the plugin:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a><span class="c1"># systemd hosts</span>
+<a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a>sudo<span class="w"> </span>journalctl<span class="w"> </span>-u<span class="w"> </span>docker<span class="w"> </span>--since<span class="w"> </span><span class="s2">&quot;2 hours ago&quot;</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span>net-dhcp
+<a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a><span class="c1"># or, where dockerd logs to a file</span>
+<a id="__codelineno-13-4" name="__codelineno-13-4" href="#__codelineno-13-4"></a>sudo<span class="w"> </span>grep<span class="w"> </span>net-dhcp<span class="w"> </span>/var/log/docker.log
+</code></pre></div>
+<p>Take the in-rootfs copy for a focused read of the running plugin, and
+the daemon log when you need history across an upgrade or the plugin is
+already gone.</p>
 <h3 id="lease-audit-ledger-audit_logtrue">Lease audit ledger (<code>audit_log=true</code>)<a class="headerlink" href="#lease-audit-ledger-audit_logtrue" title="Permanent link">&para;</a></h3>
 <p><code>STATE_DIR/leases.jsonl</code> inside the plugin rootfs:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a>sudo<span class="w"> </span>cat<span class="w"> </span>/var/lib/docker/plugins/*/rootfs/var/lib/net-dhcp/leases.jsonl<span class="w"> </span><span class="p">|</span><span class="w"> </span>jq<span class="w"> </span>.
+<div class="highlight"><pre><span></span><code><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a>sudo<span class="w"> </span>cat<span class="w"> </span>/var/lib/docker/plugins/*/rootfs/var/lib/net-dhcp/leases.jsonl<span class="w"> </span><span class="p">|</span><span class="w"> </span>jq<span class="w"> </span>.
 </code></pre></div>
 <p>One JSON object per line; kinds <code>bound</code>, <code>renew</code>, <code>release</code>,
 <code>release_failed</code>. <code>release_failed</code> means the DHCPRELEASE may not have
@@ -2308,28 +2323,28 @@ have happened.</p>
 <h2 id="compose-usage">Compose usage<a class="headerlink" href="#compose-usage" title="Permanent link">&para;</a></h2>
 <p>Recommended shape — network created once out-of-band, referenced as
 external (shareable across projects, survives <code>compose down</code>):</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a><span class="nt">services</span><span class="p">:</span>
-<a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a><span class="w">  </span><span class="nt">app</span><span class="p">:</span>
-<a id="__codelineno-14-3" name="__codelineno-14-3" href="#__codelineno-14-3"></a><span class="w">    </span><span class="nt">image</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">nginx</span>
-<a id="__codelineno-14-4" name="__codelineno-14-4" href="#__codelineno-14-4"></a><span class="w">    </span><span class="nt">hostname</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">my-server</span><span class="w">          </span><span class="c1"># → DHCP option 12 → DHCP-DNS name</span>
-<a id="__codelineno-14-5" name="__codelineno-14-5" href="#__codelineno-14-5"></a><span class="w">    </span><span class="nt">mac_address</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">02:42:ac:00:00:01</span><span class="w">  </span><span class="c1"># match a server-side reservation</span>
-<a id="__codelineno-14-6" name="__codelineno-14-6" href="#__codelineno-14-6"></a><span class="w">    </span><span class="nt">networks</span><span class="p">:</span>
-<a id="__codelineno-14-7" name="__codelineno-14-7" href="#__codelineno-14-7"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">lan</span>
-<a id="__codelineno-14-8" name="__codelineno-14-8" href="#__codelineno-14-8"></a><span class="nt">networks</span><span class="p">:</span>
-<a id="__codelineno-14-9" name="__codelineno-14-9" href="#__codelineno-14-9"></a><span class="w">  </span><span class="nt">lan</span><span class="p">:</span>
-<a id="__codelineno-14-10" name="__codelineno-14-10" href="#__codelineno-14-10"></a><span class="w">    </span><span class="nt">external</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
-<a id="__codelineno-14-11" name="__codelineno-14-11" href="#__codelineno-14-11"></a><span class="w">    </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">lan-dhcp</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a><span class="nt">services</span><span class="p">:</span>
+<a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a><span class="w">  </span><span class="nt">app</span><span class="p">:</span>
+<a id="__codelineno-15-3" name="__codelineno-15-3" href="#__codelineno-15-3"></a><span class="w">    </span><span class="nt">image</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">nginx</span>
+<a id="__codelineno-15-4" name="__codelineno-15-4" href="#__codelineno-15-4"></a><span class="w">    </span><span class="nt">hostname</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">my-server</span><span class="w">          </span><span class="c1"># → DHCP option 12 → DHCP-DNS name</span>
+<a id="__codelineno-15-5" name="__codelineno-15-5" href="#__codelineno-15-5"></a><span class="w">    </span><span class="nt">mac_address</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">02:42:ac:00:00:01</span><span class="w">  </span><span class="c1"># match a server-side reservation</span>
+<a id="__codelineno-15-6" name="__codelineno-15-6" href="#__codelineno-15-6"></a><span class="w">    </span><span class="nt">networks</span><span class="p">:</span>
+<a id="__codelineno-15-7" name="__codelineno-15-7" href="#__codelineno-15-7"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">lan</span>
+<a id="__codelineno-15-8" name="__codelineno-15-8" href="#__codelineno-15-8"></a><span class="nt">networks</span><span class="p">:</span>
+<a id="__codelineno-15-9" name="__codelineno-15-9" href="#__codelineno-15-9"></a><span class="w">  </span><span class="nt">lan</span><span class="p">:</span>
+<a id="__codelineno-15-10" name="__codelineno-15-10" href="#__codelineno-15-10"></a><span class="w">    </span><span class="nt">external</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+<a id="__codelineno-15-11" name="__codelineno-15-11" href="#__codelineno-15-11"></a><span class="w">    </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">lan-dhcp</span>
 </code></pre></div>
 <p>Compose-managed alternative (network lifecycle tied to the project):</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a><span class="nt">networks</span><span class="p">:</span>
-<a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a><span class="w">  </span><span class="nt">lan</span><span class="p">:</span>
-<a id="__codelineno-15-3" name="__codelineno-15-3" href="#__codelineno-15-3"></a><span class="w">    </span><span class="nt">driver</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ghcr.io/claymore666/docker-net-dhcp:v1.4.0</span>
-<a id="__codelineno-15-4" name="__codelineno-15-4" href="#__codelineno-15-4"></a><span class="w">    </span><span class="nt">driver_opts</span><span class="p">:</span>
-<a id="__codelineno-15-5" name="__codelineno-15-5" href="#__codelineno-15-5"></a><span class="w">      </span><span class="nt">mode</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">macvlan</span>
-<a id="__codelineno-15-6" name="__codelineno-15-6" href="#__codelineno-15-6"></a><span class="w">      </span><span class="nt">parent</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">eth0</span>
-<a id="__codelineno-15-7" name="__codelineno-15-7" href="#__codelineno-15-7"></a><span class="w">      </span><span class="nt">propagate_dns</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;true&#39;</span>
-<a id="__codelineno-15-8" name="__codelineno-15-8" href="#__codelineno-15-8"></a><span class="w">    </span><span class="nt">ipam</span><span class="p">:</span>
-<a id="__codelineno-15-9" name="__codelineno-15-9" href="#__codelineno-15-9"></a><span class="w">      </span><span class="nt">driver</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;null&#39;</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a><span class="nt">networks</span><span class="p">:</span>
+<a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a><span class="w">  </span><span class="nt">lan</span><span class="p">:</span>
+<a id="__codelineno-16-3" name="__codelineno-16-3" href="#__codelineno-16-3"></a><span class="w">    </span><span class="nt">driver</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ghcr.io/claymore666/docker-net-dhcp:v1.4.0</span>
+<a id="__codelineno-16-4" name="__codelineno-16-4" href="#__codelineno-16-4"></a><span class="w">    </span><span class="nt">driver_opts</span><span class="p">:</span>
+<a id="__codelineno-16-5" name="__codelineno-16-5" href="#__codelineno-16-5"></a><span class="w">      </span><span class="nt">mode</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">macvlan</span>
+<a id="__codelineno-16-6" name="__codelineno-16-6" href="#__codelineno-16-6"></a><span class="w">      </span><span class="nt">parent</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">eth0</span>
+<a id="__codelineno-16-7" name="__codelineno-16-7" href="#__codelineno-16-7"></a><span class="w">      </span><span class="nt">propagate_dns</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;true&#39;</span>
+<a id="__codelineno-16-8" name="__codelineno-16-8" href="#__codelineno-16-8"></a><span class="w">    </span><span class="nt">ipam</span><span class="p">:</span>
+<a id="__codelineno-16-9" name="__codelineno-16-9" href="#__codelineno-16-9"></a><span class="w">      </span><span class="nt">driver</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;null&#39;</span>
 </code></pre></div>
 <p>Multi-network containers work (one plugin network per container is
 the <em>supported</em> shape; multiple attach, but interface naming order is
@@ -2340,21 +2355,21 @@ above and issue #125).</p>
 <p>Compose merges the top-level <code>networks:</code> map <strong>key by key</strong>, not file by
 file, and this bites a common deployment shape: built-in macvlan in dev,
 an external pre-created DHCP network in prod.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a><span class="c1"># docker-compose.yml (base)</span>
-<a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a><span class="nt">networks</span><span class="p">:</span>
-<a id="__codelineno-16-3" name="__codelineno-16-3" href="#__codelineno-16-3"></a><span class="w">  </span><span class="nt">lan</span><span class="p">:</span>
-<a id="__codelineno-16-4" name="__codelineno-16-4" href="#__codelineno-16-4"></a><span class="w">    </span><span class="nt">driver</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">macvlan</span>
-<a id="__codelineno-16-5" name="__codelineno-16-5" href="#__codelineno-16-5"></a><span class="w">    </span><span class="nt">driver_opts</span><span class="p">:</span>
-<a id="__codelineno-16-6" name="__codelineno-16-6" href="#__codelineno-16-6"></a><span class="w">      </span><span class="nt">parent</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">${LAN_INTERFACE:-eth0}</span>
-<a id="__codelineno-16-7" name="__codelineno-16-7" href="#__codelineno-16-7"></a><span class="w">    </span><span class="nt">ipam</span><span class="p">:</span>
-<a id="__codelineno-16-8" name="__codelineno-16-8" href="#__codelineno-16-8"></a><span class="w">      </span><span class="nt">config</span><span class="p">:</span>
-<a id="__codelineno-16-9" name="__codelineno-16-9" href="#__codelineno-16-9"></a><span class="w">        </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">subnet</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">192.168.0.0/24</span>
-<a id="__codelineno-16-10" name="__codelineno-16-10" href="#__codelineno-16-10"></a>
-<a id="__codelineno-16-11" name="__codelineno-16-11" href="#__codelineno-16-11"></a><span class="c1"># docker-compose.prod.yml (override)</span>
-<a id="__codelineno-16-12" name="__codelineno-16-12" href="#__codelineno-16-12"></a><span class="nt">networks</span><span class="p">:</span>
-<a id="__codelineno-16-13" name="__codelineno-16-13" href="#__codelineno-16-13"></a><span class="w">  </span><span class="nt">lan</span><span class="p">:</span>
-<a id="__codelineno-16-14" name="__codelineno-16-14" href="#__codelineno-16-14"></a><span class="w">    </span><span class="nt">external</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
-<a id="__codelineno-16-15" name="__codelineno-16-15" href="#__codelineno-16-15"></a><span class="w">    </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">lan-shared</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a><span class="c1"># docker-compose.yml (base)</span>
+<a id="__codelineno-17-2" name="__codelineno-17-2" href="#__codelineno-17-2"></a><span class="nt">networks</span><span class="p">:</span>
+<a id="__codelineno-17-3" name="__codelineno-17-3" href="#__codelineno-17-3"></a><span class="w">  </span><span class="nt">lan</span><span class="p">:</span>
+<a id="__codelineno-17-4" name="__codelineno-17-4" href="#__codelineno-17-4"></a><span class="w">    </span><span class="nt">driver</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">macvlan</span>
+<a id="__codelineno-17-5" name="__codelineno-17-5" href="#__codelineno-17-5"></a><span class="w">    </span><span class="nt">driver_opts</span><span class="p">:</span>
+<a id="__codelineno-17-6" name="__codelineno-17-6" href="#__codelineno-17-6"></a><span class="w">      </span><span class="nt">parent</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">${LAN_INTERFACE:-eth0}</span>
+<a id="__codelineno-17-7" name="__codelineno-17-7" href="#__codelineno-17-7"></a><span class="w">    </span><span class="nt">ipam</span><span class="p">:</span>
+<a id="__codelineno-17-8" name="__codelineno-17-8" href="#__codelineno-17-8"></a><span class="w">      </span><span class="nt">config</span><span class="p">:</span>
+<a id="__codelineno-17-9" name="__codelineno-17-9" href="#__codelineno-17-9"></a><span class="w">        </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">subnet</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">192.168.0.0/24</span>
+<a id="__codelineno-17-10" name="__codelineno-17-10" href="#__codelineno-17-10"></a>
+<a id="__codelineno-17-11" name="__codelineno-17-11" href="#__codelineno-17-11"></a><span class="c1"># docker-compose.prod.yml (override)</span>
+<a id="__codelineno-17-12" name="__codelineno-17-12" href="#__codelineno-17-12"></a><span class="nt">networks</span><span class="p">:</span>
+<a id="__codelineno-17-13" name="__codelineno-17-13" href="#__codelineno-17-13"></a><span class="w">  </span><span class="nt">lan</span><span class="p">:</span>
+<a id="__codelineno-17-14" name="__codelineno-17-14" href="#__codelineno-17-14"></a><span class="w">    </span><span class="nt">external</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+<a id="__codelineno-17-15" name="__codelineno-17-15" href="#__codelineno-17-15"></a><span class="w">    </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">lan-shared</span>
 </code></pre></div>
 <p>The merged result is a hybrid — <code>external: true</code> <strong>and</strong> <code>driver:
 macvlan</code> <strong>and</strong> <code>ipam.config</code> — matching neither the pure-external
