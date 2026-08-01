@@ -374,6 +374,24 @@ const joinStartFailureMsg = "Failed to start persistent DHCP client"
 // on (#401), and a number you only see when something else already went
 // red is a number you cannot use to prevent anything.
 //
+
+// JoinFailureCount counts the same failures the census summarises, for
+// callers that need the number rather than the prose.
+//
+// Separate from JoinFailureCensus because the census is a diagnostic and
+// this is a verdict, and they answer to different pressures: a
+// diagnostic may be reworded freely, a verdict may not change what it
+// counts without someone deciding to.
+func JoinFailureCount(logData []byte) int {
+	n := 0
+	for _, l := range strings.Split(string(logData), "\n") {
+		if strings.Contains(l, joinStartFailureMsg) {
+			n++
+		}
+	}
+	return n
+}
+
 // Returns an empty string when there were none, so a healthy run stays
 // quiet.
 func JoinFailureCensus(logData []byte) string {
