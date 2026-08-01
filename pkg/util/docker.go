@@ -46,7 +46,8 @@ type ContainerInspector interface {
 // failures named a missing file.
 func AwaitContainerInspect(ctx context.Context, docker ContainerInspector, id string, interval time.Duration) (container.InspectResponse, error) {
 	var dummy container.InspectResponse
-	var lastErr error
+	var firstErr, lastErr error
+	attempts := 0
 	for {
 		ctr, err := docker.ContainerInspect(ctx, id)
 		if err == nil {
@@ -55,13 +56,29 @@ func AwaitContainerInspect(ctx context.Context, docker ContainerInspector, id st
 		if cerrdefs.IsNotFound(err) {
 			return dummy, err
 		}
+		attempts++
+		if firstErr == nil {
+			firstErr = err
+		}
 		lastErr = err
 		select {
 		case <-ctx.Done():
-			if lastErr != nil {
-				return dummy, fmt.Errorf("%w (last attempt: %w)", ctx.Err(), lastErr)
+			if lastErr == nil {
+				return dummy, ctx.Err()
 			}
-			return dummy, ctx.Err()
+			// The last attempt is almost always "context deadline
+			// exceeded" — the request the deadline landed on — which
+			// says nothing about why the earlier ones failed. Reporting
+			// the first error and the attempt count separates a daemon
+			// that refused once from a daemon that never answered, and
+			// a budget spent here from one already spent before this
+			// call was reached: one attempt means the context was
+			// already dead on arrival (#406).
+			if attempts > 1 && firstErr.Error() != lastErr.Error() {
+				return dummy, fmt.Errorf("%w (%d attempts; first: %w; last: %w)",
+					ctx.Err(), attempts, firstErr, lastErr)
+			}
+			return dummy, fmt.Errorf("%w (%d attempts; last: %w)", ctx.Err(), attempts, lastErr)
 		case <-time.After(interval):
 		}
 	}
