@@ -138,7 +138,13 @@ Contributions are welcome.
     `go vet` and [`staticcheck`](https://staticcheck.dev/); shell and workflow
     files must pass `shellcheck`/`actionlint`. These are enforced in CI.
   - **Tests:** new functionality is expected to ship with tests; a coverage
-    ratchet enforces this at release time.
+    ratchet enforces this at release time. Run them with `go test ./...`
+    for the fast loop and `sudo make integration-local` for the live
+    suites — see
+    [Running the tests](docs/internals.md#running-the-tests). Use that
+    target rather than `make integration-test` directly: the latter does
+    not rebuild, so it silently tests whatever plugin is already
+    installed.
   - **Authorship:** commits and pull request descriptions must not carry
     AI-assistant attribution — no `Co-authored-by:` trailer naming an
     assistant or an assistant's no-reply address, no "Generated with …"

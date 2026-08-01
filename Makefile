@@ -20,7 +20,7 @@ TEST_OUTAGE_TICK ?= 2s
 TEST_OUTAGE_GRACE ?= 10s
 
 .PHONY: all debug build create enable disable pdebug push clean integration-test \
-        integration-test-failure integration-cleanup \
+        integration-test-failure integration-local integration-cleanup \
         build-cover plugin-cover create-cover enable-cover disable-cover
 
 all: create enable
@@ -131,6 +131,26 @@ ITEST_FAILURE_LOG = $(ITEST_LOG_DIR)/integration-failure-$(ITEST_STAMP).log
 # failing recipe line and a trailing echo would never print on the one
 # outcome where you need the log. scripts/test-makefile-tee.sh pins
 # both properties.
+
+# The local entry point: rebuild, reinstall, then run both suites.
+#
+# `integration-test` and `integration-test-failure` deliberately do NOT
+# depend on a rebuild. CI calls them in sequence between its own build
+# and teardown steps, so a rebuild dependency there would reinstall the
+# plugin BETWEEN the two suites — recycling the plugin mid-run and
+# resetting the health floor's observation window with it.
+#
+# Locally there is no such build step, so `make integration-test` alone
+# tests whatever plugin happens to be installed. That is not a
+# hypothetical: validating #374, a stale installed build made two tests
+# fail for reasons unrelated to the branch AND made the health floor
+# report `clean` for counters that build could not publish at all —
+# wrong in both directions from one cause. Rebuilding reproduced CI
+# exactly.
+#
+# Use this target locally; use the two suite targets directly only when
+# you have just built and installed the plugin yourself.
+integration-local: create enable integration-test integration-test-failure
 
 # Live integration tests. Need privileges (CAP_NET_ADMIN, mount/netns
 # ops, bind UDP/67) and the plugin already enabled at PLUGIN_NAME:golang.
