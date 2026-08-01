@@ -44,9 +44,13 @@ const healthFloorBudget = 30 * time.Second
 //     Since #385 the verdict says which of the two it is instead of
 //     printing an unqualified "clean" — see FloorCleanLine. Making the
 //     floor actually span the whole run is the remaining half of #385.
-//   - It does not assert h.Healthy. See CheckHealthFloor — one of the
-//     three counters behind that flag still counts a benign event as
-//     a fault (#376).
+//   - It asserts h.Healthy since #421, alongside the three counters
+//     behind that flag. All three are now fatal — the benign paths that
+//     used to be folded into recovery_failed are counted separately as
+//     recovery_deferred (#383) and recovery_aborted_container_gone
+//     (#376) — and the flag is checked as well as the table, so a
+//     fourth healthy-affecting counter added to the plugin cannot slip
+//     past this suite's mirror of it.
 func checkHealthFloor(suite time.Duration) int {
 	// TestMain's own ctx carries a 60s setup timeout and expired long
 	// before m.Run() returned; the floor needs a fresh one.
@@ -151,6 +155,10 @@ func checkHealthFloor(suite time.Duration) int {
 		// zero is exactly the confusion this finding exists to end.
 		if f.Absent {
 			fmt.Fprintf(os.Stderr, "  %s %s=<not reported>: %s\n", verdict, f.Counter, f.Why)
+			continue
+		}
+		if f.Flag {
+			fmt.Fprintf(os.Stderr, "  %s %s=false: %s\n", verdict, f.Counter, f.Why)
 			continue
 		}
 		fmt.Fprintf(os.Stderr, "  %s %s=%d: %s\n", verdict, f.Counter, f.Value, f.Why)
