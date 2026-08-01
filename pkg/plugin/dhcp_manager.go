@@ -417,10 +417,38 @@ func (m *dhcpManager) containerID() string {
 	return m.ctrID
 }
 
+// endpointMAC returns the MAC this endpoint's DHCP identity is keyed
+// to: the one CreateEndpoint ran its one-shot exchange under, carried
+// on the join hint and restored from the tombstone on recovery. Falls
+// back to the located container link so a manager that never saw a
+// hint degrades to reading the live link rather than to no MAC.
+func (m *dhcpManager) endpointMAC() net.HardwareAddr {
+	if len(m.MacAddress) > 0 {
+		return m.MacAddress
+	}
+	if m.ctrLink != nil {
+		return m.ctrLink.Attrs().HardwareAddr
+	}
+	return nil
+}
+
+// clientID resolves this endpoint's DHCP option-61 identity.
+//
+// Every exchange the manager makes — the persistent client's renewals,
+// and the synthesised release of a lease an early-exiting container
+// orphaned (#370) — has to present the id the CreateEndpoint one-shot
+// used. Present a different one and the server sees a different client:
+// the lease it already holds is neither renewed nor freed, silently.
+// Since #371 the id is mode-dependent (MAC-derived, except ipvlan), so
+// deriving it in one place from one input is what keeps those in step.
+func (m *dhcpManager) clientID() []byte {
+	return resolveClientID(m.opts, m.joinReq.EndpointID, m.endpointMAC())
+}
+
 // macString returns the endpoint's MAC for ledger entries: the
 // container-side link's address when Start has located it (set before
 // the event goroutines exist, so reads here are race-free), falling
-// back to the macvlan-mode MacAddress hint.
+// back to the MacAddress recorded on the join hint.
 func (m *dhcpManager) macString() string {
 	if m.ctrLink != nil {
 		if hw := m.ctrLink.Attrs().HardwareAddr; len(hw) > 0 {
@@ -804,10 +832,12 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 		// (DHCPClientOptions.Broadcast, #243) — this flag is set for the
 		// ipvlan path but currently has no effect.
 		Broadcast: m.opts.effectiveMode() == ModeIPvlan,
-		// Same client-id the initial DISCOVER used in CreateEndpoint,
-		// so renewals are seen as the same client by the server.
-		// Honours the operator's client_id override when set.
-		ClientID:    resolveClientID(m.opts, m.joinReq.EndpointID),
+		// Same client-id the initial DISCOVER used in CreateEndpoint, so
+		// renewals are seen as the same client by the server. Derived
+		// from the MAC the one-shot ran under rather than from the link
+		// in hand, so this and the orphan-release path cannot drift
+		// apart (#371). Honours the operator's client_id override.
+		ClientID:    m.clientID(),
 		VendorClass: m.opts.VendorClass,
 	})
 	if err != nil {

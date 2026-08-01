@@ -145,15 +145,57 @@ func clientIDFromEndpoint(endpointID string) []byte {
 	return b
 }
 
+// clientIDFromMAC derives the option-61 payload from the endpoint's
+// MAC. Returns nil for an empty/unset MAC so callers fall back.
+//
+// The payload is the raw address bytes; formatClientID prepends the
+// same type-byte 0x00 ("opaque") wrapper it always has. RFC 2132's
+// type-0x01 ("ethernet") form would be more literal, but several
+// servers treat a type-1 client-id as an alias for the chaddr, which
+// would silently change matching semantics for operators. Opaque keeps
+// the id an id.
+func clientIDFromMAC(mac net.HardwareAddr) []byte {
+	if len(mac) == 0 {
+		return nil
+	}
+	return append([]byte(nil), mac...)
+}
+
 // resolveClientID picks the option-61 payload for a fresh DHCP
 // exchange. Operator-supplied opts.ClientID wins when non-empty
 // (treated as opaque ASCII bytes; the dhcpcd client adds the
-// type-byte 0x00 wrapper on the wire). Otherwise we fall back to
-// the endpoint-derived stable id, which is what makes per-container
-// reservations work upstream.
-func resolveClientID(opts DHCPNetworkOptions, endpointID string) []byte {
+// type-byte 0x00 wrapper on the wire).
+//
+// Otherwise the id comes from the MAC. This is what makes an IPv4
+// address survive `docker restart`: the tombstone preserves the MAC, so
+// the returning container presents the same identity and the server
+// renews the same lease. It is the identity IPv6 has always used (its
+// DUID/IAID is MAC-derived), which is why v6 survived restarts that v4
+// did not (#371).
+//
+// It also removes the dependency on the shutdown DHCPRELEASE. That
+// release is what previously freed the address for a container coming
+// back under a new endpoint-derived id — and it is not always sent
+// (#370: a ~2s window at startup where the persistent client is not yet
+// bound), nor can it ever be sent on SIGKILL, OOM, or power loss.
+//
+// ipvlan is the exception. Its L2 slaves inherit the parent's MAC by
+// kernel design, so a MAC-derived id would be *identical* for every
+// container on the network and they would all claim one lease. Those
+// keep the endpoint-derived id, and with it today's restart fragility —
+// #219 owns that case.
+//
+// The endpoint-derived fallback also covers a missing MAC, so a caller
+// that cannot supply one degrades to the previous behaviour rather than
+// to no client-id at all.
+func resolveClientID(opts DHCPNetworkOptions, endpointID string, mac net.HardwareAddr) []byte {
 	if opts.ClientID != "" {
 		return []byte(opts.ClientID)
+	}
+	if opts.effectiveMode() != ModeIPvlan {
+		if id := clientIDFromMAC(mac); id != nil {
+			return id
+		}
 	}
 	return clientIDFromEndpoint(endpointID)
 }
@@ -204,12 +246,14 @@ type DHCPNetworkOptions struct {
 	// fragments) and silently re-MTU'ing a container could surprise an
 	// operator. Opt-in keeps the behaviour change visible.
 	PropagateMTU bool `mapstructure:"propagate_mtu"`
-	// ClientID, when non-empty, overrides the endpoint-derived DHCP
-	// option 61 (Client Identifier) for every endpoint on this
-	// network. Bytes go on the wire prefixed with type byte 0x00
-	// (RFC 2132 opaque). Default empty = use the stable
-	// per-endpoint id derived from the Docker endpoint ID, which is
-	// what makes per-container reservations work upstream.
+	// ClientID, when non-empty, overrides the derived DHCP option 61
+	// (Client Identifier) for every endpoint on this network. Bytes go
+	// on the wire prefixed with type byte 0x00 (RFC 2132 opaque).
+	//
+	// Default empty = derive per endpoint: from the MAC in bridge and
+	// macvlan (unique, and preserved across a restart, so the lease
+	// survives), from the Docker endpoint ID in ipvlan (whose slaves
+	// share the parent MAC). See resolveClientID.
 	//
 	// Operator caveat: a static ClientID across containers means the
 	// upstream DHCP server can't differentiate them — each new
@@ -318,8 +362,14 @@ type joinHint struct {
 	// Gateway, they only arrive in CreateEndpoint, so they ride the hint
 	// to be appended to the Join response's StaticRoutes.
 	Routes []*StaticRoute
-	// MacAddress is set in macvlan mode so the persistent DHCP client can
-	// re-find the (renamed) macvlan link inside the container netns by MAC.
+	// MacAddress is the MAC CreateEndpoint ran its one-shot DHCP
+	// exchange under, and so the one this endpoint's DHCP identity is
+	// keyed to (dhcpManager.clientID, #371). Set in every mode.
+	//
+	// In macvlan mode it additionally locates the link: Docker moves the
+	// interface wholesale and renames it, so MAC is the only stable
+	// handle left inside the container netns. Bridge mode finds its link
+	// through the veth peer index instead and never consults this.
 	MacAddress net.HardwareAddr
 	// Ifname is the validated custom container-side interface name from
 	// the ifnameOption endpoint option (#125). The option only arrives

@@ -173,12 +173,21 @@ func (p *Plugin) synthesiseRelease(ctx context.Context, m *dhcpManager, lease *n
 	}
 
 	client, err := dhcp.NewDHCPClient(linkName, &dhcp.DHCPClientOptions{
-		// Whatever MAC the link ended up wearing — the endpoint's when
-		// it was free, a synthetic one when it was not (see
-		// releaseMACPlan). The identity the server matches on is the
-		// client-id below, which is the same either way.
+		// Whatever MAC the link ended up wearing — the endpoint's when it
+		// was free, a synthetic one when it was not (see releaseMACPlan).
+		// The link's address and the DHCP identity are separate: the
+		// server matches the binding on the client-id below, which is
+		// the same either way.
+		//
+		// That client-id comes from m.clientID(), NOT from the local mac
+		// above. Since #371 the id is MAC-derived in every mode but
+		// ipvlan, and the local mac may be a synthetic fallback —
+		// deriving the id from it would build an identity the server has
+		// never seen, so the release would match no binding. The failure
+		// would be silent, because dhcpcd reports a release it sent
+		// regardless of what it actually freed.
 		MAC:      mac,
-		ClientID: resolveClientID(m.opts, m.joinReq.EndpointID),
+		ClientID: m.clientID(),
 		// `request ADDR`: ask for precisely the address we are trying
 		// to give back.
 		RequestedIP: addr,

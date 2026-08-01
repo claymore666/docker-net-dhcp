@@ -280,13 +280,14 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 		if opts.LeaseTimeout != 0 {
 			timeout = opts.LeaseTimeout
 		}
-		// Stable client-id derived from the endpoint ID (so reservations
-		// keyed on option 61 survive container recreation, and so ipvlan
-		// children can be told apart even though they all share the
-		// parent's MAC). hostname was resolved earlier for tombstone
-		// matching and is reused for the DHCP option 12 hint here.
-		// Operator-supplied client_id overrides the derived value.
-		clientID := resolveClientID(opts, r.EndpointID)
+		// Client-id from the MAC for macvlan (tombstone-preserved, so the
+		// IPv4 lease survives a restart) and from the endpoint ID for
+		// ipvlan, whose slaves all share the parent MAC and so need
+		// something that tells them apart — see resolveClientID (#371).
+		// hostname was resolved earlier for tombstone matching and is
+		// reused for the DHCP option 12 hint here. Operator-supplied
+		// client_id overrides the derived value.
+		clientID := resolveClientID(opts, r.EndpointID, mac)
 
 		runDHCP := func(v6 bool) error {
 			v6str := ""
