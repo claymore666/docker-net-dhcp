@@ -1,0 +1,178 @@
+{
+  "crypto_certificate_verification_status": "N/A",
+  "crypto_certificate_verification_justification": "The plugin implements no TLS. Its only network protocol is DHCP (v4/v6) via dhcpcd; it talks to the Docker daemon over a local Unix socket. No TLS client or server code exists in the project.",
+
+  "crypto_verification_private_status": "N/A",
+  "crypto_verification_private_justification": "The plugin implements no TLS and sends no HTTP headers carrying private information.",
+
+  "crypto_algorithm_agility_status": "N/A",
+  "crypto_algorithm_agility_justification": "The project implements no cryptography of its own; there is no algorithm to switch. Release signing is delegated to cosign/Sigstore.",
+
+  "crypto_credential_agility_status": "N/A",
+  "crypto_credential_agility_justification": "The plugin never processes authentication credentials or private cryptographic keys.",
+
+  "installation_common_status": "Met",
+  "installation_common_justification": "Installed and removed with the standard Docker plugin convention: `docker plugin install ghcr.io/claymore666/docker-net-dhcp:vX.Y.Z`, and `docker plugin disable` + `docker plugin rm` to uninstall. Documented at https://github.com/claymore666/docker-net-dhcp/blob/main/docs/reference.md#install-upgrade-uninstall",
+
+  "dco_status": "Unmet",
+  "dco_justification": "The project has no DCO sign-off requirement or CLA today. Contributions are accepted under the repository's MIT license via GitHub pull requests. The PR checks do enforce an authorship rule (commits must be authored by a person, no AI-assistant attribution), but that is not a legal assertion mechanism.",
+
+  "governance_status": "Met",
+  "governance_justification": "Governance model, decision-making process, and the path to becoming a maintainer are documented at https://github.com/claymore666/docker-net-dhcp/blob/main/GOVERNANCE.md",
+
+  "code_of_conduct_status": "Met",
+  "code_of_conduct_justification": "Contributor Covenant based code of conduct in the standard location: https://github.com/claymore666/docker-net-dhcp/blob/main/CODE_OF_CONDUCT.md",
+
+  "roles_responsibilities_status": "Met",
+  "roles_responsibilities_justification": "Roles (maintainer, contributors) and their responsibilities — triage, review/merge, releases, security response, CI/CD ownership — are documented at https://github.com/claymore666/docker-net-dhcp/blob/main/GOVERNANCE.md#roles-and-responsibilities and it is clear who holds the maintainer role.",
+
+  "access_continuity_status": "Unmet",
+  "access_continuity_justification": "Honestly unmet: this is a single-maintainer project, and that one maintainer holds the repository, registry, and signing access. GOVERNANCE.md states this openly rather than implying otherwise, and explicitly invites co-maintainers so the project becomes resilient to any one person becoming unavailable.",
+
+  "documentation_roadmap_status": "Unmet",
+  "documentation_roadmap_justification": "There is no published roadmap covering the next year. Planned work is visible as GitHub milestones and issues, but those scope the next release rather than a year of direction.",
+
+  "documentation_architecture_status": "Met",
+  "documentation_architecture_justification": "High-level design — the veth + DHCP-client flow per attachment mode, the event loop, and how endpoint state survives a plugin restart — is documented at https://github.com/claymore666/docker-net-dhcp/blob/main/docs/internals.md",
+
+  "documentation_security_status": "Met",
+  "documentation_security_justification": "Security expectations, scope, trust boundary, and what is explicitly out of scope (a hostile DHCP server can still hand out bad addressing — that is the protocol, not a plugin defect) are documented at https://github.com/claymore666/docker-net-dhcp/blob/main/SECURITY.md",
+
+  "documentation_quick_start_status": "Met",
+  "documentation_quick_start_justification": "A copy-pasteable quick start — install the plugin, create a network, run a container on it — is the first section of the README: https://github.com/claymore666/docker-net-dhcp#quick-start",
+
+  "documentation_current_status": "Met",
+  "documentation_current_justification": "Keeping documentation consistent with the release is a mandatory step in the release runbook (step 3): every release branch gets a top-to-bottom review of README and docs/ against what the release actually contains, with the release-candidate window as the last checkpoint. See https://github.com/claymore666/docker-net-dhcp/blob/main/docs/release-runbook.md",
+
+  "documentation_achievements_status": "Met",
+  "documentation_achievements_justification": "The repository front page carries a badge row linking to this best practices badge, the OpenSSF Scorecard report, and the CI status badges: https://github.com/claymore666/docker-net-dhcp#docker-net-dhcp",
+
+  "accessibility_best_practices_status": "Met",
+  "accessibility_best_practices_justification": "The software has no GUI — it is a daemon whose entire user-facing output is plain text log lines, which are readable by screen readers and terminal accessibility tooling. The project site is a mkdocs-material build (semantic HTML, keyboard navigation, light/dark contrast themes), and project participation happens through GitHub, which follows its own accessibility program.",
+
+  "internationalization_status": "N/A",
+  "internationalization_justification": "The software produces no end-user-facing text: output is English-language operator/diagnostic logging, and the project performs no human-readable text sorting or collation.",
+
+  "sites_password_security_status": "N/A",
+  "sites_password_security_justification": "The project runs no sites of its own that store user passwords. The website, repository, and download URLs are GitHub, GitHub Pages, GHCR, and Docker Hub.",
+
+  "maintenance_or_update_status": "Met",
+  "maintenance_or_update_justification": "The upgrade path is a single documented command sequence (disable, rm, install the new tag), and it is deliberately cheap — see https://github.com/claymore666/docker-net-dhcp/blob/main/docs/reference.md#install-upgrade-uninstall. The support policy (latest release, no backports, because upgrades are cheap) is stated in SECURITY.md, and every behavioural change is recorded per release in RELEASE_NOTES.md.",
+
+  "vulnerability_report_credit_status": "N/A",
+  "vulnerability_report_credit_justification": "No vulnerabilities have been reported or resolved in the last 12 months (zero published security advisories). SECURITY.md commits in advance to crediting reporters in the advisory and the release notes unless they request anonymity.",
+
+  "vulnerability_response_process_status": "Met",
+  "vulnerability_response_process_justification": "Documented in the \"Reporting a vulnerability\" and \"Response process\" sections of https://github.com/claymore666/docker-net-dhcp/blob/main/SECURITY.md — private GitHub security advisory intake, triage and confirmation, fix in a released version, published advisory with reporter credit.",
+
+  "coding_standards_status": "Met",
+  "coding_standards_justification": "The required style guides are named in the Contributing section: Go code must be gofmt-formatted and pass `go vet` and staticcheck; shell and workflow files must pass shellcheck and actionlint. Compliance is a stated requirement for an acceptable contribution. See https://github.com/claymore666/docker-net-dhcp#contributing",
+
+  "coding_standards_enforced_status": "Met",
+  "coding_standards_enforced_justification": "gofmt, `go vet`, and staticcheck run in the test workflow on every pull request, and actionlint runs as its own required status check. Branch protection on dev and main makes these checks blocking, so a non-conforming change cannot merge.",
+
+  "build_standard_variables_status": "Met",
+  "build_standard_variables_justification": "The Makefile invokes plain `go build -o <out> ./cmd/<name>` with no injected or overriding compiler/linker flags, so GOFLAGS, CGO_ENABLED, CGO_CFLAGS, and CGO_LDFLAGS supplied by the environment are honoured and passed through to the toolchain unchanged.",
+
+  "build_preserve_debug_status": "Met",
+  "build_preserve_debug_justification": "Nothing in the build strips the binaries: there is no `-ldflags \"-s -w\"`, no `strip`, and no `install -s`. Symbol tables and DWARF debug information are preserved in the shipped binaries.",
+
+  "build_non_recursive_status": "Met",
+  "build_non_recursive_justification": "There is one top-level Makefile and no recursive make: it never invokes make in subdirectories. Cross-package dependencies are resolved by the Go toolchain from the package graph.",
+
+  "build_repeatable_status": "Met",
+  "build_repeatable_justification": "Rebuilding from the same source tree with the same pinned toolchain reproduces the same binaries: dependencies are pinned by go.mod/go.sum with checksum verification, the Go compiler is deterministic for a fixed input set, and the release image pins its base image and Alpine package versions (enforced by an apk-pin-check workflow). Bit-for-bit reproducibility of the packaged container image itself is a stronger claim and is answered separately under build_reproducible.",
+
+  "installation_standard_variables_status": "N/A",
+  "installation_standard_variables_justification": "There is no filesystem installation step for end users and therefore no DESTDIR-style convention to honour: the deliverable is a Docker managed plugin, installed by the daemon from a registry with `docker plugin install`.",
+
+  "installation_development_quick_status": "Met",
+  "installation_development_quick_justification": "A developer runs `make` (which builds the rootfs image, creates the plugin, and enables it) to get a working local install, and `make integration-test` to bring up the full test environment — the suite provisions its own dnsmasq DHCP fixtures on veth pairs, so no LAN setup or external server is needed. Standard convention (make + Docker), no bespoke bootstrap.",
+
+  "external_dependencies_status": "Met",
+  "external_dependencies_justification": "Go dependencies are listed machine-readably with pinned versions and checksums in https://github.com/claymore666/docker-net-dhcp/blob/main/go.mod and go.sum; runtime OS packages are version-pinned in the Dockerfile; and every release publishes an SBOM alongside the image.",
+
+  "dependency_monitoring_status": "Met",
+  "dependency_monitoring_justification": "Dependabot opens grouped weekly update PRs for Go modules and GitHub Actions; govulncheck runs as a required status check on every pull request and on a weekly schedule; CodeQL, Trivy, and GitHub Dependency Review also run in CI. Vulnerabilities with no fixed release available are recorded individually in .github/vuln-allowlist.txt with a written justification and a review date — never a bare identifier — and are re-evaluated by the gate on every run.",
+
+  "updateable_reused_components_status": "Met",
+  "updateable_reused_components_justification": "All reused components are standard Go modules resolved through go.mod, so updating one is a `go get` plus a lockfile change; Dependabot automates exactly that. No vendored or convenience copies of third-party source are carried in the repository.",
+
+  "interfaces_current_status": "Met",
+  "interfaces_current_justification": "staticcheck runs as a blocking CI check and its SA1019 rule fails the build on use of deprecated functions and APIs, so deprecated interfaces cannot silently accumulate. The stack is kept current deliberately — this fork exists partly because upstream stopped building against modern Docker; it tracks a current Go toolchain and Docker SDK.",
+
+  "automated_integration_testing_status": "Met",
+  "automated_integration_testing_justification": "A live integration suite runs on every pull request as a required status check, exercising all three attachment modes plus DHCPv6, restart recovery, and failure injection against a real kernel, a real Docker daemon, and real dnsmasq DHCP servers. It reports pass/fail per scenario in the workflow run.",
+
+  "regression_tests_added50_status": "Met",
+  "regression_tests_added50_justification": "The project rule is that a fix lands with the test that would have caught it, and it is applied in practice — well over half of the bugs fixed in the last six months shipped with a regression test in the same pull request (for example the container-restart failures #402/#408, the DHCP lease-lifecycle fixes in v1.3.4, and the guard test TestHostConfig_NoSlowStopOptOut, which exists specifically so the escape hatch that once hid a restart bug cannot be reintroduced). A per-package coverage ratchet enforces the policy mechanically at release time.",
+
+  "test_policy_mandated_status": "Met",
+  "test_policy_mandated_justification": "Written policy in the Contributing section — new functionality is expected to ship with tests — backed by a per-package coverage ratchet that is a required check on the release pull request, so a feature that adds untested code cannot ship. See https://github.com/claymore666/docker-net-dhcp#contributing",
+
+  "implement_secure_design_status": "Met",
+  "implement_secure_design_justification": "Secure design principles are applied and argued explicitly in the assurance case at https://github.com/claymore666/docker-net-dhcp/blob/main/SECURITY.md#security-assurance-case — memory-safe implementation language, no home-grown cryptography, an explicit trust boundary around DHCP-server-supplied bytes, and the minimum privilege set the plugin can function with, declared in config.json and shown to the user at install time.",
+
+  "input_validation_status": "Met",
+  "input_validation_justification": "The untrusted inputs are DHCP server responses and the DHCP client's hook events. Both are parsed through validating code paths (pkg/dhcp BuildEvent and the handler-pipe JSON decoder) that reject malformed input rather than propagating it, and both carry native Go fuzz targets with seed corpora that run in CI on every pull request, so malformed input is exercised rather than assumed safe.",
+
+  "signed_releases_status": "Met",
+  "signed_releases_justification": "Every release from v1.1.0 onward is cryptographically signed: the plugin image is cosign-signed (keyless, via Sigstore) and the release-artifact checksums.txt manifest is cosign-signed so one signature covers every attached file. SLSA build provenance and an SBOM are published with each release. Signing happens in the release workflow using Sigstore's ephemeral keyless flow, so no long-lived private key exists on the distribution sites. Copy-pasteable verification commands, pinned per release, are in https://github.com/claymore666/docker-net-dhcp#verifying-releases",
+
+  "version_tags_signed_status": "Met",
+  "version_tags_signed_justification": "Release tags are cryptographically signed (SSH signing) by the maintainer and display as Verified on GitHub; the signing key is published on the maintainer's GitHub account.",
+
+  "assurance_case_status": "Met",
+  "assurance_case_justification": "A written assurance case — security goals, threat model, trust boundary, an argument that secure design principles were applied, and an argument that common implementation weaknesses are countered (memory-safe language, fuzzed untrusted parsers, live integration coverage of the escape-relevant paths, signed and attested supply chain) — together with the accepted residual risk, is published at https://github.com/claymore666/docker-net-dhcp/blob/main/SECURITY.md#security-assurance-case",
+
+  "hardening_status": "Met",
+  "hardening_justification": "The plugin is written in Go, a memory-safe language, and imports the unsafe package in zero source files, so entire classes of memory-corruption defects cannot occur. The race detector runs over the unit suite in CI, the untrusted parsers are fuzzed on every pull request, and the plugin requests an explicit, minimal capability set in config.json rather than running fully privileged — the daemon shows that set to the user before installation. See https://github.com/claymore666/docker-net-dhcp/blob/main/SECURITY.md#security-assurance-case",
+
+  "crypto_used_network_status": "Unmet",
+  "crypto_used_network_justification": "Honestly unmet, and structurally so: the plugin's purpose is to obtain addresses from the LAN's existing DHCP server, and DHCP (v4 and v6) has no encrypted variant to prefer or fall back to. Its other communication channel is the local Docker Unix socket, which does not traverse a network. SECURITY.md documents the resulting residual risk — a hostile DHCP server can hand out bad addressing — as accepted and outside the plugin's control.",
+
+  "crypto_tls12_status": "N/A",
+  "crypto_tls12_justification": "The software neither supports nor uses TLS.",
+
+  "hardened_site_status": "Unmet",
+  "hardened_site_justification": "The repository and release download sites are GitHub and GHCR, which do send hardening headers including CSP and HSTS. The project documentation site is GitHub Pages, which serves static content without configurable response headers, so the project cannot add hardening headers there. Unmet rather than N/A, because the shortfall is real even though it is not fixable on the current hosting.",
+
+  "build_reproducible_status": "Unmet",
+  "build_reproducible_justification": "The build is repeatable but not verified bit-for-bit reproducible: the container image build does not yet pin SOURCE_DATE_EPOCH or use -trimpath, so image layers and embedded paths can differ between builds. Tamper-evidence is provided instead by SLSA build provenance and cosign signatures on the published artifacts, which let users verify what was built and by which workflow.",
+
+  "bus_factor_status": "Unmet",
+  "bus_factor_justification": "The bus factor is 1. This is stated openly rather than glossed at https://github.com/claymore666/docker-net-dhcp/blob/main/GOVERNANCE.md — the project is single-maintainer today and explicitly invites co-maintainers.",
+
+  "contributors_unassociated_status": "Unmet",
+  "contributors_unassociated_justification": "The fork has one significant contributor. Outside contributions arrive as issues and occasional pull requests, but not at the level of two significant unassociated contributors.",
+
+  "copyright_per_file_status": "Unmet",
+  "copyright_per_file_justification": "Source files do not currently carry per-file copyright statements; copyright and licensing are declared once at the repository root in LICENSE.md.",
+
+  "license_per_file_status": "Unmet",
+  "license_per_file_justification": "Source files do not currently carry SPDX-License-Identifier headers; the MIT license is declared once at the repository root in LICENSE.md.",
+
+  "small_tasks_status": "Unmet",
+  "small_tasks_justification": "The issue tracker does not currently flag newcomer-sized work: the label taxonomy has no `good first issue` or `help wanted` label, so a new contributor cannot filter for an easy starting point.",
+
+  "require_2FA_status": "Met",
+  "require_2FA_justification": "Two-factor authentication is enabled and enforced on the only account with write access to the repository and with access to private vulnerability reports, using a hardware security key.",
+
+  "secure_2FA_status": "Met",
+  "secure_2FA_justification": "The second factor is a FIDO2/WebAuthn hardware security key, which is cryptographic and phishing-resistant. SMS-based 2FA is not used.",
+
+  "code_review_standards_status": "Met",
+  "code_review_standards_justification": "What a change must satisfy to be acceptable is documented for contributors — target branch, coding standard, test expectations, authorship rule, and the full set of checks that must be green before merge — at https://github.com/claymore666/docker-net-dhcp#contributing, with a pull request template that restates the checklist. Branch protection enforces the mechanical half of that review on every pull request.",
+
+  "two_person_review_status": "Unmet",
+  "two_person_review_justification": "Honestly unmet: with a single maintainer, changes cannot be reviewed before release by a person other than the author. Automated review substitutes as far as it can — required unit, staticcheck, live integration, govulncheck, actionlint, and attribution checks on every pull request, plus CodeQL — but that is not a second human reviewer.",
+
+  "test_statement_coverage90_status": "Unmet",
+  "test_statement_coverage90_justification": "Measured per-package statement coverage from the merged unit and integration profiles ranges from roughly 74% to 98%, so the project does not reach 90% across the board. Per-package floors are enforced by a coverage ratchet at release time and are being raised as error-path tests land.",
+
+  "security_review_status": "Met",
+  "security_review_justification": "A security review of this fork was performed and written up as the assurance case in https://github.com/claymore666/docker-net-dhcp/blob/main/SECURITY.md#security-assurance-case — it states the security goals, enumerates the adversaries (malicious container, hostile LAN DHCP server, supply-chain tampering), identifies the trust boundary around DHCP-server-supplied bytes and the privileged plugin process, and argues why the mitigations suffice, closing with the accepted residual risk. It is re-read as part of the release documentation review. Continuous automated review runs alongside it: CodeQL, govulncheck, staticcheck, and Dependency Review on every pull request.",
+
+  "test_branch_coverage80_status": "Unmet",
+  "test_branch_coverage80_justification": "Branch coverage is not measured. The Go toolchain's coverage support reports statement coverage, which is what the project's ratchet gate enforces; no branch-coverage figure is available to substantiate this criterion."
+}

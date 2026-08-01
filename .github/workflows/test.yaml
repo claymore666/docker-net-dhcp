@@ -90,6 +90,7 @@ jobs:
           bash scripts/test-check-docs-drift.sh
           bash scripts/test-makefile-tee.sh
           bash scripts/test-check-issue-label-map.sh
+          bash scripts/test-badge-sync.sh
 
       # Every driver-option key the code parses must be documented in
       # docs/reference.md — an undocumented option turns CI red (#132).
