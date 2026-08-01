@@ -91,6 +91,7 @@ jobs:
           bash scripts/test-makefile-tee.sh
           bash scripts/test-check-test-weakening.sh
           bash scripts/test-ci-queue-watchdog.sh
+          bash scripts/test-run-evidence.sh
           bash scripts/test-check-issue-label-map.sh
           bash scripts/test-badge-sync.sh
 

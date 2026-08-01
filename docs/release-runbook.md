@@ -19,13 +19,13 @@ publishing chain is first wired up.
 The workflow installs everything it needs itself; this is only about
 the commands **you** type. Nothing here is checked by CI, so a missing
 tool surfaces as a step you skip rather than a gate that fails — which
-is exactly how the v1.3.5 release ended up unable to run step 9's
+is exactly how the v1.3.5 release ended up unable to run step 10's
 verification.
 
 | Tool | Needed for | Install |
 | --- | --- | --- |
 | `gh` | every step — PRs, milestones, run status, `gh release view` | distro package or <https://cli.github.com> |
-| `cosign` | step 9's `verify-blob` re-verification | `go install github.com/sigstore/cosign/v3/cmd/cosign@latest` |
+| `cosign` | step 10's `verify-blob` re-verification | `go install github.com/sigstore/cosign/v3/cmd/cosign@latest` |
 | `crane` | optional — comparing `:latest` and `:vX.Y.Z` digests by hand | `go install github.com/google/go-containerregistry/cmd/crane@latest` |
 
 **Use cosign v3.** The release signs `checksums.txt` keylessly and
@@ -36,7 +36,7 @@ v1.3.5 verification was run with (v3.1.2); older majors are untested
 against `checksums.txt.sigstore.json` here.
 
 Also needed, but already true on any box that has committed here: a
-git signing key, since step 8 tags with `-s`. Confirm with
+git signing key, since step 9 tags with `-s`. Confirm with
 `git config --get user.signingkey` before you get to the tag.
 
 ### GHCR — package must be linked to the repo
@@ -143,7 +143,7 @@ verify-install — but **`:latest` is not moved** and no bare
 release tag is touched. Zero impact on anything a user pulls by
 default.
 
-Use it before every real release tag (step 8 below):
+Use it before every real release tag (step 9 below):
 
 ```sh
 git checkout main && git pull --ff-only      # the release commit
@@ -290,9 +290,24 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
    rerunning, or it will just queue and be displaced again. This cost a
    full debugging session on v1.3.5 (#365) — the fix is thirty seconds
    once you know the shape of it.
-7. **Merge the release PR.** Squash or merge commit — both fine;
+7. **Assemble the verification evidence, don't hand-write it.**
+   ```sh
+   scripts/run-evidence.sh "$(git rev-parse 'HEAD^{tree}')"
+   ```
+   Prints every integration run that tested exactly this tree, with its
+   window and what else was on the privileged pool at the time. Paste
+   it into the release PR rather than reconstructing it from memory.
+
+   Read the overlap line literally. `none — ran alone` and `unknown`
+   are different claims: the second means the concurrent-run list did
+   not reach back far enough to judge, which happens once the repo has
+   been busy since. Do not upgrade an `unknown` to "ran alone" — the
+   v1.4.0 write-up asserted a concurrency caveat that the data did not
+   support, in both directions, which is what #432 was filed about.
+
+8. **Merge the release PR.** Squash or merge commit — both fine;
    match what's in `git log`.
-8. **Pull main, dry-run, then tag:** first push `vX.Y.Z-rc1` and
+9. **Pull main, dry-run, then tag:** first push `vX.Y.Z-rc1` and
    confirm the workflow run is green end-to-end (pre-release mode,
    `:latest` untouched — see "Pre-release dry-run" above). Then:
    ```sh
@@ -316,7 +331,7 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
    plugin from GHCR on a clean hosted runner and asserts it
    enables — a red verify-install means users can't install what
    we just shipped) → **github-release**.
-9. **Confirm the GitHub Release** — the `github-release` job now cuts
+10. **Confirm the GitHub Release** — the `github-release` job now cuts
    it automatically once `verify-install` is green (so a plugin that
    doesn't install never gets an advertised Releases page). It attaches
    the cosign-signed artifacts and uses the `## vX.Y.Z` section of
@@ -339,7 +354,7 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
    an rc dry-run produces an equivalent **pre-release** with the same
    signed assets, which is how this path is exercised before the real
    tag (rc releases never move `:latest` and are marked pre-release).
-10. **Fast-forward `dev` to `main`** so the release commit (version
+11. **Fast-forward `dev` to `main`** so the release commit (version
    pins, RELEASE_NOTES section) lands on `dev` too:
    ```sh
    git checkout dev && git merge --ff-only main && git push origin dev
@@ -348,7 +363,7 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
    previous version's README/docs, and the next release PR has to
    re-bump them. Forgotten once after v0.9.0 — that's why
    `release.yml`'s header comment carries the same checklist.
-11. **Prune merged branches.** The repo has *Automatically delete head
+12. **Prune merged branches.** The repo has *Automatically delete head
    branches* enabled, so merged PR head branches are removed on merge.
    Two things that setting doesn't cover, so clean them now:
    ```sh
