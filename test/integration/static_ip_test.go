@@ -24,19 +24,25 @@ import (
 // not-trivial branch was a 0%-coverage gap in v0.7.0) and
 // resolveExplicitV4 (the agreed-value return path).
 //
-// We pick a host high in the pool (.95) to keep the test reproducible
-// across suite runs: dnsmasq allocates pool entries from the low end
-// upward, and the existing tests rarely consume more than a handful
-// of leases before this test runs.
+// The address is RESERVED in the fixture (harness.StaticTestIP, pinned
+// by a --dhcp-host on harness.StaticTestHostname), not merely picked
+// high in the pool. The previous comment here claimed dnsmasq allocates
+// "from the low end upward" so a high address would stay free. That is
+// not how dnsmasq allocates — it hashes the client identity across the
+// whole range — so the address was never reserved and this test was a
+// coin flip. It passed three consecutive runs on one commit and then
+// failed twice on that same commit, drawing .89 once and .12 once.
+//
+// Hostname is set explicitly because the reservation keys on DHCP
+// option 12, which the plugin fills from the container hostname; left
+// to Docker it would be the container ID and match nothing.
 func TestStaticIP_DriverOpt(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	const (
-		netName = "dh-itest-staticip"
-		ctrName = "dh-itest-staticip-ctr"
-		wantIP  = "192.168.99.95"
-	)
+	const netName = "dh-itest-staticip"
+	ctrName := harness.StaticTestHostname
+	wantIP := harness.StaticTestIP
 
 	t.Cleanup(func() {
 		if t.Failed() {
@@ -60,12 +66,22 @@ func TestStaticIP_DriverOpt(t *testing.T) {
 		&container.Config{
 			Image: harness.TestImage,
 			Cmd:   []string{"sleep", "infinity"},
+			// Not what the reservation keys on — that is the MAC below
+			// — but it makes the dnsmasq log readable, which is how
+			// this test's failure was diagnosed in the first place.
+			Hostname: harness.StaticTestHostname,
 		},
 		harness.HostConfig(),
 		&network.NetworkingConfig{
 			EndpointsConfig: map[string]*network.EndpointSettings{
 				netName: {
 					DriverOpts: map[string]string{"ip": wantIP},
+					// Must match the fixture's --dhcp-host reservation.
+					// Fixed rather than Docker-assigned so the address
+					// cannot be handed to anyone else, and keyed on the
+					// MAC rather than the hostname because the hostname
+					// is best-effort at DISCOVER time.
+					MacAddress: harness.StaticTestMAC,
 				},
 			},
 		},
