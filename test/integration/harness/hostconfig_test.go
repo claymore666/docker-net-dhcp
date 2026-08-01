@@ -42,6 +42,60 @@ func TestHostConfig_FreshPerCall(t *testing.T) {
 	}
 }
 
+// TestHostConfig_NoSlowStopOptOut holds the line the opt-out used to
+// hold, from the other side.
+//
+// There used to be a HostConfigNoInit / RunContainerNoInit escape hatch
+// that restored `docker stop`'s full 10-second grace, with a comment
+// admitting the restart tests "only pass with a container that is slow
+// to stop". That was true, and it was the problem: the slow stop was
+// concealing two real defects — the lease reclaim never running (#402)
+// and `docker restart` failing outright with `address already in use`
+// (#408). Both were fixed; the opt-out is gone.
+//
+// It must not come back. A test that "needs" a slow stop is a test
+// standing on top of a product race, and the next person to reach for
+// one will be re-hiding whatever this suite would otherwise have found.
+// Add the slow stop and this fails, which is the point.
+func TestHostConfig_NoSlowStopOptOut(t *testing.T) {
+	patterns := []string{
+		filepath.Join("..", "*_test.go"),
+		filepath.Join(".", "*.go"),
+	}
+	var files []string
+	for _, p := range patterns {
+		matched, err := filepath.Glob(p)
+		if err != nil {
+			t.Fatalf("glob %s: %v", p, err)
+		}
+		files = append(files, matched...)
+	}
+	if len(files) == 0 {
+		t.Fatal("globbed no sources; this guard would pass vacuously")
+	}
+
+	// This file necessarily names the identifiers it forbids.
+	const self = "hostconfig_test.go"
+
+	for _, f := range files {
+		if filepath.Base(f) == self {
+			continue
+		}
+		src, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatalf("read %s: %v", f, err)
+		}
+		for _, banned := range []string{"HostConfigNoInit", "RunContainerNoInit"} {
+			if strings.Contains(string(src), banned) {
+				t.Errorf("%s reintroduces %s. A slow container stop hides product races — "+
+					"it hid #402 and #408 for months. If a test appears to need one, it is "+
+					"standing on a race that should be fixed instead.",
+					filepath.Base(f), banned)
+			}
+		}
+	}
+}
+
 // TestHostConfig_NoBareLiteralsInSuite is the part that actually holds
 // the line. The helper is only worth having if every creation site
 // uses it, and the natural thing to write in a new test is
