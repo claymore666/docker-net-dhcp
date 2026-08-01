@@ -1281,6 +1281,21 @@ func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) 
 			// The suite only stopped hiding this when its containers got
 			// an init PID 1 (#367) — `sleep infinity` ignoring SIGTERM
 			// had been holding every teardown open for 10s.
+			// An attach we cancelled ourselves because the endpoint is
+			// leaving. Not a fault, and specifically not the fault this
+			// counter names: nothing is left running without a renewal
+			// client, because the endpoint is going away. Checked before
+			// joinAbortedByVanish because the evidence here is stronger
+			// than any of that function's three — we know why the attach
+			// stopped, rather than inferring it (#406).
+			if m.attachAborted.Load() {
+				p.joinAbortedEndpointLeft.Add(1)
+				log.WithError(err).WithFields(fields).
+					Info("Attach cancelled because the endpoint is leaving; no persistent client needed")
+				p.removeDHCPManagerIfSame(r.EndpointID, m)
+				p.spawnOrphanRelease(m)
+				return
+			}
 			if joinAbortedByVanish(err, r.SandboxKey) {
 				p.joinAbortedContainerGone.Add(1)
 				log.WithError(err).WithFields(fields).

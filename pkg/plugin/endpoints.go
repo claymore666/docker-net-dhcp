@@ -299,8 +299,14 @@ type HealthResponse struct {
 	// outlasting AwaitTimeout, waiting on a daemon that was busy with
 	// the container being attached. Not healthy-affecting — these are
 	// successes — but a rising count is the visible form of #406.
-	JoinAttachSlow         int32 `json:"join_attach_slow"`
-	TombstoneWriteFailures int32 `json:"tombstone_write_failures"`
+	JoinAttachSlow int32 `json:"join_attach_slow"`
+
+	// JoinAbortedEndpointLeft counts attaches cancelled because the
+	// endpoint left while the attach was still running. Not
+	// healthy-affecting: there is no running container missing a
+	// renewal client.
+	JoinAbortedEndpointLeft int32 `json:"join_aborted_endpoint_left"`
+	TombstoneWriteFailures  int32 `json:"tombstone_write_failures"`
 	// LeaseChanged counts renewals where dhcpcd returned a different
 	// IP than the manager last recorded. Not Healthy-affecting (it
 	// doesn't break Docker's view fatally — see plugin.go for the
@@ -393,6 +399,7 @@ func (p *Plugin) apiHealth(w http.ResponseWriter, r *http.Request) {
 		RecoveryAbortedContainerGone: p.recoveryAbortedContainerGone.Load(),
 		JoinAbortedContainerGone:     p.joinAbortedContainerGone.Load(),
 		JoinAttachSlow:               p.joinAttachSlow.Load(),
+		JoinAbortedEndpointLeft:      p.joinAbortedEndpointLeft.Load(),
 		TombstoneWriteFailures:       tsFails,
 		LeaseChanged:                 p.leaseChanged.Load(),
 		LeasesObtained:               p.leasesObtained.Load(),

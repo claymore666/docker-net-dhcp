@@ -457,6 +457,14 @@ type Plugin struct {
 	// the work and the fix needs re-examining.
 	joinAttachSlow atomic.Int32
 
+	// joinAbortedEndpointLeft counts attaches cancelled because Leave
+	// arrived while they were still running. Not healthy-affecting and
+	// not silent, on the same reasoning as
+	// joinAbortedContainerGone: nothing is missing a renewal client,
+	// but a sustained rise says containers are being torn down inside
+	// the attach window (#406).
+	joinAbortedEndpointLeft atomic.Int32
+
 	// tombstoneWriteFailures counts saveTombstones failures (disk full,
 	// EROFS) from addTombstone. Reported on /Plugin.Health so operators
 	// can detect a degraded restart-stability window — every failure
