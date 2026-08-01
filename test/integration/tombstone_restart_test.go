@@ -37,6 +37,17 @@ func TestTombstoneRestart_PreservesMACAndIP(t *testing.T) {
 	})
 
 	harness.CreateNetwork(t, ctx, netName, "macvlan", nil)
+	// A NORMAL container, stopping promptly, which is the whole point.
+	// This used to opt out of the init PID 1 so `docker stop` took its
+	// full 10s grace, and the opt-out's own comment admitted the test
+	// "only passes with a slow stop". Two real bugs were hiding behind
+	// that: the lease reclaim never running (#402) and, worse, the
+	// restart itself failing with `address already in use` because the
+	// replaced endpoint's link still held the MAC (#408).
+	//
+	// So this line is the negative control for #408. Revert the fix in
+	// linkUpAwaitingAddress and this test fails — which is the only
+	// reason to believe the fix works.
 	id, ipBefore, macBefore := harness.RunContainer(t, ctx, netName, ctrName)
 	t.Logf("before restart: ip=%s mac=%s", ipBefore, macBefore)
 

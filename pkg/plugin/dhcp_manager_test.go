@@ -1,11 +1,17 @@
 package plugin
 
 import (
+	"context"
 	"errors"
+	"net"
 	"os"
+	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
+	dContainer "github.com/docker/docker/api/types/container"
+	dNetwork "github.com/docker/docker/api/types/network"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
 
@@ -389,4 +395,422 @@ func TestStop_FailedStartIsANoOp(t *testing.T) {
 	if _, err := os.Stat(p.ledger.path); !os.IsNotExist(err) {
 		t.Errorf("ledger written for a manager that never held a lease (stat err: %v)", err)
 	}
+}
+
+// #406: when a Join runs out of budget, every phase reports the same
+// "context deadline exceeded" and the useful question — which phase
+// consumed it — has no answer. These pin the rendering, since the
+// phases themselves are only reachable with a live daemon.
+func TestJoinPhases(t *testing.T) {
+	t.Run("renders each phase with its own time", func(t *testing.T) {
+		p := newJoinPhases()
+		p.mark("resolve_container_id")
+		p.mark("inspect_container")
+		got := p.summary()
+		for _, want := range []string{"resolve_container_id=", "inspect_container="} {
+			if !strings.Contains(got, want) {
+				t.Errorf("summary %q is missing %q", got, want)
+			}
+		}
+		if strings.Count(got, "=") != 2 {
+			t.Errorf("want exactly the two phases that completed, got %q", got)
+		}
+	})
+
+	t.Run("says so when nothing completed", func(t *testing.T) {
+		// The most interesting failure of all: the budget went entirely
+		// to the first phase. An empty string here would read as "no
+		// timing available" rather than "it never got past step one".
+		if got := newJoinPhases().summary(); !strings.Contains(got, "no phase completed") {
+			t.Errorf("summary with no marks = %q; want an explicit note", got)
+		}
+	})
+
+	t.Run("attributes elapsed time to the phase that spent it", func(t *testing.T) {
+		p := newJoinPhases()
+		time.Sleep(60 * time.Millisecond)
+		p.mark("slow_phase")
+		p.mark("fast_phase")
+		var slow, fast joinPhaseSpan
+		for _, s := range p.spans {
+			switch s.name {
+			case "slow_phase":
+				slow = s
+			case "fast_phase":
+				fast = s
+			}
+		}
+		if slow.took < 50*time.Millisecond {
+			t.Errorf("the slow phase was charged %v; the whole point is that it carries the time", slow.took)
+		}
+		if fast.took > 20*time.Millisecond {
+			t.Errorf("the fast phase was charged %v; time is being double-counted", fast.took)
+		}
+	})
+
+	t.Run("a nil tracker is inert", func(t *testing.T) {
+		var p *joinPhases
+		p.mark("x")
+		if got := p.summary(); got == "" {
+			t.Error("nil tracker should still render something rather than an empty field")
+		}
+		if p.total() != 0 {
+			t.Error("nil tracker total should be zero")
+		}
+	})
+}
+
+// TestStart_RecordsPhasesForTheCaller is the check that #411's timing
+// actually reaches a reader. #411 logged it on its own Debug line and
+// the line went unread: the health floor's evidence dump prints error
+// and warning lines, so a run with six "context deadline exceeded"
+// failures showed no timing anywhere near them. Instrumentation that
+// lands somewhere other than the failure it explains is not
+// instrumentation, so the summary is now recorded on the manager and
+// the Join failure log folds it in (#406).
+func TestStart_RecordsPhasesForTheCaller(t *testing.T) {
+	const (
+		netID = "net-1"
+		epID  = "ep-abcdef"
+		ctrID = "container-1"
+	)
+	docker := &fakeDocker{
+		inspectResult: map[string]dNetwork.Inspect{
+			netID: {Containers: map[string]dNetwork.EndpointResource{
+				ctrID: {EndpointID: epID},
+			}},
+		},
+		// The failure under investigation: the container resolves, then
+		// inspecting it never answers.
+		containerErr: errors.New("context deadline exceeded"),
+	}
+	m := newDHCPManager(docker, JoinRequest{NetworkID: netID, EndpointID: epID}, DHCPNetworkOptions{})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	if err := m.Start(ctx); err == nil {
+		t.Fatal("Start succeeded against a daemon that never answers ContainerInspect")
+	}
+
+	if m.startPhases == "" {
+		t.Fatal("Start recorded no phase summary; the Join failure line will say only 'context deadline exceeded' again")
+	}
+	if !strings.Contains(m.startPhases, "resolve_container_id=") {
+		t.Errorf("phase summary %q does not name the phase that completed", m.startPhases)
+	}
+	if m.startTotal == "" {
+		t.Error("Start recorded no total; a reader cannot tell a 10s timeout from a 200ms one")
+	}
+}
+
+// TestStart_LeavesNoPhaseRecordOnSuccess keeps the field honest. A
+// stale summary from a previous failure, or timing on every successful
+// Join, would put noise on the operator's log for no diagnostic gain.
+func TestStart_LeavesNoPhaseRecordOnSuccess(t *testing.T) {
+	m := newDHCPManager(&fakeDocker{}, JoinRequest{}, DHCPNetworkOptions{})
+	if m.startPhases != "" || m.startTotal != "" {
+		t.Error("a fresh manager already carries phase timing")
+	}
+}
+
+// TestStop_CancelsAnInFlightAttach is the guard on the risk the #406
+// fix introduces rather than the bug it fixes.
+//
+// The attach budget grew from AwaitTimeout to AwaitTimeout+60s so a
+// daemon that is busy with the container being joined stops being read
+// as a plugin failure. Stop waits for Start to finish, so without a
+// cancellation path that same 60s would be charged to every Leave that
+// arrives during an attach — libnetwork would block for a minute
+// waiting on an attach whose container is already going away. A longer
+// wait that becomes a longer teardown is not a fix, it is a trade, and
+// nobody agreed to that one.
+func TestStop_CancelsAnInFlightAttach(t *testing.T) {
+	m := newDHCPManager(&fakeDocker{}, JoinRequest{}, DHCPNetworkOptions{})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	m.attachCancel = cancel
+
+	// Stand in for an attach parked on an unresponsive daemon: it
+	// finishes only when its context is cancelled.
+	attachReturned := make(chan struct{})
+	go func() {
+		<-ctx.Done()
+		close(m.startedCh)
+		close(attachReturned)
+	}()
+
+	m.startErr = errors.New("attach cancelled")
+	done := make(chan struct{})
+	go func() {
+		_ = m.Stop()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop did not return; it is waiting out the attach grace instead of cancelling the attach")
+	}
+
+	select {
+	case <-attachReturned:
+	case <-time.After(time.Second):
+		t.Error("Stop returned but the attach was never cancelled; the goroutine outlives the endpoint")
+	}
+}
+
+// TestAttachBudget_ExceedsTheDaemonBusyWindow states the relationship
+// the fix depends on as an assertion rather than as a comment. If
+// someone later tunes AwaitTimeout or the grace to the point where the
+// attach budget no longer clears the client-timeout window that
+// produced #406, this says so.
+func TestAttachBudget_ExceedsTheDaemonBusyWindow(t *testing.T) {
+	// What was measured: five Docker client requests, each giving up at
+	// its own 2s timeout, filled a 10s attach budget end to end.
+	const observedBusyWindow = 10 * time.Second
+	if attachDaemonBusyGrace <= observedBusyWindow {
+		t.Errorf("attachDaemonBusyGrace = %v, which does not clear the %v window measured in #406; "+
+			"the attach would still be abandoned while the daemon is merely busy",
+			attachDaemonBusyGrace, observedBusyWindow)
+	}
+}
+
+// TestJoin_AttachCancelIsSetBeforeRegistration pins an ordering that a
+// reader cannot see from either line on its own.
+//
+// registerDHCPManager publishes the manager so a fast Leave can find
+// it — its own comment says as much. Stop then reads attachCancel. So
+// the assignment has to happen before the registration, or a Leave that
+// wins the race reads nil, does not cancel, and waits out the full
+// attach grace: the exact behaviour TestStop_CancelsAnInFlightAttach
+// forbids, reintroduced by a line that merely sits in the wrong place.
+//
+// Checked as source order because there is no runtime seam between the
+// two statements to test against, and the failure mode is a race that a
+// unit test would reproduce only occasionally (#406).
+func TestJoin_AttachCancelIsSetBeforeRegistration(t *testing.T) {
+	src, err := os.ReadFile("network.go")
+	if err != nil {
+		t.Fatalf("read network.go: %v", err)
+	}
+	text := string(src)
+
+	assign := strings.Index(text, "m.attachCancel = cancelAttach")
+	register := strings.Index(text, "p.registerDHCPManager(r.EndpointID, m)")
+	if assign < 0 || register < 0 {
+		t.Fatal("could not find both statements; this guard has gone stale and is passing vacuously")
+	}
+	if assign > register {
+		t.Error("m.attachCancel is assigned AFTER registerDHCPManager publishes the manager. " +
+			"A Leave arriving in between reads a nil cancel and blocks for the whole attach grace.")
+	}
+}
+
+// TestStart_SurvivesADaemonThatWillNotAnswer makes the #406 condition
+// happen on demand instead of waiting for CI to be unlucky.
+//
+// Every integration run so far has been a sample: unchanged code has
+// scored 6, 5, 4, 3 and 0 Join failures, and a run that scores 0 says
+// only that the condition did not arise. That is not a basis for
+// deciding whether the grace earns its place, and hoping the next run
+// hits it is not a method.
+//
+// So the fake daemon stalls the way the real one does — accepting the
+// call and never answering — and the two budgets are compared directly.
+// The measured window was 10s (five Docker client requests, each giving
+// up at its own 2s timeout); 15s here is comfortably past it.
+func TestStart_SurvivesADaemonThatWillNotAnswer(t *testing.T) {
+	const (
+		netID     = "net-1"
+		epID      = "ep-abcdef"
+		ctrID     = "container-1"
+		stall     = 120 * time.Millisecond
+		oldBudget = 40 * time.Millisecond
+	)
+	// Scaled down through the same seam the recovery tests use. The
+	// ratio is what is being tested — a stall that outlasts the old
+	// budget and not the new one — and it holds at any scale. That the
+	// SHIPPED constant clears the measured 10s window is a separate
+	// assertion, in TestAttachBudget_ExceedsTheDaemonBusyWindow, so
+	// shrinking it here cannot quietly weaken that.
+	prev := attachDaemonBusyGrace
+	attachDaemonBusyGrace = 400 * time.Millisecond
+	t.Cleanup(func() { attachDaemonBusyGrace = prev })
+	newDocker := func() *fakeDocker {
+		return &fakeDocker{
+			inspectResult: map[string]dNetwork.Inspect{
+				netID: {Containers: map[string]dNetwork.EndpointResource{
+					ctrID: {EndpointID: epID},
+				}},
+			},
+			containerResult: map[string]dContainer.InspectResponse{
+				ctrID: {ContainerJSONBase: &dContainer.ContainerJSONBase{
+					State: &dContainer.State{Pid: 1},
+				}, Config: &dContainer.Config{Hostname: "h"}},
+			},
+			containerDelay: stall,
+		}
+	}
+
+	t.Run("the old budget gives up on it", func(t *testing.T) {
+		m := newDHCPManager(newDocker(), JoinRequest{NetworkID: netID, EndpointID: epID}, DHCPNetworkOptions{})
+		ctx, cancel := context.WithTimeout(context.Background(), oldBudget)
+		defer cancel()
+		err := m.Start(ctx)
+		if err == nil {
+			t.Fatal("Start succeeded on the pre-#406 budget; the stall is not reproducing the condition")
+		}
+		if !strings.Contains(err.Error(), "Docker container info") {
+			t.Errorf("failed somewhere other than the inspect: %v", err)
+		}
+	})
+
+	t.Run("the grace outlasts it", func(t *testing.T) {
+		d := newDocker()
+		m := newDHCPManager(d, JoinRequest{NetworkID: netID, EndpointID: epID}, DHCPNetworkOptions{})
+		ctx, cancel := context.WithTimeout(context.Background(), oldBudget+attachDaemonBusyGrace)
+		defer cancel()
+		err := m.Start(ctx)
+		// Start goes on to open a netns and locate a link, neither of
+		// which exists here, so it still fails — but it must get PAST
+		// the inspect. Reaching a later phase is the whole claim.
+		if err != nil && strings.Contains(err.Error(), "Docker container info") {
+			t.Fatalf("still gave up at the inspect with the grace applied: %v", err)
+		}
+		if d.containerCalls == 0 {
+			t.Error("the inspect was never attempted")
+		}
+	})
+}
+
+// hintMAC / linkMAC are deliberately different so a test can tell which
+// source a derivation actually used.
+var (
+	hintMAC = net.HardwareAddr{0x02, 0x42, 0xac, 0x11, 0x00, 0x03}
+	linkMAC = net.HardwareAddr{0x02, 0x42, 0xac, 0x11, 0x00, 0x99}
+)
+
+func managerWithMACs(mode string, hint, link net.HardwareAddr) *dhcpManager {
+	m := &dhcpManager{
+		joinReq:    JoinRequest{EndpointID: "0123456789abcdef0123456789abcdef"},
+		opts:       DHCPNetworkOptions{Mode: mode},
+		MacAddress: hint,
+	}
+	if link != nil {
+		m.ctrLink = &netlink.Device{LinkAttrs: netlink.LinkAttrs{HardwareAddr: link}}
+	}
+	return m
+}
+
+// TestEndpointMAC_PrefersTheRecordedMAC is the guard against the drift
+// #371 made possible. The DHCP identity is keyed to the MAC the
+// CreateEndpoint one-shot ran under; that MAC is recorded on the join
+// hint. Reading it off whatever link happens to be in hand instead
+// would produce a different identity the moment the two disagree — and
+// the orphan-release path (#370) runs when there is no link at all.
+func TestEndpointMAC_PrefersTheRecordedMAC(t *testing.T) {
+	t.Run("recorded MAC wins over the live link", func(t *testing.T) {
+		m := managerWithMACs("", hintMAC, linkMAC)
+		if got := m.endpointMAC(); got.String() != hintMAC.String() {
+			t.Errorf("got %v, want the recorded %v — the lease is keyed to the one-shot's MAC, not the link's", got, hintMAC)
+		}
+	})
+
+	t.Run("falls back to the live link when nothing was recorded", func(t *testing.T) {
+		m := managerWithMACs("", nil, linkMAC)
+		if got := m.endpointMAC(); got.String() != linkMAC.String() {
+			t.Errorf("got %v, want fallback %v", got, linkMAC)
+		}
+	})
+
+	t.Run("nil when neither is available", func(t *testing.T) {
+		m := managerWithMACs("", nil, nil)
+		if got := m.endpointMAC(); len(got) != 0 {
+			t.Errorf("got %v, want empty", got)
+		}
+	})
+}
+
+// TestJoin_AttachBudgetIncludesTheGrace closes the gap between the two
+// tests above.
+//
+// TestStart_SurvivesADaemonThatWillNotAnswer proves a longer budget
+// outlasts a stalled daemon, but it builds its own context, so deleting
+// the grace from the Join path would not make it fail.
+// TestAttachBudget_ExceedsTheDaemonBusyWindow proves the constant is
+// large enough, but not that anything uses it. Between them sits the
+// line that actually matters, and neither covers it.
+//
+// Static, like the ordering guard: the budget is built inside a
+// goroutine in a handler that needs a live libnetwork request, and a
+// check this cheap should not need one.
+func TestJoin_AttachBudgetIncludesTheGrace(t *testing.T) {
+	src, err := os.ReadFile("network.go")
+	if err != nil {
+		t.Fatalf("read network.go: %v", err)
+	}
+	const want = "p.awaitTimeout+attachDaemonBusyGrace"
+	if !strings.Contains(string(src), want) {
+		t.Errorf("the Join attach budget is no longer %s. Either the grace was removed "+
+			"(in which case #406 is back: a daemon busy with the container being joined "+
+			"leaves it without a renewal client) or it moved, and this guard needs updating "+
+			"deliberately rather than by deleting it.", want)
+	}
+}
+
+// TestManagerClientID_IsStableAcrossCallSites pins the property the
+// whole helper exists for: the renewal client (setupClient) and the
+// synthesised release of an orphaned lease (synthesiseRelease) must
+// present the SAME option-61 id, or the server treats them as
+// different clients and the lease is neither renewed nor freed. Both
+// now route through m.clientID(), so the id must not depend on whether
+// a container link is still around — which it is not, by the time an
+// orphan release runs.
+func TestManagerClientID_IsStableAcrossCallSites(t *testing.T) {
+	withLink := managerWithMACs("", hintMAC, linkMAC)
+	afterContainerGone := managerWithMACs("", hintMAC, nil)
+
+	joined := withLink.clientID()
+	releasing := afterContainerGone.clientID()
+	if string(joined) != string(releasing) {
+		t.Fatalf("id drifted once the container link was gone: join=%x release=%x", joined, releasing)
+	}
+	if string(joined) != string(hintMAC) {
+		t.Errorf("got %x, want MAC-derived %x", joined, []byte(hintMAC))
+	}
+}
+
+// TestManagerClientID_ModeAndOverride checks the manager-level helper
+// honours the same rules resolveClientID does, so routing every call
+// site through it changes no semantics.
+func TestManagerClientID_ModeAndOverride(t *testing.T) {
+	eid := "0123456789abcdef0123456789abcdef"
+
+	t.Run("macvlan derives from the MAC", func(t *testing.T) {
+		m := managerWithMACs("macvlan", hintMAC, nil)
+		if got := m.clientID(); string(got) != string(hintMAC) {
+			t.Errorf("got %x, want %x", got, []byte(hintMAC))
+		}
+	})
+
+	t.Run("ipvlan stays endpoint-derived", func(t *testing.T) {
+		// ipvlan slaves share the parent's MAC, so a MAC-derived id
+		// would be identical for every container on the network.
+		m := managerWithMACs("ipvlan", hintMAC, nil)
+		got := m.clientID()
+		if want := clientIDFromEndpoint(eid); string(got) != string(want) {
+			t.Errorf("got %x, want endpoint-derived %x", got, want)
+		}
+		if string(got) == string(hintMAC) {
+			t.Error("ipvlan derived from the shared parent MAC; every container would claim one lease")
+		}
+	})
+
+	t.Run("operator override wins", func(t *testing.T) {
+		m := managerWithMACs("", hintMAC, nil)
+		m.opts.ClientID = "my-id"
+		if got := m.clientID(); string(got) != "my-id" {
+			t.Errorf("got %q, want %q", got, "my-id")
+		}
+	})
 }

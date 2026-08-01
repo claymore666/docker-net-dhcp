@@ -153,7 +153,7 @@ func TestLifecycleMacvlan_IPv6_GoldenPath(t *testing.T) {
 	// final health assertion.
 	create, err := cli.ContainerCreate(ctx,
 		&container.Config{Image: harness.TestImage, Cmd: []string{"sleep", "infinity"}, Hostname: ctrName},
-		&container.HostConfig{},
+		harness.HostConfig(),
 		&network.NetworkingConfig{EndpointsConfig: map[string]*network.EndpointSettings{netName: {}}},
 		nil, ctrName)
 	if err != nil {
@@ -252,6 +252,10 @@ func TestTombstoneRestart_PreservesIPv6(t *testing.T) {
 	defer cli.Close()
 
 	harness.CreateNetwork(t, ctx, netName, "macvlan", map[string]string{"ipv6": "true"})
+	// A normal, promptly-stopping container — see the note in
+	// tombstone_restart_test.go. The v6 half never needed the slow stop;
+	// the v4 half only appeared to, because a slow stop hid #402 and
+	// #408. This is the IPv6 half of #408's negative control.
 	id, v4Before, macBefore := harness.RunContainer(t, ctx, netName, ctrName)
 	v6Before := linkGlobalV6(t, ctx, id, harness.IPAcquisitionBudget)
 	if v6Before == "" {

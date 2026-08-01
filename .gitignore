@@ -12,6 +12,11 @@
 .claude/
 __pycache__/
 
+# Integration-suite output, teed by the Makefile targets (#378). Local
+# diagnostic artifacts — deliberately not removed by `make clean`,
+# which owns build output, not evidence from a run you may still need.
+/logs/
+
 # Local-only handoff brief — not part of the project
 CLAUDE.md
 

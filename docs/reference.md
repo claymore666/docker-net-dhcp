@@ -82,7 +82,7 @@ The plugin publishes to two registries; GHCR is primary:
 for unattended):
 
 ```bash
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.3.5
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.4.0
 ```
 
 Privileges requested: `network: host`, host PID namespace, the Docker
@@ -172,7 +172,7 @@ You bring an existing Linux bridge that is L2-connected to the LAN
 (see [`bridge-mode.md`](bridge-mode.md) for the bridge setup itself):
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.3.5 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.4.0 \
     --ipam-driver null \
     -o bridge=my-bridge \
     my-dhcp-net
@@ -184,7 +184,7 @@ No host changes — containers get per-container kernel-generated MACs
 as macvlan children of a host NIC:
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.3.5 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.4.0 \
     --ipam-driver null \
     -o mode=macvlan -o parent=eth0 \
     lan-dhcp
@@ -198,7 +198,7 @@ security, hostile vSwitches, some Wi-Fi APs). The DHCP server must
 key reservations on DHCP option 61 (client identifier), not MAC:
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.3.5 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.4.0 \
     --ipam-driver null \
     -o mode=ipvlan -o parent=eth0 \
     lan-dhcp
@@ -228,7 +228,7 @@ Passed as `-o key=value` on `docker network create`, or under
 | `skip_routes` | all | `false` | upstream; all modes since v0.9.0 | Don't copy non-default static routes from the parent (bridge or NIC) into containers, **and** don't apply DHCP-supplied classless static routes (option 121, see below). v0.9.0 extended parent route-copying from bridge-only to all modes (#102); set `true` to restore the old macvlan/ipvlan no-copy behaviour. The default gateway is unaffected either way. |
 | `propagate_dns` | all | `false` | v0.9.0 | Write the DHCP-supplied DNS server list (option 6 / v6 option 23) into the container's `/etc/resolv.conf` on every bind/renew. Overrides Docker's embedded resolver for this network; the `search` line uses option 119 with fallback to option 15. |
 | `propagate_mtu` | all | `false` | v0.9.0 | Apply DHCP option 26 (Interface MTU) to the container link on bind/renew. For jumbo-frame (9000) and VPN-reduced (~1450) networks. |
-| `client_id` | all | per-endpoint id | v0.9.0 | Override DHCP option 61 (Client Identifier) for every endpoint on this network; sent as RFC 2132 opaque bytes (type `0x00`). The default per-endpoint id is what makes per-container reservations work — a fixed `client_id` makes all containers look like one client to the server. Pair with `vendor_class` for class-based policy. |
+| `client_id` | all | per-endpoint id | v0.9.0 | Override DHCP option 61 (Client Identifier) for every endpoint on this network; sent as RFC 2132 opaque bytes (type `0x00`). The default per-endpoint id is what makes per-container reservations work — a fixed `client_id` makes all containers look like one client to the server. Pair with `vendor_class` for class-based policy. **The derived default differs by mode** (see below). |
 | `vendor_class` | all | `docker-net-dhcp` | v0.9.0 | Override DHCP option 60 (Vendor Class Identifier), for DHCP servers running class-based policy (different gateway/option sets per class). v4 only — the DHCPv6 client sends no vendor-class option. |
 | `validate_dhcp` | macvlan, ipvlan | `false` | v0.9.0 | Pre-flight probe at `docker network create`: one-shot DHCP exchange on the parent with a random locally-administered MAC, rejecting the network if no server answers within 8s. Catches isolated parents / blocked UDP 67-68 / broken VLAN tags at create time. Costs one transient lease per probe. Bridge mode rejects the option. |
 | `register_dns` | all | `false` | v1.3.0 | Send the DHCP FQDN option (81 on v4 / 39 on v6, via `dhcpcd fqdn both`) built from the container's hostname, asking the DHCP server to register that name in DNS (forward A/AAAA + reverse PTR). Reuses the same hostname already sent as the option-12 hint. Best-effort and advisory — many consumer routers ignore option 81, so this *requests* registration, it does not guarantee resolution. Off by default: dynamic-DNS registration is a network-policy decision. See below. |
@@ -411,15 +411,33 @@ in every mode:
   server can gate behaviour on "this is a plugin-managed container"
   without parsing hostname conventions. v4 only; override with
   `vendor_class`.
-- **Client identifier (option 61)** — eight bytes derived from the Docker
-  endpoint ID, type-byte `0x00` (RFC 2132 opaque). Stable across
-  container *restart* because the endpoint ID is. This is what makes
-  reservations work in ipvlan, where every child shares the parent's MAC.
-  It does **not** survive `docker rm` + `run`, which mints a fresh
-  endpoint ID — lease stability across recreate needs a per-container
-  identity the driver API doesn't currently expose (#218, #219). Override
-  with `client_id`, though a fixed value makes every container look like
-  one client.
+- **Client identifier (option 61)** — type-byte `0x00` (RFC 2132 opaque),
+  with a payload that depends on the mode:
+
+  | mode | payload | survives `docker restart`? |
+  |---|---|---|
+  | `bridge`, `macvlan` | the endpoint MAC | **yes** |
+  | `ipvlan` | eight bytes from the Docker endpoint ID | no |
+
+  In `bridge` and `macvlan` the MAC is unique per endpoint and the plugin
+  preserves it across a restart, so the server recognises the returning
+  container and renews the same address. This is the same identity IPv6
+  has always used (its DUID/IAID is MAC-derived), and it is what makes
+  IPv4 restart-stable without depending on a `DHCPRELEASE` being sent on
+  the way out — which is not always possible (`SIGKILL`, OOM, power loss).
+
+  `ipvlan` is the exception: its L2 slaves all inherit the parent's MAC,
+  so a MAC-derived id could not tell containers apart. Those keep the
+  endpoint-derived id, which is unique but **not** stable across a
+  restart — Docker mints a fresh endpoint ID each time (#219).
+
+  No mode survives `docker rm` + `run`. A recreate builds a new sandbox
+  with a new MAC and a new endpoint ID, so there is no identity to carry;
+  that needs a per-container identity the driver API doesn't currently
+  expose (#218).
+
+  Override with `client_id`, though a fixed value makes every container
+  look like one client.
 
 #### Options captured from the server
 
@@ -456,7 +474,7 @@ Runs a second persistent client (`dhcpcd -6`) alongside the v4 one —
 not work with the null IPAM driver and is not what you want:
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.3.5 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.4.0 \
     --ipam-driver null \
     -o mode=macvlan -o parent=eth0 -o ipv6=true \
     lan-dhcp6
@@ -496,8 +514,19 @@ using (option 50) so the server ACKs it rather than allocating a new one.
 
 Recovery runs synchronously inside plugin startup, before the socket
 accepts requests, so a fresh `CreateEndpoint` arriving during enable
-cannot race it. Results land on `/Plugin.Health` as `recovered_ok` and
-`recovery_failed`.
+cannot race it. Results land on `/Plugin.Health` as `recovered_ok`,
+`recovery_failed` and `recovery_aborted_container_gone` — the last
+covering containers that had already exited when recovery reached
+them, which is not a failure and does not flip `healthy`.
+
+One case cannot be finished there. On a daemon restart Docker respawns
+the plugin while the daemon itself is still coming up, so recovery's
+first API call can time out against a daemon that is not serving yet.
+Waiting for it before the socket exists would stall plugin-enable
+against the very daemon being waited on, so recovery is instead retried
+once the socket is listening, and the wait is counted as
+`recovery_deferred` rather than a failure (v1.4.0+, #383). Only a retry
+that runs out of budget counts `recovery_failed`.
 
 The same path covers `systemctl restart docker`. In practice the address
 is preserved either by recovery (when the daemon's shutdown never called
@@ -529,7 +558,7 @@ without it `curl -s` swallows the permission error and prints nothing,
 which looks exactly like a dead endpoint:
 
 ```bash
-PLUGIN_ID=$(docker plugin inspect -f '{{.Id}}' ghcr.io/claymore666/docker-net-dhcp:v1.3.5)
+PLUGIN_ID=$(docker plugin inspect -f '{{.Id}}' ghcr.io/claymore666/docker-net-dhcp:v1.4.0)
 sudo curl -s --unix-socket /run/docker/plugins/$PLUGIN_ID/net-dhcp.sock \
     http://localhost/Plugin.Health | jq .
 ```
@@ -551,8 +580,13 @@ diagnosing a specific container from them alone is not.
 | `active_endpoints` | — | DHCP managers currently registered (post-Join, pre-Leave). |
 | `pending_hints` | — | Join hints awaiting consumption; steady-state ~0. |
 | `recovered_ok` | — | Endpoints successfully rebuilt by plugin-restart recovery. |
-| `recovery_failed` | yes | Endpoints whose post-restart rebuild failed — those containers run without lease renewal and lose their IP at expiry; restart them. |
-| `join_start_failures` | yes | (v1.3.3+) Persistent-client start failures at attach time — the container got its initial lease but runs without renewal, and the lease is never released on disconnect (#317). The plugin log carries the cause; fix it and restart the container. |
+| `recovery_failed` | yes | Post-restart rebuilds that failed **for a container that is still running** — it runs without lease renewal and loses its IP at expiry; restart it. Two things are deliberately *not* counted here, because neither leaves a running container without a renewal client: a daemon that is merely still starting (`recovery_deferred`, #383) and a container that had already exited when recovery reached it (`recovery_aborted_container_gone`, #376). |
+| `recovery_deferred` | no | (v1.4.0+) Recovery met a daemon that was not serving yet and was retried once the plugin socket came up (#383). Expected on a daemon restart. Only worth attention paired with `recovery_failed`, which together mean the retry ran out too. |
+| `recovery_aborted_container_gone` | no | (v1.4.0+) Recoveries abandoned because the container had already exited, or been removed, by the time post-restart recovery reached it. Not a fault: nothing is left running without a renewal client, so this never flips `healthy`. The recovery-side twin of `join_aborted_container_gone`, and normal after a daemon restart that outlived some containers (#376). |
+| `join_start_failures` | yes | (v1.3.3+) Persistent-client start failures at attach time **for a container that is still running** — it got its initial lease but runs without renewal, and the lease is never released on disconnect (#317). The plugin log carries the cause; fix it and restart the container. A container that *exited* mid-attach is counted separately and is not a fault — see below (#373). |
+| `join_aborted_container_gone` | no | (v1.4.0+) Attaches abandoned because the container exited before the persistent client was up. Not a fault: there is no running container missing a renewal client, so this never flips `healthy`. A sustained rise still says something real — containers dying seconds after start, e.g. a crash-loop (#373). Recognised three ways: the daemon answering "no such container", the container's netns having gone, or its sandbox key being unlinked. An attach that fails for any other reason is counted as a fault, not excused (#401). |
+| `join_attach_slow` | no | (v1.4.0+) Attaches that succeeded, but only after outlasting `AWAIT_TIMEOUT`. Not a fault — the container has its renewal client. It is reported because the wait has an external cause worth seeing: the attach asks the daemon about the container being attached, and the daemon does not answer while it is still inside that container's start. Before v1.4.0 those attaches were abandoned and counted as `join_start_failures`, leaving a running container with no renewal client (#406). A rising count means the daemon is holding containers longer, not that the plugin is degrading. |
+| `join_aborted_endpoint_left` | no | (v1.4.0+) Attaches cancelled because `Leave` arrived while the attach was still running — the endpoint was being torn down. Not a fault: there is no running container missing a renewal client. Distinguished from `join_start_failures` by direct evidence rather than inference, since the plugin cancelled the attach itself and knows why (#406). |
 | `tombstone_write_failures` | yes | Failed tombstone saves (disk full, EROFS) — the next restart of some container will pick a fresh MAC/IP instead of inheriting. |
 | `lease_changed` | no | Renewals that returned a different IP than last recorded (v4+v6 aggregate). Docker's `inspect` view does **not** update on lease change (libnetwork has no in-place endpoint-IP swap), so this is the stale-inspect-window signal — alert on it for long-running containers. |
 | `leases_obtained` | no | `dhcpcd` bind events (`BOUND`/`REBOOT`, and the v6 equivalents): initial bind or re-bind after NAK/lease loss. v4+v6 aggregate. |
@@ -561,6 +595,8 @@ diagnosing a specific container from them alone is not.
 | `lease_release_failures` | no | Teardown DHCPRELEASE didn't complete cleanly — the server may hold a phantom lease until natural expiry. A pattern points at upstream reachability problems mid-teardown. |
 | `naks_received` | no | (v1.0.0+) The server NAKed a renewal/rebind (v4+v6 aggregate). `dhcpcd` recovers by re-acquiring, so each NAK is typically followed by `leases_obtained` — and, if the address moved, `lease_changed` — bumps. Climbing alongside `lease_changed` means containers are being re-addressed mid-life. |
 | `displaced_stops` | no | (v1.3.5+) Attaches that found a manager already registered for the same endpoint and stopped it — a container restarting into a plugin that had already recovered it (#338). The displaced client is released cleanly and the new one takes over, so a few are normal after a plugin restart. Climbing steadily alongside `recovered_ok` means a container is in a restart loop. |
+| `orphaned_leases_released` | no | (v1.3.6+) Leases reclaimed for a container that exited before its renewal client could attach (#370). The address is acquired during endpoint setup and deliberately held for the handover; when the handover never happens, the plugin synthesises a release instead of letting the address sit until it expires. A steady trickle is normal wherever short-lived containers run. |
+| `orphaned_lease_release_failures` | no | (v1.3.6+) A reclaim above that could not be completed — the address stays held upstream until its own expiry, exactly as it did before the reclaim existed. Read as a rate against `orphaned_leases_released`: a few failures are transient upstream trouble, a ratio near 1 means the reclaim path itself is broken (no route to the segment, server refusing the synthesised client). Not `healthy`-affecting, which is worth knowing when reading it: this counter can climb on every container without turning anything red, and did (#402). |
 | `ledger_write_failures` | no | Failed `audit_log` ledger appends — degrades forensics, not networking. Operators using `audit_log` alert on this. |
 | `lease_changed_v6`, `leases_obtained_v6`, `leases_renewed_v6`, `dhcp_timeouts_v6`, `naks_received_v6` | no | (v1.2.0+) The IPv6-only share of the matching aggregate above (#212). Each counts only the v6 client's events; the v4 share is the aggregate minus its `*_v6`. On a dual-stack host this isolates the v6-specific NAK/timeout signal the aggregate hides. `lease_release_failures` and `ledger_write_failures` have no per-family split. |
 
@@ -642,7 +678,7 @@ Compose-managed alternative (network lifecycle tied to the project):
 ```yaml
 networks:
   lan:
-    driver: ghcr.io/claymore666/docker-net-dhcp:v1.3.5
+    driver: ghcr.io/claymore666/docker-net-dhcp:v1.4.0
     driver_opts:
       mode: macvlan
       parent: eth0

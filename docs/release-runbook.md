@@ -10,8 +10,34 @@ The goal: a clean release is one tag push, no manual steps.
 
 ## One-time prerequisites
 
-These are per-account / per-Hub-repo setup, **not** per-release.
-Done once when the publishing chain is first wired up.
+These are per-account / per-Hub-repo setup plus the tooling on the
+box you release from, **not** per-release. Done once when the
+publishing chain is first wired up.
+
+### Local tooling on the release box
+
+The workflow installs everything it needs itself; this is only about
+the commands **you** type. Nothing here is checked by CI, so a missing
+tool surfaces as a step you skip rather than a gate that fails — which
+is exactly how the v1.3.5 release ended up unable to run step 9's
+verification.
+
+| Tool | Needed for | Install |
+| --- | --- | --- |
+| `gh` | every step — PRs, milestones, run status, `gh release view` | distro package or <https://cli.github.com> |
+| `cosign` | step 9's `verify-blob` re-verification | `go install github.com/sigstore/cosign/v3/cmd/cosign@latest` |
+| `crane` | optional — comparing `:latest` and `:vX.Y.Z` digests by hand | `go install github.com/google/go-containerregistry/cmd/crane@latest` |
+
+**Use cosign v3.** The release signs `checksums.txt` keylessly and
+emits a **Sigstore bundle**, which is the v3 default; v2's
+`--output-signature` / `--output-certificate` pair was removed in
+favour of it. v3 is what the workflow itself installs and what the
+v1.3.5 verification was run with (v3.1.2); older majors are untested
+against `checksums.txt.sigstore.json` here.
+
+Also needed, but already true on any box that has committed here: a
+git signing key, since step 8 tags with `-s`. Confirm with
+`git config --get user.signingkey` before you get to the tag.
 
 ### GHCR — package must be linked to the repo
 
@@ -220,6 +246,28 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
    per-package coverage than the previous one. If a package beat its
    floor during the cycle, raise the baseline as part of the release
    branch.
+
+   Coverage shares a concurrency group with the release PR's own
+   integration run, so it normally starts once integration finishes —
+   roughly twelve minutes in. A `coverage` check still showing nothing
+   after that is worth the next paragraph.
+
+   **Release PR blocked on a check that has no run.** A required check
+   that was *cancelled* looks exactly like one that is *pending*: the
+   PR sits at `BLOCKED` with nothing to click into. It is not a missing
+   trigger. GitHub keeps one running plus one pending run per
+   concurrency group, so pushing another commit to the release PR while
+   coverage is still queued displaces it. Confirm and recover with:
+
+   ```sh
+   gh run list --workflow coverage.yml --limit 5   # look for "cancelled"
+   gh run rerun <id>                               # once the group is idle
+   ```
+
+   Wait for the integration run on the same ref to finish before
+   rerunning, or it will just queue and be displaced again. This cost a
+   full debugging session on v1.3.5 (#365) — the fix is thirty seconds
+   once you know the shape of it.
 7. **Merge the release PR.** Squash or merge commit — both fine;
    match what's in `git log`.
 8. **Pull main, dry-run, then tag:** first push `vX.Y.Z-rc1` and

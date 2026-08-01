@@ -17,25 +17,8 @@ import (
 	docker "github.com/docker/docker/client"
 )
 
-// HealthResponse mirrors pkg/plugin.HealthResponse. Duplicated here
-// so the integration package doesn't pull on pkg/plugin internals.
-type HealthResponse struct {
-	Healthy                bool    `json:"healthy"`
-	UptimeSeconds          float64 `json:"uptime_seconds"`
-	ActiveEndpoints        int     `json:"active_endpoints"`
-	PendingHints           int     `json:"pending_hints"`
-	RecoveredOK            int32   `json:"recovered_ok"`
-	RecoveryFailed         int32   `json:"recovery_failed"`
-	JoinStartFailures      int32   `json:"join_start_failures"`
-	TombstoneWriteFailures int32   `json:"tombstone_write_failures"`
-	LeaseChanged           int32   `json:"lease_changed"`
-	LeasesObtained         int32   `json:"leases_obtained"`
-	LeasesRenewed          int32   `json:"leases_renewed"`
-	DHCPTimeouts           int32   `json:"dhcp_timeouts"`
-	LeaseReleaseFailures   int32   `json:"lease_release_failures"`
-	NAKsReceived           int32   `json:"naks_received"`
-	LedgerWriteFailures    int32   `json:"ledger_write_failures"`
-}
+// HealthResponse and the floor that reads it live in healthfloor.go,
+// which is untagged so the decision logic is unit-testable.
 
 // PluginSocketPath returns the absolute path to PluginRef's UNIX
 // socket. Docker exposes plugin sockets under
@@ -95,25 +78,14 @@ func PluginHealth(ctx context.Context, cli *docker.Client) (*HealthResponse, err
 // line emitted by the plugin during a bound/renew event (e.g. T2-2
 // surfaces NTP / TFTP / search-list values at info level there).
 //
-// Path resolution mirrors DumpPluginLog. ctx is used for the
-// PluginInspect round-trip; the local ReadFile is unbounded.
+// A thin t-flavoured wrapper over PluginLog: swallowing the error into
+// a log note is what a mid-test assertion helper wants, and is exactly
+// what the health floor must not do.
 func ReadPluginLog(t *testing.T, ctx context.Context) string {
 	t.Helper()
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	_, data, err := PluginLog(ctx)
 	if err != nil {
-		t.Logf("ReadPluginLog: docker client: %v", err)
-		return ""
-	}
-	defer cli.Close()
-	p, _, err := cli.PluginInspectWithRaw(ctx, PluginRef)
-	if err != nil {
-		t.Logf("ReadPluginLog: PluginInspect: %v", err)
-		return ""
-	}
-	logPath := filepath.Join("/var/lib/docker/plugins", p.ID, "rootfs/var/log/net-dhcp.log")
-	data, err := os.ReadFile(logPath)
-	if err != nil {
-		t.Logf("ReadPluginLog: read %s: %v", logPath, err)
+		t.Logf("ReadPluginLog: %v", err)
 		return ""
 	}
 	return string(data)
@@ -174,25 +146,40 @@ func DumpPluginLog(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	logPath, data, err := PluginLog(ctx)
+	if err != nil {
+		t.Logf("DumpPluginLog: %v", err)
+		return
+	}
+	t.Logf("--- net-dhcp plugin log (%s) ---\n%s", logPath, data)
+}
+
+// PluginLog returns the plugin's on-disk log and the path it came
+// from. Split out of DumpPluginLog so the health floor can reach it
+// too: the floor runs in TestMain after m.Run() and has no *testing.T
+// to log into, which is why a floor failure used to report a counter
+// and no evidence at all (#385).
+//
+// Errors are returned rather than logged so each caller can decide how
+// loud to be — DumpPluginLog stays best-effort, the floor says plainly
+// that its evidence is missing.
+func PluginLog(ctx context.Context) (string, []byte, error) {
 	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
 	if err != nil {
-		t.Logf("DumpPluginLog: docker client: %v", err)
-		return
+		return "", nil, fmt.Errorf("docker client: %w", err)
 	}
 	defer cli.Close()
 
 	p, _, err := cli.PluginInspectWithRaw(ctx, PluginRef)
 	if err != nil {
-		t.Logf("DumpPluginLog: PluginInspect: %v", err)
-		return
+		return "", nil, fmt.Errorf("PluginInspect: %w", err)
 	}
 	logPath := filepath.Join("/var/lib/docker/plugins", p.ID, "rootfs/var/log/net-dhcp.log")
 	data, err := os.ReadFile(logPath)
 	if err != nil {
-		t.Logf("DumpPluginLog: read %s: %v", logPath, err)
-		return
+		return logPath, nil, fmt.Errorf("read %s: %w", logPath, err)
 	}
-	t.Logf("--- net-dhcp plugin log (%s) ---\n%s", logPath, data)
+	return logPath, data, nil
 }
 
 // WaitPluginEnabled polls PluginInspect until p.Enabled matches want

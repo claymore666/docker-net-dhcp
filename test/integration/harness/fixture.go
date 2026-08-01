@@ -20,6 +20,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -45,8 +46,54 @@ const (
 	DHCPPoolEnd   = "192.168.99.99"
 	LeaseTime     = "2m"
 
+	// StaticTestIP / StaticTestHostname reserve one pool address for
+	// TestStaticIP_DriverOpt, which asks for it via `--driver-opt ip=`.
+	//
+	// The address MUST be reserved rather than merely "picked high in
+	// the pool". dnsmasq allocates by hashing the client identity
+	// across the whole range — not sequentially from the low end —
+	// so every unreserved pool address is available to every container
+	// at all times. The test used to rely on the sequential story and
+	// was a coin flip: it passed three consecutive runs and then failed
+	// twice on the same commit, once getting .89 and once .12.
+	//
+	// The odds got worse as the suite got faster. Leases live 2 minutes
+	// (dnsmasq's floor, see LeaseTime) while the suite now finishes in
+	// roughly half the time it used to, so far more leases are live
+	// simultaneously and the chance any given address is occupied rose
+	// with it. #356 is the real fix for the lease-timer floor.
+	//
+	// A --dhcp-host reservation takes the address out of the dynamic
+	// pool entirely: dnsmasq will not hand it to any other client.
+	//
+	// The reservation keys on the MAC, deliberately, NOT on the
+	// hostname. The plugin's hostname is best-effort at DISCOVER time:
+	// initialDHCPHostname polls a 2s budget and returns "" when the
+	// endpoint is not bound to a container yet, treating that as "not
+	// yet known" and leaving it to renewal. A hostname-keyed
+	// reservation would therefore inherit that race — and the run that
+	// exposed all this shows the static test's container reaching
+	// DHCPACK with no hostname logged at all, while its neighbours had
+	// one. The MAC is set by the test and present in every packet.
+	//
+	// It must still fall INSIDE the pool range — dnsmasq NAKs a request
+	// for an address outside every --dhcp-range. TestStaticReservation
+	// enforces both halves.
+	StaticTestIP = "192.168.99.95"
+	// StaticTestMAC is locally administered (02: prefix) and unicast,
+	// so it cannot collide with a real NIC or with Docker's own random
+	// assignment.
+	StaticTestMAC      = "02:00:00:00:99:95"
+	StaticTestHostname = "dh-itest-staticip-ctr"
+
 	// SubnetCIDR is what callers expect IP assertions to fall inside.
 	SubnetCIDR = "192.168.99.0/24"
+
+	// dnsmasqStaticReservation is the --dhcp-host flag that pins
+	// StaticTestIP to StaticTestHostname. Built by StaticReservationArg
+	// so the guard test can assert on the exact string the fixture
+	// passes to dnsmasq rather than on a copy of it.
+	dnsmasqStaticReservation = "--dhcp-host="
 
 	// DHCPServerAddrV6 / DHCPv6PoolStart / DHCPv6PoolEnd dual-stack
 	// the macvlan fixture (#103): the same dnsmasq serves stateful
@@ -146,6 +193,15 @@ const (
 // own listen address. Exposed for tests that assert vendor-class
 // tagging didn't accidentally fire on a default-config container.
 const DefaultGateway = defaultGatewayAddr
+
+// StaticReservationArg is the --dhcp-host flag pinning StaticTestIP to
+// StaticTestHostname, so TestStaticIP_DriverOpt's address cannot be
+// handed to any other container. It is a function rather than a const
+// so TestStaticReservation asserts on the exact string the fixture
+// passes to dnsmasq, not on a restatement of it that could drift.
+func StaticReservationArg() string {
+	return dnsmasqStaticReservation + StaticTestMAC + "," + StaticTestIP
+}
 
 // Fixture owns the lifecycle of the shared integration-test environment.
 // Use New() in TestMain; defer f.Teardown(). Re-running on a host with
@@ -265,6 +321,8 @@ func (f *Fixture) startDnsmasq() error {
 		"--bind-interfaces",     // don't open sockets on others
 		"--except-interface=lo", // belt + braces
 		"--dhcp-range="+DHCPPoolStart+","+DHCPPoolEnd+","+LeaseTime,
+		// Takes StaticTestIP out of the dynamic pool — see the constant.
+		StaticReservationArg(),
 		// Stateful DHCPv6 on the ULA prefix (#103). --enable-ra makes
 		// dnsmasq emit Router Advertisements with the M (managed) flag
 		// for this range — RA handling stays kernel-delegated in the
@@ -390,6 +448,36 @@ func (f *Fixture) LeaseFile() string { return f.leaseFile }
 // "did a renewal DHCPACK arrive?") can grep this file directly
 // during the test rather than waiting for the failure-path dump.
 func (f *Fixture) DnsmasqLog() string { return f.dnsmasqLog }
+
+// CountLogLines counts dnsmasq log lines containing every one of the
+// given substrings (case-insensitive), e.g. ("DHCPRELEASE", mac).
+// Mirrors EphemeralFixture.CountLogLines so an assertion reads the same
+// in either suite.
+//
+// Counts rather than booleans so callers can assert on a DELTA across a
+// window: the shared fixture accumulates every test's traffic, so an
+// absolute count says nothing about the endpoint under test.
+func (f *Fixture) CountLogLines(substrings ...string) int {
+	data, err := os.ReadFile(f.dnsmasqLog)
+	if err != nil {
+		return 0
+	}
+	count := 0
+	for _, line := range strings.Split(string(data), "\n") {
+		l := strings.ToLower(line)
+		all := true
+		for _, s := range substrings {
+			if !strings.Contains(l, strings.ToLower(s)) {
+				all = false
+				break
+			}
+		}
+		if all {
+			count++
+		}
+	}
+	return count
+}
 
 // DumpLogs prints captured dnsmasq stderr to a writer (usually
 // t.Log) so failed tests have the wire-level conversation. Tests

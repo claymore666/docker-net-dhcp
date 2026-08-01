@@ -16,12 +16,15 @@ package plugin
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net"
+	"time"
 
 	"github.com/mitchellh/mapstructure"
 	log "github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
+	"golang.org/x/sys/unix"
 
 	"github.com/devplayer0/docker-net-dhcp/pkg/dhcp"
 	"github.com/devplayer0/docker-net-dhcp/pkg/util"
@@ -67,6 +70,72 @@ func newChildLink(mode string, la netlink.LinkAttrs) netlink.Link {
 		return &netlink.IPVlan{LinkAttrs: la, Mode: netlink.IPVLAN_MODE_L2}
 	}
 	return &netlink.Macvlan{LinkAttrs: la, Mode: netlink.MACVLAN_MODE_BRIDGE}
+}
+
+// childLinkUpBudget bounds the wait for a child link's hardware address
+// to become free. See linkUpAwaitingAddress.
+//
+// The thing being waited for is Docker completing a DeleteEndpoint it
+// has already begun, which is hundreds of milliseconds. This sits well
+// inside the engine's own endpoint-creation patience, so a wait that
+// does expire still surfaces as the plugin's error rather than as an
+// engine timeout with no explanation.
+const childLinkUpBudget = 3 * time.Second
+
+// childLinkUpInterval paces the retries within that budget.
+const childLinkUpInterval = 150 * time.Millisecond
+
+// linkUpAwaitingAddress brings a child link up, waiting out the window
+// where its hardware address is still held by the link it replaces.
+//
+// The kernel refuses to bring up a macvlan child whose address is
+// already live on the parent — including the parent's own address. On
+// restart the plugin deliberately re-applies the previous endpoint's MAC
+// (that is how the lease comes back), so if DeleteEndpoint has not yet
+// removed the old child, LinkSetUp returns EADDRINUSE and the whole
+// restart fails:
+//
+//	Cannot restart container <id>: failed to set up container networking:
+//	  ... failed to set macvlan link up: address already in use
+//
+// That is a user-visible restart failure, not a degradation (#408). It
+// went unseen because the restart tests used containers that ignored
+// SIGTERM and so took Docker's full 10s stop grace, by which time the
+// old link was long gone. Containers that handle SIGTERM promptly —
+// most well-behaved images — restart fast enough to hit it.
+//
+// The address frees itself once DeleteEndpoint lands, so waiting is the
+// fix. There is deliberately NO fallback to a different address: the
+// point of re-applying the tombstoned MAC is that this exact address is
+// what brings the lease back, and coming up on a different one is the
+// failure the feature exists to prevent. If the budget expires, failing
+// is correct.
+//
+// Retrying on the kernel's answer rather than scanning for the old link
+// is also deliberate. A child Docker has already moved into a netns that
+// is being destroyed still holds the address on the parent's port and
+// does not appear in a host-side link list, so a scan would report
+// "free" and the LinkSetUp would still fail.
+func linkUpAwaitingAddress(ctx context.Context, link netlink.Link, budget time.Duration) error {
+	deadline := time.Now().Add(budget)
+	for {
+		err := nlLinkSetUp(link)
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, unix.EADDRINUSE) {
+			return err
+		}
+		if !time.Now().Before(deadline) {
+			return fmt.Errorf("%w (the address is still held by the link this one replaces, "+
+				"after waiting %v for it to be removed)", err, budget)
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("%w (last attempt: %w)", ctx.Err(), err)
+		case <-time.After(childLinkUpInterval):
+		}
+	}
 }
 
 // createParentAttachedEndpoint creates the per-endpoint child link on
@@ -191,7 +260,7 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 			}
 		}
 
-		if err := netlink.LinkSetUp(fresh); err != nil {
+		if err := linkUpAwaitingAddress(ctx, fresh, childLinkUpBudget); err != nil {
 			return fmt.Errorf("failed to set %v link up: %w", mode, err)
 		}
 
@@ -211,13 +280,14 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 		if opts.LeaseTimeout != 0 {
 			timeout = opts.LeaseTimeout
 		}
-		// Stable client-id derived from the endpoint ID (so reservations
-		// keyed on option 61 survive container recreation, and so ipvlan
-		// children can be told apart even though they all share the
-		// parent's MAC). hostname was resolved earlier for tombstone
-		// matching and is reused for the DHCP option 12 hint here.
-		// Operator-supplied client_id overrides the derived value.
-		clientID := resolveClientID(opts, r.EndpointID)
+		// Client-id from the MAC for macvlan (tombstone-preserved, so the
+		// IPv4 lease survives a restart) and from the endpoint ID for
+		// ipvlan, whose slaves all share the parent MAC and so need
+		// something that tells them apart — see resolveClientID (#371).
+		// hostname was resolved earlier for tombstone matching and is
+		// reused for the DHCP option 12 hint here. Operator-supplied
+		// client_id overrides the derived value.
+		clientID := resolveClientID(opts, r.EndpointID, mac)
 
 		runDHCP := func(v6 bool) error {
 			v6str := ""

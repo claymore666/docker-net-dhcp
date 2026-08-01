@@ -1,0 +1,491 @@
+// This file deliberately carries NO `//go:build integration` tag,
+// unlike the rest of the package. The floor decides whether a whole
+// integration run passes, so its logic has to be testable without a
+// live plugin — a floor that has never been observed rejecting
+// anything is not known to work. Keeping the decision pure and
+// untagged puts healthfloor_test.go in the ordinary `go test ./...`
+// unit job. Everything that needs a socket stays in health.go.
+//
+// HealthResponse lives here rather than in health.go for the same
+// reason: the floor takes one, so it has to compile untagged.
+
+package harness
+
+import (
+	"encoding/json"
+	"fmt"
+	"sort"
+	"strings"
+)
+
+// HealthResponse mirrors pkg/plugin.HealthResponse. Duplicated here
+// so the integration package doesn't pull on pkg/plugin internals.
+type HealthResponse struct {
+	Healthy         bool    `json:"healthy"`
+	UptimeSeconds   float64 `json:"uptime_seconds"`
+	ActiveEndpoints int     `json:"active_endpoints"`
+	PendingHints    int     `json:"pending_hints"`
+	RecoveredOK     int32   `json:"recovered_ok"`
+	RecoveryFailed  int32   `json:"recovery_failed"`
+	// RecoveryFailed has two benign twins, at the two points recovery
+	// can stop early for a reason that is not a plugin fault. Neither is
+	// healthy-affecting.
+	//
+	// RecoveryDeferred is the entry gate: the daemon was not serving yet
+	// when recovery ran, so it was retried after the socket came up.
+	// Expected on any daemon restart (#383).
+	RecoveryDeferred int32 `json:"recovery_deferred"`
+	// RecoveryAbortedContainerGone is the per-endpoint case: the
+	// container had already exited by the time recovery reached it
+	// (#376).
+	RecoveryAbortedContainerGone int32 `json:"recovery_aborted_container_gone"`
+	JoinStartFailures            int32 `json:"join_start_failures"`
+	// JoinAbortedContainerGone is the benign twin of JoinStartFailures:
+	// the container exited before the persistent client was up. Not
+	// healthy-affecting (#373).
+	JoinAbortedContainerGone int32 `json:"join_aborted_container_gone"`
+	JoinAttachSlow           int32 `json:"join_attach_slow"`
+	JoinAbortedEndpointLeft  int32 `json:"join_aborted_endpoint_left"`
+	TombstoneWriteFailures   int32 `json:"tombstone_write_failures"`
+	LeaseChanged             int32 `json:"lease_changed"`
+	LeasesObtained           int32 `json:"leases_obtained"`
+	LeasesRenewed            int32 `json:"leases_renewed"`
+	DHCPTimeouts             int32 `json:"dhcp_timeouts"`
+	LeaseReleaseFailures     int32 `json:"lease_release_failures"`
+	NAKsReceived             int32 `json:"naks_received"`
+	LedgerWriteFailures      int32 `json:"ledger_write_failures"`
+	// OrphanedLeasesReleased / OrphanedLeaseReleaseFailures cover the
+	// lease acquired during endpoint setup when no persistent client
+	// ever took ownership of it — a container that exited before the
+	// attach completed (#370). Neither is healthy-affecting: a
+	// short-lived container is an ordinary lifecycle.
+	OrphanedLeasesReleased       int32 `json:"orphaned_leases_released"`
+	OrphanedLeaseReleaseFailures int32 `json:"orphaned_lease_release_failures"`
+
+	// published is the key set of the payload this value was decoded
+	// from. It exists because an absent JSON field decodes to zero,
+	// which is indistinguishable from a counter that is genuinely at
+	// zero — so without it the floor reads "clean" for counters the
+	// plugin never sent (#377).
+	//
+	// nil means "this value was built by hand, not decoded", and the
+	// presence check is skipped. UnmarshalJSON always sets a non-nil
+	// map, including for an empty or null payload, so nil cannot occur
+	// on the path that talks to a real plugin.
+	published map[string]json.RawMessage
+}
+
+// UnmarshalJSON decodes as usual and additionally records which keys
+// the payload actually carried.
+//
+// The `plain` alias is what stops this from recursing: an alias type
+// has the same fields but not the methods, so the inner Unmarshal uses
+// the default struct decoder. published is unexported and therefore
+// invisible to encoding/json, which is also why nothing outside this
+// package can fabricate a misleading key set.
+func (h *HealthResponse) UnmarshalJSON(b []byte) error {
+	type plain HealthResponse
+	var p plain
+	if err := json.Unmarshal(b, &p); err != nil {
+		return err
+	}
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(b, &keys); err != nil {
+		return err
+	}
+	if keys == nil {
+		// A literal `null` body unmarshals into a nil map without
+		// erroring. Normalise it: a payload that carried no keys is
+		// "published nothing", not "presence unknown".
+		keys = map[string]json.RawMessage{}
+	}
+	*h = HealthResponse(p)
+	h.published = keys
+	return nil
+}
+
+// floorCounter is one counter the floor reads.
+//
+// The table below is the single source of truth for that set: both the
+// value check and the presence check iterate it, so a counter cannot be
+// added to one and forgotten in the other. name must equal the JSON tag
+// on the field read — TestFloorCounterNamesMatchJSONTags pins that, and
+// the presence check catches the other half of the same drift, where
+// the plugin renames a key this side has not followed.
+type floorCounter struct {
+	name  string
+	read  func(*HealthResponse) int32
+	fatal bool
+	why   string
+}
+
+var floorCounters = []floorCounter{
+	{
+		name:  "join_start_failures",
+		read:  func(h *HealthResponse) int32 { return h.JoinStartFailures },
+		fatal: true,
+		why:   "a running container was left without a renewal client; since #373 the benign container-exited case is counted separately as join_aborted_container_gone, so this counter now means only a real fault",
+	},
+	{
+		name:  "tombstone_write_failures",
+		read:  func(h *HealthResponse) int32 { return h.TombstoneWriteFailures },
+		fatal: true,
+		why:   "the plugin could not persist its tombstone state to disk; an endpoint will not keep its address across a restart",
+	},
+	{
+		name:  "recovery_failed",
+		read:  func(h *HealthResponse) int32 { return h.RecoveryFailed },
+		fatal: false,
+		why:   "NOT failing the run YET. Since #376 the benign case — the container had already exited when recovery reached it — is counted separately as recovery_aborted_container_gone, so this counter should now mean only a real fault: recovery could not rebuild a RUNNING container's renewal client. It stays non-fatal for a few runs so a benign path nobody anticipated shows up as a warning rather than as a mystery red. Promoting it (and collapsing this table into a plain healthy==true check) is the last step of the plan #376 belongs to",
+	},
+}
+
+// absentWhy explains a finding raised because the plugin did not
+// publish a counter at all. Fatal regardless of the counter's own
+// verdict — recovery_failed being merely noisy is a statement about
+// what its value means, not a licence to stop looking at it.
+const absentWhy = "the plugin did not publish this counter, so this run proves nothing about it — an absent JSON field decodes as zero and would otherwise read as clean. Either the plugin under test is an older build than the suite (rebuild and reinstall it), or the counter was renamed in pkg/plugin/endpoints.go without updating floorCounters in this file"
+
+// FloorFinding is one healthy-affecting counter the floor took issue
+// with — either it moved off zero, or the plugin did not report it.
+type FloorFinding struct {
+	Counter string
+	Value   int32
+	// Absent marks a counter the plugin never published. Value is
+	// meaningless for these — the point is that there was no value.
+	Absent bool
+	// Fatal distinguishes "this counter only ever means a real plugin
+	// fault" from "this counter is known to also count benign events".
+	// A non-fatal finding is still printed — loudly — because it is a
+	// signal, just not one we can hang a build on yet.
+	Fatal bool
+	// Why explains the verdict in the failure output. The reader is
+	// someone staring at a red CI job, not someone with this file open.
+	Why string
+}
+
+// CheckHealthFloor answers "is the plugin OK?" for a whole run, which
+// is a different question from the per-test deltas in
+// assertNoNewHealthFaults. Deltas catch "did this test break
+// something"; the floor catches a fault that no individual test
+// happened to bracket — including one left behind by the main suite
+// before the failure suite even started.
+//
+// It returns findings for every healthy-affecting counter that is
+// non-zero or unreported, and nothing at all for a clean run. Each
+// counter yields at most one finding.
+//
+// The values are ABSOLUTE, not deltas from the start of the run, and
+// that is the point: an absolute floor is what notices a fault that
+// predates the first test. The cost is that running against a
+// long-lived plugin (a local box where the plugin has been up across
+// several sessions) can report a counter from an earlier run, so the
+// findings say "since plugin start" out loud.
+//
+// A counter the plugin does not publish is itself a fatal finding.
+// That case is not hypothetical: an old build left installed on a dev
+// box answers /Plugin.Health without join_start_failures at all, and
+// before #377 the floor read the resulting zero as clean — weaker
+// locally than in CI while looking identical. The same silence would
+// follow a renamed JSON tag in CI, where the plugin is always built
+// from the branch under test, so this is not a dev-box-only guard.
+//
+// Note this is deliberately NOT `!h.Healthy`, though it is now one
+// step away from it. All three counters behind that flag mean exactly
+// one thing since #376 split the benign container-exit out of
+// recovery_failed; what is left is wanting a few runs of evidence
+// before promoting recovery_failed to fatal, because the cost of
+// getting that wrong is a red suite nobody can explain. When it is
+// promoted, this table collapses into a single check of h.Healthy.
+func CheckHealthFloor(h *HealthResponse) []FloorFinding {
+	if h == nil {
+		return nil
+	}
+	var out []FloorFinding
+	for _, c := range floorCounters {
+		if h.published != nil {
+			if _, ok := h.published[c.name]; !ok {
+				out = append(out, FloorFinding{
+					Counter: c.name,
+					Absent:  true,
+					Fatal:   true,
+					Why:     absentWhy,
+				})
+				continue
+			}
+		}
+		if v := c.read(h); v > 0 {
+			out = append(out, FloorFinding{
+				Counter: c.name,
+				Value:   v,
+				Fatal:   c.fatal,
+				Why:     c.why,
+			})
+		}
+	}
+	return out
+}
+
+// FloorFailed reports whether any finding is fatal. Split from
+// CheckHealthFloor so callers print every finding and fail on a
+// subset, rather than choosing between reporting and enforcing.
+func FloorFailed(findings []FloorFinding) bool {
+	for _, f := range findings {
+		if f.Fatal {
+			return true
+		}
+	}
+	return false
+}
+
+// floorEvidenceMaxFaultLines bounds the fault section. A run that
+// produced more fault lines than this has a much bigger problem than
+// the one the floor is reporting, and the tail plus the on-disk path
+// still lead a reader to the rest.
+const floorEvidenceMaxFaultLines = 200
+
+// FloorEvidence picks the parts of a plugin log worth printing when the
+// floor fails, and returns them ready to write to stderr.
+//
+// The floor runs in TestMain after m.Run(), where no test's cleanup is
+// in scope and DumpPluginLog's *testing.T is not available — so before
+// this, a floor failure printed a counter and nothing else, leaving the
+// evidence sitting on disk unread (#385). On CI that disk is an
+// ephemeral runner, so "sitting on disk" means gone.
+//
+// Two sections, both bounded:
+//
+//   - every error- and warning-level line, wherever it falls in the run.
+//     This is not a heuristic: each of the three counters the floor can
+//     report is incremented next to a log.Error or log.Warn at every one
+//     of its increment sites, so the line that explains a finding is
+//     always in this section. Warnings are included as well as errors
+//     because the counter's own line is sometimes a Warn (the tombstone
+//     write failure is), and because the warning before an error is
+//     usually the half that says why.
+//   - the last tailLines lines, for the sequence leading up to the end
+//     of the run, which the fault lines alone do not give.
+//
+// The full log stays on the runner; callers print its path alongside
+// this so a reader who needs everything knows where everything is.
+func FloorEvidence(logData []byte, tailLines int) string {
+	lines := strings.Split(strings.TrimRight(string(logData), "\n"), "\n")
+	if len(lines) == 1 && lines[0] == "" {
+		return "  (plugin log is empty)\n"
+	}
+
+	var faults []string
+	for _, l := range lines {
+		if strings.Contains(l, "level=error") || strings.Contains(l, "level=warning") {
+			faults = append(faults, l)
+		}
+	}
+
+	var b strings.Builder
+	if len(faults) == 0 {
+		// Worth saying out loud rather than printing an empty heading:
+		// a counter moved but the log carries no error or warning, which
+		// means the counter and its log line have drifted apart.
+		b.WriteString("  no error- or warning-level lines in the plugin log — " +
+			"a counter moved without logging, which is itself a defect\n")
+	} else {
+		shown := faults
+		if len(shown) > floorEvidenceMaxFaultLines {
+			shown = shown[len(shown)-floorEvidenceMaxFaultLines:]
+			fmt.Fprintf(&b, "  --- last %d of %d error/warning lines ---\n",
+				len(shown), len(faults))
+		} else {
+			fmt.Fprintf(&b, "  --- %d error/warning lines ---\n", len(faults))
+		}
+		for _, l := range shown {
+			b.WriteString("  " + l + "\n")
+		}
+	}
+
+	if tailLines > 0 {
+		tail := lines
+		if len(tail) > tailLines {
+			tail = tail[len(tail)-tailLines:]
+		}
+		fmt.Fprintf(&b, "  --- last %d lines ---\n", len(tail))
+		for _, l := range tail {
+			b.WriteString("  " + l + "\n")
+		}
+	}
+	return b.String()
+}
+
+// floorFullCoverageRatio is how much of the suite the plugin's uptime
+// has to span before the floor's verdict counts as covering the run.
+// Slightly under 1 because the plugin was already up when the suite
+// started, but the two clocks are read at different moments and the
+// fixture setup between them is not free.
+const floorFullCoverageRatio = 0.98
+
+// FloorCleanLine renders the floor's verdict when nothing was found.
+//
+// It exists because "clean" on its own was a lie worth fixing. The
+// counters reset whenever the plugin process does, and three tests
+// recycle it, so on a main-suite run the floor often sees only the last
+// ~80 seconds of eleven minutes — and said `clean — no healthy-affecting
+// counter moved` regardless. Run #379 printed exactly that for a run
+// that did contain a real fault (#383), erased by a later respawn. A
+// headline that reads "clean" gets quoted as evidence, so it has to
+// carry what it actually looked at (#385).
+//
+// suite is the wall-clock the suite took. A zero or negative value
+// means the caller could not measure it, and the qualifier is dropped
+// rather than guessed at.
+func FloorCleanLine(h *HealthResponse, suiteSeconds float64) string {
+	if h == nil {
+		return ""
+	}
+	if suiteSeconds <= 0 || h.UptimeSeconds >= suiteSeconds*floorFullCoverageRatio {
+		return fmt.Sprintf(
+			"HEALTH FLOOR: clean — no healthy-affecting counter moved over the whole %.0fs run (healthy=%v)\n",
+			h.UptimeSeconds, h.Healthy)
+	}
+	return fmt.Sprintf(
+		"HEALTH FLOOR: clean over the last %.0fs of a %.0fs run — %.0f%% of it (healthy=%v).\n"+
+			"  The plugin restarted mid-suite and its counters reset with it, so this verdict\n"+
+			"  says nothing about the earlier %.0fs. The per-test deltas cover that stretch.\n",
+		h.UptimeSeconds, suiteSeconds, 100*h.UptimeSeconds/suiteSeconds, h.Healthy,
+		suiteSeconds-h.UptimeSeconds)
+}
+
+// AttachGraceLine reports how many attaches finished only because of
+// the daemon-busy grace (#406), and is printed on every run.
+//
+// It exists because the census going to zero does not, on its own, mean
+// the grace is what did it: these failures are intermittent — runs have
+// scored 6, 5, 3 and 0 against unchanged code — so one clean run proves
+// nothing. join_attach_slow moving is positive evidence of the
+// mechanism rather than an absence of failures, and the two together
+// are what an argument for the fix rests on.
+//
+// A run with zero failures AND zero slow attaches says only that the
+// condition did not arise; it is not a pass, and the wording says so
+// rather than leaving a reader to assume.
+func AttachGraceLine(h *HealthResponse, joinFailures int) string {
+	if h == nil {
+		return ""
+	}
+	switch {
+	case h.JoinAttachSlow > 0 && joinFailures == 0:
+		return fmt.Sprintf(
+			"ATTACH GRACE: %d attach(es) finished only after outlasting AWAIT_TIMEOUT, and none\n"+
+				"  were abandoned. Before #406 each of those was a running container left with no\n"+
+				"  renewal client. This is the fix working, observed rather than inferred.\n",
+			h.JoinAttachSlow)
+	case h.JoinAttachSlow > 0:
+		return fmt.Sprintf(
+			"ATTACH GRACE: %d attach(es) needed the grace, and %d still failed. The grace is not\n"+
+				"  sufficient for every case (#406).\n", h.JoinAttachSlow, joinFailures)
+	case joinFailures == 0:
+		return "ATTACH GRACE: no attach needed the grace this run. The daemon-busy window did not\n" +
+			"  arise, so this run is not evidence either way about #406.\n"
+	default:
+		return fmt.Sprintf(
+			"ATTACH GRACE: %d Join failure(s) and no attach used the grace. The failures are not\n"+
+				"  the daemon-busy mechanism #406 describes — look elsewhere.\n", joinFailures)
+	}
+}
+
+// joinStartFailureMsg is the log line the plugin emits at every real
+// join_start_failures increment. The benign twin logs something else
+// ("Container went away during attach"), so counting this message counts
+// exactly the faults, with no classification logic duplicated here.
+const joinStartFailureMsg = "Failed to start persistent DHCP client"
+
+// JoinFailureCensus counts Join-start failures across the WHOLE plugin
+// log, and summarises what they were.
+//
+// This exists because the counter cannot answer the question. Counters
+// reset when the plugin process does, and the main suite recycles it
+// three times, so join_start_failures at the end of a run describes only
+// the last ~80 seconds (#385). One run showed the gap plainly: twelve of
+// these failures in the log, and a counter reading 1.
+//
+// The log has no such limit — it spans the run. So for "did this run
+// produce Join failures, and why", the log is the instrument and the
+// counter is not. Printed on every run, clean or not: this is the number
+// that says whether the Join budget is sized for the host it is running
+// on (#401), and a number you only see when something else already went
+// red is a number you cannot use to prevent anything.
+//
+
+// JoinFailureCount counts the same failures the census summarises, for
+// callers that need the number rather than the prose.
+//
+// Separate from JoinFailureCensus because the census is a diagnostic and
+// this is a verdict, and they answer to different pressures: a
+// diagnostic may be reworded freely, a verdict may not change what it
+// counts without someone deciding to.
+func JoinFailureCount(logData []byte) int {
+	n := 0
+	for _, l := range strings.Split(string(logData), "\n") {
+		if strings.Contains(l, joinStartFailureMsg) {
+			n++
+		}
+	}
+	return n
+}
+
+// Returns an empty string when there were none, so a healthy run stays
+// quiet.
+func JoinFailureCensus(logData []byte) string {
+	reasons := map[string]int{}
+	total := 0
+	for _, l := range strings.Split(string(logData), "\n") {
+		if !strings.Contains(l, joinStartFailureMsg) {
+			continue
+		}
+		total++
+		reasons[joinFailureReason(l)]++
+	}
+	if total == 0 {
+		return ""
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "JOIN FAILURES: %d across the whole run "+
+		"(the log spans the run; join_start_failures only spans the last plugin restart)\n", total)
+	for _, r := range sortedKeys(reasons) {
+		fmt.Fprintf(&b, "  %3d  %s\n", reasons[r], r)
+	}
+	return b.String()
+}
+
+// joinFailureReason pulls the error= field out of a logrus text line, so
+// the census groups by cause rather than listing every occurrence. A
+// timeout waiting for the Docker API and a container that vanished are
+// different problems and should not be summed into one number.
+func joinFailureReason(line string) string {
+	const key = `error="`
+	i := strings.Index(line, key)
+	if i < 0 {
+		return "(no error field)"
+	}
+	rest := line[i+len(key):]
+	// logrus quotes the value and escapes any inner quote, so the first
+	// unescaped quote ends it.
+	for j := 0; j < len(rest); j++ {
+		if rest[j] == '\\' {
+			j++
+			continue
+		}
+		if rest[j] == '"' {
+			return rest[:j]
+		}
+	}
+	return rest
+}
+
+func sortedKeys(m map[string]int) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}

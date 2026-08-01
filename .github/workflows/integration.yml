@@ -11,11 +11,28 @@ name: Integration
 #
 # The `dhcp-ci` runners are ephemeral: one container = one job, each
 # with its own nested Docker daemon (image ghcr.io/claymore666/
-# dhcp-ci-runner, Docker Engine >= 28). An orchestrator pools 2-4 of
-# them (names dhcp-ci-<n>) for full isolation — but privileged jobs
-# are serialized via the concurrency group below (#296).
+# dhcp-ci-runner, Docker Engine >= 28). An orchestrator pools them
+# (names dhcp-ci-<n>); the pool was 8 as of 2026-07-31.
 #
-# SECURITY: this workflow runs as root inside the runner container.
+# JOB TOPOLOGY (#375). The two suites used to run as sequential steps in
+# one job — ~10:38 then ~8:45, a ~20:20 gate. Nothing couples them: they
+# are separate `go test` invocations, each standing up its own fixture
+# in its own TestMain. They now run as two concurrent jobs on two
+# runners, so the gate is max(main, failure) rather than the sum.
+#
+#   gate            decide once whether the suites are needed at all
+#   main-suite  \   one `go test` each, own runner, own :integration
+#   failure-suite/  plugin build (~60s, duplicated but parallel)
+#   integration     aggregator — the required check
+#
+# The aggregator is named `integration` ON PURPOSE. That is the literal
+# required-status context on both `dev` and `main`, so this topology
+# needs NO branch-protection edit, and reverting to the single job needs
+# none either. Do not rename it, and do not let a matrix generate the
+# required name (`integration (1)` etc.) — that would silently gate on
+# nothing or block every merge.
+#
+# SECURITY: the suite jobs run as root inside the runner container.
 # Repo Settings → Actions → General → "Fork pull request workflows
 # from outside collaborators" is set to "Require approval for all
 # outside collaborators" so external PRs sit in pending until manually
@@ -30,49 +47,89 @@ on:
       - main
       - dev
 
-# Serialize all privileged self-hosted jobs (shared with coverage.yml,
-# #296). The ephemeral runners isolate Docker *state* (plugin refs,
-# veth names, UDP/67), so the old bare-metal collisions can't happen —
-# but they still share one host's CPU/IO, and the suite has real-time
-# DHCP timing in it: parallel privileged runs flaked the 5s preflight
-# probe and stalled recreates past lease timing on the v1.3.0 release
-# PR. One group restores the serialization the pool cutover dropped.
-# Caveat: GitHub keeps at most one *pending* run per group — a third
-# concurrent run cancels the queued one, which then needs a manual
-# re-run. Acceptable at this repo's volume.
+# Serializes privileged self-hosted WORKFLOW RUNS (shared with
+# coverage.yml, #296) — one PR's integration run cannot overlap
+# another's.
+#
+# Note what this does NOT do, because #375 turns on it: a concurrency
+# group serializes runs, not the jobs within a run. The two suite jobs
+# below therefore run concurrently, deliberately, and are not covered by
+# this guard. That is a re-test of #296 rather than a route around it:
+# of the two tests that flaked under the old bare-metal parallelism, one
+# was misdiagnosed (#307 reproduced it running solo — a 5s probe budget
+# undersized against dhcpcd's retransmit timing, now 8s and stable since)
+# and the other left the suite with the #219 revert. The dose is also
+# smaller: #296 saw three privileged jobs overlap, this is two.
+#
+# Coverage is the reason it stays two. coverage.yml is not manual-only —
+# it also runs on `pull_request` into main, i.e. on the release PR, and
+# it shares this group. Keeping it in the same group means the release
+# PR's coverage run queues behind this one instead of adding a third
+# concurrent privileged job on the same host. That costs ~12 minutes
+# once per release, which is the cheaper side of the trade against
+# flaking the one gate that cannot be waved through (#365).
+#
+# EXIT CONDITION, if you are here because CI got flaky: any
+# contention-signature failure — `context deadline exceeded` on the
+# Docker API, probe timeouts, lease-timing overruns — means revert to
+# the single sequential job and record the evidence on #375. That
+# reaffirms #296 with better data than it has now. Reverting is one
+# commit and leaves the required check name untouched.
+#
+# Scoped PER REF (#390), not globally. A ref cannot race itself — two
+# pushes 30s apart still queue, which is the property worth keeping —
+# but different PRs now overlap instead of serializing.
+#
+# The global group this replaces was costing more than #375 saved:
+# every PR's run queued behind every other PR's regardless of branch,
+# observed at 7 idle runners with a run pending. It also lost work,
+# because GitHub keeps at most one *pending* run per group and that
+# depth is not configurable — a third run silently cancelled the queued
+# one. Per-ref removes that failure mode rather than mitigating it,
+# since nothing shares a queue to be displaced from.
+#
+# What made this safe to widen is topology, not optimism: #296's
+# contention was three privileged jobs on shared bare metal. The pool is
+# now ephemeral, one job per container, each with its own nested Docker
+# daemon, so the isolation the group provided by hand is provided by the
+# pool. The limit becomes capacity — 8 runners at 2 jobs per run — which
+# is the correct thing to queue on.
 concurrency:
-  group: selfhosted-privileged
+  group: selfhosted-privileged-${{ github.ref }}
   cancel-in-progress: false
 
 permissions:
   contents: read
-  # actions:read — the gate step below lists this workflow's own past
-  # runs to dedupe identical trees (#312).
+  # actions:read — the gate job lists this workflow's own past runs to
+  # dedupe identical trees (#312).
   actions: read
 
 jobs:
-  integration:
-    runs-on: [self-hosted, dhcp-ci]
-    # 40 = main suite (~18 min measured) + failure-injection suite
-    # (~9 min of deliberate DHCP-timing waits, #128) + plugin build
-    # (~46s) + margin. Raised from 35 in #278: the failure tests now
-    # establish a BOUND lease before injecting the outage, so each one
-    # waits out a real 2m expiry instead of catching a client that was
-    # still acquiring — correct, and ~2 min slower across the suite.
-    timeout-minutes: 40
-    env:
-      INTEGRATION_PLUGIN_REF: ghcr.io/claymore666/docker-net-dhcp:integration
+  # Decide ONCE whether this event needs the suites at all: docs-only PR
+  # diffs (#311) and post-merge pushes whose tree already passed (#312)
+  # exit in seconds instead of holding a privileged pool slot for ~20
+  # minutes.
+  #
+  # Its own job rather than a step in each suite (#375): two suites
+  # evaluating the same gate independently could disagree — the #312
+  # dedupe looks at past runs of this workflow, and the first suite to
+  # finish changes what the second one would see.
+  #
+  # Deliberately not a workflow-level paths filter: `integration` is a
+  # required check, and a workflow that never triggers leaves PRs stuck
+  # on "Expected". The script fails open (any API error → run); its
+  # meta-test runs in test.yaml's gate-script step.
+  #
+  # ubuntu-latest, not the dhcp-ci pool: this is an API call and a
+  # git rev-parse, and it must not consume a privileged runner slot.
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      decision: ${{ steps.gate.outputs.decision }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # Decide whether this event needs the suite at all: docs-only PR
-      # diffs (#311) and post-merge pushes whose tree already passed
-      # (#312) exit in seconds instead of holding the serialized pool
-      # slot for ~22 minutes. Deliberately a job STEP, not a workflow
-      # paths filter — `integration` is a required check, and a
-      # workflow that never triggers leaves PRs stuck on "Expected".
-      # The script fails open (any API error → run); its meta-test
-      # runs in test.yaml's gate-script step.
       - name: Suite-needed gate
         id: gate
         env:
@@ -87,12 +144,44 @@ jobs:
           echo "decision=${decision}" >> "$GITHUB_OUTPUT"
           echo "gate decision: ${decision}"
 
+  # The two suites. Identical except for the make target and log name,
+  # so a matrix rather than two near-duplicate job bodies — the previous
+  # single job had already drifted into per-step `if:` conditions
+  # repeated six times.
+  #
+  # fail-fast: false is deliberate and is a BEHAVIOUR CHANGE. In the old
+  # sequential form a failing main suite skipped the failure suite
+  # entirely (ordinary step semantics), so a change breaking both looked
+  # like a change breaking one. Both runners are already allocated and
+  # the gate's wall clock is max() either way, so letting both finish
+  # costs no PR time and says whether one suite broke or two.
+  suite:
+    needs: gate
+    if: needs.gate.outputs.decision == 'run'
+    name: ${{ matrix.suite }}-suite
+    runs-on: [self-hosted, dhcp-ci]
+    # 25 per suite. Measured: main ~10:40, failure ~8:20, plus ~60s
+    # plugin build. The old single job carried 40 for both sequentially;
+    # this is proportionally more headroom, not less.
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - suite: main
+            target: integration-test
+          - suite: failure
+            target: integration-test-failure
+    env:
+      INTEGRATION_PLUGIN_REF: ghcr.io/claymore666/docker-net-dhcp:integration
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
       # The Go toolchain (go.mod's version) is baked into the dhcp-ci
       # runner image, so actions/setup-go is skipped. Fail loudly if
       # it's ever missing — that means the runner image drifted from
       # go.mod and needs a rebuild (ci/runner-image/).
       - name: Verify Go toolchain
-        if: steps.gate.outputs.decision == 'run'
         run: |
           if ! command -v go >/dev/null; then
             echo "go not in PATH — dhcp-ci runner image is stale vs go.mod; rebuild ci/runner-image/"
@@ -103,7 +192,6 @@ jobs:
       # Best-effort: clean any orphans from a previous run that
       # panicked mid-setup. Safe to run even on a clean state.
       - name: Cleanup orphans from previous runs
-        if: steps.gate.outputs.decision == 'run'
         run: bash test/integration/cleanup-orphans.sh
 
       # Build + install the plugin from THIS PR's source tree, tagged
@@ -114,11 +202,13 @@ jobs:
       # modified plugin code (new driver-opts, RPC shape changes,
       # etc.), since the production plugin pre-dated the change.
       #
-      # ~60s rebuild cost per run is the right trade for "every PR
-      # tests its own plugin code". Same shape as coverage.yml's
-      # plugin-cover step, just without the -cover instrumentation.
+      # Both suite jobs build their own. The tag is identical in both,
+      # which is safe because the dhcp-ci runners are ephemeral and
+      # one-job-per-container — each has its own nested Docker daemon,
+      # so there is no shared plugin namespace to collide in. The ~60s
+      # is duplicated but parallel: it costs aggregate CPU, not wall
+      # clock.
       - name: Build + install integration plugin
-        if: steps.gate.outputs.decision == 'run'
         run: |
           make PLUGIN_NAME=ghcr.io/claymore666/docker-net-dhcp PLUGIN_TAG=integration plugin
           docker plugin rm -f "${INTEGRATION_PLUGIN_REF}" 2>/dev/null || true
@@ -136,35 +226,85 @@ jobs:
       # only the explicit form runs `bash -eo pipefail`; the implicit
       # default is `bash -e` WITHOUT pipefail, which let tee's exit 0
       # swallow go-test failures and pass the gate green (#297).
-      - name: Run integration tests
-        if: steps.gate.outputs.decision == 'run'
+      - name: Run ${{ matrix.suite }} suite
         shell: bash
-        run: make integration-test 2>&1 | tee /tmp/itest-main.log
+        run: make ${{ matrix.target }} 2>&1 | tee /tmp/itest-${{ matrix.suite }}.log
 
-      # Failure-injection suite (#128): server loss, NAK on renewal,
-      # lease expiry — each against a per-test ephemeral DHCP server.
-      # Separate step so a red here is immediately distinguishable
-      # from a main-suite regression.
-      - name: Run failure-injection tests
-        if: steps.gate.outputs.decision == 'run'
-        shell: bash
-        run: make integration-test-failure 2>&1 | tee /tmp/itest-failure.log
-
-      # Surface the slowest tests + total in the job log and step
+      # Surface the slowest tests + phase totals in the job log and step
       # summary, so speedup work can target the biggest waits without
       # digging through verbose output. Informational, always-run: it
-      # owns no pass/fail and tolerates a missing log (e.g. the failure
-      # step was skipped because the main suite already failed).
+      # owns no pass/fail and tolerates a missing log.
+      #
+      # Per-job now rather than one combined call: each job only has its
+      # own suite's log. Both still land in the run's summary page,
+      # under their own job headings.
       - name: Test timing summary
-        if: always() && steps.gate.outputs.decision == 'run'
-        run: scripts/integration-timing.sh /tmp/itest-main.log /tmp/itest-failure.log
+        if: always()
+        run: scripts/integration-timing.sh /tmp/itest-${{ matrix.suite }}.log
 
       # Tear down so a follow-up workflow on the same runner doesn't
       # find a stale `:integration` plugin pinned to the previous
       # PR's source. Always-run; failure of the test step shouldn't
       # leave global state behind.
       - name: Tear down integration plugin
-        if: always() && steps.gate.outputs.decision == 'run'
+        if: always()
         run: |
           docker plugin disable "${INTEGRATION_PLUGIN_REF}" 2>/dev/null || true
           docker plugin rm -f "${INTEGRATION_PLUGIN_REF}" 2>/dev/null || true
+
+  # The required check. Collapses the two suite jobs into the single
+  # context branch protection knows about (see the topology note at the
+  # top — this name is load-bearing).
+  #
+  # ubuntu-latest: it decides, it does not test, and it must not hold a
+  # privileged slot while doing so.
+  integration:
+    needs: [gate, suite]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # A skip and a failure must never be conflated (#375). `suite` is
+      # a matrix job, so needs.suite.result is already the rollup:
+      # success only if every leg succeeded, failure if any failed,
+      # skipped only if the whole matrix was skipped.
+      - name: Combined suite result
+        env:
+          GATE: ${{ needs.gate.result }}
+          DECISION: ${{ needs.gate.outputs.decision }}
+          SUITES: ${{ needs.suite.result }}
+        run: |
+          echo "gate job:       $GATE"
+          echo "gate decision:  $DECISION"
+          echo "suite rollup:   $SUITES"
+
+          if [ "$GATE" != "success" ]; then
+            echo "FAIL: the gate job did not succeed, so nothing decided whether the suites were needed."
+            exit 1
+          fi
+
+          if [ "$DECISION" != "run" ]; then
+            if [ "$SUITES" = "skipped" ]; then
+              echo "PASS: gate decided the suites were not needed for this event; both were skipped."
+              exit 0
+            fi
+            echo "FAIL: gate said '$DECISION' but the suite rollup is '$SUITES' — expected 'skipped'."
+            exit 1
+          fi
+
+          case "$SUITES" in
+            success)
+              echo "PASS: both suites passed."
+              ;;
+            skipped)
+              # Would mean the suites were skipped while the gate asked
+              # for them: a green here would report "tested" for a run
+              # that tested nothing.
+              echo "FAIL: gate asked for a run but both suites were skipped."
+              exit 1
+              ;;
+            *)
+              echo "FAIL: suite rollup is '$SUITES' — at least one suite failed or was cancelled."
+              exit 1
+              ;;
+          esac

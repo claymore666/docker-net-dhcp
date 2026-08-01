@@ -26,13 +26,33 @@ on:
     branches:
       - main
 
-# Serialize all privileged self-hosted jobs (shared with
-# integration.yml, #296): the ephemeral runners isolate Docker state
-# but share one host's CPU/IO, and parallel privileged runs flaked
-# timing-sensitive tests on the v1.3.0 release PR. See integration.yml
-# for the full rationale and the pending-run-cancellation caveat.
+# Per-ref, matching integration.yml (#390) — see there for the full
+# rationale.
+#
+# Moving in step with integration.yml is the point rather than a
+# side effect. Under the old global group this workflow was the one
+# that lost work: a coverage run on the release PR shares a queue with
+# every integration run in the repo, so a routine merge into dev would
+# silently cancel it and leave the release PR waiting on a required
+# check that was never going to arrive (#365). Different refs, different
+# groups — a dev push can no longer displace a release PR's coverage.
+#
+# What is left, and why it is left: this run still shares a group with
+# the release PR's own integration run, because they are the same ref.
+# So the two serialize, and coverage typically starts ~12 minutes after
+# the PR opens. That is deliberate — splitting them would put three
+# privileged jobs on the host at once, which is the dose #296 saw flake,
+# and the release gate is the worst place to spend that risk to save
+# twelve minutes once per release.
+#
+# The residual cancellation window is narrow but real: GitHub keeps one
+# running plus one pending run per group, so pushing a new commit to the
+# release PR while coverage is still pending cancels it. Same symptom as
+# #365 — a required check with no run, indistinguishable from pending.
+# The release runbook carries the recovery step; see "release PR blocked
+# on a check that has no run".
 concurrency:
-  group: selfhosted-privileged
+  group: selfhosted-privileged-${{ github.ref }}
   cancel-in-progress: false
 
 permissions:

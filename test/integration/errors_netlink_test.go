@@ -144,7 +144,7 @@ func TestErrors_DriverOptIPMalformed(t *testing.T) {
 
 	created, createErr := cli.ContainerCreate(ctx,
 		&container.Config{Image: harness.TestImage, Cmd: []string{"sleep", "infinity"}},
-		&container.HostConfig{},
+		harness.HostConfig(),
 		&network.NetworkingConfig{
 			EndpointsConfig: map[string]*network.EndpointSettings{
 				netName: {

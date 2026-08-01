@@ -254,6 +254,12 @@ type dhcpManager struct {
 	ipMu     sync.Mutex
 	lastIP   *netlink.Addr
 	lastIPv6 *netlink.Addr
+
+	// orphanReleaseOnce guards the #370 reclaim. Both abandon paths —
+	// Join's Start goroutine finding the container gone, and a Leave
+	// that got there first — can reach the same manager, and they do
+	// not serialise against each other.
+	orphanReleaseOnce sync.Once
 	// MacAddress is set in macvlan mode so we can re-find the link inside
 	// the container netns after Docker has moved and renamed it. Empty in
 	// bridge mode.
@@ -281,6 +287,41 @@ type dhcpManager struct {
 	// blocks until Start completes, then short-circuits if Start failed.
 	startedCh chan struct{}
 	startErr  error
+
+	// startPhases / startTotal carry the per-phase timing of a FAILED
+	// Start so the caller can log it on the same line as the error.
+	// Written once in Start's deferred exit and read only after
+	// startedCh closes, which is the same happens-before startErr
+	// already relies on. Empty on success — timing a Join that worked
+	// belongs in a benchmark, not on an operator's log.
+	startPhases string
+	startTotal  string
+
+	// attachCancel aborts an in-flight Start. Stop calls it before
+	// waiting on startedCh, which is what keeps the longer attach
+	// budget (see attachDaemonBusyGrace) from turning into a longer
+	// Leave: a container that goes away mid-attach cancels the attach
+	// instead of making libnetwork wait out the whole grace for a
+	// container nobody is waiting on any more.
+	attachCancel context.CancelFunc
+
+	// attachAborted records that the cancellation above was OUR doing,
+	// i.e. Stop ran because the endpoint is leaving.
+	//
+	// Without it the resulting "context canceled" is indistinguishable
+	// from any other attach failure and gets counted as a plugin fault
+	// — a running container left with no renewal client — when the
+	// truth is the opposite: there is no container left to renew for.
+	// Measured on run 30700597210, where six attaches reported
+	// join_start_failures with `context canceled`, all of them endpoints
+	// that were being torn down (#406).
+	//
+	// Deliberately a flag rather than inferring it from
+	// errors.Is(err, context.Canceled): a cancelled context could also
+	// come from somewhere that is not a teardown, and excusing every
+	// cancellation would be exactly the blanket amnesty #373 and #376
+	// were careful not to grant.
+	attachAborted atomic.Bool
 }
 
 func newDHCPManager(docker dockerClient, r JoinRequest, opts DHCPNetworkOptions) *dhcpManager {
@@ -376,10 +417,38 @@ func (m *dhcpManager) containerID() string {
 	return m.ctrID
 }
 
+// endpointMAC returns the MAC this endpoint's DHCP identity is keyed
+// to: the one CreateEndpoint ran its one-shot exchange under, carried
+// on the join hint and restored from the tombstone on recovery. Falls
+// back to the located container link so a manager that never saw a
+// hint degrades to reading the live link rather than to no MAC.
+func (m *dhcpManager) endpointMAC() net.HardwareAddr {
+	if len(m.MacAddress) > 0 {
+		return m.MacAddress
+	}
+	if m.ctrLink != nil {
+		return m.ctrLink.Attrs().HardwareAddr
+	}
+	return nil
+}
+
+// clientID resolves this endpoint's DHCP option-61 identity.
+//
+// Every exchange the manager makes — the persistent client's renewals,
+// and the synthesised release of a lease an early-exiting container
+// orphaned (#370) — has to present the id the CreateEndpoint one-shot
+// used. Present a different one and the server sees a different client:
+// the lease it already holds is neither renewed nor freed, silently.
+// Since #371 the id is mode-dependent (MAC-derived, except ipvlan), so
+// deriving it in one place from one input is what keeps those in step.
+func (m *dhcpManager) clientID() []byte {
+	return resolveClientID(m.opts, m.joinReq.EndpointID, m.endpointMAC())
+}
+
 // macString returns the endpoint's MAC for ledger entries: the
 // container-side link's address when Start has located it (set before
 // the event goroutines exist, so reads here are race-free), falling
-// back to the macvlan-mode MacAddress hint.
+// back to the MacAddress recorded on the join hint.
 func (m *dhcpManager) macString() string {
 	if m.ctrLink != nil {
 		if hw := m.ctrLink.Attrs().HardwareAddr; len(hw) > 0 {
@@ -763,10 +832,12 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 		// (DHCPClientOptions.Broadcast, #243) — this flag is set for the
 		// ipvlan path but currently has no effect.
 		Broadcast: m.opts.effectiveMode() == ModeIPvlan,
-		// Same client-id the initial DISCOVER used in CreateEndpoint,
-		// so renewals are seen as the same client by the server.
-		// Honours the operator's client_id override when set.
-		ClientID:    resolveClientID(m.opts, m.joinReq.EndpointID),
+		// Same client-id the initial DISCOVER used in CreateEndpoint, so
+		// renewals are seen as the same client by the server. Derived
+		// from the MAC the one-shot ran under rather than from the link
+		// in hand, so this and the orphan-release path cannot drift
+		// apart (#371). Honours the operator's client_id override.
+		ClientID:    m.clientID(),
 		VendorClass: m.opts.VendorClass,
 	})
 	if err != nil {
@@ -949,9 +1020,94 @@ func (m *dhcpManager) awaitLinkLocal(ctx context.Context) error {
 	}, pollTime)
 }
 
+// joinPhases records how long each stage of Start took, so a Join that
+// runs out of budget can say WHERE the budget went.
+//
+// Start is one deadline covering five quite different waits: resolving
+// the endpoint to a real container ID, inspecting that container,
+// opening its netns, locating its link, and spawning dhcpcd. When it
+// expires, every one of them reports the same "context deadline
+// exceeded", and the two explanations that matter are indistinguishable
+// (#406):
+//
+//   - the daemon was genuinely slow, and the container is still running
+//     with no renewal client — a real fault;
+//   - an earlier phase consumed the budget, so a later one inherited an
+//     already-expired context and failed instantly against a perfectly
+//     healthy daemon.
+//
+// Those want opposite fixes — a bigger budget, or a budget spent
+// differently — so guessing between them is how #401's first attempt
+// went wrong. This makes the next ordinary CI run answer it, rather
+// than needing a reproduction nobody has managed to build locally.
+//
+// Deliberately not a health counter. This is diagnostic detail for a
+// failure that is already being counted and logged; adding a counter
+// per phase would put five numbers on an operator's health surface to
+// answer a question only a developer asks.
+type joinPhases struct {
+	start time.Time
+	last  time.Time
+	spans []joinPhaseSpan
+}
+
+type joinPhaseSpan struct {
+	name string
+	took time.Duration
+}
+
+func newJoinPhases() *joinPhases {
+	now := time.Now()
+	return &joinPhases{start: now, last: now}
+}
+
+// mark closes the phase that has just finished.
+func (p *joinPhases) mark(name string) {
+	if p == nil {
+		return
+	}
+	now := time.Now()
+	p.spans = append(p.spans, joinPhaseSpan{name: name, took: now.Sub(p.last)})
+	p.last = now
+}
+
+// summary renders the phases as a log field: "resolve_id=8.9s inspect=1.1s".
+// The phase that ate the budget is then the obvious one to read.
+func (p *joinPhases) summary() string {
+	if p == nil || len(p.spans) == 0 {
+		return "(no phase completed)"
+	}
+	parts := make([]string, 0, len(p.spans))
+	for _, s := range p.spans {
+		parts = append(parts, fmt.Sprintf("%s=%.2fs", s.name, s.took.Seconds()))
+	}
+	return strings.Join(parts, " ")
+}
+
+// total is the whole of Start, for reading against the budget.
+func (p *joinPhases) total() time.Duration {
+	if p == nil {
+		return 0
+	}
+	return time.Since(p.start)
+}
+
 func (m *dhcpManager) Start(ctx context.Context) (err error) {
+	phases := newJoinPhases()
 	defer func() {
 		m.startErr = err
+		if err != nil {
+			// Recorded on the manager rather than logged from here.
+			// #411 put this on its own Debug line, and the line was
+			// invisible where it mattered: the health floor's evidence
+			// dump prints error and warning lines, so the run that
+			// failed showed six "context deadline exceeded" errors with
+			// no timing anywhere near them. A diagnostic that only
+			// appears somewhere else is not a diagnostic — the caller
+			// now folds these onto the failure line itself (#406).
+			m.startPhases = phases.summary()
+			m.startTotal = phases.total().Round(10 * time.Millisecond).String()
+		}
 		close(m.startedCh)
 	}()
 	var ctrID string
@@ -976,11 +1132,14 @@ func (m *dhcpManager) Start(ctx context.Context) (err error) {
 	}, pollTime); err != nil {
 		return err
 	}
+	phases.mark("resolve_container_id")
 
 	ctr, err := util.AwaitContainerInspect(ctx, m.docker, ctrID, pollTime)
 	if err != nil {
 		return fmt.Errorf("failed to get Docker container info: %w", err)
 	}
+
+	phases.mark("inspect_container")
 
 	// Using the "sandbox key" directly causes issues on some platforms
 	m.nsPath = fmt.Sprintf("/proc/%v/ns/net", ctr.State.Pid)
@@ -990,6 +1149,8 @@ func (m *dhcpManager) Start(ctx context.Context) (err error) {
 	if err != nil {
 		return fmt.Errorf("failed to get sandbox network namespace: %w", err)
 	}
+
+	phases.mark("open_netns")
 
 	m.netHandle, err = netlink.NewHandleAt(m.nsHandle)
 	if err != nil {
@@ -1001,6 +1162,8 @@ func (m *dhcpManager) Start(ctx context.Context) (err error) {
 		if err := m.locateContainerLink(ctx); err != nil {
 			return err
 		}
+
+		phases.mark("locate_link")
 
 		if m.errChan, err = m.setupClient(false); err != nil {
 			close(m.stopChan)
@@ -1034,6 +1197,7 @@ func (m *dhcpManager) Start(ctx context.Context) (err error) {
 			}
 		}
 
+		phases.mark("start_clients")
 		return nil
 	}(); err != nil {
 		closeNetHandle(m.netHandle)
@@ -1045,10 +1209,31 @@ func (m *dhcpManager) Start(ctx context.Context) (err error) {
 }
 
 func (m *dhcpManager) Stop() error {
+	// Abort an attach that is still running before waiting for it.
+	// Without this, the attach grace added for #406 would be charged to
+	// every Leave that arrives during one — libnetwork would block for
+	// the full grace waiting on an attach whose container is already
+	// leaving.
+	if m.attachCancel != nil {
+		m.attachAborted.Store(true)
+		m.attachCancel()
+	}
 	// Wait for Start to finish so we don't tear down half-initialised
-	// state. If Start failed there's nothing to clean up.
+	// state.
 	<-m.startedCh
 	if m.startErr != nil {
+		// No persistent client ever ran, so there is no dhcpcd to
+		// signal — but that does NOT mean there is nothing to clean up.
+		// The CreateEndpoint one-shot acquired an address and kept it
+		// (`-1 -p`) precisely so this manager could take it over; with
+		// Start failed, nobody ever did, and the server holds it until
+		// it expires. Hand it back (#370).
+		//
+		// This used to read "If Start failed there's nothing to clean
+		// up" and return. That was true of the manager's own state and
+		// false of the lease, which is how 17 of 32 containers in one
+		// integration run leaked an address.
+		m.plugin.spawnOrphanRelease(m)
 		return nil
 	}
 

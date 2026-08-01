@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	cerrdefs "github.com/containerd/errdefs"
 	dNetwork "github.com/docker/docker/api/types/network"
 	docker "github.com/docker/docker/client"
 	"github.com/gorilla/handlers"
@@ -55,6 +56,31 @@ const (
 // AWAIT_TIMEOUT's default.
 const defaultAwaitTimeout = 10 * time.Second
 
+// attachDaemonBusyGrace is added to AwaitTimeout for the Join attach,
+// and only there.
+//
+// The attach has to ask the daemon about the container it is attaching
+// to, and the daemon is inside ContainerStart for that same container
+// while it does — so it does not answer until it is finished (#406).
+// AwaitTimeout is a statement about how long the plugin's own work may
+// take; this is the separate question of how long our caller may keep
+// us waiting, and folding the second into the first meant a busy
+// daemon read as a plugin failure and a running container was left
+// without a renewal client.
+//
+// 60s because the wait ends when ContainerStart does, and the useful
+// bound is "longer than a container can plausibly take to start", not
+// a number tuned to a measurement — a wait that ends early is exactly
+// the bug being fixed. Nothing waits on it: Stop cancels the attach, so
+// a container that leaves during the grace does not pay for it, and the
+// only cost of the ceiling being generous is a goroutine that outlives
+// its usefulness on a daemon that never recovers.
+// A var, not a const, so a test can shrink it: proving the grace changes
+// the outcome otherwise costs 70s of real waiting per run, and a unit
+// test nobody wants to run is a unit test that stops being run. Same
+// seam as recoveryDaemonRetryInterval.
+var attachDaemonBusyGrace = 60 * time.Second
+
 const initialDHCPHostnameLookupTimeout = 2 * time.Second
 
 // recoveryBudget caps the wall-time the plugin spends rebuilding its
@@ -72,6 +98,30 @@ const recoveryBudget = 30 * time.Second
 // to recover. Tight on purpose — these are local-socket calls that
 // either return promptly or are wedged.
 const recoveryPerNetworkTimeout = 3 * time.Second
+
+// recoverySyncDaemonWait caps how long recovery will wait for the daemon
+// to answer *before* the plugin socket is listening (#383). Docker
+// respawns us during its own startup and calls into us while it comes
+// up, so this window is added directly to plugin-enable latency and to
+// any deadlock risk — keep it short. When it expires, recovery is
+// deferred to the post-Listen retry rather than abandoned.
+const recoverySyncDaemonWait = 3 * time.Second
+
+// recoveryDeferredDaemonWait caps the post-Listen retry. Generous
+// because it costs nothing: the socket is already serving, so a plugin
+// waiting here is fully responsive. When *this* expires the daemon is
+// genuinely unreachable, which is a real recovery_failed.
+const recoveryDeferredDaemonWait = 60 * time.Second
+
+// recoveryDaemonRetryInterval spaces the retries. The Docker client's
+// own 2s timeout dominates each failed attempt, so this only controls
+// the gap between them.
+//
+// A var, not a const, solely so tests can shrink it — the same reason
+// as pluginShutdownTimeout below. Exercising the retry loop at the real
+// interval would cost seconds per case for no added confidence. Never
+// reassigned outside tests.
+var recoveryDaemonRetryInterval = 500 * time.Millisecond
 
 // clientIDFromEndpoint derives a stable DHCP option-61 client identifier
 // from a Docker endpoint ID. Docker's endpoint IDs are 64 hex chars
@@ -95,15 +145,57 @@ func clientIDFromEndpoint(endpointID string) []byte {
 	return b
 }
 
+// clientIDFromMAC derives the option-61 payload from the endpoint's
+// MAC. Returns nil for an empty/unset MAC so callers fall back.
+//
+// The payload is the raw address bytes; formatClientID prepends the
+// same type-byte 0x00 ("opaque") wrapper it always has. RFC 2132's
+// type-0x01 ("ethernet") form would be more literal, but several
+// servers treat a type-1 client-id as an alias for the chaddr, which
+// would silently change matching semantics for operators. Opaque keeps
+// the id an id.
+func clientIDFromMAC(mac net.HardwareAddr) []byte {
+	if len(mac) == 0 {
+		return nil
+	}
+	return append([]byte(nil), mac...)
+}
+
 // resolveClientID picks the option-61 payload for a fresh DHCP
 // exchange. Operator-supplied opts.ClientID wins when non-empty
 // (treated as opaque ASCII bytes; the dhcpcd client adds the
-// type-byte 0x00 wrapper on the wire). Otherwise we fall back to
-// the endpoint-derived stable id, which is what makes per-container
-// reservations work upstream.
-func resolveClientID(opts DHCPNetworkOptions, endpointID string) []byte {
+// type-byte 0x00 wrapper on the wire).
+//
+// Otherwise the id comes from the MAC. This is what makes an IPv4
+// address survive `docker restart`: the tombstone preserves the MAC, so
+// the returning container presents the same identity and the server
+// renews the same lease. It is the identity IPv6 has always used (its
+// DUID/IAID is MAC-derived), which is why v6 survived restarts that v4
+// did not (#371).
+//
+// It also removes the dependency on the shutdown DHCPRELEASE. That
+// release is what previously freed the address for a container coming
+// back under a new endpoint-derived id — and it is not always sent
+// (#370: a ~2s window at startup where the persistent client is not yet
+// bound), nor can it ever be sent on SIGKILL, OOM, or power loss.
+//
+// ipvlan is the exception. Its L2 slaves inherit the parent's MAC by
+// kernel design, so a MAC-derived id would be *identical* for every
+// container on the network and they would all claim one lease. Those
+// keep the endpoint-derived id, and with it today's restart fragility —
+// #219 owns that case.
+//
+// The endpoint-derived fallback also covers a missing MAC, so a caller
+// that cannot supply one degrades to the previous behaviour rather than
+// to no client-id at all.
+func resolveClientID(opts DHCPNetworkOptions, endpointID string, mac net.HardwareAddr) []byte {
 	if opts.ClientID != "" {
 		return []byte(opts.ClientID)
+	}
+	if opts.effectiveMode() != ModeIPvlan {
+		if id := clientIDFromMAC(mac); id != nil {
+			return id
+		}
 	}
 	return clientIDFromEndpoint(endpointID)
 }
@@ -154,12 +246,14 @@ type DHCPNetworkOptions struct {
 	// fragments) and silently re-MTU'ing a container could surprise an
 	// operator. Opt-in keeps the behaviour change visible.
 	PropagateMTU bool `mapstructure:"propagate_mtu"`
-	// ClientID, when non-empty, overrides the endpoint-derived DHCP
-	// option 61 (Client Identifier) for every endpoint on this
-	// network. Bytes go on the wire prefixed with type byte 0x00
-	// (RFC 2132 opaque). Default empty = use the stable
-	// per-endpoint id derived from the Docker endpoint ID, which is
-	// what makes per-container reservations work upstream.
+	// ClientID, when non-empty, overrides the derived DHCP option 61
+	// (Client Identifier) for every endpoint on this network. Bytes go
+	// on the wire prefixed with type byte 0x00 (RFC 2132 opaque).
+	//
+	// Default empty = derive per endpoint: from the MAC in bridge and
+	// macvlan (unique, and preserved across a restart, so the lease
+	// survives), from the Docker endpoint ID in ipvlan (whose slaves
+	// share the parent MAC). See resolveClientID.
 	//
 	// Operator caveat: a static ClientID across containers means the
 	// upstream DHCP server can't differentiate them — each new
@@ -268,8 +362,14 @@ type joinHint struct {
 	// Gateway, they only arrive in CreateEndpoint, so they ride the hint
 	// to be appended to the Join response's StaticRoutes.
 	Routes []*StaticRoute
-	// MacAddress is set in macvlan mode so the persistent DHCP client can
-	// re-find the (renamed) macvlan link inside the container netns by MAC.
+	// MacAddress is the MAC CreateEndpoint ran its one-shot DHCP
+	// exchange under, and so the one this endpoint's DHCP identity is
+	// keyed to (dhcpManager.clientID, #371). Set in every mode.
+	//
+	// In macvlan mode it additionally locates the link: Docker moves the
+	// interface wholesale and renames it, so MAC is the only stable
+	// handle left inside the container netns. Bridge mode finds its link
+	// through the veth peer index instead and never consults this.
 	MacAddress net.HardwareAddr
 	// Ifname is the validated custom container-side interface name from
 	// the ifnameOption endpoint option (#125). The option only arrives
@@ -339,6 +439,39 @@ type Plugin struct {
 	recoveredOK    atomic.Int32
 	recoveryFailed atomic.Int32
 
+	// recoveryDeferred counts the times recovery could not start because
+	// the daemon was not answering yet and had to be retried after the
+	// socket came up (#383). Docker respawns us during its own startup,
+	// so meeting a not-yet-ready daemon is the expected state at that
+	// moment — not a fault. NOT healthy-affecting, same reasoning as
+	// join_aborted_container_gone: only an exhausted retry budget is a
+	// real failure, and that still lands on recovery_failed.
+	recoveryDeferred atomic.Int32
+
+	// recoveryPending is set by NewPlugin when the synchronous attempt
+	// met a daemon that was not serving yet, and consumed by Listen.
+	// Written before Listen and read there; never concurrent.
+	recoveryPending bool
+
+	// recoveryCancel stops the deferred-recovery goroutine at Close.
+	// nil when recovery completed synchronously, which is the norm.
+	recoveryCancel context.CancelFunc
+
+	// recoveryAbortedContainerGone counts post-restart recoveries
+	// abandoned because the container had already exited (or been
+	// removed) by the time recovery reached it (#376). Deliberately
+	// NOT healthy-affecting, for exactly the reason
+	// joinAbortedContainerGone is not: there is no running container
+	// left without a renewal client, so nothing is wrong.
+	//
+	// This is the recovery-side twin of joinAbortedContainerGone.
+	// Before #376 both outcomes landed in recoveryFailed, so a routine
+	// daemon restart with any since-exited container flipped healthy
+	// to false and paged an operator over a normal exit. The
+	// integration suite knew the counter conflated the two and
+	// declined to assert on it at all.
+	recoveryAbortedContainerGone atomic.Int32
+
 	// joinStartFailures counts persistent-DHCP-client Start failures
 	// at Join time (#317). Each bump is a running container that got
 	// its initial lease but has NO renewal client: the lease silently
@@ -350,6 +483,41 @@ type Plugin struct {
 	// recovery_failed: restart the affected container once the cause
 	// is fixed.
 	joinStartFailures atomic.Int32
+
+	// joinAbortedContainerGone counts attaches abandoned because the
+	// container exited before the persistent client could be started
+	// (#373). Deliberately NOT healthy-affecting and deliberately not
+	// silent: nothing is wrong — there is no running container missing
+	// a renewal client — but a sudden rise still says something real
+	// about the workload (containers dying seconds after start, a
+	// crash-loop), so it stays visible on /Plugin.Health.
+	//
+	// This is the benign twin of joinStartFailures. The two are
+	// distinguished by whether the Join's sandbox key still exists;
+	// before #373 both landed in joinStartFailures and a normal fast
+	// exit could flip healthy to false.
+	joinAbortedContainerGone atomic.Int32
+
+	// joinAttachSlow counts attaches that finished, but only after
+	// outlasting AwaitTimeout — i.e. ones that would have been
+	// abandoned before attachDaemonBusyGrace existed, and were counted
+	// as join_start_failures (#406).
+	//
+	// Not healthy-affecting: nothing is wrong, the container has its
+	// renewal client. It is here because it is the only way to see from
+	// outside that the daemon is holding containers long enough to
+	// matter, and because if this ever reads zero across a run while
+	// join_start_failures moves, the grace is not the mechanism doing
+	// the work and the fix needs re-examining.
+	joinAttachSlow atomic.Int32
+
+	// joinAbortedEndpointLeft counts attaches cancelled because Leave
+	// arrived while they were still running. Not healthy-affecting and
+	// not silent, on the same reasoning as
+	// joinAbortedContainerGone: nothing is missing a renewal client,
+	// but a sustained rise says containers are being torn down inside
+	// the attach window (#406).
+	joinAbortedEndpointLeft atomic.Int32
 
 	// tombstoneWriteFailures counts saveTombstones failures (disk full,
 	// EROFS) from addTombstone. Reported on /Plugin.Health so operators
@@ -387,6 +555,25 @@ type Plugin struct {
 	leasesRenewed        atomic.Int32
 	dhcpTimeouts         atomic.Int32
 	leaseReleaseFailures atomic.Int32
+
+	// orphanedLeasesReleased / orphanedLeaseReleaseFailures cover the
+	// lease the CreateEndpoint one-shot acquired when no persistent
+	// client ever took ownership of it — a container that exited before
+	// Join's async Start could attach (#370). See releaseOrphanedLease.
+	//
+	// Deliberately separate from leaseReleaseFailures: that counter
+	// means "a client we were running failed to hand its lease back",
+	// which points at upstream reachability. These mean "no client was
+	// running at all", which points at container churn. Merging them
+	// would make the pattern each one exists to reveal unreadable.
+	//
+	// Neither participates in Healthy. A failed synthesised release
+	// leaves one lease held until it expires — worth alerting on as a
+	// rate, not worth latching a plugin unhealthy over, in the same
+	// spirit as #373/#376/#383: an ordinary container lifecycle must
+	// not read as a plugin fault.
+	orphanedLeasesReleased       atomic.Int32
+	orphanedLeaseReleaseFailures atomic.Int32
 
 	// naksReceived counts "nak" events — the server refused a
 	// REQUEST (pool reconfigured, address reassigned, lease revoked).
@@ -427,6 +614,15 @@ type Plugin struct {
 	// otherwise visible only as scattered log lines.
 	displacedStops      sync.WaitGroup
 	displacedStopsTotal atomic.Int32
+
+	// orphanReleases tracks the goroutines that hand back a lease no
+	// persistent client ever owned (#370). Same reasoning as
+	// displacedStops, and the same reason it must not be bounded: the
+	// work exists to keep a release off the teardown path, so putting a
+	// semaphore in front of it would reintroduce the blocking. Close
+	// waits on it because an interrupted synthesised release leaks the
+	// very lease it was spawned to reclaim.
+	orphanReleases sync.WaitGroup
 
 	// ledger is the append-only lease audit log (#109), written by
 	// dhcpManager.audit for networks created with audit_log=true.
@@ -745,7 +941,41 @@ func (p *Plugin) consumeTombstone(networkID, hostname string) (mac, ipv4, ipv6 s
 // as its `request` directive (DHCP option 50) so the upstream DHCP
 // server can ACK the lease the container is already using rather than
 // handing out a fresh one.
-func (p *Plugin) recoverEndpoints(ctx context.Context) {
+// listNetworksWhenReady is recovery's entry gate. It retries NetworkList
+// until the daemon answers or ctx expires.
+//
+// Retrying rather than pinging first is deliberate: NetworkList is the
+// capability recovery actually needs, and a daemon can answer /_ping
+// before its network store is ready. Retrying the real call closes that
+// gap instead of trading one race for another.
+func (p *Plugin) listNetworksWhenReady(ctx context.Context) ([]dNetwork.Summary, error) {
+	var lastErr error
+	for {
+		nets, err := p.docker.NetworkList(ctx, dNetwork.ListOptions{})
+		if err == nil {
+			return nets, nil
+		}
+		lastErr = err
+		// ctx is the wait budget; the client's own timeout is what makes
+		// each individual attempt return promptly.
+		select {
+		case <-ctx.Done():
+			return nil, lastErr
+		case <-time.After(recoveryDaemonRetryInterval):
+		}
+	}
+}
+
+// ctx bounds the whole of recovery; daemonWait is the slice of it the
+// entry gate may spend waiting for the daemon to answer. They are
+// separate on purpose — time spent waiting must not come out of the
+// budget the endpoints themselves need to re-DISCOVER.
+//
+// recoverEndpoints returns daemonNotReady=true when it could not even
+// reach the daemon within daemonWait. That is a "try again later", not a
+// failure: the caller decides whether a retry is still possible (see
+// NewPlugin / Listen) and only the last attempt counts a real failure.
+func (p *Plugin) recoverEndpoints(ctx context.Context, daemonWait time.Duration) (daemonNotReady bool) {
 	// recordSyncFailure bumps both the local counter (used for the
 	// summary log line) and the atomic surfaced on /Plugin.Health.
 	// The async Start failure path bumps p.recoveryFailed directly;
@@ -757,13 +987,13 @@ func (p *Plugin) recoverEndpoints(ctx context.Context) {
 		failed++
 		p.recoveryFailed.Add(1)
 	}
-	nets, err := p.docker.NetworkList(ctx, dNetwork.ListOptions{})
+	waitCtx, waitCancel := context.WithTimeout(ctx, daemonWait)
+	nets, err := p.listNetworksWhenReady(waitCtx)
+	waitCancel()
 	if err != nil {
-		log.WithError(err).Warn("recovery: failed to list networks; skipping")
-		// We don't know how many endpoints we missed; at least flip
-		// Healthy=false so an operator notices.
-		p.recoveryFailed.Add(1)
-		return
+		log.WithError(err).WithField("waited", daemonWait).
+			Warn("recovery: daemon did not answer within the wait budget")
+		return true
 	}
 	for _, n := range nets {
 		if !IsDHCPPlugin(n.Driver) {
@@ -797,7 +1027,7 @@ func (p *Plugin) recoverEndpoints(ctx context.Context) {
 			if strings.HasPrefix(cid, "ep-") {
 				continue
 			}
-			if err := p.recoverOneEndpoint(ctx, n.ID, info.EndpointID, info.MacAddress, info.IPv4Address, info.IPv6Address, opts); err != nil {
+			if err := p.recoverOneEndpoint(ctx, cid, n.ID, info.EndpointID, info.MacAddress, info.IPv4Address, info.IPv6Address, opts); err != nil {
 				log.WithError(err).WithFields(log.Fields{
 					"network":  shortID(n.ID),
 					"endpoint": shortID(info.EndpointID),
@@ -814,13 +1044,84 @@ func (p *Plugin) recoverEndpoints(ctx context.Context) {
 			"failed":    failed,
 		}).Info("Plugin recovery complete")
 	}
+	return false
+}
+
+// recoverEndpointsDeferred is the second half of #383. The synchronous
+// attempt in NewPlugin met a daemon that was still starting; this runs
+// once the socket is listening, so the plugin stays responsive to the
+// very daemon it is waiting for.
+//
+// Safe to run late: recoverOneEndpoint bails when a manager already
+// exists, so any endpoint a Join has meanwhile claimed is left alone
+// (TestPlugin_RecoverOneEndpointIsIdempotent pins that).
+// wait is a parameter rather than a constant read so tests can drive the
+// exhausted-budget arm without a minute of wall clock.
+func (p *Plugin) recoverEndpointsDeferred(ctx context.Context, wait time.Duration) {
+	p.recoveryDeferred.Add(1)
+	log.WithField("wait", wait).
+		Info("recovery: daemon not ready yet; retrying after the socket comes up")
+
+	// The overall budget has to cover the wait *and* the recovery work
+	// that follows it, so it is the sum of the two.
+	runCtx, cancel := context.WithTimeout(ctx, wait+recoveryBudget)
+	defer cancel()
+
+	if notReady := p.recoverEndpoints(runCtx, wait); notReady {
+		// Budget exhausted with the daemon still unreachable. Now it is
+		// a real failure: nothing else is going to retry, so every
+		// previously-attached endpoint is running without renewal.
+		log.Error("recovery: daemon never became reachable; endpoints are running without a renewal client")
+		p.recoveryFailed.Add(1)
+	}
+}
+
+// containerGone reports whether containerID names a container that is
+// no longer running — either the daemon has never heard of it (it was
+// removed) or it has stopped.
+//
+// This is the recovery-side counterpart to sandboxGone, deliberately
+// built on a different mechanism. sandboxGone avoids the Docker API
+// because the API round-trip is itself what times out when a container
+// vanishes mid-Join, and a Join request carries a sandbox key it can
+// look at instead. Recovery has neither constraint: it is not on any
+// container's critical path, and it already holds the container ID
+// straight from NetworkInspect, so a direct inspect is both available
+// and more accurate than inferring. recoverOneEndpoint's synthesised
+// JoinRequest has no SandboxKey, so sandboxGone is not reusable here
+// even in principle.
+//
+// An inspect error that is not "no such container" returns false. No
+// usable evidence is not evidence of absence — the same stance
+// sandboxGone takes about an unreadable netns directory — so a daemon
+// that is unreachable or erroring degrades to counting a real recovery
+// failure rather than silently excusing one.
+func (p *Plugin) containerGone(ctx context.Context, containerID string) bool {
+	if containerID == "" {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(ctx, recoveryPerNetworkTimeout)
+	defer cancel()
+
+	ctr, err := p.docker.ContainerInspect(ctx, containerID)
+	if err != nil {
+		return cerrdefs.IsNotFound(err)
+	}
+	// Restarting, paused-then-stopped, exited, dead: none of them have
+	// a live netns depending on us, and a container that comes back
+	// arrives through Join, which builds its own manager. Only
+	// State.Running means "something is relying on this recovery".
+	return ctr.State == nil || !ctr.State.Running
 }
 
 // recoverOneEndpoint synthesises a JoinRequest and dhcpManager for a
 // single existing endpoint, then spawns Start in a goroutine. Idempotent:
 // if a manager already exists for the endpoint (e.g. because libnetwork
 // raced with us and called Join concurrently), we skip.
-func (p *Plugin) recoverOneEndpoint(ctx context.Context, networkID, endpointID, macStr, ipv4Cidr, ipv6Cidr string, opts DHCPNetworkOptions) error {
+//
+// containerID is carried through solely so the async Start failure can
+// tell a real failure from a container that has since exited (#376).
+func (p *Plugin) recoverOneEndpoint(ctx context.Context, containerID, networkID, endpointID, macStr, ipv4Cidr, ipv6Cidr string, opts DHCPNetworkOptions) error {
 	p.mu.Lock()
 	_, exists := p.persistentDHCP[endpointID]
 	p.mu.Unlock()
@@ -859,11 +1160,34 @@ func (p *Plugin) recoverOneEndpoint(ctx context.Context, networkID, endpointID, 
 		startCtx, cancel := context.WithTimeout(context.Background(), p.awaitTimeout)
 		defer cancel()
 		if err := m.Start(startCtx); err != nil {
+			fields := log.Fields{
+				"network":   shortID(networkID),
+				"endpoint":  shortID(endpointID),
+				"container": shortID(containerID),
+			}
+			// A container that exited before recovery reached it is not
+			// a plugin failure. recovery_failed means "a RUNNING
+			// container has no renewal client" and flips healthy;
+			// firing it for a container that is simply gone would page
+			// an operator over a normal exit (#376) — the same defect
+			// #373 fixed on the Join side.
+			//
+			// Checked here rather than before Start: the container
+			// being present when recovery began says nothing about
+			// whether it survived the seconds Start takes, and an
+			// inspect on the success path would be pure cost. A fresh
+			// context because startCtx is already expired whenever
+			// Start failed by timing out.
+			if p.containerGone(context.Background(), containerID) {
+				p.recoveryAbortedContainerGone.Add(1)
+				log.WithError(err).WithFields(fields).
+					Info("recovery: container went away before recovery completed; no persistent client needed")
+				p.removeDHCPManagerIfSame(endpointID, m)
+				return
+			}
 			p.recoveryFailed.Add(1)
-			log.WithError(err).WithFields(log.Fields{
-				"network":  shortID(networkID),
-				"endpoint": shortID(endpointID),
-			}).Error("recovery: persistent DHCP client Start failed; lease will not renew until container restart")
+			log.WithError(err).WithFields(fields).
+				Error("recovery: persistent DHCP client Start failed; lease will not renew until container restart")
 			// Identity-checked: a Join for this endpoint may already
 			// have displaced us with a fresh manager we must not evict.
 			p.removeDHCPManagerIfSame(endpointID, m)
@@ -1048,9 +1372,15 @@ func NewPlugin(opts Options) (*Plugin, error) {
 	// where a fresh CreateEndpoint could race recovery's Start for the
 	// same endpoint: the map check is mutex-protected, but Start runs
 	// outside the mutex. recoveryBudget bounds plugin-enable latency.
+	//
+	// The one case we do NOT finish here is a daemon that has not
+	// started serving yet (#383). Docker respawns us during its own
+	// startup, so blocking for it would add latency to plugin-enable
+	// against the very daemon we are waiting on. Recovery is handed to
+	// Listen instead, which runs it once the socket is up.
 	{
 		ctx, cancel := context.WithTimeout(context.Background(), recoveryBudget)
-		p.recoverEndpoints(ctx)
+		p.recoveryPending = p.recoverEndpoints(ctx, recoverySyncDaemonWait)
 		cancel()
 	}
 
@@ -1068,6 +1398,17 @@ func (p *Plugin) Listen(bindSock string) error {
 	l, err := net.Listen("unix", bindSock)
 	if err != nil {
 		return err
+	}
+
+	// The socket exists now, so the daemon can reach us even while we
+	// are still waiting on it. Start the deferred recovery here rather
+	// than in NewPlugin (#383) — before this point, waiting would make
+	// us unreachable to the daemon whose readiness we are waiting for.
+	if p.recoveryPending {
+		p.recoveryPending = false
+		ctx, cancel := context.WithCancel(context.Background())
+		p.recoveryCancel = cancel
+		go p.recoverEndpointsDeferred(ctx, recoveryDeferredDaemonWait)
 	}
 
 	return p.server.Serve(l)
@@ -1120,6 +1461,15 @@ func waitBounded(wg *sync.WaitGroup, d time.Duration) bool {
 // the upstream DHCP server, defeating the release-on-stop contract
 // Leave normally honors.
 func (p *Plugin) Close() error {
+	// Stop the deferred-recovery retry first (#383). It can be sitting
+	// in a 60s wait for a daemon that is going away with us, and a
+	// recovery that registers a manager after the drain below would
+	// orphan that manager's lease — exactly the ordering bug the
+	// server-first shutdown is written to prevent.
+	if p.recoveryCancel != nil {
+		p.recoveryCancel()
+	}
+
 	// One deadline for every phase below; see pluginShutdownTimeout.
 	deadline := time.Now().Add(pluginShutdownTimeout)
 	remaining := func() time.Duration {
@@ -1207,6 +1557,13 @@ func (p *Plugin) Close() error {
 	// server — the same failure the fan-out above exists to prevent.
 	if !waitBounded(&p.displacedStops, remaining()) {
 		log.Warn("Timeout waiting for displaced DHCP manager stops; continuing shutdown")
+	}
+
+	// Same for orphan releases (#370). These reclaim a lease that no
+	// client is holding open, so cutting one short is the one case where
+	// shutdown itself causes the leak.
+	if !waitBounded(&p.orphanReleases, remaining()) {
+		log.Warn("Timeout waiting for orphaned-lease releases; continuing shutdown")
 	}
 
 	if err := p.docker.Close(); err != nil {

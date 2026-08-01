@@ -88,6 +88,8 @@ jobs:
           bash scripts/test-check-manifest-parity.sh
           bash scripts/test-check-no-ai-attribution.sh
           bash scripts/test-check-docs-drift.sh
+          bash scripts/test-makefile-tee.sh
+          bash scripts/test-check-issue-label-map.sh
 
       # Every driver-option key the code parses must be documented in
       # docs/reference.md — an undocumented option turns CI red (#132).
@@ -114,6 +116,13 @@ jobs:
       # CAP_SYS_PTRACE did exactly that on the v1.3.3 release PR).
       - name: Plugin-manifest parity check
         run: bash scripts/check-manifest-parity.sh
+
+      # The issue labeller's rule map (#393). A pattern that has stopped
+      # matching costs nothing visible at runtime — issues just fall
+      # through to the model pass — so the fixture is the only thing
+      # that notices.
+      - name: Issue label map check
+        run: bash scripts/check-issue-label-map.sh
 
   staticcheck:
     runs-on: ubuntu-latest

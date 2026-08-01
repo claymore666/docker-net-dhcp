@@ -5,12 +5,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
+	cerrdefs "github.com/containerd/errdefs"
 	dNetwork "github.com/docker/docker/api/types/network"
 	"github.com/mitchellh/mapstructure"
 	log "github.com/sirupsen/logrus"
@@ -75,6 +78,135 @@ func validateModeOptions(opts DHCPNetworkOptions) error {
 		return fmt.Errorf("%w: %q", util.ErrInvalidMode, opts.Mode)
 	}
 	return nil
+}
+
+// sandboxGone reports whether a Join's sandbox key has been unlinked,
+// which is how the container's network namespace disappears when the
+// container exits.
+//
+// Deliberately a filesystem check and not a Docker API call: the API
+// round-trip is itself what times out when a container vanishes
+// mid-attach (the `failed to get Docker container info: context deadline
+// exceeded` in #373), so asking Docker to confirm would be both slower
+// and less reliable than looking at the artifact directly.
+//
+// An empty key returns false — no evidence is not evidence of absence,
+// and the caller must fall back to treating the failure as real. The
+// same applies to any key that isn't a plain entry in a known netns
+// directory: an unrecognised shape is not evidence the container went
+// away, so it degrades to the pre-#373 behaviour of counting a real
+// failure rather than silently excusing one.
+func sandboxGone(sandboxKey string) bool {
+	return sandboxGoneIn(sandboxNetnsDirs, sandboxKey)
+}
+
+// joinAbortedByVanish reports whether a failed Join failed BECAUSE the
+// container went away, rather than because the plugin could not do its
+// job for a container that was still there.
+//
+// #373 established the distinction and answered it one way: has the
+// sandbox key been unlinked. That is sound evidence when it fires, and
+// it misses the cases where the container's own resources are already
+// gone while libnetwork has not yet unlinked the key. Those turned into
+// counted plugin faults, nine to twelve per integration run, and read
+// as "the CI host is slow" for long enough to send a PR chasing a
+// regression that was not there (#401).
+//
+// The error carries the answer more directly than the filesystem does:
+//
+//   - "no such container" from the daemon. Every caller resolved the
+//     container ID moments earlier, so absence now means removed.
+//   - fs.ErrNotExist anywhere in the chain. The only paths a failing
+//     Join opens are the sandbox netns and /proc/<pid>/ns/net, both
+//     owned by the container; neither can be missing while the
+//     container is running. This is why the await helpers now keep the
+//     last attempt's error in the chain rather than only in its text.
+//
+// The sandbox-key check stays as the third answer, unchanged. An error
+// this cannot classify still counts a real fault: no usable evidence is
+// not evidence of absence, which is the stance #373 took and #376 took
+// after it.
+func joinAbortedByVanish(err error, sandboxKey string) bool {
+	if cerrdefs.IsNotFound(err) {
+		return true
+	}
+	if errors.Is(err, fs.ErrNotExist) {
+		return true
+	}
+	return sandboxGone(sandboxKey)
+}
+
+// sandboxNetnsDirs are the only directories a Join's sandbox key is
+// expected to live in. libnetwork bind-mounts each sandbox's netns as
+// /var/run/docker/netns/<id>; hosts where /var/run is a symlink to
+// /run report the same file under the second form.
+var sandboxNetnsDirs = []string{
+	"/var/run/docker/netns",
+	"/run/docker/netns",
+}
+
+// sandboxGoneIn is sandboxGone with the permitted directories injected,
+// so both answers can be tested without root or a live Docker sandbox.
+// Production always passes sandboxNetnsDirs.
+//
+// It lists the directory and compares names rather than stat'ing the
+// key. That looks like the long way round, and it is load-bearing: the
+// sandbox key is the only path the plugin takes from a Join request into
+// a filesystem call — everywhere else it is merely logged — so no path
+// derived from it is ever handed to the filesystem. The only value that
+// reaches the OS is one of the compile-time directories above; the
+// request-supplied name is used solely in a string comparison. Rewriting
+// this as os.Stat(filepath.Join(dir, name)) reintroduces CodeQL
+// go/path-injection (flagged on #374) even with the name validated to a
+// bare filename first — filepath.Base is not treated as a barrier.
+//
+// The cost is reading one directory instead of one stat, on a path that
+// only runs when starting the persistent client has already failed.
+func sandboxGoneIn(dirs []string, sandboxKey string) bool {
+	dir, name := splitSandboxKeyIn(dirs, sandboxKey)
+	if dir == "" {
+		return false
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		// No usable evidence — not a negative result. A permission
+		// error must not read as "the container went away": the plugin
+		// runs as root and sees the real listing, while /var/run/docker
+		// is 0700, so anything less privileged gets EACCES for every
+		// key and would otherwise conclude every container had vanished.
+		return false
+	}
+	for _, e := range entries {
+		if e.Name() == name {
+			return false
+		}
+	}
+	return true
+}
+
+// splitSandboxKeyIn validates a sandbox key and splits it into one of
+// the permitted directories plus a bare filename. It returns an empty
+// dir for anything it does not recognise, which callers must treat as
+// "no usable evidence" rather than as a negative result.
+func splitSandboxKeyIn(dirs []string, sandboxKey string) (dir, name string) {
+	if sandboxKey == "" {
+		return "", ""
+	}
+	clean := filepath.Clean(sandboxKey)
+	// filepath.Base strips every directory component, so the name is a
+	// bare entry to compare against the directory listing; Clean has
+	// already resolved any interior ".." segments.
+	name = filepath.Base(clean)
+	if name == "." || name == ".." || name == string(os.PathSeparator) {
+		return "", ""
+	}
+	parent := filepath.Dir(clean)
+	for _, known := range dirs {
+		if parent == known {
+			return known, name
+		}
+	}
+	return "", ""
 }
 
 // CreateNetwork validates network creation: option shape (pure), then
@@ -555,7 +687,23 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 		if opts.LeaseTimeout != 0 {
 			timeout = opts.LeaseTimeout
 		}
-		clientID := resolveClientID(opts, r.EndpointID)
+		// Record the MAC this endpoint's DHCP identity is keyed to, so
+		// Join can re-derive the same id without re-reading a link
+		// (dhcpManager.clientID). The orphan-release path needs it after
+		// the container is already gone, when there is no link left to
+		// read it from at all.
+		//
+		// Bridge mode does not use MacAddress to *locate* the container
+		// link — that is the macvlan/ipvlan branch of
+		// locateContainerLink, which bridge never enters — so populating
+		// it here changes nothing about link location.
+		p.updateJoinHint(r.EndpointID, func(hint *joinHint) {
+			hint.MacAddress = ctrLink.Attrs().HardwareAddr
+		})
+		// MAC-derived so the IPv4 lease survives a restart the way the
+		// v6 binding always has; see resolveClientID (#371). Same link,
+		// same MAC the DUID-LL/IAID below is pinned to.
+		clientID := resolveClientID(opts, r.EndpointID, ctrLink.Attrs().HardwareAddr)
 		initialIP := func(v6 bool) error {
 			v6str := ""
 			if v6 {
@@ -1048,6 +1196,15 @@ func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) 
 	m.setLastIP(false, hint.IPv4)
 	m.setLastIP(true, hint.IPv6)
 	m.MacAddress = hint.MacAddress
+
+	// Set BEFORE registerDHCPManager publishes this manager, not after.
+	// The comment above says a fast Leave can find it the moment it is
+	// registered, and Stop reads attachCancel — so assigning it later
+	// is a data race, and worse, a Leave that wins the race reads nil
+	// and does not cancel, which is the exact case
+	// TestStop_CancelsAnInFlightAttach exists to prevent (#406).
+	attachCtx, cancelAttach := context.WithTimeout(context.Background(), p.awaitTimeout+attachDaemonBusyGrace)
+	m.attachCancel = cancelAttach
 	if displaced := p.registerDHCPManager(r.EndpointID, m); displaced != nil {
 		// A recovery-registered manager for this endpoint was still in
 		// the registry (Join with no preceding Leave to this plugin
@@ -1075,16 +1232,102 @@ func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) 
 	}
 
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), p.awaitTimeout)
-		defer cancel()
+		// AwaitTimeout plus a grace, because part of this attach is
+		// spent waiting for the daemon that is calling us.
+		//
+		// Measured (#406): the attach asks Docker about the container
+		// being joined while Docker is inside ContainerStart for that
+		// same container, and Docker does not answer until it is done.
+		// The client's own 2s timeout turns each request into a fast
+		// failure, so five of them consume a 10s budget and the attach
+		// is abandoned — leaving a RUNNING container with no renewal
+		// client, whose lease then expires unrenewed. Three to six per
+		// integration run.
+		//
+		// The budget was never the problem in the sense the first pass
+		// at #401 assumed (a slow host); it is that a fixed budget was
+		// racing our own caller. The grace covers that window. Stop
+		// cancels it, so a container that leaves during the wait does
+		// not pay for it.
+		defer cancelAttach()
 
-		if err := m.Start(ctx); err != nil {
-			p.joinStartFailures.Add(1)
-			log.WithError(err).WithFields(log.Fields{
+		attachStart := time.Now()
+		err := m.Start(attachCtx)
+		if err == nil {
+			// Successful, but only thanks to the grace. Counted so the
+			// mechanism is visible from outside: if join_start_failures
+			// ever moves while this stays at zero, the grace is not
+			// what is carrying these attaches and the diagnosis in #406
+			// is wrong.
+			if elapsed := time.Since(attachStart); elapsed > p.awaitTimeout {
+				p.joinAttachSlow.Add(1)
+				log.WithFields(log.Fields{
+					"network":  shortID(r.NetworkID),
+					"endpoint": shortID(r.EndpointID),
+					"took":     elapsed.Round(100 * time.Millisecond).String(),
+					"budget":   p.awaitTimeout.String(),
+				}).Warn("Attach outlasted AwaitTimeout; the daemon was busy with this container")
+			}
+		}
+		if err != nil {
+			fields := log.Fields{
 				"network":  shortID(r.NetworkID),
 				"endpoint": shortID(r.EndpointID),
 				"sandbox":  r.SandboxKey,
-			}).Error("Failed to start persistent DHCP client; lease will not be renewed")
+			}
+			// Per-phase timing rides the failure line rather than a
+			// separate one. "context deadline exceeded" on its own does
+			// not say whether the budget went on resolving the container
+			// ID or on inspecting it, and those want opposite fixes; a
+			// reader correlating two log lines by timestamp will guess
+			// instead, which is how #401 was first misdiagnosed (#406).
+			if m.startPhases != "" {
+				fields["phases"] = m.startPhases
+				fields["phase_total"] = m.startTotal
+			}
+			// A container that exited while we were still attaching to it
+			// is not a plugin failure. join_start_failures means "a
+			// RUNNING container has no renewal client" and flips healthy;
+			// firing it for a container that is simply gone would page an
+			// operator over a normal exit, and nothing is missing a
+			// renewal client because nothing is there (#373).
+			//
+			// Prompt exits are the common case, not the exotic one: an
+			// application that handles SIGTERM is gone in milliseconds.
+			// The suite only stopped hiding this when its containers got
+			// an init PID 1 (#367) — `sleep infinity` ignoring SIGTERM
+			// had been holding every teardown open for 10s.
+			// An attach we cancelled ourselves because the endpoint is
+			// leaving. Not a fault, and specifically not the fault this
+			// counter names: nothing is left running without a renewal
+			// client, because the endpoint is going away. Checked before
+			// joinAbortedByVanish because the evidence here is stronger
+			// than any of that function's three — we know why the attach
+			// stopped, rather than inferring it (#406).
+			if m.attachAborted.Load() {
+				p.joinAbortedEndpointLeft.Add(1)
+				log.WithError(err).WithFields(fields).
+					Info("Attach cancelled because the endpoint is leaving; no persistent client needed")
+				p.removeDHCPManagerIfSame(r.EndpointID, m)
+				p.spawnOrphanRelease(m)
+				return
+			}
+			if joinAbortedByVanish(err, r.SandboxKey) {
+				p.joinAbortedContainerGone.Add(1)
+				log.WithError(err).WithFields(fields).
+					Info("Container went away during attach; no persistent client needed")
+				p.removeDHCPManagerIfSame(r.EndpointID, m)
+				// No persistent client is needed, but the address the
+				// CreateEndpoint one-shot took is still held upstream —
+				// it was kept on purpose for a handover that is now
+				// never happening. Nothing is using it, so give it back
+				// rather than let it sit until expiry (#370).
+				p.spawnOrphanRelease(m)
+				return
+			}
+			p.joinStartFailures.Add(1)
+			log.WithError(err).WithFields(fields).
+				Error("Failed to start persistent DHCP client; lease will not be renewed")
 			// If Start failed, take ourselves out of the registry so a
 			// later Leave doesn't try to Stop() us. Stop() is safe to
 			// call against a failed-Start manager (it returns the start
