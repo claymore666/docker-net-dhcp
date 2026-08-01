@@ -256,7 +256,18 @@ func (p *Plugin) apiLeave(w http.ResponseWriter, r *http.Request) {
 // expiry. Operators should restart those containers (which produces a
 // fresh CreateEndpoint and gets them back into the persistent map).
 type HealthResponse struct {
-	Healthy         bool    `json:"healthy"`
+	Healthy bool `json:"healthy"`
+	// InstanceID identifies the plugin process that served this
+	// response. Every counter below is in-memory and returns to zero
+	// when the process does, so two reads are only comparable as a
+	// delta when their InstanceID matches (#405).
+	//
+	// uptime_seconds is a weaker version of the same signal: it does
+	// reset, but a plugin that restarts early in a long window and then
+	// runs longer than the first reading shows uptime going *up* across
+	// the pair, and the reset goes unnoticed. Comparing ids has no such
+	// blind spot.
+	InstanceID      string  `json:"instance_id"`
 	UptimeSeconds   float64 `json:"uptime_seconds"`
 	ActiveEndpoints int     `json:"active_endpoints"`
 	PendingHints    int     `json:"pending_hints"`
@@ -384,6 +395,7 @@ func (p *Plugin) apiHealth(w http.ResponseWriter, r *http.Request) {
 		// means the next restart of some container will pick a new
 		// MAC/IP.
 		Healthy:           failed == 0 && joinFails == 0 && tsFails == 0,
+		InstanceID:        p.instanceID,
 		UptimeSeconds:     time.Since(p.startTime).Seconds(),
 		ActiveEndpoints:   active,
 		PendingHints:      pending,
