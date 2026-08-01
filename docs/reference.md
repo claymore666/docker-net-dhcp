@@ -642,6 +642,26 @@ sudo cat /var/lib/docker/plugins/*/rootfs/var/log/net-dhcp.log
 Raise verbosity with `docker plugin set <plugin> LOG_LEVEL=trace`
 (plus a disable/enable cycle).
 
+**That file does not survive an upgrade.** It lives in the plugin
+rootfs, which Docker destroys and recreates on `docker plugin rm` /
+`install` — the supported upgrade path — so the previous version's
+history is gone at exactly the point you are most likely to want it.
+
+Since v1.5.0 every line also goes to the plugin's stdout, which dockerd
+captures into the **daemon** log on the host filesystem. That copy
+outlives the plugin:
+
+```bash
+# systemd hosts
+sudo journalctl -u docker --since "2 hours ago" | grep net-dhcp
+# or, where dockerd logs to a file
+sudo grep net-dhcp /var/log/docker.log
+```
+
+Take the in-rootfs copy for a focused read of the running plugin, and
+the daemon log when you need history across an upgrade or the plugin is
+already gone.
+
 ### Lease audit ledger (`audit_log=true`)
 
 `STATE_DIR/leases.jsonl` inside the plugin rootfs:
