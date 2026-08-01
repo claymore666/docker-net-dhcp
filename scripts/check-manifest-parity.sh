@@ -28,6 +28,33 @@ for field in '.linux.capabilities' '.network.type' '.pidhost' '.interface.types'
     fi
 done
 
+# The STATE_DIR mount is compared even though other mounts are not
+# (#440). It is what makes tombstones, per-network options and the
+# audit ledger survive `docker plugin rm` — the documented upgrade path
+# — so a cover manifest without it runs the suite against a plugin with
+# DIFFERENT persistence behaviour from the one that ships. That is the
+# same shape as #317, where a capability landed in config.json only and
+# the release-PR coverage run failed against the unfixed cover manifest.
+#
+# Also checked against the manifest's own STATE_DIR default: if the two
+# drift, the mount covers a path the plugin does not use and durability
+# is silently lost while the mount is still there to reassure a reader.
+for f in "$MAIN" "$COVER"; do
+    want=$(jq -r '.env[] | select(.name=="STATE_DIR") | .value' "$f")
+    if [ -z "$want" ] || [ "$want" = "null" ]; then
+        echo "FAIL  $f declares no STATE_DIR default"
+        fails=1
+        continue
+    fi
+    got=$(jq -r --arg d "$want" '[.mounts[]? | select(.destination == $d)] | length' "$f")
+    if [ "$got" != "1" ]; then
+        echo "FAIL  $f has no bind mount at STATE_DIR ($want) — state will not survive plugin rm (#440)"
+        fails=1
+    else
+        echo "ok    $f mounts STATE_DIR $want"
+    fi
+done
+
 if [ "$fails" -ne 0 ]; then
     echo "manifest parity check FAILED — align $COVER with $MAIN"
     exit 1
