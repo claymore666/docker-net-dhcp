@@ -1216,6 +1216,16 @@ func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) 
 				"endpoint": shortID(r.EndpointID),
 				"sandbox":  r.SandboxKey,
 			}
+			// Per-phase timing rides the failure line rather than a
+			// separate one. "context deadline exceeded" on its own does
+			// not say whether the budget went on resolving the container
+			// ID or on inspecting it, and those want opposite fixes; a
+			// reader correlating two log lines by timestamp will guess
+			// instead, which is how #401 was first misdiagnosed (#406).
+			if m.startPhases != "" {
+				fields["phases"] = m.startPhases
+				fields["phase_total"] = m.startTotal
+			}
 			// A container that exited while we were still attaching to it
 			// is not a plugin failure. join_start_failures means "a
 			// RUNNING container has no renewal client" and flips healthy;

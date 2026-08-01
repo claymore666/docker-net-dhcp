@@ -1,6 +1,7 @@
 package plugin
 
 import (
+	"context"
 	"errors"
 	"os"
 	"strings"
@@ -8,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	dNetwork "github.com/docker/docker/api/types/network"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
 
@@ -454,4 +456,57 @@ func TestJoinPhases(t *testing.T) {
 			t.Error("nil tracker total should be zero")
 		}
 	})
+}
+
+// TestStart_RecordsPhasesForTheCaller is the check that #411's timing
+// actually reaches a reader. #411 logged it on its own Debug line and
+// the line went unread: the health floor's evidence dump prints error
+// and warning lines, so a run with six "context deadline exceeded"
+// failures showed no timing anywhere near them. Instrumentation that
+// lands somewhere other than the failure it explains is not
+// instrumentation, so the summary is now recorded on the manager and
+// the Join failure log folds it in (#406).
+func TestStart_RecordsPhasesForTheCaller(t *testing.T) {
+	const (
+		netID = "net-1"
+		epID  = "ep-abcdef"
+		ctrID = "container-1"
+	)
+	docker := &fakeDocker{
+		inspectResult: map[string]dNetwork.Inspect{
+			netID: {Containers: map[string]dNetwork.EndpointResource{
+				ctrID: {EndpointID: epID},
+			}},
+		},
+		// The failure under investigation: the container resolves, then
+		// inspecting it never answers.
+		containerErr: errors.New("context deadline exceeded"),
+	}
+	m := newDHCPManager(docker, JoinRequest{NetworkID: netID, EndpointID: epID}, DHCPNetworkOptions{})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	if err := m.Start(ctx); err == nil {
+		t.Fatal("Start succeeded against a daemon that never answers ContainerInspect")
+	}
+
+	if m.startPhases == "" {
+		t.Fatal("Start recorded no phase summary; the Join failure line will say only 'context deadline exceeded' again")
+	}
+	if !strings.Contains(m.startPhases, "resolve_container_id=") {
+		t.Errorf("phase summary %q does not name the phase that completed", m.startPhases)
+	}
+	if m.startTotal == "" {
+		t.Error("Start recorded no total; a reader cannot tell a 10s timeout from a 200ms one")
+	}
+}
+
+// TestStart_LeavesNoPhaseRecordOnSuccess keeps the field honest. A
+// stale summary from a previous failure, or timing on every successful
+// Join, would put noise on the operator's log for no diagnostic gain.
+func TestStart_LeavesNoPhaseRecordOnSuccess(t *testing.T) {
+	m := newDHCPManager(&fakeDocker{}, JoinRequest{}, DHCPNetworkOptions{})
+	if m.startPhases != "" || m.startTotal != "" {
+		t.Error("a fresh manager already carries phase timing")
+	}
 }
