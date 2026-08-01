@@ -1,0 +1,7 @@
+# Documentation site toolchain (#133) — human-maintained intent.
+# Compiled to the fully-pinned, hashed docs/requirements.txt via:
+#   pip-compile --generate-hashes --output-file docs/requirements.txt docs/requirements.in
+# Compatible-release constraints hold the major; pip-compile resolves the
+# exact version + hashes, and Dependabot bumps both on update.
+mkdocs-material~=9.5
+mike~=2.1
