@@ -46,6 +46,20 @@ on:
     branches:
       - main
       - dev
+  # On-demand runs against a tree that has not changed (#419).
+  #
+  # "Three consecutive green runs" is this project's bar for trusting a
+  # change of this class, and it is what a release cut is meant to
+  # clear. Without this the only ways to re-run an unchanged tree were
+  # an empty commit to dev (pollutes history, bypasses the PR rule) or
+  # `gh run rerun` on the originating PR run, which depends on that run
+  # still existing and on remembering which one matches the tree.
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch, tag or SHA to run the suite against. Blank = the default branch."
+        required: false
+        type: string
 
 # Serializes privileged self-hosted WORKFLOW RUNS (shared with
 # coverage.yml, #296) — one PR's integration run cannot overlap
@@ -129,6 +143,10 @@ jobs:
       decision: ${{ steps.gate.outputs.decision }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Empty on every event except workflow_dispatch, where
+          # checkout falls back to the triggering ref (#419).
+          ref: ${{ inputs.ref }}
 
       - name: Suite-needed gate
         id: gate
@@ -136,13 +154,57 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GATE_REPO: ${{ github.repository }}
         run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            decision=$(bash scripts/integration-run-gate.sh pr "${{ github.event.pull_request.number }}") || decision=run
-          else
-            decision=$(bash scripts/integration-run-gate.sh push "$(git rev-parse 'HEAD^{tree}')") || decision=run
-          fi
+          case "${{ github.event_name }}" in
+            pull_request)
+              decision=$(bash scripts/integration-run-gate.sh pr "${{ github.event.pull_request.number }}") || decision=run
+              ;;
+            workflow_dispatch)
+              # Never skippable. A dispatch is a request for fresh
+              # evidence about a tree that has not changed, so the
+              # duplicate-tree skip would answer the wrong question —
+              # and answer it green in thirteen seconds (#419).
+              decision=$(bash scripts/integration-run-gate.sh dispatch) || decision=run
+              ;;
+            *)
+              decision=$(bash scripts/integration-run-gate.sh push "$(git rev-parse 'HEAD^{tree}')") || decision=run
+              ;;
+          esac
           echo "decision=${decision}" >> "$GITHUB_OUTPUT"
           echo "gate decision: ${decision}"
+
+  # Queue watchdog (#392). Runs alongside the suites on a hosted runner,
+  # so it is never queued behind the shortage it exists to report.
+  #
+  # timeout-minutes does not apply to a job no runner has picked up, so
+  # a pool shortage otherwise shows as a run that looks busy forever:
+  # the required `integration` context sits on Expected, the PR blocks,
+  # and the selfhosted-privileged concurrency group stays held. That
+  # happened on 2026-07-31 and was caught only by somebody looking.
+  #
+  # Deliberately NOT part of the `integration` aggregator's needs: this
+  # reports on a run that is failing to progress, and gating the
+  # aggregator on it would make the aggregator wait for the very thing
+  # that is stuck.
+  watchdog:
+    needs: gate
+    if: needs.gate.outputs.decision == 'run'
+    runs-on: ubuntu-latest
+    # Comfortably longer than the stuck budget below, so the watchdog
+    # gets to report rather than being killed mid-verdict.
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+      - name: Fail if a suite job never gets a runner
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GATE_REPO: ${{ github.repository }}
+        # 10 minutes: the suites themselves take ~8-10, and the observed
+        # incident sat unassigned for 11 before a human noticed. Long
+        # enough that ordinary pool contention resolves, short enough to
+        # beat a person watching the Actions tab.
+        run: bash scripts/ci-queue-watchdog.sh "${{ github.run_id }}" 600 30
 
   # The two suites. Identical except for the make target and log name,
   # so a matrix rather than two near-duplicate job bodies — the previous
@@ -176,6 +238,10 @@ jobs:
       INTEGRATION_PLUGIN_REF: ghcr.io/claymore666/docker-net-dhcp:integration
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Empty on every event except workflow_dispatch, where
+          # checkout falls back to the triggering ref (#419).
+          ref: ${{ inputs.ref }}
 
       # The Go toolchain (go.mod's version) is baked into the dhcp-ci
       # runner image, so actions/setup-go is skipped. Fail loudly if
