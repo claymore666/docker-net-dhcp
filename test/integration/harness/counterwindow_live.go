@@ -5,6 +5,7 @@ package harness
 import (
 	"context"
 	"testing"
+	"time"
 
 	docker "github.com/docker/docker/client"
 )
@@ -39,6 +40,7 @@ type CounterWindow struct {
 	ctx           context.Context
 	cli           *docker.Client
 	before        *HealthResponse
+	after         *HealthResponse
 	counters      []string
 	expectRecycle bool
 	ended         bool
@@ -99,6 +101,62 @@ func (w *CounterWindow) Before() *HealthResponse {
 	return w.before
 }
 
+// awaitPollInterval is the gap between health reads inside Await.
+//
+// 250ms, inherited from the failure suite's own poll helper: it returns
+// closer to the moment the health state flips without touching the
+// caller's budget (#254), and the floor keeps the extra CPU off the
+// timing-sensitive preflight probe. Do not raise it casually — that
+// tuning was deliberate.
+const awaitPollInterval = 250 * time.Millisecond
+
+// Await polls the plugin's health until cond reports true or budget is
+// spent, and returns the last successful read plus whether cond ever
+// held.
+//
+// cond receives the current read and the window's opening read, because
+// nearly every condition here is really a delta ("leases_obtained is
+// above where it started"). Handing over the baseline keeps callers
+// from capturing a stale one in a closure, which is the same hazard
+// this type exists to close.
+//
+// Every read is checked against the opening instance. A poll that spans
+// a plugin restart is the nastiest form of the #405 bug: the counters
+// it is watching went back to zero, so a "greater than baseline"
+// condition either never fires and the caller reports a timeout that
+// blames the wrong thing, or fires later for the wrong reason. Failing
+// the moment identity breaks reports the real cause instead.
+//
+// A read error is not fatal on its own — the socket can blink during
+// the events these tests provoke — but never getting a single
+// successful read is. Returning "condition not met" for a plugin that
+// was never reachable would hand the caller an absence of evidence
+// dressed as a measurement.
+func (w *CounterWindow) Await(budget time.Duration, cond func(now, before *HealthResponse) bool) (*HealthResponse, bool) {
+	w.t.Helper()
+	deadline := time.Now().Add(budget)
+	var last *HealthResponse
+	for time.Now().Before(deadline) {
+		h, err := PluginHealth(w.ctx, w.cli)
+		if err == nil {
+			last = h
+			if msg := CounterWindowError(CompareInstances(w.before, h), w.expectRecycle, w.before, h, w.counters...); msg != "" {
+				w.t.Fatalf("while waiting for a condition on the plugin's counters: %s", msg)
+			}
+			if cond(h, w.before) {
+				return h, true
+			}
+		}
+		time.Sleep(awaitPollInterval)
+	}
+	if last == nil {
+		w.t.Fatalf("waited %s for a condition on the plugin's counters and never got a single "+
+			"successful health read; that is an unreachable plugin, not an unmet condition (counters: %v)",
+			budget, w.counters)
+	}
+	return last, false
+}
+
 // End takes the closing read, verifies the plugin did not silently
 // restart in between, and returns both reads for the caller to
 // subtract.
@@ -107,8 +165,17 @@ func (w *CounterWindow) Before() *HealthResponse {
 // unexpected recycle, and an identity that cannot be established all
 // mean the same thing: the number the test is about to compute does not
 // describe what the test did.
+//
+// End is idempotent: a window closes once, and later calls return that
+// same closing read. Several tests assert on a delta and then hand the
+// window to a shared helper that also closes it; without this they
+// would take two readings a few lines apart and quietly compare against
+// different numbers.
 func (w *CounterWindow) End() (before, after *HealthResponse) {
 	w.t.Helper()
+	if w.ended {
+		return w.before, w.after
+	}
 	w.ended = true
 
 	after, err := PluginHealth(w.ctx, w.cli)
@@ -120,5 +187,6 @@ func (w *CounterWindow) End() (before, after *HealthResponse) {
 	if msg := CounterWindowError(CompareInstances(w.before, after), w.expectRecycle, w.before, after, w.counters...); msg != "" {
 		w.t.Fatal(msg)
 	}
+	w.after = after
 	return w.before, after
 }

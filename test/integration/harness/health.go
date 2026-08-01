@@ -72,6 +72,33 @@ func PluginHealth(ctx context.Context, cli *docker.Client) (*HealthResponse, err
 	return &out, nil
 }
 
+// WaitPluginHealth polls until the plugin's socket answers, or budget
+// is spent, and fails the test if it never does.
+//
+// This is for *readiness* only — the gap after a deliberate recycle
+// where Plugin.Enabled has flipped but the socket is not listening yet.
+// It deliberately makes no claim about counters, and comparing two of
+// its results is not a measurement: use BeginCounterWindow for that.
+//
+// It exists so a readiness poll is not written as a bare PluginHealth
+// loop, which is indistinguishable at a glance from an unguarded
+// measurement and is what the suite-source guard rejects (#405).
+func WaitPluginHealth(t *testing.T, ctx context.Context, cli *docker.Client, budget time.Duration) *HealthResponse {
+	t.Helper()
+	deadline := time.Now().Add(budget)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		h, err := PluginHealth(ctx, cli)
+		if err == nil {
+			return h
+		}
+		lastErr = err
+		time.Sleep(200 * time.Millisecond)
+	}
+	t.Fatalf("plugin health never became reachable within %s; last error: %v", budget, lastErr)
+	return nil
+}
+
 // ReadPluginLog returns the current contents of the plugin's
 // /var/log/net-dhcp.log as a string, or an empty string with a t.Logf
 // note on error. Useful when a test wants to assert on a specific log

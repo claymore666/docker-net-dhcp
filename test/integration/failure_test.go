@@ -119,8 +119,15 @@ const (
 // flag next to it kept the absolute form. This applies the same rule:
 // assert that THIS test introduced no new fault, not that the plugin
 // has been faultless for its whole life.
-func assertNoNewHealthFaults(t *testing.T, base, now *harness.HealthResponse, what string) {
+func assertNoNewHealthFaults(t *testing.T, w *harness.CounterWindow, what string) {
 	t.Helper()
+	// Closing the window here rather than taking the caller's
+	// mid-flight reading is deliberate on two counts. It proves the
+	// plugin never restarted across the stretch these deltas describe
+	// (#405), and it reads the counters at the latest possible moment —
+	// they only ever climb, so a check at the end is strictly stronger
+	// than one taken when some earlier condition first held.
+	base, now := w.End()
 	if base == nil || now == nil {
 		return
 	}
@@ -135,40 +142,30 @@ func assertNoNewHealthFaults(t *testing.T, base, now *harness.HealthResponse, wh
 	}
 }
 
-// failureHealth polls /Plugin.Health until cond is true or the budget
-// is spent, returning the last response either way.
-func failureHealth(t *testing.T, ctx context.Context, cli *docker.Client, budget time.Duration, cond func(*harness.HealthResponse) bool) (*harness.HealthResponse, bool) {
-	t.Helper()
-	deadline := time.Now().Add(budget)
-	var last *harness.HealthResponse
-	for time.Now().Before(deadline) {
-		h, err := harness.PluginHealth(ctx, cli)
-		if err == nil {
-			last = h
-			if cond(h) {
-				return h, true
-			}
-		}
-		// Pure poll-until-condition: a tighter interval just returns
-		// closer to the moment the health state flips, without
-		// touching the caller's budget (#254). 250ms floor keeps the
-		// extra CPU off the timing-sensitive preflight probe.
-		time.Sleep(250 * time.Millisecond)
-	}
-	return last, false
-}
+// failureHealth is gone. harness.CounterWindow.Await runs the same
+// poll and additionally rejects a reading taken after the plugin
+// restarted underneath it. "This counter rose above its baseline" is
+// exactly the condition that breaks silently across a reset — the
+// counter being watched went back to zero, so the wait either times out
+// blaming the wrong thing or is satisfied later for the wrong reason
+// (#405). The poll interval and its #254 rationale moved with it.
 
 // awaitBoundPersistentClient blocks until the plugin records a bind
-// beyond the pre-test baseline — i.e. the long-lived client started in
-// Join holds its OWN lease and the lease clock these tests wait out is
-// actually running. Rule 1 in this file's header.
-func awaitBoundPersistentClient(t *testing.T, ctx context.Context, cli *docker.Client, pre *harness.HealthResponse) {
+// beyond the window's opening baseline — i.e. the long-lived client
+// started in Join holds its OWN lease and the lease clock these tests
+// wait out is actually running. Rule 1 in this file's header.
+func awaitBoundPersistentClient(t *testing.T, w *harness.CounterWindow) {
 	t.Helper()
-	if _, ok := failureHealth(t, ctx, cli, 45*time.Second, func(h *harness.HealthResponse) bool {
-		return h.LeasesObtained > pre.LeasesObtained
+	if _, ok := w.Await(45*time.Second, func(now, before *harness.HealthResponse) bool {
+		return now.LeasesObtained > before.LeasesObtained
 	}); !ok {
 		t.Fatal("persistent client never confirmed its own bind; the failure below would land on an acquiring client, not a bound one (#278)")
 	}
+	// This window's only job was the bind; close it here so it is not
+	// left open for the rest of the test. An unclosed window is flagged
+	// by the harness, and rightly — it looks identical to one that
+	// verified something.
+	w.End()
 }
 
 // outageLines counts, for one endpoint, the plugin-log records of the
@@ -269,10 +266,7 @@ func TestFailure_ServerLossDuringRenewal(t *testing.T) {
 	}
 	defer cli.Close()
 
-	pre, err := harness.PluginHealth(ctx, cli)
-	if err != nil {
-		t.Fatalf("Plugin.Health (pre): %v", err)
-	}
+	bindW := harness.BeginCounterWindow(t, ctx, cli, "leases_obtained")
 
 	harness.CreateNetwork(t, ctx, netName, "macvlan", map[string]string{
 		"parent": harness.EphemeralHostVeth,
@@ -280,13 +274,12 @@ func TestFailure_ServerLossDuringRenewal(t *testing.T) {
 	id, ip, mac := harness.RunContainer(t, ctx, netName, "dh-itest-floss-ctr")
 	t.Logf("bound: ip=%s mac=%s", ip, mac)
 
-	awaitBoundPersistentClient(t, ctx, cli, pre)
+	awaitBoundPersistentClient(t, bindW)
 	ep := harness.EndpointShortID(t, ctx, cli, id, netName)
 
-	base, err := harness.PluginHealth(ctx, cli)
-	if err != nil {
-		t.Fatalf("Plugin.Health (baseline): %v", err)
-	}
+	faultW := harness.BeginCounterWindow(t, ctx, cli,
+		"recovery_failed", "join_start_failures", "tombstone_write_failures")
+	base := faultW.Before()
 	baseFail, baseWatch := outageLines(t, ctx, ep)
 	if baseFail+baseWatch > 0 {
 		// Not fatal: one dhcpcd TIMEOUT during initial acquisition on a
@@ -302,7 +295,7 @@ func TestFailure_ServerLossDuringRenewal(t *testing.T) {
 	ef.Stop()
 	t.Logf("server killed; a BOUND lease (fixture lease %s) has to lapse before the plugin can report a timeout", harness.LeaseTime)
 
-	h, ok := failureHealth(t, ctx, cli, outageRiseBudget, func(h *harness.HealthResponse) bool {
+	h, ok := faultW.Await(outageRiseBudget, func(h, _ *harness.HealthResponse) bool {
 		return h.DHCPTimeouts > base.DHCPTimeouts
 	})
 	if !ok {
@@ -314,7 +307,7 @@ func TestFailure_ServerLossDuringRenewal(t *testing.T) {
 	if (nowFail-baseFail)+(nowWatch-baseWatch) == 0 {
 		t.Errorf("dhcp_timeouts rose but the plugin logged no outage line for endpoint %s: the counter is plugin-wide, so this rise belongs to some other client and says nothing about the endpoint under test (#278)", ep)
 	}
-	assertNoNewHealthFaults(t, base, h, "a dead DHCP server is a degraded mode, not a plugin failure")
+	assertNoNewHealthFaults(t, faultW, "a dead DHCP server is a degraded mode, not a plugin failure")
 	if !containerHasIP(t, ctx, id, ip) {
 		t.Errorf("container lost %s during the outage; a lapsed lease is deliberately a no-op and should retain the address", ip)
 	}
@@ -359,11 +352,7 @@ func TestFailure_ServerLossDuringRenewal(t *testing.T) {
 		t.Errorf("container holds %s but the server's last DHCPACK for %s was %s; the two have diverged", live, mac, acked)
 	}
 
-	after, err := harness.PluginHealth(ctx, cli)
-	if err != nil {
-		t.Fatalf("Plugin.Health (after): %v", err)
-	}
-	assertNoNewHealthFaults(t, base, after, "the server returned and the client re-bound")
+	assertNoNewHealthFaults(t, faultW, "the server returned and the client re-bound")
 }
 
 // TestFailure_ServerReturnsBeforeExpiry: the same outage, but SHORT —
@@ -399,10 +388,7 @@ func TestFailure_ServerReturnsBeforeExpiry(t *testing.T) {
 	}
 	defer cli.Close()
 
-	pre, err := harness.PluginHealth(ctx, cli)
-	if err != nil {
-		t.Fatalf("Plugin.Health (pre): %v", err)
-	}
+	bindW := harness.BeginCounterWindow(t, ctx, cli, "leases_obtained")
 
 	harness.CreateNetwork(t, ctx, netName, "macvlan", map[string]string{
 		"parent": harness.EphemeralHostVeth,
@@ -410,13 +396,12 @@ func TestFailure_ServerReturnsBeforeExpiry(t *testing.T) {
 	id, ip, mac := harness.RunContainer(t, ctx, netName, "dh-itest-fshort-ctr")
 	t.Logf("bound: ip=%s mac=%s", ip, mac)
 
-	awaitBoundPersistentClient(t, ctx, cli, pre)
+	awaitBoundPersistentClient(t, bindW)
 	ep := harness.EndpointShortID(t, ctx, cli, id, netName)
 
-	base, err := harness.PluginHealth(ctx, cli)
-	if err != nil {
-		t.Fatalf("Plugin.Health (baseline): %v", err)
-	}
+	faultW := harness.BeginCounterWindow(t, ctx, cli,
+		"recovery_failed", "join_start_failures", "tombstone_write_failures")
+	base := faultW.Before()
 	baseFail, baseWatch := outageLines(t, ctx, ep)
 
 	// Down and back up well inside the 120s lease. 60s is long enough
@@ -461,10 +446,7 @@ func TestFailure_ServerReturnsBeforeExpiry(t *testing.T) {
 		t.Errorf("container's address changed across an outage the lease outlived; the server still held %s and must have returned it", ip)
 	}
 
-	after, err := harness.PluginHealth(ctx, cli)
-	if err != nil {
-		t.Fatalf("Plugin.Health (after): %v", err)
-	}
+	_, after := faultW.End()
 	if after.LeaseChanged != base.LeaseChanged {
 		t.Errorf("lease_changed moved %d -> %d across an outage shorter than the lease; want flat", base.LeaseChanged, after.LeaseChanged)
 	}
@@ -472,7 +454,7 @@ func TestFailure_ServerReturnsBeforeExpiry(t *testing.T) {
 	if d := (nowFail - baseFail) + (nowWatch - baseWatch); d != 0 {
 		t.Errorf("endpoint %s logged %d outage line(s) for an outage that never reached lease+grace; the watchdog fired early", ep, d)
 	}
-	assertNoNewHealthFaults(t, base, after, "an outage the plugin should have ridden out silently")
+	assertNoNewHealthFaults(t, faultW, "an outage the plugin should have ridden out silently")
 }
 
 // TestFailure_LeaseRefusedOnRenewal: the site gets renumbered under a
@@ -513,10 +495,7 @@ func TestFailure_LeaseRefusedOnRenewal(t *testing.T) {
 	}
 	defer cli.Close()
 
-	pre, err := harness.PluginHealth(ctx, cli)
-	if err != nil {
-		t.Fatalf("Plugin.Health (pre): %v", err)
-	}
+	bindW := harness.BeginCounterWindow(t, ctx, cli, "leases_obtained")
 
 	harness.CreateNetwork(t, ctx, netName, "macvlan", map[string]string{
 		"parent": harness.EphemeralHostVeth,
@@ -527,13 +506,12 @@ func TestFailure_LeaseRefusedOnRenewal(t *testing.T) {
 	// Settle: wait for the persistent client's own bound (it can
 	// differ from CreateEndpoint's one-shot lease) so the baseline
 	// isn't polluted by start-up churn.
-	awaitBoundPersistentClient(t, ctx, cli, pre)
+	awaitBoundPersistentClient(t, bindW)
 	ep := harness.EndpointShortID(t, ctx, cli, id, netName)
 
-	base, err := harness.PluginHealth(ctx, cli)
-	if err != nil {
-		t.Fatalf("Plugin.Health (baseline): %v", err)
-	}
+	faultW := harness.BeginCounterWindow(t, ctx, cli,
+		"recovery_failed", "join_start_failures", "tombstone_write_failures")
+	base := faultW.Before()
 	baseChanged := harness.CountPluginLogLines(t, ctx, ep, logIPChanged)
 
 	// Renumber the site: new server address, new pool, wiped DB. The
@@ -573,7 +551,7 @@ func TestFailure_LeaseRefusedOnRenewal(t *testing.T) {
 	}
 	t.Logf("re-acquired: live ip=%s at t+%.0fs after the renumbering", liveIP, time.Since(renumbered).Seconds())
 
-	h, ok := failureHealth(t, ctx, cli, 30*time.Second, func(h *harness.HealthResponse) bool {
+	h, ok := faultW.Await(30*time.Second, func(h, _ *harness.HealthResponse) bool {
 		return h.LeaseChanged > base.LeaseChanged
 	})
 	if !ok {
@@ -586,7 +564,7 @@ func TestFailure_LeaseRefusedOnRenewal(t *testing.T) {
 	if nowChanged := harness.CountPluginLogLines(t, ctx, ep, logIPChanged); nowChanged == baseChanged {
 		t.Errorf("endpoint %s re-addressed to %s but the plugin logged no lease-change line for it (%d before, %d after)", ep, liveIP, baseChanged, nowChanged)
 	}
-	assertNoNewHealthFaults(t, base, h, "a lease re-acquisition is a defined, healthy flow")
+	assertNoNewHealthFaults(t, faultW, "a lease re-acquisition is a defined, healthy flow")
 	if h != nil && h.NAKsReceived > base.NAKsReceived {
 		t.Logf("server NAKed on the wire (naks_received %d -> %d)", base.NAKsReceived, h.NAKsReceived)
 	}
@@ -638,10 +616,7 @@ func TestFailure_LeaseExpiry(t *testing.T) {
 	}
 	defer cli.Close()
 
-	pre, err := harness.PluginHealth(ctx, cli)
-	if err != nil {
-		t.Fatalf("Plugin.Health (pre): %v", err)
-	}
+	bindW := harness.BeginCounterWindow(t, ctx, cli, "leases_obtained")
 
 	harness.CreateNetwork(t, ctx, netName, "macvlan", map[string]string{
 		"parent": harness.EphemeralHostVeth,
@@ -649,13 +624,12 @@ func TestFailure_LeaseExpiry(t *testing.T) {
 	id, ip, mac := harness.RunContainer(t, ctx, netName, "dh-itest-fexp-ctr")
 	t.Logf("bound: ip=%s mac=%s", ip, mac)
 
-	awaitBoundPersistentClient(t, ctx, cli, pre)
+	awaitBoundPersistentClient(t, bindW)
 	ep := harness.EndpointShortID(t, ctx, cli, id, netName)
 
-	base, err := harness.PluginHealth(ctx, cli)
-	if err != nil {
-		t.Fatalf("Plugin.Health (baseline): %v", err)
-	}
+	faultW := harness.BeginCounterWindow(t, ctx, cli,
+		"recovery_failed", "join_start_failures", "tombstone_write_failures")
+	base := faultW.Before()
 	baseFail, baseWatch := outageLines(t, ctx, ep)
 	if baseFail+baseWatch > 0 {
 		t.Logf("endpoint %s carried %d leasefail / %d watchdog line(s) from start-up; asserting on the delta", ep, baseFail, baseWatch)
@@ -665,7 +639,7 @@ func TestFailure_LeaseExpiry(t *testing.T) {
 	ef.Stop()
 	t.Logf("server killed permanently; a BOUND lease (fixture lease %s) now has to cross T2 and full expiry", harness.LeaseTime)
 
-	first, ok := failureHealth(t, ctx, cli, outageRiseBudget, func(h *harness.HealthResponse) bool {
+	first, ok := faultW.Await(outageRiseBudget, func(h, _ *harness.HealthResponse) bool {
 		return h.DHCPTimeouts > base.DHCPTimeouts
 	})
 	if !ok {
@@ -683,7 +657,7 @@ func TestFailure_LeaseExpiry(t *testing.T) {
 	// that stalled on our client is invisible in the plugin-wide total.
 	// 80s covers one full 30s tick with headroom for a default-cadence
 	// plugin; under CI's 2s tick the second rise lands almost at once.
-	second, ok := failureHealth(t, ctx, cli, 80*time.Second, func(h *harness.HealthResponse) bool {
+	second, ok := faultW.Await(80*time.Second, func(h, _ *harness.HealthResponse) bool {
 		return h.DHCPTimeouts > first.DHCPTimeouts
 	})
 	if !ok {
@@ -695,7 +669,7 @@ func TestFailure_LeaseExpiry(t *testing.T) {
 	if (secondFail-firstFail)+(secondWatch-firstWatch) == 0 {
 		t.Errorf("endpoint %s logged no further outage line while the server stayed down; the recurring signal is not recurring for this client (#278)", ep)
 	}
-	assertNoNewHealthFaults(t, base, second, "a permanent server loss is a defined degraded mode")
+	assertNoNewHealthFaults(t, faultW, "a permanent server loss is a defined degraded mode")
 
 	// Address retention past expiry is deliberate...
 	if !containerHasIP(t, ctx, id, ip) {
