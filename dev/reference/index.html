@@ -1753,7 +1753,7 @@ limitations) are catalogued in
 <td>all</td>
 <td>per-endpoint id</td>
 <td>v0.9.0</td>
-<td>Override DHCP option 61 (Client Identifier) for every endpoint on this network; sent as RFC 2132 opaque bytes (type <code>0x00</code>). The default per-endpoint id is what makes per-container reservations work — a fixed <code>client_id</code> makes all containers look like one client to the server. Pair with <code>vendor_class</code> for class-based policy.</td>
+<td>Override DHCP option 61 (Client Identifier) for every endpoint on this network; sent as RFC 2132 opaque bytes (type <code>0x00</code>). The default per-endpoint id is what makes per-container reservations work — a fixed <code>client_id</code> makes all containers look like one client to the server. Pair with <code>vendor_class</code> for class-based policy. <strong>The derived default differs by mode</strong> (see below).</td>
 </tr>
 <tr>
 <td><code>vendor_class</code></td>
@@ -1976,16 +1976,46 @@ in every mode:</p>
   server can gate behaviour on "this is a plugin-managed container"
   without parsing hostname conventions. v4 only; override with
   <code>vendor_class</code>.</li>
-<li><strong>Client identifier (option 61)</strong> — eight bytes derived from the Docker
-  endpoint ID, type-byte <code>0x00</code> (RFC 2132 opaque). Stable across
-  container <em>restart</em> because the endpoint ID is. This is what makes
-  reservations work in ipvlan, where every child shares the parent's MAC.
-  It does <strong>not</strong> survive <code>docker rm</code> + <code>run</code>, which mints a fresh
-  endpoint ID — lease stability across recreate needs a per-container
-  identity the driver API doesn't currently expose (#218, #219). Override
-  with <code>client_id</code>, though a fixed value makes every container look like
-  one client.</li>
+<li><strong>Client identifier (option 61)</strong> — type-byte <code>0x00</code> (RFC 2132 opaque),
+  with a payload that depends on the mode:</li>
 </ul>
+<table>
+<thead>
+<tr>
+<th>mode</th>
+<th>payload</th>
+<th>survives <code>docker restart</code>?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>bridge</code>, <code>macvlan</code></td>
+<td>the endpoint MAC</td>
+<td><strong>yes</strong></td>
+</tr>
+<tr>
+<td><code>ipvlan</code></td>
+<td>eight bytes from the Docker endpoint ID</td>
+<td>no</td>
+</tr>
+</tbody>
+</table>
+<p>In <code>bridge</code> and <code>macvlan</code> the MAC is unique per endpoint and the plugin
+  preserves it across a restart, so the server recognises the returning
+  container and renews the same address. This is the same identity IPv6
+  has always used (its DUID/IAID is MAC-derived), and it is what makes
+  IPv4 restart-stable without depending on a <code>DHCPRELEASE</code> being sent on
+  the way out — which is not always possible (<code>SIGKILL</code>, OOM, power loss).</p>
+<p><code>ipvlan</code> is the exception: its L2 slaves all inherit the parent's MAC,
+  so a MAC-derived id could not tell containers apart. Those keep the
+  endpoint-derived id, which is unique but <strong>not</strong> stable across a
+  restart — Docker mints a fresh endpoint ID each time (#219).</p>
+<p>No mode survives <code>docker rm</code> + <code>run</code>. A recreate builds a new sandbox
+  with a new MAC and a new endpoint ID, so there is no identity to carry;
+  that needs a per-container identity the driver API doesn't currently
+  expose (#218).</p>
+<p>Override with <code>client_id</code>, though a fixed value makes every container
+  look like one client.</p>
 <h4 id="options-captured-from-the-server">Options captured from the server<a class="headerlink" href="#options-captured-from-the-server" title="Permanent link">&para;</a></h4>
 <p>Everything the server returns is captured. Some is applied, the rest is
 logged:</p>
