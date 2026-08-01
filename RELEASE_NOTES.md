@@ -59,6 +59,162 @@ assessment above is retained here as the audit trail. If it becomes
 reachable again the gate fails loudly rather than silently
 re-accepting it.
 
+## v1.4.0
+
+A correctness release that started out as a speed release.
+
+The work item was cutting the integration suite's wall clock. What it
+found was that the suite was slow in places where the slowness was
+load-bearing: every timing crutch removed turned out to be padding that
+had been holding up behaviour the plugin did not actually have. Six
+defects came out of it, one of them a `docker restart` that fails
+outright on macvlan and is present in shipped releases including v1.3.5.
+
+If you run macvlan or ipvlan, **upgrade for #408**. The two
+address-collision defects (#408, #402) cannot occur in bridge mode — a
+bridge port is not a macvlan child, so the kernel refusal behind them
+has nothing to refuse. #406 is mode-independent and affects bridge
+deployments equally.
+
+No new driver options. No manifest changes. Existing networks keep
+working unchanged. **One upgrade note:** the IPv4 client-id fix (#371)
+changes what bridge and macvlan containers present as their DHCP
+identity. On a server that keys reservations on MAC — the common case —
+nothing moves. On a server that keys on option 61, each existing
+container is seen as new once. Details in that entry below.
+
+What changed:
+
+- **`docker restart` could fail outright on macvlan** (#408). Restart
+  re-applies the previous endpoint's MAC — that is what makes an IP
+  survive a restart — while the previous endpoint's link can still
+  exist on the parent. The kernel refuses to bring up a macvlan child
+  whose MAC is already live on the parent, including the parent's own
+  address, and the restart fails with `address already in use`. The
+  plugin now waits for the departing link to release the address
+  instead of failing on the first attempt.
+
+  **Operator-visible consequence:** this is the fix most likely to
+  matter to you. It presented as an intermittent `docker restart`
+  failure with no obvious cause, more likely the faster the container
+  stops — so a well-behaved container that handles `SIGTERM` promptly
+  was *more* exposed than a sloppy one, which is why it survived so
+  long.
+
+- **A lease left behind by a fast restart was never released** (#370,
+  #402). The reclaim path built a temporary link carrying the same MAC
+  as the endpoint's live link and hit the same kernel refusal, so the
+  release never ran: the address stayed leased until the server expired
+  it, and the container came back on a different IP. Fixed for macvlan,
+  and then again one step further in for ipvlan, where slaves share the
+  parent MAC and the kernel enforces uniqueness by address instead.
+
+- **An IPv4 address now survives a container restart on its own merits**
+  (#371). IPv6 always survived one and IPv4 did not, and the asymmetry
+  was the identity rather than the protocol: the v6 DUID/IAID is derived
+  from the MAC, which the tombstone preserves, while the v4 option-61
+  client-id was derived from Docker's endpoint ID, which Docker mints
+  fresh on every restart. A returning container presented an identity
+  the server had never seen, so its old address looked like somebody
+  else's. It worked at all only because of the `DHCPRELEASE` sent on
+  shutdown — which #370 showed is not dependable, and which can never be
+  sent on `SIGKILL`, OOM, or power loss. Bridge and macvlan now use a
+  MAC-derived client-id.
+
+  ipvlan is deliberately excluded: L2 slaves inherit the parent's MAC by
+  kernel design, so a MAC-derived id would be identical for every
+  container on the network and they would all claim one lease. ipvlan
+  keeps the endpoint-derived id and its restart fragility; #219 owns
+  that case. An operator `client_id` override still wins in every mode.
+
+  **Operator-visible consequence — read this before upgrading.** The
+  client-id a container presents changes, so on bridge and macvlan a
+  container may be seen as a new client once, on its first restart after
+  the upgrade. Whether it actually moves depends on what your server
+  keys on:
+
+  - **Keys on MAC** (the common case, and how most home routers do
+    reservations) — nothing changes. The MAC is preserved as before.
+  - **Keys on option 61** — the container is unrecognised once and takes
+    a new address. One-time, per container.
+
+  ipvlan is unaffected, since its client-id is unchanged. If anything in
+  your setup points at a container by address rather than by name, plan
+  for it to move once on an option-61-keyed server.
+
+- **A container that exits mid-attach is no longer counted as a plugin
+  fault** (#373, #376, #383). Three separate paths counted an ordinary
+  short-lived container, or a daemon that had not finished starting, as
+  a failure and latched `healthy` false — enough to page an operator
+  over a normal container exit. Benign cases now have their own
+  counters, `join_aborted_container_gone` and
+  `recovery_aborted_container_gone`, which deliberately do not affect
+  `healthy`.
+
+- **A Join no longer waits out its whole budget on a container that has
+  already been removed** (#401). The attach path retried the daemon's
+  "no such container" answer until the deadline, then reported a
+  timeout — turning a container that had simply gone into something
+  indistinguishable from a slow daemon.
+
+- **Containers could be left with no renewal client when the daemon was
+  busy** (#406). The attach asks Docker about the container it is
+  attaching to — while Docker is still inside that container's start
+  and does not answer. The Docker client's own 2-second timeout turned
+  each request into a fast failure, five of which consumed the whole
+  10-second attach budget, and the attach was abandoned. The container
+  kept its address and nothing renewed the lease, so the address was
+  eventually lost while the container was still running. Three to six
+  containers per integration run.
+
+  Two things were wrong and both are fixed. An attach cancelled because
+  its own endpoint was leaving was counted as a fault — nothing is left
+  without a renewal client when nothing is left — and now has its own
+  counter, `join_aborted_endpoint_left`. And `AWAIT_TIMEOUT` no longer
+  bounds the part of an attach spent waiting for the daemon: that is a
+  statement about how long the plugin's own work may take, not about how
+  long its caller may keep it waiting.
+
+  **Operator-visible consequence:** new counter `join_attach_slow`
+  reports attaches that needed the extra time. Not a fault — they
+  succeeded — and a rising count means the daemon is holding containers
+  longer, not that the plugin is degrading. `Leave` cancels an attach in
+  progress, so a container going away during the wait does not delay its
+  own teardown.
+
+- **A run-wide floor on the health surface** (#377, #385). Per-test
+  assertions only catch a fault that falls inside some test's own
+  bracket. A run-wide floor catches one that no test bracketed,
+  including faults raised during fixture setup, and says what it saw
+  rather than printing an unqualified "clean". A counter the plugin
+  never sent is no longer treated as a zero.
+
+  The reason this is in a release note rather than left as an internal
+  test detail: the counters reset when the plugin process does, and the
+  suite restarts it, so the floor was judging the last ~12% of a run and
+  reporting the other 88% as clean. Runs were passing with several
+  containers left unrenewed. The verdict is now taken from the plugin's
+  log, which spans the whole run, and a run with any such failure goes
+  red. If you rely on `healthy` for alerting, note the same limitation
+  applies on a real host: it is cumulative since the plugin started, not
+  a statement about right now.
+
+- **CI wall clock, which is where this began:** the integration gate on
+  `dev` went from ~20 minutes to ~13, measured across the runs either
+  side of the change (#367, #375, #390). The two
+  integration suites run as concurrent jobs, the privileged
+  concurrency group is scoped per ref so unrelated PRs stop queueing
+  behind each other, and test containers get an init PID 1 so teardown
+  stops burning `docker stop`'s full 10-second grace on every
+  container.
+
+- **Process:** a PR checklist item now asks explicitly whether an
+  existing test was weakened to make the change pass (#413, #414). The
+  opt-out helper removed in this cycle had been concealing #402 and
+  #408 for months behind an accurate comment describing exactly what it
+  did — which is the argument for a check that fails rather than prose
+  that decays.
+
 ## v1.3.5
 
 A patch release whose headline is an observability defect: a DHCP
