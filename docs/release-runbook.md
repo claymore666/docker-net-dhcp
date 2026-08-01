@@ -215,6 +215,28 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
    what the versioned documentation site publishes for this tag, so the
    review *is* the site review — there's no separate wiki to reconcile.
 
+   **The badge answers are documentation too.** `.bestpractices.json`
+   at the repo root holds this project's OpenSSF Best Practices answers
+   — one `<criterion>_status` plus a `<criterion>_justification` each —
+   and every justification is a claim about the repository that can go
+   stale exactly like prose. Reconcile it against the milestone the same
+   way, then check it against the live entry:
+
+   ```sh
+   python3 scripts/badge-sync.py --diff
+   ```
+
+   If a milestone PR earned or invalidated a criterion (a new gate, a
+   document that now exists, a policy that changed), update the file on
+   the release branch. Pushing the reviewed file to the live badge entry
+   is a separate, deliberate step — see the script's header for the
+   session cookie it needs:
+
+   ```sh
+   export BADGEAPP_SESSION='<_BadgeApp_session cookie value>'
+   python3 scripts/badge-sync.py --push
+   ```
+
    The work happens here, on the release branch. The rc dry-run (step 8)
    is the **enforcement gate**: the real `vX.Y.Z` tag does not ship
    until every milestone PR is ticked off against the docs — by the real
