@@ -141,10 +141,7 @@ func TestLifecycleMacvlan_IPv6_GoldenPath(t *testing.T) {
 	}
 	defer cli.Close()
 
-	before, err := harness.PluginHealth(ctx, cli)
-	if err != nil {
-		t.Fatalf("Plugin.Health (before): %v", err)
-	}
+	w := harness.BeginCounterWindow(t, ctx, cli, "lease_release_failures")
 
 	harness.CreateNetwork(t, ctx, netName, "macvlan", map[string]string{"ipv6": "true"})
 
@@ -215,10 +212,7 @@ func TestLifecycleMacvlan_IPv6_GoldenPath(t *testing.T) {
 	if err := cli.ContainerStop(ctx, id, container.StopOptions{}); err != nil {
 		t.Fatalf("ContainerStop: %v", err)
 	}
-	after, err := harness.PluginHealth(ctx, cli)
-	if err != nil {
-		t.Fatalf("Plugin.Health (after): %v", err)
-	}
+	before, after := w.End()
 	if after.LeaseReleaseFailures != before.LeaseReleaseFailures {
 		t.Errorf("lease_release_failures moved %d -> %d over a dual-stack lifecycle; the v6 Stop path is failing",
 			before.LeaseReleaseFailures, after.LeaseReleaseFailures)

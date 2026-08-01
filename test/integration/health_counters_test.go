@@ -43,10 +43,8 @@ func TestHealthCounters_ObtainedAndReleased(t *testing.T) {
 	}
 	defer cli.Close()
 
-	before, err := harness.PluginHealth(ctx, cli)
-	if err != nil {
-		t.Fatalf("Plugin.Health (before): %v", err)
-	}
+	w := harness.BeginCounterWindow(t, ctx, cli, "leases_obtained", "lease_release_failures")
+	before := w.Before()
 	t.Logf("before: leases_obtained=%d leases_renewed=%d dhcp_timeouts=%d lease_release_failures=%d",
 		before.LeasesObtained, before.LeasesRenewed, before.DHCPTimeouts, before.LeaseReleaseFailures)
 
@@ -82,20 +80,13 @@ func TestHealthCounters_ObtainedAndReleased(t *testing.T) {
 	// bumps leases_obtained. CreateEndpoint's initial DISCOVER runs
 	// a one-shot dhcpcd whose events don't feed the plugin's counters;
 	// the persistent client started in Join is what we're testing.
-	deadline := time.Now().Add(harness.IPAcquisitionBudget + 5*time.Second)
-	var afterStart *harness.HealthResponse
-	for time.Now().Before(deadline) {
-		h, err := harness.PluginHealth(ctx, cli)
-		if err == nil && h.LeasesObtained > before.LeasesObtained {
-			afterStart = h
-			break
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
-	if afterStart == nil {
-		last, _ := harness.PluginHealth(ctx, cli)
+	budget := harness.IPAcquisitionBudget + 5*time.Second
+	afterStart, ok := w.Await(budget, func(now, before *harness.HealthResponse) bool {
+		return now.LeasesObtained > before.LeasesObtained
+	})
+	if !ok {
 		t.Fatalf("leases_obtained did not advance within %v (before=%d, last seen=%+v)",
-			harness.IPAcquisitionBudget+5*time.Second, before.LeasesObtained, last)
+			budget, before.LeasesObtained, afterStart)
 	}
 	t.Logf("after start: leases_obtained=%d (advanced by %d)",
 		afterStart.LeasesObtained, afterStart.LeasesObtained-before.LeasesObtained)
@@ -110,10 +101,7 @@ func TestHealthCounters_ObtainedAndReleased(t *testing.T) {
 		t.Fatalf("ContainerRemove: %v", err)
 	}
 
-	after, err := harness.PluginHealth(ctx, cli)
-	if err != nil {
-		t.Fatalf("Plugin.Health (after): %v", err)
-	}
+	_, after := w.End()
 	t.Logf("after teardown: lease_release_failures=%d", after.LeaseReleaseFailures)
 
 	if after.LeaseReleaseFailures != before.LeaseReleaseFailures {

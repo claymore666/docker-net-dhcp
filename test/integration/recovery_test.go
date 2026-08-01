@@ -100,18 +100,7 @@ func TestRecovery_PluginDisableEnable_PreservesEndpoint(t *testing.T) {
 	// recovery is already complete. Poll briefly for socket
 	// readiness — Plugin.Enabled flips slightly before the socket is
 	// listening.
-	var ready bool
-	deadline := time.Now().Add(15 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, err := harness.PluginHealth(ctx, cli); err == nil {
-			ready = true
-			break
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
-	if !ready {
-		t.Fatalf("Plugin.Health (after) never became reachable")
-	}
+	harness.WaitPluginHealth(t, ctx, cli, 15*time.Second)
 
 	// Closing the window does both jobs at once: it takes the
 	// post-recycle read the assertions below use, and it asserts the

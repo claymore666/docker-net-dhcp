@@ -69,10 +69,13 @@ func TestRecovery_DaemonRestart_PreservesContainer(t *testing.T) {
 	// Baseline before the container exists: leases_obtained is
 	// cumulative across the (serial) suite, so the wait below is
 	// relative to this snapshot.
-	healthBefore, err := harness.PluginHealth(ctx, cli)
-	if err != nil {
-		t.Fatalf("Plugin.Health before container start: %v", err)
-	}
+	//
+	// This window covers only the pre-restart bind and is closed before
+	// the daemon goes down. It deliberately does NOT span the restart:
+	// docker respawns the plugin with the daemon, so every counter is
+	// reset, which is exactly why the post-restart assertions further
+	// down are absolute rather than deltas (#405).
+	bindW := harness.BeginCounterWindow(t, ctx, cli, "leases_obtained")
 
 	// We can't use harness.RunContainer because it doesn't take a
 	// RestartPolicy. Inlining keeps the harness API stable — but the
@@ -132,7 +135,10 @@ func TestRecovery_DaemonRestart_PreservesContainer(t *testing.T) {
 	// recovery. Fast hosts never see this window; slower runner-class
 	// hardware does. Wait for the persistent client's first "bound"
 	// event (leases_obtained) before pulling the daemon down.
-	waitLeaseObtained(t, ctx, cli, healthBefore.LeasesObtained, 30*time.Second)
+	waitLeaseObtained(t, bindW, 30*time.Second)
+	// Done with this window while the plugin it measured is still the
+	// one running; the daemon restart below ends that process.
+	bindW.End()
 
 	harness.RestartDockerDaemon(t, ctx)
 
@@ -156,19 +162,7 @@ func TestRecovery_DaemonRestart_PreservesContainer(t *testing.T) {
 	// signals plugin enable + recovery have completed (recovery is
 	// synchronous inside NewPlugin before the socket starts
 	// listening, see pkg/plugin/plugin.go).
-	deadline := time.Now().Add(30 * time.Second)
-	var healthAfter *harness.HealthResponse
-	for time.Now().Before(deadline) {
-		h, err := harness.PluginHealth(ctx, cli2)
-		if err == nil {
-			healthAfter = h
-			break
-		}
-		time.Sleep(300 * time.Millisecond)
-	}
-	if healthAfter == nil {
-		t.Fatalf("Plugin.Health socket did not answer within 30s after daemon restart")
-	}
+	healthAfter := harness.WaitPluginHealth(t, ctx, cli2, 30*time.Second)
 	t.Logf("after restart: recovered_ok=%d recovery_failed=%d recovery_deferred=%d recovery_aborted_container_gone=%d",
 		healthAfter.RecoveredOK, healthAfter.RecoveryFailed,
 		healthAfter.RecoveryDeferred, healthAfter.RecoveryAbortedContainerGone)
@@ -218,25 +212,24 @@ func TestRecovery_DaemonRestart_PreservesContainer(t *testing.T) {
 }
 
 // waitLeaseObtained polls Plugin.Health until leases_obtained moves
-// past the pre-container baseline, i.e. the endpoint's persistent
+// past the window's opening baseline, i.e. the endpoint's persistent
 // DHCP client has fired its first dhcpcd "bound" event and lease
 // release-on-shutdown is armed.
-func waitLeaseObtained(t *testing.T, ctx context.Context, cli *docker.Client, baseline int32, budget time.Duration) {
+//
+// Takes the window rather than a bare baseline int so the wait fails
+// loudly if the plugin restarts underneath it. Watching a counter climb
+// past a number the counter no longer remembers is the #405 bug in its
+// purest form.
+func waitLeaseObtained(t *testing.T, w *harness.CounterWindow, budget time.Duration) {
 	t.Helper()
-	deadline := time.Now().Add(budget)
-	last := baseline
-	for time.Now().Before(deadline) {
-		h, err := harness.PluginHealth(ctx, cli)
-		if err == nil {
-			last = h.LeasesObtained
-			if last > baseline {
-				t.Logf("persistent DHCP client bound (leases_obtained %d -> %d)", baseline, last)
-				return
-			}
-		}
-		time.Sleep(200 * time.Millisecond)
+	baseline := w.Before().LeasesObtained
+	last, ok := w.Await(budget, func(now, before *harness.HealthResponse) bool {
+		return now.LeasesObtained > before.LeasesObtained
+	})
+	if !ok {
+		t.Fatalf("persistent DHCP client did not bind within %v (leases_obtained stuck at %d)", budget, last.LeasesObtained)
 	}
-	t.Fatalf("persistent DHCP client did not bind within %v (leases_obtained stuck at %d)", budget, last)
+	t.Logf("persistent DHCP client bound (leases_obtained %d -> %d)", baseline, last.LeasesObtained)
 }
 
 // waitForEndpoint mirrors RunContainer's polling loop but works on
