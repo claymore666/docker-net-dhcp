@@ -44,6 +44,7 @@ type HealthResponse struct {
 	// the container exited before the persistent client was up. Not
 	// healthy-affecting (#373).
 	JoinAbortedContainerGone int32 `json:"join_aborted_container_gone"`
+	JoinAttachSlow           int32 `json:"join_attach_slow"`
 	TombstoneWriteFailures   int32 `json:"tombstone_write_failures"`
 	LeaseChanged             int32 `json:"lease_changed"`
 	LeasesObtained           int32 `json:"leases_obtained"`

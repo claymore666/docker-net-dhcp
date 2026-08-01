@@ -510,3 +510,65 @@ func TestStart_LeavesNoPhaseRecordOnSuccess(t *testing.T) {
 		t.Error("a fresh manager already carries phase timing")
 	}
 }
+
+// TestStop_CancelsAnInFlightAttach is the guard on the risk the #406
+// fix introduces rather than the bug it fixes.
+//
+// The attach budget grew from AwaitTimeout to AwaitTimeout+60s so a
+// daemon that is busy with the container being joined stops being read
+// as a plugin failure. Stop waits for Start to finish, so without a
+// cancellation path that same 60s would be charged to every Leave that
+// arrives during an attach — libnetwork would block for a minute
+// waiting on an attach whose container is already going away. A longer
+// wait that becomes a longer teardown is not a fix, it is a trade, and
+// nobody agreed to that one.
+func TestStop_CancelsAnInFlightAttach(t *testing.T) {
+	m := newDHCPManager(&fakeDocker{}, JoinRequest{}, DHCPNetworkOptions{})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	m.attachCancel = cancel
+
+	// Stand in for an attach parked on an unresponsive daemon: it
+	// finishes only when its context is cancelled.
+	attachReturned := make(chan struct{})
+	go func() {
+		<-ctx.Done()
+		close(m.startedCh)
+		close(attachReturned)
+	}()
+
+	m.startErr = errors.New("attach cancelled")
+	done := make(chan struct{})
+	go func() {
+		_ = m.Stop()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop did not return; it is waiting out the attach grace instead of cancelling the attach")
+	}
+
+	select {
+	case <-attachReturned:
+	case <-time.After(time.Second):
+		t.Error("Stop returned but the attach was never cancelled; the goroutine outlives the endpoint")
+	}
+}
+
+// TestAttachBudget_ExceedsTheDaemonBusyWindow states the relationship
+// the fix depends on as an assertion rather than as a comment. If
+// someone later tunes AwaitTimeout or the grace to the point where the
+// attach budget no longer clears the client-timeout window that
+// produced #406, this says so.
+func TestAttachBudget_ExceedsTheDaemonBusyWindow(t *testing.T) {
+	// What was measured: five Docker client requests, each giving up at
+	// its own 2s timeout, filled a 10s attach budget end to end.
+	const observedBusyWindow = 10 * time.Second
+	if attachDaemonBusyGrace <= observedBusyWindow {
+		t.Errorf("attachDaemonBusyGrace = %v, which does not clear the %v window measured in #406; "+
+			"the attach would still be abandoned while the daemon is merely busy",
+			attachDaemonBusyGrace, observedBusyWindow)
+	}
+}

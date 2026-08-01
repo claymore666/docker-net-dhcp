@@ -296,6 +296,14 @@ type dhcpManager struct {
 	// belongs in a benchmark, not on an operator's log.
 	startPhases string
 	startTotal  string
+
+	// attachCancel aborts an in-flight Start. Stop calls it before
+	// waiting on startedCh, which is what keeps the longer attach
+	// budget (see attachDaemonBusyGrace) from turning into a longer
+	// Leave: a container that goes away mid-attach cancels the attach
+	// instead of making libnetwork wait out the whole grace for a
+	// container nobody is waiting on any more.
+	attachCancel context.CancelFunc
 }
 
 func newDHCPManager(docker dockerClient, r JoinRequest, opts DHCPNetworkOptions) *dhcpManager {
@@ -1153,6 +1161,14 @@ func (m *dhcpManager) Start(ctx context.Context) (err error) {
 }
 
 func (m *dhcpManager) Stop() error {
+	// Abort an attach that is still running before waiting for it.
+	// Without this, the attach grace added for #406 would be charged to
+	// every Leave that arrives during one — libnetwork would block for
+	// the full grace waiting on an attach whose container is already
+	// leaving.
+	if m.attachCancel != nil {
+		m.attachCancel()
+	}
 	// Wait for Start to finish so we don't tear down half-initialised
 	// state.
 	<-m.startedCh

@@ -56,6 +56,27 @@ const (
 // AWAIT_TIMEOUT's default.
 const defaultAwaitTimeout = 10 * time.Second
 
+// attachDaemonBusyGrace is added to AwaitTimeout for the Join attach,
+// and only there.
+//
+// The attach has to ask the daemon about the container it is attaching
+// to, and the daemon is inside ContainerStart for that same container
+// while it does — so it does not answer until it is finished (#406).
+// AwaitTimeout is a statement about how long the plugin's own work may
+// take; this is the separate question of how long our caller may keep
+// us waiting, and folding the second into the first meant a busy
+// daemon read as a plugin failure and a running container was left
+// without a renewal client.
+//
+// 60s because the wait ends when ContainerStart does, and the useful
+// bound is "longer than a container can plausibly take to start", not
+// a number tuned to a measurement — a wait that ends early is exactly
+// the bug being fixed. Nothing waits on it: Stop cancels the attach, so
+// a container that leaves during the grace does not pay for it, and the
+// only cost of the ceiling being generous is a goroutine that outlives
+// its usefulness on a daemon that never recovers.
+const attachDaemonBusyGrace = 60 * time.Second
+
 const initialDHCPHostnameLookupTimeout = 2 * time.Second
 
 // recoveryBudget caps the wall-time the plugin spends rebuilding its
@@ -422,6 +443,19 @@ type Plugin struct {
 	// before #373 both landed in joinStartFailures and a normal fast
 	// exit could flip healthy to false.
 	joinAbortedContainerGone atomic.Int32
+
+	// joinAttachSlow counts attaches that finished, but only after
+	// outlasting AwaitTimeout — i.e. ones that would have been
+	// abandoned before attachDaemonBusyGrace existed, and were counted
+	// as join_start_failures (#406).
+	//
+	// Not healthy-affecting: nothing is wrong, the container has its
+	// renewal client. It is here because it is the only way to see from
+	// outside that the daemon is holding containers long enough to
+	// matter, and because if this ever reads zero across a run while
+	// join_start_failures moves, the grace is not the mechanism doing
+	// the work and the fix needs re-examining.
+	joinAttachSlow atomic.Int32
 
 	// tombstoneWriteFailures counts saveTombstones failures (disk full,
 	// EROFS) from addTombstone. Reported on /Plugin.Health so operators

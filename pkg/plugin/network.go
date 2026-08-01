@@ -1206,11 +1206,51 @@ func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) 
 		}()
 	}
 
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), p.awaitTimeout)
-		defer cancel()
+	// Built here, not inside the goroutine: Stop reads attachCancel and
+	// a Leave can arrive before the goroutine is scheduled, so assigning
+	// it in there would be both a race and occasionally a no-op.
+	attachCtx, cancelAttach := context.WithTimeout(context.Background(), p.awaitTimeout+attachDaemonBusyGrace)
+	m.attachCancel = cancelAttach
 
-		if err := m.Start(ctx); err != nil {
+	go func() {
+		// AwaitTimeout plus a grace, because part of this attach is
+		// spent waiting for the daemon that is calling us.
+		//
+		// Measured (#406): the attach asks Docker about the container
+		// being joined while Docker is inside ContainerStart for that
+		// same container, and Docker does not answer until it is done.
+		// The client's own 2s timeout turns each request into a fast
+		// failure, so five of them consume a 10s budget and the attach
+		// is abandoned — leaving a RUNNING container with no renewal
+		// client, whose lease then expires unrenewed. Three to six per
+		// integration run.
+		//
+		// The budget was never the problem in the sense the first pass
+		// at #401 assumed (a slow host); it is that a fixed budget was
+		// racing our own caller. The grace covers that window. Stop
+		// cancels it, so a container that leaves during the wait does
+		// not pay for it.
+		defer cancelAttach()
+
+		attachStart := time.Now()
+		err := m.Start(attachCtx)
+		if err == nil {
+			// Successful, but only thanks to the grace. Counted so the
+			// mechanism is visible from outside: if join_start_failures
+			// ever moves while this stays at zero, the grace is not
+			// what is carrying these attaches and the diagnosis in #406
+			// is wrong.
+			if elapsed := time.Since(attachStart); elapsed > p.awaitTimeout {
+				p.joinAttachSlow.Add(1)
+				log.WithFields(log.Fields{
+					"network":  shortID(r.NetworkID),
+					"endpoint": shortID(r.EndpointID),
+					"took":     elapsed.Round(100 * time.Millisecond).String(),
+					"budget":   p.awaitTimeout.String(),
+				}).Warn("Attach outlasted AwaitTimeout; the daemon was busy with this container")
+			}
+		}
+		if err != nil {
 			fields := log.Fields{
 				"network":  shortID(r.NetworkID),
 				"endpoint": shortID(r.EndpointID),
