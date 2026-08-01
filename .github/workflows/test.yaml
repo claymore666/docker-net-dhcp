@@ -89,6 +89,7 @@ jobs:
           bash scripts/test-check-no-ai-attribution.sh
           bash scripts/test-check-docs-drift.sh
           bash scripts/test-makefile-tee.sh
+          bash scripts/test-check-test-weakening.sh
           bash scripts/test-check-issue-label-map.sh
           bash scripts/test-badge-sync.sh
 
@@ -201,6 +202,20 @@ jobs:
         run: |
           printf '%s' "$PR_BODY" > "$RUNNER_TEMP/pr-body.md"
           bash scripts/check-no-ai-attribution.sh \
+            "$BASE_SHA..$HEAD_SHA" "$RUNNER_TEMP/pr-body.md"
+      # Same event, same range, same reason it is mechanical rather
+      # than remembered: "never weaken a failing test" was written into
+      # CLAUDE.md and an opt-out helper still reached dev and hid #402
+      # and #408 for months. Any finding is waived by an issue
+      # reference, so this blocks silence, not the edit (#413).
+      - name: Check the diff for a weakened test
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          printf '%s' "$PR_BODY" > "$RUNNER_TEMP/pr-body.md"
+          bash scripts/check-test-weakening.sh \
             "$BASE_SHA..$HEAD_SHA" "$RUNNER_TEMP/pr-body.md"
 
   # Reachable-vulnerability scan. Known-and-reviewed findings without a
