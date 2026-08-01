@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/hex"
 	"fmt"
 	"net"
@@ -27,6 +28,24 @@ import (
 
 // DriverName is the name of the Docker Network Driver
 const DriverName string = "net-dhcp"
+
+// newInstanceID returns a value unique to this plugin process. It lets
+// a caller holding two health reads tell "the counters did not move"
+// apart from "the counters were reset under you" (#405).
+//
+// It must never return an empty string. A consumer comparing two empty
+// ids sees them as equal, concludes no restart happened, and trusts a
+// delta that spans a reset — precisely the failure the id exists to
+// prevent. crypto/rand failing is not a real expectation, so the
+// fallback is a formality; it still varies per process, which is the
+// only property that matters here.
+func newInstanceID() string {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return fmt.Sprintf("pid%d-%d", os.Getpid(), time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b[:])
+}
 
 // shortID truncates a Docker network/endpoint ID to 12 chars for
 // log fields, without panicking on short or empty IDs (which can
@@ -406,6 +425,12 @@ type Plugin struct {
 	outageTick   time.Duration
 	outageGrace  time.Duration
 	startTime    time.Time
+	// instanceID identifies this plugin *process*. Every counter on
+	// HealthResponse lives in memory and returns to zero when the
+	// process does, so a before/after pair of health reads is only
+	// comparable when this value is unchanged between them (#405).
+	// Written once at construction, never mutated.
+	instanceID string
 
 	docker dockerClient
 	server http.Server
@@ -1335,6 +1360,7 @@ func NewPlugin(opts Options) (*Plugin, error) {
 		outageTick:   opts.OutageTick,
 		outageGrace:  opts.OutageGrace,
 		startTime:    time.Now(),
+		instanceID:   newInstanceID(),
 
 		docker: client,
 

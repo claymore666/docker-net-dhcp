@@ -64,12 +64,20 @@ func TestRecovery_PluginDisableEnable_PreservesEndpoint(t *testing.T) {
 		}
 	})
 
-	// We don't read recovered_ok before the recycle: PluginDisable
-	// kills the plugin process and PluginEnable starts a fresh one,
-	// so the counter we see after is from a brand-new instance with
-	// initial value zero. The before-snapshot would be from a stale
-	// process and isn't comparable. Asserting `after >= 1` is the
-	// right invariant.
+	// PluginDisable kills the plugin process and PluginEnable starts a
+	// fresh one, so every counter below is from a brand-new instance
+	// starting at zero. A before/after delta across this point is void,
+	// which is why the assertions further down are absolute (`after >=
+	// 1`) rather than deltas.
+	//
+	// That used to be recorded here as a comment and enforced by
+	// nothing. The window makes it an assertion: ExpectRecycle fails if
+	// the plugin does *not* restart, so if PluginDisable ever stops
+	// ending the process this test says so instead of quietly measuring
+	// a delta against a stale baseline (#405). It is also the only
+	// place instance_id is exercised against a real recycle rather than
+	// a fabricated payload.
+	w := harness.BeginCounterWindow(t, ctx, cli, "recovered_ok", "recovery_failed").ExpectRecycle()
 
 	if err := cli.PluginDisable(ctx, harness.PluginRef, types.PluginDisableOptions{Force: true}); err != nil {
 		t.Fatalf("PluginDisable: %v", err)
@@ -92,19 +100,24 @@ func TestRecovery_PluginDisableEnable_PreservesEndpoint(t *testing.T) {
 	// recovery is already complete. Poll briefly for socket
 	// readiness — Plugin.Enabled flips slightly before the socket is
 	// listening.
-	var healthAfter *harness.HealthResponse
+	var ready bool
 	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
-		h, err := harness.PluginHealth(ctx, cli)
-		if err == nil {
-			healthAfter = h
+		if _, err := harness.PluginHealth(ctx, cli); err == nil {
+			ready = true
 			break
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
-	if healthAfter == nil {
+	if !ready {
 		t.Fatalf("Plugin.Health (after) never became reachable")
 	}
+
+	// Closing the window does both jobs at once: it takes the
+	// post-recycle read the assertions below use, and it asserts the
+	// instance id actually changed — i.e. that this test really did
+	// exercise a fresh plugin process.
+	_, healthAfter := w.End()
 	t.Logf("recovered_ok after: %d", healthAfter.RecoveredOK)
 
 	if healthAfter.RecoveredOK < 1 {

@@ -21,7 +21,11 @@ import (
 // HealthResponse mirrors pkg/plugin.HealthResponse. Duplicated here
 // so the integration package doesn't pull on pkg/plugin internals.
 type HealthResponse struct {
-	Healthy         bool    `json:"healthy"`
+	Healthy bool `json:"healthy"`
+	// InstanceID identifies the plugin process that served this
+	// response. Two reads are comparable as a delta only when their
+	// InstanceID matches — see counterwindow.go and #405.
+	InstanceID      string  `json:"instance_id"`
 	UptimeSeconds   float64 `json:"uptime_seconds"`
 	ActiveEndpoints int     `json:"active_endpoints"`
 	PendingHints    int     `json:"pending_hints"`
