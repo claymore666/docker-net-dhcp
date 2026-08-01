@@ -84,3 +84,52 @@ func TestAwaitContainerInspect_RetriesOtherErrorsAndKeepsTheLastOne(t *testing.T
 		t.Errorf("the last attempt's error was discarded: %v", err)
 	}
 }
+
+// TestAwaitContainerInspect_ReportsAttemptCount pins the part of the
+// error that answers "was the budget spent here, or already gone when
+// we arrived". One attempt means the context was dead on arrival —
+// something earlier in the Join used it up — and that is a different
+// bug from a daemon that refused ten times in a row. The old message
+// could not tell them apart: it reported only the last attempt, which
+// on a timeout is always the deadline itself (#406).
+func TestAwaitContainerInspect_ReportsAttemptCount(t *testing.T) {
+	t.Run("dead context on arrival reports one attempt", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		f := &countingInspector{err: errors.New("context deadline exceeded")}
+		_, err := AwaitContainerInspect(ctx, f, "c", time.Millisecond)
+		if err == nil {
+			t.Fatal("want an error against a cancelled context")
+		}
+		if !strings.Contains(err.Error(), "1 attempts") {
+			t.Errorf("error %q does not say how many attempts were made", err)
+		}
+	})
+
+	t.Run("a repeatedly refusing daemon reports both ends", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Millisecond)
+		defer cancel()
+		f := &countingInspector{err: errors.New("connection refused")}
+		_, err := AwaitContainerInspect(ctx, f, "c", time.Millisecond)
+		if err == nil {
+			t.Fatal("want an error once the budget runs out")
+		}
+		if !strings.Contains(err.Error(), "connection refused") {
+			t.Errorf("error %q lost the actual failure", err)
+		}
+		if f.calls < 2 {
+			t.Fatalf("only %d attempts; the retry loop did not run", f.calls)
+		}
+	})
+}
+
+// countingInspector always fails, and counts how often it was asked.
+type countingInspector struct {
+	err   error
+	calls int
+}
+
+func (c *countingInspector) ContainerInspect(_ context.Context, _ string) (container.InspectResponse, error) {
+	c.calls++
+	return container.InspectResponse{}, c.err
+}

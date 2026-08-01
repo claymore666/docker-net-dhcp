@@ -287,6 +287,15 @@ type dhcpManager struct {
 	// blocks until Start completes, then short-circuits if Start failed.
 	startedCh chan struct{}
 	startErr  error
+
+	// startPhases / startTotal carry the per-phase timing of a FAILED
+	// Start so the caller can log it on the same line as the error.
+	// Written once in Start's deferred exit and read only after
+	// startedCh closes, which is the same happens-before startErr
+	// already relies on. Empty on success — timing a Join that worked
+	// belongs in a benchmark, not on an operator's log.
+	startPhases string
+	startTotal  string
 }
 
 func newDHCPManager(docker dockerClient, r JoinRequest, opts DHCPNetworkOptions) *dhcpManager {
@@ -1032,14 +1041,16 @@ func (m *dhcpManager) Start(ctx context.Context) (err error) {
 	defer func() {
 		m.startErr = err
 		if err != nil {
-			// Logged here rather than at the caller so it is attached to
-			// every Start failure, including the ones the caller goes on
-			// to classify as benign — a container that vanished after
-			// nine seconds of waiting is worth seeing too (#406).
-			log.WithFields(m.logFields(false)).WithFields(log.Fields{
-				"phases": phases.summary(),
-				"total":  phases.total().Round(10 * time.Millisecond).String(),
-			}).Debug("Join phase timing at failure")
+			// Recorded on the manager rather than logged from here.
+			// #411 put this on its own Debug line, and the line was
+			// invisible where it mattered: the health floor's evidence
+			// dump prints error and warning lines, so the run that
+			// failed showed six "context deadline exceeded" errors with
+			// no timing anywhere near them. A diagnostic that only
+			// appears somewhere else is not a diagnostic — the caller
+			// now folds these onto the failure line itself (#406).
+			m.startPhases = phases.summary()
+			m.startTotal = phases.total().Round(10 * time.Millisecond).String()
 		}
 		close(m.startedCh)
 	}()
