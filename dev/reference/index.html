@@ -2243,6 +2243,16 @@ diagnosing a specific container from them alone is not.</p>
 <td>(v1.3.6+) Leases reclaimed for a container that exited before its renewal client could attach (#370). The address is acquired during endpoint setup and deliberately held for the handover; when the handover never happens, the plugin synthesises a release instead of letting the address sit until it expires. A steady trickle is normal wherever short-lived containers run.</td>
 </tr>
 <tr>
+<td><code>restart_link_up_waited</code></td>
+<td>no</td>
+<td>(v1.5.0+) Child links that came up only after waiting out the departing link's hold on the address — i.e. how often a container restart met the #408 window and the fix carried it. Not a fault: this is the repair working, counted so the window is visible rather than inferred. A steady rise means your hosts restart containers fast enough to hit it routinely, which is expected for images that handle <code>SIGTERM</code> promptly.</td>
+</tr>
+<tr>
+<td><code>restart_link_up_timeouts</code></td>
+<td>no</td>
+<td>(v1.5.0+) The same wait outlasting its budget: the restart fails and <code>docker restart</code> reports <code>address already in use</code>. A real failure, but deliberately not <code>healthy</code>-affecting — it surfaces directly to whoever ran the command, and <code>healthy</code> is for faults nothing else reports. Any non-zero value here is worth investigating; it means the departing link held the address longer than the budget allows (#422).</td>
+</tr>
+<tr>
 <td><code>orphaned_lease_release_failures</code></td>
 <td>no</td>
 <td>(v1.3.6+) A reclaim above that could not be completed — the address stays held upstream until its own expiry, exactly as it did before the reclaim existed. Read as a rate against <code>orphaned_leases_released</code>: a few failures are transient upstream trouble, a ratio near 1 means the reclaim path itself is broken (no route to the segment, server refusing the synthesised client). Not <code>healthy</code>-affecting, which is worth knowing when reading it: this counter can climb on every container without turning anything red, and did (#402).</td>
