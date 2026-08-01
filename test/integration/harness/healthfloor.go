@@ -401,6 +401,101 @@ func AttachGraceLine(h *HealthResponse, joinFailures int) string {
 // exactly the faults, with no classification logic duplicated here.
 const joinStartFailureMsg = "Failed to start persistent DHCP client"
 
+// fatalFaultSignature ties a healthy-affecting counter to the log line
+// the plugin writes when it bumps it.
+//
+// The counters reset with the plugin process and the main suite recycles
+// it, so CheckHealthFloor's verdict has only ever covered the stretch
+// since the last restart — measured at 10% of one run and 12% of
+// another. The log does not reset, so counting these lines is the same
+// verdict over the whole run. That is the remaining half of #385; the
+// Join half already worked this way and is what caught three failures a
+// green run had hidden.
+//
+// join_start_failures is deliberately absent: it has its own census
+// because it groups by cause, and counting it here as well would double
+// it in the total.
+//
+// msg must be a substring of the line the plugin actually logs.
+// TestFatalFaultSignaturesExistInPluginSource pins every one of them
+// against pkg/plugin, because a reworded log line would silently turn
+// this census into a constant zero — an absent measurement wearing the
+// costume of a clean one.
+type fatalFaultSignature struct {
+	counter string
+	msg     string
+	why     string
+}
+
+var fatalFaultSignatures = []fatalFaultSignature{
+	{
+		counter: "tombstone_write_failures",
+		msg:     "Failed to persist tombstone",
+		why:     "a container restart may come back with a different MAC and IP",
+	},
+	{
+		counter: "recovery_failed",
+		msg:     "recovery: NetworkInspect failed",
+		why:     "a whole network was skipped during post-restart recovery",
+	},
+	{
+		counter: "recovery_failed",
+		msg:     "recovery: failed to load network options",
+		why:     "a whole network was skipped during post-restart recovery",
+	},
+	{
+		counter: "recovery_failed",
+		msg:     "recovery: endpoint recovery failed",
+		why:     "an endpoint was not rebuilt after a plugin restart",
+	},
+	{
+		counter: "recovery_failed",
+		msg:     "recovery: daemon never became reachable",
+		why:     "recovery gave up entirely; every previously-attached endpoint is running without renewal",
+	},
+	{
+		counter: "recovery_failed",
+		msg:     "recovery: persistent DHCP client Start failed",
+		why:     "a running container's lease will not renew until it is restarted",
+	},
+}
+
+// FaultCensus counts healthy-affecting faults other than Join failures
+// across the WHOLE plugin log, and returns the total plus a report.
+//
+// Returns 0 and "" for a clean run so it stays quiet, and so a caller
+// cannot mistake a report for a verdict — the count is the verdict.
+func FaultCensus(logData []byte) (int, string) {
+	lines := strings.Split(string(logData), "\n")
+	counts := map[string]int{}
+	whys := map[string]string{}
+	total := 0
+	for _, sig := range fatalFaultSignatures {
+		n := 0
+		for _, l := range lines {
+			if strings.Contains(l, sig.msg) {
+				n++
+			}
+		}
+		if n == 0 {
+			continue
+		}
+		total += n
+		counts[sig.counter+": "+sig.msg] = n
+		whys[sig.counter+": "+sig.msg] = sig.why
+	}
+	if total == 0 {
+		return 0, ""
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "PLUGIN FAULTS: %d across the whole run "+
+		"(the log spans the run; the counters only span the last plugin restart)\n", total)
+	for _, k := range sortedKeys(counts) {
+		fmt.Fprintf(&b, "  %3d  %s\n       %s\n", counts[k], k, whys[k])
+	}
+	return total, b.String()
+}
+
 // JoinFailureCensus counts Join-start failures across the WHOLE plugin
 // log, and summarises what they were.
 //
