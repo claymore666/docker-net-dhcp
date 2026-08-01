@@ -1180,6 +1180,15 @@ func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) 
 	m.setLastIP(false, hint.IPv4)
 	m.setLastIP(true, hint.IPv6)
 	m.MacAddress = hint.MacAddress
+
+	// Set BEFORE registerDHCPManager publishes this manager, not after.
+	// The comment above says a fast Leave can find it the moment it is
+	// registered, and Stop reads attachCancel — so assigning it later
+	// is a data race, and worse, a Leave that wins the race reads nil
+	// and does not cancel, which is the exact case
+	// TestStop_CancelsAnInFlightAttach exists to prevent (#406).
+	attachCtx, cancelAttach := context.WithTimeout(context.Background(), p.awaitTimeout+attachDaemonBusyGrace)
+	m.attachCancel = cancelAttach
 	if displaced := p.registerDHCPManager(r.EndpointID, m); displaced != nil {
 		// A recovery-registered manager for this endpoint was still in
 		// the registry (Join with no preceding Leave to this plugin
@@ -1205,12 +1214,6 @@ func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) 
 			}
 		}()
 	}
-
-	// Built here, not inside the goroutine: Stop reads attachCancel and
-	// a Leave can arrive before the goroutine is scheduled, so assigning
-	// it in there would be both a race and occasionally a no-op.
-	attachCtx, cancelAttach := context.WithTimeout(context.Background(), p.awaitTimeout+attachDaemonBusyGrace)
-	m.attachCancel = cancelAttach
 
 	go func() {
 		// AwaitTimeout plus a grace, because part of this attach is

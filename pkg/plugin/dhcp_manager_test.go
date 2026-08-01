@@ -572,3 +572,34 @@ func TestAttachBudget_ExceedsTheDaemonBusyWindow(t *testing.T) {
 			attachDaemonBusyGrace, observedBusyWindow)
 	}
 }
+
+// TestJoin_AttachCancelIsSetBeforeRegistration pins an ordering that a
+// reader cannot see from either line on its own.
+//
+// registerDHCPManager publishes the manager so a fast Leave can find
+// it — its own comment says as much. Stop then reads attachCancel. So
+// the assignment has to happen before the registration, or a Leave that
+// wins the race reads nil, does not cancel, and waits out the full
+// attach grace: the exact behaviour TestStop_CancelsAnInFlightAttach
+// forbids, reintroduced by a line that merely sits in the wrong place.
+//
+// Checked as source order because there is no runtime seam between the
+// two statements to test against, and the failure mode is a race that a
+// unit test would reproduce only occasionally (#406).
+func TestJoin_AttachCancelIsSetBeforeRegistration(t *testing.T) {
+	src, err := os.ReadFile("network.go")
+	if err != nil {
+		t.Fatalf("read network.go: %v", err)
+	}
+	text := string(src)
+
+	assign := strings.Index(text, "m.attachCancel = cancelAttach")
+	register := strings.Index(text, "p.registerDHCPManager(r.EndpointID, m)")
+	if assign < 0 || register < 0 {
+		t.Fatal("could not find both statements; this guard has gone stale and is passing vacuously")
+	}
+	if assign > register {
+		t.Error("m.attachCancel is assigned AFTER registerDHCPManager publishes the manager. " +
+			"A Leave arriving in between reads a nil cancel and blocks for the whole attach grace.")
+	}
+}
