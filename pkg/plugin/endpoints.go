@@ -312,6 +312,19 @@ type HealthResponse struct {
 	// successes — but a rising count is the visible form of #406.
 	JoinAttachSlow int32 `json:"join_attach_slow"`
 
+	// RestartLinkUpWaited counts child links brought up only after
+	// waiting out the departing link's hold on the address (#408). Not
+	// healthy-affecting: this is the fix working, and it is counted so
+	// the window is visible rather than inferred — the same reason
+	// JoinAttachSlow exists.
+	RestartLinkUpWaited int32 `json:"restart_link_up_waited"`
+	// RestartLinkUpTimeouts counts that wait outlasting its budget. The
+	// restart then fails with `address already in use`. Not
+	// healthy-affecting despite being a real failure: it surfaces
+	// through CreateEndpoint to the operator directly, and `healthy`
+	// is for faults nothing else reports (#422).
+	RestartLinkUpTimeouts int32 `json:"restart_link_up_timeouts"`
+
 	// JoinAbortedEndpointLeft counts attaches cancelled because the
 	// endpoint left while the attach was still running. Not
 	// healthy-affecting: there is no running container missing a
@@ -411,6 +424,8 @@ func (p *Plugin) apiHealth(w http.ResponseWriter, r *http.Request) {
 		RecoveryAbortedContainerGone: p.recoveryAbortedContainerGone.Load(),
 		JoinAbortedContainerGone:     p.joinAbortedContainerGone.Load(),
 		JoinAttachSlow:               p.joinAttachSlow.Load(),
+		RestartLinkUpWaited:          p.restartLinkUpWaited.Load(),
+		RestartLinkUpTimeouts:        p.restartLinkUpTimeouts.Load(),
 		JoinAbortedEndpointLeft:      p.joinAbortedEndpointLeft.Load(),
 		TombstoneWriteFailures:       tsFails,
 		LeaseChanged:                 p.leaseChanged.Load(),
