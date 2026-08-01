@@ -49,15 +49,22 @@ type HealthResponse struct {
 	// healthy-affecting (#373).
 	JoinAbortedContainerGone int32 `json:"join_aborted_container_gone"`
 	JoinAttachSlow           int32 `json:"join_attach_slow"`
-	JoinAbortedEndpointLeft  int32 `json:"join_aborted_endpoint_left"`
-	TombstoneWriteFailures   int32 `json:"tombstone_write_failures"`
-	LeaseChanged             int32 `json:"lease_changed"`
-	LeasesObtained           int32 `json:"leases_obtained"`
-	LeasesRenewed            int32 `json:"leases_renewed"`
-	DHCPTimeouts             int32 `json:"dhcp_timeouts"`
-	LeaseReleaseFailures     int32 `json:"lease_release_failures"`
-	NAKsReceived             int32 `json:"naks_received"`
-	LedgerWriteFailures      int32 `json:"ledger_write_failures"`
+
+	// RestartLinkUpWaited / RestartLinkUpTimeouts mirror the #408
+	// window: a child link that came up only after the departing link
+	// released the address, and that wait outlasting its budget.
+	// Neither is healthy-affecting (#422).
+	RestartLinkUpWaited     int32 `json:"restart_link_up_waited"`
+	RestartLinkUpTimeouts   int32 `json:"restart_link_up_timeouts"`
+	JoinAbortedEndpointLeft int32 `json:"join_aborted_endpoint_left"`
+	TombstoneWriteFailures  int32 `json:"tombstone_write_failures"`
+	LeaseChanged            int32 `json:"lease_changed"`
+	LeasesObtained          int32 `json:"leases_obtained"`
+	LeasesRenewed           int32 `json:"leases_renewed"`
+	DHCPTimeouts            int32 `json:"dhcp_timeouts"`
+	LeaseReleaseFailures    int32 `json:"lease_release_failures"`
+	NAKsReceived            int32 `json:"naks_received"`
+	LedgerWriteFailures     int32 `json:"ledger_write_failures"`
 	// OrphanedLeasesReleased / OrphanedLeaseReleaseFailures cover the
 	// lease acquired during endpoint setup when no persistent client
 	// ever took ownership of it — a container that exited before the

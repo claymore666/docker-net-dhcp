@@ -536,6 +536,20 @@ type Plugin struct {
 	// the work and the fix needs re-examining.
 	joinAttachSlow atomic.Int32
 
+	// restartLinkUpWaited counts child links that came up only after
+	// waiting out the departing link's hold on the address — the #408
+	// window actually arising and the fix carrying the restart.
+	// NOT healthy-affecting: a successful wait is the fix working.
+	//
+	// restartLinkUpTimeouts counts the same window outlasting the
+	// budget, which is a real failure: the restart fails and the user
+	// sees `address already in use`. Also not healthy-affecting, and
+	// deliberately so — the error is already loud, surfacing through
+	// CreateEndpoint to the operator's terminal, whereas `healthy`
+	// exists for faults that are otherwise silent (#422).
+	restartLinkUpWaited   atomic.Int32
+	restartLinkUpTimeouts atomic.Int32
+
 	// joinAbortedEndpointLeft counts attaches cancelled because Leave
 	// arrived while they were still running. Not healthy-affecting and
 	// not silent, on the same reasoning as
