@@ -146,8 +146,8 @@ var floorCounters = []floorCounter{
 	{
 		name:  "recovery_failed",
 		read:  func(h *HealthResponse) int32 { return h.RecoveryFailed },
-		fatal: false,
-		why:   "NOT failing the run YET. Since #376 the benign case — the container had already exited when recovery reached it — is counted separately as recovery_aborted_container_gone, so this counter should now mean only a real fault: recovery could not rebuild a RUNNING container's renewal client. It stays non-fatal for a few runs so a benign path nobody anticipated shows up as a warning rather than as a mystery red. Promoting it (and collapsing this table into a plain healthy==true check) is the last step of the plan #376 belongs to",
+		fatal: true,
+		why:   "recovery could not rebuild a RUNNING container's renewal client, so its lease will not renew until it is restarted. Fatal since #421: both benign paths that used to land here are counted separately — recovery_deferred for a daemon that was not serving yet (#383) and recovery_aborted_container_gone for a container that had already exited (#376) — and the probation runs this counter was left non-fatal for came back clean",
 	},
 }
 
@@ -165,6 +165,11 @@ type FloorFinding struct {
 	// Absent marks a counter the plugin never published. Value is
 	// meaningless for these — the point is that there was no value.
 	Absent bool
+	// Flag marks a finding about the plugin's own boolean verdict
+	// rather than a counter. Value is meaningless for these too:
+	// printing "healthy=0" would invite a reader to look for a counter
+	// that does not exist.
+	Flag bool
 	// Fatal distinguishes "this counter only ever means a real plugin
 	// fault" from "this counter is known to also count benign events".
 	// A non-fatal finding is still printed — loudly — because it is a
@@ -174,6 +179,13 @@ type FloorFinding struct {
 	// someone staring at a red CI job, not someone with this file open.
 	Why string
 }
+
+// healthyKey is the plugin's own summary verdict on the payload.
+const healthyKey = "healthy"
+
+// healthyWhy explains a floor failure raised by the flag rather than by
+// a counter this file knows about.
+const healthyWhy = "the plugin reports itself unhealthy while every counter this suite checks is at zero. That means pkg/plugin's Healthy expression covers a condition floorCounters does not — a new healthy-affecting counter was added there without being mirrored here. The plugin's own verdict wins: it is the surface operators page on"
 
 // CheckHealthFloor answers "is the plugin OK?" for a whole run, which
 // is a different question from the per-test deltas in
@@ -231,6 +243,54 @@ func CheckHealthFloor(h *HealthResponse) []FloorFinding {
 				Value:   v,
 				Fatal:   c.fatal,
 				Why:     c.why,
+			})
+		}
+	}
+
+	// The plugin's own verdict, checked last and independently of the
+	// table above (#421).
+	//
+	// Every counter in floorCounters is now fatal, so in principle this
+	// is redundant — and that is exactly why it is worth having. The
+	// table is this suite's *mirror* of pkg/plugin's Healthy
+	// expression, and a mirror drifts: add a fourth healthy-affecting
+	// counter to the plugin and the floor keeps reporting clean until
+	// somebody remembers this file. Asking the plugin directly closes
+	// that gap without waiting for the mirror to catch up.
+	//
+	// Absence is judged too, on the same principle as the counters: a
+	// payload with no `healthy` key decodes to false, which would
+	// otherwise fail every run for the wrong reason and teach everyone
+	// to ignore it.
+	//
+	// Judged only on a decoded payload. `published == nil` means the
+	// value was built by hand rather than received, and there a false
+	// Healthy is the zero value of an unset bool, not the plugin saying
+	// anything — exactly the distinction the counters' own presence
+	// check already makes. Reading it as a verdict would fail every
+	// unit test that builds a literal to exercise one counter.
+	if h.published == nil {
+		return out
+	}
+	if _, ok := h.published[healthyKey]; !ok {
+		return append(out, FloorFinding{
+			Counter: healthyKey,
+			Absent:  true,
+			Flag:    true,
+			Fatal:   true,
+			Why:     absentWhy,
+		})
+	}
+	if !h.Healthy {
+		// Only reported when nothing else already explains it —
+		// otherwise every real fault would print twice, once named and
+		// once as this catch-all, and the named one is more useful.
+		if len(out) == 0 {
+			out = append(out, FloorFinding{
+				Counter: healthyKey,
+				Flag:    true,
+				Fatal:   true,
+				Why:     healthyWhy,
 			})
 		}
 	}
