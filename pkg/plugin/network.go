@@ -1066,6 +1066,38 @@ func parseIfnameOption(options map[string]interface{}) (string, error) {
 // the host's L3 gateway. Macvlan mode skips that: the parent NIC's host
 // routes belong to the host, not the container, and the DHCP gateway is
 // the only route the container needs.
+// noteSlowAttach records an attach that succeeded, but only after
+// outlasting AwaitTimeout — i.e. one the #406 grace is carrying.
+// Reports whether it counted.
+//
+// Split out of Join's attach goroutine so it can be exercised
+// directly (#431). The counter existed for a release without a single
+// test asserting it ever moves, which made its constant zero
+// uninterpretable: "the daemon-busy window never arose" and "the
+// increment cannot fire" produce identical readings, and the v1.4.0
+// evidence needed to tell them apart. Reaching this code in the
+// goroutine requires a *successful* Start, which needs a real network
+// namespace, so no unit test can get here through Join.
+//
+// Caller must only invoke this for a successful attach. A failed one
+// has its own classification below, and counting it here would put a
+// fault in a counter documented as not healthy-affecting.
+func (p *Plugin) noteSlowAttach(r JoinRequest, elapsed time.Duration) bool {
+	// Strictly greater: an attach that finishes exactly on budget did
+	// not need the grace.
+	if elapsed <= p.awaitTimeout {
+		return false
+	}
+	p.joinAttachSlow.Add(1)
+	log.WithFields(log.Fields{
+		"network":  shortID(r.NetworkID),
+		"endpoint": shortID(r.EndpointID),
+		"took":     elapsed.Round(100 * time.Millisecond).String(),
+		"budget":   p.awaitTimeout.String(),
+	}).Warn("Attach outlasted AwaitTimeout; the daemon was busy with this container")
+	return true
+}
+
 func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) {
 	log.WithField("options", r.Options).Debug("Join options")
 	res := JoinResponse{}
@@ -1254,20 +1286,7 @@ func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) 
 		attachStart := time.Now()
 		err := m.Start(attachCtx)
 		if err == nil {
-			// Successful, but only thanks to the grace. Counted so the
-			// mechanism is visible from outside: if join_start_failures
-			// ever moves while this stays at zero, the grace is not
-			// what is carrying these attaches and the diagnosis in #406
-			// is wrong.
-			if elapsed := time.Since(attachStart); elapsed > p.awaitTimeout {
-				p.joinAttachSlow.Add(1)
-				log.WithFields(log.Fields{
-					"network":  shortID(r.NetworkID),
-					"endpoint": shortID(r.EndpointID),
-					"took":     elapsed.Round(100 * time.Millisecond).String(),
-					"budget":   p.awaitTimeout.String(),
-				}).Warn("Attach outlasted AwaitTimeout; the daemon was busy with this container")
-			}
+			p.noteSlowAttach(r, time.Since(attachStart))
 		}
 		if err != nil {
 			fields := log.Fields{
