@@ -2138,9 +2138,14 @@ diagnosing a specific container from them alone is not.</p>
 <td><code>false</code> when <code>recovery_failed</code>, <code>join_start_failures</code>, or <code>tombstone_write_failures</code> is non-zero — an operator should look. The plugin keeps serving fresh attaches either way.</td>
 </tr>
 <tr>
+<td><code>instance_id</code></td>
+<td>—</td>
+<td>(v1.5.0+) Opaque identifier of the plugin <strong>process</strong> serving this response. Every counter below is in-memory and returns to zero when the process does, so two readings are comparable as a delta only when their <code>instance_id</code> matches. If it changed between two samples, the plugin restarted and any difference you computed is meaningless — including one that reads as zero. Prefer this over <code>uptime_seconds</code> for that check: a plugin that restarts early in a long sampling window and then runs longer than the first reading shows uptime going <em>up</em>, hiding the restart.</td>
+</tr>
+<tr>
 <td><code>uptime_seconds</code></td>
 <td>—</td>
-<td>Seconds since the plugin process started.</td>
+<td>Seconds since the plugin process started. Useful as an age, but see <code>instance_id</code> before using it to decide whether a restart happened.</td>
 </tr>
 <tr>
 <td><code>active_endpoints</code></td>
