@@ -617,3 +617,40 @@ func TestJoinAbortedByVanish(t *testing.T) {
 		}
 	})
 }
+
+// TestJoinFailure_TeardownCancelIsNotAFault pins the classification the
+// #406 grace made necessary.
+//
+// Adding a cancellation path changed what a cancelled attach looks
+// like: run 30700597210 reported six join_start_failures carrying
+// `context canceled` — every one an endpoint that was being torn down
+// while its attach was still running. Nothing was left without a
+// renewal client, because nothing was left. Counting those as faults
+// would have turned a normal Leave into a health-affecting error, which
+// is the same mistake #373 and #376 each had to undo once.
+//
+// The flag is checked rather than the error, deliberately: a cancelled
+// context can come from somewhere that is not a teardown, and excusing
+// every context.Canceled would be the blanket amnesty those two issues
+// were careful not to grant.
+func TestJoinFailure_TeardownCancelIsNotAFault(t *testing.T) {
+	m := &dhcpManager{startedCh: make(chan struct{})}
+
+	if m.attachAborted.Load() {
+		t.Fatal("a fresh manager already claims its attach was aborted")
+	}
+
+	// Stop is what sets it, and only Stop.
+	ctx, cancel := context.WithCancel(context.Background())
+	m.attachCancel = cancel
+	m.startErr = context.Canceled
+	close(m.startedCh)
+	m.plugin = &Plugin{}
+	_ = m.Stop()
+	<-ctx.Done()
+
+	if !m.attachAborted.Load() {
+		t.Error("Stop cancelled the attach without recording that it did; " +
+			"the resulting 'context canceled' will be counted as a plugin fault")
+	}
+}

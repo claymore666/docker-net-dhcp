@@ -610,3 +610,84 @@ time="2026-07-31T18:09:03Z" level=warning msg="Caller error while processing req
 		}
 	})
 }
+
+// TestJoinFailureCount_MatchesTheCensus keeps the verdict and the
+// diagnostic from drifting apart. They read the same log for the same
+// message, and the only reason they are separate functions is that one
+// is prose and one is a number; if a change makes them disagree, the
+// run's verdict stops matching the evidence printed next to it.
+func TestJoinFailureCount_MatchesTheCensus(t *testing.T) {
+	log := []byte(strings.Join([]string{
+		`time="1" level=error msg="Failed to start persistent DHCP client; lease will not be renewed" error="context deadline exceeded"`,
+		`time="2" level=info msg="Container went away during attach; no persistent client needed" error="no such container"`,
+		`time="3" level=error msg="Failed to start persistent DHCP client; lease will not be renewed" error="context deadline exceeded"`,
+		`time="4" level=warning msg="Caller error while processing request" error="parent interface is down"`,
+	}, "\n"))
+
+	if got := JoinFailureCount(log); got != 2 {
+		t.Errorf("JoinFailureCount = %d, want 2 (the benign twin and the caller error must not count)", got)
+	}
+	if census := JoinFailureCensus(log); !strings.Contains(census, "JOIN FAILURES: 2") {
+		t.Errorf("census says %q; the verdict counted 2", census)
+	}
+}
+
+// TestJoinFailureCount_ZeroIsZero pins the case that decides whether a
+// clean run stays clean. A count that is non-zero on an empty log would
+// fail every green run, which is the fastest way to get a gate switched
+// off again.
+func TestJoinFailureCount_ZeroIsZero(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		log  string
+	}{
+		{"empty", ""},
+		{"only benign", `msg="Container went away during attach; no persistent client needed"`},
+		{"unrelated errors", `level=error msg="something else entirely"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := JoinFailureCount([]byte(tc.log)); got != 0 {
+				t.Errorf("JoinFailureCount = %d, want 0", got)
+			}
+		})
+	}
+}
+
+// TestAttachGraceLine_DistinguishesQuietFromFixed is the point of the
+// line existing at all.
+//
+// The #406 failures are intermittent — unchanged code has scored 6, 5,
+// 3 and 0 across runs — so a run with no Join failures is ambiguous:
+// either the grace carried the attaches, or the daemon-busy window
+// never opened. Reporting both as "clean" would let the fix be declared
+// working by a run that never tested it, which is the n=1 reasoning
+// this whole issue has already cost a day to.
+func TestAttachGraceLine_DistinguishesQuietFromFixed(t *testing.T) {
+	t.Run("grace used and nothing failed is evidence", func(t *testing.T) {
+		got := AttachGraceLine(&HealthResponse{JoinAttachSlow: 4}, 0)
+		if !strings.Contains(got, "This is the fix working") {
+			t.Errorf("a run where the grace carried 4 attaches should say so; got %q", got)
+		}
+	})
+
+	t.Run("quiet run is explicitly not evidence", func(t *testing.T) {
+		got := AttachGraceLine(&HealthResponse{JoinAttachSlow: 0}, 0)
+		if !strings.Contains(got, "not evidence either way") {
+			t.Errorf("a run where the condition never arose must not read as a pass; got %q", got)
+		}
+	})
+
+	t.Run("failures without the grace point elsewhere", func(t *testing.T) {
+		got := AttachGraceLine(&HealthResponse{JoinAttachSlow: 0}, 3)
+		if !strings.Contains(got, "look elsewhere") {
+			t.Errorf("failures with no slow attach means a different mechanism; got %q", got)
+		}
+	})
+
+	t.Run("grace used but failures remain says the fix is partial", func(t *testing.T) {
+		got := AttachGraceLine(&HealthResponse{JoinAttachSlow: 2}, 1)
+		if !strings.Contains(got, "not\n  sufficient") && !strings.Contains(got, "not sufficient") {
+			t.Errorf("a partially working grace must not read as success; got %q", got)
+		}
+	})
+}

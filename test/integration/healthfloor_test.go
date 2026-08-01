@@ -90,11 +90,36 @@ func checkHealthFloor(suite time.Duration) int {
 	// Printed before the verdict, and on every run. The census reads the
 	// whole log, so unlike the counters below it is not blinded by a
 	// mid-suite plugin restart — see JoinFailureCensus.
-	printJoinCensus(ctx)
+	//
+	// And now judged, not merely printed. Run 30699310641 is why: three
+	// Joins failed, three containers were left without a renewal client,
+	// and the run went green — because join_start_failures resets with
+	// the plugin process and the floor below only sees the last ~12% of
+	// a run. The census reads the whole log and had the number the whole
+	// time. A measurement nobody fails on is a measurement that prevents
+	// nothing (#385, #406).
+	censusFailures := printJoinCensus(ctx)
+
+	// Printed before the verdict either way. The census answers "did
+	// anything break"; this answers "did the #406 grace carry attaches
+	// that would otherwise have broken", which a clean census cannot —
+	// these failures are intermittent, so a zero can mean the fix
+	// worked or that the condition never arose, and only this
+	// distinguishes them.
+	fmt.Fprint(os.Stderr, harness.AttachGraceLine(h, censusFailures))
 
 	findings := harness.CheckHealthFloor(h)
 	if len(findings) == 0 {
 		fmt.Fprint(os.Stderr, harness.FloorCleanLine(h, suite.Seconds()))
+		if censusFailures > 0 {
+			fmt.Fprintf(os.Stderr,
+				"HEALTH FLOOR: the counters came back clean, but the log records %d Join "+
+					"failure(s) across the run — see the census above.\n"+
+					"  Each one is a running container left without a renewal client; its lease\n"+
+					"  expires unrenewed. The counters missed them because they reset when the\n"+
+					"  plugin does. Failing on the log, which does not (#385).\n", censusFailures)
+			return 1
+		}
 		return 0
 	}
 
@@ -158,13 +183,22 @@ func printFloorEvidence(ctx context.Context) {
 // single-digit counter (#385). Sizing the Join budget for the host
 // (#401) needs the real number, on every run, not the tail of it after
 // something else has already gone red.
-func printJoinCensus(ctx context.Context) {
+// Returns how many Join-start failures the log recorded, which the
+// floor now fails on.
+func printJoinCensus(ctx context.Context) int {
 	_, data, err := harness.PluginLog(ctx)
 	if err != nil {
-		// Quiet on purpose. The census is a diagnostic; the floor's
-		// verdict below does not depend on it, and a missing log is
-		// reported there if it matters.
-		return
+		// A log we cannot read is reported as a fault rather than
+		// passed over. It used to be quiet here because the census was
+		// only a diagnostic; now that the run's verdict depends on it,
+		// silence would mean an unreadable log reads as a clean one —
+		// the failure mode this whole issue is about.
+		fmt.Fprintf(os.Stderr,
+			"HEALTH FLOOR: could not read the plugin log to count Join failures: %v\n"+
+				"  Treating that as a fault: the log is the only instrument that spans the\n"+
+				"  whole run, so without it this run has no verdict to give (#385).\n", err)
+		return 1
 	}
 	fmt.Fprint(os.Stderr, harness.JoinFailureCensus(data))
+	return harness.JoinFailureCount(data)
 }

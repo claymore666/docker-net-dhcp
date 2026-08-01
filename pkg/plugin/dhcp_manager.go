@@ -296,6 +296,32 @@ type dhcpManager struct {
 	// belongs in a benchmark, not on an operator's log.
 	startPhases string
 	startTotal  string
+
+	// attachCancel aborts an in-flight Start. Stop calls it before
+	// waiting on startedCh, which is what keeps the longer attach
+	// budget (see attachDaemonBusyGrace) from turning into a longer
+	// Leave: a container that goes away mid-attach cancels the attach
+	// instead of making libnetwork wait out the whole grace for a
+	// container nobody is waiting on any more.
+	attachCancel context.CancelFunc
+
+	// attachAborted records that the cancellation above was OUR doing,
+	// i.e. Stop ran because the endpoint is leaving.
+	//
+	// Without it the resulting "context canceled" is indistinguishable
+	// from any other attach failure and gets counted as a plugin fault
+	// — a running container left with no renewal client — when the
+	// truth is the opposite: there is no container left to renew for.
+	// Measured on run 30700597210, where six attaches reported
+	// join_start_failures with `context canceled`, all of them endpoints
+	// that were being torn down (#406).
+	//
+	// Deliberately a flag rather than inferring it from
+	// errors.Is(err, context.Canceled): a cancelled context could also
+	// come from somewhere that is not a teardown, and excusing every
+	// cancellation would be exactly the blanket amnesty #373 and #376
+	// were careful not to grant.
+	attachAborted atomic.Bool
 }
 
 func newDHCPManager(docker dockerClient, r JoinRequest, opts DHCPNetworkOptions) *dhcpManager {
@@ -1153,6 +1179,15 @@ func (m *dhcpManager) Start(ctx context.Context) (err error) {
 }
 
 func (m *dhcpManager) Stop() error {
+	// Abort an attach that is still running before waiting for it.
+	// Without this, the attach grace added for #406 would be charged to
+	// every Leave that arrives during one — libnetwork would block for
+	// the full grace waiting on an attach whose container is already
+	// leaving.
+	if m.attachCancel != nil {
+		m.attachAborted.Store(true)
+		m.attachCancel()
+	}
 	// Wait for Start to finish so we don't tear down half-initialised
 	// state.
 	<-m.startedCh

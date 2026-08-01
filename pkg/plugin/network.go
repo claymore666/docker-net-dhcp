@@ -1180,6 +1180,15 @@ func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) 
 	m.setLastIP(false, hint.IPv4)
 	m.setLastIP(true, hint.IPv6)
 	m.MacAddress = hint.MacAddress
+
+	// Set BEFORE registerDHCPManager publishes this manager, not after.
+	// The comment above says a fast Leave can find it the moment it is
+	// registered, and Stop reads attachCancel — so assigning it later
+	// is a data race, and worse, a Leave that wins the race reads nil
+	// and does not cancel, which is the exact case
+	// TestStop_CancelsAnInFlightAttach exists to prevent (#406).
+	attachCtx, cancelAttach := context.WithTimeout(context.Background(), p.awaitTimeout+attachDaemonBusyGrace)
+	m.attachCancel = cancelAttach
 	if displaced := p.registerDHCPManager(r.EndpointID, m); displaced != nil {
 		// A recovery-registered manager for this endpoint was still in
 		// the registry (Join with no preceding Leave to this plugin
@@ -1207,10 +1216,44 @@ func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) 
 	}
 
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), p.awaitTimeout)
-		defer cancel()
+		// AwaitTimeout plus a grace, because part of this attach is
+		// spent waiting for the daemon that is calling us.
+		//
+		// Measured (#406): the attach asks Docker about the container
+		// being joined while Docker is inside ContainerStart for that
+		// same container, and Docker does not answer until it is done.
+		// The client's own 2s timeout turns each request into a fast
+		// failure, so five of them consume a 10s budget and the attach
+		// is abandoned — leaving a RUNNING container with no renewal
+		// client, whose lease then expires unrenewed. Three to six per
+		// integration run.
+		//
+		// The budget was never the problem in the sense the first pass
+		// at #401 assumed (a slow host); it is that a fixed budget was
+		// racing our own caller. The grace covers that window. Stop
+		// cancels it, so a container that leaves during the wait does
+		// not pay for it.
+		defer cancelAttach()
 
-		if err := m.Start(ctx); err != nil {
+		attachStart := time.Now()
+		err := m.Start(attachCtx)
+		if err == nil {
+			// Successful, but only thanks to the grace. Counted so the
+			// mechanism is visible from outside: if join_start_failures
+			// ever moves while this stays at zero, the grace is not
+			// what is carrying these attaches and the diagnosis in #406
+			// is wrong.
+			if elapsed := time.Since(attachStart); elapsed > p.awaitTimeout {
+				p.joinAttachSlow.Add(1)
+				log.WithFields(log.Fields{
+					"network":  shortID(r.NetworkID),
+					"endpoint": shortID(r.EndpointID),
+					"took":     elapsed.Round(100 * time.Millisecond).String(),
+					"budget":   p.awaitTimeout.String(),
+				}).Warn("Attach outlasted AwaitTimeout; the daemon was busy with this container")
+			}
+		}
+		if err != nil {
 			fields := log.Fields{
 				"network":  shortID(r.NetworkID),
 				"endpoint": shortID(r.EndpointID),
@@ -1238,6 +1281,21 @@ func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) 
 			// The suite only stopped hiding this when its containers got
 			// an init PID 1 (#367) — `sleep infinity` ignoring SIGTERM
 			// had been holding every teardown open for 10s.
+			// An attach we cancelled ourselves because the endpoint is
+			// leaving. Not a fault, and specifically not the fault this
+			// counter names: nothing is left running without a renewal
+			// client, because the endpoint is going away. Checked before
+			// joinAbortedByVanish because the evidence here is stronger
+			// than any of that function's three — we know why the attach
+			// stopped, rather than inferring it (#406).
+			if m.attachAborted.Load() {
+				p.joinAbortedEndpointLeft.Add(1)
+				log.WithError(err).WithFields(fields).
+					Info("Attach cancelled because the endpoint is leaving; no persistent client needed")
+				p.removeDHCPManagerIfSame(r.EndpointID, m)
+				p.spawnOrphanRelease(m)
+				return
+			}
 			if joinAbortedByVanish(err, r.SandboxKey) {
 				p.joinAbortedContainerGone.Add(1)
 				log.WithError(err).WithFields(fields).
