@@ -425,8 +425,37 @@ func (ef *EphemeralFixture) subnet() string {
 	return ipNet.String()
 }
 
+// keaBinary is the DHCP server the ephemeral fixture runs, resolved
+// through PATH rather than hard-coded.
+//
+// The failure this avoids was worth a CI round trip: with the binary
+// missing, `ip netns exec` reports `exec of "/usr/sbin/kea-dhcp4"
+// failed: No such file or directory` INTO THE SERVER LOG, and the
+// fixture then reported the readiness timeout with that buried in a
+// wall of config. The real answer — this environment has no kea — is
+// one line, so say it as one line.
+const keaBinary = "kea-dhcp4"
+
+// requireKea fails the test with an actionable message when the DHCP
+// server this fixture needs is not installed, rather than letting it
+// surface as a readiness timeout.
+func (ef *EphemeralFixture) requireKea() string {
+	ef.t.Helper()
+	path, err := exec.LookPath(keaBinary)
+	if err != nil {
+		ef.t.Fatalf("%s not found in PATH: %v\n"+
+			"The ephemeral fixture needs it (#356). On the CI runner it comes from the "+
+			"dhcp-ci-runner image (ci/runner-image/Dockerfile installs kea-dhcp4-server); "+
+			"if this fires in CI the runner is on an image built before that landed. "+
+			"Locally: install kea-dhcp4-server, see test/integration/README.md.",
+			keaBinary, err)
+	}
+	return path
+}
+
 func (ef *EphemeralFixture) startKea() {
 	ef.t.Helper()
+	keaPath := ef.requireKea()
 	// Kea derives its PID file name from the config file name and will
 	// not create the directory itself; without this it dies before any
 	// config error is reported (#356).
@@ -444,7 +473,7 @@ func (ef *EphemeralFixture) startKea() {
 	defer logF.Close()
 
 	startMark := ef.logSize()
-	ef.cmd = ef.netnsCommand("/usr/sbin/kea-dhcp4", "-c", ef.configFile)
+	ef.cmd = ef.netnsCommand(keaPath, "-c", ef.configFile)
 	// KEA_DHCP_DATA_DIR moves the lease file out of Kea's compiled-in
 	// /var/lib/kea; KEA_LOCKFILE_DIR does the same for the logger's
 	// interprocess lockfile. Together they keep every file this server
