@@ -54,10 +54,33 @@ if ! git rev-list "$RANGE" >/dev/null 2>&1; then
     exit 2
 fi
 
+# `git diff A..B` is a TREE comparison — two dots mean nothing to it that
+# a space would not. But CI passes the base branch's tip *at event time*,
+# not the fork point, so the moment dev moves ahead of a branch the diff
+# renders everything landed in the meantime as a revert on that branch.
+# #461 — a docs PR touching no test file at all — was told it changed a
+# timing budget in failure_test.go, because #356 had merged while it was
+# open (#463).
+#
+# `A...B` is exactly `git diff $(git merge-base A B) B`, which judges the
+# branch on its own commits. `git log`/`git rev-list` keep the two-dot
+# range: there it already means "commits on B and not A", which is what
+# the waiver scan wants.
+case "$RANGE" in
+    *...*) DIFF_RANGE="$RANGE" ;;
+    *..*)  DIFF_RANGE="${RANGE%%..*}...${RANGE#*..}" ;;
+    *)     DIFF_RANGE="$RANGE" ;;
+esac
+
+if ! git diff --name-only "$DIFF_RANGE" -- >/dev/null 2>&1; then
+    echo "FAIL  cannot diff '$DIFF_RANGE' (no common ancestor?)" >&2
+    exit 2
+fi
+
 # Only test-bearing files. Weakening production code is a different
 # problem with different reviewers; this gate is about destroying a
 # finding a test just produced.
-mapfile -t FILES < <(git diff --name-only --diff-filter=d "$RANGE" -- \
+mapfile -t FILES < <(git diff --name-only --diff-filter=d "$DIFF_RANGE" -- \
     '*_test.go' 'test/integration/harness/*.go' 2>/dev/null || true)
 
 if [ "${#FILES[@]}" -eq 0 ]; then
@@ -96,8 +119,69 @@ report() {
     printf '      %s\n' "$3"
 }
 
+# --- timing-budget values (#450) -------------------------------------
+#
+# Encoded as <kind>:<n> so two readings are only ever compared when they
+# are the same kind of thing:
+#
+#   ns:120000000000   a Go duration, normalised to nanoseconds
+#   raw:60            a bare integer, comparable only to another bare one
+#   unknown:0         matched a budget assignment, could not read a value
+#
+# `unknown` never compares equal or less, so an expression this cannot
+# read still reports. Guessing at it is the one outcome worth avoiding:
+# a gate that silently passes what it does not understand is the gate
+# that was not there.
+budget_encode() {
+    local expr="$1" n
+    # Held in variables because an unbalanced ')' inside [[ =~ ]] is
+    # fine for bash and unparseable for shellcheck.
+    local dur_re='^[[:space:]]*([0-9]+)[[:space:]]*\*[[:space:]]*time\.([A-Za-z]+)'
+    local bare_re='^[[:space:]]*([0-9]+)[[:space:]]*[,)]?[[:space:]]*(//.*)?$'
+    if [[ "$expr" =~ $dur_re ]]; then
+        n="${BASH_REMATCH[1]}"
+        case "${BASH_REMATCH[2]}" in
+            Nanosecond)  printf 'ns:%d\n' "$n" ;;
+            Microsecond) printf 'ns:%d\n' "$((n * 1000))" ;;
+            Millisecond) printf 'ns:%d\n' "$((n * 1000000))" ;;
+            Second)      printf 'ns:%d\n' "$((n * 1000000000))" ;;
+            Minute)      printf 'ns:%d\n' "$((n * 60000000000))" ;;
+            Hour)        printf 'ns:%d\n' "$((n * 3600000000000))" ;;
+            *)           printf 'unknown:0\n' ;;
+        esac
+    elif [[ "$expr" =~ $bare_re ]]; then
+        printf 'raw:%d\n' "${BASH_REMATCH[1]}"
+    else
+        printf 'unknown:0\n'
+    fi
+}
+
+# Emit "<name> <encoded>" for each timing-budget assignment in the given
+# diff lines. The leading [^A-Za-z0-9_] anchors the identifier so the
+# whole name is captured, not just the keyword inside it.
+budget_values() {
+    printf '%s\n' "$1" \
+      | sed -nE 's/^.*[^A-Za-z0-9_]([A-Za-z0-9_]*(Timeout|Budget|Grace|Deadline|Interval)[A-Za-z0-9_]*)[[:space:]]*:?=[[:space:]]*([0-9].*)$/\1\t\3/p' \
+      | while IFS=$'\t' read -r bn bexpr; do
+            printf '%s %s\n' "$bn" "$(budget_encode "$bexpr")"
+        done
+}
+
+budget_human() {
+    local n="${1#*:}"
+    case "${1%%:*}" in
+        ns)
+            if   [ "$n" -ge 60000000000 ] && [ $((n % 60000000000)) -eq 0 ]; then printf '%dm\n' "$((n / 60000000000))"
+            elif [ $((n % 1000000000)) -eq 0 ]; then printf '%ds\n' "$((n / 1000000000))"
+            elif [ $((n % 1000000)) -eq 0 ];    then printf '%dms\n' "$((n / 1000000))"
+            else printf '%dns\n' "$n"; fi ;;
+        raw) printf '%s\n' "$n" ;;
+        *)   printf 'unparseable\n' ;;
+    esac
+}
+
 for f in "${FILES[@]}"; do
-    diff=$(git diff -U0 "$RANGE" -- "$f" 2>/dev/null) || continue
+    diff=$(git diff -U0 "$DIFF_RANGE" -- "$f" 2>/dev/null) || continue
     added=$(printf '%s\n' "$diff" | grep -E '^\+' | grep -v '^+++' || true)
     removed=$(printf '%s\n' "$diff" | grep -E '^-' | grep -v '^---' || true)
 
@@ -123,7 +207,7 @@ for f in "${FILES[@]}"; do
     #    the diff mentions a deadline, a budget, or a bounded loop, it
     #    is a poll and not a smell.
     if [[ "$f" == *_test.go ]]; then
-        ctx=$(git diff -U8 "$RANGE" -- "$f" 2>/dev/null | grep -E '^\+' | grep -v '^+++' || true)
+        ctx=$(git diff -U8 "$DIFF_RANGE" -- "$f" 2>/dev/null | grep -E '^\+' | grep -v '^+++' || true)
         if printf '%s\n' "$added" | grep -qE '\btime\.Sleep\('; then
             if ! printf '%s\n' "$ctx" | grep -qE 'deadline|Deadline|time\.Now\(\)\.Before|[Bb]udget|for .*range|Await\('; then
                 report "$f" "adds a bare time.Sleep" \
@@ -132,15 +216,50 @@ for f in "${FILES[@]}"; do
         fi
     fi
 
-    # 4. A budget that grew. Reading the numbers would need duration
-    #    parsing in shell; the change itself is the signal, and the
-    #    waiver makes a legitimate retune cost one issue number.
-    if printf '%s\n' "$added" | grep -qE '(Timeout|Budget|Grace|Deadline|Interval)[A-Za-z]*\s*=\s*[0-9]'; then
-        if printf '%s\n' "$removed" | grep -qE '(Timeout|Budget|Grace|Deadline|Interval)[A-Za-z]*\s*=\s*[0-9]'; then
-            report "$f" "changes a timing budget" \
-                "Raising a budget turns a reproducible failure into an intermittent one. If the old value was genuinely wrong, the issue is where that argument lives."
+    # 4. A budget that GREW. The first version of this fired on any
+    #    change to such a constant, because reading the numbers needs
+    #    duration parsing in shell. #449 then moved every budget in
+    #    failure_test.go down — 240s to 120s, 4m to 90s — once #356
+    #    removed the dnsmasq lease floor that had forced them up, and
+    #    had to be waived for tightening the suite. A waiver earned by
+    #    doing the right thing is where waiver-by-reflex starts (#450).
+    #
+    #    So the values are parsed and paired by name. Silence is bought
+    #    only by a proven decrease: anything unparseable, or a unit
+    #    swap that makes the two incomparable, still reports.
+    unset budget_old budget_new
+    declare -A budget_old budget_new
+    while read -r bname bval; do
+        [ -n "$bname" ] && budget_old["$bname"]="$bval"
+    done < <(budget_values "$removed")
+    while read -r bname bval; do
+        [ -n "$bname" ] && budget_new["$bname"]="$bval"
+    done < <(budget_values "$added")
+
+    for bname in "${!budget_new[@]}"; do
+        old="${budget_old[$bname]-}"
+        # No counterpart is a new constant, not a retune. A renamed one
+        # reads the same way; the assertion-count signal is what covers
+        # wholesale removal.
+        [ -n "$old" ] || continue
+        new="${budget_new[$bname]}"
+
+        # Two unreadable expressions are not evidence of equality, so
+        # the equal-values shortcut comes after the unknown check.
+        if [ "${old%%:*}" != "unknown" ] && [ "${new%%:*}" != "unknown" ]; then
+            [ "$old" = "$new" ] && continue
+            if [ "${old%%:*}" = "${new%%:*}" ] && [ "${new#*:}" -lt "${old#*:}" ]; then
+                continue  # tightened — the test now fails sooner, not later
+            fi
         fi
-    fi
+        if [ "${old%%:*}" = "unknown" ] || [ "${new%%:*}" = "unknown" ]; then
+            report "$f" "changes $bname" \
+                "$(budget_human "$old") -> $(budget_human "$new"): this gate cannot read one of those, so it cannot tell whether the budget grew. Raising one turns a reproducible failure into an intermittent one."
+        else
+            report "$f" "raises $bname" \
+                "$(budget_human "$old") -> $(budget_human "$new"). Raising a budget turns a reproducible failure into an intermittent one. If the old value was genuinely wrong, the issue is where that argument lives."
+        fi
+    done
 
     # Error/Errorf only, NOT Fatal. In this suite t.Fatalf is
     # overwhelmingly error propagation — `if err != nil { t.Fatalf(...) }`
