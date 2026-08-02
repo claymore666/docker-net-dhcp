@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/devplayer0/docker-net-dhcp/test/integration/harness"
+	"github.com/claymore666/docker-net-dhcp/test/integration/harness"
 )
 
 // TestDNSPropagate_OptInWritesResolvConf is the v0.9.0 / T1-1

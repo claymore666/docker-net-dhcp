@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/devplayer0/docker-net-dhcp/test/integration/harness"
+	"github.com/claymore666/docker-net-dhcp/test/integration/harness"
 )
 
 // TestConcurrency_DistinctLeases starts N containers on the same
