@@ -6,6 +6,8 @@
 [![Release](https://img.shields.io/github/v/release/claymore666/docker-net-dhcp?sort=semver)](https://github.com/claymore666/docker-net-dhcp/releases)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/claymore666/docker-net-dhcp/badge)](https://scorecard.dev/viewer/?uri=github.com/claymore666/docker-net-dhcp)
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/13229/badge)](https://www.bestpractices.dev/projects/13229)
+[![OpenSSF silver](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fwww.bestpractices.dev%2Fprojects%2F13229.json&query=%24.badge_percentage_1&label=OpenSSF%20silver&suffix=%25&color=9e9e9e)](https://www.bestpractices.dev/projects/13229/silver)
+[![OpenSSF gold](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fwww.bestpractices.dev%2Fprojects%2F13229.json&query=%24.badge_percentage_2&label=OpenSSF%20gold&suffix=%25&color=b8860b)](https://www.bestpractices.dev/projects/13229/gold)
 [![Docs](https://img.shields.io/badge/docs-claymore666.github.io-blue?logo=materialformkdocs&logoColor=white)](https://claymore666.github.io/docker-net-dhcp/)
 
 A Docker network plugin that allocates container IP addresses (IPv4 and
