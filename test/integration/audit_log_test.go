@@ -32,18 +32,23 @@ type ledgerLine struct {
 	MAC       string `json:"mac"`
 }
 
-// readLedger reads STATE_DIR/leases.jsonl out of the plugin's rootfs
-// (same host-side access pattern as harness.ReadPluginLog). Returns
-// nil when the file doesn't exist yet — callers poll. Any line that
-// fails to parse is a test failure: the ledger's contract is that
-// every line is valid JSON.
+// readLedger reads STATE_DIR/leases.jsonl. Returns nil when the file
+// doesn't exist yet — callers poll. Any line that fails to parse is a
+// test failure: the ledger's contract is that every line is valid JSON.
+//
+// The path is on the HOST, not inside the plugin rootfs. Since #440
+// STATE_DIR is bind-mounted from /var/lib/net-dhcp so its contents
+// survive `docker plugin rm`; the in-rootfs path this used to read is
+// now the empty mount point. That is exactly what this test caught when
+// the mount landed — the ledger read as `[]` because it was looking at
+// the mount point rather than the mount.
+//
+// Deliberately NOT derived from PluginInspect any more. The old form
+// keyed on the plugin ID, and the whole point of the change is that the
+// state outlives any particular plugin ID.
 func readLedger(t *testing.T, ctx context.Context, cli *docker.Client) []ledgerLine {
 	t.Helper()
-	p, _, err := cli.PluginInspectWithRaw(ctx, harness.PluginRef)
-	if err != nil {
-		t.Fatalf("PluginInspect: %v", err)
-	}
-	path := filepath.Join("/var/lib/docker/plugins", p.ID, "rootfs/var/lib/net-dhcp/leases.jsonl")
+	path := filepath.Join(harness.HostStateDir, "leases.jsonl")
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
