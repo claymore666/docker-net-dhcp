@@ -1017,6 +1017,10 @@ the same MAC to the server across an event the container did not choose.</p>
 </tr>
 </tbody>
 </table>
+<p>CI shards the main suite across two jobs (#381); <code>integration-local</code>
+deliberately does not — a local run is one machine, so sharding would
+serialise the shards and only add overhead. If you want to reproduce a
+single CI shard, <code>sudo make integration-test-shard SHARD=1 OF=2</code>.</p>
 <p><strong>Use <code>integration-local</code>, not <code>integration-test</code>.</strong></p>
 <p><code>make integration-test</code> and <code>make integration-test-failure</code> only run
 <code>go test</code>. Building and installing the plugin is a separate chain
