@@ -31,14 +31,26 @@ ARG RUNNER_VERSION
 
 # Base tooling + Docker Engine from download.docker.com (Debian 13's
 # docker.io is 26.x; the nested daemon must be >= 28 — engine-gated
-# tests, #125). dnsmasq is the test fixture's DHCP server: binary
-# only, there is no init system in here to start it. iputils-ping:
+# tests, #125).
+#
+# TWO DHCP servers, deliberately, for the duration of the #356
+# migration. dnsmasq is what the fixture uses today; kea is what it is
+# moving to, because dnsmasq's minimum lease is two minutes and every
+# failure-suite wait is built on that floor rather than on anything the
+# protocol or the plugin requires. Kea takes a 20s lease, which is worth
+# ~7 minutes off the failure suite.
+#
+# Both are binary-only — there is no init system in here to start
+# either; the fixtures spawn them directly on veth pairs. dnsmasq comes
+# out once the fixture no longer references it, not before.
+#
+# iputils-ping:
 # the failure-injection suite's L2-reachability check shells out to
 # `ping` on the runner host (failure_test.go, TestFailure_LeaseExpiry);
 # the bare-metal runner had it, this slim base does not (#158).
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         ca-certificates curl git make jq procps tini xz-utils \
-        iproute2 iptables dnsmasq iputils-ping \
+        iproute2 iptables dnsmasq kea-dhcp4-server kea-dhcp6-server iputils-ping \
     && install -m 0755 -d /etc/apt/keyrings \
     && curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc \
     && printf 'Types: deb\nURIs: https://download.docker.com/linux/debian\nSuites: trixie\nComponents: stable\nSigned-By: /etc/apt/keyrings/docker.asc\n' \
