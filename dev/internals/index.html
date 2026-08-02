@@ -1032,8 +1032,11 @@ build made two tests fail for reasons unrelated to the branch, <em>and</em>
 made the health floor report <code>clean</code> for counters that build could not
 publish at all. Wrong in both directions, from one cause. Rebuilding
 reproduced CI exactly.</p>
-<p><code>integration-local</code> chains <code>create enable integration-test
-integration-test-failure</code>, so a stale plugin cannot be what you measure.</p>
+<p><code>integration-local</code> chains <code>integration-cleanup create enable
+integration-test integration-test-failure</code>, so neither a stale plugin
+nor a previous run's leftovers can be what you measure. The cleanup
+step mirrors the CI job's own first step: local runs are the only
+place that state accumulates, because CI's runners are ephemeral.</p>
 <p>The two suite targets deliberately do <strong>not</strong> depend on a rebuild: CI
 calls them in sequence between its own build and teardown, and a
 rebuild dependency there would reinstall the plugin <em>between</em> the two
@@ -1059,7 +1062,11 @@ clean: an unreadable instrument is not a clean result.</p>
 <ol>
 <li>Did you build? <code>sudo make integration-local</code> rather than a bare
    suite target.</li>
-<li>Is a previous run's state still around? <code>make integration-cleanup</code>.</li>
+<li>Is a previous run's state still around? <code>sudo make
+   integration-cleanup</code>. <code>integration-local</code> now does this for you;
+   you only need it by hand after running a suite target directly. A
+   single leftover container fails an unrelated test with a name
+   conflict and reads exactly like a regression.</li>
 <li>Engine version — <code>interface_name</code> (#125) needs Docker ≥28 and skips
    below it, so a skip locally and a pass in CI can both be correct.</li>
 </ol>
