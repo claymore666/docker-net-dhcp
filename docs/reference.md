@@ -82,12 +82,16 @@ The plugin publishes to two registries; GHCR is primary:
 for unattended):
 
 ```bash
+# One-time: the plugin persists lease state here, bind-mounted from
+# the host so it survives upgrades. Docker will not create it for you
+# and `plugin install` fails with a mount error if it is missing.
+sudo mkdir -p /var/lib/net-dhcp
 docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.4.0
 ```
 
 Privileges requested: `network: host`, host PID namespace, the Docker
-socket mount, `CAP_NET_ADMIN` + `CAP_SYS_ADMIN` + `CAP_SYS_PTRACE`
-(v1.3.3+). All are inherent to what the plugin does: creating links in
+socket mount, a bind mount of `STATE_DIR` (v1.5.0+, see below),
+`CAP_NET_ADMIN` + `CAP_SYS_ADMIN` + `CAP_SYS_PTRACE` (v1.3.3+). All are inherent to what the plugin does: creating links in
 arbitrary netns, driving DHCP on the host's L2 segments, querying the
 daemon — and entering a container's netns via `/proc/<pid>/ns/net`,
 which the kernel ptrace-gates when the container runs as a non-root
@@ -113,7 +117,8 @@ with, so the safe sequence for moving from `vOLD` to `vNEW` is:
 # 1. Stop containers using plugin networks
 # 2. Remove the networks (they're cheap to recreate; leases release)
 docker network rm my-dhcp-net
-# 3. Swap the plugin
+# 3. Swap the plugin (STATE_DIR on the host is left alone, so the
+#    tombstone and audit ledger carry across — v1.5.0+)
 docker plugin disable ghcr.io/claymore666/docker-net-dhcp:vOLD
 docker plugin rm ghcr.io/claymore666/docker-net-dhcp:vOLD
 docker plugin install ghcr.io/claymore666/docker-net-dhcp:vNEW
@@ -131,6 +136,15 @@ the supported one.)
 > `--driver-opt ip=<old address>` is *declined* while the server still
 > holds that address against the old MAC. The container comes back on a
 > different address.
+>
+> **v1.5.0+ removes one of the two causes.** `STATE_DIR` is now bind-
+> mounted from the host, so the tombstone that remembers an endpoint's
+> MAC and IP survives `docker plugin rm`. Before v1.5.0 it lived inside
+> the plugin rootfs and every upgrade destroyed it, which is a separate
+> loss from the network-removal one described above. Removing the
+> *network* still discards the tombstone — that is keyed by network ID
+> by construction — so the address only survives an upgrade in which
+> the network itself is left in place.
 >
 > This is not the same as a container restart, which *does* preserve the
 > address — see [Restart stability](#restart-stability-mac-and-ip). That
@@ -307,7 +321,7 @@ Set with `docker plugin set <plugin> NAME=value`; take effect after
 | ---- | ------- | ------- |
 | `LOG_LEVEL` | `info` | logrus level (`trace`, `debug`, `info`, `warn`, `error`). `trace` includes per-event `dhcpcd` lines and full HTTP-RPC bodies. |
 | `AWAIT_TIMEOUT` | `10s` | Cap on the polling helpers (sandbox readiness, link rename, netns appearance). Bump if a slow daemon-restore window starves endpoint setup. |
-| `STATE_DIR` | `/var/lib/net-dhcp` | Where per-network options, the tombstone file, and the `audit_log` ledger persist (inside the plugin rootfs). |
+| `STATE_DIR` | `/var/lib/net-dhcp` | Where per-network options, the tombstone file, and the `audit_log` ledger persist. **Bind-mounted from the host at this exact path since v1.5.0**, so its contents survive `docker plugin rm` — before that they lived in the plugin rootfs and every upgrade destroyed them. Two consequences: durability begins with the version that introduced the mount (an upgrade *onto* v1.5.0 still starts from nothing, because the old state was never on the host), and **repointing this setting opts out** — a path other than the mounted one is inside the rootfs again and is wiped by the next upgrade. |
 | `OUTAGE_TICK` | `30s` | How often the DHCP-outage watchdog re-checks each client, and so the resolution of `dhcp_timeouts` — the counter climbs about once per tick while a server is unreachable. Lower it for a finer-grained signal at the cost of a little more wakeup churn. |
 | `OUTAGE_GRACE` | `25s` | Settling time before the watchdog will call an outage, added **on top of** the lease lifetime, so detection lands at `lease + grace`. Also the window a never-yet-bound client gets before its first failure is reported. |
 

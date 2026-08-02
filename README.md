@@ -30,6 +30,10 @@ like any other machine. Bridge, macvlan, and ipvlan attachment modes.
 Install the plugin:
 
 ```bash
+# One-time: the plugin persists lease state here, bind-mounted from
+# the host so it survives upgrades. Docker will not create it for you
+# and `plugin install` fails with a mount error if it is missing.
+sudo mkdir -p /var/lib/net-dhcp
 docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.4.0
 ```
 

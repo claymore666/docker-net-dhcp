@@ -1,12 +1,16 @@
 {
-    "description": "Docker DHCP networking (host-bridge or macvlan attachment) — coverage-instrumented build",
+    "description": "Docker DHCP networking (host-bridge or macvlan attachment) \u2014 coverage-instrumented build",
     "interface": {
         "socket": "net-dhcp.sock",
         "types": [
             "docker.networkdriver/1.0"
         ]
     },
-    "entrypoint": ["/usr/sbin/net-dhcp", "-logfile", "/var/log/net-dhcp.log"],
+    "entrypoint": [
+        "/usr/sbin/net-dhcp",
+        "-logfile",
+        "/var/log/net-dhcp.log"
+    ],
     "env": [
         {
             "description": "Log level",
@@ -77,6 +81,15 @@
             "type": "bind",
             "options": [
                 "bind",
+                "rw"
+            ]
+        },
+        {
+            "source": "/var/lib/net-dhcp",
+            "destination": "/var/lib/net-dhcp",
+            "type": "bind",
+            "options": [
+                "rbind",
                 "rw"
             ]
         }
