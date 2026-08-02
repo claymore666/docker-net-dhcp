@@ -222,30 +222,55 @@ jobs:
     if: needs.gate.outputs.decision == 'run'
     name: ${{ matrix.suite }}-suite
     runs-on: [self-hosted, dhcp-ci]
-    # 25 per suite. Measured: main ~10:40, failure ~8:20, plus ~60s
-    # plugin build. The old single job carried 40 for both sequentially;
-    # this is proportionally more headroom, not less.
+    # 25 per suite. Measured on dev after #356 and #468: each main shard
+    # ~4:36, failure ~3:51, both inclusive of the ~60s plugin build. The
+    # old single job carried 40 for both sequentially, so the headroom
+    # here is several times the job rather than a fraction of it —
+    # deliberately, since this timeout exists to bound a hang, not to
+    # police a slow run.
     timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
-        # The main suite is sharded two ways (#381). Measured: main was
-        # 579s against failure's 495s, so after #375 main set the gate.
-        # Two shards balance to 281s/282s against measured per-test
-        # durations, which drops main below failure and makes the
-        # FAILURE suite the critical path at ~544s.
+        # The main suite is sharded (#381, widened to three in #468).
         #
-        # Two, not four, deliberately. At n=3 the shards balance to
-        # ~190s and at n=4 to ~144s, and neither improves the gate by a
-        # second — failure's 495s already dominates. Extra shards would
-        # buy nothing and spend more privileged jobs on the pool, which
-        # is the dose #296 saw flake. Sharding the failure suite is the
-        # next lever if this one proves out; that is stage 3, not this.
+        # #381 stopped at two, and said why: at n=3 the shards balance
+        # to ~190s, "and neither improves the gate by a second — failure's
+        # 495s already dominates". That was true when written. #356 then
+        # put the failure suite on kea and it fell to 231s, so the main
+        # shards set the gate again and the reason to stop at two was
+        # gone. Measured on dev, run 30753274506:
+        #
+        #   main-1 367s   main-2 361s   failure 231s   gate = 367s
+        #
+        # Per-shard TEST time comes straight from the partitioner against
+        # testdata/main-suite-durations.tsv (99 tests, 540s); job overhead
+        # is the measured 96s difference (367 - 271), most of it the
+        # plugin build:
+        #
+        #   OF=2   271/269s  ->  367s job  ->  gate 367s
+        #   OF=3   179/181/180s -> 276s job -> gate 276s   <- here
+        #   OF=4   134..136s -> 231s job   ->  gate 231s
+        #
+        # Three, not four, and this time the reason is the POOL rather
+        # than the suite. OF=4 lands the shards exactly on the failure
+        # suite's 231s — the natural stopping point, since past it the
+        # failure suite is the critical path and stage 3 (sharding it) is
+        # the next lever. But it makes a run take five privileged jobs of
+        # eight, where three take four and two concurrent PRs still fit.
+        # That ceiling is not theoretical: on 2026-08-02 two overlapping
+        # runs at six of eight slots left main-2-suite queued 2m10,
+        # against the ~2s that is otherwise universal. OF=4 buys 45s and
+        # spends it back the first time two PRs land together. It is
+        # worth revisiting with a bigger pool — that is #430's question,
+        # re-scoped.
         include:
           - suite: main-1
-            target: integration-test-shard SHARD=1 OF=2
+            target: integration-test-shard SHARD=1 OF=3
           - suite: main-2
-            target: integration-test-shard SHARD=2 OF=2
+            target: integration-test-shard SHARD=2 OF=3
+          - suite: main-3
+            target: integration-test-shard SHARD=3 OF=3
           - suite: failure
             target: integration-test-failure
     env:
