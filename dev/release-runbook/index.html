@@ -15,7 +15,7 @@
         <link rel="canonical" href="https://claymore666.github.io/docker-net-dhcp/latest/release-runbook/">
       
       
-        <link rel="prev" href="../internals/">
+        <link rel="prev" href="../verifying-releases/">
       
       
       
@@ -322,6 +322,25 @@
   
   
   
+  
+    <li class="md-tabs__item">
+      <a href="../verifying-releases/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Verifying releases
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
     
   
   
@@ -524,6 +543,33 @@
       
   
   
+  
+  
+    <li class="md-nav__item">
+      <a href="../verifying-releases/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Verifying releases
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
     
   
   
@@ -545,10 +591,10 @@
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" checked>
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" checked>
         
           
-          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="">
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="">
             
   
   
@@ -566,8 +612,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="true">
-          <label class="md-nav__title" for="__nav_6">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_7">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -1272,9 +1318,15 @@ the <code>vX.Y.Z</code> milestone (the workflow leans on this for the
 <li><strong>Confirm the GitHub Release</strong> — the <code>github-release</code> job now cuts
    it automatically once <code>verify-install</code> is green (so a plugin that
    doesn't install never gets an advertised Releases page). It attaches
-   the cosign-signed artifacts and uses the <code>## vX.Y.Z</code> section of
-   <code>RELEASE_NOTES.md</code> as the body, so step 4's notes must already be in
-   place at tag time. No manual <code>gh release create</code> — instead verify:
+   the cosign-signed artifacts and builds the body as: a generated lead
+   line naming the project and version (it becomes the page's
+   <code>og:description</code>, so it is what link previews show — #469), the
+   <code>## vX.Y.Z</code> section of <code>RELEASE_NOTES.md</code>, a generated Downloads
+   table, and a link to <a href="../verifying-releases/">Verifying releases</a>.
+   Step 4's notes must therefore already be in place at tag time.
+   rc tags produce a <strong>draft</strong> release: the publish path is still
+   exercised, but dry-run builds stay out of the public list.
+   No manual <code>gh release create</code> — instead verify:
    <div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>gh<span class="w"> </span>release<span class="w"> </span>view<span class="w"> </span>vX.Y.Z<span class="w">   </span><span class="c1"># body = the RELEASE_NOTES section; assets:</span>
 <a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="w">                         </span><span class="c1">#   net-dhcp-plugin-vX.Y.Z-linux-amd64.tar.gz</span>
 <a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="w">                         </span><span class="c1">#   checksums.txt + checksums.txt.sigstore.json</span>

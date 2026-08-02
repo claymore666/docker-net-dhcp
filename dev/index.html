@@ -325,6 +325,25 @@
   
   
   
+    <li class="md-tabs__item">
+      <a href="verifying-releases/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Verifying releases
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
     
     
       <li class="md-tabs__item">
@@ -650,6 +669,33 @@
   
   
   
+    <li class="md-nav__item">
+      <a href="verifying-releases/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Verifying releases
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
     
     
     
@@ -664,10 +710,10 @@
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
         
           
-          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="0">
             
   
   
@@ -685,8 +731,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_6">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -963,9 +1009,10 @@ read the docs matching the plugin version you have installed.</p>
 published plugin image is signed with cosign (keyless), carries SLSA
 build provenance, and ships an SBOM; the release-artifact <code>checksums.txt</code>
 manifest is cosign-signed so one signature covers every attached file.
-The exact, copy-pasteable commands — pinned to that release's tag — are
-appended to each <a href="https://github.com/claymore666/docker-net-dhcp/releases">GitHub Release</a>
-under <strong>Verifying the signed artifacts</strong>. In brief (replace <code>VERSION</code>):</p>
+The full, copy-pasteable procedure lives in
+<strong><a href="verifying-releases/">Verifying releases</a></strong>, and every
+<a href="https://github.com/claymore666/docker-net-dhcp/releases">GitHub Release</a>
+links to it. In brief (replace <code>VERSION</code>):</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="c1"># image signature</span>
 <a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>cosign<span class="w"> </span>verify<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:VERSION<span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">  </span>--certificate-identity-regexp<span class="w"> </span><span class="s1">&#39;^https://github.com/claymore666/docker-net-dhcp/.github/workflows/release.yml@&#39;</span><span class="w"> </span><span class="se">\</span>

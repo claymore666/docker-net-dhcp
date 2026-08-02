@@ -327,6 +327,25 @@
   
   
   
+    <li class="md-tabs__item">
+      <a href="../verifying-releases/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Verifying releases
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
     
     
       <li class="md-tabs__item">
@@ -908,6 +927,33 @@
   
   
   
+    <li class="md-nav__item">
+      <a href="../verifying-releases/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Verifying releases
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
     
     
     
@@ -922,10 +968,10 @@
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
         
           
-          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="0">
             
   
   
@@ -943,8 +989,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_6">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -1580,9 +1626,10 @@ user (#317).</p>
 <p><strong>Verify the signature (v1.1.0+).</strong> The published image is cosign-signed
 (keyless) and carries SLSA build provenance; release artifacts ship a
 cosign-signed <code>checksums.txt</code> and an SBOM. Per-release, copy-pasteable
-verification commands live under <strong>Verifying the signed artifacts</strong> on
-each <a href="https://github.com/claymore666/docker-net-dhcp/releases">GitHub Release</a>;
-the <a href="../#verifying-releases">home page</a> has the short form.</p>
+verification commands live in
+<a href="../verifying-releases/">Verifying releases</a>, which every
+<a href="https://github.com/claymore666/docker-net-dhcp/releases">GitHub Release</a>
+links to; the <a href="../#verifying-releases">home page</a> has the short form.</p>
 <p><strong>Pin a version.</strong> <code>:latest</code> exists and tracks the newest release, but
 networks remember the exact driver string they were created with — a
 network created against <code>:v1.1.1</code> needs that tag present to operate.
