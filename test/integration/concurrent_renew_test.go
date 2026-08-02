@@ -44,9 +44,11 @@ import (
 //
 // Mechanism as in TestLeaseRenew_HonorsT1: an ephemeral fixture
 // advertising option 58/59 so renewal fires ~12s in rather than at half
-// of dnsmasq's hard 2m minimum lease. Self-validating — if renewal
-// never fires for either container, both assertions fail rather than
-// silently passing.
+// the lease. The lease itself stays long on purpose — an ACK observed
+// after expiry would be a re-acquisition rather than a renewal, and
+// this test would pass while proving the opposite of its name (#356).
+// Self-validating — if renewal never fires for either container, both
+// assertions fail rather than silently passing.
 func TestConcurrentRenew_SameInterfaceNameBothRenew(t *testing.T) {
 	const (
 		renewT1 = 12 // seconds; dhcpcd renews here, above its floor

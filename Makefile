@@ -154,9 +154,21 @@ ITEST_FAILURE_LOG = $(ITEST_LOG_DIR)/integration-failure-$(ITEST_STAMP).log
 # wrong in both directions from one cause. Rebuilding reproduced CI
 # exactly.
 #
+# Orphan cleanup runs FIRST, mirroring the CI job's own first step.
+# Without it a single container left behind by an earlier aborted run
+# fails the next local run with a name conflict, days later, in a test
+# that has nothing to do with whatever is being changed — and it looks
+# exactly like a regression. That cost a diagnosis on #449: a container
+# created the previous afternoon, never started, failed
+# TestLifecycleMacvlan_GoldenPath on a branch that does not touch it.
+#
+# CI never sees this because its runners are ephemeral and it cleans
+# anyway; local runs are the only place the state accumulates, which is
+# precisely why the local target is the one that needs the step.
+#
 # Use this target locally; use the two suite targets directly only when
 # you have just built and installed the plugin yourself.
-integration-local: create enable integration-test integration-test-failure
+integration-local: integration-cleanup create enable integration-test integration-test-failure
 
 # Live integration tests. Need privileges (CAP_NET_ADMIN, mount/netns
 # ops, bind UDP/67) and the plugin already enabled at PLUGIN_NAME:golang.

@@ -148,8 +148,11 @@ made the health floor report `clean` for counters that build could not
 publish at all. Wrong in both directions, from one cause. Rebuilding
 reproduced CI exactly.
 
-`integration-local` chains `create enable integration-test
-integration-test-failure`, so a stale plugin cannot be what you measure.
+`integration-local` chains `integration-cleanup create enable
+integration-test integration-test-failure`, so neither a stale plugin
+nor a previous run's leftovers can be what you measure. The cleanup
+step mirrors the CI job's own first step: local runs are the only
+place that state accumulates, because CI's runners are ephemeral.
 
 The two suite targets deliberately do **not** depend on a rebuild: CI
 calls them in sequence between its own build and teardown, and a
@@ -180,7 +183,11 @@ Check, in order:
 
 1. Did you build? `sudo make integration-local` rather than a bare
    suite target.
-2. Is a previous run's state still around? `make integration-cleanup`.
+2. Is a previous run's state still around? `sudo make
+   integration-cleanup`. `integration-local` now does this for you;
+   you only need it by hand after running a suite target directly. A
+   single leftover container fails an unrelated test with a name
+   conflict and reads exactly like a regression.
 3. Engine version — `interface_name` (#125) needs Docker ≥28 and skips
    below it, so a skip locally and a pass in CI can both be correct.
 

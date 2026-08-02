@@ -27,6 +27,16 @@ if [[ -n "$nets" ]]; then
     docker network rm $nets 2>&1 | sed 's/^/  /'
 fi
 
+echo "=== removing dh-itest-* network namespaces ==="
+# The ephemeral (failure-suite) fixture runs its kea in its own netns
+# and moves the server end of the veth pair into it (#356). Delete the
+# namespace FIRST: it takes that interface with it, so the interface
+# sweep below then has nothing left to trip over.
+for ns in $(ip netns list 2>/dev/null | awk '/^dh-itest-/{print $1}'); do
+    echo "  ip netns del $ns"
+    ip netns del "$ns" 2>/dev/null || true
+done
+
 echo "=== removing dh-itest-* host interfaces ==="
 for if in $(ip -br link 2>/dev/null | awk '/^dh-itest-/{print $1}' | sed 's|@.*||'); do
     echo "  ip link del $if"
@@ -48,6 +58,19 @@ echo "=== killing lingering dnsmasq processes started by the harness ==="
 # (--interface=dh-itest-dhcp) and the bridge-side one
 # (--interface=dh-itest-br2).
 pids=$(pgrep -f -- '--interface=dh-itest-' || true)
+if [[ -n "$pids" ]]; then
+    kill -TERM $pids 2>/dev/null || true
+    sleep 1
+    kill -KILL $pids 2>/dev/null || true
+    echo "  killed: $pids"
+fi
+
+echo "=== killing lingering kea processes started by the harness ==="
+# The ephemeral fixture's kea is identified by its config path, which
+# always lives under a dh-itest-ephemeral-* temp dir. Deleting the
+# namespace above does not kill it — a process whose netns disappears
+# keeps running, just with no interfaces.
+pids=$(pgrep -f -- 'kea-dhcp4 .*dh-itest-ephemeral-' || true)
 if [[ -n "$pids" ]]; then
     kill -TERM $pids 2>/dev/null || true
     sleep 1

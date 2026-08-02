@@ -7,9 +7,22 @@
 // *intended* degraded-mode behaviour it asserts, so those semantics
 // are decided here rather than discovered in production.
 //
-// These tests cross real DHCP timing boundaries (the fixture lease
-// floor is 2m, so T1=60s, T2=105s, expiry=120s) and add ~11 serial
-// minutes — they are split out of the main suite into
+// These tests cross real DHCP timing boundaries. They used to pay two
+// minutes per boundary because dnsmasq's minimum lease is a hard 2m;
+// the fixture now runs Kea, which honours whatever lease it is told,
+// so each test asks for the shortest lease that still makes its own
+// scenario meaningful (#356).
+//
+// That makes the lease a PARAMETER OF THE SCENARIO rather than a fact
+// of life, and every test below states the inequality it needs —
+// "the outage must outlive the lease", "the outage must cross T1 but
+// not the lease". Change a number without re-checking its inequality
+// and the test keeps passing while no longer crossing the boundary it
+// is named after; that is precisely how the pre-#278 versions of two
+// of these tests went green in ~77s while claiming to wait out a 120s
+// lease.
+//
+// They are split out of the main suite into
 // `make integration-test-failure` (second CI step).
 //
 // dhcpcd timing facts the asserts below lean on (see pkg/dhcp):
@@ -26,9 +39,9 @@
 //     (dhcp.Info.LeaseSeconds) and calls the outage once
 //     lastAffirmed + lease + grace has passed, re-checking on each
 //     tick. CI installs the plugin with OUTAGE_TICK=2s /
-//     OUTAGE_GRACE=10s (#278), so on the fixture's 120s lease the rise
-//     lands ~132s after the last bind/renew. Against a plugin left on
-//     the shipped 30s/25s defaults it is 145–175s instead.
+//     OUTAGE_GRACE=10s (#278), so on the outage tests' 20s lease the
+//     rise lands ~32s after the last bind/renew. Against a plugin left
+//     on the shipped 30s/25s defaults it is 45–75s instead.
 //
 //     The budgets below are sized for the SLOWER of the two on purpose.
 //     They are poll deadlines, not waits: each test returns as soon as
@@ -69,7 +82,6 @@ import (
 	"bytes"
 	"context"
 	"net"
-	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -96,12 +108,14 @@ const (
 
 	// outageRiseBudget bounds the wait for the first dhcp_timeouts rise
 	// after a BOUND client's server dies. Sized for the shipped 30s/25s
-	// cadence — lease + grace (120s + 25s) plus up to one 30s tick,
-	// ~175s worst case — not for the tighter cadence CI installs, so
-	// the same test is valid either way. It is a deadline, not a wait:
-	// under CI's 2s/10s the rise arrives at ~132s and the poll returns
-	// there.
-	outageRiseBudget = 240 * time.Second
+	// cadence — lease + grace (20s + 25s) plus up to one 30s tick, ~75s
+	// worst case — not for the tighter cadence CI installs, so the same
+	// test is valid either way. It is a deadline, not a wait: under
+	// CI's 2s/10s the rise arrives at ~32s and the poll returns there.
+	//
+	// The headroom over 75s is deliberate and cheap: the budget is only
+	// ever spent in full when the test is about to fail anyway.
+	outageRiseBudget = 120 * time.Second
 )
 
 // assertNoNewHealthFaults is what a bare `!h.Healthy` check should have
@@ -244,15 +258,20 @@ func inRange(ip, start, end string) bool {
 // green for the wrong reason: it finished in ~77s, inside the 120s
 // lease, so the server still held the entry and re-ACKed it.
 func TestFailure_ServerLossDuringRenewal(t *testing.T) {
-	// 8m, not 6m: the outage is only detectable after a bound lease
-	// lapses (~120s) plus up to one watchdog period, and the re-bind
-	// poll after the server returns adds up to 90s on top of that.
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
+	// The outage is only detectable after a bound lease lapses (20s)
+	// plus up to one watchdog period, and the re-bind poll after the
+	// server returns adds up to 90s on top of that.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
 	const netName = "dh-itest-floss"
 
-	ef := harness.NewEphemeralFixture(t)
+	// INEQUALITY: the outage must OUTLIVE the lease — that is the whole
+	// scenario, and it is what separates this test from
+	// TestFailure_ServerReturnsBeforeExpiry. The outage here is bounded
+	// by outageRiseBudget, which is lease + grace + a tick, so any
+	// lease shorter than that budget satisfies it.
+	ef := harness.NewEphemeralFixture(t, harness.WithLeaseSeconds(harness.EphemeralOutageLeaseSeconds))
 	t.Cleanup(func() {
 		if t.Failed() {
 			ef.DumpLogs(func(s string) { t.Log(s) })
@@ -293,7 +312,7 @@ func TestFailure_ServerLossDuringRenewal(t *testing.T) {
 	// a failing re-DISCOVER.
 	killed := time.Now()
 	ef.Stop()
-	t.Logf("server killed; a BOUND lease (fixture lease %s) has to lapse before the plugin can report a timeout", harness.LeaseTime)
+	t.Logf("server killed; a BOUND lease (fixture lease %ds) has to lapse before the plugin can report a timeout", ef.LeaseSeconds())
 
 	h, ok := faultW.Await(outageRiseBudget, func(h, _ *harness.HealthResponse) bool {
 		return h.DHCPTimeouts > base.DHCPTimeouts
@@ -369,12 +388,39 @@ func TestFailure_ServerLossDuringRenewal(t *testing.T) {
 // sides of the boundary: inside the lease the address is guaranteed,
 // past it only recovery is.
 func TestFailure_ServerReturnsBeforeExpiry(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
+	// INEQUALITY, and this test is nothing without it:
+	//
+	//	T1 (15s)  <  outage (25s)  <  lease (60s)
+	//
+	// The outage must cross T1 so the client actually attempts — and
+	// fails — a renewal while the server is down; and it must end well
+	// inside the lease so the server's DB still holds the entry when it
+	// returns, which is the address-stability contract being asserted.
+	// Break the left inequality and the test proves nothing (no renewal
+	// was ever attempted); break the right one and it becomes
+	// TestFailure_ServerLossDuringRenewal with a wrong assertion.
+	//
+	// T1/T2 are set explicitly rather than derived from the lease
+	// (which would put T1 at 30s) so the outage can be short while the
+	// lease stays comfortably long. The 35s of margin between the
+	// outage ending and expiry is what absorbs the client's renewal
+	// backoff on a loaded runner.
+	const (
+		leaseSeconds = 60
+		renewT1      = 15 // above dhcpcd's internal renewal flooring
+		renewT2      = 45 // rebind — deliberately past the outage window
+		outage       = 25 * time.Second
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
 
 	const netName = "dh-itest-fshort"
 
-	ef := harness.NewEphemeralFixture(t)
+	ef := harness.NewEphemeralFixture(t,
+		harness.WithLeaseSeconds(leaseSeconds),
+		harness.WithRenewTimes(renewT1, renewT2),
+	)
 	t.Cleanup(func() {
 		if t.Failed() {
 			ef.DumpLogs(func(s string) { t.Log(s) })
@@ -404,16 +450,16 @@ func TestFailure_ServerReturnsBeforeExpiry(t *testing.T) {
 	base := faultW.Before()
 	baseFail, baseWatch := outageLines(t, ctx, ep)
 
-	// Down and back up well inside the 120s lease. 60s is long enough
-	// to cross T1 (the renewal the client will fail) and short enough
-	// that the server's entry is still live when it returns.
+	// Down and back up well inside the lease — see the inequality at
+	// the top of this function.
 	acksBefore := ef.CountLogLines("DHCPACK", mac)
 	killed := time.Now()
 	ef.Stop()
-	t.Log("server stopped inside the lease; restarting in 60s (lease stays live throughout)")
+	t.Logf("server stopped inside the lease; restarting in %s (T1=%ds, lease=%ds, so the client fails one renewal and the lease stays live throughout)",
+		outage, renewT1, leaseSeconds)
 
 	select {
-	case <-time.After(60 * time.Second):
+	case <-time.After(outage):
 	case <-ctx.Done():
 		t.Fatal("context expired during the short outage")
 	}
@@ -476,12 +522,17 @@ func TestFailure_ServerReturnsBeforeExpiry(t *testing.T) {
 // (TestHandleEvent_Counters) — when a server does NAK, that's the
 // path that counts it; any NAK observed here is logged for interest.
 func TestFailure_LeaseRefusedOnRenewal(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
 	const netName = "dh-itest-fref"
 
-	ef := harness.NewEphemeralFixture(t)
+	// INEQUALITY: re-acquisition cannot happen before the held lease
+	// stops being defensible, so the shorter the lease the sooner this
+	// test can conclude. Nothing here needs the lease to be long — the
+	// scenario is "the address is foreign to the new server", which is
+	// true from the first renewal attempt onwards.
+	ef := harness.NewEphemeralFixture(t, harness.WithLeaseSeconds(harness.EphemeralOutageLeaseSeconds))
 	t.Cleanup(func() {
 		if t.Failed() {
 			ef.DumpLogs(func(s string) { t.Log(s) })
@@ -517,14 +568,17 @@ func TestFailure_LeaseRefusedOnRenewal(t *testing.T) {
 	// Renumber the site: new server address, new pool, wiped DB. The
 	// unicast T1 renewal dies (the old server address is gone); the
 	// T2 broadcast rebind carries a foreign address; re-acquisition
-	// follows somewhere between T2 (105s) and expiry+rediscover
-	// (~135s).
+	// follows somewhere between T2 and expiry + re-DISCOVER. On the
+	// 20s lease, with T1/T2 derived from it, that is T2 ~17.5s and
+	// expiry 20s, so re-acquisition lands within a few tens of seconds
+	// rather than the ~135s a 2m lease imposed.
 	renumbered := time.Now()
 	ef.RestartOnSubnet(harness.EphemeralAltServerAddr, harness.EphemeralAltPoolStart, harness.EphemeralAltPoolEnd)
-	t.Log("server renumbered; awaiting re-acquisition (T2 ~105s, expiry ~135s)...")
+	t.Logf("server renumbered; awaiting re-acquisition (lease %ds, so T2 ~%.1fs, expiry %ds)...",
+		ef.LeaseSeconds(), float64(ef.LeaseSeconds())*0.875, ef.LeaseSeconds())
 
 	var liveIP string
-	deadline := time.Now().Add(4 * time.Minute)
+	deadline := time.Now().Add(90 * time.Second)
 	for time.Now().Before(deadline) {
 		out := harness.ExecOutput(t, ctx, id, "ip", "-4", "addr")
 		for _, f := range strings.Fields(out) {
@@ -597,12 +651,16 @@ func TestFailure_LeaseRefusedOnRenewal(t *testing.T) {
 // lease that was never held cannot expire, so the bind wait below is
 // not hygiene, it is the entire premise.
 func TestFailure_LeaseExpiry(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
 	const netName = "dh-itest-fexp"
 
-	ef := harness.NewEphemeralFixture(t)
+	// INEQUALITY: the lease must FULLY lapse and then keep lapsing —
+	// this test asserts a recurring signal, so it needs the lease short
+	// enough that expiry plus two watchdog ticks fits inside the
+	// budgets below.
+	ef := harness.NewEphemeralFixture(t, harness.WithLeaseSeconds(harness.EphemeralOutageLeaseSeconds))
 	t.Cleanup(func() {
 		if t.Failed() {
 			ef.DumpLogs(func(s string) { t.Log(s) })
@@ -637,7 +695,7 @@ func TestFailure_LeaseExpiry(t *testing.T) {
 
 	killed := time.Now()
 	ef.Stop()
-	t.Logf("server killed permanently; a BOUND lease (fixture lease %s) now has to cross T2 and full expiry", harness.LeaseTime)
+	t.Logf("server killed permanently; a BOUND lease (fixture lease %ds) now has to cross T2 and full expiry", ef.LeaseSeconds())
 
 	first, ok := faultW.Await(outageRiseBudget, func(h, _ *harness.HealthResponse) bool {
 		return h.DHCPTimeouts > base.DHCPTimeouts
@@ -678,9 +736,14 @@ func TestFailure_LeaseExpiry(t *testing.T) {
 
 	// ...and the endpoint stays L2-reachable: ping the container from
 	// the server side of the veth pair (the address survives on the
-	// link even though dnsmasq is dead).
-	ping := exec.Command("ping", "-c", "1", "-W", "2", "-I", ef.ServerIP(), ip)
-	if out, err := ping.CombinedOutput(); err != nil {
+	// link even though the DHCP server is dead).
+	//
+	// Via the fixture, not exec.Command directly: the server address
+	// lives in the fixture's own network namespace, so a ping issued
+	// from the test process would fail because the source address is
+	// not local here — a false negative indistinguishable from a real
+	// unreachable container.
+	if out, err := ef.PingFromServer(ip); err != nil {
 		t.Errorf("container %s not L2-reachable on its expired-lease address: %v\n%s", ip, err, out)
 	}
 }
