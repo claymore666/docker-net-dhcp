@@ -103,6 +103,8 @@ jobs:
         run: |
           make plugin-cover
           docker plugin rm -f "${COVER_PLUGIN_REF}" 2>/dev/null || true
+          # See integration.yml — the bind source must pre-exist (#440).
+          mkdir -p /var/lib/net-dhcp
           docker plugin create "${COVER_PLUGIN_REF}" plugin-cover
           # Same test-only cadence as integration.yml (#278) — this job
           # runs the failure suite too, so it pays the same waits.

@@ -378,6 +378,10 @@ jobs:
           TAG="${{ needs.release.outputs.tag }}"
           REF="${GHCR_NAME}:${TAG}"
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          # The published plugin bind-mounts STATE_DIR, and the daemon
+          # does not create a missing bind source (#440). verify-install
+          # must do exactly what the docs tell an operator to do.
+          sudo mkdir -p /var/lib/net-dhcp
           docker plugin install --grant-all-permissions "$REF"
           docker plugin ls
 

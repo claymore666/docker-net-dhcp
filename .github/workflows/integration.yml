@@ -278,6 +278,11 @@ jobs:
         run: |
           make PLUGIN_NAME=ghcr.io/claymore666/docker-net-dhcp PLUGIN_TAG=integration plugin
           docker plugin rm -f "${INTEGRATION_PLUGIN_REF}" 2>/dev/null || true
+          # STATE_DIR is bind-mounted from the host since #440, and the
+          # daemon does NOT create a missing bind source — `plugin enable`
+          # fails with "failed to fulfil mount request". Every place that
+          # installs the plugin has to make it first.
+          mkdir -p /var/lib/net-dhcp
           docker plugin create "${INTEGRATION_PLUGIN_REF}" plugin
           # Tighten the outage-watchdog cadence (#278). The failure
           # suite otherwise pays the production 30s/25s on top of a

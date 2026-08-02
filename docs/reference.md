@@ -82,6 +82,10 @@ The plugin publishes to two registries; GHCR is primary:
 for unattended):
 
 ```bash
+# One-time: the plugin persists lease state here, bind-mounted from
+# the host so it survives upgrades. Docker will not create it for you
+# and `plugin install` fails with a mount error if it is missing.
+sudo mkdir -p /var/lib/net-dhcp
 docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.4.0
 ```
 
@@ -113,7 +117,8 @@ with, so the safe sequence for moving from `vOLD` to `vNEW` is:
 # 1. Stop containers using plugin networks
 # 2. Remove the networks (they're cheap to recreate; leases release)
 docker network rm my-dhcp-net
-# 3. Swap the plugin
+# 3. Swap the plugin (STATE_DIR on the host is left alone, so the
+#    tombstone and audit ledger carry across — v1.5.0+)
 docker plugin disable ghcr.io/claymore666/docker-net-dhcp:vOLD
 docker plugin rm ghcr.io/claymore666/docker-net-dhcp:vOLD
 docker plugin install ghcr.io/claymore666/docker-net-dhcp:vNEW

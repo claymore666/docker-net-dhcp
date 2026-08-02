@@ -44,6 +44,11 @@ plugin: plugin/rootfs config.json
 	cp config.json $@/
 
 create: plugin
+	# STATE_DIR is bind-mounted from the host (#440) and the daemon does
+	# not create a missing bind source — `plugin enable` fails outright.
+	# Doing it here means a local `make create` behaves like a documented
+	# install rather than failing with an OCI mount error.
+	mkdir -p /var/lib/net-dhcp
 	docker plugin rm -f $(PLUGIN_NAME):$(PLUGIN_TAG) || true
 	docker plugin create $(PLUGIN_NAME):$(PLUGIN_TAG) $<
 	docker plugin set $(PLUGIN_NAME):$(PLUGIN_TAG) LOG_LEVEL=trace \
@@ -83,6 +88,7 @@ plugin-cover: plugin-cover/rootfs config-cover.json
 	cp config-cover.json $@/config.json
 
 create-cover: plugin-cover
+	mkdir -p /var/lib/net-dhcp
 	docker plugin rm -f $(PLUGIN_NAME):$(PLUGIN_COVER_TAG) || true
 	docker plugin create $(PLUGIN_NAME):$(PLUGIN_COVER_TAG) $<
 	docker plugin set $(PLUGIN_NAME):$(PLUGIN_COVER_TAG) LOG_LEVEL=trace \
