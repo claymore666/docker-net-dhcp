@@ -334,9 +334,15 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
 10. **Confirm the GitHub Release** — the `github-release` job now cuts
    it automatically once `verify-install` is green (so a plugin that
    doesn't install never gets an advertised Releases page). It attaches
-   the cosign-signed artifacts and uses the `## vX.Y.Z` section of
-   `RELEASE_NOTES.md` as the body, so step 4's notes must already be in
-   place at tag time. No manual `gh release create` — instead verify:
+   the cosign-signed artifacts and builds the body as: a generated lead
+   line naming the project and version (it becomes the page's
+   `og:description`, so it is what link previews show — #469), the
+   `## vX.Y.Z` section of `RELEASE_NOTES.md`, a generated Downloads
+   table, and a link to [Verifying releases](verifying-releases.md).
+   Step 4's notes must therefore already be in place at tag time.
+   rc tags produce a **draft** release: the publish path is still
+   exercised, but dry-run builds stay out of the public list.
+   No manual `gh release create` — instead verify:
    ```sh
    gh release view vX.Y.Z   # body = the RELEASE_NOTES section; assets:
                             #   net-dhcp-plugin-vX.Y.Z-linux-amd64.tar.gz
