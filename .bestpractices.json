@@ -10,7 +10,7 @@
   "installation_common_status": "Met",
   "installation_common_justification": "Installed and removed with the standard Docker plugin convention: `docker plugin install ghcr.io/claymore666/docker-net-dhcp:vX.Y.Z`, and `docker plugin disable` + `docker plugin rm` to uninstall. Documented at https://github.com/claymore666/docker-net-dhcp/blob/main/docs/reference.md#install-upgrade-uninstall",
   "dco_status": "Unmet",
-  "dco_justification": "The project has no DCO sign-off requirement or CLA today. Contributions are accepted under the repository's MIT license via GitHub pull requests. The PR checks do enforce an authorship rule (commits must be authored by a person, no AI-assistant attribution), but that is not a legal assertion mechanism.",
+  "dco_justification": "The project has no DCO sign-off requirement or CLA today. Contributions are accepted under the repository's GPL-3.0 license via GitHub pull requests. The PR checks do enforce an authorship rule (commits must be authored by a person, no AI-assistant attribution), but that is not a legal assertion mechanism.",
   "governance_status": "Met",
   "governance_justification": "Governance model, decision-making process, and the path to becoming a maintainer are documented at https://github.com/claymore666/docker-net-dhcp/blob/main/GOVERNANCE.md",
   "code_of_conduct_status": "Met",
