@@ -107,6 +107,43 @@ mkdir -p "$TMP/empty"
 ( cd "$TMP/empty" && bash "$CHECK" ) > /dev/null 2>&1
 if [ $? -eq 2 ]; then echo "PASS: check bad usage exits 2"; else echo "FAIL: check bad usage"; failures=$((failures + 1)); fi
 
+# 8. A reference at someone else's namespace fails, and is named (#460).
+#    The regression: the macvlan quick start shipped
+#    ghcr.io/<your-namespace>/docker-net-dhcp:latest, which the old gate
+#    could not see — it only matched the already-correct namespace.
+seed
+cat >> "$TMP/repo/docs/reference.md" <<'EOF'
+
+    docker network create --driver=ghcr.io/<your-namespace>/docker-net-dhcp:latest mynet
+EOF
+run_check "wrong namespace fails" 1
+grep -q '<your-namespace>' "$TMP/out" || { echo "FAIL: bad namespace not named"; failures=$((failures + 1)); }
+
+# 9. `:latest` on the published image fails too — reference.md tells
+#    readers to pin, so a runnable snippet must not contradict it.
+seed
+printf '\n    docker plugin install %s:latest\n' "$IMAGE" >> "$TMP/repo/docs/reference.md"
+run_check "latest tag in a snippet fails" 1
+grep -q "latest" "$TMP/out" || { echo "FAIL: latest tag not named"; failures=$((failures + 1)); }
+
+# 10. The placeholders the prose legitimately uses still pass — including
+#     at the end of a sentence, where the reference swallows the full
+#     stop ("...:vPREV."). That false positive was real until the tag
+#     was trimmed of trailing punctuation.
+seed
+{
+    printf '\nUpgrade from %s:vOLD to %s:vNEW.\n' "$IMAGE" "$IMAGE"
+    printf 'Generic form: %s:vX.Y.Z, verify %s:VERSION, previous %s:vPREV.\n' "$IMAGE" "$IMAGE" "$IMAGE"
+} >> "$TMP/repo/docs/reference.md"
+run_check "documented placeholders pass" 0
+
+# 11. A wrong namespace is caught even when it carries a matching pin —
+#     the case bump-version.sh happily rewrites and the old gate ignored.
+seed
+printf '\n    docker plugin install ghcr.io/somebody-else/docker-net-dhcp:v1.1.1\n' \
+    >> "$TMP/repo/docs/reference.md"
+run_check "wrong namespace with a valid pin still fails" 1
+
 if [ "$failures" -ne 0 ]; then
     echo "$failures test(s) failed"
     exit 1

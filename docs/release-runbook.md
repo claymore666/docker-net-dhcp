@@ -174,7 +174,7 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
 1. **Branch off `dev`:** `git checkout -b release/vX.Y.Z origin/dev`
 2. **Bump install pins:** `scripts/bump-version.sh vX.Y.Z` (#251). It
    rewrites every published-image pin
-   (`ghcr.io/.../docker-net-dhcp:vPREV` in the `plugin install` /
+   (`ghcr.io/claymore666/docker-net-dhcp:vPREV` in the `plugin install` /
    `network create` / `driver:` / `plugin inspect` snippets across
    `README.md` and `docs/`) to the new tag, and leaves bare `vX.Y.Z`
    feature markers and historical prose (`As of vPREV every PR...`,
