@@ -269,6 +269,35 @@ jobs:
           fi
           go version
 
+      # The same staleness check for the fixtures' own dependencies.
+      #
+      # Publishing a new runner image does NOT put it on the runners:
+      # the orchestrator and the runner host are separate machines, and
+      # a host that already has a `:latest` will keep using it until
+      # something pulls. So "the Dockerfile installs it" and "the
+      # runners have it" are different claims, and only the second one
+      # matters here.
+      #
+      # Without this step a stale image surfaces ~2 minutes into the
+      # suite as a fixture readiness timeout with the real cause —
+      # `exec of "…/kea-dhcp4" failed: No such file or directory` —
+      # buried in a captured server log. That cost a full CI round trip
+      # on #449. Fail in five seconds and name the fix instead.
+      - name: Verify fixture dependencies
+        run: |
+          missing=""
+          for tool in dnsmasq kea-dhcp4 ip iptables; do
+            command -v "$tool" >/dev/null || missing="$missing $tool"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::dhcp-ci runner image is missing:$missing"
+            echo "The integration fixtures need these (see ci/runner-image/Dockerfile)."
+            echo "The image is published by the runner-image workflow, but the runner"
+            echo "host caches it — pull ghcr.io/claymore666/dhcp-ci-runner:latest there."
+            exit 1
+          fi
+          echo "fixture deps present: dnsmasq $(dnsmasq --version 2>/dev/null | head -1 | awk '{print $3}'), kea $(kea-dhcp4 -v 2>/dev/null)"
+
       # Best-effort: clean any orphans from a previous run that
       # panicked mid-setup. Safe to run even on a clean state.
       - name: Cleanup orphans from previous runs
