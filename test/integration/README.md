@@ -110,6 +110,18 @@ below). Grouped by what they prove:
   documented #104 divergence), full lease expiry (deliberate
   retention, endpoint stays reachable).
 
+  Every `TestFailure_*` case turns on an inequality between the lease
+  and the timers derived from it — `T1 < outage < lease` and the like.
+  Those timings are **verified, not declared** (#472): at teardown the
+  ephemeral fixture reads every `DHCP4_LEASE_ALLOC` line Kea logged and
+  fails the test if the lifetime the server granted differs from the
+  one the fixture asked for, naming both numbers. A run with no
+  allocation at all fails too, so absent evidence never reads as
+  agreement. The check runs itself, once per fixture — no test opts in,
+  and none can forget. Kea only; the dnsmasq backend (`WithDNS`, for
+  the FQDN test) logs no granted lifetime, and that test does not
+  depend on one.
+
 **Recovery & restart**
 - `recovery_test.go` — plugin disable/enable with a live container.
 - `recovery_daemon_test.go` — daemon restart (supervisor-agnostic:
