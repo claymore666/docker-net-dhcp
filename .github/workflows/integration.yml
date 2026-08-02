@@ -229,9 +229,23 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # The main suite is sharded two ways (#381). Measured: main was
+        # 579s against failure's 495s, so after #375 main set the gate.
+        # Two shards balance to 281s/282s against measured per-test
+        # durations, which drops main below failure and makes the
+        # FAILURE suite the critical path at ~544s.
+        #
+        # Two, not four, deliberately. At n=3 the shards balance to
+        # ~190s and at n=4 to ~144s, and neither improves the gate by a
+        # second — failure's 495s already dominates. Extra shards would
+        # buy nothing and spend more privileged jobs on the pool, which
+        # is the dose #296 saw flake. Sharding the failure suite is the
+        # next lever if this one proves out; that is stage 3, not this.
         include:
-          - suite: main
-            target: integration-test
+          - suite: main-1
+            target: integration-test-shard SHARD=1 OF=2
+          - suite: main-2
+            target: integration-test-shard SHARD=2 OF=2
           - suite: failure
             target: integration-test-failure
     env:

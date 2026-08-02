@@ -1,8 +1,15 @@
-# Measured per-test wall clock, main suite, run 30724380555 (2026-08-02).
-# Used ONLY to balance shards (#381). A test missing from this file is
-# not skipped — it is assigned the mean, so the file going stale makes
-# shards less even, never incomplete. Refresh from a green run with:
-#   scripts/integration-shard.sh --durations <run-log>
+# Measured per-test wall clock for the main suite, from run 30724380555
+# (2026-08-02). Used ONLY to balance shards (#381).
+#
+# A test missing from this file is NOT skipped — it is assigned the mean,
+# so the file going stale makes shards less even and never makes one
+# incomplete. scripts/test-integration-shard.sh asserts completeness
+# independently of this file.
+#
+# To refresh, from a green run:
+#   gh run view <id> --log | grep -oE -- '--- PASS: [A-Za-z_0-9]+ \([0-9.]+s\)' \
+#     | sed -E 's/--- PASS: ([A-Za-z_0-9]+) \(([0-9.]+)s\)/\1\t\2/' \
+#     | grep -v '^TestFailure_' | sort -u
 TestACKedTo	0.00
 TestAttachGraceLine_DistinguishesQuietFromFixed	0.00
 TestAuditLog_DefaultOff	9.99
