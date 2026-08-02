@@ -116,9 +116,11 @@ Every release (v1.1.0 onward) is signed and attested via Sigstore. The
 published plugin image is signed with cosign (keyless), carries SLSA
 build provenance, and ships an SBOM; the release-artifact `checksums.txt`
 manifest is cosign-signed so one signature covers every attached file.
-The exact, copy-pasteable commands — pinned to that release's tag — are
-appended to each [GitHub Release](https://github.com/claymore666/docker-net-dhcp/releases)
-under **Verifying the signed artifacts**. In brief (replace `VERSION`):
+The full, copy-pasteable procedure lives in
+**[Verifying releases](docs/verifying-releases.md)** (also on the
+[docs site](https://claymore666.github.io/docker-net-dhcp/verifying-releases/)),
+and every [GitHub Release](https://github.com/claymore666/docker-net-dhcp/releases)
+links to it. In brief (replace `VERSION`):
 
 ```bash
 # image signature

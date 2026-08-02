@@ -100,9 +100,10 @@ user (#317).
 **Verify the signature (v1.1.0+).** The published image is cosign-signed
 (keyless) and carries SLSA build provenance; release artifacts ship a
 cosign-signed `checksums.txt` and an SBOM. Per-release, copy-pasteable
-verification commands live under **Verifying the signed artifacts** on
-each [GitHub Release](https://github.com/claymore666/docker-net-dhcp/releases);
-the [home page](index.md#verifying-releases) has the short form.
+verification commands live in
+[Verifying releases](verifying-releases.md), which every
+[GitHub Release](https://github.com/claymore666/docker-net-dhcp/releases)
+links to; the [home page](index.md#verifying-releases) has the short form.
 
 **Pin a version.** `:latest` exists and tracks the newest release, but
 networks remember the exact driver string they were created with — a
