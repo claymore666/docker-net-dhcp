@@ -159,6 +159,46 @@ This downloads the Go version pinned in `go.mod` from go.dev and
 drops it under `/usr/local/go`, with `/usr/local/bin/go` symlinked
 in. Re-running upgrades in place.
 
+## Where the suite runs, and how those places differ
+
+The suite runs in more than one environment, and they are **not**
+meant to be identical. Keeping them different is what catches
+portability problems — the Kea AppArmor confinement below exists on
+a packaged host install and on no container, so a container-only
+world would never have surfaced it.
+
+The cost of that choice is that "green here, red there" needs a
+reason, and without a written baseline the first guess is usually
+wrong. This table is that baseline. **When two environments
+disagree, start here rather than assuming a bug.**
+
+| | Local (`sudo make integration-local`) | CI (`dhcp-ci` pool) | Hosted (`integration-hosted.yml`) |
+|---|---|---|---|
+| Machine | your dev box / the integration runner host, bare metal | privileged container from `ghcr.io/claymore666/dhcp-ci-runner` | stock GitHub-hosted VM |
+| `dnsmasq`, `kea-dhcp4` | host packages, whatever the distro ships | baked into the image, see `ci/runner-image/Dockerfile` | installed per run by the workflow |
+| AppArmor | **profiles apply** — Debian's enforcing `kea-dhcp4` profile blocks the fixture (see Prerequisites) | none: privileged containers are unconfined by host profiles | none in practice |
+| State between runs | **accumulates** — leftover containers, veths, namespaces | none: one container per job, `--rm` | none |
+| Docker daemon | your host daemon, whatever version | nested daemon, Engine >= 28 | the runner's daemon |
+| Gating | no | **yes**, required check | no — portability signal only |
+
+Three consequences worth knowing before they cost you an afternoon:
+
+- **Local is the only place state accumulates.** `integration-local`
+  therefore runs `integration-cleanup` first, mirroring the CI job's
+  own first step. A single container left by an earlier aborted run
+  fails an unrelated test with a name conflict, days later, and reads
+  exactly like a regression.
+- **Local is the only place AppArmor confines the fixture.** A failure
+  that reproduces locally and not in CI is as likely to be confinement
+  as a bug.
+- **CI's image is fetched when the runner container launches, not when
+  it picks up a job.** The runners are JIT and can sit idle after
+  launch, so a slot can be serving an image older than the newest
+  publish. That produced a ~25% per-job failure rate during #356 and
+  looked like a flaky suite. The `Verify fixture dependencies` step in
+  `integration.yml` exists to name that in seconds instead; if it
+  fires, the runner is stale, not the code.
+
 ## Architecture
 
 ```
