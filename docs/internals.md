@@ -129,6 +129,11 @@ Three loops, cheapest first. Only the last two need root or a plugin.
 | the suite's own guards | `go test ./test/integration/harness/` | nothing |
 | both integration suites | `sudo make integration-local` | root, Docker |
 
+CI shards the main suite across two jobs (#381); `integration-local`
+deliberately does not — a local run is one machine, so sharding would
+serialise the shards and only add overhead. If you want to reproduce a
+single CI shard, `sudo make integration-test-shard SHARD=1 OF=2`.
+
 **Use `integration-local`, not `integration-test`.**
 
 `make integration-test` and `make integration-test-failure` only run

@@ -20,7 +20,7 @@ TEST_OUTAGE_TICK ?= 2s
 TEST_OUTAGE_GRACE ?= 10s
 
 .PHONY: all debug build create enable disable pdebug push clean integration-test \
-        integration-test-failure integration-local integration-cleanup \
+        integration-test-failure integration-test-shard integration-local integration-cleanup \
         build-cover plugin-cover create-cover enable-cover disable-cover
 
 all: create enable
@@ -190,6 +190,44 @@ integration-test:
 # part of that; the 2m lease floor is dnsmasq's and stays (#356). The
 # ceiling is kept sized for the shipped 30s/25s cadence so the suite
 # still passes against a default-configured plugin.
+# One shard of the main suite (#381). SHARD is 1-based, OF is the total.
+#
+# The partition comes from scripts/integration-shard.sh, which balances
+# by measured duration and — the property that actually matters —
+# guarantees every main-suite test lands in exactly one shard.
+# scripts/test-integration-shard.sh asserts that, because a test in no
+# shard is silently never run and the gate goes green having tested
+# less.
+integration-test-shard:
+	@if [ -z "$(SHARD)" ] || [ -z "$(OF)" ]; then \
+		echo "usage: make integration-test-shard SHARD=<1-based> OF=<total>"; \
+		exit 2; \
+	fi
+	@if [ "$$(id -u)" -ne 0 ]; then \
+		echo "integration-test-shard must run as root. Re-run with sudo."; \
+		exit 1; \
+	fi
+	@mkdir -p $(ITEST_LOG_DIR)
+	@sel=$$(bash scripts/integration-shard.sh $(SHARD) $(OF)) || exit 1; \
+	 echo "==> shard $(SHARD)/$(OF): $$(echo "$$sel" | tr '|' '\n' | wc -l) test(s)"; \
+	 echo "==> test output: $(ITEST_LOG_DIR)/main-shard$(SHARD).log"; \
+	 bash -o pipefail -c "go test -v -tags integration -count=1 -timeout 20m \
+	     -run '$$sel' ./test/integration/ 2>&1 | tee $(ITEST_LOG_DIR)/main-shard$(SHARD).log"
+	# The harness package, unfiltered, in EVERY shard.
+	#
+	# Three of its test files carry the integration build tag, and today
+	# they run only because the unsharded main target globs
+	# ./test/integration/... with a -skip. A -run regex naming suite
+	# tests matches none of them, so sharding without this line would
+	# drop an entire package — including the guards that stop a
+	# hand-rolled counter read (#405) and a bare HostConfig literal
+	# (#367) creeping back. Silently, with the gate still green.
+	#
+	# Run in every shard rather than one: it needs no fixture and takes
+	# milliseconds, and "which shard owns it" is one more thing to get
+	# wrong later.
+	@go test -tags integration -count=1 ./test/integration/harness/
+
 integration-test-failure:
 	@if [ "$$(id -u)" -ne 0 ]; then \
 		echo "integration-test-failure must run as root. Re-run with sudo."; \

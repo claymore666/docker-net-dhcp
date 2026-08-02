@@ -93,6 +93,7 @@ jobs:
           bash scripts/test-ci-queue-watchdog.sh
           bash scripts/test-run-evidence.sh
           bash scripts/test-check-missing-runs.sh
+          bash scripts/test-integration-shard.sh
           bash scripts/test-check-issue-label-map.sh
           bash scripts/test-badge-sync.sh
 
