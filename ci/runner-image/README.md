@@ -76,6 +76,7 @@ directory and on any new host.
 | cgroup v2 nesting prep (entrypoint evacuates the root cgroup into an `init` leaf, then delegates controllers) | running dockerd bare leaves every process in the cgroup-namespace root; cgroup v2's no-internal-processes rule then forces the nested daemon's plugin/container cgroups to be *threaded*, and `cgroup.kill` (runc task teardown, docker-ce ≥ 29) is unsupported on threaded cgroups → `docker plugin disable/enable` fails with EOPNOTSUPP (#158). systemd / `docker:dind` do the same evacuation |
 | Go toolchain (go.mod's version) | test compilation on the runner, mirrors `install-go-runner.sh` |
 | dnsmasq, iproute2, iptables | integration fixtures (test-spawned DHCP server on veth pairs) |
+| kea-dhcp4-server, kea-dhcp6-server | the fixture's next DHCP server (#356). dnsmasq's minimum lease is two minutes and every failure-suite wait is built on that floor rather than on the protocol; kea takes a 20s lease. Both are present until the fixture stops referencing dnsmasq. |
 | Go module + compile caches | ephemeral containers start cold; baking turns minutes of per-job downloads/compiles into cache hits |
 | seed image tars (golang builder, alpine test image) | `docker load` at start beats pulling ~250 MB per job. The plugin's digest-pinned base still pulls (3.5 MB — `docker load` can't satisfy digest references) |
 
