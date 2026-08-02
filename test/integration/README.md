@@ -21,14 +21,47 @@ here, so the unit-test cadence stays fast.
 
 ## Prerequisites
 
-- Linux host with `iproute2`, `dnsmasq`, and Docker installed.
+- Linux host with `iproute2`, `dnsmasq`, `kea-dhcp4-server`, and
+  Docker installed.
 - The plugin enabled at `ghcr.io/claymore666/docker-net-dhcp:golang`.
   The harness verifies this in `TestMain`; it does **not** install
   the plugin for you (deliberate — installing affects the daemon's
   global state and would conflict with smoke testing on the same
   host).
 - Root (privileges: `CAP_NET_ADMIN` for veth + macvlan link work,
-  ability to bind UDP `:67` for `dnsmasq`).
+  network-namespace creation, ability to bind UDP `:67`).
+
+### AppArmor (Debian/Ubuntu hosts only)
+
+Debian's `kea-dhcp4-server` package ships an **enforcing** AppArmor
+profile that pins Kea to its own packaged paths — right down to the
+exact PID filename, which Kea derives from the config filename. The
+ephemeral fixture writes its config, lease DB and lockfile into a
+per-test temp directory instead, so under the shipped profile Kea
+cannot start. The profile denies `dac_override`, so running as root
+does not help; the symptom is `Permission denied` on paths root can
+obviously write.
+
+Put the profile in complain mode for local runs:
+
+```sh
+sudo apparmor_parser -C -r /etc/apparmor.d/usr.sbin.kea-dhcp4
+```
+
+To restore enforcement afterwards:
+
+```sh
+sudo apparmor_parser -r /etc/apparmor.d/usr.sbin.kea-dhcp4
+```
+
+CI is unaffected — the suite runs inside a privileged container,
+which is unconfined by the host's profiles.
+
+The package also enables and starts a system `kea-dhcp4-server`
+service on install. The fixture runs its own Kea, so the packaged
+service is not needed; disable it (`sudo systemctl disable --now
+kea-dhcp4-server`) rather than leaving a DHCP server running on a
+machine that sits on a real network.
 
 ## What's covered
 
@@ -148,9 +181,21 @@ in. Re-running upgrades in place.
   TestFailure_*):
     dh-itest-ehost <─ veth ─>  dh-itest-edhcp (192.168.101.1/24;
           │                          │          renumbered to
-     parent= for                ephemeral dnsmasq (authoritative)
-     the test's network         Stop/StartAgain/RestartOnSubnet
+     parent= for                ephemeral kea (authoritative),
+     the test's network         inside netns dh-itest-eph
+                                Stop/StartAgain/RestartOnSubnet
 ```
+
+The ephemeral server's end of that veth pair lives in its **own
+network namespace**, and that is load-bearing rather than tidy
+(#356). dnsmasq binds its DHCP socket as a device-scoped wildcard
+(`0.0.0.0%<iface>:67`) with `SO_REUSEADDR`; Kea binds its fallback
+socket to a specific address without it, so the kernel refuses the
+second bind. Since `TestMain` always has the suite-static dnsmasq
+up, a shared namespace leaves Kea with **no sockets open at all** —
+and Kea still logs `DHCP4_STARTED` in that state, so the fixture's
+readiness probe checks for an open interface socket rather than
+trusting that line.
 
 A single shared `Fixture` (`test/integration/harness/fixture.go`,
 `harness/bridge.go`) owns both subnets for the whole `go test`

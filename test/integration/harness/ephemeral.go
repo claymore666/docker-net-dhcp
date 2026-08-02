@@ -25,6 +25,25 @@ const (
 	EphemeralHostVeth = "dh-itest-ehost"
 	ephemeralDhcpVeth = "dh-itest-edhcp"
 
+	// ephemeralNetns is the network namespace the Kea backend's server
+	// end of the veth pair is moved into. The container-facing end
+	// stays in the host namespace, so the plugin attaches to it
+	// exactly as before.
+	//
+	// This is not tidiness, it is required (#356). dnsmasq binds its
+	// DHCP socket as a device-scoped wildcard, 0.0.0.0%<iface>:67, and
+	// Kea binds its fallback socket to a specific address — the kernel
+	// refuses the second bind, because only dnsmasq sets SO_REUSEADDR.
+	// TestMain always has the suite-static dnsmasq up, so in a shared
+	// namespace Kea opens NO sockets at all. Measured both ways: Kea
+	// alone binds fine; Kea with any dnsmasq present does not.
+	//
+	// The dnsmasq backend deliberately stays in the host namespace —
+	// two dnsmasqs coexist happily, and the FQDN test queries the
+	// fixture's resolver from the test process (see DNSAddr), which a
+	// namespace would cut off.
+	ephemeralNetns = "dh-itest-eph"
+
 	EphemeralServerAddr = "192.168.101.1/24"
 	// EphemeralAltServerAddr / pools: a wholly different subnet for
 	// RestartOnSubnet — the "site got renumbered" shape. A renewal
@@ -41,60 +60,118 @@ const (
 	// with this one, so its renewal REQUEST draws a DHCPNAK.
 	EphemeralShiftedPoolStart = "192.168.101.150"
 	EphemeralShiftedPoolEnd   = "192.168.101.199"
+
+	// EphemeralDefaultLeaseSeconds is the lease this fixture grants
+	// unless a test asks for another. 120s is not a floor any more —
+	// Kea honours whatever it is told (#356) — it is deliberately the
+	// value dnsmasq used to impose, so that every test which did not
+	// opt into a shorter lease keeps the exact timing it was written
+	// and tuned against.
+	EphemeralDefaultLeaseSeconds = 120
+
+	// EphemeralOutageLeaseSeconds is the short lease the outage tests
+	// ask for. Their wall clock is dominated by "wait for a bound lease
+	// to lapse", which under dnsmasq could never be under two minutes.
+	//
+	// 20s, not 5s: #356's own probe watched dhcpcd renew cleanly at 20s
+	// (four consecutive renewals, no rebind fallback, no churn) and the
+	// issue records that as the floor worth keeping. Going lower buys
+	// seconds and starts testing dhcpcd's retry pathology instead of
+	// the plugin's outage handling.
+	EphemeralOutageLeaseSeconds = 20
 )
+
+// ephemeralBackend selects which DHCP server the fixture runs.
+type ephemeralBackend int
+
+const (
+	// backendKea is the default: ISC Kea, whose valid-lifetime /
+	// renew-timer / rebind-timer are honoured verbatim at any value
+	// (#356). It is a real production server with real quirks, which
+	// is the property the failure suite has been earning its keep on —
+	// a hand-rolled Go fixture would exhibit none of them.
+	backendKea ephemeralBackend = iota
+	// backendDnsmasq stays for WithDNS only. Kea has no integrated
+	// resolver: DNS registration there means kea-dhcp-ddns driving a
+	// separate BIND, which is a great deal of moving parts for one
+	// test that gains nothing from short leases (the FQDN test's cost
+	// is container lifecycle, not lease timing). See WithDNS.
+	backendDnsmasq
+)
+
+func (b ephemeralBackend) String() string {
+	if b == backendDnsmasq {
+		return "dnsmasq"
+	}
+	return "kea"
+}
 
 // EphemeralFixture is a per-test DHCP server on its own veth pair,
 // for tests that break the server on purpose: SIGKILL it, bring it
 // back with the lease DB intact, or bring it back reconfigured so
-// held leases get NAKed. The suite-static Fixture must never be
+// held leases get refused. The suite-static Fixture must never be
 // touched by failure tests — every other test depends on it staying
 // up (#128).
 //
-// dnsmasq runs --dhcp-authoritative, like a production DHCP server
-// that owns its subnet: REQUESTs for out-of-pool or unknown addresses
-// are NAKed immediately instead of ignored.
+// The server runs authoritative, like a production DHCP server that
+// owns its subnet, so REQUESTs for out-of-pool or unknown addresses
+// are refused rather than ignored.
 type EphemeralFixture struct {
 	t *testing.T
 
-	cmd       *exec.Cmd
-	tmpDir    string
-	leaseFile string
-	logFile   string
+	backend ephemeralBackend
+
+	cmd        *exec.Cmd
+	tmpDir     string
+	leaseFile  string
+	configFile string
+	logFile    string
 
 	poolStart, poolEnd string
 	serverCIDR         string
 
-	// renewT1 / renewT2 are server-advertised DHCP option 58
-	// (renewal) / 59 (rebind) times in seconds. dnsmasq's minimum
-	// *lease* is a hard 2m, so a renewal test can't ride a short
-	// lease — but the server may advertise T1/T2 explicitly,
-	// independent of lease length, and dhcpcd honours them. Zero
-	// means "don't set the option" (dhcpcd then derives T1/T2 from
-	// the lease as usual). See WithRenewTimes (#253).
+	// leaseSeconds is the granted lease lifetime (Kea valid-lifetime).
+	// Under dnsmasq this was pinned to its 2m floor; it is now a knob,
+	// which is the whole point of #356.
+	leaseSeconds int
+
+	// renewT1 / renewT2 are the server-advertised renewal (DHCP option
+	// 58) and rebind (option 59) times in seconds. Zero means "don't
+	// advertise them", and the client then derives both from the lease
+	// as usual (T1 = lease/2, T2 = lease*7/8).
+	//
+	// Setting them independently of the lease is how a renewal test
+	// drives a real DHCPACK-renewal on a fast clock without shortening
+	// the lease itself — which matters because a renewal test needs the
+	// lease to OUTLIVE the window it watches. See WithRenewTimes (#253).
 	renewT1, renewT2 int
 
-	// dnsDomain, when set, enables dnsmasq's DNS resolver (instead of
-	// the default --port=0) on dnsPort with this domain and --dhcp-fqdn,
-	// so a client that sends the DHCP FQDN option (81) gets its
-	// <hostname>.<domain> registered and resolvable. --dhcp-fqdn makes
-	// registration require the FQDN option, so a plain option-12
-	// hostname is NOT registered — which is exactly what lets the FQDN
-	// test distinguish register_dns on/off. See WithDNS (#261).
+	// dnsDomain, when set, selects the dnsmasq backend and enables its
+	// DNS resolver (instead of the default --port=0) on dnsPort with
+	// this domain and --dhcp-fqdn, so a client that sends the DHCP FQDN
+	// option (81) gets its <hostname>.<domain> registered and
+	// resolvable. --dhcp-fqdn makes registration require the FQDN
+	// option, so a plain option-12 hostname is NOT registered — which
+	// is exactly what lets the FQDN test distinguish register_dns
+	// on/off. See WithDNS (#261).
 	dnsDomain string
 	dnsPort   int
 }
 
-// EphemeralOption configures an EphemeralFixture before its dnsmasq
+// EphemeralOption configures an EphemeralFixture before its server
 // starts. Options are applied in NewEphemeralFixture.
 type EphemeralOption func(*EphemeralFixture)
 
-// WithRenewTimes makes the fixture's dnsmasq advertise DHCP option 58
-// (T1, renewal) and option 59 (T2, rebind) at the given seconds,
-// regardless of the 2m lease floor. This lets a renewal test drive a
-// real DHCPACK-renewal on a fast clock (T1 small) instead of waiting
-// out half of a 2m lease. t1 must stay above dhcpcd's internal
-// renewal flooring to round-trip; t2 should exceed t1 so the test
-// observes a renewal, not a rebind (#253).
+// WithRenewTimes makes the fixture advertise DHCP option 58 (T1,
+// renewal) and option 59 (T2, rebind) at the given seconds, leaving
+// the lease itself alone. This lets a renewal test drive a real
+// DHCPACK-renewal on a fast clock (T1 small) while the lease stays
+// long enough that the window under test is unambiguously a renewal
+// and not a rebind or a re-acquisition.
+//
+// t1 must stay above dhcpcd's internal renewal flooring to round-trip;
+// t2 should exceed t1 so the test observes a renewal, not a rebind;
+// and both should stay below the lease (#253).
 func WithRenewTimes(t1, t2 int) EphemeralOption {
 	return func(ef *EphemeralFixture) {
 		ef.renewT1 = t1
@@ -102,23 +179,45 @@ func WithRenewTimes(t1, t2 int) EphemeralOption {
 	}
 }
 
-// WithDNS turns on the fixture dnsmasq's DNS resolver (on a dedicated
-// high port, bound to the fixture interface) with the given domain and
-// --dhcp-fqdn. A client that sends the DHCP FQDN option (81/39) then has
-// its <hostname>.<domain> registered in this DNS; query it via DNSAddr.
+// WithLeaseSeconds sets the granted lease lifetime.
+//
+// This is the knob #356 existed to create. Under dnsmasq the lease was
+// a hard 2m floor, so every outage test paid two minutes to watch a
+// bound lease lapse; Kea honours 20s verbatim. Use
+// EphemeralOutageLeaseSeconds unless a test needs something else, and
+// state in the test WHY its value is what it is — these tests turn on
+// inequalities between the outage length, T1/T2 and the lease, and a
+// value picked without one is how a test silently stops exercising
+// the boundary it names.
+func WithLeaseSeconds(seconds int) EphemeralOption {
+	return func(ef *EphemeralFixture) {
+		ef.leaseSeconds = seconds
+	}
+}
+
+// WithDNS turns on a DNS resolver (on a dedicated high port, bound to
+// the fixture interface) with the given domain and --dhcp-fqdn. A
+// client that sends the DHCP FQDN option (81/39) then has its
+// <hostname>.<domain> registered in this DNS; query it via DNSAddr.
 // --dhcp-fqdn deliberately ignores plain option-12 hostnames, so a
-// container WITHOUT register_dns does not resolve — the on/off proof for
-// the FQDN test (#261).
+// container WITHOUT register_dns does not resolve — the on/off proof
+// for the FQDN test (#261).
+//
+// This option selects the dnsmasq backend, because only dnsmasq has an
+// integrated resolver. The FQDN test's cost is container lifecycle,
+// not lease timing, so it gains nothing from Kea's settable lease and
+// is not worth a kea-dhcp-ddns + BIND stack to migrate (#356).
 func WithDNS(domain string) EphemeralOption {
 	return func(ef *EphemeralFixture) {
+		ef.backend = backendDnsmasq
 		ef.dnsDomain = domain
 		ef.dnsPort = 15353
 	}
 }
 
 // NewEphemeralFixture creates the veth pair and starts the
-// authoritative dnsmasq. Teardown is registered via t.Cleanup and is
-// idempotent against a previous panicked run's leftovers.
+// authoritative DHCP server. Teardown is registered via t.Cleanup and
+// is idempotent against a previous panicked run's leftovers.
 func NewEphemeralFixture(t *testing.T, opts ...EphemeralOption) *EphemeralFixture {
 	t.Helper()
 	if os.Geteuid() != 0 {
@@ -135,10 +234,12 @@ func NewEphemeralFixture(t *testing.T, opts ...EphemeralOption) *EphemeralFixtur
 	}
 
 	ef := &EphemeralFixture{
-		t:          t,
-		poolStart:  EphemeralPoolStart,
-		poolEnd:    EphemeralPoolEnd,
-		serverCIDR: EphemeralServerAddr,
+		t:            t,
+		backend:      backendKea,
+		poolStart:    EphemeralPoolStart,
+		poolEnd:      EphemeralPoolEnd,
+		serverCIDR:   EphemeralServerAddr,
+		leaseSeconds: EphemeralDefaultLeaseSeconds,
 	}
 	for _, opt := range opts {
 		opt(ef)
@@ -149,22 +250,34 @@ func NewEphemeralFixture(t *testing.T, opts ...EphemeralOption) *EphemeralFixtur
 	if err != nil {
 		t.Fatalf("LinkByName %s: %v", EphemeralHostVeth, err)
 	}
-	dhcpLink, err := netlink.LinkByName(ephemeralDhcpVeth)
-	if err != nil {
-		t.Fatalf("LinkByName %s: %v", ephemeralDhcpVeth, err)
-	}
 	if err := netlink.LinkSetUp(hostLink); err != nil {
 		t.Fatalf("LinkSetUp %s: %v", EphemeralHostVeth, err)
 	}
-	if err := netlink.LinkSetUp(dhcpLink); err != nil {
-		t.Fatalf("LinkSetUp %s: %v", ephemeralDhcpVeth, err)
-	}
-	addr, err := netlink.ParseAddr(ef.serverCIDR)
-	if err != nil {
-		t.Fatalf("ParseAddr: %v", err)
-	}
-	if err := netlink.AddrAdd(dhcpLink, addr); err != nil {
-		t.Fatalf("AddrAdd %s: %v", ephemeralDhcpVeth, err)
+
+	if ef.isolated() {
+		// Server end goes into its own namespace so Kea can bind
+		// UDP/67 at all — see ephemeralNetns. The container-facing end
+		// stays here.
+		ef.run("ip", "netns", "add", ephemeralNetns)
+		ef.run("ip", "link", "set", ephemeralDhcpVeth, "netns", ephemeralNetns)
+		ef.runNetns("ip", "link", "set", "lo", "up")
+		ef.runNetns("ip", "link", "set", ephemeralDhcpVeth, "up")
+		ef.runNetns("ip", "addr", "add", ef.serverCIDR, "dev", ephemeralDhcpVeth)
+	} else {
+		dhcpLink, err := netlink.LinkByName(ephemeralDhcpVeth)
+		if err != nil {
+			t.Fatalf("LinkByName %s: %v", ephemeralDhcpVeth, err)
+		}
+		if err := netlink.LinkSetUp(dhcpLink); err != nil {
+			t.Fatalf("LinkSetUp %s: %v", ephemeralDhcpVeth, err)
+		}
+		addr, err := netlink.ParseAddr(ef.serverCIDR)
+		if err != nil {
+			t.Fatalf("ParseAddr: %v", err)
+		}
+		if err := netlink.AddrAdd(dhcpLink, addr); err != nil {
+			t.Fatalf("AddrAdd %s: %v", ephemeralDhcpVeth, err)
+		}
 	}
 
 	tmp, err := os.MkdirTemp("", "dh-itest-ephemeral-")
@@ -172,18 +285,219 @@ func NewEphemeralFixture(t *testing.T, opts ...EphemeralOption) *EphemeralFixtur
 		t.Fatalf("MkdirTemp: %v", err)
 	}
 	ef.tmpDir = tmp
-	ef.leaseFile = filepath.Join(tmp, "leases")
-	ef.logFile = filepath.Join(tmp, "dnsmasq.log")
+	ef.logFile = filepath.Join(tmp, "dhcp-server.log")
+	if ef.backend == backendKea {
+		ef.leaseFile = filepath.Join(tmp, "leases4.csv")
+		ef.configFile = filepath.Join(tmp, "kea-dhcp4.json")
+	} else {
+		ef.leaseFile = filepath.Join(tmp, "leases")
+	}
+
+	t.Logf("ephemeral fixture: backend=%s lease=%ds pool=%s-%s server=%s",
+		ef.backend, ef.leaseSeconds, ef.poolStart, ef.poolEnd, ef.serverCIDR)
 
 	ef.start()
 	return ef
 }
 
-// start launches dnsmasq with the fixture's current pool and waits
-// until it has logged its DHCP range (the readiness probe used for
-// the static fixture — binding UDP/67 — can't distinguish this
-// instance from the suite fixture's dnsmasq, which is also up).
+// LeaseSeconds is the lease lifetime this fixture grants, for tests
+// that size a wait against it rather than hard-coding a number.
+func (ef *EphemeralFixture) LeaseSeconds() int { return ef.leaseSeconds }
+
+// isolated reports whether this fixture's server runs in its own
+// network namespace. Only the Kea backend does; see ephemeralNetns.
+func (ef *EphemeralFixture) isolated() bool { return ef.backend == backendKea }
+
+// run executes a command, failing the test with its combined output.
+// Used for the `ip` calls that have no clean netlink equivalent once a
+// namespace is in play.
+func (ef *EphemeralFixture) run(name string, args ...string) {
+	ef.t.Helper()
+	if out, err := exec.Command(name, args...).CombinedOutput(); err != nil {
+		ef.t.Fatalf("%s %s: %v\n%s", name, strings.Join(args, " "), err, out)
+	}
+}
+
+// runNetns runs a command inside the fixture's network namespace.
+func (ef *EphemeralFixture) runNetns(name string, args ...string) {
+	ef.t.Helper()
+	ef.run("ip", append([]string{"netns", "exec", ephemeralNetns, name}, args...)...)
+}
+
+// netnsCommand builds a command that will run inside the fixture's
+// namespace, or a plain one when the fixture is not isolated.
+func (ef *EphemeralFixture) netnsCommand(name string, args ...string) *exec.Cmd {
+	if !ef.isolated() {
+		return exec.Command(name, args...)
+	}
+	return exec.Command("ip", append([]string{"netns", "exec", ephemeralNetns, name}, args...)...)
+}
+
+// PingFromServer pings ip from the DHCP server's side of the veth
+// pair, returning ping's combined output and error.
+//
+// It exists because the server address may live in a namespace the
+// test process cannot reach (see ephemeralNetns), so `ping -I
+// <ServerIP>` run from the test binary would fail for the wrong
+// reason — "no such address here" reported as "container unreachable",
+// which is a false failure that looks exactly like a real one.
+func (ef *EphemeralFixture) PingFromServer(ip string) ([]byte, error) {
+	ef.t.Helper()
+	return ef.netnsCommand("ping", "-c", "1", "-W", "2", "-I", ef.ServerIP(), ip).CombinedOutput()
+}
+
+// start launches the configured backend and blocks until it is ready
+// to serve.
 func (ef *EphemeralFixture) start() {
+	ef.t.Helper()
+	if ef.backend == backendKea {
+		ef.startKea()
+		return
+	}
+	ef.startDnsmasq()
+}
+
+// keaConfig renders the server config for the fixture's current pool,
+// subnet and timers.
+//
+// Three Kea path restrictions shape this (#356, all found the hard
+// way, all reported as a path that is "invalid" without saying why):
+//
+//   - the lease file must live under Kea's compiled-in data directory
+//     (/var/lib/kea) unless KEA_DHCP_DATA_DIR says otherwise. The
+//     fixture sets that env var to its own temp dir, which also means
+//     two fixtures can never collide over a lease file;
+//   - a logger's `output` is validated the same way, so the log goes
+//     to stdout and the fixture captures the pipe — the same shape the
+//     dnsmasq fixture already used;
+//   - the PID file name is derived from the CONFIG file name, and its
+//     directory (/run/kea) must exist before startup or Kea dies
+//     before reporting any config error. teardown creates it.
+//
+// Severity stays at INFO deliberately. Every token the assertions key
+// on — DHCPDISCOVER/DHCPREQUEST/DHCPOFFER/DHCPACK, the client MAC, the
+// allocated address — is present at INFO. DEBUG additionally logs
+// DHCP4_RESPONSE_DATA, which repeats "DHCPACK" for the same packet and
+// would double every ACK count in this file.
+func (ef *EphemeralFixture) keaConfig() string {
+	timers := ""
+	if ef.renewT1 > 0 {
+		timers += fmt.Sprintf("    \"renew-timer\": %d,\n", ef.renewT1)
+	}
+	if ef.renewT2 > 0 {
+		timers += fmt.Sprintf("    \"rebind-timer\": %d,\n", ef.renewT2)
+	}
+	return fmt.Sprintf(`{
+  "Dhcp4": {
+    "interfaces-config": { "interfaces": [ %q ] },
+    "lease-database": {
+      "type": "memfile",
+      "persist": true,
+      "name": %q,
+      "lfc-interval": 0
+    },
+    "valid-lifetime": %d,
+%s    "authoritative": true,
+    "subnet4": [ {
+      "id": 1,
+      "subnet": %q,
+      "pools": [ { "pool": "%s - %s" } ]
+    } ],
+    "loggers": [ {
+      "name": "kea-dhcp4",
+      "output-options": [ { "output": "stdout", "flush": true } ],
+      "severity": "INFO"
+    } ]
+  }
+}
+`, ephemeralDhcpVeth, ef.leaseFile, ef.leaseSeconds, timers, ef.subnet(),
+		ef.poolStart, ef.poolEnd)
+}
+
+// subnet is the CIDR of the network the server address sits on, which
+// is what Kea's subnet4 entry needs (the server address itself is a
+// host address inside it).
+func (ef *EphemeralFixture) subnet() string {
+	_, ipNet, err := net.ParseCIDR(ef.serverCIDR)
+	if err != nil {
+		ef.t.Fatalf("ParseCIDR %s: %v", ef.serverCIDR, err)
+	}
+	return ipNet.String()
+}
+
+func (ef *EphemeralFixture) startKea() {
+	ef.t.Helper()
+	// Kea derives its PID file name from the config file name and will
+	// not create the directory itself; without this it dies before any
+	// config error is reported (#356).
+	if err := os.MkdirAll("/run/kea", 0o755); err != nil {
+		ef.t.Fatalf("mkdir /run/kea: %v", err)
+	}
+	if err := os.WriteFile(ef.configFile, []byte(ef.keaConfig()), 0o644); err != nil {
+		ef.t.Fatalf("write kea config: %v", err)
+	}
+
+	logF, err := os.OpenFile(ef.logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		ef.t.Fatalf("open ephemeral kea log: %v", err)
+	}
+	defer logF.Close()
+
+	startMark := ef.logSize()
+	ef.cmd = ef.netnsCommand("/usr/sbin/kea-dhcp4", "-c", ef.configFile)
+	// KEA_DHCP_DATA_DIR moves the lease file out of Kea's compiled-in
+	// /var/lib/kea; KEA_LOCKFILE_DIR does the same for the logger's
+	// interprocess lockfile. Together they keep every file this server
+	// writes inside the fixture's own temp dir, so two fixtures can
+	// never collide and teardown is a single RemoveAll.
+	ef.cmd.Env = append(os.Environ(),
+		"KEA_DHCP_DATA_DIR="+ef.tmpDir,
+		"KEA_LOCKFILE_DIR="+ef.tmpDir,
+	)
+	ef.cmd.Stdout = logF
+	ef.cmd.Stderr = logF
+	ef.cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := ef.cmd.Start(); err != nil {
+		ef.t.Fatalf("start ephemeral kea: %v", err)
+	}
+
+	// Readiness is "a DISCOVER would be answered", and DHCP4_STARTED
+	// alone does NOT mean that.
+	//
+	// Measured (#356): with any dnsmasq already holding UDP/67, Kea
+	// fails every socket bind, logs DHCPSRV_NO_SOCKETS_OPEN — and then
+	// logs DHCP4_STARTED anyway and sits there. A probe that keys on
+	// DHCP4_STARTED alone therefore returns "ready" for a server that
+	// will never answer anything, and every test built on it fails
+	// later, somewhere else, for a reason that looks like a plugin bug.
+	//
+	// So the probe requires the interface to be listening AND no
+	// socket failure in the same window. Matching from startMark, not
+	// from the top of the file, is what makes it "this instance": the
+	// log is appended to across every Stop/StartAgain cycle.
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		data, err := os.ReadFile(ef.logFile)
+		if err != nil || len(data) <= startMark {
+			time.Sleep(50 * time.Millisecond)
+			continue
+		}
+		window := string(data[startMark:])
+		if why := keaSocketFailure(window); why != "" {
+			ef.t.Fatalf("ephemeral kea started but opened no DHCP socket (%s).\n"+
+				"On a host this usually means another DHCP server holds UDP/67 — the fixture "+
+				"runs kea in netns %q precisely to avoid that, so check the namespace was created.\n"+
+				"config:\n%s\nlog:\n%s", why, ephemeralNetns, ef.keaConfig(), ef.readLog())
+		}
+		if strings.Contains(window, "DHCP4_STARTED") && strings.Contains(window, "DHCPSRV_CFGMGR_ADD_IFACE") {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	ef.t.Fatalf("ephemeral kea did not become ready; config:\n%s\nlog:\n%s", ef.keaConfig(), ef.readLog())
+}
+
+func (ef *EphemeralFixture) startDnsmasq() {
 	ef.t.Helper()
 	logF, err := os.OpenFile(ef.logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
@@ -201,7 +515,7 @@ func (ef *EphemeralFixture) start() {
 		"--interface=" + ephemeralDhcpVeth,
 		"--bind-interfaces",
 		"--except-interface=lo",
-		"--dhcp-range=" + ef.poolStart + "," + ef.poolEnd + "," + LeaseTime,
+		fmt.Sprintf("--dhcp-range=%s,%s,%ds", ef.poolStart, ef.poolEnd, ef.leaseSeconds),
 		"--dhcp-leasefile=" + ef.leaseFile,
 		"--dhcp-no-override",
 		// Authoritative: NAK requests for leases this instance
@@ -213,10 +527,6 @@ func (ef *EphemeralFixture) start() {
 		"--log-dhcp",
 		"--log-facility=-",
 	}
-	// Explicit renewal/rebind times (options 58/59), independent of the
-	// 2m lease floor: lets a renewal test drive a fast DHCPACK-renewal
-	// instead of waiting out half the lease (#253). dnsmasq encodes
-	// these known options as 32-bit seconds.
 	if ef.renewT1 > 0 {
 		args = append(args, fmt.Sprintf("--dhcp-option=58,%d", ef.renewT1))
 	}
@@ -256,6 +566,26 @@ func (ef *EphemeralFixture) start() {
 	ef.t.Fatalf("ephemeral dnsmasq did not become ready; log:\n%s", ef.readLog())
 }
 
+// keaSocketFailures are the messages Kea logs when it could not open
+// the sockets it needs. Each means "this server will not answer",
+// regardless of the DHCP4_STARTED that follows.
+var keaSocketFailures = []string{
+	"DHCPSRV_NO_SOCKETS_OPEN",
+	"DHCPSRV_OPEN_SOCKET_FAIL",
+	"DHCP4_OPEN_SOCKETS_FAILED",
+}
+
+// keaSocketFailure returns the first socket-failure marker present in
+// a slice of Kea log output, or "" if there is none.
+func keaSocketFailure(window string) string {
+	for _, marker := range keaSocketFailures {
+		if strings.Contains(window, marker) {
+			return marker
+		}
+	}
+	return ""
+}
+
 func (ef *EphemeralFixture) logSize() int {
 	st, err := os.Stat(ef.logFile)
 	if err != nil {
@@ -277,7 +607,7 @@ func (ef *EphemeralFixture) Stop() {
 	ef.cmd = nil
 }
 
-// StartAgain restarts dnsmasq with the same pool and the preserved
+// StartAgain restarts the server with the same pool and the preserved
 // lease DB — the "router came back" shape. Existing leases are still
 // known, so renewals from before the outage ACK on the same address.
 func (ef *EphemeralFixture) StartAgain() {
@@ -291,17 +621,16 @@ func (ef *EphemeralFixture) StartAgain() {
 // Restart brings the server back with a different pool and a wiped
 // lease DB — the "subnet got renumbered / pool reconfigured" shape.
 //
-// NAK caveat (learned from the first CI run): dnsmasq 2.91 silently
-// IGNORES renewal REQUESTs for addresses outside its configured range
-// even with --dhcp-authoritative — the client recovers via expiry +
-// re-DISCOVER, but no DHCPNAK is ever emitted. To provoke an actual
-// NAK, use SeedStolenLease + StartAgain instead.
+// Refusal caveat (learned from the first CI run, and true of Kea as
+// well as dnsmasq): a server may silently IGNORE renewal REQUESTs for
+// addresses outside its configured range rather than emit a DHCPNAK —
+// the client recovers via expiry + re-DISCOVER either way. Tests here
+// assert the recovery, not the wire message; see
+// TestFailure_LeaseRefusedOnRenewal.
 func (ef *EphemeralFixture) Restart(poolStart, poolEnd string) {
 	ef.t.Helper()
 	ef.Stop()
-	if err := os.Remove(ef.leaseFile); err != nil && !os.IsNotExist(err) {
-		ef.t.Fatalf("wipe ephemeral lease DB: %v", err)
-	}
+	ef.wipeLeaseDB()
 	ef.poolStart, ef.poolEnd = poolStart, poolEnd
 	ef.start()
 }
@@ -310,57 +639,89 @@ func (ef *EphemeralFixture) Restart(poolStart, poolEnd string) {
 // a wiped lease DB — the "site got renumbered" shape. The old server
 // address disappears from the veth, so unicast renewals die silently;
 // the client's broadcast REBIND carries an address foreign to the new
-// subnet (wrong-network refusal — dnsmasq may NAK or stay silent
-// depending on the shape) and re-acquisition lands in the new pool.
+// subnet (a wrong-network refusal, which the server may signal or stay
+// silent about) and re-acquisition lands in the new pool.
 func (ef *EphemeralFixture) RestartOnSubnet(serverCIDR, poolStart, poolEnd string) {
 	ef.t.Helper()
 	ef.Stop()
-	if err := os.Remove(ef.leaseFile); err != nil && !os.IsNotExist(err) {
-		ef.t.Fatalf("wipe ephemeral lease DB: %v", err)
-	}
-	link, err := netlink.LinkByName(ephemeralDhcpVeth)
-	if err != nil {
-		ef.t.Fatalf("LinkByName %s: %v", ephemeralDhcpVeth, err)
-	}
-	old, err := netlink.ParseAddr(ef.serverCIDR)
-	if err != nil {
-		ef.t.Fatalf("ParseAddr old server CIDR: %v", err)
-	}
-	if err := netlink.AddrDel(link, old); err != nil {
-		ef.t.Fatalf("AddrDel %s: %v", ef.serverCIDR, err)
-	}
-	fresh, err := netlink.ParseAddr(serverCIDR)
-	if err != nil {
-		ef.t.Fatalf("ParseAddr new server CIDR: %v", err)
-	}
-	if err := netlink.AddrAdd(link, fresh); err != nil {
-		ef.t.Fatalf("AddrAdd %s: %v", serverCIDR, err)
+	ef.wipeLeaseDB()
+	if ef.isolated() {
+		// The server end lives in the fixture's namespace, so netlink
+		// against the test process's own namespace cannot see it.
+		ef.runNetns("ip", "addr", "del", ef.serverCIDR, "dev", ephemeralDhcpVeth)
+		ef.runNetns("ip", "addr", "add", serverCIDR, "dev", ephemeralDhcpVeth)
+	} else {
+		link, err := netlink.LinkByName(ephemeralDhcpVeth)
+		if err != nil {
+			ef.t.Fatalf("LinkByName %s: %v", ephemeralDhcpVeth, err)
+		}
+		old, err := netlink.ParseAddr(ef.serverCIDR)
+		if err != nil {
+			ef.t.Fatalf("ParseAddr old server CIDR: %v", err)
+		}
+		if err := netlink.AddrDel(link, old); err != nil {
+			ef.t.Fatalf("AddrDel %s: %v", ef.serverCIDR, err)
+		}
+		fresh, err := netlink.ParseAddr(serverCIDR)
+		if err != nil {
+			ef.t.Fatalf("ParseAddr new server CIDR: %v", err)
+		}
+		if err := netlink.AddrAdd(link, fresh); err != nil {
+			ef.t.Fatalf("AddrAdd %s: %v", serverCIDR, err)
+		}
 	}
 	ef.serverCIDR = serverCIDR
 	ef.poolStart, ef.poolEnd = poolStart, poolEnd
 	ef.start()
 }
 
+func (ef *EphemeralFixture) wipeLeaseDB() {
+	ef.t.Helper()
+	if err := os.Remove(ef.leaseFile); err != nil && !os.IsNotExist(err) {
+		ef.t.Fatalf("wipe ephemeral lease DB: %v", err)
+	}
+}
+
+// keaLeaseCSVHeader is the memfile schema Kea 2.6 writes, copied from
+// a lease file Kea itself produced. SeedStolenLease emits it verbatim;
+// a seeded file carrying it was verified to load and to make the
+// address unavailable (the probe's client was offered the next address
+// in the pool instead). Whether a DRIFTED header is rejected loudly or
+// ignored silently was not established — if a future Kea changes the
+// schema, check DHCPSRV_MEMFILE_LEASE_FILE_LOAD in the fixture log
+// before trusting a seed.
+const keaLeaseCSVHeader = "address,hwaddr,client_id,valid_lifetime,expire,subnet_id,fqdn_fwd,fqdn_rev,hostname,state,user_context,pool_id"
+
 // SeedStolenLease overwrites the (stopped) server's lease DB with a
-// single entry assigning ip to a foreign client. On StartAgain,
-// dnsmasq loads it and treats ip as taken — the rightful client's
-// renewal REQUEST then draws the classic "address in use" DHCPNAK,
-// the scenario where a server reassigns a live lease (#128).
-// Lease-file format per dnsmasq(8): "expiry MAC IP hostname client-id".
+// single entry assigning ip to a foreign client. On StartAgain the
+// server loads it and treats ip as taken — the rightful client's
+// renewal REQUEST then hits the classic "address in use" refusal, the
+// scenario where a server reassigns a live lease (#128).
 func (ef *EphemeralFixture) SeedStolenLease(ip string) {
 	ef.t.Helper()
 	if ef.cmd != nil {
-		ef.t.Fatal("SeedStolenLease: stop the server first; dnsmasq reads the lease DB only at startup")
+		ef.t.Fatal("SeedStolenLease: stop the server first; the lease DB is read only at startup")
 	}
 	expiry := time.Now().Add(time.Hour).Unix()
-	line := fmt.Sprintf("%d aa:bb:cc:dd:ee:ff %s stolen-by *\n", expiry, ip)
+	var line string
+	if ef.backend == backendKea {
+		// subnet_id must match the id in keaConfig's subnet4 entry, or
+		// the loaded lease belongs to no configured subnet and is
+		// ignored — seeding nothing, silently.
+		line = fmt.Sprintf("%s\n%s,aa:bb:cc:dd:ee:ff,,3600,%d,1,0,0,stolen-by,0,,0\n",
+			keaLeaseCSVHeader, ip, expiry)
+	} else {
+		// Lease-file format per dnsmasq(8):
+		// "expiry MAC IP hostname client-id".
+		line = fmt.Sprintf("%d aa:bb:cc:dd:ee:ff %s stolen-by *\n", expiry, ip)
+	}
 	if err := os.WriteFile(ef.leaseFile, []byte(line), 0o644); err != nil {
 		ef.t.Fatalf("seed stolen lease: %v", err)
 	}
 }
 
-// ServerIP returns the server's bare IP (the gateway dnsmasq
-// advertises by default — its own listen address).
+// ServerIP returns the server's bare IP (the gateway it advertises by
+// default — its own listen address).
 func (ef *EphemeralFixture) ServerIP() string {
 	return strings.SplitN(ef.serverCIDR, "/", 2)[0]
 }
@@ -380,6 +741,15 @@ func (ef *EphemeralFixture) DNSDomain() string { return ef.dnsDomain }
 // substrings (case-insensitive), e.g. ("DHCPACK", mac) or
 // ("DHCPNAK", mac). The log accumulates across Stop/StartAgain/
 // Restart cycles, so counts are monotonic for the fixture's lifetime.
+//
+// Backend-independent by construction: both servers name the message
+// type and the client MAC on one line. Kea writes
+//
+//	DHCP4_PACKET_SEND [hwtype=1 <mac>], cid=[...], tid=0x...: trying to
+//	send packet DHCPACK (type 5) from <server>:67 to <client>:68 on
+//	interface <iface>
+//
+// and dnsmasq writes `DHCPACK(<iface>) <ip> <mac> [<hostname>]`.
 func (ef *EphemeralFixture) CountLogLines(substrings ...string) int {
 	ef.t.Helper()
 	count := 0
@@ -400,11 +770,12 @@ func (ef *EphemeralFixture) CountLogLines(substrings ...string) int {
 }
 
 // LastACKAddress returns the address in the most recent DHCPACK the
-// server logged for mac, or "" if it never ACKed one. dnsmasq writes
-// these as `DHCPACK(<iface>) <ip> <mac> [<hostname>]`, so the address
-// is the field after the DHCPACK token. Use it to check that the
-// container and the server agree on which address the container holds
-// — the container's own view alone cannot catch a divergence.
+// server logged for mac, or "" if it never ACKed one.
+//
+// Use it to check that the container and the server agree on which
+// address the container holds — the container's own view alone cannot
+// catch a divergence, and this is the outside evidence that the health
+// counters cannot supply.
 func (ef *EphemeralFixture) LastACKAddress(mac string) string {
 	ef.t.Helper()
 	last := ""
@@ -413,31 +784,56 @@ func (ef *EphemeralFixture) LastACKAddress(mac string) string {
 		if !strings.Contains(l, "dhcpack") || !strings.Contains(l, strings.ToLower(mac)) {
 			continue
 		}
-		fields := strings.Fields(line)
-		for i, f := range fields {
-			if !strings.HasPrefix(f, "DHCPACK") || i+1 >= len(fields) {
-				continue
-			}
-			if ip := net.ParseIP(fields[i+1]); ip != nil && ip.To4() != nil {
-				last = fields[i+1]
-			}
-			break
+		if ip := ackAddress(ef.backend, line); ip != "" {
+			last = ip
 		}
 	}
 	return last
 }
 
+// ackAddress pulls the ACKed address out of one server log line.
+//
+// Kea names the recipient as the `to <addr>:68` of the DHCPACK it
+// sends; dnsmasq puts the address immediately after the DHCPACK token.
+// Both are the address the server told the client to use, which is the
+// claim the callers are checking.
+func ackAddress(backend ephemeralBackend, line string) string {
+	fields := strings.Fields(line)
+	if backend == backendKea {
+		for i, f := range fields {
+			if f != "to" || i+1 >= len(fields) {
+				continue
+			}
+			bare := strings.SplitN(fields[i+1], ":", 2)[0]
+			if ip := net.ParseIP(bare); ip != nil && ip.To4() != nil {
+				return bare
+			}
+		}
+		return ""
+	}
+	for i, f := range fields {
+		if !strings.HasPrefix(f, "DHCPACK") || i+1 >= len(fields) {
+			continue
+		}
+		if ip := net.ParseIP(fields[i+1]); ip != nil && ip.To4() != nil {
+			return fields[i+1]
+		}
+		break
+	}
+	return ""
+}
+
 func (ef *EphemeralFixture) readLog() string {
 	data, err := os.ReadFile(ef.logFile)
 	if err != nil {
-		return fmt.Sprintf("(could not read ephemeral dnsmasq log: %v)", err)
+		return fmt.Sprintf("(could not read ephemeral DHCP server log: %v)", err)
 	}
 	return string(data)
 }
 
 // DumpLogs mirrors Fixture.DumpLogs for failure-path diagnostics.
 func (ef *EphemeralFixture) DumpLogs(write func(string)) {
-	write("--- ephemeral dnsmasq log ---\n" + ef.readLog())
+	write(fmt.Sprintf("--- ephemeral %s log (lease=%ds) ---\n%s", ef.backend, ef.leaseSeconds, ef.readLog()))
 }
 
 func (ef *EphemeralFixture) teardown() {
@@ -448,7 +844,15 @@ func (ef *EphemeralFixture) teardown() {
 	cleanupEphemeralLinks()
 }
 
+// cleanupEphemeralLinks removes the fixture's veth pair and namespace,
+// both on teardown and defensively at setup so a previous panicked run
+// cannot poison the next one.
+//
+// Deleting the namespace takes the server end of the veth with it, and
+// deleting either end removes the pair — so the two steps overlap by
+// design and both are best-effort.
 func cleanupEphemeralLinks() {
+	_ = exec.Command("ip", "netns", "del", ephemeralNetns).Run()
 	for _, name := range []string{EphemeralHostVeth, ephemeralDhcpVeth} {
 		if link, err := netlink.LinkByName(name); err == nil {
 			_ = netlink.LinkDel(link)
