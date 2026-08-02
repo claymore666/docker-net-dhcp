@@ -879,7 +879,11 @@ The maintained image lives at <code>ghcr.io/claymore666/docker-net-dhcp</code>.<
 </div>
 <h2 id="quick-start">Quick start<a class="headerlink" href="#quick-start" title="Permanent link">&para;</a></h2>
 <p>Install the plugin:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>docker<span class="w"> </span>plugin<span class="w"> </span>install<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v1.4.0
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="c1"># One-time: the plugin persists lease state here, bind-mounted from</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="c1"># the host so it survives upgrades. Docker will not create it for you</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="c1"># and `plugin install` fails with a mount error if it is missing.</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>sudo<span class="w"> </span>mkdir<span class="w"> </span>-p<span class="w"> </span>/var/lib/net-dhcp
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>docker<span class="w"> </span>plugin<span class="w"> </span>install<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v1.4.0
 </code></pre></div>
 <p>It requests <code>host</code> networking, the host PID namespace, the Docker
 socket, and <code>CAP_NET_ADMIN</code>/<code>CAP_SYS_ADMIN</code>/<code>CAP_SYS_PTRACE</code> — grant
