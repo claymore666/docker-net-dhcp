@@ -10,7 +10,7 @@ import (
 
 	docker "github.com/docker/docker/client"
 
-	"github.com/devplayer0/docker-net-dhcp/test/integration/harness"
+	"github.com/claymore666/docker-net-dhcp/test/integration/harness"
 )
 
 // healthFloorBudget is how long the floor waits for /Plugin.Health to

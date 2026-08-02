@@ -15,7 +15,7 @@ import (
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
 
-	"github.com/devplayer0/docker-net-dhcp/pkg/dhcp"
+	"github.com/claymore666/docker-net-dhcp/pkg/dhcp"
 )
 
 // TestRenew_LeaseChangedCounter pins the v0.9.0 / T1-4 counter

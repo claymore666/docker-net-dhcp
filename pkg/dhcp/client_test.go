@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/devplayer0/docker-net-dhcp/pkg/util"
+	"github.com/claymore666/docker-net-dhcp/pkg/util"
 )
 
 // hasArg returns whether args contains exactly target.

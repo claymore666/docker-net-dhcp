@@ -6,7 +6,7 @@ import (
 
 	log "github.com/sirupsen/logrus"
 
-	"github.com/devplayer0/docker-net-dhcp/pkg/dhcp"
+	"github.com/claymore666/docker-net-dhcp/pkg/dhcp"
 )
 
 // main is a thin shim invoked by dhcpcd as its --script hook on every

@@ -119,8 +119,8 @@
 #     v1.3.5 — Await* poll paths executing more, not util tests being
 #     added — so it is claimed when a change earns it, not because the
 #     number is there. Revisit at the next release.
-github.com/devplayer0/docker-net-dhcp/pkg/util 95.0
-github.com/devplayer0/docker-net-dhcp/pkg/plugin 84.0
-github.com/devplayer0/docker-net-dhcp/pkg/dhcp 89.5
-github.com/devplayer0/docker-net-dhcp/cmd/net-dhcp 76.0
-github.com/devplayer0/docker-net-dhcp/cmd/dhcp-handler 74.0
+github.com/claymore666/docker-net-dhcp/pkg/util 95.0
+github.com/claymore666/docker-net-dhcp/pkg/plugin 84.0
+github.com/claymore666/docker-net-dhcp/pkg/dhcp 89.5
+github.com/claymore666/docker-net-dhcp/cmd/net-dhcp 76.0
+github.com/claymore666/docker-net-dhcp/cmd/dhcp-handler 74.0

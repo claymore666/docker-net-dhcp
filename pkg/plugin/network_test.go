@@ -12,8 +12,8 @@ import (
 
 	cerrdefs "github.com/containerd/errdefs"
 
-	"github.com/devplayer0/docker-net-dhcp/pkg/dhcp"
-	"github.com/devplayer0/docker-net-dhcp/pkg/util"
+	"github.com/claymore666/docker-net-dhcp/pkg/dhcp"
+	"github.com/claymore666/docker-net-dhcp/pkg/util"
 )
 
 func TestDHCPStaticRoutes(t *testing.T) {

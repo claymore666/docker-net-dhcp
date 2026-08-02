@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/devplayer0/docker-net-dhcp/pkg/dhcp"
+	"github.com/claymore666/docker-net-dhcp/pkg/dhcp"
 )
 
 // outageTracker is the fix for #353: dhcp_timeouts stayed at zero

@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/devplayer0/docker-net-dhcp/test/integration/harness"
+	"github.com/claymore666/docker-net-dhcp/test/integration/harness"
 )
 
 // TestLifecycleBridge_GoldenPath is the bridge-mode counterpart to
