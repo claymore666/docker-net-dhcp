@@ -10,7 +10,7 @@
   "installation_common_status": "Met",
   "installation_common_justification": "Installed and removed with the standard Docker plugin convention: `docker plugin install ghcr.io/claymore666/docker-net-dhcp:vX.Y.Z`, and `docker plugin disable` + `docker plugin rm` to uninstall. Documented at https://github.com/claymore666/docker-net-dhcp/blob/main/docs/reference.md#install-upgrade-uninstall",
   "dco_status": "Unmet",
-  "dco_justification": "The project has no DCO sign-off requirement or CLA today. Contributions are accepted under the repository's MIT license via GitHub pull requests. The PR checks do enforce an authorship rule (commits must be authored by a person, no AI-assistant attribution), but that is not a legal assertion mechanism.",
+  "dco_justification": "The project has no DCO sign-off requirement or CLA today. Contributions are accepted under the repository's GPL-3.0 license via GitHub pull requests. The PR checks do enforce an authorship rule (commits must be authored by a person, no AI-assistant attribution), but that is not a legal assertion mechanism.",
   "governance_status": "Met",
   "governance_justification": "Governance model, decision-making process, and the path to becoming a maintainer are documented at https://github.com/claymore666/docker-net-dhcp/blob/main/GOVERNANCE.md",
   "code_of_conduct_status": "Met",
@@ -250,11 +250,7 @@
   "dynamic_analysis_enable_assertions_justification": "-race detector + fuzz targets are runtime-assertion mechanisms",
   "dynamic_analysis_fixed_status": "Met",
   "dynamic_analysis_fixed_justification": "dynamic findings (races, fuzz crashes) fail CI → fixed",
-  "achieve_passing_status": "Met",
   "test_statement_coverage80_status": "Met",
   "test_statement_coverage80_justification": "Merged unit-plus-integration statement coverage is 85.8 percent, computed as a statement-weighted total over the shipped packages (pkg/plugin 85.0 percent of 1811 statements, pkg/dhcp 89.9 of 338, pkg/util 98.5 of 78, cmd/net-dhcp 76.4 of 72, cmd/dhcp-handler 75.0 of 16). Coverage is measured in CI by a dedicated workflow that merges the unit run with a coverage-instrumented build of the plugin exercised by the live integration suite. Per-package floors are recorded in .github/coverage-baseline.txt and enforced by a ratchet script that blocks any release regressing them.",
-  "achieve_silver_status": "Unmet",
-  "version_semver_justification": "Releases use semantic versioning: tags are of the form vMAJOR.MINOR.PATCH, with pre-release candidates suffixed vX.Y.Z-rcN. See https://github.com/claymore666/docker-net-dhcp/releases",
-  "achieve_passing_justification": "The project has attained the passing level badge, with every passing criterion answered and justified rather than left as a bare checkbox.",
-  "achieve_silver_justification": "The silver level is not yet attained. Two silver MUST criteria remain unmet and are answered honestly rather than stretched: documentation_roadmap (no published roadmap covering the next year) and access_continuity (a single maintainer holds all repository, registry and signing access). Both are tracked as issues."
+  "version_semver_justification": "Releases use semantic versioning: tags are of the form vMAJOR.MINOR.PATCH, with pre-release candidates suffixed vX.Y.Z-rcN. See https://github.com/claymore666/docker-net-dhcp/releases"
 }
