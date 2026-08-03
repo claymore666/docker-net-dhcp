@@ -185,10 +185,31 @@ jobs:
   # reports on a run that is failing to progress, and gating the
   # aggregator on it would make the aggregator wait for the very thing
   # that is stuck.
+  #
+  # That independence is also why the watchdog had no say in whether a
+  # PR could merge — it is not a required context, and the required
+  # aggregator does not read it. Since #477 it does not need one: it
+  # CANCELS the stuck run, and the cancellation reaches the aggregator
+  # through the suite rollup it already reads. The verdict travels by
+  # changing the run's state rather than by being asked for.
+  #
+  # Making `watchdog` a required context instead would not work: it is
+  # conditional on the gate's decision, so on a gate-skipped PR it never
+  # reports at all. The one always-present aggregator stays the single
+  # name branch protection knows.
   watchdog:
     needs: gate
     if: needs.gate.outputs.decision == 'run'
     runs-on: ubuntu-latest
+    # actions:write is what lets the watchdog CANCEL the run it condemns
+    # rather than only reporting it (#477). Reporting alone left the run
+    # holding the selfhosted-privileged concurrency group for hours after
+    # the check went red. Job-scoped rather than raised at the top level:
+    # this is the only job that needs to write, and the top-level block
+    # stays read-only for the other five (Scorecard #160).
+    permissions:
+      contents: read
+      actions: write
     # Comfortably longer than the stuck budget below, so the watchdog
     # gets to report rather than being killed mid-verdict.
     timeout-minutes: 20
