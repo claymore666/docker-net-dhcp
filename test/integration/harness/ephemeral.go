@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -156,6 +157,12 @@ type EphemeralFixture struct {
 	// on/off. See WithDNS (#261).
 	dnsDomain string
 	dnsPort   int
+
+	// started records that the server reached readiness at least once.
+	// verifyLeaseGrants keys on it so a fixture that died during start
+	// is not additionally accused of never granting a lease — the
+	// startup failure has already said what went wrong.
+	started bool
 }
 
 // EphemeralOption configures an EphemeralFixture before its server
@@ -352,9 +359,12 @@ func (ef *EphemeralFixture) start() {
 	ef.t.Helper()
 	if ef.backend == backendKea {
 		ef.startKea()
-		return
+	} else {
+		ef.startDnsmasq()
 	}
-	ef.startDnsmasq()
+	// Both start paths t.Fatalf on failure, so reaching here means the
+	// server is serving.
+	ef.started = true
 }
 
 // keaConfig renders the server config for the fixture's current pool,
@@ -852,6 +862,159 @@ func ackAddress(backend ephemeralBackend, line string) string {
 	return ""
 }
 
+// keaLeaseGrant is one lifetime the server stated it granted, kept
+// with the line it came from so a mismatch can quote the server
+// verbatim instead of paraphrasing it.
+type keaLeaseGrant struct {
+	line    string
+	seconds int
+}
+
+// keaLeaseGrants returns every lease lifetime Kea logged granting, in
+// order.
+//
+// This is the fixture's only outside evidence about lease TIMING.
+// Everything else the failure suite believes about the lease — T1, T2,
+// the outage windows sized against them — is the number the fixture
+// wrote into its own config, which is intent, not effect (#472). Kea
+// states the effect on its way past:
+//
+//	DHCP4_LEASE_ALLOC [hwtype=1 <mac>], cid=[...], tid=0x...: lease
+//	192.168.101.10 has been allocated for 20 seconds
+//
+// Worth having because this server demonstrably logs success while
+// doing something else: DHCP4_STARTED is emitted after every socket
+// bind has failed, which is why startKea's readiness probe had to
+// grow a second condition (#356). A server that reports a clean start
+// while deaf will report a clean start while clamping a lifetime.
+func keaLeaseGrants(log string) []keaLeaseGrant {
+	var out []keaLeaseGrant
+	for _, line := range strings.Split(log, "\n") {
+		if n, ok := keaLeaseAllocSeconds(line); ok {
+			out = append(out, keaLeaseGrant{line: strings.TrimSpace(line), seconds: n})
+		}
+	}
+	return out
+}
+
+// keaLeaseAllocSeconds pulls the granted lifetime out of one Kea
+// DHCP4_LEASE_ALLOC line, reporting whether it found one.
+//
+// The bool is the whole point. A parser that returned a bare 0 on
+// no-match would turn every check built on it into a silent no-op the
+// day Kea rewords the message — the reasoning #356 applied to
+// LastACKAddress, and the trap #472 exists to avoid here.
+//
+// The unit token is required for the same reason: a future "allocated
+// for 2 minutes" must fail to parse rather than compare 2 against 120.
+func keaLeaseAllocSeconds(line string) (int, bool) {
+	if !strings.Contains(line, "DHCP4_LEASE_ALLOC") {
+		return 0, false
+	}
+	fields := strings.Fields(line)
+	for i, f := range fields {
+		if f != "for" || i+2 >= len(fields) {
+			continue
+		}
+		if !strings.HasPrefix(fields[i+2], "second") {
+			continue
+		}
+		if n, err := strconv.Atoi(fields[i+1]); err == nil {
+			return n, true
+		}
+	}
+	return 0, false
+}
+
+// GrantedLease returns the lease lifetime the server most recently
+// told mac it was granting, and whether it said so at all.
+//
+// Use it where a test wants to reason about the lease actually in
+// force rather than the one the fixture asked for. The blanket check
+// in verifyLeaseGrants already holds the two equal for every run, so
+// this is for tests that want to say so at the point they depend on
+// it. Kea only; the dnsmasq backend does not log a granted lifetime.
+func (ef *EphemeralFixture) GrantedLease(mac string) (int, bool) {
+	ef.t.Helper()
+	seconds, found := 0, false
+	needle := strings.ToLower(mac)
+	for _, g := range keaLeaseGrants(ef.readLog()) {
+		if !strings.Contains(strings.ToLower(g.line), needle) {
+			continue
+		}
+		seconds, found = g.seconds, true
+	}
+	return seconds, found
+}
+
+// verifyLeaseGrants holds the server's granted lifetime against the
+// one the fixture configured, for every allocation of this fixture's
+// life. Called from teardown so it runs once per fixture and no test
+// has to remember it — a check each test opts into is a check the next
+// test forgets.
+//
+// Absolute, not "close enough": Kea honours valid-lifetime verbatim
+// (#356 measured 20s against dnsmasq's 120s floor), so any difference
+// means the fixture is not serving the timings its tests are built on.
+// The failure suite turns on inequalities like T1 < outage < lease; if
+// the lease is not the lease, TestFailure_ServerReturnsBeforeExpiry
+// stops crossing T1 and passes without testing a renewal, green the
+// whole way. That is the #278 shape, which this suite has shipped once
+// already.
+func (ef *EphemeralFixture) verifyLeaseGrants() {
+	if !ef.started || ef.backend != backendKea {
+		return
+	}
+	grants := keaLeaseGrants(ef.readLog())
+	problems := checkLeaseGrants(grants, ef.leaseSeconds)
+	for _, p := range problems {
+		ef.t.Error(p)
+	}
+	if len(problems) == 0 {
+		ef.t.Logf("lease-grant check: %d allocation(s), every one granted %ds as configured",
+			len(grants), ef.leaseSeconds)
+	}
+}
+
+// checkLeaseGrants compares what the server granted against what the
+// fixture asked for, returning one message per problem and nothing at
+// all when they agree.
+//
+// Split out from verifyLeaseGrants so the negative control is an
+// ordinary unit test rather than a thing someone has to remember to
+// stage by hand: a check that has never been observed failing is not
+// known to work, and this repo has shipped a guard that passed with
+// the call it guarded deleted.
+func checkLeaseGrants(grants []keaLeaseGrant, want int) []string {
+	if len(grants) == 0 {
+		return []string{fmt.Sprintf(
+			"lease-grant check: the server logged no DHCP4_LEASE_ALLOC at all, so the %ds lease "+
+				"this fixture is built on was never confirmed against the server (#472). "+
+				"Either no client bound, or the line this parses for has changed.", want)}
+	}
+	var problems []string
+	bad := 0
+	for _, g := range grants {
+		if g.seconds == want {
+			continue
+		}
+		bad++
+		if bad == 1 {
+			problems = append(problems, fmt.Sprintf(
+				"lease-grant check: the fixture asked for a %ds lease and the server granted %ds.\n"+
+					"Every timing this test rests on (T1/T2, outage windows, expiry waits) was sized "+
+					"against %ds, so the boundary it names is not the boundary it crossed (#472).\n"+
+					"server said: %s", want, g.seconds, want, g.line))
+		}
+	}
+	if bad > 1 {
+		problems = append(problems, fmt.Sprintf(
+			"lease-grant check: %d of %d allocations were granted a lifetime other than %ds",
+			bad, len(grants), want))
+	}
+	return problems
+}
+
 func (ef *EphemeralFixture) readLog() string {
 	data, err := os.ReadFile(ef.logFile)
 	if err != nil {
@@ -866,6 +1029,9 @@ func (ef *EphemeralFixture) DumpLogs(write func(string)) {
 }
 
 func (ef *EphemeralFixture) teardown() {
+	// Before Stop, while the log is still readable and the temp dir
+	// still exists.
+	ef.verifyLeaseGrants()
 	ef.Stop()
 	if ef.tmpDir != "" {
 		_ = os.RemoveAll(ef.tmpDir)

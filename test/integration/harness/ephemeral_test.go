@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -85,6 +86,206 @@ func TestLastACKAddress_KeaTracksLatest(t *testing.T) {
 	if got := ef.LastACKAddress("de:ad:be:ef:00:00"); got != "" {
 		t.Errorf("LastACKAddress(unknown MAC) = %q, want \"\"", got)
 	}
+}
+
+// TestKeaLeaseAllocSeconds reads the granted lifetime off the one line
+// that states it. The first case is the verbatim capture from
+// keaACKLog above; the rest are that same message with only the MAC,
+// address, number or wording varied, which is what a parser has to
+// survive.
+//
+// The bool matters more than the number. GrantedLease and
+// verifyLeaseGrants both key on "did the server say so at all", so a
+// parser that answered 0/true for a line it did not understand would
+// hold 0 against the configured lease and fail every run, and one that
+// answered 0/false quietly for a line it should have read would
+// disable the check instead of failing it. Both directions are here.
+func TestKeaLeaseAllocSeconds(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		line   string
+		want   int
+		wantOK bool
+	}{
+		{
+			name:   "the captured allocation line",
+			line:   `2026-08-02 09:53:52.326 INFO  [kea-dhcp4.leases/17.140146471081664] DHCP4_LEASE_ALLOC [hwtype=1 02:11:22:33:44:55], cid=[ff:22:33:44:55:00:01:00:01:32:01:d0:2e:02:11:22:33:44:55], tid=0x517eb529: lease 192.168.101.10 has been allocated for 20 seconds`,
+			want:   20,
+			wantOK: true,
+		},
+		{
+			name:   "the fixture default lifetime",
+			line:   `2026-08-02 09:53:52.326 INFO  [kea-dhcp4.leases/17.1401] DHCP4_LEASE_ALLOC [hwtype=1 02:11:22:33:44:55], cid=[ff:22], tid=0x517eb529: lease 192.168.101.10 has been allocated for 120 seconds`,
+			want:   120,
+			wantOK: true,
+		},
+		{
+			// An ACK line names the same client and the same address
+			// but says nothing about the lifetime. Reading a number off
+			// it — the port, the type, the tid — would be worse than
+			// reading nothing.
+			name:   "an ACK line carries no lifetime",
+			line:   `2026-08-02 09:53:52.326 INFO  [kea-dhcp4.packets/17.1401] DHCP4_PACKET_SEND [hwtype=1 02:11:22:33:44:55], cid=[ff:22], tid=0x517eb529: trying to send packet DHCPACK (type 5) from 192.168.101.1:67 to 192.168.101.10:68 on interface dh-itest-edhcp`,
+			wantOK: false,
+		},
+		{
+			// The unit is read, not assumed. If a future kea says
+			// minutes, 2 must not be compared against 120.
+			name:   "a lifetime in another unit does not parse as seconds",
+			line:   `2026-08-02 09:53:52.326 INFO  [kea-dhcp4.leases/17.1401] DHCP4_LEASE_ALLOC [hwtype=1 02:11:22:33:44:55], cid=[ff:22], tid=0x517eb529: lease 192.168.101.10 has been allocated for 2 minutes`,
+			wantOK: false,
+		},
+		{
+			name:   "a reworded allocation message reports no reading",
+			line:   `2026-08-02 09:53:52.326 INFO  [kea-dhcp4.leases/17.1401] DHCP4_LEASE_ALLOC [hwtype=1 02:11:22:33:44:55], cid=[ff:22], tid=0x517eb529: lease 192.168.101.10 has been allocated`,
+			wantOK: false,
+		},
+		{
+			name:   "an empty line is not an allocation",
+			line:   "",
+			wantOK: false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := keaLeaseAllocSeconds(tc.line)
+			if ok != tc.wantOK {
+				t.Fatalf("keaLeaseAllocSeconds ok = %v, want %v (line: %s)", ok, tc.wantOK, tc.line)
+			}
+			if ok && got != tc.want {
+				t.Errorf("keaLeaseAllocSeconds = %d, want %d", got, tc.want)
+			}
+			if !ok && got != 0 {
+				t.Errorf("keaLeaseAllocSeconds returned %d alongside ok=false; a no-match must not carry a number", got)
+			}
+		})
+	}
+}
+
+// keaGrantLog is keaACKLog's allocation message repeated for a second
+// client and a later renewal, so attribution and recency can be
+// checked. Only the MAC, address and lifetime vary from the captured
+// line; the surrounding format is that capture verbatim.
+const keaGrantLog = `
+2026-08-02 09:53:52.326 INFO  [kea-dhcp4.leases/17.140146471081664] DHCP4_LEASE_ALLOC [hwtype=1 02:11:22:33:44:55], cid=[ff:22:33:44:55], tid=0x517eb529: lease 192.168.101.10 has been allocated for 20 seconds
+2026-08-02 09:53:53.001 INFO  [kea-dhcp4.leases/17.140146471081664] DHCP4_LEASE_ALLOC [hwtype=1 aa:bb:cc:dd:ee:ff], cid=[00], tid=0x1cc9f780: lease 192.168.101.42 has been allocated for 20 seconds
+2026-08-02 09:54:02.136 INFO  [kea-dhcp4.leases/17.140146462688960] DHCP4_LEASE_ALLOC [hwtype=1 02:11:22:33:44:55], cid=[ff:22:33:44:55], tid=0x1cc9f77f: lease 192.168.101.11 has been allocated for 20 seconds
+`
+
+// TestGrantedLease_Kea pins per-client attribution and recency, the
+// same two properties LastACKAddress has.
+func TestGrantedLease_Kea(t *testing.T) {
+	ef := newLogFixture(t, backendKea, keaGrantLog)
+
+	if got, ok := ef.GrantedLease(keaMAC); !ok || got != 20 {
+		t.Errorf("GrantedLease(%s) = %d, %v; want 20, true", keaMAC, got, ok)
+	}
+	if got, ok := ef.GrantedLease("aa:bb:cc:dd:ee:ff"); !ok || got != 20 {
+		t.Errorf("GrantedLease(other MAC) = %d, %v; want 20, true — grants must be attributed per client", got, ok)
+	}
+	// A client that never bound must report "no evidence", not a zero
+	// that a caller would read as a lifetime.
+	if got, ok := ef.GrantedLease("de:ad:be:ef:00:00"); ok || got != 0 {
+		t.Errorf("GrantedLease(unknown MAC) = %d, %v; want 0, false", got, ok)
+	}
+}
+
+// TestKeaLeaseGrants_ReadsEveryAllocation guards what
+// verifyLeaseGrants consumes: it checks EVERY allocation, not the
+// first, because a lifetime that changes mid-run (a Restart on a
+// different pool, a lease reloaded from a seeded DB) is exactly the
+// divergence the check exists to catch.
+func TestKeaLeaseGrants_ReadsEveryAllocation(t *testing.T) {
+	grants := keaLeaseGrants(keaGrantLog)
+	if len(grants) != 3 {
+		t.Fatalf("keaLeaseGrants found %d allocation(s), want 3", len(grants))
+	}
+	for i, g := range grants {
+		if g.seconds != 20 {
+			t.Errorf("grant %d = %ds, want 20s", i, g.seconds)
+		}
+		// The line is carried so a mismatch can quote the server
+		// rather than paraphrase it.
+		if !strings.Contains(g.line, "DHCP4_LEASE_ALLOC") {
+			t.Errorf("grant %d kept no evidence line: %q", i, g.line)
+		}
+	}
+	// keaACKLog is mostly packet traffic with a single allocation in
+	// it — the reader must not count ACKs or OFFERs as grants.
+	if got := len(keaLeaseGrants(keaACKLog)); got != 1 {
+		t.Errorf("keaLeaseGrants(keaACKLog) found %d, want 1; only DHCP4_LEASE_ALLOC states a lifetime", got)
+	}
+	if got := len(keaLeaseGrants("")); got != 0 {
+		t.Errorf("keaLeaseGrants(empty) found %d, want 0", got)
+	}
+}
+
+// TestCheckLeaseGrants is the negative control, and it is the reason
+// the comparison lives in a pure function.
+//
+// #472 exists because the fixture's lease timings were asserted about
+// without ever being confirmed. A check added to fix that, which had
+// itself never been observed rejecting anything, would be the same
+// mistake one layer up. So every direction is exercised here: agreement
+// is silent, a clamped lifetime reports and names BOTH numbers, a
+// lifetime that drifts partway through a run is not averaged away, and
+// a run with no allocation at all fails rather than passing vacuously.
+func TestCheckLeaseGrants(t *testing.T) {
+	grant := func(seconds int) keaLeaseGrant {
+		return keaLeaseGrant{
+			line:    "DHCP4_LEASE_ALLOC ...: lease 192.168.101.10 has been allocated for " + strconv.Itoa(seconds) + " seconds",
+			seconds: seconds,
+		}
+	}
+
+	t.Run("granted equals asked", func(t *testing.T) {
+		if got := checkLeaseGrants([]keaLeaseGrant{grant(20), grant(20)}, 20); len(got) != 0 {
+			t.Errorf("checkLeaseGrants reported %v on a clean run; it must be silent", got)
+		}
+	})
+
+	t.Run("a clamped lifetime reports both numbers", func(t *testing.T) {
+		// The shape #472 names: the fixture asks for 20s, something
+		// (a min-valid-lifetime default, a key kea tolerates silently)
+		// serves 60 instead, and every test built on T1 < outage <
+		// lease stays green while crossing nothing.
+		got := checkLeaseGrants([]keaLeaseGrant{grant(60)}, 20)
+		if len(got) != 1 {
+			t.Fatalf("checkLeaseGrants reported %d problem(s), want 1: %v", len(got), got)
+		}
+		// Naming only one number leaves the reader to guess which is
+		// which, and the whole value of this check is that the two are
+		// different.
+		for _, want := range []string{"20s", "60s"} {
+			if !strings.Contains(got[0], want) {
+				t.Errorf("problem does not name %s, so it cannot be acted on:\n%s", want, got[0])
+			}
+		}
+		if !strings.Contains(got[0], "DHCP4_LEASE_ALLOC") {
+			t.Errorf("problem does not quote the server's own line:\n%s", got[0])
+		}
+	})
+
+	t.Run("a lifetime that drifts mid-run is not averaged away", func(t *testing.T) {
+		got := checkLeaseGrants([]keaLeaseGrant{grant(20), grant(60), grant(90)}, 20)
+		if len(got) != 2 {
+			t.Fatalf("checkLeaseGrants reported %d problem(s), want 2 (first offender + tally): %v", len(got), got)
+		}
+		if !strings.Contains(got[1], "2 of 3") {
+			t.Errorf("tally does not say how many of how many:\n%s", got[1])
+		}
+	})
+
+	t.Run("no allocation at all is a failure, not a pass", func(t *testing.T) {
+		// The trap this whole issue is about: evidence that is absent
+		// must not read as evidence that agrees.
+		got := checkLeaseGrants(nil, 20)
+		if len(got) != 1 {
+			t.Fatalf("checkLeaseGrants(no grants) reported %d problem(s), want 1: %v", len(got), got)
+		}
+		if !strings.Contains(got[0], "DHCP4_LEASE_ALLOC") {
+			t.Errorf("problem does not say which line was looked for:\n%s", got[0])
+		}
+	})
 }
 
 // TestCountLogLines_KeaCountsAcksNotOffers guards the counter the
