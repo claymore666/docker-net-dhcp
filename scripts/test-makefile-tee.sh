@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright the docker-net-dhcp contributors.
+# SPDX-License-Identifier: GPL-3.0-only
+
 # Guards the tee added to the integration-suite targets (#378).
 #
 # Teeing a test run is not a cosmetic change: get it wrong and the

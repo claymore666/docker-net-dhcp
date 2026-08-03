@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright the docker-net-dhcp contributors.
+# SPDX-License-Identifier: GPL-3.0-only
+
 # Guard against drift between the production plugin manifest
 # (config.json) and the coverage-instrumented one (config-cover.json).
 # The two must agree on every privilege-relevant field — the cover

@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright the docker-net-dhcp contributors.
+# SPDX-License-Identifier: GPL-3.0-only
+
 # Verifies the persistent-bridge recipes in docs/bridge-mode.md by
 # applying each one, verbatim, inside a throwaway privileged container
 # running that stack.

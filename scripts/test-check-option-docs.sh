@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright the docker-net-dhcp contributors.
+# SPDX-License-Identifier: GPL-3.0-only
+
 # Table-driven tests for check-option-docs.sh (#132). Synthesizes a Go
 # package with a DHCPNetworkOptions struct + endpoint-opt parsing and a
 # reference doc, asserting: full documentation passes, a missing tagged

@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright the docker-net-dhcp contributors.
+# SPDX-License-Identifier: GPL-3.0-only
+
 # Test-weakening gate (#413).
 #
 # An escape hatch was once built to silence a failing restart test — a

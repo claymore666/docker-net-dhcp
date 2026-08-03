@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright the docker-net-dhcp contributors.
+# SPDX-License-Identifier: GPL-3.0-only
+
 # Issue state labels (#482). An issue whose work has already merged into
 # `dev` is indistinguishable from an untouched one: both read as plain
 # OPEN, and the milestone counts them the same. GitHub's "Development"

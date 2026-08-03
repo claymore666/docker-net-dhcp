@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright the docker-net-dhcp contributors.
+# SPDX-License-Identifier: GPL-3.0-only
+
 # Meta-test for integration-run-gate.sh (#311, #312). The failure mode
 # these guard against is the gate going too wide: a skip decision on a
 # diff or tree that actually needs the suite. Every ambiguous case must

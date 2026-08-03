@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright the docker-net-dhcp contributors.
+# SPDX-License-Identifier: GPL-3.0-only
+
 # Table-driven tests for check-docs-drift.sh (#345). Synthesizes a Go
 # package with a HealthResponse struct and a DHCPNetworkOptions struct,
 # a plugin manifest, and a docs tree — then asserts each of the three

@@ -96,6 +96,7 @@ jobs:
           bash scripts/test-integration-shard.sh
           bash scripts/test-check-issue-label-map.sh
           bash scripts/test-sync-issue-state-labels.sh
+          bash scripts/test-check-license-headers.sh
           bash scripts/test-badge-sync.sh
 
       # Every driver-option key the code parses must be documented in
@@ -130,6 +131,15 @@ jobs:
       # that notices.
       - name: Issue label map check
         run: bash scripts/check-issue-label-map.sh
+
+      # Every tracked source file must carry the copyright line and
+      # SPDX-License-Identifier (#454). A file added without them breaks
+      # no build and fails no test, so this gate is the only thing that
+      # would ever notice. It also pins the expression: GPL-3.0-only,
+      # not -or-later, which this fork has no standing to grant.
+      # Fix locally with: bash scripts/check-license-headers.sh --fix
+      - name: License-header check
+        run: bash scripts/check-license-headers.sh
 
   staticcheck:
     runs-on: ubuntu-latest

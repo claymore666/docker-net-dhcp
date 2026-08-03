@@ -1,3 +1,6 @@
+// Copyright the docker-net-dhcp contributors.
+// SPDX-License-Identifier: GPL-3.0-only
+
 // This file deliberately carries NO `//go:build integration` tag, for
 // the same reason healthfloor.go does not: the comparison below decides
 // whether a counter delta means anything at all, so it has to be

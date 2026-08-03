@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright the docker-net-dhcp contributors.
+# SPDX-License-Identifier: GPL-3.0-only
+
 # Meta-test for check-manifest-parity.sh: the failure mode it guards is
 # a privilege field silently differing between the two plugin manifests.
 set -euo pipefail

@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright the docker-net-dhcp contributors.
+# SPDX-License-Identifier: GPL-3.0-only
+
 # Tests for check-no-ai-attribution.sh: a throwaway git repo with
 # deliberately-bad commits, so the identity checks are exercised
 # against real git metadata rather than synthetic text.

@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright the docker-net-dhcp contributors.
+# SPDX-License-Identifier: GPL-3.0-only
+
 # Table-driven tests for check-apk-pins.sh (#169). Uses the APK_AVAIL_FILE
 # seam to feed synthetic `apk policy` output (no docker/network), against a
 # synthetic Dockerfile, and asserts the drift verdict. The first case is

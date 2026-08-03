@@ -1,3 +1,6 @@
+// Copyright the docker-net-dhcp contributors.
+// SPDX-License-Identifier: GPL-3.0-only
+
 // No `//go:build integration` tag, deliberately. This guard reads
 // source files and needs neither root nor a live plugin, so it belongs
 // in the ordinary `go test ./...` job where it fails in seconds rather

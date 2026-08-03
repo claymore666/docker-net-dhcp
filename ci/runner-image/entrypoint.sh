@@ -1,4 +1,7 @@
 #!/bin/bash
+# Copyright the docker-net-dhcp contributors.
+# SPDX-License-Identifier: GPL-3.0-only
+
 # Entrypoint for the ephemeral CI runner container. tini is PID 1;
 # this script brings up a SUPERVISED nested dockerd (the daemon-restart
 # integration test depends on the daemon being a restartable child —

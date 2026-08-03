@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright the docker-net-dhcp contributors.
+# SPDX-License-Identifier: GPL-3.0-only
+
 # Manual cleanup for integration-test orphans. Run as root after a
 # test panics mid-setup. Safe to run repeatedly.
 #

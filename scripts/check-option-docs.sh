@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright the docker-net-dhcp contributors.
+# SPDX-License-Identifier: GPL-3.0-only
+
 # Option-docs drift check (#132): every driver-option key the plugin
 # parses must appear (backticked) in the reference manual. Adding an
 # option without documenting it turns CI red — staleness becomes
