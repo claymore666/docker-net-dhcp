@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright the docker-net-dhcp contributors.
+# SPDX-License-Identifier: GPL-3.0-only
+
 # Version-pin consistency gate (#251): every published-image pin in the
 # docs must point at the SAME version. A pin is any occurrence of the
 # plugin image reference

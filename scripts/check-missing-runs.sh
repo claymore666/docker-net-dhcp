@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright the docker-net-dhcp contributors.
+# SPDX-License-Identifier: GPL-3.0-only
+
 # Missing-run detector (#418).
 #
 # On 2026-08-01 three consecutive pushes to a PR branch created ZERO

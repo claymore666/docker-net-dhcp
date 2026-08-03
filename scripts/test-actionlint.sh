@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright the docker-net-dhcp contributors.
+# SPDX-License-Identifier: GPL-3.0-only
+
 # Regression test for the actionlint gate (#127): assert actionlint
 # still flags the known-bad fixture, in particular the v0.8.0 trap
 # (secrets context in a step-level `if:`), which GitHub rejects at

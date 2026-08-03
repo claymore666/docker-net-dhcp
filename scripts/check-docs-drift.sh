@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright the docker-net-dhcp contributors.
+# SPDX-License-Identifier: GPL-3.0-only
+
 # Documentation-drift check (#345). Companion to check-option-docs.sh,
 # which already covers driver options. This covers the two other things
 # the code exposes to operators, plus the failure mode that let a whole

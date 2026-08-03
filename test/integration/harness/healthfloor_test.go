@@ -1,3 +1,6 @@
+// Copyright the docker-net-dhcp contributors.
+// SPDX-License-Identifier: GPL-3.0-only
+
 // Untagged on purpose — see the header of healthfloor.go. This is the
 // negative control for the integration suite's end-of-run health
 // floor: it proves the floor rejects what it is supposed to reject,

@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright the docker-net-dhcp contributors.
+# SPDX-License-Identifier: GPL-3.0-only
+
 # Tests for integration-shard.sh (#381).
 #
 # Balance is a nice-to-have. COMPLETENESS is the property that must

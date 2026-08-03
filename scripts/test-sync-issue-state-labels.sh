@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright the docker-net-dhcp contributors.
+# SPDX-License-Identifier: GPL-3.0-only
+
 # Table-driven tests for sync-issue-state-labels.sh (#482).
 #
 # Two things in that script can be wrong in ways nothing else would

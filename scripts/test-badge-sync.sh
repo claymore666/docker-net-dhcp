@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright the docker-net-dhcp contributors.
+# SPDX-License-Identifier: GPL-3.0-only
+
 # Table-driven tests for badge-sync.py's answers-file validator, plus a
 # check of the repository's real .bestpractices.json.
 #

@@ -1,4 +1,7 @@
 #!/bin/sh
+# Copyright the docker-net-dhcp contributors.
+# SPDX-License-Identifier: GPL-3.0-only
+
 BRIDGE=net-dhcp
 BRIDGE_IP="10.123.0.1"
 DUMMY_IP="10.123.0.3"

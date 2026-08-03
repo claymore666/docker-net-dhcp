@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright the docker-net-dhcp contributors.
+# SPDX-License-Identifier: GPL-3.0-only
+
 # Table-driven tests for govulncheck-gate.sh (#127): synthetic
 # govulncheck outputs against a synthetic allowlist.
 set -u

@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright the docker-net-dhcp contributors.
+# SPDX-License-Identifier: GPL-3.0-only
+
 # Tests for ci-queue-watchdog.sh (#392).
 #
 # The GitHub API is stubbed by putting a fake `curl` earlier on PATH,

@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright the docker-net-dhcp contributors.
+# SPDX-License-Identifier: GPL-3.0-only
+
 # Release-evidence assembler (#432).
 #
 # "Three consecutive green runs against an unchanged tree" is this

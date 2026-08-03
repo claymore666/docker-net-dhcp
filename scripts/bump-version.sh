@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright the docker-net-dhcp contributors.
+# SPDX-License-Identifier: GPL-3.0-only
+
 # Release version-pin bump (#251): rewrite the published-image version
 # pins in README.md and docs/ to a new release tag. Run on the release
 # branch (runbook step 2) instead of hand-editing each snippet.

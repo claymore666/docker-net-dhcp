@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright the docker-net-dhcp contributors.
+# SPDX-License-Identifier: GPL-3.0-only
+
 """Sync .bestpractices.json to the OpenSSF Best Practices badge entry.
 
 The badge site (https://www.bestpractices.dev) is the source of truth for

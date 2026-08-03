@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright the docker-net-dhcp contributors.
+# SPDX-License-Identifier: GPL-3.0-only
+
 import hashlib
 import argparse
 import os

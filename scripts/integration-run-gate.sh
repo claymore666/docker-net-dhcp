@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright the docker-net-dhcp contributors.
+# SPDX-License-Identifier: GPL-3.0-only
+
 # Decide whether the integration suite actually needs to run for this
 # event (#311, #312). Two skippable shapes:
 #

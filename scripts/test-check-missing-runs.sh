@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright the docker-net-dhcp contributors.
+# SPDX-License-Identifier: GPL-3.0-only
+
 # Tests for check-missing-runs.sh (#418).
 #
 # `gh` is stubbed via PATH. The cases that matter are the ones where the

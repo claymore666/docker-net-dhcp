@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright the docker-net-dhcp contributors.
+# SPDX-License-Identifier: GPL-3.0-only
+
 # Partition the main integration suite across jobs (#381).
 #
 # After #375 the gate is max(main, failure) and the main suite is the

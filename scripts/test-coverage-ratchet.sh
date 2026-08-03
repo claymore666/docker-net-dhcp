@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright the docker-net-dhcp contributors.
+# SPDX-License-Identifier: GPL-3.0-only
+
 # Table-driven tests for coverage-ratchet.sh (#127). Synthesizes
 # `go tool covdata percent` outputs and asserts the ratchet's verdicts:
 # hold/improve/within-epsilon pass, regression and vanished packages fail.

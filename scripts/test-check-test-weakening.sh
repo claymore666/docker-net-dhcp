@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright the docker-net-dhcp contributors.
+# SPDX-License-Identifier: GPL-3.0-only
+
 # Tests for check-test-weakening.sh (#413).
 #
 # A gate that has never been observed rejecting anything is not known to

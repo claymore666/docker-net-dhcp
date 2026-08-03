@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright the docker-net-dhcp contributors.
+# SPDX-License-Identifier: GPL-3.0-only
+
 # Queue watchdog (#392).
 #
 # `timeout-minutes` only starts counting once a runner has PICKED UP a

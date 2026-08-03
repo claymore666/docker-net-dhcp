@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright the docker-net-dhcp contributors.
+# SPDX-License-Identifier: GPL-3.0-only
+
 # Table-driven tests for integration-timing.sh: feeds synthetic
 # `go test -v` output and asserts the summary picks top-level tests,
 # ignores subtests, sorts by duration desc, totals correctly, and

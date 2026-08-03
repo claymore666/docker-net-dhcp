@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright the docker-net-dhcp contributors.
+# SPDX-License-Identifier: GPL-3.0-only
+
 # Boot-persistence check for the recipes in docs/bridge-mode.md.
 #
 # verify-bridge-recipes.sh proves each recipe is correct AS WRITTEN by

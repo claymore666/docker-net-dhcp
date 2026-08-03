@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright the docker-net-dhcp contributors.
+# SPDX-License-Identifier: GPL-3.0-only
+
 # Issue-labeller rule-map gate (#393). The rule pass in
 # .github/workflows/issue-labeler.yml is the cheap half of automatic
 # labelling: every title it classifies is an issue that never reaches

@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright the docker-net-dhcp contributors.
+# SPDX-License-Identifier: GPL-3.0-only
+
 # Table-driven tests for check-version-pins.sh and bump-version.sh
 # (#251). Synthesizes README/docs fixtures with image-ref pins and bare
 # prose markers, asserting: agreeing pins pass; a disagreeing pin fails

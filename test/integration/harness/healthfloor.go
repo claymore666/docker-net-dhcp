@@ -1,3 +1,6 @@
+// Copyright the docker-net-dhcp contributors.
+// SPDX-License-Identifier: GPL-3.0-only
+
 // This file deliberately carries NO `//go:build integration` tag,
 // unlike the rest of the package. The floor decides whether a whole
 // integration run passes, so its logic has to be testable without a
