@@ -932,9 +932,15 @@ The maintained image lives at <code>ghcr.io/claymore666/docker-net-dhcp</code>.<
 <a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>docker<span class="w"> </span>plugin<span class="w"> </span>install<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v1.5.0
 </code></pre></div>
 <p>It requests <code>host</code> networking, the host PID namespace, the Docker
-socket, and <code>CAP_NET_ADMIN</code>/<code>CAP_SYS_ADMIN</code>/<code>CAP_SYS_PTRACE</code> — grant
-them to proceed.
+socket, a bind mount of the state directory above, and
+<code>CAP_NET_ADMIN</code>/<code>CAP_SYS_ADMIN</code>/<code>CAP_SYS_PTRACE</code> — grant them to
+proceed.
 (If you hit <code>invalid rootfs in image configuration</code>, upgrade Docker.)</p>
+<p>Skip the <code>mkdir</code> and the install fails at start-up, leaving the plugin
+installed but <strong>disabled</strong> — re-running the install then only reports
+<code>plugin ... already exists</code>. Create the directory and
+<code>docker plugin enable</code> the plugin that is already there; see
+<a href="reference/#install-upgrade-uninstall">the reference</a>.</p>
 <p>Create a bridge-mode network and run a container on it (assumes you
 already have a host bridge <code>my-bridge</code> on your LAN — see
 <a href="bridge-mode/">Bridge mode</a> for that one-time setup):</p>
