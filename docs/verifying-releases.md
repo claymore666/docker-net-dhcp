@@ -67,6 +67,72 @@ gh attestation verify net-dhcp-plugin-VERSION-linux-amd64.tar.gz \
   --repo claymore666/docker-net-dhcp
 ```
 
+## Rebuilding the binaries yourself
+
+A signature tells you *who* built an artifact. Rebuilding tells you
+*what* they built. The build here is reproducible — the same commit
+produces byte-identical binaries on any machine — so you can check that
+a published release contains the code in this repository, without
+trusting the release workflow at all.
+
+You need Docker with `buildx`, and the release tarball you already
+downloaded above.
+
+```sh
+# 1. The source, exactly as tagged.
+git clone https://github.com/claymore666/docker-net-dhcp
+cd docker-net-dhcp
+git checkout VERSION
+
+# 2. Build on a builder with no caches. --no-cache alone is not enough:
+#    the Dockerfile mounts BuildKit caches for Go's module and build
+#    caches, and those survive it. A fresh docker-container builder has
+#    neither.
+docker buildx create --name repro --driver docker-container
+docker buildx build --builder repro --no-cache --target builder \
+  --output type=local,dest=out .
+docker buildx rm repro
+
+# 3. Your binaries.
+sha256sum out/usr/local/src/docker-net-dhcp/bin/net-dhcp \
+          out/usr/local/src/docker-net-dhcp/bin/dhcp-handler
+
+# 4. The published ones, from the release tarball.
+tar -xzf net-dhcp-plugin-VERSION-linux-amd64.tar.gz
+sha256sum rootfs/usr/sbin/net-dhcp \
+          rootfs/usr/lib/net-dhcp/dhcp-handler
+```
+
+The two pairs of digests must match. For **v1.4.0** they are:
+
+```
+0ac36b87391c5bd5ea7a4b268183ca3fd86c686bf9b5d0505b97c4e0780d710b  net-dhcp
+0eb5b698698f2d8f4e997062c77f295726915c9ba31125db1800e602edfa4bf8  dhcp-handler
+```
+
+Note that step 4 needs no separate digest list from us: the binaries you
+are comparing against are the ones inside the signed tarball, and
+`checksums.txt` already covers that tarball. The chain closes on
+artifacts you have in hand.
+
+### What the determinism rests on
+
+None of this is accidental, and it is worth knowing what to suspect if a
+rebuild ever fails to match:
+
+- base images pinned by digest, not tag — both the Go builder and the
+  Alpine runtime;
+- Alpine packages pinned to exact versions;
+- a fixed build path inside the container, so no host path is embedded;
+- no timestamp, VCS revision or build host stamped into the binaries;
+- Go's own compiler output, which is deterministic given identical
+  inputs.
+
+A run of the `Reproducible build` workflow builds the same commit twice
+on two cold builders and fails if the binaries differ, so this is
+checked rather than asserted. It runs weekly, and on any pull request
+touching the Dockerfile or the Go module files.
+
 ## A note on `:latest`
 
 `:latest` exists and tracks the newest release — it is a retag, sharing
