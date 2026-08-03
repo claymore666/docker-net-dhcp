@@ -565,6 +565,19 @@ type Plugin struct {
 	// on restart until the disk recovers.
 	tombstoneWriteFailures atomic.Int32
 
+	// tombstonesConsumed counts the other side of that story: a
+	// CreateEndpoint that found a fresh tombstone and reused its MAC/IP,
+	// i.e. a container that got its address back across a recreate.
+	//
+	// Not healthy-affecting — it is the mechanism working, not failing.
+	// It exists because it is the only way to tell, from outside, WHICH
+	// path preserved an address after a restart: recovery re-adopting a
+	// live endpoint (recovered_ok) or the tombstone being replayed. The
+	// daemon-restart test could previously observe only the first, so
+	// "neither happened and the address survived anyway" was
+	// indistinguishable from success (#386).
+	tombstonesConsumed atomic.Int32
+
 	// leaseChanged counts renewals where dhcpcd returned a different
 	// IP than the manager last recorded. Container's
 	// NetworkSettings.IPAddress in `docker inspect` does NOT update
@@ -964,6 +977,10 @@ func (p *Plugin) consumeTombstone(networkID, hostname string) (mac, ipv4, ipv6 s
 	if err := saveTombstones(ts); err != nil {
 		log.WithError(err).Warn("Failed to persist tombstones after consume")
 	}
+	// Counted here rather than at the two call sites (network.go,
+	// parent_attached.go) so a third caller cannot forget it and quietly
+	// under-report.
+	p.tombstonesConsumed.Add(1)
 	return mac, ipv4, ipv6, true
 }
 

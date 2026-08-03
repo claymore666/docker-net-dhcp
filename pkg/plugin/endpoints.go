@@ -331,6 +331,16 @@ type HealthResponse struct {
 	// renewal client.
 	JoinAbortedEndpointLeft int32 `json:"join_aborted_endpoint_left"`
 	TombstoneWriteFailures  int32 `json:"tombstone_write_failures"`
+	// TombstonesConsumed counts CreateEndpoints that replayed a fresh
+	// tombstone and so handed a recreated container its previous
+	// MAC/IP. Not Healthy-affecting: this is the address-stability
+	// mechanism working.
+	//
+	// It is the counterpart to RecoveredOK. Between them they say which
+	// of the two paths preserved an address across a restart, which is
+	// what makes "the address survived, but via neither path" a
+	// detectable state rather than a silent pass (#386).
+	TombstonesConsumed int32 `json:"tombstones_consumed"`
 	// LeaseChanged counts renewals where dhcpcd returned a different
 	// IP than the manager last recorded. Not Healthy-affecting (it
 	// doesn't break Docker's view fatally — see plugin.go for the
@@ -428,6 +438,7 @@ func (p *Plugin) apiHealth(w http.ResponseWriter, r *http.Request) {
 		RestartLinkUpTimeouts:        p.restartLinkUpTimeouts.Load(),
 		JoinAbortedEndpointLeft:      p.joinAbortedEndpointLeft.Load(),
 		TombstoneWriteFailures:       tsFails,
+		TombstonesConsumed:           p.tombstonesConsumed.Load(),
 		LeaseChanged:                 p.leaseChanged.Load(),
 		LeasesObtained:               p.leasesObtained.Load(),
 		LeasesRenewed:                p.leasesRenewed.Load(),
