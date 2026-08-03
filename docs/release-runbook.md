@@ -405,6 +405,22 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
    an rc dry-run produces an equivalent **pre-release** with the same
    signed assets, which is how this path is exercised before the real
    tag (rc releases never move `:latest` and are marked pre-release).
+10b. **Refresh the reference digests in
+   [Verifying releases](verifying-releases.md).** The "Rebuilding the
+   binaries yourself" section ends with the expected `sha256sum` of
+   `net-dhcp` and `dhcp-handler`, prefixed by the version they belong
+   to. Those can only be known once the tag has built, so this is the
+   one documentation change that cannot happen before the tag:
+   ```sh
+   gh run download <release-run-id> -n <artifact>   # or from the release
+   sha256sum rootfs/usr/sbin/net-dhcp rootfs/usr/lib/net-dhcp/dhcp-handler
+   ```
+   Update the version name and both digests, and land it on `dev` as a
+   normal PR (it back-merges to `main` with the next release). Leaving
+   the previous version's digests in place is worse than having none:
+   a reader who rebuilds the current tag and compares against them sees
+   a mismatch and concludes the release does not match its source.
+   Nothing gates this today (#502).
 11. **Fast-forward `dev` to `main`** so the release commit (version
    pins, RELEASE_NOTES section) lands on `dev` too:
    ```sh
