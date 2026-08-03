@@ -1,0 +1,73 @@
+name: Issue state labels
+
+# Make an issue with merged work in `dev` distinguishable from an
+# untouched one (#482). Both read as plain OPEN today, and the milestone
+# counts them the same, because GitHub only builds its "Development"
+# link for PRs targeting the *default* branch — and every PR here
+# targets `dev`.
+#
+# scripts/sync-issue-state-labels.sh carries the reasoning and the
+# reference-parsing rules. This file is only about when it runs and with
+# what permissions.
+#
+# RECONCILER, NOT A TRANSITION HANDLER. Every run recomputes the desired
+# state of every open issue and adds *and removes* to match. That is why
+# a missed event costs nothing, why the backfill needs no separate
+# tooling, and why cancelling a run mid-apply is harmless.
+#
+# Security, because this is a public repository:
+#
+#   - `pull_request_target` is used WITHOUT a PR checkout. Nothing
+#     authored in a pull request is fetched, built, or executed; the
+#     checkout is the base branch, which is what that trigger already
+#     gives us. The only PR-derived input is the title, and the script
+#     reduces it to digits that must already match an open issue number.
+#   - The worst an attacker can do is cause an issue to gain or lose one
+#     of two state labels. No other label is touched, no content is
+#     written, and the token cannot do more (issues: write only).
+
+on:
+  push:
+    branches: [dev]
+  pull_request_target:
+    types: [opened, reopened, edited, closed]
+  # Backstop. Events are the fast path, but a reconciler that also runs
+  # on a clock cannot be left permanently wrong by a missed webhook, an
+  # API blip, or a run cancelled at the wrong moment.
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+
+concurrency:
+  group: issue-state-labels
+  cancel-in-progress: true
+
+jobs:
+  sync:
+    # Forks have neither the issues nor a writable token; running there
+    # would fail every scheduled tick on a fork with nothing to fix.
+    if: github.repository == 'claymore666/docker-net-dhcp'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      # fetch-depth: 0 gets the full history of the checked-out ref only.
+      # The script needs both branch tips to ask what is in dev and not
+      # yet on main, and it fails loudly rather than treating a missing
+      # ref as "nothing merged" — which would strip in-dev off every
+      # issue at once.
+      - name: Fetch both branch tips
+        run: git fetch --no-tags origin main dev
+
+      - name: Sync
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/sync-issue-state-labels.sh
