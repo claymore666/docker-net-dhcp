@@ -177,6 +177,108 @@ type SomethingElse struct{}
 EOF
 expect 2 "renamed HealthResponse cannot gate" "could not extract HealthResponse"
 
+# --- 5. a documented install creates the bind source it needs (#494) ----
+# The mirror of the rootfs rule. That one is about where a reader is sent
+# to LOOK; this one is about what must EXIST before the plugin starts.
+# The real bug: reference.md's install block created the directory and
+# its upgrade block, on the same page, did not — so the page as a whole
+# looked fine and the procedure a reader actually follows did not work.
+
+# Case 14 above deliberately renames the struct away to prove the gate
+# refuses rather than passes vacuously. Everything after it needs the
+# fixture put back, or these cases exit 2 on that check and never reach
+# the rule they are about.
+cat > "$PKG/endpoints.go" <<'EOF'
+package plugin
+
+type HealthResponse struct {
+	Healthy       bool  `json:"healthy"`
+	LeasesRenewed int32 `json:"leases_renewed"`
+	// A comment line inside the struct body.
+	NAKsReceived int32 `json:"naks_received"`
+}
+
+type DHCPNetworkOptions struct {
+	Mode   string `mapstructure:"mode"`
+	Bridge string
+}
+EOF
+
+# The shape that shipped: two procedures, only one of them correct.
+write_reference
+rm -f "$DOCS/guide.md"
+cat >> "$DOCS/reference.md" <<'EOF'
+
+```bash
+sudo mkdir -p /var/lib/net-dhcp
+docker plugin install ghcr.io/ns/docker-net-dhcp:v1.0.0
+```
+
+```bash
+docker plugin rm ghcr.io/ns/docker-net-dhcp:vOLD
+docker plugin install ghcr.io/ns/docker-net-dhcp:vNEW
+```
+EOF
+expect 1 "a second procedure missing the mkdir is caught" "installs the plugin without creating"
+
+# Per-block, not per-page: the same page passes once both procedures
+# create it. If this ever fails, the rule has quietly become per-page and
+# the case above is passing for the wrong reason.
+write_reference
+cat >> "$DOCS/reference.md" <<'EOF'
+
+```bash
+sudo mkdir -p /var/lib/net-dhcp
+docker plugin install ghcr.io/ns/docker-net-dhcp:v1.0.0
+```
+
+```bash
+docker plugin rm ghcr.io/ns/docker-net-dhcp:vOLD
+sudo mkdir -p /var/lib/net-dhcp
+docker plugin install ghcr.io/ns/docker-net-dhcp:vNEW
+```
+EOF
+expect 0 "each procedure is judged on its own" "docs-drift gate passed"
+
+# Prose is not a procedure. A page discussing `docker plugin install`
+# outside a fence must not be dragged in — otherwise the rule is
+# unsatisfiable on any page that merely names the command.
+write_reference
+rm -f "$DOCS/guide.md"
+cat > "$DOCS/guide.md" <<'EOF'
+# guide
+Privileges are granted interactively at `docker plugin install` time.
+EOF
+expect 0 "a prose mention is not a procedure" "docs-drift gate passed"
+
+# The opt-out that keeps this honest: a source no documented procedure
+# ever creates is daemon-owned (docker.sock) and not the operator's to
+# make. Such a source must not turn every install block red.
+write_reference
+rm -f "$DOCS/guide.md"
+cat > "$TMP/config-sock.json" <<'EOF'
+{
+  "env": [ { "name": "LOG_LEVEL", "value": "info", "settable": ["value"] } ],
+  "mounts": [
+    { "type": "bind", "source": "/var/run/docker.sock", "destination": "/run/docker.sock" }
+  ]
+}
+EOF
+cat >> "$DOCS/reference.md" <<'EOF'
+
+```bash
+docker plugin install ghcr.io/ns/docker-net-dhcp:v1.0.0
+```
+EOF
+out=$(MANIFEST="$TMP/config-sock.json" bash "$CHECK" "$PKG" "$DOCS" "$DOCS/reference.md" 2>&1)
+if [ $? -eq 0 ]; then
+    echo "PASS: a daemon-owned source is not the operator's to create"
+else
+    echo "FAIL: a daemon-owned source is not the operator's to create"
+    printf '%s\n' "$out" | sed 's/^/    /'
+    fail=1
+fi
+
 if [ "$fail" -ne 0 ]; then
     echo "check-docs-drift tests FAILED"
     exit 1

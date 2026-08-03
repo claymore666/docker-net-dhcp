@@ -191,6 +191,62 @@ for d in $mounts; do
     done
 done
 
+# ---- 5. a documented install creates the bind source it needs -----------
+# The mirror of rule 4. That one is about *destinations* — where a reader
+# is told to look. This one is about *sources* — what has to exist on the
+# host before the plugin will start at all.
+#
+# Docker does not create a missing bind source; `plugin enable` fails and
+# leaves the plugin disabled. So every procedure that runs
+# `docker plugin install` must create every bind source first, or it is a
+# procedure that does not work.
+#
+# Scoped to the fenced code block, not the page: a block is one
+# copy-pasteable procedure, and that is the unit a reader follows. It is
+# also what makes this catch the case it was written for (#494) — the
+# install block in reference.md creates the directory and the *upgrade*
+# block, further down the same page, did not.
+sources=$(python3 -c '
+import json, sys
+m = json.load(open(sys.argv[1]))
+for mnt in m.get("mounts", []):
+    if mnt.get("type") == "bind" and mnt.get("source"):
+        print(mnt["source"])
+' "$MANIFEST")
+
+for page in "${pages[@]}"; do
+    [ -f "$page" ] || continue
+    for src in $sources; do
+        # `/run/docker.sock` and friends are daemon-owned and always
+        # present; only paths the plugin itself owns are the operator's
+        # to create. The manifest cannot express that, so the discriminator
+        # is whether any documented procedure creates it anywhere.
+        grep -qF "mkdir -p $src" "$page" || continue
+        offenders=$(SRC="$src" python3 -c '
+import os, re, sys
+
+src = os.environ["SRC"]
+text = open(sys.argv[1], encoding="utf-8").read()
+# Fenced blocks only. A prose mention of `docker plugin install` is not a
+# procedure and must not be judged as one.
+for i, block in enumerate(re.findall(r"^```[^\n]*\n(.*?)^```", text, re.S | re.M)):
+    if "docker plugin install" not in block:
+        continue
+    if f"mkdir -p {src}" in block:
+        continue
+    first = next(l.strip() for l in block.splitlines()
+                 if "docker plugin install" in l)
+    print(f"{first}")
+' "$page")
+        if [ -n "$offenders" ]; then
+            while IFS= read -r line; do
+                echo "FAIL  $(basename "$page") installs the plugin without creating \`$src\`, which the manifest bind-mounts and Docker will not create — \`plugin enable\` fails and leaves it disabled: $line"
+                fail=1
+            done <<< "$offenders"
+        fi
+    done
+done
+
 if [ "$fail" -eq 0 ]; then
     echo "docs-drift gate passed"
 fi
