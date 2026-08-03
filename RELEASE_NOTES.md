@@ -61,6 +61,10 @@ re-accepting it.
 
 ## v1.5.0
 
+The release that stops a plugin upgrade from erasing what the plugin
+knows about your containers — and the one release you cannot install
+without running a command first.
+
 ### ⚠️ Breaking — run this before you install or upgrade
 
 ```bash
@@ -115,54 +119,83 @@ Two further consequences worth stating plainly:
   one is inside the rootfs again, and is wiped by the next upgrade
   exactly as before.
 
-### Why the mount is worth the precondition
+### What changes for you
 
-This is the release where plugin state stops dying on every upgrade.
+**You can read the plugin's log without digging into the plugin.**
+Every line now also goes to the plugin's stdout, which dockerd captures
+into the daemon log on the host:
 
-Before this version, `STATE_DIR` and the plugin log both lived inside
-the plugin's own rootfs. `docker plugin rm` — which every documented
-upgrade performs — took the tombstones, the `audit_log` ledger and the
-entire log history with it. The durability machinery reset itself on
-each upgrade, and the evidence of what it had been doing went at the
-same time. Two changes fix that (#440, #420).
+```bash
+sudo journalctl -u docker --since "2 hours ago" | grep net-dhcp
+```
 
-### Also user-visible
+Until now the only copy lived in the plugin's own rootfs, which
+`docker plugin rm` destroys — so the history disappeared at precisely
+the moment an upgrade went wrong and you wanted to read it (#420).
 
-- **The plugin log survives an upgrade** (#420). Previously every
-  upgrade destroyed all history at the moment you most wanted it.
-- **The `#408` restart wait is observable** (#422) — it had no counter
-  and no log line, so the fix's only evidence was that the symptom
-  stopped.
-- **The macvlan/ipvlan quick start now works** (#460). The driver
-  string it published could not have worked as written; the class of
-  error is now gated.
-- **Published artifacts identify as this fork** (#464). The Go module
-  path still named upstream, so binaries and SBOMs attributed
-  themselves to `devplayer0`.
-- **Reproducing the build is documented** (#456), with a gate that the
-  build stays reproducible. Every source file now carries an SPDX and
-  copyright header (#454).
-- **Documentation reconciled against reality** (#489, #494) — eight
-  divergences, including recipes that routed operators through a plugin
-  rootfs path the bind mount had made empty. Wrong paths that return no
-  data read exactly like a feature producing nothing.
+**From your next upgrade on, the plugin stops forgetting your
+containers.** Its record of which MAC and IP belonged to which endpoint
+now lives on the host at `/var/lib/net-dhcp` rather than inside the
+plugin. In practice: a container that comes back after an upgrade can
+be handed the address it had, and `audit_log=true` produces one
+continuous ledger instead of one that silently restarts at every
+install. (Starting with the upgrade *after* this one — see the caveats
+above.)
 
-### Under the hood — no behaviour change
+**Two new health counters** on `/Plugin.Health`:
+`restart_link_up_waited` and `restart_link_up_timeouts`. v1.4.0 fixed a
+`docker restart` that failed outright on macvlan and ipvlan by waiting
+for the interface to come up, but gave you no way to see whether that
+wait was happening on your host or how often it ran out of patience.
+Now `curl` the plugin socket and look (#422).
 
-Roughly two thirds of this release is work on the things that *measure*
-the plugin, and it is worth nothing to you directly. It is here because
-v1.4.0 was a correctness release delivered by removing timing crutches,
-and that play cannot be repeated if the instruments lie: a counter that
-reset unnoticed mid-run, a health floor that judged a tenth of a run,
-`join_attach_slow` reading zero and untestable.
+**The macvlan / ipvlan quick start in the docs actually works.** The
+`docker network create` line it published could not have worked as
+written — anyone who copy-pasted it got an error rather than a network.
+Fixed, and CI now rejects a broken driver string in the documentation
+instead of publishing it (#460).
 
-The integration suite now runs its own DHCP server with settable lease
-timers (#356) instead of one whose floor was two minutes, verifies the
-lease the server actually granted rather than the one the fixture asked
-for (#472), and the gate's wall clock went from 630s to 290s along the
-way. CI grew checks for the failure modes that had been silent: a job
-no runner picks up (#392), a push that produces no run at all (#418), a
-test weakened to make it pass (#413).
+**Published artifacts name the right project.** The Go module path
+still said `devplayer0`, so the binaries, the SBOM and the provenance
+attestation all attributed themselves upstream. If you scan
+dependencies or verify provenance, what you get back now matches the
+repository you pulled from (#464).
+
+**You can rebuild a release yourself and check it matches ours.** The
+binaries reproduce byte-for-byte from the tag; the procedure is in
+[Verifying releases](https://github.com/claymore666/docker-net-dhcp/blob/main/docs/verifying-releases.md#rebuilding-the-binaries-yourself),
+and CI fails if reproducibility breaks. Every source file also carries
+an SPDX licence and copyright header now (#456, #454).
+
+**The documentation stopped sending you to empty paths.** Several
+troubleshooting recipes read plugin state from inside the plugin
+rootfs — which this release makes empty, because the data moved to the
+host. A wrong path that returns nothing is indistinguishable from a
+feature that does nothing, so those recipes read as broken features
+(#489, #494).
+
+### What does not change
+
+No driver options added, removed or renamed. No change to how addresses
+are requested, renewed or released, in any of the three modes. Existing
+networks keep working against the tag they were created with. Apart
+from the new state-directory mount, the plugin asks for exactly the
+privileges it asked for in v1.4.0.
+
+### The part you cannot see
+
+About two thirds of this release went into the test suite and CI, with
+no effect on the running plugin at all. What it buys you is indirect
+but not nothing: the suite now runs a DHCP server whose lease timers it
+controls, and checks the lease that **server** recorded rather than the
+counter the plugin reports about itself.
+
+That distinction is why it was worth doing. Every one of the six
+defects v1.4.0 fixed was found by removing a timing crutch from a test,
+and several of them — including a `docker restart` that failed on every
+macvlan container — sat behind health counters reading green while the
+feature did nothing. A plugin's own opinion of its health is not
+evidence. Fewer defects of that shape should reach you.
 
 ## v1.4.0
 
