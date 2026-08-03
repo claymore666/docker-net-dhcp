@@ -207,13 +207,58 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
 
    Then still read everything user-visible top-to-bottom for anything
    the per-PR pass misses — `README.md` (feature list, driver-opt table,
-   examples), every file under `docs/` (including this runbook — process
-   changes during the cycle land here too), and the coverage table if
-   republished. Anything describing the previous version's behaviour,
-   options, or numbers gets updated on the release branch now.
-   Everything under `docs/` (plus `docs/index.md`, the site home) is
-   what the versioned documentation site publishes for this tag, so the
-   review *is* the site review — there's no separate wiki to reconcile.
+   examples), `GOVERNANCE.md` and `SECURITY.md`, every file under
+   `docs/` (including this runbook — process changes during the cycle
+   land here too), and the coverage table if republished. Anything
+   describing the previous version's behaviour, options, or numbers gets
+   updated on the release branch now. Everything under `docs/` (plus
+   `docs/index.md`, the site home) is what the versioned documentation
+   site publishes for this tag, so the review *is* the site review —
+   there's no separate wiki to reconcile.
+
+   **Read the pages whole, and aim at the ungated prose.** The
+   reference material defends itself: `check-option-docs.sh`,
+   `check-docs-drift.sh` and `check-version-pins.sh` gate every driver
+   option, health counter, plugin setting and image pin, so those tables
+   are the *least* likely place to find drift. What rots is everything
+   else — a walkthrough's shell snippet, a troubleshooting row, a
+   sentence in a Behaviour section, a hand-maintained list. The v1.5.0
+   pass found eight divergences (#489) and every one of them was in
+   ungated prose; none would have been caught by grepping for keywords.
+
+   **Some drift belongs to no milestone PR at all**, so the per-PR read
+   cannot reach it by construction. Check these directly:
+
+   - **Commands and paths that never existed or stopped working.**
+     `docker plugin logs` was in the README's bug-report checklist and
+     is not a Docker subcommand. Run the commands the docs tell a
+     reader to run.
+   - **Text invalidated by a feature in *this* release.** #440 mounted
+     `STATE_DIR` from the host and left two recipes still routing
+     operators through the plugin rootfs. A feature PR updates the
+     section it is about; it rarely finds the other page that quietly
+     depended on the old behaviour.
+   - **Syntax deprecated upstream.** Compose, Docker CLI and dhcpcd move
+     on their own schedule. `docker compose -f <snippet> config` prints
+     the deprecation warnings for anything in a Compose example.
+   - **Restated lists that live somewhere else.** Required CI checks,
+     registries, privileges. Prefer replacing the copy with a pointer at
+     the authority — the way step 5 defers to branch protection — over
+     updating a copy that will decay again.
+
+   **Verify each finding against the artifact, not from reasoning.**
+   Run the command, `config` the snippet, `ls` the path on the test
+   box, query the API (`gh api repos/.../branches/dev/protection`). A
+   confidently-argued divergence that turns out to be wrong costs more
+   than the one it replaced.
+
+   **A finding that is a class, not an incident, ends in a gate.** Same
+   rule as anywhere else in this project: if the same shape of staleness
+   can recur on the next mount, option or workflow change, add the check
+   rather than a promise to remember. The rootfs-path finding above
+   became a fourth rule in `check-docs-drift.sh`, deriving the
+   bind-mount destinations from `config.json`, so that class now fails
+   loudly.
 
    **The badge answers are documentation too.** `.bestpractices.json`
    at the repo root holds this project's OpenSSF Best Practices answers
