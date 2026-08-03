@@ -556,10 +556,17 @@ back into the Docker API to learn the mode or parent. That callback is
 what deadlocked the upstream plugin during `dockerd` startup, when it was
 asked to restore containers using its own networks.
 
-State survives enable/disable cycles and is reset by `docker plugin rm`
-or `docker plugin upgrade`. After an upgrade, existing networks fall back
-to the Docker API on first read, which back-fills the file — so by the
-second endpoint operation everything is served from disk again.
+State survives enable/disable cycles, and — since v1.5.0, because
+`STATE_DIR` is [bind-mounted from the host](#plugin-settings) — it
+survives `docker plugin rm` and `docker plugin upgrade` too. Before
+v1.5.0 it lived in the plugin rootfs and every upgrade reset it.
+
+The fall-back path is still there and still matters, because state can
+be absent for other reasons (a first install, a `STATE_DIR` repointed
+off the mount, a file removed by hand): on a cache miss, existing
+networks fall back to the Docker API on first read, which back-fills the
+file — so by the second endpoint operation everything is served from
+disk again.
 
 ---
 
@@ -680,10 +687,14 @@ already gone.
 
 ### Lease audit ledger (`audit_log=true`)
 
-`STATE_DIR/leases.jsonl` inside the plugin rootfs:
+`STATE_DIR/leases.jsonl`. Since v1.5.0 `STATE_DIR` is bind-mounted from
+the host, so read it there. The old path under the plugin rootfs is not
+where the ledger lands any more — the mount is applied in the plugin's
+own mount namespace, so following that path from the host finds a
+mount point at best and, more usually, nothing at all:
 
 ```bash
-sudo cat /var/lib/docker/plugins/*/rootfs/var/lib/net-dhcp/leases.jsonl | jq .
+sudo cat /var/lib/net-dhcp/leases.jsonl | jq .
 ```
 
 One JSON object per line; kinds `bound`, `renew`, `release`,
@@ -794,7 +805,7 @@ consumer-side:
 | Reservations don't stick on ipvlan | DHCP server keys on MAC only, ignores option 61 | Use `mode=macvlan`, or configure the server to honor client identifiers |
 | Container can't reach the Docker host (or vice versa) | macvlan/ipvlan kernel rule: children can't talk to the parent NIC's host IP | Bridge mode, or a second NIC — not a plugin setting |
 | `dhcp_timeouts` climbs on a healthy network, often just after containers start | `OUTAGE_GRACE` is set below the time a client needs to acquire its first lease, so ordinary start-up is being reported as an outage | Raise `OUTAGE_GRACE`, or unset both outage variables to return to the defaults. The plugin logs a warning at startup whenever either is overridden — check the log's first lines |
-| `healthy: false` on `/Plugin.Health` | Recovery or tombstone-write failure | See the field table above; restart affected containers; check disk space under the plugin rootfs |
+| `healthy: false` on `/Plugin.Health` | Recovery or tombstone-write failure | See the field table above; restart affected containers; for a tombstone-write failure check space and writability on the filesystem holding [`STATE_DIR`](#plugin-settings) — the host's `/var/lib/net-dhcp` since v1.5.0, the plugin rootfs before that |
 | Container came back on a **different IP** after a plugin upgrade | Recreating the network minted a new child MAC; the server keys the old lease to the old MAC and declines the re-request | Expected — see the callout under [Upgrade](#install-upgrade-uninstall). Pin the endpoint MAC and reserve it server-side to make the address survive future upgrades |
 | `/Plugin.Health` prints nothing and exits 0 | `curl` run without `sudo`; `/run/docker/plugins` is root-only and `-s` hides the error | Re-run with `sudo` — see [`/Plugin.Health`](#pluginhealth) |
 | `leases_renewed` still 0 and the log looks empty | Probably nothing — clean renewals log at `Debug`, and T1 may not have arrived | [Verify renewal properly](#verifying-that-renewal-works): read T1 from the lease, then re-check the counter |

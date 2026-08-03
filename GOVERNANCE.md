@@ -29,9 +29,12 @@ explicit goal — see "Becoming a maintainer" below.
 ## How decisions are made
 
 - All code changes land through a pull request against the `dev`
-  branch and must pass the required CI checks (unit tests,
-  `staticcheck`, the integration suite, `govulncheck`, `actionlint`)
-  before merge.
+  branch and must pass the required CI checks before merge. Branch
+  protection is what enforces them, and is therefore the authoritative
+  list; today it covers unit tests, `staticcheck`, the integration
+  suite, `govulncheck`, `actionlint`, CodeQL, and `attribution`.
+  Release pull requests into `main` additionally carry the per-package
+  coverage ratchet.
 - The maintainer reviews and merges. Substantial or user-visible
   changes are discussed in the relevant issue first.
 - Releases are deliberate, maintainer-initiated steps; merging a PR is

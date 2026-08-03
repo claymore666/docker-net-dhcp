@@ -151,6 +151,46 @@ for page in "$DOCS_DIR"/*.md; do
     done
 done
 
+# ---- 4. no rootfs route to a bind-mounted path --------------------------
+# A path the manifest bind-mounts is reachable at that path on the HOST.
+# It is not reachable by walking into the plugin rootfs: the mount is
+# applied in the plugin's own mount namespace, so from the host that
+# route finds a bare mount point, or nothing.
+#
+# This is the shape that rotted when #440 mounted STATE_DIR. Both the
+# audit-ledger recipe and a troubleshooting row kept sending operators
+# to `/var/lib/docker/plugins/*/rootfs/var/lib/net-dhcp`, which is empty
+# — and a wrong path that returns no data reads exactly like "the
+# feature produced nothing" (#489).
+#
+# Destinations come from the manifest, so a future mount is covered the
+# day it is added. Paths the manifest does NOT mount are untouched: the
+# plugin log genuinely does live at `…/rootfs/var/log/net-dhcp.log` and
+# must stay documented that way.
+mounts=$(python3 -c '
+import json, sys
+m = json.load(open(sys.argv[1]))
+for mnt in m.get("mounts", []):
+    if mnt.get("type") == "bind" and mnt.get("destination"):
+        print(mnt["destination"])
+' "$MANIFEST")
+
+pages=("$DOCS_DIR"/*.md)
+readme="$(dirname "$DOCS_DIR")/README.md"
+[ -f "$readme" ] && pages+=("$readme")
+
+for d in $mounts; do
+    for page in "${pages[@]}"; do
+        [ -f "$page" ] || continue
+        # The stale shape is literal: "rootfs" immediately followed by
+        # the mounted destination, whatever glob precedes it.
+        if grep -qF "rootfs$d" "$page"; then
+            echo "FAIL  $(basename "$page") routes a reader through the plugin rootfs to \`$d\`, which the manifest bind-mounts — read it on the host at \`$d\`"
+            fail=1
+        fi
+    done
+done
+
 if [ "$fail" -eq 0 ]; then
     echo "docs-drift gate passed"
 fi
