@@ -61,32 +61,50 @@ re-accepting it.
 
 ## v1.5.0
 
-The release where plugin state stops dying on every upgrade.
-
-Before this version, `STATE_DIR` and the plugin log both lived inside
-the plugin's own rootfs. `docker plugin rm` — which every documented
-upgrade performs — took the tombstones, the `audit_log` ledger and the
-entire log history with it. The durability machinery reset itself on
-each upgrade, and the evidence of what it had been doing went at the
-same time. Two changes fix that (#440, #420).
-
-### ⚠️ Breaking: create `/var/lib/net-dhcp` before upgrading
-
-v1.5.0 is the first release whose plugin manifest **bind-mounts
-`STATE_DIR` from the host**. That is what makes state survive, and it
-introduces a precondition earlier versions did not have: the directory
-must exist before the plugin is installed. Docker does not create a
-missing bind source — the install succeeds and `docker plugin enable`
-then fails, leaving you with no working plugin where one used to be.
+### ⚠️ Breaking — run this before you install or upgrade
 
 ```bash
 sudo mkdir -p /var/lib/net-dhcp
 ```
 
-Run that once, before `docker plugin install`, on any host upgrading
-from v1.4.0 or earlier. It is also a new privilege at the interactive
-grant prompt: the manifest now requests two bind mounts rather than
-one.
+v1.5.0 is the first release whose plugin manifest **bind-mounts
+`STATE_DIR` from the host**. That is what makes plugin state survive an
+upgrade, and it introduces a precondition earlier versions did not
+have: **the directory must exist before the plugin is installed.**
+Docker does not create a missing bind source. It is also a new
+privilege at the interactive grant prompt — the manifest now requests
+two bind mounts rather than one.
+
+**If you skip it**, `docker plugin install` pulls the plugin, fails to
+start it, and exits non-zero:
+
+```text
+Error response from daemon: failed to create task for container: ...
+error mounting "/var/lib/net-dhcp" to rootfs at "/var/lib/net-dhcp":
+bind mount source stat: no such file or directory
+```
+
+Nothing on disk is lost or corrupted, but you are left in a state the
+error does not explain, and **the obvious next move does not work**:
+
+| what you try | what Docker says |
+|---|---|
+| re-run the same `docker plugin install` | `plugin ... already exists` — no mention of the mount |
+| `docker network create -d ...` | `plugin ... found but disabled` — no mention of why |
+
+The install leaves the plugin **present but disabled**, so a second
+install refuses before it ever re-attempts the mount. Recover with:
+
+```bash
+sudo mkdir -p /var/lib/net-dhcp
+docker plugin enable ghcr.io/claymore666/docker-net-dhcp:v1.5.0
+```
+
+This bites hardest on the documented upgrade path, where the previous
+version has already been removed by the time the new one is installed:
+until you run those two lines the host has no working DHCP driver, with
+networks removed and containers stopped. Every sequence above was
+executed against Docker 26.1.5 rather than reasoned about (#494).
 
 Two further consequences worth stating plainly:
 
@@ -96,6 +114,17 @@ Two further consequences worth stating plainly:
 - **Repointing `STATE_DIR` opts out.** A path other than the mounted
   one is inside the rootfs again, and is wiped by the next upgrade
   exactly as before.
+
+### Why the mount is worth the precondition
+
+This is the release where plugin state stops dying on every upgrade.
+
+Before this version, `STATE_DIR` and the plugin log both lived inside
+the plugin's own rootfs. `docker plugin rm` — which every documented
+upgrade performs — took the tombstones, the `audit_log` ledger and the
+entire log history with it. The durability machinery reset itself on
+each upgrade, and the evidence of what it had been doing went at the
+same time. Two changes fix that (#440, #420).
 
 ### Also user-visible
 
