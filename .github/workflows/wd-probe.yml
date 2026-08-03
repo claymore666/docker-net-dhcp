@@ -14,6 +14,12 @@ name: Watchdog probe (temporary)
 # always() aggregator — on hosted runners only, so it costs the
 # self-hosted pool nothing.
 on:
+  # Scoped to this branch only. workflow_dispatch is not usable here:
+  # GitHub resolves it against the DEFAULT branch, so a workflow that
+  # exists only on a feature branch 404s.
+  push:
+    branches:
+      - fix/477-watchdog-cancels
   workflow_dispatch:
 
 permissions:
