@@ -280,6 +280,38 @@ fi
 D=$(fixture hop_broken "$HOP_SUBJECT" "$HOP_ISSUES" '[]' 'not json at all')
 plan "an unreadable pr_titles.json fails loudly" 1 "$D" ""
 
+# --- the workflow must run ONE version of this script (#490) -----------
+# Not a property of the script, but the property that decides which
+# script runs at all — so it is asserted here rather than left to a
+# comment. Without an explicit ref, cron checks out the default branch
+# (`main`) while a push checks out dev. Every run is a reconciler that
+# also REMOVES labels, so two versions of the parser undo each other on
+# a loop for the whole window between merging to dev and shipping.
+WF="$(cd "$(dirname "$0")/.." && pwd)/.github/workflows/issue-state-labels.yml"
+if [ ! -f "$WF" ]; then
+    echo "FAIL: the workflow is where this expects it ($WF)"
+    failures=$((failures + 1))
+else
+    # Comments stripped first: a `# ref: dev` must not satisfy this.
+    wf_body=$(sed 's/[[:space:]]*#.*$//' "$WF")
+    if printf '%s\n' "$wf_body" | grep -qE '^[[:space:]]+ref:[[:space:]]*dev[[:space:]]*$'; then
+        echo "PASS: the workflow pins its checkout to dev"
+    else
+        echo "FAIL: the workflow pins its checkout to dev"
+        echo "    without 'ref: dev', cron runs main's copy of the script"
+        failures=$((failures + 1))
+    fi
+
+    # The pin above is only meaningful if there is one checkout to pin.
+    checkouts=$(printf '%s\n' "$wf_body" | grep -cE 'uses:[[:space:]]*actions/checkout@')
+    if [ "$checkouts" -eq 1 ]; then
+        echo "PASS: the workflow has exactly one checkout"
+    else
+        echo "FAIL: the workflow has exactly one checkout (found $checkouts)"
+        failures=$((failures + 1))
+    fi
+fi
+
 # --- guard the guard ---------------------------------------------------
 # If --plan could not fail, every assertion above would be vacuous.
 D=$(fixture broken \
