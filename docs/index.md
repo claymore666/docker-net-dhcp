@@ -17,14 +17,39 @@ like any other machine. Bridge, macvlan, and ipvlan attachment modes.
     injection) with a coverage ratchet and supply-chain gates on release.
     The maintained image lives at `ghcr.io/claymore666/docker-net-dhcp`.
 
+!!! danger "⚠️ BREAKING CHANGE IN v1.5.0 — DO THIS FIRST ⚠️"
+
+    ```bash
+    sudo mkdir -p /var/lib/net-dhcp
+    ```
+
+    v1.5.0 is the first release that **bind-mounts its state directory
+    from the host** (so leases survive an upgrade), and **Docker will
+    not create a missing bind source.** Run the line above before
+    `docker plugin install`, on every host, new install or upgrade.
+
+    **If you skip it**, `docker plugin install` fails at start-up and
+    leaves the plugin **installed but disabled** — and re-running the
+    exact same install command then answers only
+    `plugin ... already exists`, which says nothing about the cause.
+    Recover with:
+
+    ```bash
+    sudo mkdir -p /var/lib/net-dhcp
+    docker plugin enable ghcr.io/claymore666/docker-net-dhcp:v1.5.0
+    ```
+
+    Nothing is lost or corrupted. Full detail:
+    [the reference](reference.md#install-upgrade-uninstall).
+
 ## Quick start
 
 Install the plugin:
 
 ```bash
-# One-time: the plugin persists lease state here, bind-mounted from
-# the host so it survives upgrades. Docker will not create it for you
-# and `plugin install` fails with a mount error if it is missing.
+# One-time, and REQUIRED — see the warning above. Docker will not
+# create this directory for you, and `plugin install` fails at
+# start-up without it.
 sudo mkdir -p /var/lib/net-dhcp
 docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.5.0
 ```
@@ -34,12 +59,6 @@ socket, a bind mount of the state directory above, and
 `CAP_NET_ADMIN`/`CAP_SYS_ADMIN`/`CAP_SYS_PTRACE` — grant them to
 proceed.
 (If you hit `invalid rootfs in image configuration`, upgrade Docker.)
-
-Skip the `mkdir` and the install fails at start-up, leaving the plugin
-installed but **disabled** — re-running the install then only reports
-`plugin ... already exists`. Create the directory and
-`docker plugin enable` the plugin that is already there; see
-[the reference](reference.md#install-upgrade-uninstall).
 
 Create a bridge-mode network and run a container on it (assumes you
 already have a host bridge `my-bridge` on your LAN — see

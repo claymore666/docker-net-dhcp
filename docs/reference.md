@@ -73,6 +73,19 @@ each group.
 
 ## Install, upgrade, uninstall
 
+> **⚠️ BREAKING CHANGE IN v1.5.0 — DO THIS FIRST ⚠️**
+>
+> ```bash
+> sudo mkdir -p /var/lib/net-dhcp
+> ```
+>
+> v1.5.0 is the first release that bind-mounts `STATE_DIR` from the
+> host, and **Docker will not create a missing bind source.** Run that
+> before `docker plugin install`, on every host, new install or
+> upgrade. Skip it and the install fails at start-up and leaves the
+> plugin **installed but disabled**, with a retry that reports only
+> `plugin ... already exists`. Recovery is two lines, just below.
+
 The plugin publishes to two registries; GHCR is primary:
 
 - `ghcr.io/claymore666/docker-net-dhcp:vX.Y.Z` (primary)
