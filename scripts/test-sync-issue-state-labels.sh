@@ -104,13 +104,21 @@ plan() {
     fi
 }
 
-# fixture DIR SUBJECTS ISSUES_JSON PRS_JSON
+# fixture DIR SUBJECTS ISSUES_JSON PRS_JSON [PR_TITLES_JSON]
+#
+# pr_titles.json is optional on purpose: absent means the one hop
+# contributed nothing, which is what makes it usable as a negative
+# control for every test that depends on the hop.
 fixture() {
     local dir="$TMP/$1"
+    rm -rf "$dir"
     mkdir -p "$dir"
     printf '%s\n' "$2" > "$dir/subjects.txt"
     printf '%s\n' "$3" > "$dir/issues.json"
     printf '%s\n' "$4" > "$dir/prs.json"
+    if [ "$#" -ge 5 ]; then
+        printf '%s\n' "$5" > "$dir/pr_titles.json"
+    fi
     echo "$dir"
 }
 
@@ -183,6 +191,94 @@ if grep -qE '^(ADD|REMOVE)' "$TMP/out"; then
 else
     echo "PASS: re-running changes nothing"
 fi
+
+# --- the one hop (#487) ------------------------------------------------
+# A squash subject that names only the PR. #472 shipped this way and read
+# as untouched: the subject is GitHub's default (the PR title as it stood
+# at merge) and is immutable afterwards, so the only way to reach the
+# issue is to ask what PR #900 was called.
+
+# unresolved NAME DIR WANT  ("-" for none)
+unresolved() {
+    local name="$1" dir="$2" want="$3" got
+    got=$(bash "$SYNC" --unresolved "$dir" 2>&1 | tr '\n' ' ' | sed 's/ *$//')
+    [ -z "$got" ] && got="-"
+    if [ "$got" = "$want" ]; then
+        echo "PASS: $name"
+    else
+        echo "FAIL: $name"
+        echo "    want [$want]  got [$got]"
+        failures=$((failures + 1))
+    fi
+}
+
+HOP_SUBJECT='test(harness): verify the lease kea granted (#900)'
+HOP_ISSUES='[{"number":100,"labels":[]}]'
+
+# The lookup list is what the online path spends API calls on. It must
+# hold the PR and nothing that is already an open issue.
+D=$(fixture unres "$HOP_SUBJECT"$'\nfeat: done (#100) (#901)' "$HOP_ISSUES" '[]')
+unresolved "an unresolved ref is listed for lookup" "$D" '900 901'
+
+D=$(fixture unres_none 'feat: done (#100)' "$HOP_ISSUES" '[]')
+unresolved "an open issue is never looked up" "$D" '-'
+
+# NEGATIVE CONTROL, and the reason the rest of this section means
+# anything: without the hop the issue is invisible. If this ever starts
+# planning ADD 100, the tests below stopped testing the hop.
+D=$(fixture hop_off "$HOP_SUBJECT" "$HOP_ISSUES" '[]')
+plan "without the hop the issue stays invisible" 0 "$D" 'SUMMARY'
+if grep -qE '^(ADD|REMOVE)' "$TMP/out"; then
+    echo "FAIL: the hop is what makes the case below pass"
+    failures=$((failures + 1))
+else
+    echo "PASS: the hop is what makes the case below pass"
+fi
+
+D=$(fixture hop_on "$HOP_SUBJECT" "$HOP_ISSUES" '[]' \
+    '{"900":"test(harness): verify the lease kea granted (#100)"}')
+plan "a PR title resolves the subject to its issue" 0 "$D" $'ADD\t100\tin-dev'
+
+# The intersection still classifies. A title may not introduce a number
+# the repo does not list as open, however it got there.
+D=$(fixture hop_closed "$HOP_SUBJECT" "$HOP_ISSUES" '[]' \
+    '{"900":"feat: a thing (#404)"}')
+plan "a title naming a closed issue adds nothing" 0 "$D" 'SUMMARY'
+if grep -qE '^(ADD|REMOVE)' "$TMP/out"; then
+    echo "FAIL: a title cannot introduce a number that is not open"
+    failures=$((failures + 1))
+else
+    echo "PASS: a title cannot introduce a number that is not open"
+fi
+
+# One hop, not a chase. A title naming another PR does not get looked up
+# in turn — otherwise a ref cycle would run until the API said stop.
+D=$(fixture hop_no_recurse "$HOP_SUBJECT" "$HOP_ISSUES" '[]' \
+    '{"900":"feat: a thing (#901)","901":"feat: a thing (#100)"}')
+plan "the hop does not recurse" 0 "$D" 'SUMMARY'
+if grep -q 'ADD' "$TMP/out"; then
+    echo "FAIL: only refs from the subjects are looked up"
+    failures=$((failures + 1))
+else
+    echo "PASS: only refs from the subjects are looked up"
+fi
+
+# Titles are attacker-controlled, and now they are read by the planner
+# rather than merely listed. Nothing but digits may survive.
+D=$(fixture hop_evil "$HOP_SUBJECT" "$HOP_ISSUES" '[]' \
+    '{"900":"evil: $(touch '"$TMP"'/pwned) (#100; rm -rf /)"}')
+plan "a hostile title contributes no refs" 0 "$D" 'SUMMARY'
+if [ -e "$TMP/pwned" ] || grep -qE '^(ADD|REMOVE)' "$TMP/out"; then
+    echo "FAIL: a hostile title is inert"
+    failures=$((failures + 1))
+else
+    echo "PASS: a hostile title is inert"
+fi
+
+# An unreadable answer must not degrade to "the hop found nothing" —
+# that is the silent-underlabelling failure this issue was about.
+D=$(fixture hop_broken "$HOP_SUBJECT" "$HOP_ISSUES" '[]' 'not json at all')
+plan "an unreadable pr_titles.json fails loudly" 1 "$D" ""
 
 # --- guard the guard ---------------------------------------------------
 # If --plan could not fail, every assertion above would be vacuous.
