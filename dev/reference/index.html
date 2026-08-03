@@ -2160,10 +2160,16 @@ either way.</p>
 back into the Docker API to learn the mode or parent. That callback is
 what deadlocked the upstream plugin during <code>dockerd</code> startup, when it was
 asked to restore containers using its own networks.</p>
-<p>State survives enable/disable cycles and is reset by <code>docker plugin rm</code>
-or <code>docker plugin upgrade</code>. After an upgrade, existing networks fall back
-to the Docker API on first read, which back-fills the file — so by the
-second endpoint operation everything is served from disk again.</p>
+<p>State survives enable/disable cycles, and — since v1.5.0, because
+<code>STATE_DIR</code> is <a href="#plugin-settings">bind-mounted from the host</a> — it
+survives <code>docker plugin rm</code> and <code>docker plugin upgrade</code> too. Before
+v1.5.0 it lived in the plugin rootfs and every upgrade reset it.</p>
+<p>The fall-back path is still there and still matters, because state can
+be absent for other reasons (a first install, a <code>STATE_DIR</code> repointed
+off the mount, a file removed by hand): on a cache miss, existing
+networks fall back to the Docker API on first read, which back-fills the
+file — so by the second endpoint operation everything is served from
+disk again.</p>
 <hr />
 <h2 id="observability">Observability<a class="headerlink" href="#observability" title="Permanent link">&para;</a></h2>
 <h3 id="pluginhealth"><code>/Plugin.Health</code><a class="headerlink" href="#pluginhealth" title="Permanent link">&para;</a></h3>
@@ -2377,8 +2383,12 @@ outlives the plugin:</p>
 the daemon log when you need history across an upgrade or the plugin is
 already gone.</p>
 <h3 id="lease-audit-ledger-audit_logtrue">Lease audit ledger (<code>audit_log=true</code>)<a class="headerlink" href="#lease-audit-ledger-audit_logtrue" title="Permanent link">&para;</a></h3>
-<p><code>STATE_DIR/leases.jsonl</code> inside the plugin rootfs:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a>sudo<span class="w"> </span>cat<span class="w"> </span>/var/lib/docker/plugins/*/rootfs/var/lib/net-dhcp/leases.jsonl<span class="w"> </span><span class="p">|</span><span class="w"> </span>jq<span class="w"> </span>.
+<p><code>STATE_DIR/leases.jsonl</code>. Since v1.5.0 <code>STATE_DIR</code> is bind-mounted from
+the host, so read it there. The old path under the plugin rootfs is not
+where the ledger lands any more — the mount is applied in the plugin's
+own mount namespace, so following that path from the host finds a
+mount point at best and, more usually, nothing at all:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a>sudo<span class="w"> </span>cat<span class="w"> </span>/var/lib/net-dhcp/leases.jsonl<span class="w"> </span><span class="p">|</span><span class="w"> </span>jq<span class="w"> </span>.
 </code></pre></div>
 <p>One JSON object per line; kinds <code>bound</code>, <code>renew</code>, <code>release</code>,
 <code>release_failed</code>. <code>release_failed</code> means the DHCPRELEASE may not have
@@ -2520,7 +2530,7 @@ consumer-side:</p>
 <tr>
 <td><code>healthy: false</code> on <code>/Plugin.Health</code></td>
 <td>Recovery or tombstone-write failure</td>
-<td>See the field table above; restart affected containers; check disk space under the plugin rootfs</td>
+<td>See the field table above; restart affected containers; for a tombstone-write failure check space and writability on the filesystem holding <a href="#plugin-settings"><code>STATE_DIR</code></a> — the host's <code>/var/lib/net-dhcp</code> since v1.5.0, the plugin rootfs before that</td>
 </tr>
 <tr>
 <td>Container came back on a <strong>different IP</strong> after a plugin upgrade</td>
