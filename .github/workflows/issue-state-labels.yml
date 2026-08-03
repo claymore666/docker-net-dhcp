@@ -57,6 +57,23 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # Pinned, and NOT redundant (#490). Without a ref, the script
+          # that runs is whichever branch the trigger points at: dev on a
+          # push, `main` on a schedule (cron only ever runs from the
+          # default branch), and the base branch on pull_request_target
+          # — `main` for a release PR. Every run is a full reconciler
+          # that also REMOVES labels, so two triggers running two
+          # versions of the parser undo each other on a loop for the
+          # whole window between a change merging to dev and shipping.
+          #
+          # The labels describe "merged into dev, not yet on main", so
+          # dev is the branch whose script should describe it.
+          #
+          # Safe under pull_request_target: `dev` is protected and
+          # maintainer-only, the same trust the `push: [dev]` trigger
+          # already grants this workflow with issues: write. Nothing
+          # authored in a pull request is checked out either way.
+          ref: dev
           fetch-depth: 0
 
       # fetch-depth: 0 gets the full history of the checked-out ref only.
