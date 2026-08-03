@@ -42,19 +42,37 @@
 # guessing; a subject that wants its issue counted can say so in the
 # plain form.
 #
-# The same limit is why an issue whose subject named only the PR gets no
-# label — #472 is the one case on `dev` at the time of writing (its
-# subject ends `... (#473)`, the PR, and never names the issue). The
-# labels are DERIVED, and every run reconciles: adding one by hand will
-# be undone on the next tick. If an issue that is genuinely done shows no
-# `in-dev`, the thing to fix is the commit subject, not the label.
-#
 # HOW A NUMBER IS CLASSIFIED. It isn't, and that is on purpose. Issues
 # and PRs share one number sequence, so a ref could be either. Rather
 # than spend an API call per ref asking which, the parsed refs are
 # INTERSECTED with the list of open issues. A PR number is not in that
 # list, and neither is an already-closed issue — both are exactly the
 # things we must not label. The intersection is the classifier.
+#
+# THE ONE HOP (#487). A subject sometimes names only the PR:
+#
+#   test(harness): verify the lease kea granted ... (#473)
+#
+# #473 is the PR; the issue is #472 and is never mentioned. The first
+# version of this script called that the contributor's problem and said
+# to fix the commit subject. That is not an available action — the
+# subject is GitHub's squash default, taken from the PR title *as it
+# stood when the merge button was pressed*, and it is immutable
+# afterwards. So the issue read as untouched forever, which is the exact
+# condition these labels exist to remove.
+#
+# Hence: every ref that survives parsing but is NOT an open issue is a
+# candidate PR number. Fetch those PRs' titles and run the same parser
+# over them, one hop, no recursion. The intersection with the open-issue
+# list still does the classifying, so nothing about the trust model
+# changes — a title can only ever contribute a number the repo already
+# lists as open.
+#
+# Not `closingIssuesReferences`, which would be the authoritative field:
+# PR bodies here say "Closes nothing on dev" by convention, because the
+# release PR does the closing on `main`. That field is empty for exactly
+# the PRs this needs to resolve. The title is the carrier the repo
+# actually uses.
 #
 # SECURITY. PR titles are attacker-controlled on a public repo. They are
 # never executed, never checked out, and are reduced to digits before
@@ -68,11 +86,17 @@
 #                                           the refs — offline, no gh
 #   sync-issue-state-labels.sh --plan DIR   print the plan for a directory
 #                                           of subjects.txt / issues.json /
-#                                           prs.json — offline, no gh
+#                                           prs.json, plus an optional
+#                                           pr_titles.json — offline, no gh
+#   sync-issue-state-labels.sh --unresolved DIR
+#                                           print the refs in subjects.txt
+#                                           that are not open issues, i.e.
+#                                           the PRs to look up — offline
 #
-# The two offline modes exist so the gate can exercise both halves that
-# can actually be wrong: the reference parser, and the reconciliation
-# (which label wins, and when a stale one is taken back off).
+# The offline modes exist so the gate can exercise every half that can
+# actually be wrong: the reference parser, the set of refs the hop will
+# spend API calls on, and the reconciliation (which label wins, and when
+# a stale one is taken back off).
 #
 # Exit: 0 clean, 1 something failed, 2 cannot run (bad usage/inputs).
 set -u
@@ -83,11 +107,11 @@ case "${1:-}" in
     "") ;;
     --dry-run) MODE="dry-run" ;;
     --parse) MODE="parse" ;;
-    --plan)
-        MODE="plan"
+    --plan|--unresolved)
+        MODE="${1#--}"
         PLAN_DIR="${2:-}"
         if [ -z "$PLAN_DIR" ] || [ ! -d "$PLAN_DIR" ]; then
-            echo "FAIL  --plan needs a directory holding subjects.txt, issues.json, prs.json" >&2
+            echo "FAIL  $1 needs a directory holding subjects.txt, issues.json, prs.json" >&2
             exit 2
         fi
         ;;
@@ -96,7 +120,7 @@ case "${1:-}" in
         exit 0
         ;;
     *)
-        echo "usage: $0 [--dry-run|--parse]" >&2
+        echo "usage: $0 [--dry-run|--parse|--plan DIR|--unresolved DIR]" >&2
         exit 2
         ;;
 esac
@@ -156,9 +180,10 @@ for line in sys.stdin:
     exit $?
 fi
 
-# The reconciliation, likewise in one place. Reads three files out of a
-# directory and emits the plan as ADD/REMOVE rows plus one SUMMARY row.
-PLANNER=$(cat <<'PY'
+# Everything both the planner and the unresolved-ref listing need: the
+# open issues, and the refs the dev-window subjects carry. Kept as one
+# fragment so the two modes cannot disagree about what a ref is.
+LOADER=$(cat <<'PY'
 import json
 import os
 
@@ -171,7 +196,33 @@ open_numbers = {i["number"] for i in issues}
 current = {i["number"]: {lbl["name"] for lbl in i["labels"]} for i in issues}
 
 with open(f"{tmp}/subjects.txt", encoding="utf-8") as fh:
-    in_dev = {n for line in fh for n in refs(line.rstrip("\n"))} & open_numbers
+    subject_refs = {n for line in fh for n in refs(line.rstrip("\n"))}
+
+# A ref that is not an open issue is either a PR or an issue already
+# closed. Both are things we must not label, and the first is the thing
+# worth one lookup — see THE ONE HOP above.
+unresolved = sorted(subject_refs - open_numbers)
+PY
+)
+
+# The reconciliation. Reads the loader's inputs plus an optional
+# pr_titles.json ({"473": "...title..."}) carrying the hop's answers, and
+# emits the plan as ADD/REMOVE rows plus one SUMMARY row.
+PLANNER=$(cat <<'PY'
+in_dev = subject_refs & open_numbers
+
+# The hop. A PR title contributes only through the same parser and the
+# same intersection, so it can never introduce a number the repo does
+# not already list as open. Absent file = no hop, which is what keeps
+# the offline fixtures that predate this honest.
+titles = {}
+titles_path = f"{tmp}/pr_titles.json"
+if os.path.exists(titles_path):
+    titles = {int(k): v for k, v in json.load(open(titles_path, encoding="utf-8")).items()}
+for number in unresolved:
+    title = titles.get(number)
+    if title:
+        in_dev |= set(refs(title)) & open_numbers
 
 prs = json.load(open(f"{tmp}/prs.json", encoding="utf-8"))
 has_pr = {n for pr in prs for n in refs(pr["title"])} & open_numbers
@@ -195,14 +246,26 @@ print(f"SUMMARY\t{len(open_numbers)}\t{len(in_dev)}\t{len(has_pr)}")
 PY
 )
 
-if [ "$MODE" = "plan" ]; then
+UNRESOLVED=$(cat <<'PY'
+for number in unresolved:
+    print(number)
+PY
+)
+
+if [ "$MODE" = "plan" ] || [ "$MODE" = "unresolved" ]; then
     for f in subjects.txt issues.json prs.json; do
         [ -f "$PLAN_DIR/$f" ] || {
             echo "FAIL  missing: $PLAN_DIR/$f" >&2
             exit 2
         }
     done
-    PARSER="$PARSER" TMP="$PLAN_DIR" python3 -c "$PLANNER"
+    if [ "$MODE" = "unresolved" ]; then
+        PARSER="$PARSER" TMP="$PLAN_DIR" python3 -c "$LOADER
+$UNRESOLVED"
+    else
+        PARSER="$PARSER" TMP="$PLAN_DIR" python3 -c "$LOADER
+$PLANNER"
+    fi
     exit $?
 fi
 
@@ -240,7 +303,52 @@ gh issue list --repo "$REPO" --state open --limit 1000 \
 gh pr list --repo "$REPO" --state open --base "$DEV_BRANCH" --limit 200 \
     --json number,title > "$TMP/prs.json" || exit 1
 
-if ! PARSER="$PARSER" TMP="$TMP" python3 -c "$PLANNER" > "$TMP/plan"; then
+# THE ONE HOP. Ask about exactly the refs that did not land on an open
+# issue — no paged listing to truncate, so a ref can never go unlooked-at
+# because it fell outside a fetch window. Most are PRs; the rest 404 as
+# closed issues, which is not an error, just an answer.
+if ! PARSER="$PARSER" TMP="$TMP" python3 -c "$LOADER
+$UNRESOLVED" > "$TMP/unresolved"; then
+    echo "FAIL  could not determine which refs need looking up" >&2
+    exit 1
+fi
+
+echo "{}" > "$TMP/pr_titles.json"
+looked_up=0
+resolved=0
+while read -r number; do
+    [ -n "$number" ] || continue
+    looked_up=$((looked_up + 1))
+    title=$(gh api "repos/$REPO/pulls/$number" --jq .title 2>/dev/null) || continue
+    [ -n "$title" ] || continue
+    resolved=$((resolved + 1))
+    printf '%s\n' "$title" > "$TMP/title.$number"
+done < "$TMP/unresolved"
+
+if [ "$resolved" -ne 0 ]; then
+    # Titles are attacker-controlled text; hand them to python as files
+    # rather than through a shell-expanded string.
+    if ! TMP="$TMP" python3 -c '
+import json
+import os
+
+tmp = os.environ["TMP"]
+titles = {}
+for name in os.listdir(tmp):
+    if name.startswith("title."):
+        with open(f"{tmp}/{name}", encoding="utf-8", errors="replace") as fh:
+            titles[name[len("title."):]] = fh.read().rstrip("\n")
+with open(f"{tmp}/pr_titles.json", "w", encoding="utf-8") as fh:
+    json.dump(titles, fh)
+'; then
+        echo "FAIL  could not collect the PR titles" >&2
+        exit 1
+    fi
+fi
+echo "one-hop lookups: $looked_up ref(s) not an open issue, $resolved resolved to a PR title"
+
+if ! PARSER="$PARSER" TMP="$TMP" python3 -c "$LOADER
+$PLANNER" > "$TMP/plan"; then
     echo "FAIL  could not build the plan" >&2
     exit 1
 fi
