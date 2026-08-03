@@ -36,7 +36,7 @@ Install the plugin:
 # the host so it survives upgrades. Docker will not create it for you
 # and `plugin install` fails with a mount error if it is missing.
 sudo mkdir -p /var/lib/net-dhcp
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.4.0
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.5.0
 ```
 
 It requests `host` networking, the host PID namespace, the Docker
@@ -49,7 +49,7 @@ already have a host bridge `my-bridge` on your LAN — see
 [bridge mode](docs/bridge-mode.md) for that one-time setup):
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.4.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.5.0 \
   --ipam-driver null -o bridge=my-bridge my-dhcp-net
 
 docker run --rm -ti --network my-dhcp-net alpine ip address show

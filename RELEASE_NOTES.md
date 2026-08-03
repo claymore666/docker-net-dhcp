@@ -59,6 +59,82 @@ assessment above is retained here as the audit trail. If it becomes
 reachable again the gate fails loudly rather than silently
 re-accepting it.
 
+## v1.5.0
+
+The release where plugin state stops dying on every upgrade.
+
+Before this version, `STATE_DIR` and the plugin log both lived inside
+the plugin's own rootfs. `docker plugin rm` — which every documented
+upgrade performs — took the tombstones, the `audit_log` ledger and the
+entire log history with it. The durability machinery reset itself on
+each upgrade, and the evidence of what it had been doing went at the
+same time. Two changes fix that (#440, #420).
+
+### ⚠️ Breaking: create `/var/lib/net-dhcp` before upgrading
+
+v1.5.0 is the first release whose plugin manifest **bind-mounts
+`STATE_DIR` from the host**. That is what makes state survive, and it
+introduces a precondition earlier versions did not have: the directory
+must exist before the plugin is installed. Docker does not create a
+missing bind source — the install succeeds and `docker plugin enable`
+then fails, leaving you with no working plugin where one used to be.
+
+```bash
+sudo mkdir -p /var/lib/net-dhcp
+```
+
+Run that once, before `docker plugin install`, on any host upgrading
+from v1.4.0 or earlier. It is also a new privilege at the interactive
+grant prompt: the manifest now requests two bind mounts rather than
+one.
+
+Two further consequences worth stating plainly:
+
+- **Durability starts here.** An upgrade *onto* v1.5.0 still begins
+  from nothing, because the old state was never on the host to carry
+  across. The benefit applies to upgrades *after* this one.
+- **Repointing `STATE_DIR` opts out.** A path other than the mounted
+  one is inside the rootfs again, and is wiped by the next upgrade
+  exactly as before.
+
+### Also user-visible
+
+- **The plugin log survives an upgrade** (#420). Previously every
+  upgrade destroyed all history at the moment you most wanted it.
+- **The `#408` restart wait is observable** (#422) — it had no counter
+  and no log line, so the fix's only evidence was that the symptom
+  stopped.
+- **The macvlan/ipvlan quick start now works** (#460). The driver
+  string it published could not have worked as written; the class of
+  error is now gated.
+- **Published artifacts identify as this fork** (#464). The Go module
+  path still named upstream, so binaries and SBOMs attributed
+  themselves to `devplayer0`.
+- **Reproducing the build is documented** (#456), with a gate that the
+  build stays reproducible. Every source file now carries an SPDX and
+  copyright header (#454).
+- **Documentation reconciled against reality** (#489, #494) — eight
+  divergences, including recipes that routed operators through a plugin
+  rootfs path the bind mount had made empty. Wrong paths that return no
+  data read exactly like a feature producing nothing.
+
+### Under the hood — no behaviour change
+
+Roughly two thirds of this release is work on the things that *measure*
+the plugin, and it is worth nothing to you directly. It is here because
+v1.4.0 was a correctness release delivered by removing timing crutches,
+and that play cannot be repeated if the instruments lie: a counter that
+reset unnoticed mid-run, a health floor that judged a tenth of a run,
+`join_attach_slow` reading zero and untestable.
+
+The integration suite now runs its own DHCP server with settable lease
+timers (#356) instead of one whose floor was two minutes, verifies the
+lease the server actually granted rather than the one the fixture asked
+for (#472), and the gate's wall clock went from 630s to 290s along the
+way. CI grew checks for the failure modes that had been silent: a job
+no runner picks up (#392), a push that produces no run at all (#418), a
+test weakened to make it pass (#413).
+
 ## v1.4.0
 
 A correctness release that started out as a speed release.
