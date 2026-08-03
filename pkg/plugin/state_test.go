@@ -156,6 +156,58 @@ func TestTombstones_RoundtripAndConsume(t *testing.T) {
 	}
 }
 
+// tombstones_consumed is what lets a restart test say WHICH path
+// preserved an address (#386), so it has to move exactly when a
+// tombstone is actually replayed — not when one is merely looked for.
+// A counter that over-counts would let the daemon-restart test report
+// the tombstone path for a run that took neither.
+func TestTombstones_ConsumedCounter(t *testing.T) {
+	withStateDir(t, t.TempDir())
+	p := newPluginForTest()
+
+	if got := p.tombstonesConsumed.Load(); got != 0 {
+		t.Fatalf("fresh plugin: tombstones_consumed=%d, want 0", got)
+	}
+
+	// A miss must not count. This is the case that matters: the
+	// daemon-restart test reads the counter as evidence the tombstone
+	// path ran, so a lookup that found nothing must leave it alone.
+	if _, _, _, ok := p.consumeTombstone("net-A", ""); ok {
+		t.Fatal("consumeTombstone on empty state returned ok=true")
+	}
+	if got := p.tombstonesConsumed.Load(); got != 0 {
+		t.Errorf("a lookup that found no tombstone counted anyway: tombstones_consumed=%d, want 0", got)
+	}
+
+	p.addTombstone("net-A", "", "02:42:ac:11:00:01", "192.168.0.166", "")
+	if _, _, _, ok := p.consumeTombstone("net-A", ""); !ok {
+		t.Fatal("consumeTombstone did not find the tombstone just added")
+	}
+	if got := p.tombstonesConsumed.Load(); got != 1 {
+		t.Errorf("after one replay: tombstones_consumed=%d, want 1", got)
+	}
+
+	// Consumed exactly once: the second lookup finds nothing, so the
+	// counter must not advance again.
+	if _, _, _, ok := p.consumeTombstone("net-A", ""); ok {
+		t.Fatal("tombstone was consumable twice")
+	}
+	if got := p.tombstonesConsumed.Load(); got != 1 {
+		t.Errorf("a second lookup double-counted: tombstones_consumed=%d, want 1", got)
+	}
+
+	// An ambiguous match (two candidates on one network) is declined by
+	// consumeTombstone, and a declined match is not a replay.
+	p.addTombstone("net-B", "", "aa:aa:aa:aa:aa:aa", "10.0.0.1", "")
+	p.addTombstone("net-B", "", "bb:bb:bb:bb:bb:bb", "10.0.0.2", "")
+	if _, _, _, ok := p.consumeTombstone("net-B", ""); ok {
+		t.Fatal("two candidates on one network should not resolve")
+	}
+	if got := p.tombstonesConsumed.Load(); got != 1 {
+		t.Errorf("an ambiguous match counted as a replay: tombstones_consumed=%d, want 1", got)
+	}
+}
+
 func TestTombstones_DifferentNetworksDoNotMix(t *testing.T) {
 	withStateDir(t, t.TempDir())
 	p := newPluginForTest()
