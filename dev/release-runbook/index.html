@@ -1384,10 +1384,25 @@ the <code>vX.Y.Z</code> milestone (the workflow leans on this for the
    <code>--clobber</code>). This satisfies OpenSSF Scorecard <strong>Signed-Releases</strong>;
    an rc dry-run produces an equivalent <strong>pre-release</strong> with the same
    signed assets, which is how this path is exercised before the real
-   tag (rc releases never move <code>:latest</code> and are marked pre-release).</li>
+   tag (rc releases never move <code>:latest</code> and are marked pre-release).
+10b. <strong>Refresh the reference digests in
+   <a href="../verifying-releases/">Verifying releases</a>.</strong> The "Rebuilding the
+   binaries yourself" section ends with the expected <code>sha256sum</code> of
+   <code>net-dhcp</code> and <code>dhcp-handler</code>, prefixed by the version they belong
+   to. Those can only be known once the tag has built, so this is the
+   one documentation change that cannot happen before the tag:
+   <div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>gh<span class="w"> </span>run<span class="w"> </span>download<span class="w"> </span>&lt;release-run-id&gt;<span class="w"> </span>-n<span class="w"> </span>&lt;artifact&gt;<span class="w">   </span><span class="c1"># or from the release</span>
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>sha256sum<span class="w"> </span>rootfs/usr/sbin/net-dhcp<span class="w"> </span>rootfs/usr/lib/net-dhcp/dhcp-handler
+</code></pre></div>
+   Update the version name and both digests, and land it on <code>dev</code> as a
+   normal PR (it back-merges to <code>main</code> with the next release). Leaving
+   the previous version's digests in place is worse than having none:
+   a reader who rebuilds the current tag and compares against them sees
+   a mismatch and concludes the release does not match its source.
+   Nothing gates this today (#502).</li>
 <li><strong>Fast-forward <code>dev</code> to <code>main</code></strong> so the release commit (version
    pins, RELEASE_NOTES section) lands on <code>dev</code> too:
-   <div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>git<span class="w"> </span>checkout<span class="w"> </span>dev<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>merge<span class="w"> </span>--ff-only<span class="w"> </span>main<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>push<span class="w"> </span>origin<span class="w"> </span>dev
+   <div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>git<span class="w"> </span>checkout<span class="w"> </span>dev<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>merge<span class="w"> </span>--ff-only<span class="w"> </span>main<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>push<span class="w"> </span>origin<span class="w"> </span>dev
 </code></pre></div>
    Skipping this leaves the next feature branch starting from the
    previous version's README/docs, and the next release PR has to
@@ -1396,11 +1411,11 @@ the <code>vX.Y.Z</code> milestone (the workflow leans on this for the
 <li><strong>Prune merged branches.</strong> The repo has <em>Automatically delete head
    branches</em> enabled, so merged PR head branches are removed on merge.
    Two things that setting doesn't cover, so clean them now:
-   <div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="c1"># the release branch is merged but was never a PR head:</span>
-<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>git<span class="w"> </span>push<span class="w"> </span>origin<span class="w"> </span>--delete<span class="w"> </span>release/vX.Y.Z
-<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="c1"># sweep for any other branch already merged into dev that lingered:</span>
-<a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a>git<span class="w"> </span>fetch<span class="w"> </span>--prune<span class="w"> </span>origin
-<a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a>git<span class="w"> </span>branch<span class="w"> </span>-r<span class="w"> </span>--merged<span class="w"> </span>origin/dev<span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span>-vE<span class="w"> </span><span class="s1">&#39;origin/(dev|main|HEAD)$&#39;</span>
+   <div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="c1"># the release branch is merged but was never a PR head:</span>
+<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>git<span class="w"> </span>push<span class="w"> </span>origin<span class="w"> </span>--delete<span class="w"> </span>release/vX.Y.Z
+<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="c1"># sweep for any other branch already merged into dev that lingered:</span>
+<a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a>git<span class="w"> </span>fetch<span class="w"> </span>--prune<span class="w"> </span>origin
+<a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a>git<span class="w"> </span>branch<span class="w"> </span>-r<span class="w"> </span>--merged<span class="w"> </span>origin/dev<span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span>-vE<span class="w"> </span><span class="s1">&#39;origin/(dev|main|HEAD)$&#39;</span>
 </code></pre></div>
    Delete what that sweep lists. Leave alone: open-PR branches,
    Dependabot branches (it recreates its own — close via the PR), and
