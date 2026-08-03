@@ -165,11 +165,18 @@ observation window with it.
 Both suites tee to `test/integration/logs/`. At the end of each, the
 health floor prints a verdict for the whole run:
 
-- `HEALTH FLOOR: clean — ... over the whole Ns run` — the plugin was up
-  throughout and nothing healthy-affecting moved.
+- `HEALTH FLOOR: clean — ... over the whole Ns run (plugin up Ms, ...)` —
+  the plugin was up throughout and nothing healthy-affecting moved. The
+  run's duration and the plugin's uptime are separate numbers and are
+  always printed as such: locally the plugin often long predates the
+  suite, and where the gap is large the line says by how much, because
+  the counters are cumulative and carry that earlier history too.
 - `HEALTH FLOOR: clean over the last Ns of an Ms run` — the plugin
   restarted mid-suite, so the counters only cover the tail. The
   whole-run fault census covers the rest.
+- `HEALTH FLOOR: clean ... over the plugin's Ns uptime` — the suite's own
+  duration could not be measured, so no coverage claim is made rather
+  than one being invented.
 - `PLUGIN FAULTS: N across the whole run` — read from the log rather
   than the counters, so it survives a restart. Any non-zero value fails
   the run.

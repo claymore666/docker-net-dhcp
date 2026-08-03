@@ -393,6 +393,15 @@ func FloorEvidence(logData []byte, tailLines int) string {
 // fixture setup between them is not free.
 const floorFullCoverageRatio = 0.98
 
+// floorPredatesRunSeconds is how far the plugin's uptime has to exceed
+// the suite before the line says so. In CI the plugin is installed for
+// the run, so the two are seconds apart and a note would be noise; on a
+// local run against a plugin that has been up for hours the counters
+// carry history the run did not produce, and a bare "clean" reads as a
+// verdict on the run alone. Five minutes separates those two worlds
+// without firing on ordinary install-then-run slack.
+const floorPredatesRunSeconds = 300
+
 // FloorCleanLine renders the floor's verdict when nothing was found.
 //
 // It exists because "clean" on its own was a lie worth fixing. The
@@ -407,14 +416,38 @@ const floorFullCoverageRatio = 0.98
 // suite is the wall-clock the suite took. A zero or negative value
 // means the caller could not measure it, and the qualifier is dropped
 // rather than guessed at.
+//
+// The number that follows "run" is always suiteSeconds. Uptime is a
+// different quantity and is labelled as one: the full-coverage branch
+// used to print uptime under the word "run", which on a local run
+// against a long-lived plugin read `the whole 15479s run` for a suite
+// that took 61 seconds (#474). Same failure as the one #385 fixed — a
+// quotable "clean" that does not carry what it looked at — arrived at
+// from the other side.
 func FloorCleanLine(h *HealthResponse, suiteSeconds float64) string {
 	if h == nil {
 		return ""
 	}
-	if suiteSeconds <= 0 || h.UptimeSeconds >= suiteSeconds*floorFullCoverageRatio {
+	if suiteSeconds <= 0 {
 		return fmt.Sprintf(
-			"HEALTH FLOOR: clean — no healthy-affecting counter moved over the whole %.0fs run (healthy=%v)\n",
+			"HEALTH FLOOR: clean — no healthy-affecting counter moved over the plugin's %.0fs uptime.\n"+
+				"  The suite's own duration was not measured, so how much of the run that spans is\n"+
+				"  unknown (healthy=%v).\n",
 			h.UptimeSeconds, h.Healthy)
+	}
+	if h.UptimeSeconds >= suiteSeconds*floorFullCoverageRatio {
+		line := fmt.Sprintf(
+			"HEALTH FLOOR: clean — no healthy-affecting counter moved over the whole %.0fs run\n"+
+				"  (plugin up %.0fs, so its counters span it; healthy=%v)\n",
+			suiteSeconds, h.UptimeSeconds, h.Healthy)
+		if h.UptimeSeconds-suiteSeconds > floorPredatesRunSeconds {
+			line += fmt.Sprintf(
+				"  The plugin predates this run by %.0fs, so these counters also carry history\n"+
+					"  from before it. Clean is therefore stronger than this run needed — but had\n"+
+					"  anything moved, it could not have been pinned on this run either.\n",
+				h.UptimeSeconds-suiteSeconds)
+		}
+		return line
 	}
 	return fmt.Sprintf(
 		"HEALTH FLOOR: clean over the last %.0fs of a %.0fs run — %.0f%% of it (healthy=%v).\n"+
