@@ -247,13 +247,15 @@ func inRange(ip, start, end string) bool {
 //
 // It does NOT assert that the address survives, and cannot: the
 // outage is only detectable once the lease has lapsed (the rise is at
-// lease+grace, expiry at 120s — true at any grace, since the grace is
-// added ON TOP of the lease), so by the time this test has proven an
-// outage the server's lease DB no longer holds the client's address. Worse, the plugin's own retain-through-outage behaviour
-// makes the old address look occupied: the container is still
-// answering on it, dnsmasq pings before offering a freshly allocated
-// address, and hands out a different one. Observed exactly that —
-// DISCOVER requesting .21, OFFER .22.
+// lease+grace — true at any grace, since the grace is added ON TOP of
+// the lease, and at any lease, since this test sets its own), so by the
+// time this test has proven an outage the server's lease DB no longer
+// holds the client's address. Worse, the plugin's own
+// retain-through-outage behaviour makes the old address look occupied:
+// the container is still answering on it, so a server that probes
+// before offering a freshly allocated address hands out a different
+// one. Observed exactly that against the pre-#356 dnsmasq fixture,
+// which pings — DISCOVER requesting .21, OFFER .22.
 //
 // The same-address contract is real, but it belongs to an outage the
 // lease OUTLIVES; TestFailure_ServerReturnsBeforeExpiry owns it.
@@ -508,11 +510,13 @@ func TestFailure_ServerReturnsBeforeExpiry(t *testing.T) {
 
 // TestFailure_LeaseRefusedOnRenewal: the site gets renumbered under a
 // live lease — the server comes back on a different subnet and the
-// container's held address is foreign to it. Two CI iterations showed
-// dnsmasq REFUSES such renewals *silently* in several shapes (out-of-
-// range REQUEST: ignored; address-taken REQUEST: ignored) rather than
-// emitting DHCPNAK, so this test asserts the *intended degraded-mode
-// semantics* rather than a specific wire message:
+// container's held address is foreign to it. Two CI iterations against
+// the pre-#356 dnsmasq fixture showed it REFUSES such renewals
+// *silently* in several shapes (out-of-range REQUEST: ignored;
+// address-taken REQUEST: ignored) rather than emitting DHCPNAK. Which
+// shape a given server picks is exactly what this test must not depend
+// on — so it asserts the *intended degraded-mode semantics* rather
+// than a specific wire message, and that holds on Kea unchanged:
 //   - the client re-acquires from the new subnet's pool without
 //     operator intervention; lease_changed records the move;
 //   - `docker inspect` keeps reporting the ORIGINAL address: libnetwork
