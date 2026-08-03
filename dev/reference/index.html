@@ -2263,6 +2263,11 @@ diagnosing a specific container from them alone is not.</p>
 <td>Failed tombstone saves (disk full, EROFS) — the next restart of some container will pick a fresh MAC/IP instead of inheriting.</td>
 </tr>
 <tr>
+<td><code>tombstones_consumed</code></td>
+<td>no</td>
+<td>(v1.5.0+) Recreated containers that got their previous MAC/IP back by replaying a fresh tombstone. Not a fault — this is the address-stability mechanism working. It is the counterpart to <code>recovered_ok</code>: after a restart an address is preserved either by recovery re-adopting a still-attached endpoint (<code>recovered_ok</code>) or by a tombstone being replayed (this). Reported so the two can be told apart, which is what makes "the address survived, but via neither path" observable rather than silent (#386).</td>
+</tr>
+<tr>
 <td><code>lease_changed</code></td>
 <td>no</td>
 <td>Renewals that returned a different IP than last recorded (v4+v6 aggregate). Docker's <code>inspect</code> view does <strong>not</strong> update on lease change (libnetwork has no in-place endpoint-IP swap), so this is the stale-inspect-window signal — alert on it for long-running containers.</td>
