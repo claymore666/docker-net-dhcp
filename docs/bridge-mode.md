@@ -294,9 +294,12 @@ services:
       - dhcp
 networks:
   dhcp:
-    external:
-      name: my-dhcp-net
+    external: true
+    name: my-dhcp-net
 ```
+
+(The older `external:` block with a nested `name:` is deprecated and
+warns on current Compose — the two-key form above is the supported one.)
 
 You can also have Compose manage the network itself (it is then deleted
 on `compose down`):

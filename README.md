@@ -105,9 +105,11 @@ version from the selector). The same content lives in `docs/` in the repo:
 - **Governance & code of conduct:** [GOVERNANCE.md](GOVERNANCE.md),
   [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
 
-This fork publishes semver-tagged images on GHCR
-(`ghcr.io/claymore666/docker-net-dhcp:vX.Y.Z`, `linux/amd64`; ARM via
-the build pipeline on request). See the
+This fork publishes semver-tagged images to two registries — GHCR is
+primary (`ghcr.io/claymore666/docker-net-dhcp:vX.Y.Z`, `linux/amd64`;
+ARM via the build pipeline on request), mirrored to Docker Hub as
+`claymore666/net-dhcp:vX.Y.Z`. Every snippet here uses the GHCR
+reference. See the
 [Releases page](https://github.com/claymore666/docker-net-dhcp/releases).
 
 ## Verifying releases
@@ -138,8 +140,12 @@ Contributions are welcome.
 
 - **Questions, bugs, and feature requests:** open a [GitHub issue](https://github.com/claymore666/docker-net-dhcp/issues).
   For bugs, please include the plugin version, your Docker version, the network
-  mode (`bridge`, `macvlan`, or `ipvlan`), and the relevant output from
-  `docker plugin logs <plugin>`.
+  mode (`bridge`, `macvlan`, or `ipvlan`), and the relevant plugin log.
+  Docker has no `plugin logs` subcommand — the log lives in two places
+  and [Plugin log](docs/reference.md#plugin-log) shows how to read
+  either: `sudo journalctl -u docker | grep net-dhcp` on a systemd host
+  (the copy that survives an upgrade), or the file inside the plugin
+  rootfs.
 - **Code changes:** open a pull request against the `dev` branch (not `main`).
   Requirements for an acceptable contribution:
   - **Coding standard:** Go code must be formatted with `gofmt` and pass
@@ -165,9 +171,12 @@ Contributions are welcome.
     description, code blocks and inline code are stripped before scanning,
     so you can quote a trailer to discuss one, as here; commit messages are
     scanned in full and have no such escape.
-  - **Green CI:** every PR must pass the required checks — unit tests,
-    `staticcheck`, the live integration suite, `govulncheck`, `actionlint`,
-    and `attribution` — before it can be merged. (Docs-only PRs — diffs touching nothing but
+  - **Green CI:** every PR must pass the repository's required checks
+    before it can be merged. Branch protection holds the authoritative
+    list and your PR's checks panel shows it applied to your branch — at
+    the time of writing it is unit tests, `staticcheck`, the live
+    integration suite, `govulncheck`, `actionlint`, CodeQL (`Analyze
+    (go)` and `Analyze (actions)`), and `attribution`. (Docs-only PRs — diffs touching nothing but
     `*.md` — satisfy the integration check via a fast in-job skip; any code,
     script, or workflow change runs the full suite.)
   - **Hosted cross-check:** a separate, *non-required* workflow runs the

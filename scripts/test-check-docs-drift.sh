@@ -37,7 +37,12 @@ type DHCPNetworkOptions struct {
 EOF
 
 cat > "$TMP/config.json" <<'EOF'
-{ "env": [ { "name": "LOG_LEVEL", "value": "info", "settable": ["value"] } ] }
+{
+  "env": [ { "name": "LOG_LEVEL", "value": "info", "settable": ["value"] } ],
+  "mounts": [
+    { "type": "bind", "source": "/var/lib/net-dhcp", "destination": "/var/lib/net-dhcp" }
+  ]
+}
 EOF
 
 write_reference() {
@@ -130,7 +135,38 @@ cat > "$DOCS/guide.md" <<'EOF'
 EOF
 expect 1 "waiver does not cover other names on the page" "documents \`LOG_LEVEL\`"
 
-# 10. A vanished struct is an explicit failure, not a vacuous pass —
+# 10. A page routing a reader through the plugin rootfs to a path the
+#     manifest bind-mounts — the shape that survived #440 in two places
+#     and sent operators to an empty directory (#489).
+write_reference
+rm -f "$DOCS/guide.md"
+printf '# guide\nsudo cat /var/lib/docker/plugins/*/rootfs/var/lib/net-dhcp/leases.jsonl\n' > "$DOCS/guide.md"
+expect 1 "rootfs route to a bind-mounted path fails" "routes a reader through the plugin rootfs"
+
+# 11. The reference is not exempt from that one — it is where the real
+#     stale path lived, so exempting it would gate everything but the
+#     page that drifted.
+write_reference
+rm -f "$DOCS/guide.md"
+printf 'sudo cat /var/lib/docker/plugins/*/rootfs/var/lib/net-dhcp/tombstones.json\n' >> "$DOCS/reference.md"
+expect 1 "the reference is scanned too" "reference.md routes a reader"
+
+# 12. A rootfs path to something the manifest does NOT mount is correct
+#     and must stay: the plugin log really does live there.
+write_reference
+rm -f "$DOCS/guide.md"
+printf '# guide\nsudo cat /var/lib/docker/plugins/*/rootfs/var/log/net-dhcp.log\n' > "$DOCS/guide.md"
+expect 0 "an unmounted rootfs path is left alone" "docs-drift gate passed"
+
+# 13. The README beside the docs tree is scanned as well — it carries
+#     operator-facing recipes too.
+write_reference
+rm -f "$DOCS/guide.md"
+printf '# readme\nsudo cat /var/lib/docker/plugins/*/rootfs/var/lib/net-dhcp/leases.jsonl\n' > "$TMP/README.md"
+expect 1 "a README beside docs/ is scanned" "README.md routes a reader"
+rm -f "$TMP/README.md"
+
+# 14. A vanished struct is an explicit failure, not a vacuous pass —
 #     the check must never go quiet because the code moved.
 write_reference
 rm -f "$DOCS/guide.md"
