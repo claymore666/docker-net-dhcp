@@ -40,9 +40,16 @@ docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.5.0
 ```
 
 It requests `host` networking, the host PID namespace, the Docker
-socket, and `CAP_NET_ADMIN`/`CAP_SYS_ADMIN`/`CAP_SYS_PTRACE` — grant
-them to proceed.
+socket, a bind mount of the state directory above, and
+`CAP_NET_ADMIN`/`CAP_SYS_ADMIN`/`CAP_SYS_PTRACE` — grant them to
+proceed.
 (If you hit `invalid rootfs in image configuration`, upgrade Docker.)
+
+Skip the `mkdir` and the install fails at start-up, leaving the plugin
+installed but **disabled** — re-running the install then only reports
+`plugin ... already exists`. Create the directory and
+`docker plugin enable` the plugin that is already there; see
+[the reference](docs/reference.md#install-upgrade-uninstall).
 
 Create a bridge-mode network and run a container on it (assumes you
 already have a host bridge `my-bridge` on your LAN — see

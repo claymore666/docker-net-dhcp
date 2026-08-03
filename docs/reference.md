@@ -83,11 +83,29 @@ for unattended):
 
 ```bash
 # One-time: the plugin persists lease state here, bind-mounted from
-# the host so it survives upgrades. Docker will not create it for you
-# and `plugin install` fails with a mount error if it is missing.
+# the host so it survives upgrades (v1.5.0+). Docker will not create it
+# for you, and `plugin install` fails with a mount error if it is
+# missing — see "If the directory is missing" below.
 sudo mkdir -p /var/lib/net-dhcp
 docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.5.0
 ```
+
+**If the directory is missing**, the install pulls the plugin, then
+fails to start it and exits non-zero with an OCI mount error naming
+`/var/lib/net-dhcp`. The plugin is left **installed but disabled**, and
+re-running the same install command answers `plugin ... already exists`
+without re-attempting the mount, while `docker network create` against
+it answers `plugin ... found but disabled`. Neither second error
+mentions the cause. Recover by creating the directory and enabling the
+plugin that is already there:
+
+```bash
+sudo mkdir -p /var/lib/net-dhcp
+docker plugin enable ghcr.io/claymore666/docker-net-dhcp:v1.5.0
+```
+
+Nothing is lost or corrupted by the failed install. (Behaviour verified
+against Docker 26.1.5, #494.)
 
 Privileges requested: `network: host`, host PID namespace, the Docker
 socket mount, a bind mount of `STATE_DIR` (v1.5.0+, see below),
@@ -125,8 +143,10 @@ docker plugin rm ghcr.io/claymore666/docker-net-dhcp:vOLD
 # Upgrading ONTO v1.5.0 or later from an earlier version: create the
 # bind source first. v1.5.0 is the release whose manifest started
 # mounting STATE_DIR from the host, and Docker will not create a missing
-# bind source — `plugin enable` fails, and you are left with no working
-# plugin where one used to be. Harmless to repeat on later upgrades.
+# bind source — the install below fails at start-up and leaves the
+# plugin disabled. vOLD is already gone at this point, so the host has
+# no working driver until you `docker plugin enable` the new one. See
+# "If the directory is missing" above. Harmless to repeat later.
 sudo mkdir -p /var/lib/net-dhcp
 docker plugin install ghcr.io/claymore666/docker-net-dhcp:vNEW
 # 4. Recreate networks against vNEW, restart containers
