@@ -923,31 +923,45 @@ integration suite (all three modes + DHCPv6, recovery, failure
 injection) with a coverage ratchet and supply-chain gates on release.
 The maintained image lives at <code>ghcr.io/claymore666/docker-net-dhcp</code>.</p>
 </div>
+<div class="admonition danger">
+<p class="admonition-title">⚠️ BREAKING CHANGE IN v1.5.0 — DO THIS FIRST ⚠️</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>sudo<span class="w"> </span>mkdir<span class="w"> </span>-p<span class="w"> </span>/var/lib/net-dhcp
+</code></pre></div>
+<p>v1.5.0 is the first release that <strong>bind-mounts its state directory
+from the host</strong> (so leases survive an upgrade), and <strong>Docker will
+not create a missing bind source.</strong> Run the line above before
+<code>docker plugin install</code>, on every host, new install or upgrade.</p>
+<p><strong>If you skip it</strong>, <code>docker plugin install</code> fails at start-up and
+leaves the plugin <strong>installed but disabled</strong> — and re-running the
+exact same install command then answers only
+<code>plugin ... already exists</code>, which says nothing about the cause.
+Recover with:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>sudo<span class="w"> </span>mkdir<span class="w"> </span>-p<span class="w"> </span>/var/lib/net-dhcp
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>docker<span class="w"> </span>plugin<span class="w"> </span><span class="nb">enable</span><span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v1.5.0
+</code></pre></div>
+<p>Nothing is lost or corrupted. Full detail:
+<a href="reference/#install-upgrade-uninstall">the reference</a>.</p>
+</div>
 <h2 id="quick-start">Quick start<a class="headerlink" href="#quick-start" title="Permanent link">&para;</a></h2>
 <p>Install the plugin:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="c1"># One-time: the plugin persists lease state here, bind-mounted from</span>
-<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="c1"># the host so it survives upgrades. Docker will not create it for you</span>
-<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="c1"># and `plugin install` fails with a mount error if it is missing.</span>
-<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>sudo<span class="w"> </span>mkdir<span class="w"> </span>-p<span class="w"> </span>/var/lib/net-dhcp
-<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>docker<span class="w"> </span>plugin<span class="w"> </span>install<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v1.5.0
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="c1"># One-time, and REQUIRED — see the warning above. Docker will not</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="c1"># create this directory for you, and `plugin install` fails at</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="c1"># start-up without it.</span>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>sudo<span class="w"> </span>mkdir<span class="w"> </span>-p<span class="w"> </span>/var/lib/net-dhcp
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>docker<span class="w"> </span>plugin<span class="w"> </span>install<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v1.5.0
 </code></pre></div>
 <p>It requests <code>host</code> networking, the host PID namespace, the Docker
 socket, a bind mount of the state directory above, and
 <code>CAP_NET_ADMIN</code>/<code>CAP_SYS_ADMIN</code>/<code>CAP_SYS_PTRACE</code> — grant them to
 proceed.
 (If you hit <code>invalid rootfs in image configuration</code>, upgrade Docker.)</p>
-<p>Skip the <code>mkdir</code> and the install fails at start-up, leaving the plugin
-installed but <strong>disabled</strong> — re-running the install then only reports
-<code>plugin ... already exists</code>. Create the directory and
-<code>docker plugin enable</code> the plugin that is already there; see
-<a href="reference/#install-upgrade-uninstall">the reference</a>.</p>
 <p>Create a bridge-mode network and run a container on it (assumes you
 already have a host bridge <code>my-bridge</code> on your LAN — see
 <a href="bridge-mode/">Bridge mode</a> for that one-time setup):</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>docker<span class="w"> </span>network<span class="w"> </span>create<span class="w"> </span>-d<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v1.5.0<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span>--ipam-driver<span class="w"> </span>null<span class="w"> </span>-o<span class="w"> </span><span class="nv">bridge</span><span class="o">=</span>my-bridge<span class="w"> </span>my-dhcp-net
-<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>
-<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>docker<span class="w"> </span>run<span class="w"> </span>--rm<span class="w"> </span>-ti<span class="w"> </span>--network<span class="w"> </span>my-dhcp-net<span class="w"> </span>alpine<span class="w"> </span>ip<span class="w"> </span>address<span class="w"> </span>show
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>docker<span class="w"> </span>network<span class="w"> </span>create<span class="w"> </span>-d<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v1.5.0<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">  </span>--ipam-driver<span class="w"> </span>null<span class="w"> </span>-o<span class="w"> </span><span class="nv">bridge</span><span class="o">=</span>my-bridge<span class="w"> </span>my-dhcp-net
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>docker<span class="w"> </span>run<span class="w"> </span>--rm<span class="w"> </span>-ti<span class="w"> </span>--network<span class="w"> </span>my-dhcp-net<span class="w"> </span>alpine<span class="w"> </span>ip<span class="w"> </span>address<span class="w"> </span>show
 </code></pre></div>
 <p>The <code>null</code> IPAM driver is <strong>mandatory</strong> — it stops Docker handing out
 addresses that would collide with the real LAN.</p>
@@ -1019,13 +1033,13 @@ The full, copy-pasteable procedure lives in
 <strong><a href="verifying-releases/">Verifying releases</a></strong>, and every
 <a href="https://github.com/claymore666/docker-net-dhcp/releases">GitHub Release</a>
 links to it. In brief (replace <code>VERSION</code>):</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="c1"># image signature</span>
-<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>cosign<span class="w"> </span>verify<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:VERSION<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">  </span>--certificate-identity-regexp<span class="w"> </span><span class="s1">&#39;^https://github.com/claymore666/docker-net-dhcp/.github/workflows/release.yml@&#39;</span><span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">  </span>--certificate-oidc-issuer<span class="w"> </span>https://token.actions.githubusercontent.com
-<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>
-<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="c1"># SLSA build provenance (image + release artifacts)</span>
-<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>gh<span class="w"> </span>attestation<span class="w"> </span>verify<span class="w"> </span>oci://ghcr.io/claymore666/docker-net-dhcp:VERSION<span class="w"> </span>--repo<span class="w"> </span>claymore666/docker-net-dhcp
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="c1"># image signature</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>cosign<span class="w"> </span>verify<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:VERSION<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="w">  </span>--certificate-identity-regexp<span class="w"> </span><span class="s1">&#39;^https://github.com/claymore666/docker-net-dhcp/.github/workflows/release.yml@&#39;</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="w">  </span>--certificate-oidc-issuer<span class="w"> </span>https://token.actions.githubusercontent.com
+<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>
+<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="c1"># SLSA build provenance (image + release artifacts)</span>
+<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a>gh<span class="w"> </span>attestation<span class="w"> </span>verify<span class="w"> </span>oci://ghcr.io/claymore666/docker-net-dhcp:VERSION<span class="w"> </span>--repo<span class="w"> </span>claymore666/docker-net-dhcp
 </code></pre></div>
 <h2 id="project-community">Project &amp; community<a class="headerlink" href="#project-community" title="Permanent link">&para;</a></h2>
 <ul>
