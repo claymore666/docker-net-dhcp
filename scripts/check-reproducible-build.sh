@@ -66,6 +66,22 @@ if [ -z "$list_a" ] || [ -z "$list_b" ]; then
     exit 2
 fi
 
+# The export is the whole builder filesystem, so the sweep above also
+# picks up the Go toolchain's own bin/. Comparing those is a bonus — the
+# base image is digest-pinned, so they are identical by construction —
+# but it means a non-empty result is NOT evidence that our binaries were
+# compared. Without this check, moving or renaming the build output
+# would leave the gate green over ten unrelated toolchain files.
+for want in net-dhcp dhcp-handler; do
+    if ! printf '%s\n' "$list_a" | grep -qE "(^|/)${want}\$"; then
+        echo "FAIL  '$want' is not among the binaries found in $A." >&2
+        echo "      The build output moved, or the build produced nothing." >&2
+        echo "      Found:" >&2
+        printf '%s\n' "$list_a" | sed 's/^/        /' >&2
+        exit 2
+    fi
+done
+
 if [ "$list_a" != "$list_b" ]; then
     echo "FAIL  the two builds produced different sets of binaries:" >&2
     diff <(printf '%s\n' "$list_a") <(printf '%s\n' "$list_b") >&2 || true
@@ -103,4 +119,6 @@ if [ "$differences" -ne 0 ]; then
     exit 1
 fi
 
-echo "Reproducible — $count binaries identical across two independent builds."
+echo "Reproducible — $count binaries identical across two independent builds,"
+echo "including net-dhcp and dhcp-handler. The count is above two because the"
+echo "exported builder stage carries the pinned Go toolchain's own bin/ as well."

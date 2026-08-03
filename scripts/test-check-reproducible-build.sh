@@ -71,6 +71,30 @@ mkdir -p "$E/usr/local/src/docker-net-dhcp/obj"
 printf 'noise' > "$E/usr/local/src/docker-net-dhcp/obj/scratch"
 check "files outside bin/ are ignored" 0 "2 binaries identical" "$A" "$E"
 
+# The export is the whole builder filesystem, so the sweep also finds
+# the Go toolchain's bin/. A non-empty comparison is therefore NOT
+# evidence that our binaries were in it — the real CI run compares 12
+# files, only two of which are ours. If the build output moved, ten
+# identical toolchain files would otherwise carry the gate to green.
+F="$TMP/toolchain-only-a"
+G="$TMP/toolchain-only-b"
+for d in "$F" "$G"; do
+    mkdir -p "$d/usr/local/go/bin"
+    printf 'go' > "$d/usr/local/go/bin/go"
+    printf 'gofmt' > "$d/usr/local/go/bin/gofmt"
+done
+check "our binaries missing entirely is a refusal, not a pass" 2 \
+    "'net-dhcp' is not among the binaries" "$F" "$G"
+
+H=$(mk h 'identical bytes')
+mv "$H/usr/local/src/docker-net-dhcp/bin/net-dhcp" \
+   "$H/usr/local/src/docker-net-dhcp/bin/net-dhcp-renamed"
+I=$(mk i 'identical bytes')
+mv "$I/usr/local/src/docker-net-dhcp/bin/net-dhcp" \
+   "$I/usr/local/src/docker-net-dhcp/bin/net-dhcp-renamed"
+check "a renamed output binary is a refusal on both sides" 2 \
+    "is not among the binaries" "$H" "$I"
+
 check "a missing directory is a usage error" 2 "not a directory" "$A" "$TMP/nope"
 check "no arguments is a usage error" 2 "usage" "" ""
 
