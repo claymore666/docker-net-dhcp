@@ -98,6 +98,7 @@ jobs:
           bash scripts/test-sync-issue-state-labels.sh
           bash scripts/test-check-license-headers.sh
           bash scripts/test-badge-sync.sh
+          bash scripts/test-check-reproducible-build.sh
 
       # Every driver-option key the code parses must be documented in
       # docs/reference.md — an undocumented option turns CI red (#132).
