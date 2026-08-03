@@ -652,6 +652,34 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#rebuilding-the-binaries-yourself" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Rebuilding the binaries yourself
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Rebuilding the binaries yourself">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#what-the-determinism-rests-on" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What the determinism rests on
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#a-note-on-latest" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -828,6 +856,34 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#rebuilding-the-binaries-yourself" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Rebuilding the binaries yourself
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Rebuilding the binaries yourself">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#what-the-determinism-rests-on" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What the determinism rests on
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#a-note-on-latest" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -936,6 +992,61 @@ anything else fails.</p>
 <a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>gh<span class="w"> </span>attestation<span class="w"> </span>verify<span class="w"> </span>net-dhcp-plugin-VERSION-linux-amd64.tar.gz<span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">  </span>--repo<span class="w"> </span>claymore666/docker-net-dhcp
 </code></pre></div>
+<h2 id="rebuilding-the-binaries-yourself">Rebuilding the binaries yourself<a class="headerlink" href="#rebuilding-the-binaries-yourself" title="Permanent link">&para;</a></h2>
+<p>A signature tells you <em>who</em> built an artifact. Rebuilding tells you
+<em>what</em> they built. The build here is reproducible — the same commit
+produces byte-identical binaries on any machine — so you can check that
+a published release contains the code in this repository, without
+trusting the release workflow at all.</p>
+<p>You need Docker with <code>buildx</code>, and the release tarball you already
+downloaded above.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="c1"># 1. The source, exactly as tagged.</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/claymore666/docker-net-dhcp
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="nb">cd</span><span class="w"> </span>docker-net-dhcp
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>git<span class="w"> </span>checkout<span class="w"> </span>VERSION
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>
+<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="c1"># 2. Build on a builder with no caches. --no-cache alone is not enough:</span>
+<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="c1">#    the Dockerfile mounts BuildKit caches for Go&#39;s module and build</span>
+<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="c1">#    caches, and those survive it. A fresh docker-container builder has</span>
+<a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a><span class="c1">#    neither.</span>
+<a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a>docker<span class="w"> </span>buildx<span class="w"> </span>create<span class="w"> </span>--name<span class="w"> </span>repro<span class="w"> </span>--driver<span class="w"> </span>docker-container
+<a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a>docker<span class="w"> </span>buildx<span class="w"> </span>build<span class="w"> </span>--builder<span class="w"> </span>repro<span class="w"> </span>--no-cache<span class="w"> </span>--target<span class="w"> </span>builder<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-3-12" name="__codelineno-3-12" href="#__codelineno-3-12"></a><span class="w">  </span>--output<span class="w"> </span><span class="nv">type</span><span class="o">=</span>local,dest<span class="o">=</span>out<span class="w"> </span>.
+<a id="__codelineno-3-13" name="__codelineno-3-13" href="#__codelineno-3-13"></a>docker<span class="w"> </span>buildx<span class="w"> </span>rm<span class="w"> </span>repro
+<a id="__codelineno-3-14" name="__codelineno-3-14" href="#__codelineno-3-14"></a>
+<a id="__codelineno-3-15" name="__codelineno-3-15" href="#__codelineno-3-15"></a><span class="c1"># 3. Your binaries.</span>
+<a id="__codelineno-3-16" name="__codelineno-3-16" href="#__codelineno-3-16"></a>sha256sum<span class="w"> </span>out/usr/local/src/docker-net-dhcp/bin/net-dhcp<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-3-17" name="__codelineno-3-17" href="#__codelineno-3-17"></a><span class="w">          </span>out/usr/local/src/docker-net-dhcp/bin/dhcp-handler
+<a id="__codelineno-3-18" name="__codelineno-3-18" href="#__codelineno-3-18"></a>
+<a id="__codelineno-3-19" name="__codelineno-3-19" href="#__codelineno-3-19"></a><span class="c1"># 4. The published ones, from the release tarball.</span>
+<a id="__codelineno-3-20" name="__codelineno-3-20" href="#__codelineno-3-20"></a>tar<span class="w"> </span>-xzf<span class="w"> </span>net-dhcp-plugin-VERSION-linux-amd64.tar.gz
+<a id="__codelineno-3-21" name="__codelineno-3-21" href="#__codelineno-3-21"></a>sha256sum<span class="w"> </span>rootfs/usr/sbin/net-dhcp<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-3-22" name="__codelineno-3-22" href="#__codelineno-3-22"></a><span class="w">          </span>rootfs/usr/lib/net-dhcp/dhcp-handler
+</code></pre></div>
+<p>The two pairs of digests must match. For <strong>v1.4.0</strong> they are:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>0ac36b87391c5bd5ea7a4b268183ca3fd86c686bf9b5d0505b97c4e0780d710b  net-dhcp
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>0eb5b698698f2d8f4e997062c77f295726915c9ba31125db1800e602edfa4bf8  dhcp-handler
+</code></pre></div>
+<p>Note that step 4 needs no separate digest list from us: the binaries you
+are comparing against are the ones inside the signed tarball, and
+<code>checksums.txt</code> already covers that tarball. The chain closes on
+artifacts you have in hand.</p>
+<h3 id="what-the-determinism-rests-on">What the determinism rests on<a class="headerlink" href="#what-the-determinism-rests-on" title="Permanent link">&para;</a></h3>
+<p>None of this is accidental, and it is worth knowing what to suspect if a
+rebuild ever fails to match:</p>
+<ul>
+<li>base images pinned by digest, not tag — both the Go builder and the
+  Alpine runtime;</li>
+<li>Alpine packages pinned to exact versions;</li>
+<li>a fixed build path inside the container, so no host path is embedded;</li>
+<li>no timestamp, VCS revision or build host stamped into the binaries;</li>
+<li>Go's own compiler output, which is deterministic given identical
+  inputs.</li>
+</ul>
+<p>A run of the <code>Reproducible build</code> workflow builds the same commit twice
+on two cold builders and fails if the binaries differ, so this is
+checked rather than asserted. It runs weekly, and on any pull request
+touching the Dockerfile or the Go module files.</p>
 <h2 id="a-note-on-latest">A note on <code>:latest</code><a class="headerlink" href="#a-note-on-latest" title="Permanent link">&para;</a></h2>
 <p><code>:latest</code> exists and tracks the newest release — it is a retag, sharing
 one digest and therefore one signature with the <code>vX.Y.Z</code> tag it points
