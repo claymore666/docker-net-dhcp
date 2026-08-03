@@ -1207,13 +1207,55 @@ the <code>vX.Y.Z</code> milestone (the workflow leans on this for the
    fixed in #234/#237) slipped through a memory-based read.</p>
 <p>Then still read everything user-visible top-to-bottom for anything
    the per-PR pass misses — <code>README.md</code> (feature list, driver-opt table,
-   examples), every file under <code>docs/</code> (including this runbook — process
-   changes during the cycle land here too), and the coverage table if
-   republished. Anything describing the previous version's behaviour,
-   options, or numbers gets updated on the release branch now.
-   Everything under <code>docs/</code> (plus <code>docs/index.md</code>, the site home) is
-   what the versioned documentation site publishes for this tag, so the
-   review <em>is</em> the site review — there's no separate wiki to reconcile.</p>
+   examples), <code>GOVERNANCE.md</code> and <code>SECURITY.md</code>, every file under
+   <code>docs/</code> (including this runbook — process changes during the cycle
+   land here too), and the coverage table if republished. Anything
+   describing the previous version's behaviour, options, or numbers gets
+   updated on the release branch now. Everything under <code>docs/</code> (plus
+   <code>docs/index.md</code>, the site home) is what the versioned documentation
+   site publishes for this tag, so the review <em>is</em> the site review —
+   there's no separate wiki to reconcile.</p>
+<p><strong>Read the pages whole, and aim at the ungated prose.</strong> The
+   reference material defends itself: <code>check-option-docs.sh</code>,
+   <code>check-docs-drift.sh</code> and <code>check-version-pins.sh</code> gate every driver
+   option, health counter, plugin setting and image pin, so those tables
+   are the <em>least</em> likely place to find drift. What rots is everything
+   else — a walkthrough's shell snippet, a troubleshooting row, a
+   sentence in a Behaviour section, a hand-maintained list. The v1.5.0
+   pass found eight divergences (#489) and every one of them was in
+   ungated prose; none would have been caught by grepping for keywords.</p>
+<p><strong>Some drift belongs to no milestone PR at all</strong>, so the per-PR read
+   cannot reach it by construction. Check these directly:</p>
+<ul>
+<li><strong>Commands and paths that never existed or stopped working.</strong>
+     <code>docker plugin logs</code> was in the README's bug-report checklist and
+     is not a Docker subcommand. Run the commands the docs tell a
+     reader to run.</li>
+<li><strong>Text invalidated by a feature in <em>this</em> release.</strong> #440 mounted
+     <code>STATE_DIR</code> from the host and left two recipes still routing
+     operators through the plugin rootfs. A feature PR updates the
+     section it is about; it rarely finds the other page that quietly
+     depended on the old behaviour.</li>
+<li><strong>Syntax deprecated upstream.</strong> Compose, Docker CLI and dhcpcd move
+     on their own schedule. <code>docker compose -f &lt;snippet&gt; config</code> prints
+     the deprecation warnings for anything in a Compose example.</li>
+<li><strong>Restated lists that live somewhere else.</strong> Required CI checks,
+     registries, privileges. Prefer replacing the copy with a pointer at
+     the authority — the way step 5 defers to branch protection — over
+     updating a copy that will decay again.</li>
+</ul>
+<p><strong>Verify each finding against the artifact, not from reasoning.</strong>
+   Run the command, <code>config</code> the snippet, <code>ls</code> the path on the test
+   box, query the API (<code>gh api repos/.../branches/dev/protection</code>). A
+   confidently-argued divergence that turns out to be wrong costs more
+   than the one it replaced.</p>
+<p><strong>A finding that is a class, not an incident, ends in a gate.</strong> Same
+   rule as anywhere else in this project: if the same shape of staleness
+   can recur on the next mount, option or workflow change, add the check
+   rather than a promise to remember. The rootfs-path finding above
+   became a fourth rule in <code>check-docs-drift.sh</code>, deriving the
+   bind-mount destinations from <code>config.json</code>, so that class now fails
+   loudly.</p>
 <p><strong>The badge answers are documentation too.</strong> <code>.bestpractices.json</code>
    at the repo root holds this project's OpenSSF Best Practices answers
    — one <code>&lt;criterion&gt;_status</code> plus a <code>&lt;criterion&gt;_justification</code> each —
