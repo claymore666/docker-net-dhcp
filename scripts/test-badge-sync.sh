@@ -109,6 +109,40 @@ check "missing file fails" 1 "$TMP/does-not-exist.json"
 # The real file is the point of the exercise; it must always validate.
 check "repository .bestpractices.json validates" 0 "$REAL"
 
+# --- the script stays read-only ---
+#
+# It used to have a --push mode. That mode never worked — wrong edit URL,
+# missing lock_version, misnamed CSRF parameter — and stayed broken across
+# releases while reading like working automation, precisely because no gate
+# can exercise a write path that needs a live human session cookie. Changes
+# are entered through the badge site's form; this script's job is to notice
+# when the live entry has drifted from the repository. Reintroducing a
+# writer would recreate a code path CI cannot test, so it fails here
+# instead of failing silently in a year.
+assert_absent() {
+    local label="$1" pattern="$2"
+    if grep -qE "$pattern" "$SYNC"; then
+        echo "FAIL: $label (matched /$pattern/ in badge-sync.py)"
+        failures=$((failures + 1))
+    else
+        echo "PASS: $label"
+    fi
+}
+
+assert_absent "no --push mode" '"--push"'
+assert_absent "no session-cookie handling" 'BADGEAPP_SESSION|_BadgeApp_session'
+assert_absent "no write methods" 'method="(PATCH|POST|PUT|DELETE)"'
+
+# A negative control: the assertion must be capable of failing. If the
+# pattern never matches anything, the three checks above are decoration.
+if grep -qE '"--diff"' "$SYNC"; then
+    echo "PASS: absence checks can see the file they read"
+else
+    echo "FAIL: absence checks matched nothing at all — wrong path or"
+    echo "      unreadable file, so the three checks above proved nothing"
+    failures=$((failures + 1))
+fi
+
 if [ "$failures" -ne 0 ]; then
     echo "$failures test(s) failed"
     exit 1

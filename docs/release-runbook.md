@@ -273,14 +273,24 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
 
    If a milestone PR earned or invalidated a criterion (a new gate, a
    document that now exists, a policy that changed), update the file on
-   the release branch. Pushing the reviewed file to the live badge entry
-   is a separate, deliberate step — see the script's header for the
-   session cookie it needs:
+   the release branch.
 
-   ```sh
-   export BADGEAPP_SESSION='<_BadgeApp_session cookie value>'
-   python3 scripts/badge-sync.py --push
-   ```
+   Getting the reviewed answers *onto* the live entry is manual and
+   deliberate: the badge site takes them through its own form, one
+   **criteria level** at a time —
+   `https://www.bestpractices.dev/en/projects/13229/{passing,silver,gold}/edit`,
+   in a browser you are signed into. A field only appears on the level
+   that owns it, and the level-less `/edit` URL 404s for everyone
+   including the owner, which is worth knowing before it looks like an
+   expired login.
+
+   **Hash-check every justification you paste before submitting** — the
+   procedure is in the script's header. Typing an answer by hand is how
+   this project once produced a 65-field divergence from its own
+   source of truth; the hash is what makes hand-entry safe. Then run
+   `--diff` again: it must report that the entry matches. That
+   confirmation is the point of the script, and the reason it has no
+   push mode.
 
    The work happens here, on the release branch. The rc dry-run (step 8)
    is the **enforcement gate**: the real `vX.Y.Z` tag does not ship

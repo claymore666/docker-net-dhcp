@@ -2,66 +2,88 @@
 # Copyright the docker-net-dhcp contributors.
 # SPDX-License-Identifier: GPL-3.0-only
 
-"""Sync .bestpractices.json to the OpenSSF Best Practices badge entry.
+"""Check .bestpractices.json against the OpenSSF Best Practices entry.
 
-The badge site (https://www.bestpractices.dev) is the source of truth for
-the badge itself, but its answers are hand-entered through a web form, so
-they drift from the repository silently. This script makes the repository
-the source of truth: `.bestpractices.json` holds the answers, review
-happens in a pull request, and this pushes the reviewed file to the
-project entry.
+The badge site (https://www.bestpractices.dev) renders the badge from its
+own copy of the answers, hand-entered through a web form, so that copy
+drifts from the repository silently. This script makes the repository the
+source of truth: `.bestpractices.json` holds the answers, review happens
+in a pull request, and this reports whenever the live entry has fallen
+behind.
 
-Two modes:
+Two modes, both read-only:
 
   --diff  (default)  Read the project's public JSON and print how the
                      live answers differ from the file. Needs no
                      credentials and no session.
-  --push             Apply the differing fields to the live entry.
-                     Needs a logged-in browser session cookie.
+  --check            Validate the answers file and exit. No network.
 
-Getting the cookie for --push: log in to https://www.bestpractices.dev
-with GitHub, open the browser devtools (Chrome: More Tools -> Developer
-Tools -> Application -> Cookies; Firefox: Web Developer -> Storage
-Inspector -> Cookies), copy the value of the `_BadgeApp_session` cookie,
-and export it:
+There is deliberately no push mode. See "Applying a change" below.
 
-    export BADGEAPP_SESSION='<value>'
+Applying a change
+-----------------
 
-The cookie is valid for 48 hours. It is read from the environment only —
-never pass it on the command line, where it lands in shell history.
+Edit `.bestpractices.json`, land it in a PR, then enter the changed
+fields once through the badge site's own form in a browser you are
+logged into. The form is **per criteria level** — a field only appears
+on the level that owns it, and there is no combined page:
 
-The push mechanics (fetch the edit form, scrape the Rails authenticity
-and CSRF tokens, PATCH the HTML endpoint with project[field] parameters)
-follow the upstream reference implementation, docs/best_practices_modify.py
-in ossf/best-practices-badge; the JSON API endpoint does not accept
-writes.
+    https://www.bestpractices.dev/en/projects/<id>/passing/edit
+    https://www.bestpractices.dev/en/projects/<id>/silver/edit
+    https://www.bestpractices.dev/en/projects/<id>/gold/edit
+
+(`/en/projects/<id>/edit` — no level — does not exist and 404s for
+everyone, including the project's owner.)
+
+**Verify the text you paste, do not trust that you pasted it right.**
+Typing an answer by hand is how this project produced a 65-field
+divergence from its own source of truth. Before submitting, hash each
+justification in the page and compare against the file:
+
+    # in the browser console, per field
+    await crypto.subtle.digest('SHA-256',
+        new TextEncoder().encode(
+            document.querySelector('textarea[name="project[<key>_justification]"]').value))
+      .then(h => [...new Uint8Array(h)].map(x => x.toString(16).padStart(2,'0')).join('').slice(0,16))
+
+    # locally, the value it must equal
+    python3 -c "import json,hashlib; d=json.load(open('.bestpractices.json')); \\
+        print(hashlib.sha256(d['<key>_justification'].encode()).hexdigest()[:16])"
+
+Then run `--diff` afterwards: it must report that the entry matches.
+That check is the whole point of this script — the form is where
+answers are entered, and this is how we find out when it has gone
+stale.
+
+Why there is no --push
+----------------------
+
+There was one. It never worked: it requested an edit URL that 404s,
+omitted the form's `project[lock_version]`, and posted the CSRF
+parameter under the wrong name. It stayed broken across releases while
+reading like working automation, because no gate can exercise it — a
+write path against a third-party Rails app needs a live human session
+cookie, so CI cannot test it and the next form change breaks it
+silently again. A verifier that runs on every check is worth more than
+an un-runnable writer.
 
 Usage:
     scripts/badge-sync.py                    # diff against the live entry
-    scripts/badge-sync.py --push             # apply the differences
+    scripts/badge-sync.py --check            # validate the file, no network
     scripts/badge-sync.py --project 13229    # override the project id
 """
 
 import argparse
 import json
-import os
-import re
 import sys
 import urllib.error
-import urllib.parse
 import urllib.request
 
 PRODUCTION_BASE_URL = "https://www.bestpractices.dev/"
-COOKIE_NAME = "_BadgeApp_session"
 DEFAULT_PROJECT_ID = 13229
 DEFAULT_ANSWERS = ".bestpractices.json"
 
 VALID_STATUSES = ("Met", "Unmet", "N/A", "?")
-
-AUTH_TOKEN_PATTERN = re.compile(
-    r'<input type="hidden" name="authenticity_token" value="([^"]+)"'
-)
-CSRF_TOKEN_PATTERN = re.compile(r'<meta name="csrf-token" content="([^"]+)"')
 
 
 def die(message):
@@ -167,77 +189,18 @@ def print_diff(diff, project_id):
             print("    %s" % key[: -len("_justification")])
 
 
-def get_tokens(base_url, project_id, session_cookie):
-    """Fetch the edit form and return (auth_token, csrf_token, cookie)."""
-    url = "%sen/projects/%d/edit" % (base_url, project_id)
-    request = urllib.request.Request(url)
-    request.add_header("Cookie", COOKIE_NAME + "=" + session_cookie)
-    try:
-        response = urllib.request.urlopen(request)
-    except urllib.error.HTTPError as exc:
-        die("could not open the edit page (HTTP %d) — is the session cookie "
-            "current? It expires after 48 hours." % exc.code)
-    if response.url != url:
-        die("redirected away from the edit page — the session cookie is not "
-            "logged in, or that account cannot edit project %d" % project_id)
-
-    html = response.read().decode("utf-8")
-    auth_match = AUTH_TOKEN_PATTERN.search(html)
-    csrf_match = CSRF_TOKEN_PATTERN.search(html)
-    if not auth_match or not csrf_match:
-        die("could not find the authenticity/CSRF tokens on the edit page — "
-            "the badge site's form markup may have changed")
-
-    # The site rotates the session cookie on each response; use the new one.
-    set_cookie = response.headers.get("Set-Cookie")
-    if set_cookie and set_cookie.startswith(COOKIE_NAME + "="):
-        session_cookie = set_cookie[len(COOKIE_NAME) + 1:].split(";", 1)[0]
-
-    return auth_match.group(1), csrf_match.group(1), session_cookie
-
-
-def push(base_url, project_id, updates, session_cookie):
-    """PATCH the project with updates; return True on success."""
-    auth_token, csrf_token, session_cookie = get_tokens(
-        base_url, project_id, session_cookie
-    )
-
-    url = "%sen/projects/%d" % (base_url, project_id)
-    form = {"project[" + key + "]": value for key, value in updates.items()}
-    form["authentication_token"] = auth_token
-    body = urllib.parse.urlencode(form).encode("utf-8")
-
-    request = urllib.request.Request(url, data=body, method="PATCH")
-    request.add_header("Cookie", COOKIE_NAME + "=" + session_cookie)
-    request.add_header("X-CSRF-Token", csrf_token)
-
-    try:
-        urllib.request.urlopen(request)
-    except urllib.error.HTTPError as exc:
-        # A 302 back to the project page is the success path: the form
-        # submission redirects. Anything else is a real failure.
-        if exc.code == 302 and exc.headers.get("Location") == url:
-            return True
-        die("PATCH failed with HTTP %d — no changes were saved" % exc.code)
-    # urlopen followed the redirect instead of raising; the update landed.
-    return True
-
-
 def main():
     parser = argparse.ArgumentParser(
-        description="Sync .bestpractices.json to the OpenSSF Best Practices "
-                    "badge entry.",
-        epilog="--push reads the session cookie from $BADGEAPP_SESSION.",
+        description="Check .bestpractices.json against the OpenSSF Best "
+                    "Practices badge entry.",
+        epilog="Read-only. Changes are entered through the badge site's own "
+               "form — see this script's header for the procedure, including "
+               "the hash check that keeps a hand-entered answer honest.",
     )
     parser.add_argument(
         "--diff",
         action="store_true",
         help="show how the live entry differs from the file (the default)",
-    )
-    parser.add_argument(
-        "--push",
-        action="store_true",
-        help="apply the differences (default is to only show them)",
     )
     parser.add_argument(
         "--project",
@@ -277,37 +240,7 @@ def main():
         die("--base-url must end in a slash")
 
     live = fetch_live(args.base_url, args.project)
-    diff = differences(answers, live)
-
-    if not args.push:
-        print_diff(diff, args.project)
-        return
-
-    if not diff:
-        print("nothing to push: project %d already matches %s"
-              % (args.project, args.file))
-        return
-
-    session_cookie = os.environ.get("BADGEAPP_SESSION", "").strip()
-    if not session_cookie:
-        die("BADGEAPP_SESSION is not set — see the header of this script for "
-            "how to obtain the session cookie")
-
-    print_diff(diff, args.project)
-    updates = {key: wanted for key, (_, wanted) in diff.items()}
-    print("\npushing %d field(s) to project %d ..." % (len(updates), args.project))
-    push(args.base_url, args.project, updates, session_cookie)
-
-    # Confirm against the site rather than trusting the response: read the
-    # public JSON back and report anything that did not take.
-    remaining = differences(answers, fetch_live(args.base_url, args.project))
-    if remaining:
-        print("\nwarning: %d field(s) still differ after the push:"
-              % len(remaining))
-        for key in sorted(remaining):
-            print("  %s" % key)
-        sys.exit(1)
-    print("done — project %d now matches %s" % (args.project, args.file))
+    print_diff(differences(answers, live), args.project)
 
 
 if __name__ == "__main__":
