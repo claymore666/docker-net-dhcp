@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright the docker-net-dhcp contributors.
+# SPDX-License-Identifier: GPL-3.0-only
+
 # Meta-test for integration-run-gate.sh (#311, #312). The failure mode
 # these guard against is the gate going too wide: a skip decision on a
 # diff or tree that actually needs the suite. Every ambiguous case must
@@ -122,6 +125,22 @@ got=$(PATH="" "$BASH_BIN" "$GATE" pr 99 2>/dev/null)
 check "pr mode fails open without curl/jq on PATH" run "$got"
 got=$(PATH="" "$BASH_BIN" "$GATE" push deadbeeftree 2>/dev/null)
 check "push mode fails open without curl/jq on PATH" run "$got"
+
+# dispatch mode: never skippable (#419). A manual run is a request for
+# fresh evidence about a tree that has NOT changed — three consecutive
+# green runs is this project's bar — so the duplicate-tree skip would
+# answer the wrong question, and answer it green in ~13 seconds having
+# executed nothing.
+got=$(bash "$GATE" dispatch 2>/dev/null)
+check "dispatch mode always runs" run "$got"
+
+# ...and it must not depend on the API or on curl/jq being present:
+# there is nothing to look up, so nothing can make it skip.
+got=$(PATH="" "$BASH_BIN" "$GATE" dispatch 2>/dev/null)
+check "dispatch mode runs even without curl/jq" run "$got"
+
+# The counterpart — push mode still taking the duplicate-tree skip — is
+# covered by "push mode skips an already-passed tree" above.
 
 # unknown mode / missing args -> run
 got=$(bash "$GATE" bogus 2>/dev/null)

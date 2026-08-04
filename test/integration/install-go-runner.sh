@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright the docker-net-dhcp contributors.
+# SPDX-License-Identifier: GPL-3.0-only
+
 # Install the Go toolchain for the integration-test runner.
 #
 # Run once, as root, on the self-hosted CI host. The integration

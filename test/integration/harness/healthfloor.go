@@ -1,3 +1,6 @@
+// Copyright the docker-net-dhcp contributors.
+// SPDX-License-Identifier: GPL-3.0-only
+
 // This file deliberately carries NO `//go:build integration` tag,
 // unlike the rest of the package. The floor decides whether a whole
 // integration run passes, so its logic has to be testable without a
@@ -21,7 +24,11 @@ import (
 // HealthResponse mirrors pkg/plugin.HealthResponse. Duplicated here
 // so the integration package doesn't pull on pkg/plugin internals.
 type HealthResponse struct {
-	Healthy         bool    `json:"healthy"`
+	Healthy bool `json:"healthy"`
+	// InstanceID identifies the plugin process that served this
+	// response. Two reads are comparable as a delta only when their
+	// InstanceID matches — see counterwindow.go and #405.
+	InstanceID      string  `json:"instance_id"`
 	UptimeSeconds   float64 `json:"uptime_seconds"`
 	ActiveEndpoints int     `json:"active_endpoints"`
 	PendingHints    int     `json:"pending_hints"`
@@ -45,15 +52,27 @@ type HealthResponse struct {
 	// healthy-affecting (#373).
 	JoinAbortedContainerGone int32 `json:"join_aborted_container_gone"`
 	JoinAttachSlow           int32 `json:"join_attach_slow"`
-	JoinAbortedEndpointLeft  int32 `json:"join_aborted_endpoint_left"`
-	TombstoneWriteFailures   int32 `json:"tombstone_write_failures"`
-	LeaseChanged             int32 `json:"lease_changed"`
-	LeasesObtained           int32 `json:"leases_obtained"`
-	LeasesRenewed            int32 `json:"leases_renewed"`
-	DHCPTimeouts             int32 `json:"dhcp_timeouts"`
-	LeaseReleaseFailures     int32 `json:"lease_release_failures"`
-	NAKsReceived             int32 `json:"naks_received"`
-	LedgerWriteFailures      int32 `json:"ledger_write_failures"`
+
+	// RestartLinkUpWaited / RestartLinkUpTimeouts mirror the #408
+	// window: a child link that came up only after the departing link
+	// released the address, and that wait outlasting its budget.
+	// Neither is healthy-affecting (#422).
+	RestartLinkUpWaited     int32 `json:"restart_link_up_waited"`
+	RestartLinkUpTimeouts   int32 `json:"restart_link_up_timeouts"`
+	JoinAbortedEndpointLeft int32 `json:"join_aborted_endpoint_left"`
+	TombstoneWriteFailures  int32 `json:"tombstone_write_failures"`
+	// TombstonesConsumed is RecoveredOK's counterpart: the address was
+	// preserved by replaying a tombstone rather than by recovery
+	// re-adopting a live endpoint. Together they let a restart test say
+	// WHICH path ran instead of only that the address survived (#386).
+	TombstonesConsumed   int32 `json:"tombstones_consumed"`
+	LeaseChanged         int32 `json:"lease_changed"`
+	LeasesObtained       int32 `json:"leases_obtained"`
+	LeasesRenewed        int32 `json:"leases_renewed"`
+	DHCPTimeouts         int32 `json:"dhcp_timeouts"`
+	LeaseReleaseFailures int32 `json:"lease_release_failures"`
+	NAKsReceived         int32 `json:"naks_received"`
+	LedgerWriteFailures  int32 `json:"ledger_write_failures"`
 	// OrphanedLeasesReleased / OrphanedLeaseReleaseFailures cover the
 	// lease acquired during endpoint setup when no persistent client
 	// ever took ownership of it — a container that exited before the
@@ -135,8 +154,8 @@ var floorCounters = []floorCounter{
 	{
 		name:  "recovery_failed",
 		read:  func(h *HealthResponse) int32 { return h.RecoveryFailed },
-		fatal: false,
-		why:   "NOT failing the run YET. Since #376 the benign case — the container had already exited when recovery reached it — is counted separately as recovery_aborted_container_gone, so this counter should now mean only a real fault: recovery could not rebuild a RUNNING container's renewal client. It stays non-fatal for a few runs so a benign path nobody anticipated shows up as a warning rather than as a mystery red. Promoting it (and collapsing this table into a plain healthy==true check) is the last step of the plan #376 belongs to",
+		fatal: true,
+		why:   "recovery could not rebuild a RUNNING container's renewal client, so its lease will not renew until it is restarted. Fatal since #421: both benign paths that used to land here are counted separately — recovery_deferred for a daemon that was not serving yet (#383) and recovery_aborted_container_gone for a container that had already exited (#376) — and the probation runs this counter was left non-fatal for came back clean",
 	},
 }
 
@@ -154,6 +173,11 @@ type FloorFinding struct {
 	// Absent marks a counter the plugin never published. Value is
 	// meaningless for these — the point is that there was no value.
 	Absent bool
+	// Flag marks a finding about the plugin's own boolean verdict
+	// rather than a counter. Value is meaningless for these too:
+	// printing "healthy=0" would invite a reader to look for a counter
+	// that does not exist.
+	Flag bool
 	// Fatal distinguishes "this counter only ever means a real plugin
 	// fault" from "this counter is known to also count benign events".
 	// A non-fatal finding is still printed — loudly — because it is a
@@ -163,6 +187,13 @@ type FloorFinding struct {
 	// someone staring at a red CI job, not someone with this file open.
 	Why string
 }
+
+// healthyKey is the plugin's own summary verdict on the payload.
+const healthyKey = "healthy"
+
+// healthyWhy explains a floor failure raised by the flag rather than by
+// a counter this file knows about.
+const healthyWhy = "the plugin reports itself unhealthy while every counter this suite checks is at zero. That means pkg/plugin's Healthy expression covers a condition floorCounters does not — a new healthy-affecting counter was added there without being mirrored here. The plugin's own verdict wins: it is the surface operators page on"
 
 // CheckHealthFloor answers "is the plugin OK?" for a whole run, which
 // is a different question from the per-test deltas in
@@ -220,6 +251,54 @@ func CheckHealthFloor(h *HealthResponse) []FloorFinding {
 				Value:   v,
 				Fatal:   c.fatal,
 				Why:     c.why,
+			})
+		}
+	}
+
+	// The plugin's own verdict, checked last and independently of the
+	// table above (#421).
+	//
+	// Every counter in floorCounters is now fatal, so in principle this
+	// is redundant — and that is exactly why it is worth having. The
+	// table is this suite's *mirror* of pkg/plugin's Healthy
+	// expression, and a mirror drifts: add a fourth healthy-affecting
+	// counter to the plugin and the floor keeps reporting clean until
+	// somebody remembers this file. Asking the plugin directly closes
+	// that gap without waiting for the mirror to catch up.
+	//
+	// Absence is judged too, on the same principle as the counters: a
+	// payload with no `healthy` key decodes to false, which would
+	// otherwise fail every run for the wrong reason and teach everyone
+	// to ignore it.
+	//
+	// Judged only on a decoded payload. `published == nil` means the
+	// value was built by hand rather than received, and there a false
+	// Healthy is the zero value of an unset bool, not the plugin saying
+	// anything — exactly the distinction the counters' own presence
+	// check already makes. Reading it as a verdict would fail every
+	// unit test that builds a literal to exercise one counter.
+	if h.published == nil {
+		return out
+	}
+	if _, ok := h.published[healthyKey]; !ok {
+		return append(out, FloorFinding{
+			Counter: healthyKey,
+			Absent:  true,
+			Flag:    true,
+			Fatal:   true,
+			Why:     absentWhy,
+		})
+	}
+	if !h.Healthy {
+		// Only reported when nothing else already explains it —
+		// otherwise every real fault would print twice, once named and
+		// once as this catch-all, and the named one is more useful.
+		if len(out) == 0 {
+			out = append(out, FloorFinding{
+				Counter: healthyKey,
+				Flag:    true,
+				Fatal:   true,
+				Why:     healthyWhy,
 			})
 		}
 	}
@@ -322,6 +401,15 @@ func FloorEvidence(logData []byte, tailLines int) string {
 // fixture setup between them is not free.
 const floorFullCoverageRatio = 0.98
 
+// floorPredatesRunSeconds is how far the plugin's uptime has to exceed
+// the suite before the line says so. In CI the plugin is installed for
+// the run, so the two are seconds apart and a note would be noise; on a
+// local run against a plugin that has been up for hours the counters
+// carry history the run did not produce, and a bare "clean" reads as a
+// verdict on the run alone. Five minutes separates those two worlds
+// without firing on ordinary install-then-run slack.
+const floorPredatesRunSeconds = 300
+
 // FloorCleanLine renders the floor's verdict when nothing was found.
 //
 // It exists because "clean" on its own was a lie worth fixing. The
@@ -336,14 +424,38 @@ const floorFullCoverageRatio = 0.98
 // suite is the wall-clock the suite took. A zero or negative value
 // means the caller could not measure it, and the qualifier is dropped
 // rather than guessed at.
+//
+// The number that follows "run" is always suiteSeconds. Uptime is a
+// different quantity and is labelled as one: the full-coverage branch
+// used to print uptime under the word "run", which on a local run
+// against a long-lived plugin read `the whole 15479s run` for a suite
+// that took 61 seconds (#474). Same failure as the one #385 fixed — a
+// quotable "clean" that does not carry what it looked at — arrived at
+// from the other side.
 func FloorCleanLine(h *HealthResponse, suiteSeconds float64) string {
 	if h == nil {
 		return ""
 	}
-	if suiteSeconds <= 0 || h.UptimeSeconds >= suiteSeconds*floorFullCoverageRatio {
+	if suiteSeconds <= 0 {
 		return fmt.Sprintf(
-			"HEALTH FLOOR: clean — no healthy-affecting counter moved over the whole %.0fs run (healthy=%v)\n",
+			"HEALTH FLOOR: clean — no healthy-affecting counter moved over the plugin's %.0fs uptime.\n"+
+				"  The suite's own duration was not measured, so how much of the run that spans is\n"+
+				"  unknown (healthy=%v).\n",
 			h.UptimeSeconds, h.Healthy)
+	}
+	if h.UptimeSeconds >= suiteSeconds*floorFullCoverageRatio {
+		line := fmt.Sprintf(
+			"HEALTH FLOOR: clean — no healthy-affecting counter moved over the whole %.0fs run\n"+
+				"  (plugin up %.0fs, so its counters span it; healthy=%v)\n",
+			suiteSeconds, h.UptimeSeconds, h.Healthy)
+		if h.UptimeSeconds-suiteSeconds > floorPredatesRunSeconds {
+			line += fmt.Sprintf(
+				"  The plugin predates this run by %.0fs, so these counters also carry history\n"+
+					"  from before it. Clean is therefore stronger than this run needed — but had\n"+
+					"  anything moved, it could not have been pinned on this run either.\n",
+				h.UptimeSeconds-suiteSeconds)
+		}
+		return line
 	}
 	return fmt.Sprintf(
 		"HEALTH FLOOR: clean over the last %.0fs of a %.0fs run — %.0f%% of it (healthy=%v).\n"+
@@ -396,6 +508,101 @@ func AttachGraceLine(h *HealthResponse, joinFailures int) string {
 // ("Container went away during attach"), so counting this message counts
 // exactly the faults, with no classification logic duplicated here.
 const joinStartFailureMsg = "Failed to start persistent DHCP client"
+
+// fatalFaultSignature ties a healthy-affecting counter to the log line
+// the plugin writes when it bumps it.
+//
+// The counters reset with the plugin process and the main suite recycles
+// it, so CheckHealthFloor's verdict has only ever covered the stretch
+// since the last restart — measured at 10% of one run and 12% of
+// another. The log does not reset, so counting these lines is the same
+// verdict over the whole run. That is the remaining half of #385; the
+// Join half already worked this way and is what caught three failures a
+// green run had hidden.
+//
+// join_start_failures is deliberately absent: it has its own census
+// because it groups by cause, and counting it here as well would double
+// it in the total.
+//
+// msg must be a substring of the line the plugin actually logs.
+// TestFatalFaultSignaturesExistInPluginSource pins every one of them
+// against pkg/plugin, because a reworded log line would silently turn
+// this census into a constant zero — an absent measurement wearing the
+// costume of a clean one.
+type fatalFaultSignature struct {
+	counter string
+	msg     string
+	why     string
+}
+
+var fatalFaultSignatures = []fatalFaultSignature{
+	{
+		counter: "tombstone_write_failures",
+		msg:     "Failed to persist tombstone",
+		why:     "a container restart may come back with a different MAC and IP",
+	},
+	{
+		counter: "recovery_failed",
+		msg:     "recovery: NetworkInspect failed",
+		why:     "a whole network was skipped during post-restart recovery",
+	},
+	{
+		counter: "recovery_failed",
+		msg:     "recovery: failed to load network options",
+		why:     "a whole network was skipped during post-restart recovery",
+	},
+	{
+		counter: "recovery_failed",
+		msg:     "recovery: endpoint recovery failed",
+		why:     "an endpoint was not rebuilt after a plugin restart",
+	},
+	{
+		counter: "recovery_failed",
+		msg:     "recovery: daemon never became reachable",
+		why:     "recovery gave up entirely; every previously-attached endpoint is running without renewal",
+	},
+	{
+		counter: "recovery_failed",
+		msg:     "recovery: persistent DHCP client Start failed",
+		why:     "a running container's lease will not renew until it is restarted",
+	},
+}
+
+// FaultCensus counts healthy-affecting faults other than Join failures
+// across the WHOLE plugin log, and returns the total plus a report.
+//
+// Returns 0 and "" for a clean run so it stays quiet, and so a caller
+// cannot mistake a report for a verdict — the count is the verdict.
+func FaultCensus(logData []byte) (int, string) {
+	lines := strings.Split(string(logData), "\n")
+	counts := map[string]int{}
+	whys := map[string]string{}
+	total := 0
+	for _, sig := range fatalFaultSignatures {
+		n := 0
+		for _, l := range lines {
+			if strings.Contains(l, sig.msg) {
+				n++
+			}
+		}
+		if n == 0 {
+			continue
+		}
+		total += n
+		counts[sig.counter+": "+sig.msg] = n
+		whys[sig.counter+": "+sig.msg] = sig.why
+	}
+	if total == 0 {
+		return 0, ""
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "PLUGIN FAULTS: %d across the whole run "+
+		"(the log spans the run; the counters only span the last plugin restart)\n", total)
+	for _, k := range sortedKeys(counts) {
+		fmt.Fprintf(&b, "  %3d  %s\n       %s\n", counts[k], k, whys[k])
+	}
+	return total, b.String()
+}
 
 // JoinFailureCensus counts Join-start failures across the WHOLE plugin
 // log, and summarises what they were.

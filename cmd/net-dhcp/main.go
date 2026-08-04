@@ -1,3 +1,6 @@
+// Copyright the docker-net-dhcp contributors.
+// SPDX-License-Identifier: GPL-3.0-only
+
 package main
 
 import (
@@ -13,7 +16,7 @@ import (
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
 
-	"github.com/devplayer0/docker-net-dhcp/pkg/plugin"
+	"github.com/claymore666/docker-net-dhcp/pkg/plugin"
 )
 
 var (
@@ -62,6 +65,26 @@ func main() {
 	}
 	log.SetLevel(level)
 
+	// The log goes to BOTH the file and stdout (#420).
+	//
+	// The file lives in the plugin rootfs, which Docker destroys and
+	// recreates on every `docker plugin rm` / `install` — the supported
+	// upgrade path. So every upgrade has silently taken all of
+	// production's plugin history with it, and the moment an operator
+	// most wants the previous version's log is exactly the moment it
+	// stops existing. That is not hypothetical: a v1.4.0 production
+	// upgrade lost the outgoing plugin's evidence before anyone could
+	// read it.
+	//
+	// Stdout of a managed plugin is captured by dockerd, so it lands in
+	// the daemon's log on the HOST filesystem and survives the plugin
+	// being removed entirely.
+	//
+	// Dropping -logfile instead was the obvious-looking fix and is
+	// wrong: harness.PluginLog reads that file, and it is the input to
+	// the whole-run fault census that gates every integration run
+	// (#385). Removing it would delete the suite's only instrument that
+	// spans a plugin restart. Both outputs, not one.
 	openLogFile := func() error {
 		f, err := os.OpenFile(*logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
 		if err != nil {
@@ -76,7 +99,9 @@ func main() {
 		// the old fd — making the Close below safe. A direct field
 		// assignment had both problems (data race on Out; a SIGHUP close
 		// could yank the fd out from under an in-flight write).
-		log.StandardLogger().SetOutput(f)
+		// Rebuilt on every reopen, so a SIGHUP rotation re-points the
+		// file half without ever detaching stdout.
+		log.StandardLogger().SetOutput(pluginLogWriter(os.Stdout, f))
 		logFileMu.Unlock()
 		if old != nil {
 			_ = old.Close()

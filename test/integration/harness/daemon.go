@@ -1,3 +1,6 @@
+// Copyright the docker-net-dhcp contributors.
+// SPDX-License-Identifier: GPL-3.0-only
+
 //go:build integration
 
 package harness
@@ -35,6 +38,26 @@ const dockerdPidFile = "/var/run/docker.pid"
 //     child* — NOT as the container's main process the way stock
 //     docker:dind does, where dockerd's exit tears down the whole
 //     environment. See issue #145 for the runner-image requirement.
+//
+// WHICH BRANCH CI RUNS (#386): always the containerized one. The
+// integration job runs inside a container on every runner, so
+// /run/systemd/system is never present. The systemd branch is not
+// merely rare here — it is structurally unreachable, and executes only
+// on a bare-metal systemd host, i.e. a manual local run.
+//
+// That asymmetry is smaller than it looks, and the reason belongs next
+// to the code rather than in an issue. Both branches shut dockerd down
+// GRACEFULLY: systemctl runs the unit's stop sequence, and the direct
+// branch SIGTERMs and then waits for the graceful drain below. A
+// graceful shutdown runs Leave on the endpoints, so both branches send
+// a restarted container back through CreateEndpoint + tombstone rather
+// than through recoverEndpoints. They differ in timing, not in which
+// plugin path runs — the systemd branch is not hiding a distinct one.
+//
+// The genuinely uncovered case is an ABRUPT daemon death (SIGKILL,
+// crash, power loss), where Leave never runs and recovery has to
+// re-adopt a live endpoint. Nothing in the suite does that; it is #480,
+// and it is not fixed by this comment.
 //
 // If neither environment is detected, or the supervisor fails to
 // produce a new daemon process (PID must change), the test fails

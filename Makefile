@@ -20,7 +20,7 @@ TEST_OUTAGE_TICK ?= 2s
 TEST_OUTAGE_GRACE ?= 10s
 
 .PHONY: all debug build create enable disable pdebug push clean integration-test \
-        integration-test-failure integration-cleanup \
+        integration-test-failure integration-test-shard integration-local integration-cleanup \
         build-cover plugin-cover create-cover enable-cover disable-cover
 
 all: create enable
@@ -44,6 +44,11 @@ plugin: plugin/rootfs config.json
 	cp config.json $@/
 
 create: plugin
+	# STATE_DIR is bind-mounted from the host (#440) and the daemon does
+	# not create a missing bind source — `plugin enable` fails outright.
+	# Doing it here means a local `make create` behaves like a documented
+	# install rather than failing with an OCI mount error.
+	mkdir -p /var/lib/net-dhcp
 	docker plugin rm -f $(PLUGIN_NAME):$(PLUGIN_TAG) || true
 	docker plugin create $(PLUGIN_NAME):$(PLUGIN_TAG) $<
 	docker plugin set $(PLUGIN_NAME):$(PLUGIN_TAG) LOG_LEVEL=trace \
@@ -83,6 +88,7 @@ plugin-cover: plugin-cover/rootfs config-cover.json
 	cp config-cover.json $@/config.json
 
 create-cover: plugin-cover
+	mkdir -p /var/lib/net-dhcp
 	docker plugin rm -f $(PLUGIN_NAME):$(PLUGIN_COVER_TAG) || true
 	docker plugin create $(PLUGIN_NAME):$(PLUGIN_COVER_TAG) $<
 	docker plugin set $(PLUGIN_NAME):$(PLUGIN_COVER_TAG) LOG_LEVEL=trace \
@@ -132,6 +138,38 @@ ITEST_FAILURE_LOG = $(ITEST_LOG_DIR)/integration-failure-$(ITEST_STAMP).log
 # outcome where you need the log. scripts/test-makefile-tee.sh pins
 # both properties.
 
+# The local entry point: rebuild, reinstall, then run both suites.
+#
+# `integration-test` and `integration-test-failure` deliberately do NOT
+# depend on a rebuild. CI calls them in sequence between its own build
+# and teardown steps, so a rebuild dependency there would reinstall the
+# plugin BETWEEN the two suites — recycling the plugin mid-run and
+# resetting the health floor's observation window with it.
+#
+# Locally there is no such build step, so `make integration-test` alone
+# tests whatever plugin happens to be installed. That is not a
+# hypothetical: validating #374, a stale installed build made two tests
+# fail for reasons unrelated to the branch AND made the health floor
+# report `clean` for counters that build could not publish at all —
+# wrong in both directions from one cause. Rebuilding reproduced CI
+# exactly.
+#
+# Orphan cleanup runs FIRST, mirroring the CI job's own first step.
+# Without it a single container left behind by an earlier aborted run
+# fails the next local run with a name conflict, days later, in a test
+# that has nothing to do with whatever is being changed — and it looks
+# exactly like a regression. That cost a diagnosis on #449: a container
+# created the previous afternoon, never started, failed
+# TestLifecycleMacvlan_GoldenPath on a branch that does not touch it.
+#
+# CI never sees this because its runners are ephemeral and it cleans
+# anyway; local runs are the only place the state accumulates, which is
+# precisely why the local target is the one that needs the step.
+#
+# Use this target locally; use the two suite targets directly only when
+# you have just built and installed the plugin yourself.
+integration-local: integration-cleanup create enable integration-test integration-test-failure
+
 # Live integration tests. Need privileges (CAP_NET_ADMIN, mount/netns
 # ops, bind UDP/67) and the plugin already enabled at PLUGIN_NAME:golang.
 # Locally: `sudo make integration-test`. CI: runner is root, target
@@ -164,6 +202,44 @@ integration-test:
 # part of that; the 2m lease floor is dnsmasq's and stays (#356). The
 # ceiling is kept sized for the shipped 30s/25s cadence so the suite
 # still passes against a default-configured plugin.
+# One shard of the main suite (#381). SHARD is 1-based, OF is the total.
+#
+# The partition comes from scripts/integration-shard.sh, which balances
+# by measured duration and — the property that actually matters —
+# guarantees every main-suite test lands in exactly one shard.
+# scripts/test-integration-shard.sh asserts that, because a test in no
+# shard is silently never run and the gate goes green having tested
+# less.
+integration-test-shard:
+	@if [ -z "$(SHARD)" ] || [ -z "$(OF)" ]; then \
+		echo "usage: make integration-test-shard SHARD=<1-based> OF=<total>"; \
+		exit 2; \
+	fi
+	@if [ "$$(id -u)" -ne 0 ]; then \
+		echo "integration-test-shard must run as root. Re-run with sudo."; \
+		exit 1; \
+	fi
+	@mkdir -p $(ITEST_LOG_DIR)
+	@sel=$$(bash scripts/integration-shard.sh $(SHARD) $(OF)) || exit 1; \
+	 echo "==> shard $(SHARD)/$(OF): $$(echo "$$sel" | tr '|' '\n' | wc -l) test(s)"; \
+	 echo "==> test output: $(ITEST_LOG_DIR)/main-shard$(SHARD).log"; \
+	 bash -o pipefail -c "go test -v -tags integration -count=1 -timeout 20m \
+	     -run '$$sel' ./test/integration/ 2>&1 | tee $(ITEST_LOG_DIR)/main-shard$(SHARD).log"
+	# The harness package, unfiltered, in EVERY shard.
+	#
+	# Three of its test files carry the integration build tag, and today
+	# they run only because the unsharded main target globs
+	# ./test/integration/... with a -skip. A -run regex naming suite
+	# tests matches none of them, so sharding without this line would
+	# drop an entire package — including the guards that stop a
+	# hand-rolled counter read (#405) and a bare HostConfig literal
+	# (#367) creeping back. Silently, with the gate still green.
+	#
+	# Run in every shard rather than one: it needs no fixture and takes
+	# milliseconds, and "which shard owns it" is one more thing to get
+	# wrong later.
+	@go test -tags integration -count=1 ./test/integration/harness/
+
 integration-test-failure:
 	@if [ "$$(id -u)" -ne 0 ]; then \
 		echo "integration-test-failure must run as root. Re-run with sudo."; \

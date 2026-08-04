@@ -1,3 +1,6 @@
+// Copyright the docker-net-dhcp contributors.
+// SPDX-License-Identifier: GPL-3.0-only
+
 package main
 
 import (
@@ -6,7 +9,7 @@ import (
 
 	log "github.com/sirupsen/logrus"
 
-	"github.com/devplayer0/docker-net-dhcp/pkg/dhcp"
+	"github.com/claymore666/docker-net-dhcp/pkg/dhcp"
 )
 
 // main is a thin shim invoked by dhcpcd as its --script hook on every

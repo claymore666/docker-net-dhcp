@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright the docker-net-dhcp contributors.
+# SPDX-License-Identifier: GPL-3.0-only
+
 # Table-driven tests for check-issue-label-map.sh (#393). The gate's own
 # failure modes are the point: a gate that cannot fail is not a gate, and
 # this one guards a file (the rule map) whose breakage is otherwise

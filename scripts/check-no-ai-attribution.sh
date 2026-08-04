@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright the docker-net-dhcp contributors.
+# SPDX-License-Identifier: GPL-3.0-only
+
 # AI-attribution gate: this fork is published as the maintainer's own
 # work, so no commit or PR may credit an AI assistant. The rule has
 # been in CLAUDE.md from the start and still reached a public branch

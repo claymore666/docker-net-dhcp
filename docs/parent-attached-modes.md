@@ -32,14 +32,15 @@ for hostile L2.
 
 ## Quick start
 
-Create a network attached to one of the host's NICs:
+Create a network attached to one of the host's NICs (`eth0` below —
+substitute yours; `ip -brief link` lists them):
 
 ```bash
 docker network create \
-    --driver=ghcr.io/<your-namespace>/docker-net-dhcp:latest \
+    --driver=ghcr.io/claymore666/docker-net-dhcp:v1.5.0 \
     --ipam-driver=null \
     -o mode=macvlan \
-    -o parent=ens18 \
+    -o parent=eth0 \
     lan-dhcp
 ```
 

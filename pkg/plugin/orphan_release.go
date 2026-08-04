@@ -1,3 +1,6 @@
+// Copyright the docker-net-dhcp contributors.
+// SPDX-License-Identifier: GPL-3.0-only
+
 package plugin
 
 import (
@@ -13,7 +16,7 @@ import (
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 
-	"github.com/devplayer0/docker-net-dhcp/pkg/dhcp"
+	"github.com/claymore666/docker-net-dhcp/pkg/dhcp"
 )
 
 // orphanReleaseBudget caps the whole synthesised release: bring up a

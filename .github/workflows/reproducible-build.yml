@@ -1,0 +1,84 @@
+name: Reproducible build
+
+# Build the same commit twice, on two cold builders, and require the
+# binaries to be byte-identical (#456).
+#
+# The property already held — it was measured before this workflow
+# existed, and a rebuild of the v1.4.0 tag reproduced the binaries
+# inside the published release tarball exactly. What did not exist was
+# anything that would notice the day it stopped. Determinism here rests
+# on digest-pinned base images, version-pinned apk packages, a fixed
+# in-container build path and no timestamp or VCS stamping; any of those
+# can be undone by a change that looks entirely reasonable and breaks
+# nothing else in CI.
+#
+# WHY A SEPARATE BUILDER PER BUILD, and not just `--no-cache`. The
+# Dockerfile mounts BuildKit caches for the Go module and build caches.
+# `--no-cache` invalidates layers; it does not empty those mounts. Two
+# builds on one builder would therefore share compiler output, which is
+# the thing under test. A fresh `docker-container` builder starts with
+# nothing — the same state a third party reproducing a release is in.
+#
+# WHEN IT RUNS. Not on every PR: two cold builds are several minutes of
+# runner time and reproducibility does not drift from a change to a test
+# file. It runs on pull requests that touch the things determinism
+# actually depends on, weekly so an upstream base-image change is caught
+# without waiting for someone to touch the Dockerfile, and on demand.
+
+on:
+  pull_request:
+    branches: [main, dev]
+    paths:
+      - 'Dockerfile'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/reproducible-build.yml'
+      - 'scripts/check-reproducible-build.sh'
+  schedule:
+    - cron: '41 4 * * 2'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  rebuild:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+        id: builder_a
+        with:
+          driver: docker-container
+
+      - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+        id: builder_b
+        with:
+          driver: docker-container
+
+      # --target builder: the binaries are what must be reproducible.
+      # The runtime stage adds an Alpine layer whose own image digest is
+      # pinned, so comparing it would test Docker's tar layout rather
+      # than our build.
+      - name: Build A
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          context: .
+          target: builder
+          no-cache: true
+          builder: ${{ steps.builder_a.outputs.name }}
+          outputs: type=local,dest=out-a
+
+      - name: Build B
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          context: .
+          target: builder
+          no-cache: true
+          builder: ${{ steps.builder_b.outputs.name }}
+          outputs: type=local,dest=out-b
+
+      - name: Compare
+        run: bash scripts/check-reproducible-build.sh out-a out-b

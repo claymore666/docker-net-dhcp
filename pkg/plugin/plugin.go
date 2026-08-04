@@ -1,7 +1,11 @@
+// Copyright the docker-net-dhcp contributors.
+// SPDX-License-Identifier: GPL-3.0-only
+
 package plugin
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/hex"
 	"fmt"
 	"net"
@@ -22,11 +26,29 @@ import (
 	log "github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
 
-	"github.com/devplayer0/docker-net-dhcp/pkg/util"
+	"github.com/claymore666/docker-net-dhcp/pkg/util"
 )
 
 // DriverName is the name of the Docker Network Driver
 const DriverName string = "net-dhcp"
+
+// newInstanceID returns a value unique to this plugin process. It lets
+// a caller holding two health reads tell "the counters did not move"
+// apart from "the counters were reset under you" (#405).
+//
+// It must never return an empty string. A consumer comparing two empty
+// ids sees them as equal, concludes no restart happened, and trusts a
+// delta that spans a reset — precisely the failure the id exists to
+// prevent. crypto/rand failing is not a real expectation, so the
+// fallback is a formality; it still varies per process, which is the
+// only property that matters here.
+func newInstanceID() string {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return fmt.Sprintf("pid%d-%d", os.Getpid(), time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b[:])
+}
 
 // shortID truncates a Docker network/endpoint ID to 12 chars for
 // log fields, without panicking on short or empty IDs (which can
@@ -406,6 +428,12 @@ type Plugin struct {
 	outageTick   time.Duration
 	outageGrace  time.Duration
 	startTime    time.Time
+	// instanceID identifies this plugin *process*. Every counter on
+	// HealthResponse lives in memory and returns to zero when the
+	// process does, so a before/after pair of health reads is only
+	// comparable when this value is unchanged between them (#405).
+	// Written once at construction, never mutated.
+	instanceID string
 
 	docker dockerClient
 	server http.Server
@@ -511,6 +539,20 @@ type Plugin struct {
 	// the work and the fix needs re-examining.
 	joinAttachSlow atomic.Int32
 
+	// restartLinkUpWaited counts child links that came up only after
+	// waiting out the departing link's hold on the address — the #408
+	// window actually arising and the fix carrying the restart.
+	// NOT healthy-affecting: a successful wait is the fix working.
+	//
+	// restartLinkUpTimeouts counts the same window outlasting the
+	// budget, which is a real failure: the restart fails and the user
+	// sees `address already in use`. Also not healthy-affecting, and
+	// deliberately so — the error is already loud, surfacing through
+	// CreateEndpoint to the operator's terminal, whereas `healthy`
+	// exists for faults that are otherwise silent (#422).
+	restartLinkUpWaited   atomic.Int32
+	restartLinkUpTimeouts atomic.Int32
+
 	// joinAbortedEndpointLeft counts attaches cancelled because Leave
 	// arrived while they were still running. Not healthy-affecting and
 	// not silent, on the same reasoning as
@@ -525,6 +567,19 @@ type Plugin struct {
 	// here means one container that won't get its previous MAC/IP back
 	// on restart until the disk recovers.
 	tombstoneWriteFailures atomic.Int32
+
+	// tombstonesConsumed counts the other side of that story: a
+	// CreateEndpoint that found a fresh tombstone and reused its MAC/IP,
+	// i.e. a container that got its address back across a recreate.
+	//
+	// Not healthy-affecting — it is the mechanism working, not failing.
+	// It exists because it is the only way to tell, from outside, WHICH
+	// path preserved an address after a restart: recovery re-adopting a
+	// live endpoint (recovered_ok) or the tombstone being replayed. The
+	// daemon-restart test could previously observe only the first, so
+	// "neither happened and the address survived anyway" was
+	// indistinguishable from success (#386).
+	tombstonesConsumed atomic.Int32
 
 	// leaseChanged counts renewals where dhcpcd returned a different
 	// IP than the manager last recorded. Container's
@@ -925,6 +980,10 @@ func (p *Plugin) consumeTombstone(networkID, hostname string) (mac, ipv4, ipv6 s
 	if err := saveTombstones(ts); err != nil {
 		log.WithError(err).Warn("Failed to persist tombstones after consume")
 	}
+	// Counted here rather than at the two call sites (network.go,
+	// parent_attached.go) so a third caller cannot forget it and quietly
+	// under-report.
+	p.tombstonesConsumed.Add(1)
 	return mac, ipv4, ipv6, true
 }
 
@@ -1335,6 +1394,7 @@ func NewPlugin(opts Options) (*Plugin, error) {
 		outageTick:   opts.OutageTick,
 		outageGrace:  opts.OutageGrace,
 		startTime:    time.Now(),
+		instanceID:   newInstanceID(),
 
 		docker: client,
 

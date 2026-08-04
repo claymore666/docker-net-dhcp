@@ -1,10 +1,13 @@
+// Copyright the docker-net-dhcp contributors.
+// SPDX-License-Identifier: GPL-3.0-only
+
 package plugin
 
 import (
 	"net/http"
 	"time"
 
-	"github.com/devplayer0/docker-net-dhcp/pkg/util"
+	"github.com/claymore666/docker-net-dhcp/pkg/util"
 )
 
 // Payloads are based on https://github.com/docker/go-plugins-helpers/blob/master/network/api.go
@@ -256,7 +259,18 @@ func (p *Plugin) apiLeave(w http.ResponseWriter, r *http.Request) {
 // expiry. Operators should restart those containers (which produces a
 // fresh CreateEndpoint and gets them back into the persistent map).
 type HealthResponse struct {
-	Healthy         bool    `json:"healthy"`
+	Healthy bool `json:"healthy"`
+	// InstanceID identifies the plugin process that served this
+	// response. Every counter below is in-memory and returns to zero
+	// when the process does, so two reads are only comparable as a
+	// delta when their InstanceID matches (#405).
+	//
+	// uptime_seconds is a weaker version of the same signal: it does
+	// reset, but a plugin that restarts early in a long window and then
+	// runs longer than the first reading shows uptime going *up* across
+	// the pair, and the reset goes unnoticed. Comparing ids has no such
+	// blind spot.
+	InstanceID      string  `json:"instance_id"`
 	UptimeSeconds   float64 `json:"uptime_seconds"`
 	ActiveEndpoints int     `json:"active_endpoints"`
 	PendingHints    int     `json:"pending_hints"`
@@ -301,12 +315,35 @@ type HealthResponse struct {
 	// successes — but a rising count is the visible form of #406.
 	JoinAttachSlow int32 `json:"join_attach_slow"`
 
+	// RestartLinkUpWaited counts child links brought up only after
+	// waiting out the departing link's hold on the address (#408). Not
+	// healthy-affecting: this is the fix working, and it is counted so
+	// the window is visible rather than inferred — the same reason
+	// JoinAttachSlow exists.
+	RestartLinkUpWaited int32 `json:"restart_link_up_waited"`
+	// RestartLinkUpTimeouts counts that wait outlasting its budget. The
+	// restart then fails with `address already in use`. Not
+	// healthy-affecting despite being a real failure: it surfaces
+	// through CreateEndpoint to the operator directly, and `healthy`
+	// is for faults nothing else reports (#422).
+	RestartLinkUpTimeouts int32 `json:"restart_link_up_timeouts"`
+
 	// JoinAbortedEndpointLeft counts attaches cancelled because the
 	// endpoint left while the attach was still running. Not
 	// healthy-affecting: there is no running container missing a
 	// renewal client.
 	JoinAbortedEndpointLeft int32 `json:"join_aborted_endpoint_left"`
 	TombstoneWriteFailures  int32 `json:"tombstone_write_failures"`
+	// TombstonesConsumed counts CreateEndpoints that replayed a fresh
+	// tombstone and so handed a recreated container its previous
+	// MAC/IP. Not Healthy-affecting: this is the address-stability
+	// mechanism working.
+	//
+	// It is the counterpart to RecoveredOK. Between them they say which
+	// of the two paths preserved an address across a restart, which is
+	// what makes "the address survived, but via neither path" a
+	// detectable state rather than a silent pass (#386).
+	TombstonesConsumed int32 `json:"tombstones_consumed"`
 	// LeaseChanged counts renewals where dhcpcd returned a different
 	// IP than the manager last recorded. Not Healthy-affecting (it
 	// doesn't break Docker's view fatally — see plugin.go for the
@@ -384,6 +421,7 @@ func (p *Plugin) apiHealth(w http.ResponseWriter, r *http.Request) {
 		// means the next restart of some container will pick a new
 		// MAC/IP.
 		Healthy:           failed == 0 && joinFails == 0 && tsFails == 0,
+		InstanceID:        p.instanceID,
 		UptimeSeconds:     time.Since(p.startTime).Seconds(),
 		ActiveEndpoints:   active,
 		PendingHints:      pending,
@@ -399,8 +437,11 @@ func (p *Plugin) apiHealth(w http.ResponseWriter, r *http.Request) {
 		RecoveryAbortedContainerGone: p.recoveryAbortedContainerGone.Load(),
 		JoinAbortedContainerGone:     p.joinAbortedContainerGone.Load(),
 		JoinAttachSlow:               p.joinAttachSlow.Load(),
+		RestartLinkUpWaited:          p.restartLinkUpWaited.Load(),
+		RestartLinkUpTimeouts:        p.restartLinkUpTimeouts.Load(),
 		JoinAbortedEndpointLeft:      p.joinAbortedEndpointLeft.Load(),
 		TombstoneWriteFailures:       tsFails,
+		TombstonesConsumed:           p.tombstonesConsumed.Load(),
 		LeaseChanged:                 p.leaseChanged.Load(),
 		LeasesObtained:               p.leasesObtained.Load(),
 		LeasesRenewed:                p.leasesRenewed.Load(),

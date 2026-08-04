@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright the docker-net-dhcp contributors.
+# SPDX-License-Identifier: GPL-3.0-only
+
 # Coverage ratchet (#127): compare per-package coverage against the
 # committed baseline. Fails when any baselined package drops more than
 # RATCHET_EPSILON points below its floor. The baseline only moves up:

@@ -6,7 +6,11 @@
             "docker.networkdriver/1.0"
         ]
     },
-    "entrypoint": ["/usr/sbin/net-dhcp", "-logfile", "/var/log/net-dhcp.log"],
+    "entrypoint": [
+        "/usr/sbin/net-dhcp",
+        "-logfile",
+        "/var/log/net-dhcp.log"
+    ],
     "env": [
         {
             "description": "Log level",
@@ -61,6 +65,15 @@
             "type": "bind",
             "options": [
                 "bind"
+            ]
+        },
+        {
+            "source": "/var/lib/net-dhcp",
+            "destination": "/var/lib/net-dhcp",
+            "type": "bind",
+            "options": [
+                "rbind",
+                "rw"
             ]
         }
     ],

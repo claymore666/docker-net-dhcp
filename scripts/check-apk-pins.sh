@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright the docker-net-dhcp contributors.
+# SPDX-License-Identifier: GPL-3.0-only
+
 # Check the apk version pins in Dockerfile against the current Alpine
 # package index. Prints a diff and exits non-zero when a pin is behind
 # upstream — wire it into a weekly CI cron so an upgrade signal lands

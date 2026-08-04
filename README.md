@@ -6,6 +6,8 @@
 [![Release](https://img.shields.io/github/v/release/claymore666/docker-net-dhcp?sort=semver)](https://github.com/claymore666/docker-net-dhcp/releases)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/claymore666/docker-net-dhcp/badge)](https://scorecard.dev/viewer/?uri=github.com/claymore666/docker-net-dhcp)
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/13229/badge)](https://www.bestpractices.dev/projects/13229)
+[![OpenSSF silver](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fwww.bestpractices.dev%2Fprojects%2F13229.json&query=%24.badge_percentage_1&label=OpenSSF%20silver&suffix=%25&color=9e9e9e)](https://www.bestpractices.dev/projects/13229/silver)
+[![OpenSSF gold](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fwww.bestpractices.dev%2Fprojects%2F13229.json&query=%24.badge_percentage_2&label=OpenSSF%20gold&suffix=%25&color=b8860b)](https://www.bestpractices.dev/projects/13229/gold)
 [![Docs](https://img.shields.io/badge/docs-claymore666.github.io-blue?logo=materialformkdocs&logoColor=white)](https://claymore666.github.io/docker-net-dhcp/)
 
 A Docker network plugin that allocates container IP addresses (IPv4 and
@@ -25,17 +27,48 @@ like any other machine. Bridge, macvlan, and ipvlan attachment modes.
 
 [upstream]: https://github.com/devplayer0/docker-net-dhcp
 
+> [!WARNING]
+> **⚠️ BREAKING CHANGE IN v1.5.0 — DO THIS FIRST ⚠️**
+>
+> ```bash
+> sudo mkdir -p /var/lib/net-dhcp
+> ```
+>
+> v1.5.0 is the first release that **bind-mounts its state directory
+> from the host** (so leases survive an upgrade), and **Docker will not
+> create a missing bind source.** Run the line above before
+> `docker plugin install`, on every host, new install or upgrade.
+>
+> **If you skip it**, `docker plugin install` fails at start-up and
+> leaves the plugin **installed but disabled** — and re-running the
+> exact same install command then answers only
+> `plugin ... already exists`, which says nothing about the cause.
+> Recover with:
+>
+> ```bash
+> sudo mkdir -p /var/lib/net-dhcp
+> docker plugin enable ghcr.io/claymore666/docker-net-dhcp:v1.5.0
+> ```
+>
+> Nothing is lost or corrupted. Full detail:
+> [the reference](docs/reference.md#install-upgrade-uninstall).
+
 ## Quick start
 
 Install the plugin:
 
 ```bash
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.4.0
+# One-time, and REQUIRED — see the warning above. Docker will not
+# create this directory for you, and `plugin install` fails at
+# start-up without it.
+sudo mkdir -p /var/lib/net-dhcp
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.5.0
 ```
 
 It requests `host` networking, the host PID namespace, the Docker
-socket, and `CAP_NET_ADMIN`/`CAP_SYS_ADMIN`/`CAP_SYS_PTRACE` — grant
-them to proceed.
+socket, a bind mount of the state directory above, and
+`CAP_NET_ADMIN`/`CAP_SYS_ADMIN`/`CAP_SYS_PTRACE` — grant them to
+proceed.
 (If you hit `invalid rootfs in image configuration`, upgrade Docker.)
 
 Create a bridge-mode network and run a container on it (assumes you
@@ -43,7 +76,7 @@ already have a host bridge `my-bridge` on your LAN — see
 [bridge mode](docs/bridge-mode.md) for that one-time setup):
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.4.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.5.0 \
   --ipam-driver null -o bridge=my-bridge my-dhcp-net
 
 docker run --rm -ti --network my-dhcp-net alpine ip address show
@@ -99,9 +132,11 @@ version from the selector). The same content lives in `docs/` in the repo:
 - **Governance & code of conduct:** [GOVERNANCE.md](GOVERNANCE.md),
   [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
 
-This fork publishes semver-tagged images on GHCR
-(`ghcr.io/claymore666/docker-net-dhcp:vX.Y.Z`, `linux/amd64`; ARM via
-the build pipeline on request). See the
+This fork publishes semver-tagged images to two registries — GHCR is
+primary (`ghcr.io/claymore666/docker-net-dhcp:vX.Y.Z`, `linux/amd64`;
+ARM via the build pipeline on request), mirrored to Docker Hub as
+`claymore666/net-dhcp:vX.Y.Z`. Every snippet here uses the GHCR
+reference. See the
 [Releases page](https://github.com/claymore666/docker-net-dhcp/releases).
 
 ## Verifying releases
@@ -110,9 +145,11 @@ Every release (v1.1.0 onward) is signed and attested via Sigstore. The
 published plugin image is signed with cosign (keyless), carries SLSA
 build provenance, and ships an SBOM; the release-artifact `checksums.txt`
 manifest is cosign-signed so one signature covers every attached file.
-The exact, copy-pasteable commands — pinned to that release's tag — are
-appended to each [GitHub Release](https://github.com/claymore666/docker-net-dhcp/releases)
-under **Verifying the signed artifacts**. In brief (replace `VERSION`):
+The full, copy-pasteable procedure lives in
+**[Verifying releases](docs/verifying-releases.md)** (also on the
+[docs site](https://claymore666.github.io/docker-net-dhcp/verifying-releases/)),
+and every [GitHub Release](https://github.com/claymore666/docker-net-dhcp/releases)
+links to it. In brief (replace `VERSION`):
 
 ```bash
 # image signature
@@ -130,15 +167,25 @@ Contributions are welcome.
 
 - **Questions, bugs, and feature requests:** open a [GitHub issue](https://github.com/claymore666/docker-net-dhcp/issues).
   For bugs, please include the plugin version, your Docker version, the network
-  mode (`bridge`, `macvlan`, or `ipvlan`), and the relevant output from
-  `docker plugin logs <plugin>`.
+  mode (`bridge`, `macvlan`, or `ipvlan`), and the relevant plugin log.
+  Docker has no `plugin logs` subcommand — the log lives in two places
+  and [Plugin log](docs/reference.md#plugin-log) shows how to read
+  either: `sudo journalctl -u docker | grep net-dhcp` on a systemd host
+  (the copy that survives an upgrade), or the file inside the plugin
+  rootfs.
 - **Code changes:** open a pull request against the `dev` branch (not `main`).
   Requirements for an acceptable contribution:
   - **Coding standard:** Go code must be formatted with `gofmt` and pass
     `go vet` and [`staticcheck`](https://staticcheck.dev/); shell and workflow
     files must pass `shellcheck`/`actionlint`. These are enforced in CI.
   - **Tests:** new functionality is expected to ship with tests; a coverage
-    ratchet enforces this at release time.
+    ratchet enforces this at release time. Run them with `go test ./...`
+    for the fast loop and `sudo make integration-local` for the live
+    suites — see
+    [Running the tests](docs/internals.md#running-the-tests). Use that
+    target rather than `make integration-test` directly: the latter does
+    not rebuild, so it silently tests whatever plugin is already
+    installed.
   - **Authorship:** commits and pull request descriptions must not carry
     AI-assistant attribution — no `Co-authored-by:` trailer naming an
     assistant or an assistant's no-reply address, no "Generated with …"
@@ -151,9 +198,12 @@ Contributions are welcome.
     description, code blocks and inline code are stripped before scanning,
     so you can quote a trailer to discuss one, as here; commit messages are
     scanned in full and have no such escape.
-  - **Green CI:** every PR must pass the required checks — unit tests,
-    `staticcheck`, the live integration suite, `govulncheck`, `actionlint`,
-    and `attribution` — before it can be merged. (Docs-only PRs — diffs touching nothing but
+  - **Green CI:** every PR must pass the repository's required checks
+    before it can be merged. Branch protection holds the authoritative
+    list and your PR's checks panel shows it applied to your branch — at
+    the time of writing it is unit tests, `staticcheck`, the live
+    integration suite, `govulncheck`, `actionlint`, CodeQL (`Analyze
+    (go)` and `Analyze (actions)`), and `attribution`. (Docs-only PRs — diffs touching nothing but
     `*.md` — satisfy the integration check via a fast in-job skip; any code,
     script, or workflow change runs the full suite.)
   - **Hosted cross-check:** a separate, *non-required* workflow runs the

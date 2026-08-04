@@ -21,14 +21,47 @@ here, so the unit-test cadence stays fast.
 
 ## Prerequisites
 
-- Linux host with `iproute2`, `dnsmasq`, and Docker installed.
+- Linux host with `iproute2`, `dnsmasq`, `kea-dhcp4-server`, and
+  Docker installed.
 - The plugin enabled at `ghcr.io/claymore666/docker-net-dhcp:golang`.
   The harness verifies this in `TestMain`; it does **not** install
   the plugin for you (deliberate — installing affects the daemon's
   global state and would conflict with smoke testing on the same
   host).
 - Root (privileges: `CAP_NET_ADMIN` for veth + macvlan link work,
-  ability to bind UDP `:67` for `dnsmasq`).
+  network-namespace creation, ability to bind UDP `:67`).
+
+### AppArmor (Debian/Ubuntu hosts only)
+
+Debian's `kea-dhcp4-server` package ships an **enforcing** AppArmor
+profile that pins Kea to its own packaged paths — right down to the
+exact PID filename, which Kea derives from the config filename. The
+ephemeral fixture writes its config, lease DB and lockfile into a
+per-test temp directory instead, so under the shipped profile Kea
+cannot start. The profile denies `dac_override`, so running as root
+does not help; the symptom is `Permission denied` on paths root can
+obviously write.
+
+Put the profile in complain mode for local runs:
+
+```sh
+sudo apparmor_parser -C -r /etc/apparmor.d/usr.sbin.kea-dhcp4
+```
+
+To restore enforcement afterwards:
+
+```sh
+sudo apparmor_parser -r /etc/apparmor.d/usr.sbin.kea-dhcp4
+```
+
+CI is unaffected — the suite runs inside a privileged container,
+which is unconfined by the host's profiles.
+
+The package also enables and starts a system `kea-dhcp4-server`
+service on install. The fixture runs its own Kea, so the packaged
+service is not needed; disable it (`sudo systemctl disable --now
+kea-dhcp4-server`) rather than leaving a DHCP server running on a
+machine that sits on a real network.
 
 ## What's covered
 
@@ -76,6 +109,18 @@ below). Grouped by what they prove:
   renumbering (unattended re-acquisition, stale-inspect as the
   documented #104 divergence), full lease expiry (deliberate
   retention, endpoint stays reachable).
+
+  Every `TestFailure_*` case turns on an inequality between the lease
+  and the timers derived from it — `T1 < outage < lease` and the like.
+  Those timings are **verified, not declared** (#472): at teardown the
+  ephemeral fixture reads every `DHCP4_LEASE_ALLOC` line Kea logged and
+  fails the test if the lifetime the server granted differs from the
+  one the fixture asked for, naming both numbers. A run with no
+  allocation at all fails too, so absent evidence never reads as
+  agreement. The check runs itself, once per fixture — no test opts in,
+  and none can forget. Kea only; the dnsmasq backend (`WithDNS`, for
+  the FQDN test) logs no granted lifetime, and that test does not
+  depend on one.
 
 **Recovery & restart**
 - `recovery_test.go` — plugin disable/enable with a live container.
@@ -126,6 +171,46 @@ This downloads the Go version pinned in `go.mod` from go.dev and
 drops it under `/usr/local/go`, with `/usr/local/bin/go` symlinked
 in. Re-running upgrades in place.
 
+## Where the suite runs, and how those places differ
+
+The suite runs in more than one environment, and they are **not**
+meant to be identical. Keeping them different is what catches
+portability problems — the Kea AppArmor confinement below exists on
+a packaged host install and on no container, so a container-only
+world would never have surfaced it.
+
+The cost of that choice is that "green here, red there" needs a
+reason, and without a written baseline the first guess is usually
+wrong. This table is that baseline. **When two environments
+disagree, start here rather than assuming a bug.**
+
+| | Local (`sudo make integration-local`) | CI (`dhcp-ci` pool) | Hosted (`integration-hosted.yml`) |
+|---|---|---|---|
+| Machine | your dev box / the integration runner host, bare metal | privileged container from `ghcr.io/claymore666/dhcp-ci-runner` | stock GitHub-hosted VM |
+| `dnsmasq`, `kea-dhcp4` | host packages, whatever the distro ships | baked into the image, see `ci/runner-image/Dockerfile` | installed per run by the workflow |
+| AppArmor | **profiles apply** — Debian's enforcing `kea-dhcp4` profile blocks the fixture (see Prerequisites) | none: privileged containers are unconfined by host profiles | none in practice |
+| State between runs | **accumulates** — leftover containers, veths, namespaces | none: one container per job, `--rm` | none |
+| Docker daemon | your host daemon, whatever version | nested daemon, Engine >= 28 | the runner's daemon |
+| Gating | no | **yes**, required check | no — portability signal only |
+
+Three consequences worth knowing before they cost you an afternoon:
+
+- **Local is the only place state accumulates.** `integration-local`
+  therefore runs `integration-cleanup` first, mirroring the CI job's
+  own first step. A single container left by an earlier aborted run
+  fails an unrelated test with a name conflict, days later, and reads
+  exactly like a regression.
+- **Local is the only place AppArmor confines the fixture.** A failure
+  that reproduces locally and not in CI is as likely to be confinement
+  as a bug.
+- **CI's image is fetched when the runner container launches, not when
+  it picks up a job.** The runners are JIT and can sit idle after
+  launch, so a slot can be serving an image older than the newest
+  publish. That produced a ~25% per-job failure rate during #356 and
+  looked like a flaky suite. The `Verify fixture dependencies` step in
+  `integration.yml` exists to name that in seconds instead; if it
+  fires, the runner is stale, not the code.
+
 ## Architecture
 
 ```
@@ -148,9 +233,21 @@ in. Re-running upgrades in place.
   TestFailure_*):
     dh-itest-ehost <─ veth ─>  dh-itest-edhcp (192.168.101.1/24;
           │                          │          renumbered to
-     parent= for                ephemeral dnsmasq (authoritative)
-     the test's network         Stop/StartAgain/RestartOnSubnet
+     parent= for                ephemeral kea (authoritative),
+     the test's network         inside netns dh-itest-eph
+                                Stop/StartAgain/RestartOnSubnet
 ```
+
+The ephemeral server's end of that veth pair lives in its **own
+network namespace**, and that is load-bearing rather than tidy
+(#356). dnsmasq binds its DHCP socket as a device-scoped wildcard
+(`0.0.0.0%<iface>:67`) with `SO_REUSEADDR`; Kea binds its fallback
+socket to a specific address without it, so the kernel refuses the
+second bind. Since `TestMain` always has the suite-static dnsmasq
+up, a shared namespace leaves Kea with **no sockets open at all** —
+and Kea still logs `DHCP4_STARTED` in that state, so the fixture's
+readiness probe checks for an open interface socket rather than
+trusting that line.
 
 A single shared `Fixture` (`test/integration/harness/fixture.go`,
 `harness/bridge.go`) owns both subnets for the whole `go test`

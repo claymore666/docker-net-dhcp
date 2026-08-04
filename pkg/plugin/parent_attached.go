@@ -1,3 +1,6 @@
+// Copyright the docker-net-dhcp contributors.
+// SPDX-License-Identifier: GPL-3.0-only
+
 package plugin
 
 // This file implements the macvlan and ipvlan attachment modes. Both
@@ -26,8 +29,8 @@ import (
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 
-	"github.com/devplayer0/docker-net-dhcp/pkg/dhcp"
-	"github.com/devplayer0/docker-net-dhcp/pkg/util"
+	"github.com/claymore666/docker-net-dhcp/pkg/dhcp"
+	"github.com/claymore666/docker-net-dhcp/pkg/util"
 )
 
 // subLinkName returns the host-side child link name for an endpoint.
@@ -116,26 +119,74 @@ const childLinkUpInterval = 150 * time.Millisecond
 // is being destroyed still holds the address on the parent's port and
 // does not appear in a host-side link list, so a scan would report
 // "free" and the LinkSetUp would still fail.
-func linkUpAwaitingAddress(ctx context.Context, link netlink.Link, budget time.Duration) error {
+// Returns whether it had to wait — i.e. whether the window this
+// function exists for actually arose. A caller with access to the
+// health counters records that; the function itself stays free of the
+// Plugin so the existing unit tests can call it directly.
+//
+// Reporting the wait rather than only its failure is the point. This is
+// the fix for the release's headline defect and it did its whole job in
+// silence: on success after retrying, nothing anywhere recorded that
+// the window had been hit (#422). An operator could not tell whether
+// their host meets it at all, how often, or whether the budget is close
+// to expiring — and neither could we, which is the position #403
+// describes for the #406 grace.
+func linkUpAwaitingAddress(ctx context.Context, link netlink.Link, budget time.Duration) (bool, error) {
 	deadline := time.Now().Add(budget)
+	waited := false
 	for {
 		err := nlLinkSetUp(link)
 		if err == nil {
-			return nil
+			return waited, nil
 		}
 		if !errors.Is(err, unix.EADDRINUSE) {
-			return err
+			return waited, err
 		}
+		// From here on the address was held by the departing link, so
+		// whatever happens next, this call met the #408 window.
+		waited = true
 		if !time.Now().Before(deadline) {
-			return fmt.Errorf("%w (the address is still held by the link this one replaces, "+
+			return waited, fmt.Errorf("%w (the address is still held by the link this one replaces, "+
 				"after waiting %v for it to be removed)", err, budget)
 		}
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("%w (last attempt: %w)", ctx.Err(), err)
+			return waited, fmt.Errorf("%w (last attempt: %w)", ctx.Err(), err)
 		case <-time.After(childLinkUpInterval):
 		}
 	}
+}
+
+// noteRestartLinkUpWait records the outcome of a child link-up that met
+// the #408 window: the departing link still holding the address.
+//
+// Split from linkUpAwaitingAddress so that function stays callable
+// without a Plugin, and so this decision is directly testable — the
+// #431 lesson, where a counter shipped for a release with nothing
+// asserting it could move.
+//
+// Neither counter is healthy-affecting. A successful wait is the fix
+// working. A timeout IS a real failure, but it surfaces through
+// CreateEndpoint to the operator as `address already in use`; `healthy`
+// is for faults that nothing else reports (#422).
+func (p *Plugin) noteRestartLinkUpWait(r CreateEndpointRequest, waited bool, err error) {
+	if !waited {
+		return
+	}
+	fields := log.Fields{
+		"network":  shortID(r.NetworkID),
+		"endpoint": shortID(r.EndpointID),
+		"budget":   childLinkUpBudget.String(),
+	}
+	if err != nil {
+		p.restartLinkUpTimeouts.Add(1)
+		log.WithError(err).WithFields(fields).
+			Warn("Child link never got the address back; the departing link still holds it")
+		return
+	}
+	p.restartLinkUpWaited.Add(1)
+	log.WithFields(fields).
+		Info("Child link came up after waiting out the departing link's address (#408)")
 }
 
 // createParentAttachedEndpoint creates the per-endpoint child link on
@@ -260,7 +311,9 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 			}
 		}
 
-		if err := linkUpAwaitingAddress(ctx, fresh, childLinkUpBudget); err != nil {
+		waited, err := linkUpAwaitingAddress(ctx, fresh, childLinkUpBudget)
+		p.noteRestartLinkUpWait(r, waited, err)
+		if err != nil {
 			return fmt.Errorf("failed to set %v link up: %w", mode, err)
 		}
 

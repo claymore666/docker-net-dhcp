@@ -1,4 +1,7 @@
 #!/bin/bash
+# Copyright the docker-net-dhcp contributors.
+# SPDX-License-Identifier: GPL-3.0-only
+
 # Entrypoint for the ephemeral CI runner container. tini is PID 1;
 # this script brings up a SUPERVISED nested dockerd (the daemon-restart
 # integration test depends on the daemon being a restartable child —
@@ -150,6 +153,42 @@ if [[ "${1:-}" == "selftest" ]]; then
     # L2-reachability check runs `ping` on the runner itself (not in a
     # container) — failure_test.go, TestFailure_LeaseExpiry (#158).
     command -v ping >/dev/null || { log "FAIL: ping missing (failure-injection L2 check needs it on the runner)"; exit 1; }
+
+    # Both DHCP servers the fixtures can spawn (#356). dnsmasq is what
+    # the fixture uses today; kea is what it is migrating to.
+    command -v dnsmasq >/dev/null || { log "FAIL: dnsmasq missing (integration fixture's DHCP server)"; exit 1; }
+    command -v kea-dhcp4 >/dev/null || { log "FAIL: kea-dhcp4 missing (#356 fixture DHCP server)"; exit 1; }
+    command -v kea-dhcp6 >/dev/null || { log "FAIL: kea-dhcp6 missing (#356 fixture DHCP server)"; exit 1; }
+
+    # Assert the PROPERTY kea is here for, not merely that it installed.
+    #
+    # The entire case for the migration is that dnsmasq enforces a
+    # two-minute minimum lease and kea does not. If a future Debian kea
+    # ever grew a floor of its own, presence checks would stay green
+    # while every timing assumption downstream quietly broke. So the
+    # selftest hands it a 20-second lease and requires it to be accepted.
+    kea_probe=$(mktemp -d)
+    cat > "$kea_probe/k.conf" <<'KEACONF'
+{ "Dhcp4": {
+    "interfaces-config": { "interfaces": [] },
+    "lease-database": { "type": "memfile", "persist": false },
+    "valid-lifetime": 20, "renew-timer": 10, "rebind-timer": 15,
+    "subnet4": [ { "id": 1, "subnet": "192.168.99.0/24",
+                   "pools": [ { "pool": "192.168.99.10 - 192.168.99.99" } ] } ]
+} }
+KEACONF
+    if kea_out=$(kea-dhcp4 -t "$kea_probe/k.conf" 2>&1); then
+        case "$kea_out" in
+            *"valid-lifetime=20"*) log "selftest: kea accepts a 20s lease (dnsmasq's floor is 120s) — #356 premise holds" ;;
+            *) log "FAIL: kea validated the config but did not report valid-lifetime=20; a lease floor may have been introduced"; rm -rf "$kea_probe"; exit 1 ;;
+        esac
+    else
+        log "FAIL: kea-dhcp4 rejected a 20s-lease config — the #356 migration premise no longer holds:"
+        log "$kea_out"
+        rm -rf "$kea_probe"
+        exit 1
+    fi
+    rm -rf "$kea_probe"
 
     # cgroup-nesting guard (#158): prepare_cgroups must have evacuated the
     # namespace-root so the nested daemon makes *domain* (not threaded)

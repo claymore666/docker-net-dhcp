@@ -1,3 +1,6 @@
+// Copyright the docker-net-dhcp contributors.
+// SPDX-License-Identifier: GPL-3.0-only
+
 //go:build integration
 
 package integration
@@ -10,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/devplayer0/docker-net-dhcp/test/integration/harness"
+	"github.com/claymore666/docker-net-dhcp/test/integration/harness"
 )
 
 var fixture *harness.Fixture

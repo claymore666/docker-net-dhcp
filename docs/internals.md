@@ -119,6 +119,85 @@ The plugin's identity is a MAC. Both stability mechanisms exist because
 DHCP servers key on it, and everything above is in service of presenting
 the same MAC to the server across an event the container did not choose.
 
+## Running the tests
+
+Three loops, cheapest first. Only the last two need root or a plugin.
+
+| what | command | needs |
+| --- | --- | --- |
+| unit + gate scripts | `go test ./...` | nothing — seconds |
+| the suite's own guards | `go test ./test/integration/harness/` | nothing |
+| both integration suites | `sudo make integration-local` | root, Docker |
+
+CI shards the main suite across three jobs (#381, #468); `integration-local`
+deliberately does not — a local run is one machine, so sharding would
+serialise the shards and only add overhead. If you want to reproduce a
+single CI shard, `sudo make integration-test-shard SHARD=1 OF=3`.
+
+**Use `integration-local`, not `integration-test`.**
+
+`make integration-test` and `make integration-test-failure` only run
+`go test`. Building and installing the plugin is a separate chain
+(`make create enable`). CI never diverges because the workflow does the
+build as its own step before calling either target — a local run has no
+such guarantee, so it tests **whatever plugin happens to be installed**.
+
+That is not a hypothetical. While validating #374 a stale installed
+build made two tests fail for reasons unrelated to the branch, *and*
+made the health floor report `clean` for counters that build could not
+publish at all. Wrong in both directions, from one cause. Rebuilding
+reproduced CI exactly.
+
+`integration-local` chains `integration-cleanup create enable
+integration-test integration-test-failure`, so neither a stale plugin
+nor a previous run's leftovers can be what you measure. The cleanup
+step mirrors the CI job's own first step: local runs are the only
+place that state accumulates, because CI's runners are ephemeral.
+
+The two suite targets deliberately do **not** depend on a rebuild: CI
+calls them in sequence between its own build and teardown, and a
+rebuild dependency there would reinstall the plugin *between* the two
+suites — recycling it mid-run and resetting the health floor's
+observation window with it.
+
+### Reading the output
+
+Both suites tee to `test/integration/logs/`. At the end of each, the
+health floor prints a verdict for the whole run:
+
+- `HEALTH FLOOR: clean — ... over the whole Ns run (plugin up Ms, ...)` —
+  the plugin was up throughout and nothing healthy-affecting moved. The
+  run's duration and the plugin's uptime are separate numbers and are
+  always printed as such: locally the plugin often long predates the
+  suite, and where the gap is large the line says by how much, because
+  the counters are cumulative and carry that earlier history too.
+- `HEALTH FLOOR: clean over the last Ns of an Ms run` — the plugin
+  restarted mid-suite, so the counters only cover the tail. The
+  whole-run fault census covers the rest.
+- `HEALTH FLOOR: clean ... over the plugin's Ns uptime` — the suite's own
+  duration could not be measured, so no coverage claim is made rather
+  than one being invented.
+- `PLUGIN FAULTS: N across the whole run` — read from the log rather
+  than the counters, so it survives a restart. Any non-zero value fails
+  the run.
+
+A run that cannot read the plugin log fails rather than reporting
+clean: an unreadable instrument is not a clean result.
+
+### If a local run disagrees with CI
+
+Check, in order:
+
+1. Did you build? `sudo make integration-local` rather than a bare
+   suite target.
+2. Is a previous run's state still around? `sudo make
+   integration-cleanup`. `integration-local` now does this for you;
+   you only need it by hand after running a suite target directly. A
+   single leftover container fails an unrelated test with a name
+   conflict and reads exactly like a regression.
+3. Engine version — `interface_name` (#125) needs Docker ≥28 and skips
+   below it, so a skip locally and a pass in CI can both be correct.
+
 ## See also
 
 - [Driver reference](reference.md) — every option, counter, and behaviour

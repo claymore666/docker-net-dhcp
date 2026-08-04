@@ -17,17 +17,47 @@ like any other machine. Bridge, macvlan, and ipvlan attachment modes.
     injection) with a coverage ratchet and supply-chain gates on release.
     The maintained image lives at `ghcr.io/claymore666/docker-net-dhcp`.
 
+!!! danger "⚠️ BREAKING CHANGE IN v1.5.0 — DO THIS FIRST ⚠️"
+
+    ```bash
+    sudo mkdir -p /var/lib/net-dhcp
+    ```
+
+    v1.5.0 is the first release that **bind-mounts its state directory
+    from the host** (so leases survive an upgrade), and **Docker will
+    not create a missing bind source.** Run the line above before
+    `docker plugin install`, on every host, new install or upgrade.
+
+    **If you skip it**, `docker plugin install` fails at start-up and
+    leaves the plugin **installed but disabled** — and re-running the
+    exact same install command then answers only
+    `plugin ... already exists`, which says nothing about the cause.
+    Recover with:
+
+    ```bash
+    sudo mkdir -p /var/lib/net-dhcp
+    docker plugin enable ghcr.io/claymore666/docker-net-dhcp:v1.5.0
+    ```
+
+    Nothing is lost or corrupted. Full detail:
+    [the reference](reference.md#install-upgrade-uninstall).
+
 ## Quick start
 
 Install the plugin:
 
 ```bash
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.4.0
+# One-time, and REQUIRED — see the warning above. Docker will not
+# create this directory for you, and `plugin install` fails at
+# start-up without it.
+sudo mkdir -p /var/lib/net-dhcp
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.5.0
 ```
 
 It requests `host` networking, the host PID namespace, the Docker
-socket, and `CAP_NET_ADMIN`/`CAP_SYS_ADMIN`/`CAP_SYS_PTRACE` — grant
-them to proceed.
+socket, a bind mount of the state directory above, and
+`CAP_NET_ADMIN`/`CAP_SYS_ADMIN`/`CAP_SYS_PTRACE` — grant them to
+proceed.
 (If you hit `invalid rootfs in image configuration`, upgrade Docker.)
 
 Create a bridge-mode network and run a container on it (assumes you
@@ -35,7 +65,7 @@ already have a host bridge `my-bridge` on your LAN — see
 [Bridge mode](bridge-mode.md) for that one-time setup):
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.4.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.5.0 \
   --ipam-driver null -o bridge=my-bridge my-dhcp-net
 
 docker run --rm -ti --network my-dhcp-net alpine ip address show
@@ -94,9 +124,10 @@ Every release (v1.1.0 onward) is signed and attested via Sigstore. The
 published plugin image is signed with cosign (keyless), carries SLSA
 build provenance, and ships an SBOM; the release-artifact `checksums.txt`
 manifest is cosign-signed so one signature covers every attached file.
-The exact, copy-pasteable commands — pinned to that release's tag — are
-appended to each [GitHub Release](https://github.com/claymore666/docker-net-dhcp/releases)
-under **Verifying the signed artifacts**. In brief (replace `VERSION`):
+The full, copy-pasteable procedure lives in
+**[Verifying releases](verifying-releases.md)**, and every
+[GitHub Release](https://github.com/claymore666/docker-net-dhcp/releases)
+links to it. In brief (replace `VERSION`):
 
 ```bash
 # image signature

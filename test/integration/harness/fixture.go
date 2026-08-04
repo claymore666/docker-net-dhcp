@@ -1,3 +1,6 @@
+// Copyright the docker-net-dhcp contributors.
+// SPDX-License-Identifier: GPL-3.0-only
+
 //go:build integration
 
 // Package harness sets up the privileged fixture (veth pair, DHCP
@@ -79,6 +82,15 @@ const (
 	// It must still fall INSIDE the pool range — dnsmasq NAKs a request
 	// for an address outside every --dhcp-range. TestStaticReservation
 	// enforces both halves.
+	// HostStateDir is the plugin's STATE_DIR as seen from the host.
+	//
+	// Since #440 the manifest bind-mounts this path, so the plugin's
+	// tombstones, per-network options and audit ledger live here rather
+	// than inside the plugin rootfs — which is what makes them survive
+	// `docker plugin rm`. Tests that read plugin state read it here; the
+	// in-rootfs path is now just the mount point.
+	HostStateDir = "/var/lib/net-dhcp"
+
 	StaticTestIP = "192.168.99.95"
 	// StaticTestMAC is locally administered (02: prefix) and unicast,
 	// so it cannot collide with a real NIC or with Docker's own random

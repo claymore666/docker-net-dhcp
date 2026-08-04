@@ -39,11 +39,27 @@ on:
 #
 # What is left, and why it is left: this run still shares a group with
 # the release PR's own integration run, because they are the same ref.
-# So the two serialize, and coverage typically starts ~12 minutes after
-# the PR opens. That is deliberate — splitting them would put three
-# privileged jobs on the host at once, which is the dose #296 saw flake,
-# and the release gate is the worst place to spend that risk to save
-# twelve minutes once per release.
+# So the two serialize, and coverage starts once integration finishes.
+# That is deliberate, but NOT for the reason first written here.
+#
+# The original argument was that splitting "would put three privileged
+# jobs on the host at once, which is the dose #296 saw flake". That has
+# been overtaken: #375 split the suites and #381/#468 sharded main, so
+# every PR run already puts four privileged jobs on the pool. Three is
+# not an untested dose; it is Tuesday.
+#
+# The reason it stays is arithmetic (measured 2026-08-02, #430). After
+# #356 the integration gate is ~4m36 and coverage is 22-34 min, so on a
+# release PR the split saves ~5 minutes of a ~30 minute wall clock,
+# once per release — and it does so by adding a fifth privileged job to
+# a pool of eight that already queues at six. Queue time is ~2s across
+# every recent run except the one where two runs overlapped, which cost
+# a suite job 2m10.
+#
+# So the binding constraint is pool capacity, not contention, and the
+# same runners buy far more elsewhere: #468 took 25% off the gate that
+# runs all day, for one matrix entry. #430 is closed on those numbers;
+# reopen the question with a bigger pool, not with this comment.
 #
 # The residual cancellation window is narrow but real: GitHub keeps one
 # running plus one pending run per group, so pushing a new commit to the
@@ -103,6 +119,8 @@ jobs:
         run: |
           make plugin-cover
           docker plugin rm -f "${COVER_PLUGIN_REF}" 2>/dev/null || true
+          # See integration.yml — the bind source must pre-exist (#440).
+          mkdir -p /var/lib/net-dhcp
           docker plugin create "${COVER_PLUGIN_REF}" plugin-cover
           # Same test-only cadence as integration.yml (#278) — this job
           # runs the failure suite too, so it pays the same waits.

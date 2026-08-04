@@ -1,3 +1,6 @@
+// Copyright the docker-net-dhcp contributors.
+// SPDX-License-Identifier: GPL-3.0-only
+
 package dhcp
 
 import (
@@ -21,7 +24,7 @@ import (
 	log "github.com/sirupsen/logrus"
 	"github.com/vishvananda/netns"
 
-	"github.com/devplayer0/docker-net-dhcp/pkg/util"
+	"github.com/claymore666/docker-net-dhcp/pkg/util"
 )
 
 const (

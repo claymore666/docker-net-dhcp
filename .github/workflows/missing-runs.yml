@@ -1,0 +1,54 @@
+name: Missing runs
+
+# Reconciles open PR heads against the workflow runs that exist (#418).
+#
+# On 2026-08-01 three consecutive pushes to a PR branch created ZERO
+# workflow runs. Actions itself was healthy — a manual dispatch started
+# immediately, nothing was queued, githubstatus was green — only
+# push / pull_request event delivery was dropping, most likely a
+# secondary rate limit after a busy day.
+#
+# The absence of a run is indistinguishable from a run that has not
+# finished, and after long enough it starts looking like a green branch.
+# `gh pr checks` reports the PREVIOUS commit's checks against the new
+# head without saying so, so a PR can read as passing for code no runner
+# ever saw.
+#
+# This cannot live inside a normal run: nothing executes to notice that
+# nothing executed. Hence a schedule.
+#
+# Hosted runner, read-only token, no privileges — it must not compete
+# for the self-hosted pool it is reporting on.
+on:
+  schedule:
+    # Every 30 minutes. The grace below is 20, so a genuinely dropped
+    # push surfaces within about an hour of being pushed.
+    - cron: '7,37 * * * *'
+  workflow_dispatch:
+    inputs:
+      grace-minutes:
+        description: "How long a head may have no run before it counts as missing."
+        required: false
+        default: "20"
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: read
+  actions: read
+
+concurrency:
+  group: missing-runs
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Reconcile open PR heads against existing runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GATE_REPO: ${{ github.repository }}
+        run: bash scripts/check-missing-runs.sh "${{ inputs.grace-minutes || '20' }}"

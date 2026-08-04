@@ -1,3 +1,6 @@
+// Copyright the docker-net-dhcp contributors.
+// SPDX-License-Identifier: GPL-3.0-only
+
 //go:build integration
 
 package integration
@@ -10,7 +13,7 @@ import (
 
 	docker "github.com/docker/docker/client"
 
-	"github.com/devplayer0/docker-net-dhcp/test/integration/harness"
+	"github.com/claymore666/docker-net-dhcp/test/integration/harness"
 )
 
 // healthFloorBudget is how long the floor waits for /Plugin.Health to
@@ -44,9 +47,13 @@ const healthFloorBudget = 30 * time.Second
 //     Since #385 the verdict says which of the two it is instead of
 //     printing an unqualified "clean" — see FloorCleanLine. Making the
 //     floor actually span the whole run is the remaining half of #385.
-//   - It does not assert h.Healthy. See CheckHealthFloor — one of the
-//     three counters behind that flag still counts a benign event as
-//     a fault (#376).
+//   - It asserts h.Healthy since #421, alongside the three counters
+//     behind that flag. All three are now fatal — the benign paths that
+//     used to be folded into recovery_failed are counted separately as
+//     recovery_deferred (#383) and recovery_aborted_container_gone
+//     (#376) — and the flag is checked as well as the table, so a
+//     fourth healthy-affecting counter added to the plugin cannot slip
+//     past this suite's mirror of it.
 func checkHealthFloor(suite time.Duration) int {
 	// TestMain's own ctx carries a 60s setup timeout and expired long
 	// before m.Run() returned; the floor needs a fresh one.
@@ -98,7 +105,14 @@ func checkHealthFloor(suite time.Duration) int {
 	// a run. The census reads the whole log and had the number the whole
 	// time. A measurement nobody fails on is a measurement that prevents
 	// nothing (#385, #406).
-	censusFailures := printJoinCensus(ctx)
+	// Both censuses read the whole log, so unlike the counters below
+	// they are not blinded by a mid-suite plugin restart. The Join half
+	// already worked this way; extending it to the other two
+	// healthy-affecting counters is the remaining half of #385. Their
+	// increments each sit next to a distinct log line, and the log
+	// spans the run while the counters span only the last restart —
+	// 10% of one recent run.
+	censusFailures, faultCount := printCensuses(ctx)
 
 	// Printed before the verdict either way. The census answers "did
 	// anything break"; this answers "did the #406 grace carry attaches
@@ -109,6 +123,15 @@ func checkHealthFloor(suite time.Duration) int {
 	fmt.Fprint(os.Stderr, harness.AttachGraceLine(h, censusFailures))
 
 	findings := harness.CheckHealthFloor(h)
+	if len(findings) == 0 && faultCount > 0 {
+		fmt.Fprintf(os.Stderr,
+			"HEALTH FLOOR: the counters came back clean, but the log records %d "+
+				"healthy-affecting fault(s) across the run — see PLUGIN FAULTS above.\n"+
+				"  The counters missed them because they reset when the plugin does.\n"+
+				"  Failing on the log, which does not (#385).\n", faultCount)
+		printFloorEvidence(ctx)
+		return 1
+	}
 	if len(findings) == 0 {
 		fmt.Fprint(os.Stderr, harness.FloorCleanLine(h, suite.Seconds()))
 		if censusFailures > 0 {
@@ -135,6 +158,10 @@ func checkHealthFloor(suite time.Duration) int {
 		// zero is exactly the confusion this finding exists to end.
 		if f.Absent {
 			fmt.Fprintf(os.Stderr, "  %s %s=<not reported>: %s\n", verdict, f.Counter, f.Why)
+			continue
+		}
+		if f.Flag {
+			fmt.Fprintf(os.Stderr, "  %s %s=false: %s\n", verdict, f.Counter, f.Why)
 			continue
 		}
 		fmt.Fprintf(os.Stderr, "  %s %s=%d: %s\n", verdict, f.Counter, f.Value, f.Why)
@@ -183,9 +210,13 @@ func printFloorEvidence(ctx context.Context) {
 // single-digit counter (#385). Sizing the Join budget for the host
 // (#401) needs the real number, on every run, not the tail of it after
 // something else has already gone red.
-// Returns how many Join-start failures the log recorded, which the
-// floor now fails on.
-func printJoinCensus(ctx context.Context) int {
+// Returns how many Join-start failures the log recorded, and how many
+// other healthy-affecting faults it recorded. The floor fails on either.
+//
+// One read serves both censuses: the log is the single instrument that
+// spans the whole run, and reading it twice would invite the two
+// verdicts to disagree about which run they are describing.
+func printCensuses(ctx context.Context) (joinFailures, otherFaults int) {
 	_, data, err := harness.PluginLog(ctx)
 	if err != nil {
 		// A log we cannot read is reported as a fault rather than
@@ -194,11 +225,13 @@ func printJoinCensus(ctx context.Context) int {
 		// silence would mean an unreadable log reads as a clean one —
 		// the failure mode this whole issue is about.
 		fmt.Fprintf(os.Stderr,
-			"HEALTH FLOOR: could not read the plugin log to count Join failures: %v\n"+
+			"HEALTH FLOOR: could not read the plugin log to count faults: %v\n"+
 				"  Treating that as a fault: the log is the only instrument that spans the\n"+
 				"  whole run, so without it this run has no verdict to give (#385).\n", err)
-		return 1
+		return 1, 0
 	}
 	fmt.Fprint(os.Stderr, harness.JoinFailureCensus(data))
-	return harness.JoinFailureCount(data)
+	faults, report := harness.FaultCensus(data)
+	fmt.Fprint(os.Stderr, report)
+	return harness.JoinFailureCount(data), faults
 }

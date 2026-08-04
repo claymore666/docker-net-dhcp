@@ -1,3 +1,6 @@
+// Copyright the docker-net-dhcp contributors.
+// SPDX-License-Identifier: GPL-3.0-only
+
 //go:build integration
 
 package integration
@@ -12,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/devplayer0/docker-net-dhcp/test/integration/harness"
+	"github.com/claymore666/docker-net-dhcp/test/integration/harness"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/network"
 	docker "github.com/docker/docker/client"
@@ -32,18 +35,23 @@ type ledgerLine struct {
 	MAC       string `json:"mac"`
 }
 
-// readLedger reads STATE_DIR/leases.jsonl out of the plugin's rootfs
-// (same host-side access pattern as harness.ReadPluginLog). Returns
-// nil when the file doesn't exist yet — callers poll. Any line that
-// fails to parse is a test failure: the ledger's contract is that
-// every line is valid JSON.
+// readLedger reads STATE_DIR/leases.jsonl. Returns nil when the file
+// doesn't exist yet — callers poll. Any line that fails to parse is a
+// test failure: the ledger's contract is that every line is valid JSON.
+//
+// The path is on the HOST, not inside the plugin rootfs. Since #440
+// STATE_DIR is bind-mounted from /var/lib/net-dhcp so its contents
+// survive `docker plugin rm`; the in-rootfs path this used to read is
+// now the empty mount point. That is exactly what this test caught when
+// the mount landed — the ledger read as `[]` because it was looking at
+// the mount point rather than the mount.
+//
+// Deliberately NOT derived from PluginInspect any more. The old form
+// keyed on the plugin ID, and the whole point of the change is that the
+// state outlives any particular plugin ID.
 func readLedger(t *testing.T, ctx context.Context, cli *docker.Client) []ledgerLine {
 	t.Helper()
-	p, _, err := cli.PluginInspectWithRaw(ctx, harness.PluginRef)
-	if err != nil {
-		t.Fatalf("PluginInspect: %v", err)
-	}
-	path := filepath.Join("/var/lib/docker/plugins", p.ID, "rootfs/var/lib/net-dhcp/leases.jsonl")
+	path := filepath.Join(harness.HostStateDir, "leases.jsonl")
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -108,10 +116,7 @@ func TestAuditLog_RecordsLifecycle(t *testing.T) {
 	}
 	defer cli.Close()
 
-	before, err := harness.PluginHealth(ctx, cli)
-	if err != nil {
-		t.Fatalf("Plugin.Health (before): %v", err)
-	}
+	w := harness.BeginCounterWindow(t, ctx, cli, "ledger_write_failures")
 
 	netID := harness.CreateNetwork(t, ctx, netName, "macvlan", map[string]string{
 		"audit_log": "true",
@@ -217,10 +222,7 @@ func TestAuditLog_RecordsLifecycle(t *testing.T) {
 		t.Errorf("first ledger kind for MAC %s = %q, want \"bound\"", mac, kinds[0])
 	}
 
-	after, err := harness.PluginHealth(ctx, cli)
-	if err != nil {
-		t.Fatalf("Plugin.Health (after): %v", err)
-	}
+	before, after := w.End()
 	if after.LedgerWriteFailures != before.LedgerWriteFailures {
 		t.Errorf("ledger_write_failures moved %d -> %d; want flat",
 			before.LedgerWriteFailures, after.LedgerWriteFailures)
@@ -252,10 +254,7 @@ func TestAuditLog_DefaultOff(t *testing.T) {
 	}
 	defer cli.Close()
 
-	before, err := harness.PluginHealth(ctx, cli)
-	if err != nil {
-		t.Fatalf("Plugin.Health (before): %v", err)
-	}
+	w := harness.BeginCounterWindow(t, ctx, cli, "leases_obtained")
 
 	harness.CreateNetwork(t, ctx, netName, "macvlan", nil)
 	id, _, mac := harness.RunContainer(t, ctx, netName, ctrName)
@@ -263,14 +262,20 @@ func TestAuditLog_DefaultOff(t *testing.T) {
 	// Wait for the persistent client's bound event (the moment an
 	// audit-enabled network would have written its entry), then check
 	// the ledger has nothing for this MAC.
-	deadline := time.Now().Add(harness.IPAcquisitionBudget + 5*time.Second)
-	for time.Now().Before(deadline) {
-		h, err := harness.PluginHealth(ctx, cli)
-		if err == nil && h.LeasesObtained > before.LeasesObtained {
-			break
-		}
-		time.Sleep(200 * time.Millisecond)
+	//
+	// Reaching the bind is now required rather than merely attempted.
+	// The assertion below — "the ledger holds nothing for this MAC" —
+	// is satisfied trivially by a container that never bound at all, so
+	// letting the wait lapse silently would turn this into a test that
+	// passes hardest when the plugin is least functional.
+	if _, ok := w.Await(harness.IPAcquisitionBudget+5*time.Second,
+		func(now, before *harness.HealthResponse) bool {
+			return now.LeasesObtained > before.LeasesObtained
+		}); !ok {
+		t.Fatalf("no lease was obtained within %s, so an empty ledger proves nothing here",
+			harness.IPAcquisitionBudget+5*time.Second)
 	}
+	w.End()
 
 	if kinds := ledgerKindsForMAC(readLedger(t, ctx, cli), mac); len(kinds) != 0 {
 		t.Errorf("ledger has entries %v for MAC %s of a non-audit network; want none", kinds, mac)

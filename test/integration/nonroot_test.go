@@ -1,3 +1,6 @@
+// Copyright the docker-net-dhcp contributors.
+// SPDX-License-Identifier: GPL-3.0-only
+
 //go:build integration
 
 package integration
@@ -7,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/devplayer0/docker-net-dhcp/test/integration/harness"
+	"github.com/claymore666/docker-net-dhcp/test/integration/harness"
 	docker "github.com/docker/docker/client"
 )
 
@@ -58,10 +61,7 @@ func TestNonRootContainer_PersistentClientStarts(t *testing.T) {
 	}
 	defer cli.Close()
 
-	healthBefore, err := harness.PluginHealth(ctx, cli)
-	if err != nil {
-		t.Fatalf("PluginHealth (before): %v", err)
-	}
+	w := harness.BeginCounterWindow(t, ctx, cli, "join_start_failures")
 
 	harness.CreateNetwork(t, ctx, netName, "macvlan", map[string]string{
 		"parent": harness.EphemeralHostVeth,
@@ -99,11 +99,11 @@ func TestNonRootContainer_PersistentClientStarts(t *testing.T) {
 	}
 
 	// The suite shares one plugin instance, so assert the DELTA of the
-	// failure counter across this test, not its absolute value.
-	healthAfter, err := harness.PluginHealth(ctx, cli)
-	if err != nil {
-		t.Fatalf("PluginHealth (after): %v", err)
-	}
+	// failure counter across this test, not its absolute value. Closing
+	// the window also proves the instance was the same one throughout,
+	// without which the delta below would be arithmetic on two
+	// unrelated numbers (#405).
+	healthBefore, healthAfter := w.End()
 	if d := healthAfter.JoinStartFailures - healthBefore.JoinStartFailures; d != 0 {
 		t.Errorf("join_start_failures grew by %d during this test — persistent client failed to start", d)
 	}

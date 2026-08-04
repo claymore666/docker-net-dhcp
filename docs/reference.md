@@ -73,6 +73,19 @@ each group.
 
 ## Install, upgrade, uninstall
 
+> **⚠️ BREAKING CHANGE IN v1.5.0 — DO THIS FIRST ⚠️**
+>
+> ```bash
+> sudo mkdir -p /var/lib/net-dhcp
+> ```
+>
+> v1.5.0 is the first release that bind-mounts `STATE_DIR` from the
+> host, and **Docker will not create a missing bind source.** Run that
+> before `docker plugin install`, on every host, new install or
+> upgrade. Skip it and the install fails at start-up and leaves the
+> plugin **installed but disabled**, with a retry that reports only
+> `plugin ... already exists`. Recovery is two lines, just below.
+
 The plugin publishes to two registries; GHCR is primary:
 
 - `ghcr.io/claymore666/docker-net-dhcp:vX.Y.Z` (primary)
@@ -82,12 +95,34 @@ The plugin publishes to two registries; GHCR is primary:
 for unattended):
 
 ```bash
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.4.0
+# One-time: the plugin persists lease state here, bind-mounted from
+# the host so it survives upgrades (v1.5.0+). Docker will not create it
+# for you, and `plugin install` fails with a mount error if it is
+# missing — see "If the directory is missing" below.
+sudo mkdir -p /var/lib/net-dhcp
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.5.0
 ```
 
+**If the directory is missing**, the install pulls the plugin, then
+fails to start it and exits non-zero with an OCI mount error naming
+`/var/lib/net-dhcp`. The plugin is left **installed but disabled**, and
+re-running the same install command answers `plugin ... already exists`
+without re-attempting the mount, while `docker network create` against
+it answers `plugin ... found but disabled`. Neither second error
+mentions the cause. Recover by creating the directory and enabling the
+plugin that is already there:
+
+```bash
+sudo mkdir -p /var/lib/net-dhcp
+docker plugin enable ghcr.io/claymore666/docker-net-dhcp:v1.5.0
+```
+
+Nothing is lost or corrupted by the failed install. (Behaviour verified
+against Docker 26.1.5, #494.)
+
 Privileges requested: `network: host`, host PID namespace, the Docker
-socket mount, `CAP_NET_ADMIN` + `CAP_SYS_ADMIN` + `CAP_SYS_PTRACE`
-(v1.3.3+). All are inherent to what the plugin does: creating links in
+socket mount, a bind mount of `STATE_DIR` (v1.5.0+, see below),
+`CAP_NET_ADMIN` + `CAP_SYS_ADMIN` + `CAP_SYS_PTRACE` (v1.3.3+). All are inherent to what the plugin does: creating links in
 arbitrary netns, driving DHCP on the host's L2 segments, querying the
 daemon — and entering a container's netns via `/proc/<pid>/ns/net`,
 which the kernel ptrace-gates when the container runs as a non-root
@@ -96,9 +131,10 @@ user (#317).
 **Verify the signature (v1.1.0+).** The published image is cosign-signed
 (keyless) and carries SLSA build provenance; release artifacts ship a
 cosign-signed `checksums.txt` and an SBOM. Per-release, copy-pasteable
-verification commands live under **Verifying the signed artifacts** on
-each [GitHub Release](https://github.com/claymore666/docker-net-dhcp/releases);
-the [home page](index.md#verifying-releases) has the short form.
+verification commands live in
+[Verifying releases](verifying-releases.md), which every
+[GitHub Release](https://github.com/claymore666/docker-net-dhcp/releases)
+links to; the [home page](index.md#verifying-releases) has the short form.
 
 **Pin a version.** `:latest` exists and tracks the newest release, but
 networks remember the exact driver string they were created with — a
@@ -113,9 +149,18 @@ with, so the safe sequence for moving from `vOLD` to `vNEW` is:
 # 1. Stop containers using plugin networks
 # 2. Remove the networks (they're cheap to recreate; leases release)
 docker network rm my-dhcp-net
-# 3. Swap the plugin
+# 3. Swap the plugin (STATE_DIR on the host is left alone, so the
+#    tombstone and audit ledger carry across — v1.5.0+)
 docker plugin disable ghcr.io/claymore666/docker-net-dhcp:vOLD
 docker plugin rm ghcr.io/claymore666/docker-net-dhcp:vOLD
+# Upgrading ONTO v1.5.0 or later from an earlier version: create the
+# bind source first. v1.5.0 is the release whose manifest started
+# mounting STATE_DIR from the host, and Docker will not create a missing
+# bind source — the install below fails at start-up and leaves the
+# plugin disabled. vOLD is already gone at this point, so the host has
+# no working driver until you `docker plugin enable` the new one. See
+# "If the directory is missing" above. Harmless to repeat later.
+sudo mkdir -p /var/lib/net-dhcp
 docker plugin install ghcr.io/claymore666/docker-net-dhcp:vNEW
 # 4. Recreate networks against vNEW, restart containers
 ```
@@ -131,6 +176,15 @@ the supported one.)
 > `--driver-opt ip=<old address>` is *declined* while the server still
 > holds that address against the old MAC. The container comes back on a
 > different address.
+>
+> **v1.5.0+ removes one of the two causes.** `STATE_DIR` is now bind-
+> mounted from the host, so the tombstone that remembers an endpoint's
+> MAC and IP survives `docker plugin rm`. Before v1.5.0 it lived inside
+> the plugin rootfs and every upgrade destroyed it, which is a separate
+> loss from the network-removal one described above. Removing the
+> *network* still discards the tombstone — that is keyed by network ID
+> by construction — so the address only survives an upgrade in which
+> the network itself is left in place.
 >
 > This is not the same as a container restart, which *does* preserve the
 > address — see [Restart stability](#restart-stability-mac-and-ip). That
@@ -172,7 +226,7 @@ You bring an existing Linux bridge that is L2-connected to the LAN
 (see [`bridge-mode.md`](bridge-mode.md) for the bridge setup itself):
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.4.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.5.0 \
     --ipam-driver null \
     -o bridge=my-bridge \
     my-dhcp-net
@@ -184,7 +238,7 @@ No host changes — containers get per-container kernel-generated MACs
 as macvlan children of a host NIC:
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.4.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.5.0 \
     --ipam-driver null \
     -o mode=macvlan -o parent=eth0 \
     lan-dhcp
@@ -198,7 +252,7 @@ security, hostile vSwitches, some Wi-Fi APs). The DHCP server must
 key reservations on DHCP option 61 (client identifier), not MAC:
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.4.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.5.0 \
     --ipam-driver null \
     -o mode=ipvlan -o parent=eth0 \
     lan-dhcp
@@ -307,7 +361,7 @@ Set with `docker plugin set <plugin> NAME=value`; take effect after
 | ---- | ------- | ------- |
 | `LOG_LEVEL` | `info` | logrus level (`trace`, `debug`, `info`, `warn`, `error`). `trace` includes per-event `dhcpcd` lines and full HTTP-RPC bodies. |
 | `AWAIT_TIMEOUT` | `10s` | Cap on the polling helpers (sandbox readiness, link rename, netns appearance). Bump if a slow daemon-restore window starves endpoint setup. |
-| `STATE_DIR` | `/var/lib/net-dhcp` | Where per-network options, the tombstone file, and the `audit_log` ledger persist (inside the plugin rootfs). |
+| `STATE_DIR` | `/var/lib/net-dhcp` | Where per-network options, the tombstone file, and the `audit_log` ledger persist. **Bind-mounted from the host at this exact path since v1.5.0**, so its contents survive `docker plugin rm` — before that they lived in the plugin rootfs and every upgrade destroyed them. Two consequences: durability begins with the version that introduced the mount (an upgrade *onto* v1.5.0 still starts from nothing, because the old state was never on the host), and **repointing this setting opts out** — a path other than the mounted one is inside the rootfs again and is wiped by the next upgrade. |
 | `OUTAGE_TICK` | `30s` | How often the DHCP-outage watchdog re-checks each client, and so the resolution of `dhcp_timeouts` — the counter climbs about once per tick while a server is unreachable. Lower it for a finer-grained signal at the cost of a little more wakeup churn. |
 | `OUTAGE_GRACE` | `25s` | Settling time before the watchdog will call an outage, added **on top of** the lease lifetime, so detection lands at `lease + grace`. Also the window a never-yet-bound client gets before its first failure is reported. |
 
@@ -474,7 +528,7 @@ Runs a second persistent client (`dhcpcd -6`) alongside the v4 one —
 not work with the null IPAM driver and is not what you want:
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.4.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.5.0 \
     --ipam-driver null \
     -o mode=macvlan -o parent=eth0 -o ipv6=true \
     lan-dhcp6
@@ -541,10 +595,17 @@ back into the Docker API to learn the mode or parent. That callback is
 what deadlocked the upstream plugin during `dockerd` startup, when it was
 asked to restore containers using its own networks.
 
-State survives enable/disable cycles and is reset by `docker plugin rm`
-or `docker plugin upgrade`. After an upgrade, existing networks fall back
-to the Docker API on first read, which back-fills the file — so by the
-second endpoint operation everything is served from disk again.
+State survives enable/disable cycles, and — since v1.5.0, because
+`STATE_DIR` is [bind-mounted from the host](#plugin-settings) — it
+survives `docker plugin rm` and `docker plugin upgrade` too. Before
+v1.5.0 it lived in the plugin rootfs and every upgrade reset it.
+
+The fall-back path is still there and still matters, because state can
+be absent for other reasons (a first install, a `STATE_DIR` repointed
+off the mount, a file removed by hand): on a cache miss, existing
+networks fall back to the Docker API on first read, which back-fills the
+file — so by the second endpoint operation everything is served from
+disk again.
 
 ---
 
@@ -558,7 +619,7 @@ without it `curl -s` swallows the permission error and prints nothing,
 which looks exactly like a dead endpoint:
 
 ```bash
-PLUGIN_ID=$(docker plugin inspect -f '{{.Id}}' ghcr.io/claymore666/docker-net-dhcp:v1.4.0)
+PLUGIN_ID=$(docker plugin inspect -f '{{.Id}}' ghcr.io/claymore666/docker-net-dhcp:v1.5.0)
 sudo curl -s --unix-socket /run/docker/plugins/$PLUGIN_ID/net-dhcp.sock \
     http://localhost/Plugin.Health | jq .
 ```
@@ -576,7 +637,8 @@ diagnosing a specific container from them alone is not.
 | field | healthy-affecting | meaning |
 | ----- | ----------------- | ------- |
 | `healthy` | — | `false` when `recovery_failed`, `join_start_failures`, or `tombstone_write_failures` is non-zero — an operator should look. The plugin keeps serving fresh attaches either way. |
-| `uptime_seconds` | — | Seconds since the plugin process started. |
+| `instance_id` | — | (v1.5.0+) Opaque identifier of the plugin **process** serving this response. Every counter below is in-memory and returns to zero when the process does, so two readings are comparable as a delta only when their `instance_id` matches. If it changed between two samples, the plugin restarted and any difference you computed is meaningless — including one that reads as zero. Prefer this over `uptime_seconds` for that check: a plugin that restarts early in a long sampling window and then runs longer than the first reading shows uptime going *up*, hiding the restart. |
+| `uptime_seconds` | — | Seconds since the plugin process started. Useful as an age, but see `instance_id` before using it to decide whether a restart happened. |
 | `active_endpoints` | — | DHCP managers currently registered (post-Join, pre-Leave). |
 | `pending_hints` | — | Join hints awaiting consumption; steady-state ~0. |
 | `recovered_ok` | — | Endpoints successfully rebuilt by plugin-restart recovery. |
@@ -588,6 +650,7 @@ diagnosing a specific container from them alone is not.
 | `join_attach_slow` | no | (v1.4.0+) Attaches that succeeded, but only after outlasting `AWAIT_TIMEOUT`. Not a fault — the container has its renewal client. It is reported because the wait has an external cause worth seeing: the attach asks the daemon about the container being attached, and the daemon does not answer while it is still inside that container's start. Before v1.4.0 those attaches were abandoned and counted as `join_start_failures`, leaving a running container with no renewal client (#406). A rising count means the daemon is holding containers longer, not that the plugin is degrading. |
 | `join_aborted_endpoint_left` | no | (v1.4.0+) Attaches cancelled because `Leave` arrived while the attach was still running — the endpoint was being torn down. Not a fault: there is no running container missing a renewal client. Distinguished from `join_start_failures` by direct evidence rather than inference, since the plugin cancelled the attach itself and knows why (#406). |
 | `tombstone_write_failures` | yes | Failed tombstone saves (disk full, EROFS) — the next restart of some container will pick a fresh MAC/IP instead of inheriting. |
+| `tombstones_consumed` | no | (v1.5.0+) Recreated containers that got their previous MAC/IP back by replaying a fresh tombstone. Not a fault — this is the address-stability mechanism working. It is the counterpart to `recovered_ok`: after a restart an address is preserved either by recovery re-adopting a still-attached endpoint (`recovered_ok`) or by a tombstone being replayed (this). Reported so the two can be told apart, which is what makes "the address survived, but via neither path" observable rather than silent (#386). |
 | `lease_changed` | no | Renewals that returned a different IP than last recorded (v4+v6 aggregate). Docker's `inspect` view does **not** update on lease change (libnetwork has no in-place endpoint-IP swap), so this is the stale-inspect-window signal — alert on it for long-running containers. |
 | `leases_obtained` | no | `dhcpcd` bind events (`BOUND`/`REBOOT`, and the v6 equivalents): initial bind or re-bind after NAK/lease loss. v4+v6 aggregate. |
 | `leases_renewed` | no | `dhcpcd` `RENEW`/`REBIND` events. v4+v6 aggregate. |
@@ -596,6 +659,8 @@ diagnosing a specific container from them alone is not.
 | `naks_received` | no | (v1.0.0+) The server NAKed a renewal/rebind (v4+v6 aggregate). `dhcpcd` recovers by re-acquiring, so each NAK is typically followed by `leases_obtained` — and, if the address moved, `lease_changed` — bumps. Climbing alongside `lease_changed` means containers are being re-addressed mid-life. |
 | `displaced_stops` | no | (v1.3.5+) Attaches that found a manager already registered for the same endpoint and stopped it — a container restarting into a plugin that had already recovered it (#338). The displaced client is released cleanly and the new one takes over, so a few are normal after a plugin restart. Climbing steadily alongside `recovered_ok` means a container is in a restart loop. |
 | `orphaned_leases_released` | no | (v1.3.6+) Leases reclaimed for a container that exited before its renewal client could attach (#370). The address is acquired during endpoint setup and deliberately held for the handover; when the handover never happens, the plugin synthesises a release instead of letting the address sit until it expires. A steady trickle is normal wherever short-lived containers run. |
+| `restart_link_up_waited` | no | (v1.5.0+) Child links that came up only after waiting out the departing link's hold on the address — i.e. how often a container restart met the #408 window and the fix carried it. Not a fault: this is the repair working, counted so the window is visible rather than inferred. A steady rise means your hosts restart containers fast enough to hit it routinely, which is expected for images that handle `SIGTERM` promptly. |
+| `restart_link_up_timeouts` | no | (v1.5.0+) The same wait outlasting its budget: the restart fails and `docker restart` reports `address already in use`. A real failure, but deliberately not `healthy`-affecting — it surfaces directly to whoever ran the command, and `healthy` is for faults nothing else reports. Any non-zero value here is worth investigating; it means the departing link held the address longer than the budget allows (#422). |
 | `orphaned_lease_release_failures` | no | (v1.3.6+) A reclaim above that could not be completed — the address stays held upstream until its own expiry, exactly as it did before the reclaim existed. Read as a rate against `orphaned_leases_released`: a few failures are transient upstream trouble, a ratio near 1 means the reclaim path itself is broken (no route to the segment, server refusing the synthesised client). Not `healthy`-affecting, which is worth knowing when reading it: this counter can climb on every container without turning anything red, and did (#402). |
 | `ledger_write_failures` | no | Failed `audit_log` ledger appends — degrades forensics, not networking. Operators using `audit_log` alert on this. |
 | `lease_changed_v6`, `leases_obtained_v6`, `leases_renewed_v6`, `dhcp_timeouts_v6`, `naks_received_v6` | no | (v1.2.0+) The IPv6-only share of the matching aggregate above (#212). Each counts only the v6 client's events; the v4 share is the aggregate minus its `*_v6`. On a dual-stack host this isolates the v6-specific NAK/timeout signal the aggregate hides. `lease_release_failures` and `ledger_write_failures` have no per-family split. |
@@ -639,12 +704,36 @@ sudo cat /var/lib/docker/plugins/*/rootfs/var/log/net-dhcp.log
 Raise verbosity with `docker plugin set <plugin> LOG_LEVEL=trace`
 (plus a disable/enable cycle).
 
-### Lease audit ledger (`audit_log=true`)
+**That file does not survive an upgrade.** It lives in the plugin
+rootfs, which Docker destroys and recreates on `docker plugin rm` /
+`install` — the supported upgrade path — so the previous version's
+history is gone at exactly the point you are most likely to want it.
 
-`STATE_DIR/leases.jsonl` inside the plugin rootfs:
+Since v1.5.0 every line also goes to the plugin's stdout, which dockerd
+captures into the **daemon** log on the host filesystem. That copy
+outlives the plugin:
 
 ```bash
-sudo cat /var/lib/docker/plugins/*/rootfs/var/lib/net-dhcp/leases.jsonl | jq .
+# systemd hosts
+sudo journalctl -u docker --since "2 hours ago" | grep net-dhcp
+# or, where dockerd logs to a file
+sudo grep net-dhcp /var/log/docker.log
+```
+
+Take the in-rootfs copy for a focused read of the running plugin, and
+the daemon log when you need history across an upgrade or the plugin is
+already gone.
+
+### Lease audit ledger (`audit_log=true`)
+
+`STATE_DIR/leases.jsonl`. Since v1.5.0 `STATE_DIR` is bind-mounted from
+the host, so read it there. The old path under the plugin rootfs is not
+where the ledger lands any more — the mount is applied in the plugin's
+own mount namespace, so following that path from the host finds a
+mount point at best and, more usually, nothing at all:
+
+```bash
+sudo cat /var/lib/net-dhcp/leases.jsonl | jq .
 ```
 
 One JSON object per line; kinds `bound`, `renew`, `release`,
@@ -678,7 +767,7 @@ Compose-managed alternative (network lifecycle tied to the project):
 ```yaml
 networks:
   lan:
-    driver: ghcr.io/claymore666/docker-net-dhcp:v1.4.0
+    driver: ghcr.io/claymore666/docker-net-dhcp:v1.5.0
     driver_opts:
       mode: macvlan
       parent: eth0
@@ -755,7 +844,7 @@ consumer-side:
 | Reservations don't stick on ipvlan | DHCP server keys on MAC only, ignores option 61 | Use `mode=macvlan`, or configure the server to honor client identifiers |
 | Container can't reach the Docker host (or vice versa) | macvlan/ipvlan kernel rule: children can't talk to the parent NIC's host IP | Bridge mode, or a second NIC — not a plugin setting |
 | `dhcp_timeouts` climbs on a healthy network, often just after containers start | `OUTAGE_GRACE` is set below the time a client needs to acquire its first lease, so ordinary start-up is being reported as an outage | Raise `OUTAGE_GRACE`, or unset both outage variables to return to the defaults. The plugin logs a warning at startup whenever either is overridden — check the log's first lines |
-| `healthy: false` on `/Plugin.Health` | Recovery or tombstone-write failure | See the field table above; restart affected containers; check disk space under the plugin rootfs |
+| `healthy: false` on `/Plugin.Health` | Recovery or tombstone-write failure | See the field table above; restart affected containers; for a tombstone-write failure check space and writability on the filesystem holding [`STATE_DIR`](#plugin-settings) — the host's `/var/lib/net-dhcp` since v1.5.0, the plugin rootfs before that |
 | Container came back on a **different IP** after a plugin upgrade | Recreating the network minted a new child MAC; the server keys the old lease to the old MAC and declines the re-request | Expected — see the callout under [Upgrade](#install-upgrade-uninstall). Pin the endpoint MAC and reserve it server-side to make the address survive future upgrades |
 | `/Plugin.Health` prints nothing and exits 0 | `curl` run without `sudo`; `/run/docker/plugins` is root-only and `-s` hides the error | Re-run with `sudo` — see [`/Plugin.Health`](#pluginhealth) |
 | `leases_renewed` still 0 and the log looks empty | Probably nothing — clean renewals log at `Debug`, and T1 may not have arrived | [Verify renewal properly](#verifying-that-renewal-works): read T1 from the lease, then re-check the counter |

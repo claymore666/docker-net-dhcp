@@ -122,7 +122,7 @@ jobs:
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
       - name: Log in to GHCR
-        uses: docker/login-action@abd2ef45e78c5afb21d64d4ca52ee8550d9572c7 # v4
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -131,7 +131,7 @@ jobs:
       - name: Log in to Docker Hub
         id: hub-login
         if: env.HAS_HUB_CREDS == 'true'
-        uses: docker/login-action@abd2ef45e78c5afb21d64d4ca52ee8550d9572c7 # v4
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
@@ -378,6 +378,10 @@ jobs:
           TAG="${{ needs.release.outputs.tag }}"
           REF="${GHCR_NAME}:${TAG}"
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          # The published plugin bind-mounts STATE_DIR, and the daemon
+          # does not create a missing bind source (#440). verify-install
+          # must do exactly what the docs tell an operator to do.
+          sudo mkdir -p /var/lib/net-dhcp
           docker plugin install --grant-all-permissions "$REF"
           docker plugin ls
 
@@ -409,6 +413,16 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       TAG: ${{ needs.release.outputs.tag }}
+      # The attached artifacts, declared once. Both the notes step (which
+      # names them for readers, since GitHub lazy-loads the assets list)
+      # and the upload step read this, so the list on the page cannot
+      # drift from the list actually uploaded (#469).
+      RELEASE_FILES: >-
+        net-dhcp-plugin-${{ needs.release.outputs.tag }}-linux-amd64.tar.gz
+        sbom.spdx.json
+        sbom.cdx.json
+        checksums.txt
+        checksums.txt.sigstore.json
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -423,57 +437,93 @@ jobs:
       - name: Assemble release notes
         run: |
           set -euo pipefail
-          # Per-version section from RELEASE_NOTES.md (the extraction the
-          # runbook documents). Exact-match the header so version dots
-          # aren't treated as regex. Empty for rc/suffixed tags that have
-          # no notes section — fall back to a short body so the dry-run
-          # still produces a release.
-          awk -v hdr="## ${TAG}" '$0==hdr{flag=1; next} /^## v/{flag=0} flag' \
-            RELEASE_NOTES.md > notes.md || true
-          if [ ! -s notes.md ]; then
-            echo "Pre-release / dry-run build for \`${TAG}\`." > notes.md
-          fi
-          # Append cosign verification instructions for the signed manifest.
-          # Heredoc (not a wall of single-quoted echos) so the literal
-          # backslash line-continuations don't trip shellcheck SC1003 in
-          # the actionlint gate (#183). Quoted 'EOF' -> emitted verbatim.
-          cat >> notes.md <<'EOF'
+          # A release page is a landing page — for a link preview, a search
+          # engine, and anything summarising the project cold (#469). So the
+          # body is assembled as: self-locating line, then the hand-written
+          # notes, then what you can download, then a link out to the
+          # verification docs.
 
-          ## Verifying the signed artifacts
+          # 1. The lead line. GitHub uses the first ~200 characters of the
+          #    body as og:description, which is what Slack/Discord/forum
+          #    previews show. Before this it was whatever the notes happened
+          #    to open with — for v1.4.0, a sentence about the integration
+          #    suite's wall clock, with the project unnamed.
+          cat > notes.md <<EOF
+          **docker-net-dhcp ${TAG}** — a Docker network plugin that leases
+          container IPs from your LAN's real DHCP server instead of Docker's
+          own IPAM. Bridge, macvlan and ipvlan modes.
 
-          The `checksums.txt` manifest is signed keylessly with cosign (Sigstore); one signature covers every attached artifact. Verify the manifest, then check the artifacts against it:
-
-          ```sh
-          cosign verify-blob \
-            --bundle checksums.txt.sigstore.json \
-            --certificate-identity-regexp '^https://github.com/claymore666/docker-net-dhcp/.github/workflows/release.yml@' \
-            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-            checksums.txt
-          sha256sum -c checksums.txt
-          ```
-
-          The published plugin image is signed (cosign keyless) and carries SLSA build provenance, and an SBOM is attached (`sbom.spdx.json`, `sbom.cdx.json`):
-
-          ```sh
-          # image signature
-          cosign verify ghcr.io/claymore666/docker-net-dhcp:VERSION \
-            --certificate-identity-regexp '^https://github.com/claymore666/docker-net-dhcp/.github/workflows/release.yml@' \
-            --certificate-oidc-issuer https://token.actions.githubusercontent.com
-          # build provenance (image + release artifacts)
-          gh attestation verify oci://ghcr.io/claymore666/docker-net-dhcp:VERSION --repo claymore666/docker-net-dhcp
-          gh attestation verify net-dhcp-plugin-VERSION-linux-amd64.tar.gz --repo claymore666/docker-net-dhcp
-          ```
           EOF
+
+          # 2. Per-version section from RELEASE_NOTES.md (the extraction the
+          #    runbook documents). Exact-match the header so version dots
+          #    aren't treated as regex. Empty for rc/suffixed tags that have
+          #    no notes section — fall back to a short body so the dry-run
+          #    still produces a release.
+          awk -v hdr="## ${TAG}" '$0==hdr{flag=1; next} /^## v/{flag=0} flag' \
+            RELEASE_NOTES.md > section.md || true
+          if [ ! -s section.md ]; then
+            echo "Pre-release / dry-run build for \`${TAG}\`." > section.md
+          fi
+          # The rest of the body is written in one group: the notes
+          # section, then (3) the artifact names — GitHub lazy-loads the
+          # assets list, so the filenames appear nowhere in the fetched
+          # HTML and "what can I download, for which architecture" had no
+          # answer on the page. Generated from the same list that gets
+          # uploaded, so it cannot drift from what is actually attached.
+          {
+            cat section.md
+            echo
+            echo "## Downloads"
+            echo
+            echo "\`linux/amd64\`. Plugin image: \`ghcr.io/claymore666/docker-net-dhcp:${TAG}\` (mirrored to Docker Hub as \`claymore666/net-dhcp\`)."
+            echo
+            echo "| file | what it is |"
+            echo "| --- | --- |"
+            for f in $RELEASE_FILES; do
+              case "$f" in
+                *.tar.gz)                 what="plugin rootfs + \`config.json\`" ;;
+                checksums.txt)            what="SHA-256 of every attached file" ;;
+                checksums.txt.sigstore.json) what="cosign bundle signing \`checksums.txt\`" ;;
+                sbom.spdx.json)           what="SBOM, SPDX" ;;
+                sbom.cdx.json)            what="SBOM, CycloneDX" ;;
+                *)                        what="release artifact" ;;
+              esac
+              echo "| \`${f}\` | ${what} |"
+            done
+
+            # 4. Link the verification instructions instead of repeating
+            #    them. The full block used to be appended verbatim to every
+            #    release: ~1200 characters, over half the body of a small
+            #    release and 96% of every rc. Anything that read the
+            #    releases page and truncated saw `cosign verify-blob`
+            #    several times and the changelog once.
+            echo
+            echo "## Verifying this release"
+            echo
+            echo "Signed and attested with Sigstore: the image carries a cosign signature and SLSA build provenance, and \`checksums.txt\` is signed so one signature covers every attached file."
+            echo
+            echo "Copy-pasteable commands: **<https://claymore666.github.io/docker-net-dhcp/verifying-releases/>**"
+          } >> notes.md
 
       - name: Create or update the GitHub Release with signed artifacts
         run: |
           set -euo pipefail
+          # rc builds are published as DRAFTS (#469). They still exercise the
+          # real publish path — which is the entire point of the dry-run, so
+          # skipping `gh release create` for them would defeat it — but a
+          # draft stays out of the public releases list. Before this, every
+          # vX.Y.Z sat next to its vX.Y.Z-rc1 and page one of the list was
+          # ten entries of which five were boilerplate dry-run builds.
+          # Nothing downstream depends on an rc release being public:
+          # verify-install installs from the registry, not from release
+          # assets, and runs before this job.
           if [ "${{ needs.release.outputs.prerelease }}" = "true" ]; then
-            PRE="--prerelease=true"
+            PRE="--prerelease=true --draft=true"
           else
-            PRE="--prerelease=false"
+            PRE="--prerelease=false --draft=false"
           fi
-          FILES="net-dhcp-plugin-${TAG}-linux-amd64.tar.gz sbom.spdx.json sbom.cdx.json checksums.txt checksums.txt.sigstore.json"
+          FILES="$RELEASE_FILES"
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             # Re-dispatch of an existing tag: refresh assets + metadata.
             # shellcheck disable=SC2086

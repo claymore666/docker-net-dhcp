@@ -111,6 +111,8 @@ jobs:
         run: |
           make PLUGIN_NAME=ghcr.io/claymore666/docker-net-dhcp PLUGIN_TAG=integration-hosted plugin
           docker plugin rm -f "${INTEGRATION_PLUGIN_REF}" 2>/dev/null || true
+          # See integration.yml — the bind source must pre-exist (#440).
+          sudo mkdir -p /var/lib/net-dhcp
           docker plugin create "${INTEGRATION_PLUGIN_REF}" plugin
           # Same test-only outage cadence as integration.yml and
           # coverage.yml (#278). This lane runs the failure suite too, so

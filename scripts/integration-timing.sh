@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright the docker-net-dhcp contributors.
+# SPDX-License-Identifier: GPL-3.0-only
+
 # integration-timing.sh — summarize per-test wall-clock from one or more
 # `go test -v` logs. Prints the slowest tests + total to stdout and, when
 # running under Actions, to the job's step summary.

@@ -19,13 +19,13 @@ publishing chain is first wired up.
 The workflow installs everything it needs itself; this is only about
 the commands **you** type. Nothing here is checked by CI, so a missing
 tool surfaces as a step you skip rather than a gate that fails — which
-is exactly how the v1.3.5 release ended up unable to run step 9's
+is exactly how the v1.3.5 release ended up unable to run step 10's
 verification.
 
 | Tool | Needed for | Install |
 | --- | --- | --- |
 | `gh` | every step — PRs, milestones, run status, `gh release view` | distro package or <https://cli.github.com> |
-| `cosign` | step 9's `verify-blob` re-verification | `go install github.com/sigstore/cosign/v3/cmd/cosign@latest` |
+| `cosign` | step 10's `verify-blob` re-verification | `go install github.com/sigstore/cosign/v3/cmd/cosign@latest` |
 | `crane` | optional — comparing `:latest` and `:vX.Y.Z` digests by hand | `go install github.com/google/go-containerregistry/cmd/crane@latest` |
 
 **Use cosign v3.** The release signs `checksums.txt` keylessly and
@@ -36,7 +36,7 @@ v1.3.5 verification was run with (v3.1.2); older majors are untested
 against `checksums.txt.sigstore.json` here.
 
 Also needed, but already true on any box that has committed here: a
-git signing key, since step 8 tags with `-s`. Confirm with
+git signing key, since step 9 tags with `-s`. Confirm with
 `git config --get user.signingkey` before you get to the tag.
 
 ### GHCR — package must be linked to the repo
@@ -143,7 +143,7 @@ verify-install — but **`:latest` is not moved** and no bare
 release tag is touched. Zero impact on anything a user pulls by
 default.
 
-Use it before every real release tag (step 8 below):
+Use it before every real release tag (step 9 below):
 
 ```sh
 git checkout main && git pull --ff-only      # the release commit
@@ -174,7 +174,7 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
 1. **Branch off `dev`:** `git checkout -b release/vX.Y.Z origin/dev`
 2. **Bump install pins:** `scripts/bump-version.sh vX.Y.Z` (#251). It
    rewrites every published-image pin
-   (`ghcr.io/.../docker-net-dhcp:vPREV` in the `plugin install` /
+   (`ghcr.io/claymore666/docker-net-dhcp:vPREV` in the `plugin install` /
    `network create` / `driver:` / `plugin inspect` snippets across
    `README.md` and `docs/`) to the new tag, and leaves bare `vX.Y.Z`
    feature markers and historical prose (`As of vPREV every PR...`,
@@ -207,13 +207,80 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
 
    Then still read everything user-visible top-to-bottom for anything
    the per-PR pass misses — `README.md` (feature list, driver-opt table,
-   examples), every file under `docs/` (including this runbook — process
-   changes during the cycle land here too), and the coverage table if
-   republished. Anything describing the previous version's behaviour,
-   options, or numbers gets updated on the release branch now.
-   Everything under `docs/` (plus `docs/index.md`, the site home) is
-   what the versioned documentation site publishes for this tag, so the
-   review *is* the site review — there's no separate wiki to reconcile.
+   examples), `GOVERNANCE.md` and `SECURITY.md`, every file under
+   `docs/` (including this runbook — process changes during the cycle
+   land here too), and the coverage table if republished. Anything
+   describing the previous version's behaviour, options, or numbers gets
+   updated on the release branch now. Everything under `docs/` (plus
+   `docs/index.md`, the site home) is what the versioned documentation
+   site publishes for this tag, so the review *is* the site review —
+   there's no separate wiki to reconcile.
+
+   **Read the pages whole, and aim at the ungated prose.** The
+   reference material defends itself: `check-option-docs.sh`,
+   `check-docs-drift.sh` and `check-version-pins.sh` gate every driver
+   option, health counter, plugin setting and image pin, so those tables
+   are the *least* likely place to find drift. What rots is everything
+   else — a walkthrough's shell snippet, a troubleshooting row, a
+   sentence in a Behaviour section, a hand-maintained list. The v1.5.0
+   pass found eight divergences (#489) and every one of them was in
+   ungated prose; none would have been caught by grepping for keywords.
+
+   **Some drift belongs to no milestone PR at all**, so the per-PR read
+   cannot reach it by construction. Check these directly:
+
+   - **Commands and paths that never existed or stopped working.**
+     `docker plugin logs` was in the README's bug-report checklist and
+     is not a Docker subcommand. Run the commands the docs tell a
+     reader to run.
+   - **Text invalidated by a feature in *this* release.** #440 mounted
+     `STATE_DIR` from the host and left two recipes still routing
+     operators through the plugin rootfs. A feature PR updates the
+     section it is about; it rarely finds the other page that quietly
+     depended on the old behaviour.
+   - **Syntax deprecated upstream.** Compose, Docker CLI and dhcpcd move
+     on their own schedule. `docker compose -f <snippet> config` prints
+     the deprecation warnings for anything in a Compose example.
+   - **Restated lists that live somewhere else.** Required CI checks,
+     registries, privileges. Prefer replacing the copy with a pointer at
+     the authority — the way step 5 defers to branch protection — over
+     updating a copy that will decay again.
+
+   **Verify each finding against the artifact, not from reasoning.**
+   Run the command, `config` the snippet, `ls` the path on the test
+   box, query the API (`gh api repos/.../branches/dev/protection`). A
+   confidently-argued divergence that turns out to be wrong costs more
+   than the one it replaced.
+
+   **A finding that is a class, not an incident, ends in a gate.** Same
+   rule as anywhere else in this project: if the same shape of staleness
+   can recur on the next mount, option or workflow change, add the check
+   rather than a promise to remember. The rootfs-path finding above
+   became a fourth rule in `check-docs-drift.sh`, deriving the
+   bind-mount destinations from `config.json`, so that class now fails
+   loudly.
+
+   **The badge answers are documentation too.** `.bestpractices.json`
+   at the repo root holds this project's OpenSSF Best Practices answers
+   — one `<criterion>_status` plus a `<criterion>_justification` each —
+   and every justification is a claim about the repository that can go
+   stale exactly like prose. Reconcile it against the milestone the same
+   way, then check it against the live entry:
+
+   ```sh
+   python3 scripts/badge-sync.py --diff
+   ```
+
+   If a milestone PR earned or invalidated a criterion (a new gate, a
+   document that now exists, a policy that changed), update the file on
+   the release branch. Pushing the reviewed file to the live badge entry
+   is a separate, deliberate step — see the script's header for the
+   session cookie it needs:
+
+   ```sh
+   export BADGEAPP_SESSION='<_BadgeApp_session cookie value>'
+   python3 scripts/badge-sync.py --push
+   ```
 
    The work happens here, on the release branch. The rc dry-run (step 8)
    is the **enforcement gate**: the real `vX.Y.Z` tag does not ship
@@ -268,9 +335,24 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
    rerunning, or it will just queue and be displaced again. This cost a
    full debugging session on v1.3.5 (#365) — the fix is thirty seconds
    once you know the shape of it.
-7. **Merge the release PR.** Squash or merge commit — both fine;
+7. **Assemble the verification evidence, don't hand-write it.**
+   ```sh
+   scripts/run-evidence.sh "$(git rev-parse 'HEAD^{tree}')"
+   ```
+   Prints every integration run that tested exactly this tree, with its
+   window and what else was on the privileged pool at the time. Paste
+   it into the release PR rather than reconstructing it from memory.
+
+   Read the overlap line literally. `none — ran alone` and `unknown`
+   are different claims: the second means the concurrent-run list did
+   not reach back far enough to judge, which happens once the repo has
+   been busy since. Do not upgrade an `unknown` to "ran alone" — the
+   v1.4.0 write-up asserted a concurrency caveat that the data did not
+   support, in both directions, which is what #432 was filed about.
+
+8. **Merge the release PR.** Squash or merge commit — both fine;
    match what's in `git log`.
-8. **Pull main, dry-run, then tag:** first push `vX.Y.Z-rc1` and
+9. **Pull main, dry-run, then tag:** first push `vX.Y.Z-rc1` and
    confirm the workflow run is green end-to-end (pre-release mode,
    `:latest` untouched — see "Pre-release dry-run" above). Then:
    ```sh
@@ -294,12 +376,18 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
    plugin from GHCR on a clean hosted runner and asserts it
    enables — a red verify-install means users can't install what
    we just shipped) → **github-release**.
-9. **Confirm the GitHub Release** — the `github-release` job now cuts
+10. **Confirm the GitHub Release** — the `github-release` job now cuts
    it automatically once `verify-install` is green (so a plugin that
    doesn't install never gets an advertised Releases page). It attaches
-   the cosign-signed artifacts and uses the `## vX.Y.Z` section of
-   `RELEASE_NOTES.md` as the body, so step 4's notes must already be in
-   place at tag time. No manual `gh release create` — instead verify:
+   the cosign-signed artifacts and builds the body as: a generated lead
+   line naming the project and version (it becomes the page's
+   `og:description`, so it is what link previews show — #469), the
+   `## vX.Y.Z` section of `RELEASE_NOTES.md`, a generated Downloads
+   table, and a link to [Verifying releases](verifying-releases.md).
+   Step 4's notes must therefore already be in place at tag time.
+   rc tags produce a **draft** release: the publish path is still
+   exercised, but dry-run builds stay out of the public list.
+   No manual `gh release create` — instead verify:
    ```sh
    gh release view vX.Y.Z   # body = the RELEASE_NOTES section; assets:
                             #   net-dhcp-plugin-vX.Y.Z-linux-amd64.tar.gz
@@ -317,7 +405,23 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
    an rc dry-run produces an equivalent **pre-release** with the same
    signed assets, which is how this path is exercised before the real
    tag (rc releases never move `:latest` and are marked pre-release).
-10. **Fast-forward `dev` to `main`** so the release commit (version
+10b. **Refresh the reference digests in
+   [Verifying releases](verifying-releases.md).** The "Rebuilding the
+   binaries yourself" section ends with the expected `sha256sum` of
+   `net-dhcp` and `dhcp-handler`, prefixed by the version they belong
+   to. Those can only be known once the tag has built, so this is the
+   one documentation change that cannot happen before the tag:
+   ```sh
+   gh run download <release-run-id> -n <artifact>   # or from the release
+   sha256sum rootfs/usr/sbin/net-dhcp rootfs/usr/lib/net-dhcp/dhcp-handler
+   ```
+   Update the version name and both digests, and land it on `dev` as a
+   normal PR (it back-merges to `main` with the next release). Leaving
+   the previous version's digests in place is worse than having none:
+   a reader who rebuilds the current tag and compares against them sees
+   a mismatch and concludes the release does not match its source.
+   Nothing gates this today (#502).
+11. **Fast-forward `dev` to `main`** so the release commit (version
    pins, RELEASE_NOTES section) lands on `dev` too:
    ```sh
    git checkout dev && git merge --ff-only main && git push origin dev
@@ -326,7 +430,7 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
    previous version's README/docs, and the next release PR has to
    re-bump them. Forgotten once after v0.9.0 — that's why
    `release.yml`'s header comment carries the same checklist.
-11. **Prune merged branches.** The repo has *Automatically delete head
+12. **Prune merged branches.** The repo has *Automatically delete head
    branches* enabled, so merged PR head branches are removed on merge.
    Two things that setting doesn't cover, so clean them now:
    ```sh

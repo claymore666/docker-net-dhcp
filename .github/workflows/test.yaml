@@ -89,7 +89,16 @@ jobs:
           bash scripts/test-check-no-ai-attribution.sh
           bash scripts/test-check-docs-drift.sh
           bash scripts/test-makefile-tee.sh
+          bash scripts/test-check-test-weakening.sh
+          bash scripts/test-ci-queue-watchdog.sh
+          bash scripts/test-run-evidence.sh
+          bash scripts/test-check-missing-runs.sh
+          bash scripts/test-integration-shard.sh
           bash scripts/test-check-issue-label-map.sh
+          bash scripts/test-sync-issue-state-labels.sh
+          bash scripts/test-check-license-headers.sh
+          bash scripts/test-badge-sync.sh
+          bash scripts/test-check-reproducible-build.sh
 
       # Every driver-option key the code parses must be documented in
       # docs/reference.md — an undocumented option turns CI red (#132).
@@ -123,6 +132,15 @@ jobs:
       # that notices.
       - name: Issue label map check
         run: bash scripts/check-issue-label-map.sh
+
+      # Every tracked source file must carry the copyright line and
+      # SPDX-License-Identifier (#454). A file added without them breaks
+      # no build and fails no test, so this gate is the only thing that
+      # would ever notice. It also pins the expression: GPL-3.0-only,
+      # not -or-later, which this fork has no standing to grant.
+      # Fix locally with: bash scripts/check-license-headers.sh --fix
+      - name: License-header check
+        run: bash scripts/check-license-headers.sh
 
   staticcheck:
     runs-on: ubuntu-latest
@@ -200,6 +218,20 @@ jobs:
         run: |
           printf '%s' "$PR_BODY" > "$RUNNER_TEMP/pr-body.md"
           bash scripts/check-no-ai-attribution.sh \
+            "$BASE_SHA..$HEAD_SHA" "$RUNNER_TEMP/pr-body.md"
+      # Same event, same range, same reason it is mechanical rather
+      # than remembered: "never weaken a failing test" was written into
+      # CLAUDE.md and an opt-out helper still reached dev and hid #402
+      # and #408 for months. Any finding is waived by an issue
+      # reference, so this blocks silence, not the edit (#413).
+      - name: Check the diff for a weakened test
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          printf '%s' "$PR_BODY" > "$RUNNER_TEMP/pr-body.md"
+          bash scripts/check-test-weakening.sh \
             "$BASE_SHA..$HEAD_SHA" "$RUNNER_TEMP/pr-body.md"
 
   # Reachable-vulnerability scan. Known-and-reviewed findings without a

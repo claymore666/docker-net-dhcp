@@ -94,5 +94,6 @@ nav:
   - macvlan / ipvlan: parent-attached-modes.md
   - Driver reference: reference.md
   - How it works: internals.md
+  - Verifying releases: verifying-releases.md
   - Maintainer:
       - Release runbook: release-runbook.md

@@ -1,3 +1,6 @@
+// Copyright the docker-net-dhcp contributors.
+// SPDX-License-Identifier: GPL-3.0-only
+
 //go:build integration
 
 package integration
@@ -7,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/devplayer0/docker-net-dhcp/test/integration/harness"
+	"github.com/claymore666/docker-net-dhcp/test/integration/harness"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/network"
 	docker "github.com/docker/docker/client"
@@ -67,10 +70,8 @@ func TestOrphanedLease_ReleasedWhenContainerExitsEarly(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = cli.Close() })
 
-	before, err := harness.PluginHealth(ctx, cli)
-	if err != nil {
-		t.Fatalf("Plugin.Health (before): %v", err)
-	}
+	w := harness.BeginCounterWindow(t, ctx, cli, "orphaned_leases_released")
+	before := w.Before()
 	releasesBefore := fixture.CountLogLines("DHCPRELEASE")
 	logLinesBefore := harness.CountPluginLogLines(t, ctx, "Released orphaned lease")
 
@@ -120,18 +121,12 @@ func TestOrphanedLease_ReleasedWhenContainerExitsEarly(t *testing.T) {
 	// Poll the counter rather than sleeping a fixed span: the reclaim is
 	// asynchronous by design and its duration is a DHCP round-trip, not
 	// a constant.
-	deadline := time.Now().Add(orphanReleaseBudget)
-	var after *harness.HealthResponse
-	for time.Now().Before(deadline) {
-		after, err = harness.PluginHealth(ctx, cli)
-		if err != nil {
-			t.Fatalf("Plugin.Health (after): %v", err)
-		}
-		if after.OrphanedLeasesReleased > before.OrphanedLeasesReleased {
-			break
-		}
-		time.Sleep(250 * time.Millisecond)
-	}
+	after, _ := w.Await(orphanReleaseBudget, func(now, before *harness.HealthResponse) bool {
+		return now.OrphanedLeasesReleased > before.OrphanedLeasesReleased
+	})
+	// Close the window: the reclaim is confirmed, and this also proves
+	// the plugin was the same process throughout.
+	w.End()
 
 	if after == nil || after.OrphanedLeasesReleased <= before.OrphanedLeasesReleased {
 		t.Fatalf("orphaned_leases_released did not advance within %v (before=%d, after=%d) — "+
@@ -214,10 +209,8 @@ func TestOrphanedLease_ReleasedInIpvlanMode(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = cli.Close() })
 
-	before, err := harness.PluginHealth(ctx, cli)
-	if err != nil {
-		t.Fatalf("Plugin.Health (before): %v", err)
-	}
+	w := harness.BeginCounterWindow(t, ctx, cli, "orphaned_leases_released")
+	before := w.Before()
 	releasesBefore := fixture.CountLogLines("DHCPRELEASE")
 
 	create, err := cli.ContainerCreate(ctx,
@@ -257,18 +250,12 @@ func TestOrphanedLease_ReleasedInIpvlanMode(t *testing.T) {
 		t.Fatalf("container did not exit: %v", ctx.Err())
 	}
 
-	deadline := time.Now().Add(orphanReleaseBudget)
-	var after *harness.HealthResponse
-	for time.Now().Before(deadline) {
-		after, err = harness.PluginHealth(ctx, cli)
-		if err != nil {
-			t.Fatalf("Plugin.Health (after): %v", err)
-		}
-		if after.OrphanedLeasesReleased > before.OrphanedLeasesReleased {
-			break
-		}
-		time.Sleep(250 * time.Millisecond)
-	}
+	after, _ := w.Await(orphanReleaseBudget, func(now, before *harness.HealthResponse) bool {
+		return now.OrphanedLeasesReleased > before.OrphanedLeasesReleased
+	})
+	// Close the window: the reclaim is confirmed, and this also proves
+	// the plugin was the same process throughout.
+	w.End()
 
 	if after == nil || after.OrphanedLeasesReleased <= before.OrphanedLeasesReleased {
 		t.Fatalf("orphaned_leases_released did not advance within %v (before=%d, after=%d) — "+

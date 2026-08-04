@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright the docker-net-dhcp contributors.
+# SPDX-License-Identifier: GPL-3.0-only
+
 # Decide whether the integration suite actually needs to run for this
 # event (#311, #312). Two skippable shapes:
 #
@@ -7,6 +10,14 @@
 #                   deliberately just *.md; comment-only code changes,
 #                   workflow edits, scripts, Dockerfile etc. all run
 #                   the full suite.
+#   dispatch        never skippable (#419). A manual run is a request
+#                   for fresh evidence against a tree that has NOT
+#                   changed — three consecutive green runs is this
+#                   project's bar for trusting a change of this class.
+#                   Taking the duplicate-tree skip there would report
+#                   success in ~13 seconds having executed nothing,
+#                   which is precisely the green-that-is-not-evidence
+#                   shape of #418.
 #   push <treesha>  duplicate post-merge trees (#312): a squash merge
 #                   whose tree is byte-identical to a tree that already
 #                   passed integration (the PR's merge-ref run, when the
@@ -91,6 +102,13 @@ case "$MODE" in
         else
             echo run
         fi
+        ;;
+    dispatch)
+        # Deliberately before any dependency or API check: there is
+        # nothing to look up. Somebody asked for a run; that is the
+        # whole decision.
+        echo "manual dispatch — duplicate-tree skip does not apply, running the full suite (#419)" >&2
+        echo run
         ;;
     push)
         TREE="${2:-}"

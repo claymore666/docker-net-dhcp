@@ -119,8 +119,36 @@
 #     v1.3.5 — Await* poll paths executing more, not util tests being
 #     added — so it is claimed when a change earns it, not because the
 #     number is there. Revisit at the next release.
-github.com/devplayer0/docker-net-dhcp/pkg/util 95.0
-github.com/devplayer0/docker-net-dhcp/pkg/plugin 84.0
-github.com/devplayer0/docker-net-dhcp/pkg/dhcp 89.5
-github.com/devplayer0/docker-net-dhcp/cmd/net-dhcp 76.0
-github.com/devplayer0/docker-net-dhcp/cmd/dhcp-handler 74.0
+#
+# v1.5.0 recorded decision (measured on Coverage run 30811078284, the
+#   release PR's own run against dev at 019dba4):
+#   - pkg/plugin 84.0 -> 85.0: RAISED, and the margin tightened back to
+#     0.5 as the v1.4.0 entry above said to do at this release.
+#     Measured 85.5. v1.4.0 set the floor 1.0 under measured on purpose
+#     and once, because #407/#409 were landing after that measurement;
+#     that reason has expired. Earned this cycle by new code arriving
+#     with its own tests rather than after them — endpoints.go (+43),
+#     network.go (+38), parent_attached.go (+61), plugin.go (+61)
+#     against instance_id_test.go (+103), join_attach_slow_test.go
+#     (+157), parent_attached_test.go (+97), state_test.go (+55).
+#   - cmd/net-dhcp 76.0 -> 77.5: RAISED. Measured 77.9, floor 0.4 under.
+#     Earned by #420: log.go is 31 new statements and arrived with
+#     log_test.go, 65 lines of them. v1.4.0 measured 76.4, so this is a
+#     +1.5 attributable to an identifiable change, not drift.
+#   - pkg/dhcp (89.9) and cmd/dhcp-handler (75.0) left at floor. Neither
+#     package has a non-header diff this cycle, and both measured the
+#     same numbers at v1.4.0.
+#   - pkg/util LEFT AT 95.0, and this cycle says why the earlier
+#     decisions were right to leave it. v1.4.0 measured 98.5 and noted
+#     3.5 of unclaimed headroom. It measures 96.2 now — DOWN 2.3 points
+#     with no util change beyond an SPDX header. That swing is more than
+#     four times RATCHET_EPSILON, so util's number tracks how much the
+#     integration suite happens to exercise its Await* poll paths, not
+#     what its tests cover. Claiming that headroom would have failed
+#     this release. Do not raise this floor on a measurement alone; it
+#     needs a change that earns it.
+github.com/claymore666/docker-net-dhcp/pkg/util 95.0
+github.com/claymore666/docker-net-dhcp/pkg/plugin 85.0
+github.com/claymore666/docker-net-dhcp/pkg/dhcp 89.5
+github.com/claymore666/docker-net-dhcp/cmd/net-dhcp 77.5
+github.com/claymore666/docker-net-dhcp/cmd/dhcp-handler 74.0

@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright the docker-net-dhcp contributors.
+# SPDX-License-Identifier: GPL-3.0-only
+
 # Documentation-drift check (#345). Companion to check-option-docs.sh,
 # which already covers driver options. This covers the two other things
 # the code exposes to operators, plus the failure mode that let a whole
@@ -144,6 +147,102 @@ for page in "$DOCS_DIR"/*.md; do
         elif grep -qE "^[[:space:]]*[-*][[:space:]]+\`$n\`[[:space:]]*[—:-]" "$page"; then
             echo "FAIL  $(basename "$page") documents \`$n\` in a definition bullet — the reference is its only home"
             fail=1
+        fi
+    done
+done
+
+# ---- 4. no rootfs route to a bind-mounted path --------------------------
+# A path the manifest bind-mounts is reachable at that path on the HOST.
+# It is not reachable by walking into the plugin rootfs: the mount is
+# applied in the plugin's own mount namespace, so from the host that
+# route finds a bare mount point, or nothing.
+#
+# This is the shape that rotted when #440 mounted STATE_DIR. Both the
+# audit-ledger recipe and a troubleshooting row kept sending operators
+# to `/var/lib/docker/plugins/*/rootfs/var/lib/net-dhcp`, which is empty
+# — and a wrong path that returns no data reads exactly like "the
+# feature produced nothing" (#489).
+#
+# Destinations come from the manifest, so a future mount is covered the
+# day it is added. Paths the manifest does NOT mount are untouched: the
+# plugin log genuinely does live at `…/rootfs/var/log/net-dhcp.log` and
+# must stay documented that way.
+mounts=$(python3 -c '
+import json, sys
+m = json.load(open(sys.argv[1]))
+for mnt in m.get("mounts", []):
+    if mnt.get("type") == "bind" and mnt.get("destination"):
+        print(mnt["destination"])
+' "$MANIFEST")
+
+pages=("$DOCS_DIR"/*.md)
+readme="$(dirname "$DOCS_DIR")/README.md"
+[ -f "$readme" ] && pages+=("$readme")
+
+for d in $mounts; do
+    for page in "${pages[@]}"; do
+        [ -f "$page" ] || continue
+        # The stale shape is literal: "rootfs" immediately followed by
+        # the mounted destination, whatever glob precedes it.
+        if grep -qF "rootfs$d" "$page"; then
+            echo "FAIL  $(basename "$page") routes a reader through the plugin rootfs to \`$d\`, which the manifest bind-mounts — read it on the host at \`$d\`"
+            fail=1
+        fi
+    done
+done
+
+# ---- 5. a documented install creates the bind source it needs -----------
+# The mirror of rule 4. That one is about *destinations* — where a reader
+# is told to look. This one is about *sources* — what has to exist on the
+# host before the plugin will start at all.
+#
+# Docker does not create a missing bind source; `plugin enable` fails and
+# leaves the plugin disabled. So every procedure that runs
+# `docker plugin install` must create every bind source first, or it is a
+# procedure that does not work.
+#
+# Scoped to the fenced code block, not the page: a block is one
+# copy-pasteable procedure, and that is the unit a reader follows. It is
+# also what makes this catch the case it was written for (#494) — the
+# install block in reference.md creates the directory and the *upgrade*
+# block, further down the same page, did not.
+sources=$(python3 -c '
+import json, sys
+m = json.load(open(sys.argv[1]))
+for mnt in m.get("mounts", []):
+    if mnt.get("type") == "bind" and mnt.get("source"):
+        print(mnt["source"])
+' "$MANIFEST")
+
+for page in "${pages[@]}"; do
+    [ -f "$page" ] || continue
+    for src in $sources; do
+        # `/run/docker.sock` and friends are daemon-owned and always
+        # present; only paths the plugin itself owns are the operator's
+        # to create. The manifest cannot express that, so the discriminator
+        # is whether any documented procedure creates it anywhere.
+        grep -qF "mkdir -p $src" "$page" || continue
+        offenders=$(SRC="$src" python3 -c '
+import os, re, sys
+
+src = os.environ["SRC"]
+text = open(sys.argv[1], encoding="utf-8").read()
+# Fenced blocks only. A prose mention of `docker plugin install` is not a
+# procedure and must not be judged as one.
+for i, block in enumerate(re.findall(r"^```[^\n]*\n(.*?)^```", text, re.S | re.M)):
+    if "docker plugin install" not in block:
+        continue
+    if f"mkdir -p {src}" in block:
+        continue
+    first = next(l.strip() for l in block.splitlines()
+                 if "docker plugin install" in l)
+    print(f"{first}")
+' "$page")
+        if [ -n "$offenders" ]; then
+            while IFS= read -r line; do
+                echo "FAIL  $(basename "$page") installs the plugin without creating \`$src\`, which the manifest bind-mounts and Docker will not create — \`plugin enable\` fails and leaves it disabled: $line"
+                fail=1
+            done <<< "$offenders"
         fi
     done
 done

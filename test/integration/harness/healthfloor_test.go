@@ -1,3 +1,6 @@
+// Copyright the docker-net-dhcp contributors.
+// SPDX-License-Identifier: GPL-3.0-only
+
 // Untagged on purpose — see the header of healthfloor.go. This is the
 // negative control for the integration suite's end-of-run health
 // floor: it proves the floor rejects what it is supposed to reject,
@@ -58,9 +61,13 @@ func TestCheckHealthFloor(t *testing.T) {
 			// before the floor is tightened to a plain healthy check.
 			// When that happens this case flips to fatal, and this is
 			// the test that has to be edited to allow it.
-			name: "recovery_failed is reported but not yet fatal",
+			name: "recovery_failed fails the run",
+			// Non-fatal until #421 while #376 and #383 were still folded
+			// into it. Both are counted separately now, so what remains
+			// means one thing: a RUNNING container whose renewal client
+			// could not be rebuilt.
 			in:   &HealthResponse{RecoveryFailed: 2},
-			want: want{counters: map[string]int32{"recovery_failed": 2}, fatal: false},
+			want: want{counters: map[string]int32{"recovery_failed": 2}, fatal: true},
 		},
 		{
 			name: "the benign #373 counter is never a finding",
@@ -221,6 +228,10 @@ func TestCheckHealthFloorPresence(t *testing.T) {
 			payload: `{}`,
 			wantAbsent: []string{
 				"join_start_failures", "tombstone_write_failures", "recovery_failed",
+				// The plugin's own verdict is presence-checked too since
+				// #421: an absent `healthy` decodes to false, which would
+				// otherwise fail the run while claiming the plugin said so.
+				"healthy",
 			},
 			wantValues:  map[string]int32{},
 			wantFatal:   true,
@@ -234,6 +245,10 @@ func TestCheckHealthFloorPresence(t *testing.T) {
 			payload: `null`,
 			wantAbsent: []string{
 				"join_start_failures", "tombstone_write_failures", "recovery_failed",
+				// The plugin's own verdict is presence-checked too since
+				// #421: an absent `healthy` decodes to false, which would
+				// otherwise fail the run while claiming the plugin said so.
+				"healthy",
 			},
 			wantValues:  map[string]int32{},
 			wantFatal:   true,
@@ -250,11 +265,30 @@ func TestCheckHealthFloorPresence(t *testing.T) {
 			wantMissing: true,
 		},
 		{
-			name: "a present non-fatal counter alone stays non-fatal",
-			// Presence checking must not accidentally promote
-			// recovery_failed to fatal ahead of #376.
+			name: "recovery_failed alone fails the run",
+			// Was deliberately non-fatal while #376 and #383 were still
+			// folded into it. Both are counted separately now, so what
+			// is left means one thing — a RUNNING container whose
+			// renewal client could not be rebuilt — and the probation
+			// runs came back clean (#421).
 			payload:    `{"healthy": false, "join_start_failures": 0, "tombstone_write_failures": 0, "recovery_failed": 3}`,
 			wantValues: map[string]int32{"recovery_failed": 3},
+			wantFatal:  true,
+		},
+		{
+			name: "an unhealthy plugin fails even when every known counter is clean",
+			// The table is this suite's mirror of pkg/plugin's Healthy
+			// expression, and a mirror drifts. A fourth healthy-affecting
+			// counter added to the plugin would otherwise leave the floor
+			// reporting clean until someone remembered this file (#421).
+			payload:    `{"healthy": false, "join_start_failures": 0, "tombstone_write_failures": 0, "recovery_failed": 0}`,
+			wantValues: map[string]int32{},
+			wantFatal:  true,
+		},
+		{
+			name:       "a healthy plugin with clean counters passes",
+			payload:    `{"healthy": true, "join_start_failures": 0, "tombstone_write_failures": 0, "recovery_failed": 0}`,
+			wantValues: map[string]int32{},
 			wantFatal:  false,
 		},
 		{
@@ -300,6 +334,11 @@ func TestCheckHealthFloorPresence(t *testing.T) {
 					if !f.Fatal {
 						t.Errorf("absent finding for %q is not fatal; an unreadable counter proves nothing about the run", f.Counter)
 					}
+					continue
+				}
+				if f.Flag {
+					// The plugin's own verdict, not a counter — it has
+					// no value to compare.
 					continue
 				}
 				values[f.Counter] = f.Value
@@ -502,12 +541,67 @@ func firstLines(s string, n int) string {
 // what it claims has to match what the floor could actually see (#385).
 func TestFloorCleanLine(t *testing.T) {
 	t.Run("full coverage says so plainly", func(t *testing.T) {
+		// 92 is the suite, 95 the plugin's uptime. The number after
+		// "run" is the suite's — this assertion used to demand
+		// "whole 95s run", which is uptime wearing the word "run"
+		// (#474). At this ratio the two are indistinguishable, which
+		// is exactly why the defect survived; the case below separates
+		// them.
 		got := FloorCleanLine(&HealthResponse{UptimeSeconds: 95, Healthy: true}, 92)
-		if !strings.Contains(got, "whole 95s run") {
-			t.Errorf("a plugin that outlived the suite should read as full coverage, got:\n%s", got)
+		if !strings.Contains(got, "whole 92s run") {
+			t.Errorf("the run's duration is the suite's, got:\n%s", got)
+		}
+		if !strings.Contains(got, "plugin up 95s") {
+			t.Errorf("uptime should still be reported, labelled as uptime, got:\n%s", got)
 		}
 		if strings.Contains(got, "restarted mid-suite") {
 			t.Error("full coverage should not carry the partial-coverage caveat")
+		}
+	})
+
+	// The observation that produced #474: a local single-test run
+	// against a plugin that had been up for hours printed
+	//
+	//   clean — ... over the whole 15479s run (healthy=true)
+	//
+	// for a suite that took 61 seconds. The verdict was sound; the
+	// headline described a run ~250x longer than the one it judged.
+	// A "clean" line gets quoted as evidence (#385), so the numbers in
+	// it have to be the ones it actually looked at.
+	t.Run("a plugin that long predates the suite does not lend it its uptime", func(t *testing.T) {
+		got := FloorCleanLine(&HealthResponse{UptimeSeconds: 15479, Healthy: true}, 61)
+
+		if strings.Contains(got, "15479s run") {
+			t.Errorf("uptime is being reported as the run's duration (#474):\n%s", got)
+		}
+		if !strings.Contains(got, "whole 61s run") {
+			t.Errorf("the run is the 61s suite, not the plugin's lifetime:\n%s", got)
+		}
+		if !strings.Contains(got, "15479s") {
+			t.Errorf("uptime should still appear, as uptime:\n%s", got)
+		}
+		// 15479 - 61: the counters carry history this run did not
+		// produce, and the line has to say so rather than let a reader
+		// take "clean" as a verdict on the run alone.
+		if !strings.Contains(got, "predates this run by 15418s") {
+			t.Errorf("a plugin far older than the suite should be disclosed:\n%s", got)
+		}
+		if strings.Contains(got, "restarted mid-suite") {
+			t.Error("uptime exceeding the suite is full coverage, not partial")
+		}
+	})
+
+	t.Run("a plugin installed for the run does not carry the predates note", func(t *testing.T) {
+		// CI's shape: the plugin goes in just before the suite, so the
+		// gap is slack rather than history. The note would be noise on
+		// every run, and noise on every run is how a line stops being
+		// read.
+		got := FloorCleanLine(&HealthResponse{UptimeSeconds: 700, Healthy: true}, 611)
+		if strings.Contains(got, "predates") {
+			t.Errorf("ordinary install-then-run slack should not be flagged as history:\n%s", got)
+		}
+		if !strings.Contains(got, "whole 611s run") {
+			t.Errorf("the run is still the suite's duration:\n%s", got)
 		}
 	})
 

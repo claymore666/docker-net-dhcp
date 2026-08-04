@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright the docker-net-dhcp contributors.
+# SPDX-License-Identifier: GPL-3.0-only
+
 # govulncheck gate (#127): fail on any vulnerability govulncheck reports
 # as reachable from our code, unless its ID is in the reviewed
 # allowlist. Warn (without failing) about allowlist entries that are no

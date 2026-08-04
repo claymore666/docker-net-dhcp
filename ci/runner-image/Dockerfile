@@ -12,7 +12,7 @@
 # The plugin's digest-pinned base (alpine:3.20.3@sha256:...) is NOT
 # seeded: `docker load` can't satisfy digest references, and at 3.5 MB
 # the per-job pull is noise. The golang builder is the one that hurts.
-FROM debian:trixie-slim@sha256:28de0877c2189802884ccd20f15ee41c203573bd87bb6b883f5f46362d24c5c2 AS seeder
+FROM debian:trixie-slim@sha256:020c0d20b9880058cbe785a9db107156c3c75c2ac944a6aa7ab59f2add76a7bd AS seeder
 RUN apt-get update && apt-get install -y --no-install-recommends skopeo ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 RUN mkdir /seed \
@@ -22,7 +22,7 @@ RUN mkdir /seed \
          docker-archive:/seed/alpine-testimage.tar:alpine:3.20
 
 # ---- runner image
-FROM debian:trixie-slim@sha256:28de0877c2189802884ccd20f15ee41c203573bd87bb6b883f5f46362d24c5c2
+FROM debian:trixie-slim@sha256:020c0d20b9880058cbe785a9db107156c3c75c2ac944a6aa7ab59f2add76a7bd
 
 ARG GO_VERSION=1.26.4
 # Resolved by the build workflow from actions/runner's latest release;
@@ -31,14 +31,26 @@ ARG RUNNER_VERSION
 
 # Base tooling + Docker Engine from download.docker.com (Debian 13's
 # docker.io is 26.x; the nested daemon must be >= 28 — engine-gated
-# tests, #125). dnsmasq is the test fixture's DHCP server: binary
-# only, there is no init system in here to start it. iputils-ping:
+# tests, #125).
+#
+# TWO DHCP servers, deliberately, for the duration of the #356
+# migration. dnsmasq is what the fixture uses today; kea is what it is
+# moving to, because dnsmasq's minimum lease is two minutes and every
+# failure-suite wait is built on that floor rather than on anything the
+# protocol or the plugin requires. Kea takes a 20s lease, which is worth
+# ~7 minutes off the failure suite.
+#
+# Both are binary-only — there is no init system in here to start
+# either; the fixtures spawn them directly on veth pairs. dnsmasq comes
+# out once the fixture no longer references it, not before.
+#
+# iputils-ping:
 # the failure-injection suite's L2-reachability check shells out to
 # `ping` on the runner host (failure_test.go, TestFailure_LeaseExpiry);
 # the bare-metal runner had it, this slim base does not (#158).
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         ca-certificates curl git make jq procps tini xz-utils \
-        iproute2 iptables dnsmasq iputils-ping \
+        iproute2 iptables dnsmasq kea-dhcp4-server kea-dhcp6-server iputils-ping \
     && install -m 0755 -d /etc/apt/keyrings \
     && curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc \
     && printf 'Types: deb\nURIs: https://download.docker.com/linux/debian\nSuites: trixie\nComponents: stable\nSigned-By: /etc/apt/keyrings/docker.asc\n' \
