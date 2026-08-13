@@ -261,3 +261,47 @@ jobs:
           # rather than only for this workflow.
       - name: Gate against allowlist
         run: bash scripts/govulncheck-gate.sh vulns.txt .github/vuln-allowlist.txt
+
+  # The release job is the only thing that packages the plugin as an
+  # unprivileged user on a machine where /var/lib/net-dhcp does not
+  # exist — and it only runs on a tag. v1.5.0-rc1 died there on a bare
+  # `mkdir /var/lib/net-dhcp` in the `create` recipe (#517).
+  #
+  # Nothing caught it because `mkdir -p` on an existing directory
+  # succeeds whoever owns it: integration and coverage run as root,
+  # the hosted cross-check and verify-install `sudo mkdir` first, and
+  # the docs tell operators to do the same. Every caller satisfied the
+  # precondition before reaching it, so the recipe could not fail.
+  #
+  # This job is that path's proxy on every PR: same unprivileged user,
+  # same absent directory, everything the release does except the push.
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # A check whose precondition is already satisfied reports success
+      # without testing anything — the exact way this bug survived. Fail
+      # loudly rather than pass vacuously.
+      - name: Assert this runner can actually fail the check
+        run: |
+          if [ "$(id -u)" -eq 0 ]; then
+            echo "Running as root: an unprivileged mkdir failure cannot occur here."
+            exit 1
+          fi
+          if [ -e /var/lib/net-dhcp ]; then
+            echo "/var/lib/net-dhcp already exists: mkdir -p would succeed regardless."
+            exit 1
+          fi
+          echo "uid=$(id -u), /var/lib/net-dhcp absent — the release job's conditions."
+      - name: Package the plugin the way the release job does
+        run: make create
+      # Packaging must not have required the host state directory. If
+      # this appears, something put the mkdir back on the package path.
+      - name: Assert packaging created no host state directory
+        run: |
+          if [ -e /var/lib/net-dhcp ]; then
+            echo "make create created /var/lib/net-dhcp — the bind source belongs to enable, not create (#517)."
+            exit 1
+          fi
+          echo "Packaging touched no host state directory."

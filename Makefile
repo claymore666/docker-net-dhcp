@@ -44,17 +44,21 @@ plugin: plugin/rootfs config.json
 	cp config.json $@/
 
 create: plugin
-	# STATE_DIR is bind-mounted from the host (#440) and the daemon does
-	# not create a missing bind source — `plugin enable` fails outright.
-	# Doing it here means a local `make create` behaves like a documented
-	# install rather than failing with an OCI mount error.
-	mkdir -p /var/lib/net-dhcp
 	docker plugin rm -f $(PLUGIN_NAME):$(PLUGIN_TAG) || true
 	docker plugin create $(PLUGIN_NAME):$(PLUGIN_TAG) $<
 	docker plugin set $(PLUGIN_NAME):$(PLUGIN_TAG) LOG_LEVEL=trace \
 	    OUTAGE_TICK=$(TEST_OUTAGE_TICK) OUTAGE_GRACE=$(TEST_OUTAGE_GRACE)
 
+# STATE_DIR is bind-mounted from the host (#440) and the daemon does not
+# create a missing bind source, so enabling without it fails with an OCI
+# mount error. It lives here and not in `create` (#517): packaging needs
+# no host directory, and putting it in `create` meant the release build —
+# which packages and pushes but never enables — tried to create a
+# root-owned directory as an unprivileged runner, and v1.5.0-rc1 died on
+# exactly that. Unprivileged first, sudo only if that fails, so a root
+# shell without sudo installed still works.
 enable: plugin
+	[ -d /var/lib/net-dhcp ] || mkdir -p /var/lib/net-dhcp 2>/dev/null || sudo mkdir -p /var/lib/net-dhcp
 	docker plugin enable $(PLUGIN_NAME):$(PLUGIN_TAG)
 disable:
 	docker plugin disable $(PLUGIN_NAME):$(PLUGIN_TAG)
