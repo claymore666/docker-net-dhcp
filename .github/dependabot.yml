@@ -48,3 +48,19 @@ updates:
       docker:
         patterns:
           - "*"
+
+  # The documentation site's hash-pinned build deps (#511). Without this
+  # entry the file gets no scheduled updates at all — only Dependabot
+  # *security* PRs, which ignore target-branch and open against the
+  # default branch. A weekly ecosystem producing zero PRs is
+  # indistinguishable from one with nothing to update.
+  - package-ecosystem: pip
+    directory: /docs
+    target-branch: dev
+    schedule:
+      interval: weekly
+      day: sunday
+    groups:
+      docs-deps:
+        patterns:
+          - "*"
