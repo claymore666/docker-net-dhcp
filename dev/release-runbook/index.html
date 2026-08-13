@@ -1266,12 +1266,22 @@ the <code>vX.Y.Z</code> milestone (the workflow leans on this for the
 </code></pre></div>
 <p>If a milestone PR earned or invalidated a criterion (a new gate, a
    document that now exists, a policy that changed), update the file on
-   the release branch. Pushing the reviewed file to the live badge entry
-   is a separate, deliberate step — see the script's header for the
-   session cookie it needs:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="nb">export</span><span class="w"> </span><span class="nv">BADGEAPP_SESSION</span><span class="o">=</span><span class="s1">&#39;&lt;_BadgeApp_session cookie value&gt;&#39;</span>
-<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>python3<span class="w"> </span>scripts/badge-sync.py<span class="w"> </span>--push
-</code></pre></div>
+   the release branch.</p>
+<p>Getting the reviewed answers <em>onto</em> the live entry is manual and
+   deliberate: the badge site takes them through its own form, one
+   <strong>criteria level</strong> at a time —
+   <code>https://www.bestpractices.dev/en/projects/13229/{passing,silver,gold}/edit</code>,
+   in a browser you are signed into. A field only appears on the level
+   that owns it, and the level-less <code>/edit</code> URL 404s for everyone
+   including the owner, which is worth knowing before it looks like an
+   expired login.</p>
+<p><strong>Hash-check every justification you paste before submitting</strong> — the
+   procedure is in the script's header. Typing an answer by hand is how
+   this project once produced a 65-field divergence from its own
+   source of truth; the hash is what makes hand-entry safe. Then run
+   <code>--diff</code> again: it must report that the entry matches. That
+   confirmation is the point of the script, and the reason it has no
+   push mode.</p>
 <p>The work happens here, on the release branch. The rc dry-run (step 8)
    is the <strong>enforcement gate</strong>: the real <code>vX.Y.Z</code> tag does not ship
    until every milestone PR is ticked off against the docs — by the real
@@ -1312,15 +1322,15 @@ the <code>vX.Y.Z</code> milestone (the workflow leans on this for the
    trigger. GitHub keeps one running plus one pending run per
    concurrency group, so pushing another commit to the release PR while
    coverage is still queued displaces it. Confirm and recover with:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>gh<span class="w"> </span>run<span class="w"> </span>list<span class="w"> </span>--workflow<span class="w"> </span>coverage.yml<span class="w"> </span>--limit<span class="w"> </span><span class="m">5</span><span class="w">   </span><span class="c1"># look for &quot;cancelled&quot;</span>
-<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>gh<span class="w"> </span>run<span class="w"> </span>rerun<span class="w"> </span>&lt;id&gt;<span class="w">                               </span><span class="c1"># once the group is idle</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>gh<span class="w"> </span>run<span class="w"> </span>list<span class="w"> </span>--workflow<span class="w"> </span>coverage.yml<span class="w"> </span>--limit<span class="w"> </span><span class="m">5</span><span class="w">   </span><span class="c1"># look for &quot;cancelled&quot;</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>gh<span class="w"> </span>run<span class="w"> </span>rerun<span class="w"> </span>&lt;id&gt;<span class="w">                               </span><span class="c1"># once the group is idle</span>
 </code></pre></div>
 <p>Wait for the integration run on the same ref to finish before
    rerunning, or it will just queue and be displaced again. This cost a
    full debugging session on v1.3.5 (#365) — the fix is thirty seconds
    once you know the shape of it.
 7. <strong>Assemble the verification evidence, don't hand-write it.</strong>
-   <div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>scripts/run-evidence.sh<span class="w"> </span><span class="s2">&quot;</span><span class="k">$(</span>git<span class="w"> </span>rev-parse<span class="w"> </span><span class="s1">&#39;HEAD^{tree}&#39;</span><span class="k">)</span><span class="s2">&quot;</span>
+   <div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>scripts/run-evidence.sh<span class="w"> </span><span class="s2">&quot;</span><span class="k">$(</span>git<span class="w"> </span>rev-parse<span class="w"> </span><span class="s1">&#39;HEAD^{tree}&#39;</span><span class="k">)</span><span class="s2">&quot;</span>
 </code></pre></div>
    Prints every integration run that tested exactly this tree, with its
    window and what else was on the privileged pool at the time. Paste
@@ -1337,9 +1347,9 @@ the <code>vX.Y.Z</code> milestone (the workflow leans on this for the
 <li><strong>Pull main, dry-run, then tag:</strong> first push <code>vX.Y.Z-rc1</code> and
    confirm the workflow run is green end-to-end (pre-release mode,
    <code>:latest</code> untouched — see "Pre-release dry-run" above). Then:
-   <div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>git<span class="w"> </span>checkout<span class="w"> </span>main<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>pull<span class="w"> </span>--ff-only
-<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>git<span class="w"> </span>tag<span class="w"> </span>-s<span class="w"> </span>vX.Y.Z<span class="w"> </span>-m<span class="w"> </span><span class="s2">&quot;vX.Y.Z — &lt;one-liner&gt;&quot;</span><span class="w">   </span><span class="c1"># signed (#175)</span>
-<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>git<span class="w"> </span>push<span class="w"> </span>origin<span class="w"> </span>vX.Y.Z
+   <div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>git<span class="w"> </span>checkout<span class="w"> </span>main<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>pull<span class="w"> </span>--ff-only
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>git<span class="w"> </span>tag<span class="w"> </span>-s<span class="w"> </span>vX.Y.Z<span class="w"> </span>-m<span class="w"> </span><span class="s2">&quot;vX.Y.Z — &lt;one-liner&gt;&quot;</span><span class="w">   </span><span class="c1"># signed (#175)</span>
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>git<span class="w"> </span>push<span class="w"> </span>origin<span class="w"> </span>vX.Y.Z
 </code></pre></div>
    Use <code>-s</code> (signed) so the release tag shows <strong>Verified</strong> on GitHub —
    the dev box has <code>tag.gpgsign=true</code> so <code>-a</code> would also sign, but spell
@@ -1369,15 +1379,15 @@ the <code>vX.Y.Z</code> milestone (the workflow leans on this for the
    rc tags produce a <strong>draft</strong> release: the publish path is still
    exercised, but dry-run builds stay out of the public list.
    No manual <code>gh release create</code> — instead verify:
-   <div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>gh<span class="w"> </span>release<span class="w"> </span>view<span class="w"> </span>vX.Y.Z<span class="w">   </span><span class="c1"># body = the RELEASE_NOTES section; assets:</span>
-<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="w">                         </span><span class="c1">#   net-dhcp-plugin-vX.Y.Z-linux-amd64.tar.gz</span>
-<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="w">                         </span><span class="c1">#   checksums.txt + checksums.txt.sigstore.json</span>
-<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="c1"># Re-verify the signature the way a downstream consumer would:</span>
-<a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a>cosign<span class="w"> </span>verify-blob<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a><span class="w">  </span>--bundle<span class="w"> </span>checksums.txt.sigstore.json<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a><span class="w">  </span>--certificate-identity-regexp<span class="w"> </span><span class="s1">&#39;^https://github.com/claymore666/docker-net-dhcp/.github/workflows/release.yml@&#39;</span><span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a><span class="w">  </span>--certificate-oidc-issuer<span class="w"> </span>https://token.actions.githubusercontent.com<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a><span class="w">  </span>checksums.txt
+   <div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>gh<span class="w"> </span>release<span class="w"> </span>view<span class="w"> </span>vX.Y.Z<span class="w">   </span><span class="c1"># body = the RELEASE_NOTES section; assets:</span>
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="w">                         </span><span class="c1">#   net-dhcp-plugin-vX.Y.Z-linux-amd64.tar.gz</span>
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="w">                         </span><span class="c1">#   checksums.txt + checksums.txt.sigstore.json</span>
+<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="c1"># Re-verify the signature the way a downstream consumer would:</span>
+<a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>cosign<span class="w"> </span>verify-blob<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a><span class="w">  </span>--bundle<span class="w"> </span>checksums.txt.sigstore.json<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a><span class="w">  </span>--certificate-identity-regexp<span class="w"> </span><span class="s1">&#39;^https://github.com/claymore666/docker-net-dhcp/.github/workflows/release.yml@&#39;</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a><span class="w">  </span>--certificate-oidc-issuer<span class="w"> </span>https://token.actions.githubusercontent.com<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a><span class="w">  </span>checksums.txt
 </code></pre></div>
    Adjust the title/notes in the UI if the one-liner needs polish.
    The job is idempotent on a tag re-dispatch (re-uploads assets with
@@ -1391,8 +1401,8 @@ the <code>vX.Y.Z</code> milestone (the workflow leans on this for the
    <code>net-dhcp</code> and <code>dhcp-handler</code>, prefixed by the version they belong
    to. Those can only be known once the tag has built, so this is the
    one documentation change that cannot happen before the tag:
-   <div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>gh<span class="w"> </span>run<span class="w"> </span>download<span class="w"> </span>&lt;release-run-id&gt;<span class="w"> </span>-n<span class="w"> </span>&lt;artifact&gt;<span class="w">   </span><span class="c1"># or from the release</span>
-<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>sha256sum<span class="w"> </span>rootfs/usr/sbin/net-dhcp<span class="w"> </span>rootfs/usr/lib/net-dhcp/dhcp-handler
+   <div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>gh<span class="w"> </span>run<span class="w"> </span>download<span class="w"> </span>&lt;release-run-id&gt;<span class="w"> </span>-n<span class="w"> </span>&lt;artifact&gt;<span class="w">   </span><span class="c1"># or from the release</span>
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>sha256sum<span class="w"> </span>rootfs/usr/sbin/net-dhcp<span class="w"> </span>rootfs/usr/lib/net-dhcp/dhcp-handler
 </code></pre></div>
    Update the version name and both digests, and land it on <code>dev</code> as a
    normal PR (it back-merges to <code>main</code> with the next release). Leaving
@@ -1402,7 +1412,7 @@ the <code>vX.Y.Z</code> milestone (the workflow leans on this for the
    Nothing gates this today (#502).</li>
 <li><strong>Fast-forward <code>dev</code> to <code>main</code></strong> so the release commit (version
    pins, RELEASE_NOTES section) lands on <code>dev</code> too:
-   <div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>git<span class="w"> </span>checkout<span class="w"> </span>dev<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>merge<span class="w"> </span>--ff-only<span class="w"> </span>main<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>push<span class="w"> </span>origin<span class="w"> </span>dev
+   <div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>git<span class="w"> </span>checkout<span class="w"> </span>dev<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>merge<span class="w"> </span>--ff-only<span class="w"> </span>main<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>push<span class="w"> </span>origin<span class="w"> </span>dev
 </code></pre></div>
    Skipping this leaves the next feature branch starting from the
    previous version's README/docs, and the next release PR has to
@@ -1411,11 +1421,11 @@ the <code>vX.Y.Z</code> milestone (the workflow leans on this for the
 <li><strong>Prune merged branches.</strong> The repo has <em>Automatically delete head
    branches</em> enabled, so merged PR head branches are removed on merge.
    Two things that setting doesn't cover, so clean them now:
-   <div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="c1"># the release branch is merged but was never a PR head:</span>
-<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>git<span class="w"> </span>push<span class="w"> </span>origin<span class="w"> </span>--delete<span class="w"> </span>release/vX.Y.Z
-<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="c1"># sweep for any other branch already merged into dev that lingered:</span>
-<a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a>git<span class="w"> </span>fetch<span class="w"> </span>--prune<span class="w"> </span>origin
-<a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a>git<span class="w"> </span>branch<span class="w"> </span>-r<span class="w"> </span>--merged<span class="w"> </span>origin/dev<span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span>-vE<span class="w"> </span><span class="s1">&#39;origin/(dev|main|HEAD)$&#39;</span>
+   <div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="c1"># the release branch is merged but was never a PR head:</span>
+<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>git<span class="w"> </span>push<span class="w"> </span>origin<span class="w"> </span>--delete<span class="w"> </span>release/vX.Y.Z
+<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="c1"># sweep for any other branch already merged into dev that lingered:</span>
+<a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a>git<span class="w"> </span>fetch<span class="w"> </span>--prune<span class="w"> </span>origin
+<a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a>git<span class="w"> </span>branch<span class="w"> </span>-r<span class="w"> </span>--merged<span class="w"> </span>origin/dev<span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span>-vE<span class="w"> </span><span class="s1">&#39;origin/(dev|main|HEAD)$&#39;</span>
 </code></pre></div>
    Delete what that sweep lists. Leave alone: open-PR branches,
    Dependabot branches (it recreates its own — close via the PR), and
