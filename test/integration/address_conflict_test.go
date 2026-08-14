@@ -131,6 +131,12 @@ func TestAddressConflict_SquattedAddressIsReported(t *testing.T) {
 	if after.Healthy {
 		t.Error("healthy is still true with a conflict recorded; /Plugin.Health is the surface operators page on, and it is saying the endpoint is fine")
 	}
+
+	// A window that is opened and never closed measured nothing while
+	// looking exactly like one that passed, so the harness fails the
+	// test for it. Closed here rather than deferred so it runs before
+	// the plugin recycle registered above.
+	w.End()
 }
 
 // TestAddressConflict_CleanSegmentIsNotReported is the control, and it
@@ -185,6 +191,7 @@ func TestAddressConflict_CleanSegmentIsNotReported(t *testing.T) {
 	if after.ConflictProbeFailures > w.Before().ConflictProbeFailures {
 		t.Errorf("the probe could not run (conflict_probe_failures moved); the clean result above covers nothing")
 	}
+	w.End()
 }
 
 // TestAddressConflict_BridgeModeDoesNotSelfReport is the case that
@@ -238,6 +245,7 @@ func TestAddressConflict_BridgeModeDoesNotSelfReport(t *testing.T) {
 			"probe — the MAC comparison in checkAddressConflict is what is supposed to tell " +
 			"it apart from a squatter, and it did not.")
 	}
+	w.End()
 }
 
 // cliReset recycles the plugin process, which is the only way to clear

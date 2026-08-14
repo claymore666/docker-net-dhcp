@@ -75,106 +75,74 @@ func (p *Plugin) probeAddressConflict(ctx context.Context, parent string, ip net
 	if err != nil {
 		return nil, fmt.Errorf("parent link %q: %w", parent, err)
 	}
+	idx := parentLink.Attrs().Index
 
-	// A throwaway macvlan child of the parent, not the parent itself.
+	// Probing from the PARENT is not a convenience — it is the only
+	// vantage point where an answer means anything, and both
+	// alternatives were tried and measured (#524, #528).
 	//
-	// The parent looked like the obvious place to probe from and is the
-	// wrong one, for two independent reasons — both measured, not
-	// argued:
+	// Our own endpoint holds the leased address too; that is the
+	// premise. macvlan isolates a parent from its own children, so from
+	// here our endpoint cannot answer and any reply is somebody else's.
+	// A throwaway bridge-mode child instead reaches its siblings — and
+	// our endpoint answered first, MAC matched ours, verdict "not a
+	// conflict" with a live squatter on the address.
 	//
-	//  1. The parent cannot reach its own macvlan children, so a
-	//     conflicting sibling on this host is invisible to it (#528).
-	//  2. An ordinary datagram is routed by the HOST's routing table,
-	//     not by the link we then read the neighbour table on. Those
-	//     agree only when the parent happens to hold an address on the
-	//     leased subnet. A parent NIC with no IP of its own is an
-	//     ordinary deployment, and there the probe reported a squatted
-	//     address as CLEAN — a live squatter, a live endpoint on its
-	//     address, and probes=1 failures=0.
+	// The cost of that isolation is that a same-host sibling squatter is
+	// invisible. That is excluded by construction, not pending work; see
+	// the closed #528.
+
+	// Egress control, which the first version of this function lacked.
+	// An ordinary datagram is routed by the HOST table, so without these
+	// two the packet can leave by an entirely different interface and
+	// the neighbour entry lands where we are not looking — measured as a
+	// squatted address reported CLEAN on a parent that had no address of
+	// its own.
 	//
-	// A child in MACVLAN_MODE_BRIDGE can reach its siblings, and giving
-	// it its own address plus a scope-link route to the target makes the
-	// egress interface a property of this function rather than of how
-	// the operator addressed the parent. pkg/plugin/dhcp_probe.go has
-	// created and torn down exactly this kind of link for validate_dhcp
-	// since v1.3.0.
-	probeName, err := newProbeLinkName()
-	if err != nil {
-		return nil, fmt.Errorf("probe link name: %w", err)
-	}
-	probeMAC, err := newProbeMAC()
-	if err != nil {
-		return nil, fmt.Errorf("probe MAC: %w", err)
-	}
-	la := netlink.NewLinkAttrs()
-	la.Name = probeName
-	la.ParentIndex = parentLink.Attrs().Index
-	la.HardwareAddr = probeMAC
-	probeLink := &netlink.Macvlan{LinkAttrs: la, Mode: netlink.MACVLAN_MODE_BRIDGE}
-
-	if err := netlink.LinkAdd(probeLink); err != nil {
-		return nil, fmt.Errorf("create probe macvlan on %q: %w", parent, err)
-	}
-	defer func() {
-		// Deleting the link takes its addresses and routes with it, so
-		// this is the only cleanup needed. Best-effort: a failure here
-		// leaves a link the operator can remove with `ip link del`,
-		// logged rather than swallowed so names cannot leak silently.
-		if err := netlink.LinkDel(probeLink); err != nil {
-			log.WithError(err).WithField("link", probeName).Warn("[conflict-probe] probe link cleanup failed")
-		}
-	}()
-	if err := netlink.LinkSetUp(probeLink); err != nil {
-		return nil, fmt.Errorf("bring probe link up: %w", err)
-	}
-
-	// Re-look up to get the kernel-assigned index; LinkAdd does not fill
-	// it in on the struct we handed it.
-	live, err := nlLinkByName(probeName)
-	if err != nil {
-		return nil, fmt.Errorf("relookup probe link: %w", err)
-	}
-	idx := live.Attrs().Index
-
-	// A link-local source address. ARP does not care that it is off the
-	// target's subnet — the request carries it as the sender protocol
-	// address and the holder replies regardless — and using 169.254/16
-	// means we never have to pick an address out of the operator's pool,
-	// which would be the very hazard this function exists to detect.
+	// Link-local source on purpose: any address borrowed from the
+	// operator's subnet might be the next one their server hands out,
+	// which is the hazard this function exists to detect.
 	src, err := newProbeLinkLocal()
 	if err != nil {
 		return nil, fmt.Errorf("probe source address: %w", err)
 	}
-	if err := netlink.AddrAdd(probeLink, src); err != nil {
-		return nil, fmt.Errorf("address probe link: %w", err)
+	if err := netlink.AddrAdd(parentLink, src); err != nil {
+		return nil, fmt.Errorf("add probe source to %s: %w", parent, err)
 	}
+	defer func() {
+		if err := netlink.AddrDel(parentLink, src); err != nil {
+			log.WithError(err).WithFields(log.Fields{
+				"parent": parent, "addr": src.IPNet.String(),
+			}).Warn("[conflict-probe] could not remove the temporary probe address; remove it with `ip addr del`")
+		}
+	}()
 
-	// A /32 scope-link route pins the egress to this link, which is the
-	// whole point: without it the kernel picks an interface from the
-	// host table and the neighbour entry lands somewhere we are not
-	// looking.
-	if err := netlink.RouteAdd(&netlink.Route{
+	route := &netlink.Route{
 		LinkIndex: idx,
 		Dst:       &net.IPNet{IP: ip, Mask: net.CIDRMask(32, 32)},
 		Scope:     netlink.SCOPE_LINK,
 		Src:       src.IP,
-	}); err != nil {
-		return nil, fmt.Errorf("route %s via probe link: %w", ip, err)
 	}
+	if err := netlink.RouteAdd(route); err != nil {
+		return nil, fmt.Errorf("route %s via %s: %w", ip, parent, err)
+	}
+	defer func() {
+		if err := netlink.RouteDel(route); err != nil {
+			log.WithError(err).WithFields(log.Fields{
+				"parent": parent, "dst": ip.String(),
+			}).Warn("[conflict-probe] could not remove the temporary probe route; remove it with `ip route del`")
+		}
+	}()
 
-	// Trigger resolution. The datagram goes to the discard port and its
-	// delivery is irrelevant — an ICMP unreachable, a closed port or
-	// nothing at all are equally fine. It exists to make the kernel ARP,
-	// not to be received.
-	//
-	// It is a datagram rather than a netlink request because netlink
-	// does not work: inserting the neighbour in NUD_INCOMPLETE succeeds,
-	// the kernel never probes, and the entry stays INCOMPLETE — a clean
-	// verdict over a squatted address. Measured on a veth pair.
-	dialer := net.Dialer{
-		Timeout:   conflictProbeBudget,
-		LocalAddr: &net.UDPAddr{IP: src.IP},
-	}
+	// Drop any cached answer so the reply is from this probe.
+	_ = netlink.NeighDel(&netlink.Neigh{LinkIndex: idx, IP: ip})
+
+	// Trigger resolution with a datagram. netlink cannot do it:
+	// inserting the neighbour in NUD_INCOMPLETE succeeds, the kernel
+	// never probes, and the entry stays INCOMPLETE — a clean verdict
+	// over a squatted address. The datagram goes to the discard port and
+	// its delivery is irrelevant; it exists to make the kernel ARP.
+	dialer := net.Dialer{Timeout: conflictProbeBudget, LocalAddr: &net.UDPAddr{IP: src.IP}}
 	conn, dialErr := dialer.DialContext(ctx, "udp", net.JoinHostPort(ip.String(), "9"))
 	if conn != nil {
 		_, _ = conn.Write([]byte{0})
@@ -186,7 +154,7 @@ func (p *Plugin) probeAddressConflict(ctx context.Context, parent string, ip net
 	for {
 		neighs, err := netlink.NeighList(idx, unix.AF_INET)
 		if err != nil {
-			return nil, fmt.Errorf("read neighbour table for %s: %w", probeName, err)
+			return nil, fmt.Errorf("read neighbour table for %s: %w", parent, err)
 		}
 		for _, n := range neighs {
 			if !n.IP.Equal(ip) {
@@ -195,12 +163,9 @@ func (p *Plugin) probeAddressConflict(ctx context.Context, parent string, ip net
 			sawEntry = true
 			if n.HardwareAddr != nil && n.State&resolvedStates != 0 {
 				if macsEqual(n.HardwareAddr, ourMAC) {
-					// Our own endpoint answered. Expected: the probe
-					// link is a bridge-mode sibling, so it CAN reach the
-					// endpoint — in every mode, not only over a bridge.
-					// This comparison is what separates "somebody holds
-					// the address" from "we do", and it is now the only
-					// thing that does.
+					// Should be unreachable from the parent in
+					// macvlan/ipvlan, and is the normal case over a
+					// bridge, where the host can reach the container.
 					return nil, nil
 				}
 				return n.HardwareAddr, nil
@@ -216,11 +181,8 @@ func (p *Plugin) probeAddressConflict(ctx context.Context, parent string, ip net
 		}
 	}
 
-	// Nothing answered. If the datagram could not even be sent and the
-	// kernel never created an entry, we did not ask the question — say
-	// so rather than reporting the address as free.
 	if !sawEntry && dialErr != nil {
-		return nil, fmt.Errorf("could not reach %s via %s to probe it: %w", ip, probeName, dialErr)
+		return nil, fmt.Errorf("could not reach %s via %s to probe it: %w", ip, parent, dialErr)
 	}
 	return nil, nil
 }
