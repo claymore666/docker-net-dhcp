@@ -788,3 +788,79 @@ func TestAttachGraceLine_DistinguishesQuietFromFixed(t *testing.T) {
 		}
 	})
 }
+
+// ConflictProbeLine's whole job is to stop a zero from being read as
+// evidence. Each branch is a different answer to "does this run tell us
+// anything about #524", so each one is pinned.
+func TestConflictProbeLine(t *testing.T) {
+	cases := []struct {
+		name string
+		h    *HealthResponse
+		want []string // substrings that must appear
+		deny []string // substrings that must not
+	}{
+		{
+			name: "nil health says nothing",
+			h:    nil,
+			want: nil,
+		},
+		{
+			name: "no probes is explicitly not evidence",
+			h:    &HealthResponse{},
+			want: []string{"not\n  evidence", "absence of a measurement"},
+			// Deny the AFFIRMATIVE claim, not the substring: this line
+			// legitimately says "is not evidence the segment was clean",
+			// and a looser check would have failed on the right answer.
+			deny: []string{"detector ran and the segment was clean"},
+		},
+		{
+			name: "probes ran clean is stated as observed",
+			h:    &HealthResponse{AddressConflictProbes: 7},
+			want: []string{"7 probe(s)", "observed, not inferred"},
+			deny: []string{"not\n  evidence"},
+		},
+		{
+			name: "a conflict is reported over the probe count",
+			h:    &HealthResponse{AddressConflicts: 1, AddressConflictProbes: 4},
+			want: []string{"1 leased address(es)", "out of 4 probe(s)"},
+			deny: []string{"detector ran and the segment was clean"},
+		},
+		{
+			name: "partial coverage is not a clean bill",
+			h:    &HealthResponse{AddressConflictProbes: 3, ConflictProbeFailures: 2},
+			want: []string{"3 probe(s)", "2 could not", "only the endpoints that were checked"},
+			deny: []string{"observed, not inferred"},
+		},
+		{
+			name: "a conflict outranks probe failures",
+			// Both non-zero: the conflict is the finding that matters.
+			h:    &HealthResponse{AddressConflicts: 2, AddressConflictProbes: 5, ConflictProbeFailures: 1},
+			want: []string{"2 leased address(es)"},
+			deny: []string{"could not\n  run at all"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ConflictProbeLine(tc.h)
+			if tc.h == nil {
+				if got != "" {
+					t.Errorf("nil health produced %q, want empty", got)
+				}
+				return
+			}
+			if got == "" {
+				t.Fatal("produced no line; every non-nil case must say something")
+			}
+			for _, w := range tc.want {
+				if !strings.Contains(got, w) {
+					t.Errorf("line missing %q:\n%s", w, got)
+				}
+			}
+			for _, d := range tc.deny {
+				if strings.Contains(got, d) {
+					t.Errorf("line wrongly contains %q:\n%s", d, got)
+				}
+			}
+		})
+	}
+}

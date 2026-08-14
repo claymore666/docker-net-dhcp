@@ -519,6 +519,43 @@ func AttachGraceLine(h *HealthResponse, joinFailures int) string {
 	}
 }
 
+// ConflictProbeLine reports whether the address-conflict detector
+// actually ran, which address_conflicts alone cannot say. Zero
+// conflicts and zero probes are the same reading, and "nothing checked"
+// is exactly what #524 looked like in production for months — green
+// health, every counter at zero, a container on somebody else's
+// address.
+//
+// Same shape as AttachGraceLine above, for the same reason: a zero that
+// could mean either "the mechanism worked" or "the condition never
+// arose" is not evidence until something distinguishes them.
+func ConflictProbeLine(h *HealthResponse) string {
+	if h == nil {
+		return ""
+	}
+	switch {
+	case h.AddressConflicts > 0:
+		return fmt.Sprintf(
+			"CONFLICT PROBE: %d leased address(es) were already held by another device on the\n"+
+				"  segment, out of %d probe(s). The floor fails on this — see above (#524).\n",
+			h.AddressConflicts, h.AddressConflictProbes)
+	case h.AddressConflictProbes == 0:
+		return "CONFLICT PROBE: no probe reached a verdict this run, so address_conflicts=0 is not\n" +
+			"  evidence the segment was clean — it is the absence of a measurement. Either no\n" +
+			"  endpoint was leased a v4 address, or the detector did not run (#524).\n"
+	case h.ConflictProbeFailures > 0:
+		return fmt.Sprintf(
+			"CONFLICT PROBE: %d probe(s) reached a verdict and found no conflict, but %d could not\n"+
+				"  run at all. The clean verdict covers only the endpoints that were checked (#524).\n",
+			h.AddressConflictProbes, h.ConflictProbeFailures)
+	default:
+		return fmt.Sprintf(
+			"CONFLICT PROBE: %d probe(s) reached a verdict, none found a conflict, none failed.\n"+
+				"  The detector ran and the segment was clean — observed, not inferred (#524).\n",
+			h.AddressConflictProbes)
+	}
+}
+
 // joinStartFailureMsg is the log line the plugin emits at every real
 // join_start_failures increment. The benign twin logs something else
 // ("Container went away during attach"), so counting this message counts
