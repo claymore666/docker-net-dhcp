@@ -967,7 +967,7 @@ the checksums inside it cover the artifacts. So verifying the manifest
 and then checking the files against it is enough — there is no per-file
 signature to chase.</p>
 <h2 id="verifying-the-release-artifacts">Verifying the release artifacts<a class="headerlink" href="#verifying-the-release-artifacts" title="Permanent link">&para;</a></h2>
-<p>Replace <code>VERSION</code> with the release tag (for example <code>v1.4.0</code>). You need
+<p>Replace <code>VERSION</code> with the release tag (for example <code>v1.5.0</code>). You need
 <a href="https://docs.sigstore.dev/cosign/installation/"><code>cosign</code></a> and, for the
 provenance step, the <a href="https://cli.github.com/">GitHub CLI</a>.</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>cosign<span class="w"> </span>verify-blob<span class="w"> </span><span class="se">\</span>
@@ -1023,9 +1023,9 @@ downloaded above.</p>
 <a id="__codelineno-3-21" name="__codelineno-3-21" href="#__codelineno-3-21"></a>sha256sum<span class="w"> </span>rootfs/usr/sbin/net-dhcp<span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-3-22" name="__codelineno-3-22" href="#__codelineno-3-22"></a><span class="w">          </span>rootfs/usr/lib/net-dhcp/dhcp-handler
 </code></pre></div>
-<p>The two pairs of digests must match. For <strong>v1.4.0</strong> they are:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>0ac36b87391c5bd5ea7a4b268183ca3fd86c686bf9b5d0505b97c4e0780d710b  net-dhcp
-<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>0eb5b698698f2d8f4e997062c77f295726915c9ba31125db1800e602edfa4bf8  dhcp-handler
+<p>The two pairs of digests must match. For <strong>v1.5.0</strong> they are:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>3bf50a941dee0aff937526efe24bf5a08a6bc234d74fe22cfe007fd5dd1c5c42  net-dhcp
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>20b6fd4f3fe9d0337faa4b7bdc9ff0c818f5092153111a4517b5262b48750ebd  dhcp-handler
 </code></pre></div>
 <p>Note that step 4 needs no separate digest list from us: the binaries you
 are comparing against are the ones inside the signed tarball, and
