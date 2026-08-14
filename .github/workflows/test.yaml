@@ -101,6 +101,7 @@ jobs:
           bash scripts/test-sync-issue-state-labels.sh
           bash scripts/test-check-license-headers.sh
           bash scripts/test-badge-sync.sh
+          bash scripts/test-check-release-tooling.sh
           bash scripts/test-check-reproducible-build.sh
           bash scripts/test-check-go-pins.sh
 

@@ -20,7 +20,20 @@ The workflow installs everything it needs itself; this is only about
 the commands **you** type. Nothing here is checked by CI, so a missing
 tool surfaces as a step you skip rather than a gate that fails — which
 is exactly how the v1.3.5 release ended up unable to run step 10's
-verification.
+verification, and how v1.5.0 was tagged before anyone noticed `cosign`
+was absent, leaving the signature unverified locally until afterwards.
+
+Twice is a class, so it has a check now. **Run this before step 1:**
+
+```sh
+bash scripts/check-release-tooling.sh
+```
+
+Exit 0 means every step below can actually be executed on this box. It
+verifies `gh`, `cosign` **major 3**, and a configured
+`user.signingkey`; `crane` is reported but optional. Its own
+table-driven tests run in CI (`scripts/test-check-release-tooling.sh`),
+so the check cannot rot into something that always passes.
 
 | Tool | Needed for | Install |
 | --- | --- | --- |
@@ -32,8 +45,9 @@ verification.
 emits a **Sigstore bundle**, which is the v3 default; v2's
 `--output-signature` / `--output-certificate` pair was removed in
 favour of it. v3 is what the workflow itself installs and what the
-v1.3.5 verification was run with (v3.1.2); older majors are untested
-against `checksums.txt.sigstore.json` here.
+v1.3.5 verification was run with (v3.1.2), and what verified v1.5.0
+(v3.1.3); older majors are untested against
+`checksums.txt.sigstore.json` here.
 
 Also needed, but already true on any box that has committed here: a
 git signing key, since step 9 tags with `-s`. Confirm with
