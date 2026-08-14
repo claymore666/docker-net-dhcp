@@ -72,6 +72,10 @@ type HealthResponse struct {
 	// that never happened reads exactly like a clean segment.
 	AddressConflicts      int32 `json:"address_conflicts"`
 	ConflictProbeFailures int32 `json:"conflict_probe_failures"`
+	// AddressConflictProbes is what makes address_conflicts=0 mean
+	// anything: zero probes and a clean segment read identically
+	// otherwise.
+	AddressConflictProbes int32 `json:"address_conflict_probes"`
 	LeaseChanged          int32 `json:"lease_changed"`
 	LeasesObtained        int32 `json:"leases_obtained"`
 	LeasesRenewed         int32 `json:"leases_renewed"`

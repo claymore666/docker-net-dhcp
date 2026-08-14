@@ -605,6 +605,13 @@ type Plugin struct {
 	// #524 stayed invisible through a production incident.
 	addressConflicts      atomic.Int32
 	conflictProbeFailures atomic.Int32
+	// addressConflictProbes counts probes that ran to a verdict —
+	// conflict or clean. Not Healthy-affecting, and the reason it
+	// exists at all: without it, "the segment is clean" and "the
+	// detector never ran" are the same reading (all counters zero),
+	// which is precisely the ambiguity #524 hid behind. A run is only
+	// evidence of a clean segment if this advanced.
+	addressConflictProbes atomic.Int32
 
 	// leasesObtained / leasesRenewed / dhcpTimeouts / leaseReleaseFailures
 	// expose DHCP-wire-level counters via /Plugin.Health (T2-4). They

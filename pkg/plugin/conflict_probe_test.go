@@ -143,10 +143,25 @@ func TestApiHealth_AddressConflictIsUnhealthy(t *testing.T) {
 	}
 
 	// Pin the wire keys — an operator's alert is written against these.
-	for _, key := range []string{"address_conflicts", "conflict_probe_failures"} {
+	for _, key := range []string{"address_conflicts", "conflict_probe_failures", "address_conflict_probes"} {
 		if !strings.Contains(rec.Body.String(), key) {
 			t.Errorf("Health JSON missing %q field", key)
 		}
+	}
+}
+
+// A probe that could not run must NOT count as a probe that reached a
+// verdict. If it did, address_conflict_probes would climb while nothing
+// was actually being checked — a detector that reports itself working
+// while blind, which is worse than one that reports nothing.
+func TestCheckAddressConflict_FailedProbeIsNotAVerdict(t *testing.T) {
+	p := newHealthPlugin()
+	p.checkAddressConflict("eth0", "192.0.2.10/24", "not-a-mac", "e", "n")
+	if got := p.addressConflictProbes.Load(); got != 0 {
+		t.Errorf("address_conflict_probes = %d after an unrunnable probe, want 0", got)
+	}
+	if got := p.conflictProbeFailures.Load(); got != 1 {
+		t.Errorf("conflict_probe_failures = %d, want 1", got)
 	}
 }
 

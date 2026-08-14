@@ -67,7 +67,7 @@ each group.
 | `OUTAGE_TICK` | `30s` |
 | `OUTAGE_GRACE` | `25s` |
 
-**[Health counters](#pluginhealth)** — `/Plugin.Health` on the plugin socket. Three flip `healthy` to `false`: `recovery_failed`, `join_start_failures`, `tombstone_write_failures`.
+**[Health counters](#pluginhealth)** — `/Plugin.Health` on the plugin socket. Four flip `healthy` to `false`: `recovery_failed`, `join_start_failures`, `tombstone_write_failures`, `address_conflicts`.
 
 ---
 
@@ -653,6 +653,7 @@ diagnosing a specific container from them alone is not.
 | `tombstones_consumed` | no | (v1.5.0+) Recreated containers that got their previous MAC/IP back by replaying a fresh tombstone. Not a fault — this is the address-stability mechanism working. It is the counterpart to `recovered_ok`: after a restart an address is preserved either by recovery re-adopting a still-attached endpoint (`recovered_ok`) or by a tombstone being replayed (this). Reported so the two can be told apart, which is what makes "the address survived, but via neither path" observable rather than silent (#386). |
 | `lease_changed` | no | Renewals that returned a different IP than last recorded (v4+v6 aggregate). Docker's `inspect` view does **not** update on lease change (libnetwork has no in-place endpoint-IP swap), so this is the stale-inspect-window signal — alert on it for long-running containers. |
 | `address_conflicts` | **yes** | (v1.6.0+) Leases whose address was already held by another device on the segment (#524). After each v4 lease the plugin resolves the address on the parent link and compares the answering MAC with the endpoint's; a reply from a different MAC is a conflict. This is the only signal for the condition — the container starts, Docker reports an address, and every other counter stays at zero, because from the DHCP server's point of view the lease was issued normally. The usual cause is a **statically configured** host inside the DHCP pool range: it never asks the server for anything, so the server cannot know the address is taken. Fix it at the server (reserve or exclude the address), not at the plugin. |
+| `address_conflict_probes` | no | (v1.6.0+) Conflict probes that reached a verdict, clean or not. Read this **before** believing `address_conflicts` is 0: with no probes, the two readings are identical, and "the detector never ran" is what #524 looked like for months. A healthy segment is `address_conflict_probes` climbing with `address_conflicts` at 0. |
 | `conflict_probe_failures` | no | (v1.6.0+) Conflict probes that could not run at all — the parent link was unroutable to the address, or the lease/MAC could not be parsed. This is an unanswered question, not a known-bad address, so it does not affect `healthy`. Watch it anyway: a detector that has stopped running looks exactly like a clean segment, which is how #524 went unnoticed in the first place. |
 | `leases_obtained` | no | `dhcpcd` bind events (`BOUND`/`REBOOT`, and the v6 equivalents): initial bind or re-bind after NAK/lease loss. v4+v6 aggregate. |
 | `leases_renewed` | no | `dhcpcd` `RENEW`/`REBIND` events. v4+v6 aggregate. |

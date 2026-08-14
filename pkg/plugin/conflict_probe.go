@@ -211,6 +211,10 @@ func (p *Plugin) checkAddressConflict(parent, cidr, mac, endpointID, networkID s
 		p.conflictProbeFailures.Add(1)
 		return
 	}
+	// A verdict was reached — clean or not. Counted before the branch
+	// so both outcomes land in it.
+	p.addressConflictProbes.Add(1)
+
 	if foreign == nil {
 		log.WithFields(log.Fields{
 			"endpoint": shortID(endpointID),

@@ -361,6 +361,10 @@ type HealthResponse struct {
 	// running looks identical to a clean segment.
 	AddressConflicts      int32 `json:"address_conflicts"`
 	ConflictProbeFailures int32 `json:"conflict_probe_failures"`
+	// AddressConflictProbes counts probes that reached a verdict. Read
+	// it before believing address_conflicts=0: a zero here means the
+	// detector did not run, not that the segment is clean.
+	AddressConflictProbes int32 `json:"address_conflict_probes"`
 
 	// DHCP-wire counters (T2-4). Naming intentionally drops the
 	// Prometheus `_total` suffix to stay consistent with the
@@ -458,6 +462,7 @@ func (p *Plugin) apiHealth(w http.ResponseWriter, r *http.Request) {
 		LeaseChanged:                 p.leaseChanged.Load(),
 		AddressConflicts:             conflicts,
 		ConflictProbeFailures:        p.conflictProbeFailures.Load(),
+		AddressConflictProbes:        p.addressConflictProbes.Load(),
 		LeasesObtained:               p.leasesObtained.Load(),
 		LeasesRenewed:                p.leasesRenewed.Load(),
 		DHCPTimeouts:                 p.dhcpTimeouts.Load(),
