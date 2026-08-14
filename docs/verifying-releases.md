@@ -31,7 +31,7 @@ signature to chase.
 
 ## Verifying the release artifacts
 
-Replace `VERSION` with the release tag (for example `v1.4.0`). You need
+Replace `VERSION` with the release tag (for example `v1.5.0`). You need
 [`cosign`](https://docs.sigstore.dev/cosign/installation/) and, for the
 provenance step, the [GitHub CLI](https://cli.github.com/).
 
@@ -103,11 +103,11 @@ sha256sum rootfs/usr/sbin/net-dhcp \
           rootfs/usr/lib/net-dhcp/dhcp-handler
 ```
 
-The two pairs of digests must match. For **v1.4.0** they are:
+The two pairs of digests must match. For **v1.5.0** they are:
 
 ```
-0ac36b87391c5bd5ea7a4b268183ca3fd86c686bf9b5d0505b97c4e0780d710b  net-dhcp
-0eb5b698698f2d8f4e997062c77f295726915c9ba31125db1800e602edfa4bf8  dhcp-handler
+3bf50a941dee0aff937526efe24bf5a08a6bc234d74fe22cfe007fd5dd1c5c42  net-dhcp
+20b6fd4f3fe9d0337faa4b7bdc9ff0c818f5092153111a4517b5262b48750ebd  dhcp-handler
 ```
 
 Note that step 4 needs no separate digest list from us: the binaries you
