@@ -437,6 +437,16 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 		p.rememberEndpoint(r.EndpointID, endpointFingerprint{MAC: hintMAC, IPv4: hintIPv4, IPv6: hintIPv6, Hostname: hostname, Ifname: p.hintIfname(r.EndpointID)})
 	}
 
+	// Is anyone else already using the address we were just given
+	// (#524)? Asynchronous on purpose: the answer changes no part of
+	// this response, and keeping it off the critical path is what lets
+	// dhcpcd keep `-A` and its acquisition deadline. The probe runs on
+	// the parent link in the host namespace, so it cannot be raced by
+	// Docker moving the child into the container's netns.
+	if res.Interface.Address != "" {
+		go p.checkAddressConflict(opts.Parent, res.Interface.Address, hintMAC, r.EndpointID, r.NetworkID)
+	}
+
 	log.WithFields(log.Fields{
 		"network":  shortID(r.NetworkID),
 		"endpoint": shortID(r.EndpointID),

@@ -805,6 +805,16 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 	}
 	p.rememberEndpoint(r.EndpointID, endpointFingerprint{MAC: mac, IPv4: v4IP, IPv6: v6IP, Hostname: hostname, Ifname: p.hintIfname(r.EndpointID)})
 
+	// Same post-lease conflict probe as the parent-attached path (#524),
+	// against the bridge. Bridge mode is the case that makes the MAC
+	// comparison in checkAddressConflict load-bearing rather than
+	// belt-and-braces: the host CAN reach the container here, so our own
+	// endpoint answers, and a probe that only asked "did anything reply?"
+	// would report every single endpoint as a conflict.
+	if res.Interface.Address != "" {
+		go p.checkAddressConflict(opts.Bridge, res.Interface.Address, mac, r.EndpointID, r.NetworkID)
+	}
+
 	log.WithFields(log.Fields{
 		"network":  shortID(r.NetworkID),
 		"endpoint": shortID(r.EndpointID),

@@ -350,6 +350,17 @@ type HealthResponse struct {
 	// truthfulness-gap discussion), but worth alerting on for
 	// long-running containers.
 	LeaseChanged int32 `json:"lease_changed"`
+	// AddressConflicts counts leases whose address was already held by
+	// another device on the segment, found by probing after the lease
+	// (#524). Healthy-affecting: the endpoint is up and reporting an
+	// address that does not work, and no other counter moves for it.
+	//
+	// ConflictProbeFailures counts probes that could not run. NOT
+	// Healthy-affecting — it says the question went unasked, not that
+	// the answer was bad. Watch it anyway: a detector that has stopped
+	// running looks identical to a clean segment.
+	AddressConflicts      int32 `json:"address_conflicts"`
+	ConflictProbeFailures int32 `json:"conflict_probe_failures"`
 
 	// DHCP-wire counters (T2-4). Naming intentionally drops the
 	// Prometheus `_total` suffix to stay consistent with the
@@ -414,13 +425,15 @@ func (p *Plugin) apiHealth(w http.ResponseWriter, r *http.Request) {
 	failed := p.recoveryFailed.Load()
 	joinFails := p.joinStartFailures.Load()
 	tsFails := p.tombstoneWriteFailures.Load()
+	conflicts := p.addressConflicts.Load()
 	util.JSONResponse(w, HealthResponse{
 		// Healthy is false on any condition that means an operator
 		// should look: a recovery or join-start failure means a running
 		// container has no renewal goroutine; a tombstone-write failure
 		// means the next restart of some container will pick a new
-		// MAC/IP.
-		Healthy:           failed == 0 && joinFails == 0 && tsFails == 0,
+		// MAC/IP; an address conflict means a container is up and
+		// reporting an address that belongs to someone else (#524).
+		Healthy:           failed == 0 && joinFails == 0 && tsFails == 0 && conflicts == 0,
 		InstanceID:        p.instanceID,
 		UptimeSeconds:     time.Since(p.startTime).Seconds(),
 		ActiveEndpoints:   active,
@@ -443,6 +456,8 @@ func (p *Plugin) apiHealth(w http.ResponseWriter, r *http.Request) {
 		TombstoneWriteFailures:       tsFails,
 		TombstonesConsumed:           p.tombstonesConsumed.Load(),
 		LeaseChanged:                 p.leaseChanged.Load(),
+		AddressConflicts:             conflicts,
+		ConflictProbeFailures:        p.conflictProbeFailures.Load(),
 		LeasesObtained:               p.leasesObtained.Load(),
 		LeasesRenewed:                p.leasesRenewed.Load(),
 		DHCPTimeouts:                 p.dhcpTimeouts.Load(),
