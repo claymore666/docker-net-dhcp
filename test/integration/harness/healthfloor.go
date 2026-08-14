@@ -65,14 +65,20 @@ type HealthResponse struct {
 	// preserved by replaying a tombstone rather than by recovery
 	// re-adopting a live endpoint. Together they let a restart test say
 	// WHICH path ran instead of only that the address survived (#386).
-	TombstonesConsumed   int32 `json:"tombstones_consumed"`
-	LeaseChanged         int32 `json:"lease_changed"`
-	LeasesObtained       int32 `json:"leases_obtained"`
-	LeasesRenewed        int32 `json:"leases_renewed"`
-	DHCPTimeouts         int32 `json:"dhcp_timeouts"`
-	LeaseReleaseFailures int32 `json:"lease_release_failures"`
-	NAKsReceived         int32 `json:"naks_received"`
-	LedgerWriteFailures  int32 `json:"ledger_write_failures"`
+	TombstonesConsumed int32 `json:"tombstones_consumed"`
+	// AddressConflicts is healthy-affecting (#524) and so appears in
+	// floorCounters below. ConflictProbeFailures is not, but is mirrored
+	// here so a run can say whether the detector actually ran — a probe
+	// that never happened reads exactly like a clean segment.
+	AddressConflicts      int32 `json:"address_conflicts"`
+	ConflictProbeFailures int32 `json:"conflict_probe_failures"`
+	LeaseChanged          int32 `json:"lease_changed"`
+	LeasesObtained        int32 `json:"leases_obtained"`
+	LeasesRenewed         int32 `json:"leases_renewed"`
+	DHCPTimeouts          int32 `json:"dhcp_timeouts"`
+	LeaseReleaseFailures  int32 `json:"lease_release_failures"`
+	NAKsReceived          int32 `json:"naks_received"`
+	LedgerWriteFailures   int32 `json:"ledger_write_failures"`
 	// OrphanedLeasesReleased / OrphanedLeaseReleaseFailures cover the
 	// lease acquired during endpoint setup when no persistent client
 	// ever took ownership of it — a container that exited before the
@@ -156,6 +162,12 @@ var floorCounters = []floorCounter{
 		read:  func(h *HealthResponse) int32 { return h.RecoveryFailed },
 		fatal: true,
 		why:   "recovery could not rebuild a RUNNING container's renewal client, so its lease will not renew until it is restarted. Fatal since #421: both benign paths that used to land here are counted separately — recovery_deferred for a daemon that was not serving yet (#383) and recovery_aborted_container_gone for a container that had already exited (#376) — and the probation runs this counter was left non-fatal for came back clean",
+	},
+	{
+		name:  "address_conflicts",
+		read:  func(h *HealthResponse) int32 { return h.AddressConflicts },
+		fatal: true,
+		why:   "an endpoint was leased an address another device on the segment already holds, so traffic for it is wrong for both hosts (#524). Fatal from the start, unlike recovery_failed: there is no benign path into this counter — it moves only when a probe got an ARP reply from a MAC that is not the endpoint's. A run that trips this has a container up on somebody else's address, which is the exact production fault the counter was added for",
 	},
 }
 
