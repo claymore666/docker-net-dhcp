@@ -172,6 +172,24 @@ type EphemeralFixture struct {
 // starts. Options are applied in NewEphemeralFixture.
 type EphemeralOption func(*EphemeralFixture)
 
+// WithPool narrows the fixture's address pool. Passing the same
+// address as start and end leaves the server exactly one address to
+// give, which is how a test can know in advance which address an
+// endpoint will be leased.
+//
+// That matters for the conflict scenario (#524), which has to park a
+// squatter on the address BEFORE the container asks for it. Guessing
+// is not an option: allocators do not hand out the low end of a range
+// in order — dnsmasq hashes client identity across the whole pool, and
+// a test that assumed otherwise was a coin flip that passed three runs
+// and then failed twice on the same commit (see TestStaticIP_DriverOpt).
+func WithPool(start, end string) EphemeralOption {
+	return func(ef *EphemeralFixture) {
+		ef.poolStart = start
+		ef.poolEnd = end
+	}
+}
+
 // WithRenewTimes makes the fixture advertise DHCP option 58 (T1,
 // renewal) and option 59 (T2, rebind) at the given seconds, leaving
 // the lease itself alone. This lets a renewal test drive a real
@@ -332,6 +350,49 @@ func (ef *EphemeralFixture) run(name string, args ...string) {
 func (ef *EphemeralFixture) runNetns(name string, args ...string) {
 	ef.t.Helper()
 	ef.run("ip", append([]string{"netns", "exec", ephemeralNetns, name}, args...)...)
+}
+
+// Squat parks a device on addr so that something other than the plugin's
+// endpoint answers ARP for it — the condition #524 is about, where the
+// DHCP server hands out an address a host already has because that host
+// never asked the server for anything.
+//
+// The address is added on the SERVER side of the veth pair, inside the
+// fixture's network namespace. That placement is the whole trick and it
+// is not interchangeable with the alternatives:
+//
+//   - A second address on the host side would be answered locally. Both
+//     ends of a veth pair in one namespace never put the request on the
+//     wire, so the probe would see nothing and the test would pass while
+//     proving nothing.
+//   - A macvlan sibling of the parent is unreachable from the parent by
+//     design, so that squatter is invisible too — a real limitation,
+//     tracked as #528, and not the case this scenario is for.
+//
+// Across the namespace boundary the squatter is a genuinely remote
+// device on the segment, which is the shape of the production incident.
+//
+// Returns the squatter's MAC, so a test can assert the conflict was
+// reported against the right device rather than merely reported.
+func (ef *EphemeralFixture) Squat(addr string) string {
+	ef.t.Helper()
+	if !ef.isolated() {
+		ef.t.Fatal("Squat needs the namespaced fixture: in a shared namespace the kernel answers for the address locally and never ARPs, so the probe under test would never see it")
+	}
+	ef.runNetns("ip", "addr", "add", addr+"/24", "dev", ephemeralDhcpVeth)
+	ef.t.Cleanup(func() {
+		// Best-effort: the namespace is torn down with the fixture
+		// anyway, so a failure here cannot leak past the test.
+		_ = exec.Command("ip", "netns", "exec", ephemeralNetns,
+			"ip", "addr", "del", addr+"/24", "dev", ephemeralDhcpVeth).Run()
+	})
+
+	out, err := exec.Command("ip", "netns", "exec", ephemeralNetns,
+		"cat", "/sys/class/net/"+ephemeralDhcpVeth+"/address").Output()
+	if err != nil {
+		ef.t.Fatalf("read squatter MAC: %v", err)
+	}
+	return strings.TrimSpace(string(out))
 }
 
 // netnsCommand builds a command that will run inside the fixture's
