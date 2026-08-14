@@ -185,3 +185,38 @@ func TestApiHealth_ProbeFailureIsNotUnhealthy(t *testing.T) {
 		t.Error("healthy = false on probe failures alone; an unasked question is not a known-broken address")
 	}
 }
+
+// The probe's source address must never come out of the operator's own
+// subnet: the address it picked could be the next one their DHCP server
+// hands out, which is the exact fault this file exists to detect.
+func TestNewProbeLinkLocal(t *testing.T) {
+	seen := map[string]int{}
+	for i := 0; i < 200; i++ {
+		a, err := newProbeLinkLocal()
+		if err != nil {
+			t.Fatalf("newProbeLinkLocal: %v", err)
+		}
+		ip := a.IPNet.IP.To4()
+		if ip == nil {
+			t.Fatalf("not an IPv4 address: %v", a.IPNet.IP)
+		}
+		if ip[0] != 169 || ip[1] != 254 {
+			t.Fatalf("address %v is outside 169.254.0.0/16 — it could collide with the pool being probed", ip)
+		}
+		// RFC 3927 reserves the first and last /24, and .0/.255 hosts
+		// are not usable.
+		if ip[2] == 0 || ip[2] == 255 || ip[3] == 0 || ip[3] == 255 {
+			t.Errorf("address %v falls in a reserved or non-host range", ip)
+		}
+		if ones, bits := a.IPNet.Mask.Size(); ones != 16 || bits != 32 {
+			t.Errorf("mask is /%d of %d, want /16 of 32", ones, bits)
+		}
+		seen[ip.String()]++
+	}
+	// Two probes can run concurrently on one host, so a constant
+	// address would make them collide. Not a randomness test — just
+	// proof it is not a fixed value.
+	if len(seen) < 2 {
+		t.Errorf("200 calls produced %d distinct address(es); concurrent probes on one host would collide", len(seen))
+	}
+}
