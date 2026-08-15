@@ -2,6 +2,12 @@
 /plugin/
 /multiarch/
 .git/
+# Nothing in the image needs .claude/, and it is where per-instance git
+# worktrees live. A worktree that ever ran `sudo make create` leaves a
+# root-owned plugin/rootfs/ behind; once that directory is in the build
+# context, every unprivileged `docker build` from the repo root dies in
+# the context walk. scripts/check-build-context.sh gates this.
+.claude/
 .github/
 docs/
 scripts/
