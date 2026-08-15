@@ -1062,13 +1062,21 @@ so the check cannot rot into something that always passes.</p>
 </tr>
 </tbody>
 </table>
-<p><strong>Use cosign v3.</strong> The release signs <code>checksums.txt</code> keylessly and
-emits a <strong>Sigstore bundle</strong>, which is the v3 default; v2's
+<p><strong>Use cosign v3 or newer.</strong> The release signs <code>checksums.txt</code> keylessly
+and emits a <strong>Sigstore bundle</strong>, which is the v3 default; v2's
 <code>--output-signature</code> / <code>--output-certificate</code> pair was removed in
 favour of it. v3 is what the workflow itself installs and what the
 v1.3.5 verification was run with (v3.1.2), and what verified v1.5.0
 (v3.1.3); older majors are untested against
 <code>checksums.txt.sigstore.json</code> here.</p>
+<p>v2 does not fail with anything resembling "your cosign is too old" — it
+fails with <code>Error: bundle does not contain cert for verification, please
+provide public key</code>, which implicates the artifact rather than the
+toolchain (#522). That string is now quoted on
+<a href="../verifying-releases/">Verifying releases</a> so a search for it lands on
+the answer. <code>scripts/check-cosign-docs.sh</code> keeps every page that prints
+a cosign command naming the same major as
+<code>scripts/check-release-tooling.sh</code> enforces.</p>
 <p>Also needed, but already true on any box that has committed here: a
 git signing key, since step 9 tags with <code>-s</code>. Confirm with
 <code>git config --get user.signingkey</code> before you get to the tag.</p>

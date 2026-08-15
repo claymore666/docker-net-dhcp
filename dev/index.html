@@ -1032,7 +1032,9 @@ manifest is cosign-signed so one signature covers every attached file.
 The full, copy-pasteable procedure lives in
 <strong><a href="verifying-releases/">Verifying releases</a></strong>, and every
 <a href="https://github.com/claymore666/docker-net-dhcp/releases">GitHub Release</a>
-links to it. In brief (replace <code>VERSION</code>):</p>
+links to it. Both commands need <strong>cosign v3 or newer</strong> — v2 cannot read the
+Sigstore bundle format the release signs with, and fails in a way that looks
+like a broken signature. In brief (replace <code>VERSION</code>):</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="c1"># image signature</span>
 <a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>cosign<span class="w"> </span>verify<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:VERSION<span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="w">  </span>--certificate-identity-regexp<span class="w"> </span><span class="s1">&#39;^https://github.com/claymore666/docker-net-dhcp/.github/workflows/release.yml@&#39;</span><span class="w"> </span><span class="se">\</span>

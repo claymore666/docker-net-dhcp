@@ -970,27 +970,40 @@ signature to chase.</p>
 <p>Replace <code>VERSION</code> with the release tag (for example <code>v1.5.0</code>). You need
 <a href="https://docs.sigstore.dev/cosign/installation/"><code>cosign</code></a> and, for the
 provenance step, the <a href="https://cli.github.com/">GitHub CLI</a>.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>cosign<span class="w"> </span>verify-blob<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="w">  </span>--bundle<span class="w"> </span>checksums.txt.sigstore.json<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">  </span>--certificate-identity-regexp<span class="w"> </span><span class="s1">&#39;^https://github.com/claymore666/docker-net-dhcp/.github/workflows/release.yml@&#39;</span><span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w">  </span>--certificate-oidc-issuer<span class="w"> </span>https://token.actions.githubusercontent.com<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="w">  </span>checksums.txt
-<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>sha256sum<span class="w"> </span>-c<span class="w"> </span>checksums.txt
+<blockquote>
+<p><strong>You need cosign v3 or newer.</strong> Check with <code>cosign version</code>, and
+install with
+<code>go install github.com/sigstore/cosign/v3/cmd/cosign@latest</code>.</p>
+<p><code>checksums.txt.sigstore.json</code> is a <strong>Sigstore bundle</strong>, which is the v3
+format. Run the command below with cosign v2 and it fails like this:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>Error: bundle does not contain cert for verification, please provide public key
+</code></pre></div>
+<p>That message names the bundle, so it reads as though the release were
+signed wrong. It isn't — v2 simply cannot read the format. If you see
+it, upgrade cosign and run the command again.</p>
+</blockquote>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>cosign<span class="w"> </span>verify-blob<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span>--bundle<span class="w"> </span>checksums.txt.sigstore.json<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">  </span>--certificate-identity-regexp<span class="w"> </span><span class="s1">&#39;^https://github.com/claymore666/docker-net-dhcp/.github/workflows/release.yml@&#39;</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">  </span>--certificate-oidc-issuer<span class="w"> </span>https://token.actions.githubusercontent.com<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="w">  </span>checksums.txt
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>sha256sum<span class="w"> </span>-c<span class="w"> </span>checksums.txt
 </code></pre></div>
 <p>The identity regexp is the point of the exercise: it pins the signature
 to this repository's <code>release.yml</code>, so a valid Sigstore signature made by
 anything else fails.</p>
 <h2 id="verifying-the-image">Verifying the image<a class="headerlink" href="#verifying-the-image" title="Permanent link">&para;</a></h2>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>cosign<span class="w"> </span>verify<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:VERSION<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span>--certificate-identity-regexp<span class="w"> </span><span class="s1">&#39;^https://github.com/claymore666/docker-net-dhcp/.github/workflows/release.yml@&#39;</span><span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">  </span>--certificate-oidc-issuer<span class="w"> </span>https://token.actions.githubusercontent.com
+<p>Also <strong>cosign v3 or newer</strong>.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>cosign<span class="w"> </span>verify<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:VERSION<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span>--certificate-identity-regexp<span class="w"> </span><span class="s1">&#39;^https://github.com/claymore666/docker-net-dhcp/.github/workflows/release.yml@&#39;</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">  </span>--certificate-oidc-issuer<span class="w"> </span>https://token.actions.githubusercontent.com
 </code></pre></div>
 <h2 id="verifying-build-provenance">Verifying build provenance<a class="headerlink" href="#verifying-build-provenance" title="Permanent link">&para;</a></h2>
 <p>SLSA provenance covers both the image and the release artifacts:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>gh<span class="w"> </span>attestation<span class="w"> </span>verify<span class="w"> </span>oci://ghcr.io/claymore666/docker-net-dhcp:VERSION<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span>--repo<span class="w"> </span>claymore666/docker-net-dhcp
-<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>gh<span class="w"> </span>attestation<span class="w"> </span>verify<span class="w"> </span>net-dhcp-plugin-VERSION-linux-amd64.tar.gz<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">  </span>--repo<span class="w"> </span>claymore666/docker-net-dhcp
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>gh<span class="w"> </span>attestation<span class="w"> </span>verify<span class="w"> </span>oci://ghcr.io/claymore666/docker-net-dhcp:VERSION<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">  </span>--repo<span class="w"> </span>claymore666/docker-net-dhcp
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>gh<span class="w"> </span>attestation<span class="w"> </span>verify<span class="w"> </span>net-dhcp-plugin-VERSION-linux-amd64.tar.gz<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="w">  </span>--repo<span class="w"> </span>claymore666/docker-net-dhcp
 </code></pre></div>
 <h2 id="rebuilding-the-binaries-yourself">Rebuilding the binaries yourself<a class="headerlink" href="#rebuilding-the-binaries-yourself" title="Permanent link">&para;</a></h2>
 <p>A signature tells you <em>who</em> built an artifact. Rebuilding tells you
@@ -1000,32 +1013,32 @@ a published release contains the code in this repository, without
 trusting the release workflow at all.</p>
 <p>You need Docker with <code>buildx</code>, and the release tarball you already
 downloaded above.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="c1"># 1. The source, exactly as tagged.</span>
-<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/claymore666/docker-net-dhcp
-<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="nb">cd</span><span class="w"> </span>docker-net-dhcp
-<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>git<span class="w"> </span>checkout<span class="w"> </span>VERSION
-<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>
-<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="c1"># 2. Build on a builder with no caches. --no-cache alone is not enough:</span>
-<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="c1">#    the Dockerfile mounts BuildKit caches for Go&#39;s module and build</span>
-<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="c1">#    caches, and those survive it. A fresh docker-container builder has</span>
-<a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a><span class="c1">#    neither.</span>
-<a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a>docker<span class="w"> </span>buildx<span class="w"> </span>create<span class="w"> </span>--name<span class="w"> </span>repro<span class="w"> </span>--driver<span class="w"> </span>docker-container
-<a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a>docker<span class="w"> </span>buildx<span class="w"> </span>build<span class="w"> </span>--builder<span class="w"> </span>repro<span class="w"> </span>--no-cache<span class="w"> </span>--target<span class="w"> </span>builder<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-3-12" name="__codelineno-3-12" href="#__codelineno-3-12"></a><span class="w">  </span>--output<span class="w"> </span><span class="nv">type</span><span class="o">=</span>local,dest<span class="o">=</span>out<span class="w"> </span>.
-<a id="__codelineno-3-13" name="__codelineno-3-13" href="#__codelineno-3-13"></a>docker<span class="w"> </span>buildx<span class="w"> </span>rm<span class="w"> </span>repro
-<a id="__codelineno-3-14" name="__codelineno-3-14" href="#__codelineno-3-14"></a>
-<a id="__codelineno-3-15" name="__codelineno-3-15" href="#__codelineno-3-15"></a><span class="c1"># 3. Your binaries.</span>
-<a id="__codelineno-3-16" name="__codelineno-3-16" href="#__codelineno-3-16"></a>sha256sum<span class="w"> </span>out/usr/local/src/docker-net-dhcp/bin/net-dhcp<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-3-17" name="__codelineno-3-17" href="#__codelineno-3-17"></a><span class="w">          </span>out/usr/local/src/docker-net-dhcp/bin/dhcp-handler
-<a id="__codelineno-3-18" name="__codelineno-3-18" href="#__codelineno-3-18"></a>
-<a id="__codelineno-3-19" name="__codelineno-3-19" href="#__codelineno-3-19"></a><span class="c1"># 4. The published ones, from the release tarball.</span>
-<a id="__codelineno-3-20" name="__codelineno-3-20" href="#__codelineno-3-20"></a>tar<span class="w"> </span>-xzf<span class="w"> </span>net-dhcp-plugin-VERSION-linux-amd64.tar.gz
-<a id="__codelineno-3-21" name="__codelineno-3-21" href="#__codelineno-3-21"></a>sha256sum<span class="w"> </span>rootfs/usr/sbin/net-dhcp<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-3-22" name="__codelineno-3-22" href="#__codelineno-3-22"></a><span class="w">          </span>rootfs/usr/lib/net-dhcp/dhcp-handler
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="c1"># 1. The source, exactly as tagged.</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/claymore666/docker-net-dhcp
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="nb">cd</span><span class="w"> </span>docker-net-dhcp
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>git<span class="w"> </span>checkout<span class="w"> </span>VERSION
+<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>
+<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="c1"># 2. Build on a builder with no caches. --no-cache alone is not enough:</span>
+<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="c1">#    the Dockerfile mounts BuildKit caches for Go&#39;s module and build</span>
+<a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a><span class="c1">#    caches, and those survive it. A fresh docker-container builder has</span>
+<a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a><span class="c1">#    neither.</span>
+<a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a>docker<span class="w"> </span>buildx<span class="w"> </span>create<span class="w"> </span>--name<span class="w"> </span>repro<span class="w"> </span>--driver<span class="w"> </span>docker-container
+<a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a>docker<span class="w"> </span>buildx<span class="w"> </span>build<span class="w"> </span>--builder<span class="w"> </span>repro<span class="w"> </span>--no-cache<span class="w"> </span>--target<span class="w"> </span>builder<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-4-12" name="__codelineno-4-12" href="#__codelineno-4-12"></a><span class="w">  </span>--output<span class="w"> </span><span class="nv">type</span><span class="o">=</span>local,dest<span class="o">=</span>out<span class="w"> </span>.
+<a id="__codelineno-4-13" name="__codelineno-4-13" href="#__codelineno-4-13"></a>docker<span class="w"> </span>buildx<span class="w"> </span>rm<span class="w"> </span>repro
+<a id="__codelineno-4-14" name="__codelineno-4-14" href="#__codelineno-4-14"></a>
+<a id="__codelineno-4-15" name="__codelineno-4-15" href="#__codelineno-4-15"></a><span class="c1"># 3. Your binaries.</span>
+<a id="__codelineno-4-16" name="__codelineno-4-16" href="#__codelineno-4-16"></a>sha256sum<span class="w"> </span>out/usr/local/src/docker-net-dhcp/bin/net-dhcp<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-4-17" name="__codelineno-4-17" href="#__codelineno-4-17"></a><span class="w">          </span>out/usr/local/src/docker-net-dhcp/bin/dhcp-handler
+<a id="__codelineno-4-18" name="__codelineno-4-18" href="#__codelineno-4-18"></a>
+<a id="__codelineno-4-19" name="__codelineno-4-19" href="#__codelineno-4-19"></a><span class="c1"># 4. The published ones, from the release tarball.</span>
+<a id="__codelineno-4-20" name="__codelineno-4-20" href="#__codelineno-4-20"></a>tar<span class="w"> </span>-xzf<span class="w"> </span>net-dhcp-plugin-VERSION-linux-amd64.tar.gz
+<a id="__codelineno-4-21" name="__codelineno-4-21" href="#__codelineno-4-21"></a>sha256sum<span class="w"> </span>rootfs/usr/sbin/net-dhcp<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-4-22" name="__codelineno-4-22" href="#__codelineno-4-22"></a><span class="w">          </span>rootfs/usr/lib/net-dhcp/dhcp-handler
 </code></pre></div>
 <p>The two pairs of digests must match. For <strong>v1.5.0</strong> they are:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>3bf50a941dee0aff937526efe24bf5a08a6bc234d74fe22cfe007fd5dd1c5c42  net-dhcp
-<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>20b6fd4f3fe9d0337faa4b7bdc9ff0c818f5092153111a4517b5262b48750ebd  dhcp-handler
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>3bf50a941dee0aff937526efe24bf5a08a6bc234d74fe22cfe007fd5dd1c5c42  net-dhcp
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>20b6fd4f3fe9d0337faa4b7bdc9ff0c818f5092153111a4517b5262b48750ebd  dhcp-handler
 </code></pre></div>
 <p>Note that step 4 needs no separate digest list from us: the binaries you
 are comparing against are the ones inside the signed tarball, and
