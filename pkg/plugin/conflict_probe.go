@@ -70,7 +70,7 @@ const resolvedStates = netlink.NUD_REACHABLE | netlink.NUD_STALE |
 // It is sent to the discard port and its delivery is irrelevant: an
 // ICMP unreachable, a closed port, or nothing at all are equally fine.
 // The packet exists to make the kernel resolve L2, not to be received.
-func (p *Plugin) probeAddressConflict(ctx context.Context, parent string, ip net.IP, ourMAC net.HardwareAddr) (net.HardwareAddr, error) {
+func (p *Plugin) probeAddressConflict(ctx context.Context, parent string, ip net.IP, subnet *net.IPNet, ourMAC net.HardwareAddr) (net.HardwareAddr, error) {
 	parentLink, err := nlLinkByName(parent)
 	if err != nil {
 		return nil, fmt.Errorf("parent link %q: %w", parent, err)
@@ -99,29 +99,30 @@ func (p *Plugin) probeAddressConflict(ctx context.Context, parent string, ip net
 	// squatted address reported CLEAN on a parent that had no address of
 	// its own.
 	//
-	// Link-local source on purpose: any address borrowed from the
-	// operator's subnet might be the next one their server hands out,
-	// which is the hazard this function exists to detect.
-	src, err := newProbeLinkLocal()
+	// WHICH source address is not a detail: it decides whether the
+	// question is answerable at all. See pickProbeSource.
+	src, err := pickProbeSource(parentLink, ip, subnet)
 	if err != nil {
 		return nil, fmt.Errorf("probe source address: %w", err)
 	}
-	if err := netlink.AddrAdd(parentLink, src); err != nil {
-		return nil, fmt.Errorf("add probe source to %s: %w", parent, err)
-	}
-	defer func() {
-		if err := netlink.AddrDel(parentLink, src); err != nil {
-			log.WithError(err).WithFields(log.Fields{
-				"parent": parent, "addr": src.IPNet.String(),
-			}).Warn("[conflict-probe] could not remove the temporary probe address; remove it with `ip addr del`")
+	if src.borrowed {
+		if err := netlink.AddrAdd(parentLink, src.addr); err != nil {
+			return nil, fmt.Errorf("add probe source to %s: %w", parent, err)
 		}
-	}()
+		defer func() {
+			if err := netlink.AddrDel(parentLink, src.addr); err != nil {
+				log.WithError(err).WithFields(log.Fields{
+					"parent": parent, "addr": src.addr.IPNet.String(),
+				}).Warn("[conflict-probe] could not remove the temporary probe address; remove it with `ip addr del`")
+			}
+		}()
+	}
 
 	route := &netlink.Route{
 		LinkIndex: idx,
 		Dst:       &net.IPNet{IP: ip, Mask: net.CIDRMask(32, 32)},
 		Scope:     netlink.SCOPE_LINK,
-		Src:       src.IP,
+		Src:       src.addr.IP,
 	}
 	if err := netlink.RouteAdd(route); err != nil {
 		return nil, fmt.Errorf("route %s via %s: %w", ip, parent, err)
@@ -142,7 +143,7 @@ func (p *Plugin) probeAddressConflict(ctx context.Context, parent string, ip net
 	// never probes, and the entry stays INCOMPLETE — a clean verdict
 	// over a squatted address. The datagram goes to the discard port and
 	// its delivery is irrelevant; it exists to make the kernel ARP.
-	dialer := net.Dialer{Timeout: conflictProbeBudget, LocalAddr: &net.UDPAddr{IP: src.IP}}
+	dialer := net.Dialer{Timeout: conflictProbeBudget, LocalAddr: &net.UDPAddr{IP: src.addr.IP}}
 	conn, dialErr := dialer.DialContext(ctx, "udp", net.JoinHostPort(ip.String(), "9"))
 	if conn != nil {
 		_, _ = conn.Write([]byte{0})
@@ -184,7 +185,95 @@ func (p *Plugin) probeAddressConflict(ctx context.Context, parent string, ip net
 	if !sawEntry && dialErr != nil {
 		return nil, fmt.Errorf("could not reach %s via %s to probe it: %w", ip, parent, dialErr)
 	}
+
+	// Silence. What that is worth depends entirely on the source address
+	// we had to send from.
+	//
+	// From an on-subnet source, silence is an answer: every host that
+	// holds the address would have replied, so nobody holds it.
+	//
+	// From the borrowed link-local source it is NOT an answer, and
+	// reporting it as one is the bug this file exists to prevent. A
+	// responder only replies to an ARP request whose sender it can route
+	// back to, so a host with neither a default route nor a link-local
+	// route stays silent while holding the address. Measured on 6.12,
+	// two namespaces over a veth pair, squatter on 192.168.101.42:
+	//
+	//   responder routes      link-local sender   on-subnet sender
+	//   none                  INCOMPLETE          answered
+	//   link-local route      answered            -
+	//   default route         answered            -
+	//
+	// So the fallback is a best-effort: a reply still proves a conflict,
+	// but silence proves nothing, and it is counted as a probe that
+	// could not run rather than as a clean segment (#524).
+	if !src.onSubnet {
+		return nil, fmt.Errorf(
+			"nothing answered for %s, but the probe had to be sent from %s: %s has no address "+
+				"on the leased subnet, and a host only answers an ARP request whose sender it can "+
+				"route back to. A squatter with no default route is silent here, so this is "+
+				"undetermined rather than clean. Give %s an address on the segment to enable "+
+				"conflict detection",
+			ip, src.addr.IP, parent, parent)
+	}
 	return nil, nil
+}
+
+// probeSource is the address a probe sends from, and whether an
+// unanswered probe from it means anything.
+type probeSource struct {
+	addr *netlink.Addr
+	// onSubnet is true when the source sits inside the leased subnet, so
+	// any host holding the address can route a reply back to it and
+	// silence is therefore a real verdict.
+	onSubnet bool
+	// borrowed is true when we added the address ourselves and must
+	// remove it again.
+	borrowed bool
+}
+
+// pickProbeSource chooses the address the conflict probe sends from.
+//
+// An address the parent ALREADY holds on the leased subnet is the right
+// answer wherever one exists: it is on-subnet so every responder can
+// reply to it, it is the address the host already announces for its own
+// traffic, and using it mutates nothing.
+//
+// That covers the normal deployment — a macvlan or ipvlan parent is the
+// host NIC and carries the host's LAN address, and a bridge parent
+// always has one. A parent deliberately left bare (a NIC dedicated to
+// being a macvlan parent) has no such address, and there is no address
+// on the operator's subnet we may invent: the next one their DHCP
+// server hands out is exactly the hazard this file detects. So that
+// case falls back to a random link-local source, whose answers are
+// trustworthy and whose silences are not — see the caller.
+func pickProbeSource(parentLink netlink.Link, target net.IP, subnet *net.IPNet) (probeSource, error) {
+	if subnet != nil {
+		addrs, err := nlAddrList(parentLink, unix.AF_INET)
+		if err != nil {
+			return probeSource{}, fmt.Errorf("list addresses on %s: %w", parentLink.Attrs().Name, err)
+		}
+		for i := range addrs {
+			if addrs[i].IP == nil || !subnet.Contains(addrs[i].IP) {
+				continue
+			}
+			// The parent holding the address we are asking about is
+			// itself the conflict — the host is the squatter. Sending
+			// from it would ask the address about itself and resolve
+			// locally, so skip it and let a different source, or the
+			// fallback, put the question on the wire.
+			if addrs[i].IP.Equal(target) {
+				continue
+			}
+			return probeSource{addr: &addrs[i], onSubnet: true}, nil
+		}
+	}
+
+	ll, err := newProbeLinkLocal()
+	if err != nil {
+		return probeSource{}, err
+	}
+	return probeSource{addr: ll, borrowed: true}, nil
 }
 
 // newProbeLinkLocal returns a random 169.254.0.0/16 address for the
@@ -239,7 +328,11 @@ func (p *Plugin) checkAddressConflict(parent, cidr, mac, endpointID, networkID s
 	if parent == "" || cidr == "" {
 		return
 	}
-	ip, _, err := net.ParseCIDR(cidr)
+	// The subnet is load-bearing, not decoration: it is what lets the
+	// probe find an on-subnet source address on the parent, and an
+	// on-subnet source is what makes silence mean something. A bare
+	// address with no mask therefore probes in the degraded mode.
+	ip, subnet, err := net.ParseCIDR(cidr)
 	if err != nil {
 		if ip = net.ParseIP(cidr); ip == nil {
 			log.WithFields(log.Fields{
@@ -267,7 +360,7 @@ func (p *Plugin) checkAddressConflict(parent, cidr, mac, endpointID, networkID s
 	ctx, cancel := context.WithTimeout(context.Background(), conflictProbeBudget+time.Second)
 	defer cancel()
 
-	foreign, err := p.probeAddressConflict(ctx, parent, ip, ourMAC)
+	foreign, err := p.probeAddressConflict(ctx, parent, ip, subnet, ourMAC)
 	if err != nil {
 		// A probe that could not run is counted separately and does not
 		// mark the plugin unhealthy — it is an unanswered question, not

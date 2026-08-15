@@ -53,7 +53,12 @@ func TestAddressConflict_SquattedAddressIsReported(t *testing.T) {
 
 	const netName = "dh-itest-conflict"
 
-	ef := harness.NewEphemeralFixture(t, harness.WithPool(squatAddr, squatAddr))
+	ef := harness.NewEphemeralFixture(t,
+		harness.WithPool(squatAddr, squatAddr),
+		// Without an address on the segment the probe falls back to a
+		// link-local source, which this fixture's gateway-less namespace
+		// never answers — see WithParentAddress.
+		harness.WithParentAddress(harness.EphemeralParentAddr))
 	t.Cleanup(func() {
 		if t.Failed() {
 			ef.DumpLogs(func(s string) { t.Log(s) })
@@ -149,8 +154,10 @@ func TestAddressConflict_CleanSegmentIsNotReported(t *testing.T) {
 
 	const netName = "dh-itest-noconflict"
 
-	// Same fixture, same pinned pool, no squatter.
-	ef := harness.NewEphemeralFixture(t, harness.WithPool(squatAddr, squatAddr))
+	// Same fixture, same pinned pool, same parent address, no squatter.
+	ef := harness.NewEphemeralFixture(t,
+		harness.WithPool(squatAddr, squatAddr),
+		harness.WithParentAddress(harness.EphemeralParentAddr))
 	t.Cleanup(func() {
 		if t.Failed() {
 			ef.DumpLogs(func(s string) { t.Log(s) })
@@ -244,6 +251,87 @@ func TestAddressConflict_BridgeModeDoesNotSelfReport(t *testing.T) {
 			"The host can reach the container over a bridge, so our own endpoint answers the " +
 			"probe — the MAC comparison in checkAddressConflict is what is supposed to tell " +
 			"it apart from a squatter, and it did not.")
+	}
+	w.End()
+}
+
+// TestAddressConflict_BareParentIsUndetermined pins the honest half of
+// the fix, and it is the test that would have caught #524's second life.
+//
+// A parent with no address on the leased subnet forces the probe onto a
+// link-local source, and a host only answers an ARP request whose sender
+// it can route back to. So against a gateway-less squatter the probe
+// hears nothing — and hearing nothing is NOT the same as the address
+// being free.
+//
+// The original implementation reported that silence as a clean segment.
+// It passed its own positive test for months of development and failed
+// the moment a real squatter was put on the wire, because the counter it
+// moved (`address_conflict_probes`) was reporting that a check had
+// happened while no check could have happened.
+//
+// So: same squatter, same everything, only the parent address removed.
+// The probe must come back as UNDETERMINED — a probe failure — and must
+// not claim a verdict either way.
+func TestAddressConflict_BareParentIsUndetermined(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	const netName = "dh-itest-conflict-bare"
+
+	ef := harness.NewEphemeralFixture(t,
+		harness.WithPool(squatAddr, squatAddr),
+		harness.WithBareParent())
+	t.Cleanup(func() {
+		if t.Failed() {
+			ef.DumpLogs(func(s string) { t.Log(s) })
+			harness.DumpPluginLog(t)
+		}
+	})
+
+	squatMAC := ef.Squat(squatAddr)
+	t.Logf("squatter holds %s at %s (parent deliberately bare)", squatAddr, squatMAC)
+
+	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	if err != nil {
+		t.Fatalf("docker client: %v", err)
+	}
+	defer cli.Close()
+
+	w := harness.BeginCounterWindow(t, ctx, cli,
+		"address_conflicts", "address_conflict_probes", "conflict_probe_failures")
+
+	harness.CreateNetwork(t, ctx, netName, "macvlan", map[string]string{
+		"parent": harness.EphemeralHostVeth,
+	})
+	_, ip, _ := harness.RunContainer(t, ctx, netName, "dh-itest-conflict-bare-ctr")
+	t.Logf("endpoint bound: ip=%s", ip)
+
+	after, ok := w.Await(conflictProbeWait, func(now, before *harness.HealthResponse) bool {
+		return now.ConflictProbeFailures > before.ConflictProbeFailures
+	})
+	if !ok {
+		t.Fatalf("conflict_probe_failures never moved within %v.\n"+
+			"The probe could not have detected this squatter — it had no address on the segment "+
+			"to send from — so it owes an explicit 'undetermined'. Silence here is the #524 fault "+
+			"in its subtler form.\n"+
+			"conflicts=%d probes=%d healthy=%v",
+			conflictProbeWait, after.AddressConflicts, after.AddressConflictProbes, after.Healthy)
+	}
+
+	// The decisive assertion: no verdict was reached. A probe counted
+	// here would mean the plugin believes it checked something.
+	if after.AddressConflictProbes > w.Before().AddressConflictProbes {
+		t.Errorf("address_conflict_probes moved on a probe that could not reach the squatter; " +
+			"the plugin is reporting a check it did not perform")
+	}
+	if after.AddressConflicts > w.Before().AddressConflicts {
+		t.Errorf("address_conflicts moved without a reply to base it on")
+	}
+	// An unanswered question must not latch the plugin unhealthy — that
+	// is what separates it from a known-bad address.
+	if !after.Healthy {
+		t.Error("healthy = false on an undetermined probe alone; an unasked question is not a known-broken address")
 	}
 	w.End()
 }

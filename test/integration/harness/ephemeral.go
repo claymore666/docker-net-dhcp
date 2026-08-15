@@ -58,6 +58,11 @@ const (
 	EphemeralAltPoolEnd    = "192.168.102.99"
 	EphemeralPoolStart     = "192.168.101.10"
 	EphemeralPoolEnd       = "192.168.101.99"
+	// EphemeralParentAddr is the host's own address on the segment, for
+	// tests that pass WithParentAddress. Outside the pool on purpose:
+	// the server must never be able to lease the address the probe
+	// sends from.
+	EphemeralParentAddr = "192.168.101.2/24"
 	// EphemeralShiftedPoolStart/End are a disjoint range for
 	// Restart() in the NAK test: an address leased from the original
 	// pool is out-of-range for an authoritative server configured
@@ -134,6 +139,14 @@ type EphemeralFixture struct {
 	poolStart, poolEnd string
 	serverCIDR         string
 
+	// parentCIDR, when set, is an address put on the HOST side of the
+	// veth pair — the interface tests hand to the driver as `parent`.
+	// Empty by default, which leaves the parent bare.
+	//
+	// A bare parent is not the neutral choice it looks like; see
+	// WithParentAddress.
+	parentCIDR string
+
 	// leaseSeconds is the granted lease lifetime (Kea valid-lifetime).
 	// Under dnsmasq this was pinned to its 2m floor; it is now a knob,
 	// which is the whole point of #356.
@@ -188,6 +201,76 @@ func WithPool(start, end string) EphemeralOption {
 		ef.poolStart = start
 		ef.poolEnd = end
 	}
+}
+
+// WithParentAddress puts addr (CIDR form) on the host side of the veth
+// pair — the interface the test hands to the driver as `parent`.
+//
+// This models the ordinary deployment, where the macvlan or ipvlan
+// parent is the host's own NIC and carries the host's address on the
+// segment, and where a bridge parent always has one.
+//
+// It is required by any test that expects the address-conflict probe to
+// reach a verdict, and the reason is a kernel behaviour rather than a
+// harness detail: a host answers an ARP request only if it can route a
+// reply back to the SENDER. With no address on the leased subnet the
+// probe has to fall back to a link-local source, and a responder with no
+// default route then stays silent. Measured on 6.12 over a veth pair,
+// squatter on 192.168.101.42:
+//
+//	responder routes    link-local sender   on-subnet sender
+//	none                INCOMPLETE          answered
+//	link-local route    answered            -
+//	default route       answered            -
+//
+// The fixture's namespace has no default route, so it is the strict
+// left-hand column. That is deliberate: it is the configuration in which
+// a detector that only works by luck goes red (#524).
+// It is ON BY DEFAULT, derived from the fixture's server address, so
+// the suite models the ordinary deployment rather than the exotic one.
+// Use WithBareParent for the opposite case, and say why.
+func WithParentAddress(addr string) EphemeralOption {
+	return func(ef *EphemeralFixture) {
+		ef.parentCIDR = addr
+	}
+}
+
+// WithBareParent leaves the parent with no address at all.
+//
+// This is the deployment where a NIC exists only to be a macvlan
+// parent, and it is the configuration in which the address-conflict
+// probe is degraded: with no on-subnet source to send from it cannot
+// get an answer out of a gateway-less host, and must report
+// "undetermined" instead of "clean". A test that wants that state asks
+// for it here rather than getting it by accident, because getting it by
+// accident is what made the first conflict probe look like it worked.
+func WithBareParent() EphemeralOption {
+	return func(ef *EphemeralFixture) {
+		ef.parentCIDR = ""
+	}
+}
+
+// defaultParentAddr derives the host's own address on a fixture's
+// segment from the server address it was configured with, so a fixture
+// on an alternate subnet gets a parent address on THAT subnet rather
+// than a stale one from the default.
+//
+// Host octet 2: the server holds .1, and the pools start at .10.
+func defaultParentAddr(serverCIDR string) string {
+	ip, ipnet, err := net.ParseCIDR(serverCIDR)
+	if err != nil {
+		return ""
+	}
+	v4 := ip.To4()
+	if v4 == nil {
+		return ""
+	}
+	parent := net.IPv4(v4[0], v4[1], v4[2], 2)
+	if parent.Equal(ip) {
+		parent = net.IPv4(v4[0], v4[1], v4[2], 3)
+	}
+	ones, _ := ipnet.Mask.Size()
+	return fmt.Sprintf("%s/%d", parent.String(), ones)
 }
 
 // WithRenewTimes makes the fixture advertise DHCP option 58 (T1,
@@ -269,6 +352,12 @@ func NewEphemeralFixture(t *testing.T, opts ...EphemeralOption) *EphemeralFixtur
 		serverCIDR:   EphemeralServerAddr,
 		leaseSeconds: EphemeralDefaultLeaseSeconds,
 	}
+	// Set before the options run, so WithParentAddress can override it
+	// and WithBareParent can clear it. No option changes serverCIDR —
+	// only RestartOnSubnet does, at runtime, and a fixture renumbered
+	// out from under its parent address probes in the degraded mode
+	// from then on, which is the truth about that situation.
+	ef.parentCIDR = defaultParentAddr(ef.serverCIDR)
 	for _, opt := range opts {
 		opt(ef)
 	}
@@ -280,6 +369,16 @@ func NewEphemeralFixture(t *testing.T, opts ...EphemeralOption) *EphemeralFixtur
 	}
 	if err := netlink.LinkSetUp(hostLink); err != nil {
 		t.Fatalf("LinkSetUp %s: %v", EphemeralHostVeth, err)
+	}
+
+	if ef.parentCIDR != "" {
+		parentAddr, err := netlink.ParseAddr(ef.parentCIDR)
+		if err != nil {
+			t.Fatalf("ParseAddr(%q): %v", ef.parentCIDR, err)
+		}
+		if err := netlink.AddrAdd(hostLink, parentAddr); err != nil {
+			t.Fatalf("AddrAdd %s on %s: %v", ef.parentCIDR, EphemeralHostVeth, err)
+		}
 	}
 
 	if ef.isolated() {
