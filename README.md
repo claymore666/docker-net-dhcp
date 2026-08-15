@@ -149,7 +149,9 @@ The full, copy-pasteable procedure lives in
 **[Verifying releases](docs/verifying-releases.md)** (also on the
 [docs site](https://claymore666.github.io/docker-net-dhcp/verifying-releases/)),
 and every [GitHub Release](https://github.com/claymore666/docker-net-dhcp/releases)
-links to it. In brief (replace `VERSION`):
+links to it. Both commands need **cosign v3 or newer** — v2 cannot read the
+Sigstore bundle format the release signs with, and fails in a way that looks
+like a broken signature. In brief (replace `VERSION`):
 
 ```bash
 # image signature

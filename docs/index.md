@@ -127,7 +127,9 @@ manifest is cosign-signed so one signature covers every attached file.
 The full, copy-pasteable procedure lives in
 **[Verifying releases](verifying-releases.md)**, and every
 [GitHub Release](https://github.com/claymore666/docker-net-dhcp/releases)
-links to it. In brief (replace `VERSION`):
+links to it. Both commands need **cosign v3 or newer** — v2 cannot read the
+Sigstore bundle format the release signs with, and fails in a way that looks
+like a broken signature. In brief (replace `VERSION`):
 
 ```bash
 # image signature
