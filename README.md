@@ -165,6 +165,11 @@ gh attestation verify oci://ghcr.io/claymore666/docker-net-dhcp:VERSION --repo c
 
 Contributions are welcome.
 
+- **Looking for somewhere to start?** Issues tagged
+  [`good first issue`](https://github.com/claymore666/docker-net-dhcp/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
+  are self-contained and need no deep project context — each one states the
+  gap, where to look, and how to check that you fixed it. They are real work
+  that would otherwise sit undone, not busywork.
 - **Questions, bugs, and feature requests:** open a [GitHub issue](https://github.com/claymore666/docker-net-dhcp/issues).
   For bugs, please include the plugin version, your Docker version, the network
   mode (`bridge`, `macvlan`, or `ipvlan`), and the relevant plugin log.
