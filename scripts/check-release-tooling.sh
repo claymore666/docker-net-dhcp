@@ -15,6 +15,12 @@
 # actually be executed on this box.
 set -u
 
+# The cosign major the release is verifiable with. Single source of truth:
+# scripts/check-cosign-docs.sh reads this line and asserts every page that
+# prints a cosign command names the same major, so a bump here cannot leave
+# the user-facing docs behind (#522).
+COSIGN_MAJOR=3
+
 fail=0
 ok()   { printf 'PASS  %s\n' "$1"; }
 bad()  { printf 'FAIL  %s\n' "$1"; fail=1; }
@@ -36,12 +42,12 @@ if command -v cosign >/dev/null 2>&1; then
            | sed -n 's/.*GitVersion:[[:space:]]*v\{0,1\}\([0-9][0-9.]*\).*/\1/p' \
            | head -1)"
     case "$ver" in
-        3.*) ok "cosign v$ver" ;;
+        "$COSIGN_MAJOR".*) ok "cosign v$ver" ;;
         "")  bad "cosign present but its version could not be read — expected a 'GitVersion:' line" ;;
-        *)   bad "cosign v$ver — step 10 needs v3; older majors are untested against checksums.txt.sigstore.json" ;;
+        *)   bad "cosign v$ver — step 10 needs v$COSIGN_MAJOR; older majors are untested against checksums.txt.sigstore.json" ;;
     esac
 else
-    bad "cosign missing — go install github.com/sigstore/cosign/v3/cmd/cosign@latest"
+    bad "cosign missing — go install github.com/sigstore/cosign/v$COSIGN_MAJOR/cmd/cosign@latest"
 fi
 
 # A signing key, because step 9 tags with -s and a release tag must show

@@ -105,6 +105,7 @@ jobs:
           bash scripts/test-check-reproducible-build.sh
           bash scripts/test-check-go-pins.sh
           bash scripts/test-check-build-context.sh
+          bash scripts/test-check-cosign-docs.sh
 
       # Every driver-option key the code parses must be documented in
       # docs/reference.md — an undocumented option turns CI red (#132).
@@ -164,6 +165,15 @@ jobs:
       # working checkout by a non-root user — where development happens.
       - name: Build-context check
         run: bash scripts/check-build-context.sh
+
+      # Every page that prints a cosign command must state which cosign
+      # major it needs (#522). Verifying a signature is the one moment a
+      # user is deciding whether to trust the artifact, and cosign v2's
+      # failure against a v3 bundle blames the release, not the toolchain.
+      # The required major lives in scripts/check-release-tooling.sh; this
+      # keeps the user-facing pages following it.
+      - name: Cosign-version docs check
+        run: bash scripts/check-cosign-docs.sh
 
   staticcheck:
     runs-on: ubuntu-latest

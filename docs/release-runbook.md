@@ -41,13 +41,22 @@ so the check cannot rot into something that always passes.
 | `cosign` | step 10's `verify-blob` re-verification | `go install github.com/sigstore/cosign/v3/cmd/cosign@latest` |
 | `crane` | optional — comparing `:latest` and `:vX.Y.Z` digests by hand | `go install github.com/google/go-containerregistry/cmd/crane@latest` |
 
-**Use cosign v3.** The release signs `checksums.txt` keylessly and
-emits a **Sigstore bundle**, which is the v3 default; v2's
+**Use cosign v3 or newer.** The release signs `checksums.txt` keylessly
+and emits a **Sigstore bundle**, which is the v3 default; v2's
 `--output-signature` / `--output-certificate` pair was removed in
 favour of it. v3 is what the workflow itself installs and what the
 v1.3.5 verification was run with (v3.1.2), and what verified v1.5.0
 (v3.1.3); older majors are untested against
 `checksums.txt.sigstore.json` here.
+
+v2 does not fail with anything resembling "your cosign is too old" — it
+fails with `Error: bundle does not contain cert for verification, please
+provide public key`, which implicates the artifact rather than the
+toolchain (#522). That string is now quoted on
+[Verifying releases](verifying-releases.md) so a search for it lands on
+the answer. `scripts/check-cosign-docs.sh` keeps every page that prints
+a cosign command naming the same major as
+`scripts/check-release-tooling.sh` enforces.
 
 Also needed, but already true on any box that has committed here: a
 git signing key, since step 9 tags with `-s`. Confirm with

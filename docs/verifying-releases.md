@@ -35,6 +35,21 @@ Replace `VERSION` with the release tag (for example `v1.5.0`). You need
 [`cosign`](https://docs.sigstore.dev/cosign/installation/) and, for the
 provenance step, the [GitHub CLI](https://cli.github.com/).
 
+> **You need cosign v3 or newer.** Check with `cosign version`, and
+> install with
+> `go install github.com/sigstore/cosign/v3/cmd/cosign@latest`.
+>
+> `checksums.txt.sigstore.json` is a **Sigstore bundle**, which is the v3
+> format. Run the command below with cosign v2 and it fails like this:
+>
+> ```
+> Error: bundle does not contain cert for verification, please provide public key
+> ```
+>
+> That message names the bundle, so it reads as though the release were
+> signed wrong. It isn't — v2 simply cannot read the format. If you see
+> it, upgrade cosign and run the command again.
+
 ```sh
 cosign verify-blob \
   --bundle checksums.txt.sigstore.json \
@@ -49,6 +64,8 @@ to this repository's `release.yml`, so a valid Sigstore signature made by
 anything else fails.
 
 ## Verifying the image
+
+Also **cosign v3 or newer**.
 
 ```sh
 cosign verify ghcr.io/claymore666/docker-net-dhcp:VERSION \
