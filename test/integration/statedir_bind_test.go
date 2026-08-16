@@ -50,13 +50,9 @@ import (
 // re-DISCOVERing the same endpoints. The daemon contract under test
 // does not care what the plugin is called; the blast radius does.
 func TestStateDirBindSource_MissingSourceContract(t *testing.T) {
-	const (
-		// Outside devplayer0/claymore666 on purpose — see above.
-		pluginRef = "local/dh-itest-statedir:500"
-		// The in-plugin mount point, i.e. the mounts[] entry whose
-		// source this test redirects. Must match config.json.
-		stateDest = "/var/lib/net-dhcp"
-	)
+	// The in-plugin mount point, i.e. the mounts[] entry whose source
+	// this test redirects. Must match config.json.
+	const stateDest = "/var/lib/net-dhcp"
 
 	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 	defer cancel()
@@ -78,6 +74,26 @@ func TestStateDirBindSource_MissingSourceContract(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(scratch) })
 
+	// The plugin name is unique per run, and that is load-bearing
+	// rather than tidiness.
+	//
+	// A name that was successfully enabled earlier in the SAME daemon
+	// lifetime keeps a registered network-driver handler even after
+	// `plugin disable` + `plugin rm`. Re-create that name and step 5
+	// below stops answering "found but disabled" and instead dials the
+	// dead socket of the previous incarnation — measured on 26.1.5, 4/4
+	// deterministic with a fresh name and reproducible with a reused
+	// one. CI would never have seen it (its daemon is new each run);
+	// a second `make integration-local` on a developer's box would.
+	//
+	// The name also stays OUTSIDE the namespaces driverRegexp matches
+	// — see the doc comment above.
+	// Lowercased: os.MkdirTemp's random suffix is mixed-case and Docker
+	// rejects a plugin reference that is not lowercase ("repository
+	// name ... must be lowercase"), which would fail nearly every run.
+	suffix := strings.ToLower(strings.TrimPrefix(filepath.Base(scratch), ".itest-statedir-"))
+	pluginRef := "local/dh-itest-statedir-" + suffix + ":500"
+
 	// The bind source the daemon will be asked for. Deliberately NOT
 	// created yet — its absence is the whole scenario.
 	bindSource := filepath.Join(scratch, "state")
@@ -86,10 +102,6 @@ func TestStateDirBindSource_MissingSourceContract(t *testing.T) {
 	copyPluginPackage(ctx, t, srcPlugin, pkgDir)
 	rewriteStateDirSource(t, filepath.Join(pkgDir, "config.json"), stateDest, bindSource)
 
-	// Belt and braces: a previous aborted run of this test could have
-	// left the throwaway behind, and `create` would then answer
-	// "already exists" at step 1 for the wrong reason.
-	_, _ = dockerRun(ctx, t, "plugin", "rm", "-f", pluginRef)
 	t.Cleanup(func() {
 		// Fresh ctx: cleanup must still run when the test ctx expired.
 		cctx, ccancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -105,6 +117,12 @@ func TestStateDirBindSource_MissingSourceContract(t *testing.T) {
 	//    stages the plugin without starting it, so it must succeed even
 	//    though the mount cannot be satisfied.
 	if out, err := dockerRun(ctx, t, "plugin", "create", pluginRef, pkgDir); err != nil {
+		if strings.Contains(out, "already exists") {
+			t.Fatalf("plugin create %s hit a content-store collision: %v: %s\n"+
+				"The rootfs marker written by copyPluginPackage is meant to make this "+
+				"layer unique; if it is failing anyway, the digest is being computed over "+
+				"something the marker does not change.", pluginRef, err, out)
+		}
 		t.Fatalf("plugin create %s: %v: %s", pluginRef, err, out)
 	}
 
@@ -226,6 +244,25 @@ func copyPluginPackage(ctx context.Context, t *testing.T, src, dst string) {
 			t.Fatalf("copy plugin package %s -> %s: %v: %s", src, dst, err, out)
 		}
 	}
+	// Make the rootfs layer unique to this run.
+	//
+	// `docker plugin create` digests the rootfs and stores it as
+	// content. The runner built this same tree minutes earlier and
+	// created the suite's own plugin from it, so a byte-identical copy
+	// hashes to a blob the daemon already holds and `create` fails with
+	// `content sha256:...: already exists` (seen on 26.1.5). The marker
+	// is one file with the scratch directory's random name in it: it
+	// changes the digest, is inert inside the plugin, and is unique per
+	// run so a repeat on the same daemon does not collide either.
+	//
+	// It has to be a NEW file rather than an edit — the copy above is
+	// hardlinked, so writing to any existing path would write into the
+	// runner's real plugin package.
+	marker := filepath.Join(dst, "rootfs", ".dh-itest-statedir-500")
+	if err := os.WriteFile(marker, []byte(filepath.Base(filepath.Dir(dst))+"\n"), 0o644); err != nil {
+		t.Fatalf("write rootfs marker: %v", err)
+	}
+
 	// config.json is rewritten below; break the hardlink so the
 	// repo's own config.json can never be modified through it.
 	cfg := filepath.Join(dst, "config.json")
