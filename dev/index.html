@@ -997,7 +997,8 @@ Recover with:</p>
 <a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>docker<span class="w"> </span>plugin<span class="w"> </span>install<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v1.6.0
 </code></pre></div>
 <p>It requests <code>host</code> networking, the host PID namespace, the Docker
-socket, a bind mount of the state directory above, and
+socket, a bind mount of the state directory above, a read-only bind
+mount of <code>/var/run/docker</code> (v1.6.0+), and
 <code>CAP_NET_ADMIN</code>/<code>CAP_SYS_ADMIN</code>/<code>CAP_SYS_PTRACE</code> — grant them to
 proceed.
 (If you hit <code>invalid rootfs in image configuration</code>, upgrade Docker.)</p>

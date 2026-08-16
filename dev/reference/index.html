@@ -1665,6 +1665,15 @@ plugin <strong>installed but disabled</strong>, with a retry that reports only
 <li><code>ghcr.io/claymore666/docker-net-dhcp:vX.Y.Z</code> (primary)</li>
 <li><code>claymore666/net-dhcp:vX.Y.Z</code> (Docker Hub mirror)</li>
 </ul>
+<p>Published builds are <strong><code>linux/amd64</code> only</strong>, and this is a constraint of
+Docker plugins rather than a choice about which architectures to build:
+a plugin cannot be installed from a multi-architecture manifest list at
+all, and <code>docker plugin install</code> has no <code>--platform</code> to steer one. An
+index fails with <code>did not find plugin config for specified reference</code>
+for every architecture, including the one you are on. arm64 therefore
+needs a tag of its own — tracked in
+<a href="https://github.com/claymore666/docker-net-dhcp/issues/507">#507</a>. The
+README covers the daemon-side reason in full.</p>
 <p><strong>Install</strong> (interactive privilege grant, or <code>--grant-all-permissions</code>
 for unattended):</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="c1"># One-time: the plugin persists lease state here, bind-mounted from</span>
@@ -1688,12 +1697,20 @@ plugin that is already there:</p>
 <p>Nothing is lost or corrupted by the failed install. (Behaviour verified
 against Docker 26.1.5, #494.)</p>
 <p>Privileges requested: <code>network: host</code>, host PID namespace, the Docker
-socket mount, a bind mount of <code>STATE_DIR</code> (v1.5.0+, see below),
+socket mount, a bind mount of <code>STATE_DIR</code> (v1.5.0+, see below), a
+<strong>read-only</strong> bind mount of <code>/var/run/docker</code> (v1.6.0+),
 <code>CAP_NET_ADMIN</code> + <code>CAP_SYS_ADMIN</code> + <code>CAP_SYS_PTRACE</code> (v1.3.3+). All are inherent to what the plugin does: creating links in
 arbitrary netns, driving DHCP on the host's L2 segments, querying the
 daemon — and entering a container's netns via <code>/proc/&lt;pid&gt;/ns/net</code>,
 which the kernel ptrace-gates when the container runs as a non-root
 user (#317).</p>
+<p>The <code>/var/run/docker</code> mount lets the plugin list the daemon's sandbox
+netns entries, so "the container went away mid-attach" is reported as
+that rather than as a generic failure (<code>sandbox_netns_visible</code>). It is
+the parent of <code>/var/run/docker/netns</code> rather than that directory
+itself, because the daemon does not create the latter until the first
+container sandbox — mounting it directly made <code>plugin install</code> fail on
+a host that had never run one (#588).</p>
 <p><strong>Verify the signature (v1.1.0+).</strong> The published image is cosign-signed
 (keyless) and carries SLSA build provenance; release artifacts ship a
 cosign-signed <code>checksums.txt</code> and an SBOM. Per-release, copy-pasteable
