@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"syscall"
 	"testing"
 
@@ -800,34 +801,150 @@ func TestSandboxNetnsVisibleIn(t *testing.T) {
 // while leaving the code that depends on it, which is the regression
 // that would restore the dead branch silently.
 func TestSandboxNetnsDirsAreMounted(t *testing.T) {
-	raw, err := os.ReadFile("../../config.json")
+	for _, name := range pluginManifests {
+		t.Run(name, func(t *testing.T) {
+			mounted := make(map[string]bool)
+			for _, m := range readPluginManifest(t, name) {
+				mounted[m.Destination] = true
+			}
+
+			var found bool
+			for _, dir := range sandboxNetnsDirs {
+				for dest := range mounted {
+					if mountCovers(dest, dir) {
+						found = true
+						break
+					}
+				}
+			}
+			if !found {
+				t.Errorf("no mount in %s covers any of sandboxNetnsDirs %v — os.ReadDir will "+
+					"fail on every one of them inside the plugin, sandboxGone will answer \"no "+
+					"usable evidence\" forever, and nothing will say so (#567). Mounts "+
+					"present: %v", name, sandboxNetnsDirs, mounted)
+			}
+		})
+	}
+}
+
+// pluginManifests is every manifest that ships a plugin, because a gate
+// that reads one of them cannot see a mount added to the other.
+// config-cover.json builds the instrumented plugin the coverage lane
+// enables, and it carried the same lazily-created bind source (#588) —
+// a lane that runs once per release would have failed on it long after
+// the PR that introduced it.
+var pluginManifests = []string{"config.json", "config-cover.json"}
+
+type manifestMount struct {
+	Source      string `json:"source"`
+	Destination string `json:"destination"`
+	Type        string `json:"type"`
+}
+
+func readPluginManifest(t *testing.T, name string) []manifestMount {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join("../..", name))
 	if err != nil {
-		t.Fatalf("read config.json: %v", err)
+		t.Fatalf("read %s: %v", name, err)
 	}
 	var manifest struct {
-		Mounts []struct {
-			Destination string `json:"destination"`
-		} `json:"mounts"`
+		Mounts []manifestMount `json:"mounts"`
 	}
 	if err := json.Unmarshal(raw, &manifest); err != nil {
-		t.Fatalf("parse config.json: %v", err)
+		t.Fatalf("parse %s: %v", name, err)
 	}
+	if len(manifest.Mounts) == 0 {
+		t.Fatalf("%s declares no mounts; the guards below would pass on an empty list", name)
+	}
+	return manifest.Mounts
+}
 
-	mounted := make(map[string]bool, len(manifest.Mounts))
-	for _, m := range manifest.Mounts {
-		mounted[m.Destination] = true
+// mountCovers reports whether a mount at dest makes dir readable inside
+// the plugin, which is true when dest IS dir or an ancestor of it.
+//
+// An ancestor counts because a bind mount shares the source's directory
+// tree: entries created under it afterwards are visible through the
+// mount without any propagation, since creating a directory is not
+// creating a mount. That is not a technicality here, it is the fix for
+// #588 — /var/run/docker/netns does not exist until the daemon's first
+// sandbox, so the manifest mounts the parent and the netns directory
+// appears inside the plugin when libnetwork creates it. Verified with a
+// plugin enabled before the directory existed: sandbox_netns_visible
+// went -1 -> 1 on the same process, matching the host's entry.
+func mountCovers(dest, dir string) bool {
+	if dest == dir {
+		return true
 	}
+	return strings.HasPrefix(dir, strings.TrimSuffix(dest, "/")+"/")
+}
 
-	var found bool
-	for _, dir := range sandboxNetnsDirs {
-		if mounted[dir] {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Errorf("config.json mounts none of sandboxNetnsDirs %v — os.ReadDir will fail on "+
-			"every one of them inside the plugin, sandboxGone will answer \"no usable evidence\" "+
-			"forever, and nothing will say so (#567). Mounts present: %v", sandboxNetnsDirs, mounted)
+// enableTimeMountSources are the only bind sources config.json may name,
+// each with the reason it is present on a host that has just installed
+// the plugin and done nothing else.
+//
+// The daemon does not create a missing bind source (#440), so a mount
+// whose source does not exist fails the enable and takes the whole
+// install with it. The question a new mount has to answer is therefore
+// not "does this path exist on my machine" but "does it exist on a host
+// whose daemon has never created a network sandbox" — which is every
+// first install, and almost no machine anyone tests on.
+var enableTimeMountSources = map[string]string{
+	"/var/run/docker.sock": "the daemon's own socket; the plugin cannot be called at all without it",
+	"/var/run/docker":      "created at daemon start — it holds plugins/, which must exist before any plugin can be enabled",
+	"/var/lib/net-dhcp":    "STATE_DIR, created by the operator; every install doc says so (#440)",
+	"/var/lib/dh-cover":    "GOCOVERDIR for the instrumented plugin; coverage.yml mkdir -p's it before enabling, and it never ships in config.json",
+}
+
+// lazyMountSources are paths the daemon creates on demand rather than at
+// startup. Naming one as a bind source builds an install that works on
+// every machine that has run a container and fails on every machine that
+// has not.
+var lazyMountSources = map[string]string{
+	"/var/run/docker/netns": "libnetwork creates it on the first sandbox, not at daemon start",
+	"/run/docker/netns":     "same directory by the other name",
+}
+
+// A bind source that does not exist yet fails the enable, so every one
+// of them has to be a path the daemon has already made by the time it
+// enables plugins.
+//
+// This is #588 written down as a check. v1.6.0-rc2 mounted
+// /var/run/docker/netns, which libnetwork does not create until the
+// first container sandbox. Every host we own had run a container, so the
+// directory was always there: the integration suite passed, the coverage
+// lane passed, and production would have upgraded without a murmur. The
+// only machine that could see it was a hosted runner installing onto a
+// daemon that had never started anything — verify-install, which caught
+// it, but only by accident of being fresh rather than by asking.
+//
+// TestSandboxNetnsDirsAreMounted guards the opposite direction: that the
+// mount does not disappear. Neither one implies the other, and this
+// release needed both.
+func TestPluginMountSourcesExistAtEnableTime(t *testing.T) {
+	for _, name := range pluginManifests {
+		t.Run(name, func(t *testing.T) {
+			for _, m := range readPluginManifest(t, name) {
+				if m.Type != "bind" {
+					continue
+				}
+				if why, lazy := lazyMountSources[m.Source]; lazy {
+					t.Errorf("%s bind-mounts %q, which the daemon creates lazily (%s). "+
+						"`docker plugin install` fails on any host whose daemon has never "+
+						"created a network sandbox, and succeeds on every host that has — so "+
+						"CI and production both stay silent (#588). Mount the parent instead: "+
+						"entries created under a bind mount afterwards are visible through it.",
+						name, m.Source, why)
+					continue
+				}
+				if _, ok := enableTimeMountSources[m.Source]; !ok {
+					t.Errorf("%s bind-mounts %q, which is not a reviewed enable-time source. "+
+						"A bind source that does not exist when the daemon enables the plugin "+
+						"fails the enable and the install with it (#440, #588). If this path is "+
+						"genuinely present on a host that has only just installed the plugin, "+
+						"add it to enableTimeMountSources with the reason; do not delete this "+
+						"check. Reviewed sources: %v", name, m.Source, enableTimeMountSources)
+				}
+			}
+		})
 	}
 }
