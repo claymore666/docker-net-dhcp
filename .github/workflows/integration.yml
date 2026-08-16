@@ -217,7 +217,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.ref }}
+      # It also classifies WHY nothing picked the job up and says so in
+      # an annotation, a step summary and the `starved` output (#513) —
+      # a capacity red and a suite failure looked identical in the
+      # checks UI, and the third concurrent run's red was routinely read
+      # as a broken dependency bump. `actions: write` above already
+      # covers the read of other in-flight runs the classifier needs.
       - name: Fail if a suite job never gets a runner
+        id: watchdog
         env:
           GH_TOKEN: ${{ github.token }}
           GATE_REPO: ${{ github.repository }}

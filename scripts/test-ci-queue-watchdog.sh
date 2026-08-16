@@ -31,9 +31,25 @@ no() { printf 'FAIL  %s\n' "$1" >&2; fail=$((fail + 1)); }
 # The stub distinguishes the two calls the way the real API does — by
 # the URL — rather than by call order, so a test cannot pass because the
 # script happened to issue its requests in the expected sequence.
+# RUNS_JSON is what the stub returns for the "other runs in flight"
+# query the classifier makes (#513). Set per-case by the parent; the
+# default is "nothing else running", which is the POOL SHORT class.
+RUNS_JSON='{"workflow_runs":[]}'
+
+# The runs fixture goes to a FILE rather than into the generated script.
+# Interpolating multi-line JSON into a `[ "$x" = ERR ]` test inside the
+# stub turns it into a syntax error, and the stub then fails for a
+# reason that has nothing to do with the case under test — which is
+# exactly how the first cut of these cases produced four confident
+# "POOL UNKNOWN" passes-as-failures.
 stub_curl() {
     local dir="$1" json="$2" cancel_exit="${3:-0}"
     mkdir -p "$dir/bin"
+    if [ "$RUNS_JSON" = "ERR" ]; then
+        : > "$dir/runs.err"
+    else
+        printf '%s\n' "$RUNS_JSON" > "$dir/runs.json"
+    fi
     cat > "$dir/bin/curl" <<EOF
 #!/usr/bin/env bash
 for a in "\$@"; do
@@ -41,6 +57,11 @@ for a in "\$@"; do
         */cancel)
             echo "\$a" >> "$CANCEL_LOG"
             exit $cancel_exit
+            ;;
+        *"actions/runs?status=in_progress"*)
+            [ -f "$dir/runs.err" ] && exit 1
+            cat "$dir/runs.json"
+            exit 0
             ;;
     esac
 done
@@ -197,6 +218,119 @@ rm -rf "$dir"
 case "$out" in
     *"diagnosed only"*) ok "WATCHDOG_NO_CANCEL says the run was left alone" ;;
     *) no "WATCHDOG_NO_CANCEL was silent about not cancelling" ;;
+esac
+
+# --- starvation must not read as a suite failure (#513) --------------
+#
+# The expensive failure mode is a red that carries no information about
+# the change. On 2026-08-13 the third concurrent run reported six failed
+# checks having executed none of its own diff, and "the debian bump
+# broke the suite" is the natural misreading. The watchdog knows which
+# it is; these cases pin that it SAYS so, on the annotation surface,
+# before it cancels.
+
+STUCK='{"jobs":[{"name":"main-1-suite","status":"queued"},{"name":"failure-suite","status":"queued"}]}'
+OTHERS='{"workflow_runs":[
+  {"id":999,"run_number":41,"name":"Integration","path":".github/workflows/integration.yml"},
+  {"id":998,"run_number":40,"name":"Integration","path":".github/workflows/integration.yml"}
+]}'
+
+arm
+RUNS_JSON="$OTHERS"
+out=$(run_watchdog "$STUCK" 2 1); rc=$?
+[ "$rc" = 1 ] && ok "starvation still fails the watchdog" || no "starvation exited $rc, want 1"
+case "$out" in
+    *"CLASS: STARVATION"*) ok "a run starved by other runs is classified as STARVATION" ;;
+    *) no "starvation was not classified; the reader cannot tell it from a suite failure: $out" ;;
+esac
+case "$out" in
+    *"::error title=CI STARVATION"*) ok "the class reaches the annotation surface" ;;
+    *) no "no ::error annotation — the checks page still shows an unexplained red" ;;
+esac
+case "$out" in
+    *"says NOTHING about the change under test"*) ok "it says the red carries no verdict on the diff" ;;
+    *) no "it does not tell the reader the result is uninformative about their change" ;;
+esac
+case "$out" in
+    *"#41"*|*"#40"*) ok "it names the runs that are holding the pool" ;;
+    *) no "the competing runs are not named, so the claim cannot be checked: $out" ;;
+esac
+[ -n "$(cancels)" ] && ok "a starved run is still cancelled (#477 unchanged)" || \
+    no "classification came at the cost of the cancel — the pool stays held"
+
+# --- and an empty pool must NOT be called starvation ------------------
+# Without this the classifier could return STARVATION unconditionally
+# and every case above would pass.
+arm
+RUNS_JSON='{"workflow_runs":[]}'
+out=$(run_watchdog "$STUCK" 2 1); rc=$?
+case "$out" in
+    *"CLASS: POOL SHORT"*) ok "nothing else running is classified POOL SHORT, not starvation" ;;
+    *) no "an idle pool was misclassified — the two need opposite responses: $out" ;;
+esac
+case "$out" in
+    *"CLASS: STARVATION"*) no "an idle pool was called starvation" ;;
+    *) ok "STARVATION is not the unconditional answer" ;;
+esac
+
+# A run of a workflow that does NOT use the self-hosted pool is not why
+# nobody took this job.
+arm
+RUNS_JSON='{"workflow_runs":[{"id":997,"run_number":39,"name":"Docs site","path":".github/workflows/pages.yml"}]}'
+out=$(run_watchdog "$STUCK" 2 1)
+case "$out" in
+    *"CLASS: POOL SHORT"*) ok "a hosted-only run in flight does not count as competition" ;;
+    *) no "a workflow that never touches the pool was blamed for the wait: $out" ;;
+esac
+
+# The run's own id must be excluded, or every stuck run blames itself.
+arm
+RUNS_JSON='{"workflow_runs":[{"id":12345,"run_number":42,"name":"Integration","path":".github/workflows/integration.yml"}]}'
+out=$(run_watchdog "$STUCK" 2 1)
+case "$out" in
+    *"CLASS: POOL SHORT"*) ok "the stuck run does not count itself as competition" ;;
+    *) no "the run blamed itself for holding the pool: $out" ;;
+esac
+
+# --- cannot see: unknown, never a guess -------------------------------
+arm
+RUNS_JSON="ERR"
+out=$(run_watchdog "$STUCK" 2 1); rc=$?
+[ "$rc" = 1 ] && ok "an unreadable run list still fails the watchdog" || no "unreadable run list exited $rc"
+case "$out" in
+    *"CLASS: POOL UNKNOWN"*) ok "an unreadable pool is reported as unknown" ;;
+    *) no "an unreadable pool was resolved into a confident class: $out" ;;
+esac
+[ -n "$(cancels)" ] && ok "an unknown cause is still cancelled" || \
+    no "an unreadable classification suppressed the cancel"
+RUNS_JSON='{"workflow_runs":[]}'
+
+# --- the machine-readable outputs -------------------------------------
+arm
+dir=$(mktemp -d)
+RUNS_JSON="$OTHERS"
+stub_curl "$dir" "$STUCK"
+PATH="$dir/bin:$PATH" GATE_REPO=o/r GH_TOKEN=x \
+    GITHUB_OUTPUT="$dir/gho" GITHUB_STEP_SUMMARY="$dir/ghs" \
+    bash "$WATCHDOG" 12345 2 1 >/dev/null 2>&1
+gho=$(cat "$dir/gho" 2>/dev/null); ghs=$(cat "$dir/ghs" 2>/dev/null)
+rm -rf "$dir"
+RUNS_JSON='{"workflow_runs":[]}'
+case "$gho" in
+    *"starved=true"*) ok "starvation sets starved=true for a triage query to filter on" ;;
+    *) no "no starved= output; reds still cannot be told apart in bulk: $gho" ;;
+esac
+case "$gho" in
+    *"wait_class=STARVATION"*) ok "the class is exported too" ;;
+    *) no "wait_class not exported: $gho" ;;
+esac
+case "$ghs" in
+    *"STARVATION"*) ok "the step summary states the class" ;;
+    *) no "the step summary does not state the class: $ghs" ;;
+esac
+case "$ghs" in
+    *"no verdict on the change"*) ok "the step summary says the run carries no verdict" ;;
+    *) no "the step summary does not say the result is uninformative" ;;
 esac
 
 # --- and a clean run is never cancelled -------------------------------
