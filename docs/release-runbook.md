@@ -500,7 +500,12 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
    sha256sum rootfs/usr/sbin/net-dhcp rootfs/usr/lib/net-dhcp/dhcp-handler
    ```
    Update the version name and both digests, and land it on `dev` as a
-   normal PR (it back-merges to `main` with the next release). Leaving
+   normal PR — **then bring it to `main` before the next rc.** Since
+   #547 the release run itself checks this block, so the fix has to be
+   on the **tagged commit**: leaving it on `dev` makes the next rc fail
+   in exactly the same place. (Before #547 it could ride along with the
+   next release, which is what this step used to say. v1.6.0 is where
+   that stopped being true.) Leaving
    the previous version's digests in place is worse than having none:
    a reader who rebuilds the current tag and compares against them sees
    a mismatch and concludes the release does not match its source.
