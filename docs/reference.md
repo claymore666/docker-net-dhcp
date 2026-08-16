@@ -91,6 +91,16 @@ The plugin publishes to two registries; GHCR is primary:
 - `ghcr.io/claymore666/docker-net-dhcp:vX.Y.Z` (primary)
 - `claymore666/net-dhcp:vX.Y.Z` (Docker Hub mirror)
 
+Published builds are **`linux/amd64` only**, and this is a constraint of
+Docker plugins rather than a choice about which architectures to build:
+a plugin cannot be installed from a multi-architecture manifest list at
+all, and `docker plugin install` has no `--platform` to steer one. An
+index fails with `did not find plugin config for specified reference`
+for every architecture, including the one you are on. arm64 therefore
+needs a tag of its own — tracked in
+[#507](https://github.com/claymore666/docker-net-dhcp/issues/507). The
+README covers the daemon-side reason in full.
+
 **Install** (interactive privilege grant, or `--grant-all-permissions`
 for unattended):
 
