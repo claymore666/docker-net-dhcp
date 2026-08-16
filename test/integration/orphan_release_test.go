@@ -7,6 +7,7 @@ package integration
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/network"
 	docker "github.com/docker/docker/client"
+	"github.com/vishvananda/netlink"
 )
 
 // orphanReleaseBudget bounds the wait for the reclaim to land. The
@@ -265,10 +267,7 @@ func TestOrphanedLease_ReleasedWhenClientNeverBound(t *testing.T) {
 	}
 
 	deadline := time.Now().Add(orphanReleaseBudget)
-	for {
-		if fixture.CountLogLines("DHCPRELEASE", ip) >= 1 {
-			return
-		}
+	for fixture.CountLogLines("DHCPRELEASE", ip) < 1 {
 		if !time.Now().Before(deadline) {
 			t.Fatalf("dnsmasq never logged a DHCPRELEASE for %s within %v — the "+
 				"lease is still held upstream with nobody responsible for it. "+
@@ -277,6 +276,54 @@ func TestOrphanedLease_ReleasedWhenClientNeverBound(t *testing.T) {
 				"never started did not run (#549)", ip, orphanReleaseBudget)
 		}
 		time.Sleep(500 * time.Millisecond)
+	}
+
+	awaitReleaseLinksGone(t)
+}
+
+// awaitReleaseLinksGone waits for the reclaim's temporary link to be
+// removed from the shared parent.
+//
+// Two reasons, and the second is why it is not optional here.
+//
+// The plugin must not leak the links it creates: the reclaim deletes
+// `dh-rel-*` in a deferred call after the release, so a link still
+// present long afterwards is a real defect, and nothing else asserts it.
+//
+// And this test hands the parent straight to the next one. It is macvlan
+// and it runs immediately before TestOrphanedLease_ReleasedInIpvlanMode
+// in the same shard; the reclaim's link outlives the DHCPRELEASE that
+// this test waits for, because deleting it is the step after. A parent
+// carrying a macvlan child cannot accept an ipvlan one — that is #486's
+// mechanism and #556's residue — so returning early would hand the next
+// test an EBUSY that looks like its own failure. Tests share one parent
+// until #556 changes that; until then, leaving it as we found it is this
+// test's job.
+func awaitReleaseLinksGone(t *testing.T) {
+	t.Helper()
+
+	const budget = 15 * time.Second
+	deadline := time.Now().Add(budget)
+	for {
+		links, err := netlink.LinkList()
+		if err != nil {
+			t.Fatalf("LinkList: %v", err)
+		}
+		var left []string
+		for _, l := range links {
+			if strings.HasPrefix(l.Attrs().Name, "dh-rel-") {
+				left = append(left, l.Attrs().Name)
+			}
+		}
+		if len(left) == 0 {
+			return
+		}
+		if !time.Now().Before(deadline) {
+			t.Fatalf("orphan-release link(s) %v still on the host after %v; the "+
+				"reclaim did not remove them, and a macvlan child left on the "+
+				"shared parent blocks the next ipvlan test (#486/#556)", left, budget)
+		}
+		time.Sleep(250 * time.Millisecond)
 	}
 }
 
