@@ -16,7 +16,7 @@ Fritz!Box, dnsmasq, anything — instead of Docker's self-managed IPAM
 pools. Containers come up on your LAN as first-class hosts, addressable
 like any other machine. Bridge, macvlan, and ipvlan attachment modes.
 
-> **This is a maintained fork** of [`devplayer0/docker-net-dhcp`][upstream]
+> **This is a maintained fork** of [`devplayer0/docker-net-dhcp`][fork-parent]
 > (quiet since 2021, no longer builds on current Docker). This fork
 > modernises the toolchain (Go 1.26, docker SDK v28, current Alpine),
 > adds **macvlan** and **ipvlan** modes, fixes the daemon-restart
@@ -25,7 +25,7 @@ like any other machine. Bridge, macvlan, and ipvlan attachment modes.
 > injection) with a coverage ratchet and supply-chain gates on release.
 > The maintained image lives at `ghcr.io/claymore666/docker-net-dhcp`.
 
-[upstream]: https://github.com/devplayer0/docker-net-dhcp
+[fork-parent]: https://github.com/devplayer0/docker-net-dhcp
 
 > [!WARNING]
 > **⚠️ BREAKING CHANGE IN v1.5.0 — DO THIS FIRST ⚠️**
@@ -133,11 +133,21 @@ version from the selector). The same content lives in `docs/` in the repo:
   [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
 
 This fork publishes semver-tagged images to two registries — GHCR is
-primary (`ghcr.io/claymore666/docker-net-dhcp:vX.Y.Z`, `linux/amd64`;
-ARM via the build pipeline on request), mirrored to Docker Hub as
-`claymore666/net-dhcp:vX.Y.Z`. Every snippet here uses the GHCR
-reference. See the
+primary (`ghcr.io/claymore666/docker-net-dhcp:vX.Y.Z`), mirrored to
+Docker Hub as `claymore666/net-dhcp:vX.Y.Z`. Every snippet here uses the
+GHCR reference. See the
 [Releases page](https://github.com/claymore666/docker-net-dhcp/releases).
+
+Published builds are **`linux/amd64` only**. This is not an oversight
+about which architectures get built: a Docker *plugin* cannot be
+installed from a multi-architecture manifest list at all. The daemon
+reads a plugin's privileges before pulling it and its manifest handler
+matches single manifests only, so an index fails with `did not find
+plugin config for specified reference` — for every architecture,
+including the one you are on — and `docker plugin install` has no
+`--platform` to steer it. arm64 therefore needs a tag of its own rather
+than a flag on this one; that is tracked in
+[#507](https://github.com/claymore666/docker-net-dhcp/issues/507).
 
 ## Verifying releases
 
@@ -227,5 +237,5 @@ few days for a response.
 ## License
 
 GPL-3.0 — see [LICENSE.md](LICENSE.md). This is a fork of
-[`devplayer0/docker-net-dhcp`][upstream], which is GPL-3.0; as a
+[`devplayer0/docker-net-dhcp`][fork-parent], which is GPL-3.0; as a
 derivative work it stays under the same license.
