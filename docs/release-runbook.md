@@ -268,6 +268,20 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
      registries, privileges. Prefer replacing the copy with a pointer at
      the authority — the way step 5 defers to branch protection — over
      updating a copy that will decay again.
+   - **Mechanisms this release added that no page describes.** The
+     failure is *absence*, not wrongness, so nothing reads as wrong and
+     no grep finds it. Take the release's mechanism changes and ask
+     which section of `internals.md` covers each; v1.6.0 shipped a lease
+     reclaim and a per-parent gate with no section for either, while
+     every counter table was green.
+   - **Standing preconditions that read like old-version prose.** The
+     `BREAKING CHANGE IN v1.5.0` block (`README.md`, `docs/index.md`,
+     `docs/reference.md`) is a precondition for *every* install, not a
+     changelog entry — but it names an old version, so a pass tidying
+     stale version references deletes it in good faith. **Keep it.**
+   - **Counted claims.** "Four flip `healthy` to `false`" is right until
+     a fifth is added, and the sentence still parses. Check any stated
+     count against the code.
 
    **Verify each finding against the artifact, not from reasoning.**
    Run the command, `config` the snippet, `ls` the path on the test
@@ -325,6 +339,21 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
    commit messages. Include any **operator-visible compatibility
    notes** (e.g. v0.8.0 narrowed the `IsDHCPPlugin` regex — that
    needed a callout).
+
+   **Credit outside contributions by name**, the way the v1.0.0 notes
+   do. Find them rather than recalling them — almost every PR here is
+   the maintainer's or Dependabot's, so an outside one is easy to miss
+   precisely because it is rare:
+
+   ```sh
+   gh pr list --state merged --limit 300 --json number,title,author \
+     --jq '.[] | select(.author.login|test("claymore666|dependabot")|not)
+                | "#\(.number) @\(.author.login) \(.title)"'
+   ```
+
+   Also confirm the merged commit still carries their authorship
+   (`git log -1 --format='%an <%ae>' <sha>`) — a rebase or squash of a
+   fork branch is where that quietly becomes the maintainer's.
 5. **PR `release/vX.Y.Z` → `dev`.** Required checks on `dev` are
    `test`, `staticcheck`, `integration` (every PR builds and exercises
    its own plugin on the integration runner), `actionlint`,

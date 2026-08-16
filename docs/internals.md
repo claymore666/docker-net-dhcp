@@ -138,6 +138,59 @@ every part of it is a constraint rather than a preference.
 The probe is asynchronous and off `CreateEndpoint`'s critical path, with
 a 2-second cap that only an unclaimed address ever pays.
 
+## How a lease gets handed back
+
+Normally the container's own `dhcpcd` does it: a graceful stop emits a
+`RELEASE` and the server frees the address at once instead of waiting
+for the lease to expire.
+
+That needs a binding to release. Two cases leave one held with nobody
+responsible for it — the persistent client **never started** (the
+container was already gone), or it **started but never bound** (it was
+signalled before its first `ACK`, so `dhcpcd` had nothing to release and
+exited cleanly). The address was won regardless, by the one-shot at
+`CreateEndpoint`.
+
+The plugin then **reclaims**: a temporary child of the network's kind,
+re-acquire the same address under the endpoint's identity, release it
+properly. Counted by `orphaned_leases_released` and
+`orphaned_lease_release_failures`, and written to the audit ledger.
+
+**The scoping is load-bearing.** It fires when an endpoint *leaves*, not
+on every manager shutdown — `Close` stops every manager on an upgrade or
+`docker plugin disable`, with containers still running. A never-bound
+manager is legitimate there (a DHCP server that is not answering, while
+the container still holds the one-shot's address), and releasing would
+tell the server an address is free while it is in use: the duplicate
+assignment this release added detection for, manufactured by us.
+
+A missed reclaim leaves a lease to expire. A wrong one causes an outage.
+
+## How operations on one parent NIC are serialised
+
+A parent NIC registers one `rx_handler`, so it is a macvlan port or an
+ipvlan port and never both — whichever kind asks second gets `EBUSY`.
+That is a kernel rule; one mode per parent stays the operator-facing
+constraint.
+
+What the plugin can stop is inflicting it on itself. Three of its paths
+attach a child to a parent: creating an endpoint, the `validate_dhcp`
+probe, and the reclaim above — which holds its link for a full DHCP
+round trip, from a goroutine ordered against no Docker request. Since
+v1.6.0 all three take a per-parent gate first, so they queue instead of
+refusing each other (#486, #549).
+
+`parent_link_waits` counts operations that queued — the mechanism
+working. `parent_link_wait_timeouts` counts ones that gave up and
+proceeded anyway; they may still succeed, but the budget has stopped
+covering a reclaim's duration.
+
+The rule is enforced by the compiler, not by review: attaching a child
+link requires a guard value only the gate can produce, so a path that
+skipped it does not compile. An accounting file covers the one way
+around — a direct `netlink.LinkAdd`, which bridge mode needs, having no
+parent to contend for.
+
 ## How state outlives a process
 
 Three separate mechanisms keep addresses stable across three different
