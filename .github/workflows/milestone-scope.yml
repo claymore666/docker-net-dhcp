@@ -21,6 +21,13 @@ name: Milestone scope
 # next. It would fail on a tracker API blip too. Same reasoning, and the
 # same accepted cost, as the Starter tasks workflow.
 #
+# A RED RUN IS A PROMPT TO LOOK, NOT PROOF. The tracker's issue-list
+# index lags the issue itself by up to about a minute, so a run that
+# fires just after somebody fixes a label can still report it. Confirm
+# with `gh issue view <N> --json labels` before acting; the next run is
+# clean on its own. The script's header explains why that is left alone
+# rather than retried around.
+#
 # A red schedule is easier to ignore than a red PR. That is affordable
 # here specifically because the risk window is long — a milestone is
 # wrong for days or weeks before a release PR exists — so a daily check

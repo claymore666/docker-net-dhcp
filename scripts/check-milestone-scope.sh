@@ -43,6 +43,21 @@
 # before a release PR is opened — so a daily check catches it with room
 # to spare, which is what makes the trade affordable here.
 #
+# THE ISSUE LIST IS EVENTUALLY CONSISTENT. `gh issue list --label` is
+# served from an index that lags the issue itself by up to a minute or
+# so. Observed: both stale labels were dropped, `gh issue view` showed
+# them gone immediately, and this gate still reported them on a run
+# seconds later. That direction is harmless — it reports work already
+# done, and the next scheduled run is clean — but it means a red run is
+# a prompt to look, not proof on its own. Confirm against the issue
+# (`gh issue view <N> --json labels`) before acting, and re-run rather
+# than believing a red that follows a fix by less than a minute.
+#
+# Not worked around here on purpose: a retry loop would trade a
+# self-correcting false positive for a gate that hides a real one, and
+# per-issue verification would cost a request per issue to fix a
+# condition that resolves itself.
+#
 # EXIT CODES ARE PART OF THE CONTRACT:
 #   0  every milestoned issue is genuinely in scope
 #   1  a `backlog` issue carries a milestone — the release would close it
