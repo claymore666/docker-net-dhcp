@@ -43,19 +43,33 @@ const orphanReleaseBudget = 45 * time.Second
 // specific address and getting a different one, since an earlier
 // container was still holding what it wanted.
 //
-// The container here runs `true`: it exits within milliseconds of
-// start, while the persistent-client attach needs to find the container
-// PID, enter its netns, locate the link and complete a DHCP exchange.
-// The race is therefore not close, which is what makes the test stable
-// rather than a coin flip.
+// # Why there is no container here
+//
+// This test used to run a container executing `true`, and said in this
+// comment that "the race is therefore not close, which is what makes
+// the test stable rather than a coin flip". That claim was wrong, and
+// the suite proved it: the sibling test built the same way lost exactly
+// that race once #555 repartitioned the shards, and its wire log showed
+// the persistent client binding and releasing normally — no orphan, no
+// reclaim, nothing to assert on. Container exit versus dhcpcd's DORA is
+// a coin flip with a heavy bias, and a biased coin still lands the
+// other way eventually.
+//
+// So the orphan is constructed instead. Join is issued with no
+// container behind the endpoint, so the attach's container lookup
+// returns util.ErrNoContainer and the address is handed back — on every
+// run, in every shard position, with no dependence on how fast anything
+// else is. What used to be raced for is now stated.
+//
+// That path only reclaims because #566 made it reclaim. Before that fix
+// it gave up, charged join_start_failures, and leaked the address, so
+// this construction produced nothing at all. The hole was found by
+// this very rewrite failing to build the state it wanted.
 func TestOrphanedLease_ReleasedWhenContainerExitsEarly(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	const (
-		netName = "dh-itest-orphanrel"
-		ctrName = "dh-itest-orphanrel-ctr"
-	)
+	const netName = "dh-itest-orphanrel"
 
 	t.Cleanup(func() {
 		if t.Failed() {
@@ -64,7 +78,7 @@ func TestOrphanedLease_ReleasedWhenContainerExitsEarly(t *testing.T) {
 		}
 	})
 
-	harness.CreateNetwork(t, ctx, netName, "macvlan", nil)
+	netID := harness.CreateNetwork(t, ctx, netName, "macvlan", nil)
 
 	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
 	if err != nil {
@@ -72,52 +86,36 @@ func TestOrphanedLease_ReleasedWhenContainerExitsEarly(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = cli.Close() })
 
+	drv := harness.NewDriverClient(t, ctx, cli)
+
 	w := harness.BeginCounterWindow(t, ctx, cli, "orphaned_leases_released")
 	before := w.Before()
-	releasesBefore := fixture.CountLogLines("DHCPRELEASE")
 	logLinesBefore := harness.CountPluginLogLines(t, ctx, "Released orphaned lease")
 
-	create, err := cli.ContainerCreate(ctx,
-		&container.Config{
-			Image:    harness.TestImage,
-			Cmd:      []string{"true"},
-			Hostname: ctrName,
-		},
-		harness.HostConfig(),
-		&network.NetworkingConfig{
-			EndpointsConfig: map[string]*network.EndpointSettings{
-				netName: {},
-			},
-		},
-		nil,
-		ctrName,
-	)
+	endpointID := harness.NewEndpointID(t)
+	addrs, err := drv.CreateEndpoint(ctx, netID, endpointID)
 	if err != nil {
-		t.Fatalf("ContainerCreate: %v", err)
+		t.Fatalf("CreateEndpoint: %v", err)
 	}
-	id := create.ID
-	t.Cleanup(func() {
-		bg := context.Background()
-		if err := cli.ContainerRemove(bg, id, container.RemoveOptions{Force: true}); err != nil {
-			t.Logf("WARN: ContainerRemove(%s): %v", id, err)
-		}
-	})
+	t.Cleanup(func() { drv.CleanupEndpoint(netID, endpointID) })
 
-	if err := cli.ContainerStart(ctx, id, container.StartOptions{}); err != nil {
-		t.Fatalf("ContainerStart: %v", err)
+	ip := addressOnly(addrs.Address)
+	if ip == "" {
+		t.Fatalf("CreateEndpoint returned no IPv4 address (got %q)", addrs.Address)
 	}
 
-	// Wait for the exit so the reclaim window is genuinely open before
-	// we start polling — otherwise a slow start could have us give up
-	// while the container is still running and holding its address
-	// legitimately.
-	waitCh, errCh := cli.ContainerWait(ctx, id, container.WaitConditionNotRunning)
-	select {
-	case err := <-errCh:
-		t.Fatalf("ContainerWait: %v", err)
-	case <-waitCh:
-	case <-ctx.Done():
-		t.Fatalf("container did not exit: %v", ctx.Err())
+	// The address must actually have been leased, or every assertion
+	// below would be about an address the server never handed out.
+	if got := fixture.CountLogLines("DHCPACK", ip); got < 1 {
+		t.Fatalf("dnsmasq logged no DHCPACK for %s; the endpoint never took a "+
+			"lease, so this run proves nothing about releasing one", ip)
+	}
+	releasesBefore := fixture.CountLogLines("DHCPRELEASE", ip)
+
+	// Orphan it: the sandbox does not exist, so the attach cannot
+	// complete and nobody is left responsible for the address.
+	if err := drv.Join(ctx, netID, endpointID, harness.SyntheticSandboxKey(t)); err != nil {
+		t.Fatalf("Join(no container): %v", err)
 	}
 
 	// Poll the counter rather than sleeping a fixed span: the reclaim is
@@ -130,9 +128,24 @@ func TestOrphanedLease_ReleasedWhenContainerExitsEarly(t *testing.T) {
 	// the plugin was the same process throughout.
 	w.End()
 
+	// Wire-side ground truth first, and it is the assertion that
+	// actually matters: a counter can only prove the plugin believes it
+	// released something. Only the server's log proves a DHCPRELEASE
+	// reached it — and it is keyed on this endpoint's own address, so no
+	// neighbouring release can satisfy it by accident.
+	deadline := time.Now().Add(orphanReleaseBudget)
+	for fixture.CountLogLines("DHCPRELEASE", ip)-releasesBefore < 1 {
+		if !time.Now().Before(deadline) {
+			t.Fatalf("dnsmasq never logged a DHCPRELEASE for %s within %v — the lease "+
+				"is still held upstream with nobody responsible for it (#370)",
+				ip, orphanReleaseBudget)
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+
 	if after == nil || after.OrphanedLeasesReleased <= before.OrphanedLeasesReleased {
 		t.Fatalf("orphaned_leases_released did not advance within %v (before=%d, after=%d) — "+
-			"the lease this container acquired is still held upstream",
+			"the server saw the release but the plugin did not count it",
 			orphanReleaseBudget, before.OrphanedLeasesReleased, orphanedAfter(after))
 	}
 
@@ -147,15 +160,7 @@ func TestOrphanedLease_ReleasedWhenContainerExitsEarly(t *testing.T) {
 		t.Errorf("plugin logged %d orphan releases in this window, want at least 1", got)
 	}
 
-	// Wire-side ground truth, and the assertion that actually matters: a
-	// counter can only prove the plugin believes it released something.
-	// Only the server's log proves a DHCPRELEASE reached it. Tests run
-	// sequentially against the shared fixture, so a delta across this
-	// window is attributable to this container.
-	if got := fixture.CountLogLines("DHCPRELEASE") - releasesBefore; got < 1 {
-		t.Errorf("dnsmasq logged %d DHCPRELEASE lines in this window, want at least 1 — "+
-			"the plugin counted a release the server never saw", got)
-	}
+	awaitReleaseLinksGone(t)
 }
 
 // TestOrphanedLease_ReleasedWhenClientNeverBound covers the third state
@@ -281,49 +286,55 @@ func TestOrphanedLease_ReleasedWhenClientNeverBound(t *testing.T) {
 	awaitReleaseLinksGone(t)
 }
 
-// awaitReleaseLinksGone waits for the reclaim's temporary link to be
-// removed from the shared parent.
-//
-// Two reasons, and the second is why it is not optional here.
-//
-// The plugin must not leak the links it creates: the reclaim deletes
-// `dh-rel-*` in a deferred call after the release, so a link still
-// present long afterwards is a real defect, and nothing else asserts it.
-//
-// And this test hands the parent straight to the next one. It is macvlan
-// and it runs immediately before TestOrphanedLease_ReleasedInIpvlanMode
-// in the same shard; the reclaim's link outlives the DHCPRELEASE that
-// this test waits for, because deleting it is the step after. A parent
-// carrying a macvlan child cannot accept an ipvlan one — that is #486's
-// mechanism and #556's residue — so returning early would hand the next
-// test an EBUSY that looks like its own failure. Tests share one parent
-// until #556 changes that; until then, leaving it as we found it is this
-// test's job.
-func awaitReleaseLinksGone(t *testing.T) {
+// releaseLinks returns the reclaim's temporary links currently on the
+// host. The reclaim creates exactly one at a time and removes it in a
+// deferred call, so a non-empty result means a reclaim is in flight.
+func releaseLinks(t *testing.T) []string {
 	t.Helper()
 
-	const budget = 15 * time.Second
+	links, err := netlink.LinkList()
+	if err != nil {
+		t.Fatalf("LinkList: %v", err)
+	}
+	var found []string
+	for _, l := range links {
+		if strings.HasPrefix(l.Attrs().Name, "dh-rel-") {
+			found = append(found, l.Attrs().Name)
+		}
+	}
+	return found
+}
+
+// awaitReleaseLinkPresent blocks until a reclaim's temporary link is on
+// the host, and returns its name.
+//
+// This is the other half of constructing a parent-interface collision,
+// and it is what turns "fire the second operation and hope it lands
+// inside the window" into "do not fire it until the window is provably
+// open". The reclaim holds its link for a full DHCP round trip; this
+// returns as soon as the link exists, so the caller enters that window
+// near its start rather than at an unknown point in it.
+//
+// Polled tightly on purpose. The interval is the caller's margin: every
+// millisecond spent not noticing the link is a millisecond of the
+// reclaim's window spent, and the point of the exercise is to make that
+// margin large and known rather than incidental.
+func awaitReleaseLinkPresent(t *testing.T, budget time.Duration) string {
+	t.Helper()
+
 	deadline := time.Now().Add(budget)
 	for {
-		links, err := netlink.LinkList()
-		if err != nil {
-			t.Fatalf("LinkList: %v", err)
-		}
-		var left []string
-		for _, l := range links {
-			if strings.HasPrefix(l.Attrs().Name, "dh-rel-") {
-				left = append(left, l.Attrs().Name)
-			}
-		}
-		if len(left) == 0 {
-			return
+		if found := releaseLinks(t); len(found) > 0 {
+			return found[0]
 		}
 		if !time.Now().Before(deadline) {
-			t.Fatalf("orphan-release link(s) %v still on the host after %v; the "+
-				"reclaim did not remove them, and a macvlan child left on the "+
-				"shared parent blocks the next ipvlan test (#486/#556)", left, budget)
+			t.Fatalf("no orphan-release link appeared within %v — the reclaim never "+
+				"started, so there is no window to collide with. This is a failure to "+
+				"CONSTRUCT the scenario, not evidence about the code under test: check "+
+				"that the endpoint was actually orphaned (Join against a sandbox that "+
+				"does not exist) before looking anywhere else", budget)
 		}
-		time.Sleep(250 * time.Millisecond)
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 
@@ -367,23 +378,24 @@ func orphanedAfter(h *harness.HealthResponse) int32 {
 // time. Not sometimes: an ipvlan orphaned lease had never been released.
 //
 // That determinism is why this test is here rather than a second
-// macvlan one. The macvlan failure depends on losing a race with
-// Docker's teardown, so a test for it passes or fails on timing. This
-// one fails on every run against the unfixed code and passes on every
-// run against the fixed one, which is what a negative control has to do
-// to be worth anything.
+// macvlan one: it fails on every run against the unfixed code and
+// passes on every run against the fixed one, which is what a negative
+// control has to do to be worth anything.
 //
-// Same shape as the macvlan test above, and the assertion that matters
-// is the same: the DHCP server's own log, not a counter. A counter can
-// only say the plugin believes it released something.
+// The FAULT was always deterministic. Reaching it was not — this test
+// used to orphan its lease by racing a container's exit against the
+// persistent client's DORA, so a deterministic negative control sat
+// behind a probabilistic setup. It is now constructed the same way as
+// the macvlan test above: Join against a sandbox that does not exist.
+//
+// Same shape as that test, and the assertion that matters is the same:
+// the DHCP server's own log, not a counter. A counter can only say the
+// plugin believes it released something.
 func TestOrphanedLease_ReleasedInIpvlanMode(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	const (
-		netName = "dh-itest-orphanrel6"
-		ctrName = "dh-itest-orphanrel6-ctr"
-	)
+	const netName = "dh-itest-orphanrel-ipvlan"
 
 	t.Cleanup(func() {
 		if t.Failed() {
@@ -392,7 +404,7 @@ func TestOrphanedLease_ReleasedInIpvlanMode(t *testing.T) {
 		}
 	})
 
-	harness.CreateNetwork(t, ctx, netName, "ipvlan", nil)
+	netID := harness.CreateNetwork(t, ctx, netName, "ipvlan", nil)
 
 	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
 	if err != nil {
@@ -400,45 +412,30 @@ func TestOrphanedLease_ReleasedInIpvlanMode(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = cli.Close() })
 
+	drv := harness.NewDriverClient(t, ctx, cli)
+
 	w := harness.BeginCounterWindow(t, ctx, cli, "orphaned_leases_released")
 	before := w.Before()
-	releasesBefore := fixture.CountLogLines("DHCPRELEASE")
 
-	create, err := cli.ContainerCreate(ctx,
-		&container.Config{
-			Image:    harness.TestImage,
-			Cmd:      []string{"true"},
-			Hostname: ctrName,
-		},
-		harness.HostConfig(),
-		&network.NetworkingConfig{
-			EndpointsConfig: map[string]*network.EndpointSettings{netName: {}},
-		},
-		nil,
-		ctrName,
-	)
+	endpointID := harness.NewEndpointID(t)
+	addrs, err := drv.CreateEndpoint(ctx, netID, endpointID)
 	if err != nil {
-		t.Fatalf("ContainerCreate: %v", err)
+		t.Fatalf("CreateEndpoint: %v", err)
 	}
-	id := create.ID
-	t.Cleanup(func() {
-		bg := context.Background()
-		if err := cli.ContainerRemove(bg, id, container.RemoveOptions{Force: true}); err != nil {
-			t.Logf("WARN: ContainerRemove(%s): %v", id, err)
-		}
-	})
+	t.Cleanup(func() { drv.CleanupEndpoint(netID, endpointID) })
 
-	if err := cli.ContainerStart(ctx, id, container.StartOptions{}); err != nil {
-		t.Fatalf("ContainerStart: %v", err)
+	ip := addressOnly(addrs.Address)
+	if ip == "" {
+		t.Fatalf("CreateEndpoint returned no IPv4 address (got %q)", addrs.Address)
 	}
+	if got := fixture.CountLogLines("DHCPACK", ip); got < 1 {
+		t.Fatalf("dnsmasq logged no DHCPACK for %s; the endpoint never took a "+
+			"lease, so this run proves nothing about releasing one", ip)
+	}
+	releasesBefore := fixture.CountLogLines("DHCPRELEASE", ip)
 
-	waitCh, errCh := cli.ContainerWait(ctx, id, container.WaitConditionNotRunning)
-	select {
-	case err := <-errCh:
-		t.Fatalf("ContainerWait: %v", err)
-	case <-waitCh:
-	case <-ctx.Done():
-		t.Fatalf("container did not exit: %v", ctx.Err())
+	if err := drv.Join(ctx, netID, endpointID, harness.SyntheticSandboxKey(t)); err != nil {
+		t.Fatalf("Join(no container): %v", err)
 	}
 
 	after, _ := w.Await(orphanReleaseBudget, func(now, before *harness.HealthResponse) bool {
@@ -454,14 +451,18 @@ func TestOrphanedLease_ReleasedInIpvlanMode(t *testing.T) {
 	// "orphaned_leases_released did not advance", a statement about the
 	// plugin's bookkeeping, and never got as far as saying what actually
 	// happened on the wire (#549). Evidence before opinion.
-	if got := fixture.CountLogLines("DHCPRELEASE") - releasesBefore; got < 1 {
-		t.Errorf("dnsmasq logged %d DHCPRELEASE lines in this window, want at least 1 — "+
-			"the lease is still held upstream", got)
+	deadline := time.Now().Add(orphanReleaseBudget)
+	for fixture.CountLogLines("DHCPRELEASE", ip)-releasesBefore < 1 {
+		if !time.Now().Before(deadline) {
+			t.Fatalf("dnsmasq never logged a DHCPRELEASE for %s within %v — an ipvlan "+
+				"orphaned lease is still held upstream (#402)", ip, orphanReleaseBudget)
+		}
+		time.Sleep(250 * time.Millisecond)
 	}
 
 	if after == nil || after.OrphanedLeasesReleased <= before.OrphanedLeasesReleased {
 		t.Fatalf("orphaned_leases_released did not advance within %v (before=%d, after=%d) — "+
-			"an ipvlan orphaned lease is still held upstream",
+			"the server saw the release but the plugin did not count it",
 			orphanReleaseBudget, before.OrphanedLeasesReleased, orphanedAfter(after))
 	}
 
@@ -473,4 +474,6 @@ func TestOrphanedLease_ReleasedInIpvlanMode(t *testing.T) {
 		t.Errorf("orphaned_lease_release_failures advanced by %d, want 0 — "+
 			"the reclaim was attempted but could not complete (#402)", got)
 	}
+
+	awaitReleaseLinksGone(t)
 }
