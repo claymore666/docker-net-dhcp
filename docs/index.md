@@ -55,7 +55,8 @@ docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.6.0
 ```
 
 It requests `host` networking, the host PID namespace, the Docker
-socket, a bind mount of the state directory above, and
+socket, a bind mount of the state directory above, a read-only bind
+mount of `/var/run/docker` (v1.6.0+), and
 `CAP_NET_ADMIN`/`CAP_SYS_ADMIN`/`CAP_SYS_PTRACE` — grant them to
 proceed.
 (If you hit `invalid rootfs in image configuration`, upgrade Docker.)
