@@ -52,8 +52,19 @@ WANT="cosign v${MAJOR} or newer"
 # verification command. Discovered, not listed — a new page that copies the
 # snippet is in scope the moment it lands, which a hand-maintained list
 # would miss.
+# .claude/ is excluded for the same reason .dockerignore excludes it
+# (#530): per-instance git worktrees live there, so a repo-root walk finds
+# every OTHER branch's copy of these pages and judges the current tree by
+# them. A worktree on a branch predating this gate made it fail on a dev
+# checkout where all four real pages passed, and a worktree that ever ran
+# `sudo make create` adds root-owned paths the walk cannot even read.
+#
+# CI never sees either: checkouts are fresh and have no worktrees. This
+# gate is therefore broken precisely where a maintainer runs it by hand,
+# and green where it is automated — the worst way round.
 mapfile -t PAGES < <(
-    cd "$ROOT" && grep -rl --include='*.md' -E '^[[:space:]]*cosign verify' . \
+    cd "$ROOT" && grep -rl --include='*.md' --exclude-dir='.claude' --exclude-dir='.git' \
+        -E '^[[:space:]]*cosign verify' . \
         | sed 's|^\./||' | sort
 )
 

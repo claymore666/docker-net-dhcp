@@ -199,6 +199,73 @@ fi
 check "an unreadable file is exit 2, not a pass" 2 "" "" no-such-file.go
 check "an unknown flag is a usage error" 2 --nonsense "" good.go
 
+# --- file discovery ----------------------------------------------------
+# Everything above drives the gate through LICENSE_HEADER_FILES, which
+# hands it a list and therefore never exercises the code that BUILDS the
+# list. That is where the bug was: the gate enumerated tracked files
+# only, so a new unheadered file sat in the tree while it reported a
+# clean run, and no test above could have noticed because none of them
+# reach that line.
+#
+# These run against a throwaway repository so the enumeration is the
+# thing under test.
+REPO="$TMP/discovery"
+mkdir -p "$REPO"
+(
+    cd "$REPO" || exit 1
+    git init -q .
+    git config user.email t@example.com
+    git config user.name t
+    printf '// Copyright the docker-net-dhcp contributors.\n// SPDX-License-Identifier: GPL-3.0-only\n\npackage x\n' > tracked.go
+    git add tracked.go
+    git commit -qm init
+) >/dev/null 2>&1
+
+out=$(cd "$REPO" && bash "$CHECK" 2>&1)
+rc=$?
+if [ "$rc" -eq 0 ]; then
+    pass "a repository whose tracked files all carry the header is clean"
+else
+    fail "a repository whose tracked files all carry the header is clean" "exit $rc" "$out"
+fi
+
+# THE REGRESSION. Written, not yet added — the state a file is in for the
+# entire time it is being worked on, and the state the gate used to be
+# blind to.
+printf 'package y\n' > "$REPO/untracked.go"
+out=$(cd "$REPO" && bash "$CHECK" 2>&1)
+rc=$?
+if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q "untracked.go"; then
+    pass "an untracked file with no header is found, not silently skipped"
+else
+    fail "an untracked file with no header is found, not silently skipped" "exit $rc" "$out"
+fi
+
+# The other direction, and the reason --exclude-standard is not optional.
+# Ignored paths are build output and nested worktrees; judging them would
+# make the gate fail on other branches' files and on generated code.
+mkdir -p "$REPO/build"
+printf 'build/\n' > "$REPO/.gitignore"
+printf 'package z\n' > "$REPO/build/generated.go"
+rm -f "$REPO/untracked.go"
+out=$(cd "$REPO" && bash "$CHECK" 2>&1)
+rc=$?
+if [ "$rc" -eq 0 ]; then
+    pass "an ignored file is not judged"
+else
+    fail "an ignored file is not judged" "exit $rc" "$out"
+fi
+
+# --fix has to reach the same files the check does, or the gate reports a
+# problem it cannot fix and the fixer becomes something to work around.
+printf 'package w\n' > "$REPO/newly-written.go"
+(cd "$REPO" && bash "$CHECK" --fix) >/dev/null 2>&1
+if head -2 "$REPO/newly-written.go" | grep -q "SPDX-License-Identifier: GPL-3.0-only"; then
+    pass "--fix reaches an untracked file too"
+else
+    fail "--fix reaches an untracked file too" "header not inserted" "$(cat "$REPO/newly-written.go")"
+fi
+
 if [ "$failures" -ne 0 ]; then
     echo "$failures test(s) failed" >&2
     exit 1
