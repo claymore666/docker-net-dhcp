@@ -100,6 +100,8 @@ right pick when you don't want to reconfigure the host's networking.
   between the two, quick start, and the mode-specific constraints.
 - **[How it works](internals.md)** — the mechanism, for contributors:
   the veth + DHCP-client flow, and how state survives a restart.
+- **[Roadmap](roadmap.md)** — where the project is going over the next
+  year, and what it deliberately will not do.
 - **[Release runbook](release-runbook.md)** — maintainer-facing publish
   procedure.
 

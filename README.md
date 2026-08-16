@@ -116,6 +116,8 @@ version from the selector). The same content lives in `docs/` in the repo:
 - **[How it works](docs/internals.md)** — the mechanism, for
   contributors: the veth + DHCP-client flow, and how state survives a
   restart.
+- **[Roadmap](docs/roadmap.md)** — where the project is going over the
+  next year, and what it deliberately will not do.
 - **[Changelog](RELEASE_NOTES.md)** — per-release notes and credits.
 - **[Release runbook](docs/release-runbook.md)** — maintainer-facing
   publish procedure.
