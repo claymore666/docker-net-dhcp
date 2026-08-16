@@ -2373,6 +2373,11 @@ diagnosing a specific container from them alone is not.</p>
 <td>(v1.6.0+) Conflict probes that reached a verdict, clean or not. Read this <strong>before</strong> believing <code>address_conflicts</code> is 0: with no probes, the two readings are identical, and "the detector never ran" is what #524 looked like for months. A healthy segment is <code>address_conflict_probes</code> climbing with <code>address_conflicts</code> at 0.</td>
 </tr>
 <tr>
+<td><code>sandbox_netns_visible</code></td>
+<td>no</td>
+<td>(v1.6.0+) How many sandbox netns entries the plugin can currently see, or <code>-1</code> if it cannot read the directory at all. Sampled per request, not accumulated. <strong>Read it against <code>active_endpoints</code>, never alone.</strong> <code>-1</code> means the bind mount is missing, so the <code>sandboxGone</code> check can only ever answer "no usable evidence" — safe but useless. A <code>0</code> <em>with endpoints attached</em> is the dangerous one: the directory is readable but mounted from the wrong place, and <code>sandboxGone</code> would conclude every container had vanished. A <code>0</code> with nothing attached is neither — there is genuinely nothing to see (#567).</td>
+</tr>
+<tr>
 <td><code>conflict_probe_failures</code></td>
 <td>no</td>
 <td>(v1.6.0+) Conflict probes that could not reach a verdict — the parent link was unroutable to the address, the lease/MAC could not be parsed, or <strong>the parent has no address on the leased subnet</strong>, which leaves the probe unable to get an answer out of a device with no default route. The last case is the common one, and its fix is on your side: give the parent an address on the segment and conflict detection starts working. Until then the plugin reports "undetermined" here rather than counting a clean probe, because a detector that cannot see must not report all-clear. This is an unanswered question, not a known-bad address, so it does not affect <code>healthy</code>. Watch it anyway: a detector that has stopped running looks exactly like a clean segment, which is how #524 went unnoticed in the first place.</td>
@@ -2431,6 +2436,16 @@ diagnosing a specific container from them alone is not.</p>
 <td><code>orphaned_lease_release_failures</code></td>
 <td>no</td>
 <td>(v1.3.6+) A reclaim above that could not be completed — the address stays held upstream until its own expiry, exactly as it did before the reclaim existed. Read as a rate against <code>orphaned_leases_released</code>: a few failures are transient upstream trouble, a ratio near 1 means the reclaim path itself is broken (no route to the segment, server refusing the synthesised client). Not <code>healthy</code>-affecting, which is worth knowing when reading it: this counter can climb on every container without turning anything red, and did (#402).</td>
+</tr>
+<tr>
+<td><code>parent_link_waits</code></td>
+<td>no</td>
+<td>(v1.6.0+) Operations that had to queue for a shared parent interface before attaching their own link. A parent NIC can be a macvlan port or an ipvlan port but never both, so when networks of both kinds share one parent — or when a lease reclaim still has its temporary link attached — the plugin serialises them per parent rather than letting the kernel refuse one with <code>device or resource busy</code> (#486, #549). Queuing is the mechanism working; a steady rise just means that NIC is busy.</td>
+</tr>
+<tr>
+<td><code>parent_link_wait_timeouts</code></td>
+<td>no</td>
+<td>(v1.6.0+) The same wait giving up after its budget, after which the operation asks the kernel anyway and may fail with <code>device or resource busy</code>. Deliberately bounded well below the reclaim's own budget so a wedged reclaim degrades to the pre-v1.6.0 behaviour instead of stalling a container start. Not <code>healthy</code>-affecting, but the actionable one of the pair: any non-zero value means something held a parent far longer than a DHCP round trip should take, and container starts on that NIC were refused as a result.</td>
 </tr>
 <tr>
 <td><code>ledger_write_failures</code></td>
