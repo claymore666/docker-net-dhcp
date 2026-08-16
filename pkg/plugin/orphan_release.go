@@ -141,6 +141,20 @@ func (p *Plugin) synthesiseRelease(ctx context.Context, m *dhcpManager, lease *n
 		return fmt.Errorf("MAC generation: %w", err)
 	}
 
+	// Hold the parent for as long as this reclaim has a link on it.
+	//
+	// This is the long holder the gate exists for — the whole reacquire
+	// is a DHCP round trip, seconds rather than the microseconds an
+	// endpoint's own LinkAdd takes. It is also the only one that runs
+	// detached from any Docker request, which is precisely why an
+	// endpoint creation could previously walk into it.
+	//
+	// Released after the link is gone, not merely after the release is
+	// sent: the deferred LinkDel below is registered later and so runs
+	// first. Waiting on the DHCPRELEASE alone would hand the parent on
+	// while our child was still attached to it.
+	defer p.lockParent(ctx, m.opts.Parent, "orphan_release")()
+
 	link, mac, err := p.upReleaseLink(ctx, m.opts, linkName, plan)
 	if err != nil {
 		return err

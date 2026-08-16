@@ -682,6 +682,28 @@ type Plugin struct {
 	orphanedLeasesReleased       atomic.Int32
 	orphanedLeaseReleaseFailures atomic.Int32
 
+	// parentGate serialises child-link creation per parent NIC, so an
+	// asynchronous orphan-lease reclaim cannot hold a parent in one
+	// attachment mode while an endpoint asks for the other. See
+	// parent_gate.go for why this is per-parent and for the lock
+	// ordering.
+	//
+	// parentLinkWaits / parentLinkWaitTimeouts are the observability
+	// half. Read them together, like the orphan counters above: waits
+	// climbing with timeouts flat is the gate absorbing contention,
+	// which is it working. Timeouts climbing means something held a
+	// parent longer than parentGateBudget — a wedged or unusually slow
+	// reclaim — and the operations that gave up will have fallen back
+	// to asking the kernel directly, so expect matching EBUSY failures
+	// on the container-start path.
+	//
+	// Neither participates in Healthy. Contention on a shared parent is
+	// a normal consequence of running macvlan and ipvlan networks on one
+	// NIC, and even a timeout only restores the pre-gate behaviour.
+	parentGate             parentGate
+	parentLinkWaits        atomic.Int32
+	parentLinkWaitTimeouts atomic.Int32
+
 	// naksReceived counts "nak" events — the server refused a
 	// REQUEST (pool reconfigured, address reassigned, lease revoked).
 	// Until v1.0.0 a NAK was only a warn-level log line, invisible to

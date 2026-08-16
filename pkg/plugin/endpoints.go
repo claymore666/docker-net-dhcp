@@ -415,6 +415,22 @@ type HealthResponse struct {
 	// failures flat is the mechanism working.
 	OrphanedLeasesReleased       int32 `json:"orphaned_leases_released"`
 	OrphanedLeaseReleaseFailures int32 `json:"orphaned_lease_release_failures"`
+	// ParentLinkWaits / ParentLinkWaitTimeouts cover contention on a
+	// shared parent NIC. A parent is a macvlan port or an ipvlan port,
+	// never both, so an orphan-lease reclaim holding one asynchronously
+	// can collide with an endpoint asking for the other (#486/#549).
+	// The plugin queues them per parent instead.
+	//
+	// Waits counts the operations that had to queue; timeouts counts
+	// those that gave up after parentGateBudget and went to the kernel
+	// anyway. Neither is Healthy-affecting: queuing is the mechanism
+	// working, and a timeout only restores the behaviour that existed
+	// before the queue did. Timeouts climbing is the actionable one —
+	// it means a reclaim is holding a parent far longer than its DORA
+	// should take, and container starts on that NIC are failing with
+	// "device or resource busy".
+	ParentLinkWaits        int32 `json:"parent_link_waits"`
+	ParentLinkWaitTimeouts int32 `json:"parent_link_wait_timeouts"`
 	// LedgerWriteFailures counts failed appends to the audit_log
 	// lease ledger (#109). Not Healthy-affecting — a lost audit line
 	// degrades forensics, not networking; operators using audit_log
@@ -486,6 +502,8 @@ func (p *Plugin) apiHealth(w http.ResponseWriter, r *http.Request) {
 		DisplacedStops:               p.displacedStopsTotal.Load(),
 		OrphanedLeasesReleased:       p.orphanedLeasesReleased.Load(),
 		OrphanedLeaseReleaseFailures: p.orphanedLeaseReleaseFailures.Load(),
+		ParentLinkWaits:              p.parentLinkWaits.Load(),
+		ParentLinkWaitTimeouts:       p.parentLinkWaitTimeouts.Load(),
 		LedgerWriteFailures:          p.ledgerWriteFailures.Load(),
 		LeaseChangedV6:               p.leaseChangedV6.Load(),
 		LeasesObtainedV6:             p.leasesObtainedV6.Load(),
