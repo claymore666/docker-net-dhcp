@@ -1514,7 +1514,12 @@ the <code>vX.Y.Z</code> milestone (the workflow leans on this for the
 <a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>sha256sum<span class="w"> </span>rootfs/usr/sbin/net-dhcp<span class="w"> </span>rootfs/usr/lib/net-dhcp/dhcp-handler
 </code></pre></div>
    Update the version name and both digests, and land it on <code>dev</code> as a
-   normal PR (it back-merges to <code>main</code> with the next release). Leaving
+   normal PR — <strong>then bring it to <code>main</code> before the next rc.</strong> Since
+   #547 the release run itself checks this block, so the fix has to be
+   on the <strong>tagged commit</strong>: leaving it on <code>dev</code> makes the next rc fail
+   in exactly the same place. (Before #547 it could ride along with the
+   next release, which is what this step used to say. v1.6.0 is where
+   that stopped being true.) Leaving
    the previous version's digests in place is worse than having none:
    a reader who rebuilds the current tag and compares against them sees
    a mismatch and concludes the release does not match its source.</li>
