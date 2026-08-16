@@ -60,13 +60,19 @@ func TestSandboxNetnsIsVisibleToThePlugin(t *testing.T) {
 	}
 	defer cli.Close()
 
+	// Read through the counter window rather than calling PluginHealth
+	// directly. This test wants two ABSOLUTE readings, not a delta, so
+	// the hazard the window exists for (#405) does not apply to it —
+	// but the guard that enforces the window is textual, deliberately,
+	// because a reviewer cannot be expected to catch the thirtieth
+	// hand-rolled pair. Taking the sanctioned path costs nothing here
+	// and keeps the rule free of the exemption that would erode it.
+	w := harness.BeginCounterWindow(t, ctx, cli)
+
 	// Before anything is attached. The directory must be READABLE even
 	// with nothing in it: -1 means the mount is missing, which is the
 	// state every release before #567 shipped in.
-	before, err := harness.PluginHealth(ctx, cli)
-	if err != nil {
-		t.Fatalf("Plugin.Health: %v", err)
-	}
+	before := w.Before()
 	if before.SandboxNetnsVisible == nil {
 		t.Fatal("sandbox_netns_visible is not published by this plugin — it cannot be " +
 			"judged, and reading its absence as a value is how #567 stayed invisible")
@@ -92,10 +98,7 @@ func TestSandboxNetnsIsVisibleToThePlugin(t *testing.T) {
 	// is worse than the "no evidence" it used to return. That is what
 	// an unpropagated or misdirected bind mount looks like, and it
 	// would satisfy a test that only checked the mount existed.
-	during, err := harness.PluginHealth(ctx, cli)
-	if err != nil {
-		t.Fatalf("Plugin.Health with a container attached: %v", err)
-	}
+	_, during := w.End()
 	if during.SandboxNetnsVisible == nil {
 		t.Fatal("sandbox_netns_visible vanished from the health payload mid-test")
 	}
