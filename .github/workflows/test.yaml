@@ -60,20 +60,37 @@ jobs:
       # per-PR without a long-running job; the committed seed corpora
       # also run unconditionally in the race step above. Scorecard's
       # Fuzzing check is satisfied by the presence of these targets.
-      # -parallel 2 caps the fuzzing WORKER PROCESSES (#324). Default is
-      # GOMAXPROCS, i.e. one worker per vCPU, which leaves the
-      # coordinator no scheduling headroom on a contended hosted runner:
-      # at -fuzztime expiry it asks each worker to stop and waits on a
-      # context, and if a worker can't be scheduled to answer in time
-      # the run fails with a bare "context deadline exceeded" and no
-      # crashing input. Seen twice consecutively on a release PR, both
-      # times exactly at the 20s boundary while the runner crawled at
-      # 7-45k execs/s against ~500k unloaded.
+      #
+      # The budget is in EXECUTIONS, not wall clock, and that is the fix
+      # for #324 rather than a preference. A duration makes the fuzzing
+      # coordinator install a deadline context; when it expires the
+      # coordinator wakes on the parent's Done channel and calls
+      # stop(ctx.Err()). The suppression that should turn that into a
+      # clean stop compares the error against the CHILD context's Err(),
+      # and context.cancelCtx closes its own Done channel BEFORE it
+      # propagates cancellation to its children. Lose that race and the
+      # child still reads nil, DeadlineExceeded survives, and the run
+      # fails with a bare "context deadline exceeded" and no crashing
+      # input. With a count, opts.Timeout stays zero, the deadline
+      # context is never created, and the branch is unreachable.
+      #
+      # -parallel 2 stays, but note it was NOT the fix: #350 capped the
+      # workers on the theory that the coordinator lacked CPU, and the
+      # same failure returned on dev on 2026-08-14 with the runner
+      # executing a healthy 22k execs/sec.
+      #
+      # A count also makes every runner do the same amount of fuzzing.
+      # Under 20s the contended runs managed ~110k execs against ~10M
+      # locally — the gate was quietly testing far less exactly when it
+      # was least able to. -timeout bounds the one thing a count does
+      # not: a pathologically slow runner, which is a real signal.
+      #
+      # scripts/check-fuzz-budget.sh keeps this shape from regressing.
       - name: Fuzz (short)
         run: |
           for target in FuzzBuildEvent FuzzEventUnmarshal; do
             echo "::group::${target}"
-            go test ./pkg/dhcp/ -run '^$' -fuzz "^${target}$" -fuzztime 20s -parallel 2
+            go test ./pkg/dhcp/ -run '^$' -fuzz "^${target}$" -fuzztime 200000x -parallel 2 -timeout 5m
             echo "::endgroup::"
           done
 
@@ -88,6 +105,7 @@ jobs:
           bash scripts/test-check-version-pins.sh
           bash scripts/test-integration-timing.sh
           bash scripts/test-integration-run-gate.sh
+          bash scripts/test-check-fuzz-budget.sh
           bash scripts/test-check-manifest-parity.sh
           bash scripts/test-check-no-ai-attribution.sh
           bash scripts/test-check-docs-drift.sh
