@@ -308,6 +308,13 @@ type HealthResponse struct {
 	// renewal client. Worth watching anyway — a rise means containers
 	// are dying seconds after start.
 	JoinAbortedContainerGone int32 `json:"join_aborted_container_gone"`
+	// JoinAbortedNoContainer counts attaches abandoned because no
+	// container ever claimed the endpoint on the network, and whose
+	// address was therefore released rather than left to expire (#566).
+	// Not Healthy-affecting: nothing is running without a renewal
+	// client, because nothing is running. A rise means endpoints are
+	// being created for containers that never attach.
+	JoinAbortedNoContainer int32 `json:"join_aborted_no_container"`
 
 	// JoinAttachSlow counts attaches that succeeded only after
 	// outlasting AwaitTimeout, waiting on a daemon that was busy with
@@ -453,6 +460,7 @@ func (p *Plugin) apiHealth(w http.ResponseWriter, r *http.Request) {
 		RecoveryDeferred:             p.recoveryDeferred.Load(),
 		RecoveryAbortedContainerGone: p.recoveryAbortedContainerGone.Load(),
 		JoinAbortedContainerGone:     p.joinAbortedContainerGone.Load(),
+		JoinAbortedNoContainer:       p.joinAbortedNoContainer.Load(),
 		JoinAttachSlow:               p.joinAttachSlow.Load(),
 		RestartLinkUpWaited:          p.restartLinkUpWaited.Load(),
 		RestartLinkUpTimeouts:        p.restartLinkUpTimeouts.Load(),

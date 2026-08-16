@@ -52,7 +52,11 @@ type HealthResponse struct {
 	// the container exited before the persistent client was up. Not
 	// healthy-affecting (#373).
 	JoinAbortedContainerGone int32 `json:"join_aborted_container_gone"`
-	JoinAttachSlow           int32 `json:"join_attach_slow"`
+	// JoinAbortedNoContainer is the other benign twin: no container ever
+	// claimed the endpoint, so its address was released rather than left
+	// to expire (#566).
+	JoinAbortedNoContainer int32 `json:"join_aborted_no_container"`
+	JoinAttachSlow         int32 `json:"join_attach_slow"`
 
 	// RestartLinkUpWaited / RestartLinkUpTimeouts mirror the #408
 	// window: a child link that came up only after the departing link
