@@ -136,6 +136,31 @@ else
     echo "PASS: an untouched issue is left alone"
 fi
 
+# PR body parses 'Closes #N', 'Fixes #N, #M', and case variations (#548).
+D=$(fixture pr_body \
+    'chore: nothing' \
+    '[{"number":103,"labels":[]},{"number":104,"labels":[]},{"number":105,"labels":[]},{"number":106,"labels":[]},{"number":107,"labels":[]},{"number":108,"labels":[]}]' \
+    '[{"number":903,"title":"wip: work","body":"## Related issue\n\nCloses #103\n"},{"number":904,"title":"fix: bug","body":"Fixes #104, #105\n"},{"number":905,"title":"chore: clean","body":"Resolves: #106\n"},{"number":906,"title":"feat: new","body":"Closes nothing on dev\n"},{"number":907,"title":"fix: lower","body":"closes #107\n"},{"number":908,"title":"fix: upper","body":"FIXES #108\n"}]')
+plan "a PR body with Closes #N earns has-pr" 0 "$D" $'ADD\t103\thas-pr'
+plan "a PR body with Fixes #N, #M earns has-pr for first" 0 "$D" $'ADD\t104\thas-pr'
+plan "a PR body with Fixes #N, #M earns has-pr for second" 0 "$D" $'ADD\t105\thas-pr'
+plan "a PR body with Resolves: #N earns has-pr" 0 "$D" $'ADD\t106\thas-pr'
+plan "a PR body with lowercase closes #N earns has-pr" 0 "$D" $'ADD\t107\thas-pr'
+plan "a PR body with uppercase FIXES #N earns has-pr" 0 "$D" $'ADD\t108\thas-pr'
+
+# PR template HTML comments and overlong digit strings must not parse as refs.
+D=$(fixture pr_body_comments \
+    'chore: nothing' \
+    '[{"number":123,"labels":[]},{"number":1234567,"labels":[]}]' \
+    '[{"number":909,"title":"feat: template untouched","body":"## Related issue\n\n<!-- e.g. Closes #123 -->\n"},{"number":910,"title":"feat: overlong ref","body":"Closes #12345678\n"}]')
+plan "HTML template comment is not parsed as closing ref" 0 "$D" 'SUMMARY'
+if grep -qE '^(ADD|REMOVE)' "$TMP/out"; then
+    echo "FAIL: template HTML comments or overlong numbers produced false labels"
+    failures=$((failures + 1))
+else
+    echo "PASS: template HTML comments and overlong numbers are ignored"
+fi
+
 # The number that is a PR, not an issue. 900 is referenced by the
 # subject but is not an open issue, so it must never be labelled — this
 # is the whole reason the script intersects instead of classifying.

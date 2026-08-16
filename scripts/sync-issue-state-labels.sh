@@ -140,6 +140,11 @@ import re
 # number no issue could ever have.
 _GROUP = re.compile(r"\(\s*#\d{1,7}(?:\s*,\s*#\d{1,7})*\s*\)\s*$")
 _NUM = re.compile(r"#(\d{1,7})")
+_HTML_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
+_CLOSES = re.compile(
+    r"(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s*(#[0-9]+(?:\s*(?:,|and)\s*#[0-9]+)*)"
+)
+_NUM_BOUNDED = re.compile(r"#([0-9]{1,7})(?![0-9])")
 
 
 def refs(subject):
@@ -159,6 +164,32 @@ def refs(subject):
             n = int(raw)
             if n and n not in out:
                 out.append(n)
+    return out
+
+
+def body_refs(body):
+    """Numbers referenced with closing keywords in PR prose (e.g.
+    'Closes #123', 'Fixes #45, #67'), deduplicated. HTML comments are
+    stripped first so template examples like '<!-- e.g. Closes #123 -->'
+    do not create false references."""
+    if not body:
+        return []
+    clean_body = _HTML_COMMENT.sub("", body)
+    out = []
+    for m in _CLOSES.finditer(clean_body):
+        for raw in _NUM_BOUNDED.findall(m.group(1)):
+            n = int(raw)
+            if n and n not in out:
+                out.append(n)
+    return out
+
+
+def pr_refs(pr):
+    """Candidate issue refs from an open PR's title and body."""
+    out = refs(pr.get("title", "") or "")
+    for n in body_refs(pr.get("body", "") or ""):
+        if n not in out:
+            out.append(n)
     return out
 PY
 )
@@ -225,7 +256,7 @@ for number in unresolved:
         in_dev |= set(refs(title)) & open_numbers
 
 prs = json.load(open(f"{tmp}/prs.json", encoding="utf-8"))
-has_pr = {n for pr in prs for n in refs(pr["title"])} & open_numbers
+has_pr = {n for pr in prs for n in pr_refs(pr)} & open_numbers
 
 # in-dev is the stronger claim; a later PR must not un-finish an issue.
 has_pr -= in_dev
@@ -301,7 +332,7 @@ git log "origin/$BASE_BRANCH..origin/$DEV_BRANCH" --format='%s' --no-merges > "$
 gh issue list --repo "$REPO" --state open --limit 1000 \
     --json number,labels > "$TMP/issues.json" || exit 1
 gh pr list --repo "$REPO" --state open --base "$DEV_BRANCH" --limit 200 \
-    --json number,title > "$TMP/prs.json" || exit 1
+    --json number,title,body > "$TMP/prs.json" || exit 1
 
 # THE ONE HOP. Ask about exactly the refs that did not land on an open
 # issue — no paged listing to truncate, so a ref can never go unlooked-at
