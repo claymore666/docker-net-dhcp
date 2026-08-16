@@ -1600,7 +1600,7 @@ each group.</p>
 </tr>
 </tbody>
 </table>
-<p><strong><a href="#pluginhealth">Health counters</a></strong> — <code>/Plugin.Health</code> on the plugin socket. Three flip <code>healthy</code> to <code>false</code>: <code>recovery_failed</code>, <code>join_start_failures</code>, <code>tombstone_write_failures</code>.</p>
+<p><strong><a href="#pluginhealth">Health counters</a></strong> — <code>/Plugin.Health</code> on the plugin socket. Four flip <code>healthy</code> to <code>false</code>: <code>recovery_failed</code>, <code>join_start_failures</code>, <code>tombstone_write_failures</code>, <code>address_conflicts</code>.</p>
 <hr />
 <h2 id="install-upgrade-uninstall">Install, upgrade, uninstall<a class="headerlink" href="#install-upgrade-uninstall" title="Permanent link">&para;</a></h2>
 <blockquote>
@@ -2310,6 +2310,21 @@ diagnosing a specific container from them alone is not.</p>
 <td><code>lease_changed</code></td>
 <td>no</td>
 <td>Renewals that returned a different IP than last recorded (v4+v6 aggregate). Docker's <code>inspect</code> view does <strong>not</strong> update on lease change (libnetwork has no in-place endpoint-IP swap), so this is the stale-inspect-window signal — alert on it for long-running containers.</td>
+</tr>
+<tr>
+<td><code>address_conflicts</code></td>
+<td><strong>yes</strong></td>
+<td>(v1.6.0+) Leases whose address was already held by another device on the segment (#524). After each v4 lease the plugin resolves the address on the parent link and compares the answering MAC with the endpoint's; a reply from a different MAC is a conflict. This is the only signal for the condition — the container starts, Docker reports an address, and every other counter stays at zero, because from the DHCP server's point of view the lease was issued normally. The usual cause is a <strong>statically configured</strong> host inside the DHCP pool range: it never asks the server for anything, so the server cannot know the address is taken. Fix it at the server (reserve or exclude the address), not at the plugin. <strong>What it does not cover:</strong> another container on the <em>same host</em> sharing the same parent NIC. macvlan isolates a parent from its own children, and that isolation is what lets the check tell a squatter apart from your own endpoint — which holds the address too. A vantage point that could see a sibling would also hear your own container answer, and no reply would be informative. Excluded by construction, not pending work (#528). <strong>What it requires:</strong> the parent interface must carry an address on the leased subnet — which is the normal case, since a macvlan/ipvlan parent is usually the host NIC and a bridge parent always has one. A host answers an ARP request only if it can route a reply back to the sender, so with no on-subnet address to send from, the probe cannot get an answer out of a device that has no default route, and reports <code>conflict_probe_failures</code> rather than a clean result.</td>
+</tr>
+<tr>
+<td><code>address_conflict_probes</code></td>
+<td>no</td>
+<td>(v1.6.0+) Conflict probes that reached a verdict, clean or not. Read this <strong>before</strong> believing <code>address_conflicts</code> is 0: with no probes, the two readings are identical, and "the detector never ran" is what #524 looked like for months. A healthy segment is <code>address_conflict_probes</code> climbing with <code>address_conflicts</code> at 0.</td>
+</tr>
+<tr>
+<td><code>conflict_probe_failures</code></td>
+<td>no</td>
+<td>(v1.6.0+) Conflict probes that could not reach a verdict — the parent link was unroutable to the address, the lease/MAC could not be parsed, or <strong>the parent has no address on the leased subnet</strong>, which leaves the probe unable to get an answer out of a device with no default route. The last case is the common one, and its fix is on your side: give the parent an address on the segment and conflict detection starts working. Until then the plugin reports "undetermined" here rather than counting a clean probe, because a detector that cannot see must not report all-clear. This is an unanswered question, not a known-bad address, so it does not affect <code>healthy</code>. Watch it anyway: a detector that has stopped running looks exactly like a clean segment, which is how #524 went unnoticed in the first place.</td>
 </tr>
 <tr>
 <td><code>leases_obtained</code></td>
