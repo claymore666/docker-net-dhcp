@@ -8,6 +8,7 @@ package integration
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -49,6 +50,52 @@ import (
 // plugin live on the same daemon, would mean two instances
 // re-DISCOVERing the same endpoints. The daemon contract under test
 // does not care what the plugin is called; the blast radius does.
+// pluginBuildDirs are the directories a lane may have built its plugin
+// rootfs into. `make plugin` produces the first; `make plugin-cover`,
+// which the coverage lane runs instead, produces the second.
+//
+// This test packages a THROWAWAY plugin from whichever rootfs is
+// present, so either serves — it exercises the daemon's bind-source
+// contract, not the binary inside.
+//
+// Listed here rather than passed in by the workflow deliberately. A
+// value the test needs and a workflow that supplies it are two things
+// that drift apart, and the drift is invisible until the lane that
+// needed it runs — which for coverage is once per release. #500's test
+// went one whole release cycle failing in the coverage lane for exactly
+// that reason, green on every PR the entire time.
+var pluginBuildDirs = []string{"plugin", "plugin-cover"}
+
+// builtPluginDir returns the first built rootfs it finds, or an error
+// naming everywhere it looked.
+//
+// PLUGIN_BUILD_DIR overrides the search when a caller knows better.
+// There is deliberately no "skip if absent" path: a missing rootfs
+// means this test did not run, and a test that quietly does not run is
+// the failure mode the STATE_DIR contract exists to prevent.
+func builtPluginDir(t *testing.T) (string, error) {
+	t.Helper()
+	root := repoRoot(t)
+
+	candidates := pluginBuildDirs
+	if override := os.Getenv("PLUGIN_BUILD_DIR"); override != "" {
+		candidates = []string{override}
+	}
+
+	tried := make([]string, 0, len(candidates))
+	for _, name := range candidates {
+		dir := filepath.Join(root, name)
+		if _, err := os.Stat(filepath.Join(dir, "rootfs")); err == nil {
+			return dir, nil
+		}
+		tried = append(tried, dir)
+	}
+	return "", fmt.Errorf("no built plugin rootfs in any of %s\n"+
+		"This test packages a throwaway plugin from the rootfs the runner already built. "+
+		"Run `make plugin` (or the usual `make integration-local`, which does) first; "+
+		"the coverage lane builds `make plugin-cover` instead.", strings.Join(tried, ", "))
+}
+
 func TestStateDirBindSource_MissingSourceContract(t *testing.T) {
 	// The in-plugin mount point, i.e. the mounts[] entry whose source
 	// this test redirects. Must match config.json.
@@ -58,12 +105,9 @@ func TestStateDirBindSource_MissingSourceContract(t *testing.T) {
 	defer cancel()
 
 	root := repoRoot(t)
-	srcPlugin := filepath.Join(root, "plugin")
-	if _, err := os.Stat(filepath.Join(srcPlugin, "rootfs")); err != nil {
-		t.Fatalf("no built plugin rootfs at %s: %v\n"+
-			"This test packages a throwaway plugin from the rootfs the runner already built. "+
-			"Run `make plugin` (or the usual `make integration-local`, which does) first.",
-			srcPlugin, err)
+	srcPlugin, err := builtPluginDir(t)
+	if err != nil {
+		t.Fatal(err)
 	}
 
 	// Scratch lives under the repo, not /tmp: the rootfs copy is done
