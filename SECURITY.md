@@ -20,8 +20,10 @@ and the fix's release notes unless they ask to remain anonymous.
 ## Scope — what this plugin is
 
 `docker-net-dhcp` is a privileged Docker network plugin: it runs with
-`CAP_NET_ADMIN`/`CAP_SYS_ADMIN`, the host PID namespace, host
-networking, and the Docker socket mounted. Reports are especially
+`CAP_NET_ADMIN`, `CAP_SYS_ADMIN` and `CAP_SYS_PTRACE`, the host PID
+namespace, host networking, and the Docker socket mounted. `config.json`
+at the repository root is the authoritative list — it is what the daemon
+asks you to approve at `docker plugin install`. Reports are especially
 welcome for:
 
 - container → host or container → plugin escapes through the netns /
@@ -64,7 +66,8 @@ must not cause memory-unsafe behaviour or injection. (3) Published
 artifacts must be tamper-evident so users install what was built.
 
 **Threats** (see *Scope* above). The plugin is privileged
-(`CAP_NET_ADMIN`/`CAP_SYS_ADMIN`, host PID ns, Docker socket), so the
+(`CAP_NET_ADMIN`, `CAP_SYS_ADMIN`, `CAP_SYS_PTRACE`, host PID ns,
+Docker socket), so the
 relevant adversaries are a malicious container, a hostile LAN DHCP
 server supplying crafted lease/option bytes, and a supply-chain
 attacker tampering with distributed images.

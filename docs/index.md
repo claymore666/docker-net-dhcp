@@ -106,10 +106,18 @@ right pick when you don't want to reconfigure the host's networking.
 ## Images & releases
 
 This fork publishes semver-tagged plugin images on GHCR
-(`ghcr.io/claymore666/docker-net-dhcp:vX.Y.Z`, `linux/amd64`; ARM via
-the build pipeline on request) and mirrors them to Docker Hub
-(`claymore666/net-dhcp`). Pin a version (`:vX.Y.Z`) for reproducibility,
-or track `:latest`.
+(`ghcr.io/claymore666/docker-net-dhcp:vX.Y.Z`) and mirrors them to
+Docker Hub (`claymore666/net-dhcp`). Pin a version (`:vX.Y.Z`) for
+reproducibility, or track `:latest`.
+
+Published builds are **`linux/amd64` only**. A Docker *plugin* cannot be
+installed from a multi-architecture manifest list at all: the daemon
+reads a plugin's privileges before pulling it, its manifest handler
+matches single manifests only, and an index therefore fails with `did
+not find plugin config for specified reference` on every architecture —
+with no `--platform` to steer it. arm64 needs a tag of its own rather
+than a flag on this one, tracked in
+[#507](https://github.com/claymore666/docker-net-dhcp/issues/507).
 
 - [GHCR package](https://github.com/claymore666/docker-net-dhcp/pkgs/container/docker-net-dhcp)
 - [GitHub Releases](https://github.com/claymore666/docker-net-dhcp/releases)

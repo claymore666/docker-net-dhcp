@@ -99,6 +99,17 @@ The host's NIC config (IP, routes, netplan/`systemd-networkd`,
   cannot reach the parent NIC's own host IP, and vice-versa. This is a
   kernel-level rule, not a plugin restriction. For host↔container
   traffic you'd need bridge mode or a second NIC.
+- **The parent should carry an address on the leased subnet.** Normally
+  it does — a macvlan/ipvlan parent is the host NIC, holding the host's
+  own DHCP address — and nothing here requires you to add one. It
+  matters because the plugin checks each new lease against the segment
+  (v1.6.0+, #524) by resolving the address from the parent, and a host
+  answers ARP only if it can route a reply back to the sender. On a
+  deliberately address-less parent that check reports
+  `conflict_probe_failures` and an explicit *undetermined* instead of a
+  clean result — addressing still works exactly as before, you just lose
+  the detection. See
+  [`/Plugin.Health`](reference.md#pluginhealth).
 - **ipvlan-specific:** custom MAC addresses are unsupported (children
   share the parent's MAC). Passing `--mac-address` on `docker run`
   with an ipvlan network will fail with `invalid MAC address`.
@@ -138,6 +149,13 @@ docker inspect <container> | jq '.[0].NetworkSettings.Networks'
 
 A container on a macvlan should be pingable from any other host on the LAN
 on the IP its DHCP server handed it.
+
+If you also want to confirm the lease is not colliding with something
+already on the segment, read `address_conflict_probes` before believing
+`address_conflicts` is zero — with no probes the two readings are
+identical, and "the detector never ran" is what the fault behind #524
+looked like. Both are on
+[`/Plugin.Health`](reference.md#pluginhealth).
 
 ## Troubleshooting
 
