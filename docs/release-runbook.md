@@ -20,7 +20,20 @@ The workflow installs everything it needs itself; this is only about
 the commands **you** type. Nothing here is checked by CI, so a missing
 tool surfaces as a step you skip rather than a gate that fails — which
 is exactly how the v1.3.5 release ended up unable to run step 10's
-verification.
+verification, and how v1.5.0 was tagged before anyone noticed `cosign`
+was absent, leaving the signature unverified locally until afterwards.
+
+Twice is a class, so it has a check now. **Run this before step 1:**
+
+```sh
+bash scripts/check-release-tooling.sh
+```
+
+Exit 0 means every step below can actually be executed on this box. It
+verifies `gh`, `cosign` **major 3**, and a configured
+`user.signingkey`; `crane` is reported but optional. Its own
+table-driven tests run in CI (`scripts/test-check-release-tooling.sh`),
+so the check cannot rot into something that always passes.
 
 | Tool | Needed for | Install |
 | --- | --- | --- |
@@ -28,12 +41,22 @@ verification.
 | `cosign` | step 10's `verify-blob` re-verification | `go install github.com/sigstore/cosign/v3/cmd/cosign@latest` |
 | `crane` | optional — comparing `:latest` and `:vX.Y.Z` digests by hand | `go install github.com/google/go-containerregistry/cmd/crane@latest` |
 
-**Use cosign v3.** The release signs `checksums.txt` keylessly and
-emits a **Sigstore bundle**, which is the v3 default; v2's
+**Use cosign v3 or newer.** The release signs `checksums.txt` keylessly
+and emits a **Sigstore bundle**, which is the v3 default; v2's
 `--output-signature` / `--output-certificate` pair was removed in
 favour of it. v3 is what the workflow itself installs and what the
-v1.3.5 verification was run with (v3.1.2); older majors are untested
-against `checksums.txt.sigstore.json` here.
+v1.3.5 verification was run with (v3.1.2), and what verified v1.5.0
+(v3.1.3); older majors are untested against
+`checksums.txt.sigstore.json` here.
+
+v2 does not fail with anything resembling "your cosign is too old" — it
+fails with `Error: bundle does not contain cert for verification, please
+provide public key`, which implicates the artifact rather than the
+toolchain (#522). That string is now quoted on
+[Verifying releases](verifying-releases.md) so a search for it lands on
+the answer. `scripts/check-cosign-docs.sh` keeps every page that prints
+a cosign command naming the same major as
+`scripts/check-release-tooling.sh` enforces.
 
 Also needed, but already true on any box that has committed here: a
 git signing key, since step 9 tags with `-s`. Confirm with
@@ -245,6 +268,20 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
      registries, privileges. Prefer replacing the copy with a pointer at
      the authority — the way step 5 defers to branch protection — over
      updating a copy that will decay again.
+   - **Mechanisms this release added that no page describes.** The
+     failure is *absence*, not wrongness, so nothing reads as wrong and
+     no grep finds it. Take the release's mechanism changes and ask
+     which section of `internals.md` covers each; v1.6.0 shipped a lease
+     reclaim and a per-parent gate with no section for either, while
+     every counter table was green.
+   - **Standing preconditions that read like old-version prose.** The
+     `BREAKING CHANGE IN v1.5.0` block (`README.md`, `docs/index.md`,
+     `docs/reference.md`) is a precondition for *every* install, not a
+     changelog entry — but it names an old version, so a pass tidying
+     stale version references deletes it in good faith. **Keep it.**
+   - **Counted claims.** "Four flip `healthy` to `false`" is right until
+     a fifth is added, and the sentence still parses. Check any stated
+     count against the code.
 
    **Verify each finding against the artifact, not from reasoning.**
    Run the command, `config` the snippet, `ls` the path on the test
@@ -302,6 +339,21 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
    commit messages. Include any **operator-visible compatibility
    notes** (e.g. v0.8.0 narrowed the `IsDHCPPlugin` regex — that
    needed a callout).
+
+   **Credit outside contributions by name**, the way the v1.0.0 notes
+   do. Find them rather than recalling them — almost every PR here is
+   the maintainer's or Dependabot's, so an outside one is easy to miss
+   precisely because it is rare:
+
+   ```sh
+   gh pr list --state merged --limit 300 --json number,title,author \
+     --jq '.[] | select(.author.login|test("claymore666|dependabot")|not)
+                | "#\(.number) @\(.author.login) \(.title)"'
+   ```
+
+   Also confirm the merged commit still carries their authorship
+   (`git log -1 --format='%an <%ae>' <sha>`) — a rebase or squash of a
+   fork branch is where that quietly becomes the maintainer's.
 5. **PR `release/vX.Y.Z` → `dev`.** Required checks on `dev` are
    `test`, `staticcheck`, `integration` (every PR builds and exercises
    its own plugin on the integration runner), `actionlint`,
@@ -317,6 +369,20 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
    `Release vX.Y.Z` and a `Closes #N` line for **every issue** in
    the milestone. The list is what auto-closes them when the PR
    merges; without it the milestone stays open after the tag.
+
+   **Because the list is milestone membership, membership has to be
+   true.** An issue that is in the milestone but not done gets closed
+   as delivered, silently, by the tag. The taxonomy already says
+   `backlog` never sits on a milestoned issue for exactly this reason,
+   and the **Milestone scope** workflow
+   (`.github/workflows/milestone-scope.yml`,
+   `scripts/check-milestone-scope.sh`) checks it daily rather than
+   leaving it to whoever builds the list. It splits the two cases,
+   because their fixes are opposite: `backlog` **with** `in-dev` means
+   the work shipped and the label is stale (drop the label, keep the
+   milestone); `backlog` **without** it means the work has not started
+   (move it off the milestone). Read that run before opening the
+   release PR — it is a schedule, so a red one waits quietly.
    Release PRs additionally run the **Coverage** workflow with the
    coverage ratchet (`scripts/coverage-ratchet.sh` vs
    `.github/coverage-baseline.txt`): no release ships with less
@@ -334,7 +400,15 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
    PR sits at `BLOCKED` with nothing to click into. It is not a missing
    trigger. GitHub keeps one running plus one pending run per
    concurrency group, so pushing another commit to the release PR while
-   coverage is still queued displaces it. Confirm and recover with:
+   coverage is still queued displaces it — and a run displaced before
+   any job was assigned creates no check run at all, which is why the
+   `coverage` context goes absent rather than red.
+
+   You should not have to notice this yourself: the **Coverage
+   presence** check (`.github/workflows/coverage-presence.yml`, #504)
+   watches the head and fails with the run id and the exact recovery
+   command when the run was evicted. If it is red, do what it says. The
+   manual form, for a head it did not cover:
 
    ```sh
    gh run list --workflow coverage.yml --limit 5   # look for "cancelled"
@@ -430,7 +504,15 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
    the previous version's digests in place is worse than having none:
    a reader who rebuilds the current tag and compares against them sees
    a mismatch and concludes the release does not match its source.
-   Nothing gates this today (#502).
+
+   **The rc dry-run tells you the digests.** `release.yml` compares this
+   block against the binaries it just built and fails the run when they
+   disagree, printing the corrected block ready to paste (#502). So the
+   first rc of a new version is *expected* to fail on this step — that
+   is the check doing its job, and it is why the rc exists. Take the
+   block from the failed run's log, land it, and re-tag `-rc2`; the real
+   tag then passes silently. A pre-release compares against its base
+   version, so `v1.6.0-rc2` validates exactly what `v1.6.0` will publish.
 11. **Fast-forward `dev` to `main`** so the release commit (version
    pins, RELEASE_NOTES section) lands on `dev` too:
    ```sh

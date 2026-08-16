@@ -75,6 +75,15 @@
                 "rbind",
                 "rw"
             ]
+        },
+        {
+            "source": "/var/run/docker/netns",
+            "destination": "/var/run/docker/netns",
+            "type": "bind",
+            "options": [
+                "rbind",
+                "ro"
+            ]
         }
     ],
     "linux": {

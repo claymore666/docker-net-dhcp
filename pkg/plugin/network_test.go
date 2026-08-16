@@ -5,6 +5,7 @@ package plugin
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -655,5 +656,178 @@ func TestJoinFailure_TeardownCancelIsNotAFault(t *testing.T) {
 	if !m.attachAborted.Load() {
 		t.Error("Stop cancelled the attach without recording that it did; " +
 			"the resulting 'context canceled' will be counted as a plugin fault")
+	}
+}
+
+// TestJoinFailureLeavesAddressUnused pins the predicate that decides
+// whether a failed attach hands its address back (#566).
+//
+// The negative half is the important half. A reclaim that fires on the
+// wrong error takes an address away from a container that is using it —
+// the same duplicate assignment #524 was about, except caused by us —
+// so this asserts the default is "do not release" and that only one
+// error opts in.
+func TestJoinFailureLeavesAddressUnused(t *testing.T) {
+	t.Run("no container claimed the endpoint", func(t *testing.T) {
+		if !joinFailureLeavesAddressUnused(util.ErrNoContainer) {
+			t.Error("ErrNoContainer did not release the address; the lease it took is leaked (#566)")
+		}
+	})
+
+	t.Run("wrapped, as the attach path actually produces it", func(t *testing.T) {
+		err := fmt.Errorf("failed to find container: %w", util.ErrNoContainer)
+		if !joinFailureLeavesAddressUnused(err) {
+			t.Error("a wrapped ErrNoContainer was not recognised; errors.Is is required, not ==")
+		}
+	})
+
+	// Every one of these is compatible with a RUNNING container holding
+	// the address. Releasing on any of them is worse than the leak it
+	// would fix.
+	t.Run("a live container keeps its address", func(t *testing.T) {
+		for _, tc := range []struct {
+			name string
+			err  error
+		}{
+			{"nil error", nil},
+			{"daemon unreachable", fmt.Errorf("failed to get Docker container info: %w",
+				fmt.Errorf("%w (last attempt: %w)", context.DeadlineExceeded, errors.New("connection refused")))},
+			{"permission denied on the netns", fmt.Errorf("failed to get sandbox network namespace: %w", syscall.EACCES)},
+			{"dhcpcd refused to start", errors.New("failed to start DHCP client: exec format error")},
+			{"attach timed out", context.DeadlineExceeded},
+			{"no sandbox", util.ErrNoSandbox},
+		} {
+			if joinFailureLeavesAddressUnused(tc.err) {
+				t.Errorf("%s: released the address of a container that may still be running — "+
+					"this is #524's duplicate assignment, manufactured by the plugin", tc.name)
+			}
+		}
+	})
+}
+
+// TestSandboxNetnsVisibleIn pins the diagnostic that makes #567's dead
+// branch observable.
+//
+// The point of separating this from sandboxGoneIn is that sandboxGoneIn
+// answers false for BOTH "the entry is there" and "I cannot read the
+// directory", correctly — for its purpose those mean the same thing.
+// That folding is exactly what let an unreachable directory look
+// healthy for every release up to #567. These cases exist to keep the
+// two distinguishable from outside the process.
+func TestSandboxNetnsVisibleIn(t *testing.T) {
+	populated := t.TempDir()
+	for _, name := range []string{"aaaa", "bbbb", "cccc"} {
+		if err := os.WriteFile(filepath.Join(populated, name), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	empty := t.TempDir()
+	missing := filepath.Join(t.TempDir(), "not-created")
+
+	cases := []struct {
+		name string
+		dirs []string
+		want int32
+	}{
+		{
+			// The mount is missing — the state every shipped release
+			// was in. Must be -1 and never 0: a zero here would be
+			// indistinguishable from a host with no containers, which
+			// is the confusion this field exists to end.
+			name: "no readable directory is -1, not 0",
+			dirs: []string{missing},
+			want: -1,
+		},
+		{
+			name: "no directories at all is -1",
+			dirs: nil,
+			want: -1,
+		},
+		{
+			// Readable and genuinely empty. Legitimate on an idle host,
+			// and only dangerous when endpoints are attached — which is
+			// why the health field is documented to be read against
+			// active_endpoints rather than alone.
+			name: "a readable empty directory is 0",
+			dirs: []string{empty},
+			want: 0,
+		},
+		{
+			name: "entries are counted",
+			dirs: []string{populated},
+			want: 3,
+		},
+		{
+			// THE DOUBLE-COUNT GUARD. /var/run is a symlink to /run on
+			// most hosts, so both entries in sandboxNetnsDirs name the
+			// same directory. Summing would report six for three
+			// sandboxes and make the number useless for the comparison
+			// it exists to serve.
+			name: "the same directory reached twice is not counted twice",
+			dirs: []string{populated, populated},
+			want: 3,
+		},
+		{
+			// An unreadable first entry must not mask a readable
+			// second one, or a host whose netns lives under /run gets
+			// -1 while the evidence is right there.
+			name: "an unreadable directory falls through to a readable one",
+			dirs: []string{missing, populated},
+			want: 3,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sandboxNetnsVisibleIn(tc.dirs); got != tc.want {
+				t.Errorf("sandboxNetnsVisibleIn(%v) = %d, want %d", tc.dirs, got, tc.want)
+			}
+		})
+	}
+}
+
+// The production directory list must be what the manifest mounts.
+//
+// This is the assertion that was missing. network_test.go tested
+// sandboxGoneIn thoroughly by injecting t.TempDir()s, so it proved the
+// logic and said nothing about whether production's input was
+// reachable — the parameter that made the function testable is the
+// parameter that let the tests never touch the failing case (#567).
+//
+// It cannot check that the mount WORKS from here; that needs a running
+// plugin and is asserted by the integration suite against
+// sandbox_netns_visible. It can check that nobody removes the mount
+// while leaving the code that depends on it, which is the regression
+// that would restore the dead branch silently.
+func TestSandboxNetnsDirsAreMounted(t *testing.T) {
+	raw, err := os.ReadFile("../../config.json")
+	if err != nil {
+		t.Fatalf("read config.json: %v", err)
+	}
+	var manifest struct {
+		Mounts []struct {
+			Destination string `json:"destination"`
+		} `json:"mounts"`
+	}
+	if err := json.Unmarshal(raw, &manifest); err != nil {
+		t.Fatalf("parse config.json: %v", err)
+	}
+
+	mounted := make(map[string]bool, len(manifest.Mounts))
+	for _, m := range manifest.Mounts {
+		mounted[m.Destination] = true
+	}
+
+	var found bool
+	for _, dir := range sandboxNetnsDirs {
+		if mounted[dir] {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("config.json mounts none of sandboxNetnsDirs %v — os.ReadDir will fail on "+
+			"every one of them inside the plugin, sandboxGone will answer \"no usable evidence\" "+
+			"forever, and nothing will say so (#567). Mounts present: %v", sandboxNetnsDirs, mounted)
 	}
 }

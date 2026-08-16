@@ -260,6 +260,12 @@ func releasingManager(t *testing.T, p *Plugin, opts DHCPNetworkOptions, errV4, e
 		t.Fatalf("ParseAddr v4: %v", err)
 	}
 	m.setLastIP(false, v4)
+	// Every case in this file models a client that reached a bind and is
+	// now being shut down, which is what makes "release" the honest
+	// ledger entry. Without this the manager is in the never-bound state
+	// instead, where Stop must NOT claim a release — see
+	// TestStop_NeverBoundClientReclaimsInsteadOfClaimingRelease.
+	m.boundV4.Store(true)
 
 	m.errChan = make(chan error, 1)
 	m.errChan <- errV4
@@ -398,6 +404,168 @@ func TestStop_FailedStartIsANoOp(t *testing.T) {
 	if _, err := os.Stat(p.ledger.path); !os.IsNotExist(err) {
 		t.Errorf("ledger written for a manager that never held a lease (stat err: %v)", err)
 	}
+}
+
+// TestStop_NeverBoundClientReclaimsInsteadOfClaimingRelease pins the
+// third state Stop used to fall between (#549).
+//
+// CreateEndpoint's one-shot acquires the address and deliberately keeps
+// it, because handing over is the persistent client's job. Stop knew two
+// endings: Start failed (reclaim) and Start succeeded (let dhcpcd's
+// `release` directive do it). A client that starts and is SIGTERMed
+// before it ever binds is neither — dhcpcd releases only a lease it
+// holds, so it sends nothing, and startErr is nil so the reclaim never
+// ran. The address stayed held upstream with nobody responsible, while
+// the ledger recorded a release the server never saw.
+//
+// Both halves are asserted, because the second is the one that kept the
+// first invisible.
+//
+// Mode-independent by construction: this is a Join/Leave ordering race,
+// not an ipvlan property. It was found through an ipvlan test only
+// because that test deliberately races container exit against Join.
+func TestStop_NeverBoundClientReclaimsInsteadOfClaimingRelease(t *testing.T) {
+	var ledgerFailures atomic.Int32
+	p := &Plugin{}
+	p.ledger = testLedger(t, &ledgerFailures)
+
+	// A network with neither parent nor bridge: the reclaim has no path
+	// to the wire, so it lands on orphanedLeaseReleaseFailures. That is
+	// what makes "the reclaim ran at all" observable in a unit test,
+	// which is the fact under test here — whether it can reach a real
+	// DHCP server is the integration test's job.
+	m := releasingManager(t, p, DHCPNetworkOptions{AuditLog: true}, nil, nil)
+	m.boundV4.Store(false)
+
+	if err := m.StopForLeave(); err != nil {
+		t.Fatalf("StopForLeave() = %v, want nil", err)
+	}
+	p.orphanReleases.Wait()
+
+	if got := p.orphanedLeaseReleaseFailures.Load(); got != 1 {
+		t.Errorf("orphaned_lease_release_failures = %d, want 1 — the lease the "+
+			"one-shot acquired was never handed to the reclaim", got)
+	}
+	if got := p.leaseReleaseFailures.Load(); got != 0 {
+		t.Errorf("leaseReleaseFailures = %d, want 0 — nothing we were running "+
+			"failed to release; no client ever held this lease", got)
+	}
+
+	for _, e := range readLedgerLines(t, p.ledger.path) {
+		if e.Kind == "release" {
+			t.Fatalf("ledger recorded %q for %s, but the client never held a "+
+				"binding and no DHCPRELEASE was sent", e.Kind, e.IP)
+		}
+	}
+}
+
+// A bound client is the unchanged path, asserted alongside the above so
+// the reclaim cannot start firing on every ordinary teardown — that
+// would send a second DHCPRELEASE for an address the server has already
+// freed and may have reallocated.
+func TestStop_BoundClientDoesNotReclaim(t *testing.T) {
+	var ledgerFailures atomic.Int32
+	p := &Plugin{}
+	p.ledger = testLedger(t, &ledgerFailures)
+
+	m := releasingManager(t, p, DHCPNetworkOptions{AuditLog: true}, nil, nil)
+
+	if err := m.Stop(); err != nil {
+		t.Fatalf("Stop() = %v, want nil", err)
+	}
+	p.orphanReleases.Wait()
+
+	if got := p.orphanedLeasesReleased.Load() + p.orphanedLeaseReleaseFailures.Load(); got != 0 {
+		t.Errorf("reclaim ran %d time(s) for a client that held its lease; "+
+			"dhcpcd already released it", got)
+	}
+}
+
+// TestStop_NeverBoundIsNotReclaimedUnlessLeaving is the guard on the
+// reclaim's blast radius, and it matters more than the reclaim itself.
+//
+// Plain Stop() is what plugin Close calls, once per live manager, so
+// their dhcpcds can release before the process exits — on a plugin
+// upgrade or `docker plugin disable`, with every container still
+// running. A manager can be never-bound there for an ordinary reason:
+// its persistent client came up against a DHCP server that is not
+// answering. The address is still configured inside that container and
+// still in use.
+//
+// Reclaiming it would tell the server an address is free while a live
+// container holds it, and the server would be entitled to hand it to
+// somebody else — the duplicate-assignment failure this release added
+// conflict detection for (#524), manufactured by the plugin. A missed
+// reclaim only leaves the leak that existed before; a wrong one creates
+// an outage.
+//
+// The same applies to a displaced manager and to managers stopped on
+// network removal, which is why the reclaim is opt-in at the call site
+// rather than a flag that defaults to on.
+func TestStop_NeverBoundIsNotReclaimedUnlessLeaving(t *testing.T) {
+	var ledgerFailures atomic.Int32
+	p := &Plugin{}
+	p.ledger = testLedger(t, &ledgerFailures)
+
+	m := releasingManager(t, p, DHCPNetworkOptions{AuditLog: true}, nil, nil)
+	m.boundV4.Store(false)
+
+	if err := m.Stop(); err != nil {
+		t.Fatalf("Stop() = %v, want nil", err)
+	}
+	p.orphanReleases.Wait()
+
+	if got := p.orphanedLeasesReleased.Load() + p.orphanedLeaseReleaseFailures.Load(); got != 0 {
+		t.Errorf("reclaim ran %d time(s) on a plain Stop; the container may still "+
+			"be running and using this address", got)
+	}
+
+	// Still must not claim a release that did not happen. Nothing was
+	// audited at all here, so the ledger was never even created — the
+	// same shape TestStop_FailedStartIsANoOp asserts, and the honest
+	// record: no DHCPRELEASE was sent, so none is written down.
+	if _, err := os.Stat(p.ledger.path); !os.IsNotExist(err) {
+		for _, e := range readLedgerLines(t, p.ledger.path) {
+			if e.Kind == "release" {
+				t.Errorf("ledger recorded %q for %s on a client that never bound", e.Kind, e.IP)
+			}
+		}
+	}
+}
+
+// The event that flips the manager out of the never-bound state. Only a
+// v4 bind counts: the reclaim hands back the v4 address and there is no
+// v6 equivalent, so a v6-only bind must leave the v4 lease unclaimed.
+func TestHandleEvent_BoundOwnershipIsV4Only(t *testing.T) {
+	for _, tc := range []struct {
+		event string
+		v6    bool
+		want  bool
+	}{
+		{event: "bound", v6: false, want: true},
+		{event: "renew", v6: false, want: true},
+		{event: "bound", v6: true, want: false},
+		{event: "renew", v6: true, want: false},
+		{event: "leasefail", v6: false, want: false},
+		{event: "nak", v6: false, want: false},
+	} {
+		t.Run(tc.event+familySuffix(tc.v6), func(t *testing.T) {
+			m := newDHCPManager(nil, JoinRequest{NetworkID: "net1", EndpointID: "ep1"},
+				DHCPNetworkOptions{})
+			m.handleEvent(dhcp.Event{Type: tc.event, Data: dhcp.Info{IP: "192.168.99.50/24"}}, tc.v6)
+
+			if got := m.boundV4.Load(); got != tc.want {
+				t.Errorf("after %q (v6=%v): boundV4 = %v, want %v", tc.event, tc.v6, got, tc.want)
+			}
+		})
+	}
+}
+
+func familySuffix(v6 bool) string {
+	if v6 {
+		return "_v6"
+	}
+	return "_v4"
 }
 
 // #406: when a Join runs out of budget, every phase reports the same

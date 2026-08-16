@@ -212,6 +212,44 @@ func PluginLog(ctx context.Context) (string, []byte, error) {
 	return logPath, data, nil
 }
 
+// PluginLogSize returns the current size of the plugin's on-disk log,
+// for use as a baseline offset.
+//
+// WHY AN OFFSET AND NOT A COUNTER SNAPSHOT. The censuses read the whole
+// log on purpose: the plugin's counters reset when the plugin process
+// does, so a floor judging counters alone sees only the last restart's
+// worth of a run — which is how a run with three failed Joins went
+// green (#385, #406). The log does not reset, and neither does a byte
+// offset into it, so scoping by offset keeps that property while still
+// answering "during THIS process".
+//
+// A missing or unreadable log yields 0, meaning "scope to the whole
+// log". That is the safe direction: it can only make the floor judge
+// more than this process caused, never less, so a broken baseline
+// cannot quietly narrow what gets judged.
+func PluginLogSize(ctx context.Context) int64 {
+	_, data, err := PluginLog(ctx)
+	if err != nil {
+		return 0
+	}
+	return int64(len(data))
+}
+
+// LogSince returns the portion of data after off, for scoping a census
+// to one test process.
+//
+// An offset past the end means the log was TRUNCATED or replaced since
+// the baseline — a plugin reinstall, or a rotation. Falling back to the
+// whole log is deliberate: the alternative is judging nothing, and a
+// census that silently judges nothing is the failure mode this whole
+// mechanism exists to prevent.
+func LogSince(data []byte, off int64) []byte {
+	if off <= 0 || off > int64(len(data)) {
+		return data
+	}
+	return data[off:]
+}
+
 // WaitPluginEnabled polls PluginInspect until p.Enabled matches want
 // or budget elapses. Use after PluginEnable / PluginDisable to know
 // when the daemon has reflected the state change.
@@ -229,4 +267,25 @@ func WaitPluginEnabled(ctx context.Context, cli *docker.Client, want bool, budge
 		}
 	}
 	return fmt.Errorf("plugin did not reach enabled=%v within %v", want, budget)
+}
+
+// PluginHealthOrNil reads the health surface and returns nil on any
+// error, for callers that want a baseline rather than an assertion.
+//
+// Deliberately NOT a variant that fails: a baseline is an optimisation
+// on top of a correct-but-wider judgement, so a plugin that is not
+// answering yet must not turn into a run-level error here. The floor
+// itself already fails loudly if health is unreadable at the END of a
+// run, which is where an unreachable plugin actually matters.
+func PluginHealthOrNil(ctx context.Context) *HealthResponse {
+	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	if err != nil {
+		return nil
+	}
+	defer cli.Close()
+	h, err := PluginHealth(ctx, cli)
+	if err != nil {
+		return nil
+	}
+	return h
 }

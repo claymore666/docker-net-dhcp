@@ -139,6 +139,34 @@ func joinAbortedByVanish(err error, sandboxKey string) bool {
 	return sandboxGone(sandboxKey)
 }
 
+// joinFailureLeavesAddressUnused reports whether a failed attach proves
+// that nothing is using the address the CreateEndpoint one-shot took,
+// and that the plugin should therefore hand it back (#566).
+//
+// It is an allowlist of one, and the narrowness is the whole point.
+// Every start failure looks the same from the caller — an error and no
+// persistent client — but they divide into opposites:
+//
+//   - ErrNoContainer means no container holds this endpoint on the
+//     network. AwaitCondition has already retried for the entire attach
+//     budget before this surfaces, so it is a settled answer, not a
+//     glimpse of a container mid-registration. Nothing can be using the
+//     address.
+//   - Everything else — a missing binary, a netns we could not enter, a
+//     timeout — is compatible with a RUNNING container that is using
+//     that address right now. Releasing there would hand a live
+//     container's address back to the pool for reassignment, which is
+//     #524's duplicate-assignment failure with us as the cause.
+//
+// The costs are not symmetric. A reclaim we skip leaves a lease to
+// expire on its own; a reclaim we should not have made takes an address
+// away from something using it. So this returns true only where the
+// evidence is positive, and new errors are non-reclaiming by default
+// rather than by omission.
+func joinFailureLeavesAddressUnused(err error) bool {
+	return errors.Is(err, util.ErrNoContainer)
+}
+
 // sandboxNetnsDirs are the only directories a Join's sandbox key is
 // expected to live in. libnetwork bind-mounts each sandbox's netns as
 // /var/run/docker/netns/<id>; hosts where /var/run is a symlink to
@@ -146,6 +174,44 @@ func joinAbortedByVanish(err error, sandboxKey string) bool {
 var sandboxNetnsDirs = []string{
 	"/var/run/docker/netns",
 	"/run/docker/netns",
+}
+
+// sandboxNetnsVisibleIn reports how many sandbox netns entries the
+// plugin can see across the permitted directories, or -1 if it cannot
+// read any of them (#567).
+//
+// This exists to make the difference between "no containers" and "no
+// evidence" observable from outside the process. sandboxGoneIn folds
+// both into false, deliberately and correctly — for its purpose an
+// unreadable directory and a present entry mean the same thing, which
+// is "do not conclude the container vanished". The cost of that folding
+// is that a directory unreachable for the entire life of the plugin
+// looks exactly like a healthy one, and did, for every release up to
+// #567.
+//
+// Separated from sandboxGoneIn rather than folded into it: this is a
+// diagnostic and must never influence the decision. A count that could
+// change an answer would be a second source of truth for the same
+// question.
+//
+// -1 rather than an error because this feeds a health field sampled on
+// every request; the caller has nothing useful to do with an error, and
+// a sentinel keeps the JSON shape one integer wide.
+// The FIRST readable directory wins rather than a sum across all of
+// them. The two entries in sandboxNetnsDirs are usually the same
+// directory reached two ways — /var/run is a symlink to /run on most
+// hosts — so adding them would report double the real count and make
+// the number meaningless exactly where it is being read for a
+// comparison against active_endpoints.
+func sandboxNetnsVisibleIn(dirs []string) int32 {
+	for _, dir := range dirs {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		return int32(len(entries))
+	}
+	return -1
 }
 
 // sandboxGoneIn is sandboxGone with the permitted directories injected,
@@ -243,7 +309,13 @@ func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 		// Default off; opt-in via -o validate_dhcp=true.
 		if opts.ValidateDHCP {
 			ctx, cancel := context.WithTimeout(context.Background(), preflightProbeBudget+5*time.Second)
-			err := runDHCPProbe(ctx, opts.Parent)
+			// The probe puts its own child on the parent for up to
+			// preflightProbeBudget, so it is both a waiter and a holder:
+			// it must not start on top of a reclaim, and no endpoint
+			// should start on top of it.
+			guard := p.lockParent(ctx, opts.Parent, "preflight_probe")
+			err := runDHCPProbe(ctx, guard, opts.Parent, mode)
+			guard.Unlock()
 			cancel()
 			if err != nil {
 				return err
@@ -805,6 +877,16 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 	}
 	p.rememberEndpoint(r.EndpointID, endpointFingerprint{MAC: mac, IPv4: v4IP, IPv6: v6IP, Hostname: hostname, Ifname: p.hintIfname(r.EndpointID)})
 
+	// Same post-lease conflict probe as the parent-attached path (#524),
+	// against the bridge. Bridge mode is the case that makes the MAC
+	// comparison in checkAddressConflict load-bearing rather than
+	// belt-and-braces: the host CAN reach the container here, so our own
+	// endpoint answers, and a probe that only asked "did anything reply?"
+	// would report every single endpoint as a conflict.
+	if res.Interface.Address != "" {
+		go p.checkAddressConflict(opts.Bridge, res.Interface.Address, mac, r.EndpointID, r.NetworkID)
+	}
+
 	log.WithFields(log.Fields{
 		"network":  shortID(r.NetworkID),
 		"endpoint": shortID(r.EndpointID),
@@ -1347,6 +1429,36 @@ func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) 
 				p.spawnOrphanRelease(m)
 				return
 			}
+			// No container ever claimed this endpoint on the network.
+			// The address the CreateEndpoint one-shot took is held
+			// upstream for a handover to a persistent client that can
+			// never happen, so give it back (#566).
+			//
+			// Narrow to ErrNoContainer ON PURPOSE, rather than
+			// reclaiming on every start failure. The two cases look
+			// alike from here and are opposites in effect: a start that
+			// failed for any other reason — a missing binary, a netns we
+			// could not enter — leaves a RUNNING container using that
+			// address, and handing it back would be us manufacturing
+			// #524's duplicate assignment. ErrNoContainer is the one
+			// error that says the address is unused, and it says it
+			// after AwaitCondition has retried for the whole attach
+			// budget, so it is a settled answer rather than a glimpse of
+			// a container mid-registration.
+			//
+			// A missed reclaim leaves a lease to expire on its own; a
+			// wrong one takes an address away from something using it.
+			// That asymmetry is why this is an allowlist of one and not
+			// a fallthrough.
+			if joinFailureLeavesAddressUnused(err) {
+				p.joinAbortedNoContainer.Add(1)
+				log.WithError(err).WithFields(fields).
+					Info("No container claimed the endpoint; releasing the address it was holding")
+				p.removeDHCPManagerIfSame(r.EndpointID, m)
+				p.spawnOrphanRelease(m)
+				return
+			}
+
 			p.joinStartFailures.Add(1)
 			log.WithError(err).WithFields(fields).
 				Error("Failed to start persistent DHCP client; lease will not be renewed")
@@ -1377,7 +1489,7 @@ func (p *Plugin) Leave(ctx context.Context, r LeaveRequest) error {
 		return util.ErrNoSandbox
 	}
 
-	stopErr := manager.Stop()
+	stopErr := manager.StopForLeave()
 
 	// Refresh the endpoint fingerprint with the most recent v4/v6 IPs
 	// the persistent client saw, *whether or not Stop succeeded*. Stop

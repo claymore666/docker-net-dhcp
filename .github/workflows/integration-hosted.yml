@@ -70,11 +70,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Hosted runners have no pre-baked toolchain (unlike the dhcp-ci
-      # image, which bakes go.mod's Go and skips setup-go). Pin to the
-      # go.mod minor so the cross-check tracks our real toolchain.
+      # image, which bakes go.mod's Go and skips setup-go). Pin the exact
+      # patch, not the minor: setup-go satisfies a range from the hosted
+      # image's tool cache without consulting upstream, so `'1.26'` means
+      # "whichever patch GitHub baked in this week" — which is how we
+      # scanned and built on go1.26.5 while go.mod said 1.26.4 (#525).
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: '1.26'
+          go-version: '1.26.6'
 
       # Record the environment under test — the whole point of this lane
       # is to know exactly which hosted Docker/Go a green (or red) ran

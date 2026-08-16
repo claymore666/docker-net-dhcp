@@ -308,6 +308,13 @@ type HealthResponse struct {
 	// renewal client. Worth watching anyway — a rise means containers
 	// are dying seconds after start.
 	JoinAbortedContainerGone int32 `json:"join_aborted_container_gone"`
+	// JoinAbortedNoContainer counts attaches abandoned because no
+	// container ever claimed the endpoint on the network, and whose
+	// address was therefore released rather than left to expire (#566).
+	// Not Healthy-affecting: nothing is running without a renewal
+	// client, because nothing is running. A rise means endpoints are
+	// being created for containers that never attach.
+	JoinAbortedNoContainer int32 `json:"join_aborted_no_container"`
 
 	// JoinAttachSlow counts attaches that succeeded only after
 	// outlasting AwaitTimeout, waiting on a daemon that was busy with
@@ -350,6 +357,58 @@ type HealthResponse struct {
 	// truthfulness-gap discussion), but worth alerting on for
 	// long-running containers.
 	LeaseChanged int32 `json:"lease_changed"`
+	// AddressConflicts counts leases whose address was already held by
+	// another device on the segment, found by probing after the lease
+	// (#524). Healthy-affecting: the endpoint is up and reporting an
+	// address that does not work, and no other counter moves for it.
+	//
+	// ConflictProbeFailures counts probes that could not run. NOT
+	// Healthy-affecting — it says the question went unasked, not that
+	// the answer was bad. Watch it anyway: a detector that has stopped
+	// running looks identical to a clean segment.
+	AddressConflicts      int32 `json:"address_conflicts"`
+	ConflictProbeFailures int32 `json:"conflict_probe_failures"`
+	// ConflictProbeStaleRoutes counts leftover probe routes reclaimed
+	// from a probe that was cut short before it could clean up (#572).
+	// Not Healthy-affecting — the probe that reclaimed it went on to
+	// run — but a rising count means the plugin is being stopped inside
+	// probe windows.
+	ConflictProbeStaleRoutes int32 `json:"conflict_probe_stale_routes"`
+	// AddressConflictProbes counts probes that reached a verdict. Read
+	// it before believing address_conflicts=0: a zero here means the
+	// detector did not run, not that the segment is clean.
+	AddressConflictProbes int32 `json:"address_conflict_probes"`
+
+	// SandboxNetnsVisible is how many sandbox netns entries the plugin
+	// can currently see, or -1 when it cannot read the directory at all
+	// (#567). Sampled at request time rather than accumulated — it
+	// describes the plugin's view of the host right now, not something
+	// that happened.
+	//
+	// It exists because the evidence sandboxGone depends on was
+	// unreachable for the entire life of this plugin and nothing said
+	// so. The directory is not part of the image; it is bind-mounted by
+	// config.json, and before #567 it was not mounted at all, so
+	// os.ReadDir failed on every call and sandboxGone answered "no
+	// usable evidence" forever. A dead branch is invisible precisely
+	// because it never does anything.
+	//
+	// READ IT AGAINST ACTIVE_ENDPOINTS, NOT ON ITS OWN. The two
+	// failure modes are opposite and only the comparison separates
+	// them:
+	//
+	//   -1  the directory is unreadable — the mount is missing. Every
+	//       sandboxGone answer is "no evidence", which is safe but
+	//       useless: the API 404 becomes the only source of truth.
+	//    0  with endpoints attached, the directory is readable but
+	//       WRONG — mounted from somewhere with no sandboxes in it.
+	//       This is the dangerous one. sandboxGone finds no entry
+	//       matching any key and concludes every container has
+	//       vanished, which is worse than never answering.
+	//
+	// A plain zero with no endpoints attached is neither: there is
+	// genuinely nothing to see.
+	SandboxNetnsVisible int32 `json:"sandbox_netns_visible"`
 
 	// DHCP-wire counters (T2-4). Naming intentionally drops the
 	// Prometheus `_total` suffix to stay consistent with the
@@ -387,6 +446,22 @@ type HealthResponse struct {
 	// failures flat is the mechanism working.
 	OrphanedLeasesReleased       int32 `json:"orphaned_leases_released"`
 	OrphanedLeaseReleaseFailures int32 `json:"orphaned_lease_release_failures"`
+	// ParentLinkWaits / ParentLinkWaitTimeouts cover contention on a
+	// shared parent NIC. A parent is a macvlan port or an ipvlan port,
+	// never both, so an orphan-lease reclaim holding one asynchronously
+	// can collide with an endpoint asking for the other (#486/#549).
+	// The plugin queues them per parent instead.
+	//
+	// Waits counts the operations that had to queue; timeouts counts
+	// those that gave up after parentGateBudget and went to the kernel
+	// anyway. Neither is Healthy-affecting: queuing is the mechanism
+	// working, and a timeout only restores the behaviour that existed
+	// before the queue did. Timeouts climbing is the actionable one —
+	// it means a reclaim is holding a parent far longer than its DORA
+	// should take, and container starts on that NIC are failing with
+	// "device or resource busy".
+	ParentLinkWaits        int32 `json:"parent_link_waits"`
+	ParentLinkWaitTimeouts int32 `json:"parent_link_wait_timeouts"`
 	// LedgerWriteFailures counts failed appends to the audit_log
 	// lease ledger (#109). Not Healthy-affecting — a lost audit line
 	// degrades forensics, not networking; operators using audit_log
@@ -414,13 +489,15 @@ func (p *Plugin) apiHealth(w http.ResponseWriter, r *http.Request) {
 	failed := p.recoveryFailed.Load()
 	joinFails := p.joinStartFailures.Load()
 	tsFails := p.tombstoneWriteFailures.Load()
+	conflicts := p.addressConflicts.Load()
 	util.JSONResponse(w, HealthResponse{
 		// Healthy is false on any condition that means an operator
 		// should look: a recovery or join-start failure means a running
 		// container has no renewal goroutine; a tombstone-write failure
 		// means the next restart of some container will pick a new
-		// MAC/IP.
-		Healthy:           failed == 0 && joinFails == 0 && tsFails == 0,
+		// MAC/IP; an address conflict means a container is up and
+		// reporting an address that belongs to someone else (#524).
+		Healthy:           failed == 0 && joinFails == 0 && tsFails == 0 && conflicts == 0,
 		InstanceID:        p.instanceID,
 		UptimeSeconds:     time.Since(p.startTime).Seconds(),
 		ActiveEndpoints:   active,
@@ -436,6 +513,7 @@ func (p *Plugin) apiHealth(w http.ResponseWriter, r *http.Request) {
 		RecoveryDeferred:             p.recoveryDeferred.Load(),
 		RecoveryAbortedContainerGone: p.recoveryAbortedContainerGone.Load(),
 		JoinAbortedContainerGone:     p.joinAbortedContainerGone.Load(),
+		JoinAbortedNoContainer:       p.joinAbortedNoContainer.Load(),
 		JoinAttachSlow:               p.joinAttachSlow.Load(),
 		RestartLinkUpWaited:          p.restartLinkUpWaited.Load(),
 		RestartLinkUpTimeouts:        p.restartLinkUpTimeouts.Load(),
@@ -443,6 +521,11 @@ func (p *Plugin) apiHealth(w http.ResponseWriter, r *http.Request) {
 		TombstoneWriteFailures:       tsFails,
 		TombstonesConsumed:           p.tombstonesConsumed.Load(),
 		LeaseChanged:                 p.leaseChanged.Load(),
+		AddressConflicts:             conflicts,
+		ConflictProbeFailures:        p.conflictProbeFailures.Load(),
+		ConflictProbeStaleRoutes:     p.conflictProbeStaleRoutes.Load(),
+		AddressConflictProbes:        p.addressConflictProbes.Load(),
+		SandboxNetnsVisible:          sandboxNetnsVisibleIn(sandboxNetnsDirs),
 		LeasesObtained:               p.leasesObtained.Load(),
 		LeasesRenewed:                p.leasesRenewed.Load(),
 		DHCPTimeouts:                 p.dhcpTimeouts.Load(),
@@ -451,6 +534,8 @@ func (p *Plugin) apiHealth(w http.ResponseWriter, r *http.Request) {
 		DisplacedStops:               p.displacedStopsTotal.Load(),
 		OrphanedLeasesReleased:       p.orphanedLeasesReleased.Load(),
 		OrphanedLeaseReleaseFailures: p.orphanedLeaseReleaseFailures.Load(),
+		ParentLinkWaits:              p.parentLinkWaits.Load(),
+		ParentLinkWaitTimeouts:       p.parentLinkWaitTimeouts.Load(),
 		LedgerWriteFailures:          p.ledgerWriteFailures.Load(),
 		LeaseChangedV6:               p.leaseChangedV6.Load(),
 		LeasesObtainedV6:             p.leasesObtainedV6.Load(),

@@ -160,6 +160,33 @@ jobs:
       - name: Push to GHCR
         run: make PLUGIN_NAME="${GHCR_NAME}" PLUGIN_TAG="${{ steps.tag.outputs.tag }}" push
 
+      # The reference digests in docs/verifying-releases.md must describe
+      # the binaries this tag actually publishes (#502).
+      #
+      # Placed here deliberately: `make push` above has just built
+      # plugin/, so this is the earliest point the binaries exist, and it
+      # is still BEFORE `:latest` moves. A failure therefore leaves a
+      # published `:vX.Y.Z` with `:latest` untouched — recoverable by
+      # fixing the doc and re-running, with nothing user-visible pointing
+      # at a release that was never announced.
+      #
+      # It fails the release rather than warning, and it fails on an rc
+      # too. That is the point: the rc dry-run is where a documentation
+      # error should stop the train, not the real tag. An rc compares
+      # against its base version (v1.6.0-rc1 -> v1.6.0) because it builds
+      # from the same source and therefore carries the same digests.
+      #
+      # The digests can only be known after a tag builds, so the first rc
+      # of a new version is EXPECTED to fail here and print the block to
+      # paste into the doc. That is runbook step 10b becoming enforced
+      # rather than remembered.
+      - name: Check the documented reference digests against this build
+        run: |
+          bash scripts/check-reference-digests.sh \
+            "${{ steps.tag.outputs.tag }}" \
+            plugin/rootfs/usr/sbin/net-dhcp \
+            plugin/rootfs/usr/lib/net-dhcp/dhcp-handler
+
       - name: Tag :latest to the published GHCR digest
         if: steps.tag.outputs.prerelease != 'true'
         run: crane tag "${GHCR_NAME}:${{ steps.tag.outputs.tag }}" latest
@@ -234,6 +261,41 @@ jobs:
       # consumed, so packaging that reconstructs the published plugin.
       - name: Install cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      # The installer's major is not cosign's: cosign-installer v4 ships
+      # cosign v3, and nothing in the pin says so. Docs telling users which
+      # cosign to verify with are therefore documentation about a version
+      # nobody asserts — which is how v1.5.0 shipped a bundle that the
+      # documented command could not read on v2 (#522).
+      #
+      # Record what actually signed this release, and hard-fail if the
+      # installer starts shipping a major the docs do not describe. Better
+      # here, before anything is signed, than in a user's terminal with an
+      # error that implicates the artifact.
+      - name: Record and gate the cosign version
+        run: |
+          set -euo pipefail
+          want=$(sed -n 's/^COSIGN_MAJOR=\([0-9][0-9]*\).*/\1/p' \
+                   scripts/check-release-tooling.sh | head -1)
+          got=$(cosign version 2>/dev/null \
+                  | sed -n 's/.*GitVersion:[[:space:]]*v\{0,1\}\([0-9][0-9.]*\).*/\1/p' \
+                  | head -1)
+          echo "cosign ${got:-unknown} (docs and preflight expect major ${want})"
+          {
+            echo "### Signing toolchain"
+            echo
+            echo "- cosign \`${got:-unknown}\` — expected major \`${want}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ -z "$got" ]; then
+            echo "::error::could not read the cosign version" >&2
+            exit 1
+          fi
+          if [ "${got%%.*}" != "$want" ]; then
+            echo "::error::cosign major ${got%%.*} installed, but the docs and" \
+                 "scripts/check-release-tooling.sh describe major ${want}." \
+                 "Update both before releasing — see #522." >&2
+            exit 1
+          fi
 
       # Sign the published plugin images by digest (#173). docker plugins
       # are OCI artifacts, so cosign signs them like any image once we

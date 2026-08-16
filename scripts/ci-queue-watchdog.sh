@@ -40,8 +40,17 @@
 # pool hostage, and the pool is worth more than a result nothing will
 # read.
 #
+# It also says WHY nothing picked the job up (#513). Cancelling for a
+# capacity shortage produced a red that looked exactly like a suite that
+# ran and failed, on a run that had executed none of its own diff —
+# "the debian bump broke the suite" is the natural misreading, and the
+# only thing separating the two was opening this log. So the class is
+# now stated explicitly and emitted as an annotation, a step summary and
+# a step output. See classify_wait.
+#
 # Usage: ci-queue-watchdog.sh <run-id> <stuck-after-seconds> [poll-seconds]
 # Env:   GATE_REPO=owner/repo, GH_TOKEN
+#        WATCHDOG_POOL_WORKFLOWS=<paths>  which workflows use the pool
 #        WATCHDOG_NO_CANCEL=1 diagnoses without cancelling (tests only)
 #
 # Needs `actions: write` on the calling job for the cancel; without it
@@ -66,6 +75,9 @@ set -uo pipefail
 RUN_ID="${1:-}"
 BUDGET="${2:-600}"
 POLL="${3:-30}"
+# The workflows whose jobs land on the self-hosted pool. Comma-separated
+# workflow paths, matched against a run's `.path`.
+POOL_WORKFLOWS="${WATCHDOG_POOL_WORKFLOWS:-.github/workflows/integration.yml,.github/workflows/coverage.yml}"
 
 if [ -z "$RUN_ID" ] || [ -z "${GATE_REPO:-}" ]; then
     echo "usage: $0 <run-id> <stuck-after-seconds> [poll-seconds]  (needs GATE_REPO)" >&2
@@ -93,6 +105,100 @@ cancel_run() {
         -H "Authorization: Bearer ${GH_TOKEN:-}" \
         -H "Accept: application/vnd.github+json" \
         "https://api.github.com/repos/${GATE_REPO}/actions/runs/${RUN_ID}/cancel"
+}
+
+# classify_wait says WHY nothing picked the jobs up, rather than leaving
+# the reader to guess (#513).
+#
+# This is the difference the issue is about. A run cancelled for never
+# being assigned presents in the checks UI exactly like a suite that ran
+# and failed, and reading the third concurrent PR's red as "the debian
+# bump broke the suite" is the natural mistake — the only thing that
+# distinguishes them is opening this log. So the log has to say which
+# one it is, in a line that reaches the annotation surface.
+#
+# The three answers need three different responses from a human:
+#
+#   STARVATION   other privileged runs are holding the pool. Nothing is
+#                broken, including the change under test. Re-run when
+#                the pool drains.
+#   POOL SHORT   nothing else was using the pool and this job was still
+#                not picked up: the pool is short, offline, or not
+#                assigning. A re-run queues behind the same condition.
+#
+# It prints "<CLASS>|<detail>". An unreadable answer is its own class,
+# never silently one of the above: this file's whole premise is that a
+# watchdog which goes quiet when it cannot see is the failure it exists
+# to catch.
+#
+# It asks about competing RUNS rather than about the runner pool, and
+# that is a constraint, not a preference: listing self-hosted runners
+# needs repo administration rights, which the workflow GITHUB_TOKEN
+# cannot be granted at all — `administration` is not one of its
+# permission scopes. `actions: read` can see other runs, so the question
+# becomes "is anything else holding the pool right now", which is the
+# one the reader actually needs answered.
+classify_wait() {
+    local body others count
+    body=$(api "actions/runs?status=in_progress&per_page=50") || {
+        echo "POOL UNKNOWN|could not list the other runs in flight, so the cause of the wait is unknown"
+        return
+    }
+
+    # Only the workflows that put jobs on the self-hosted pool count.
+    # A docs build in flight is not why nobody took this job.
+    others=$(printf '%s' "$body" | jq -r --arg me "$RUN_ID" --arg wf "$POOL_WORKFLOWS" '
+        ($wf | split(",")) as $paths
+        | [.workflow_runs[]?
+           | . as $r
+           | select(($r.id | tostring) != $me)
+           | select(($paths | index($r.path)) != null)
+           | "#\($r.run_number) \($r.name)"]
+        | join(", ")' 2>/dev/null)
+
+    count=$(printf '%s' "$body" | jq -r --arg me "$RUN_ID" --arg wf "$POOL_WORKFLOWS" '
+        ($wf | split(",")) as $paths
+        | [.workflow_runs[]?
+           | . as $r
+           | select(($r.id | tostring) != $me)
+           | select(($paths | index($r.path)) != null)]
+        | length' 2>/dev/null)
+    case "$count" in ''|*[!0-9]*)
+        echo "POOL UNKNOWN|the run list did not parse, so the cause of the wait is unknown"
+        return ;;
+    esac
+
+    if [ "$count" -gt 0 ]; then
+        echo "STARVATION|${count} other privileged run(s) are holding the pool right now: ${others}"
+    else
+        echo "POOL SHORT|nothing else is using the pool, and this job was still not picked up"
+    fi
+}
+
+# advise prints what the reader should DO about each class.
+advise() {
+    case "$1" in
+        STARVATION)
+            echo "This red says NOTHING about the change under test. The pool was full of other"
+            echo "work and this run never got a runner, so no suite executed. Re-run it once the"
+            echo "pool drains; do not go looking for a bug in the diff."
+            echo
+            echo "Concurrent runs are expected to fit: each integration run puts 4 jobs on the"
+            echo "pool (the suite matrix; gate, watchdog and the aggregator are hosted). Two runs"
+            echo "fit an 8-runner pool exactly, a third cannot start inside the budget (#513)." ;;
+        "POOL SHORT")
+            echo "Nothing else was competing for the pool, so this is not capacity — the pool"
+            echo "itself is short, offline, or not being assigned. A re-run queues behind the"
+            echo "same condition, so check the orchestrator and the runner host first. This is"
+            echo "the 2026-07-31 shape, where one runner was registered instead of the"
+            echo "contracted eight (#392)."
+            echo
+            echo "It says nothing about the change under test either: no suite executed." ;;
+        *)
+            echo "The runner pool could not be read, so why nothing picked this up is unknown."
+            echo "Treat it as unknown rather than as either a capacity problem or a code"
+            echo "problem, and check the pool by hand." ;;
+    esac
 }
 
 # queued_names: prints the names of jobs currently in `queued`, one per
@@ -129,22 +235,56 @@ while :; do
 
     if [ "$now" -ge "$deadline" ]; then
         waited=$(( now - stuck_since ))
+
+        # Ask the pool BEFORE saying anything, so the diagnosis is one
+        # complete story and the class can lead it.
+        verdict=$(classify_wait)
+        class="${verdict%%|*}"
+        detail="${verdict#*|}"
+
+        # An annotation, so the reason is visible on the checks page
+        # without opening this log. That is the whole point of #513: a
+        # capacity red and a product red looked identical there.
+        echo "::error title=CI ${class}: this run never got a runner::${detail}. No suite executed, so this result says nothing about the change under test."
+
         {
             echo
             echo "WATCHDOG: a job has been queued for ${waited}s without a runner picking it up."
             echo
             printf '%s\n' "$queued" | sed 's/^/  still queued: /'
             echo
+            echo "  CLASS: ${class} — ${detail}"
+            echo
+            advise "$class"
+            echo
             echo "timeout-minutes does not apply to a job that was never assigned, so this"
             echo "run would otherwise sit pending indefinitely — looking like work in"
             echo "progress, holding the selfhosted-privileged concurrency group, and"
             echo "blocking every other integration run behind it (#392)."
             echo
-            echo "Most likely the self-hosted pool is short of runners. Check the pool"
-            echo "before re-running: a re-run queues behind the same shortage."
-            echo
             echo "Cancelling this run now so it stops holding the concurrency group (#477)."
         } >&2
+
+        # Machine-readable, for a release checklist or a triage query
+        # that wants to tell these reds apart in bulk.
+        if [ -n "${GITHUB_OUTPUT:-}" ]; then
+            {
+                echo "wait_class=${class}"
+                echo "starved=$([ "$class" = "STARVATION" ] && echo true || echo false)"
+            } >> "$GITHUB_OUTPUT"
+        fi
+        if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+            {
+                echo "### ⛔ Run cancelled: ${class}"
+                echo
+                echo "${detail}."
+                echo
+                echo "Queued ${waited}s without a runner. **No suite executed**, so this run"
+                echo "carries no verdict on the change under test."
+                echo
+                printf '%s\n' "$queued" | sed 's/^/- still queued: `/; s/$/`/'
+            } >> "$GITHUB_STEP_SUMMARY"
+        fi
 
         # Everything the operator needs is on stderr already. From here
         # the process may be killed at any moment by its own request.

@@ -20,8 +20,17 @@ name: Issue state labels
 #   - `pull_request_target` is used WITHOUT a PR checkout. Nothing
 #     authored in a pull request is fetched, built, or executed; the
 #     checkout is the base branch, which is what that trigger already
-#     gives us. The only PR-derived input is the title, and the script
-#     reduces it to digits that must already match an open issue number.
+#     gives us. The PR-derived inputs are the title and the BODY, and
+#     the script reduces both to digits that must already match an open
+#     issue number.
+#
+#     The body was added by #548 and is the more attacker-controlled of
+#     the two only in length, not in kind: it is never executed, never
+#     checked out, and never written anywhere. It is matched for closing
+#     keywords and issue numbers and discarded. A body is arbitrary
+#     multi-line text, which is why it travels as JSON rather than in
+#     any hand-rolled delimited form — framing arbitrary input by hand
+#     is a parser bug waiting to happen.
 #   - The worst an attacker can do is cause an issue to gain or lose one
 #     of two state labels. No other label is touched, no content is
 #     written, and the token cannot do more (issues: write only).

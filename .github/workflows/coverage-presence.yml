@@ -1,0 +1,73 @@
+name: Coverage presence
+
+# Watches the release PR's coverage run and goes red if it never
+# produces a check (#504).
+#
+# `coverage` is required on main and nowhere else — it IS the release
+# ratchet. On the v1.5.0 release PR that context was not red, not
+# queued, not failed: no run existed, and `gh pr checks` reported it as
+# `pending`, indistinguishable from "still working".
+#
+# coverage.yml and integration.yml share a per-ref concurrency group and
+# GitHub holds exactly one pending run per group, so a third run on the
+# same ref EVICTS the queued one. An evicted run is cancelled before any
+# job is assigned, which means no check run is created at all — hence
+# absence rather than red. Measured on the 2026-08-03 release PR; see
+# scripts/check-coverage-run.sh for the run ids and for why splitting
+# the concurrency groups does not fix it.
+#
+# This cannot live in coverage.yml: concurrency is per RUN, so a job
+# added there is evicted along with everything else it was meant to
+# report on. It runs hosted, read-only, and never touches the
+# self-hosted pool it watches.
+on:
+  pull_request:
+    branches:
+      - main
+  # Dispatch is for exercising the gate against a known head without a
+  # release PR — `workflow_dispatch` only fires from the default branch,
+  # so this is usable once the workflow has shipped to main.
+  workflow_dispatch:
+    inputs:
+      head-sha:
+        description: "Commit whose coverage run must exist."
+        required: true
+        type: string
+      wait-minutes:
+        description: "How long a run may take to reach a terminal state."
+        required: false
+        default: "75"
+        type: string
+
+# Own group, cancel-in-progress on purpose: only the PR's latest head
+# matters, and a watcher left running for a superseded commit would
+# report an eviction that no longer harms anyone. This group is NOT the
+# self-hosted one — sharing that group is the bug, not the fix.
+concurrency:
+  group: coverage-presence-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  coverage-present:
+    runs-on: ubuntu-latest
+    # The gate's own wait is 75 minutes (coverage is 22-34 min and
+    # queues behind the same ref's integration run first). This is that
+    # plus margin, so the job never dies before the gate can speak.
+    timeout-minutes: 80
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Wait for a coverage run on this head
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GATE_REPO: ${{ github.repository }}
+          # Through the environment, not interpolated into the script:
+          # `head-sha` is dispatch input, and a `${{ }}` in a run block
+          # is a shell-injection site regardless of who can reach it.
+          HEAD_SHA: ${{ inputs.head-sha || github.event.pull_request.head.sha }}
+          WAIT_MINUTES: ${{ inputs.wait-minutes || '75' }}
+        run: bash scripts/check-coverage-run.sh "$HEAD_SHA" "$WAIT_MINUTES"

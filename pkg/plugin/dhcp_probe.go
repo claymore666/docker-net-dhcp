@@ -48,27 +48,58 @@ const preflightProbeBudget = 8 * time.Second
 //     link name so the DISCOVER doesn't collide with any stable
 //     upstream reservation, and concurrent probes on the same host
 //     don't fight for the link name.
-//  2. Create a temporary macvlan child of the parent NIC in the host
-//     netns (mode bridge — same submode the production endpoint
-//     uses, so the probe path matches the real path as closely as
-//     possible). ipvlan callers also get macvlan here: ipvlan slaves
-//     share the parent MAC, which would clash with the random probe
-//     MAC, and the probe goal (verifying DHCP reachability of the
-//     parent) is mode-agnostic.
+//
+//  2. Create a temporary child of the parent NIC in the host netns, of
+//     the SAME KIND the network's endpoints will use — macvlan (mode
+//     bridge) for a macvlan network, ipvlan (L2) for an ipvlan one.
+//
+//     This used to build a macvlan whatever the mode was, on the
+//     reasoning that ipvlan slaves share the parent MAC (clashing with
+//     the random probe MAC) and that reachability is mode-agnostic.
+//     Reachability is; the parent is not. macvlan and ipvlan children
+//     are mutually exclusive on one parent — see explainChildLinkAdd —
+//     so a macvlan probe on an ipvlan network is refused outright the
+//     moment any ipvlan container is running on that NIC, and while it
+//     does run it blocks every ipvlan endpoint on the same parent.
+//     `docker network create -o mode=ipvlan -o validate_dhcp=true`
+//     could therefore fail for a reason that had nothing to do with
+//     DHCP, which is the opposite of what the flag is for.
+//
+//     The shared MAC that motivated the old choice turns out not to
+//     bite. An ipvlan probe link wears the parent's address because the
+//     kernel permits nothing else, but the random probe MAC is still
+//     what dhcpcd derives its DUID and IAID from, so the probe's
+//     identity stays its own — the link's address and the DHCP identity
+//     are separate things, exactly as they are on the release path. The
+//     one thing the parent's address does reach is chaddr, which is why
+//     Broadcast is already requested below (#243): an ipvlan-L2 segment
+//     cannot demux a unicast OFFER to a shared MAC.
+//
 //  3. Bring it up and run dhcp.GetIP one-shot with the probe budget.
 //     dhcpcd has no DISCOVER-only flag; we accept the full DORA and
 //     let the upstream server briefly hold a lease that times out
 //     naturally (no `release` directive sent). The cost is one
 //     transient pool entry
 //     per `docker network create -o validate_dhcp=true`.
-//  4. Tear down the macvlan child unconditionally on return.
+//
+//  4. Tear down the child unconditionally on return.
 //
 // On success returns nil. On failure wraps the underlying error
 // (link-create failed, dhcpcd timeout, malformed lease, etc.) with
 // a parent-aware prefix so the operator's docker CLI surfaces a
 // clear "no DHCP OFFER on <parent> within 8s" message instead of
 // the generic CreateNetwork failure shape.
-func runDHCPProbe(ctx context.Context, parent string) error {
+//
+// The guard is the caller's proof that the gate for parent is held. It
+// has to be, and for longer than the LinkAdd: this probe keeps a child
+// on the parent for the whole DORA, so it is a holder as well as a
+// waiter — no endpoint may start on top of it, and it must not start on
+// top of a reclaim. The gate is taken in CreateNetwork rather than here
+// only because that is where it was; moving it inside is #577. That is
+// a tidy-up and not a fix — a caller that forgot the gate could not
+// obtain a guard and so would not compile, which makes the placement
+// untidy rather than fragile.
+func runDHCPProbe(ctx context.Context, guard *parentGuard, parent, mode string) error {
 	if parent == "" {
 		return errors.New("validate_dhcp: parent NIC name is empty")
 	}
@@ -89,14 +120,11 @@ func runDHCPProbe(ctx context.Context, parent string) error {
 	if err != nil {
 		return fmt.Errorf("validate_dhcp: relookup parent: %w", err)
 	}
-	la := netlink.NewLinkAttrs()
-	la.Name = probeName
-	la.ParentIndex = parentLink.Attrs().Index
-	la.HardwareAddr = probeMAC
-	probeLink := &netlink.Macvlan{LinkAttrs: la, Mode: netlink.MACVLAN_MODE_BRIDGE}
+	probeLink := newProbeLink(mode, probeName, parentLink.Attrs().Index, probeMAC)
 
-	if err := netlink.LinkAdd(probeLink); err != nil {
-		return fmt.Errorf("validate_dhcp: create probe macvlan on %q: %w", parent, err)
+	if err := addChildLink(guard, probeLink); err != nil {
+		return fmt.Errorf("validate_dhcp: %w",
+			explainChildLinkAdd(err, mode, parent, parentLink.Attrs().Index))
 	}
 	defer func() {
 		// Best-effort: a failed Del here only leaves a temporary
@@ -145,6 +173,29 @@ func runDHCPProbe(ctx context.Context, parent string) error {
 		WithField("probe_gateway", info.Gateway).
 		Info("validate_dhcp probe succeeded — DHCP server reachable")
 	return nil
+}
+
+// newProbeLink builds the temporary child the probe runs on.
+//
+// Split out of runDHCPProbe so the one property that matters can be
+// asserted without CAP_NET_ADMIN: the probe attaches to the parent as
+// the SAME KIND the network's endpoints will, because the kernel will
+// not let one parent carry both kinds (explainChildLinkAdd). Getting
+// this wrong is invisible in a unit-testable seam otherwise, and it is
+// what made `validate_dhcp=true` unusable on an ipvlan network.
+//
+// The MAC is applied only where the kernel accepts one. ipvlan children
+// inherit the parent's address; the random probe MAC still reaches
+// dhcpcd, where it becomes the probe's DUID and IAID, so identity is
+// unaffected either way.
+func newProbeLink(mode, name string, parentIndex int, mac net.HardwareAddr) netlink.Link {
+	la := netlink.NewLinkAttrs()
+	la.Name = name
+	la.ParentIndex = parentIndex
+	if mode != ModeIPvlan {
+		la.HardwareAddr = mac
+	}
+	return newChildLink(mode, la)
 }
 
 // newProbeLinkName returns a per-probe link name unique enough to

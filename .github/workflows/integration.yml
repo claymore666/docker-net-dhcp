@@ -37,6 +37,20 @@ name: Integration
 # from outside collaborators" is set to "Require approval for all
 # outside collaborators" so external PRs sit in pending until manually
 # approved.
+#
+# Since #562 the suite jobs also hold a Docker Hub credential, which is
+# why the paragraph above matters more than it did. Two things keep it
+# contained, and both are load-bearing:
+#
+#   - `pull_request` from a fork is not given repository secrets at all,
+#     so approving an external PR to run does NOT hand it this token.
+#     The login step skips and the job pulls anonymously.
+#   - The token is pull/push for this project's own Hub repository, not
+#     an account-wide credential, and the suite jobs never push.
+#
+# Anything that would let fork code see the secret — moving this
+# workflow to `pull_request_target`, or checking out a PR head in a job
+# that has the credential — reverses that and must not be done here.
 on:
   push:
     branches:
@@ -217,7 +231,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.ref }}
+      # It also classifies WHY nothing picked the job up and says so in
+      # an annotation, a step summary and the `starved` output (#513) —
+      # a capacity red and a suite failure looked identical in the
+      # checks UI, and the third concurrent run's red was routinely read
+      # as a broken dependency bump. `actions: write` above already
+      # covers the read of other in-flight runs the classifier needs.
       - name: Fail if a suite job never gets a runner
+        id: watchdog
         env:
           GH_TOKEN: ${{ github.token }}
           GATE_REPO: ${{ github.repository }}
@@ -296,12 +317,57 @@ jobs:
             target: integration-test-failure
     env:
       INTEGRATION_PLUGIN_REF: ghcr.io/claymore666/docker-net-dhcp:integration
+      # Materialized at job level so the login step can gate on `env`.
+      # A step-level `if:` cannot read the `secrets` context directly —
+      # that is rejected at parse time. Resolves to the literal string
+      # "true" or "false"; compare with `== 'true'`. Same shape as
+      # release.yml's HAS_HUB_CREDS, deliberately.
+      HAS_HUB_CREDS: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Empty on every event except workflow_dispatch, where
           # checkout falls back to the triggering ref (#419).
           ref: ${{ inputs.ref }}
+
+      # Authenticate to Docker Hub before anything pulls from it (#562).
+      #
+      # The plugin build pulls two Hub base images — golang:*-alpine and
+      # alpine:* — on each of the four suite jobs. Anonymously, those are
+      # billed to a per-ADDRESS quota shared by the whole runner pool and
+      # by anything else behind the same address. Run 31939915811 spent
+      # it: two suite jobs died 15s into `make plugin` with
+      # `toomanyrequests: You have reached your unauthenticated pull rate
+      # limit`, no test binary ran, and the red looked exactly like a
+      # sharded test failure. Authenticated pulls are billed to the
+      # account instead, which is a bucket only this project spends.
+      #
+      # WHY THIS MUST NOT BE MANDATORY. `pull_request` events from forks
+      # are not given repository secrets, so HAS_HUB_CREDS is "false"
+      # there and this step is skipped. That is the correct outcome, not
+      # a degraded one: a fork PR then pulls anonymously exactly as it
+      # does today. Making the login required would turn every external
+      # contribution red for want of a credential we cannot hand it.
+      #
+      # It follows that this reduces the anonymous pull volume rather
+      # than eliminating it, so #562 is mitigated here, not closed by
+      # arithmetic. Cutting the four builds to one (#396) is the other
+      # half.
+      - name: Log in to Docker Hub
+        if: env.HAS_HUB_CREDS == 'true'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # Said out loud rather than inferred from a missing step. Without
+      # this, an expired or revoked token looks identical to a fork PR —
+      # both simply skip the login — and the next 429 gets diagnosed
+      # from scratch.
+      - name: Note that Docker Hub pulls are anonymous
+        if: env.HAS_HUB_CREDS != 'true'
+        run: |
+          echo "::warning title=Anonymous Docker Hub pulls::DOCKERHUB_USERNAME / DOCKERHUB_TOKEN are not available to this job, so base-image pulls share the per-address anonymous quota and may hit a 429 (#562). Expected on pull requests from forks, which are never given secrets. On an internal branch it means the secrets are missing or expired."
 
       # The Go toolchain (go.mod's version) is baked into the dhcp-ci
       # runner image, so actions/setup-go is skipped. Fail loudly if

@@ -36,7 +36,7 @@ like any other machine. Bridge, macvlan, and ipvlan attachment modes.
 
     ```bash
     sudo mkdir -p /var/lib/net-dhcp
-    docker plugin enable ghcr.io/claymore666/docker-net-dhcp:v1.5.0
+    docker plugin enable ghcr.io/claymore666/docker-net-dhcp:v1.6.0
     ```
 
     Nothing is lost or corrupted. Full detail:
@@ -51,7 +51,7 @@ Install the plugin:
 # create this directory for you, and `plugin install` fails at
 # start-up without it.
 sudo mkdir -p /var/lib/net-dhcp
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.5.0
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.6.0
 ```
 
 It requests `host` networking, the host PID namespace, the Docker
@@ -65,7 +65,7 @@ already have a host bridge `my-bridge` on your LAN — see
 [Bridge mode](bridge-mode.md) for that one-time setup):
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.5.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.6.0 \
   --ipam-driver null -o bridge=my-bridge my-dhcp-net
 
 docker run --rm -ti --network my-dhcp-net alpine ip address show
@@ -100,16 +100,26 @@ right pick when you don't want to reconfigure the host's networking.
   between the two, quick start, and the mode-specific constraints.
 - **[How it works](internals.md)** — the mechanism, for contributors:
   the veth + DHCP-client flow, and how state survives a restart.
+- **[Roadmap](roadmap.md)** — where the project is going over the next
+  year, and what it deliberately will not do.
 - **[Release runbook](release-runbook.md)** — maintainer-facing publish
   procedure.
 
 ## Images & releases
 
 This fork publishes semver-tagged plugin images on GHCR
-(`ghcr.io/claymore666/docker-net-dhcp:vX.Y.Z`, `linux/amd64`; ARM via
-the build pipeline on request) and mirrors them to Docker Hub
-(`claymore666/net-dhcp`). Pin a version (`:vX.Y.Z`) for reproducibility,
-or track `:latest`.
+(`ghcr.io/claymore666/docker-net-dhcp:vX.Y.Z`) and mirrors them to
+Docker Hub (`claymore666/net-dhcp`). Pin a version (`:vX.Y.Z`) for
+reproducibility, or track `:latest`.
+
+Published builds are **`linux/amd64` only**. A Docker *plugin* cannot be
+installed from a multi-architecture manifest list at all: the daemon
+reads a plugin's privileges before pulling it, its manifest handler
+matches single manifests only, and an index therefore fails with `did
+not find plugin config for specified reference` on every architecture —
+with no `--platform` to steer it. arm64 needs a tag of its own rather
+than a flag on this one, tracked in
+[#507](https://github.com/claymore666/docker-net-dhcp/issues/507).
 
 - [GHCR package](https://github.com/claymore666/docker-net-dhcp/pkgs/container/docker-net-dhcp)
 - [GitHub Releases](https://github.com/claymore666/docker-net-dhcp/releases)
@@ -127,7 +137,9 @@ manifest is cosign-signed so one signature covers every attached file.
 The full, copy-pasteable procedure lives in
 **[Verifying releases](verifying-releases.md)**, and every
 [GitHub Release](https://github.com/claymore666/docker-net-dhcp/releases)
-links to it. In brief (replace `VERSION`):
+links to it. Both commands need **cosign v3 or newer** — v2 cannot read the
+Sigstore bundle format the release signs with, and fails in a way that looks
+like a broken signature. In brief (replace `VERSION`):
 
 ```bash
 # image signature

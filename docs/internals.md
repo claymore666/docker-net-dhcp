@@ -85,6 +85,112 @@ lifecycle, the event plumbing, and everything below are identical.
   `nsenter -t <dhcpcd-pid> -m` (see
   [verifying renewal](reference.md#verifying-that-renewal-works)).
 
+## How a lease is checked against the segment
+
+Since v1.6.0 the plugin asks, after each IPv4 lease, whether some *other*
+device already holds the address it was just given (#524). The counters
+and the operator-facing rules are in the
+[driver reference](reference.md#pluginhealth); this is the mechanism, and
+every part of it is a constraint rather than a preference.
+
+- **The question is asked by sending, not by asking netlink.** Inserting
+  the neighbour in `NUD_INCOMPLETE` and letting the kernel resolve it
+  looks like the tidy implementation. The call succeeds, the kernel does
+  not probe, and the entry stays `INCOMPLETE` — so the check reports
+  "nobody holds it" with a squatter sitting on the address. An ordinary
+  datagram to the discard port makes the kernel do the ARP instead; its
+  delivery is irrelevant, the packet exists to resolve L2.
+- **That also keeps the plugin inside its declared privileges.** A real
+  RFC 5227 ARP probe needs `AF_PACKET` and therefore `CAP_NET_RAW`, which
+  `config.json` does not grant — adding it would force every operator to
+  re-approve the plugin's privileges on upgrade. Ordinary traffic gets
+  the same answer with `CAP_NET_ADMIN` alone. (`dhcpcd` itself runs with
+  `-A`, which turns *its* conflict detection off; this is what replaces
+  it.)
+- **The probe runs from the parent link, and compares MACs.** Our own
+  endpoint holds the leased address too — that is the premise — so the
+  vantage point has to be one our endpoint cannot answer from, which is
+  what macvlan's parent/child isolation gives. Comparing the answering
+  MAC against the endpoint's is what makes the same code correct in
+  bridge mode, where the host *can* reach the container and a
+  did-anything-reply probe would report every single endpoint as a
+  conflict. The cost of that vantage point is that a squatter which is
+  another container on the same parent is invisible; that is excluded by
+  construction, not pending work (#528).
+- **Egress is pinned, because an unrouted datagram answers the wrong
+  question.** The packet is otherwise routed by the host table and can
+  leave by a different interface entirely, landing the neighbour entry
+  somewhere nobody is reading — measured as a squatted address reported
+  clean. A temporary `/32` scope-link route on the parent fixes the exit,
+  and both it and any borrowed address are removed when the probe
+  returns.
+- **The source address decides whether the question is answerable at
+  all.** A host answers ARP only when it can route a reply back to the
+  sender, so the probe prefers an address the parent already holds on the
+  leased subnet. Where the parent has none it falls back to a random
+  link-local source — random because two probes can run at once, and
+  link-local because any address borrowed from the operator's own subnet
+  might be the next one their DHCP server hands out. A gateway-less
+  squatter cannot reply to that fallback, which is why a parent with no
+  on-subnet address yields `conflict_probe_failures` and an explicit
+  *undetermined* rather than a clean result.
+
+The probe is asynchronous and off `CreateEndpoint`'s critical path, with
+a 2-second cap that only an unclaimed address ever pays.
+
+## How a lease gets handed back
+
+Normally the container's own `dhcpcd` does it: a graceful stop emits a
+`RELEASE` and the server frees the address at once instead of waiting
+for the lease to expire.
+
+That needs a binding to release. Two cases leave one held with nobody
+responsible for it — the persistent client **never started** (the
+container was already gone), or it **started but never bound** (it was
+signalled before its first `ACK`, so `dhcpcd` had nothing to release and
+exited cleanly). The address was won regardless, by the one-shot at
+`CreateEndpoint`.
+
+The plugin then **reclaims**: a temporary child of the network's kind,
+re-acquire the same address under the endpoint's identity, release it
+properly. Counted by `orphaned_leases_released` and
+`orphaned_lease_release_failures`, and written to the audit ledger.
+
+**The scoping is load-bearing.** It fires when an endpoint *leaves*, not
+on every manager shutdown — `Close` stops every manager on an upgrade or
+`docker plugin disable`, with containers still running. A never-bound
+manager is legitimate there (a DHCP server that is not answering, while
+the container still holds the one-shot's address), and releasing would
+tell the server an address is free while it is in use: the duplicate
+assignment this release added detection for, manufactured by us.
+
+A missed reclaim leaves a lease to expire. A wrong one causes an outage.
+
+## How operations on one parent NIC are serialised
+
+A parent NIC registers one `rx_handler`, so it is a macvlan port or an
+ipvlan port and never both — whichever kind asks second gets `EBUSY`.
+That is a kernel rule; one mode per parent stays the operator-facing
+constraint.
+
+What the plugin can stop is inflicting it on itself. Three of its paths
+attach a child to a parent: creating an endpoint, the `validate_dhcp`
+probe, and the reclaim above — which holds its link for a full DHCP
+round trip, from a goroutine ordered against no Docker request. Since
+v1.6.0 all three take a per-parent gate first, so they queue instead of
+refusing each other (#486, #549).
+
+`parent_link_waits` counts operations that queued — the mechanism
+working. `parent_link_wait_timeouts` counts ones that gave up and
+proceeded anyway; they may still succeed, but the budget has stopped
+covering a reclaim's duration.
+
+The rule is enforced by the compiler, not by review: attaching a child
+link requires a guard value only the gate can produce, so a path that
+skipped it does not compile. An accounting file covers the one way
+around — a direct `netlink.LinkAdd`, which bridge mode needs, having no
+parent to contend for.
+
 ## How state outlives a process
 
 Three separate mechanisms keep addresses stable across three different

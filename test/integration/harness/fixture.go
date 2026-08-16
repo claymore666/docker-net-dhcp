@@ -39,6 +39,28 @@ const (
 
 	// DHCPServerAddr is the static IP on DhcpVeth.
 	DHCPServerAddr = "192.168.99.1/24"
+	// HostVethAddr is an on-subnet address for the macvlan/ipvlan
+	// PARENT, and it is what lets the address-conflict detector work
+	// on this fixture at all (#549).
+	//
+	// A host answers an ARP request only if it can route a reply back
+	// to the sender, so the conflict probe has to send from an address
+	// on the leased subnet. Without one here the probe fell back to a
+	// link-local source and — correctly, since #524 — reported every
+	// result as *undetermined* rather than clean. The effect was that
+	// the detector could not run on the macvlan and ipvlan fixtures,
+	// i.e. on the two modes the feature exists for, while the bridge
+	// fixture passed because its parent IS the addressed bridge.
+	//
+	// That is the exact failure this release keeps finding: "nothing
+	// checked" and "nothing found" reading the same. The detector was
+	// honest about it in the log; nothing failed.
+	//
+	// .2 is deliberate: outside [DHCPPoolStart, DHCPPoolEnd] so dnsmasq
+	// can never hand it to a client, and not .1, which is the server.
+	// It also mirrors production, where a macvlan parent is a real host
+	// NIC that carries an address.
+	HostVethAddr = "192.168.99.2/24"
 	// DHCPPoolStart / DHCPPoolEnd / LeaseTime drive dnsmasq's
 	// --dhcp-range. 2 minutes is dnsmasq's hard floor — anything
 	// shorter is silently rounded up, which made an earlier "30s"
@@ -284,6 +306,25 @@ func New() (*Fixture, error) {
 	}
 	if err := netlink.AddrAdd(dhcpLink, addrV6); err != nil {
 		return nil, wrapTeardown(fmt.Errorf("AddrAdd dhcp v6: %w", err))
+	}
+
+	// The parent's own on-subnet address, so the conflict probe has a
+	// source a responder can route back to. See HostVethAddr (#549).
+	//
+	// Added AFTER the server's, deliberately. Both ends of the pair now
+	// hold an address in 192.168.99.0/24, so the host has two connected
+	// routes for it with equal metric, and Linux resolves that tie by
+	// insertion order. Installing the server's first leaves every
+	// existing, non-source-pinned path selecting the interface it
+	// selected before this change. The probe itself is unaffected
+	// either way: it installs a /32 link-scope route for the address
+	// under test, which is more specific than either /24.
+	hostAddr, err := netlink.ParseAddr(HostVethAddr)
+	if err != nil {
+		return nil, wrapTeardown(fmt.Errorf("ParseAddr host: %w", err))
+	}
+	if err := netlink.AddrAdd(hostLink, hostAddr); err != nil {
+		return nil, wrapTeardown(fmt.Errorf("AddrAdd host: %w", err))
 	}
 
 	// Per-run temp dir for dnsmasq lease file + log.

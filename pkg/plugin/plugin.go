@@ -526,6 +526,24 @@ type Plugin struct {
 	// exit could flip healthy to false.
 	joinAbortedContainerGone atomic.Int32
 
+	// joinAbortedNoContainer counts attaches abandoned because no
+	// container ever claimed the endpoint on the network (#566).
+	//
+	// The distinction from joinAbortedContainerGone is where the evidence
+	// comes from, and it matters because the sandbox-key evidence is not
+	// available in a shipped plugin at all: the netns directory is not
+	// mounted into the plugin container, so the filesystem check can only
+	// answer "no usable evidence" and every vanished container that does
+	// not produce a Docker API 404 used to fall through to
+	// joinStartFailures (#567). This counter is that fall-through,
+	// recognised.
+	//
+	// Not healthy-affecting, for the same reason as its two siblings:
+	// there is no running container missing a renewal client, because
+	// there is no container. A sustained rise still says something real
+	// about the workload, so it stays visible.
+	joinAbortedNoContainer atomic.Int32
+
 	// joinAttachSlow counts attaches that finished, but only after
 	// outlasting AwaitTimeout — i.e. ones that would have been
 	// abandoned before attachDaemonBusyGrace existed, and were counted
@@ -591,6 +609,40 @@ type Plugin struct {
 	// discussion deferred from v0.9.0.
 	leaseChanged atomic.Int32
 
+	// addressConflicts counts leases whose address was found to be
+	// already held by another device on the segment (#524).
+	// Healthy-affecting: the container is up, Docker reports an
+	// address, and traffic is broken or intermittently wrong for two
+	// hosts — an operator has to look, and nothing else will tell them.
+	//
+	// conflictProbeFailures counts probes that could not run at all
+	// (unroutable parent, unparseable lease or MAC). NOT
+	// Healthy-affecting: an unanswered question is not a known-broken
+	// address. It is counted so the detector cannot quietly stop
+	// working — a check that silently does not happen is exactly how
+	// #524 stayed invisible through a production incident.
+	addressConflicts      atomic.Int32
+	conflictProbeFailures atomic.Int32
+
+	// conflictProbeStaleRoutes counts leftover probe routes reclaimed
+	// from a previous probe that was cut short before it could clean up
+	// (#572). The probe goroutine is detached, so a plugin stop inside
+	// its window leaves its /32 behind and every later probe for that
+	// address fails with EEXIST until something removes it.
+	//
+	// Not healthy-affecting: the probe it appears in went on to run.
+	// Counted because the recovery hides a real event — the plugin being
+	// stopped mid-probe — and a detector that silently repairs itself is
+	// how the last one stopped being trustworthy.
+	conflictProbeStaleRoutes atomic.Int32
+	// addressConflictProbes counts probes that ran to a verdict —
+	// conflict or clean. Not Healthy-affecting, and the reason it
+	// exists at all: without it, "the segment is clean" and "the
+	// detector never ran" are the same reading (all counters zero),
+	// which is precisely the ambiguity #524 hid behind. A run is only
+	// evidence of a clean segment if this advanced.
+	addressConflictProbes atomic.Int32
+
 	// leasesObtained / leasesRenewed / dhcpTimeouts / leaseReleaseFailures
 	// expose DHCP-wire-level counters via /Plugin.Health (T2-4). They
 	// complement the lease_changed signal and let operators alert on
@@ -629,6 +681,28 @@ type Plugin struct {
 	// not read as a plugin fault.
 	orphanedLeasesReleased       atomic.Int32
 	orphanedLeaseReleaseFailures atomic.Int32
+
+	// parentGate serialises child-link creation per parent NIC, so an
+	// asynchronous orphan-lease reclaim cannot hold a parent in one
+	// attachment mode while an endpoint asks for the other. See
+	// parent_gate.go for why this is per-parent and for the lock
+	// ordering.
+	//
+	// parentLinkWaits / parentLinkWaitTimeouts are the observability
+	// half. Read them together, like the orphan counters above: waits
+	// climbing with timeouts flat is the gate absorbing contention,
+	// which is it working. Timeouts climbing means something held a
+	// parent longer than parentGateBudget — a wedged or unusually slow
+	// reclaim — and the operations that gave up will have fallen back
+	// to asking the kernel directly, so expect matching EBUSY failures
+	// on the container-start path.
+	//
+	// Neither participates in Healthy. Contention on a shared parent is
+	// a normal consequence of running macvlan and ipvlan networks on one
+	// NIC, and even a timeout only restores the pre-gate behaviour.
+	parentGate             parentGate
+	parentLinkWaits        atomic.Int32
+	parentLinkWaitTimeouts atomic.Int32
 
 	// naksReceived counts "nak" events — the server refused a
 	// REQUEST (pool reconfigured, address reassigned, lease revoked).

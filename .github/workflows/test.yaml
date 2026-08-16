@@ -24,9 +24,12 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # Exact patch, never a `'1.26'` range — see #525. Every Go pin in
+      # this tree names the same patch release and
+      # scripts/check-go-pins.sh fails the build when they drift apart.
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: '1.26'
+          go-version: '1.26.6'
           cache: true
 
       # Drifted go.mod/go.sum slips through silently until someone
@@ -57,53 +60,87 @@ jobs:
       # per-PR without a long-running job; the committed seed corpora
       # also run unconditionally in the race step above. Scorecard's
       # Fuzzing check is satisfied by the presence of these targets.
-      # -parallel 2 caps the fuzzing WORKER PROCESSES (#324). Default is
-      # GOMAXPROCS, i.e. one worker per vCPU, which leaves the
-      # coordinator no scheduling headroom on a contended hosted runner:
-      # at -fuzztime expiry it asks each worker to stop and waits on a
-      # context, and if a worker can't be scheduled to answer in time
-      # the run fails with a bare "context deadline exceeded" and no
-      # crashing input. Seen twice consecutively on a release PR, both
-      # times exactly at the 20s boundary while the runner crawled at
-      # 7-45k execs/s against ~500k unloaded.
+      #
+      # The budget is in EXECUTIONS, not wall clock, and that is the fix
+      # for #324 rather than a preference. A duration makes the fuzzing
+      # coordinator install a deadline context; when it expires the
+      # coordinator wakes on the parent's Done channel and calls
+      # stop(ctx.Err()). The suppression that should turn that into a
+      # clean stop compares the error against the CHILD context's Err(),
+      # and context.cancelCtx closes its own Done channel BEFORE it
+      # propagates cancellation to its children. Lose that race and the
+      # child still reads nil, DeadlineExceeded survives, and the run
+      # fails with a bare "context deadline exceeded" and no crashing
+      # input. With a count, opts.Timeout stays zero, the deadline
+      # context is never created, and the branch is unreachable.
+      #
+      # -parallel 2 stays, but note it was NOT the fix: #350 capped the
+      # workers on the theory that the coordinator lacked CPU, and the
+      # same failure returned on dev on 2026-08-14 with the runner
+      # executing a healthy 22k execs/sec.
+      #
+      # A count also makes every runner do the same amount of fuzzing.
+      # Under 20s the contended runs managed ~110k execs against ~10M
+      # locally — the gate was quietly testing far less exactly when it
+      # was least able to. -timeout bounds the one thing a count does
+      # not: a pathologically slow runner, which is a real signal.
+      #
+      # scripts/check-fuzz-budget.sh keeps this shape from regressing.
       - name: Fuzz (short)
         run: |
           for target in FuzzBuildEvent FuzzEventUnmarshal; do
             echo "::group::${target}"
-            go test ./pkg/dhcp/ -run '^$' -fuzz "^${target}$" -fuzztime 20s -parallel 2
+            go test ./pkg/dhcp/ -run '^$' -fuzz "^${target}$" -fuzztime 200000x -parallel 2 -timeout 5m
             echo "::endgroup::"
           done
 
       # The CI gate scripts are code too — their table-driven tests run
       # here so a broken ratchet/vuln gate fails like any unit test.
-      - name: Gate script self-tests
+      #
+      # DISCOVERED, not listed (#542). This was 28 hand-maintained
+      # `bash scripts/test-...sh` lines with nothing reconciling them
+      # against the directory: add a gate with its self-test, forget the
+      # line, and the self-test never ran — no error, no warning, and
+      # `scripts/` looked fully covered while the gate it protects
+      # rotted. The logic lives in a script rather than here so it can
+      # have a self-test of its own, like every other gate in this repo.
+      # test-integration-shard.sh asserts the shard partition is identical
+      # under C and under a comma-decimal locale (#554). The hosted image
+      # ships only C/C.UTF-8/POSIX/en_US, none of which format 1.5 as
+      # "1,5", so without this the case has nothing to compare against.
+      #
+      # It deliberately FAILS rather than skips in that situation: an
+      # uninstalled locale silently falls back to C, so a skip would have
+      # been indistinguishable from a pass while exercising nothing —
+      # which is the exact bug class the case exists to catch. Generating
+      # the locale here is what keeps it honest, and it costs ~2s.
+      - name: Provide a comma-decimal locale for the shard self-test
         run: |
-          bash scripts/test-coverage-ratchet.sh
-          bash scripts/test-govulncheck-gate.sh
-          bash scripts/test-check-option-docs.sh
-          bash scripts/test-check-apk-pins.sh
-          bash scripts/test-check-version-pins.sh
-          bash scripts/test-integration-timing.sh
-          bash scripts/test-integration-run-gate.sh
-          bash scripts/test-check-manifest-parity.sh
-          bash scripts/test-check-no-ai-attribution.sh
-          bash scripts/test-check-docs-drift.sh
-          bash scripts/test-makefile-tee.sh
-          bash scripts/test-check-test-weakening.sh
-          bash scripts/test-ci-queue-watchdog.sh
-          bash scripts/test-run-evidence.sh
-          bash scripts/test-check-missing-runs.sh
-          bash scripts/test-integration-shard.sh
-          bash scripts/test-check-issue-label-map.sh
-          bash scripts/test-sync-issue-state-labels.sh
-          bash scripts/test-check-license-headers.sh
-          bash scripts/test-badge-sync.sh
-          bash scripts/test-check-reproducible-build.sh
+          sudo locale-gen de_DE.UTF-8
+          locale -a | grep -qi '^de_DE' || {
+            echo "::error title=Locale not generated::de_DE.UTF-8 is still absent after locale-gen" >&2
+            exit 1
+          }
+
+      - name: Gate script self-tests
+        run: bash scripts/run-gate-selftests.sh
 
       # Every driver-option key the code parses must be documented in
       # docs/reference.md — an undocumented option turns CI red (#132).
       - name: Option-docs drift check
         run: bash scripts/check-option-docs.sh
+
+      # Only the half that needs no network (#537). The README's starter-task
+      # filter and the badge justification's must point at the same label, so
+      # a rename cannot leave one of them matching nothing. That is a property
+      # of the tree, so this commit is the only thing that can break it.
+      #
+      # Whether the label still HAS open issues is a claim about live tracker
+      # state and deliberately does NOT run here: an unrelated PR must not go
+      # red because somebody closed the last starter issue. That half runs on
+      # a schedule — see starter-tasks.yml.
+      - name: Starter-task links agree
+        run: bash scripts/check-good-first-issues.sh --static
 
       # The companion check (#345): every health counter and settable
       # env var must be documented too, and none of them — nor any
@@ -118,6 +155,14 @@ jobs:
       # scripts/bump-version.sh vX.Y.Z.
       - name: Version-pin consistency check
         run: bash scripts/check-version-pins.sh
+
+      # The same invariant for the Go toolchain (#525): every pin names
+      # the same patch release, and none of them is a range. A `'1.26'`
+      # in setup-go resolves out of the hosted tool cache, so it let us
+      # scan on one Go and ship users another — go1.26.5 went out in
+      # v1.5.0 with five stdlib findings nobody had chosen to accept.
+      - name: Go pin consistency check
+        run: bash scripts/check-go-pins.sh
 
       # config.json and config-cover.json must agree on privilege
       # fields — a capability landing in only one means coverage runs
@@ -142,6 +187,57 @@ jobs:
       - name: License-header check
         run: bash scripts/check-license-headers.sh
 
+      # A parent NIC registers one rx_handler, so it is a macvlan port
+      # or an ipvlan port and never both. Every child link attached to a
+      # parent has to be serialised by Plugin.lockParent or it can be
+      # refused with EBUSY — reaching the user as a `docker run` that
+      # fails because of an unrelated container (#549, #486).
+      #
+      # addChildLink takes a *parentGuard, so the compiler proves a
+      # guard is present at every parent-attached LinkAdd. It cannot
+      # prove the guard is REAL — the zero value is valid Go — nor stop
+      # a direct netlink.LinkAdd. This gate covers both of those: every
+      # LinkAdd in pkg/ must be justified in
+      # .github/linkadd-accounting.txt, and a parentGuard built outside
+      # parent_gate.go fails the build. Bridge networks legitimately
+      # need the direct call, so the bypass cannot be banned; what this
+      # stops is taking it without anyone deciding to (#571).
+      - name: Parent-gate accounting check
+        run: bash scripts/check-parent-gate-accounting.sh
+
+      # An unreadable path under .claude/ must not break the build
+      # context (#530). This one is structurally invisible to the rest
+      # of CI: checkouts are fresh, so .claude/ does not exist, and the
+      # integration and coverage jobs run as root, for which the
+      # permission does not apply. It is only reachable in a long-lived
+      # working checkout by a non-root user — where development happens.
+      - name: Build-context check
+        run: bash scripts/check-build-context.sh
+
+      # Every job that builds an image on the shared self-hosted pool
+      # must authenticate to Docker Hub before it pulls (#562). Pulled
+      # anonymously, base images are billed to a per-address quota the
+      # whole pool shares; when it is spent the build dies with
+      # `toomanyrequests` fifteen seconds in, no test binary runs, and
+      # the red is indistinguishable from a sharded test failure.
+      #
+      # Hosted, so it costs no pool slot to assert a property of the
+      # pool — this reads workflow text and needs no runner of that
+      # kind. It is also the only place the property is checked at all:
+      # the failure it prevents depends on unrelated traffic from the
+      # same address, so a run can pass for weeks with the login absent.
+      - name: Registry-login check
+        run: bash scripts/check-registry-login.sh
+
+      # Every page that prints a cosign command must state which cosign
+      # major it needs (#522). Verifying a signature is the one moment a
+      # user is deciding whether to trust the artifact, and cosign v2's
+      # failure against a v3 bundle blames the release, not the toolchain.
+      # The required major lives in scripts/check-release-tooling.sh; this
+      # keeps the user-facing pages following it.
+      - name: Cosign-version docs check
+        run: bash scripts/check-cosign-docs.sh
+
   staticcheck:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -149,7 +245,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: '1.26'
+          go-version: '1.26.6'
           cache: true
       - name: Install staticcheck
         run: go install honnef.co/go/tools/cmd/staticcheck@v0.7.0
@@ -169,7 +265,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: '1.26'
+          go-version: '1.26.6'
           cache: true
       # actionlint shells out to shellcheck for `run:` blocks. The agent
       # itself is pinned (above), but the runner-supplied shellcheck is
@@ -248,7 +344,7 @@ jobs:
       # toolchain, which should represent what ships in the plugin.
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: '1.26'
+          go-version: '1.26.6'
           cache: true
       - name: Install govulncheck
         run: go install golang.org/x/vuln/cmd/govulncheck@v1.3.0

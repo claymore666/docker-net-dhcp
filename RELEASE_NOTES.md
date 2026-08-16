@@ -59,6 +59,110 @@ assessment above is retained here as the audit trail. If it becomes
 reachable again the gate fails loudly rather than silently
 re-accepting it.
 
+## v1.6.0
+
+The release that makes the plugin notice when something is wrong. Three
+classes of silent failure — an address already in use, a lease nobody
+hands back, and the plugin refusing its own operations — now report
+themselves instead of looking healthy.
+
+### The v1.5.0 precondition still applies
+
+```bash
+sudo mkdir -p /var/lib/net-dhcp
+```
+
+Unchanged since v1.5.0, and still required on every host before
+`docker plugin install`. Docker does not create a missing bind source,
+and skipping it leaves the plugin installed but disabled with an error
+that does not say why. See the v1.5.0 notes below for recovery.
+
+### An address that is already in use is now reported
+
+The plugin accepted a lease for an address another device was already
+holding, and nothing said so. The container started, `docker inspect`
+showed an address, and every counter stayed at zero — because from the
+DHCP server's point of view the lease was issued normally.
+
+This was found in production, not in CI.
+
+After each IPv4 lease the plugin now resolves the address on the parent
+link and compares the answering MAC with the endpoint's. A reply from a
+different MAC is a conflict: `address_conflicts` increments and
+`healthy` goes false. The usual cause is a **statically configured**
+host inside the DHCP pool range — it never asks the server for anything,
+so the server cannot know the address is taken. Fix it at the server.
+
+Two supporting counters exist because a detector that silently stops
+running looks exactly like a clean segment:
+
+- `address_conflict_probes` — probes that reached a verdict. Read this
+  **before** believing `address_conflicts` is 0.
+- `conflict_probe_failures` — probes that could not reach one. The
+  common cause is a parent with no address on the leased subnet, which
+  leaves the probe unable to get a reply back. Give the parent an
+  on-subnet address and detection starts working.
+
+**Known limit, by construction:** it cannot see another container on the
+*same host* sharing the parent NIC. macvlan isolates a parent from its
+own children, and that isolation is what lets the check tell a squatter
+from your own endpoint.
+
+### Leases are handed back instead of leaking
+
+Two cases held an address upstream with nobody responsible for it: the
+renewal client never started because the container was already gone, and
+the renewal client started but was stopped before it ever bound. In
+both, `dhcpcd` had nothing to release, exited cleanly, and the audit
+ledger recorded a release the server never saw.
+
+Both now hand the address back properly, and the ledger records what
+actually happened. Short-lived containers (`docker run --rm`, a failed
+start, a compose `up` that exits) no longer strand a lease until expiry.
+
+### ipvlan networks work where they previously refused
+
+- `validate_dhcp=true` on an ipvlan network built a **macvlan** probe
+  link. A parent NIC cannot carry both kinds, so the probe was refused
+  whenever an ipvlan container was already running on that NIC —
+  `validate_dhcp` failing for a reason that had nothing to do with DHCP.
+  The probe is now the same kind as the network's endpoints.
+- The plugin's own operations on one parent — endpoint creation, the
+  preflight probe, the lease reclaim — could refuse each other the same
+  way. They now queue per parent instead, visible as `parent_link_waits`.
+
+One mode per parent remains a kernel constraint; this is only about the
+plugin no longer inflicting that error on itself.
+
+### Also
+
+- A conflict probe interrupted by a plugin stop left a route behind,
+  and every later probe for that address failed until something removed
+  it — so that address silently stopped being checked. The probe now
+  reclaims the leftover (`conflict_probe_stale_routes`).
+- The plugin can now see the sandbox network namespaces it was already
+  trying to read, so "the container is gone" is reported as that rather
+  than as a generic failure. New diagnostic: `sandbox_netns_visible`.
+
+### Architecture
+
+Published images remain **linux/amd64**. Docker plugins cannot be
+installed from a multi-architecture manifest list, so arm64 needs a tag
+of its own; that is tracked in
+[#507](https://github.com/claymore666/docker-net-dhcp/issues/507).
+
+### With thanks to
+
+- **[@snowyukitty](https://github.com/snowyukitty)** — taught the
+  issue-state reconciler to read issue references from a pull request's
+  **body**, not only its title, so a PR that names its issue only in the
+  description is no longer invisible to it
+  ([#553](https://github.com/claymore666/docker-net-dhcp/pull/553)).
+- **[@sdjnmxd](https://github.com/sdjnmxd)** — reported that published
+  manifest lists are uninstallable as Docker plugins, which is why arm64
+  needs per-arch tags rather than a second platform on the same tag
+  ([#507](https://github.com/claymore666/docker-net-dhcp/issues/507)).
+
 ## v1.5.0
 
 The release that stops a plugin upgrade from erasing what the plugin

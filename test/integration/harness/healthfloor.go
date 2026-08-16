@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 )
 
 // HealthResponse mirrors pkg/plugin.HealthResponse. Duplicated here
@@ -51,7 +52,11 @@ type HealthResponse struct {
 	// the container exited before the persistent client was up. Not
 	// healthy-affecting (#373).
 	JoinAbortedContainerGone int32 `json:"join_aborted_container_gone"`
-	JoinAttachSlow           int32 `json:"join_attach_slow"`
+	// JoinAbortedNoContainer is the other benign twin: no container ever
+	// claimed the endpoint, so its address was released rather than left
+	// to expire (#566).
+	JoinAbortedNoContainer int32 `json:"join_aborted_no_container"`
+	JoinAttachSlow         int32 `json:"join_attach_slow"`
 
 	// RestartLinkUpWaited / RestartLinkUpTimeouts mirror the #408
 	// window: a child link that came up only after the departing link
@@ -65,14 +70,33 @@ type HealthResponse struct {
 	// preserved by replaying a tombstone rather than by recovery
 	// re-adopting a live endpoint. Together they let a restart test say
 	// WHICH path ran instead of only that the address survived (#386).
-	TombstonesConsumed   int32 `json:"tombstones_consumed"`
-	LeaseChanged         int32 `json:"lease_changed"`
-	LeasesObtained       int32 `json:"leases_obtained"`
-	LeasesRenewed        int32 `json:"leases_renewed"`
-	DHCPTimeouts         int32 `json:"dhcp_timeouts"`
-	LeaseReleaseFailures int32 `json:"lease_release_failures"`
-	NAKsReceived         int32 `json:"naks_received"`
-	LedgerWriteFailures  int32 `json:"ledger_write_failures"`
+	TombstonesConsumed int32 `json:"tombstones_consumed"`
+	// AddressConflicts is healthy-affecting (#524) and so appears in
+	// floorCounters below. ConflictProbeFailures is not, but is mirrored
+	// here so a run can say whether the detector actually ran — a probe
+	// that never happened reads exactly like a clean segment.
+	AddressConflicts      int32 `json:"address_conflicts"`
+	ConflictProbeFailures int32 `json:"conflict_probe_failures"`
+	// ConflictProbeStaleRoutes counts leftover probe routes reclaimed
+	// from a probe cut short before it could clean up (#572).
+	ConflictProbeStaleRoutes int32 `json:"conflict_probe_stale_routes"`
+	// AddressConflictProbes is what makes address_conflicts=0 mean
+	// anything: zero probes and a clean segment read identically
+	// otherwise.
+	AddressConflictProbes int32 `json:"address_conflict_probes"`
+	// SandboxNetnsVisible is how many sandbox netns entries the plugin
+	// can see, or -1 if it cannot read the directory (#567). Sampled per
+	// request, not accumulated. A pointer so an older plugin that does
+	// not publish it is distinguishable from one reporting -1 — absent
+	// data is not a value.
+	SandboxNetnsVisible  *int32 `json:"sandbox_netns_visible"`
+	LeaseChanged         int32  `json:"lease_changed"`
+	LeasesObtained       int32  `json:"leases_obtained"`
+	LeasesRenewed        int32  `json:"leases_renewed"`
+	DHCPTimeouts         int32  `json:"dhcp_timeouts"`
+	LeaseReleaseFailures int32  `json:"lease_release_failures"`
+	NAKsReceived         int32  `json:"naks_received"`
+	LedgerWriteFailures  int32  `json:"ledger_write_failures"`
 	// OrphanedLeasesReleased / OrphanedLeaseReleaseFailures cover the
 	// lease acquired during endpoint setup when no persistent client
 	// ever took ownership of it — a container that exited before the
@@ -80,6 +104,14 @@ type HealthResponse struct {
 	// short-lived container is an ordinary lifecycle.
 	OrphanedLeasesReleased       int32 `json:"orphaned_leases_released"`
 	OrphanedLeaseReleaseFailures int32 `json:"orphaned_lease_release_failures"`
+	// ParentLinkWaits / ParentLinkWaitTimeouts cover contention on a
+	// shared parent NIC, where a macvlan and an ipvlan child cannot
+	// coexist (#486/#549). Waits means an operation queued and got
+	// through; timeouts means it gave up and asked the kernel anyway,
+	// which is when a container start can still fail with EBUSY.
+	// Neither is healthy-affecting.
+	ParentLinkWaits        int32 `json:"parent_link_waits"`
+	ParentLinkWaitTimeouts int32 `json:"parent_link_wait_timeouts"`
 
 	// published is the key set of the payload this value was decoded
 	// from. It exists because an absent JSON field decodes to zero,
@@ -156,6 +188,12 @@ var floorCounters = []floorCounter{
 		read:  func(h *HealthResponse) int32 { return h.RecoveryFailed },
 		fatal: true,
 		why:   "recovery could not rebuild a RUNNING container's renewal client, so its lease will not renew until it is restarted. Fatal since #421: both benign paths that used to land here are counted separately — recovery_deferred for a daemon that was not serving yet (#383) and recovery_aborted_container_gone for a container that had already exited (#376) — and the probation runs this counter was left non-fatal for came back clean",
+	},
+	{
+		name:  "address_conflicts",
+		read:  func(h *HealthResponse) int32 { return h.AddressConflicts },
+		fatal: true,
+		why:   "an endpoint was leased an address another device on the segment already holds, so traffic for it is wrong for both hosts (#524). Fatal from the start, unlike recovery_failed: there is no benign path into this counter — it moves only when a probe got an ARP reply from a MAC that is not the endpoint's. A run that trips this has a container up on somebody else's address, which is the exact production fault the counter was added for",
 	},
 }
 
@@ -503,6 +541,43 @@ func AttachGraceLine(h *HealthResponse, joinFailures int) string {
 	}
 }
 
+// ConflictProbeLine reports whether the address-conflict detector
+// actually ran, which address_conflicts alone cannot say. Zero
+// conflicts and zero probes are the same reading, and "nothing checked"
+// is exactly what #524 looked like in production for months — green
+// health, every counter at zero, a container on somebody else's
+// address.
+//
+// Same shape as AttachGraceLine above, for the same reason: a zero that
+// could mean either "the mechanism worked" or "the condition never
+// arose" is not evidence until something distinguishes them.
+func ConflictProbeLine(h *HealthResponse) string {
+	if h == nil {
+		return ""
+	}
+	switch {
+	case h.AddressConflicts > 0:
+		return fmt.Sprintf(
+			"CONFLICT PROBE: %d leased address(es) were already held by another device on the\n"+
+				"  segment, out of %d probe(s). The floor fails on this — see above (#524).\n",
+			h.AddressConflicts, h.AddressConflictProbes)
+	case h.AddressConflictProbes == 0:
+		return "CONFLICT PROBE: no probe reached a verdict this run, so address_conflicts=0 is not\n" +
+			"  evidence the segment was clean — it is the absence of a measurement. Either no\n" +
+			"  endpoint was leased a v4 address, or the detector did not run (#524).\n"
+	case h.ConflictProbeFailures > 0:
+		return fmt.Sprintf(
+			"CONFLICT PROBE: %d probe(s) reached a verdict and found no conflict, but %d could not\n"+
+				"  run at all. The clean verdict covers only the endpoints that were checked (#524).\n",
+			h.AddressConflictProbes, h.ConflictProbeFailures)
+	default:
+		return fmt.Sprintf(
+			"CONFLICT PROBE: %d probe(s) reached a verdict, none found a conflict, none failed.\n"+
+				"  The detector ran and the segment was clean — observed, not inferred (#524).\n",
+			h.AddressConflictProbes)
+	}
+}
+
 // joinStartFailureMsg is the log line the plugin emits at every real
 // join_start_failures increment. The benign twin logs something else
 // ("Container went away during attach"), so counting this message counts
@@ -694,5 +769,235 @@ func sortedKeys(m map[string]int) []string {
 		out = append(out, k)
 	}
 	sort.Strings(out)
+	return out
+}
+
+// ---- the conflict-probe census gate (#551) --------------------------
+//
+// ConflictProbeLine above already distinguishes the three states that
+// matter. Nothing acted on the third. From #527 merging until #550,
+// every single run printed
+//
+//	CONFLICT PROBE: 1 probe(s) reached a verdict and found no conflict,
+//	  but 2 could not run at all.
+//
+// because the macvlan/ipvlan fixture's parent carried no on-subnet
+// address, so the detector could not run on two of the three attachment
+// modes. The line said so on every run and the suite went green
+// throughout. That is the failure the detector itself exists to prevent,
+// one level up: "nothing checked" and "nothing found" must not read the
+// same. The instrument was right; there was no gate behind it.
+//
+// WHY THE OBVIOUS GATE IS THE WRONG ONE. "Endpoints were created and no
+// probe reached a verdict" sounds like the property, and it never fires
+// on the case above — one probe DID reach a verdict there. The blindness
+// was in the two that could not run, so the failures are what must be
+// judged, against what the suite legitimately expects.
+//
+// Two things would otherwise make this fail for reasons unrelated to the
+// property:
+//
+//  1. TestAddressConflict_BareParentIsUndetermined (#541) drives the
+//     degraded path ON PURPOSE and increments conflict_probe_failures.
+//     Failing on failures > 0 would break a correct test, so a test that
+//     means to degrade a probe declares it with AllowConflictProbeFailures
+//     and the gate judges the excess.
+//  2. The floor runs per shard, and a shard whose tests lease no v4
+//     address legitimately reaches zero probes. Failing on
+//     address_conflict_probes == 0 alone would make the verdict depend on
+//     how the partitioner happened to balance that run — a gate whose
+//     result depends on shard assignment is worse than no gate.
+//
+// The premise that makes "leases but no probes" sound: the post-lease
+// conflict probe is NOT opt-in. checkAddressConflict runs for every
+// endpoint that received a v4 address, on both the bridge and the
+// parent-attached paths. (The opt-in validate_dhcp preflight is a
+// different probe entirely and does not touch these counters.) And
+// leases_obtained is v4-only — v6 has its own counter — so a v6-only
+// shard cannot trip this.
+
+// conflictAllowance accumulates the probe failures this shard EXPECTS,
+// declared by the tests that cause them deliberately.
+//
+// Package-level and mutex-guarded rather than plumbed through: the floor
+// runs in TestMain after every test has finished, so there is no value
+// to thread and no ordering to get wrong. A test declares its intent
+// where it degrades the probe, which is the only place that knows.
+var conflictAllowance struct {
+	mu sync.Mutex
+	n  int32
+}
+
+// AllowConflictProbeFailures declares that n conflict-probe failures are
+// expected in this shard, because a test degrades a probe on purpose.
+//
+// Call it from the test that does the degrading, next to the degrading,
+// so the declaration cannot drift away from its reason. Anything beyond
+// the declared count fails the run.
+func AllowConflictProbeFailures(n int32) {
+	conflictAllowance.mu.Lock()
+	defer conflictAllowance.mu.Unlock()
+	conflictAllowance.n += n
+}
+
+// AllowedConflictProbeFailures reports the total declared so far.
+func AllowedConflictProbeFailures() int32 {
+	conflictAllowance.mu.Lock()
+	defer conflictAllowance.mu.Unlock()
+	return conflictAllowance.n
+}
+
+// base returns a usable baseline, so callers with none (a hand-built
+// HealthResponse, an older lane, a failed baseline read) get zeroes and
+// therefore the old whole-plugin-life behaviour. Judging more than this
+// process caused is the safe direction; judging less would hide a real
+// failure, which is the outcome this census exists to prevent.
+func base(b *HealthResponse) *HealthResponse {
+	if b == nil {
+		return &HealthResponse{}
+	}
+	return b
+}
+
+// deltaSincePluginStart converts a cumulative counter into what this
+// process is answerable for.
+//
+// A value BELOW the baseline means the plugin restarted mid-run and its
+// counters went back to zero. The current value is then already scoped
+// to the restart — narrower than this process, not wider — so it is
+// used as-is rather than clamped to zero. Clamping would report "no
+// probes failed" for a run in which the plugin died, which is precisely
+// the shape of #385: the counters reset, the floor saw the tail, and a
+// run with three failed Joins went green.
+func deltaSincePluginStart(now, was int32) int32 {
+	if now < was {
+		return now
+	}
+	return now - was
+}
+
+// ConflictCensusFindings judges whether the conflict-probe census is
+// evidence or an alibi, given how many failures the shard declared.
+//
+// Returns nil when there is nothing to say — including the honest
+// nothing of a shard that leased no v4 address.
+// conflictProbeFailureMsgs is every log line the plugin writes at a
+// conflict_probe_failures increment (pkg/plugin/conflict_probe.go).
+// Listed rather than pattern-matched so that adding a fourth failure
+// path without adding it here is the only way to under-count, and so a
+// reader can check the list against the source by eye.
+var conflictProbeFailureMsgs = []string{
+	"[conflict-probe] address-conflict probe could not run",
+	"[conflict-probe] cannot parse leased address; address conflict not checked",
+	"[conflict-probe] cannot parse endpoint MAC; address conflict not checked",
+}
+
+// ConflictProbeFailuresInLog counts probe failures across the WHOLE run.
+//
+// This exists because the counters do not. The plugin's counters live in
+// its process, the main suite recycles that process, and the floor's own
+// output says so: "the plugin restarted mid-suite and its counters reset
+// with it ... this verdict says nothing about the earlier 209s". A
+// counter-only census would therefore read clean for every probe that
+// failed before the last restart — the same shape as #385, which is why
+// the Join half already counts log lines instead.
+func ConflictProbeFailuresInLog(logData []byte) int {
+	if len(logData) == 0 {
+		return 0
+	}
+	n := 0
+	for _, l := range strings.Split(string(logData), "\n") {
+		for _, msg := range conflictProbeFailureMsgs {
+			if strings.Contains(l, msg) {
+				n++
+				break
+			}
+		}
+	}
+	return n
+}
+
+// ConflictCensusFindings judges the census. observedInLog is the count
+// from ConflictProbeFailuresInLog; the larger of it and the counter wins,
+// because the counter can only ever under-report after a restart and the
+// log can only under-report if a line was lost.
+func ConflictCensusFindings(h *HealthResponse, allowed int32, observedInLog int, baseline *HealthResponse) []FloorFinding {
+	if h == nil {
+		return nil
+	}
+	// An absent counter is not a zero. If the plugin never published
+	// these, the census cannot be judged at all, and saying so is the
+	// point — silently treating <not reported> as 0 would rebuild the
+	// blindness this closes.
+	if h.published != nil {
+		for _, k := range []string{"address_conflict_probes", "conflict_probe_failures"} {
+			if _, ok := h.published[k]; !ok {
+				return []FloorFinding{{
+					Counter: k,
+					Absent:  true,
+					Fatal:   true,
+					Why: "the plugin did not publish this, so whether the address-conflict " +
+						"detector ran cannot be established. address_conflicts=0 is not evidence " +
+						"without it (#551).",
+				}}
+			}
+		}
+	}
+
+	var out []FloorFinding
+
+	// Counters are cumulative for the PLUGIN's life; the allowance is
+	// declared by THIS process. Comparing them directly is only correct
+	// when the plugin was started for this run, which the sharded lanes
+	// happen to guarantee and the coverage lane does not — it drives one
+	// instrumented plugin through both suites back to back. There, the
+	// main suite's deliberately-degraded probe (declared, allowed, fine)
+	// was still on the counter when the failure suite's process started
+	// with an allowance of 0, and the floor called it unexplained.
+	//
+	// Wrong in the other direction too, and that is the worse one: a
+	// failure that happened before this process started would be
+	// attributed to it, and a real one that happened after a restart
+	// could be masked by subtracting.
+	probeFailures := deltaSincePluginStart(h.ConflictProbeFailures, base(baseline).ConflictProbeFailures)
+	probes := deltaSincePluginStart(h.AddressConflictProbes, base(baseline).AddressConflictProbes)
+	leases := deltaSincePluginStart(h.LeasesObtained, base(baseline).LeasesObtained)
+
+	failures := probeFailures
+	if int32(observedInLog) > failures {
+		failures = int32(observedInLog)
+	}
+
+	if excess := failures - allowed; excess > 0 {
+		why := fmt.Sprintf(
+			"%d conflict probe(s) could not run at all; %d is the number this shard declared "+
+				"as deliberate, so %d went unexplained. Each one is an endpoint whose address was "+
+				"never checked, and address_conflicts=0 does not cover them — that reading is "+
+				"exactly how #524 stayed invisible in production for months (#551).",
+			failures, allowed, excess)
+		out = append(out, FloorFinding{
+			Counter: "conflict_probe_failures",
+			Value:   failures,
+			Fatal:   true,
+			Why:     why,
+		})
+	}
+
+	// The detector never even tried, on a shard that leased addresses
+	// for it to check. Distinct from the case above: there, probes were
+	// attempted and failed; here nothing was attempted at all.
+	if probes == 0 && failures == 0 && leases > 0 {
+		out = append(out, FloorFinding{
+			Counter: "address_conflict_probes",
+			Value:   0,
+			Fatal:   true,
+			Why: fmt.Sprintf(
+				"%d v4 lease(s) were obtained and the conflict detector was never invoked for "+
+					"any of them. The probe is not opt-in, so this is the detector having stopped "+
+					"working rather than a shard with nothing to check (#551).",
+				h.LeasesObtained),
+		})
+	}
+
 	return out
 }

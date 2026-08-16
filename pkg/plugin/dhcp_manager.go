@@ -263,6 +263,35 @@ type dhcpManager struct {
 	// that got there first — can reach the same manager, and they do
 	// not serialise against each other.
 	orphanReleaseOnce sync.Once
+
+	// boundV4 records that the persistent v4 client actually took
+	// ownership of the binding, i.e. that it reached a bound/renew.
+	//
+	// "Start succeeded" is NOT that proof, and the difference leaks a
+	// lease. CreateEndpoint's one-shot runs `-1 -p` and deliberately
+	// does not release, because handing the binding over is the
+	// persistent client's job. Stop therefore had exactly two branches:
+	// Start failed (reclaim the lease, #370) or Start succeeded (signal
+	// dhcpcd and let its `release` directive do the work). A client that
+	// starts and is SIGTERMed before it ever binds falls between them —
+	// dhcpcd only releases a lease it holds, so it sends nothing, and
+	// startErr is nil so the reclaim never runs. The address is left
+	// held upstream with nobody responsible for it.
+	//
+	// Not hypothetical: run 31917924943 has DHCPOFFER/REQUEST/ACK for
+	// 192.168.99.12 and no DHCPRELEASE anywhere in the run, with the
+	// whole start-and-signal sequence inside one second. That surfaced
+	// as an intermittent integration failure (#549) rather than as the
+	// leak it is, because the counter the test watched belongs to the
+	// path this case never reaches.
+	//
+	// Written from the v4 consumer goroutine, read in Stop after that
+	// goroutine has been drained via errChan, which is the same
+	// happens-before startErr already relies on.
+	//
+	// v4 only, matching the reclaim: releaseOrphanedLease works from
+	// lastIPs()'s v4 address and there is no v6 equivalent to hand back.
+	boundV4 atomic.Bool
 	// MacAddress is set in macvlan mode so we can re-find the link inside
 	// the container netns after Docker has moved and renamed it. Empty in
 	// bridge mode.
@@ -740,6 +769,11 @@ func (m *dhcpManager) handleEvent(event dhcp.Event, v6 bool) {
 		// hand out a fresh address per DISCOVER even for
 		// the same MAC). Reuse the renew path so LastIP
 		// reflects what's actually in the kernel.
+		if !v6 {
+			// Ownership of the binding has transferred; Stop can
+			// now rely on dhcpcd's own release. See boundV4.
+			m.boundV4.Store(true)
+		}
 		if m.plugin != nil {
 			bumpFamily(&m.plugin.leasesObtained, &m.plugin.leasesObtainedV6, v6)
 		}
@@ -756,6 +790,12 @@ func (m *dhcpManager) handleEvent(event dhcp.Event, v6 bool) {
 			WithFields(m.logFields(v6)).
 			Debug("dhcp renew")
 
+		if !v6 {
+			// Same proof as "bound", and needed separately: a client
+			// that comes up against a lease it already holds can
+			// report renew without a preceding bound.
+			m.boundV4.Store(true)
+		}
 		if m.plugin != nil {
 			bumpFamily(&m.plugin.leasesRenewed, &m.plugin.leasesRenewedV6, v6)
 		}
@@ -1211,7 +1251,38 @@ func (m *dhcpManager) Start(ctx context.Context) (err error) {
 	return nil
 }
 
+// Stop shuts the persistent clients down WITHOUT assuming the endpoint
+// is going away.
+//
+// This is the shutdown every caller but Leave wants: plugin Close stops
+// every live manager so their dhcpcds get to send a DHCPRELEASE before
+// the process exits, and the containers behind them keep running. Same
+// for a manager displaced by a newer one for the same endpoint, and for
+// managers cleaned up when a network is removed.
 func (m *dhcpManager) Stop() error {
+	return m.stop(false)
+}
+
+// StopForLeave is Stop for an endpoint that is being torn down.
+//
+// The difference is the orphan reclaim. A lease whose persistent client
+// never took ownership has to be handed back, and only here is that
+// unambiguously safe: the endpoint is leaving, so nothing is going to
+// use the address again.
+//
+// Getting this wrong is worse than the leak it fixes, which is why it
+// is a separate entry point rather than a flag with a default. On
+// plugin Close the containers are still running and still using their
+// addresses; reclaiming there would tell the server an address is free
+// while a live container holds it, and the server would be entitled to
+// hand it to somebody else. That is the duplicate-assignment failure
+// this release added conflict detection for (#524) — manufactured by
+// the plugin itself.
+func (m *dhcpManager) StopForLeave() error {
+	return m.stop(true)
+}
+
+func (m *dhcpManager) stop(leaving bool) error {
 	// Abort an attach that is still running before waiting for it.
 	// Without this, the attach grace added for #406 would be charged to
 	// every Leave that arrives during one — libnetwork would block for
@@ -1279,12 +1350,41 @@ func (m *dhcpManager) Stop() error {
 	// trail never claims a release the server may not have seen.
 	// Both families are audited independently: a failed v4 release
 	// no longer hides the v6 outcome from the ledger.
-	if errV4 != nil {
+	//
+	// The never-bound case is neither of those and must not be audited
+	// as either. The client exited cleanly, so errV4 is nil, but it
+	// held no binding and therefore sent no DHCPRELEASE — writing
+	// "release" here is the ledger claiming something the server never
+	// saw, which is the one thing this ledger exists not to do. The
+	// lease is still outstanding, so hand it to the same reclaim that
+	// covers a Start that never happened at all; releaseOrphanedLease
+	// writes the ledger entry for whichever way that goes.
+	//
+	// Reading boundV4 is safe here and only here: the v4 consumer
+	// goroutine is the sole writer and the receive from errChan above
+	// is its last act.
+	switch {
+	case errV4 != nil:
 		if m.plugin != nil {
 			m.plugin.leaseReleaseFailures.Add(1)
 		}
 		m.audit("release_failed", auditIP(lastIP))
-	} else {
+	case !m.boundV4.Load() && leaving:
+		log.
+			WithFields(m.logFields(false)).
+			WithField("ip", auditIP(lastIP)).
+			Info("Persistent client stopped before it ever held the lease; reclaiming it")
+		m.plugin.spawnOrphanRelease(m)
+	case !m.boundV4.Load():
+		// Not leaving, so the address may still be in use by a running
+		// container — see StopForLeave. Nothing is released and nothing
+		// is audited as released, which is the honest record: no
+		// DHCPRELEASE was sent.
+		log.
+			WithFields(m.logFields(false)).
+			WithField("ip", auditIP(lastIP)).
+			Debug("Persistent client stopped before it held the lease; not reclaiming, the endpoint is not leaving")
+	default:
 		m.audit("release", auditIP(lastIP))
 	}
 	if m.opts.IPv6 {

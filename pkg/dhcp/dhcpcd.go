@@ -271,10 +271,24 @@ func renderConfig(p dhcpcdParams) string {
 //	             dhcpcd's RFC 5227 ACD adds ~5s between offer and lease,
 //	             which busybox udhcpc never did and which pushed the
 //	             one-shot CreateEndpoint acquisition over its lease
-//	             deadline. The DHCP server is authoritative for allocation
-//	             and the plugin runs its own preflight probe, so the
-//	             client-side ARP claim is redundant latency. (v4-only flag;
-//	             a no-op under -6.)
+//	             deadline. That latency argument is why the flag stays.
+//
+//	             It previously also claimed the plugin's own preflight
+//	             probe covered the conflict case. It did not: that probe
+//	             is validate_dhcp, which is opt-in, runs once per
+//	             *network* at CreateNetwork, and only checks that a DHCP
+//	             server answers on the parent NIC. Nothing checked
+//	             whether the leased address was free, and a production
+//	             endpoint was handed an address a statically-configured
+//	             host already held — silently, with every counter at
+//	             zero (#524).
+//
+//	             Conflict detection now lives in
+//	             pkg/plugin/conflict_probe.go: after the lease, off the
+//	             critical path, comparing the answering MAC against the
+//	             endpoint's. Do not restore the claim above without a
+//	             check that fails when it stops being true.
+//	             (v4-only flag; a no-op under -6.)
 //	-c <handler> hook script (emits events to the parent FIFO)
 //	-f <config>  the rendered per-endpoint config
 //	-1           one-shot: exit after the first lease (acquisition only)
