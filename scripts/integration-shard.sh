@@ -28,6 +28,31 @@
 # shards equals the full list, for several values of <total>.
 set -uo pipefail
 
+# THE PARTITION MUST BE A FUNCTION OF THE TREE, NOT OF WHO RUNS IT (#554).
+#
+# Without this the same commit produced a different partition depending
+# on the maintainer's locale. Measured: shard 3 of 4 held three
+# different tests under de_DE.UTF-8 than under C — one of them the test
+# somebody was at that moment failing to reproduce a CI failure in.
+#
+# Three separate mechanisms, which is why the fix is a blanket export
+# rather than a flag on one command:
+#
+#   1. awk PARSES the durations file with a locale decimal separator.
+#      Under a comma-decimal locale `$2` of `12.5` is read as 12 — every
+#      duration silently truncated to its integer part, so the packer
+#      optimises against numbers that are simply wrong. The computed
+#      mean differs outright: 6.48 under C, 6,21 under de_DE.
+#   2. awk's printf "%.2f" then EMITS a comma, and `sort -rn` reads
+#      "6,21" as 6, truncating a second time.
+#   3. Ties (every test absent from the durations file gets the mean)
+#      fall to sort's last-resort whole-line comparison, which is
+#      locale-collated.
+#
+# Only the third is visible by reading the sort; the first two are the
+# ones that actually moved tests between shards.
+export LC_ALL=C
+
 IDX="${1:-}"
 TOTAL="${2:-}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -65,11 +90,17 @@ assigned=$(
         d=$(awk -F'\t' -v k="$t" '$1==k {print $2; found=1; exit} END {if (!found) print ""}' "$DURATIONS" 2>/dev/null)
         [ -z "$d" ] && d="$mean"
         printf '%s\t%s\n' "$d" "$t"
-    done | sort -rn | awk -v total="$TOTAL" '
+    # Explicit keys: duration descending, then name ascending. Every
+    # test absent from the durations file gets the mean and so TIES on
+    # the numeric key; without a second key those ties fall to sort's
+    # last-resort whole-line comparison. LC_ALL=C is exported at the top
+    # and is what keeps that comparison stable (#554).
+    done | sort -t"$(printf '\t')" -k1,1rn -k2,2 | awk -v total="$TOTAL" '
         BEGIN { for (i = 1; i <= total; i++) load[i] = 0 }
         {
-            # Smallest-load bin wins; ties go to the lowest index so the
-            # partition is deterministic across runs and machines.
+            # Smallest-load bin wins; ties go to the lowest index. This
+            # is deterministic only because the input order above is —
+            # see the sort. Both halves are needed.
             best = 1
             for (i = 2; i <= total; i++) if (load[i] < load[best]) best = i
             load[best] += $1
@@ -77,6 +108,10 @@ assigned=$(
         }'
 )
 
+# This sort decides the order of the alternation in the emitted regex,
+# so it is covered by the same LC_ALL=C export: membership would survive
+# a locale change but the emitted string would not, and "same tree, same
+# shard, same bytes" is the property the self-test pins (#554).
 mine=$(printf '%s\n' "$assigned" | awk -F'\t' -v i="$IDX" '$1==i {print $2}' | sort)
 
 if [ -z "$mine" ]; then

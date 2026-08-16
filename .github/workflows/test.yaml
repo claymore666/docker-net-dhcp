@@ -104,6 +104,24 @@ jobs:
       # `scripts/` looked fully covered while the gate it protects
       # rotted. The logic lives in a script rather than here so it can
       # have a self-test of its own, like every other gate in this repo.
+      # test-integration-shard.sh asserts the shard partition is identical
+      # under C and under a comma-decimal locale (#554). The hosted image
+      # ships only C/C.UTF-8/POSIX/en_US, none of which format 1.5 as
+      # "1,5", so without this the case has nothing to compare against.
+      #
+      # It deliberately FAILS rather than skips in that situation: an
+      # uninstalled locale silently falls back to C, so a skip would have
+      # been indistinguishable from a pass while exercising nothing —
+      # which is the exact bug class the case exists to catch. Generating
+      # the locale here is what keeps it honest, and it costs ~2s.
+      - name: Provide a comma-decimal locale for the shard self-test
+        run: |
+          sudo locale-gen de_DE.UTF-8
+          locale -a | grep -qi '^de_DE' || {
+            echo "::error title=Locale not generated::de_DE.UTF-8 is still absent after locale-gen" >&2
+            exit 1
+          }
+
       - name: Gate script self-tests
         run: bash scripts/run-gate-selftests.sh
 
