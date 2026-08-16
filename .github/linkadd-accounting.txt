@@ -1,0 +1,70 @@
+# Every netlink.LinkAdd in pkg/ and the parent-interface gate that
+# covers it (#571).
+#
+# WHAT THIS FILE IS FOR
+#
+# A parent NIC registers one rx_handler, so it is a macvlan port or an
+# ipvlan port and never both. Any child link attached to a parent must
+# therefore be serialised against every other operation on that parent,
+# which is what Plugin.lockParent does. A LinkAdd that reaches a parent
+# without holding that gate can be refused with "device or resource
+# busy" — surfacing to a user as a failed `docker run` caused by an
+# unrelated container.
+#
+# WHAT THIS FILE DOES AND DOES NOT PROVE
+#
+# It does NOT prove the gate is held. Three of the sites below are
+# gated by a CALLER, and proving reachability from a caller needs a
+# call-graph analysis, not a text search. What this file proves is that
+# every LinkAdd has been ACCOUNTED FOR: scripts/check-parent-gate-
+# accounting.sh matches every netlink.LinkAdd in pkg/ and fails if any
+# file is unlisted or its count has changed.
+#
+# So it catches the failure that actually happens — a new LinkAdd
+# appearing on a parent with nobody having thought about the gate — and
+# it does not catch someone deleting a lockParent call from a site
+# already listed here. That gap is deliberate and recorded in #571.
+#
+# FORMAT
+#
+#   <path> <count>
+#       <justification, indented, one or more lines>
+#
+# Entries are separated by blank lines. A bare path with no
+# justification fails the gate: a list of paths with no reasons becomes
+# a list somebody appends to. Same rule as .github/vuln-allowlist.txt.
+
+pkg/plugin/parent_attached.go 1
+    The endpoint's own child link, created during CreateEndpoint.
+    Gated inline: lockParent is taken in the same function, immediately
+    around the LinkAdd, and released as soon as it returns. The hold is
+    deliberately short — an endpoint's link creation is microseconds and
+    holding beyond it would serialise unrelated work.
+
+pkg/plugin/orphan_release.go 2
+    The reclaim's temporary dh-rel-* link, created to hand an orphaned
+    lease back.
+    Gated by the CALLER, several frames up, for the whole reclaim.
+    DO NOT "TIDY" THIS INTO A LEXICAL LOCK AROUND THE LinkAdd. The hold
+    must span the entire reclaim — the DHCP round trip AND the deferred
+    LinkDel — because the parent stays occupied until that child link is
+    gone, not merely until the DHCPRELEASE is sent. Shortening it to the
+    LinkAdd restores the exact bug the gate was added for: an ipvlan
+    reclaim link left on the parent while a macvlan endpoint is created,
+    which is EBUSY on an operation the user did not cause.
+    This is the entry a future reader is most likely to change, because
+    making it lexical looks like an improvement.
+
+pkg/plugin/dhcp_probe.go 1
+    The validate_dhcp preflight probe's temporary link, created at
+    network creation to prove a DHCP server answers on the parent.
+    Gated by the CALLER in network.go, around the whole runDHCPProbe
+    call. Lexical placement would be tidier and buys nothing under an
+    accounting gate, so it is deliberately left alone rather than
+    refactored inside a release (v1.7.0 follow-up).
+
+pkg/plugin/network.go 1
+    The bridge-mode veth pair. NOT a parent-attached child link: bridge
+    networks have no parent NIC, nothing registers an rx_handler, and
+    there is no parent to contend for. Correctly ungated, and adding a
+    gate here would serialise bridge endpoints against nothing.
