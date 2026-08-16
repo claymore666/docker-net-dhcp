@@ -88,8 +88,31 @@ jobs:
     env:
       COVER_PLUGIN_REF: ghcr.io/claymore666/docker-net-dhcp:golang-cover
       COVER_DIR: /var/lib/dh-cover
+      # See integration.yml — step-level `if:` cannot read the secrets
+      # context, so the presence check is materialized here.
+      HAS_HUB_CREDS: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Same reasoning as integration.yml's login (#562): the cover
+      # build pulls the same two Hub base images, from the same pool,
+      # against the same shared per-address anonymous quota.
+      #
+      # This job is the one that can least afford it. It runs on the
+      # release PR and carries the coverage ratchet — the one gate the
+      # project does not wave through — so a 429 here blocks a release
+      # for a reason unconnected to the code.
+      - name: Log in to Docker Hub
+        if: env.HAS_HUB_CREDS == 'true'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Note that Docker Hub pulls are anonymous
+        if: env.HAS_HUB_CREDS != 'true'
+        run: |
+          echo "::warning title=Anonymous Docker Hub pulls::DOCKERHUB_USERNAME / DOCKERHUB_TOKEN are not available to this job, so base-image pulls share the per-address anonymous quota and may hit a 429 (#562)."
 
       # Coverage uses `-coverpkg=./...` for the unit-test step, which
       # forces go test to recompile stdlib's internal/coverage runtime
