@@ -122,6 +122,10 @@ func checkHealthFloor(suite time.Duration) int {
 	// distinguishes them.
 	fmt.Fprint(os.Stderr, harness.AttachGraceLine(h, censusFailures))
 
+	// Same question for the #524 detector: did it run at all? A green
+	// run with address_conflicts=0 says nothing until this does.
+	fmt.Fprint(os.Stderr, harness.ConflictProbeLine(h))
+
 	findings := harness.CheckHealthFloor(h)
 	if len(findings) == 0 && faultCount > 0 {
 		fmt.Fprintf(os.Stderr,

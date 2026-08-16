@@ -591,6 +591,28 @@ type Plugin struct {
 	// discussion deferred from v0.9.0.
 	leaseChanged atomic.Int32
 
+	// addressConflicts counts leases whose address was found to be
+	// already held by another device on the segment (#524).
+	// Healthy-affecting: the container is up, Docker reports an
+	// address, and traffic is broken or intermittently wrong for two
+	// hosts — an operator has to look, and nothing else will tell them.
+	//
+	// conflictProbeFailures counts probes that could not run at all
+	// (unroutable parent, unparseable lease or MAC). NOT
+	// Healthy-affecting: an unanswered question is not a known-broken
+	// address. It is counted so the detector cannot quietly stop
+	// working — a check that silently does not happen is exactly how
+	// #524 stayed invisible through a production incident.
+	addressConflicts      atomic.Int32
+	conflictProbeFailures atomic.Int32
+	// addressConflictProbes counts probes that ran to a verdict —
+	// conflict or clean. Not Healthy-affecting, and the reason it
+	// exists at all: without it, "the segment is clean" and "the
+	// detector never ran" are the same reading (all counters zero),
+	// which is precisely the ambiguity #524 hid behind. A run is only
+	// evidence of a clean segment if this advanced.
+	addressConflictProbes atomic.Int32
+
 	// leasesObtained / leasesRenewed / dhcpTimeouts / leaseReleaseFailures
 	// expose DHCP-wire-level counters via /Plugin.Health (T2-4). They
 	// complement the lease_changed signal and let operators alert on

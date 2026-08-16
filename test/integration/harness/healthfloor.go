@@ -65,14 +65,24 @@ type HealthResponse struct {
 	// preserved by replaying a tombstone rather than by recovery
 	// re-adopting a live endpoint. Together they let a restart test say
 	// WHICH path ran instead of only that the address survived (#386).
-	TombstonesConsumed   int32 `json:"tombstones_consumed"`
-	LeaseChanged         int32 `json:"lease_changed"`
-	LeasesObtained       int32 `json:"leases_obtained"`
-	LeasesRenewed        int32 `json:"leases_renewed"`
-	DHCPTimeouts         int32 `json:"dhcp_timeouts"`
-	LeaseReleaseFailures int32 `json:"lease_release_failures"`
-	NAKsReceived         int32 `json:"naks_received"`
-	LedgerWriteFailures  int32 `json:"ledger_write_failures"`
+	TombstonesConsumed int32 `json:"tombstones_consumed"`
+	// AddressConflicts is healthy-affecting (#524) and so appears in
+	// floorCounters below. ConflictProbeFailures is not, but is mirrored
+	// here so a run can say whether the detector actually ran — a probe
+	// that never happened reads exactly like a clean segment.
+	AddressConflicts      int32 `json:"address_conflicts"`
+	ConflictProbeFailures int32 `json:"conflict_probe_failures"`
+	// AddressConflictProbes is what makes address_conflicts=0 mean
+	// anything: zero probes and a clean segment read identically
+	// otherwise.
+	AddressConflictProbes int32 `json:"address_conflict_probes"`
+	LeaseChanged          int32 `json:"lease_changed"`
+	LeasesObtained        int32 `json:"leases_obtained"`
+	LeasesRenewed         int32 `json:"leases_renewed"`
+	DHCPTimeouts          int32 `json:"dhcp_timeouts"`
+	LeaseReleaseFailures  int32 `json:"lease_release_failures"`
+	NAKsReceived          int32 `json:"naks_received"`
+	LedgerWriteFailures   int32 `json:"ledger_write_failures"`
 	// OrphanedLeasesReleased / OrphanedLeaseReleaseFailures cover the
 	// lease acquired during endpoint setup when no persistent client
 	// ever took ownership of it — a container that exited before the
@@ -156,6 +166,12 @@ var floorCounters = []floorCounter{
 		read:  func(h *HealthResponse) int32 { return h.RecoveryFailed },
 		fatal: true,
 		why:   "recovery could not rebuild a RUNNING container's renewal client, so its lease will not renew until it is restarted. Fatal since #421: both benign paths that used to land here are counted separately — recovery_deferred for a daemon that was not serving yet (#383) and recovery_aborted_container_gone for a container that had already exited (#376) — and the probation runs this counter was left non-fatal for came back clean",
+	},
+	{
+		name:  "address_conflicts",
+		read:  func(h *HealthResponse) int32 { return h.AddressConflicts },
+		fatal: true,
+		why:   "an endpoint was leased an address another device on the segment already holds, so traffic for it is wrong for both hosts (#524). Fatal from the start, unlike recovery_failed: there is no benign path into this counter — it moves only when a probe got an ARP reply from a MAC that is not the endpoint's. A run that trips this has a container up on somebody else's address, which is the exact production fault the counter was added for",
 	},
 }
 
@@ -500,6 +516,43 @@ func AttachGraceLine(h *HealthResponse, joinFailures int) string {
 		return fmt.Sprintf(
 			"ATTACH GRACE: %d Join failure(s) and no attach used the grace. The failures are not\n"+
 				"  the daemon-busy mechanism #406 describes — look elsewhere.\n", joinFailures)
+	}
+}
+
+// ConflictProbeLine reports whether the address-conflict detector
+// actually ran, which address_conflicts alone cannot say. Zero
+// conflicts and zero probes are the same reading, and "nothing checked"
+// is exactly what #524 looked like in production for months — green
+// health, every counter at zero, a container on somebody else's
+// address.
+//
+// Same shape as AttachGraceLine above, for the same reason: a zero that
+// could mean either "the mechanism worked" or "the condition never
+// arose" is not evidence until something distinguishes them.
+func ConflictProbeLine(h *HealthResponse) string {
+	if h == nil {
+		return ""
+	}
+	switch {
+	case h.AddressConflicts > 0:
+		return fmt.Sprintf(
+			"CONFLICT PROBE: %d leased address(es) were already held by another device on the\n"+
+				"  segment, out of %d probe(s). The floor fails on this — see above (#524).\n",
+			h.AddressConflicts, h.AddressConflictProbes)
+	case h.AddressConflictProbes == 0:
+		return "CONFLICT PROBE: no probe reached a verdict this run, so address_conflicts=0 is not\n" +
+			"  evidence the segment was clean — it is the absence of a measurement. Either no\n" +
+			"  endpoint was leased a v4 address, or the detector did not run (#524).\n"
+	case h.ConflictProbeFailures > 0:
+		return fmt.Sprintf(
+			"CONFLICT PROBE: %d probe(s) reached a verdict and found no conflict, but %d could not\n"+
+				"  run at all. The clean verdict covers only the endpoints that were checked (#524).\n",
+			h.AddressConflictProbes, h.ConflictProbeFailures)
+	default:
+		return fmt.Sprintf(
+			"CONFLICT PROBE: %d probe(s) reached a verdict, none found a conflict, none failed.\n"+
+				"  The detector ran and the segment was clean — observed, not inferred (#524).\n",
+			h.AddressConflictProbes)
 	}
 }
 

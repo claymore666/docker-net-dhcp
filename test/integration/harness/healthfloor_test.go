@@ -197,7 +197,8 @@ func TestCheckHealthFloorPresence(t *testing.T) {
 		"uptime_seconds": 42,
 		"join_start_failures": 0,
 		"tombstone_write_failures": 0,
-		"recovery_failed": 0
+		"recovery_failed": 0,
+		"address_conflicts": 0
 	}`
 
 	cases := []struct {
@@ -217,7 +218,7 @@ func TestCheckHealthFloorPresence(t *testing.T) {
 			name: "a counter the plugin does not publish is fatal",
 			// The concrete #377 case: an older plugin build predating
 			// #373 answers without join_start_failures at all.
-			payload:     `{"healthy": true, "tombstone_write_failures": 0, "recovery_failed": 0}`,
+			payload:     `{"healthy": true, "tombstone_write_failures": 0, "recovery_failed": 0, "address_conflicts": 0}`,
 			wantAbsent:  []string{"join_start_failures"},
 			wantValues:  map[string]int32{},
 			wantFatal:   true,
@@ -228,6 +229,7 @@ func TestCheckHealthFloorPresence(t *testing.T) {
 			payload: `{}`,
 			wantAbsent: []string{
 				"join_start_failures", "tombstone_write_failures", "recovery_failed",
+				"address_conflicts",
 				// The plugin's own verdict is presence-checked too since
 				// #421: an absent `healthy` decodes to false, which would
 				// otherwise fail the run while claiming the plugin said so.
@@ -245,6 +247,7 @@ func TestCheckHealthFloorPresence(t *testing.T) {
 			payload: `null`,
 			wantAbsent: []string{
 				"join_start_failures", "tombstone_write_failures", "recovery_failed",
+				"address_conflicts",
 				// The plugin's own verdict is presence-checked too since
 				// #421: an absent `healthy` decodes to false, which would
 				// otherwise fail the run while claiming the plugin said so.
@@ -258,7 +261,7 @@ func TestCheckHealthFloorPresence(t *testing.T) {
 			name: "a missing counter and a real fault are both reported",
 			// The absence must not mask the fault, nor the other way
 			// round: a red run needs to show both reasons at once.
-			payload:     `{"healthy": false, "tombstone_write_failures": 2, "recovery_failed": 0}`,
+			payload:     `{"healthy": false, "tombstone_write_failures": 2, "recovery_failed": 0, "address_conflicts": 0}`,
 			wantAbsent:  []string{"join_start_failures"},
 			wantValues:  map[string]int32{"tombstone_write_failures": 2},
 			wantFatal:   true,
@@ -271,7 +274,7 @@ func TestCheckHealthFloorPresence(t *testing.T) {
 			// is left means one thing — a RUNNING container whose
 			// renewal client could not be rebuilt — and the probation
 			// runs came back clean (#421).
-			payload:    `{"healthy": false, "join_start_failures": 0, "tombstone_write_failures": 0, "recovery_failed": 3}`,
+			payload:    `{"healthy": false, "join_start_failures": 0, "tombstone_write_failures": 0, "recovery_failed": 3, "address_conflicts": 0}`,
 			wantValues: map[string]int32{"recovery_failed": 3},
 			wantFatal:  true,
 		},
@@ -281,13 +284,13 @@ func TestCheckHealthFloorPresence(t *testing.T) {
 			// expression, and a mirror drifts. A fourth healthy-affecting
 			// counter added to the plugin would otherwise leave the floor
 			// reporting clean until someone remembered this file (#421).
-			payload:    `{"healthy": false, "join_start_failures": 0, "tombstone_write_failures": 0, "recovery_failed": 0}`,
+			payload:    `{"healthy": false, "join_start_failures": 0, "tombstone_write_failures": 0, "recovery_failed": 0, "address_conflicts": 0}`,
 			wantValues: map[string]int32{},
 			wantFatal:  true,
 		},
 		{
 			name:       "a healthy plugin with clean counters passes",
-			payload:    `{"healthy": true, "join_start_failures": 0, "tombstone_write_failures": 0, "recovery_failed": 0}`,
+			payload:    `{"healthy": true, "join_start_failures": 0, "tombstone_write_failures": 0, "recovery_failed": 0, "address_conflicts": 0}`,
 			wantValues: map[string]int32{},
 			wantFatal:  false,
 		},
@@ -295,7 +298,7 @@ func TestCheckHealthFloorPresence(t *testing.T) {
 			name: "an unpublished non-fatal counter is still fatal",
 			// recovery_failed being noisy is a statement about what
 			// its value means, not a licence to stop reading it.
-			payload:     `{"healthy": true, "join_start_failures": 0, "tombstone_write_failures": 0}`,
+			payload:     `{"healthy": true, "join_start_failures": 0, "tombstone_write_failures": 0, "address_conflicts": 0}`,
 			wantAbsent:  []string{"recovery_failed"},
 			wantValues:  map[string]int32{},
 			wantFatal:   true,
@@ -784,4 +787,80 @@ func TestAttachGraceLine_DistinguishesQuietFromFixed(t *testing.T) {
 			t.Errorf("a partially working grace must not read as success; got %q", got)
 		}
 	})
+}
+
+// ConflictProbeLine's whole job is to stop a zero from being read as
+// evidence. Each branch is a different answer to "does this run tell us
+// anything about #524", so each one is pinned.
+func TestConflictProbeLine(t *testing.T) {
+	cases := []struct {
+		name string
+		h    *HealthResponse
+		want []string // substrings that must appear
+		deny []string // substrings that must not
+	}{
+		{
+			name: "nil health says nothing",
+			h:    nil,
+			want: nil,
+		},
+		{
+			name: "no probes is explicitly not evidence",
+			h:    &HealthResponse{},
+			want: []string{"not\n  evidence", "absence of a measurement"},
+			// Deny the AFFIRMATIVE claim, not the substring: this line
+			// legitimately says "is not evidence the segment was clean",
+			// and a looser check would have failed on the right answer.
+			deny: []string{"detector ran and the segment was clean"},
+		},
+		{
+			name: "probes ran clean is stated as observed",
+			h:    &HealthResponse{AddressConflictProbes: 7},
+			want: []string{"7 probe(s)", "observed, not inferred"},
+			deny: []string{"not\n  evidence"},
+		},
+		{
+			name: "a conflict is reported over the probe count",
+			h:    &HealthResponse{AddressConflicts: 1, AddressConflictProbes: 4},
+			want: []string{"1 leased address(es)", "out of 4 probe(s)"},
+			deny: []string{"detector ran and the segment was clean"},
+		},
+		{
+			name: "partial coverage is not a clean bill",
+			h:    &HealthResponse{AddressConflictProbes: 3, ConflictProbeFailures: 2},
+			want: []string{"3 probe(s)", "2 could not", "only the endpoints that were checked"},
+			deny: []string{"observed, not inferred"},
+		},
+		{
+			name: "a conflict outranks probe failures",
+			// Both non-zero: the conflict is the finding that matters.
+			h:    &HealthResponse{AddressConflicts: 2, AddressConflictProbes: 5, ConflictProbeFailures: 1},
+			want: []string{"2 leased address(es)"},
+			deny: []string{"could not\n  run at all"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ConflictProbeLine(tc.h)
+			if tc.h == nil {
+				if got != "" {
+					t.Errorf("nil health produced %q, want empty", got)
+				}
+				return
+			}
+			if got == "" {
+				t.Fatal("produced no line; every non-nil case must say something")
+			}
+			for _, w := range tc.want {
+				if !strings.Contains(got, w) {
+					t.Errorf("line missing %q:\n%s", w, got)
+				}
+			}
+			for _, d := range tc.deny {
+				if strings.Contains(got, d) {
+					t.Errorf("line wrongly contains %q:\n%s", d, got)
+				}
+			}
+		})
+	}
 }

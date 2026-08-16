@@ -58,6 +58,11 @@ const (
 	EphemeralAltPoolEnd    = "192.168.102.99"
 	EphemeralPoolStart     = "192.168.101.10"
 	EphemeralPoolEnd       = "192.168.101.99"
+	// EphemeralParentAddr is the host's own address on the segment, for
+	// tests that pass WithParentAddress. Outside the pool on purpose:
+	// the server must never be able to lease the address the probe
+	// sends from.
+	EphemeralParentAddr = "192.168.101.2/24"
 	// EphemeralShiftedPoolStart/End are a disjoint range for
 	// Restart() in the NAK test: an address leased from the original
 	// pool is out-of-range for an authoritative server configured
@@ -134,6 +139,14 @@ type EphemeralFixture struct {
 	poolStart, poolEnd string
 	serverCIDR         string
 
+	// parentCIDR, when set, is an address put on the HOST side of the
+	// veth pair — the interface tests hand to the driver as `parent`.
+	// Empty by default, which leaves the parent bare.
+	//
+	// A bare parent is not the neutral choice it looks like; see
+	// WithParentAddress.
+	parentCIDR string
+
 	// leaseSeconds is the granted lease lifetime (Kea valid-lifetime).
 	// Under dnsmasq this was pinned to its 2m floor; it is now a knob,
 	// which is the whole point of #356.
@@ -171,6 +184,94 @@ type EphemeralFixture struct {
 // EphemeralOption configures an EphemeralFixture before its server
 // starts. Options are applied in NewEphemeralFixture.
 type EphemeralOption func(*EphemeralFixture)
+
+// WithPool narrows the fixture's address pool. Passing the same
+// address as start and end leaves the server exactly one address to
+// give, which is how a test can know in advance which address an
+// endpoint will be leased.
+//
+// That matters for the conflict scenario (#524), which has to park a
+// squatter on the address BEFORE the container asks for it. Guessing
+// is not an option: allocators do not hand out the low end of a range
+// in order — dnsmasq hashes client identity across the whole pool, and
+// a test that assumed otherwise was a coin flip that passed three runs
+// and then failed twice on the same commit (see TestStaticIP_DriverOpt).
+func WithPool(start, end string) EphemeralOption {
+	return func(ef *EphemeralFixture) {
+		ef.poolStart = start
+		ef.poolEnd = end
+	}
+}
+
+// WithParentAddress puts addr (CIDR form) on the host side of the veth
+// pair — the interface the test hands to the driver as `parent`.
+//
+// This models the ordinary deployment, where the macvlan or ipvlan
+// parent is the host's own NIC and carries the host's address on the
+// segment, and where a bridge parent always has one.
+//
+// It is required by any test that expects the address-conflict probe to
+// reach a verdict, and the reason is a kernel behaviour rather than a
+// harness detail: a host answers an ARP request only if it can route a
+// reply back to the SENDER. With no address on the leased subnet the
+// probe has to fall back to a link-local source, and a responder with no
+// default route then stays silent. Measured on 6.12 over a veth pair,
+// squatter on 192.168.101.42:
+//
+//	responder routes    link-local sender   on-subnet sender
+//	none                INCOMPLETE          answered
+//	link-local route    answered            -
+//	default route       answered            -
+//
+// The fixture's namespace has no default route, so it is the strict
+// left-hand column. That is deliberate: it is the configuration in which
+// a detector that only works by luck goes red (#524).
+// It is ON BY DEFAULT, derived from the fixture's server address, so
+// the suite models the ordinary deployment rather than the exotic one.
+// Use WithBareParent for the opposite case, and say why.
+func WithParentAddress(addr string) EphemeralOption {
+	return func(ef *EphemeralFixture) {
+		ef.parentCIDR = addr
+	}
+}
+
+// WithBareParent leaves the parent with no address at all.
+//
+// This is the deployment where a NIC exists only to be a macvlan
+// parent, and it is the configuration in which the address-conflict
+// probe is degraded: with no on-subnet source to send from it cannot
+// get an answer out of a gateway-less host, and must report
+// "undetermined" instead of "clean". A test that wants that state asks
+// for it here rather than getting it by accident, because getting it by
+// accident is what made the first conflict probe look like it worked.
+func WithBareParent() EphemeralOption {
+	return func(ef *EphemeralFixture) {
+		ef.parentCIDR = ""
+	}
+}
+
+// defaultParentAddr derives the host's own address on a fixture's
+// segment from the server address it was configured with, so a fixture
+// on an alternate subnet gets a parent address on THAT subnet rather
+// than a stale one from the default.
+//
+// Host octet 2: the server holds .1, and the pools start at .10.
+func defaultParentAddr(serverCIDR string) string {
+	ip, ipnet, err := net.ParseCIDR(serverCIDR)
+	if err != nil {
+		return ""
+	}
+	v4 := ip.To4()
+	if v4 == nil {
+		return ""
+	}
+	parent := net.IPv4(v4[0], v4[1], v4[2], 2)
+	if parent.Equal(ip) {
+		parent = net.IPv4(v4[0], v4[1], v4[2], 3)
+	}
+	ones, _ := ipnet.Mask.Size()
+	return fmt.Sprintf("%s/%d", parent.String(), ones)
+}
 
 // WithRenewTimes makes the fixture advertise DHCP option 58 (T1,
 // renewal) and option 59 (T2, rebind) at the given seconds, leaving
@@ -251,6 +352,12 @@ func NewEphemeralFixture(t *testing.T, opts ...EphemeralOption) *EphemeralFixtur
 		serverCIDR:   EphemeralServerAddr,
 		leaseSeconds: EphemeralDefaultLeaseSeconds,
 	}
+	// Set before the options run, so WithParentAddress can override it
+	// and WithBareParent can clear it. No option changes serverCIDR —
+	// only RestartOnSubnet does, at runtime, and a fixture renumbered
+	// out from under its parent address probes in the degraded mode
+	// from then on, which is the truth about that situation.
+	ef.parentCIDR = defaultParentAddr(ef.serverCIDR)
 	for _, opt := range opts {
 		opt(ef)
 	}
@@ -262,6 +369,16 @@ func NewEphemeralFixture(t *testing.T, opts ...EphemeralOption) *EphemeralFixtur
 	}
 	if err := netlink.LinkSetUp(hostLink); err != nil {
 		t.Fatalf("LinkSetUp %s: %v", EphemeralHostVeth, err)
+	}
+
+	if ef.parentCIDR != "" {
+		parentAddr, err := netlink.ParseAddr(ef.parentCIDR)
+		if err != nil {
+			t.Fatalf("ParseAddr(%q): %v", ef.parentCIDR, err)
+		}
+		if err := netlink.AddrAdd(hostLink, parentAddr); err != nil {
+			t.Fatalf("AddrAdd %s on %s: %v", ef.parentCIDR, EphemeralHostVeth, err)
+		}
 	}
 
 	if ef.isolated() {
@@ -332,6 +449,49 @@ func (ef *EphemeralFixture) run(name string, args ...string) {
 func (ef *EphemeralFixture) runNetns(name string, args ...string) {
 	ef.t.Helper()
 	ef.run("ip", append([]string{"netns", "exec", ephemeralNetns, name}, args...)...)
+}
+
+// Squat parks a device on addr so that something other than the plugin's
+// endpoint answers ARP for it — the condition #524 is about, where the
+// DHCP server hands out an address a host already has because that host
+// never asked the server for anything.
+//
+// The address is added on the SERVER side of the veth pair, inside the
+// fixture's network namespace. That placement is the whole trick and it
+// is not interchangeable with the alternatives:
+//
+//   - A second address on the host side would be answered locally. Both
+//     ends of a veth pair in one namespace never put the request on the
+//     wire, so the probe would see nothing and the test would pass while
+//     proving nothing.
+//   - A macvlan sibling of the parent is unreachable from the parent by
+//     design, so that squatter is invisible too — a real limitation,
+//     tracked as #528, and not the case this scenario is for.
+//
+// Across the namespace boundary the squatter is a genuinely remote
+// device on the segment, which is the shape of the production incident.
+//
+// Returns the squatter's MAC, so a test can assert the conflict was
+// reported against the right device rather than merely reported.
+func (ef *EphemeralFixture) Squat(addr string) string {
+	ef.t.Helper()
+	if !ef.isolated() {
+		ef.t.Fatal("Squat needs the namespaced fixture: in a shared namespace the kernel answers for the address locally and never ARPs, so the probe under test would never see it")
+	}
+	ef.runNetns("ip", "addr", "add", addr+"/24", "dev", ephemeralDhcpVeth)
+	ef.t.Cleanup(func() {
+		// Best-effort: the namespace is torn down with the fixture
+		// anyway, so a failure here cannot leak past the test.
+		_ = exec.Command("ip", "netns", "exec", ephemeralNetns,
+			"ip", "addr", "del", addr+"/24", "dev", ephemeralDhcpVeth).Run()
+	})
+
+	out, err := exec.Command("ip", "netns", "exec", ephemeralNetns,
+		"cat", "/sys/class/net/"+ephemeralDhcpVeth+"/address").Output()
+	if err != nil {
+		ef.t.Fatalf("read squatter MAC: %v", err)
+	}
+	return strings.TrimSpace(string(out))
 }
 
 // netnsCommand builds a command that will run inside the fixture's
