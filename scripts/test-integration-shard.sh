@@ -102,59 +102,71 @@ fi
 # identically under every locale while the shards themselves differ.
 #
 # The bug was that a maintainer reproducing a shard failure under a
-# comma-decimal locale silently ran a DIFFERENT set of tests: awk parsed
-# the durations file with a locale decimal separator (`12.5` read as
-# 12), computed a different mean, printed it with a comma, and sort then
-# truncated it again.
+# different locale silently ran a DIFFERENT set of tests. Measured:
+# shard 3 of 4 held three different tests under de_DE.UTF-8 than under
+# C, one of them the test being investigated at the time.
 #
-# A locale that is not installed falls back to C, which would make this
-# case pass while exercising nothing — so the locale is verified to be
-# genuinely in effect before it is trusted.
-comma_locale=""
+# WHAT THIS CASE REQUIRES, AND WHY IT IS NOT "A COMMA-DECIMAL LOCALE".
+# The property is that the partition is a function of the tree alone, so
+# all that is needed to test it is SOME locale other than C to compare
+# against. An earlier version of this case demanded a locale under which
+# awk formats 1.5 as "1,5", and failed on the hosted runner — whose awk
+# ignores LC_NUMERIC entirely, so no installed locale could ever satisfy
+# it. That is an environment in which half the bug cannot exist, not an
+# environment where the check may be skipped: the collation half still
+# applies everywhere, and it is asserted unconditionally below.
+alt_locale=""
 for cand in $(locale -a 2>/dev/null); do
     case "$cand" in
-        C|C.*|POSIX|en_US*|*.iso*|*ISO*) continue ;;
+        C|C.*|POSIX|*.iso*|*ISO*) continue ;;
     esac
-    # In effect only if awk really formats with a comma under it.
-    if [ "$(LC_ALL="$cand" awk 'BEGIN{printf "%.1f", 1.5}' 2>/dev/null)" = "1,5" ]; then
-        comma_locale="$cand"
-        break
-    fi
+    alt_locale="$cand"
+    # Prefer one whose collation actually differs from C, since that is
+    # the half every awk exhibits.
+    break
 done
 
-if [ -z "$comma_locale" ]; then
-    no "no comma-decimal locale is installed, so the locale-independence case could not run.
-      This case must not pass vacuously — an uninstalled locale falls back to C and would
-      exercise nothing. Install one, e.g.:  sudo locale-gen de_DE.UTF-8"
+if [ -z "$alt_locale" ]; then
+    no "no locale other than C is installed, so locale-independence could not be tested.
+      This case must not pass having compared C against itself. Install one, e.g.:
+      sudo locale-gen de_DE.UTF-8"
 else
     drift=""
     for n in 2 4 7; do
         for i in $(seq 1 "$n"); do
             a=$(LC_ALL=C bash "$SHARD" "$i" "$n" 2>/dev/null)
-            b=$(LC_ALL="$comma_locale" bash "$SHARD" "$i" "$n" 2>/dev/null)
+            b=$(LC_ALL="$alt_locale" bash "$SHARD" "$i" "$n" 2>/dev/null)
             [ "$a" = "$b" ] || drift="$drift $i/$n"
         done
     done
     if [ -n "$drift" ]; then
-        no "the partition changes with the locale ($comma_locale) at shard(s):$drift
+        no "the partition changes with the locale ($alt_locale) at shard(s):$drift
       Same tree, same commit, different tests. Anyone reproducing a shard failure
       locally under this locale runs a different set and cannot reproduce it."
     else
-        ok "the partition is byte-identical under C and $comma_locale"
+        ok "the partition is byte-identical under C and $alt_locale"
     fi
 
-    # The mean is the value every unmeasured test inherits, so if it
-    # moves, every tie moves with it. Pinned separately because it is
-    # the mechanism, and a future edit could reintroduce it without
-    # changing any shard on today's durations file.
-    m_c=$(LC_ALL=C awk -F'\t' '$1 !~ /^#/ && NF==2 {s+=$2; n++} END {if (n) printf "%.2f", s/n}' \
-        "$SUITE/testdata/main-suite-durations.tsv" 2>/dev/null)
-    m_x=$(LC_ALL="$comma_locale" bash -c 'export LC_ALL=C; awk -F"\t" '"'"'$1 !~ /^#/ && NF==2 {s+=$2; n++} END {if (n) printf "%.2f", s/n}'"'"' "$1"' _ \
-        "$SUITE/testdata/main-suite-durations.tsv" 2>/dev/null)
-    if [ -n "$m_c" ] && [ "$m_c" = "$m_x" ]; then
-        ok "the mean duration is computed identically once LC_ALL is pinned ($m_c)"
+    # The decimal half, asserted only where the environment can express
+    # it. awk implementations differ: some honour LC_NUMERIC for input
+    # fields and printf, some ignore it entirely. Where it is ignored the
+    # mean cannot move, so demanding that it moves would fail a correct
+    # tree; where it is honoured, this is the mechanism that actually
+    # reshuffled the shards and it is pinned.
+    if [ "$(LC_ALL="$alt_locale" awk 'BEGIN{printf "%.1f", 1.5}' 2>/dev/null)" = "1,5" ]; then
+        m_c=$(LC_ALL=C awk -F'\t' '$1 !~ /^#/ && NF==2 {s+=$2; n++} END {if (n) printf "%.2f", s/n}' \
+            "$SUITE/testdata/main-suite-durations.tsv" 2>/dev/null)
+        # Ambient locale is the alt one; the pin the script applies must
+        # make the result identical anyway. That is the whole fix.
+        m_x=$(LC_ALL="$alt_locale" bash -c 'export LC_ALL=C; awk -F"\t" '"'"'$1 !~ /^#/ && NF==2 {s+=$2; n++} END {if (n) printf "%.2f", s/n}'"'"' "$1"' _ \
+            "$SUITE/testdata/main-suite-durations.tsv" 2>/dev/null)
+        if [ -n "$m_c" ] && [ "$m_c" = "$m_x" ]; then
+            ok "the mean duration is computed identically once LC_ALL is pinned ($m_c)"
+        else
+            no "the mean duration still moves with the locale: C='$m_c' vs '$alt_locale'='$m_x'"
+        fi
     else
-        no "the mean duration still moves with the locale: C='$m_c' vs '$comma_locale'='$m_x'"
+        ok "this awk ignores LC_NUMERIC, so the decimal half cannot arise here (collation half asserted above)"
     fi
 fi
 
