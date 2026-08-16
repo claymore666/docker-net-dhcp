@@ -52,8 +52,43 @@ permissions:
   issues: write
   pull-requests: read
 
+# ONE GROUP PER PR, NOT ONE FOR THE REPOSITORY (#600).
+#
+# A cancelled job renders as a FAILED check on the PR that triggered it.
+# Under a single repo-wide group, any two PR events close together made
+# one PR cancel another's run: three Dependabot PRs opened within five
+# minutes on 2026-08-17 left #594 sitting on a red `sync` it had nothing
+# to do with. Nothing had failed — every step succeeded except `Sync`,
+# which was cancelled — and a re-run passed in 8 seconds.
+#
+# That red is not cosmetic. Nothing here merges on a red check, required
+# or not, so a check that goes red for structural reasons unrelated to
+# the PR teaches people to wave reds through, and the one eventually
+# waved through will be real.
+#
+# Keying the group by PR number keeps the ONE cancellation that is
+# wanted — a new push to a PR superseding that same PR's in-flight run,
+# which is why cancel-in-progress stays true — while making it
+# impossible for one PR to cancel another's. push and schedule runs fall
+# back to github.ref, so they get their own keys and do not collide with
+# any PR.
+#
+# Queueing instead was the obvious alternative and does not actually
+# work: GitHub keeps only one PENDING run per group, so with one run in
+# progress and one pending, a third event cancels the pending one. A
+# burst of three — exactly the shape that caused this — would still go
+# red.
+#
+# WHAT THIS TRADES. Runs for different PRs can now overlap, so two can
+# interleave label writes on the same issue. That is safe for the reason
+# the header already gives: every run recomputes the desired state of
+# every open issue and adds and removes to match, so two concurrent runs
+# are computing the same answer and converge on it. A disagreement
+# requires an issue to change between their reads, and the next run —
+# event-driven or the hourly cron — corrects it. This is the same
+# property that makes a cancelled run harmless to the labels.
 concurrency:
-  group: issue-state-labels
+  group: issue-state-labels-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
