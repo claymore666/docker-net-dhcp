@@ -282,6 +282,15 @@ func TestAddressConflict_BareParentIsUndetermined(t *testing.T) {
 	ef := harness.NewEphemeralFixture(t,
 		harness.WithPool(squatAddr, squatAddr),
 		harness.WithBareParent())
+
+	// This test exists to make a probe fail, so it declares that one
+	// conflict_probe_failures increment is expected and the shard's
+	// census gate judges only the excess (#551). Declared HERE, next to
+	// the WithBareParent that causes it, because this is the only place
+	// that knows why the probe cannot run — a number kept anywhere else
+	// would outlive its reason.
+	harness.AllowConflictProbeFailures(1)
+
 	t.Cleanup(func() {
 		if t.Failed() {
 			ef.DumpLogs(func(s string) { t.Log(s) })

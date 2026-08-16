@@ -112,7 +112,7 @@ func checkHealthFloor(suite time.Duration) int {
 	// increments each sit next to a distinct log line, and the log
 	// spans the run while the counters span only the last restart —
 	// 10% of one recent run.
-	censusFailures, faultCount := printCensuses(ctx)
+	censusFailures, faultCount, probeFailuresInLog := printCensuses(ctx)
 
 	// Printed before the verdict either way. The census answers "did
 	// anything break"; this answers "did the #406 grace carry attaches
@@ -127,6 +127,14 @@ func checkHealthFloor(suite time.Duration) int {
 	fmt.Fprint(os.Stderr, harness.ConflictProbeLine(h))
 
 	findings := harness.CheckHealthFloor(h)
+
+	// The census above printed whether the detector ran; this is what
+	// acts on it (#551). Printing alone is what let every run between
+	// #527 and #550 report "2 probe(s) could not run at all" and stay
+	// green. Appended to the same findings list so it prints, counts and
+	// fails through the existing path rather than a parallel one.
+	findings = append(findings,
+		harness.ConflictCensusFindings(h, harness.AllowedConflictProbeFailures(), probeFailuresInLog)...)
 	if len(findings) == 0 && faultCount > 0 {
 		fmt.Fprintf(os.Stderr,
 			"HEALTH FLOOR: the counters came back clean, but the log records %d "+
@@ -220,7 +228,7 @@ func printFloorEvidence(ctx context.Context) {
 // One read serves both censuses: the log is the single instrument that
 // spans the whole run, and reading it twice would invite the two
 // verdicts to disagree about which run they are describing.
-func printCensuses(ctx context.Context) (joinFailures, otherFaults int) {
+func printCensuses(ctx context.Context) (joinFailures, otherFaults, probeFailuresInLog int) {
 	_, data, err := harness.PluginLog(ctx)
 	if err != nil {
 		// A log we cannot read is reported as a fault rather than
@@ -232,10 +240,13 @@ func printCensuses(ctx context.Context) (joinFailures, otherFaults int) {
 			"HEALTH FLOOR: could not read the plugin log to count faults: %v\n"+
 				"  Treating that as a fault: the log is the only instrument that spans the\n"+
 				"  whole run, so without it this run has no verdict to give (#385).\n", err)
-		return 1, 0
+		// The 1 above already fails the run, so the 0 here cannot be
+		// mistaken for "no probe failures" — nothing downstream gets to
+		// treat this as a clean census.
+		return 1, 0, 0
 	}
 	fmt.Fprint(os.Stderr, harness.JoinFailureCensus(data))
 	faults, report := harness.FaultCensus(data)
 	fmt.Fprint(os.Stderr, report)
-	return harness.JoinFailureCount(data), faults
+	return harness.JoinFailureCount(data), faults, harness.ConflictProbeFailuresInLog(data)
 }
