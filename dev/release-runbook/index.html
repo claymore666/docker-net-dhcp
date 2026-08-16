@@ -1479,17 +1479,25 @@ the <code>vX.Y.Z</code> milestone (the workflow leans on this for the
    normal PR (it back-merges to <code>main</code> with the next release). Leaving
    the previous version's digests in place is worse than having none:
    a reader who rebuilds the current tag and compares against them sees
-   a mismatch and concludes the release does not match its source.
-   Nothing gates this today (#502).</li>
-<li><strong>Fast-forward <code>dev</code> to <code>main</code></strong> so the release commit (version
+   a mismatch and concludes the release does not match its source.</li>
+</ol>
+<p><strong>The rc dry-run tells you the digests.</strong> <code>release.yml</code> compares this
+   block against the binaries it just built and fails the run when they
+   disagree, printing the corrected block ready to paste (#502). So the
+   first rc of a new version is <em>expected</em> to fail on this step — that
+   is the check doing its job, and it is why the rc exists. Take the
+   block from the failed run's log, land it, and re-tag <code>-rc2</code>; the real
+   tag then passes silently. A pre-release compares against its base
+   version, so <code>v1.6.0-rc2</code> validates exactly what <code>v1.6.0</code> will publish.
+11. <strong>Fast-forward <code>dev</code> to <code>main</code></strong> so the release commit (version
    pins, RELEASE_NOTES section) lands on <code>dev</code> too:
    <div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>git<span class="w"> </span>checkout<span class="w"> </span>dev<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>merge<span class="w"> </span>--ff-only<span class="w"> </span>main<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>push<span class="w"> </span>origin<span class="w"> </span>dev
 </code></pre></div>
    Skipping this leaves the next feature branch starting from the
    previous version's README/docs, and the next release PR has to
    re-bump them. Forgotten once after v0.9.0 — that's why
-   <code>release.yml</code>'s header comment carries the same checklist.</li>
-<li><strong>Prune merged branches.</strong> The repo has <em>Automatically delete head
+   <code>release.yml</code>'s header comment carries the same checklist.
+12. <strong>Prune merged branches.</strong> The repo has <em>Automatically delete head
    branches</em> enabled, so merged PR head branches are removed on merge.
    Two things that setting doesn't cover, so clean them now:
    <div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="c1"># the release branch is merged but was never a PR head:</span>
@@ -1501,8 +1509,7 @@ the <code>vX.Y.Z</code> milestone (the workflow leans on this for the
    Delete what that sweep lists. Leave alone: open-PR branches,
    Dependabot branches (it recreates its own — close via the PR), and
    the <code>upstream/*</code> refs (those are the original fork's remote, not
-   ours).</li>
-</ol>
+   ours).</p>
 <h2 id="verifying">Verifying<a class="headerlink" href="#verifying" title="Permanent link">&para;</a></h2>
 <p>After the workflow succeeds:</p>
 <ul>
