@@ -139,13 +139,29 @@ type EndpointAddresses struct {
 // address from the real DHCP server and attaches the endpoint's child
 // link to the parent NIC.
 func (d *DriverClient) CreateEndpoint(ctx context.Context, netID, endpointID string) (EndpointAddresses, error) {
+	return d.CreateEndpointWithMAC(ctx, netID, endpointID, "")
+}
+
+// CreateEndpointWithMAC is CreateEndpoint with an explicit hardware
+// address, the way libnetwork passes one when the caller pinned it.
+//
+// It exists so a test can lease the SAME address twice on purpose: the
+// DHCP server keys its offers on the client's MAC, so a fixed MAC makes
+// the second lease land on the first one's address instead of whatever
+// the pool hands out next. That turns "hope the address repeats" into a
+// property of the request.
+func (d *DriverClient) CreateEndpointWithMAC(ctx context.Context, netID, endpointID, mac string) (EndpointAddresses, error) {
 	var res struct {
 		Interface *EndpointAddresses
+	}
+	iface := map[string]any{}
+	if mac != "" {
+		iface["MacAddress"] = mac
 	}
 	err := d.call(ctx, "NetworkDriver.CreateEndpoint", map[string]any{
 		"NetworkID":  netID,
 		"EndpointID": endpointID,
-		"Interface":  map[string]any{},
+		"Interface":  iface,
 		"Options":    map[string]any{},
 	}, &res)
 	if err != nil {

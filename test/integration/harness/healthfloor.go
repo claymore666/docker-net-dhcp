@@ -77,6 +77,9 @@ type HealthResponse struct {
 	// that never happened reads exactly like a clean segment.
 	AddressConflicts      int32 `json:"address_conflicts"`
 	ConflictProbeFailures int32 `json:"conflict_probe_failures"`
+	// ConflictProbeStaleRoutes counts leftover probe routes reclaimed
+	// from a probe cut short before it could clean up (#572).
+	ConflictProbeStaleRoutes int32 `json:"conflict_probe_stale_routes"`
 	// AddressConflictProbes is what makes address_conflicts=0 mean
 	// anything: zero probes and a clean segment read identically
 	// otherwise.

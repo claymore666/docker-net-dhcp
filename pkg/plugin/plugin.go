@@ -623,6 +623,18 @@ type Plugin struct {
 	// #524 stayed invisible through a production incident.
 	addressConflicts      atomic.Int32
 	conflictProbeFailures atomic.Int32
+
+	// conflictProbeStaleRoutes counts leftover probe routes reclaimed
+	// from a previous probe that was cut short before it could clean up
+	// (#572). The probe goroutine is detached, so a plugin stop inside
+	// its window leaves its /32 behind and every later probe for that
+	// address fails with EEXIST until something removes it.
+	//
+	// Not healthy-affecting: the probe it appears in went on to run.
+	// Counted because the recovery hides a real event — the plugin being
+	// stopped mid-probe — and a detector that silently repairs itself is
+	// how the last one stopped being trustworthy.
+	conflictProbeStaleRoutes atomic.Int32
 	// addressConflictProbes counts probes that ran to a verdict —
 	// conflict or clean. Not Healthy-affecting, and the reason it
 	// exists at all: without it, "the segment is clean" and "the
