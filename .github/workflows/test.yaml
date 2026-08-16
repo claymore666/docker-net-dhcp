@@ -124,6 +124,7 @@ jobs:
           bash scripts/test-check-go-pins.sh
           bash scripts/test-check-build-context.sh
           bash scripts/test-check-cosign-docs.sh
+          bash scripts/test-check-coverage-run.sh
 
       # Every driver-option key the code parses must be documented in
       # docs/reference.md — an undocumented option turns CI red (#132).

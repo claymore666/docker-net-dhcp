@@ -357,7 +357,15 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
    PR sits at `BLOCKED` with nothing to click into. It is not a missing
    trigger. GitHub keeps one running plus one pending run per
    concurrency group, so pushing another commit to the release PR while
-   coverage is still queued displaces it. Confirm and recover with:
+   coverage is still queued displaces it — and a run displaced before
+   any job was assigned creates no check run at all, which is why the
+   `coverage` context goes absent rather than red.
+
+   You should not have to notice this yourself: the **Coverage
+   presence** check (`.github/workflows/coverage-presence.yml`, #504)
+   watches the head and fails with the run id and the exact recovery
+   command when the run was evicted. If it is red, do what it says. The
+   manual form, for a head it did not cover:
 
    ```sh
    gh run list --workflow coverage.yml --limit 5   # look for "cancelled"
