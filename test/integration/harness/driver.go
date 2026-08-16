@@ -15,7 +15,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -37,11 +36,11 @@ import (
 // repartitioned the shards, and the losing test could not tell whether
 // the code was wrong or the window had simply closed.
 //
-// Driving the driver directly removes the race: a Join with no
-// container behind it cannot find a container to attach to, so the
-// attach fails with util.ErrNoContainer and the orphan exists by
-// construction. No sleeps, no retries, no widened budgets — the state
-// is built rather than waited for.
+// Driving the driver directly removes the race: an endpoint Docker
+// never attached to a container cannot be claimed by one, so the attach
+// fails with util.ErrNoContainer and the orphan exists by construction.
+// No sleeps, no retries, no widened budgets — the state is built rather
+// than waited for.
 //
 // # What this is NOT
 //
@@ -232,34 +231,40 @@ func NewEndpointID(t *testing.T) string {
 	return hex.EncodeToString(b[:])
 }
 
-// SyntheticSandboxKey returns a sandbox key for a Join issued without a
-// container behind it.
+// LiveSandboxKey returns the real netns path of a running container,
+// as libnetwork recorded it.
 //
-// The key itself is nearly irrelevant, and saying so is the point. The
-// plugin's own "did the sandbox go away?" check reads the netns
-// directory, which is not mounted into the plugin container at all, so
-// that check can only ever answer "no usable evidence" (#567). What
-// actually makes a socket-driven Join orphan its address is that no
-// container claims the endpoint on the network: the attach's container
-// lookup retries for the whole budget and then returns
-// util.ErrNoContainer, which is the state #566 is about.
+// It exists so a test can drive Join with a sandbox that GENUINELY
+// EXISTS while still reaching "no container claims this endpoint". Those
+// are two independent facts about the world, and the plugin checks them
+// separately — it asks whether the sandbox netns is still there, and it
+// asks whether any container holds this endpoint on the network. A test
+// that wants the second answer must not accidentally also give the
+// first, or it lands on the vanished-container branch instead and
+// proves something else.
 //
-// So this exists to supply a plausible, non-colliding value for a field
-// the plugin logs, not to trigger anything. It is still placed in
-// libnetwork's netns directory so the key looks like what the plugin
-// sees in production, and so the behaviour does not change if #567 ever
-// gives that check real evidence to work with.
-func SyntheticSandboxKey(t *testing.T) string {
+// This replaced a synthetic key pointing at a path that did not exist.
+// That worked only because the plugin could not read the netns
+// directory at all and so could never conclude "gone"; the moment that
+// directory became visible, the synthetic key started answering "the
+// container vanished" and the construction silently changed meaning.
+// A real key is stable under both, which is the point.
+func LiveSandboxKey(t *testing.T, ctx context.Context, cli *docker.Client, containerID string) string {
 	t.Helper()
 
-	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		t.Fatalf("generate sandbox key: %v", err)
+	info, err := cli.ContainerInspect(ctx, containerID)
+	if err != nil {
+		t.Fatalf("ContainerInspect(%s): %v", containerID[:12], err)
 	}
-	key := filepath.Join("/var/run/docker/netns", "dh-itest-nocontainer-"+hex.EncodeToString(b[:]))
-	if _, err := os.Stat(key); err == nil {
-		t.Fatalf("sandbox key %s unexpectedly exists; it must not, or a real "+
-			"container could be behind this Join", key)
+	key := info.NetworkSettings.SandboxKey
+	if key == "" {
+		t.Fatalf("container %s reports no sandbox key; it must be running for its "+
+			"netns to exist, or this construction gives the plugin the wrong answer "+
+			"about whether the container vanished", containerID[:12])
+	}
+	if _, err := os.Stat(key); err != nil {
+		t.Fatalf("sandbox key %s does not exist on the host (%v) — the whole point of "+
+			"using a live container's key is that the netns is really there", key, err)
 	}
 	return key
 }
