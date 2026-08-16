@@ -193,13 +193,15 @@ jobs:
       # refused with EBUSY — reaching the user as a `docker run` that
       # fails because of an unrelated container (#549, #486).
       #
-      # Whether the gate is HELD is proved by the compiler: addChildLink
-      # takes a *parentGuard and only lockParent makes one. This gate
-      # covers the one path round that — a direct netlink.LinkAdd — by
-      # matching every one in pkg/ and requiring each to be justified in
-      # .github/linkadd-accounting.txt. Bridge networks legitimately
-      # need the direct call, so the bypass cannot be banned; this makes
-      # taking it a decision somebody records (#571).
+      # addChildLink takes a *parentGuard, so the compiler proves a
+      # guard is present at every parent-attached LinkAdd. It cannot
+      # prove the guard is REAL — the zero value is valid Go — nor stop
+      # a direct netlink.LinkAdd. This gate covers both of those: every
+      # LinkAdd in pkg/ must be justified in
+      # .github/linkadd-accounting.txt, and a parentGuard built outside
+      # parent_gate.go fails the build. Bridge networks legitimately
+      # need the direct call, so the bypass cannot be banned; what this
+      # stops is taking it without anyone deciding to (#571).
       - name: Parent-gate accounting check
         run: bash scripts/check-parent-gate-accounting.sh
 

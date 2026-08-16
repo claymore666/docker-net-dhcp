@@ -16,21 +16,27 @@
 #
 # WHAT IT CHECKS, AND WHAT THE COMPILER CHECKS INSTEAD
 #
-# Whether the gate is HELD is not this script's job and cannot be done
-# by a text search — two of the sites take the lock several frames above
-# the LinkAdd, and proving reachability from a caller needs a call
-# graph. That half is discharged by the type system: lockParent returns
-# a *parentGuard, addChildLink demands one, and nothing else makes one,
-# so a child link created through the helper is holding the gate as a
-# matter of compilation.
+# Whether a guard is PRESENT at each LinkAdd is not this script's job
+# and could not be done by a text search anyway — two of the sites take
+# the lock several frames above the LinkAdd, and proving reachability
+# from a caller needs a call graph. The type system does that half:
+# addChildLink demands a *parentGuard, so a child link created through
+# the helper has one as a matter of compilation.
 #
-# This script covers the one remaining way round it — calling
-# netlink.LinkAdd directly instead of the helper. It matches the
-# SUPERSET, every netlink.LinkAdd in pkg/ however it is gated, and
-# requires each file to be listed with a count and a justification.
-# Bridge networks legitimately need the direct call, so the bypass
-# cannot simply be banned; what this makes impossible is taking it
-# without anyone deciding to.
+# This script covers the two ways round that, and the second is the one
+# that is easy to miss:
+#
+#  1. Call netlink.LinkAdd directly and skip the helper. Matched as the
+#     SUPERSET — every netlink.LinkAdd in pkg/ however it is gated —
+#     with each file required to carry a count and a justification.
+#     Bridge networks legitimately need the direct call, so the bypass
+#     cannot simply be banned; what stops is taking it without anyone
+#     deciding to.
+#
+#  2. Forge a guard. parentGuard's zero value is valid Go, so
+#     `addChildLink(&parentGuard{}, link)` compiles and holds nothing.
+#     "Only lockParent constructs one" is not expressible in the type
+#     system, so it is enforced below instead of asserted in a comment.
 #
 # Matching the superset rather than the interesting subset is the
 # lesson from check-version-pins, which matched only well-formed pins
@@ -57,6 +63,17 @@ done
 if [ ! -f "$MANIFEST" ]; then
     echo "FAIL  accounting file missing: $MANIFEST" >&2
     exit 1
+fi
+
+# Validate the root before scanning it. Every check below reduces to a
+# grep over $ROOT/pkg, so a wrong or missing root makes all of them
+# match nothing and the gate reports success having examined no code —
+# the failure this whole file exists to prevent, turned on itself.
+if [ ! -d "$ROOT/pkg" ]; then
+    echo "FAIL  no pkg/ directory under $ROOT" >&2
+    echo "      Every check here is a grep over that tree, so without it this gate" >&2
+    echo "      would pass having scanned nothing at all." >&2
+    exit 2
 fi
 
 fail=0
@@ -134,12 +151,55 @@ while read -r path count; do
     fi
 done < "$declared"
 
+# A guard must come from lockParent — and THAT half is not a compiler
+# guarantee, which is the part most likely to be believed anyway.
+#
+# parentGuard's zero value is valid Go, so
+#
+#     addChildLink(&parentGuard{}, link)
+#
+# compiles and takes no lock at all. lockParent returns exactly that
+# literal for the no-parent case, so the shape is already in the file as
+# a legitimate-looking pattern to copy. The realistic route to it is not
+# malice: someone adds a parent-attached call site, the compiler asks
+# for a guard, they do not know where one comes from, and the zero value
+# is right there and builds.
+#
+# Checked here because Go cannot say "only this function may construct
+# this type". Test files are excluded for the same reason as above — a
+# unit test building one is exercising the type's contract, not
+# attaching a child link to a contended parent.
+forged="$(grep -rn "parentGuard" "$ROOT/pkg" --include='*.go' 2>/dev/null \
+    | grep -v '_test\.go:' \
+    | grep -v 'parent_gate\.go:' \
+    | grep -v '\*parentGuard' \
+    | sed "s|^$ROOT/||" || true)"
+if [ -n "$forged" ]; then
+    echo "FAIL  a parentGuard is built outside the file that owns it:"
+    printf '%s\n' "$forged" | sed 's/^/      /'
+    echo "      A guard is supposed to be EVIDENCE that lockParent was called. One built"
+    echo "      any other way is evidence of nothing, and addChildLink cannot tell the two"
+    echo "      apart. Take the gate instead: g := p.lockParent(ctx, parent, \"<op>\")."
+    fail=1
+fi
+
 if [ "$fail" -ne 0 ]; then
     exit 1
 fi
 
 total="$(awk '{ s += $2 } END { print s + 0 }' "$actual")"
 files="$(wc -l < "$actual" | tr -d ' ')"
+
+# Zero sites is not a clean tree, it is a broken pattern. The plugin
+# attaches links; if this ever finds none, the grep has stopped
+# matching and every check above passed over an empty set.
+if [ "$total" -eq 0 ]; then
+    echo "FAIL  no netlink.LinkAdd found anywhere in $ROOT/pkg" >&2
+    echo "      The plugin creates links, so this means the pattern has stopped matching" >&2
+    echo "      and every check above ran against nothing. Fix the gate, not the tree." >&2
+    exit 1
+fi
 echo "parent-gate accounting: OK — $total netlink.LinkAdd site(s) across $files file(s), all accounted for."
 echo "NOTE: this does NOT prove the gate is held — addChildLink taking a *parentGuard is what"
-echo "      proves that. This covers the sites that bypass the helper and call netlink directly (#571)."
+echo "      proves that. This covers the two ways round it: a direct netlink.LinkAdd, and a"
+echo "      parentGuard forged outside parent_gate.go, which the compiler cannot refuse (#571)."

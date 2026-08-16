@@ -13,24 +13,33 @@
 #
 # HOW THIS FILE AND THE COMPILER DIVIDE THE WORK
 #
-# The gate itself is proved by the type system, not here. lockParent
-# returns a *parentGuard, addChildLink takes one, and nothing else
-# constructs one — so a child link created through addChildLink is
-# holding the gate as a matter of compilation, at every site, however
-# many frames separate the lock from the LinkAdd.
+# Most of the gate is proved by the type system, not here. lockParent
+# returns a *parentGuard and addChildLink takes one, so a child link
+# created through addChildLink is holding the gate as a matter of
+# compilation, at every site, however many frames separate the lock
+# from the LinkAdd.
 #
-# That leaves exactly one way to attach a child to a parent without the
-# gate: call netlink.LinkAdd directly and bypass the helper. This file
-# is the check on that path. scripts/check-parent-gate-accounting.sh
-# matches every netlink.LinkAdd in pkg/ — the SUPERSET, however it is
-# gated — and fails when a file is unlisted, when a count has changed,
-# or when an entry has no justification. Bypassing the helper stays
-# possible, because bridge networks legitimately need it, but it stops
-# being something that can happen without anyone deciding it.
+# That leaves TWO ways round it, and the script covers both.
 #
-# So: the compiler answers "is the gate held on the guarded path", and
-# this file answers "is anything off that path, and why". Neither
-# question is answered by the other, which is why both exist.
+# 1. Call netlink.LinkAdd directly and skip the helper. This file is
+#    the check on that path: the script matches every netlink.LinkAdd
+#    in pkg/ — the SUPERSET, however it is gated — and fails when a
+#    file is unlisted, when a count has changed, or when an entry has
+#    no justification. The bypass stays possible, because bridge
+#    networks legitimately need it; what stops is it happening without
+#    anyone deciding it.
+#
+# 2. Forge a guard. parentGuard's zero value is valid Go, so
+#    `addChildLink(&parentGuard{}, link)` compiles and holds nothing.
+#    "Only lockParent constructs one" is not a thing the type system
+#    can say, so the script fails the build on a parentGuard built
+#    anywhere but parent_gate.go.
+#
+# So: the compiler answers "is a guard present at the LinkAdd", and
+# this script answers "is the guard real, and is anything off the
+# guarded path". Neither question is answered by the other, which is
+# why both exist — and why the compiler half must not be described as
+# doing all of it.
 #
 # FORMAT
 #

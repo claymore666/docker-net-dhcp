@@ -130,6 +130,22 @@ check "an entry for a file with no LinkAdd left fails" 1 "$TMP/stale" \
 check "a missing manifest fails rather than passing vacuously" 1 "$TMP/ok" \
     "$TMP/ok/does-not-exist.txt" "accounting file missing"
 
+# The gate turned on itself. Every check here is a grep over $ROOT/pkg,
+# so a wrong root makes all of them match nothing — and a gate that
+# reports success having scanned no code is the exact failure the whole
+# file exists to prevent.
+mkdir -p "$TMP/norootpkg"
+cp "$TMP/ok/manifest.txt" "$TMP/norootpkg/manifest.txt"
+check "a root with no pkg/ exits 2 rather than passing" 2 "$TMP/norootpkg" \
+    "$TMP/norootpkg/manifest.txt" "would pass having scanned nothing"
+
+# Same shape one level in: the tree is there, the pattern finds nothing.
+mkdir -p "$TMP/nosites/pkg/plugin"
+printf 'package plugin\n\nfunc nothing() {}\n' > "$TMP/nosites/pkg/plugin/quiet.go"
+printf '# nothing declared\n' > "$TMP/nosites/manifest.txt"
+check "zero LinkAdd sites is a broken pattern, not a clean tree" 1 "$TMP/nosites" \
+    "$TMP/nosites/manifest.txt" "pattern has stopped matching"
+
 # Usage errors must be distinguishable from findings: a gate invoked
 # wrongly that exits 1 reads in a log exactly like a gate that found
 # something, and the wrong one gets investigated.
@@ -140,6 +156,94 @@ else
     echo "FAIL: an unknown flag exits 2, not 1"
     failures=$((failures + 1))
 fi
+
+# ------------------------------------------------- the forged guard
+
+# The compile-time half of the parent gate rests on "only lockParent
+# constructs a parentGuard", which Go cannot enforce: the zero value is
+# valid, so `addChildLink(&parentGuard{}, link)` compiles and holds
+# nothing. Verified by building exactly that against the real package
+# before this check existed. These cases are what makes the claim true.
+
+mkguard() {
+    mkdir -p "$1/pkg/plugin"
+    cat > "$1/pkg/plugin/parent_gate.go" <<'EOF'
+package plugin
+
+type parentGuard struct{ release func() }
+
+func (p *Plugin) lockParent(parent string) *parentGuard {
+	return &parentGuard{}
+}
+
+func addChildLink(_ *parentGuard, link netlink.Link) error {
+	return netlink.LinkAdd(link)
+}
+EOF
+    cat > "$1/manifest.txt" <<'EOF'
+pkg/plugin/parent_gate.go 1
+    The funnel; the guard is what makes the gate compile-checked.
+EOF
+}
+
+mkguard "$TMP/guard"
+check "the owning file may construct guards" 0 "$TMP/guard" "$TMP/guard/manifest.txt" \
+    "1 netlink.LinkAdd site(s)"
+
+# Taking one as a parameter is the whole point and must stay legal.
+cp -r "$TMP/guard" "$TMP/guardparam"
+cat > "$TMP/guardparam/pkg/plugin/user.go" <<'EOF'
+package plugin
+
+func attach(guard *parentGuard, link netlink.Link) error {
+	return addChildLink(guard, link)
+}
+EOF
+check "receiving a *parentGuard is legal" 0 "$TMP/guardparam" "$TMP/guardparam/manifest.txt" \
+    "1 netlink.LinkAdd site(s)"
+
+# THE case: a composite literal outside the owning file.
+cp -r "$TMP/guard" "$TMP/forged"
+cat > "$TMP/forged/pkg/plugin/user.go" <<'EOF'
+package plugin
+
+func attach(link netlink.Link) error {
+	return addChildLink(&parentGuard{}, link)
+}
+EOF
+check "a forged guard fails" 1 "$TMP/forged" "$TMP/forged/manifest.txt" \
+    "built outside the file that owns it"
+check "and the message says a forged guard is evidence of nothing" 1 "$TMP/forged" \
+    "$TMP/forged/manifest.txt" "evidence of nothing"
+
+# The same hole wearing a var declaration rather than a literal. Worth
+# its own case: a check that only matched `parentGuard{` would pass this
+# and the zero value is identical.
+cp -r "$TMP/guard" "$TMP/forgedvar"
+cat > "$TMP/forgedvar/pkg/plugin/user.go" <<'EOF'
+package plugin
+
+func attach(link netlink.Link) error {
+	var g parentGuard
+	return addChildLink(&g, link)
+}
+EOF
+check "a zero-value guard declared with var also fails" 1 "$TMP/forgedvar" \
+    "$TMP/forgedvar/manifest.txt" "built outside the file that owns it"
+
+# A unit test may build one to exercise the type's contract — Unlock on
+# a zero guard must not panic, and proving that needs a zero guard.
+cp -r "$TMP/guard" "$TMP/guardtest"
+cat > "$TMP/guardtest/pkg/plugin/gate_test.go" <<'EOF'
+package plugin
+
+func TestZeroGuardUnlockIsSafe(t *testing.T) {
+	var zero parentGuard
+	zero.Unlock()
+}
+EOF
+check "a test may build one" 0 "$TMP/guardtest" "$TMP/guardtest/manifest.txt" \
+    "1 netlink.LinkAdd site(s)"
 
 # --------------------------------------------------------- exclusions
 

@@ -57,22 +57,35 @@ import (
 // roughly two orders of magnitude, which is what makes this a
 // construction rather than a race.
 //
-// # What this therefore does NOT cover, and why nothing can
+// # Cross-mode is covered by composition, not by this test alone
 //
-// It does not reproduce a cross-mode EBUSY. Both reclaims here are the
-// same kind, so the kernel would accept both even with no gate at all;
-// what is proved is that the gate serialised them, which is the
-// mechanism that prevents the cross-mode refusal rather than the
-// refusal itself.
+// No single test here drives a cross-mode collision end to end, and
+// that is a deliberate division of labour rather than a hole. Read this
+// before "strengthening" it:
 //
-// That gap is not an oversight and is not closeable by trying harder.
-// Two operations of DIFFERENT kinds can only overlap on one parent if
-// one of them is a CreateEndpoint — a parent cannot hold live children
-// of both kinds, so the two endpoints cannot exist at once — and the
-// measurement above is that a CreateEndpoint cannot reach the gate
-// inside a reclaim's hold. Anyone who wants that coverage back needs to
-// lengthen the hold or shorten the arrival, and both of those are
-// changes to the product made to suit a test.
+//   - Every parent-attached netlink.LinkAdd in the plugin goes through
+//     addChildLink, which cannot be called without a *parentGuard. That
+//     is the compiler, at every site, including CreateEndpoint's.
+//     scripts/check-parent-gate-accounting.sh covers the two ways round
+//     it — a direct netlink.LinkAdd, and a forged zero-value guard.
+//   - The gate keys on the PARENT, not on the mode. A macvlan caller
+//     and an ipvlan caller queue on the same token by construction.
+//   - This test proves that token actually serialises two contenders at
+//     runtime, which is the part no amount of type-checking can show.
+//
+// A compiler proof plus a runtime proof of the mechanism is stronger
+// evidence than an integration test that has to be raced into
+// existence — and, as measured above, cannot be. Both reclaims here are
+// the same kind, so the kernel would accept both even with no gate; the
+// claim being made is about the gate, and it is the right claim.
+//
+// DO NOT try to recover a literal cross-mode collision by making the
+// reclaim hold the parent longer or reach it sooner. Two operations of
+// different kinds can only overlap on one parent if one is a
+// CreateEndpoint — a parent cannot hold live children of both kinds, so
+// the two endpoints cannot coexist — and a CreateEndpoint cannot reach
+// the gate inside a reclaim's hold. Every remaining route runs through
+// changing the product to suit a test.
 //
 // # The wire is the assertion of record
 //
@@ -193,15 +206,20 @@ func TestParentGate_SecondReclaimQueuesBehindTheFirst(t *testing.T) {
 	// assertion below is the thing that will say so.
 	t.Logf("PHASE collision_setup %.3fs (window open -> B's join returned)", arrived.Seconds())
 
-	after, _ := w.Await(30*time.Second, func(now, before *harness.HealthResponse) bool {
+	// The two conditions below happen at different times and must be
+	// awaited separately. parent_link_waits ticks the moment B gets in,
+	// which is as soon as A releases; B's own release is a whole DHCP
+	// round trip after that. Reading one snapshot for both is what the
+	// first version of this test did, and it reported the plugin failing
+	// to count a release that had not happened yet.
+	serialised, _ := w.Await(30*time.Second, func(now, before *harness.HealthResponse) bool {
 		return now.ParentLinkWaits > before.ParentLinkWaits
 	})
-	w.End()
 
-	if after == nil || after.ParentLinkWaits <= before.ParentLinkWaits {
+	if serialised == nil || serialised.ParentLinkWaits <= before.ParentLinkWaits {
 		got := int32(-1)
-		if after != nil {
-			got = after.ParentLinkWaits
+		if serialised != nil {
+			got = serialised.ParentLinkWaits
 		}
 		t.Fatalf("parent_link_waits did not advance (before=%d, after=%d) — B's reclaim did not "+
 			"queue behind A's, even though A's link %s was on the parent %.3fs before B was "+
@@ -212,14 +230,6 @@ func TestParentGate_SecondReclaimQueuesBehindTheFirst(t *testing.T) {
 			"Check that lockParent is still taken in synthesiseRelease, and that it is still taken "+
 			"BEFORE upReleaseLink rather than somewhere inside it.",
 			before.ParentLinkWaits, got, relLink, arrived.Seconds())
-	}
-
-	if after.ParentLinkWaitTimeouts > before.ParentLinkWaitTimeouts {
-		t.Errorf("parent_link_wait_timeouts advanced (before=%d, after=%d) — B gave up waiting and "+
-			"proceeded anyway. It may still have succeeded, because same-kind children coexist, but "+
-			"the gate's budget is no longer covering a reclaim's normal duration and a cross-mode "+
-			"caller in B's place would have been refused.",
-			before.ParentLinkWaitTimeouts, after.ParentLinkWaitTimeouts)
 	}
 
 	// Ground truth. The counter says the plugin queued; only the server
@@ -241,11 +251,39 @@ func TestParentGate_SecondReclaimQueuesBehindTheFirst(t *testing.T) {
 		time.Sleep(250 * time.Millisecond)
 	}
 
-	if after.OrphanedLeasesReleased-before.OrphanedLeasesReleased < 2 {
-		t.Errorf("orphaned_leases_released advanced by %d, want at least 2 — the server saw both "+
-			"releases but the plugin did not count them, so the counter is not a usable signal "+
-			"for this path",
-			after.OrphanedLeasesReleased-before.OrphanedLeasesReleased)
+	// Now the plugin's own count, awaited rather than sampled.
+	//
+	// This assertion is unchanged in strength and it is worth saying why,
+	// because moving a read looks exactly like relaxing one. The first
+	// version took a single snapshot at the moment parent_link_waits
+	// ticked — which is when B ACQUIRED the parent, seconds before B had
+	// released anything — and then asserted two releases against it. It
+	// reported "the plugin did not count them" for a release that had not
+	// happened yet. The claim being made here is the same claim; only the
+	// read is now ordered after the event it describes.
+	//
+	// The counter was checked before this was changed: the increment is
+	// per-manager (orphanReleaseOnce lives on the manager, not the
+	// plugin) and unconditional on success, so two reclaims give two
+	// increments. Had that not held, the fix would have been in the
+	// plugin and this test would have stayed as it was.
+	w.Await(orphanReleaseBudget, func(now, before *harness.HealthResponse) bool {
+		return now.OrphanedLeasesReleased-before.OrphanedLeasesReleased >= 2
+	})
+	_, after := w.End()
+
+	if got := after.OrphanedLeasesReleased - before.OrphanedLeasesReleased; got < 2 {
+		t.Errorf("orphaned_leases_released advanced by %d, want at least 2 — the server logged both "+
+			"releases, so the plugin did the work and did not count it. That makes this path "+
+			"invisible in production, where the counter is the only window onto it.", got)
+	}
+
+	if after.ParentLinkWaitTimeouts > before.ParentLinkWaitTimeouts {
+		t.Errorf("parent_link_wait_timeouts advanced (before=%d, after=%d) — B gave up waiting and "+
+			"proceeded anyway. It may still have succeeded, because same-kind children coexist, but "+
+			"the gate's budget is no longer covering a reclaim's normal duration and a cross-mode "+
+			"caller in B's place would have been refused.",
+			before.ParentLinkWaitTimeouts, after.ParentLinkWaitTimeouts)
 	}
 
 	// Leave the parent as we found it: an ipvlan child of ours must be

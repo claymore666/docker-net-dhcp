@@ -128,8 +128,24 @@ func (g *parentGate) acquire(ctx context.Context, parent string, budget time.Dur
 // netlink.LinkAdd appearing anywhere in pkg/. This catches the other
 // half: a child link created on a path that never went through
 // lockParent. addChildLink cannot be called without one of these, and
-// lockParent is the only thing that makes one, so the requirement is
-// discharged by the compiler rather than by review.
+// that much IS the compiler's doing.
+//
+// WHERE THE COMPILER STOPS. "Only lockParent makes one" is not
+// something Go can express. This struct's zero value is valid, so
+//
+//	addChildLink(&parentGuard{}, link)
+//
+// compiles and holds nothing — and lockParent returns exactly that
+// literal on the no-parent path below, so the shape is already in this
+// file as a pattern to copy. The realistic route to it is not malice:
+// a new parent-attached call site, a compiler demanding a guard, and
+// the zero value sitting right there.
+//
+// So that half is enforced by scripts/check-parent-gate-accounting.sh,
+// which fails the build on a parentGuard built anywhere but here. Two
+// mechanisms, and the split is deliberate — claiming the compiler does
+// both would be a prose guarantee about a property nothing checks,
+// which is the exact thing this type was introduced to replace.
 //
 // WHAT IT DOES NOT PROVE. The guard does not say WHICH parent it is
 // for, so a guard taken on one NIC and handed to a link on another
