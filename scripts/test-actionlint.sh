@@ -9,6 +9,15 @@
 # workflow. If this script fails, the linter has lost the teeth we
 # rely on — treat it like a failing unit test, not a flaky check.
 #
+# gate-selftest-runs-in: actionlint
+#
+# Declared for scripts/run-gate-selftests.sh (#542): this needs the
+# actionlint binary, which only the actionlint job installs, so running
+# it in the test job's discovery loop would fail for want of a tool
+# rather than for a defect. The runner verifies this file is actually
+# referenced by a workflow, so the declaration cannot quietly mean
+# "runs nowhere".
+#
 # Usage: test-actionlint.sh [path-to-actionlint]
 #
 # Exit: 0 linter has its teeth, 1 it lost them, 2 cannot test.
