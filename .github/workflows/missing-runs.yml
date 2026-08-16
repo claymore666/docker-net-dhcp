@@ -17,6 +17,13 @@ name: Missing runs
 # This cannot live inside a normal run: nothing executes to notice that
 # nothing executed. Hence a schedule.
 #
+# It also reconciles BRANCH heads on dev and main (#515), where the
+# question is different: not "does a run exist" but "did one execute".
+# A burst of merges leaves commits whose push run was cancelled before
+# any job started — a run exists for them, so the PR-head question
+# answers yes and reports them clean. Those commits are permanent points
+# in the branch's history that nothing ever tested.
+#
 # Hosted runner, read-only token, no privileges — it must not compete
 # for the self-hosted pool it is reporting on.
 on:
@@ -47,8 +54,13 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Reconcile open PR heads against existing runs
+      - name: Reconcile PR and branch heads against the runs that executed
         env:
           GH_TOKEN: ${{ github.token }}
           GATE_REPO: ${{ github.repository }}
+          # 15 covers a merge burst comfortably at an hourly cadence:
+          # the 2026-08-13 incident put six runs on dev in 20 seconds,
+          # and a commit stays in range for well over a day of normal
+          # traffic. Raising it costs one API call per extra commit.
+          GATE_BRANCH_COMMITS: "15"
         run: bash scripts/check-missing-runs.sh "${{ inputs.grace-minutes || '20' }}"
