@@ -48,6 +48,7 @@ const preflightProbeBudget = 8 * time.Second
 //     link name so the DISCOVER doesn't collide with any stable
 //     upstream reservation, and concurrent probes on the same host
 //     don't fight for the link name.
+//
 //  2. Create a temporary child of the parent NIC in the host netns, of
 //     the SAME KIND the network's endpoints will use — macvlan (mode
 //     bridge) for a macvlan network, ipvlan (L2) for an ipvlan one.
@@ -73,13 +74,15 @@ const preflightProbeBudget = 8 * time.Second
 //     one thing the parent's address does reach is chaddr, which is why
 //     Broadcast is already requested below (#243): an ipvlan-L2 segment
 //     cannot demux a unicast OFFER to a shared MAC.
+//
 //  3. Bring it up and run dhcp.GetIP one-shot with the probe budget.
 //     dhcpcd has no DISCOVER-only flag; we accept the full DORA and
 //     let the upstream server briefly hold a lease that times out
 //     naturally (no `release` directive sent). The cost is one
 //     transient pool entry
 //     per `docker network create -o validate_dhcp=true`.
-//  4. Tear down the macvlan child unconditionally on return.
+//
+//  4. Tear down the child unconditionally on return.
 //
 // On success returns nil. On failure wraps the underlying error
 // (link-create failed, dhcpcd timeout, malformed lease, etc.) with
