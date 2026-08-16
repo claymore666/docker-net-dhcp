@@ -6,6 +6,7 @@ package plugin
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"net"
 	"time"
@@ -124,8 +125,8 @@ func (p *Plugin) probeAddressConflict(ctx context.Context, parent string, ip net
 		Scope:     netlink.SCOPE_LINK,
 		Src:       src.addr.IP,
 	}
-	if err := netlink.RouteAdd(route); err != nil {
-		return nil, fmt.Errorf("route %s via %s: %w", ip, parent, err)
+	if err := p.addProbeRoute(route, parent, ip); err != nil {
+		return nil, err
 	}
 	defer func() {
 		if err := netlink.RouteDel(route); err != nil {
@@ -247,6 +248,59 @@ type probeSource struct {
 // server hands out is exactly the hazard this file detects. So that
 // case falls back to a random link-local source, whose answers are
 // trustworthy and whose silences are not — see the caller.
+// addProbeRoute installs the probe's temporary /32, reclaiming a
+// leftover one if the previous owner never got to remove it (#572).
+//
+// # Why a leftover is possible at all
+//
+// The probe runs in a detached goroutine with its own background
+// context, so nothing waits for it. If the process goes away inside the
+// probe's window — a daemon restart, a `docker plugin disable`, an
+// upgrade — the deferred RouteDel never runs and a /32 for that address
+// is left on the parent. The next probe for the same address then gets
+// EEXIST from RouteAdd, reports "probe could not run", and the address
+// is never checked. Intermittent, because it needs the process to die
+// inside a roughly two-second window, and invisible in the ordinary
+// case because the counter it increments is not healthy-affecting.
+//
+// # Why reclaiming is safe
+//
+// EEXIST is keyed on the destination, so the route in the way is for
+// THIS address. Two probes for one address cannot both be legitimate:
+// the address belongs to a single endpoint at a time, and a genuine
+// overlap (an endpoint restarting onto the same address) wants exactly
+// the route we are about to install anyway.
+//
+// So it is replaced rather than deleted-and-re-added. RouteReplace is
+// atomic, which matters precisely in that overlap case: a del/add pair
+// leaves a window with no route at all, and a concurrent probe's ARP
+// would leave by whatever the host table says instead — which is the
+// misrouting #524 was about. Replacing an identical route is a no-op
+// for anyone else using it.
+//
+// The reclaim is counted, not silent. A rising count means the plugin
+// is being stopped inside probe windows, which is worth seeing even
+// though each individual instance is now recovered.
+func (p *Plugin) addProbeRoute(route *netlink.Route, parent string, ip net.IP) error {
+	err := netlink.RouteAdd(route)
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, unix.EEXIST) {
+		return fmt.Errorf("route %s via %s: %w", ip, parent, err)
+	}
+
+	p.conflictProbeStaleRoutes.Add(1)
+	log.WithFields(log.Fields{
+		"parent": parent, "dst": ip.String(),
+	}).Info("[conflict-probe] reclaiming a leftover probe route; a previous probe was cut short before it could clean up")
+
+	if err := netlink.RouteReplace(route); err != nil {
+		return fmt.Errorf("reclaim leftover route %s via %s: %w", ip, parent, err)
+	}
+	return nil
+}
+
 func pickProbeSource(parentLink netlink.Link, target net.IP, subnet *net.IPNet) (probeSource, error) {
 	if subnet != nil {
 		addrs, err := nlAddrList(parentLink, unix.AF_INET)

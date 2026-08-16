@@ -368,6 +368,12 @@ type HealthResponse struct {
 	// running looks identical to a clean segment.
 	AddressConflicts      int32 `json:"address_conflicts"`
 	ConflictProbeFailures int32 `json:"conflict_probe_failures"`
+	// ConflictProbeStaleRoutes counts leftover probe routes reclaimed
+	// from a probe that was cut short before it could clean up (#572).
+	// Not Healthy-affecting — the probe that reclaimed it went on to
+	// run — but a rising count means the plugin is being stopped inside
+	// probe windows.
+	ConflictProbeStaleRoutes int32 `json:"conflict_probe_stale_routes"`
 	// AddressConflictProbes counts probes that reached a verdict. Read
 	// it before believing address_conflicts=0: a zero here means the
 	// detector did not run, not that the segment is clean.
@@ -470,6 +476,7 @@ func (p *Plugin) apiHealth(w http.ResponseWriter, r *http.Request) {
 		LeaseChanged:                 p.leaseChanged.Load(),
 		AddressConflicts:             conflicts,
 		ConflictProbeFailures:        p.conflictProbeFailures.Load(),
+		ConflictProbeStaleRoutes:     p.conflictProbeStaleRoutes.Load(),
 		AddressConflictProbes:        p.addressConflictProbes.Load(),
 		LeasesObtained:               p.leasesObtained.Load(),
 		LeasesRenewed:                p.leasesRenewed.Load(),
