@@ -240,10 +240,14 @@ func (p *Plugin) synthesiseRelease(ctx context.Context, m *dhcpManager, lease *n
 // releaseLink builds the temporary link the release is sent from,
 // matching how the endpoint was attached in the first place:
 //
-//   - macvlan / ipvlan: a macvlan child of the parent NIC. ipvlan gets
-//     macvlan here for the same reason the preflight probe does —
-//     ipvlan slaves share the parent MAC, which would collide with the
-//     endpoint MAC we are deliberately reproducing.
+//   - macvlan / ipvlan: a child of the parent NIC of the SAME KIND the
+//     endpoint had. This paragraph used to say ipvlan gets a macvlan
+//     here, "for the same reason the preflight probe does" — it no
+//     longer does either, and the reason was wrong in both places: a
+//     parent NIC is a macvlan port or an ipvlan port, never both, so
+//     asking for the other kind is refused outright (#486). The shared
+//     ipvlan MAC that motivated it is handled on identity instead, in
+//     releaseMACPlan.
 //   - bridge: a veth pair with the far end enslaved to the bridge, the
 //     near end carrying the endpoint's MAC. Same shape CreateEndpoint
 //     builds, minus the move into a container netns.

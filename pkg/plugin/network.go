@@ -243,7 +243,7 @@ func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 		// Default off; opt-in via -o validate_dhcp=true.
 		if opts.ValidateDHCP {
 			ctx, cancel := context.WithTimeout(context.Background(), preflightProbeBudget+5*time.Second)
-			err := runDHCPProbe(ctx, opts.Parent)
+			err := runDHCPProbe(ctx, opts.Parent, mode)
 			cancel()
 			if err != nil {
 				return err

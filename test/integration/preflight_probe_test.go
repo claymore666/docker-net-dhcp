@@ -45,6 +45,57 @@ func TestPreflightProbe_PassesOnReachableServer(t *testing.T) {
 	t.Logf("network %s created with validate_dhcp=true on the working fixture", netName)
 }
 
+// TestPreflightProbe_IPvlanProbeCoexistsWithIPvlanEndpoints is #486's
+// product half, and it is deterministic rather than a race.
+//
+// macvlan and ipvlan children cannot share a parent NIC — both claim
+// the parent netdev's single receive handler, so the second kind to ask
+// is refused with EBUSY. The probe used to build a macvlan whatever the
+// network's mode was. That made `-o mode=ipvlan -o validate_dhcp=true`
+// fail outright whenever any ipvlan container was already running on
+// that parent, with "device or resource busy" — a message that says
+// nothing about DHCP, which is the only thing the flag is about.
+//
+// The setup below establishes exactly that precondition and then does
+// the thing that used to fail. No timing is involved: the first
+// network's container is up and holding an ipvlan child on the parent
+// before the second network is created, so on unfixed code this fails
+// every run, and on fixed code it passes every run. That is what makes
+// it worth having — the hosted lane caught this once in nine weekly
+// runs, by luck of interleaving.
+func TestPreflightProbe_IPvlanProbeCoexistsWithIPvlanEndpoints(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	const (
+		occupantNet = "dh-itest-preflight-ipv-occupant"
+		occupantCtr = "dh-itest-preflight-ipv-occupant-ctr"
+		probeNet    = "dh-itest-preflight-ipv-probe"
+	)
+
+	t.Cleanup(func() {
+		if t.Failed() {
+			fixture.DumpLogs(func(s string) { t.Log(s) })
+			harness.DumpPluginLog(t)
+		}
+	})
+
+	// An ipvlan container, running, so the parent is unambiguously an
+	// ipvlan port for the duration of the probe below.
+	harness.CreateNetwork(t, ctx, occupantNet, "ipvlan", nil)
+	harness.RunContainer(t, ctx, occupantNet, occupantCtr)
+
+	// The operation under test. Before the fix the probe asked the
+	// kernel for a macvlan on a parent that is already an ipvlan port,
+	// and CreateNetwork returned the kernel's refusal.
+	harness.CreateNetwork(t, ctx, probeNet, "ipvlan", map[string]string{
+		"validate_dhcp": "true",
+	})
+
+	t.Logf("validate_dhcp=true succeeded on an ipvlan network while an ipvlan "+
+		"endpoint was live on the same parent (%s)", harness.HostVeth)
+}
+
 // TestPreflightProbe_FailsWhenServerUnreachable is the negative
 // guard: validate_dhcp=true with a parent that has no DHCP server
 // reachable must fail within the probe budget (8s + harness slack)
