@@ -34,15 +34,30 @@ import (
 // #370, #549 and #561 — the plugin's bookkeeping and the DHCP server's
 // state disagreeing, with only the server being right.
 //
-// # How this reaches the state, and why it is not exotic
+// # How this reaches the state, and why the sandbox must be REAL
 //
-// Driving CreateEndpoint and Join over the plugin's own socket with no
-// container behind them makes the attach's container lookup fail the
-// way it fails in production when a container is removed inside the
-// attach window — `docker run --rm` on something that exits at once, or
-// a `docker rm -f` landing in the same second. The lookup retries for
-// the whole attach budget before giving up, so this is a settled
-// answer and not a container caught mid-registration.
+// The plugin asks two independent questions when an attach fails: is
+// the sandbox netns still there, and does any container hold this
+// endpoint on the network. Only the second one is this test's subject.
+//
+// So the Join is issued with the netns path of a container that is
+// genuinely running — a live sandbox, provably present on the host —
+// against an endpoint Docker never attached to anything. The netns
+// question answers "still there", the lookup retries for the whole
+// attach budget and then answers "nobody holds it", and
+// util.ErrNoContainer is the only path out.
+//
+// The earlier version pointed Join at a netns path that did not exist,
+// which reached the same branch for the wrong reason: the plugin could
+// not read the netns directory at all, so it could never conclude
+// "gone". The moment that directory became visible (#567), the same
+// construction started answering "the container vanished" and landed on
+// a different counter. A live key is stable under both, and needing it
+// to be is the tell that the old one was a stand-in.
+//
+// The production shape this stands for is a container disconnected from
+// the network while its attach is in flight — netns present, endpoint
+// no longer on the network.
 //
 // # The assertion is the server's log
 //
@@ -56,7 +71,10 @@ func TestJoinNoContainer_AddressIsReleased(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	const netName = "dh-itest-nocontainer"
+	const (
+		netName   = "dh-itest-nocontainer"
+		holderCtr = "dh-itest-nocontainer-holder"
+	)
 
 	t.Cleanup(func() {
 		if t.Failed() {
@@ -72,6 +90,13 @@ func TestJoinNoContainer_AddressIsReleased(t *testing.T) {
 		t.Fatalf("docker client: %v", err)
 	}
 	t.Cleanup(func() { _ = cli.Close() })
+
+	// A real, running container purely to supply a real netns. It holds
+	// its OWN endpoint on this network; the endpoint under test below is
+	// a separate one that no container ever claims, which is what makes
+	// the lookup fail while the sandbox question still answers "present".
+	holderID, _, _ := harness.RunContainer(t, ctx, netName, holderCtr)
+	sandboxKey := harness.LiveSandboxKey(t, ctx, cli, holderID)
 
 	drv := harness.NewDriverClient(t, ctx, cli)
 
@@ -100,8 +125,9 @@ func TestJoinNoContainer_AddressIsReleased(t *testing.T) {
 	}
 	releasesBefore := fixture.CountLogLines("DHCPRELEASE", ip)
 
-	// No container is behind this Join, so the attach cannot find one.
-	if err := drv.Join(ctx, netID, endpointID, harness.SyntheticSandboxKey(t)); err != nil {
+	// The sandbox is real and present; the endpoint is claimed by
+	// nobody. Only the second fact can fail the attach.
+	if err := drv.Join(ctx, netID, endpointID, sandboxKey); err != nil {
 		t.Fatalf("Join: %v", err)
 	}
 
