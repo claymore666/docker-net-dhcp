@@ -119,6 +119,9 @@ fixture() {
     if [ "$#" -ge 5 ]; then
         printf '%s\n' "$5" > "$dir/pr_titles.json"
     fi
+    if [ "$#" -ge 6 ]; then
+        printf '%s\n' "$6" > "$dir/pr_bodies.json"
+    fi
     echo "$dir"
 }
 
@@ -134,6 +137,31 @@ if grep -q '	102	' "$TMP/out"; then
     failures=$((failures + 1))
 else
     echo "PASS: an untouched issue is left alone"
+fi
+
+# PR body parses 'Closes #N', 'Fixes #N, #M', and case variations (#548).
+D=$(fixture pr_body \
+    'chore: nothing' \
+    '[{"number":103,"labels":[]},{"number":104,"labels":[]},{"number":105,"labels":[]},{"number":106,"labels":[]},{"number":107,"labels":[]},{"number":108,"labels":[]}]' \
+    '[{"number":903,"title":"wip: work","body":"## Related issue\n\nCloses #103\n"},{"number":904,"title":"fix: bug","body":"Fixes #104, #105\n"},{"number":905,"title":"chore: clean","body":"Resolves: #106\n"},{"number":906,"title":"feat: new","body":"Closes nothing on dev\n"},{"number":907,"title":"fix: lower","body":"closes #107\n"},{"number":908,"title":"fix: upper","body":"FIXES #108\n"}]')
+plan "a PR body with Closes #N earns has-pr" 0 "$D" $'ADD\t103\thas-pr'
+plan "a PR body with Fixes #N, #M earns has-pr for first" 0 "$D" $'ADD\t104\thas-pr'
+plan "a PR body with Fixes #N, #M earns has-pr for second" 0 "$D" $'ADD\t105\thas-pr'
+plan "a PR body with Resolves: #N earns has-pr" 0 "$D" $'ADD\t106\thas-pr'
+plan "a PR body with lowercase closes #N earns has-pr" 0 "$D" $'ADD\t107\thas-pr'
+plan "a PR body with uppercase FIXES #N earns has-pr" 0 "$D" $'ADD\t108\thas-pr'
+
+# PR template HTML comments and overlong digit strings must not parse as refs.
+D=$(fixture pr_body_comments \
+    'chore: nothing' \
+    '[{"number":123,"labels":[]},{"number":1234567,"labels":[]}]' \
+    '[{"number":909,"title":"feat: template untouched","body":"## Related issue\n\n<!-- e.g. Closes #123 -->\n"},{"number":910,"title":"feat: overlong ref","body":"Closes #12345678\n"}]')
+plan "HTML template comment is not parsed as closing ref" 0 "$D" 'SUMMARY'
+if grep -qE '^(ADD|REMOVE)' "$TMP/out"; then
+    echo "FAIL: template HTML comments or overlong numbers produced false labels"
+    failures=$((failures + 1))
+else
+    echo "PASS: template HTML comments and overlong numbers are ignored"
 fi
 
 # The number that is a PR, not an issue. 900 is referenced by the
@@ -279,6 +307,71 @@ fi
 # that is the silent-underlabelling failure this issue was about.
 D=$(fixture hop_broken "$HOP_SUBJECT" "$HOP_ISSUES" '[]' 'not json at all')
 plan "an unreadable pr_titles.json fails loudly" 1 "$D" ""
+
+# --- the hop reads PR BODIES too (#548) --------------------------------
+# The live case, and the ordinary one rather than an edge case: a squash
+# subject carries the PR's own number and nothing else, so an issue named
+# only in the body is reachable through the body or not at all. PR 532's
+# subject is "(#532)" while its body says "Closes #530", and #530 read as
+# untouched for days after its work had merged.
+D=$(fixture hop_body "$HOP_SUBJECT" "$HOP_ISSUES" '[]' \
+    '{"900":"chore: no number here"}' \
+    '{"900":"## Related issue\n\nCloses #100\n"}')
+plan "a merged PR naming its issue only in the body earns in-dev" 0 "$D" $'ADD\t100\tin-dev'
+
+# The body must not drag in anything it did not close. Same trust model
+# as the title: digits, then intersected with the open-issue list.
+D=$(fixture hop_body_scope "$HOP_SUBJECT" "$HOP_ISSUES" '[]' \
+    '{"900":"chore: no number here"}' \
+    '{"900":"Closes #100\n\nSee also #101 for context.\n"}')
+plan "an issue merely mentioned in the body is not dragged in" 0 "$D" $'ADD\t100\tin-dev'
+if grep -qE '^ADD\t101\t' "$TMP/out"; then
+    echo "FAIL: only closing keywords in a body earn in-dev"
+    failures=$((failures + 1))
+else
+    echo "PASS: only closing keywords in a body earn in-dev"
+fi
+
+# "Refs #N" means "related to" in this repo, not "delivered". PR #550
+# refs #549 while fixing one of its two findings — counting that would
+# make the label lie in the other direction, which is worse than the
+# under-labelling this change fixes.
+D=$(fixture hop_body_refs "$HOP_SUBJECT" "$HOP_ISSUES" '[]' \
+    '{"900":"chore: no number here"}' \
+    '{"900":"Refs #100\n"}')
+plan "a body that only says Refs #N earns nothing" 0 "$D" 'SUMMARY'
+if grep -qE '^(ADD|REMOVE)' "$TMP/out"; then
+    echo "FAIL: Refs in a body does not earn in-dev"
+    failures=$((failures + 1))
+else
+    echo "PASS: Refs in a body does not earn in-dev"
+fi
+
+# Bodies are attacker-controlled on a public repo, exactly as titles are,
+# and are now read by the planner rather than merely fetched.
+D=$(fixture hop_body_evil "$HOP_SUBJECT" "$HOP_ISSUES" '[]' \
+    '{"900":"chore: no number here"}' \
+    '{"900":"Closes $(touch '"$TMP"'/pwned2) #100; rm -rf /\n"}')
+plan "a hostile body is inert" 0 "$D" 'SUMMARY'
+if [ -e "$TMP/pwned2" ]; then
+    echo "FAIL: a hostile body is inert"
+    failures=$((failures + 1))
+else
+    echo "PASS: a hostile body is inert"
+fi
+
+# The negative control that keeps every fixture written before this
+# change honest: no pr_bodies.json means no body contribution, and must
+# never be an error.
+D=$(fixture hop_no_bodies "$HOP_SUBJECT" "$HOP_ISSUES" '[]' \
+    '{"900":"chore: no number here"}')
+plan "an absent pr_bodies.json is a no-op, not a failure" 0 "$D" 'SUMMARY'
+
+# An unreadable one fails loudly, for the same reason its title
+# counterpart does: a hop that silently found nothing strips labels.
+D=$(fixture hop_bodies_broken "$HOP_SUBJECT" "$HOP_ISSUES" '[]' \
+    '{"900":"chore: no number here"}' 'not json at all')
+plan "an unreadable pr_bodies.json fails loudly" 1 "$D" ""
 
 # --- the workflow must run ONE version of this script (#490) -----------
 # Not a property of the script, but the property that decides which
