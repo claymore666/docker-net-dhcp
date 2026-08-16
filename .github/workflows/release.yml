@@ -160,6 +160,33 @@ jobs:
       - name: Push to GHCR
         run: make PLUGIN_NAME="${GHCR_NAME}" PLUGIN_TAG="${{ steps.tag.outputs.tag }}" push
 
+      # The reference digests in docs/verifying-releases.md must describe
+      # the binaries this tag actually publishes (#502).
+      #
+      # Placed here deliberately: `make push` above has just built
+      # plugin/, so this is the earliest point the binaries exist, and it
+      # is still BEFORE `:latest` moves. A failure therefore leaves a
+      # published `:vX.Y.Z` with `:latest` untouched — recoverable by
+      # fixing the doc and re-running, with nothing user-visible pointing
+      # at a release that was never announced.
+      #
+      # It fails the release rather than warning, and it fails on an rc
+      # too. That is the point: the rc dry-run is where a documentation
+      # error should stop the train, not the real tag. An rc compares
+      # against its base version (v1.6.0-rc1 -> v1.6.0) because it builds
+      # from the same source and therefore carries the same digests.
+      #
+      # The digests can only be known after a tag builds, so the first rc
+      # of a new version is EXPECTED to fail here and print the block to
+      # paste into the doc. That is runbook step 10b becoming enforced
+      # rather than remembered.
+      - name: Check the documented reference digests against this build
+        run: |
+          bash scripts/check-reference-digests.sh \
+            "${{ steps.tag.outputs.tag }}" \
+            plugin/rootfs/usr/sbin/net-dhcp \
+            plugin/rootfs/usr/lib/net-dhcp/dhcp-handler
+
       - name: Tag :latest to the published GHCR digest
         if: steps.tag.outputs.prerelease != 'true'
         run: crane tag "${GHCR_NAME}:${{ steps.tag.outputs.tag }}" latest

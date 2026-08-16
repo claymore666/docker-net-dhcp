@@ -461,7 +461,15 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
    the previous version's digests in place is worse than having none:
    a reader who rebuilds the current tag and compares against them sees
    a mismatch and concludes the release does not match its source.
-   Nothing gates this today (#502).
+
+   **The rc dry-run tells you the digests.** `release.yml` compares this
+   block against the binaries it just built and fails the run when they
+   disagree, printing the corrected block ready to paste (#502). So the
+   first rc of a new version is *expected* to fail on this step — that
+   is the check doing its job, and it is why the rc exists. Take the
+   block from the failed run's log, land it, and re-tag `-rc2`; the real
+   tag then passes silently. A pre-release compares against its base
+   version, so `v1.6.0-rc2` validates exactly what `v1.6.0` will publish.
 11. **Fast-forward `dev` to `main`** so the release commit (version
    pins, RELEASE_NOTES section) lands on `dev` too:
    ```sh
