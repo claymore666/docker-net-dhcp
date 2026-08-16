@@ -43,7 +43,11 @@ const orphanReleaseBudget = 45 * time.Second
 // specific address and getting a different one, since an earlier
 // container was still holding what it wanted.
 //
-// # Why there is no container here
+// # Why no container claims the endpoint under test
+//
+// There is a container running — it exists only to lend its netns, so
+// the sandbox the attach is handed is a real one. What there is not is
+// a container claiming the endpoint being tested.
 //
 // This test used to run a container executing `true`, and said in this
 // comment that "the race is therefore not close, which is what makes
@@ -69,7 +73,10 @@ func TestOrphanedLease_ReleasedWhenContainerExitsEarly(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	const netName = "dh-itest-orphanrel"
+	const (
+		netName   = "dh-itest-orphanrel"
+		holderCtr = "dh-itest-orphanrel-holder"
+	)
 
 	t.Cleanup(func() {
 		if t.Failed() {
@@ -85,6 +92,13 @@ func TestOrphanedLease_ReleasedWhenContainerExitsEarly(t *testing.T) {
 		t.Fatalf("docker client: %v", err)
 	}
 	t.Cleanup(func() { _ = cli.Close() })
+
+	// A real, running container purely to supply a real netns. The
+	// endpoint under test is a separate one that no container ever
+	// claims, so the sandbox question answers "present" and only the
+	// container lookup can fail — which is the state being constructed.
+	holderID, _, _ := harness.RunContainer(t, ctx, netName, holderCtr)
+	sandboxKey := harness.LiveSandboxKey(t, ctx, cli, holderID)
 
 	drv := harness.NewDriverClient(t, ctx, cli)
 
@@ -112,9 +126,14 @@ func TestOrphanedLease_ReleasedWhenContainerExitsEarly(t *testing.T) {
 	}
 	releasesBefore := fixture.CountLogLines("DHCPRELEASE", ip)
 
-	// Orphan it: the sandbox does not exist, so the attach cannot
-	// complete and nobody is left responsible for the address.
-	if err := drv.Join(ctx, netID, endpointID, harness.SyntheticSandboxKey(t)); err != nil {
+	// Orphan it. The sandbox is real and present — it belongs to the
+	// holder container — and this endpoint is claimed by nobody, so the
+	// container lookup is the only thing that can fail the attach and
+	// nobody is left responsible for the address. Using a live netns
+	// rather than a made-up path matters: a missing one would fail the
+	// attach for a second, different reason and charge a different
+	// counter, so the test would stop distinguishing them (#573).
+	if err := drv.Join(ctx, netID, endpointID, sandboxKey); err != nil {
 		t.Fatalf("Join(no container): %v", err)
 	}
 
@@ -331,8 +350,8 @@ func awaitReleaseLinkPresent(t *testing.T, budget time.Duration) string {
 			t.Fatalf("no orphan-release link appeared within %v — the reclaim never "+
 				"started, so there is no window to collide with. This is a failure to "+
 				"CONSTRUCT the scenario, not evidence about the code under test: check "+
-				"that the endpoint was actually orphaned (Join against a sandbox that "+
-				"does not exist) before looking anywhere else", budget)
+				"that the endpoint was actually orphaned (Join against a live sandbox "+
+				"that no container claims) before looking anywhere else", budget)
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
@@ -386,7 +405,8 @@ func orphanedAfter(h *harness.HealthResponse) int32 {
 // used to orphan its lease by racing a container's exit against the
 // persistent client's DORA, so a deterministic negative control sat
 // behind a probabilistic setup. It is now constructed the same way as
-// the macvlan test above: Join against a sandbox that does not exist.
+// the macvlan test above: Join against a live sandbox that no container
+// claims, so the container lookup is the only thing that can fail.
 //
 // Same shape as that test, and the assertion that matters is the same:
 // the DHCP server's own log, not a counter. A counter can only say the
@@ -395,7 +415,10 @@ func TestOrphanedLease_ReleasedInIpvlanMode(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	const netName = "dh-itest-orphanrel-ipvlan"
+	const (
+		netName   = "dh-itest-orphanrel-ipvlan"
+		holderCtr = "dh-itest-orphanrel-ipvlan-holder"
+	)
 
 	t.Cleanup(func() {
 		if t.Failed() {
@@ -411,6 +434,13 @@ func TestOrphanedLease_ReleasedInIpvlanMode(t *testing.T) {
 		t.Fatalf("docker client: %v", err)
 	}
 	t.Cleanup(func() { _ = cli.Close() })
+
+	// A real, running container purely to supply a real netns. The
+	// endpoint under test is a separate one that no container ever
+	// claims, so the sandbox question answers "present" and only the
+	// container lookup can fail — which is the state being constructed.
+	holderID, _, _ := harness.RunContainer(t, ctx, netName, holderCtr)
+	sandboxKey := harness.LiveSandboxKey(t, ctx, cli, holderID)
 
 	drv := harness.NewDriverClient(t, ctx, cli)
 
@@ -434,7 +464,7 @@ func TestOrphanedLease_ReleasedInIpvlanMode(t *testing.T) {
 	}
 	releasesBefore := fixture.CountLogLines("DHCPRELEASE", ip)
 
-	if err := drv.Join(ctx, netID, endpointID, harness.SyntheticSandboxKey(t)); err != nil {
+	if err := drv.Join(ctx, netID, endpointID, sandboxKey); err != nil {
 		t.Fatalf("Join(no container): %v", err)
 	}
 
