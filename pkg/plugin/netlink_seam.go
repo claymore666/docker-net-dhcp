@@ -18,6 +18,7 @@ var (
 	nlAddrAdd           = netlink.AddrAdd
 	nlAddrList          = netlink.AddrList
 	nlRouteListFiltered = netlink.RouteListFiltered
+	nlLinkList          = netlink.LinkList
 )
 
 // linkLister is the subset of *netlink.Handle that findLinkByMAC needs.

@@ -75,6 +75,85 @@ func newChildLink(mode string, la netlink.LinkAttrs) netlink.Link {
 	return &netlink.Macvlan{LinkAttrs: la, Mode: netlink.MACVLAN_MODE_BRIDGE}
 }
 
+// explainChildLinkAdd turns the kernel's bare EBUSY on child-link
+// creation into the sentence that answers it.
+//
+// macvlan and ipvlan children are MUTUALLY EXCLUSIVE on one parent: both
+// claim the parent netdev's single receive handler, and the second kind
+// to ask is refused with EBUSY. Many children of the SAME kind are fine,
+// and removing the last child of one kind frees the parent for the
+// other. Verified directly against the kernel, both directions.
+//
+// Left as a bare errno this is close to undiagnosable. "failed to create
+// ipvlan link: device or resource busy" says nothing about the macvlan
+// network next to it, and an operator reading it has no reason to
+// suspect a different network is the cause. It cost this project a
+// weekly cross-check failure that was first blamed on the runner image
+// (#486), and both directions of it are in the CI record: an ipvlan
+// endpoint refused while a macvlan child was live, and a macvlan
+// validate_dhcp probe refused while an ipvlan child was live.
+//
+// Deliberately NOT a retry. Where this is teardown lag it would go away
+// on its own, but where the operator really is running both kinds on one
+// NIC it is permanent, and retrying a permanent condition only delays a
+// confusing error — the same trade #486 called out. Naming the cause
+// serves both cases: the transient one says what to wait for, the
+// permanent one says what to change.
+//
+// The parent is inspected rather than guessed, so the message can name
+// the kind actually in the way. Only reached on the error path.
+func explainChildLinkAdd(err error, mode, parent string, parentIndex int) error {
+	if !errors.Is(err, unix.EBUSY) {
+		return fmt.Errorf("failed to create %v link: %w", mode, err)
+	}
+
+	occupant := childLinkKind(parentIndex)
+	if occupant == "" || occupant == mode {
+		// EBUSY with nothing of the other kind visible: the blocker has
+		// already gone (a teardown that completed between the refusal
+		// and this lookup) or lives somewhere this scan cannot see.
+		// Say what is known and no more.
+		return fmt.Errorf("failed to create %v link on %q: %w — the parent would not "+
+			"accept another child; if a %v network is being torn down on the same "+
+			"parent, retry once it has finished", mode, parent, err, otherChildMode(mode))
+	}
+
+	return fmt.Errorf("failed to create %v link on %q: %w — %q already carries %v "+
+		"children, and a parent interface can be a macvlan port or an ipvlan port "+
+		"but not both. Put the %v network on a different parent interface, or move "+
+		"both networks to the same mode",
+		mode, parent, err, parent, occupant, mode)
+}
+
+// childLinkKind reports the kind of parent-attached child already on
+// this parent — "macvlan", "ipvlan", or "" if it carries neither.
+func childLinkKind(parentIndex int) string {
+	links, err := nlLinkList()
+	if err != nil {
+		return ""
+	}
+	for _, l := range links {
+		if l.Attrs().ParentIndex != parentIndex {
+			continue
+		}
+		switch l.Type() {
+		case "macvlan":
+			return ModeMacvlan
+		case "ipvlan":
+			return ModeIPvlan
+		}
+	}
+	return ""
+}
+
+// otherChildMode names the kind that would conflict with this one.
+func otherChildMode(mode string) string {
+	if mode == ModeIPvlan {
+		return ModeMacvlan
+	}
+	return ModeIPvlan
+}
+
 // childLinkUpBudget bounds the wait for a child link's hardware address
 // to become free. See linkUpAwaitingAddress.
 //
@@ -278,7 +357,7 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 	link := newChildLink(mode, la)
 
 	if err := netlink.LinkAdd(link); err != nil {
-		return res, fmt.Errorf("failed to create %v link: %w", mode, err)
+		return res, explainChildLinkAdd(err, mode, opts.Parent, parent.Attrs().Index)
 	}
 
 	if err := func() error {
