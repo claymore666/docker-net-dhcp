@@ -139,6 +139,34 @@ func joinAbortedByVanish(err error, sandboxKey string) bool {
 	return sandboxGone(sandboxKey)
 }
 
+// joinFailureLeavesAddressUnused reports whether a failed attach proves
+// that nothing is using the address the CreateEndpoint one-shot took,
+// and that the plugin should therefore hand it back (#566).
+//
+// It is an allowlist of one, and the narrowness is the whole point.
+// Every start failure looks the same from the caller — an error and no
+// persistent client — but they divide into opposites:
+//
+//   - ErrNoContainer means no container holds this endpoint on the
+//     network. AwaitCondition has already retried for the entire attach
+//     budget before this surfaces, so it is a settled answer, not a
+//     glimpse of a container mid-registration. Nothing can be using the
+//     address.
+//   - Everything else — a missing binary, a netns we could not enter, a
+//     timeout — is compatible with a RUNNING container that is using
+//     that address right now. Releasing there would hand a live
+//     container's address back to the pool for reassignment, which is
+//     #524's duplicate-assignment failure with us as the cause.
+//
+// The costs are not symmetric. A reclaim we skip leaves a lease to
+// expire on its own; a reclaim we should not have made takes an address
+// away from something using it. So this returns true only where the
+// evidence is positive, and new errors are non-reclaiming by default
+// rather than by omission.
+func joinFailureLeavesAddressUnused(err error) bool {
+	return errors.Is(err, util.ErrNoContainer)
+}
+
 // sandboxNetnsDirs are the only directories a Join's sandbox key is
 // expected to live in. libnetwork bind-mounts each sandbox's netns as
 // /var/run/docker/netns/<id>; hosts where /var/run is a symlink to
@@ -1357,6 +1385,36 @@ func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) 
 				p.spawnOrphanRelease(m)
 				return
 			}
+			// No container ever claimed this endpoint on the network.
+			// The address the CreateEndpoint one-shot took is held
+			// upstream for a handover to a persistent client that can
+			// never happen, so give it back (#566).
+			//
+			// Narrow to ErrNoContainer ON PURPOSE, rather than
+			// reclaiming on every start failure. The two cases look
+			// alike from here and are opposites in effect: a start that
+			// failed for any other reason — a missing binary, a netns we
+			// could not enter — leaves a RUNNING container using that
+			// address, and handing it back would be us manufacturing
+			// #524's duplicate assignment. ErrNoContainer is the one
+			// error that says the address is unused, and it says it
+			// after AwaitCondition has retried for the whole attach
+			// budget, so it is a settled answer rather than a glimpse of
+			// a container mid-registration.
+			//
+			// A missed reclaim leaves a lease to expire on its own; a
+			// wrong one takes an address away from something using it.
+			// That asymmetry is why this is an allowlist of one and not
+			// a fallthrough.
+			if joinFailureLeavesAddressUnused(err) {
+				p.joinAbortedNoContainer.Add(1)
+				log.WithError(err).WithFields(fields).
+					Info("No container claimed the endpoint; releasing the address it was holding")
+				p.removeDHCPManagerIfSame(r.EndpointID, m)
+				p.spawnOrphanRelease(m)
+				return
+			}
+
 			p.joinStartFailures.Add(1)
 			log.WithError(err).WithFields(fields).
 				Error("Failed to start persistent DHCP client; lease will not be renewed")

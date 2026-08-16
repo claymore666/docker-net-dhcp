@@ -657,3 +657,49 @@ func TestJoinFailure_TeardownCancelIsNotAFault(t *testing.T) {
 			"the resulting 'context canceled' will be counted as a plugin fault")
 	}
 }
+
+// TestJoinFailureLeavesAddressUnused pins the predicate that decides
+// whether a failed attach hands its address back (#566).
+//
+// The negative half is the important half. A reclaim that fires on the
+// wrong error takes an address away from a container that is using it —
+// the same duplicate assignment #524 was about, except caused by us —
+// so this asserts the default is "do not release" and that only one
+// error opts in.
+func TestJoinFailureLeavesAddressUnused(t *testing.T) {
+	t.Run("no container claimed the endpoint", func(t *testing.T) {
+		if !joinFailureLeavesAddressUnused(util.ErrNoContainer) {
+			t.Error("ErrNoContainer did not release the address; the lease it took is leaked (#566)")
+		}
+	})
+
+	t.Run("wrapped, as the attach path actually produces it", func(t *testing.T) {
+		err := fmt.Errorf("failed to find container: %w", util.ErrNoContainer)
+		if !joinFailureLeavesAddressUnused(err) {
+			t.Error("a wrapped ErrNoContainer was not recognised; errors.Is is required, not ==")
+		}
+	})
+
+	// Every one of these is compatible with a RUNNING container holding
+	// the address. Releasing on any of them is worse than the leak it
+	// would fix.
+	t.Run("a live container keeps its address", func(t *testing.T) {
+		for _, tc := range []struct {
+			name string
+			err  error
+		}{
+			{"nil error", nil},
+			{"daemon unreachable", fmt.Errorf("failed to get Docker container info: %w",
+				fmt.Errorf("%w (last attempt: %w)", context.DeadlineExceeded, errors.New("connection refused")))},
+			{"permission denied on the netns", fmt.Errorf("failed to get sandbox network namespace: %w", syscall.EACCES)},
+			{"dhcpcd refused to start", errors.New("failed to start DHCP client: exec format error")},
+			{"attach timed out", context.DeadlineExceeded},
+			{"no sandbox", util.ErrNoSandbox},
+		} {
+			if joinFailureLeavesAddressUnused(tc.err) {
+				t.Errorf("%s: released the address of a container that may still be running — "+
+					"this is #524's duplicate assignment, manufactured by the plugin", tc.name)
+			}
+		}
+	})
+}

@@ -526,6 +526,24 @@ type Plugin struct {
 	// exit could flip healthy to false.
 	joinAbortedContainerGone atomic.Int32
 
+	// joinAbortedNoContainer counts attaches abandoned because no
+	// container ever claimed the endpoint on the network (#566).
+	//
+	// The distinction from joinAbortedContainerGone is where the evidence
+	// comes from, and it matters because the sandbox-key evidence is not
+	// available in a shipped plugin at all: the netns directory is not
+	// mounted into the plugin container, so the filesystem check can only
+	// answer "no usable evidence" and every vanished container that does
+	// not produce a Docker API 404 used to fall through to
+	// joinStartFailures (#567). This counter is that fall-through,
+	// recognised.
+	//
+	// Not healthy-affecting, for the same reason as its two siblings:
+	// there is no running container missing a renewal client, because
+	// there is no container. A sustained rise still says something real
+	// about the workload, so it stays visible.
+	joinAbortedNoContainer atomic.Int32
+
 	// joinAttachSlow counts attaches that finished, but only after
 	// outlasting AwaitTimeout — i.e. ones that would have been
 	// abandoned before attachDaemonBusyGrace existed, and were counted
