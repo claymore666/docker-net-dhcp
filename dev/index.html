@@ -1013,10 +1013,17 @@ right pick when you don't want to reconfigure the host's networking.</p>
 </ul>
 <h2 id="images-releases">Images &amp; releases<a class="headerlink" href="#images-releases" title="Permanent link">&para;</a></h2>
 <p>This fork publishes semver-tagged plugin images on GHCR
-(<code>ghcr.io/claymore666/docker-net-dhcp:vX.Y.Z</code>, <code>linux/amd64</code>; ARM via
-the build pipeline on request) and mirrors them to Docker Hub
-(<code>claymore666/net-dhcp</code>). Pin a version (<code>:vX.Y.Z</code>) for reproducibility,
-or track <code>:latest</code>.</p>
+(<code>ghcr.io/claymore666/docker-net-dhcp:vX.Y.Z</code>) and mirrors them to
+Docker Hub (<code>claymore666/net-dhcp</code>). Pin a version (<code>:vX.Y.Z</code>) for
+reproducibility, or track <code>:latest</code>.</p>
+<p>Published builds are <strong><code>linux/amd64</code> only</strong>. A Docker <em>plugin</em> cannot be
+installed from a multi-architecture manifest list at all: the daemon
+reads a plugin's privileges before pulling it, its manifest handler
+matches single manifests only, and an index therefore fails with <code>did
+not find plugin config for specified reference</code> on every architecture —
+with no <code>--platform</code> to steer it. arm64 needs a tag of its own rather
+than a flag on this one, tracked in
+<a href="https://github.com/claymore666/docker-net-dhcp/issues/507">#507</a>.</p>
 <ul>
 <li><a href="https://github.com/claymore666/docker-net-dhcp/pkgs/container/docker-net-dhcp">GHCR package</a></li>
 <li><a href="https://github.com/claymore666/docker-net-dhcp/releases">GitHub Releases</a>

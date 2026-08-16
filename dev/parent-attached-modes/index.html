@@ -1017,6 +1017,17 @@ sidecar, no <code>cap_add</code>:</p>
   cannot reach the parent NIC's own host IP, and vice-versa. This is a
   kernel-level rule, not a plugin restriction. For host↔container
   traffic you'd need bridge mode or a second NIC.</li>
+<li><strong>The parent should carry an address on the leased subnet.</strong> Normally
+  it does — a macvlan/ipvlan parent is the host NIC, holding the host's
+  own DHCP address — and nothing here requires you to add one. It
+  matters because the plugin checks each new lease against the segment
+  (v1.6.0+, #524) by resolving the address from the parent, and a host
+  answers ARP only if it can route a reply back to the sender. On a
+  deliberately address-less parent that check reports
+  <code>conflict_probe_failures</code> and an explicit <em>undetermined</em> instead of a
+  clean result — addressing still works exactly as before, you just lose
+  the detection. See
+  <a href="../reference/#pluginhealth"><code>/Plugin.Health</code></a>.</li>
 <li><strong>ipvlan-specific:</strong> custom MAC addresses are unsupported (children
   share the parent's MAC). Passing <code>--mac-address</code> on <code>docker run</code>
   with an ipvlan network will fail with <code>invalid MAC address</code>.</li>
@@ -1052,6 +1063,12 @@ sidecar, no <code>cap_add</code>:</p>
 </code></pre></div>
 <p>A container on a macvlan should be pingable from any other host on the LAN
 on the IP its DHCP server handed it.</p>
+<p>If you also want to confirm the lease is not colliding with something
+already on the segment, read <code>address_conflict_probes</code> before believing
+<code>address_conflicts</code> is zero — with no probes the two readings are
+identical, and "the detector never ran" is what the fault behind #524
+looked like. Both are on
+<a href="../reference/#pluginhealth"><code>/Plugin.Health</code></a>.</p>
 <h2 id="troubleshooting">Troubleshooting<a class="headerlink" href="#troubleshooting" title="Permanent link">&para;</a></h2>
 <p><strong>"parent interface is unsuitable for macvlan"</strong> — you passed a bridge,
 macvlan, or ipvlan as <code>parent</code>. Use a real NIC, a VLAN sub-interface,

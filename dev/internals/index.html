@@ -603,6 +603,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#how-a-lease-is-checked-against-the-segment" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How a lease is checked against the segment
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#how-state-outlives-a-process" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -834,6 +845,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#how-a-lease-is-checked-against-the-segment" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How a lease is checked against the segment
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#how-state-outlives-a-process" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1003,6 +1025,57 @@ lifecycle, the event plumbing, and everything below are identical.</p>
   visible from inside that namespace, so reading it means
   <code>nsenter -t &lt;dhcpcd-pid&gt; -m</code> (see
   <a href="../reference/#verifying-that-renewal-works">verifying renewal</a>).</p>
+<h2 id="how-a-lease-is-checked-against-the-segment">How a lease is checked against the segment<a class="headerlink" href="#how-a-lease-is-checked-against-the-segment" title="Permanent link">&para;</a></h2>
+<p>Since v1.6.0 the plugin asks, after each IPv4 lease, whether some <em>other</em>
+device already holds the address it was just given (#524). The counters
+and the operator-facing rules are in the
+<a href="../reference/#pluginhealth">driver reference</a>; this is the mechanism, and
+every part of it is a constraint rather than a preference.</p>
+<ul>
+<li><strong>The question is asked by sending, not by asking netlink.</strong> Inserting
+  the neighbour in <code>NUD_INCOMPLETE</code> and letting the kernel resolve it
+  looks like the tidy implementation. The call succeeds, the kernel does
+  not probe, and the entry stays <code>INCOMPLETE</code> — so the check reports
+  "nobody holds it" with a squatter sitting on the address. An ordinary
+  datagram to the discard port makes the kernel do the ARP instead; its
+  delivery is irrelevant, the packet exists to resolve L2.</li>
+<li><strong>That also keeps the plugin inside its declared privileges.</strong> A real
+  RFC 5227 ARP probe needs <code>AF_PACKET</code> and therefore <code>CAP_NET_RAW</code>, which
+  <code>config.json</code> does not grant — adding it would force every operator to
+  re-approve the plugin's privileges on upgrade. Ordinary traffic gets
+  the same answer with <code>CAP_NET_ADMIN</code> alone. (<code>dhcpcd</code> itself runs with
+  <code>-A</code>, which turns <em>its</em> conflict detection off; this is what replaces
+  it.)</li>
+<li><strong>The probe runs from the parent link, and compares MACs.</strong> Our own
+  endpoint holds the leased address too — that is the premise — so the
+  vantage point has to be one our endpoint cannot answer from, which is
+  what macvlan's parent/child isolation gives. Comparing the answering
+  MAC against the endpoint's is what makes the same code correct in
+  bridge mode, where the host <em>can</em> reach the container and a
+  did-anything-reply probe would report every single endpoint as a
+  conflict. The cost of that vantage point is that a squatter which is
+  another container on the same parent is invisible; that is excluded by
+  construction, not pending work (#528).</li>
+<li><strong>Egress is pinned, because an unrouted datagram answers the wrong
+  question.</strong> The packet is otherwise routed by the host table and can
+  leave by a different interface entirely, landing the neighbour entry
+  somewhere nobody is reading — measured as a squatted address reported
+  clean. A temporary <code>/32</code> scope-link route on the parent fixes the exit,
+  and both it and any borrowed address are removed when the probe
+  returns.</li>
+<li><strong>The source address decides whether the question is answerable at
+  all.</strong> A host answers ARP only when it can route a reply back to the
+  sender, so the probe prefers an address the parent already holds on the
+  leased subnet. Where the parent has none it falls back to a random
+  link-local source — random because two probes can run at once, and
+  link-local because any address borrowed from the operator's own subnet
+  might be the next one their DHCP server hands out. A gateway-less
+  squatter cannot reply to that fallback, which is why a parent with no
+  on-subnet address yields <code>conflict_probe_failures</code> and an explicit
+  <em>undetermined</em> rather than a clean result.</li>
+</ul>
+<p>The probe is asynchronous and off <code>CreateEndpoint</code>'s critical path, with
+a 2-second cap that only an unclaimed address ever pays.</p>
 <h2 id="how-state-outlives-a-process">How state outlives a process<a class="headerlink" href="#how-state-outlives-a-process" title="Permanent link">&para;</a></h2>
 <p>Three separate mechanisms keep addresses stable across three different
 kinds of restart. Their <em>observable</em> behaviour is documented in the
