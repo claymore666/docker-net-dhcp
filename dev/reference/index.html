@@ -1906,7 +1906,7 @@ limitations) are catalogued in
 <td>macvlan, ipvlan</td>
 <td><code>false</code></td>
 <td>v0.9.0</td>
-<td>Pre-flight probe at <code>docker network create</code>: one-shot DHCP exchange on the parent with a random locally-administered MAC, rejecting the network if no server answers within 8s. Catches isolated parents / blocked UDP 67-68 / broken VLAN tags at create time. Costs one transient lease per probe. Bridge mode rejects the option.</td>
+<td>Pre-flight probe at <code>docker network create</code>: one-shot DHCP exchange on a temporary child of the parent, rejecting the network if no server answers within 8s. Catches isolated parents / blocked UDP 67-68 / broken VLAN tags at create time. Costs one transient lease per probe. Bridge mode rejects the option. <strong>Since v1.6.0 the probe link is the same kind the network's endpoints will be</strong> — a macvlan child for a macvlan network, an ipvlan L2 child for an ipvlan one (#486). It used to build a macvlan whatever the mode was, on the reasoning that reachability is mode-agnostic; reachability is, but the parent is not. One parent cannot carry both kinds, so a macvlan probe on an ipvlan network was refused outright whenever an ipvlan container was already running on that NIC — <code>validate_dhcp</code> failing for a reason that had nothing to do with DHCP, which is the opposite of what the flag is for. <strong>What MAC you will see at the server:</strong> on macvlan, a random locally-administered address. On ipvlan, the <strong>parent's</strong> address — an ipvlan child cannot have its own, by kernel design. The random address is still generated and still reaches <code>dhcpcd</code>, where it becomes the probe's DUID and IAID, so the probe's DHCP <em>identity</em> is its own either way; it is only the link-layer address in <code>chaddr</code> that is shared. Don't go looking for a random MAC in an ipvlan probe's lease log.</td>
 </tr>
 <tr>
 <td><code>register_dns</code></td>
@@ -2610,6 +2610,11 @@ consumer-side:</p>
 <td>Container has an IP but <code>docker inspect</code> shows a different one</td>
 <td>Mid-life re-acquisition after NAK/lease change</td>
 <td>Expected degraded mode; watch <code>lease_changed</code> on <code>/Plugin.Health</code>; restart the container to resync Docker's view</td>
+</tr>
+<tr>
+<td>Container starts and gets an address, but traffic to it is intermittent or lands on the wrong machine</td>
+<td>Another device on the segment already holds that address. Usually a <strong>statically configured</strong> host inside the DHCP pool range: it never asks the server for anything, so the server cannot know the address is taken and hands it out. Nothing else reports this — the container starts, Docker shows an address, the lease was issued normally</td>
+<td>Read <code>address_conflicts</code> on <code>/Plugin.Health</code> (v1.6.0+), and read <code>address_conflict_probes</code> <strong>first</strong>: with no probes the two are indistinguishable and "the detector never ran" is what this looked like for months. If probes are 0 or <code>conflict_probe_failures</code> is climbing, the parent most likely has no address on the leased subnet, which leaves the probe unable to get an answer back — give the parent an on-subnet address and detection starts working. The conflict itself is fixed at the DHCP server (reserve or exclude the address), not at the plugin</td>
 </tr>
 <tr>
 <td><code>--mac-address</code> fails on an ipvlan network</td>
