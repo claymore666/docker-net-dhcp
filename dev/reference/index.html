@@ -2378,6 +2378,11 @@ diagnosing a specific container from them alone is not.</p>
 <td>(v1.6.0+) Conflict probes that could not reach a verdict — the parent link was unroutable to the address, the lease/MAC could not be parsed, or <strong>the parent has no address on the leased subnet</strong>, which leaves the probe unable to get an answer out of a device with no default route. The last case is the common one, and its fix is on your side: give the parent an address on the segment and conflict detection starts working. Until then the plugin reports "undetermined" here rather than counting a clean probe, because a detector that cannot see must not report all-clear. This is an unanswered question, not a known-bad address, so it does not affect <code>healthy</code>. Watch it anyway: a detector that has stopped running looks exactly like a clean segment, which is how #524 went unnoticed in the first place.</td>
 </tr>
 <tr>
+<td><code>conflict_probe_stale_routes</code></td>
+<td>no</td>
+<td>(v1.6.0+) Leftover conflict-probe routes reclaimed from a probe that was cut short before it could clean up. The probe runs detached, so stopping the plugin inside its window (a daemon restart, <code>docker plugin disable</code>, an upgrade) leaves its temporary <code>/32</code> on the parent, and every later probe for that address is refused with <code>file exists</code> until something removes it — the address then silently stops being checked. The probe now replaces the leftover and carries on; a rising count means the plugin is being stopped inside probe windows, not that any address went unchecked (#572).</td>
+</tr>
+<tr>
 <td><code>leases_obtained</code></td>
 <td>no</td>
 <td><code>dhcpcd</code> bind events (<code>BOUND</code>/<code>REBOOT</code>, and the v6 equivalents): initial bind or re-bind after NAK/lease loss. v4+v6 aggregate.</td>
