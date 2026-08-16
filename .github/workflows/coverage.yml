@@ -65,8 +65,13 @@ on:
 # running plus one pending run per group, so pushing a new commit to the
 # release PR while coverage is still pending cancels it. Same symptom as
 # #365 — a required check with no run, indistinguishable from pending.
-# The release runbook carries the recovery step; see "release PR blocked
-# on a check that has no run".
+# It recurred on the v1.5.0 release PR (#504), which is why it is no
+# longer left to the reader: coverage-presence.yml watches the head and
+# goes red, naming the evicted run and the command that recovers it. A
+# job here could not do that — concurrency is per run, so it would be
+# evicted alongside the thing it is meant to report on. The release
+# runbook carries the manual form; see "release PR blocked on a check
+# that has no run".
 concurrency:
   group: selfhosted-privileged-${{ github.ref }}
   cancel-in-progress: false
