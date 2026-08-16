@@ -2333,6 +2333,11 @@ diagnosing a specific container from them alone is not.</p>
 <td>(v1.4.0+) Attaches abandoned because the container exited before the persistent client was up. Not a fault: there is no running container missing a renewal client, so this never flips <code>healthy</code>. A sustained rise still says something real — containers dying seconds after start, e.g. a crash-loop (#373). Recognised three ways: the daemon answering "no such container", the container's netns having gone, or its sandbox key being unlinked. An attach that fails for any other reason is counted as a fault, not excused (#401).</td>
 </tr>
 <tr>
+<td><code>join_aborted_no_container</code></td>
+<td>no</td>
+<td>(v1.6.0+) Attaches abandoned because no container ever claimed the endpoint on the network, and whose leased address was released rather than left to expire. Not a fault: nothing is running without a renewal client, because nothing is running — so this never flips <code>healthy</code>. Distinct from <code>join_aborted_container_gone</code>, which needs the daemon to say "no such container" or the sandbox netns to be visibly gone; this one covers the case where the endpoint is simply unclaimed after the attach budget, which previously fell through to <code>join_start_failures</code> and leaked the address (#566).</td>
+</tr>
+<tr>
 <td><code>join_attach_slow</code></td>
 <td>no</td>
 <td>(v1.4.0+) Attaches that succeeded, but only after outlasting <code>AWAIT_TIMEOUT</code>. Not a fault — the container has its renewal client. It is reported because the wait has an external cause worth seeing: the attach asks the daemon about the container being attached, and the daemon does not answer while it is still inside that container's start. Before v1.4.0 those attaches were abandoned and counted as <code>join_start_failures</code>, leaving a running container with no renewal client (#406). A rising count means the daemon is holding containers longer, not that the plugin is degrading.</td>
