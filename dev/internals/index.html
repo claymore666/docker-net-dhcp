@@ -633,6 +633,28 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#how-a-lease-gets-handed-back" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How a lease gets handed back
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#how-operations-on-one-parent-nic-are-serialised" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How operations on one parent NIC are serialised
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#how-state-outlives-a-process" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -902,6 +924,28 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#how-a-lease-gets-handed-back" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How a lease gets handed back
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#how-operations-on-one-parent-nic-are-serialised" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How operations on one parent NIC are serialised
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#how-state-outlives-a-process" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1122,6 +1166,48 @@ every part of it is a constraint rather than a preference.</p>
 </ul>
 <p>The probe is asynchronous and off <code>CreateEndpoint</code>'s critical path, with
 a 2-second cap that only an unclaimed address ever pays.</p>
+<h2 id="how-a-lease-gets-handed-back">How a lease gets handed back<a class="headerlink" href="#how-a-lease-gets-handed-back" title="Permanent link">&para;</a></h2>
+<p>Normally the container's own <code>dhcpcd</code> does it: a graceful stop emits a
+<code>RELEASE</code> and the server frees the address at once instead of waiting
+for the lease to expire.</p>
+<p>That needs a binding to release. Two cases leave one held with nobody
+responsible for it — the persistent client <strong>never started</strong> (the
+container was already gone), or it <strong>started but never bound</strong> (it was
+signalled before its first <code>ACK</code>, so <code>dhcpcd</code> had nothing to release and
+exited cleanly). The address was won regardless, by the one-shot at
+<code>CreateEndpoint</code>.</p>
+<p>The plugin then <strong>reclaims</strong>: a temporary child of the network's kind,
+re-acquire the same address under the endpoint's identity, release it
+properly. Counted by <code>orphaned_leases_released</code> and
+<code>orphaned_lease_release_failures</code>, and written to the audit ledger.</p>
+<p><strong>The scoping is load-bearing.</strong> It fires when an endpoint <em>leaves</em>, not
+on every manager shutdown — <code>Close</code> stops every manager on an upgrade or
+<code>docker plugin disable</code>, with containers still running. A never-bound
+manager is legitimate there (a DHCP server that is not answering, while
+the container still holds the one-shot's address), and releasing would
+tell the server an address is free while it is in use: the duplicate
+assignment this release added detection for, manufactured by us.</p>
+<p>A missed reclaim leaves a lease to expire. A wrong one causes an outage.</p>
+<h2 id="how-operations-on-one-parent-nic-are-serialised">How operations on one parent NIC are serialised<a class="headerlink" href="#how-operations-on-one-parent-nic-are-serialised" title="Permanent link">&para;</a></h2>
+<p>A parent NIC registers one <code>rx_handler</code>, so it is a macvlan port or an
+ipvlan port and never both — whichever kind asks second gets <code>EBUSY</code>.
+That is a kernel rule; one mode per parent stays the operator-facing
+constraint.</p>
+<p>What the plugin can stop is inflicting it on itself. Three of its paths
+attach a child to a parent: creating an endpoint, the <code>validate_dhcp</code>
+probe, and the reclaim above — which holds its link for a full DHCP
+round trip, from a goroutine ordered against no Docker request. Since
+v1.6.0 all three take a per-parent gate first, so they queue instead of
+refusing each other (#486, #549).</p>
+<p><code>parent_link_waits</code> counts operations that queued — the mechanism
+working. <code>parent_link_wait_timeouts</code> counts ones that gave up and
+proceeded anyway; they may still succeed, but the budget has stopped
+covering a reclaim's duration.</p>
+<p>The rule is enforced by the compiler, not by review: attaching a child
+link requires a guard value only the gate can produce, so a path that
+skipped it does not compile. An accounting file covers the one way
+around — a direct <code>netlink.LinkAdd</code>, which bridge mode needs, having no
+parent to contend for.</p>
 <h2 id="how-state-outlives-a-process">How state outlives a process<a class="headerlink" href="#how-state-outlives-a-process" title="Permanent link">&para;</a></h2>
 <p>Three separate mechanisms keep addresses stable across three different
 kinds of restart. Their <em>observable</em> behaviour is documented in the
