@@ -176,6 +176,44 @@ var sandboxNetnsDirs = []string{
 	"/run/docker/netns",
 }
 
+// sandboxNetnsVisibleIn reports how many sandbox netns entries the
+// plugin can see across the permitted directories, or -1 if it cannot
+// read any of them (#567).
+//
+// This exists to make the difference between "no containers" and "no
+// evidence" observable from outside the process. sandboxGoneIn folds
+// both into false, deliberately and correctly — for its purpose an
+// unreadable directory and a present entry mean the same thing, which
+// is "do not conclude the container vanished". The cost of that folding
+// is that a directory unreachable for the entire life of the plugin
+// looks exactly like a healthy one, and did, for every release up to
+// #567.
+//
+// Separated from sandboxGoneIn rather than folded into it: this is a
+// diagnostic and must never influence the decision. A count that could
+// change an answer would be a second source of truth for the same
+// question.
+//
+// -1 rather than an error because this feeds a health field sampled on
+// every request; the caller has nothing useful to do with an error, and
+// a sentinel keeps the JSON shape one integer wide.
+// The FIRST readable directory wins rather than a sum across all of
+// them. The two entries in sandboxNetnsDirs are usually the same
+// directory reached two ways — /var/run is a symlink to /run on most
+// hosts — so adding them would report double the real count and make
+// the number meaningless exactly where it is being read for a
+// comparison against active_endpoints.
+func sandboxNetnsVisibleIn(dirs []string) int32 {
+	for _, dir := range dirs {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		return int32(len(entries))
+	}
+	return -1
+}
+
 // sandboxGoneIn is sandboxGone with the permitted directories injected,
 // so both answers can be tested without root or a live Docker sandbox.
 // Production always passes sandboxNetnsDirs.

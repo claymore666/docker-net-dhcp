@@ -379,6 +379,37 @@ type HealthResponse struct {
 	// detector did not run, not that the segment is clean.
 	AddressConflictProbes int32 `json:"address_conflict_probes"`
 
+	// SandboxNetnsVisible is how many sandbox netns entries the plugin
+	// can currently see, or -1 when it cannot read the directory at all
+	// (#567). Sampled at request time rather than accumulated — it
+	// describes the plugin's view of the host right now, not something
+	// that happened.
+	//
+	// It exists because the evidence sandboxGone depends on was
+	// unreachable for the entire life of this plugin and nothing said
+	// so. The directory is not part of the image; it is bind-mounted by
+	// config.json, and before #567 it was not mounted at all, so
+	// os.ReadDir failed on every call and sandboxGone answered "no
+	// usable evidence" forever. A dead branch is invisible precisely
+	// because it never does anything.
+	//
+	// READ IT AGAINST ACTIVE_ENDPOINTS, NOT ON ITS OWN. The two
+	// failure modes are opposite and only the comparison separates
+	// them:
+	//
+	//   -1  the directory is unreadable — the mount is missing. Every
+	//       sandboxGone answer is "no evidence", which is safe but
+	//       useless: the API 404 becomes the only source of truth.
+	//    0  with endpoints attached, the directory is readable but
+	//       WRONG — mounted from somewhere with no sandboxes in it.
+	//       This is the dangerous one. sandboxGone finds no entry
+	//       matching any key and concludes every container has
+	//       vanished, which is worse than never answering.
+	//
+	// A plain zero with no endpoints attached is neither: there is
+	// genuinely nothing to see.
+	SandboxNetnsVisible int32 `json:"sandbox_netns_visible"`
+
 	// DHCP-wire counters (T2-4). Naming intentionally drops the
 	// Prometheus `_total` suffix to stay consistent with the
 	// existing fields above; the issue's proposal listed them with
@@ -478,6 +509,7 @@ func (p *Plugin) apiHealth(w http.ResponseWriter, r *http.Request) {
 		ConflictProbeFailures:        p.conflictProbeFailures.Load(),
 		ConflictProbeStaleRoutes:     p.conflictProbeStaleRoutes.Load(),
 		AddressConflictProbes:        p.addressConflictProbes.Load(),
+		SandboxNetnsVisible:          sandboxNetnsVisibleIn(sandboxNetnsDirs),
 		LeasesObtained:               p.leasesObtained.Load(),
 		LeasesRenewed:                p.leasesRenewed.Load(),
 		DHCPTimeouts:                 p.dhcpTimeouts.Load(),
