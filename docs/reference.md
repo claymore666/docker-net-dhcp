@@ -121,12 +121,21 @@ Nothing is lost or corrupted by the failed install. (Behaviour verified
 against Docker 26.1.5, #494.)
 
 Privileges requested: `network: host`, host PID namespace, the Docker
-socket mount, a bind mount of `STATE_DIR` (v1.5.0+, see below),
+socket mount, a bind mount of `STATE_DIR` (v1.5.0+, see below), a
+**read-only** bind mount of `/var/run/docker` (v1.6.0+),
 `CAP_NET_ADMIN` + `CAP_SYS_ADMIN` + `CAP_SYS_PTRACE` (v1.3.3+). All are inherent to what the plugin does: creating links in
 arbitrary netns, driving DHCP on the host's L2 segments, querying the
 daemon — and entering a container's netns via `/proc/<pid>/ns/net`,
 which the kernel ptrace-gates when the container runs as a non-root
 user (#317).
+
+The `/var/run/docker` mount lets the plugin list the daemon's sandbox
+netns entries, so "the container went away mid-attach" is reported as
+that rather than as a generic failure (`sandbox_netns_visible`). It is
+the parent of `/var/run/docker/netns` rather than that directory
+itself, because the daemon does not create the latter until the first
+container sandbox — mounting it directly made `plugin install` fail on
+a host that had never run one (#588).
 
 **Verify the signature (v1.1.0+).** The published image is cosign-signed
 (keyless) and carries SLSA build provenance; release artifacts ship a
