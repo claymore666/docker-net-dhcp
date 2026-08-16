@@ -1339,7 +1339,14 @@ the <code>vX.Y.Z</code> milestone (the workflow leans on this for the
    PR sits at <code>BLOCKED</code> with nothing to click into. It is not a missing
    trigger. GitHub keeps one running plus one pending run per
    concurrency group, so pushing another commit to the release PR while
-   coverage is still queued displaces it. Confirm and recover with:</p>
+   coverage is still queued displaces it — and a run displaced before
+   any job was assigned creates no check run at all, which is why the
+   <code>coverage</code> context goes absent rather than red.</p>
+<p>You should not have to notice this yourself: the <strong>Coverage
+   presence</strong> check (<code>.github/workflows/coverage-presence.yml</code>, #504)
+   watches the head and fails with the run id and the exact recovery
+   command when the run was evicted. If it is red, do what it says. The
+   manual form, for a head it did not cover:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>gh<span class="w"> </span>run<span class="w"> </span>list<span class="w"> </span>--workflow<span class="w"> </span>coverage.yml<span class="w"> </span>--limit<span class="w"> </span><span class="m">5</span><span class="w">   </span><span class="c1"># look for &quot;cancelled&quot;</span>
 <a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>gh<span class="w"> </span>run<span class="w"> </span>rerun<span class="w"> </span>&lt;id&gt;<span class="w">                               </span><span class="c1"># once the group is idle</span>
 </code></pre></div>
