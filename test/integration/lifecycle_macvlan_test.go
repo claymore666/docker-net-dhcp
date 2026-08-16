@@ -42,6 +42,24 @@ func TestMain(m *testing.M) {
 	}
 	fixture = f
 
+	// Baseline the plugin before any test runs, so the floor can judge
+	// what THIS process caused rather than everything the plugin has
+	// done since it started.
+	//
+	// The sharded lanes create a plugin per job, so the two are the same
+	// thing there. The coverage lane drives ONE instrumented plugin
+	// through the main suite and then this one, and a probe failure the
+	// main suite declared as deliberate was still on the counter when
+	// this process started with an allowance of zero. That failed the
+	// v1.6.0 release PR's coverage run on a run in which nothing was
+	// wrong.
+	//
+	// Best-effort by design: a baseline that cannot be read leaves the
+	// zero value, which restores the old whole-plugin-life behaviour.
+	// That direction judges more than this process caused, never less.
+	floorHealthBaseline = harness.PluginHealthOrNil(ctx)
+	floorLogBaseline = harness.PluginLogSize(ctx)
+
 	suiteStart := time.Now()
 	rc := m.Run()
 

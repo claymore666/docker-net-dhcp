@@ -54,6 +54,22 @@ const healthFloorBudget = 30 * time.Second
 //     (#376) — and the flag is checked as well as the table, so a
 //     fourth healthy-affecting counter added to the plugin cannot slip
 //     past this suite's mirror of it.
+//
+// floorHealthBaseline / floorLogBaseline are the plugin's counters and
+// log length when this test process started, set once by TestMain.
+//
+// Package-level rather than plumbed: the floor runs after m.Run() has
+// returned, so there is no call stack to thread them through, and the
+// same reasoning already applies to conflictAllowance in the harness.
+//
+// Both zero values mean "no baseline", which is exactly the old
+// behaviour — judging the plugin's whole life. That is the safe
+// fallback: it can only widen what gets judged.
+var (
+	floorHealthBaseline *harness.HealthResponse
+	floorLogBaseline    int64
+)
+
 func checkHealthFloor(suite time.Duration) int {
 	// TestMain's own ctx carries a 60s setup timeout and expired long
 	// before m.Run() returned; the floor needs a fresh one.
@@ -134,7 +150,8 @@ func checkHealthFloor(suite time.Duration) int {
 	// green. Appended to the same findings list so it prints, counts and
 	// fails through the existing path rather than a parallel one.
 	findings = append(findings,
-		harness.ConflictCensusFindings(h, harness.AllowedConflictProbeFailures(), probeFailuresInLog)...)
+		harness.ConflictCensusFindings(h, harness.AllowedConflictProbeFailures(), probeFailuresInLog,
+			floorHealthBaseline)...)
 	if len(findings) == 0 && faultCount > 0 {
 		fmt.Fprintf(os.Stderr,
 			"HEALTH FLOOR: the counters came back clean, but the log records %d "+
@@ -248,5 +265,15 @@ func printCensuses(ctx context.Context) (joinFailures, otherFaults, probeFailure
 	fmt.Fprint(os.Stderr, harness.JoinFailureCensus(data))
 	faults, report := harness.FaultCensus(data)
 	fmt.Fprint(os.Stderr, report)
-	return harness.JoinFailureCount(data), faults, harness.ConflictProbeFailuresInLog(data)
+	// The join and fault censuses stay WHOLE-LOG on purpose. Neither has
+	// a declared allowance, so a fault carried over from an earlier
+	// process is a fault either way and re-reporting it costs nothing —
+	// whereas narrowing them would give back the restart-blindness #385
+	// closed.
+	//
+	// The conflict census is the one that must be scoped, because it is
+	// the only one judged against an allowance that a test process
+	// declares and cannot carry across an exec.
+	return harness.JoinFailureCount(data), faults,
+		harness.ConflictProbeFailuresInLog(harness.LogSince(data, floorLogBaseline))
 }

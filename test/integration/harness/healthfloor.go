@@ -847,6 +847,35 @@ func AllowedConflictProbeFailures() int32 {
 	return conflictAllowance.n
 }
 
+// base returns a usable baseline, so callers with none (a hand-built
+// HealthResponse, an older lane, a failed baseline read) get zeroes and
+// therefore the old whole-plugin-life behaviour. Judging more than this
+// process caused is the safe direction; judging less would hide a real
+// failure, which is the outcome this census exists to prevent.
+func base(b *HealthResponse) *HealthResponse {
+	if b == nil {
+		return &HealthResponse{}
+	}
+	return b
+}
+
+// deltaSincePluginStart converts a cumulative counter into what this
+// process is answerable for.
+//
+// A value BELOW the baseline means the plugin restarted mid-run and its
+// counters went back to zero. The current value is then already scoped
+// to the restart — narrower than this process, not wider — so it is
+// used as-is rather than clamped to zero. Clamping would report "no
+// probes failed" for a run in which the plugin died, which is precisely
+// the shape of #385: the counters reset, the floor saw the tail, and a
+// run with three failed Joins went green.
+func deltaSincePluginStart(now, was int32) int32 {
+	if now < was {
+		return now
+	}
+	return now - was
+}
+
 // ConflictCensusFindings judges whether the conflict-probe census is
 // evidence or an alibi, given how many failures the shard declared.
 //
@@ -892,7 +921,7 @@ func ConflictProbeFailuresInLog(logData []byte) int {
 // from ConflictProbeFailuresInLog; the larger of it and the counter wins,
 // because the counter can only ever under-report after a restart and the
 // log can only under-report if a line was lost.
-func ConflictCensusFindings(h *HealthResponse, allowed int32, observedInLog int) []FloorFinding {
+func ConflictCensusFindings(h *HealthResponse, allowed int32, observedInLog int, baseline *HealthResponse) []FloorFinding {
 	if h == nil {
 		return nil
 	}
@@ -917,7 +946,24 @@ func ConflictCensusFindings(h *HealthResponse, allowed int32, observedInLog int)
 
 	var out []FloorFinding
 
-	failures := h.ConflictProbeFailures
+	// Counters are cumulative for the PLUGIN's life; the allowance is
+	// declared by THIS process. Comparing them directly is only correct
+	// when the plugin was started for this run, which the sharded lanes
+	// happen to guarantee and the coverage lane does not — it drives one
+	// instrumented plugin through both suites back to back. There, the
+	// main suite's deliberately-degraded probe (declared, allowed, fine)
+	// was still on the counter when the failure suite's process started
+	// with an allowance of 0, and the floor called it unexplained.
+	//
+	// Wrong in the other direction too, and that is the worse one: a
+	// failure that happened before this process started would be
+	// attributed to it, and a real one that happened after a restart
+	// could be masked by subtracting.
+	probeFailures := deltaSincePluginStart(h.ConflictProbeFailures, base(baseline).ConflictProbeFailures)
+	probes := deltaSincePluginStart(h.AddressConflictProbes, base(baseline).AddressConflictProbes)
+	leases := deltaSincePluginStart(h.LeasesObtained, base(baseline).LeasesObtained)
+
+	failures := probeFailures
 	if int32(observedInLog) > failures {
 		failures = int32(observedInLog)
 	}
@@ -940,7 +986,7 @@ func ConflictCensusFindings(h *HealthResponse, allowed int32, observedInLog int)
 	// The detector never even tried, on a shard that leased addresses
 	// for it to check. Distinct from the case above: there, probes were
 	// attempted and failed; here nothing was attempted at all.
-	if h.AddressConflictProbes == 0 && failures == 0 && h.LeasesObtained > 0 {
+	if probes == 0 && failures == 0 && leases > 0 {
 		out = append(out, FloorFinding{
 			Counter: "address_conflict_probes",
 			Value:   0,

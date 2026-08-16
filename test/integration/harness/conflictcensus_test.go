@@ -26,8 +26,13 @@ func TestConflictCensusFindings(t *testing.T) {
 		name    string
 		h       *HealthResponse
 		allowed int32
-		logFail int      // failures visible in the log, which spans the whole run
+		logFail int      // failures visible in the log, scoped to this process
 		want    []string // fatal counters, in order
+		// baseline is the plugin's counters when THIS process started.
+		// nil means the plugin was started for this run, which is what
+		// every sharded lane gives us and what the coverage lane does
+		// not — it drives one plugin through both suites.
+		baseline *HealthResponse
 	}{
 		{
 			name: "nil health says nothing",
@@ -115,6 +120,51 @@ func TestConflictCensusFindings(t *testing.T) {
 			want:    nil,
 		},
 		{
+			// THE coverage-lane bug. The main suite declared and caused
+			// one probe failure, then exited; this process starts with an
+			// allowance of 0 against a plugin whose counter is still 1.
+			// Judged cumulatively that is an unexplained failure and the
+			// release PR goes red; judged against the baseline it is
+			// nothing to do with this process.
+			name:     "a failure that predates this process is not ours",
+			h:        &HealthResponse{AddressConflictProbes: 5, ConflictProbeFailures: 1, LeasesObtained: 5},
+			allowed:  0,
+			baseline: &HealthResponse{AddressConflictProbes: 4, ConflictProbeFailures: 1, LeasesObtained: 4},
+			want:     nil,
+		},
+		{
+			// The same baseline must not hide a NEW one. This is the
+			// direction that matters: a fix which only ever silences
+			// findings is not a fix.
+			name:     "a failure after the baseline is still ours",
+			h:        &HealthResponse{AddressConflictProbes: 5, ConflictProbeFailures: 2, LeasesObtained: 5},
+			allowed:  0,
+			baseline: &HealthResponse{AddressConflictProbes: 4, ConflictProbeFailures: 1, LeasesObtained: 4},
+			want:     []string{"conflict_probe_failures"},
+		},
+		{
+			// Counters below the baseline mean the plugin restarted and
+			// reset. The current value is then already scoped to the
+			// restart, so it is used as-is. Clamping to zero here would
+			// report a clean run for one in which the plugin died — #385
+			// exactly.
+			name:     "a counter below the baseline is a restart, not a negative",
+			h:        &HealthResponse{AddressConflictProbes: 1, ConflictProbeFailures: 2, LeasesObtained: 1},
+			allowed:  0,
+			baseline: &HealthResponse{AddressConflictProbes: 9, ConflictProbeFailures: 7, LeasesObtained: 9},
+			want:     []string{"conflict_probe_failures"},
+		},
+		{
+			// The never-ran check has to be scoped too. Cumulatively the
+			// plugin has probed plenty; this process leased addresses and
+			// probed none of them, which is the blindness #551 is about.
+			name:     "the detector not running in THIS process is still a finding",
+			h:        &HealthResponse{AddressConflictProbes: 4, ConflictProbeFailures: 0, LeasesObtained: 7},
+			allowed:  0,
+			baseline: &HealthResponse{AddressConflictProbes: 4, ConflictProbeFailures: 0, LeasesObtained: 4},
+			want:     []string{"address_conflict_probes"},
+		},
+		{
 			name:    "both faults are reported together, not just the first",
 			h:       &HealthResponse{AddressConflictProbes: 0, ConflictProbeFailures: 0, LeasesObtained: 2},
 			allowed: 0,
@@ -124,7 +174,7 @@ func TestConflictCensusFindings(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := fatalCounters(ConflictCensusFindings(tc.h, tc.allowed, tc.logFail))
+			got := fatalCounters(ConflictCensusFindings(tc.h, tc.allowed, tc.logFail, tc.baseline))
 			if len(got) != len(tc.want) {
 				t.Fatalf("fatal counters = %v, want %v", got, tc.want)
 			}
@@ -144,7 +194,7 @@ func TestConflictCensusFindingsAbsentCounter(t *testing.T) {
 	// A payload that publishes leases but neither census counter.
 	h := decodeHealth(t, `{"healthy":true,"leases_obtained":3}`)
 
-	got := ConflictCensusFindings(h, 0, 0)
+	got := ConflictCensusFindings(h, 0, 0, nil)
 	if len(got) != 1 {
 		t.Fatalf("findings = %v, want exactly one", got)
 	}
