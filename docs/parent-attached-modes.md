@@ -37,7 +37,7 @@ substitute yours; `ip -brief link` lists them):
 
 ```bash
 docker network create \
-    --driver=ghcr.io/claymore666/docker-net-dhcp:v1.5.0 \
+    --driver=ghcr.io/claymore666/docker-net-dhcp:v1.6.0 \
     --ipam-driver=null \
     -o mode=macvlan \
     -o parent=eth0 \
