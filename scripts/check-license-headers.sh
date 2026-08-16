@@ -23,8 +23,10 @@
 # or the fork owner: the file histories are the record of who wrote
 # what, and upstream's authors are contributors to this codebase too.
 #
-# SCOPE: tracked Go, shell and Python files — the things that are
-# source. Workflow YAML, Dockerfiles and JSON manifests are
+# SCOPE: Go, shell and Python files that git can see and does not
+# ignore — tracked or not, since a file being written is not yet tracked
+# and is exactly when this gate is worth asking. Workflow YAML,
+# Dockerfiles and JSON manifests are
 # configuration and are deliberately left alone; the criteria are about
 # source files, and two comment lines at the top of a workflow would
 # push the explanation of *why the workflow exists* below the fold for
@@ -63,11 +65,34 @@ command -v git >/dev/null 2>&1 || {
     exit 2
 }
 
-# The file list comes from git, not from find: only tracked files are
-# ours to license, and it keeps build output and worktrees out.
+# The file list comes from git, not from find: git already knows what is
+# build output and what is a nested worktree, and `find` would have to be
+# taught both by hand.
+#
+# UNTRACKED FILES COUNT TOO, and leaving them out was a real hole. A file
+# that has been written but not yet `git add`ed is invisible to
+# `ls-files` alone — and that is precisely the state a source file is in
+# for the whole time someone is writing it. So the gate answered "OK —
+# 188 files" in a working tree that contained two new files with no
+# header at all. It was right about the 188 and useless about the two.
+#
+# CI never saw the hole, which is why it survived: a fresh checkout has
+# everything committed, so tracked and present mean the same thing there.
+# It only misleads in a working checkout — the one place a person runs
+# this gate by hand, expecting it to tell them whether they are ready to
+# commit. A gate that is honest only where nobody consults it is not a
+# gate (#454).
+#
+# --exclude-standard is what keeps the enumeration honest in the other
+# direction: it applies .gitignore, so build output under plugin/ and the
+# nested worktrees under .claude/ stay out, exactly as before. Untracked
+# and ignored are different questions and only the first one is being
+# reversed here.
 FILES="${LICENSE_HEADER_FILES:-}"
 if [ -z "$FILES" ]; then
-    FILES=$(git ls-files '*.go' '*.sh' '*.py') || exit 2
+    tracked=$(git ls-files '*.go' '*.sh' '*.py') || exit 2
+    untracked=$(git ls-files --others --exclude-standard '*.go' '*.sh' '*.py') || exit 2
+    FILES=$(printf '%s\n%s\n' "$tracked" "$untracked" | grep -v '^$' | sort -u)
 fi
 
 MODE="$MODE" FILES="$FILES" python3 -c '
