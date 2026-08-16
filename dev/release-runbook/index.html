@@ -1369,7 +1369,20 @@ the <code>vX.Y.Z</code> milestone (the workflow leans on this for the
 6. <strong>Open the release PR <code>dev</code> → <code>main</code></strong> with title
    <code>Release vX.Y.Z</code> and a <code>Closes #N</code> line for <strong>every issue</strong> in
    the milestone. The list is what auto-closes them when the PR
-   merges; without it the milestone stays open after the tag.
+   merges; without it the milestone stays open after the tag.</p>
+<p><strong>Because the list is milestone membership, membership has to be
+   true.</strong> An issue that is in the milestone but not done gets closed
+   as delivered, silently, by the tag. The taxonomy already says
+   <code>backlog</code> never sits on a milestoned issue for exactly this reason,
+   and the <strong>Milestone scope</strong> workflow
+   (<code>.github/workflows/milestone-scope.yml</code>,
+   <code>scripts/check-milestone-scope.sh</code>) checks it daily rather than
+   leaving it to whoever builds the list. It splits the two cases,
+   because their fixes are opposite: <code>backlog</code> <strong>with</strong> <code>in-dev</code> means
+   the work shipped and the label is stale (drop the label, keep the
+   milestone); <code>backlog</code> <strong>without</strong> it means the work has not started
+   (move it off the milestone). Read that run before opening the
+   release PR — it is a schedule, so a red one waits quietly.
    Release PRs additionally run the <strong>Coverage</strong> workflow with the
    coverage ratchet (<code>scripts/coverage-ratchet.sh</code> vs
    <code>.github/coverage-baseline.txt</code>): no release ships with less
