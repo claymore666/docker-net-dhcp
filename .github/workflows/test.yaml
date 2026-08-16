@@ -96,35 +96,16 @@ jobs:
 
       # The CI gate scripts are code too — their table-driven tests run
       # here so a broken ratchet/vuln gate fails like any unit test.
+      #
+      # DISCOVERED, not listed (#542). This was 28 hand-maintained
+      # `bash scripts/test-...sh` lines with nothing reconciling them
+      # against the directory: add a gate with its self-test, forget the
+      # line, and the self-test never ran — no error, no warning, and
+      # `scripts/` looked fully covered while the gate it protects
+      # rotted. The logic lives in a script rather than here so it can
+      # have a self-test of its own, like every other gate in this repo.
       - name: Gate script self-tests
-        run: |
-          bash scripts/test-coverage-ratchet.sh
-          bash scripts/test-govulncheck-gate.sh
-          bash scripts/test-check-option-docs.sh
-          bash scripts/test-check-apk-pins.sh
-          bash scripts/test-check-version-pins.sh
-          bash scripts/test-integration-timing.sh
-          bash scripts/test-integration-run-gate.sh
-          bash scripts/test-check-fuzz-budget.sh
-          bash scripts/test-check-manifest-parity.sh
-          bash scripts/test-check-no-ai-attribution.sh
-          bash scripts/test-check-docs-drift.sh
-          bash scripts/test-makefile-tee.sh
-          bash scripts/test-check-test-weakening.sh
-          bash scripts/test-ci-queue-watchdog.sh
-          bash scripts/test-run-evidence.sh
-          bash scripts/test-check-missing-runs.sh
-          bash scripts/test-integration-shard.sh
-          bash scripts/test-check-issue-label-map.sh
-          bash scripts/test-sync-issue-state-labels.sh
-          bash scripts/test-check-license-headers.sh
-          bash scripts/test-badge-sync.sh
-          bash scripts/test-check-release-tooling.sh
-          bash scripts/test-check-reproducible-build.sh
-          bash scripts/test-check-go-pins.sh
-          bash scripts/test-check-build-context.sh
-          bash scripts/test-check-cosign-docs.sh
-          bash scripts/test-check-coverage-run.sh
+        run: bash scripts/run-gate-selftests.sh
 
       # Every driver-option key the code parses must be documented in
       # docs/reference.md — an undocumented option turns CI red (#132).
