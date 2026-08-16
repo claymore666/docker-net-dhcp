@@ -444,6 +444,15 @@ jobs:
           # does not create a missing bind source (#440). verify-install
           # must do exactly what the docs tell an operator to do.
           sudo mkdir -p /var/lib/net-dhcp
+          # Nothing else gets an mkdir here. This runner is the only
+          # machine that installs onto a daemon which has never created a
+          # network sandbox, and that is the whole value of the job: it
+          # is how v1.6.0-rc2 caught a bind source the daemon creates
+          # lazily (#588), which every developer box and the integration
+          # runner had long since created by running a container.
+          # Creating a missing path here would turn the one host that can
+          # see that class of bug into another host that cannot, and ship
+          # it to users instead. Fix the manifest.
           docker plugin install --grant-all-permissions "$REF"
           docker plugin ls
 

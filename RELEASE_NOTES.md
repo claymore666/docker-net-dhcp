@@ -143,6 +143,12 @@ plugin no longer inflicting that error on itself.
 - The plugin can now see the sandbox network namespaces it was already
   trying to read, so "the container is gone" is reported as that rather
   than as a generic failure. New diagnostic: `sandbox_netns_visible`.
+  Doing so adds one **read-only** bind mount of `/var/run/docker`, which
+  `docker plugin install` lists among the permissions it asks you to
+  grant. It is the parent of the namespace directory rather than the
+  directory itself, because Docker does not create that directory until
+  the first container starts — mounting it directly made the install
+  fail on a host that had never run one.
 
 ### Architecture
 

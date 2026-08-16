@@ -77,8 +77,8 @@
             ]
         },
         {
-            "source": "/var/run/docker/netns",
-            "destination": "/var/run/docker/netns",
+            "source": "/var/run/docker",
+            "destination": "/var/run/docker",
             "type": "bind",
             "options": [
                 "rbind",
