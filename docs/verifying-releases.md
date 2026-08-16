@@ -120,11 +120,11 @@ sha256sum rootfs/usr/sbin/net-dhcp \
           rootfs/usr/lib/net-dhcp/dhcp-handler
 ```
 
-The two pairs of digests must match. For **v1.5.0** they are:
+The two pairs of digests must match. For **v1.6.0** they are:
 
 ```
-3bf50a941dee0aff937526efe24bf5a08a6bc234d74fe22cfe007fd5dd1c5c42  net-dhcp
-20b6fd4f3fe9d0337faa4b7bdc9ff0c818f5092153111a4517b5262b48750ebd  dhcp-handler
+eade3423468fa55c5f2c82bd16c28f4f6e8e447096c291fe37459b36e22ac78e  net-dhcp
+140f4f14dc9a48d7991e33186c824da790f30d184fc6e014ebbeb447f22132ca  dhcp-handler
 ```
 
 Note that step 4 needs no separate digest list from us: the binaries you
