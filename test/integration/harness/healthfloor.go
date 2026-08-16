@@ -104,6 +104,14 @@ type HealthResponse struct {
 	// short-lived container is an ordinary lifecycle.
 	OrphanedLeasesReleased       int32 `json:"orphaned_leases_released"`
 	OrphanedLeaseReleaseFailures int32 `json:"orphaned_lease_release_failures"`
+	// ParentLinkWaits / ParentLinkWaitTimeouts cover contention on a
+	// shared parent NIC, where a macvlan and an ipvlan child cannot
+	// coexist (#486/#549). Waits means an operation queued and got
+	// through; timeouts means it gave up and asked the kernel anyway,
+	// which is when a container start can still fail with EBUSY.
+	// Neither is healthy-affecting.
+	ParentLinkWaits        int32 `json:"parent_link_waits"`
+	ParentLinkWaitTimeouts int32 `json:"parent_link_wait_timeouts"`
 
 	// published is the key set of the payload this value was decoded
 	// from. It exists because an absent JSON field decodes to zero,

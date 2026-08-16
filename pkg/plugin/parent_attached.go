@@ -356,7 +356,15 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 	}
 	link := newChildLink(mode, la)
 
-	if err := netlink.LinkAdd(link); err != nil {
+	// Queue behind anything else holding this parent — in practice an
+	// orphan-lease reclaim, whose temporary link is created in a
+	// goroutine ordered against nothing (#549). Held across the LinkAdd
+	// only: two endpoints on the same parent contend for microseconds,
+	// and it is the reclaim's multi-second DORA this exists to wait out.
+	guard := p.lockParent(ctx, opts.Parent, "create_endpoint")
+	err = addChildLink(guard, link)
+	guard.Unlock()
+	if err != nil {
 		return res, explainChildLinkAdd(err, mode, opts.Parent, parent.Attrs().Index)
 	}
 

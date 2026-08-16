@@ -87,12 +87,20 @@ func (p *Plugin) releaseOrphanedLease(m *dhcpManager, endpointID string) {
 
 	if err := p.synthesiseRelease(ctx, m, v4); err != nil {
 		p.orphanedLeaseReleaseFailures.Add(1)
+		// Same ledger vocabulary as an ordinary teardown, because the
+		// fact being recorded is the same one: this address was not
+		// handed back. Until now the reclaim was invisible to the audit
+		// log entirely — an endpoint that took this path left a `bound`
+		// and then nothing, which reads as a lease still held whether
+		// or not the reclaim worked.
+		m.audit("release_failed", addr)
 		log.WithError(err).WithFields(fields).
 			Warn("Could not release orphaned lease; it will be held until it expires")
 		return
 	}
 
 	p.orphanedLeasesReleased.Add(1)
+	m.audit("release", addr)
 	log.WithFields(fields).Info("Released orphaned lease")
 }
 
@@ -133,7 +141,22 @@ func (p *Plugin) synthesiseRelease(ctx context.Context, m *dhcpManager, lease *n
 		return fmt.Errorf("MAC generation: %w", err)
 	}
 
-	link, mac, err := p.upReleaseLink(ctx, m.opts, linkName, plan)
+	// Hold the parent for as long as this reclaim has a link on it.
+	//
+	// This is the long holder the gate exists for — the whole reacquire
+	// is a DHCP round trip, seconds rather than the microseconds an
+	// endpoint's own LinkAdd takes. It is also the only one that runs
+	// detached from any Docker request, which is precisely why an
+	// endpoint creation could previously walk into it.
+	//
+	// Released after the link is gone, not merely after the release is
+	// sent: the deferred LinkDel below is registered later and so runs
+	// first. Waiting on the DHCPRELEASE alone would hand the parent on
+	// while our child was still attached to it.
+	guard := p.lockParent(ctx, m.opts.Parent, "orphan_release")
+	defer guard.Unlock()
+
+	link, mac, err := p.upReleaseLink(ctx, guard, m.opts, linkName, plan)
 	if err != nil {
 		return err
 	}
@@ -255,7 +278,7 @@ func (p *Plugin) synthesiseRelease(ctx context.Context, m *dhcpManager, lease *n
 // The MAC being reused is safe precisely because this is only ever
 // called once the container is gone: nothing else on the segment is
 // answering for it.
-func (p *Plugin) releaseLink(opts DHCPNetworkOptions, name string, mac net.HardwareAddr) (netlink.Link, error) {
+func (p *Plugin) releaseLink(guard *parentGuard, opts DHCPNetworkOptions, name string, mac net.HardwareAddr) (netlink.Link, error) {
 	switch {
 	case opts.Parent != "":
 		parent, err := netlink.LinkByName(opts.Parent)
@@ -281,7 +304,7 @@ func (p *Plugin) releaseLink(opts DHCPNetworkOptions, name string, mac net.Hardw
 		// half of why an ipvlan orphaned lease has never been released
 		// (#402).
 		link := newChildLink(mode, la)
-		if err := netlink.LinkAdd(link); err != nil {
+		if err := addChildLink(guard, link); err != nil {
 			return nil, fmt.Errorf("create release %v on %q: %w", mode, opts.Parent, err)
 		}
 		return link, nil
@@ -295,6 +318,9 @@ func (p *Plugin) releaseLink(opts DHCPNetworkOptions, name string, mac net.Hardw
 		la.Name = name
 		la.HardwareAddr = mac
 		link := &netlink.Veth{LinkAttrs: la, PeerName: name + "p"}
+		// Not addChildLink: a bridge network has no parent NIC, so there
+		// is no rx_handler to contend for and no gate to hold. The guard
+		// this function carries is for the branch above.
 		if err := netlink.LinkAdd(link); err != nil {
 			return nil, fmt.Errorf("create release veth on %q: %w", opts.Bridge, err)
 		}
@@ -402,7 +428,7 @@ func releaseMACPlan(opts DHCPNetworkOptions, recorded net.HardwareAddr, synth fu
 // created, so working through a plan of addresses means destroying and
 // rebuilding the link on each attempt — a different operation that only
 // looks like the same one.
-func (p *Plugin) upReleaseLink(ctx context.Context, opts DHCPNetworkOptions, linkName string, plan []net.HardwareAddr) (netlink.Link, net.HardwareAddr, error) {
+func (p *Plugin) upReleaseLink(ctx context.Context, guard *parentGuard, opts DHCPNetworkOptions, linkName string, plan []net.HardwareAddr) (netlink.Link, net.HardwareAddr, error) {
 	var lastErr error
 	for i, mac := range plan {
 		// Every MAC but the last gets the retry window; the last is the
@@ -413,7 +439,7 @@ func (p *Plugin) upReleaseLink(ctx context.Context, opts DHCPNetworkOptions, lin
 		}
 
 		for {
-			link, err := p.releaseLink(opts, linkName, mac)
+			link, err := p.releaseLink(guard, opts, linkName, mac)
 			if err != nil {
 				return nil, nil, err
 			}

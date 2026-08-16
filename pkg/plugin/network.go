@@ -309,7 +309,13 @@ func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 		// Default off; opt-in via -o validate_dhcp=true.
 		if opts.ValidateDHCP {
 			ctx, cancel := context.WithTimeout(context.Background(), preflightProbeBudget+5*time.Second)
-			err := runDHCPProbe(ctx, opts.Parent, mode)
+			// The probe puts its own child on the parent for up to
+			// preflightProbeBudget, so it is both a waiter and a holder:
+			// it must not start on top of a reclaim, and no endpoint
+			// should start on top of it.
+			guard := p.lockParent(ctx, opts.Parent, "preflight_probe")
+			err := runDHCPProbe(ctx, guard, opts.Parent, mode)
+			guard.Unlock()
 			cancel()
 			if err != nil {
 				return err
@@ -1483,7 +1489,7 @@ func (p *Plugin) Leave(ctx context.Context, r LeaveRequest) error {
 		return util.ErrNoSandbox
 	}
 
-	stopErr := manager.Stop()
+	stopErr := manager.StopForLeave()
 
 	// Refresh the endpoint fingerprint with the most recent v4/v6 IPs
 	// the persistent client saw, *whether or not Stop succeeded*. Stop

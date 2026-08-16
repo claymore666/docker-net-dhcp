@@ -1,0 +1,87 @@
+# Every netlink.LinkAdd in pkg/ and the parent-interface gate that
+# covers it (#571).
+#
+# WHAT THIS FILE IS FOR
+#
+# A parent NIC registers one rx_handler, so it is a macvlan port or an
+# ipvlan port and never both. Any child link attached to a parent must
+# therefore be serialised against every other operation on that parent,
+# which is what Plugin.lockParent does. A LinkAdd that reaches a parent
+# without holding that gate can be refused with "device or resource
+# busy" — surfacing to a user as a failed `docker run` caused by an
+# unrelated container.
+#
+# HOW THIS FILE AND THE COMPILER DIVIDE THE WORK
+#
+# Most of the gate is proved by the type system, not here. lockParent
+# returns a *parentGuard and addChildLink takes one, so a child link
+# created through addChildLink is holding the gate as a matter of
+# compilation, at every site, however many frames separate the lock
+# from the LinkAdd.
+#
+# That leaves TWO ways round it, and the script covers both.
+#
+# 1. Call netlink.LinkAdd directly and skip the helper. This file is
+#    the check on that path: the script matches every netlink.LinkAdd
+#    in pkg/ — the SUPERSET, however it is gated — and fails when a
+#    file is unlisted, when a count has changed, or when an entry has
+#    no justification. The bypass stays possible, because bridge
+#    networks legitimately need it; what stops is it happening without
+#    anyone deciding it.
+#
+# 2. Forge a guard. parentGuard's zero value is valid Go, so
+#    `addChildLink(&parentGuard{}, link)` compiles and holds nothing.
+#    "Only lockParent constructs one" is not a thing the type system
+#    can say, so the script fails the build on a parentGuard built
+#    anywhere but parent_gate.go.
+#
+# So: the compiler answers "is a guard present at the LinkAdd", and
+# this script answers "is the guard real, and is anything off the
+# guarded path". Neither question is answered by the other, which is
+# why both exist — and why the compiler half must not be described as
+# doing all of it.
+#
+# FORMAT
+#
+#   <path> <count>
+#       <justification, indented, one or more lines>
+#
+# Entries are separated by blank lines. A bare path with no
+# justification fails the gate: a list of paths with no reasons becomes
+# a list somebody appends to. Same rule as .github/vuln-allowlist.txt.
+
+pkg/plugin/parent_gate.go 1
+    THE funnel. This is addChildLink, and it is the only place in the
+    plugin that attaches a child link to a parent NIC. It takes a
+    *parentGuard it never reads: the parameter exists so the caller
+    cannot reach this line without having gone through lockParent, which
+    is what makes the requirement a compile error rather than a review
+    comment.
+    Every parent-attached site in the plugin — the endpoint's own child
+    in parent_attached.go, the reclaim's temporary link in
+    orphan_release.go, the validate_dhcp preflight probe in
+    dhcp_probe.go — reaches the kernel through here.
+
+pkg/plugin/orphan_release.go 1
+    The bridge-mode branch of releaseLink: a veth pair for handing back
+    an orphaned lease on a bridge network. NOT parent-attached — a
+    bridge network has no parent NIC, nothing registers an rx_handler,
+    and there is no parent to contend for. Correctly ungated.
+    The macvlan/ipvlan branch of the same function is the one that IS
+    parent-attached, and it goes through addChildLink.
+    A note for whoever reads the reclaim next, because it is the thing
+    most likely to be "tidied": the gate for that branch is taken in
+    synthesiseRelease, several frames up, and it has to stay there. The
+    hold must span the entire reclaim — the DHCP round trip AND the
+    deferred LinkDel — because the parent stays occupied until the child
+    link is gone, not merely until the DHCPRELEASE is sent. Moving it
+    down to sit lexically around the LinkAdd looks like an improvement
+    and restores the exact bug the gate was added for: an ipvlan reclaim
+    link left on the parent while a macvlan endpoint is created, which
+    is EBUSY on an operation the user did not cause.
+
+pkg/plugin/network.go 1
+    The bridge-mode veth pair created at CreateEndpoint. Same reasoning
+    as the bridge branch above: no parent NIC, nothing to serialise
+    against, and adding a gate here would serialise bridge endpoints
+    against nothing.

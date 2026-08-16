@@ -89,7 +89,17 @@ const preflightProbeBudget = 8 * time.Second
 // a parent-aware prefix so the operator's docker CLI surfaces a
 // clear "no DHCP OFFER on <parent> within 8s" message instead of
 // the generic CreateNetwork failure shape.
-func runDHCPProbe(ctx context.Context, parent, mode string) error {
+//
+// The guard is the caller's proof that the gate for parent is held. It
+// has to be, and for longer than the LinkAdd: this probe keeps a child
+// on the parent for the whole DORA, so it is a holder as well as a
+// waiter — no endpoint may start on top of it, and it must not start on
+// top of a reclaim. The gate is taken in CreateNetwork rather than here
+// only because that is where it was; moving it inside is #577. That is
+// a tidy-up and not a fix — a caller that forgot the gate could not
+// obtain a guard and so would not compile, which makes the placement
+// untidy rather than fragile.
+func runDHCPProbe(ctx context.Context, guard *parentGuard, parent, mode string) error {
 	if parent == "" {
 		return errors.New("validate_dhcp: parent NIC name is empty")
 	}
@@ -112,7 +122,7 @@ func runDHCPProbe(ctx context.Context, parent, mode string) error {
 	}
 	probeLink := newProbeLink(mode, probeName, parentLink.Attrs().Index, probeMAC)
 
-	if err := netlink.LinkAdd(probeLink); err != nil {
+	if err := addChildLink(guard, probeLink); err != nil {
 		return fmt.Errorf("validate_dhcp: %w",
 			explainChildLinkAdd(err, mode, parent, parentLink.Attrs().Index))
 	}

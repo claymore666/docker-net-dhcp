@@ -187,6 +187,24 @@ jobs:
       - name: License-header check
         run: bash scripts/check-license-headers.sh
 
+      # A parent NIC registers one rx_handler, so it is a macvlan port
+      # or an ipvlan port and never both. Every child link attached to a
+      # parent has to be serialised by Plugin.lockParent or it can be
+      # refused with EBUSY — reaching the user as a `docker run` that
+      # fails because of an unrelated container (#549, #486).
+      #
+      # addChildLink takes a *parentGuard, so the compiler proves a
+      # guard is present at every parent-attached LinkAdd. It cannot
+      # prove the guard is REAL — the zero value is valid Go — nor stop
+      # a direct netlink.LinkAdd. This gate covers both of those: every
+      # LinkAdd in pkg/ must be justified in
+      # .github/linkadd-accounting.txt, and a parentGuard built outside
+      # parent_gate.go fails the build. Bridge networks legitimately
+      # need the direct call, so the bypass cannot be banned; what this
+      # stops is taking it without anyone deciding to (#571).
+      - name: Parent-gate accounting check
+        run: bash scripts/check-parent-gate-accounting.sh
+
       # An unreadable path under .claude/ must not break the build
       # context (#530). This one is structurally invisible to the rest
       # of CI: checkouts are fresh, so .claude/ does not exist, and the
