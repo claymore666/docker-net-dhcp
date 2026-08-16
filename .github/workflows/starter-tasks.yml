@@ -1,0 +1,49 @@
+name: Starter tasks
+
+# Does the "good first issue" promise still have anything behind it (#537)?
+#
+# README.md's Contributing section and .bestpractices.json's `small_tasks`
+# answer both assert live tracker state: that the label exists, that it has
+# open issues, and that the specific issues the justification names are still
+# available. Those claims decay silently. The moment the seeded tasks are
+# picked up — the SUCCESS case — the filter returns an empty page and both
+# artifacts start lying, with nothing going red.
+#
+# WHY THIS IS NOT IN test.yaml. The claim can become false without anybody
+# touching the tree, so gating a pull request on it would fail an unrelated
+# PR because somebody closed an issue, and would fail on a tracker API blip
+# too. The half that IS a property of the tree — the README and the badge
+# justification pointing at the same label — runs there instead, and this
+# workflow covers only what needs the API.
+#
+# A red schedule is easier to ignore than a red PR; that is the accepted
+# cost of not charging it to an unrelated contributor. The check exits 2
+# rather than 1 when it cannot see, so "the API was down" is distinguishable
+# from "the promise is broken" in the run log.
+#
+# NOTE ON WHICH COPY RUNS. Scheduled workflows only ever fire from the
+# default branch, so this file's behaviour is whatever is on `main` — not
+# what is on `dev`. Changes here take effect at the next release, not at
+# merge.
+on:
+  schedule:
+    # Daily. The claim changes at human pace — an issue gets picked up, not
+    # a commit pushed — so hourly would only add noise.
+    - cron: '41 7 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: read
+
+jobs:
+  starter-tasks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: The starter-task claims still hold
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash scripts/check-good-first-issues.sh --live
