@@ -84,13 +84,19 @@ type HealthResponse struct {
 	// anything: zero probes and a clean segment read identically
 	// otherwise.
 	AddressConflictProbes int32 `json:"address_conflict_probes"`
-	LeaseChanged          int32 `json:"lease_changed"`
-	LeasesObtained        int32 `json:"leases_obtained"`
-	LeasesRenewed         int32 `json:"leases_renewed"`
-	DHCPTimeouts          int32 `json:"dhcp_timeouts"`
-	LeaseReleaseFailures  int32 `json:"lease_release_failures"`
-	NAKsReceived          int32 `json:"naks_received"`
-	LedgerWriteFailures   int32 `json:"ledger_write_failures"`
+	// SandboxNetnsVisible is how many sandbox netns entries the plugin
+	// can see, or -1 if it cannot read the directory (#567). Sampled per
+	// request, not accumulated. A pointer so an older plugin that does
+	// not publish it is distinguishable from one reporting -1 — absent
+	// data is not a value.
+	SandboxNetnsVisible  *int32 `json:"sandbox_netns_visible"`
+	LeaseChanged         int32  `json:"lease_changed"`
+	LeasesObtained       int32  `json:"leases_obtained"`
+	LeasesRenewed        int32  `json:"leases_renewed"`
+	DHCPTimeouts         int32  `json:"dhcp_timeouts"`
+	LeaseReleaseFailures int32  `json:"lease_release_failures"`
+	NAKsReceived         int32  `json:"naks_received"`
+	LedgerWriteFailures  int32  `json:"ledger_write_failures"`
 	// OrphanedLeasesReleased / OrphanedLeaseReleaseFailures cover the
 	// lease acquired during endpoint setup when no persistent client
 	// ever took ownership of it — a container that exited before the
