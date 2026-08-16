@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 )
 
 // HealthResponse mirrors pkg/plugin.HealthResponse. Duplicated here
@@ -747,5 +748,189 @@ func sortedKeys(m map[string]int) []string {
 		out = append(out, k)
 	}
 	sort.Strings(out)
+	return out
+}
+
+// ---- the conflict-probe census gate (#551) --------------------------
+//
+// ConflictProbeLine above already distinguishes the three states that
+// matter. Nothing acted on the third. From #527 merging until #550,
+// every single run printed
+//
+//	CONFLICT PROBE: 1 probe(s) reached a verdict and found no conflict,
+//	  but 2 could not run at all.
+//
+// because the macvlan/ipvlan fixture's parent carried no on-subnet
+// address, so the detector could not run on two of the three attachment
+// modes. The line said so on every run and the suite went green
+// throughout. That is the failure the detector itself exists to prevent,
+// one level up: "nothing checked" and "nothing found" must not read the
+// same. The instrument was right; there was no gate behind it.
+//
+// WHY THE OBVIOUS GATE IS THE WRONG ONE. "Endpoints were created and no
+// probe reached a verdict" sounds like the property, and it never fires
+// on the case above — one probe DID reach a verdict there. The blindness
+// was in the two that could not run, so the failures are what must be
+// judged, against what the suite legitimately expects.
+//
+// Two things would otherwise make this fail for reasons unrelated to the
+// property:
+//
+//  1. TestAddressConflict_BareParentIsUndetermined (#541) drives the
+//     degraded path ON PURPOSE and increments conflict_probe_failures.
+//     Failing on failures > 0 would break a correct test, so a test that
+//     means to degrade a probe declares it with AllowConflictProbeFailures
+//     and the gate judges the excess.
+//  2. The floor runs per shard, and a shard whose tests lease no v4
+//     address legitimately reaches zero probes. Failing on
+//     address_conflict_probes == 0 alone would make the verdict depend on
+//     how the partitioner happened to balance that run — a gate whose
+//     result depends on shard assignment is worse than no gate.
+//
+// The premise that makes "leases but no probes" sound: the post-lease
+// conflict probe is NOT opt-in. checkAddressConflict runs for every
+// endpoint that received a v4 address, on both the bridge and the
+// parent-attached paths. (The opt-in validate_dhcp preflight is a
+// different probe entirely and does not touch these counters.) And
+// leases_obtained is v4-only — v6 has its own counter — so a v6-only
+// shard cannot trip this.
+
+// conflictAllowance accumulates the probe failures this shard EXPECTS,
+// declared by the tests that cause them deliberately.
+//
+// Package-level and mutex-guarded rather than plumbed through: the floor
+// runs in TestMain after every test has finished, so there is no value
+// to thread and no ordering to get wrong. A test declares its intent
+// where it degrades the probe, which is the only place that knows.
+var conflictAllowance struct {
+	mu sync.Mutex
+	n  int32
+}
+
+// AllowConflictProbeFailures declares that n conflict-probe failures are
+// expected in this shard, because a test degrades a probe on purpose.
+//
+// Call it from the test that does the degrading, next to the degrading,
+// so the declaration cannot drift away from its reason. Anything beyond
+// the declared count fails the run.
+func AllowConflictProbeFailures(n int32) {
+	conflictAllowance.mu.Lock()
+	defer conflictAllowance.mu.Unlock()
+	conflictAllowance.n += n
+}
+
+// AllowedConflictProbeFailures reports the total declared so far.
+func AllowedConflictProbeFailures() int32 {
+	conflictAllowance.mu.Lock()
+	defer conflictAllowance.mu.Unlock()
+	return conflictAllowance.n
+}
+
+// ConflictCensusFindings judges whether the conflict-probe census is
+// evidence or an alibi, given how many failures the shard declared.
+//
+// Returns nil when there is nothing to say — including the honest
+// nothing of a shard that leased no v4 address.
+// conflictProbeFailureMsgs is every log line the plugin writes at a
+// conflict_probe_failures increment (pkg/plugin/conflict_probe.go).
+// Listed rather than pattern-matched so that adding a fourth failure
+// path without adding it here is the only way to under-count, and so a
+// reader can check the list against the source by eye.
+var conflictProbeFailureMsgs = []string{
+	"[conflict-probe] address-conflict probe could not run",
+	"[conflict-probe] cannot parse leased address; address conflict not checked",
+	"[conflict-probe] cannot parse endpoint MAC; address conflict not checked",
+}
+
+// ConflictProbeFailuresInLog counts probe failures across the WHOLE run.
+//
+// This exists because the counters do not. The plugin's counters live in
+// its process, the main suite recycles that process, and the floor's own
+// output says so: "the plugin restarted mid-suite and its counters reset
+// with it ... this verdict says nothing about the earlier 209s". A
+// counter-only census would therefore read clean for every probe that
+// failed before the last restart — the same shape as #385, which is why
+// the Join half already counts log lines instead.
+func ConflictProbeFailuresInLog(logData []byte) int {
+	if len(logData) == 0 {
+		return 0
+	}
+	n := 0
+	for _, l := range strings.Split(string(logData), "\n") {
+		for _, msg := range conflictProbeFailureMsgs {
+			if strings.Contains(l, msg) {
+				n++
+				break
+			}
+		}
+	}
+	return n
+}
+
+// ConflictCensusFindings judges the census. observedInLog is the count
+// from ConflictProbeFailuresInLog; the larger of it and the counter wins,
+// because the counter can only ever under-report after a restart and the
+// log can only under-report if a line was lost.
+func ConflictCensusFindings(h *HealthResponse, allowed int32, observedInLog int) []FloorFinding {
+	if h == nil {
+		return nil
+	}
+	// An absent counter is not a zero. If the plugin never published
+	// these, the census cannot be judged at all, and saying so is the
+	// point — silently treating <not reported> as 0 would rebuild the
+	// blindness this closes.
+	if h.published != nil {
+		for _, k := range []string{"address_conflict_probes", "conflict_probe_failures"} {
+			if _, ok := h.published[k]; !ok {
+				return []FloorFinding{{
+					Counter: k,
+					Absent:  true,
+					Fatal:   true,
+					Why: "the plugin did not publish this, so whether the address-conflict " +
+						"detector ran cannot be established. address_conflicts=0 is not evidence " +
+						"without it (#551).",
+				}}
+			}
+		}
+	}
+
+	var out []FloorFinding
+
+	failures := h.ConflictProbeFailures
+	if int32(observedInLog) > failures {
+		failures = int32(observedInLog)
+	}
+
+	if excess := failures - allowed; excess > 0 {
+		why := fmt.Sprintf(
+			"%d conflict probe(s) could not run at all; %d is the number this shard declared "+
+				"as deliberate, so %d went unexplained. Each one is an endpoint whose address was "+
+				"never checked, and address_conflicts=0 does not cover them — that reading is "+
+				"exactly how #524 stayed invisible in production for months (#551).",
+			failures, allowed, excess)
+		out = append(out, FloorFinding{
+			Counter: "conflict_probe_failures",
+			Value:   failures,
+			Fatal:   true,
+			Why:     why,
+		})
+	}
+
+	// The detector never even tried, on a shard that leased addresses
+	// for it to check. Distinct from the case above: there, probes were
+	// attempted and failed; here nothing was attempted at all.
+	if h.AddressConflictProbes == 0 && failures == 0 && h.LeasesObtained > 0 {
+		out = append(out, FloorFinding{
+			Counter: "address_conflict_probes",
+			Value:   0,
+			Fatal:   true,
+			Why: fmt.Sprintf(
+				"%d v4 lease(s) were obtained and the conflict detector was never invoked for "+
+					"any of them. The probe is not opt-in, so this is the detector having stopped "+
+					"working rather than a shard with nothing to check (#551).",
+				h.LeasesObtained),
+		})
+	}
+
 	return out
 }
