@@ -250,10 +250,26 @@ titles = {}
 titles_path = f"{tmp}/pr_titles.json"
 if os.path.exists(titles_path):
     titles = {int(k): v for k, v in json.load(open(titles_path, encoding="utf-8")).items()}
+# Bodies are optional and in their own file, so every fixture written
+# before this stays valid: absent means no body contribution, never an
+# error. That also keeps the pre-existing fixtures as a negative control
+# — they must still produce exactly what they did before.
+bodies = {}
+bodies_path = f"{tmp}/pr_bodies.json"
+if os.path.exists(bodies_path):
+    bodies = {int(k): v for k, v in json.load(open(bodies_path, encoding="utf-8")).items()}
 for number in unresolved:
     title = titles.get(number)
     if title:
         in_dev |= set(refs(title)) & open_numbers
+    # The body, with body_refs' closing-keyword rule rather than refs'
+    # trailing-"(#N)" rule. A merged PR that names its issue only in the
+    # body is the ordinary case here, not an edge one: the squash
+    # subject carries the PR's own number and nothing else, so the issue
+    # is reachable through the body or not at all.
+    body = bodies.get(number)
+    if body:
+        in_dev |= set(body_refs(body)) & open_numbers
 
 prs = json.load(open(f"{tmp}/prs.json", encoding="utf-8"))
 has_pr = {n for pr in prs for n in pr_refs(pr)} & open_numbers
@@ -345,38 +361,65 @@ $UNRESOLVED" > "$TMP/unresolved"; then
 fi
 
 echo "{}" > "$TMP/pr_titles.json"
+echo "{}" > "$TMP/pr_bodies.json"
 looked_up=0
 resolved=0
 while read -r number; do
     [ -n "$number" ] || continue
     looked_up=$((looked_up + 1))
-    title=$(gh api "repos/$REPO/pulls/$number" --jq .title 2>/dev/null) || continue
-    [ -n "$title" ] || continue
+    # One request, both fields. The body is where a PR that does not name
+    # its issue in the title says "Closes #N", and asking for it costs
+    # nothing extra: it is the same lookup that was already being made.
+    #
+    # Written as JSON rather than two delimited values because a body is
+    # multi-line arbitrary text — any hand-rolled framing here would be a
+    # parser bug waiting to happen.
+    gh api "repos/$REPO/pulls/$number" \
+        --jq '{title: .title, body: (.body // "")}' > "$TMP/pr.$number" 2>/dev/null || continue
+    [ -s "$TMP/pr.$number" ] || continue
     resolved=$((resolved + 1))
-    printf '%s\n' "$title" > "$TMP/title.$number"
 done < "$TMP/unresolved"
 
 if [ "$resolved" -ne 0 ]; then
-    # Titles are attacker-controlled text; hand them to python as files
-    # rather than through a shell-expanded string.
+    # Titles AND bodies are attacker-controlled text on a public repo;
+    # hand them to python as files rather than through a shell-expanded
+    # string. The trust model is unchanged by adding the body: it is
+    # reduced to digits by the same parser, and the intersection with the
+    # repo's own open-issue list still does all the classifying, so a
+    # body can only ever contribute a number that is already an open
+    # issue here.
     if ! TMP="$TMP" python3 -c '
 import json
 import os
 
 tmp = os.environ["TMP"]
 titles = {}
+bodies = {}
 for name in os.listdir(tmp):
-    if name.startswith("title."):
-        with open(f"{tmp}/{name}", encoding="utf-8", errors="replace") as fh:
-            titles[name[len("title."):]] = fh.read().rstrip("\n")
+    if not name.startswith("pr."):
+        continue
+    number = name[len("pr."):]
+    with open(f"{tmp}/{name}", encoding="utf-8", errors="replace") as fh:
+        try:
+            pr = json.load(fh)
+        except ValueError:
+            continue
+    title = (pr.get("title") or "").rstrip("\n")
+    if title:
+        titles[number] = title
+    body = pr.get("body") or ""
+    if body:
+        bodies[number] = body
 with open(f"{tmp}/pr_titles.json", "w", encoding="utf-8") as fh:
     json.dump(titles, fh)
+with open(f"{tmp}/pr_bodies.json", "w", encoding="utf-8") as fh:
+    json.dump(bodies, fh)
 '; then
-        echo "FAIL  could not collect the PR titles" >&2
+        echo "FAIL  could not collect the PR titles and bodies" >&2
         exit 1
     fi
 fi
-echo "one-hop lookups: $looked_up ref(s) not an open issue, $resolved resolved to a PR title"
+echo "one-hop lookups: $looked_up ref(s) not an open issue, $resolved resolved to a PR"
 
 if ! PARSER="$PARSER" TMP="$TMP" python3 -c "$LOADER
 $PLANNER" > "$TMP/plan"; then
