@@ -70,6 +70,48 @@ check "no COSIGN_MAJOR assignment => exit 2" 2 \
 check "no page prints a cosign command => exit 2" 2 \
     'COSIGN_MAJOR=3' $'# Nothing to see\n' "nothing to check"
 
+# A page under .claude/ must be invisible to the walk. Per-instance git
+# worktrees live there, so without the exclusion the gate judges the
+# current tree by every OTHER branch's copy of these pages — it failed on
+# a clean dev checkout, where all four real pages passed, because a
+# worktree sat on a branch predating the gate.
+#
+# CI never sees this: fresh checkouts have no worktrees. So the gate was
+# broken exactly where a maintainer runs it by hand and green where it is
+# automated, which is the worst way round and the reason this case exists.
+root="$(mktemp -d -p "$TMP")"
+mkdir -p "$root/scripts" "$root/docs" "$root/.claude/worktrees/other/docs"
+printf '%s\n' 'COSIGN_MAJOR=3' > "$root/scripts/check-release-tooling.sh"
+printf '%s\n' "$DOC_WITH_VERSION" > "$root/docs/verifying-releases.md"
+printf '%s\n' "$DOC_WITHOUT" > "$root/.claude/worktrees/other/docs/verifying-releases.md"
+DOCS_ROOT="$root" TOOLING_SCRIPT="$root/scripts/check-release-tooling.sh" \
+    bash "$CHECK" > "$TMP/out" 2>&1
+rc=$?
+if [ "$rc" -eq 0 ] && ! grep -q '\.claude' "$TMP/out"; then
+    echo "PASS: a stale page inside .claude/ is not walked"
+else
+    echo "FAIL: a stale page inside .claude/ is not walked (rc=$rc)"
+    sed 's/^/    /' "$TMP/out"
+    failures=$((failures + 1))
+fi
+
+# And .git, for the same reason and to keep the walk cheap.
+root="$(mktemp -d -p "$TMP")"
+mkdir -p "$root/scripts" "$root/docs" "$root/.git"
+printf '%s\n' 'COSIGN_MAJOR=3' > "$root/scripts/check-release-tooling.sh"
+printf '%s\n' "$DOC_WITH_VERSION" > "$root/docs/verifying-releases.md"
+printf '%s\n' "$DOC_WITHOUT" > "$root/.git/verifying-releases.md"
+DOCS_ROOT="$root" TOOLING_SCRIPT="$root/scripts/check-release-tooling.sh" \
+    bash "$CHECK" > "$TMP/out" 2>&1
+rc=$?
+if [ "$rc" -eq 0 ]; then
+    echo "PASS: a page inside .git/ is not walked"
+else
+    echo "FAIL: a page inside .git/ is not walked (rc=$rc)"
+    sed 's/^/    /' "$TMP/out"
+    failures=$((failures + 1))
+fi
+
 if [ "$failures" -gt 0 ]; then
     echo "$failures test(s) failed" >&2
     exit 1
