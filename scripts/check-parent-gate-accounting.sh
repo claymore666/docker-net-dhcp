@@ -14,23 +14,27 @@
 # busy", which reaches the user as a failed `docker run` caused by an
 # unrelated container.
 #
-# WHAT IT CHECKS, AND THE STRENGTH OF THE CLAIM
+# WHAT IT CHECKS, AND WHAT THE COMPILER CHECKS INSTEAD
 #
-# It matches the SUPERSET — every netlink.LinkAdd in pkg/, however it is
-# gated — and requires each file to be listed with a count and a
-# justification. It does NOT prove the gate is held: three of the four
-# parent-attached sites are gated by a caller, and proving reachability
-# from a caller needs a call-graph analysis rather than a text search.
+# Whether the gate is HELD is not this script's job and cannot be done
+# by a text search — two of the sites take the lock several frames above
+# the LinkAdd, and proving reachability from a caller needs a call
+# graph. That half is discharged by the type system: lockParent returns
+# a *parentGuard, addChildLink demands one, and nothing else makes one,
+# so a child link created through the helper is holding the gate as a
+# matter of compilation.
 #
-# That distinction is the whole design. The version-pins gate matched
-# only well-formed pins, so a broken pin string was invisible to it for
-# months; the lesson recorded then was to match the superset and then
-# make a human judge. This gate does that: a new LinkAdd anywhere in
-# pkg/ fails the build until someone writes down which gate covers it.
+# This script covers the one remaining way round it — calling
+# netlink.LinkAdd directly instead of the helper. It matches the
+# SUPERSET, every netlink.LinkAdd in pkg/ however it is gated, and
+# requires each file to be listed with a count and a justification.
+# Bridge networks legitimately need the direct call, so the bypass
+# cannot simply be banned; what this makes impossible is taking it
+# without anyone deciding to.
 #
-# What it therefore does NOT catch: someone removing a lockParent call
-# from a site already listed here. Recorded in #571 rather than papered
-# over.
+# Matching the superset rather than the interesting subset is the
+# lesson from check-version-pins, which matched only well-formed pins
+# and so could not see a broken one for months.
 #
 # Usage: check-parent-gate-accounting.sh [--root <dir>] [--manifest <file>]
 # Exit: 0 accounted for, 1 drift, 2 bad usage.
@@ -137,4 +141,5 @@ fi
 total="$(awk '{ s += $2 } END { print s + 0 }' "$actual")"
 files="$(wc -l < "$actual" | tr -d ' ')"
 echo "parent-gate accounting: OK — $total netlink.LinkAdd site(s) across $files file(s), all accounted for."
-echo "NOTE: this proves every site is accounted for, NOT that the gate is held at each one (#571)."
+echo "NOTE: this does NOT prove the gate is held — addChildLink taking a *parentGuard is what"
+echo "      proves that. This covers the sites that bypass the helper and call netlink directly (#571)."

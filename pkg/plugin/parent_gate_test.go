@@ -32,8 +32,8 @@ func TestParentGate_SerialisesOneParent(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			unlock := p.lockParent(context.Background(), "eth0", "test")
-			defer unlock()
+			guard := p.lockParent(context.Background(), "eth0", "test")
+			defer guard.Unlock()
 
 			n := inside.Add(1)
 			for {
@@ -78,8 +78,8 @@ func TestParentGate_DifferentParentsDoNotSerialise(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			unlock := p.lockParent(context.Background(), parent, "test")
-			defer unlock()
+			guard := p.lockParent(context.Background(), parent, "test")
+			defer guard.Unlock()
 			arrived <- struct{}{}
 			<-released
 		}()
@@ -149,8 +149,7 @@ func TestLockParent_TimeoutIsCounted(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	unlock := p.lockParent(ctx, "eth0", "test")
-	unlock()
+	p.lockParent(ctx, "eth0", "test").Unlock()
 
 	if p.parentLinkWaitTimeouts.Load() != 1 {
 		t.Fatalf("parent_link_wait_timeouts = %d, want 1", p.parentLinkWaitTimeouts.Load())
@@ -167,7 +166,7 @@ func TestLockParent_UncontendedIsSilent(t *testing.T) {
 	p := &Plugin{}
 
 	for i := 0; i < 20; i++ {
-		p.lockParent(context.Background(), "eth0", "test")()
+		p.lockParent(context.Background(), "eth0", "test").Unlock()
 	}
 
 	if got := p.parentLinkWaits.Load(); got != 0 {
@@ -188,7 +187,7 @@ func TestLockParent_NoParentIsANoOp(t *testing.T) {
 	go func() {
 		defer close(done)
 		for i := 0; i < 3; i++ {
-			p.lockParent(context.Background(), "", "test")()
+			p.lockParent(context.Background(), "", "test").Unlock()
 		}
 	}()
 
@@ -201,5 +200,79 @@ func TestLockParent_NoParentIsANoOp(t *testing.T) {
 	if p.parentLinkWaits.Load() != 0 || p.parentLinkWaitTimeouts.Load() != 0 {
 		t.Fatalf("an empty parent touched the counters: waits=%d timeouts=%d",
 			p.parentLinkWaits.Load(), p.parentLinkWaitTimeouts.Load())
+	}
+}
+
+// TestLockParent_GuardIsAlwaysUsable covers the contract the guard type
+// depends on: lockParent never returns nil, and Unlock is safe whatever
+// happened during the acquisition.
+//
+// Both matter because every caller defers Unlock unconditionally. The
+// no-parent and nil-Plugin paths return a guard that holds nothing, and
+// the timeout path returns one whose wait failed; if any of those came
+// back nil or panicked on release, the deferred Unlock would take down
+// the plugin on a path that is supposed to degrade quietly.
+func TestLockParent_GuardIsAlwaysUsable(t *testing.T) {
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	cases := []struct {
+		name   string
+		p      *Plugin
+		ctx    context.Context
+		parent string
+	}{
+		{"a real acquisition", &Plugin{}, context.Background(), "eth0"},
+		{"no parent (bridge mode)", &Plugin{}, context.Background(), ""},
+		{"a nil plugin", nil, context.Background(), "eth0"},
+		{"an acquisition that never succeeded", &Plugin{}, cancelled, "eth0"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := tc.p.lockParent(tc.ctx, tc.parent, "test")
+			if g == nil {
+				t.Fatal("lockParent returned nil; every caller defers Unlock on the result")
+			}
+			g.Unlock()
+		})
+	}
+
+	// A zero guard is what a future caller would get by declaring one
+	// rather than calling lockParent. It must not panic either — the
+	// type is a compile-time requirement, not a runtime trap.
+	var zero parentGuard
+	zero.Unlock()
+	var nilGuard *parentGuard
+	nilGuard.Unlock()
+}
+
+// TestLockParent_GuardIsReleasedNotJustDiscarded proves Unlock actually
+// hands the parent on. A guard whose release was dropped would compile,
+// satisfy every type check, and deadlock the next endpoint on that NIC
+// for the full budget — so the type carrying the release is not on its
+// own evidence that the release happens.
+func TestLockParent_GuardIsReleasedNotJustDiscarded(t *testing.T) {
+	p := &Plugin{}
+
+	first := p.lockParent(context.Background(), "eth0", "test")
+	first.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		p.lockParent(context.Background(), "eth0", "test").Unlock()
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("a second acquisition blocked after the first was unlocked; " +
+			"Unlock is not releasing the parent")
+	}
+
+	if got := p.parentLinkWaits.Load(); got != 0 {
+		t.Fatalf("parent_link_waits = %d, want 0 — the second acquisition should not "+
+			"have had to wait at all, so the first was still holding the parent", got)
 	}
 }

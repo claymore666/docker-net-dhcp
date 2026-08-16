@@ -275,9 +275,9 @@ func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 			// preflightProbeBudget, so it is both a waiter and a holder:
 			// it must not start on top of a reclaim, and no endpoint
 			// should start on top of it.
-			unlockParent := p.lockParent(ctx, opts.Parent, "preflight_probe")
-			err := runDHCPProbe(ctx, opts.Parent, mode)
-			unlockParent()
+			guard := p.lockParent(ctx, opts.Parent, "preflight_probe")
+			err := runDHCPProbe(ctx, guard, opts.Parent, mode)
+			guard.Unlock()
 			cancel()
 			if err != nil {
 				return err

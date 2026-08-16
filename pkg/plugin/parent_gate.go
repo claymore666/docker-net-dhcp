@@ -9,6 +9,7 @@ import (
 	"time"
 
 	log "github.com/sirupsen/logrus"
+	"github.com/vishvananda/netlink"
 )
 
 // parentGateBudget bounds how long an operation will wait for another
@@ -113,15 +114,70 @@ func (g *parentGate) acquire(ctx context.Context, parent string, budget time.Dur
 	}
 }
 
+// parentGuard is evidence that the gate for one parent NIC is held.
+//
+// It exists to move the rule out of prose and into the type system. The
+// rule — a child link may only be attached to a parent NIC while the
+// gate for that parent is held — used to live in a comment beside each
+// call site, which means it was enforced by whoever last read the
+// comment. Two of the three sites take the gate several frames above
+// the LinkAdd, so checking it meant following callers upwards and
+// trusting that nobody had added a fourth path.
+//
+// The accounting gate (.github/linkadd-accounting.txt) catches a new
+// netlink.LinkAdd appearing anywhere in pkg/. This catches the other
+// half: a child link created on a path that never went through
+// lockParent. addChildLink cannot be called without one of these, and
+// lockParent is the only thing that makes one, so the requirement is
+// discharged by the compiler rather than by review.
+//
+// WHAT IT DOES NOT PROVE. The guard does not say WHICH parent it is
+// for, so a guard taken on one NIC and handed to a link on another
+// compiles. Closing that would mean carrying the parent name and
+// comparing it inside addChildLink — a runtime check, trading a compile
+// error for a log line, on a mistake no call site can currently make:
+// each takes its guard a line or two before using it, for the parent it
+// is about to touch. Written down rather than left to be assumed, for
+// the same reason the accounting file states its own limit.
+type parentGuard struct {
+	release func()
+}
+
+// Unlock releases the gate. Always safe to call, including on a guard
+// whose wait timed out and which therefore never held anything.
+func (g *parentGuard) Unlock() {
+	if g == nil || g.release == nil {
+		return
+	}
+	g.release()
+}
+
+// addChildLink creates a link attached to a parent NIC.
+//
+// The guard parameter is the whole point of this function. It is
+// unused, and it is what makes "the gate is held here" something the
+// compiler checks instead of something the next reader has to establish
+// by following calls up several frames.
+//
+// Links with no parent do NOT belong here and deliberately still call
+// netlink.LinkAdd directly: a bridge network has no parent NIC, nothing
+// registers an rx_handler, and routing it through a function that
+// demands a guard would ask for a lock on nothing.
+func addChildLink(_ *parentGuard, link netlink.Link) error {
+	return netlink.LinkAdd(link)
+}
+
 // lockParent gates one operation on a parent NIC and records the
 // outcome on the health counters.
 //
 // op names the caller in the log line only; the counters are
 // deliberately not split by op, because what an operator needs to know
 // is whether this host is contending on a parent at all.
-func (p *Plugin) lockParent(ctx context.Context, parent, op string) func() {
+//
+// Never returns nil, so a caller can always defer Unlock.
+func (p *Plugin) lockParent(ctx context.Context, parent, op string) *parentGuard {
 	if p == nil || parent == "" {
-		return func() {}
+		return &parentGuard{}
 	}
 
 	start := time.Now()
@@ -148,7 +204,7 @@ func (p *Plugin) lockParent(ctx context.Context, parent, op string) func() {
 			"budget": parentGateBudget.String(),
 		}).Warn("Gave up waiting for the parent interface; proceeding, the kernel may refuse this")
 	}
-	return release
+	return &parentGuard{release: release}
 }
 
 // parentGateContendedFloor is the wait below which an acquisition is

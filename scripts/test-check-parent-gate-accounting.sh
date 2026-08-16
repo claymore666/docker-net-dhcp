@@ -70,9 +70,12 @@ check "an accounted-for tree passes" 0 "$TMP/ok" "$TMP/ok/manifest.txt" \
 
 # The passing output must keep saying what it does NOT prove. A gate
 # that reports a bare "OK" invites the reader to believe the stronger
-# claim, which here would be that the lock is held at every site.
+# claim, which here would be that the lock is held at every site — that
+# is addChildLink's *parentGuard doing the work, not this.
 check "and says what it does not prove" 0 "$TMP/ok" "$TMP/ok/manifest.txt" \
-    "NOT that the gate is held"
+    "does NOT prove the gate is held"
+check "and points at what does prove it" 0 "$TMP/ok" "$TMP/ok/manifest.txt" \
+    "parentGuard"
 
 # ------------------------------------------------------------------ red
 

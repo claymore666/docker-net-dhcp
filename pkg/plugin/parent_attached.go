@@ -361,9 +361,9 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 	// goroutine ordered against nothing (#549). Held across the LinkAdd
 	// only: two endpoints on the same parent contend for microseconds,
 	// and it is the reclaim's multi-second DORA this exists to wait out.
-	unlockParent := p.lockParent(ctx, opts.Parent, "create_endpoint")
-	err = netlink.LinkAdd(link)
-	unlockParent()
+	guard := p.lockParent(ctx, opts.Parent, "create_endpoint")
+	err = addChildLink(guard, link)
+	guard.Unlock()
 	if err != nil {
 		return res, explainChildLinkAdd(err, mode, opts.Parent, parent.Attrs().Index)
 	}
