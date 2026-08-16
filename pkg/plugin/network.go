@@ -1445,7 +1445,7 @@ func (p *Plugin) Leave(ctx context.Context, r LeaveRequest) error {
 		return util.ErrNoSandbox
 	}
 
-	stopErr := manager.Stop()
+	stopErr := manager.StopForLeave()
 
 	// Refresh the endpoint fingerprint with the most recent v4/v6 IPs
 	// the persistent client saw, *whether or not Stop succeeded*. Stop

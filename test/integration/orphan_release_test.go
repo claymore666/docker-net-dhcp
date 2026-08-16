@@ -156,6 +156,150 @@ func TestOrphanedLease_ReleasedWhenContainerExitsEarly(t *testing.T) {
 	}
 }
 
+// TestOrphanedLease_ReleasedWhenClientNeverBound covers the third state
+// #549 found, the one between the two the plugin already knew.
+//
+// The reclaim above triggers on "the persistent client never started".
+// dhcpcd's own `release` covers "it started and held the lease". Neither
+// covers "it started and was signalled before it ever bound" — dhcpcd
+// releases only a binding it holds, so it sends nothing, and because
+// Start succeeded the reclaim was skipped. The address the one-shot
+// acquired stayed held upstream with nobody responsible for it, while
+// the audit ledger recorded a release the server never saw.
+//
+// # Why connect/disconnect rather than a short-lived container
+//
+// The window is between the attach starting the persistent client and
+// that client completing its DORA — seconds wide, and not reachable by
+// timing a container's exit, which is what the two tests above do from
+// the other side. Connecting a network to an already-running container
+// and disconnecting it immediately drives Join and Leave directly, with
+// no container lifecycle in between.
+//
+// # Why this is a sound test even though the race is a race
+//
+// It does not assert which side of the race it landed on. Both sides
+// owe exactly one thing — the server must see a DHCPRELEASE for this
+// address — and the assertion is that, keyed on the address so no
+// neighbouring container can satisfy it by accident. On unfixed code
+// the never-bound side produces no release at all and this goes red; on
+// the bound side it passes, as it should, because nothing is wrong
+// there. So it can be red only when the bug is real, never on timing.
+// The state machine itself is pinned deterministically in the unit test
+// (TestStop_NeverBoundClientReclaimsInsteadOfClaimingRelease); this one
+// exists to prove the effect on the wire, which no counter can.
+//
+// Deliberately macvlan: the bug lives in the manager's shutdown path and
+// is mode-independent. It was found through an ipvlan test only because
+// that test races container exit against attach.
+func TestOrphanedLease_ReleasedWhenClientNeverBound(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	const (
+		netName = "dh-itest-neverbound"
+		ctrName = "dh-itest-neverbound-ctr"
+	)
+
+	t.Cleanup(func() {
+		if t.Failed() {
+			fixture.DumpLogs(func(s string) { t.Log(s) })
+			harness.DumpPluginLog(t)
+		}
+	})
+
+	harness.CreateNetwork(t, ctx, netName, "macvlan", nil)
+
+	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	if err != nil {
+		t.Fatalf("docker client: %v", err)
+	}
+	t.Cleanup(func() { _ = cli.Close() })
+
+	// A container that stays up, started on no plugin network at all, so
+	// the connect below is the only thing that touches DHCP.
+	create, err := cli.ContainerCreate(ctx,
+		&container.Config{
+			Image:    harness.TestImage,
+			Cmd:      []string{"sleep", "infinity"},
+			Hostname: ctrName,
+		},
+		harness.HostConfig(),
+		nil, nil, ctrName,
+	)
+	if err != nil {
+		t.Fatalf("ContainerCreate: %v", err)
+	}
+	id := create.ID
+	t.Cleanup(func() {
+		bg := context.Background()
+		if err := cli.ContainerRemove(bg, id, container.RemoveOptions{Force: true}); err != nil {
+			t.Logf("WARN: ContainerRemove(%s): %v", id, err)
+		}
+	})
+
+	if err := cli.ContainerStart(ctx, id, container.StartOptions{}); err != nil {
+		t.Fatalf("ContainerStart: %v", err)
+	}
+
+	if err := cli.NetworkConnect(ctx, netName, id, &network.EndpointSettings{}); err != nil {
+		t.Fatalf("NetworkConnect: %v", err)
+	}
+
+	// Read the address before disconnecting — it is the key every
+	// assertion below hangs on, and it is gone from Docker's view the
+	// moment the endpoint is removed. One inspect costs milliseconds
+	// against a DORA measured in hundreds; the window stays open.
+	ip := endpointIPv4(t, ctx, cli, id, netName)
+
+	if err := cli.NetworkDisconnect(ctx, netName, id, false); err != nil {
+		t.Fatalf("NetworkDisconnect: %v", err)
+	}
+
+	// dnsmasq must have handed this exact address out, or the test is
+	// asserting about an address that was never leased and would pass
+	// for the wrong reason.
+	if got := fixture.CountLogLines("DHCPACK", ip); got < 1 {
+		t.Fatalf("dnsmasq logged no DHCPACK for %s; the endpoint never took a "+
+			"lease, so this run proves nothing about releasing one", ip)
+	}
+
+	deadline := time.Now().Add(orphanReleaseBudget)
+	for {
+		if fixture.CountLogLines("DHCPRELEASE", ip) >= 1 {
+			return
+		}
+		if !time.Now().Before(deadline) {
+			t.Fatalf("dnsmasq never logged a DHCPRELEASE for %s within %v — the "+
+				"lease is still held upstream with nobody responsible for it. "+
+				"The persistent client was signalled before it bound, so it "+
+				"released nothing, and the reclaim that covers a client which "+
+				"never started did not run (#549)", ip, orphanReleaseBudget)
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+}
+
+// endpointIPv4 reads the address Docker recorded for this endpoint,
+// which is what CreateEndpoint's one-shot leased and therefore the
+// address that has to come back.
+func endpointIPv4(t *testing.T, ctx context.Context, cli *docker.Client, id, netName string) string {
+	t.Helper()
+
+	info, err := cli.ContainerInspect(ctx, id)
+	if err != nil {
+		t.Fatalf("ContainerInspect: %v", err)
+	}
+	settings, ok := info.NetworkSettings.Networks[netName]
+	if !ok {
+		t.Fatalf("container is not attached to %q after NetworkConnect", netName)
+	}
+	if settings.IPAddress == "" {
+		t.Fatalf("endpoint on %q reported no IPv4 address", netName)
+	}
+	return settings.IPAddress
+}
+
 // orphanedAfter renders the after-counter for a failure message,
 // tolerating the nil that a first-iteration health error would leave.
 func orphanedAfter(h *harness.HealthResponse) int32 {
@@ -257,6 +401,17 @@ func TestOrphanedLease_ReleasedInIpvlanMode(t *testing.T) {
 	// the plugin was the same process throughout.
 	w.End()
 
+	// The server's log first, deliberately. This assertion used to sit
+	// below the counter check and was unreachable whenever the counter
+	// failed — so a run where the lease genuinely leaked reported
+	// "orphaned_leases_released did not advance", a statement about the
+	// plugin's bookkeeping, and never got as far as saying what actually
+	// happened on the wire (#549). Evidence before opinion.
+	if got := fixture.CountLogLines("DHCPRELEASE") - releasesBefore; got < 1 {
+		t.Errorf("dnsmasq logged %d DHCPRELEASE lines in this window, want at least 1 — "+
+			"the lease is still held upstream", got)
+	}
+
 	if after == nil || after.OrphanedLeasesReleased <= before.OrphanedLeasesReleased {
 		t.Fatalf("orphaned_leases_released did not advance within %v (before=%d, after=%d) — "+
 			"an ipvlan orphaned lease is still held upstream",
@@ -270,10 +425,5 @@ func TestOrphanedLease_ReleasedInIpvlanMode(t *testing.T) {
 	if got := after.OrphanedLeaseReleaseFailures - before.OrphanedLeaseReleaseFailures; got != 0 {
 		t.Errorf("orphaned_lease_release_failures advanced by %d, want 0 — "+
 			"the reclaim was attempted but could not complete (#402)", got)
-	}
-
-	if got := fixture.CountLogLines("DHCPRELEASE") - releasesBefore; got < 1 {
-		t.Errorf("dnsmasq logged %d DHCPRELEASE lines in this window, want at least 1 — "+
-			"the plugin counted a release the server never saw", got)
 	}
 }

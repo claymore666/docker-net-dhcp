@@ -87,12 +87,20 @@ func (p *Plugin) releaseOrphanedLease(m *dhcpManager, endpointID string) {
 
 	if err := p.synthesiseRelease(ctx, m, v4); err != nil {
 		p.orphanedLeaseReleaseFailures.Add(1)
+		// Same ledger vocabulary as an ordinary teardown, because the
+		// fact being recorded is the same one: this address was not
+		// handed back. Until now the reclaim was invisible to the audit
+		// log entirely — an endpoint that took this path left a `bound`
+		// and then nothing, which reads as a lease still held whether
+		// or not the reclaim worked.
+		m.audit("release_failed", addr)
 		log.WithError(err).WithFields(fields).
 			Warn("Could not release orphaned lease; it will be held until it expires")
 		return
 	}
 
 	p.orphanedLeasesReleased.Add(1)
+	m.audit("release", addr)
 	log.WithFields(fields).Info("Released orphaned lease")
 }
 
