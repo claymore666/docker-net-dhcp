@@ -153,7 +153,28 @@ for c in "${only[@]}"; do
     fi
 done
 
-age_h=$(( (now - oldest_ct) / 3600 ))
+# A committer date in the future makes the subtraction negative, and a
+# negative age is ALWAYS "within grace" — so a single skewed clock
+# silences this gate for the length of the skew plus the window, while
+# printing "oldest is -166h old" at whoever reads it. Measured: that is
+# the literal output before this clamp.
+#
+# Committer dates come from whichever machine made the commit, so a
+# wrong clock or a mangled timezone is the realistic cause rather than
+# anything adversarial. Clamp to 0 — the gate then behaves as if the
+# commit had just been made, which is the conservative reading — and
+# say so loudly, because a skew this large means the grace window is
+# not measuring what it claims to.
+if [ "$now" -lt "$oldest_ct" ]; then
+    echo "::warning title=Commit dated in the future::the oldest commit on" \
+         "${BASE} that ${HEAD_REF} does not contain is dated" \
+         "$(( (oldest_ct - now) / 3600 ))h ahead of now. Treating its age as 0." \
+         "A clock skew this large makes the ${GRACE_HOURS}h grace window" \
+         "meaningless — check the committer's clock." >&2
+    age_h=0
+else
+    age_h=$(( (now - oldest_ct) / 3600 ))
+fi
 
 if [ "$age_h" -lt "$GRACE_HOURS" ]; then
     echo "::notice title=Back-merge pending::oldest is ${age_h}h old, within the" \

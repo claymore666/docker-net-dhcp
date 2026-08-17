@@ -107,6 +107,34 @@ check "a fresh commit does not reset the clock" 1 "$d" "back-merge was skipped"
 check "a wider grace window accepts the same divergence" 0 "$d" "within the" \
     BACKMERGE_GRACE_HOURS=72
 
+# --- a future-dated commit must not silence the gate ------------------
+# Unclamped, `now - ct` goes negative and a negative age is always
+# "within grace", so one skewed clock buys silence for the length of the
+# skew plus the window — and prints "oldest is -166h old" while doing
+# it. Measured output before the clamp; pinned here so it cannot come
+# back.
+d="$(newrepo future)"
+git_q "$d" checkout -q main
+commit future "release merge from a machine with a fast clock" $((NOW + 166 * H))
+check "a future-dated straggler is reported as skewed, not silently aged" 0 "$d" \
+    "dated in the future"
+
+# The clamp RESETS the clock; it does not disable the gate. Unclamped,
+# no grace window however small could fire on this commit — the age was
+# negative and every comparison said "within". With the clamp the age is
+# 0, so a zero-hour window goes red exactly as it would for a commit
+# made this second. That is the property worth pinning: the skew buys at
+# most one grace window, not the length of the skew on top of it.
+check "the clamp resets the clock rather than disabling the gate" 1 "$d" \
+    "back-merge was skipped" BACKMERGE_GRACE_HOURS=0
+
+# The clamp must not swallow the ordinary case it sits next to: a
+# future-dated commit ALONGSIDE a genuinely old one is still judged on
+# the old one, because the age is the oldest straggler's.
+commit future "an older omission underneath" $((NOW - 48 * H))
+check "a future-dated commit does not hide an older omission" 1 "$d" \
+    "back-merge was skipped"
+
 # --- THE v1.6.0 SHAPE: identical trees, divergent graph ---------------
 # main gets a merge commit whose second parent IS the dev tip, exactly
 # as a release PR produces. No file differs afterwards.
