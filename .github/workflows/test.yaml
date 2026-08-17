@@ -205,6 +205,18 @@ jobs:
       - name: Parent-gate accounting check
         run: bash scripts/check-parent-gate-accounting.sh
 
+      # Documentation that is a standing operator PRECONDITION rather
+      # than a description of the current version. The other docs gates
+      # reconcile prose against a code fact — counters, settings,
+      # driver-opts, image pins — and text with no code fact to check
+      # against fell between all of them. The STATE_DIR install block
+      # is the first entry: it names v1.5.0, so it reads as changelog
+      # prose a release documentation pass should clean up, and
+      # deleting it makes `docker plugin install` fail with no error
+      # anywhere that names the cause (#579).
+      - name: Doc-invariant check
+        run: bash scripts/check-doc-invariants.sh
+
       # An unreadable path under .claude/ must not break the build
       # context (#530). This one is structurally invisible to the rest
       # of CI: checkouts are fresh, so .claude/ does not exist, and the

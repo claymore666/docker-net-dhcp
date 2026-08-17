@@ -1,0 +1,75 @@
+# Documentation invariants: prose that is a standing operator
+# instruction, and the files that must keep saying it (#579).
+#
+# WHAT THIS FILE IS FOR
+#
+# Some documentation is reference material — it describes what the
+# current version does, and it is supposed to change when the code
+# changes. Gates already cover that kind: check-docs-drift.sh judges
+# counters and settings, check-option-docs.sh judges driver-opts,
+# check-version-pins.sh judges image pins.
+#
+# A different kind of documentation is a PRECONDITION. It tells the
+# operator to do something before the software will work at all, it is
+# true on every host and every version, and it is not made stale by a
+# release. Nothing gates that kind, because there is no code fact to
+# reconcile it against — and it is exactly the text a release
+# documentation pass deletes in good faith, because it mentions an old
+# version and therefore reads as changelog prose.
+#
+# This file is the reconciliation target such text does not otherwise
+# have. Deleting a block listed here goes red, and the entry says why
+# it must not be deleted, to whoever is holding the delete key.
+#
+# WHAT IT DOES NOT DO
+#
+# It cannot judge whether the prose is still CORRECT — only that it is
+# still THERE. An invariant whose underlying behaviour has genuinely
+# changed must be removed from this file in the same commit that
+# removes it from the docs, and the gate going red is the prompt to
+# make that a decision instead of a side effect.
+#
+# FORMAT
+#
+#   <invariant-id>
+#       file: <path relative to the repo root>      (one or more)
+#       marker: <literal substring>                 (one or more)
+#       <justification, indented, one or more lines>
+#
+# Entries are separated by blank lines. Every entry needs at least one
+# file, at least one marker, and a justification: an entry with no
+# reason becomes a line somebody deletes along with the block it
+# protects. Same rule as .github/linkadd-accounting.txt and
+# .github/vuln-allowlist.txt.
+#
+# Markers are matched as fixed strings against SINGLE LINES, so pick
+# something that cannot be re-wrapped: a command, or a short heading
+# fragment. The same sentence is wrapped differently in each of the
+# three files below, which is precisely why a marker must not be a
+# sentence.
+
+state-dir-bind-source
+    file: README.md
+    file: docs/index.md
+    file: docs/reference.md
+    marker: sudo mkdir -p /var/lib/net-dhcp
+    marker: DO THIS FIRST
+    v1.5.0 was the first release to bind-mount STATE_DIR from the host
+    so leases survive an upgrade, and Docker will not create a missing
+    bind source. The operator must create the directory BEFORE
+    `docker plugin install`, on every host, new install or upgrade,
+    indefinitely.
+    Skip it and the install fails at start-up and leaves the plugin
+    installed but disabled — after which re-running the identical
+    command answers only "plugin ... already exists", which says
+    nothing about the cause. A first-run experience with no path to
+    the answer, and no error message anywhere that names the missing
+    directory.
+    The block reads like changelog prose because it names a version,
+    and that is the trap: the version records when the behaviour
+    landed, not when the instruction expires. It does not expire. It
+    was kept by hand during the v1.6.0 documentation review; this
+    entry is what replaces the reviewer having to know.
+    Both markers are required in all three files. The heading alone
+    could survive while the command is dropped, and the command alone
+    could survive without the warning that makes anyone read it.
