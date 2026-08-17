@@ -1341,49 +1341,67 @@ func (m *dhcpManager) stop(leaving bool) error {
 		errV6 = <-m.errChanV6
 	}
 
-	// SIGTERM -> DHCPRELEASE -> exit didn't complete cleanly. The
-	// upstream server may now be holding a phantom lease against
-	// this MAC until its own expiry. Bump so operators can alert
-	// on a pattern of releases failing — typically points at
-	// upstream reachability problems mid-teardown. The ledger
-	// records release_failed rather than release so the audit
-	// trail never claims a release the server may not have seen.
-	// Both families are audited independently: a failed v4 release
-	// no longer hides the v6 outcome from the ledger.
+	// What the shutdown meant is decided by whether this client ever
+	// held a binding, NOT by how its process ended. That ordering is
+	// the whole of #607.
 	//
-	// The never-bound case is neither of those and must not be audited
-	// as either. The client exited cleanly, so errV4 is nil, but it
-	// held no binding and therefore sent no DHCPRELEASE — writing
-	// "release" here is the ledger claiming something the server never
-	// saw, which is the one thing this ledger exists not to do. The
-	// lease is still outstanding, so hand it to the same reclaim that
-	// covers a Start that never happened at all; releaseOrphanedLease
-	// writes the ledger entry for whichever way that goes.
+	// The exit status is a property of a process we deliberately
+	// signalled. dhcpcd answers SIGTERM by releasing and exiting 0 —
+	// but only once it is far enough into startup to have installed the
+	// handler. Signal it before that and it dies ON the signal, so
+	// Finish reaps "signal: terminated" and errV4 is non-nil. Testing
+	// errV4 first therefore routed the never-bound case into the
+	// release-failure branch below, skipping the reclaim and leaving
+	// the lease held upstream with nobody responsible for it. That is
+	// #549's bug one branch to the left, and the comment this replaces
+	// stated the assumption that hid it: "the client exited cleanly, so
+	// errV4 is nil". Sometimes it is not, and it changes nothing — a
+	// client that never bound cannot have failed to release a lease it
+	// never had.
 	//
 	// Reading boundV4 is safe here and only here: the v4 consumer
 	// goroutine is the sole writer and the receive from errChan above
 	// is its last act.
+	neverBoundV4 := !m.boundV4.Load()
+	neverBoundLog := log.WithFields(m.logFields(false)).WithField("ip", auditIP(lastIP))
+	if neverBoundV4 && errV4 != nil {
+		// Expected rather than a fault, but recorded so a signalled
+		// exit is not simply invisible. Debug, because there is nothing
+		// here for an operator to act on: the lease is handled below.
+		neverBoundLog = neverBoundLog.WithField("client_exit", errV4)
+	}
 	switch {
-	case errV4 != nil:
-		if m.plugin != nil {
-			m.plugin.leaseReleaseFailures.Add(1)
-		}
-		m.audit("release_failed", auditIP(lastIP))
-	case !m.boundV4.Load() && leaving:
-		log.
-			WithFields(m.logFields(false)).
-			WithField("ip", auditIP(lastIP)).
-			Info("Persistent client stopped before it ever held the lease; reclaiming it")
+	case neverBoundV4 && leaving:
+		// The one-shot's lease is still outstanding and the endpoint is
+		// going away, so hand it to the same reclaim that covers a
+		// Start that never happened at all; releaseOrphanedLease writes
+		// the ledger entry for whichever way that goes. Nothing is
+		// audited here: no DHCPRELEASE was sent, and writing "release"
+		// would be the ledger claiming something the server never saw,
+		// which is the one thing this ledger exists not to do.
+		neverBoundLog.Info("Persistent client stopped before it ever held the lease; reclaiming it")
 		m.plugin.spawnOrphanRelease(m)
-	case !m.boundV4.Load():
+	case neverBoundV4:
 		// Not leaving, so the address may still be in use by a running
 		// container — see StopForLeave. Nothing is released and nothing
 		// is audited as released, which is the honest record: no
 		// DHCPRELEASE was sent.
-		log.
-			WithFields(m.logFields(false)).
-			WithField("ip", auditIP(lastIP)).
-			Debug("Persistent client stopped before it held the lease; not reclaiming, the endpoint is not leaving")
+		neverBoundLog.Debug("Persistent client stopped before it held the lease; not reclaiming, the endpoint is not leaving")
+	case errV4 != nil:
+		// Held a binding and did not shut down cleanly, so
+		// SIGTERM -> DHCPRELEASE -> exit did not complete and the
+		// upstream server may now be holding a phantom lease against
+		// this MAC until its own expiry. Bump so operators can alert
+		// on a pattern of releases failing — typically points at
+		// upstream reachability problems mid-teardown. The ledger
+		// records release_failed rather than release so the audit
+		// trail never claims a release the server may not have seen.
+		// Both families are audited independently: a failed v4 release
+		// no longer hides the v6 outcome from the ledger.
+		if m.plugin != nil {
+			m.plugin.leaseReleaseFailures.Add(1)
+		}
+		m.audit("release_failed", auditIP(lastIP))
 	default:
 		m.audit("release", auditIP(lastIP))
 	}
@@ -1398,7 +1416,14 @@ func (m *dhcpManager) stop(leaving bool) error {
 		}
 	}
 
-	if errV4 != nil {
+	// A client that never bound reports no error, whatever its exit
+	// status: we sent the SIGTERM, it died because we asked it to, and
+	// the lease it never took has been dealt with above. Returning the
+	// exit status here is what turned a correctly handled teardown into
+	// a 500 from Leave, for a shutdown in which nothing actually
+	// failed. The startErr path earlier in this function already
+	// reclaims and returns nil on the same reasoning (#607).
+	if errV4 != nil && !neverBoundV4 {
 		return fmt.Errorf("failed shut down DHCP client: %w", errV4)
 	}
 	if errV6 != nil {
