@@ -238,6 +238,20 @@ jobs:
       - name: Cosign-version docs check
         run: bash scripts/check-cosign-docs.sh
 
+      # Every job taking a workflow_dispatch `ref` input must sit behind
+      # the job that validates it (#593). A fork's pull-request head is
+      # fetchable from this repository and a dispatch context carries
+      # the repository secrets, so an unvalidated ref checks outside
+      # code out as root on the self-hosted pool, with the registry
+      # credential in the job.
+      #
+      # The rule already existed as a SECURITY comment in
+      # integration.yml and a second route walked around it, which is
+      # why the coverage is asserted here rather than remembered. It
+      # reads workflow text, so it costs no pool slot.
+      - name: Dispatch-ref guard coverage
+        run: bash scripts/check-dispatch-ref-guard.sh
+
   staticcheck:
     runs-on: ubuntu-latest
     timeout-minutes: 15

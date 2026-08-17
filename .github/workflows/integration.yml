@@ -51,6 +51,21 @@ name: Integration
 # Anything that would let fork code see the secret — moving this
 # workflow to `pull_request_target`, or checking out a PR head in a job
 # that has the credential — reverses that and must not be done here.
+#
+# `workflow_dispatch` IS such a route, and this note did not say so
+# until #593. A fork's PR head is fetchable from the base repository
+# (`refs/pull/<N>/head`, no `repository:` argument needed), a dispatch
+# context DOES carry repository secrets, and the `ref` input below went
+# straight to actions/checkout. Passing `-f ref=refs/pull/<N>/head` —
+# or the head's bare SHA, which no ref pattern can see — reached the
+# outcome this paragraph forbids, by a route it had not named.
+#
+# That is now enforced rather than described. The `dispatch-ref` job
+# rejects any ref not reachable from a branch or tag of this repository
+# before anything checks it out, every consumer of `inputs.ref` sits
+# behind it, and scripts/check-dispatch-ref-guard.sh fails the build if
+# a future job takes the input without that dependency. Prose was what
+# failed here; do not replace the check with more of it.
 on:
   push:
     branches:
@@ -71,7 +86,7 @@ on:
   workflow_dispatch:
     inputs:
       ref:
-        description: "Branch, tag or SHA to run the suite against. Blank = the default branch."
+        description: "Branch, tag or SHA OF THIS REPOSITORY to run the suite against. Blank = the default branch. A pull-request ref is rejected (#593)."
         required: false
         type: string
 
@@ -133,6 +148,34 @@ permissions:
   actions: read
 
 jobs:
+  # Validate the dispatch ref BEFORE anything checks it out (#593).
+  #
+  # Deliberately NOT conditioned on `github.event_name`. A skipped job
+  # skips everything in its `needs:` chain, so an `if:` here would skip
+  # the gate and the suites on every push and pull_request — and the
+  # aggregator would read that as a failure. Instead the job always
+  # runs and the script passes trivially on a blank ref, which is what
+  # every non-dispatch event supplies.
+  #
+  # It checks out WITHOUT `ref:` on purpose: this job must never
+  # materialize the untrusted tree it is judging. What it runs is the
+  # workflow's own ref, which required write access to dispatch.
+  dispatch-ref:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Load-bearing. The check answers "is this commit reachable
+          # from one of our branches or tags", and `--contains` on a
+          # truncated graph answers that wrong in the direction that
+          # rejects legitimate refs. The script refuses to run on a
+          # shallow clone rather than guess.
+          fetch-depth: 0
+
+      - name: Reject a dispatch ref that is not ours
+        run: bash scripts/check-dispatch-ref.sh "${{ inputs.ref }}"
+
   # Decide ONCE whether this event needs the suites at all: docs-only PR
   # diffs (#311) and post-merge pushes whose tree already passed (#312)
   # exit in seconds instead of holding a privileged pool slot for ~20
@@ -151,16 +194,26 @@ jobs:
   # ubuntu-latest, not the dhcp-ci pool: this is an API call and a
   # git rev-parse, and it must not consume a privileged runner slot.
   gate:
+    needs: dispatch-ref
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
       decision: ${{ steps.gate.outputs.decision }}
     steps:
+      # No `ref:` — this job runs scripts/integration-run-gate.sh, and
+      # it must run OUR copy of it (#593). Checking out `inputs.ref`
+      # here executed an attacker-chosen script with the default
+      # branch's Actions cache scope, which is the open CodeQL
+      # `actions/cache-poisoning/poisonable-step` alert: four setup-go
+      # call sites across codeql.yml and test.yaml restore that cache on
+      # the default branch.
+      #
+      # Nothing is lost by dropping it. The gate decides repo policy,
+      # not PR content: on a dispatch its answer is the hardcoded "run"
+      # (#419), and on push/pull_request the input is blank, so this
+      # checkout is the event's own tree either way — which is exactly
+      # what the push-mode tree comparison needs.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          # Empty on every event except workflow_dispatch, where
-          # checkout falls back to the triggering ref (#419).
-          ref: ${{ inputs.ref }}
 
       - name: Suite-needed gate
         id: gate
@@ -228,9 +281,12 @@ jobs:
     # gets to report rather than being killed mid-verdict.
     timeout-minutes: 20
     steps:
+      # No `ref:`, same reason as the gate (#593): this job runs
+      # scripts/ci-queue-watchdog.sh, which reports on the RUN — how
+      # long its jobs have been unassigned and why — and has no
+      # interest in the tree under test. Nothing it reads comes from
+      # the dispatched ref, so there is no reason to materialize it.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ inputs.ref }}
       # It also classifies WHY nothing picked the job up and says so in
       # an annotation, a step summary and the `starved` output (#513) —
       # a capacity red and a suite failure looked identical in the
