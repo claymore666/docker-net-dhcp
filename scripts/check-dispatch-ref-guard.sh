@@ -91,6 +91,28 @@ scan_file() {
     }
     /^jobs:[[:space:]]*$/ { in_jobs = 1; next }
     in_jobs && /^[^[:space:]#]/ { flush(); in_jobs = 0; next }
+    # A reference OUTSIDE any job taints the whole file. A workflow-level
+    # `env:` (or `defaults:`) can carry the input into every job without
+    # a single job naming it:
+    #
+    #     env:
+    #       TARGET_REF: ${{ inputs.ref }}
+    #     jobs:
+    #       suite:
+    #         steps:
+    #           - uses: actions/checkout@...
+    #             with:
+    #               ref: ${{ env.TARGET_REF }}
+    #
+    # Scanning job bodies alone reports "nothing to guard" on that file
+    # and exits 0 while an unguarded job checks the untrusted ref out.
+    # A check that reports green having examined nothing is worse than
+    # no check, so the laundering path is treated as consumption by
+    # every job in the file.
+    !in_jobs && /inputs\.ref/ && $0 !~ /^[[:space:]]*#/ {
+        file_level = 1
+        if (file_line == 0) file_line = FNR
+    }
     in_jobs && /^  [A-Za-z0-9_-]+:[[:space:]]*$/ {
         flush()
         job = $1; sub(/:$/, "", job)
@@ -124,7 +146,10 @@ scan_file() {
         }
         if (index($0, guard) > 0) is_guard = 1
     }
-    END { flush() }
+    END {
+        flush()
+        if (file_level) printf "!file\t-\t0\t0\t%d\n", file_line
+    }
     ' "$1"
 }
 
@@ -136,8 +161,15 @@ for f in "${files[@]}"; do
     examined=$((examined + 1))
     declare -A NEEDS=() USES=() GUARDJOB=() LINE=()
     jobs=()
+    file_level=0
+    file_line=0
     while IFS=$'\t' read -r job needs uses guard line; do
         [ -n "${job:-}" ] || continue
+        if [ "$job" = "!file" ]; then
+            file_level=1
+            file_line="$line"
+            continue
+        fi
         jobs+=("$job")
         [ "$needs" = "-" ] && needs=""
         NEEDS["$job"]="$needs"
@@ -145,6 +177,15 @@ for f in "${files[@]}"; do
         GUARDJOB["$job"]="$guard"
         LINE["$job"]="$line"
     done < <(scan_file "$f")
+
+    # Workflow-level reference: every job in the file can reach the
+    # input without naming it, so every job must be behind the guard.
+    if [ "$file_level" = "1" ]; then
+        for job in "${jobs[@]}"; do
+            USES["$job"]=1
+            [ "${LINE[$job]}" = "0" ] && LINE["$job"]="$file_line (workflow-level)"
+        done
+    fi
 
     # reaches_guard JOB — true if JOB is the guard, or any job it needs
     # (transitively) is. Visited-set guards against a cycle in `needs:`,

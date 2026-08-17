@@ -164,6 +164,69 @@ jobs:
 YAML
 check "scalar, inline-array and block needs: all parse" 0 "$TMP/shapes" "4 job(s)"
 
+# --- laundering through a workflow-level env: --------------------------
+# The blind spot this check was reviewed into having. No job names
+# inputs.ref, so a job-body-only scan reported "nothing to guard" and
+# exited 0 while an unguarded self-hosted job checked the untrusted ref
+# out. Green having examined nothing is the failure mode the whole
+# check exists to prevent, so it is pinned here in both directions.
+mkdir -p "$TMP/laundered" "$TMP/laundered-ok"
+cat > "$TMP/laundered/w.yml" <<'YAML'
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        type: string
+env:
+  TARGET_REF: ${{ inputs.ref }}
+jobs:
+  suite:
+    runs-on: [self-hosted, dhcp-ci]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.TARGET_REF }}
+YAML
+check "a workflow-level env: laundering the ref is reported" 1 "$TMP/laundered" \
+    "workflow-level"
+
+# ...and the same shape, correctly guarded, must still pass — otherwise
+# the fix would be a check nobody can satisfy.
+cat > "$TMP/laundered-ok/w.yml" <<'YAML'
+env:
+  TARGET_REF: ${{ inputs.ref }}
+jobs:
+  dispatch-ref:
+    runs-on: ubuntu-latest
+    steps:
+      - run: bash scripts/check-dispatch-ref.sh "${{ inputs.ref }}"
+  suite:
+    needs: dispatch-ref
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.TARGET_REF }}
+YAML
+check "a guarded workflow-level env: passes" 0 "$TMP/laundered-ok" "are behind"
+
+# A comment before `jobs:` naming inputs.ref must not taint the file —
+# integration.yml's SECURITY block does exactly that.
+mkdir -p "$TMP/toplevel-comment"
+cat > "$TMP/toplevel-comment/w.yml" <<'YAML'
+# The `ref` input is validated before use — never pass inputs.ref to a
+# credentialed job without the guard (#593).
+on:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+YAML
+check "a top-level comment naming inputs.ref does not taint the file" 0 \
+    "$TMP/toplevel-comment" "nothing to guard"
+
 # --- a cycle must terminate, not hang ---------------------------------
 # GitHub rejects this, but a checker that hangs on malformed input is
 # worse than one that reports it.

@@ -173,6 +173,18 @@ jobs:
           # shallow clone rather than guess.
           fetch-depth: 0
 
+      - name: Fetch every branch and tag
+        # Explicit rather than inferred from fetch-depth, for the same
+        # reason release-backmerge.yml fetches its two tips by hand:
+        # checkout leaves us on ONE ref, and this check can only see
+        # what is in the object store. The input's own description
+        # advertises a tag as valid, so a missing refs/tags would reject
+        # `v1.6.0` as "not ours" — failing closed, but confusingly, at
+        # the moment somebody is trying to test a release tag.
+        run: |
+          git fetch --no-tags origin '+refs/heads/*:refs/remotes/origin/*'
+          git fetch --tags origin
+
       - name: Reject a dispatch ref that is not ours
         run: bash scripts/check-dispatch-ref.sh "${{ inputs.ref }}"
 
