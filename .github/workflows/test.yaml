@@ -229,6 +229,22 @@ jobs:
       - name: Registry-login check
         run: bash scripts/check-registry-login.sh
 
+      # A workflow_dispatch ref must be validated before it reaches a
+      # checkout (#593). `refs/pull/N/head` is fetchable from this
+      # repository, and a dispatch run — unlike a fork `pull_request` —
+      # carries the secrets, so an unguarded `inputs.ref` put outside
+      # code in the credentialed root job on the self-hosted pool and in
+      # a step whose cache the default branch later restores.
+      #
+      # The rule already existed as prose in integration.yml and a new
+      # route walked around it, so what this checks is not that a guard
+      # exists but that EVERY consumer is behind one — the half that
+      # prose cannot do. Reads workflow text, needs no runner of any
+      # particular kind, and nothing else in CI would notice: the
+      # failure is a route nobody takes until somebody does.
+      - name: Dispatch-ref guard check
+        run: bash scripts/check-dispatch-ref.sh
+
       # Every page that prints a cosign command must state which cosign
       # major it needs (#522). Verifying a signature is the one moment a
       # user is deciding whether to trust the artifact, and cosign v2's

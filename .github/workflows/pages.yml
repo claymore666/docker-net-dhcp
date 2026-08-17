@@ -57,7 +57,26 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      # No `ref:` — this is the trusted checkout, and `deploy` needs it,
+      # which is what lets the guard below cover the deploy job's
+      # checkout of the dispatched ref (#593).
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Same class as integration.yml's `inputs.ref` (#593), reached
+      # through `inputs.tag`. `deploy` checked out this input and then
+      # ran `pip install -r docs/requirements.txt` from that tree — in a
+      # job holding `contents: write` — and only refused an unexpected
+      # ref afterwards, in the mike step, by which point the tree was on
+      # disk and the install had already run. `--require-hashes` does
+      # not help: whoever supplies the ref supplies the hashes too.
+      #
+      # Refusing here, in the job deploy needs, puts the decision before
+      # the checkout instead of after it. The mike step's own
+      # dev/vX.Y.Z[-rcN] branching stays where it is — that one decides
+      # what to PUBLISH, which is a different question from whether the
+      # ref may be executed at all.
+      - name: Reject a dispatch ref that is not ours
+        run: bash scripts/check-dispatch-ref.sh --validate "${{ inputs.tag }}"
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:

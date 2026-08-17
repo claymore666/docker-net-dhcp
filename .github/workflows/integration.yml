@@ -51,6 +51,20 @@ name: Integration
 # Anything that would let fork code see the secret — moving this
 # workflow to `pull_request_target`, or checking out a PR head in a job
 # that has the credential — reverses that and must not be done here.
+#
+# That paragraph was correct and was walked around anyway (#593), which
+# is worth keeping on the record. It anticipated `pull_request_target`;
+# it did not anticipate that `workflow_dispatch` reaches the same place,
+# because a fork's PR head is fetchable from THIS repository as
+# `refs/pull/N/head` and a dispatch run — unlike a fork `pull_request` —
+# does get the secrets. `-f ref=refs/pull/N/head` was the whole exploit.
+#
+# So the rule is executable now rather than only written down. The gate
+# job validates `inputs.ref` from a trusted checkout before any other
+# job runs, and scripts/check-dispatch-ref.sh's static half fails CI if
+# a job ever consumes a dispatch ref without being covered by it. Treat
+# the paragraph above as the intent and that script as the enforcement:
+# if you find yourself needing to weaken one, you are editing the other.
 on:
   push:
     branches:
@@ -156,11 +170,41 @@ jobs:
     outputs:
       decision: ${{ steps.gate.outputs.decision }}
     steps:
+      # DELIBERATELY NO `ref:` (#593). This job decides repository
+      # policy, not PR content, and it EXECUTES a script from whatever
+      # it checks out. Running that script from `inputs.ref` meant a
+      # dispatch could run chosen code with the default branch's Actions
+      # cache scope, which `codeql.yml` and `test.yaml` then restore
+      # through `setup-go`'s `cache: true` — the CodeQL alert
+      # `actions/cache-poisoning/poisonable-step` at integration.yml:165,
+      # which was the step below.
+      #
+      # A trusted checkout is also what lets the guard below mean
+      # anything: a validator fetched from the tree it is validating
+      # validates nothing.
+      #
+      # Nothing is lost by dropping it. `inputs.ref` is empty on every
+      # other event, and on dispatch this job takes the `dispatch`
+      # branch below, which never looks at the tree.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          # Empty on every event except workflow_dispatch, where
-          # checkout falls back to the triggering ref (#419).
-          ref: ${{ inputs.ref }}
+
+      # The guard for the whole workflow (#593). It sits here, in the
+      # one job every other job needs, so a job added later inherits it
+      # rather than having to remember it — and
+      # scripts/check-dispatch-ref.sh's static half fails the build if
+      # some future job consumes `inputs.ref` without being covered.
+      #
+      # What it stops: `-f ref=refs/pull/N/head`. A fork's PR head is
+      # fetchable from THIS repository, and a dispatch run — unlike a
+      # `pull_request` from a fork — is given the repository secrets. The
+      # suite job below runs as root on the self-hosted pool and has held
+      # the Docker Hub credential since #562, so that combination is
+      # exactly what this file's SECURITY block already forbids. That
+      # block anticipated `pull_request_target` and did not anticipate
+      # this route, which is why the rule is executable now instead of
+      # only written down.
+      - name: Reject a dispatch ref that is not ours
+        run: bash scripts/check-dispatch-ref.sh --validate "${{ inputs.ref }}"
 
       - name: Suite-needed gate
         id: gate
@@ -228,9 +272,13 @@ jobs:
     # gets to report rather than being killed mid-verdict.
     timeout-minutes: 20
     steps:
+      # No `ref:` here either, for the gate job's reason (#593): this
+      # job runs scripts/ci-queue-watchdog.sh, and it reports on the RUN
+      # — which jobs were picked up, and why not — so the tree under test
+      # has no bearing on its verdict. It also holds `actions: write`,
+      # which makes it the worst place in this workflow to execute a
+      # dispatched tree's code.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ inputs.ref }}
       # It also classifies WHY nothing picked the job up and says so in
       # an annotation, a step summary and the `starved` output (#513) —
       # a capacity red and a suite failure looked identical in the
@@ -328,6 +376,13 @@ jobs:
         with:
           # Empty on every event except workflow_dispatch, where
           # checkout falls back to the triggering ref (#419).
+          #
+          # This is the one job that legitimately runs the dispatched
+          # tree — testing it is the entire point — so the ref stays.
+          # What makes that safe is `needs: gate`, whose guard has
+          # already refused a PR head by the time this runs (#593). Do
+          # not remove that dependency to save a minute: it is load
+          # bearing, not scheduling.
           ref: ${{ inputs.ref }}
 
       # Authenticate to Docker Hub before anything pulls from it (#562).

@@ -46,7 +46,35 @@ permissions:
   contents: read
 
 jobs:
+  # This workflow was NOT vulnerable to #593: `Resolve release tag`
+  # refuses anything that is not vX.Y.Z — `refs/pull/N/head` included —
+  # and it refuses it before the checkout. The guard is here so that the
+  # answer to "what may a dispatched ref be" has ONE authority in this
+  # repository, instead of a correct hand-rolled regex here, another in
+  # pages.yml, and whatever the next workflow's author writes. The
+  # alternative was an exemption list in the checker, and an exemption
+  # list is a documented hole that the next person walks through —
+  # which is roughly how #593 happened.
+  #
+  # ITS OWN JOB, not a step in `release`. The guard needs the script,
+  # the script needs a checkout, and `release`'s own checkout is of the
+  # resolved tag at `fetch-depth: 0` — sequencing a second, trusted
+  # checkout in front of it would perturb the one workflow whose failure
+  # mode is a broken release. Thirty seconds of a thirty-minute chain is
+  # the cheaper side of that trade. Everything else here reaches the tag
+  # through `needs: release`, so gating this one job gates the workflow.
+  dispatch-guard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # Trusted: no `ref:` of its own, so a dispatched ref cannot supply
+      # the validator that judges it.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Reject a dispatch ref that is not ours
+        run: bash scripts/check-dispatch-ref.sh --validate "${{ inputs.tag }}"
+
   release:
+    needs: dispatch-guard
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
