@@ -141,16 +141,36 @@ Docker Hub as `claymore666/net-dhcp:vX.Y.Z`. Every snippet here uses the
 GHCR reference. See the
 [Releases page](https://github.com/claymore666/docker-net-dhcp/releases).
 
-Published builds are **`linux/amd64` only**. This is not an oversight
-about which architectures get built: a Docker *plugin* cannot be
-installed from a multi-architecture manifest list at all. The daemon
-reads a plugin's privileges before pulling it and its manifest handler
-matches single manifests only, so an index fails with `did not find
-plugin config for specified reference` — for every architecture,
-including the one you are on — and `docker plugin install` has no
-`--platform` to steer it. arm64 therefore needs a tag of its own rather
-than a flag on this one; that is tracked in
-[#507](https://github.com/claymore666/docker-net-dhcp/issues/507).
+**`linux/amd64` and `linux/arm64` are both published, as separate tags**
+(v1.7.0+). There is deliberately no multi-architecture tag, and this is
+not an oversight about which architectures get built: a Docker *plugin*
+cannot be installed from a manifest list at all. The daemon reads a
+plugin's privileges before pulling it and its manifest handler matches
+single manifests only, so an index fails with `did not find plugin
+config for specified reference` — for every architecture, including the
+one you are on — and `docker plugin install` has no `--platform` to
+steer it. arm64 therefore gets a tag of its own rather than a flag on
+this one ([#507]):
+
+```bash
+sudo mkdir -p /var/lib/net-dhcp   # required on every host, see above
+# x86-64
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.6.0
+# 64-bit ARM (Pi 4/5, Armbian, aarch64 VMs)
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.6.0-linux-arm64-v8
+```
+
+`:vX.Y.Z` and `:latest` are amd64 and stay that way. Mind the tag:
+Docker does **no architecture check** at plugin install — the plugin
+config format has no field for it — so the wrong one installs cleanly
+and only misbehaves afterwards. All three attachment modes take real
+leases on arm64; *timing* behaviour (renewal, expiry, outage detection)
+is not yet verified there, which needs native hardware ([#531]). The
+[reference](docs/reference.md#choosing-the-right-tag-for-your-architecture)
+has the full arch table and the failure modes.
+
+[#507]: https://github.com/claymore666/docker-net-dhcp/issues/507
+[#531]: https://github.com/claymore666/docker-net-dhcp/issues/531
 
 ## Verifying releases
 

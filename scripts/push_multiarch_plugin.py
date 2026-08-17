@@ -34,6 +34,21 @@ def main():
     parser.add_argument('rootfs', help='buildx rootfs parent directory')
     parser.add_argument('image', help='target image (registry/image:tag)')
     parser.add_argument('-p', '--platforms', default='linux/amd64', help='buildx platforms')
+    # A Docker PLUGIN cannot be installed from a manifest list, by any
+    # Docker version (#507). Manager.Privileges() runs before the pull
+    # and matches single manifests only, so the walk stops at the index,
+    # no plugin config is found, and install aborts with `did not find
+    # plugin config for specified reference` — on every architecture,
+    # including the one you are on.
+    #
+    # So the index is not a convenience here, it is a trap: writing one
+    # to `:vX.Y.Z` would make the release uninstallable for the amd64
+    # users who have been installing that tag all along. The per-arch
+    # manifests this pushes on the way to building the index are the
+    # shipping shape, and this flag stops at them.
+    parser.add_argument('--no-index', action='store_true',
+                        help='push only the per-platform manifests, not the manifest list '
+                             '(a plugin cannot be installed from an index — see #507)')
 
     args = parser.parse_args()
 
@@ -118,6 +133,21 @@ def main():
                 'digest': digest,
                 'platform': p.manifest,
             })
+
+    pushed = len(mf_list['manifests'])
+    if pushed != len(platforms):
+        # Per-platform failures are caught and printed above so one bad
+        # platform does not lose the others' work. That is the right
+        # behaviour for a build, and the wrong behaviour for a release:
+        # a partial push would otherwise be reported as success and the
+        # missing architecture would surface as a user's 404.
+        raise SystemExit(
+            f'only {pushed} of {len(platforms)} platform manifests pushed — see the exceptions above')
+
+    if args.no_index:
+        print(f'Skipping the {args.image} manifest list (--no-index); '
+              f'per-platform tags are the installable artifacts')
+        return
 
     print(f'Pushing {args.image} manifest list')
     reg.push_manifest(mf_list, ref=tag, mime=MTYPE_MANIFEST_LIST)

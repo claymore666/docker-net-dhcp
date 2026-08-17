@@ -2,6 +2,23 @@ PLUGIN_NAME ?= ghcr.io/claymore666/docker-net-dhcp
 PLUGIN_TAG ?= golang
 PLATFORMS ?= linux/amd64,linux/arm64
 
+# Which of the built platforms get PUSHED as per-arch tags (#507).
+#
+# Separate from PLATFORMS because the two answer different questions.
+# `buildx ... -o type=local` only creates per-platform SUBDIRECTORIES
+# (linux_amd64/, linux_arm64/) when it is given more than one platform;
+# with a single one it writes the rootfs straight into dest, and
+# push_multiarch_plugin.py — which joins dest with the platform dirname —
+# would then look in a directory that does not exist. So the build stays
+# multi-platform, and this narrows what is published.
+#
+# The release narrows it to arm64 on purpose. `:vX.Y.Z` and
+# `:vX.Y.Z-linux-amd64` should be the SAME artifact at the same digest,
+# covered by the one signature, and they are — because release.yml
+# retags the amd64 per-arch tag off the already-pushed `:vX.Y.Z` rather
+# than pushing a second, differently-tarred amd64 build here.
+PUSH_PLATFORMS ?= $(PLATFORMS)
+
 SOURCES = $(shell find pkg/ cmd/ -name '*.go')
 BINARY = bin/net-dhcp
 
@@ -21,7 +38,8 @@ TEST_OUTAGE_GRACE ?= 10s
 
 .PHONY: all debug build create enable disable pdebug push clean integration-test \
         integration-test-failure integration-test-shard integration-local integration-cleanup \
-        build-cover plugin-cover create-cover enable-cover disable-cover
+        build-cover plugin-cover create-cover enable-cover disable-cover \
+        push-multiarch push-per-arch
 
 all: create enable
 
@@ -103,11 +121,33 @@ enable-cover:
 disable-cover:
 	docker plugin disable $(PLUGIN_NAME):$(PLUGIN_COVER_TAG)
 
+# BUILDX_BUILDER names the builder to use, empty meaning "whatever is
+# current". Multi-platform builds need the `docker-container` driver —
+# the default `docker` driver refuses them — but the rest of this
+# Makefile builds with plain `docker build` and needs images LOADED into
+# the local image store (`plugin/rootfs` does `docker create` against the
+# tag it just built). A docker-container builder does not load, so making
+# one the current builder would quietly break `make push`.
+#
+# Hence: the release names this builder for the multi-arch build only,
+# and never switches the default (#507).
 multiarch: $(SOURCES)
-	docker buildx build --platform=$(PLATFORMS) -o type=local,dest=$@ .
+	docker buildx build $(if $(BUILDX_BUILDER),--builder=$(BUILDX_BUILDER),) \
+	    --platform=$(PLATFORMS) -o type=local,dest=$@ .
 
 push-multiarch: multiarch config.json
 	scripts/push_multiarch_plugin.py -p $(PLATFORMS) config.json multiarch $(PLUGIN_NAME):$(PLUGIN_TAG)
+
+# What the release actually calls (#507). Same build, but it publishes
+# only the per-arch tags named by PUSH_PLATFORMS and writes NO manifest
+# list — a plugin cannot be installed from an index, so an index at
+# `:vX.Y.Z` would break the tag every amd64 user already installs.
+#
+# push-multiarch above is kept as-is for anyone who wants the index for
+# inspection; it is not on the release path.
+push-per-arch: multiarch config.json
+	scripts/push_multiarch_plugin.py --no-index -p $(PUSH_PLATFORMS) \
+	    config.json multiarch $(PLUGIN_NAME):$(PLUGIN_TAG)
 
 clean:
 	-rm -rf multiarch/

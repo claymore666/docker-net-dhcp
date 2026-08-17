@@ -91,15 +91,53 @@ The plugin publishes to two registries; GHCR is primary:
 - `ghcr.io/claymore666/docker-net-dhcp:vX.Y.Z` (primary)
 - `claymore666/net-dhcp:vX.Y.Z` (Docker Hub mirror)
 
-Published builds are **`linux/amd64` only**, and this is a constraint of
-Docker plugins rather than a choice about which architectures to build:
-a plugin cannot be installed from a multi-architecture manifest list at
-all, and `docker plugin install` has no `--platform` to steer one. An
-index fails with `did not find plugin config for specified reference`
-for every architecture, including the one you are on. arm64 therefore
-needs a tag of its own — tracked in
-[#507](https://github.com/claymore666/docker-net-dhcp/issues/507). The
-README covers the daemon-side reason in full.
+### Choosing the right tag for your architecture
+
+`linux/amd64` and `linux/arm64` are both published, as **separate tags**
+(v1.7.0+, [#507]). There is no multi-architecture tag and there cannot
+be one: a plugin cannot be installed from a manifest list at all, and
+`docker plugin install` has no `--platform` to steer one. An index fails
+with `did not find plugin config for specified reference` for every
+architecture, including the one you are on. The README covers the
+daemon-side reason in full.
+
+| Your host | Tag to install |
+| --- | --- |
+| x86-64 (`amd64`) | `ghcr.io/claymore666/docker-net-dhcp:v1.6.0` |
+| 64-bit ARM (`arm64`/`aarch64`) — Pi 4/5, Armbian, Apple silicon VMs | `ghcr.io/claymore666/docker-net-dhcp:v1.6.0-linux-arm64-v8` |
+
+The bare `:vX.Y.Z` and `:latest` tags are **amd64**, and will stay that
+way — they are what every existing install already names. An explicit
+`:vX.Y.Z-linux-amd64` alias exists for symmetry and points at the exact
+same digest, so either name verifies against the same signature.
+
+32-bit ARM (`armv7`/`armhf`) is not published.
+
+> **Installing the wrong architecture fails late, and quietly.**
+> Docker performs **no architecture check** when installing a plugin —
+> the plugin config format has no `os`/`architecture` field for it to
+> check against. So an arm64 plugin installs onto an x86-64 host with no
+> complaint at all, and the failure surfaces afterwards as a plugin that
+> will not enable, or that enables and then answers nothing. If a fresh
+> install misbehaves in a way that makes no sense, check the tag first:
+>
+> ```bash
+> docker plugin inspect -f '{{.PluginReference}}' \
+>   ghcr.io/claymore666/docker-net-dhcp:v1.6.0
+> ```
+
+**arm64 maturity, stated honestly.** All three attachment modes take
+real DHCP leases on arm64 — bridge, macvlan and ipvlan are verified in a
+full-system aarch64 VM against the same fixtures the amd64 lane uses.
+What is **not** yet verified on arm64 is *timing* behaviour: lease
+renewal at T1, expiry, and outage detection. That gap is not an
+oversight, it is a measurement problem — emulation slows the code
+without slowing the protocol's clocks, and `qemu-user` cannot run the
+plugin at all (`dhcpcd` opens a `NETLINK_GENERIC` socket it does not
+translate). Closing it needs native hardware, tracked in [#531].
+
+[#507]: https://github.com/claymore666/docker-net-dhcp/issues/507
+[#531]: https://github.com/claymore666/docker-net-dhcp/issues/531
 
 **Install** (interactive privilege grant, or `--grant-all-permissions`
 for unattended):

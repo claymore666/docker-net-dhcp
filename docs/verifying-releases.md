@@ -73,6 +73,21 @@ cosign verify ghcr.io/claymore666/docker-net-dhcp:VERSION \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 
+**Verify the tag you actually installed.** From v1.7.0 each architecture
+is published as its own tag, and cosign verifies by digest, so the
+command above tells you nothing about a tag you did not name. On arm64:
+
+```sh
+cosign verify ghcr.io/claymore666/docker-net-dhcp:VERSION-linux-arm64-v8 \
+  --certificate-identity-regexp '^https://github.com/claymore666/docker-net-dhcp/.github/workflows/release.yml@' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+`VERSION`, `VERSION-linux-amd64` and `latest` are three names for one
+digest and one signature; `VERSION-linux-arm64-v8` is a separate build
+with a signature of its own. Both are made by the same workflow, so the
+identity regexp above is unchanged.
+
 ## Verifying build provenance
 
 SLSA provenance covers both the image and the release artifacts:

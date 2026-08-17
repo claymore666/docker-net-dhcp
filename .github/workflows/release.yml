@@ -215,6 +215,131 @@ jobs:
             plugin/rootfs/usr/sbin/net-dhcp \
             plugin/rootfs/usr/lib/net-dhcp/dhcp-handler
 
+      # ---------------------------------------------------------------
+      # Per-architecture tags (#507).
+      #
+      # WHY TAGS AND NOT A MANIFEST LIST. A Docker plugin cannot be
+      # installed from an index, by any Docker version:
+      # Manager.Privileges() runs before the pull and matches single
+      # manifests only, so the walk stops at the index and install fails
+      # with `did not find plugin config for specified reference` — for
+      # every architecture, including the one you are on, and
+      # `docker plugin install` has no `--platform` to steer it.
+      # Verified identical on Docker 26.1.5 and 28.5.2. So wiring
+      # `push-multiarch` onto `:vX.Y.Z` would not add arm64, it would
+      # make the release uninstallable for the amd64 users who already
+      # pull that tag. The fork's own upstream published
+      # `:release-linux-amd64` and appears to have hit the same wall.
+      #
+      # WHAT THE BARE TAGS MEAN, PERMANENTLY. `:vX.Y.Z` and `:latest`
+      # stay amd64. That is backward compatibility, not a preference:
+      # they are what every existing install already names.
+      #
+      # ORDER MATTERS. This runs AFTER the reference-digest check and
+      # BEFORE `:latest` moves, for the same reason that check sits where
+      # it does — a failure here leaves a published `:vX.Y.Z` with
+      # `:latest` untouched, pointing at the previous release.
+      - name: Set up QEMU for the arm64 build
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+
+      # The default `docker` buildx driver refuses multi-platform builds;
+      # `docker-container` is the one that can. Nothing else in this
+      # workflow needs it, so it is created here rather than at the top.
+      #
+      # `use: false` IS LOAD BEARING. This builder must not become the
+      # current one: `docker build` routes through buildx, a
+      # docker-container builder does not load images into the local
+      # store, and `make push` — which the Docker Hub step below still
+      # runs — does `docker create` against the tag it just built. Making
+      # this the default would break that step with a missing image, well
+      # after the GHCR release had already published. The multi-arch build
+      # names this builder explicitly via BUILDX_BUILDER instead.
+      - name: Set up buildx (docker-container driver)
+        id: buildx
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+        with:
+          driver: docker-container
+          use: false
+
+      # scripts/requirements.txt declares exactly the two dependencies
+      # push_multiarch_plugin.py imports (python-dxf, docker-image-py).
+      # Until now nothing installed it (#535); the release path is the
+      # first thing that needs it.
+      - name: Install the plugin-push dependencies
+        run: pip install --no-cache-dir -r scripts/requirements.txt
+
+      # Builds both platforms — buildx only creates the per-platform
+      # subdirectories push_multiarch_plugin.py reads when it is given
+      # more than one — then publishes ONLY arm64, with no index.
+      #
+      # amd64 is deliberately not published from this build. It is
+      # retagged off `:vX.Y.Z` in the next step instead, so
+      # `:vX.Y.Z-linux-amd64` is the same digest as `:vX.Y.Z` and is
+      # already covered by its signature. Pushing a second amd64 build
+      # here would produce a different digest for the same release —
+      # `docker plugin create` and this script tar the rootfs
+      # differently — and two digests claiming to be the same thing is a
+      # verification hazard, not a convenience.
+      #
+      # The arm64 build runs under QEMU. That is fine for BUILDING (pure
+      # Go plus two apk packages); it is not fine for TESTING, because
+      # qemu-user does not translate the NETLINK_GENERIC socket dhcpcd
+      # opens, so an emulated plugin cannot take a lease at all. arm64 is
+      # functionally verified in a full-system VM, and its timing
+      # behaviour stays unverified until native hardware (#531).
+      - name: Push per-arch plugin tags to GHCR
+        env:
+          REGISTRY_USERNAME: ${{ github.actor }}
+          REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          make PLUGIN_NAME="${GHCR_NAME}" \
+               PLUGIN_TAG="${{ steps.tag.outputs.tag }}" \
+               PUSH_PLATFORMS=linux/arm64 \
+               BUILDX_BUILDER="${{ steps.buildx.outputs.name }}" \
+               push-per-arch
+
+      - name: Alias the amd64 per-arch tag to the published GHCR digest
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: crane tag "${GHCR_NAME}:${TAG}" "${TAG}-linux-amd64"
+
+      # The guard for the whole scheme. If an edit ever points a tag a
+      # user installs at an index, EVERY `docker plugin install` of this
+      # release fails — including amd64's, which worked before the change.
+      # `make push-multiarch` still exists and still writes an index, so
+      # that is one Make target away at all times and is asserted rather
+      # than remembered.
+      #
+      # Here, before `:latest` moves, for the reference-digest step's
+      # reason: a failure leaves a published `:vX.Y.Z` with `:latest`
+      # still pointing at the previous release, which is recoverable and
+      # invisible to users.
+      #
+      # GHCR only. It is the primary registry, Hub mirrors the same
+      # artifacts by the same mechanism, and the Hub tags do not exist
+      # yet at this point in the job.
+      - name: Assert the installable tags are single manifests, not indexes
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          LIST='application/vnd.docker.distribution.manifest.list.v2+json'
+          INDEX='application/vnd.oci.image.index.v1+json'
+          rc=0
+          echo "Media types of the tags users install:"
+          for ref in "${GHCR_NAME}:${TAG}" \
+                     "${GHCR_NAME}:${TAG}-linux-amd64" \
+                     "${GHCR_NAME}:${TAG}-linux-arm64-v8"; do
+            mt=$(crane manifest "$ref" | jq -r '.mediaType // "unset"')
+            if [ "$mt" = "$LIST" ] || [ "$mt" = "$INDEX" ]; then
+              echo "::error::${ref} is a manifest list (${mt}). A Docker plugin cannot be installed from an index, so this release would be uninstallable on every architecture — see #507." >&2
+              rc=1
+            else
+              echo "  ${ref} -> ${mt}"
+            fi
+          done
+          exit "$rc"
+
       - name: Tag :latest to the published GHCR digest
         if: steps.tag.outputs.prerelease != 'true'
         run: crane tag "${GHCR_NAME}:${{ steps.tag.outputs.tag }}" latest
@@ -225,6 +350,27 @@ jobs:
       - name: Push to Docker Hub
         if: env.HAS_HUB_CREDS == 'true'
         run: make PLUGIN_NAME="${HUB_NAME}" PLUGIN_TAG="${{ steps.tag.outputs.tag }}" push
+
+      # The Hub half of the per-arch tags (#507). It has to sit after the
+      # Hub push above, because the amd64 alias is a retag of the Hub
+      # `:vX.Y.Z` that step publishes.
+      - name: Push per-arch plugin tags to Docker Hub
+        if: env.HAS_HUB_CREDS == 'true'
+        env:
+          REGISTRY_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          REGISTRY_PASSWORD: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          make PLUGIN_NAME="${HUB_NAME}" \
+               PLUGIN_TAG="${{ steps.tag.outputs.tag }}" \
+               PUSH_PLATFORMS=linux/arm64 \
+               BUILDX_BUILDER="${{ steps.buildx.outputs.name }}" \
+               push-per-arch
+
+      - name: Alias the amd64 per-arch tag to the published Docker Hub digest
+        if: env.HAS_HUB_CREDS == 'true'
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: crane tag "${HUB_NAME}:${TAG}" "${TAG}-linux-amd64"
 
       - name: Tag :latest to the published Docker Hub digest
         if: env.HAS_HUB_CREDS == 'true' && steps.tag.outputs.prerelease != 'true'
@@ -348,6 +494,28 @@ jobs:
             echo "Signed ${HUB_NAME}@${HUB_DIGEST}"
           fi
 
+      # The arm64 manifest needs its own signature (#507). cosign signs by
+      # DIGEST, so the signature above covers `:vX.Y.Z`, `:latest` and
+      # `:vX.Y.Z-linux-amd64` — all one digest by construction — and says
+      # nothing whatsoever about arm64. Leaving it out would ship an
+      # architecture that docs/verifying-releases.md tells users to verify
+      # and that cannot be verified.
+      - name: Sign the arm64 per-arch manifest (cosign keyless)
+        id: signarm
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          D=$(crane digest "${GHCR_NAME}:${TAG}-linux-arm64-v8")
+          echo "arm64_digest=${D}" >> "$GITHUB_OUTPUT"
+          cosign sign --yes "${GHCR_NAME}@${D}"
+          echo "Signed ${GHCR_NAME}@${D} (linux/arm64)"
+          if [ "${HAS_HUB_CREDS}" = "true" ]; then
+            HD=$(crane digest "${HUB_NAME}:${TAG}-linux-arm64-v8")
+            cosign sign --yes "${HUB_NAME}@${HD}"
+            echo "Signed ${HUB_NAME}@${HD} (linux/arm64)"
+          fi
+
       # SBOM over the plugin rootfs make already built (#174). syft emits
       # SPDX and CycloneDX in one pass; both are attached to the release
       # and folded into the signed checksum manifest below.
@@ -401,6 +569,17 @@ jobs:
         with:
           subject-name: ${{ env.GHCR_NAME }}
           subject-digest: ${{ steps.signimg.outputs.ghcr_digest }}
+          push-to-registry: true
+
+      # arm64 is a separate digest, so it needs its own attestation for
+      # the same reason it needs its own signature (#507). Without this,
+      # `gh attestation verify oci://...:VERSION-linux-arm64-v8` fails —
+      # and docs/verifying-releases.md tells arm64 users to run it.
+      - name: Attest image provenance (GHCR, arm64)
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.GHCR_NAME }}
+          subject-digest: ${{ steps.signarm.outputs.arm64_digest }}
           push-to-registry: true
 
       - name: Upload signed artifacts for the release job
@@ -495,6 +674,80 @@ jobs:
             exit 1
           fi
           echo "Plugin ${REF} installs and enables cleanly." >> "$GITHUB_STEP_SUMMARY"
+
+      # The per-arch tags are a second publishing path, and an unexercised
+      # publishing path is one that breaks quietly (#507). This is the
+      # half that can be checked from an amd64 runner.
+      #
+      # WHY THE ARM64 TAG IS NOT INSTALLED HERE. Not caution — it would
+      # tell us nothing true. Docker does NO architecture validation at
+      # plugin install (the plugin config carries no os/arch field to
+      # validate against), so the arm64 plugin would install happily and
+      # then fail to enable because its binaries cannot exec. That red
+      # would be indistinguishable from a genuinely broken build. Running
+      # it under emulation is not the answer either: qemu-user does not
+      # translate the NETLINK_GENERIC socket dhcpcd opens, so an emulated
+      # plugin cannot take a lease at all. arm64 is verified in a
+      # full-system VM, and on native hardware in #531.
+      - name: Assert the per-arch tags resolve
+        run: |
+          set -euo pipefail
+          TAG="${{ needs.release.outputs.tag }}"
+          LIST='application/vnd.docker.distribution.manifest.list.v2+json'
+          INDEX='application/vnd.oci.image.index.v1+json'
+          for arch in linux-amd64 linux-arm64-v8; do
+            REF="${GHCR_NAME}:${TAG}-${arch}"
+            mt=$(docker manifest inspect "$REF" | jq -r '.mediaType // "unset"')
+            if [ "$mt" = "$LIST" ] || [ "$mt" = "$INDEX" ]; then
+              echo "::error::${REF} is a manifest list (${mt}) — a plugin cannot be installed from an index (#507)." >&2
+              exit 1
+            fi
+            echo "  ${REF} -> ${mt}"
+          done
+          # A distinct ROOTFS LAYER is the evidence that the arm64 tag is
+          # a genuinely different build rather than the amd64 manifest
+          # aliased under an arm64 name — the mistake that would ship an
+          # amd64 binary to every Pi and pass every other check here.
+          #
+          # The layer, not the config: both manifests reference the same
+          # config.json blob by design, so comparing configs would compare
+          # something that is supposed to match.
+          b=$(docker manifest inspect "${GHCR_NAME}:${TAG}-linux-arm64-v8" | jq -r '.layers[0].digest')
+          c=$(docker manifest inspect "${GHCR_NAME}:${TAG}-linux-amd64" | jq -r '.layers[0].digest')
+          if [ -z "$b" ] || [ "$b" = "null" ] || [ -z "$c" ] || [ "$c" = "null" ]; then
+            echo "::error::could not read a rootfs layer digest from both per-arch manifests" >&2
+            exit 1
+          fi
+          if [ "$b" = "$c" ]; then
+            echo "::error::${TAG}-linux-arm64-v8 and ${TAG}-linux-amd64 share a rootfs layer (${b}) — the arm64 tag is not an arm64 build (#507)." >&2
+            exit 1
+          fi
+          echo "arm64 rootfs layer ${b} differs from amd64's ${c}, as it must."
+
+      # The amd64 per-arch tag is the one an amd64 host would install, so
+      # it is the one this runner can prove end to end. It is a retag of
+      # the same digest as `:vX.Y.Z`, so what this actually catches is a
+      # broken or missing alias — a 404 for anyone following the arch
+      # table in the docs.
+      #
+      # The bare tag's plugin is removed first: two enabled plugins from
+      # one release is not a state any user is in, and not one worth
+      # discovering a quirk of.
+      - name: Install the amd64 per-arch tag from a clean slate
+        run: |
+          set -euo pipefail
+          TAG="${{ needs.release.outputs.tag }}"
+          docker plugin disable -f "${GHCR_NAME}:${TAG}"
+          docker plugin rm -f "${GHCR_NAME}:${TAG}"
+          REF="${GHCR_NAME}:${TAG}-linux-amd64"
+          docker plugin install --grant-all-permissions "$REF"
+          ENABLED="$(docker plugin inspect -f '{{.Enabled}}' "$REF")"
+          if [ "$ENABLED" != "true" ]; then
+            echo "::error::${REF} installed but not enabled (Enabled=$ENABLED)" >&2
+            docker plugin inspect "$REF"
+            exit 1
+          fi
+          echo "Per-arch tag ${REF} installs and enables cleanly." >> "$GITHUB_STEP_SUMMARY"
 
   # Cut the GitHub Release with the signed artifacts attached. Gated on
   # verify-install so a plugin that doesn't install/enable never gets an

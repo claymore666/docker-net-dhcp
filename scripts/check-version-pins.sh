@@ -45,11 +45,36 @@ ANY_REF_RE='ghcr\.io/[^/[:space:]]+/docker-net-dhcp:[A-Za-z0-9._<>-]+'
 # absent: reference.md tells readers to pin, and a runnable snippet must
 # not contradict it.
 allowed_tag() {
-    case "$1" in
-        v[0-9]*.[0-9]*.[0-9]*) return 0 ;;   # a real pin
-        vX.Y.Z|VERSION|vOLD|vNEW|vPREV) return 0 ;;  # documented placeholders
-        *) return 1 ;;
+    local t="$1"
+    # Per-architecture tags (#507). Each architecture is published as its
+    # own tag, because a plugin cannot be installed from a manifest list,
+    # so the docs legitimately carry references like
+    # `...:v1.7.0-linux-arm64-v8` and `...:VERSION-linux-arm64-v8`.
+    #
+    # A KNOWN suffix is stripped and the version underneath is judged by
+    # the same rules as any other pin — rather than loosening those rules
+    # — so `v1.7.0-linux-arm64-v8` is a pin at v1.7.0 while a suffix for
+    # a platform this project does not publish is still rejected. Add a
+    # platform here when one starts being published, which is the point:
+    # the set of architectures a reader may be told to install is a
+    # decision, not whatever happens to match.
+    case "$t" in
+        *-linux-amd64 | *-linux-arm64-v8) t="${t%-linux-*}" ;;
     esac
+
+    # ANCHORED, and that is what makes the strip above an allowlist. The
+    # old glob (`v[0-9]*.[0-9]*.[0-9]*`) let its trailing `*` swallow any
+    # suffix, so `:v1.7.0-linux-riscv64` — or `:v1.7.0-rc1`, which no
+    # reader should be pinned to — read as a valid pin. Every tag in the
+    # tree was already of the strict form, so this rejects only what it
+    # should have been rejecting.
+    if [[ "$t" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        return 0                                     # a real pin
+    fi
+    case "$t" in
+        vX.Y.Z|VERSION|vOLD|vNEW|vPREV) return 0 ;;  # documented placeholders
+    esac
+    return 1
 }
 
 files=("$@")

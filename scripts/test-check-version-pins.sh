@@ -147,6 +147,41 @@ printf '\n    docker plugin install ghcr.io/somebody-else/docker-net-dhcp:v1.1.1
     >> "$TMP/repo/docs/reference.md"
 run_check "wrong namespace with a valid pin still fails" 1
 
+# 12. Per-arch tags (#507). Each architecture ships as its own tag —
+#     a plugin cannot be installed from a manifest list — so the docs
+#     carry `...:v1.7.0-linux-arm64-v8` alongside the bare pin, and both
+#     have to read as the SAME version. Before #507 this passed only by
+#     accident of glob matching; it is load-bearing now, so it is pinned.
+seed
+printf '\n    docker plugin install %s:v1.1.1-linux-arm64-v8\n' "$IMAGE" \
+    >> "$TMP/repo/docs/reference.md"
+printf '\n    docker plugin install %s:v1.1.1-linux-amd64\n' "$IMAGE" \
+    >> "$TMP/repo/docs/reference.md"
+run_check "per-arch tags agree with the bare pin" 0
+
+# 13. And a per-arch tag left behind by a partial bump is a DISAGREEMENT,
+#     not an exemption. This is the whole reason bump-version.sh needs no
+#     per-arch logic of its own: it rewrites the version in place, and if
+#     it ever stops, this goes red.
+seed
+printf '\n    docker plugin install %s:v0.9.9-linux-arm64-v8\n' "$IMAGE" \
+    >> "$TMP/repo/docs/reference.md"
+run_check "a stale per-arch tag is caught as a disagreeing pin" 1
+
+# 14. The placeholder form the verification docs use.
+seed
+printf '\n    cosign verify %s:VERSION-linux-arm64-v8\n' "$IMAGE" \
+    >> "$TMP/repo/docs/reference.md"
+run_check "a placeholder per-arch tag passes" 0
+
+# 15. A platform this project does not publish is still rejected. The
+#     suffix is an allowlist of architectures a reader may be told to
+#     install, not a licence to append anything after the version.
+seed
+printf '\n    docker plugin install %s:v1.1.1-linux-riscv64\n' "$IMAGE" \
+    >> "$TMP/repo/docs/reference.md"
+run_check "an unpublished platform suffix is rejected" 1
+
 if [ "$failures" -ne 0 ]; then
     echo "$failures test(s) failed"
     exit 1

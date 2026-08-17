@@ -56,14 +56,20 @@ child shares the parent's MAC). See *Blocked upstream* below.
 
 ### 3. arm64
 
-Users have asked for it and it works — a full-system arm64 VM runs all
-three attachment modes against real leases. What does not work is the
-obvious shipping shape: a Docker *plugin* cannot be installed from a
-multi-architecture manifest list at all, so arm64 needs per-architecture
-tags rather than a flag on the existing build ([#507], milestone
-v1.7.0). Timing behaviour — renewal, expiry, outage detection — stays
-unverified on arm64 until it runs on real hardware ([#531]), because
-emulation slows the code without slowing the protocol's clocks.
+Shipped in v1.7.0 ([#507]): `linux/arm64` publishes as its own tag,
+`:vX.Y.Z-linux-arm64-v8`. The obvious shipping shape was the thing that
+did not work — a Docker *plugin* cannot be installed from a
+multi-architecture manifest list at all, so an index at the version tag
+would have broken amd64 too rather than adding arm64. Per-architecture
+tags are the answer, and the bare tags stay amd64 because that is what
+every existing install already names.
+
+What remains is verification, not packaging. A full-system arm64 VM runs
+all three attachment modes against real leases, but timing behaviour —
+renewal, expiry, outage detection — stays unverified on arm64 until it
+runs on real hardware ([#531]), because emulation slows the code without
+slowing the protocol's clocks. A netbooted Pi is the intended shape of
+that runner.
 
 ### 4. A test substrate that cannot lie
 
