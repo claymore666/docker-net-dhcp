@@ -120,7 +120,7 @@ GIT_AUTHOR_DATE="@$((NOW - 50 * H)) +0000" GIT_COMMITTER_DATE="@$((NOW - 50 * H)
     git_q "$d" merge -q --no-ff -m "Merge pull request #1 from dev" dev
 # Precondition: this is the invisible case. If the trees ever differ,
 # this test has stopped covering what it claims to.
-if [ "$(git -C "$d" rev-parse main^{tree})" != "$(git -C "$d" rev-parse dev^{tree})" ]; then
+if [ "$(git -C "$d" rev-parse "main^{tree}")" != "$(git -C "$d" rev-parse "dev^{tree}")" ]; then
     echo "FAIL: release-shape fixture is not content-identical — test is invalid"
     failures=$((failures + 1))
 fi

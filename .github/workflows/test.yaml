@@ -287,6 +287,26 @@ jobs:
       - name: Verify actionlint catches known-bad patterns
         run: bash scripts/test-actionlint.sh actionlint
 
+      # The gate scripts themselves. Until now shellcheck ran here only
+      # as actionlint's subprocess, on `run:` blocks embedded in workflow
+      # files — so scripts/*.sh, which is every check-*.sh gate and every
+      # self-test, was linted by nothing at all. The pinned binary was
+      # already installed two steps up; the gap was one step wide.
+      #
+      # It matters more here than in ordinary code. A gate that
+      # misbehaves does not fail loudly, it passes quietly, and this
+      # repository keeps rediscovering that shape (#418, #487, #542,
+      # #598). The scripts meant to catch it were the unchecked ones.
+      #
+      # -S warning, not -S style: style is clean on the newest scripts
+      # and noisy on the older ones, and a level nobody can hold gets
+      # bypassed. Raise it deliberately if that changes.
+      #
+      # Suppressions carry a reason inline. A repo-wide exclude list
+      # would recreate exactly the blind spot this closes.
+      - name: Shellcheck the gate scripts
+        run: shellcheck -S warning scripts/*.sh
+
   # This fork is published as the maintainer's own work, so no commit
   # or PR may credit an AI assistant. The rule predates the repo's CI
   # and still reached a public branch twice — enforcing it mechanically

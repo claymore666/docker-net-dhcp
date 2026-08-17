@@ -48,7 +48,7 @@ run_it() {
     local dir; dir=$(mktemp -d)
     make_gh "$dir" "$1" "$2" "$3"
     # Branch phase off: these cases are about open PR heads.
-    PATH="$dir/bin:$PATH" GATE_REPO=o/r GATE_BRANCHES= bash "$CHECK" 20 >"$dir/o" 2>&1
+    PATH="$dir/bin:$PATH" GATE_REPO=o/r GATE_BRANCHES='' bash "$CHECK" 20 >"$dir/o" 2>&1
     local rc=$?; cat "$dir/o"; rm -rf "$dir"; return $rc
 }
 
@@ -181,7 +181,7 @@ out=$(run_branch "$OLD_COMMIT" "ERR"); rc=$?
 
 # --- the phase can be turned off ------------------------------------
 dir=$(mktemp -d); make_branch_gh "$dir" "$OLD_COMMIT" ""
-PATH="$dir/bin:$PATH" GATE_REPO=o/r GATE_BRANCHES= bash "$CHECK" 20 >/dev/null 2>&1
+PATH="$dir/bin:$PATH" GATE_REPO=o/r GATE_BRANCHES='' bash "$CHECK" 20 >/dev/null 2>&1
 [ "$?" = 0 ] && ok "GATE_BRANCHES empty skips the branch phase" || no "empty GATE_BRANCHES still reconciled branches"
 rm -rf "$dir"
 

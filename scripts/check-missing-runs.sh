@@ -85,7 +85,10 @@ if [ "$n" = "0" ]; then
     prs='[]'
 fi
 
-while IFS=$'\t' read -r num head branch updated draft; do
+# `_` for updated_at, deliberately: the age that matters is the head
+# COMMIT's, computed below, not the PR's. Naming it would suggest it
+# was meant to be used.
+while IFS=$'\t' read -r num head branch _ draft; do
     [ -z "$num" ] && continue
 
     # Age the HEAD COMMIT, not the PR. A PR opened last week whose head

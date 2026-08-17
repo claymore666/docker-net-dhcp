@@ -140,8 +140,8 @@ stop_lan() {
 # "never finished booting" for a container that was still legitimately
 # working, i.e. manufactured a failure rather than found one.
 wait_booted() {
-  local c=$1 i
-  for i in $(seq 1 180); do
+  local c=$1
+  for _ in $(seq 1 180); do
     case "$(docker exec "$c" systemctl is-system-running 2>/dev/null)" in
       running|degraded) return 0 ;;
     esac
@@ -291,15 +291,13 @@ rm -f /etc/netplan/*.yaml
 systemctl enable systemd-networkd >/dev/null 2>&1 || true
 EOS
 
-# nmcli writes profiles to /etc/NetworkManager/system-connections, which
-# is exactly the persistence being tested — nothing else to do.
-read -r -d '' CFG_NM <<EOS || true
-nmcli con add type bridge ifname $BRIDGE con-name $BRIDGE \\
-    ipv4.method auto bridge.stp no bridge.forward-delay 0 >/dev/null
-nmcli con add type ethernet ifname $NIC con-name $BRIDGE-port \\
-    master $BRIDGE slave-type bridge >/dev/null
-echo "profiles written to /etc/NetworkManager/system-connections"
-EOS
+# No CFG_NM. nmcli writes profiles to
+# /etc/NetworkManager/system-connections, which is exactly the
+# persistence being tested — but NetworkManager's boot path cannot be
+# exercised the way the other three are (see the note further down), so
+# nothing here would ever run it. The recipe itself lives in
+# docs/bridge-mode.md; a second copy carried in an unused variable is
+# prose waiting to drift out of step with it.
 
 need_docker
 build_images
