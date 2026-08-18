@@ -100,13 +100,47 @@ jobs:
       # on this (systemd-having) host and contend for UDP/53+67 with the
       # per-test dnsmasq instances. iputils-ping is usually preinstalled;
       # listed for parity with the runner image and to fail loud if not.
+      #
+      # kea is the ephemeral fixture's backend (#356). Its absence is why
+      # this lane went red on 2026-08-10 and stayed red: the fixture came
+      # from the runner image, which bakes kea in, and nothing here did.
+      # Both families are installed to match ci/runner-image/Dockerfile,
+      # so a future v6 fixture does not reopen this the same way.
+      #
+      # Unlike dnsmasq the kea packages DO ship enabled systemd units, and
+      # this host has systemd — an activated kea-dhcp4 would hold UDP/67
+      # against every per-test instance. Masked rather than stopped: a
+      # stop races socket activation, a mask cannot be undone by it.
       - name: Install integration fixture dependencies
         run: |
           sudo apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            dnsmasq-base iputils-ping
+            dnsmasq-base iputils-ping kea-dhcp4-server kea-dhcp6-server
+          # Mask what exists rather than `|| true` over the lot: a unit
+          # Debian has not shipped is not a failure, but a mask that is
+          # refused for any other reason must fail the step, or the
+          # contention it prevents comes back silently.
+          for u in isc-kea-dhcp4-server isc-kea-dhcp6-server; do
+            if systemctl list-unit-files "$u.service" --no-legend 2>/dev/null | grep -q .; then
+              sudo systemctl mask --now "$u.service"
+            fi
+          done
           # The harness execs this absolute path (test/integration/harness)
           test -x /usr/sbin/dnsmasq && /usr/sbin/dnsmasq --version | head -1
+
+      # kea is found by exec.LookPath("kea-dhcp4"), NOT by absolute path
+      # like dnsmasq above — so installing it is only half the claim. The
+      # suite runs as `sudo env "PATH=$PATH"`, and that PATH is the one
+      # that has to resolve it; a PATH without /usr/sbin reproduces the
+      # exact "kea-dhcp4 not found in PATH" failure on a host where the
+      # binary is present. Assert against the real invocation, not
+      # against this step's own shell, and fail here rather than 40
+      # minutes later inside a test.
+      - name: Verify kea resolves in the PATH the suite will use
+        run: |
+          sudo env "PATH=$PATH" sh -c 'command -v kea-dhcp4' \
+            || { echo "::error title=kea not on the suite PATH::installed, but not resolvable under sudo env PATH=$PATH"; exit 1; }
+          sudo env "PATH=$PATH" kea-dhcp4 -V | head -1
 
       # Build + install the plugin from THIS tree, exactly as
       # integration.yml does, just under a hosted-specific tag.
