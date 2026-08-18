@@ -93,7 +93,7 @@ func TestPreflightProbe_IPvlanProbeCoexistsWithIPvlanEndpoints(t *testing.T) {
 	})
 
 	t.Logf("validate_dhcp=true succeeded on an ipvlan network while an ipvlan "+
-		"endpoint was live on the same parent (%s)", harness.HostVeth)
+		"endpoint was live on the same parent (%s)", harness.IpvlanParent)
 }
 
 // TestPreflightProbe_FailsWhenServerUnreachable is the negative

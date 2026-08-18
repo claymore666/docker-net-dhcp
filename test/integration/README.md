@@ -231,11 +231,16 @@ Three consequences worth knowing before they cost you an afternoon:
 [host netns]
 
 
-  Macvlan/ipvlan path:
-    dh-itest-host  <─ veth ─>  dh-itest-dhcp  (192.168.99.1/24 +
-          │                          │          fd00:6470:6863::1/64)
-     parent= for                dnsmasq #1 (dual-stack + RA)
-     plugin children            v4 pool .10–.99, v6 ::10–::99
+  Macvlan/ipvlan path (one L2 segment, two parents — #556):
+    dh-itest-host  (.2)  <─ veth ─>  dh-itest-hostp ─┐
+          │                                          │
+     parent= for MACVLAN                        dh-itest-dhcp  (bridge;
+     plugin children                            192.168.99.1/24 +
+                                                fd00:6470:6863::1/64)
+    dh-itest-ipv   (.3)  <─ veth ─>  dh-itest-ipvp  ─┘   dnsmasq #1
+          │                                              (dual-stack + RA)
+     parent= for IPVLAN                                  v4 pool .10–.99,
+     plugin children                                     v6 ::10–::99
 
   Bridge path:
     dh-itest-br2  (192.168.100.1/24 + fd00:6470:6864::1/64)
@@ -267,7 +272,32 @@ A single shared `Fixture` (`test/integration/harness/fixture.go`,
 `harness/bridge.go`) owns both subnets for the whole `go test`
 invocation. Tests select a path by mode:
 `harness.CreateNetwork(t, ctx, ..., "macvlan", nil)` uses
-`dh-itest-host` as the parent; `"bridge"` uses `dh-itest-br2`.
+`dh-itest-host` as the parent, `"ipvlan"` uses `dh-itest-ipv`, and
+`"bridge"` uses `dh-itest-br2`.
+
+**Why macvlan and ipvlan get separate parents, and what that asks of a
+new test.** A parent NIC is a macvlan port or an ipvlan port, never
+both — the two kinds contend for its single receive handler, and the
+second to ask is refused with `Device or resource busy`. Plugin
+teardown is asynchronous relative to test boundaries: an orphan-lease
+reclaim keeps its temporary `dh-rel-*` child on the parent for a full
+DHCP round trip after the test that caused it has already returned.
+With one shared parent, a macvlan test's tail could therefore still
+own the parent when the next ipvlan test's head asked for it, and the
+suite went red on the wrong test — an EBUSY from deep inside a netlink
+call that reads as a plugin fault (#556). Dedicated parents remove the
+contention; `harness.CreateNetwork` additionally asserts that the
+parent it is about to use carries no child of the other kind, so a
+violation is named rather than diagnosed.
+
+The general lesson survives the fix and applies to every mode: **check
+what your test leaves for its neighbours, not only what it asserts
+about itself.** Shards run tests in declaration order, so a test that
+returns while the plugin is still tearing down on its behalf hands that
+state to whichever test is declared next. If your test can leave links
+on a fixture parent, wait until they are gone before returning (see
+`awaitReleaseLinksGone` in `orphan_release_test.go`) rather than
+assuming teardown outruns the next test.
 
 Distinct subnets keep the two dnsmasq instances cleanly isolated
 from each other — without that, two DHCP servers on the same
