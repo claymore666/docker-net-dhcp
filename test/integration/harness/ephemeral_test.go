@@ -337,7 +337,7 @@ func TestKeaConfig_IsValidJSON(t *testing.T) {
 				renewT1:      tc.t1,
 				renewT2:      tc.t2,
 			}
-			raw := ef.keaConfig()
+			raw := ef.keaConfig(keaLoggerOutputModern)
 			var cfg struct {
 				Dhcp4 struct {
 					ValidLifetime int `json:"valid-lifetime"`
@@ -428,5 +428,60 @@ func TestSeedStolenLease_Kea(t *testing.T) {
 	}
 	if cols[5] != "1" {
 		t.Errorf("subnet_id = %q, want 1 to match keaConfig's subnet4 id; a mismatch seeds nothing silently", cols[5])
+	}
+}
+
+// The logger key is the one part of the kea config that differs by
+// server version: renamed from output_options to output-options in Kea
+// 2.5.4, and Debian/Ubuntu stable still ships the older 2.4.x. The
+// fixture asks the installed binary which it accepts rather than
+// deciding from a version string, so what is testable without a kea on
+// PATH is the substitution itself — that both spellings render, and
+// that neither leaks the other.
+//
+// This is not hypothetical tidiness. The hosted portability lane failed
+// with `got unexpected keyword "output-options" in loggers map` on a
+// stock runner, while every self-hosted run stayed green on a newer kea
+// from our own image (#612).
+func TestKeaConfig_LoggerOutputKeyIsSubstituted(t *testing.T) {
+	for _, key := range []string{keaLoggerOutputModern, keaLoggerOutputLegacy} {
+		t.Run(key, func(t *testing.T) {
+			ef := &EphemeralFixture{
+				t:            t,
+				backend:      backendKea,
+				poolStart:    EphemeralPoolStart,
+				poolEnd:      EphemeralPoolEnd,
+				serverCIDR:   EphemeralServerAddr,
+				leaseSeconds: EphemeralOutageLeaseSeconds,
+				leaseFile:    "/tmp/leases4.csv",
+			}
+			raw := ef.keaConfig(key)
+
+			var cfg struct {
+				Dhcp4 struct {
+					Loggers []map[string]any
+				}
+			}
+			if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
+				t.Fatalf("keaConfig(%q) is not valid JSON: %v\n%s", key, err, raw)
+			}
+			if len(cfg.Dhcp4.Loggers) != 1 {
+				t.Fatalf("want exactly one logger, got %d", len(cfg.Dhcp4.Loggers))
+			}
+			if _, ok := cfg.Dhcp4.Loggers[0][key]; !ok {
+				t.Errorf("logger has no %q key; got keys %v", key, cfg.Dhcp4.Loggers[0])
+			}
+
+			// The other spelling must be absent, not merely
+			// unused: kea rejects the key it does not know, so a
+			// config carrying both fails on every version.
+			other := keaLoggerOutputLegacy
+			if key == keaLoggerOutputLegacy {
+				other = keaLoggerOutputModern
+			}
+			if _, ok := cfg.Dhcp4.Loggers[0][other]; ok {
+				t.Errorf("logger also carries %q; kea rejects the spelling it does not know", other)
+			}
+		})
 	}
 }
