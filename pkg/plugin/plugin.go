@@ -728,6 +728,10 @@ type Plugin struct {
 	leasesRenewedV6  atomic.Int32
 	dhcpTimeoutsV6   atomic.Int32
 	naksReceivedV6   atomic.Int32
+	// leaseReleaseFailuresV6 joined the split late (#608): until then a
+	// dual-stack operator alerting on lease_release_failures could not
+	// tell which family's client had failed to hand its lease back.
+	leaseReleaseFailuresV6 atomic.Int32
 
 	// displacedStops tracks the goroutines Join spawns to Stop a
 	// manager it displaced (#338). Join must not block on the dhcpcd

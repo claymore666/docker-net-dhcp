@@ -288,3 +288,50 @@ func TestAddrAddAwaiting(t *testing.T) {
 		}
 	})
 }
+
+// TestReleaseOrphanedLease_ReclaimsEveryNeverBoundFamily pins the
+// dual-stack contract (#608): the reclaim owes one release per family
+// whose persistent client never held its binding, and nothing for a
+// family that did — that client released on its own way out, and a
+// second release would tear down an address the server may already
+// have handed to somebody else.
+//
+// Asserted through the failure counter, as the tests above are: this
+// manager cannot reach the wire, so each family it decides to hand back
+// costs exactly one count. Before #608 the v6 rows here read 0 — the v6
+// half of every orphan was left held until it expired.
+func TestReleaseOrphanedLease_ReclaimsEveryNeverBoundFamily(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		v4, v6       string
+		boundV4      bool
+		boundV6      bool
+		wantAttempts int32
+	}{
+		{name: "dual stack, nothing bound: both owed", v4: "192.168.99.95/24", v6: "fd00::95/64", wantAttempts: 2},
+		{name: "dual stack, v4 bound: only v6 owed", v4: "192.168.99.95/24", v6: "fd00::95/64", boundV4: true, wantAttempts: 1},
+		{name: "dual stack, v6 bound: only v4 owed", v4: "192.168.99.95/24", v6: "fd00::95/64", boundV6: true, wantAttempts: 1},
+		{name: "dual stack, both bound: nothing owed", v4: "192.168.99.95/24", v6: "fd00::95/64", boundV4: true, boundV6: true, wantAttempts: 0},
+		{name: "v6 only acquired: v6 owed", v6: "fd00::95/64", wantAttempts: 1},
+		{name: "v4 only acquired: unchanged", v4: "192.168.99.95/24", wantAttempts: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &Plugin{}
+			m := orphanManager(t, DHCPNetworkOptions{IPv6: tc.v6 != ""}, tc.v4)
+			if tc.v6 != "" {
+				m.setLastIP(true, mustAddr(t, tc.v6))
+			}
+			m.boundV4.Store(tc.boundV4)
+			m.boundV6.Store(tc.boundV6)
+
+			p.releaseOrphanedLease(m, m.joinReq.EndpointID)
+
+			if got := p.orphanedLeaseReleaseFailures.Load(); got != tc.wantAttempts {
+				t.Errorf("reclaim attempted %d release(s), want %d", got, tc.wantAttempts)
+			}
+			if got := p.orphanedLeasesReleased.Load(); got != 0 {
+				t.Errorf("orphaned_leases_released = %d, want 0 — nothing here can reach the wire", got)
+			}
+		})
+	}
+}

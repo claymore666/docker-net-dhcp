@@ -1,6 +1,5 @@
 PLUGIN_NAME ?= ghcr.io/claymore666/docker-net-dhcp
 PLUGIN_TAG ?= golang
-PLATFORMS ?= linux/amd64,linux/arm64
 
 SOURCES = $(shell find pkg/ cmd/ -name '*.go')
 BINARY = bin/net-dhcp
@@ -103,14 +102,14 @@ enable-cover:
 disable-cover:
 	docker plugin disable $(PLUGIN_NAME):$(PLUGIN_COVER_TAG)
 
-multiarch: $(SOURCES)
-	docker buildx build --platform=$(PLATFORMS) -o type=local,dest=$@ .
-
-push-multiarch: multiarch config.json
-	scripts/push_multiarch_plugin.py -p $(PLATFORMS) config.json multiarch $(PLUGIN_NAME):$(PLUGIN_TAG)
+# There is deliberately NO multiarch/manifest-list target. `docker
+# plugin install` cannot resolve a manifest list at all — measured on
+# #507 — so the only shipping shape is one single-arch build per
+# architecture, tagged with the arch in the tag name (vX.Y.Z-arm64).
+# release.yml runs this same `push` target once per architecture on a
+# native host of that architecture; the build follows the host.
 
 clean:
-	-rm -rf multiarch/
 	-rm -rf plugin/
 	-rm -rf plugin-cover/
 	-rm bin/*

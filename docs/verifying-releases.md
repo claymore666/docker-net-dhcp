@@ -14,15 +14,20 @@ links here rather than repeating them.
 | artifact | what it is |
 | --- | --- |
 | `net-dhcp-plugin-vX.Y.Z-linux-amd64.tar.gz` | the plugin rootfs + `config.json`, `linux/amd64` |
-| `checksums.txt` | SHA-256 of every attached artifact |
+| `checksums.txt` | SHA-256 of every attached amd64 artifact |
 | `checksums.txt.sigstore.json` | the cosign bundle signing `checksums.txt` |
 | `sbom.spdx.json` | SBOM, SPDX format |
 | `sbom.cdx.json` | SBOM, CycloneDX format |
+| `net-dhcp-plugin-vX.Y.Z-linux-arm64.tar.gz` | the same for `linux/arm64` (v1.7.0 onward) |
+| `checksums-arm64.txt`, `checksums-arm64.txt.sigstore.json` | the arm64 checksum manifest and its cosign bundle |
+| `sbom-arm64.spdx.json`, `sbom-arm64.cdx.json` | the arm64 SBOMs |
 
 The plugin image itself lives at
 `ghcr.io/claymore666/docker-net-dhcp:vX.Y.Z` (mirrored to Docker Hub as
 `claymore666/net-dhcp`), is cosign-signed, and carries SLSA build
-provenance.
+provenance. The arm64 image is the same at `:vX.Y.Z-arm64`; every
+verification step below applies to it with the `-arm64` tag and the
+`-arm64` artifact names substituted.
 
 One signature covers every attached file: `checksums.txt` is signed, and
 the checksums inside it cover the artifacts. So verifying the manifest
@@ -120,12 +125,29 @@ sha256sum rootfs/usr/sbin/net-dhcp \
           rootfs/usr/lib/net-dhcp/dhcp-handler
 ```
 
-The two pairs of digests must match. For **v1.6.0** they are:
+The two pairs of digests must match. For **v1.6.0** (`linux/amd64`) they are:
 
 ```
 eade3423468fa55c5f2c82bd16c28f4f6e8e447096c291fe37459b36e22ac78e  net-dhcp
 140f4f14dc9a48d7991e33186c824da790f30d184fc6e014ebbeb447f22132ca  dhcp-handler
 ```
+
+Since v1.7.0 each release also ships arm64 binaries under the `-arm64`
+tags; rebuild them the same way on an arm64 host (the build follows the
+host architecture) and unpack `net-dhcp-plugin-VERSION-linux-arm64.tar.gz`
+in step 4.
+The two pairs of digests must match. For **v1.7.0** (`linux/arm64`) they are:
+
+```
+0000000000000000000000000000000000000000000000000000000000000000  net-dhcp
+0000000000000000000000000000000000000000000000000000000000000000  dhcp-handler
+```
+
+(The zeroed digests are placeholders: no arm64 binary exists before the
+first v1.7.0 release candidate builds one. The release workflow's digest
+gate fails on them at that rc and prints the real block to paste —
+runbook step 10b, the same flow the amd64 digests follow on every
+release.)
 
 Note that step 4 needs no separate digest list from us: the binaries you
 are comparing against are the ones inside the signed tarball, and

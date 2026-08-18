@@ -103,23 +103,8 @@ func (f *Fixture) startBridge() error {
 		return fmt.Errorf("AddrAdd bridge v6: %w", err)
 	}
 
-	// docker's default FORWARD policy is DROP. With br_netfilter
-	// loaded, even pure-bridge DHCP traffic (UDP 67/68 broadcast on
-	// the same bridge) is run through iptables FORWARD. Without these
-	// inserts the DHCPDISCOVER never reaches dnsmasq.
-	for _, args := range [][]string{
-		{"-I", "FORWARD", "-i", BridgeName, "-j", "ACCEPT"},
-		{"-I", "FORWARD", "-o", BridgeName, "-j", "ACCEPT"},
-	} {
-		// Both families: bridge-nf-call-ip6tables routes bridged
-		// DHCPv6 (UDP 546/547) through ip6tables FORWARD the same
-		// way bridge-nf-call-iptables does for v4 (#103).
-		if out, err := exec.Command("iptables", args...).CombinedOutput(); err != nil {
-			return fmt.Errorf("iptables %v: %w (%s)", args, err, out)
-		}
-		if out, err := exec.Command("ip6tables", args...).CombinedOutput(); err != nil {
-			return fmt.Errorf("ip6tables %v: %w (%s)", args, err, out)
-		}
+	if err := installBridgeForward(BridgeName); err != nil {
+		return err
 	}
 	f.iptablesInstalled = true
 
@@ -214,13 +199,7 @@ func (f *Fixture) stopBridge() {
 		_ = os.RemoveAll(filepath.Dir(f.bridgeLeaseFile))
 	}
 	if f.iptablesInstalled {
-		for _, args := range [][]string{
-			{"-D", "FORWARD", "-i", BridgeName, "-j", "ACCEPT"},
-			{"-D", "FORWARD", "-o", BridgeName, "-j", "ACCEPT"},
-		} {
-			_ = exec.Command("iptables", args...).Run()
-			_ = exec.Command("ip6tables", args...).Run()
-		}
+		removeBridgeForward(BridgeName)
 		f.iptablesInstalled = false
 	}
 	if link, err := netlink.LinkByName(BridgeName); err == nil {
@@ -253,4 +232,39 @@ func IsInBridgePool(ip net.IP) bool {
 	start := net.ParseIP(BridgeDHCPPoolStart).To4()
 	end := net.ParseIP(BridgeDHCPPoolEnd).To4()
 	return bytesGE(v4, start) && bytesLE(v4, end)
+}
+
+// installBridgeForward opens iptables FORWARD for traffic in and out of
+// a fixture bridge. docker's default FORWARD policy is DROP, and with
+// br_netfilter loaded even pure-bridge DHCP traffic (UDP 67/68
+// broadcast between ports of the same bridge) is run through iptables
+// FORWARD. Without these inserts the DHCPDISCOVER never reaches
+// dnsmasq. Both families: bridge-nf-call-ip6tables routes bridged
+// DHCPv6 (UDP 546/547) through ip6tables FORWARD the same way
+// bridge-nf-call-iptables does for v4 (#103). Used for the bridge-mode
+// fixture and, since #556, for the parent-attached segment too.
+func installBridgeForward(bridge string) error {
+	for _, args := range [][]string{
+		{"-I", "FORWARD", "-i", bridge, "-j", "ACCEPT"},
+		{"-I", "FORWARD", "-o", bridge, "-j", "ACCEPT"},
+	} {
+		if out, err := exec.Command("iptables", args...).CombinedOutput(); err != nil {
+			return fmt.Errorf("iptables %v: %w (%s)", args, err, out)
+		}
+		if out, err := exec.Command("ip6tables", args...).CombinedOutput(); err != nil {
+			return fmt.Errorf("ip6tables %v: %w (%s)", args, err, out)
+		}
+	}
+	return nil
+}
+
+// removeBridgeForward undoes installBridgeForward. Best-effort.
+func removeBridgeForward(bridge string) {
+	for _, args := range [][]string{
+		{"-D", "FORWARD", "-i", bridge, "-j", "ACCEPT"},
+		{"-D", "FORWARD", "-o", bridge, "-j", "ACCEPT"},
+	} {
+		_ = exec.Command("iptables", args...).Run()
+		_ = exec.Command("ip6tables", args...).Run()
+	}
 }

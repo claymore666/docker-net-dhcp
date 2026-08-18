@@ -288,10 +288,18 @@ type dhcpManager struct {
 	// Written from the v4 consumer goroutine, read in Stop after that
 	// goroutine has been drained via errChan, which is the same
 	// happens-before startErr already relies on.
-	//
-	// v4 only, matching the reclaim: releaseOrphanedLease works from
-	// lastIPs()'s v4 address and there is no v6 equivalent to hand back.
 	boundV4 atomic.Bool
+	// boundV6 is the same proof for the persistent v6 client, written
+	// from the v6 consumer goroutine and read in Stop after errChanV6
+	// has been drained. It exists because the v6 shutdown path had none
+	// of the above (#608): Stop audited v6 on the exit error alone, so a
+	// v6 client signalled before it bound was written up as a clean
+	// release of an address the server had never been asked to free,
+	// and the reclaim — v4-only until then — left the IA_NA address the
+	// one-shot took held upstream until it expired. Not a race, the
+	// only behaviour. releaseOrphanedLease now reads both flags to
+	// decide which families it owes.
+	boundV6 atomic.Bool
 	// MacAddress is set in macvlan mode so we can re-find the link inside
 	// the container netns after Docker has moved and renamed it. Empty in
 	// bridge mode.
@@ -746,6 +754,27 @@ func (m *dhcpManager) renew(v6 bool, info dhcp.Info) error {
 // bumpFamily increments the aggregate counter (always) and its IPv6
 // sibling (only for v6 events), so /Plugin.Health exposes a per-family
 // breakdown while the aggregate stays a true v4+v6 total (#212).
+// markBound records that the persistent client of one family holds
+// its binding. See boundV4 / boundV6 for what that proof is for.
+func (m *dhcpManager) markBound(v6 bool) {
+	if v6 {
+		m.boundV6.Store(true)
+		return
+	}
+	m.boundV4.Store(true)
+}
+
+// neverBound reports whether the persistent client of one family
+// stopped without ever holding its binding. Only meaningful once that
+// family's consumer goroutine has been drained (see stop) or was never
+// started (see releaseOrphanedLease on the Start-failed path).
+func (m *dhcpManager) neverBound(v6 bool) bool {
+	if v6 {
+		return !m.boundV6.Load()
+	}
+	return !m.boundV4.Load()
+}
+
 func bumpFamily(total, v6Counter *atomic.Int32, v6 bool) {
 	total.Add(1)
 	if v6 {
@@ -769,11 +798,9 @@ func (m *dhcpManager) handleEvent(event dhcp.Event, v6 bool) {
 		// hand out a fresh address per DISCOVER even for
 		// the same MAC). Reuse the renew path so LastIP
 		// reflects what's actually in the kernel.
-		if !v6 {
-			// Ownership of the binding has transferred; Stop can
-			// now rely on dhcpcd's own release. See boundV4.
-			m.boundV4.Store(true)
-		}
+		// Ownership of the binding has transferred; Stop can now rely
+		// on dhcpcd's own release. See boundV4 / boundV6.
+		m.markBound(v6)
 		if m.plugin != nil {
 			bumpFamily(&m.plugin.leasesObtained, &m.plugin.leasesObtainedV6, v6)
 		}
@@ -790,12 +817,10 @@ func (m *dhcpManager) handleEvent(event dhcp.Event, v6 bool) {
 			WithFields(m.logFields(v6)).
 			Debug("dhcp renew")
 
-		if !v6 {
-			// Same proof as "bound", and needed separately: a client
-			// that comes up against a lease it already holds can
-			// report renew without a preceding bound.
-			m.boundV4.Store(true)
-		}
+		// Same proof as "bound", and needed separately: a client that
+		// comes up against a lease it already holds can report renew
+		// without a preceding bound.
+		m.markBound(v6)
 		if m.plugin != nil {
 			bumpFamily(&m.plugin.leasesRenewed, &m.plugin.leasesRenewedV6, v6)
 		}
@@ -1341,70 +1366,119 @@ func (m *dhcpManager) stop(leaving bool) error {
 		errV6 = <-m.errChanV6
 	}
 
-	// SIGTERM -> DHCPRELEASE -> exit didn't complete cleanly. The
-	// upstream server may now be holding a phantom lease against
-	// this MAC until its own expiry. Bump so operators can alert
-	// on a pattern of releases failing — typically points at
-	// upstream reachability problems mid-teardown. The ledger
-	// records release_failed rather than release so the audit
-	// trail never claims a release the server may not have seen.
-	// Both families are audited independently: a failed v4 release
-	// no longer hides the v6 outcome from the ledger.
+	// What the shutdown meant is decided by whether this client ever
+	// held a binding, NOT by how its process ended. That ordering is
+	// the whole of #607.
 	//
-	// The never-bound case is neither of those and must not be audited
-	// as either. The client exited cleanly, so errV4 is nil, but it
-	// held no binding and therefore sent no DHCPRELEASE — writing
-	// "release" here is the ledger claiming something the server never
-	// saw, which is the one thing this ledger exists not to do. The
-	// lease is still outstanding, so hand it to the same reclaim that
-	// covers a Start that never happened at all; releaseOrphanedLease
-	// writes the ledger entry for whichever way that goes.
+	// The exit status is a property of a process we deliberately
+	// signalled. dhcpcd answers SIGTERM by releasing and exiting 0 —
+	// but only once it is far enough into startup to have installed the
+	// handler. Signal it before that and it dies ON the signal, so
+	// Finish reaps "signal: terminated" and errV4 is non-nil. Testing
+	// errV4 first therefore routed the never-bound case into the
+	// release-failure branch below, skipping the reclaim and leaving
+	// the lease held upstream with nobody responsible for it. That is
+	// #549's bug one branch to the left, and the comment this replaces
+	// stated the assumption that hid it: "the client exited cleanly, so
+	// errV4 is nil". Sometimes it is not, and it changes nothing — a
+	// client that never bound cannot have failed to release a lease it
+	// never had.
 	//
-	// Reading boundV4 is safe here and only here: the v4 consumer
-	// goroutine is the sole writer and the receive from errChan above
-	// is its last act.
-	switch {
-	case errV4 != nil:
-		if m.plugin != nil {
-			m.plugin.leaseReleaseFailures.Add(1)
-		}
-		m.audit("release_failed", auditIP(lastIP))
-	case !m.boundV4.Load() && leaving:
-		log.
-			WithFields(m.logFields(false)).
-			WithField("ip", auditIP(lastIP)).
-			Info("Persistent client stopped before it ever held the lease; reclaiming it")
-		m.plugin.spawnOrphanRelease(m)
-	case !m.boundV4.Load():
-		// Not leaving, so the address may still be in use by a running
-		// container — see StopForLeave. Nothing is released and nothing
-		// is audited as released, which is the honest record: no
-		// DHCPRELEASE was sent.
-		log.
-			WithFields(m.logFields(false)).
-			WithField("ip", auditIP(lastIP)).
-			Debug("Persistent client stopped before it held the lease; not reclaiming, the endpoint is not leaving")
-	default:
-		m.audit("release", auditIP(lastIP))
-	}
+	// Reading boundV4 / boundV6 is safe here and only here: each
+	// family's consumer goroutine is the sole writer of its flag and
+	// the receive from its error channel above is its last act.
+	//
+	// The v6 client is judged by exactly the same rule (#608). Until
+	// then it was judged on its exit error alone: a v6 client signalled
+	// before it bound exits cleanly, so the ledger recorded "release"
+	// for the IA_NA address the CreateEndpoint one-shot had taken — the
+	// ledger asserting the server saw a DHCPv6 RELEASE for a specific
+	// address that no client ever held a binding to release — and the
+	// address itself was left leased upstream, because the reclaim was
+	// v4-only. Both families now go through settleFamily, and one
+	// reclaim covers whichever of them is owed.
+	neverBoundV4 := m.settleFamily(false, lastIP, errV4, leaving)
+	neverBoundV6 := false
 	if m.opts.IPv6 {
-		if errV6 != nil {
-			if m.plugin != nil {
-				m.plugin.leaseReleaseFailures.Add(1)
-			}
-			m.audit("release_failed", auditIP(lastIPv6))
-		} else {
-			m.audit("release", auditIP(lastIPv6))
-		}
+		neverBoundV6 = m.settleFamily(true, lastIPv6, errV6, leaving)
+	}
+	if leaving && (neverBoundV4 || neverBoundV6) {
+		// The one-shot's lease is still outstanding for at least one
+		// family and the endpoint is going away, so hand it to the same
+		// reclaim that covers a Start that never happened at all;
+		// releaseOrphanedLease reads boundV4/boundV6 to decide which
+		// families it owes and writes the ledger entry for whichever
+		// way that goes. Nothing is audited here: no RELEASE was sent,
+		// and writing "release" would be the ledger claiming something
+		// the server never saw, which is the one thing this ledger
+		// exists not to do.
+		m.plugin.spawnOrphanRelease(m)
 	}
 
-	if errV4 != nil {
+	// A client that never bound reports no error, whatever its exit
+	// status: we sent the SIGTERM, it died because we asked it to, and
+	// the lease it never took has been dealt with above. Returning the
+	// exit status here is what turned a correctly handled teardown into
+	// a 500 from Leave, for a shutdown in which nothing actually
+	// failed. The startErr path earlier in this function already
+	// reclaims and returns nil on the same reasoning (#607).
+	if errV4 != nil && !neverBoundV4 {
 		return fmt.Errorf("failed shut down DHCP client: %w", errV4)
 	}
-	if errV6 != nil {
+	if errV6 != nil && !neverBoundV6 {
 		return fmt.Errorf("failed shut down DHCPv6 client: %w", errV6)
 	}
 	return nil
+}
+
+// settleFamily writes down what one family's shutdown meant — ledger
+// entry, counter, log line — and reports whether that family's client
+// never held its binding, i.e. whether its one-shot lease is still
+// outstanding and owed to the reclaim. Called from stop for v4 always
+// and for v6 when the network is dual-stack, after both consumer
+// goroutines have been drained; the reclaim decision itself is taken by
+// the caller, once, across both families.
+func (m *dhcpManager) settleFamily(v6 bool, last *netlink.Addr, exitErr error, leaving bool) bool {
+	neverBound := m.neverBound(v6)
+	neverBoundLog := log.WithFields(m.logFields(v6)).WithField("ip", auditIP(last))
+	if neverBound && exitErr != nil {
+		// Expected rather than a fault, but recorded so a signalled
+		// exit is not simply invisible. Debug, because there is nothing
+		// here for an operator to act on: the lease is handled by the
+		// reclaim the caller spawns.
+		neverBoundLog = neverBoundLog.WithField("client_exit", exitErr)
+	}
+	switch {
+	case neverBound && leaving:
+		// The reclaim is the caller's to spawn, once for both families;
+		// what is settled here is that nothing is audited as released,
+		// which is the honest record: no RELEASE was sent.
+		neverBoundLog.Info("Persistent client stopped before it ever held the lease; reclaiming it")
+	case neverBound:
+		// Not leaving, so the address may still be in use by a running
+		// container — see StopForLeave. Nothing is released and nothing
+		// is audited as released.
+		neverBoundLog.Debug("Persistent client stopped before it held the lease; not reclaiming, the endpoint is not leaving")
+	case exitErr != nil:
+		// Held a binding and did not shut down cleanly, so
+		// SIGTERM -> RELEASE -> exit did not complete and the upstream
+		// server may now be holding a phantom lease against this
+		// identity until its own expiry. Bump so operators can alert on
+		// a pattern of releases failing — typically points at upstream
+		// reachability problems mid-teardown; split by family like its
+		// neighbours so a dual-stack host can tell which client failed
+		// (#608). The ledger records release_failed rather than release
+		// so the audit trail never claims a release the server may not
+		// have seen. Both families are audited independently: a failed
+		// v4 release does not hide the v6 outcome from the ledger.
+		if m.plugin != nil {
+			bumpFamily(&m.plugin.leaseReleaseFailures, &m.plugin.leaseReleaseFailuresV6, v6)
+		}
+		m.audit("release_failed", auditIP(last))
+	default:
+		m.audit("release", auditIP(last))
+	}
+	return neverBound
 }
 
 // auditIP renders a netlink address for a ledger entry, tolerating

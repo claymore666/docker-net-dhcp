@@ -90,16 +90,37 @@ const preflightProbeBudget = 8 * time.Second
 // clear "no DHCP OFFER on <parent> within 8s" message instead of
 // the generic CreateNetwork failure shape.
 //
-// The guard is the caller's proof that the gate for parent is held. It
-// has to be, and for longer than the LinkAdd: this probe keeps a child
-// on the parent for the whole DORA, so it is a holder as well as a
-// waiter — no endpoint may start on top of it, and it must not start on
-// top of a reclaim. The gate is taken in CreateNetwork rather than here
-// only because that is where it was; moving it inside is #577. That is
-// a tidy-up and not a fix — a caller that forgot the gate could not
-// obtain a guard and so would not compile, which makes the placement
-// untidy rather than fragile.
-func runDHCPProbe(ctx context.Context, guard *parentGuard, parent, mode string) error {
+// # The parent gate
+//
+// The probe takes the gate for parent itself, as its first act, and
+// holds it until the probe link is gone. It has to hold it for longer
+// than the LinkAdd: the probe keeps a child on the parent for the whole
+// DORA, so it is a holder as well as a waiter — no endpoint may start
+// on top of it, and it must not start on top of a reclaim.
+//
+// The ordering of the two defers below is what gives that, and it is
+// the only subtle thing in this function. Deferred calls run last-in
+// first-out, so registering Unlock FIRST makes it run LAST — after the
+// deferred LinkDel. The parent stays occupied until the child link is
+// removed, not merely until the lease arrives. Register them the other
+// way round and the gate opens while the probe's child is still
+// attached, which is the EBUSY the gate exists to prevent.
+//
+// DO NOT read this as a precedent for the reclaim path. The gate for
+// the reclaim's temporary link is taken several frames up in
+// synthesiseRelease and has to stay there; moving it down to sit around
+// that LinkAdd would shorten the hold and restore the original bug (see
+// the orphan_release.go entry in .github/linkadd-accounting.txt). The
+// move was safe HERE only because this function already spans the whole
+// hold — DORA and teardown both — so taking the gate at its top changes
+// where the lock is written and not how long it is held (#577).
+func (p *Plugin) runDHCPProbe(ctx context.Context, parent, mode string) error {
+	// First statement, before the parent is even looked up: the hold
+	// must cover everything the caller used to wrap, or this is a
+	// change to the gate's duration rather than to its location.
+	guard := p.lockParent(ctx, parent, "preflight_probe")
+	defer guard.Unlock()
+
 	if parent == "" {
 		return errors.New("validate_dhcp: parent NIC name is empty")
 	}

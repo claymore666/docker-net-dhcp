@@ -129,7 +129,24 @@ func (p *Plugin) probeAddressConflict(ctx context.Context, parent string, ip net
 		return nil, err
 	}
 	defer func() {
-		if err := netlink.RouteDel(route); err != nil {
+		err := netlink.RouteDel(route)
+		switch {
+		case err == nil:
+		case errors.Is(err, unix.ESRCH):
+			// Already gone. The postcondition — no probe route left on
+			// the parent — is met, so this is not a cleanup failure and
+			// must not read as one: #574 exists because a leftover route
+			// silently disables detection for an address, and a warning
+			// that is usually noise is a warning nobody reads when it
+			// is not (#575). The one legitimate way here is two probes
+			// for the same address overlapping — an endpoint restarting
+			// onto the address it had — where addProbeRoute's reclaim
+			// makes both own one route and the first to finish removes
+			// it. Info, so the overlap is visible without alarming.
+			log.WithFields(log.Fields{
+				"parent": parent, "dst": ip.String(),
+			}).Info("[conflict-probe] temporary probe route was already removed")
+		default:
 			log.WithError(err).WithFields(log.Fields{
 				"parent": parent, "dst": ip.String(),
 			}).Warn("[conflict-probe] could not remove the temporary probe route; remove it with `ip route del`")
@@ -330,11 +347,27 @@ func pickProbeSource(parentLink netlink.Link, target net.IP, subnet *net.IPNet) 
 	return probeSource{addr: ll, borrowed: true}, nil
 }
 
-// newProbeLinkLocal returns a random 169.254.0.0/16 address for the
+// newProbeLinkLocal returns a random 169.254.x.y/32 address for the
 // probe link. Random because two probes can run concurrently on one
 // host and must not collide; link-local because any address from the
 // operator's own subnet might be the next one their DHCP server hands
 // out, which is precisely the fault this file detects.
+//
+// The prefix is /32, and that is load-bearing (#575). With a /16 every
+// borrowed source on one parent shares a subnet, so the kernel makes
+// the second one a SECONDARY of the first — and unless
+// promote_secondaries is on, deleting the primary deletes every
+// secondary with it and flushes the routes sourced from them. Two
+// probes overlapping on an address-less parent then did exactly that
+// to each other: the first to finish took the second's source address
+// and its /32 route away mid-probe, and the second's cleanup found
+// nothing to delete (ESRCH on the route, EADDRNOTAVAIL on the
+// address). Reproduced in a fresh network namespace, where the kernel
+// default is promote_secondaries=0 — which is what a nested-Docker
+// runner is, and why it was only ever seen there. A /32 has no subnet
+// to be secondary in, so no probe's cleanup can reach another's; the
+// probe's own explicit /32 route to the target supplies the egress the
+// connected /16 used to.
 //
 // .0 and .255 in the last octet are avoided, as are the first and last
 // /24 of the range, which RFC 3927 reserves.
@@ -347,7 +380,7 @@ func newProbeLinkLocal() (*netlink.Addr, error) {
 	fourth := 1 + int(b[1])%254 // 1..254
 	return &netlink.Addr{IPNet: &net.IPNet{
 		IP:   net.IPv4(169, 254, byte(third), byte(fourth)),
-		Mask: net.CIDRMask(16, 32),
+		Mask: net.CIDRMask(32, 32),
 	}}, nil
 }
 

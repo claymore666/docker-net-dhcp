@@ -96,15 +96,66 @@ api() {
         "https://api.github.com/repos/${GATE_REPO}/$1"
 }
 
+# How hard cancel_run tries. Overridable so the self-tests can exercise
+# the retry without sleeping through it; CI never sets either.
+CANCEL_ATTEMPTS="${WATCHDOG_CANCEL_ATTEMPTS:-4}"
+CANCEL_BACKOFF="${WATCHDOG_CANCEL_BACKOFF:-3}"
+
 # cancel_run stops the run this script is running inside. Returns
-# non-zero if the API refused, which the caller reports — a cancel that
-# silently failed would leave the pool held with nobody told.
+# non-zero if the API refused every attempt, which the caller reports —
+# a cancel that silently failed would leave the pool held with nobody
+# told.
+#
+# WHY IT RETRIES (#611)
+#
+# On 2026-08-17 three runs were condemned within 33 seconds and each
+# POSTed this same endpoint. The first succeeded; the next two were
+# refused, and both stayed queued for 21 hours before executing on a
+# verdict a day old, holding their concurrency groups throughout.
+#
+# Identical token, identical code path, different outcomes — so the
+# cause is not configuration. It cannot be the permission the old
+# failure message guessed at: the job log's GITHUB_TOKEN Permissions
+# group shows `Actions: write`, and a missing scope would have failed
+# all three alike. It is transient, and the single attempt this
+# replaces had no answer to a transient.
+#
+# WHY IT RECORDS THE STATUS
+#
+# `curl -sf ... -o /dev/null` discarded the status code and the body,
+# leaving a boolean. That is why the incident above still cannot name
+# its own mechanism: 403, 409 and a network timeout were
+# indistinguishable after the fact. Dropping -f and keeping %{http_code}
+# costs nothing and makes the next occurrence diagnosable, which is the
+# only way the retry count above ever gets tuned on evidence.
 cancel_run() {
-    curl -sf -X POST --max-time 20 \
-        -o /dev/null \
-        -H "Authorization: Bearer ${GH_TOKEN:-}" \
-        -H "Accept: application/vnd.github+json" \
-        "https://api.github.com/repos/${GATE_REPO}/actions/runs/${RUN_ID}/cancel"
+    local attempt=1 code rc
+    while :; do
+        code=$(curl -s -X POST --max-time 20 \
+            -o /dev/null -w '%{http_code}' \
+            -H "Authorization: Bearer ${GH_TOKEN:-}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GATE_REPO}/actions/runs/${RUN_ID}/cancel")
+        rc=$?
+
+        case "$code" in
+            2*) echo "watchdog: cancel accepted (HTTP $code) on attempt $attempt" >&2
+                return 0 ;;
+        esac
+
+        # Reported per attempt rather than only at the end: if the first
+        # POST is refused and a later one lands, that pattern is the
+        # evidence that names the mechanism, and it is invisible if only
+        # the final verdict is logged.
+        echo "watchdog: cancel attempt ${attempt}/${CANCEL_ATTEMPTS} refused (HTTP ${code:-none}, curl exit ${rc})" >&2
+
+        if [ "$attempt" -ge "$CANCEL_ATTEMPTS" ]; then
+            CANCEL_LAST_CODE="${code:-none}"
+            return 1
+        fi
+        attempt=$((attempt + 1))
+        [ "$CANCEL_BACKOFF" -gt 0 ] && sleep "$CANCEL_BACKOFF"
+    done
 }
 
 # classify_wait says WHY nothing picked the jobs up, rather than leaving
@@ -298,10 +349,16 @@ while :; do
         else
             {
                 echo
-                echo "WATCHDOG: the cancel request FAILED. The run is still queued and still"
+                echo "WATCHDOG: the cancel request FAILED after ${CANCEL_ATTEMPTS} attempts, last"
+                echo "status HTTP ${CANCEL_LAST_CODE:-none}. The run is still queued and still"
                 echo "holding the concurrency group — the condition above is unchanged and now"
-                echo "needs a human. Cancel it by hand, then check that this job has"
-                echo "'actions: write': without it the API refuses with 403."
+                echo "needs a human. Cancel it by hand."
+                echo
+                echo "Read the status above before guessing: 403 is a permission or a rate"
+                echo "limit, 409 means the run was not in a cancellable state, and 000 means"
+                echo "the request never got an answer. This message used to assert the job"
+                echo "was missing 'actions: write', which sent the one real investigation of"
+                echo "this failure down the wrong path — the permission was present (#611)."
             } >&2
         fi
         exit 1

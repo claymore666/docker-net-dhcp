@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -134,7 +135,10 @@ type EphemeralFixture struct {
 	tmpDir     string
 	leaseFile  string
 	configFile string
-	logFile    string
+	// renderedConfig is the exact text written to configFile, kept so a
+	// failure prints what kea was given rather than a fresh render.
+	renderedConfig string
+	logFile        string
 
 	poolStart, poolEnd string
 	serverCIDR         string
@@ -552,7 +556,56 @@ func (ef *EphemeralFixture) start() {
 // allocated address — is present at INFO. DEBUG additionally logs
 // DHCP4_RESPONSE_DATA, which repeats "DHCPACK" for the same packet and
 // would double every ACK count in this file.
-func (ef *EphemeralFixture) keaConfig() string {
+// keaLoggerOutputKey is the name Kea gives the logger's output list.
+// It was renamed from output_options to output-options in Kea 2.5.4,
+// and the older spelling is what Debian/Ubuntu's stable 2.4.x expects.
+// Resolved ONCE per test binary: one kea is on PATH and its answer
+// cannot change underneath us.
+var (
+	keaLoggerKeyOnce sync.Once
+	keaLoggerKey     string
+)
+
+// resolveKeaLoggerKey asks the installed Kea which spelling it accepts,
+// rather than deciding from its version string.
+//
+// A version comparison would have to encode the 2.5.4 boundary, guess
+// how a distribution numbers its backports, and be revisited whenever
+// the name changes again. Feeding kea the real config under `-t` asks
+// the only question that matters — will this server load this file —
+// and is right by construction on versions nobody has thought about
+// yet. The fallback is taken only for the specific parse error naming
+// the key, so an unrelated config mistake still surfaces as itself.
+func (ef *EphemeralFixture) resolveKeaLoggerKey(keaPath string) string {
+	ef.t.Helper()
+	keaLoggerKeyOnce.Do(func() {
+		keaLoggerKey = keaLoggerOutputModern
+		probeDir, err := os.MkdirTemp("", "kea-logger-probe-")
+		if err != nil {
+			return
+		}
+		defer os.RemoveAll(probeDir)
+
+		probe := filepath.Join(probeDir, "kea-dhcp4.json")
+		if err := os.WriteFile(probe, []byte(ef.keaConfig(keaLoggerOutputModern)), 0o644); err != nil {
+			return
+		}
+		out, err := exec.Command(keaPath, "-t", probe).CombinedOutput()
+		if err != nil && strings.Contains(string(out), keaLoggerOutputModern) {
+			keaLoggerKey = keaLoggerOutputLegacy
+			ef.t.Logf("kea rejects %q, falling back to %q (pre-2.5.4 server)",
+				keaLoggerOutputModern, keaLoggerOutputLegacy)
+		}
+	})
+	return keaLoggerKey
+}
+
+const (
+	keaLoggerOutputModern = "output-options"
+	keaLoggerOutputLegacy = "output_options"
+)
+
+func (ef *EphemeralFixture) keaConfig(loggerOutputKey string) string {
 	timers := ""
 	if ef.renewT1 > 0 {
 		timers += fmt.Sprintf("    \"renew-timer\": %d,\n", ef.renewT1)
@@ -578,13 +631,13 @@ func (ef *EphemeralFixture) keaConfig() string {
     } ],
     "loggers": [ {
       "name": "kea-dhcp4",
-      "output-options": [ { "output": "stdout", "flush": true } ],
+      %q: [ { "output": "stdout", "flush": true } ],
       "severity": "INFO"
     } ]
   }
 }
 `, ephemeralDhcpVeth, ef.leaseFile, ef.leaseSeconds, timers, ef.subnet(),
-		ef.poolStart, ef.poolEnd)
+		ef.poolStart, ef.poolEnd, loggerOutputKey)
 }
 
 // subnet is the CIDR of the network the server address sits on, which
@@ -635,7 +688,11 @@ func (ef *EphemeralFixture) startKea() {
 	if err := os.MkdirAll("/run/kea", 0o755); err != nil {
 		ef.t.Fatalf("mkdir /run/kea: %v", err)
 	}
-	if err := os.WriteFile(ef.configFile, []byte(ef.keaConfig()), 0o644); err != nil {
+	// Kept so the diagnostics below print the config kea was actually
+	// given, rather than re-rendering it and risking a message that
+	// disagrees with the file that failed.
+	ef.renderedConfig = ef.keaConfig(ef.resolveKeaLoggerKey(keaPath))
+	if err := os.WriteFile(ef.configFile, []byte(ef.renderedConfig), 0o644); err != nil {
 		ef.t.Fatalf("write kea config: %v", err)
 	}
 
@@ -689,14 +746,14 @@ func (ef *EphemeralFixture) startKea() {
 			ef.t.Fatalf("ephemeral kea started but opened no DHCP socket (%s).\n"+
 				"On a host this usually means another DHCP server holds UDP/67 — the fixture "+
 				"runs kea in netns %q precisely to avoid that, so check the namespace was created.\n"+
-				"config:\n%s\nlog:\n%s", why, ephemeralNetns, ef.keaConfig(), ef.readLog())
+				"config:\n%s\nlog:\n%s", why, ephemeralNetns, ef.renderedConfig, ef.readLog())
 		}
 		if strings.Contains(window, "DHCP4_STARTED") && strings.Contains(window, "DHCPSRV_CFGMGR_ADD_IFACE") {
 			return
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	ef.t.Fatalf("ephemeral kea did not become ready; config:\n%s\nlog:\n%s", ef.keaConfig(), ef.readLog())
+	ef.t.Fatalf("ephemeral kea did not become ready; config:\n%s\nlog:\n%s", ef.renderedConfig, ef.readLog())
 }
 
 func (ef *EphemeralFixture) startDnsmasq() {
@@ -952,23 +1009,71 @@ func (ef *EphemeralFixture) DNSDomain() string { return ef.dnsDomain }
 //	interface <iface>
 //
 // and dnsmasq writes `DHCPACK(<iface>) <ip> <mac> [<hostname>]`.
+//
+// EXCEPT that which line Kea writes for an ACK depends on its version,
+// and the two versions this project meets are on opposite sides of the
+// change (#612). Measured on real logs, one client, bind plus renewals:
+//
+//	kea 2.6.3 (runner image)   bind:    DHCPACK line AND DHCP4_LEASE_ALLOC
+//	                            renewal: DHCPACK line only
+//	kea 2.4.1 (Ubuntu stable)  bind:    DHCP4_LEASE_ALLOC only
+//	                            renewal: DHCP4_LEASE_ALLOC only
+//	                            (no line containing DHCPACK at INFO, ever)
+//
+// So on 2.6.3 the DHCPACK line is the complete record and LEASE_ALLOC
+// would double count the bind; on 2.4.1 LEASE_ALLOC is the only record
+// there is. Neither token works alone and both together over-count.
+// The rule is therefore decided per log, from the log: if it contains
+// any DHCPACK line the server is one that writes them and only those
+// are counted; if it contains none, LEASE_ALLOC stands in. That is
+// version detection by what the server actually wrote rather than by
+// what it calls itself, and it is pinned on both captures in
+// ephemeral_test.go.
+//
+// Callers keep saying DHCPACK: it names what they mean, and the fact
+// that Kea spells it two ways is one fact about one server, kept here.
 func (ef *EphemeralFixture) CountLogLines(substrings ...string) int {
 	ef.t.Helper()
+	log := ef.readLog()
+	ackToken := ef.keaACKToken(log)
 	count := 0
-	for _, line := range strings.Split(ef.readLog(), "\n") {
-		l := strings.ToLower(line)
-		all := true
-		for _, s := range substrings {
-			if !strings.Contains(l, strings.ToLower(s)) {
-				all = false
-				break
-			}
-		}
-		if all {
+	for _, line := range strings.Split(log, "\n") {
+		if lineMatches(line, substrings, ackToken) {
 			count++
 		}
 	}
 	return count
+}
+
+// keaACKToken decides, for one log, which line stands for "the server
+// ACKed a lease": the DHCPACK line where the server writes one, the
+// lease allocation line where it does not. Non-Kea backends always
+// mean the literal token. See CountLogLines for the measurements.
+func (ef *EphemeralFixture) keaACKToken(log string) string {
+	if ef.backend != backendKea {
+		return "dhcpack"
+	}
+	if strings.Contains(strings.ToLower(log), "dhcpack") {
+		return "dhcpack"
+	}
+	return "dhcp4_lease_alloc"
+}
+
+// lineMatches is the per-line predicate behind CountLogLines and
+// LastACKAddress: every substring must appear (case-insensitive), with
+// a caller's "DHCPACK" satisfied by ackToken instead.
+func lineMatches(line string, substrings []string, ackToken string) bool {
+	l := strings.ToLower(line)
+	for _, s := range substrings {
+		want := strings.ToLower(s)
+		if want == "dhcpack" {
+			want = ackToken
+		}
+		if !strings.Contains(l, want) {
+			return false
+		}
+	}
+	return true
 }
 
 // LastACKAddress returns the address in the most recent DHCPACK the
@@ -980,10 +1085,13 @@ func (ef *EphemeralFixture) CountLogLines(substrings ...string) int {
 // counters cannot supply.
 func (ef *EphemeralFixture) LastACKAddress(mac string) string {
 	ef.t.Helper()
+	// Same per-log token choice as CountLogLines, for the same reason:
+	// which line Kea writes for an ACK depends on its version (#612).
+	log := ef.readLog()
+	ackToken := ef.keaACKToken(log)
 	last := ""
-	for _, line := range strings.Split(ef.readLog(), "\n") {
-		l := strings.ToLower(line)
-		if !strings.Contains(l, "dhcpack") || !strings.Contains(l, strings.ToLower(mac)) {
+	for _, line := range strings.Split(log, "\n") {
+		if !lineMatches(line, []string{"DHCPACK", mac}, ackToken) {
 			continue
 		}
 		if ip := ackAddress(ef.backend, line); ip != "" {
@@ -995,20 +1103,26 @@ func (ef *EphemeralFixture) LastACKAddress(mac string) string {
 
 // ackAddress pulls the ACKed address out of one server log line.
 //
-// Kea names the recipient as the `to <addr>:68` of the DHCPACK it
-// sends; dnsmasq puts the address immediately after the DHCPACK token.
-// Both are the address the server told the client to use, which is the
-// claim the callers are checking.
+// Kea has two shapes, by version: `... DHCPACK ... to <addr>:68 ...`
+// names the recipient of the packet, and `lease <addr> has been
+// allocated` names the address granted. dnsmasq puts the address
+// immediately after the DHCPACK token. All three are the address the
+// server told the client to use, which is the claim callers check.
 func ackAddress(backend ephemeralBackend, line string) string {
 	fields := strings.Fields(line)
 	if backend == backendKea {
 		for i, f := range fields {
-			if f != "to" || i+1 >= len(fields) {
+			var candidate string
+			switch {
+			case f == "to" && i+1 < len(fields):
+				candidate = strings.SplitN(fields[i+1], ":", 2)[0]
+			case f == "lease" && i+1 < len(fields):
+				candidate = fields[i+1]
+			default:
 				continue
 			}
-			bare := strings.SplitN(fields[i+1], ":", 2)[0]
-			if ip := net.ParseIP(bare); ip != nil && ip.To4() != nil {
-				return bare
+			if ip := net.ParseIP(candidate); ip != nil && ip.To4() != nil {
+				return candidate
 			}
 		}
 		return ""

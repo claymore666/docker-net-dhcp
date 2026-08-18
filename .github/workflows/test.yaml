@@ -205,6 +205,25 @@ jobs:
       - name: Parent-gate accounting check
         run: bash scripts/check-parent-gate-accounting.sh
 
+      # Documentation that is a standing operator PRECONDITION rather
+      # than a description of the current version. The other docs gates
+      # reconcile prose against a code fact — counters, settings,
+      # driver-opts, image pins — and text with no code fact to check
+      # against fell between all of them. The STATE_DIR install block
+      # is the first entry: it names v1.5.0, so it reads as changelog
+      # prose a release documentation pass should clean up, and
+      # deleting it makes `docker plugin install` fail with no error
+      # anywhere that names the cause (#579).
+      - name: Doc-invariant check
+        run: bash scripts/check-doc-invariants.sh
+
+      # The two integration lanes build the plugin into different
+      # directories, and a test that spells one of them is green on
+      # every PR and red once per release (#583). harness.BuiltPluginDir
+      # is the one place they are named; this keeps it that way.
+      - name: Build-directory reference check
+        run: bash scripts/check-build-dir-refs.sh
+
       # An unreadable path under .claude/ must not break the build
       # context (#530). This one is structurally invisible to the rest
       # of CI: checkouts are fresh, so .claude/ does not exist, and the
@@ -237,6 +256,20 @@ jobs:
       # keeps the user-facing pages following it.
       - name: Cosign-version docs check
         run: bash scripts/check-cosign-docs.sh
+
+      # Every job taking a workflow_dispatch `ref` input must sit behind
+      # the job that validates it (#593). A fork's pull-request head is
+      # fetchable from this repository and a dispatch context carries
+      # the repository secrets, so an unvalidated ref checks outside
+      # code out as root on the self-hosted pool, with the registry
+      # credential in the job.
+      #
+      # The rule already existed as a SECURITY comment in
+      # integration.yml and a second route walked around it, which is
+      # why the coverage is asserted here rather than remembered. It
+      # reads workflow text, so it costs no pool slot.
+      - name: Dispatch-ref guard coverage
+        run: bash scripts/check-dispatch-ref-guard.sh
 
   staticcheck:
     runs-on: ubuntu-latest
@@ -286,6 +319,26 @@ jobs:
         run: actionlint -color
       - name: Verify actionlint catches known-bad patterns
         run: bash scripts/test-actionlint.sh actionlint
+
+      # The gate scripts themselves. Until now shellcheck ran here only
+      # as actionlint's subprocess, on `run:` blocks embedded in workflow
+      # files — so scripts/*.sh, which is every check-*.sh gate and every
+      # self-test, was linted by nothing at all. The pinned binary was
+      # already installed two steps up; the gap was one step wide.
+      #
+      # It matters more here than in ordinary code. A gate that
+      # misbehaves does not fail loudly, it passes quietly, and this
+      # repository keeps rediscovering that shape (#418, #487, #542,
+      # #598). The scripts meant to catch it were the unchecked ones.
+      #
+      # -S warning, not -S style: style is clean on the newest scripts
+      # and noisy on the older ones, and a level nobody can hold gets
+      # bypassed. Raise it deliberately if that changes.
+      #
+      # Suppressions carry a reason inline. A repo-wide exclude list
+      # would recreate exactly the blind spot this closes.
+      - name: Shellcheck the gate scripts
+        run: shellcheck -S warning scripts/*.sh
 
   # This fork is published as the maintainer's own work, so no commit
   # or PR may credit an AI assistant. The rule predates the repo's CI

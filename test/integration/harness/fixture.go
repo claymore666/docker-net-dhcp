@@ -31,17 +31,41 @@ import (
 )
 
 const (
-	// HostVeth is the veth end the plugin attaches macvlan/ipvlan
-	// children to (driver-opt parent=HostVeth).
-	HostVeth = "dh-itest-host"
-	// DhcpVeth is the other end of the pair; dnsmasq listens here.
-	DhcpVeth = "dh-itest-dhcp"
+	// HostVeth is the veth end the plugin attaches MACVLAN children to
+	// (driver-opt parent=HostVeth). Its peer, hostVethPeer, is a port
+	// of DHCPSegment.
+	HostVeth     = "dh-itest-host"
+	hostVethPeer = "dh-itest-hostp"
+	// IpvlanParent is the veth end the plugin attaches IPVLAN children
+	// to, on the same L2 segment as HostVeth and deliberately NOT the
+	// same netdev (#556).
+	//
+	// A parent NIC is a macvlan port or an ipvlan port, never both: the
+	// two kinds contend for its single rx_handler and the second to ask
+	// is refused with EBUSY. Plugin teardown is asynchronous relative
+	// to test boundaries — an orphan-release reclaim can hold its
+	// temporary child on the parent for seconds after the test that
+	// caused it has returned — so with one shared parent a macvlan
+	// test's tail could still own it when an ipvlan test's head asked,
+	// and the suite went red on whichever test happened to be next.
+	// Both directions are in the CI record. Two parents remove the
+	// contention rather than racing it; CreateNetwork asserts the
+	// invariant so a violation is named rather than surfacing as a
+	// netlink error deep inside the plugin.
+	IpvlanParent     = "dh-itest-ipv"
+	ipvlanParentPeer = "dh-itest-ipvp"
+	// DHCPSegment is the bridge that joins the two parents' peers into
+	// one L2 segment. dnsmasq listens here and it carries the server
+	// addresses; before #556 this was the plain veth peer of HostVeth
+	// and kept its name so log lines (`DHCPACK(dh-itest-dhcp)`) and
+	// captures read as before.
+	DHCPSegment = "dh-itest-dhcp"
 
-	// DHCPServerAddr is the static IP on DhcpVeth.
+	// DHCPServerAddr is the static IP on DHCPSegment.
 	DHCPServerAddr = "192.168.99.1/24"
-	// HostVethAddr is an on-subnet address for the macvlan/ipvlan
-	// PARENT, and it is what lets the address-conflict detector work
-	// on this fixture at all (#549).
+	// HostVethAddr / IpvlanParentAddr are on-subnet addresses for the
+	// macvlan and ipvlan PARENTS, and they are what let the
+	// address-conflict detector work on this fixture at all (#549).
 	//
 	// A host answers an ARP request only if it can route a reply back
 	// to the sender, so the conflict probe has to send from an address
@@ -56,11 +80,12 @@ const (
 	// checked" and "nothing found" reading the same. The detector was
 	// honest about it in the log; nothing failed.
 	//
-	// .2 is deliberate: outside [DHCPPoolStart, DHCPPoolEnd] so dnsmasq
-	// can never hand it to a client, and not .1, which is the server.
-	// It also mirrors production, where a macvlan parent is a real host
-	// NIC that carries an address.
-	HostVethAddr = "192.168.99.2/24"
+	// .2 and .3 are deliberate: outside [DHCPPoolStart, DHCPPoolEnd] so
+	// dnsmasq can never hand them to a client, and not .1, which is the
+	// server. They also mirror production, where a parent is a real
+	// host NIC that carries an address.
+	HostVethAddr     = "192.168.99.2/24"
+	IpvlanParentAddr = "192.168.99.3/24"
 	// DHCPPoolStart / DHCPPoolEnd / LeaseTime drive dnsmasq's
 	// --dhcp-range. 2 minutes is dnsmasq's hard floor — anything
 	// shorter is silently rounded up, which made an earlier "30s"
@@ -258,9 +283,10 @@ type Fixture struct {
 	iptablesInstalled bool
 }
 
-// New creates the veth pair, brings both ends up, addresses the DHCP
-// end, and starts dnsmasq. Returns an error if any step fails; on
-// failure, partial state is cleaned up before returning.
+// New builds the parent-attached segment — the DHCPSegment bridge, one
+// veth pair per parent kind with the far end enslaved to it — addresses
+// the server end, and starts dnsmasq. Returns an error if any step
+// fails; on failure, partial state is cleaned up before returning.
 func New() (*Fixture, error) {
 	if os.Geteuid() != 0 {
 		return nil, fmt.Errorf("integration tests must run as root (got uid=%d). Use 'sudo make integration-test' or run the runner as root", os.Geteuid())
@@ -269,26 +295,35 @@ func New() (*Fixture, error) {
 	// Idempotent: kill any stragglers from a previous panic'd run.
 	cleanupNetlink()
 
-	la := netlink.NewLinkAttrs()
-	la.Name = HostVeth
-	veth := &netlink.Veth{LinkAttrs: la, PeerName: DhcpVeth}
-	if err := netlink.LinkAdd(veth); err != nil {
-		return nil, fmt.Errorf("LinkAdd veth: %w", err)
+	segAttrs := netlink.NewLinkAttrs()
+	segAttrs.Name = DHCPSegment
+	if err := netlink.LinkAdd(&netlink.Bridge{LinkAttrs: segAttrs}); err != nil {
+		return nil, fmt.Errorf("LinkAdd segment bridge: %w", err)
 	}
-
-	hostLink, err := netlink.LinkByName(HostVeth)
+	dhcpLink, err := netlink.LinkByName(DHCPSegment)
 	if err != nil {
-		return nil, wrapTeardown(fmt.Errorf("LinkByName host: %w", err))
-	}
-	dhcpLink, err := netlink.LinkByName(DhcpVeth)
-	if err != nil {
-		return nil, wrapTeardown(fmt.Errorf("LinkByName dhcp: %w", err))
-	}
-	if err := netlink.LinkSetUp(hostLink); err != nil {
-		return nil, wrapTeardown(fmt.Errorf("LinkSetUp host: %w", err))
+		return nil, wrapTeardown(fmt.Errorf("LinkByName segment: %w", err))
 	}
 	if err := netlink.LinkSetUp(dhcpLink); err != nil {
-		return nil, wrapTeardown(fmt.Errorf("LinkSetUp dhcp: %w", err))
+		return nil, wrapTeardown(fmt.Errorf("LinkSetUp segment: %w", err))
+	}
+	// Same FORWARD opening the bridge-mode fixture needs: the segment
+	// is a bridge now, and br_netfilter would otherwise run frames
+	// between its two ports through docker's DROP policy.
+	if err := installBridgeForward(DHCPSegment); err != nil {
+		return nil, wrapTeardown(err)
+	}
+
+	// One veth pair per parent kind, each with its peer on the segment,
+	// so a macvlan child and an ipvlan child are on the same L2 domain
+	// as the server without ever sharing a netdev (#556).
+	hostLink, err := addParentVeth(dhcpLink, HostVeth, hostVethPeer)
+	if err != nil {
+		return nil, wrapTeardown(err)
+	}
+	ipvlanLink, err := addParentVeth(dhcpLink, IpvlanParent, ipvlanParentPeer)
+	if err != nil {
+		return nil, wrapTeardown(err)
 	}
 
 	addr, err := netlink.ParseAddr(DHCPServerAddr)
@@ -319,12 +354,17 @@ func New() (*Fixture, error) {
 	// selected before this change. The probe itself is unaffected
 	// either way: it installs a /32 link-scope route for the address
 	// under test, which is more specific than either /24.
-	hostAddr, err := netlink.ParseAddr(HostVethAddr)
-	if err != nil {
-		return nil, wrapTeardown(fmt.Errorf("ParseAddr host: %w", err))
-	}
-	if err := netlink.AddrAdd(hostLink, hostAddr); err != nil {
-		return nil, wrapTeardown(fmt.Errorf("AddrAdd host: %w", err))
+	for _, pa := range []struct {
+		link netlink.Link
+		addr string
+	}{{hostLink, HostVethAddr}, {ipvlanLink, IpvlanParentAddr}} {
+		a, err := netlink.ParseAddr(pa.addr)
+		if err != nil {
+			return nil, wrapTeardown(fmt.Errorf("ParseAddr %s: %w", pa.addr, err))
+		}
+		if err := netlink.AddrAdd(pa.link, a); err != nil {
+			return nil, wrapTeardown(fmt.Errorf("AddrAdd %s on %s: %w", pa.addr, pa.link.Attrs().Name, err))
+		}
 	}
 
 	// Per-run temp dir for dnsmasq lease file + log.
@@ -369,10 +409,10 @@ func (f *Fixture) startDnsmasq() error {
 	f.dnsmasq = exec.Command("/usr/sbin/dnsmasq",
 		"--no-daemon",
 		"--conf-file=/dev/null",
-		"--port=0",              // disable DNS
-		"--interface="+DhcpVeth, // DHCP only on this interface
-		"--bind-interfaces",     // don't open sockets on others
-		"--except-interface=lo", // belt + braces
+		"--port=0",                 // disable DNS
+		"--interface="+DHCPSegment, // DHCP only on this interface
+		"--bind-interfaces",        // don't open sockets on others
+		"--except-interface=lo",    // belt + braces
 		"--dhcp-range="+DHCPPoolStart+","+DHCPPoolEnd+","+LeaseTime,
 		// Takes StaticTestIP out of the dynamic pool — see the constant.
 		StaticReservationArg(),
@@ -474,10 +514,40 @@ func (f *Fixture) Teardown() error {
 	return firstErr
 }
 
+// addParentVeth creates the veth pair name<->peer, enslaves peer to the
+// segment bridge and brings both ends up. Returns the parent end.
+func addParentVeth(segment netlink.Link, name, peer string) (netlink.Link, error) {
+	la := netlink.NewLinkAttrs()
+	la.Name = name
+	if err := netlink.LinkAdd(&netlink.Veth{LinkAttrs: la, PeerName: peer}); err != nil {
+		return nil, fmt.Errorf("LinkAdd veth %s: %w", name, err)
+	}
+	parent, err := netlink.LinkByName(name)
+	if err != nil {
+		return nil, fmt.Errorf("LinkByName %s: %w", name, err)
+	}
+	peerLink, err := netlink.LinkByName(peer)
+	if err != nil {
+		return nil, fmt.Errorf("LinkByName %s: %w", peer, err)
+	}
+	if err := netlink.LinkSetMaster(peerLink, segment); err != nil {
+		return nil, fmt.Errorf("enslave %s to %s: %w", peer, segment.Attrs().Name, err)
+	}
+	if err := netlink.LinkSetUp(peerLink); err != nil {
+		return nil, fmt.Errorf("LinkSetUp %s: %w", peer, err)
+	}
+	if err := netlink.LinkSetUp(parent); err != nil {
+		return nil, fmt.Errorf("LinkSetUp %s: %w", name, err)
+	}
+	return parent, nil
+}
+
 // cleanupNetlink removes any leftover fixture interfaces from a
-// previous run. Best-effort.
+// previous run. Best-effort. Veths first (deleting one end removes
+// both), then the segment bridge they were ports of.
 func cleanupNetlink() {
-	for _, name := range []string{HostVeth, DhcpVeth, BridgeName} {
+	removeBridgeForward(DHCPSegment)
+	for _, name := range []string{HostVeth, IpvlanParent, DHCPSegment, BridgeName} {
 		if link, err := netlink.LinkByName(name); err == nil {
 			_ = netlink.LinkDel(link)
 		}

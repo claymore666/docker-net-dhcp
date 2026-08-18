@@ -351,7 +351,7 @@ func TestLeaseRenewIPv6_HonorsT1(t *testing.T) {
 	// be L2-delivery problems that no application log can show, so
 	// the capture stays.
 	var dumps []*os.File
-	for _, iface := range []string{harness.HostVeth, harness.DhcpVeth} {
+	for _, iface := range []string{harness.HostVeth, harness.IpvlanParent, harness.DHCPSegment} {
 		f, err := os.CreateTemp("", "v6dbg-"+iface+"-*.txt")
 		if err != nil {
 			t.Fatalf("tcpdump capture file: %v", err)

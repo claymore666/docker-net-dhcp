@@ -1,0 +1,4 @@
+# dsmode: local keeps cloud-init from waiting on the network it is already
+# using as its root filesystem.
+instance_id: rpi-arm64-runner-netboot
+dsmode: local

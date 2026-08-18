@@ -1,0 +1,88 @@
+name: Release back-merge
+
+# Asserts every commit on `main` is reachable from `dev` — that the
+# post-release back-merge in release-runbook step 11 actually ran (#598).
+#
+# scripts/check-release-backmerge.sh carries the reasoning, the grace
+# window, and the direction the guard fails in. This file is only about
+# when it runs and with what it runs.
+#
+# THIS CANNOT BE A PR CHECK. The step it watches happens after the last
+# CI-visible event of a release — the release PR merges green, the tag
+# builds green, and then nothing runs. There is no run to fail, so it
+# needs a clock, exactly like missing-runs.yml (#418).
+#
+# fetch-depth: 0 IS LOAD-BEARING. The check computes reachability; the
+# default depth of 1 makes that unanswerable. The script refuses to give
+# a verdict on a shallow clone rather than giving a wrong one, so
+# lowering this turns the gate off loudly rather than silently — but it
+# does turn it off.
+#
+# Hosted runner, read-only token: it must not compete for the
+# self-hosted pool.
+on:
+  schedule:
+    # Daily. The grace window is 24h, so a back-merge that never happens
+    # surfaces within a day or two of the release — long after the rc
+    # chain has stopped legitimately moving `main` ahead.
+    - cron: '43 6 * * *'
+  # ADVISORY on every PR into `dev`, and it answers a different question
+  # from the schedule: not "did the back-merge ever happen" but "is it
+  # safe to merge into `dev` right now". While `main` is not contained,
+  # the runbook's `--ff-only` still works — merging anything into `dev`
+  # first destroys it permanently. That is a merge-time fact, and no
+  # scheduled job can catch it: by the time a nightly run looks, the
+  # fast-forward is already gone.
+  #
+  # It WARNS, never blocks. Not a required check, exit 0 on divergence.
+  # A hard block on every PR during an rc window would be worse than the
+  # problem, and a blocking check nobody can satisfy gets bypassed once
+  # and then always.
+  #
+  # It also happens to be the only thing that runs this workflow before
+  # a release carries it to `main`: a schedule only fires from the
+  # default branch, and workflow_dispatch only RESOLVES on the default
+  # branch — dispatching it against a feature branch is a flat 404. A
+  # schedule-only gate would sit unrun for a whole release cycle,
+  # reading as coverage while being none.
+  pull_request:
+    branches: [dev]
+  workflow_dispatch:
+    inputs:
+      grace-hours:
+        description: "How long main may sit ahead of dev before it is an error."
+        required: false
+        default: "24"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-backmerge
+  cancel-in-progress: false
+
+jobs:
+  backmerge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Fetch both branch tips
+        # checkout leaves us on one ref; the check needs both, by their
+        # remote-tracking names.
+        run: |
+          git fetch --no-tags origin \
+            +refs/heads/main:refs/remotes/origin/main \
+            +refs/heads/dev:refs/remotes/origin/dev
+      - name: Assert main is contained in dev
+        env:
+          BACKMERGE_GRACE_HOURS: ${{ inputs.grace-hours || '24' }}
+          # Advisory on PRs, enforcing on the schedule. The script owns
+          # the difference — including that advisory ignores the grace
+          # window, because the fresh divergence the schedule stays
+          # quiet about is exactly the one a PR must be warned about.
+          BACKMERGE_ADVISORY: ${{ github.event_name == 'pull_request' && '1' || '' }}
+        run: bash scripts/check-release-backmerge.sh

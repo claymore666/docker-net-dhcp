@@ -8,12 +8,13 @@ package integration
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/claymore666/docker-net-dhcp/test/integration/harness"
 	"time"
 )
 
@@ -50,52 +51,11 @@ import (
 // plugin live on the same daemon, would mean two instances
 // re-DISCOVERing the same endpoints. The daemon contract under test
 // does not care what the plugin is called; the blast radius does.
-// pluginBuildDirs are the directories a lane may have built its plugin
-// rootfs into. `make plugin` produces the first; `make plugin-cover`,
-// which the coverage lane runs instead, produces the second.
-//
-// This test packages a THROWAWAY plugin from whichever rootfs is
-// present, so either serves — it exercises the daemon's bind-source
-// contract, not the binary inside.
-//
-// Listed here rather than passed in by the workflow deliberately. A
-// value the test needs and a workflow that supplies it are two things
-// that drift apart, and the drift is invisible until the lane that
-// needed it runs — which for coverage is once per release. #500's test
-// went one whole release cycle failing in the coverage lane for exactly
-// that reason, green on every PR the entire time.
-var pluginBuildDirs = []string{"plugin", "plugin-cover"}
-
-// builtPluginDir returns the first built rootfs it finds, or an error
-// naming everywhere it looked.
-//
-// PLUGIN_BUILD_DIR overrides the search when a caller knows better.
-// There is deliberately no "skip if absent" path: a missing rootfs
-// means this test did not run, and a test that quietly does not run is
-// the failure mode the STATE_DIR contract exists to prevent.
-func builtPluginDir(t *testing.T) (string, error) {
-	t.Helper()
-	root := repoRoot(t)
-
-	candidates := pluginBuildDirs
-	if override := os.Getenv("PLUGIN_BUILD_DIR"); override != "" {
-		candidates = []string{override}
-	}
-
-	tried := make([]string, 0, len(candidates))
-	for _, name := range candidates {
-		dir := filepath.Join(root, name)
-		if _, err := os.Stat(filepath.Join(dir, "rootfs")); err == nil {
-			return dir, nil
-		}
-		tried = append(tried, dir)
-	}
-	return "", fmt.Errorf("no built plugin rootfs in any of %s\n"+
-		"This test packages a throwaway plugin from the rootfs the runner already built. "+
-		"Run `make plugin` (or the usual `make integration-local`, which does) first; "+
-		"the coverage lane builds `make plugin-cover` instead.", strings.Join(tried, ", "))
-}
-
+// The rootfs comes from harness.BuiltPluginDir — the ONE place the
+// lanes' build directories are named (#583). This test used to carry
+// its own list, and before that a single hard-coded PR-lane path,
+// which is how it was born broken in the coverage lane and stayed
+// green for a whole release cycle (#541, #582).
 func TestStateDirBindSource_MissingSourceContract(t *testing.T) {
 	// The in-plugin mount point, i.e. the mounts[] entry whose source
 	// this test redirects. Must match config.json.
@@ -105,7 +65,7 @@ func TestStateDirBindSource_MissingSourceContract(t *testing.T) {
 	defer cancel()
 
 	root := repoRoot(t)
-	srcPlugin, err := builtPluginDir(t)
+	srcPlugin, err := harness.BuiltPluginDir()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -251,26 +211,14 @@ func TestStateDirBindSource_MissingSourceContract(t *testing.T) {
 	}
 }
 
-// repoRoot walks up from the test's working directory to the module
-// root. `go test` runs the binary in its package directory, but the
-// suite is also run through several make targets and from shard jobs,
-// so deriving the root rather than assuming "../.." keeps it honest.
+// repoRoot is harness.RepoRoot with the test's failure semantics.
 func repoRoot(t *testing.T) string {
 	t.Helper()
-	dir, err := os.Getwd()
+	root, err := harness.RepoRoot()
 	if err != nil {
-		t.Fatalf("getwd: %v", err)
+		t.Fatalf("repo root: %v", err)
 	}
-	for {
-		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-			return dir
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			t.Fatalf("no go.mod above the test working directory")
-		}
-		dir = parent
-	}
+	return root
 }
 
 // copyPluginPackage clones the built plugin package into dst. Hardlinks

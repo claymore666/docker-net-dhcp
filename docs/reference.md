@@ -91,14 +91,14 @@ The plugin publishes to two registries; GHCR is primary:
 - `ghcr.io/claymore666/docker-net-dhcp:vX.Y.Z` (primary)
 - `claymore666/net-dhcp:vX.Y.Z` (Docker Hub mirror)
 
-Published builds are **`linux/amd64` only**, and this is a constraint of
-Docker plugins rather than a choice about which architectures to build:
-a plugin cannot be installed from a multi-architecture manifest list at
-all, and `docker plugin install` has no `--platform` to steer one. An
-index fails with `did not find plugin config for specified reference`
-for every architecture, including the one you are on. arm64 therefore
-needs a tag of its own — tracked in
-[#507](https://github.com/claymore666/docker-net-dhcp/issues/507). The
+Published builds: **`linux/amd64`** on the bare tag and
+**`linux/arm64`** as `:vX.Y.Z-arm64` / `:latest-arm64` (v1.7.0 onward).
+The architecture lives in the tag because a Docker plugin cannot be
+installed from a multi-architecture manifest list at all, and
+`docker plugin install` has no `--platform` to steer one — an index
+fails with `did not find plugin config for specified reference` for
+every architecture, including the one you are on. On arm64, substitute
+the `-arm64` tag in the install line below; nothing else differs. The
 README covers the daemon-side reason in full.
 
 **Install** (interactive privilege grant, or `--grant-all-permissions`
@@ -110,7 +110,7 @@ for unattended):
 # for you, and `plugin install` fails with a mount error if it is
 # missing — see "If the directory is missing" below.
 sudo mkdir -p /var/lib/net-dhcp
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.6.0
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.7.0
 ```
 
 **If the directory is missing**, the install pulls the plugin, then
@@ -124,7 +124,7 @@ plugin that is already there:
 
 ```bash
 sudo mkdir -p /var/lib/net-dhcp
-docker plugin enable ghcr.io/claymore666/docker-net-dhcp:v1.6.0
+docker plugin enable ghcr.io/claymore666/docker-net-dhcp:v1.7.0
 ```
 
 Nothing is lost or corrupted by the failed install. (Behaviour verified
@@ -245,7 +245,7 @@ You bring an existing Linux bridge that is L2-connected to the LAN
 (see [`bridge-mode.md`](bridge-mode.md) for the bridge setup itself):
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.6.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.7.0 \
     --ipam-driver null \
     -o bridge=my-bridge \
     my-dhcp-net
@@ -257,7 +257,7 @@ No host changes — containers get per-container kernel-generated MACs
 as macvlan children of a host NIC:
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.6.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.7.0 \
     --ipam-driver null \
     -o mode=macvlan -o parent=eth0 \
     lan-dhcp
@@ -271,7 +271,7 @@ security, hostile vSwitches, some Wi-Fi APs). The DHCP server must
 key reservations on DHCP option 61 (client identifier), not MAC:
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.6.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.7.0 \
     --ipam-driver null \
     -o mode=ipvlan -o parent=eth0 \
     lan-dhcp
@@ -547,7 +547,7 @@ Runs a second persistent client (`dhcpcd -6`) alongside the v4 one —
 not work with the null IPAM driver and is not what you want:
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.6.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.7.0 \
     --ipam-driver null \
     -o mode=macvlan -o parent=eth0 -o ipv6=true \
     lan-dhcp6
@@ -638,7 +638,7 @@ without it `curl -s` swallows the permission error and prints nothing,
 which looks exactly like a dead endpoint:
 
 ```bash
-PLUGIN_ID=$(docker plugin inspect -f '{{.Id}}' ghcr.io/claymore666/docker-net-dhcp:v1.6.0)
+PLUGIN_ID=$(docker plugin inspect -f '{{.Id}}' ghcr.io/claymore666/docker-net-dhcp:v1.7.0)
 sudo curl -s --unix-socket /run/docker/plugins/$PLUGIN_ID/net-dhcp.sock \
     http://localhost/Plugin.Health | jq .
 ```
@@ -683,14 +683,14 @@ diagnosing a specific container from them alone is not.
 | `lease_release_failures` | no | Teardown DHCPRELEASE didn't complete cleanly — the server may hold a phantom lease until natural expiry. A pattern points at upstream reachability problems mid-teardown. |
 | `naks_received` | no | (v1.0.0+) The server NAKed a renewal/rebind (v4+v6 aggregate). `dhcpcd` recovers by re-acquiring, so each NAK is typically followed by `leases_obtained` — and, if the address moved, `lease_changed` — bumps. Climbing alongside `lease_changed` means containers are being re-addressed mid-life. |
 | `displaced_stops` | no | (v1.3.5+) Attaches that found a manager already registered for the same endpoint and stopped it — a container restarting into a plugin that had already recovered it (#338). The displaced client is released cleanly and the new one takes over, so a few are normal after a plugin restart. Climbing steadily alongside `recovered_ok` means a container is in a restart loop. |
-| `orphaned_leases_released` | no | (v1.3.6+) Leases reclaimed for a container that exited before its renewal client could attach (#370). The address is acquired during endpoint setup and deliberately held for the handover; when the handover never happens, the plugin synthesises a release instead of letting the address sit until it expires. A steady trickle is normal wherever short-lived containers run. |
+| `orphaned_leases_released` | no | (v1.3.6+) Leases reclaimed for a container that exited before its renewal client could attach (#370) — one count per address, so a dual-stack endpoint that orphaned both of its addresses counts twice (v1.7.0+, #608; before that only the IPv4 address was ever reclaimed). The address is acquired during endpoint setup and deliberately held for the handover; when the handover never happens, the plugin synthesises a release instead of letting the address sit until it expires. A steady trickle is normal wherever short-lived containers run. |
 | `restart_link_up_waited` | no | (v1.5.0+) Child links that came up only after waiting out the departing link's hold on the address — i.e. how often a container restart met the #408 window and the fix carried it. Not a fault: this is the repair working, counted so the window is visible rather than inferred. A steady rise means your hosts restart containers fast enough to hit it routinely, which is expected for images that handle `SIGTERM` promptly. |
 | `restart_link_up_timeouts` | no | (v1.5.0+) The same wait outlasting its budget: the restart fails and `docker restart` reports `address already in use`. A real failure, but deliberately not `healthy`-affecting — it surfaces directly to whoever ran the command, and `healthy` is for faults nothing else reports. Any non-zero value here is worth investigating; it means the departing link held the address longer than the budget allows (#422). |
 | `orphaned_lease_release_failures` | no | (v1.3.6+) A reclaim above that could not be completed — the address stays held upstream until its own expiry, exactly as it did before the reclaim existed. Read as a rate against `orphaned_leases_released`: a few failures are transient upstream trouble, a ratio near 1 means the reclaim path itself is broken (no route to the segment, server refusing the synthesised client). Not `healthy`-affecting, which is worth knowing when reading it: this counter can climb on every container without turning anything red, and did (#402). |
 | `parent_link_waits` | no | (v1.6.0+) Operations that had to queue for a shared parent interface before attaching their own link. A parent NIC can be a macvlan port or an ipvlan port but never both, so when networks of both kinds share one parent — or when a lease reclaim still has its temporary link attached — the plugin serialises them per parent rather than letting the kernel refuse one with `device or resource busy` (#486, #549). Queuing is the mechanism working; a steady rise just means that NIC is busy. |
 | `parent_link_wait_timeouts` | no | (v1.6.0+) The same wait giving up after its budget, after which the operation asks the kernel anyway and may fail with `device or resource busy`. Deliberately bounded well below the reclaim's own budget so a wedged reclaim degrades to the pre-v1.6.0 behaviour instead of stalling a container start. Not `healthy`-affecting, but the actionable one of the pair: any non-zero value means something held a parent far longer than a DHCP round trip should take, and container starts on that NIC were refused as a result. |
 | `ledger_write_failures` | no | Failed `audit_log` ledger appends — degrades forensics, not networking. Operators using `audit_log` alert on this. |
-| `lease_changed_v6`, `leases_obtained_v6`, `leases_renewed_v6`, `dhcp_timeouts_v6`, `naks_received_v6` | no | (v1.2.0+) The IPv6-only share of the matching aggregate above (#212). Each counts only the v6 client's events; the v4 share is the aggregate minus its `*_v6`. On a dual-stack host this isolates the v6-specific NAK/timeout signal the aggregate hides. `lease_release_failures` and `ledger_write_failures` have no per-family split. |
+| `lease_changed_v6`, `leases_obtained_v6`, `leases_renewed_v6`, `dhcp_timeouts_v6`, `naks_received_v6` | no | (v1.2.0+) The IPv6-only share of the matching aggregate above (#212). Each counts only the v6 client's events; the v4 share is the aggregate minus its `*_v6`. On a dual-stack host this isolates the v6-specific NAK/timeout signal the aggregate hides. `lease_release_failures_v6` (v1.7.0+, #608) joins the split with the same rule; `ledger_write_failures` has no per-family split. |
 
 ### Verifying that renewal works
 
@@ -794,7 +794,7 @@ Compose-managed alternative (network lifecycle tied to the project):
 ```yaml
 networks:
   lan:
-    driver: ghcr.io/claymore666/docker-net-dhcp:v1.6.0
+    driver: ghcr.io/claymore666/docker-net-dhcp:v1.7.0
     driver_opts:
       mode: macvlan
       parent: eth0
