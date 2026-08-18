@@ -14,15 +14,20 @@ links here rather than repeating them.
 | artifact | what it is |
 | --- | --- |
 | `net-dhcp-plugin-vX.Y.Z-linux-amd64.tar.gz` | the plugin rootfs + `config.json`, `linux/amd64` |
-| `checksums.txt` | SHA-256 of every attached artifact |
+| `checksums.txt` | SHA-256 of every attached amd64 artifact |
 | `checksums.txt.sigstore.json` | the cosign bundle signing `checksums.txt` |
 | `sbom.spdx.json` | SBOM, SPDX format |
 | `sbom.cdx.json` | SBOM, CycloneDX format |
+| `net-dhcp-plugin-vX.Y.Z-linux-arm64.tar.gz` | the same for `linux/arm64` (v1.7.0 onward) |
+| `checksums-arm64.txt`, `checksums-arm64.txt.sigstore.json` | the arm64 checksum manifest and its cosign bundle |
+| `sbom-arm64.spdx.json`, `sbom-arm64.cdx.json` | the arm64 SBOMs |
 
 The plugin image itself lives at
 `ghcr.io/claymore666/docker-net-dhcp:vX.Y.Z` (mirrored to Docker Hub as
 `claymore666/net-dhcp`), is cosign-signed, and carries SLSA build
-provenance.
+provenance. The arm64 image is the same at `:vX.Y.Z-arm64`; every
+verification step below applies to it with the `-arm64` tag and the
+`-arm64` artifact names substituted.
 
 One signature covers every attached file: `checksums.txt` is signed, and
 the checksums inside it cover the artifacts. So verifying the manifest

@@ -173,8 +173,23 @@ git checkout main && git pull --ff-only      # the release commit
 git tag -s v1.0.0-rc1 -m "v1.0.0-rc1" && git push origin v1.0.0-rc1
 ```
 
-Watch the run; every step including **verify-install** must be
-green. The rc window is the **enforcement gate** for the
+Watch the run; every step including **verify-install** and, since
+v1.7.0, **release-arm64** / **verify-install-arm64** must be green.
+
+**The rc window is also when the arm64 integration lane runs** (#531).
+It is dispatch-only and must run only against release candidates: the
+arm64 runner pool it targets (label `dhcp-ci-arm64`) is provided for
+that window, not for day-to-day PRs. Once the rc tag exists:
+
+```sh
+gh workflow run integration-arm64.yml --ref vX.Y.Z-rcN
+```
+
+Its `arm64-suite` job must be green before the real tag. A job that
+sits queued means no arm64 runner is online — that is a "bring the
+pool up" question for whoever runs it, not a CI outage.
+
+The rc window is the **enforcement gate** for the
 documentation review (procedure step 3): every PR on the milestone
 must be reconciled against README, `docs/`, and the RELEASE_NOTES
 section, and they must describe the version about to ship — if
