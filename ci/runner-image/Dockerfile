@@ -54,6 +54,15 @@ ARG TARGETARCH
 # either; the fixtures spawn them directly on veth pairs. dnsmasq comes
 # out once the fixture no longer references it, not before.
 #
+# chmod 0755 /etc/kea:
+# the package ships it 0750 _kea:_kea, and Debian's AppArmor profile for
+# /usr/sbin/kea-dhcp4 denies dac_override/dac_read_search. kea runs as root
+# here, so root cannot traverse a 0750 directory it does not own and every
+# config read fails with a misleading "Unable to open file". The profile is
+# loaded from the HOST and attaches on exec even under --privileged, so this
+# bites on any host with kea installed natively and on none without it --
+# which is why CI never saw it.
+#
 # iputils-ping:
 # the failure-injection suite's L2-reachability check shells out to
 # `ping` on the runner host (failure_test.go, TestFailure_LeaseExpiry);
@@ -67,6 +76,7 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
          > /etc/apt/sources.list.d/docker.sources \
     && apt-get update && apt-get install -y --no-install-recommends \
         docker-ce docker-ce-cli containerd.io docker-buildx-plugin \
+    && chmod 0755 /etc/kea \
     && rm -rf /var/lib/apt/lists/*
 
 # Go toolchain, same procedure as test/integration/install-go-runner.sh.
