@@ -8,6 +8,7 @@ import (
 	"errors"
 	"net"
 	"os"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -530,6 +531,105 @@ func TestStop_NeverBoundIsNotReclaimedUnlessLeaving(t *testing.T) {
 				t.Errorf("ledger recorded %q for %s on a client that never bound", e.Kind, e.IP)
 			}
 		}
+	}
+}
+
+// TestStop_NeverBoundClientKilledBySignalIsStillNeverBound covers the
+// case #558 left behind, which shipped as a lease leak (#607).
+//
+// The #549 tests above all model a client that exits cleanly, and the
+// code they pinned read the exit error FIRST — so it only ever reached
+// the never-bound branch when errV4 was nil. dhcpcd exits 0 on SIGTERM
+// once it has installed its handler; signalled before that it dies ON
+// the signal and Finish reaps an exit status instead. A Leave that
+// arrives immediately after Join produces exactly that, and the lease
+// was then classified as a failed release and never reclaimed.
+//
+// The exit status is not evidence of anything here: we sent that
+// SIGTERM. What decides the outcome is that the client never held a
+// binding, so it cannot have failed to release one.
+//
+// Both `leaving` values are asserted, because the fix must not widen
+// the reclaim's blast radius while it is widening its reach — see
+// TestStop_NeverBoundIsNotReclaimedUnlessLeaving for why a wrong
+// reclaim is worse than a missed one.
+func TestStop_NeverBoundClientKilledBySignalIsStillNeverBound(t *testing.T) {
+	// Stands in for the *exec.ExitError that Finish reaps when dhcpcd
+	// dies on the signal. The production path distinguishes nothing
+	// beyond non-nil, so the concrete type is not what is under test —
+	// the string is the one operators see in the plugin log.
+	errSignalled := errors.New("signal: terminated")
+
+	for _, tc := range []struct {
+		name        string
+		leaving     bool
+		wantReclaim int32
+		// The ledger cannot tell these two writers apart on its own: an
+		// unfixed stop() writes release_failed here, and so does a
+		// reclaim that could not reach the wire. wantReclaim is what
+		// separates them, and it is the assertion that goes red on the
+		// bug. The kinds are asserted alongside it so a fix that
+		// reclaims AND still audits from stop() is caught too.
+		wantKinds []string
+	}{
+		{
+			name:    "leaving reclaims the lease nobody took",
+			leaving: true, wantReclaim: 1,
+			wantKinds: []string{"release_failed"}, // the reclaim's own, honest: not handed back
+		},
+		{
+			name:    "not leaving leaves a live container's address alone",
+			leaving: false, wantReclaim: 0,
+			wantKinds: nil,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var ledgerFailures atomic.Int32
+			p := &Plugin{}
+			p.ledger = testLedger(t, &ledgerFailures)
+
+			// As in the #549 test: no parent and no bridge, so the
+			// reclaim cannot reach the wire and lands on
+			// orphanedLeaseReleaseFailures. That it ran at all is the
+			// fact under test.
+			m := releasingManager(t, p, DHCPNetworkOptions{AuditLog: true}, errSignalled, nil)
+			m.boundV4.Store(false)
+
+			err := m.stop(tc.leaving)
+			// Errorf, not Fatalf: the reclaim assertion below is the
+			// one that fails on the leak itself, and a run that stopped
+			// here would hide it behind the cosmetic half.
+			if err != nil {
+				t.Errorf("stop(%v) = %v, want nil — we sent the SIGTERM and the "+
+					"lease was handled, so nothing failed; returning this is what "+
+					"made Leave answer 500 for a correct teardown", tc.leaving, err)
+			}
+			p.orphanReleases.Wait()
+
+			if got := p.orphanedLeaseReleaseFailures.Load(); got != tc.wantReclaim {
+				t.Errorf("reclaim ran %d time(s), want %d — the client died on the "+
+					"signal before it bound, which does not change what is owed",
+					got, tc.wantReclaim)
+			}
+			if got := p.leaseReleaseFailures.Load(); got != 0 {
+				t.Errorf("leaseReleaseFailures = %d, want 0 — no client we were "+
+					"running failed to hand a lease back; none ever held one", got)
+			}
+
+			var kinds []string
+			if _, err := os.Stat(p.ledger.path); !os.IsNotExist(err) {
+				for _, e := range readLedgerLines(t, p.ledger.path) {
+					kinds = append(kinds, e.Kind)
+					if e.Kind == "release" {
+						t.Errorf("ledger recorded %q for %s, but the client never held "+
+							"a binding, so no DHCPRELEASE was ever sent", e.Kind, e.IP)
+					}
+				}
+			}
+			if !slices.Equal(kinds, tc.wantKinds) {
+				t.Errorf("ledger kinds = %v, want %v", kinds, tc.wantKinds)
+			}
+		})
 	}
 }
 
