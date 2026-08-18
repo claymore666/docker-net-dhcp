@@ -54,10 +54,10 @@ func BuiltPluginDir() (string, error) {
 		}
 		tried = append(tried, dir)
 	}
-	return "", fmt.Errorf("no built plugin rootfs in any of %s\n"+
-		"Tests that package a throwaway plugin use the rootfs the runner already built. "+
-		"Run `make plugin` (or the usual `make integration-local`, which does) first; "+
-		"the coverage lane builds `make plugin-cover` instead. Set %s to point elsewhere.",
+	return "", fmt.Errorf("no built plugin rootfs in any of %s — "+
+		"tests that package a throwaway plugin use the rootfs the runner already built; "+
+		"run `make plugin` (or the usual `make integration-local`, which does) first, "+
+		"the coverage lane builds `make plugin-cover` instead, or set %s to point elsewhere",
 		strings.Join(tried, ", "), PluginBuildDirEnv)
 }
 
