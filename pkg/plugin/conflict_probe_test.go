@@ -211,8 +211,17 @@ func TestNewProbeLinkLocal(t *testing.T) {
 		if ip[2] == 0 || ip[2] == 255 || ip[3] == 0 || ip[3] == 255 {
 			t.Errorf("address %v falls in a reserved or non-host range", ip)
 		}
-		if ones, bits := a.IPNet.Mask.Size(); ones != 16 || bits != 32 {
-			t.Errorf("mask is /%d of %d, want /16 of 32", ones, bits)
+		// /32, not /16 (#575): with a shared /16 the second concurrent
+		// probe's source is a secondary address of the first's, and
+		// deleting the primary takes the secondary and its route with
+		// it wherever promote_secondaries is off — a fresh network
+		// namespace, i.e. every nested-Docker runner. Two probes
+		// overlapping on an address-less parent then unpicked each
+		// other's egress mid-probe. A /32 has no subnet to be secondary
+		// in.
+		if ones, bits := a.IPNet.Mask.Size(); ones != 32 || bits != 32 {
+			t.Errorf("mask is /%d of %d, want /32 of 32 — a shared prefix makes concurrent "+
+				"probes' sources primary/secondary of each other, and deleting one deletes the other", ones, bits)
 		}
 		seen[ip.String()]++
 	}
