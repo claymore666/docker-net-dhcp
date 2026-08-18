@@ -153,7 +153,11 @@ exited cleanly). The address was won regardless, by the one-shot at
 
 The plugin then **reclaims**: a temporary child of the network's kind,
 re-acquire the same address under the endpoint's identity, release it
-properly. Counted by `orphaned_leases_released` and
+properly. Per family — a dual-stack endpoint hands back exactly the
+addresses whose client never bound, IPv4 via the client-id, IPv6 via
+the same DUID and IAID the endpoint used (v1.7.0+, #608; before that
+the IPv6 half was leaked and the ledger wrote it up as released).
+Counted by `orphaned_leases_released` and
 `orphaned_lease_release_failures`, and written to the audit ledger.
 
 **The scoping is load-bearing.** It fires when an endpoint *leaves*, not

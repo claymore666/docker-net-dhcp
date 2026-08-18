@@ -507,3 +507,124 @@ func TestOrphanedLease_ReleasedInIpvlanMode(t *testing.T) {
 
 	awaitReleaseLinksGone(t)
 }
+
+// TestOrphanedLease_DualStackReleasesBothFamilies is the IPv6 half of
+// TestOrphanedLease_ReleasedWhenContainerExitsEarly (#608).
+//
+// A dual-stack endpoint's one-shot takes two addresses. Until #608 an
+// orphan handed back only the IPv4 one: the reclaim worked from the v4
+// address alone, and the ledger wrote the v6 address up as released on
+// the strength of the v6 client's clean exit — a claim about a DHCPv6
+// RELEASE the server never received. Both halves are asserted here on
+// the server's own log, per address, because a counter is exactly what
+// let the v6 leak stay invisible: the plugin's counters and ledger read
+// clean the whole time.
+//
+// Same construction as the v4 test — a real sandbox, an endpoint no
+// container claims — so the only thing that differs is `ipv6=true`.
+func TestOrphanedLease_DualStackReleasesBothFamilies(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	const (
+		netName   = "dh-itest-orphan6"
+		holderCtr = "dh-itest-orphan6-holder"
+	)
+
+	t.Cleanup(func() {
+		if t.Failed() {
+			fixture.DumpLogs(func(s string) { t.Log(s) })
+			harness.DumpPluginLog(t)
+		}
+	})
+
+	netID := harness.CreateNetwork(t, ctx, netName, "macvlan", map[string]string{"ipv6": "true"})
+
+	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	if err != nil {
+		t.Fatalf("docker client: %v", err)
+	}
+	t.Cleanup(func() { _ = cli.Close() })
+
+	holderID, _, _ := harness.RunContainer(t, ctx, netName, holderCtr)
+	sandboxKey := harness.LiveSandboxKey(t, ctx, cli, holderID)
+
+	drv := harness.NewDriverClient(t, ctx, cli)
+
+	w := harness.BeginCounterWindow(t, ctx, cli, "orphaned_leases_released")
+	before := w.Before()
+
+	endpointID := harness.NewEndpointID(t)
+	addrs, err := drv.CreateEndpoint(ctx, netID, endpointID)
+	if err != nil {
+		t.Fatalf("CreateEndpoint: %v", err)
+	}
+	t.Cleanup(func() { drv.CleanupEndpoint(netID, endpointID) })
+
+	ip4 := addressOnly(addrs.Address)
+	ip6 := addressOnly(addrs.AddressIPv6)
+	if ip4 == "" || ip6 == "" {
+		t.Fatalf("CreateEndpoint returned v4=%q v6=%q; want both families leased", addrs.Address, addrs.AddressIPv6)
+	}
+
+	// Both addresses must actually have been leased by the server, or
+	// the release assertions below would be about addresses it never
+	// handed out. dnsmasq logs the v6 grant as DHCPREPLY.
+	if got := fixture.CountLogLines("DHCPACK", ip4); got < 1 {
+		t.Fatalf("dnsmasq logged no DHCPACK for %s; the v4 lease was never taken", ip4)
+	}
+	if got := fixture.CountLogLines("DHCPREPLY", ip6); got < 1 {
+		t.Fatalf("dnsmasq logged no DHCPREPLY for %s; the v6 lease was never taken", ip6)
+	}
+	// dnsmasq logs a v4 release by address and a v6 release by the
+	// client's DUID — `DHCPRELEASE(iface) 00:03:00:01:<mac>` — because a
+	// DHCPv6 RELEASE frees the whole binding of that identity, not one
+	// address. The DUID-LL is the endpoint's MAC, which is exactly the
+	// identity the reclaim has to reproduce (a synthetic link MAC would
+	// produce a different DUID and free nothing), so keying on it is
+	// keying on the thing under test.
+	duid6 := "00:03:00:01:" + strings.ToLower(addrs.MacAddress)
+	rel4Before := fixture.CountLogLines("DHCPRELEASE", ip4)
+	rel6Before := fixture.CountLogLines("DHCPRELEASE", duid6)
+
+	// Orphan it — see the v4 test for why a live sandbox and no
+	// container is the state being constructed.
+	if err := drv.Join(ctx, netID, endpointID, sandboxKey); err != nil {
+		t.Fatalf("Join(no container): %v", err)
+	}
+
+	// One reclaim, two releases: the counter is per address, so it must
+	// advance by two before the window closes.
+	after, _ := w.Await(2*orphanReleaseBudget, func(now, before *harness.HealthResponse) bool {
+		return now.OrphanedLeasesReleased-before.OrphanedLeasesReleased >= 2
+	})
+	w.End()
+
+	// Wire-side ground truth, per family and per address. The v6 line
+	// is the one #608 exists for: on unfixed code the plugin counts one
+	// release, the ledger says two, and dnsmasq has seen only the v4
+	// one.
+	deadline := time.Now().Add(orphanReleaseBudget)
+	for fixture.CountLogLines("DHCPRELEASE", ip4)-rel4Before < 1 ||
+		fixture.CountLogLines("DHCPRELEASE", duid6)-rel6Before < 1 {
+		if !time.Now().Before(deadline) {
+			t.Fatalf("dnsmasq DHCPRELEASE lines within %v: v4 %s +%d, v6 %s (DUID %s) +%d — want both ≥1; "+
+				"a family at 0 is a lease still held upstream with nobody responsible for it (#608)",
+				orphanReleaseBudget,
+				ip4, fixture.CountLogLines("DHCPRELEASE", ip4)-rel4Before,
+				ip6, duid6, fixture.CountLogLines("DHCPRELEASE", duid6)-rel6Before)
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+
+	if after == nil || after.OrphanedLeasesReleased-before.OrphanedLeasesReleased < 2 {
+		t.Fatalf("orphaned_leases_released advanced by %d, want 2 (one per family) — "+
+			"the server saw both releases but the plugin did not count them",
+			orphanedAfter(after)-before.OrphanedLeasesReleased)
+	}
+	if got := after.OrphanedLeaseReleaseFailures - before.OrphanedLeaseReleaseFailures; got != 0 {
+		t.Errorf("orphaned_lease_release_failures advanced by %d, want 0", got)
+	}
+
+	awaitReleaseLinksGone(t)
+}
