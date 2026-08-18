@@ -1178,7 +1178,11 @@ exited cleanly). The address was won regardless, by the one-shot at
 <code>CreateEndpoint</code>.</p>
 <p>The plugin then <strong>reclaims</strong>: a temporary child of the network's kind,
 re-acquire the same address under the endpoint's identity, release it
-properly. Counted by <code>orphaned_leases_released</code> and
+properly. Per family — a dual-stack endpoint hands back exactly the
+addresses whose client never bound, IPv4 via the client-id, IPv6 via
+the same DUID and IAID the endpoint used (v1.7.0+, #608; before that
+the IPv6 half was leaked and the ledger wrote it up as released).
+Counted by <code>orphaned_leases_released</code> and
 <code>orphaned_lease_release_failures</code>, and written to the audit ledger.</p>
 <p><strong>The scoping is load-bearing.</strong> It fires when an endpoint <em>leaves</em>, not
 on every manager shutdown — <code>Close</code> stops every manager on an upgrade or
