@@ -60,7 +60,7 @@ check() {
 }
 
 doc "v1.6.0" "$D_MAIN" "$D_HANDLER"
-check "matching digests and label pass" 0 "v1.6.0" "matches the published v1.6.0 binaries"
+check "matching digests and label pass" 0 "v1.6.0" "matches the published v1.6.0 amd64 binaries"
 
 # THE case from the issue: digests right, heading a release behind.
 doc "v1.5.0" "$D_MAIN" "$D_HANDLER"
@@ -96,6 +96,72 @@ $D_MAIN  net-dhcp
 \`\`\`
 EOF
 check "a half-present digest block exits 2" 2 "v1.6.0" "could not read both reference digests"
+
+# Per-arch blocks (#507). One doc, two labelled blocks with DIFFERENT
+# digests; each arch must read only its own block. The arm64 "digests"
+# are the amd64 pair reversed, so a scoping bug (whole-file grep takes
+# the first block for both arches) fails loudly rather than passing by
+# coincidence.
+doc2() {
+    cat > "$TMP/doc.md" <<EOF
+The two pairs of digests must match. For **v1.6.0** (\`linux/amd64\`) they are:
+
+\`\`\`
+$D_MAIN  net-dhcp
+$D_HANDLER  dhcp-handler
+\`\`\`
+
+The two pairs of digests must match. For **v1.6.0** (\`linux/arm64\`) they are:
+
+\`\`\`
+$D_HANDLER  net-dhcp
+$D_MAIN  dhcp-handler
+\`\`\`
+EOF
+}
+# check_arch NAME WANT_EXIT TAG ARCH GREP
+check_arch() {
+    local name="$1" want_exit="$2" tag="$3" arch="$4" want_grep="$5"
+    DIGEST_DOCS="$TMP/doc.md" bash "$CHECK" "$tag" \
+        "$TMP/net-dhcp" "$TMP/dhcp-handler" "$arch" > "$TMP/out" 2>&1
+    local got_exit=$?
+    local ok=1
+    [ "$got_exit" -eq "$want_exit" ] || ok=0
+    if [ -n "$want_grep" ] && ! grep -q -- "$want_grep" "$TMP/out"; then ok=0; fi
+    if [ "$ok" -eq 1 ]; then
+        echo "PASS: $name"
+    else
+        echo "FAIL: $name (want exit $want_exit/grep '$want_grep', got exit $got_exit)"
+        sed 's/^/    /' "$TMP/out"
+        failures=$((failures + 1))
+    fi
+}
+
+doc2
+check_arch "labelled amd64 block passes for amd64" 0 "v1.6.0" amd64 "matches the published v1.6.0 amd64"
+# The binaries carry D_MAIN/D_HANDLER; the arm64 block documents them
+# reversed, so a correctly-scoped arm64 read MUST mismatch. If it
+# passes, arm64 read the amd64 block — the scoping bug this guards.
+check_arch "the arm64 read is scoped to the arm64 block" 1 "v1.6.0" arm64 "net-dhcp digest in .* is stale"
+check_arch "an rc tag works against a labelled block" 0 "v1.6.0-rc1" amd64 "matches the published v1.6.0 amd64"
+
+doc "v1.6.0" "$D_MAIN" "$D_HANDLER"
+check_arch "a doc without an arm64 block exits 2 for arm64" 2 "v1.6.0" arm64 "no arm64 version label"
+check_arch "the unlabelled legacy block still counts as amd64" 0 "v1.6.0" amd64 "matches the published v1.6.0 amd64"
+
+# The corrected block a failure prints must carry the arch label, or
+# pasting it produces a doc the arm64 gate cannot find.
+doc2
+DIGEST_DOCS="$TMP/doc.md" bash "$CHECK" v1.6.0 "$TMP/net-dhcp" "$TMP/dhcp-handler" arm64 > "$TMP/out" 2>&1
+# The backticks are literal doc markup, not expansion.
+# shellcheck disable=SC2016
+if grep -q 'For \*\*v1.6.0\*\* (`linux/arm64`) they are' "$TMP/out"; then
+    echo "PASS: the corrected block is arch-labelled"
+else
+    echo "FAIL: the corrected block is arch-labelled"
+    sed 's/^/    /' "$TMP/out"
+    failures=$((failures + 1))
+fi
 
 # Usage / missing inputs.
 DIGEST_DOCS="$TMP/doc.md" bash "$CHECK" > "$TMP/out" 2>&1
