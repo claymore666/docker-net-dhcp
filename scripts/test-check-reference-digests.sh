@@ -190,21 +190,27 @@ else
     failures=$((failures + 1))
 fi
 
-# The committed doc must still be parseable by this checker, even though
-# its digests belong to whatever shipped last. Parse-only: a mismatch is
-# expected here and is not what this case is about.
+# The committed doc must still be parseable by this checker, for BOTH
+# architectures, even though its digests belong to whatever shipped
+# last. Exercised through the checker itself rather than a private copy
+# of its parsing (the private copy went stale the first time the format
+# grew an arch label — exactly the drift this case exists to catch).
+# With throwaway binaries a parseable doc exits 1 (stale digests,
+# expected); only exit 2 means the checker can no longer see the block.
 REAL_DOC="$(dirname "$0")/../docs/verifying-releases.md"
 if [ -f "$REAL_DOC" ]; then
-    v=$(sed -n 's/.*For \*\*\(v[0-9][0-9.]*\)\*\* they are.*/\1/p' "$REAL_DOC" | head -1)
-    m=$(sed -n 's/^\([0-9a-f]\{64\}\)  *net-dhcp$/\1/p' "$REAL_DOC" | head -1)
-    h=$(sed -n 's/^\([0-9a-f]\{64\}\)  *dhcp-handler$/\1/p' "$REAL_DOC" | head -1)
-    if [ -n "$v" ] && [ -n "$m" ] && [ -n "$h" ]; then
-        echo "PASS: the committed doc is parseable (label $v)"
-    else
-        echo "FAIL: the committed doc is not parseable by this checker"
-        echo "    label='$v' net-dhcp='$m' dhcp-handler='$h'"
-        failures=$((failures + 1))
-    fi
+    for arch in amd64 arm64; do
+        DIGEST_DOCS="$REAL_DOC" bash "$CHECK" v0.0.1 \
+            "$TMP/net-dhcp" "$TMP/dhcp-handler" "$arch" > "$TMP/out" 2>&1
+        rc=$?
+        if [ "$rc" -eq 2 ]; then
+            echo "FAIL: the committed doc is not parseable for $arch"
+            sed 's/^/    /' "$TMP/out"
+            failures=$((failures + 1))
+        else
+            echo "PASS: the committed doc is parseable for $arch"
+        fi
+    done
 fi
 
 if [ "$failures" -eq 0 ]; then
