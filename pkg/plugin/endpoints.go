@@ -478,6 +478,10 @@ type HealthResponse struct {
 	LeasesRenewedV6  int32 `json:"leases_renewed_v6"`
 	DHCPTimeoutsV6   int32 `json:"dhcp_timeouts_v6"`
 	NAKsReceivedV6   int32 `json:"naks_received_v6"`
+	// LeaseReleaseFailuresV6 is the v6 share of LeaseReleaseFailures
+	// (#608): the persistent DHCPv6 client held a binding and its
+	// SIGTERM-driven RELEASE did not complete cleanly.
+	LeaseReleaseFailuresV6 int32 `json:"lease_release_failures_v6"`
 }
 
 func (p *Plugin) apiHealth(w http.ResponseWriter, r *http.Request) {
@@ -542,5 +546,6 @@ func (p *Plugin) apiHealth(w http.ResponseWriter, r *http.Request) {
 		LeasesRenewedV6:              p.leasesRenewedV6.Load(),
 		DHCPTimeoutsV6:               p.dhcpTimeoutsV6.Load(),
 		NAKsReceivedV6:               p.naksReceivedV6.Load(),
+		LeaseReleaseFailuresV6:       p.leaseReleaseFailuresV6.Load(),
 	}, http.StatusOK)
 }

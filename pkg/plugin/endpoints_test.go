@@ -130,6 +130,8 @@ func TestApiHealth_PerFamilyCounters(t *testing.T) {
 	p.dhcpTimeoutsV6.Add(1)
 	p.leaseChanged.Add(4)
 	p.leaseChangedV6.Add(4)
+	p.leaseReleaseFailures.Add(2)
+	p.leaseReleaseFailuresV6.Add(1)
 
 	req := httptest.NewRequest(http.MethodGet, "/Plugin.Health", nil)
 	rec := httptest.NewRecorder()
@@ -148,9 +150,12 @@ func TestApiHealth_PerFamilyCounters(t *testing.T) {
 	if got.LeaseChanged != 4 || got.LeaseChangedV6 != 4 {
 		t.Errorf("lease_changed: aggregate=%d v6=%d, want 4 and 4", got.LeaseChanged, got.LeaseChangedV6)
 	}
+	if got.LeaseReleaseFailures != 2 || got.LeaseReleaseFailuresV6 != 1 {
+		t.Errorf("lease_release_failures: aggregate=%d v6=%d, want 2 and 1", got.LeaseReleaseFailures, got.LeaseReleaseFailuresV6)
+	}
 
 	// Pin the wire keys so the field names don't silently drift.
-	for _, key := range []string{"naks_received_v6", "dhcp_timeouts_v6", "leases_obtained_v6", "leases_renewed_v6", "lease_changed_v6"} {
+	for _, key := range []string{"naks_received_v6", "dhcp_timeouts_v6", "leases_obtained_v6", "leases_renewed_v6", "lease_changed_v6", "lease_release_failures_v6"} {
 		if !strings.Contains(rec.Body.String(), key) {
 			t.Errorf("Health JSON missing %q field", key)
 		}

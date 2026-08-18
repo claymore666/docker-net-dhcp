@@ -68,14 +68,48 @@ const orphanReleaseBudget = 20 * time.Second
 // Best-effort by construction — it is called after the endpoint is
 // already gone, so there is no caller to fail. Outcomes land on the
 // health counters instead.
+//
+// # Both families
+//
+// A dual-stack endpoint's one-shot takes two addresses, and either
+// persistent client can be the one that never bound — a v4 client can
+// have taken over while its v6 sibling was still soliciting when the
+// container went away. So this runs per family, and reclaims exactly
+// the families whose client never held the binding (boundV4 / boundV6):
+// a family that did bind has already been released by dhcpcd's own
+// `release` directive, and releasing it again would tear down an
+// address the server may since have handed to someone else. Until #608
+// only v4 was ever handed back; the v6 half of every orphan was simply
+// leaked.
+//
+// The families are done one after the other rather than concurrently:
+// each holds the parent gate for its own reacquire, and the whole thing
+// runs off the teardown path with nothing user-visible waiting on it.
 func (p *Plugin) releaseOrphanedLease(m *dhcpManager, endpointID string) {
-	v4, _ := m.lastIPs()
-	if v4 == nil || v4.IP == nil {
-		// Nothing was ever acquired (the one-shot itself failed), so
-		// there is no binding to hand back.
-		return
+	v4, v6 := m.lastIPs()
+	for _, fam := range []struct {
+		addr *netlink.Addr
+		v6   bool
+	}{{v4, false}, {v6, true}} {
+		if fam.addr == nil || fam.addr.IP == nil {
+			// Nothing was ever acquired for this family (the one-shot
+			// itself failed, or the network is single-stack), so there
+			// is no binding to hand back.
+			continue
+		}
+		if !m.neverBound(fam.v6) {
+			// This family's client took the binding over and released
+			// it itself on the way out.
+			continue
+		}
+		p.releaseOrphanedFamily(m, endpointID, fam.addr, fam.v6)
 	}
-	addr := v4.IP.String()
+}
+
+// releaseOrphanedFamily hands back one family's orphaned address and
+// records the outcome on the counters and the ledger.
+func (p *Plugin) releaseOrphanedFamily(m *dhcpManager, endpointID string, lease *netlink.Addr, v6 bool) {
+	addr := lease.IP.String()
 
 	fields := log.Fields{
 		"endpoint": shortID(endpointID),
@@ -85,7 +119,7 @@ func (p *Plugin) releaseOrphanedLease(m *dhcpManager, endpointID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), orphanReleaseBudget)
 	defer cancel()
 
-	if err := p.synthesiseRelease(ctx, m, v4); err != nil {
+	if err := p.synthesiseRelease(ctx, m, lease, v6); err != nil {
 		p.orphanedLeaseReleaseFailures.Add(1)
 		// Same ledger vocabulary as an ordinary teardown, because the
 		// fact being recorded is the same one: this address was not
@@ -128,7 +162,9 @@ func (p *Plugin) spawnOrphanRelease(m *dhcpManager) {
 
 // synthesiseRelease does the work described on releaseOrphanedLease:
 // temporary link -> reacquire under the endpoint's identity -> release.
-func (p *Plugin) synthesiseRelease(ctx context.Context, m *dhcpManager, lease *netlink.Addr) error {
+// v6 selects the DHCPv6 client and identity; the link, the MAC plan and
+// the parent gate are the same in both families.
+func (p *Plugin) synthesiseRelease(ctx context.Context, m *dhcpManager, lease *netlink.Addr, v6 bool) error {
 	addr := lease.IP.String()
 
 	linkName, err := newReleaseLinkName()
@@ -198,25 +234,41 @@ func (p *Plugin) synthesiseRelease(ctx context.Context, m *dhcpManager, lease *n
 		return fmt.Errorf("assign %v to release link: %w", addr, err)
 	}
 
+	// The link's address and the DHCP identity are separate things,
+	// and only the identity has to be faithful — a release that matches
+	// no binding is silent, because dhcpcd reports a release it sent
+	// regardless of what it actually freed.
+	//
+	//   - v4: the server matches the binding on the client-id (option
+	//     61), which comes from m.clientID() — NOT from the local mac.
+	//     Since #371 the id is MAC-derived in every mode but ipvlan, and
+	//     the local mac may be a synthetic fallback; deriving the id
+	//     from it would build an identity the server has never seen.
+	//     The MAC handed to the client is whatever the link ended up
+	//     wearing (see releaseMACPlan); v4 ignores it for identity.
+	//   - v6: there is no client-id. The identity is the DUID-LL and
+	//     the pinned IAID, and dhcpcd derives both from the MAC option
+	//     (#152/#213). That MAC therefore has to be the endpoint's own —
+	//     the one the one-shot and the persistent client ran under —
+	//     whatever the release link wears; a synthetic fallback here
+	//     would produce a DUID the server has never seen and the IA_NA
+	//     would stay bound.
+	identityMAC := mac
+	// Ask for precisely the address we are trying to give back:
+	// `request ADDR` on v4, the IA_NA preferred address on v6.
+	requestedIP, preferredV6 := addr, ""
+	if v6 {
+		if hw := m.endpointMAC(); len(hw) > 0 {
+			identityMAC = hw
+		}
+		requestedIP, preferredV6 = "", addr
+	}
 	client, err := dhcp.NewDHCPClient(linkName, &dhcp.DHCPClientOptions{
-		// Whatever MAC the link ended up wearing — the endpoint's when it
-		// was free, a synthetic one when it was not (see releaseMACPlan).
-		// The link's address and the DHCP identity are separate: the
-		// server matches the binding on the client-id below, which is
-		// the same either way.
-		//
-		// That client-id comes from m.clientID(), NOT from the local mac
-		// above. Since #371 the id is MAC-derived in every mode but
-		// ipvlan, and the local mac may be a synthetic fallback —
-		// deriving the id from it would build an identity the server has
-		// never seen, so the release would match no binding. The failure
-		// would be silent, because dhcpcd reports a release it sent
-		// regardless of what it actually freed.
-		MAC:      mac,
-		ClientID: m.clientID(),
-		// `request ADDR`: ask for precisely the address we are trying
-		// to give back.
-		RequestedIP: addr,
+		V6:          v6,
+		MAC:         identityMAC,
+		ClientID:    m.clientID(),
+		RequestedIP: requestedIP,
+		PreferredV6: preferredV6,
 		VendorClass: m.opts.VendorClass,
 		// Not Once: only the persistent shape emits dhcpcd's `release`
 		// directive, which is the entire point of this exercise.
@@ -231,9 +283,10 @@ func (p *Plugin) synthesiseRelease(ctx context.Context, m *dhcpManager, lease *n
 	}
 
 	// Wait for the binding before signalling. dhcpcd only sends a
-	// DHCPRELEASE for a lease it currently holds, so a SIGTERM that
-	// arrives mid-DORA releases nothing and would report success
-	// against an address still held upstream.
+	// RELEASE for a lease it currently holds, so a SIGTERM that arrives
+	// mid-exchange releases nothing and would report success against an
+	// address still held upstream. Same for both families: the handler
+	// maps BOUND6/RENEW6 onto the same "bound"/"renew" events.
 	bound := false
 	for !bound {
 		select {
