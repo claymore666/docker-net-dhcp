@@ -1095,14 +1095,13 @@ problem. Two pieces are designed and blocked rather than unplanned —
 <a href="https://github.com/claymore666/docker-net-dhcp/issues/218">#218</a> (deterministic MAC) and <a href="https://github.com/claymore666/docker-net-dhcp/issues/219">#219</a> (client-id for ipvlan, where every
 child shares the parent's MAC). See <em>Blocked upstream</em> below.</p>
 <h3 id="3-arm64">3. arm64<a class="headerlink" href="#3-arm64" title="Permanent link">&para;</a></h3>
-<p>Users have asked for it and it works — a full-system arm64 VM runs all
-three attachment modes against real leases. What does not work is the
-obvious shipping shape: a Docker <em>plugin</em> cannot be installed from a
-multi-architecture manifest list at all, so arm64 needs per-architecture
-tags rather than a flag on the existing build (<a href="https://github.com/claymore666/docker-net-dhcp/issues/507">#507</a>, milestone
-v1.7.0). Timing behaviour — renewal, expiry, outage detection — stays
-unverified on arm64 until it runs on real hardware (<a href="https://github.com/claymore666/docker-net-dhcp/issues/531">#531</a>), because
-emulation slows the code without slowing the protocol's clocks.</p>
+<p>Users have asked for it and it works — proven on real hardware: a
+native arm64 CI runner executes the full integration suite, timing
+behaviour included, as a release-candidate gate (<a href="https://github.com/claymore666/docker-net-dhcp/issues/531">#531</a>). The shipping
+shape is per-architecture tags (<code>vX.Y.Z-arm64</code>, <code>latest-arm64</code>), first
+published with v1.7.0 (<a href="https://github.com/claymore666/docker-net-dhcp/issues/507">#507</a>) — a Docker <em>plugin</em> cannot be installed
+from a multi-architecture manifest list at all, so the architecture
+lives in the tag rather than in a manifest.</p>
 <h3 id="4-a-test-substrate-that-cannot-lie">4. A test substrate that cannot lie<a class="headerlink" href="#4-a-test-substrate-that-cannot-lie" title="Permanent link">&para;</a></h3>
 <p>This is infrastructure work with a user-visible reason: on this project,
 every timing crutch removed from CI turned out to be hiding a real

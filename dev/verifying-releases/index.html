@@ -1082,10 +1082,23 @@ downloaded above.</p>
 <a id="__codelineno-4-21" name="__codelineno-4-21" href="#__codelineno-4-21"></a>sha256sum<span class="w"> </span>rootfs/usr/sbin/net-dhcp<span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-4-22" name="__codelineno-4-22" href="#__codelineno-4-22"></a><span class="w">          </span>rootfs/usr/lib/net-dhcp/dhcp-handler
 </code></pre></div>
-<p>The two pairs of digests must match. For <strong>v1.6.0</strong> they are:</p>
+<p>The two pairs of digests must match. For <strong>v1.6.0</strong> (<code>linux/amd64</code>) they are:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>eade3423468fa55c5f2c82bd16c28f4f6e8e447096c291fe37459b36e22ac78e  net-dhcp
 <a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>140f4f14dc9a48d7991e33186c824da790f30d184fc6e014ebbeb447f22132ca  dhcp-handler
 </code></pre></div>
+<p>Since v1.7.0 each release also ships arm64 binaries under the <code>-arm64</code>
+tags; rebuild them the same way on an arm64 host (the build follows the
+host architecture) and unpack <code>net-dhcp-plugin-VERSION-linux-arm64.tar.gz</code>
+in step 4.
+The two pairs of digests must match. For <strong>v1.7.0</strong> (<code>linux/arm64</code>) they are:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>0000000000000000000000000000000000000000000000000000000000000000  net-dhcp
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>0000000000000000000000000000000000000000000000000000000000000000  dhcp-handler
+</code></pre></div>
+<p>(The zeroed digests are placeholders: no arm64 binary exists before the
+first v1.7.0 release candidate builds one. The release workflow's digest
+gate fails on them at that rc and prints the real block to paste —
+runbook step 10b, the same flow the amd64 digests follow on every
+release.)</p>
 <p>Note that step 4 needs no separate digest list from us: the binaries you
 are comparing against are the ones inside the signed tarball, and
 <code>checksums.txt</code> already covers that tarball. The chain closes on
