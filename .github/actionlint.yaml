@@ -6,6 +6,12 @@
 #              ghcr.io/claymore666/dhcp-ci-runner; names dhcp-ci-<n>,
 #              pooled 2-4 by the orchestrator). The sole runner target
 #              since the gpu1 bare-metal runner was retired (#157).
+#
+#   dhcp-ci-arm64 — the native arm64 runner on the netbooted Pi (#531).
+#              Deliberately NOT `dhcp-ci`: the amd64 workflows select on
+#              [self-hosted, dhcp-ci] with no arch label, so a Pi
+#              carrying that label would receive amd64 suite jobs.
 self-hosted-runner:
   labels:
     - dhcp-ci
+    - dhcp-ci-arm64
