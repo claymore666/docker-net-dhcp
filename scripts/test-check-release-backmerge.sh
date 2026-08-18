@@ -107,6 +107,34 @@ check "a fresh commit does not reset the clock" 1 "$d" "back-merge was skipped"
 check "a wider grace window accepts the same divergence" 0 "$d" "within the" \
     BACKMERGE_GRACE_HOURS=72
 
+# --- a future-dated commit must not silence the gate ------------------
+# Unclamped, `now - ct` goes negative and a negative age is always
+# "within grace", so one skewed clock buys silence for the length of the
+# skew plus the window — and prints "oldest is -166h old" while doing
+# it. Measured output before the clamp; pinned here so it cannot come
+# back.
+d="$(newrepo future)"
+git_q "$d" checkout -q main
+commit future "release merge from a machine with a fast clock" $((NOW + 166 * H))
+check "a future-dated straggler is reported as skewed, not silently aged" 0 "$d" \
+    "dated in the future"
+
+# The clamp RESETS the clock; it does not disable the gate. Unclamped,
+# no grace window however small could fire on this commit — the age was
+# negative and every comparison said "within". With the clamp the age is
+# 0, so a zero-hour window goes red exactly as it would for a commit
+# made this second. That is the property worth pinning: the skew buys at
+# most one grace window, not the length of the skew on top of it.
+check "the clamp resets the clock rather than disabling the gate" 1 "$d" \
+    "back-merge was skipped" BACKMERGE_GRACE_HOURS=0
+
+# The clamp must not swallow the ordinary case it sits next to: a
+# future-dated commit ALONGSIDE a genuinely old one is still judged on
+# the old one, because the age is the oldest straggler's.
+commit future "an older omission underneath" $((NOW - 48 * H))
+check "a future-dated commit does not hide an older omission" 1 "$d" \
+    "back-merge was skipped"
+
 # --- THE v1.6.0 SHAPE: identical trees, divergent graph ---------------
 # main gets a merge commit whose second parent IS the dev tip, exactly
 # as a release PR produces. No file differs afterwards.
@@ -132,6 +160,50 @@ else
     failures=$((failures + 1))
 fi
 check "a content-identical release merge is still caught" 1 "$d" "back-merge was skipped"
+
+# --- advisory mode ----------------------------------------------------
+# The case this mode exists for: a divergence WELL INSIDE the grace
+# window, which the scheduled check deliberately stays quiet about, and
+# which merging into dev anyway is what turns permanent. If a shared
+# grace ever creeps back in, this goes red.
+d="$(newrepo advisoryfresh)"
+git_q "$d" checkout -q main
+commit advisoryfresh "release merge, one hour ago" $((NOW - 1 * H))
+check "advisory warns inside the grace window (the case it exists for)" 0 "$d" \
+    "::warning" BACKMERGE_ADVISORY=1
+check "the same repo is silent in scheduled mode" 0 "$d" "within the"
+
+# Advisory never blocks, however old the divergence is.
+d="$(newrepo advisorystale)"
+git_q "$d" checkout -q main
+commit advisorystale "release merge, long ago" $((NOW - 200 * H))
+check "advisory warns rather than failing on a stale divergence" 0 "$d" \
+    "::warning" BACKMERGE_ADVISORY=1
+check "the same repo DOES fail in scheduled mode" 1 "$d" "back-merge was skipped"
+
+# Nothing to say when there is nothing wrong — an advisory that warns on
+# every PR is one nobody reads.
+d="$(newrepo advisoryclean)"
+n=$((n + 1))
+if env BACKMERGE_GIT_DIR="$d" BACKMERGE_NOW="$NOW" BACKMERGE_ADVISORY=1 \
+       BACKMERGE_BASE=main BACKMERGE_HEAD=dev bash "$CHECK" > "$TMP/out" 2>&1 \
+   && ! grep -q "::warning" "$TMP/out"; then
+    echo "PASS: advisory is silent when main is contained"
+else
+    echo "FAIL: advisory warned with nothing to warn about"
+    sed 's/^/    /' "$TMP/out"
+    failures=$((failures + 1))
+fi
+
+# Advisory must NOT swallow a blind gate. Exit 2 means the check cannot
+# see; downgrading that to a green PR turns the advisory into decoration.
+d="$(newrepo advisoryshallow)"
+git -C "$d" rev-parse main > "$d/.git/shallow"
+check "advisory still exits 2 on a shallow clone" 2 "$d" "fetch-depth 0" \
+    BACKMERGE_ADVISORY=1
+d="$(newrepo advisorymissing)"
+check "advisory still exits 2 on an unresolvable ref" 2 "$d" "must go red here" \
+    BACKMERGE_ADVISORY=1 BACKMERGE_BASE=refs/heads/renamed-away
 
 # --- defaults resolve origin/main and origin/dev ----------------------
 # Every case above overrides both refs. This one does not, so the

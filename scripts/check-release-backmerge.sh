@@ -43,14 +43,33 @@
 # the remedy for the red — back-merge now — is what the runbook wants
 # after every release-PR merge, not only the last one.
 #
+# TWO MODES, because there are two different questions.
+#
+#   scheduled (default) — "did the back-merge ever happen?" Grace
+#   applies, because an rc chain moves `main` ahead legitimately.
+#
+#   advisory (BACKMERGE_ADVISORY=1) — "is it safe to merge into `dev`
+#   right now?" Grace does NOT apply, and that is the whole point.
+#   Tonight's divergence was three hours old and entirely within grace;
+#   merging into `dev` anyway is precisely what destroyed the
+#   fast-forward. The window this warns in is exactly the window the
+#   scheduled check is built to stay quiet through, so a shared grace
+#   would make the advisory blind to the only case it exists for.
+#
+# Advisory downgrades the verdict to a warning and exits 0 — it must
+# never block a PR. It does NOT downgrade exit 2: a gate that cannot see
+# is broken rather than reassuring, and staying green on a shallow clone
+# would let the advisory rot into decoration.
+#
 # Usage: bash scripts/check-release-backmerge.sh
 # Env:   BACKMERGE_GIT_DIR      repo to inspect (default: this checkout)
 #        BACKMERGE_BASE         ref that must be contained (default origin/main)
 #        BACKMERGE_HEAD         ref that must contain it  (default origin/dev)
 #        BACKMERGE_GRACE_HOURS  window before divergence is an error (default 24)
+#        BACKMERGE_ADVISORY     non-empty: warn instead of failing, ignore grace
 #        BACKMERGE_NOW          epoch seconds, overrides "now" for tests
-# Exit:  0 contained, or within grace
-#        1 main-only commits older than the grace window
+# Exit:  0 contained, within grace, or advisory
+#        1 main-only commits older than the grace window (scheduled mode)
 #        2 cannot see — refs missing, shallow clone, not a repo
 
 set -uo pipefail
@@ -106,6 +125,22 @@ if [ "${#only[@]}" -eq 0 ]; then
     exit 0
 fi
 
+echo "${#only[@]} commit(s) on ${BASE} are not reachable from ${HEAD_REF}:"
+for c in "${only[@]}"; do
+    echo "  $(git show -s --format='%h %ad %s' --date=short "$c")"
+done
+
+# Advisory: any divergence at all, however fresh. See the mode note in
+# the header — the fresh window is the only one this mode exists for.
+if [ -n "${BACKMERGE_ADVISORY:-}" ]; then
+    echo "::warning title=Back-merge main into dev first::${BASE} has" \
+         "${#only[@]} commit(s) that ${HEAD_REF} does not contain. While that" \
+         "is true, 'git checkout dev && git merge --ff-only main' still works." \
+         "Merging anything into ${HEAD_REF} first destroys that fast-forward" \
+         "permanently and recovery needs a back-merge PR (#597)."
+    exit 0
+fi
+
 # Age of the OLDEST straggler, not the newest: the question is how long
 # the branch has been left disconnected, and a fresh commit on top of an
 # old omission must not reset the clock.
@@ -118,12 +153,28 @@ for c in "${only[@]}"; do
     fi
 done
 
-age_h=$(( (now - oldest_ct) / 3600 ))
-
-echo "${#only[@]} commit(s) on ${BASE} are not reachable from ${HEAD_REF}:"
-for c in "${only[@]}"; do
-    echo "  $(git show -s --format='%h %ad %s' --date=short "$c")"
-done
+# A committer date in the future makes the subtraction negative, and a
+# negative age is ALWAYS "within grace" — so a single skewed clock
+# silences this gate for the length of the skew plus the window, while
+# printing "oldest is -166h old" at whoever reads it. Measured: that is
+# the literal output before this clamp.
+#
+# Committer dates come from whichever machine made the commit, so a
+# wrong clock or a mangled timezone is the realistic cause rather than
+# anything adversarial. Clamp to 0 — the gate then behaves as if the
+# commit had just been made, which is the conservative reading — and
+# say so loudly, because a skew this large means the grace window is
+# not measuring what it claims to.
+if [ "$now" -lt "$oldest_ct" ]; then
+    echo "::warning title=Commit dated in the future::the oldest commit on" \
+         "${BASE} that ${HEAD_REF} does not contain is dated" \
+         "$(( (oldest_ct - now) / 3600 ))h ahead of now. Treating its age as 0." \
+         "A clock skew this large makes the ${GRACE_HOURS}h grace window" \
+         "meaningless — check the committer's clock." >&2
+    age_h=0
+else
+    age_h=$(( (now - oldest_ct) / 3600 ))
+fi
 
 if [ "$age_h" -lt "$GRACE_HOURS" ]; then
     echo "::notice title=Back-merge pending::oldest is ${age_h}h old, within the" \

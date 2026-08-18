@@ -26,22 +26,27 @@ on:
     # surfaces within a day or two of the release — long after the rc
     # chain has stopped legitimately moving `main` ahead.
     - cron: '43 6 * * *'
-  # Self-exercising, and it has to be. A schedule only ever fires from
-  # the default branch, and workflow_dispatch only RESOLVES on the
-  # default branch — dispatching this against a feature branch is a flat
-  # 404. So between merging to `dev` and the next release reaching
-  # `main`, a schedule-only gate would sit there completely unrun,
-  # reading as live coverage while being none.
+  # ADVISORY on every PR into `dev`, and it answers a different question
+  # from the schedule: not "did the back-merge ever happen" but "is it
+  # safe to merge into `dev` right now". While `main` is not contained,
+  # the runbook's `--ff-only` still works — merging anything into `dev`
+  # first destroys it permanently. That is a merge-time fact, and no
+  # scheduled job can catch it: by the time a nightly run looks, the
+  # fast-forward is already gone.
   #
-  # Scoped to the gate's own files so it runs on exactly the PRs that
-  # could break its wiring — the checkout depth, the fetch refspec, the
-  # env plumbing — none of which the self-test can reach, because the
-  # self-test drives the script and this file is what feeds it.
+  # It WARNS, never blocks. Not a required check, exit 0 on divergence.
+  # A hard block on every PR during an rc window would be worse than the
+  # problem, and a blocking check nobody can satisfy gets bypassed once
+  # and then always.
+  #
+  # It also happens to be the only thing that runs this workflow before
+  # a release carries it to `main`: a schedule only fires from the
+  # default branch, and workflow_dispatch only RESOLVES on the default
+  # branch — dispatching it against a feature branch is a flat 404. A
+  # schedule-only gate would sit unrun for a whole release cycle,
+  # reading as coverage while being none.
   pull_request:
-    paths:
-      - .github/workflows/release-backmerge.yml
-      - scripts/check-release-backmerge.sh
-      - scripts/test-check-release-backmerge.sh
+    branches: [dev]
   workflow_dispatch:
     inputs:
       grace-hours:
@@ -75,4 +80,9 @@ jobs:
       - name: Assert main is contained in dev
         env:
           BACKMERGE_GRACE_HOURS: ${{ inputs.grace-hours || '24' }}
+          # Advisory on PRs, enforcing on the schedule. The script owns
+          # the difference — including that advisory ignores the grace
+          # window, because the fresh divergence the schedule stays
+          # quiet about is exactly the one a PR must be warned about.
+          BACKMERGE_ADVISORY: ${{ github.event_name == 'pull_request' && '1' || '' }}
         run: bash scripts/check-release-backmerge.sh
