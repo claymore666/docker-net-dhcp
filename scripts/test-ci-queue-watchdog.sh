@@ -43,7 +43,7 @@ RUNS_JSON='{"workflow_runs":[]}'
 # exactly how the first cut of these cases produced four confident
 # "POOL UNKNOWN" passes-as-failures.
 stub_curl() {
-    local dir="$1" json="$2" cancel_exit="${3:-0}"
+    local dir="$1" json="$2" cancel_fail_n="${3:-0}" cancel_fail_code="${4:-403}"
     mkdir -p "$dir/bin"
     if [ "$RUNS_JSON" = "ERR" ]; then
         : > "$dir/runs.err"
@@ -56,7 +56,18 @@ for a in "\$@"; do
     case "\$a" in
         */cancel)
             echo "\$a" >> "$CANCEL_LOG"
-            exit $cancel_exit
+            # Real curl now prints %{http_code} and exits 0 even on an
+            # HTTP error (-f is gone), so the stub must answer with a
+            # status, not an exit code. Failing the first N attempts is
+            # what makes the retry observable: a stub that always
+            # refuses cannot tell "retried" from "gave up".
+            n=\$(wc -l < "$CANCEL_LOG")
+            if [ "\$n" -le "$cancel_fail_n" ]; then
+                printf '%s' "$cancel_fail_code"
+            else
+                printf '202'
+            fi
+            exit 0
             ;;
         *"actions/runs?status=in_progress"*)
             [ -f "$dir/runs.err" ] && exit 1
@@ -88,11 +99,14 @@ CANCEL_LOG=""
 cancels() { cat "$CANCEL_LOG" 2>/dev/null; }
 
 run_watchdog() {
-    local json="$1" budget="$2" poll="$3" cancel_exit="${4:-0}"
+    local json="$1" budget="$2" poll="$3" cancel_fail_n="${4:-0}" cancel_fail_code="${5:-403}"
     local dir
     dir=$(mktemp -d)
-    stub_curl "$dir" "$json" "$cancel_exit"
+    stub_curl "$dir" "$json" "$cancel_fail_n" "$cancel_fail_code"
+    # Backoff 0: these cases assert the retry COUNT, and sleeping
+    # through the real one would add ~9s per case for nothing.
     PATH="$dir/bin:$PATH" GATE_REPO=o/r GH_TOKEN=x \
+        WATCHDOG_CANCEL_ATTEMPTS=3 WATCHDOG_CANCEL_BACKOFF=0 \
         bash "$WATCHDOG" 12345 "$budget" "$poll" >"$dir/out" 2>&1
     local rc=$?
     cat "$dir/out"
@@ -187,21 +201,66 @@ else
 fi
 
 # --- a cancel the API refuses must be loud ----------------------------
-# 403 is the realistic case: the calling job lacking `actions: write`.
 # Silence here would be the original bug wearing a fix's clothes — the
 # pool still held, and now with a check that claims to have freed it.
+# 999 refusals: every attempt fails, so this is the give-up path.
 arm
-out=$(run_watchdog '{"jobs":[{"name":"main-suite","status":"queued"}]}' 2 1 22)
+out=$(run_watchdog '{"jobs":[{"name":"main-suite","status":"queued"}]}' 2 1 999 403)
 rc=$?
 [ "$rc" = 1 ] && ok "a refused cancel still fails the watchdog" || no "a refused cancel exited $rc, want 1"
 case "$out" in
     *"cancel request FAILED"*) ok "a refused cancel says so" ;;
     *) no "a refused cancel was silent — the run is still holding the pool and nobody is told" ;;
 esac
+
+# #611. The old message asserted the job was missing `actions: write`.
+# It was not — the permission was present in the one real incident, and
+# that guess sent the investigation down the wrong path. The status the
+# API actually returned is the thing to report.
 case "$out" in
-    *"actions: write"*) ok "a refused cancel names the likely cause" ;;
-    *) no "a refused cancel does not point at the missing permission" ;;
+    *"HTTP 403"*) ok "a refused cancel reports the status the API returned" ;;
+    *) no "a refused cancel does not report its HTTP status, so the next one is undiagnosable too" ;;
 esac
+case "$out" in
+    *"check that this job has"*) no "the message still asserts a cause it has not established (#611)" ;;
+    *) ok "a refused cancel no longer guesses at the cause" ;;
+esac
+# The case above can only fail when a failure message is printed at all,
+# so on a script that reported nothing it would pass having proved
+# nothing — exactly the vacuous pass this file warns about elsewhere.
+# Asserted against the source too, where it can always fail.
+if grep -q "without it the API refuses with 403" "$WATCHDOG"; then
+    no "the guessed 403 cause is still in the script (#611)"
+else
+    ok "the guessed 403 cause is gone from the script"
+fi
+
+# The retry itself. Asserted as a COUNT of POSTs, because "it retried"
+# and "it gave up once" produce identical output otherwise.
+n=$(cancels | wc -l)
+[ "$n" -eq 3 ] && ok "a refused cancel is retried to the attempt limit (3 POSTs)" || \
+    no "want 3 cancel POSTs at the limit, got $n — a single attempt is #611 unfixed"
+
+# --- a cancel that fails then succeeds must NOT fail the watchdog -----
+# The whole point of #611: the 2026-08-17 refusals were transient, so a
+# later attempt landing is the expected shape, not an edge case. If this
+# still exited 1 the retry would be decoration.
+arm
+out=$(run_watchdog '{"jobs":[{"name":"main-suite","status":"queued"}]}' 2 1 1 403)
+rc=$?
+[ "$rc" = 1 ] && ok "a run cancelled on retry still fails the watchdog (the run WAS stuck)" || \
+    no "a cancelled-on-retry run exited $rc, want 1 — the verdict is about the queue, not the cancel"
+case "$out" in
+    *"cancel accepted (HTTP 202) on attempt 2"*) ok "a cancel that lands on the second attempt is reported as accepted" ;;
+    *) no "a cancel that succeeded on retry was not reported as accepted" ;;
+esac
+case "$out" in
+    *"cancel request FAILED"*) no "a cancel that eventually landed still claimed to have failed" ;;
+    *) ok "a cancel that eventually landed does not claim failure" ;;
+esac
+n=$(cancels | wc -l)
+[ "$n" -eq 2 ] && ok "a cancel that lands on attempt 2 stops there" || \
+    no "want 2 cancel POSTs, got $n — the loop does not stop on success"
 
 # --- the escape hatch is opt-in and says so ---------------------------
 arm
