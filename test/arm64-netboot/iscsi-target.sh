@@ -1,4 +1,7 @@
 #!/bin/bash
+# Copyright the docker-net-dhcp contributors.
+# SPDX-License-Identifier: GPL-3.0-only
+
 # Export one iSCSI LUN for the runner's /var/lib/docker.
 #
 # The runner is diskless, but Docker's overlay2 storage driver cannot run on

@@ -1,4 +1,7 @@
 #!/bin/bash
+# Copyright the docker-net-dhcp contributors.
+# SPDX-License-Identifier: GPL-3.0-only
+
 # Build the TFTP tree and the NFS root from a stock Raspberry Pi OS image.
 #
 # Runs once per volume; re-run with FORCE_PROVISION=1 to rebuild from scratch.

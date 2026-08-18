@@ -1,4 +1,7 @@
 #!/bin/bash
+# Copyright the docker-net-dhcp contributors.
+# SPDX-License-Identifier: GPL-3.0-only
+
 # Give the netbooted runner a real block device for /var/lib/docker.
 #
 # Run this ON the Pi, once. Everything it changes lives in the NFS root, so it

@@ -1,4 +1,7 @@
 #!/bin/bash
+# Copyright the docker-net-dhcp contributors.
+# SPDX-License-Identifier: GPL-3.0-only
+
 # Turn a stock Raspberry Pi OS tree into a netbootable one.
 #
 # Split out of provision.sh so it can be re-run on its own after changing

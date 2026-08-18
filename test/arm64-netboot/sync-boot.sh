@@ -1,4 +1,7 @@
 #!/bin/bash
+# Copyright the docker-net-dhcp contributors.
+# SPDX-License-Identifier: GPL-3.0-only
+
 # Publish the runner's boot files from the NFS root into the TFTP root.
 #
 # Run this on the SERVER after anything on the Pi writes to /boot/firmware --

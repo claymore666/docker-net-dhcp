@@ -1,4 +1,7 @@
 #!/bin/bash
+# Copyright the docker-net-dhcp contributors.
+# SPDX-License-Identifier: GPL-3.0-only
+
 # Serve one Raspberry Pi its boot firmware (TFTP) and root filesystem (NFS).
 set -euo pipefail
 
