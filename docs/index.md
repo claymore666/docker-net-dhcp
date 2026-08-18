@@ -36,7 +36,7 @@ like any other machine. Bridge, macvlan, and ipvlan attachment modes.
 
     ```bash
     sudo mkdir -p /var/lib/net-dhcp
-    docker plugin enable ghcr.io/claymore666/docker-net-dhcp:v1.6.0
+    docker plugin enable ghcr.io/claymore666/docker-net-dhcp:v1.7.0
     ```
 
     Nothing is lost or corrupted. Full detail:
@@ -51,7 +51,7 @@ Install the plugin:
 # create this directory for you, and `plugin install` fails at
 # start-up without it.
 sudo mkdir -p /var/lib/net-dhcp
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.6.0
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.7.0
 ```
 
 It requests `host` networking, the host PID namespace, the Docker
@@ -66,7 +66,7 @@ already have a host bridge `my-bridge` on your LAN — see
 [Bridge mode](bridge-mode.md) for that one-time setup):
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.6.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.7.0 \
   --ipam-driver null -o bridge=my-bridge my-dhcp-net
 
 docker run --rm -ti --network my-dhcp-net alpine ip address show
@@ -113,14 +113,15 @@ This fork publishes semver-tagged plugin images on GHCR
 Docker Hub (`claymore666/net-dhcp`). Pin a version (`:vX.Y.Z`) for
 reproducibility, or track `:latest`.
 
-Published builds are **`linux/amd64` only**. A Docker *plugin* cannot be
+Published builds: **`linux/amd64`** on the bare tag and
+**`linux/arm64`** as `:vX.Y.Z-arm64` / `:latest-arm64` (v1.7.0 onward).
+The architecture is in the tag because a Docker *plugin* cannot be
 installed from a multi-architecture manifest list at all: the daemon
 reads a plugin's privileges before pulling it, its manifest handler
 matches single manifests only, and an index therefore fails with `did
 not find plugin config for specified reference` on every architecture —
-with no `--platform` to steer it. arm64 needs a tag of its own rather
-than a flag on this one, tracked in
-[#507](https://github.com/claymore666/docker-net-dhcp/issues/507).
+with no `--platform` to steer it. On an arm64 host, install the
+`-arm64` tag; everything else in these pages applies unchanged.
 
 - [GHCR package](https://github.com/claymore666/docker-net-dhcp/pkgs/container/docker-net-dhcp)
 - [GitHub Releases](https://github.com/claymore666/docker-net-dhcp/releases)

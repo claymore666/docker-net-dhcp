@@ -12,8 +12,9 @@
 #     serially at best and deadlock at worst (later jobs waiting for a
 #     runner that exited after the first).
 #   - Not a required check. This lane runs at release-candidate time,
-#     not per PR — the Pi is powered with the pve2 pool and is not held
-#     online for day-to-day development.
+#     not per PR — the arm64 runner pool is brought up for the rc window
+#     and is not held online for day-to-day development. Dispatch it on
+#     the rc tag (docs/release-runbook.md, "Pre-release dry-run").
 #   - The runner must be launched before this workflow runs (JIT mint +
 #     docker run on the Pi); a queued job here with no runner online
 #     means nobody launched one, not a CI outage.

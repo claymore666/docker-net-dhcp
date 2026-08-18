@@ -59,6 +59,85 @@ assessment above is retained here as the audit trail. If it becomes
 reachable again the gate fails loudly rather than silently
 re-accepting it.
 
+## v1.7.0
+
+The release that ships arm64, and closes the last of the lease-leak
+cases from v1.6.0.
+
+### The v1.5.0 precondition still applies
+
+```bash
+sudo mkdir -p /var/lib/net-dhcp
+```
+
+Unchanged since v1.5.0, and still required on every host before
+`docker plugin install`. Docker does not create a missing bind source,
+and skipping it leaves the plugin installed but disabled with an error
+that does not say why. See the v1.5.0 notes below for recovery.
+
+### arm64 is published
+
+Every release now ships a native `linux/arm64` build alongside amd64.
+The architecture is in the **tag**, because a Docker plugin cannot be
+installed from a multi-architecture manifest list:
+
+```bash
+# amd64 (unchanged)
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.7.0
+# arm64
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.7.0-arm64
+```
+
+`:latest-arm64` tracks the newest release the way `:latest` does. Both
+architectures are signed, attested and carry SBOMs identically; the
+arm64 artifacts are the `-arm64`-suffixed files on the release. The
+suite is run natively on arm64 hardware for every release candidate —
+not under emulation, which cannot run the DHCP client at all. 32-bit
+ARM is not built.
+
+### Two more lease leaks closed
+
+v1.6.0 fixed the renewal client that was stopped before it ever bound.
+Two neighbours of that case remained:
+
+- **The client was killed by the stop signal before it bound.** The
+  plugin read the exit status first, classified it as a failed release,
+  skipped the reclaim, and answered the `docker` teardown with an error
+  — for a shutdown in which nothing had actually failed. It is now
+  judged by whether the client ever held the lease, which is the only
+  thing that decides what is owed.
+- **The IPv6 half of a dual-stack endpoint.** The v6 client had none of
+  the v4 machinery: a never-bound v6 client was written to the audit
+  ledger as *released*, and its address was leaked until the server
+  expired it. Both families are now reclaimed, each with its own
+  identity, and the ledger records only what the server actually saw —
+  verified against the DHCP server's log, not against the plugin's
+  counters. New health counter: `lease_release_failures_v6`, joining
+  the per-family split of its neighbours.
+
+### Also
+
+- Two address-conflict probes running at the same time on a parent
+  without an address of its own could unpick each other's temporary
+  source address mid-probe (a kernel rule about secondary addresses,
+  active in fresh network namespaces). Each probe's borrowed address is
+  now standalone. A probe route that is *already* gone at cleanup is no
+  longer logged as a failure to remove it — only a genuine failure is.
+- Release verification: `docs/verifying-releases.md` covers the arm64
+  artifacts, and the reference binary digests for both architectures
+  are recorded there per release.
+
+### CI and process (no user-visible change)
+
+The hosted portability lane runs again on stock Ubuntu (it had been red
+for two weeks on a missing DHCP server); merge bursts can no longer
+leave a commit on `dev` with no integration verdict; the test harness
+gives macvlan and ipvlan separate parent NICs and names the two lanes'
+build directories in exactly one place; a queue-watchdog cancel that is
+refused is retried and explained; and a `workflow_dispatch` against a
+ref that is not this repository's is rejected before it can reach a
+privileged runner.
+
 ## v1.6.0
 
 The release that makes the plugin notice when something is wrong. Three

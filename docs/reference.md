@@ -91,14 +91,14 @@ The plugin publishes to two registries; GHCR is primary:
 - `ghcr.io/claymore666/docker-net-dhcp:vX.Y.Z` (primary)
 - `claymore666/net-dhcp:vX.Y.Z` (Docker Hub mirror)
 
-Published builds are **`linux/amd64` only**, and this is a constraint of
-Docker plugins rather than a choice about which architectures to build:
-a plugin cannot be installed from a multi-architecture manifest list at
-all, and `docker plugin install` has no `--platform` to steer one. An
-index fails with `did not find plugin config for specified reference`
-for every architecture, including the one you are on. arm64 therefore
-needs a tag of its own — tracked in
-[#507](https://github.com/claymore666/docker-net-dhcp/issues/507). The
+Published builds: **`linux/amd64`** on the bare tag and
+**`linux/arm64`** as `:vX.Y.Z-arm64` / `:latest-arm64` (v1.7.0 onward).
+The architecture lives in the tag because a Docker plugin cannot be
+installed from a multi-architecture manifest list at all, and
+`docker plugin install` has no `--platform` to steer one — an index
+fails with `did not find plugin config for specified reference` for
+every architecture, including the one you are on. On arm64, substitute
+the `-arm64` tag in the install line below; nothing else differs. The
 README covers the daemon-side reason in full.
 
 **Install** (interactive privilege grant, or `--grant-all-permissions`
@@ -110,7 +110,7 @@ for unattended):
 # for you, and `plugin install` fails with a mount error if it is
 # missing — see "If the directory is missing" below.
 sudo mkdir -p /var/lib/net-dhcp
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.6.0
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.7.0
 ```
 
 **If the directory is missing**, the install pulls the plugin, then
@@ -124,7 +124,7 @@ plugin that is already there:
 
 ```bash
 sudo mkdir -p /var/lib/net-dhcp
-docker plugin enable ghcr.io/claymore666/docker-net-dhcp:v1.6.0
+docker plugin enable ghcr.io/claymore666/docker-net-dhcp:v1.7.0
 ```
 
 Nothing is lost or corrupted by the failed install. (Behaviour verified
@@ -245,7 +245,7 @@ You bring an existing Linux bridge that is L2-connected to the LAN
 (see [`bridge-mode.md`](bridge-mode.md) for the bridge setup itself):
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.6.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.7.0 \
     --ipam-driver null \
     -o bridge=my-bridge \
     my-dhcp-net
@@ -257,7 +257,7 @@ No host changes — containers get per-container kernel-generated MACs
 as macvlan children of a host NIC:
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.6.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.7.0 \
     --ipam-driver null \
     -o mode=macvlan -o parent=eth0 \
     lan-dhcp
@@ -271,7 +271,7 @@ security, hostile vSwitches, some Wi-Fi APs). The DHCP server must
 key reservations on DHCP option 61 (client identifier), not MAC:
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.6.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.7.0 \
     --ipam-driver null \
     -o mode=ipvlan -o parent=eth0 \
     lan-dhcp
@@ -547,7 +547,7 @@ Runs a second persistent client (`dhcpcd -6`) alongside the v4 one —
 not work with the null IPAM driver and is not what you want:
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.6.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.7.0 \
     --ipam-driver null \
     -o mode=macvlan -o parent=eth0 -o ipv6=true \
     lan-dhcp6
@@ -638,7 +638,7 @@ without it `curl -s` swallows the permission error and prints nothing,
 which looks exactly like a dead endpoint:
 
 ```bash
-PLUGIN_ID=$(docker plugin inspect -f '{{.Id}}' ghcr.io/claymore666/docker-net-dhcp:v1.6.0)
+PLUGIN_ID=$(docker plugin inspect -f '{{.Id}}' ghcr.io/claymore666/docker-net-dhcp:v1.7.0)
 sudo curl -s --unix-socket /run/docker/plugins/$PLUGIN_ID/net-dhcp.sock \
     http://localhost/Plugin.Health | jq .
 ```
@@ -794,7 +794,7 @@ Compose-managed alternative (network lifecycle tied to the project):
 ```yaml
 networks:
   lan:
-    driver: ghcr.io/claymore666/docker-net-dhcp:v1.6.0
+    driver: ghcr.io/claymore666/docker-net-dhcp:v1.7.0
     driver_opts:
       mode: macvlan
       parent: eth0

@@ -47,7 +47,7 @@ like any other machine. Bridge, macvlan, and ipvlan attachment modes.
 >
 > ```bash
 > sudo mkdir -p /var/lib/net-dhcp
-> docker plugin enable ghcr.io/claymore666/docker-net-dhcp:v1.6.0
+> docker plugin enable ghcr.io/claymore666/docker-net-dhcp:v1.7.0
 > ```
 >
 > Nothing is lost or corrupted. Full detail:
@@ -62,7 +62,7 @@ Install the plugin:
 # create this directory for you, and `plugin install` fails at
 # start-up without it.
 sudo mkdir -p /var/lib/net-dhcp
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.6.0
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.7.0
 ```
 
 It requests `host` networking, the host PID namespace, the Docker
@@ -77,7 +77,7 @@ already have a host bridge `my-bridge` on your LAN — see
 [bridge mode](docs/bridge-mode.md) for that one-time setup):
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.6.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.7.0 \
   --ipam-driver null -o bridge=my-bridge my-dhcp-net
 
 docker run --rm -ti --network my-dhcp-net alpine ip address show
@@ -141,16 +141,19 @@ Docker Hub as `claymore666/net-dhcp:vX.Y.Z`. Every snippet here uses the
 GHCR reference. See the
 [Releases page](https://github.com/claymore666/docker-net-dhcp/releases).
 
-Published builds are **`linux/amd64` only**. This is not an oversight
-about which architectures get built: a Docker *plugin* cannot be
-installed from a multi-architecture manifest list at all. The daemon
+Published builds: **`linux/amd64`** on the bare tag (`:vX.Y.Z`,
+`:latest`) and **`linux/arm64`** on an arch-suffixed tag
+(`:vX.Y.Z-arm64`, `:latest-arm64`; v1.7.0 onward). The architecture is
+in the tag rather than in a manifest because a Docker *plugin* cannot be
+installed from a multi-architecture manifest list at all: the daemon
 reads a plugin's privileges before pulling it and its manifest handler
 matches single manifests only, so an index fails with `did not find
 plugin config for specified reference` — for every architecture,
 including the one you are on — and `docker plugin install` has no
-`--platform` to steer it. arm64 therefore needs a tag of its own rather
-than a flag on this one; that is tracked in
-[#507](https://github.com/claymore666/docker-net-dhcp/issues/507).
+`--platform` to steer it. On an arm64 host, install
+`ghcr.io/claymore666/docker-net-dhcp:vX.Y.Z-arm64`; every other snippet
+is the same. Both architectures are signed and attested identically
+(see below). 32-bit ARM is not built.
 
 ## Verifying releases
 
