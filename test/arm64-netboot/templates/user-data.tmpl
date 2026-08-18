@@ -1,0 +1,25 @@
+#cloud-config
+# Seed for the netbooted arm64 CI runner. cloud-init reads this from
+# /boot/firmware inside the NFS root; see 99_raspberry-pi.cfg in the image.
+
+hostname: ${PI_HOSTNAME}
+manage_etc_hosts: true
+
+users:
+  - name: ${PI_USER}
+    gecos: "arm64 CI runner"
+    groups: [adm, sudo, dialout, plugdev, users]
+    shell: /bin/bash
+    sudo: "ALL=(ALL) NOPASSWD:ALL"
+    # Key-only. There is no console on this machine and no password to leak.
+    lock_passwd: true
+    ssh_authorized_keys:
+      - ${PI_SSH_AUTHORIZED_KEY}
+
+ssh_pwauth: false
+
+# The root filesystem is an NFS export sized by the server. Both of these
+# would otherwise try to grow a block device that does not exist here.
+resize_rootfs: false
+growpart:
+  mode: off
