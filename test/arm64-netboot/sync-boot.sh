@@ -25,6 +25,21 @@ die() { printf '[sync-boot] ERROR: %s\n' "$*" >&2; exit 1; }
 [ -d "${FW_DIR}" ]   || die "${FW_DIR} not found"
 [ -d "${TFTP_DIR}" ] || die "${TFTP_DIR} not found; provision first"
 
+# raspi-firmware's kernel hook only copies the GPU firmware blobs (start*.elf,
+# fixup*.dat, bootcode.bin) into /boot/firmware when it looks like a mounted
+# boot partition. On a diskless NFS root it silently skips, the blobs vanish
+# from /boot/firmware on the next raspi-firmware upgrade, and the rsync
+# --delete below would then remove them from the TFTP root too -- after which
+# the Pi's bootloader loops on "start4.elf not found" and falls off netboot.
+# That is not hypothetical: it happened on the first apt full-upgrade.
+# Restore them from the package's payload before publishing.
+RASPI_FW_DIR="${NETBOOT_DIR}/nfsroot/usr/lib/raspi-firmware"
+if [ -d "${RASPI_FW_DIR}" ]; then
+    log "restoring GPU firmware blobs from usr/lib/raspi-firmware"
+    cp -a "${RASPI_FW_DIR}/." "${FW_DIR}/"
+fi
+[ -f "${FW_DIR}/start4.elf" ] || die "start4.elf missing from ${FW_DIR}; refusing to publish a boot tree the Pi cannot boot"
+
 # cmdline.txt and config.txt are OURS, not the distribution's: they carry the
 # nfsroot= arguments and the UART setting. Copying the OS's copies over them
 # would point the Pi back at a PARTUUID that does not exist here and strand it.
