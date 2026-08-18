@@ -60,7 +60,7 @@ check() {
 }
 
 doc "v1.6.0" "$D_MAIN" "$D_HANDLER"
-check "matching digests and label pass" 0 "v1.6.0" "matches the published v1.6.0 binaries"
+check "matching digests and label pass" 0 "v1.6.0" "matches the published v1.6.0 amd64 binaries"
 
 # THE case from the issue: digests right, heading a release behind.
 doc "v1.5.0" "$D_MAIN" "$D_HANDLER"
@@ -97,6 +97,72 @@ $D_MAIN  net-dhcp
 EOF
 check "a half-present digest block exits 2" 2 "v1.6.0" "could not read both reference digests"
 
+# Per-arch blocks (#507). One doc, two labelled blocks with DIFFERENT
+# digests; each arch must read only its own block. The arm64 "digests"
+# are the amd64 pair reversed, so a scoping bug (whole-file grep takes
+# the first block for both arches) fails loudly rather than passing by
+# coincidence.
+doc2() {
+    cat > "$TMP/doc.md" <<EOF
+The two pairs of digests must match. For **v1.6.0** (\`linux/amd64\`) they are:
+
+\`\`\`
+$D_MAIN  net-dhcp
+$D_HANDLER  dhcp-handler
+\`\`\`
+
+The two pairs of digests must match. For **v1.6.0** (\`linux/arm64\`) they are:
+
+\`\`\`
+$D_HANDLER  net-dhcp
+$D_MAIN  dhcp-handler
+\`\`\`
+EOF
+}
+# check_arch NAME WANT_EXIT TAG ARCH GREP
+check_arch() {
+    local name="$1" want_exit="$2" tag="$3" arch="$4" want_grep="$5"
+    DIGEST_DOCS="$TMP/doc.md" bash "$CHECK" "$tag" \
+        "$TMP/net-dhcp" "$TMP/dhcp-handler" "$arch" > "$TMP/out" 2>&1
+    local got_exit=$?
+    local ok=1
+    [ "$got_exit" -eq "$want_exit" ] || ok=0
+    if [ -n "$want_grep" ] && ! grep -q -- "$want_grep" "$TMP/out"; then ok=0; fi
+    if [ "$ok" -eq 1 ]; then
+        echo "PASS: $name"
+    else
+        echo "FAIL: $name (want exit $want_exit/grep '$want_grep', got exit $got_exit)"
+        sed 's/^/    /' "$TMP/out"
+        failures=$((failures + 1))
+    fi
+}
+
+doc2
+check_arch "labelled amd64 block passes for amd64" 0 "v1.6.0" amd64 "matches the published v1.6.0 amd64"
+# The binaries carry D_MAIN/D_HANDLER; the arm64 block documents them
+# reversed, so a correctly-scoped arm64 read MUST mismatch. If it
+# passes, arm64 read the amd64 block — the scoping bug this guards.
+check_arch "the arm64 read is scoped to the arm64 block" 1 "v1.6.0" arm64 "net-dhcp digest in .* is stale"
+check_arch "an rc tag works against a labelled block" 0 "v1.6.0-rc1" amd64 "matches the published v1.6.0 amd64"
+
+doc "v1.6.0" "$D_MAIN" "$D_HANDLER"
+check_arch "a doc without an arm64 block exits 2 for arm64" 2 "v1.6.0" arm64 "no arm64 version label"
+check_arch "the unlabelled legacy block still counts as amd64" 0 "v1.6.0" amd64 "matches the published v1.6.0 amd64"
+
+# The corrected block a failure prints must carry the arch label, or
+# pasting it produces a doc the arm64 gate cannot find.
+doc2
+DIGEST_DOCS="$TMP/doc.md" bash "$CHECK" v1.6.0 "$TMP/net-dhcp" "$TMP/dhcp-handler" arm64 > "$TMP/out" 2>&1
+# The backticks are literal doc markup, not expansion.
+# shellcheck disable=SC2016
+if grep -q 'For \*\*v1.6.0\*\* (`linux/arm64`) they are' "$TMP/out"; then
+    echo "PASS: the corrected block is arch-labelled"
+else
+    echo "FAIL: the corrected block is arch-labelled"
+    sed 's/^/    /' "$TMP/out"
+    failures=$((failures + 1))
+fi
+
 # Usage / missing inputs.
 DIGEST_DOCS="$TMP/doc.md" bash "$CHECK" > "$TMP/out" 2>&1
 if [ $? -eq 2 ] && grep -q "usage:" "$TMP/out"; then
@@ -124,21 +190,27 @@ else
     failures=$((failures + 1))
 fi
 
-# The committed doc must still be parseable by this checker, even though
-# its digests belong to whatever shipped last. Parse-only: a mismatch is
-# expected here and is not what this case is about.
+# The committed doc must still be parseable by this checker, for BOTH
+# architectures, even though its digests belong to whatever shipped
+# last. Exercised through the checker itself rather than a private copy
+# of its parsing (the private copy went stale the first time the format
+# grew an arch label — exactly the drift this case exists to catch).
+# With throwaway binaries a parseable doc exits 1 (stale digests,
+# expected); only exit 2 means the checker can no longer see the block.
 REAL_DOC="$(dirname "$0")/../docs/verifying-releases.md"
 if [ -f "$REAL_DOC" ]; then
-    v=$(sed -n 's/.*For \*\*\(v[0-9][0-9.]*\)\*\* they are.*/\1/p' "$REAL_DOC" | head -1)
-    m=$(sed -n 's/^\([0-9a-f]\{64\}\)  *net-dhcp$/\1/p' "$REAL_DOC" | head -1)
-    h=$(sed -n 's/^\([0-9a-f]\{64\}\)  *dhcp-handler$/\1/p' "$REAL_DOC" | head -1)
-    if [ -n "$v" ] && [ -n "$m" ] && [ -n "$h" ]; then
-        echo "PASS: the committed doc is parseable (label $v)"
-    else
-        echo "FAIL: the committed doc is not parseable by this checker"
-        echo "    label='$v' net-dhcp='$m' dhcp-handler='$h'"
-        failures=$((failures + 1))
-    fi
+    for arch in amd64 arm64; do
+        DIGEST_DOCS="$REAL_DOC" bash "$CHECK" v0.0.1 \
+            "$TMP/net-dhcp" "$TMP/dhcp-handler" "$arch" > "$TMP/out" 2>&1
+        rc=$?
+        if [ "$rc" -eq 2 ]; then
+            echo "FAIL: the committed doc is not parseable for $arch"
+            sed 's/^/    /' "$TMP/out"
+            failures=$((failures + 1))
+        else
+            echo "PASS: the committed doc is parseable for $arch"
+        fi
+    done
 fi
 
 if [ "$failures" -eq 0 ]; then

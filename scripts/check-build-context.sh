@@ -14,8 +14,8 @@
 #     ERROR: failed to solve: error from sender:
 #       open .claude/worktrees/<name>/plugin/rootfs/root: permission denied
 #
-# breaking `make build`, `make create`, `make multiarch` and
-# `make push-multiarch` — in a place unrelated to whatever the developer
+# breaking `make build`, `make create` and `make push` — in a place
+# unrelated to whatever the developer
 # had changed. CI never saw it: checkouts are fresh, and the integration
 # and coverage jobs run as root, for which the permission does not apply.
 #
