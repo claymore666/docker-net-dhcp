@@ -114,11 +114,29 @@ stopped" (kernel or NFS problem).
 
 ## Status
 
-Verified on the server side: image fetch and checksum, extraction, all
-patching, TFTP transfer of a 10 MB kernel byte-identical, and an NFS v3/tcp
-mount with root write access.
+Verified end to end on a Raspberry Pi 4B rev 1.4 (2 GB) on 2026-08-18: EEPROM
+configured over SSH from the SD-card OS, TFTP boot chain served, kernel and
+initramfs loaded, NFS root mounted, cloud-init completed, and key-only SSH
+login as the runner account. The bootloader was then updated in place from
+2024-04-15 to 2026-05-17 while netbooted.
 
-**Not yet exercised: an actual Pi boot.** Also not yet built: local block
-storage for `/var/lib/docker`. Docker's `overlay2` does not run on NFS, so the
-runner needs a real block device — iSCSI from this same server is the intended
-answer and is not implemented here.
+Updating the bootloader on a netbooted Pi needs the self-update path, not the
+usual one. The 2711 ROM cannot load `recovery.bin` over the network, and
+`/boot/firmware` on a netbooted root is an ordinary directory that the
+bootloader never reads — `rpi-eeprom-update -a` there reports success and
+changes nothing. Stage it instead with:
+
+```sh
+sudo env RPI_EEPROM_SELF_UPDATE=1 BOOTFS=/tmp/stage rpi-eeprom-update -a
+```
+
+then copy `pieeprom.upd` and `pieeprom.sig` into this server's TFTP root, and
+**remove them again once the new version is confirmed**.
+
+**Not yet built: local block storage for `/var/lib/docker`.** Docker's
+`overlay2` does not run on NFS, so the runner needs a real block device. The Pi
+4 has no PCIe, so iSCSI from this same server is the intended answer.
+
+Also still open: the runner has no Docker and is not enrolled as a GitHub
+Actions runner, and `PI_IP_MODE=dhcp` was observed moving the Pi's address
+across a reboot — a live demonstration of why `static` is the production shape.

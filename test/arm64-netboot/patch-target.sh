@@ -108,6 +108,14 @@ touch "${NFSROOT_DIR}/boot/firmware/ssh"
 # adds a failed unit to every boot.
 rm -f "${NFSROOT_DIR}/etc/systemd/system/multi-user.target.wants/wpa_supplicant.service"
 
+# Two units cannot succeed on a diskless root and fail on every boot otherwise:
+# growfs-root tries to grow a filesystem that is an NFS export, and
+# networkd-wait-online waits for a networkd that does not manage the boot
+# interface (it is deliberately unmanaged, below).
+log "masking units that cannot succeed on a diskless root"
+ln -sf /dev/null "${NFSROOT_DIR}/etc/systemd/system/systemd-growfs-root.service"
+ln -sf /dev/null "${NFSROOT_DIR}/etc/systemd/system/systemd-networkd-wait-online.service"
+
 # -------------------------------------------------------------- NetworkManager
 # The boot interface carries the NFS root. NetworkManager would re-run DHCP on
 # it and drop the link mid-flight; the kernel already configured it from the
