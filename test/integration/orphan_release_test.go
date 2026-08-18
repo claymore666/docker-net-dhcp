@@ -576,8 +576,16 @@ func TestOrphanedLease_DualStackReleasesBothFamilies(t *testing.T) {
 	if got := fixture.CountLogLines("DHCPREPLY", ip6); got < 1 {
 		t.Fatalf("dnsmasq logged no DHCPREPLY for %s; the v6 lease was never taken", ip6)
 	}
+	// dnsmasq logs a v4 release by address and a v6 release by the
+	// client's DUID — `DHCPRELEASE(iface) 00:03:00:01:<mac>` — because a
+	// DHCPv6 RELEASE frees the whole binding of that identity, not one
+	// address. The DUID-LL is the endpoint's MAC, which is exactly the
+	// identity the reclaim has to reproduce (a synthetic link MAC would
+	// produce a different DUID and free nothing), so keying on it is
+	// keying on the thing under test.
+	duid6 := "00:03:00:01:" + strings.ToLower(addrs.MacAddress)
 	rel4Before := fixture.CountLogLines("DHCPRELEASE", ip4)
-	rel6Before := fixture.CountLogLines("DHCPRELEASE", ip6)
+	rel6Before := fixture.CountLogLines("DHCPRELEASE", duid6)
 
 	// Orphan it — see the v4 test for why a live sandbox and no
 	// container is the state being constructed.
@@ -598,13 +606,13 @@ func TestOrphanedLease_DualStackReleasesBothFamilies(t *testing.T) {
 	// one.
 	deadline := time.Now().Add(orphanReleaseBudget)
 	for fixture.CountLogLines("DHCPRELEASE", ip4)-rel4Before < 1 ||
-		fixture.CountLogLines("DHCPRELEASE", ip6)-rel6Before < 1 {
+		fixture.CountLogLines("DHCPRELEASE", duid6)-rel6Before < 1 {
 		if !time.Now().Before(deadline) {
-			t.Fatalf("dnsmasq DHCPRELEASE lines within %v: v4 %s +%d, v6 %s +%d — want both ≥1; "+
+			t.Fatalf("dnsmasq DHCPRELEASE lines within %v: v4 %s +%d, v6 %s (DUID %s) +%d — want both ≥1; "+
 				"a family at 0 is a lease still held upstream with nobody responsible for it (#608)",
 				orphanReleaseBudget,
 				ip4, fixture.CountLogLines("DHCPRELEASE", ip4)-rel4Before,
-				ip6, fixture.CountLogLines("DHCPRELEASE", ip6)-rel6Before)
+				ip6, duid6, fixture.CountLogLines("DHCPRELEASE", duid6)-rel6Before)
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
