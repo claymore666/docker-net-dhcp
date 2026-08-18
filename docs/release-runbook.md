@@ -460,6 +460,12 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
    plugin from GHCR on a clean hosted runner and asserts it
    enables — a red verify-install means users can't install what
    we just shipped) → **github-release**.
+   Since v1.7.0 the run carries a parallel arm64 chain (#507):
+   **release-arm64** (native `ubuntu-24.04-arm` build, pushes
+   `vX.Y.Z-arm64` / `latest-arm64` — per-arch tags, because a Docker
+   plugin cannot install from a manifest list) and
+   **verify-install-arm64**. Both gate `github-release` exactly like
+   their amd64 twins, and every green checklist below includes them.
 10. **Confirm the GitHub Release** — the `github-release` job now cuts
    it automatically once `verify-install` is green (so a plugin that
    doesn't install never gets an advertised Releases page). It attaches
@@ -475,7 +481,9 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
    ```sh
    gh release view vX.Y.Z   # body = the RELEASE_NOTES section; assets:
                             #   net-dhcp-plugin-vX.Y.Z-linux-amd64.tar.gz
+                            #   net-dhcp-plugin-vX.Y.Z-linux-arm64.tar.gz
                             #   checksums.txt + checksums.txt.sigstore.json
+                            #   checksums-arm64.txt + checksums-arm64.txt.sigstore.json
    # Re-verify the signature the way a downstream consumer would:
    cosign verify-blob \
      --bundle checksums.txt.sigstore.json \
@@ -494,7 +502,10 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
    binaries yourself" section ends with the expected `sha256sum` of
    `net-dhcp` and `dhcp-handler`, prefixed by the version they belong
    to. Those can only be known once the tag has built, so this is the
-   one documentation change that cannot happen before the tag:
+   one documentation change that cannot happen before the tag.
+   Since v1.7.0 there are TWO digest blocks, one per architecture —
+   refresh both; the failing gate in each of the `release` and
+   `release-arm64` jobs prints its arch's corrected block verbatim:
    ```sh
    gh run download <release-run-id> -n <artifact>   # or from the release
    sha256sum rootfs/usr/sbin/net-dhcp rootfs/usr/lib/net-dhcp/dhcp-handler
