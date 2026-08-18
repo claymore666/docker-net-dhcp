@@ -142,6 +142,25 @@ jobs:
                 [ -n "$u" ] && sudo systemctl mask --now "$u" || true
               done
 
+          # Debian's kea AppArmor profile is ENFORCING and denies even
+          # root (it grants no dac_override), so the fixture cannot
+          # create the logger's lockfile in its own temp dir and kea
+          # never reaches ready. Put the profile in complain mode, which
+          # is what the test box has run since #356.
+          #
+          # The self-hosted pool never hits this: its jobs run in
+          # privileged containers, which are unconfined. That is exactly
+          # why the exposure was invisible until this lane ran on a bare
+          # host — the portability check earning its keep.
+          #
+          # Profiles are DISCOVERED, not named. Guessing an identifier
+          # and acting only when the guess matches is what made the
+          # previous attempt a silent no-op.
+          for prof in $(sudo grep -rl 'kea-dhcp' /etc/apparmor.d/ 2>/dev/null | grep -v '/disable/'); do
+            echo "apparmor: setting $prof to complain"
+            sudo apparmor_parser -C -r "$prof"
+          done
+
           sudo rm -f /usr/sbin/policy-rc.d
           # The harness execs this absolute path (test/integration/harness)
           test -x /usr/sbin/dnsmasq && /usr/sbin/dnsmasq --version | head -1
@@ -173,6 +192,21 @@ jobs:
             exit 1
           fi
           echo "UDP/67 is free — per-test DHCP fixtures can bind"
+
+      # Second half of the same idea: assert the OUTCOME, not the
+      # configuration meant to produce it. An enforcing kea profile
+      # denies the fixture its lockfile and the tests fail 40 minutes
+      # later with a message about readiness that names no cause.
+      - name: Verify no kea AppArmor profile is enforcing
+        run: |
+          if sudo aa-status 2>/dev/null \
+               | sed -n '/profiles are in enforce mode/,/profiles are in complain mode/p' \
+               | grep -qi kea; then
+            echo "::error title=kea AppArmor profile is enforcing::the fixture cannot create its lockfile and kea will never become ready"
+            sudo aa-status | grep -i kea || true
+            exit 1
+          fi
+          echo "no kea profile in enforce mode — the fixture can write its own temp dir"
 
       # Build + install the plugin from THIS tree, exactly as
       # integration.yml does, just under a hosted-specific tag.
