@@ -21,6 +21,35 @@ fi
 
 /usr/local/bin/provision.sh
 
+# ----------------------------------------------------------- server relocation
+# A provisioned tree carries the server's address in two client-visible places:
+# the kernel command line (nfsroot=) and the Pi's iSCSI node database inside
+# the NFS root. When the data directory is copied to a new host, TFTP moves
+# with the EEPROM's TFTP_IP but those two silently keep feeding the Pi from
+# the OLD server -- the first migration ran exactly that way: TFTP from the
+# new box, root filesystem and /var/lib/docker still from the old one.
+# SERVER_IP is the single source of truth; rewrite both to match it.
+CMDLINE="${TFTP_DIR}/cmdline.txt"
+if [ -f "${CMDLINE}" ]; then
+    old_ip=$(grep -o 'nfsroot=[0-9.]*' "${CMDLINE}" | cut -d= -f2 || true)
+    if [ -n "${old_ip}" ] && [ "${old_ip}" != "${SERVER_IP}" ]; then
+        log "relocating: ${old_ip} -> ${SERVER_IP} in cmdline.txt and the iSCSI node db"
+        sed -i "s/${old_ip//./\\.}/${SERVER_IP}/g" "${CMDLINE}"
+        ISCSI_DB="${NETBOOT_DIR}/nfsroot/var/lib/iscsi"
+        if [ -d "${ISCSI_DB}" ]; then
+            # children first, and only the basename: parent directory names
+            # contain the address too and are renamed on their own turn
+            find "${ISCSI_DB}" -depth -name "*${old_ip}*" | while read -r path; do
+                dir=$(dirname "${path}"); base=$(basename "${path}")
+                mv "${path}" "${dir}/${base//${old_ip}/${SERVER_IP}}"
+            done
+            grep -rl "${old_ip}" "${ISCSI_DB}" 2>/dev/null | while read -r f; do
+                sed -i "s/${old_ip//./\\.}/${SERVER_IP}/g" "${f}"
+            done
+        fi
+    fi
+fi
+
 # ------------------------------------------------------------------------ NFS
 # no_root_squash is not optional: the Pi runs its entire root filesystem from
 # this export and writes to it as uid 0 from the first second of boot.
