@@ -33,9 +33,17 @@ docker run -d --name rpi-netboot \
   -v /lib/modules:/lib/modules:ro \
   -v /srv/rpi-netboot:/srv/netboot \
   -e SERVER_IP=<this host's LAN address> \
+  -e NFS_ALLOWED_CLIENTS=<the Pi's address> \
+  -e ISCSI_ALLOWED_CLIENTS=<the Pi's address> \
   -e PI_SSH_AUTHORIZED_KEY="$(cat ~/.ssh/id_ed25519.pub)" \
   rpi-netboot:dev
 ```
+
+The two `*_ALLOWED_CLIENTS` lines are not paranoia: without them the ACLs
+default to the whole /24, which offers a root-writable filesystem and a raw
+block device to every host on the subnet. The default exists so a first
+bring-up works before the Pi has a stable address; once it does, narrow both
+to it and do not rely on a firewall to do this file's job.
 
 First start downloads the Raspberry Pi OS image, verifies its checksum and
 unpacks it into the volume; that takes a few minutes. Later starts reuse it.
@@ -52,7 +60,8 @@ unpacks it into the volume; that takes a few minutes. Later starts reuse it.
 | `PI_IP_MODE` | `dhcp` | `dhcp` or `static` — see below |
 | `PI_STATIC_IP`, `PI_GATEWAY`, `PI_NETMASK` | — | Required when `PI_IP_MODE=static` |
 | `PI_SERIAL` | — | Adds a serial-named TFTP directory, for `TFTP_PREFIX=0` |
-| `NFS_ALLOWED_CLIENTS` | `SERVER_IP`'s /24 | Export ACL. Never widen this to `*`: the export is `rw,no_root_squash` |
+| `NFS_ALLOWED_CLIENTS` | `SERVER_IP`'s /24 | Export ACL. Narrow to the Pi's address in production; never widen to `*`: the export is `rw,no_root_squash` |
+| `ISCSI_ALLOWED_CLIENTS` | `SERVER_IP`'s /24 | Initiator ACL for the `/var/lib/docker` LUN. Narrow to the Pi's address in production |
 | `RPIOS_IMAGE_URL` / `RPIOS_IMAGE_SHA256` | — | Image to serve |
 
 ### Addressing: use `static` in production
