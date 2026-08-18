@@ -73,7 +73,11 @@ on:
 # runbook carries the manual form; see "release PR blocked on a check
 # that has no run".
 concurrency:
-  group: selfhosted-privileged-${{ github.ref }}
+  # Branch pushes key on the COMMIT (#617): a merge burst into dev used to
+  # evict the queued run, leaving a commit nothing ever tested. PR events
+  # stay per-ref so a superseded PR head is replaced instead of holding
+  # pool slots next to its successor.
+  group: selfhosted-privileged-${{ github.event_name == 'push' && github.sha || github.ref }}
   cancel-in-progress: false
 
 permissions:

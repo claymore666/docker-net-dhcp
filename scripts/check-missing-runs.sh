@@ -198,15 +198,24 @@ indistinguishable from one still waiting, and \`gh pr checks\` reports
 the PREVIOUS commit's checks against it without saying so. A PR can
 read as passing for code no runner ever saw.
 
-On a branch head it is usually a merge burst (#515). GitHub keeps at
-most one running plus one pending run per concurrency group and cancels
-the rest, so several merges landing within a few seconds leave commits
-whose run was cancelled before any job started. Those commits are
-permanent points in the branch's history that nothing ever tested, and
-a bisect across them lands on a commit with no verdict.
+On a branch head it was a merge burst (#515, #617) until the group was
+keyed per commit for pushes: GitHub keeps at most one running plus one
+pending run per concurrency group and cancels the rest, so several
+merges landing within a few seconds left commits whose run was
+cancelled before any job started. Those commits are permanent points in
+the branch's history that nothing ever tested, and a bisect across them
+lands on a commit with no verdict.
 
-To recover, in either case: re-run the workflow by dispatch against that
-SHA. For a PR an empty commit also works; closing and reopening does NOT
-re-fire it.
+To recover a PR head: push an empty commit, or dispatch the workflow on
+the PR branch. Closing and reopening does NOT re-fire it.
+
+To recover a branch commit: dispatching with \`-f ref=<sha>\` does NOT
+clear it — GitHub records a dispatched run's head_sha as the tip of the
+ref it was dispatched on, whatever the suite checks out. Give the commit
+a ref of its own and dispatch on that:
+
+    git tag verify/<sha> <sha> && git push origin verify/<sha>
+    gh workflow run integration.yml --ref verify/<sha>
+    git push origin :verify/<sha>   # afterwards
 EOF
 exit 1
