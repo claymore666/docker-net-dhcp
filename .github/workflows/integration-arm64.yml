@@ -18,14 +18,9 @@
 #     docker run on the Pi); a queued job here with no runner online
 #     means nobody launched one, not a CI outage.
 #
-# The push trigger below is BRING-UP SCAFFOLDING for the branch that
-# builds this lane; it must be narrowed to workflow_dispatch-only before
-# this file merges to dev.
 name: integration-arm64
 
 on:
-  push:
-    branches: [ci/531-arm64-netboot]
   workflow_dispatch:
 
 permissions:
@@ -35,10 +30,9 @@ jobs:
   suite:
     name: arm64-suite
     runs-on: [self-hosted, Linux, ARM64, dhcp-ci-arm64]
-    # A bound on a hang, not an estimate of a run: no arm64 timing
-    # exists yet. The amd64 suites total ~14 min of test time unsharded;
-    # first runs here will measure what the Pi makes of that, and this
-    # number should then be tightened to match.
+    # A bound on a hang, not an estimate of a run. First measured run
+    # (32182473498, 2026-08-18): 17m33s end to end on the Pi 4. Kept
+    # loose at 120 until a few more runs say what the spread is.
     timeout-minutes: 120
     env:
       INTEGRATION_PLUGIN_REF: ghcr.io/claymore666/docker-net-dhcp:integration
