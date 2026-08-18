@@ -36,9 +36,11 @@ COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY provision.sh  /usr/local/bin/provision.sh
 COPY patch-target.sh /usr/local/bin/patch-target.sh
 COPY iscsi-target.sh /usr/local/bin/iscsi-target.sh
+COPY sync-boot.sh /usr/local/bin/sync-boot.sh
 COPY templates/    /usr/local/share/netboot-templates/
 RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/provision.sh \
-        /usr/local/bin/patch-target.sh /usr/local/bin/iscsi-target.sh
+        /usr/local/bin/patch-target.sh /usr/local/bin/iscsi-target.sh \
+        /usr/local/bin/sync-boot.sh
 
 # cache/  downloaded .img.xz        tftp/  boot firmware served over TFTP
 # nfsroot/ the Pi's root filesystem
