@@ -138,7 +138,11 @@ on:
 # pool. The limit becomes capacity — 8 runners at 2 jobs per run — which
 # is the correct thing to queue on.
 concurrency:
-  group: selfhosted-privileged-${{ github.ref }}
+  # Branch pushes key on the COMMIT (#617): a merge burst into dev used to
+  # evict the queued run, leaving a commit nothing ever tested. PR events
+  # stay per-ref so a superseded PR head is replaced instead of holding
+  # pool slots next to its successor.
+  group: selfhosted-privileged-${{ github.event_name == 'push' && github.sha || github.ref }}
   cancel-in-progress: false
 
 permissions:
