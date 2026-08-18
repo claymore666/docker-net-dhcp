@@ -217,6 +217,13 @@ jobs:
       - name: Doc-invariant check
         run: bash scripts/check-doc-invariants.sh
 
+      # The two integration lanes build the plugin into different
+      # directories, and a test that spells one of them is green on
+      # every PR and red once per release (#583). harness.BuiltPluginDir
+      # is the one place they are named; this keeps it that way.
+      - name: Build-directory reference check
+        run: bash scripts/check-build-dir-refs.sh
+
       # An unreadable path under .claude/ must not break the build
       # context (#530). This one is structurally invisible to the rest
       # of CI: checkouts are fresh, so .claude/ does not exist, and the
