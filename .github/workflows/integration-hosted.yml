@@ -107,24 +107,65 @@ jobs:
       # Both families are installed to match ci/runner-image/Dockerfile,
       # so a future v6 fixture does not reopen this the same way.
       #
-      # Unlike dnsmasq the kea packages DO ship enabled systemd units, and
-      # this host has systemd — an activated kea-dhcp4 would hold UDP/67
-      # against every per-test instance. Masked rather than stopped: a
-      # stop races socket activation, a mask cannot be undone by it.
+      # Unlike dnsmasq-base the kea packages ship ENABLED systemd units,
+      # and this host has systemd — an activated kea-dhcp4 holds UDP/67
+      # against every per-test instance, and the fixture then reports
+      # "ephemeral kea did not become ready".
+      #
+      # policy-rc.d is what stops it, not a mask afterwards. It is the
+      # Debian-sanctioned hook for "install this, do not start it", and
+      # crucially it does not depend on knowing the unit's NAME. The
+      # first cut of this step masked `isc-kea-dhcp4-server`, which is
+      # what the service is called on some distributions and is not what
+      # Ubuntu ships — so the mask matched nothing, skipped silently, and
+      # the very contention it was written to prevent took out thirteen
+      # tests instead of the four that were already red. Guessing an
+      # identifier and then only acting when the guess matches is a check
+      # that reports success for looking in the wrong place.
       - name: Install integration fixture dependencies
         run: |
+          # Must exist BEFORE apt runs: the package's postinst is what
+          # starts the service, and there is no undoing that afterwards
+          # without a race against socket activation.
+          printf '#!/bin/sh\nexit 101\n' | sudo tee /usr/sbin/policy-rc.d > /dev/null
+          sudo chmod +x /usr/sbin/policy-rc.d
+
           sudo apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             dnsmasq-base iputils-ping kea-dhcp4-server kea-dhcp6-server
-          # Mask what exists rather than `|| true` over the lot: a unit
-          # Debian has not shipped is not a failure, but a mask that is
-          # refused for any other reason must fail the step, or the
-          # contention it prevents comes back silently.
-          for u in isc-kea-dhcp4-server isc-kea-dhcp6-server; do
-            if systemctl list-unit-files "$u.service" --no-legend 2>/dev/null | grep -q .; then
-              sudo systemctl mask --now "$u.service"
-            fi
+
+          # Belt and braces, by discovery rather than by guess: mask
+          # whatever kea units this distribution actually shipped, so a
+          # later boot or a socket activation cannot start one.
+          # A mask that is refused must fail the step: it is what
+          # keeps a socket activation from restarting the squatter.
+          sudo systemctl list-unit-files --no-legend 'kea-*.service' '*kea*.service' 2>/dev/null \
+            | awk '{print $1}' | sort -u | while read -r u; do
+                if [ -n "$u" ]; then
+                  sudo systemctl mask --now "$u"
+                fi
+              done
+
+          # Debian's kea AppArmor profile is ENFORCING and denies even
+          # root (it grants no dac_override), so the fixture cannot
+          # create the logger's lockfile in its own temp dir and kea
+          # never reaches ready. Put the profile in complain mode, which
+          # is what the test box has run since #356.
+          #
+          # The self-hosted pool never hits this: its jobs run in
+          # privileged containers, which are unconfined. That is exactly
+          # why the exposure was invisible until this lane ran on a bare
+          # host — the portability check earning its keep.
+          #
+          # Profiles are DISCOVERED, not named. Guessing an identifier
+          # and acting only when the guess matches is what made the
+          # previous attempt a silent no-op.
+          for prof in $(sudo grep -rl 'kea-dhcp' /etc/apparmor.d/ 2>/dev/null | grep -v '/disable/'); do
+            echo "apparmor: setting $prof to complain"
+            sudo apparmor_parser -C -r "$prof"
           done
+
+          sudo rm -f /usr/sbin/policy-rc.d
           # The harness execs this absolute path (test/integration/harness)
           test -x /usr/sbin/dnsmasq && /usr/sbin/dnsmasq --version | head -1
 
@@ -141,6 +182,35 @@ jobs:
           sudo env "PATH=$PATH" sh -c 'command -v kea-dhcp4' \
             || { echo "::error title=kea not on the suite PATH::installed, but not resolvable under sudo env PATH=$PATH"; exit 1; }
           sudo env "PATH=$PATH" kea-dhcp4 -V | head -1
+
+      # The check that would have caught the first attempt. Whether a
+      # unit is masked is the plugin's own opinion of the situation; what
+      # actually breaks the fixtures is something holding UDP/67, so that
+      # is what gets asserted. It is also name-independent: it does not
+      # matter what the squatter is called, or whether it is kea at all.
+      - name: Verify nothing is holding the DHCP server port
+        run: |
+          if sudo ss -lunp 'sport = :67' | grep -q ':67'; then
+            echo "::error title=UDP/67 is occupied::a host DHCP server is bound to the port the per-test fixtures need"
+            sudo ss -lunp 'sport = :67'
+            exit 1
+          fi
+          echo "UDP/67 is free — per-test DHCP fixtures can bind"
+
+      # Second half of the same idea: assert the OUTCOME, not the
+      # configuration meant to produce it. An enforcing kea profile
+      # denies the fixture its lockfile and the tests fail 40 minutes
+      # later with a message about readiness that names no cause.
+      - name: Verify no kea AppArmor profile is enforcing
+        run: |
+          if sudo aa-status 2>/dev/null \
+               | sed -n '/profiles are in enforce mode/,/profiles are in complain mode/p' \
+               | grep -qi kea; then
+            echo "::error title=kea AppArmor profile is enforcing::the fixture cannot create its lockfile and kea will never become ready"
+            sudo aa-status | grep -i kea || true
+            exit 1
+          fi
+          echo "no kea profile in enforce mode — the fixture can write its own temp dir"
 
       # Build + install the plugin from THIS tree, exactly as
       # integration.yml does, just under a hosted-specific tag.
