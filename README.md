@@ -151,7 +151,7 @@ matches single manifests only, so an index fails with `did not find
 plugin config for specified reference` — for every architecture,
 including the one you are on — and `docker plugin install` has no
 `--platform` to steer it. On an arm64 host, install
-`ghcr.io/claymore666/docker-net-dhcp:vX.Y.Z-arm64`; every other snippet
+`ghcr.io/claymore666/docker-net-dhcp:v1.7.0-arm64`; every other snippet
 is the same. Both architectures are signed and attested identically
 (see below). 32-bit ARM is not built.
 
