@@ -1009,23 +1009,71 @@ func (ef *EphemeralFixture) DNSDomain() string { return ef.dnsDomain }
 //	interface <iface>
 //
 // and dnsmasq writes `DHCPACK(<iface>) <ip> <mac> [<hostname>]`.
+//
+// EXCEPT that which line Kea writes for an ACK depends on its version,
+// and the two versions this project meets are on opposite sides of the
+// change (#612). Measured on real logs, one client, bind plus renewals:
+//
+//	kea 2.6.3 (runner image)   bind:    DHCPACK line AND DHCP4_LEASE_ALLOC
+//	                            renewal: DHCPACK line only
+//	kea 2.4.1 (Ubuntu stable)  bind:    DHCP4_LEASE_ALLOC only
+//	                            renewal: DHCP4_LEASE_ALLOC only
+//	                            (no line containing DHCPACK at INFO, ever)
+//
+// So on 2.6.3 the DHCPACK line is the complete record and LEASE_ALLOC
+// would double count the bind; on 2.4.1 LEASE_ALLOC is the only record
+// there is. Neither token works alone and both together over-count.
+// The rule is therefore decided per log, from the log: if it contains
+// any DHCPACK line the server is one that writes them and only those
+// are counted; if it contains none, LEASE_ALLOC stands in. That is
+// version detection by what the server actually wrote rather than by
+// what it calls itself, and it is pinned on both captures in
+// ephemeral_test.go.
+//
+// Callers keep saying DHCPACK: it names what they mean, and the fact
+// that Kea spells it two ways is one fact about one server, kept here.
 func (ef *EphemeralFixture) CountLogLines(substrings ...string) int {
 	ef.t.Helper()
+	log := ef.readLog()
+	ackToken := ef.keaACKToken(log)
 	count := 0
-	for _, line := range strings.Split(ef.readLog(), "\n") {
-		l := strings.ToLower(line)
-		all := true
-		for _, s := range substrings {
-			if !strings.Contains(l, strings.ToLower(s)) {
-				all = false
-				break
-			}
-		}
-		if all {
+	for _, line := range strings.Split(log, "\n") {
+		if lineMatches(line, substrings, ackToken) {
 			count++
 		}
 	}
 	return count
+}
+
+// keaACKToken decides, for one log, which line stands for "the server
+// ACKed a lease": the DHCPACK line where the server writes one, the
+// lease allocation line where it does not. Non-Kea backends always
+// mean the literal token. See CountLogLines for the measurements.
+func (ef *EphemeralFixture) keaACKToken(log string) string {
+	if ef.backend != backendKea {
+		return "dhcpack"
+	}
+	if strings.Contains(strings.ToLower(log), "dhcpack") {
+		return "dhcpack"
+	}
+	return "dhcp4_lease_alloc"
+}
+
+// lineMatches is the per-line predicate behind CountLogLines and
+// LastACKAddress: every substring must appear (case-insensitive), with
+// a caller's "DHCPACK" satisfied by ackToken instead.
+func lineMatches(line string, substrings []string, ackToken string) bool {
+	l := strings.ToLower(line)
+	for _, s := range substrings {
+		want := strings.ToLower(s)
+		if want == "dhcpack" {
+			want = ackToken
+		}
+		if !strings.Contains(l, want) {
+			return false
+		}
+	}
+	return true
 }
 
 // LastACKAddress returns the address in the most recent DHCPACK the
@@ -1037,10 +1085,13 @@ func (ef *EphemeralFixture) CountLogLines(substrings ...string) int {
 // counters cannot supply.
 func (ef *EphemeralFixture) LastACKAddress(mac string) string {
 	ef.t.Helper()
+	// Same per-log token choice as CountLogLines, for the same reason:
+	// which line Kea writes for an ACK depends on its version (#612).
+	log := ef.readLog()
+	ackToken := ef.keaACKToken(log)
 	last := ""
-	for _, line := range strings.Split(ef.readLog(), "\n") {
-		l := strings.ToLower(line)
-		if !strings.Contains(l, "dhcpack") || !strings.Contains(l, strings.ToLower(mac)) {
+	for _, line := range strings.Split(log, "\n") {
+		if !lineMatches(line, []string{"DHCPACK", mac}, ackToken) {
 			continue
 		}
 		if ip := ackAddress(ef.backend, line); ip != "" {
@@ -1052,20 +1103,26 @@ func (ef *EphemeralFixture) LastACKAddress(mac string) string {
 
 // ackAddress pulls the ACKed address out of one server log line.
 //
-// Kea names the recipient as the `to <addr>:68` of the DHCPACK it
-// sends; dnsmasq puts the address immediately after the DHCPACK token.
-// Both are the address the server told the client to use, which is the
-// claim the callers are checking.
+// Kea has two shapes, by version: `... DHCPACK ... to <addr>:68 ...`
+// names the recipient of the packet, and `lease <addr> has been
+// allocated` names the address granted. dnsmasq puts the address
+// immediately after the DHCPACK token. All three are the address the
+// server told the client to use, which is the claim callers check.
 func ackAddress(backend ephemeralBackend, line string) string {
 	fields := strings.Fields(line)
 	if backend == backendKea {
 		for i, f := range fields {
-			if f != "to" || i+1 >= len(fields) {
+			var candidate string
+			switch {
+			case f == "to" && i+1 < len(fields):
+				candidate = strings.SplitN(fields[i+1], ":", 2)[0]
+			case f == "lease" && i+1 < len(fields):
+				candidate = fields[i+1]
+			default:
 				continue
 			}
-			bare := strings.SplitN(fields[i+1], ":", 2)[0]
-			if ip := net.ParseIP(bare); ip != nil && ip.To4() != nil {
-				return bare
+			if ip := net.ParseIP(candidate); ip != nil && ip.To4() != nil {
+				return candidate
 			}
 		}
 		return ""

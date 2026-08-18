@@ -485,3 +485,76 @@ func TestKeaConfig_LoggerOutputKeyIsSubstituted(t *testing.T) {
 		})
 	}
 }
+
+// Real kea-dhcp4 2.4.1 output at severity INFO — what Ubuntu 24.04
+// ships — captured from the hosted portability lane on 2026-08-18
+// (#612). Kept verbatim for the same reason as keaACKLog above.
+//
+// The shape to notice, because it is why the parser needs a per-log
+// decision: this version writes NO line containing DHCPACK. Every
+// bind and every renewal is a DHCP4_LEASE_ALLOC, and nothing else. A
+// parser that only knew the 2.6.3 shape answered "0 ACKs" for the
+// client below, which had visibly bound and renewed twice.
+const kea24Log = `
+2026-08-18 16:18:35.302 INFO  [kea-dhcp4.leases/17955.139959131666112] DHCP4_LEASE_ADVERT [hwtype=1 e6:ea:00:d4:55:60], cid=[00:e6:ea:00:d4:55:60], tid=0x8a179707: lease 192.168.101.10 will be advertised
+2026-08-18 16:18:35.303 INFO  [kea-dhcp4.leases/17955.139959123273408] DHCP4_LEASE_ALLOC [hwtype=1 e6:ea:00:d4:55:60], cid=[00:e6:ea:00:d4:55:60], tid=0x8a179707: lease 192.168.101.10 has been allocated for 120 seconds
+2026-08-18 16:18:37.190 INFO  [kea-dhcp4.leases/17955.139959114880704] DHCP4_LEASE_ADVERT [hwtype=1 e6:ea:00:d4:55:60], cid=[00:e6:ea:00:d4:55:60], tid=0x456b68e2: lease 192.168.101.10 will be advertised
+2026-08-18 16:18:37.191 INFO  [kea-dhcp4.leases/17955.139959106488000] DHCP4_LEASE_ALLOC [hwtype=1 e6:ea:00:d4:55:60], cid=[00:e6:ea:00:d4:55:60], tid=0x456b68e2: lease 192.168.101.10 has been allocated for 120 seconds
+2026-08-18 16:18:49.203 INFO  [kea-dhcp4.leases/17955.139959131666112] DHCP4_LEASE_ALLOC [hwtype=1 e6:ea:00:d4:55:60], cid=[00:e6:ea:00:d4:55:60], tid=0xac7971a5: lease 192.168.101.10 has been allocated for 120 seconds
+2026-08-18 16:18:50.000 INFO  [kea-dhcp4.leases/17955.139959131666112] DHCP4_LEASE_ALLOC [hwtype=1 aa:bb:cc:dd:ee:ff], cid=[00], tid=0xac7971a6: lease 192.168.101.42 has been allocated for 120 seconds
+2026-08-18 16:18:53.506 INFO  [kea-dhcp4.leases/17955.139959123273408] DHCP4_RELEASE [hwtype=1 e6:ea:00:d4:55:60], cid=[00:e6:ea:00:d4:55:60], tid=0xf24c63e4: address 192.168.101.10 was released properly.
+`
+
+const kea24MAC = "e6:ea:00:d4:55:60"
+
+// TestCountLogLines_Kea24CountsLeaseAllocs pins the 2.4.x side of the
+// parser: with no DHCPACK line anywhere in the log, LEASE_ALLOC stands
+// in, and it counts one per bind or renewal — three for this client
+// — attributed per MAC, with ADVERT and RELEASE lines not counted.
+func TestCountLogLines_Kea24CountsLeaseAllocs(t *testing.T) {
+	ef := newLogFixture(t, backendKea, kea24Log)
+	if got := ef.CountLogLines("DHCPACK", kea24MAC); got != 3 {
+		t.Errorf("CountLogLines(DHCPACK, %s) on kea 2.4 = %d, want 3 (one bind, two renewals)", kea24MAC, got)
+	}
+	if got := ef.CountLogLines("DHCPACK", "aa:bb:cc:dd:ee:ff"); got != 1 {
+		t.Errorf("CountLogLines(DHCPACK, other MAC) on kea 2.4 = %d, want 1", got)
+	}
+	if got := ef.CountLogLines("DHCPACK", "de:ad:be:ef:00:00"); got != 0 {
+		t.Errorf("CountLogLines(DHCPACK, unknown MAC) = %d, want 0", got)
+	}
+}
+
+// TestLastACKAddress_Kea24 pins that the granted address is read off
+// the LEASE_ALLOC line when that is all the server writes.
+func TestLastACKAddress_Kea24(t *testing.T) {
+	ef := newLogFixture(t, backendKea, kea24Log)
+	if got := ef.LastACKAddress(kea24MAC); got != "192.168.101.10" {
+		t.Errorf("LastACKAddress on kea 2.4 = %q, want 192.168.101.10", got)
+	}
+	if got := ef.LastACKAddress("aa:bb:cc:dd:ee:ff"); got != "192.168.101.42" {
+		t.Errorf("LastACKAddress(other MAC) on kea 2.4 = %q, want 192.168.101.42", got)
+	}
+}
+
+// TestCountLogLines_KeaTokenChoiceIsPerLog is the property the whole
+// design rests on: the two Kea shapes must give the SAME answer for
+// the same history. keaACKLog (2.6.3) has one bind and one renewal for
+// keaMAC and answers 2; a 2.4 log with one bind and one renewal must
+// also answer 2, and must not double count the bind on 2.6.3, where
+// the DHCPACK line and the LEASE_ALLOC line describe the same event.
+func TestCountLogLines_KeaTokenChoiceIsPerLog(t *testing.T) {
+	// 2.6.3: DHCPACK lines exist, so LEASE_ALLOC must be ignored.
+	ef26 := newLogFixture(t, backendKea, keaACKLog)
+	if got := ef26.CountLogLines("DHCPACK", keaMAC); got != 2 {
+		t.Errorf("2.6.3: = %d, want 2 — a bind on 2.6.3 writes both lines and must count once", got)
+	}
+	// 2.4.1: no DHCPACK line anywhere, so LEASE_ALLOC stands in.
+	const oneBindOneRenew = `
+2026-08-18 16:18:35.303 INFO  [kea-dhcp4.leases/1.1] DHCP4_LEASE_ALLOC [hwtype=1 e6:ea:00:d4:55:60], cid=[00], tid=0x1: lease 192.168.101.10 has been allocated for 120 seconds
+2026-08-18 16:18:49.203 INFO  [kea-dhcp4.leases/1.1] DHCP4_LEASE_ALLOC [hwtype=1 e6:ea:00:d4:55:60], cid=[00], tid=0x2: lease 192.168.101.10 has been allocated for 120 seconds
+`
+	ef24 := newLogFixture(t, backendKea, oneBindOneRenew)
+	if got := ef24.CountLogLines("DHCPACK", kea24MAC); got != 2 {
+		t.Errorf("2.4.1: = %d, want 2 — the same history must count the same on both versions", got)
+	}
+}
