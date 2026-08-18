@@ -46,6 +46,22 @@ case "${PI_IP_MODE}" in
         ;;
 esac
 
+# ------------------------------------------------------------------- AppArmor
+# Raspberry Pi OS ships AppArmor compiled in but disabled; Debian and Ubuntu
+# hosts have it on. Leaving it off would make this runner quietly more
+# permissive than the amd64 lane, so a confinement bug could pass here and fail
+# there -- the opposite of what a second architecture is for.
+#
+# Nothing in the default profile set confines sshd, init or dhcpcd, so turning
+# it on cannot lock the runner out.
+if [ "${PI_APPARMOR:-1}" = "1" ]; then
+    APPARMOR_ARG=" apparmor=1 security=apparmor"
+    log "AppArmor: enabled (matches the amd64 hosts)"
+else
+    APPARMOR_ARG=""
+    log "AppArmor: left disabled (PI_APPARMOR=0)"
+fi
+
 # ------------------------------------------------------------------ cmdline.txt
 # root=/dev/nfs is what makes the stock initramfs select its NFS boot script.
 # The mount is performed by klibc nfsmount, which speaks NFSv2/v3 only, so the
@@ -54,7 +70,7 @@ esac
 # Raspberry Pi kernels; without them the runner silently loses memory limits.
 log "writing cmdline.txt (nfsroot=${SERVER_IP}:${NFS_EXPORT})"
 cat > "${TFTP_DIR}/cmdline.txt" <<EOF
-console=serial0,115200 console=tty1 root=/dev/nfs nfsroot=${SERVER_IP}:${NFS_EXPORT},v3,tcp rw ${IP_ARG} rootwait cgroup_enable=memory cgroup_memory=1 net.ifnames=0
+console=serial0,115200 console=tty1 root=/dev/nfs nfsroot=${SERVER_IP}:${NFS_EXPORT},v3,tcp rw ${IP_ARG} rootwait cgroup_enable=memory cgroup_memory=1 net.ifnames=0${APPARMOR_ARG}
 EOF
 
 # ------------------------------------------------------------------- config.txt
