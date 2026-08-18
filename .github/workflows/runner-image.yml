@@ -23,7 +23,19 @@ env:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    # Both architectures build NATIVELY. GitHub's arm64 hosted runners are
+    # free for public repositories, and the alternative -- qemu -- would land
+    # on the one step that hurts most: baking the Go compile cache. Measured
+    # elsewhere in this project at roughly 11x under emulation.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     permissions:
       contents: read
@@ -49,14 +61,28 @@ jobs:
         run: |
           docker build -f ci/runner-image/Dockerfile \
             --build-arg RUNNER_VERSION="${{ steps.agent.outputs.version }}" \
-            -t "${IMAGE}:latest" \
-            -t "${IMAGE}:${GITHUB_SHA::7}" \
+            -t "${IMAGE}:${GITHUB_SHA::7}-${{ matrix.arch }}" \
             .
 
+      # Guard against a silently mis-built image: the Dockerfile derives two
+      # downloads from TARGETARCH, and an empty TARGETARCH (classic builder)
+      # or a wrong one would produce an image that runs but is the wrong
+      # architecture. Assert it rather than trust it.
+      - name: Assert architecture
+        run: |
+          got=$(docker run --rm --entrypoint uname "${IMAGE}:${GITHUB_SHA::7}-${{ matrix.arch }}" -m)
+          case "${{ matrix.arch }}" in
+            amd64) want=x86_64 ;;
+            arm64) want=aarch64 ;;
+          esac
+          echo "built=${got} expected=${want}"
+          [ "${got}" = "${want}" ] || { echo "architecture mismatch" >&2; exit 1; }
+
       # The selftest needs --privileged, which GitHub-hosted runners
-      # allow for containers started by the job itself.
+      # allow for containers started by the job itself. It runs on each
+      # architecture natively, so it is a real check on both.
       - name: Selftest
-        run: docker run --rm --privileged "${IMAGE}:latest" selftest
+        run: docker run --rm --privileged "${IMAGE}:${GITHUB_SHA::7}-${{ matrix.arch }}" selftest
 
       # Proxy wiring (#181): a bogus proxy is never contacted — selftest
       # does no network pulls — so this hermetically proves setup_proxy
@@ -68,9 +94,34 @@ jobs:
           docker run --rm --privileged \
             -e HTTPS_PROXY=http://proxy.invalid:3128 \
             -e NO_PROXY=example.com \
-            "${IMAGE}:latest" selftest
+            "${IMAGE}:${GITHUB_SHA::7}-${{ matrix.arch }}" selftest
 
-      - name: Push
+      - name: Push per-arch tag
+        run: docker push "${IMAGE}:${GITHUB_SHA::7}-${{ matrix.arch }}"
+
+  # The per-arch tags above are what the manifest list points at. Unlike a
+  # Docker *plugin* -- where a manifest list is uninstallable and per-arch tags
+  # are the only shipping shape (#507) -- this is an ordinary image pulled by
+  # `docker run`, so a manifest list is both correct and what the orchestrator
+  # wants: one name, right architecture per host.
+  manifest:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Create and push manifest list
         run: |
-          docker push "${IMAGE}:latest"
-          docker push "${IMAGE}:${GITHUB_SHA::7}"
+          for tag in "latest" "${GITHUB_SHA::7}"; do
+            docker buildx imagetools create -t "${IMAGE}:${tag}" \
+              "${IMAGE}:${GITHUB_SHA::7}-amd64" \
+              "${IMAGE}:${GITHUB_SHA::7}-arm64"
+          done
+
+      - name: Show what was published
+        run: docker buildx imagetools inspect "${IMAGE}:latest"

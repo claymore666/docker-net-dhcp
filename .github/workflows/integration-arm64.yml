@@ -1,0 +1,110 @@
+# Native arm64 integration lane (#531).
+#
+# Runs the same suites as integration.yml, but on the bare-metal arm64
+# runner (a netbooted Raspberry Pi 4) instead of the amd64 pool. The Pi
+# exists to prove the plugin on a real arm64 kernel — qemu-user cannot
+# run dhcpcd at all (#507), so emulation proves nothing here.
+#
+# Differences from the amd64 lane, all deliberate:
+#
+#   - One unsharded job instead of a 4-job matrix. There is one Pi, and
+#     its runner is JIT single-job-then-exit: a matrix would run
+#     serially at best and deadlock at worst (later jobs waiting for a
+#     runner that exited after the first).
+#   - Not a required check. This lane runs at release-candidate time,
+#     not per PR — the Pi is powered with the pve2 pool and is not held
+#     online for day-to-day development.
+#   - The runner must be launched before this workflow runs (JIT mint +
+#     docker run on the Pi); a queued job here with no runner online
+#     means nobody launched one, not a CI outage.
+#
+name: integration-arm64
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  suite:
+    name: arm64-suite
+    runs-on: [self-hosted, Linux, ARM64, dhcp-ci-arm64]
+    # A bound on a hang, not an estimate of a run. First measured run
+    # (32182473498, 2026-08-18): 17m33s end to end on the Pi 4. Kept
+    # loose at 120 until a few more runs say what the spread is.
+    timeout-minutes: 120
+    env:
+      INTEGRATION_PLUGIN_REF: ghcr.io/claymore666/docker-net-dhcp:integration
+      # Same shape and reasoning as integration.yml (#562): resolves to
+      # the literal "true"/"false" because a step-level `if:` cannot
+      # read the secrets context directly.
+      HAS_HUB_CREDS: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Authenticate before anything pulls from Docker Hub (#562). Forks
+      # never see secrets, so this skips there — expected, not degraded.
+      - name: Log in to Docker Hub
+        if: env.HAS_HUB_CREDS == 'true'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Note that Docker Hub pulls are anonymous
+        if: env.HAS_HUB_CREDS != 'true'
+        run: |
+          echo "::warning title=Anonymous Docker Hub pulls::DOCKERHUB_USERNAME / DOCKERHUB_TOKEN are not available to this job (#562)."
+
+      # The toolchain and fixture deps are baked into the runner image;
+      # fail loudly if the image on the Pi drifted (same as amd64).
+      - name: Verify Go toolchain
+        run: |
+          if ! command -v go >/dev/null; then
+            echo "go not in PATH — dhcp-ci runner image is stale vs go.mod; rebuild ci/runner-image/ for arm64"
+            exit 1
+          fi
+          go version
+          [ "$(uname -m)" = "aarch64" ] || { echo "::error::expected aarch64, got $(uname -m)"; exit 1; }
+
+      - name: Verify fixture dependencies
+        run: |
+          missing=""
+          for tool in dnsmasq kea-dhcp4 ip iptables; do
+            command -v "$tool" >/dev/null || missing="$missing $tool"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::dhcp-ci runner image is missing:$missing — rebuild ci/runner-image/ for arm64"
+            exit 1
+          fi
+
+      - name: Cleanup orphans from previous runs
+        run: bash test/integration/cleanup-orphans.sh
+
+      - name: Build + install integration plugin
+        run: |
+          make PLUGIN_NAME=ghcr.io/claymore666/docker-net-dhcp PLUGIN_TAG=integration plugin
+          docker plugin rm -f "${INTEGRATION_PLUGIN_REF}" 2>/dev/null || true
+          # The daemon does not create a missing bind source (#440).
+          mkdir -p /var/lib/net-dhcp
+          docker plugin create "${INTEGRATION_PLUGIN_REF}" plugin
+          docker plugin set "${INTEGRATION_PLUGIN_REF}" LOG_LEVEL=trace \
+            OUTAGE_TICK=2s OUTAGE_GRACE=10s
+          docker plugin enable "${INTEGRATION_PLUGIN_REF}"
+
+      # shell: bash is LOAD-BEARING for pipefail, exactly as in
+      # integration.yml (#297).
+      - name: Run main suite
+        shell: bash
+        run: make integration-test 2>&1 | tee /tmp/itest-arm64-main.log
+
+      - name: Run failure suite
+        shell: bash
+        run: make integration-test-failure 2>&1 | tee /tmp/itest-arm64-failure.log
+
+      - name: Test timing summary
+        if: always()
+        run: |
+          scripts/integration-timing.sh /tmp/itest-arm64-main.log
+          scripts/integration-timing.sh /tmp/itest-arm64-failure.log

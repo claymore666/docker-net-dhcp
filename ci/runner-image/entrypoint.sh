@@ -167,7 +167,14 @@ if [[ "${1:-}" == "selftest" ]]; then
     # ever grew a floor of its own, presence checks would stay green
     # while every timing assumption downstream quietly broke. So the
     # selftest hands it a 20-second lease and requires it to be accepted.
-    kea_probe=$(mktemp -d)
+    # Deliberately NOT mktemp: Debian ships an AppArmor profile for
+    # /usr/sbin/kea-dhcp4 that permits reading /etc/kea/** and nothing under
+    # /tmp. The profile is loaded from the HOST, and it attaches on exec even
+    # in a --privileged container, so a probe config in /tmp is denied on any
+    # host that has kea installed natively. GitHub-hosted runners do not, which
+    # is why this passed CI while failing on a self-hosted box.
+    kea_probe=/etc/kea/selftest-probe.d
+    mkdir -p "$kea_probe"
     cat > "$kea_probe/k.conf" <<'KEACONF'
 { "Dhcp4": {
     "interfaces-config": { "interfaces": [] },

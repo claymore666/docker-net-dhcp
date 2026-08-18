@@ -54,8 +54,19 @@ To restore enforcement afterwards:
 sudo apparmor_parser -r /etc/apparmor.d/usr.sbin.kea-dhcp4
 ```
 
-CI is unaffected — the suite runs inside a privileged container,
-which is unconfined by the host's profiles.
+A privileged container does **not** escape this. `--privileged` sets the
+container's own profile to `unconfined`, and the README used to stop there —
+but an unconfined process still *transitions into a matching profile on exec*,
+which is ordinary AppArmor behaviour. Measured on a host with the profile
+loaded: the container's shell reports `unconfined`, and `kea-dhcp4` launched
+from that same shell is nonetheless denied, with the kernel logging
+`apparmor="DENIED" ... profile="kea-dhcp4"`.
+
+What actually decides it is whether **the host has the profile loaded at all**,
+which in practice means whether `kea-dhcp4-server` is installed on the host —
+not whether the container is privileged. CI has been unaffected because its
+runner host does not have the package, not because the container is privileged.
+Install kea on a runner host and CI starts failing the same way.
 
 The package also enables and starts a system `kea-dhcp4-server`
 service on install. The fixture runs its own Kea, so the packaged
@@ -188,7 +199,7 @@ disagree, start here rather than assuming a bug.**
 |---|---|---|---|
 | Machine | your dev box / the integration runner host, bare metal | privileged container from `ghcr.io/claymore666/dhcp-ci-runner` | stock GitHub-hosted VM |
 | `dnsmasq`, `kea-dhcp4` | host packages, whatever the distro ships | baked into the image, see `ci/runner-image/Dockerfile` | installed per run by the workflow |
-| AppArmor | **profiles apply** — Debian's enforcing `kea-dhcp4` profile blocks the fixture (see Prerequisites) | none: privileged containers are unconfined by host profiles | none in practice |
+| AppArmor | **profiles apply** — Debian's enforcing `kea-dhcp4` profile blocks the fixture (see Prerequisites) | applies **if the host has the profile loaded**; today it does not, because kea is not installed on the runner host — privilege is *not* what saves it | none in practice |
 | State between runs | **accumulates** — leftover containers, veths, namespaces | none: one container per job, `--rm` | none |
 | Docker daemon | your host daemon, whatever version | nested daemon, Engine >= 28 | the runner's daemon |
 | Gating | no | **yes**, required check | no — portability signal only |
@@ -200,9 +211,12 @@ Three consequences worth knowing before they cost you an afternoon:
   own first step. A single container left by an earlier aborted run
   fails an unrelated test with a name conflict, days later, and reads
   exactly like a regression.
-- **Local is the only place AppArmor confines the fixture.** A failure
-  that reproduces locally and not in CI is as likely to be confinement
-  as a bug.
+- **AppArmor confines the fixture wherever the host has the profile
+  loaded** — including inside a privileged container. Today that is local
+  hosts only, so a failure that reproduces locally and not in CI is as
+  likely to be confinement as a bug. Do not read that as a property of
+  containers: it is a property of which hosts happen to have
+  `kea-dhcp4-server` installed, and it changes the day one of them does.
 - **CI's image is fetched when the runner container launches, not when
   it picks up a job.** The runners are JIT and can sit idle after
   launch, so a slot can be serving an image older than the newest

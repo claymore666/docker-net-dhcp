@@ -1,0 +1,6 @@
+# The kernel has already configured the boot interface from the ip= argument
+# on the command line; that configuration is what the NFS root is mounted
+# over. Re-applying it here would tear the link down underneath the running
+# system, so cloud-init is told to leave networking alone.
+network:
+  config: disabled
