@@ -308,14 +308,13 @@ func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 		// cleanly and they can re-issue once the upstream is fixed.
 		// Default off; opt-in via -o validate_dhcp=true.
 		if opts.ValidateDHCP {
+			// The budget covers the probe AND its wait for the parent
+			// gate: runDHCPProbe takes that gate itself (#577), because
+			// it puts its own child on the parent for up to
+			// preflightProbeBudget and so is a holder as well as a
+			// waiter.
 			ctx, cancel := context.WithTimeout(context.Background(), preflightProbeBudget+5*time.Second)
-			// The probe puts its own child on the parent for up to
-			// preflightProbeBudget, so it is both a waiter and a holder:
-			// it must not start on top of a reclaim, and no endpoint
-			// should start on top of it.
-			guard := p.lockParent(ctx, opts.Parent, "preflight_probe")
-			err := runDHCPProbe(ctx, guard, opts.Parent, mode)
-			guard.Unlock()
+			err := p.runDHCPProbe(ctx, opts.Parent, mode)
 			cancel()
 			if err != nil {
 				return err
