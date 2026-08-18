@@ -50,7 +50,7 @@ fi
 
 # Sorted, so the run order is the same on every machine and a diff of
 # two logs lines up.
-IFS=$'\n' tests=($(printf '%s\n' "${tests[@]}" | sort)); unset IFS
+mapfile -t tests < <(printf '%s\n' "${tests[@]}" | sort)
 
 # A self-test may legitimately belong to a different job — test-actionlint.sh
 # needs the actionlint binary, which only the actionlint job installs, and
