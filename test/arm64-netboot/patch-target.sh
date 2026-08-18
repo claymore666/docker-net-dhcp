@@ -116,6 +116,25 @@ log "masking units that cannot succeed on a diskless root"
 ln -sf /dev/null "${NFSROOT_DIR}/etc/systemd/system/systemd-growfs-root.service"
 ln -sf /dev/null "${NFSROOT_DIR}/etc/systemd/system/systemd-networkd-wait-online.service"
 
+# ------------------------------------------------------------ initramfs-tools
+# mkinitramfs cannot resolve a device for / when the root is an NFS export, and
+# its postinst then fails. That breaks *every* later apt operation on the
+# runner, not just the package that triggered it -- installing open-iscsi was
+# enough to wedge dpkg. BOOT=nfs tells it not to look for a block device.
+log "configuring initramfs-tools for an NFS root"
+mkdir -p "${NFSROOT_DIR}/etc/initramfs-tools/conf.d"
+cat > "${NFSROOT_DIR}/etc/initramfs-tools/conf.d/netboot.conf" <<'EOF'
+# The root filesystem is an NFS export, not a block device. Without BOOT=nfs,
+# mkinitramfs fails to determine a device for / and any package triggering an
+# initramfs rebuild fails its postinst, wedging dpkg.
+#
+# Note: a regenerated initramfs lands in /boot/firmware here, which on a
+# netbooted root the bootloader never reads. Only the copy in the server's TFTP
+# root is used at boot; copy it there if a rebuild ever needs to take effect.
+BOOT=nfs
+MODULES=most
+EOF
+
 # -------------------------------------------------------------- NetworkManager
 # The boot interface carries the NFS root. NetworkManager would re-run DHCP on
 # it and drop the link mid-flight; the kernel already configured it from the

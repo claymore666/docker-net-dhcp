@@ -70,6 +70,31 @@ Either way, NetworkManager is configured to leave the boot interface alone.
 Re-running DHCP on it would drop the link that the root filesystem is mounted
 over.
 
+## Docker storage
+
+Docker's `overlay2` driver cannot run on NFS — it needs a real block device —
+and a Pi 4 has no PCIe to plug one into. So the block device is served from
+here too, as an iSCSI LUN backed by a sparse file in the volume.
+
+That keeps the runner genuinely diskless and keeps its state server-side:
+resetting Docker's storage is an `rm` on this host, not a trip to the Pi. The
+file is sparse, so a generous size costs nothing up front — a 24G LUN holding
+one small image occupies well under a gigabyte.
+
+Set up the Pi side once, from the Pi:
+
+```sh
+sudo env SERVER_IP=<server> bash setup-runner-storage.sh
+```
+
+It installs `open-iscsi`, logs in, formats the LUN if it is blank, mounts it at
+`/var/lib/docker` by filesystem label, and orders `docker.service` after that
+mount. All of it lives in the NFS root, so it survives reboots. It will not
+reformat an existing filesystem — that is the runner's image cache, and wiping
+it silently would present as an inexplicably cold build.
+
+Disable the target entirely with `ENABLE_ISCSI=0` if a Pi only needs to boot.
+
 ## Preparing the Pi
 
 **This is the one step the container cannot do for you**, and it must happen
@@ -114,29 +139,33 @@ stopped" (kernel or NFS problem).
 
 ## Status
 
-Verified end to end on a Raspberry Pi 4B rev 1.4 (2 GB) on 2026-08-18: EEPROM
-configured over SSH from the SD-card OS, TFTP boot chain served, kernel and
-initramfs loaded, NFS root mounted, cloud-init completed, and key-only SSH
-login as the runner account. The bootloader was then updated in place from
-2024-04-15 to 2026-05-17 while netbooted.
+Verified end to end on a Raspberry Pi 4B rev 1.4 (2 GB) on 2026-08-18:
 
-Updating the bootloader on a netbooted Pi needs the self-update path, not the
-usual one. The 2711 ROM cannot load `recovery.bin` over the network, and
-`/boot/firmware` on a netbooted root is an ordinary directory that the
-bootloader never reads — `rpi-eeprom-update -a` there reports success and
-changes nothing. Stage it instead with:
+- EEPROM configured over SSH from the SD-card OS; the SD was never modified
+- TFTP boot chain served, kernel and initramfs loaded, NFS root mounted
+- cloud-init completed, key-only SSH as the runner account
+- bootloader updated in place 2024-04-15 → 2026-05-17 while netbooted
+- `/var/lib/docker` on an iSCSI LUN, `overlay2` on `extfs` with `d_type`
+- Docker 26.1.5 — the same version the amd64 lane runs, so a difference
+  between the lanes is architecture rather than Docker version
+- survives reboot: iSCSI session restored, mount and Docker ordered correctly,
+  no failed units, image cache intact
 
-```sh
-sudo env RPI_EEPROM_SELF_UPDATE=1 BOOTFS=/tmp/stage rpi-eeprom-update -a
-```
+Two things this tree cannot tell you, recorded because both cost real time:
 
-then copy `pieeprom.upd` and `pieeprom.sig` into this server's TFTP root, and
-**remove them again once the new version is confirmed**.
+**Updating the bootloader on a netbooted Pi needs the self-update path.** The
+2711 ROM cannot load `recovery.bin` over the network, and `/boot/firmware` on a
+netbooted root is an ordinary directory the bootloader never reads — so
+`rpi-eeprom-update -a` there reports success and changes nothing. Stage it with
+`sudo env RPI_EEPROM_SELF_UPDATE=1 BOOTFS=/tmp/stage rpi-eeprom-update -a`, copy
+`pieeprom.upd` and `pieeprom.sig` into this server's TFTP root, reboot, confirm,
+then remove them again. The same applies to a regenerated initramfs: only the
+copy in the TFTP root is ever used.
 
-**Not yet built: local block storage for `/var/lib/docker`.** Docker's
-`overlay2` does not run on NFS, so the runner needs a real block device. The Pi
-4 has no PCIe, so iSCSI from this same server is the intended answer.
+**`PI_IP_MODE=dhcp` was observed moving the Pi's address across a reboot**, a
+live demonstration of why `static` is the production shape.
 
-Also still open: the runner has no Docker and is not enrolled as a GitHub
-Actions runner, and `PI_IP_MODE=dhcp` was observed moving the Pi's address
-across a reboot — a live demonstration of why `static` is the production shape.
+## Still open
+
+The runner is not enrolled as a GitHub Actions runner, and the `dhcp-ci-runner`
+image is amd64-only. 2 GB of RAM is tight for Go builds over an NFS root.

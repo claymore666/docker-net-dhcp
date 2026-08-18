@@ -55,6 +55,15 @@ shutdown() {
 }
 trap shutdown TERM INT
 
+# ---------------------------------------------------------------------- iSCSI
+# Serves the runner's /var/lib/docker as a real block device. Optional: a Pi
+# that only needs to boot does not need it, and it is skipped if disabled.
+if [ "${ENABLE_ISCSI:-1}" = "1" ]; then
+    /usr/local/bin/iscsi-target.sh
+else
+    log "iSCSI disabled (ENABLE_ISCSI=0)"
+fi
+
 # ----------------------------------------------------------------------- TFTP
 # port=0 disables DNS and no DHCP range is configured, so this dnsmasq answers
 # TFTP and nothing else. The site DHCP server keeps its role untouched; the Pi
