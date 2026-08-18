@@ -137,9 +137,13 @@ jobs:
           # Belt and braces, by discovery rather than by guess: mask
           # whatever kea units this distribution actually shipped, so a
           # later boot or a socket activation cannot start one.
+          # A mask that is refused must fail the step: it is what
+          # keeps a socket activation from restarting the squatter.
           sudo systemctl list-unit-files --no-legend 'kea-*.service' '*kea*.service' 2>/dev/null \
             | awk '{print $1}' | sort -u | while read -r u; do
-                [ -n "$u" ] && sudo systemctl mask --now "$u" || true
+                if [ -n "$u" ]; then
+                  sudo systemctl mask --now "$u"
+                fi
               done
 
           # Debian's kea AppArmor profile is ENFORCING and denies even
