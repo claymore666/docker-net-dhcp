@@ -988,7 +988,7 @@ links here rather than repeating them.</p>
 </tr>
 <tr>
 <td><code>checksums.txt</code></td>
-<td>SHA-256 of every attached artifact</td>
+<td>SHA-256 of every attached amd64 artifact</td>
 </tr>
 <tr>
 <td><code>checksums.txt.sigstore.json</code></td>
@@ -1002,12 +1002,26 @@ links here rather than repeating them.</p>
 <td><code>sbom.cdx.json</code></td>
 <td>SBOM, CycloneDX format</td>
 </tr>
+<tr>
+<td><code>net-dhcp-plugin-vX.Y.Z-linux-arm64.tar.gz</code></td>
+<td>the same for <code>linux/arm64</code> (v1.7.0 onward)</td>
+</tr>
+<tr>
+<td><code>checksums-arm64.txt</code>, <code>checksums-arm64.txt.sigstore.json</code></td>
+<td>the arm64 checksum manifest and its cosign bundle</td>
+</tr>
+<tr>
+<td><code>sbom-arm64.spdx.json</code>, <code>sbom-arm64.cdx.json</code></td>
+<td>the arm64 SBOMs</td>
+</tr>
 </tbody>
 </table>
 <p>The plugin image itself lives at
 <code>ghcr.io/claymore666/docker-net-dhcp:vX.Y.Z</code> (mirrored to Docker Hub as
 <code>claymore666/net-dhcp</code>), is cosign-signed, and carries SLSA build
-provenance.</p>
+provenance. The arm64 image is the same at <code>:vX.Y.Z-arm64</code>; every
+verification step below applies to it with the <code>-arm64</code> tag and the
+<code>-arm64</code> artifact names substituted.</p>
 <p>One signature covers every attached file: <code>checksums.txt</code> is signed, and
 the checksums inside it cover the artifacts. So verifying the manifest
 and then checking the files against it is enough — there is no per-file
