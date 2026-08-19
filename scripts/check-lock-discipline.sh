@@ -85,8 +85,12 @@ violations=$(awk -v entry="$ENTRY" '
 # Comments are stripped first: this file's own documentation discusses
 # `p.tombstoneMu` and `p.tombstones.mu` by name, and a gate that counted
 # prose would flag the explanation of the rule it enforces.
+# `grep -q` is deliberately not used: it exits at the first match and
+# SIGPIPEs the producing sed, which under `set -o pipefail` reports
+# failure on a *successful* find. Redirect instead — grep reads to EOF,
+# so the exit status is the real one.
 if [ -f "$DIR/tombstone_store.go" ] \
-   && sed 's,//.*,,' "$DIR/tombstone_store.go" | grep -qE '\bp\.'; then
+   && sed 's,//.*,,' "$DIR/tombstone_store.go" | grep -E '\bp\.' >/dev/null; then
     echo "FAIL  tombstone_store.go references a Plugin receiver." >&2
     echo "  The store must not reach back into Plugin: if it can take p.mu," >&2
     echo "  the two locks are one lock order away from deadlocking." >&2
