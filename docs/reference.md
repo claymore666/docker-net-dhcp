@@ -134,6 +134,10 @@ sudo mkdir -p /var/lib/net-dhcp
 docker plugin enable ghcr.io/claymore666/docker-net-dhcp:v1.7.0
 ```
 
+On arm64 that second line takes the `-arm64` tag, like every other
+reference on this page — the bare one names a plugin the host never
+installed.
+
 Nothing is lost or corrupted by the failed install. (Behaviour verified
 against Docker 26.1.5, #494.)
 
@@ -662,7 +666,7 @@ diagnosing a specific container from them alone is not.
 
 | field | healthy-affecting | meaning |
 | ----- | ----------------- | ------- |
-| `healthy` | — | `false` when `recovery_failed`, `join_start_failures`, or `tombstone_write_failures` is non-zero — an operator should look. The plugin keeps serving fresh attaches either way. |
+| `healthy` | — | `false` when `recovery_failed`, `join_start_failures`, `tombstone_write_failures`, or `address_conflicts` is non-zero — an operator should look. Those four, and only those, are the ones marked **yes** in this column. The plugin keeps serving fresh attaches either way. |
 | `instance_id` | — | (v1.5.0+) Opaque identifier of the plugin **process** serving this response. Every counter below is in-memory and returns to zero when the process does, so two readings are comparable as a delta only when their `instance_id` matches. If it changed between two samples, the plugin restarted and any difference you computed is meaningless — including one that reads as zero. Prefer this over `uptime_seconds` for that check: a plugin that restarts early in a long sampling window and then runs longer than the first reading shows uptime going *up*, hiding the restart. |
 | `uptime_seconds` | — | Seconds since the plugin process started. Useful as an age, but see `instance_id` before using it to decide whether a restart happened. |
 | `active_endpoints` | — | DHCP managers currently registered (post-Join, pre-Leave). |
