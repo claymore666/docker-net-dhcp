@@ -120,8 +120,11 @@ installed from a multi-architecture manifest list at all: the daemon
 reads a plugin's privileges before pulling it, its manifest handler
 matches single manifests only, and an index therefore fails with `did
 not find plugin config for specified reference` on every architecture —
-with no `--platform` to steer it. On an arm64 host, install the
-`-arm64` tag; everything else in these pages applies unchanged.
+with no `--platform` to steer it. On an arm64 host the `-arm64` tag
+replaces the bare one in **every** snippet that names the image. That
+includes `docker network create -d <image>`: a network records the
+tagged plugin reference as its driver, so leaving the bare tag there
+names a plugin the host does not have.
 
 - [GHCR package](https://github.com/claymore666/docker-net-dhcp/pkgs/container/docker-net-dhcp)
 - [GitHub Releases](https://github.com/claymore666/docker-net-dhcp/releases)

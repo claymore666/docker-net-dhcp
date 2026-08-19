@@ -98,7 +98,10 @@ installed from a multi-architecture manifest list at all, and
 `docker plugin install` has no `--platform` to steer one — an index
 fails with `did not find plugin config for specified reference` for
 every architecture, including the one you are on. On arm64, substitute
-the `-arm64` tag in the install line below; nothing else differs. The
+the `-arm64` tag in **every** reference below, not only the install
+line: `docker network create -d <image>` records the tagged plugin
+reference as the network's driver, and a bare tag there names a plugin
+that was never installed. The
 README covers the daemon-side reason in full.
 
 **Install** (interactive privilege grant, or `--grant-all-permissions`

@@ -150,9 +150,12 @@ reads a plugin's privileges before pulling it and its manifest handler
 matches single manifests only, so an index fails with `did not find
 plugin config for specified reference` — for every architecture,
 including the one you are on — and `docker plugin install` has no
-`--platform` to steer it. On an arm64 host, install
-`ghcr.io/claymore666/docker-net-dhcp:v1.7.0-arm64`; every other snippet
-is the same. Both architectures are signed and attested identically
+`--platform` to steer it. On an arm64 host the `-arm64` tag replaces the bare one in **every**
+snippet that names the image, not just the install line — a network
+records the tagged plugin reference as its driver, so
+`docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.7.0`
+on a host where only `:v1.7.0-arm64` is installed names a plugin that
+is not there. Both architectures are signed and attested identically
 (see below). 32-bit ARM is not built.
 
 ## Verifying releases
