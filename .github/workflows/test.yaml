@@ -150,6 +150,14 @@ jobs:
       - name: Docs-drift check
         run: bash scripts/check-docs-drift.sh
 
+      # Presence is not agreement (#638). check-docs-drift proves every
+      # counter is documented; this proves the three places that say
+      # WHICH ones flip `healthy` still say the same thing, and that the
+      # code computes that many. The `healthy` row listed three for two
+      # releases while the column beside it and the code both said four.
+      - name: Health-contract check
+        run: bash scripts/check-health-contract.sh
+
       # Every published-image pin in README/docs must agree on one
       # version — catches a partial release bump (#251). Bump them with
       # scripts/bump-version.sh vX.Y.Z.
@@ -177,6 +185,14 @@ jobs:
       # that notices.
       - name: Issue label map check
         run: bash scripts/check-issue-label-map.sh
+
+      # Every FROM in the tree must name its base by digest (#633).
+      # Three of four Dockerfiles already did, including the sibling that
+      # pins the same base as the one that did not — so the convention
+      # was universal and unenforced, and only an advisory external scan
+      # noticed. Dependabot cannot bump a digest that was never written.
+      - name: Dockerfile digest-pin check
+        run: bash scripts/check-dockerfile-pins.sh
 
       # Every tracked source file must carry the copyright line and
       # SPDX-License-Identifier (#454). A file added without them breaks

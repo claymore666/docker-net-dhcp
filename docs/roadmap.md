@@ -93,9 +93,13 @@ Docker's own engine carries a change. They stay open on purpose:
 | [#125] — Compose `interface_name` | the remote driver to honour a plugin-returned `DstName` | [moby/moby#52865] (issue), [moby/moby#52866] (PR) |
 | [#218] — deterministic MAC | network drivers to receive the endpoint name at `CreateEndpoint`, as IPAM drivers already do | [moby/moby#52870] (issue), [moby/moby#52871] (PR) |
 
-Both PRs were filed in June 2026 and are awaiting review. Neither issue
-here will be closed as "won't fix" while that is the only thing in the
-way; the fork's own half of each is written and waiting.
+Both were filed in June 2026. The `interface_name` pass-through
+([moby/moby#52866]) has since been **approved** and is milestoned for
+engine **29.8.0**; it unblocks [#125] once an engine carrying it is
+released. The endpoint-name change ([moby/moby#52871]) is still
+awaiting review. Neither issue here will be closed as "won't fix" while
+that is the only thing in the way; the fork's own half of each is
+written and waiting.
 
 ## What this project will deliberately not do
 

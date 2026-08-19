@@ -114,10 +114,10 @@ for unattended):
 sudo mkdir -p /var/lib/net-dhcp
 
 # amd64
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.7.0
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.7.1
 
 # arm64 (v1.7.0 onward) — the architecture is in the tag, see below
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.7.0-arm64
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.7.1-arm64
 ```
 
 **If the directory is missing**, the install pulls the plugin, then
@@ -131,8 +131,12 @@ plugin that is already there:
 
 ```bash
 sudo mkdir -p /var/lib/net-dhcp
-docker plugin enable ghcr.io/claymore666/docker-net-dhcp:v1.7.0
+docker plugin enable ghcr.io/claymore666/docker-net-dhcp:v1.7.1
 ```
+
+On arm64 that second line takes the `-arm64` tag, like every other
+reference on this page — the bare one names a plugin the host never
+installed.
 
 Nothing is lost or corrupted by the failed install. (Behaviour verified
 against Docker 26.1.5, #494.)
@@ -252,7 +256,7 @@ You bring an existing Linux bridge that is L2-connected to the LAN
 (see [`bridge-mode.md`](bridge-mode.md) for the bridge setup itself):
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.7.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.7.1 \
     --ipam-driver null \
     -o bridge=my-bridge \
     my-dhcp-net
@@ -264,7 +268,7 @@ No host changes — containers get per-container kernel-generated MACs
 as macvlan children of a host NIC:
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.7.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.7.1 \
     --ipam-driver null \
     -o mode=macvlan -o parent=eth0 \
     lan-dhcp
@@ -278,7 +282,7 @@ security, hostile vSwitches, some Wi-Fi APs). The DHCP server must
 key reservations on DHCP option 61 (client identifier), not MAC:
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.7.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.7.1 \
     --ipam-driver null \
     -o mode=ipvlan -o parent=eth0 \
     lan-dhcp
@@ -554,7 +558,7 @@ Runs a second persistent client (`dhcpcd -6`) alongside the v4 one —
 not work with the null IPAM driver and is not what you want:
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.7.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.7.1 \
     --ipam-driver null \
     -o mode=macvlan -o parent=eth0 -o ipv6=true \
     lan-dhcp6
@@ -645,7 +649,7 @@ without it `curl -s` swallows the permission error and prints nothing,
 which looks exactly like a dead endpoint:
 
 ```bash
-PLUGIN_ID=$(docker plugin inspect -f '{{.Id}}' ghcr.io/claymore666/docker-net-dhcp:v1.7.0)
+PLUGIN_ID=$(docker plugin inspect -f '{{.Id}}' ghcr.io/claymore666/docker-net-dhcp:v1.7.1)
 sudo curl -s --unix-socket /run/docker/plugins/$PLUGIN_ID/net-dhcp.sock \
     http://localhost/Plugin.Health | jq .
 ```
@@ -662,7 +666,7 @@ diagnosing a specific container from them alone is not.
 
 | field | healthy-affecting | meaning |
 | ----- | ----------------- | ------- |
-| `healthy` | — | `false` when `recovery_failed`, `join_start_failures`, or `tombstone_write_failures` is non-zero — an operator should look. The plugin keeps serving fresh attaches either way. |
+| `healthy` | — | `false` when `recovery_failed`, `join_start_failures`, `tombstone_write_failures`, or `address_conflicts` is non-zero — an operator should look. Those four, and only those, are the ones marked **yes** in this column. The plugin keeps serving fresh attaches either way. |
 | `instance_id` | — | (v1.5.0+) Opaque identifier of the plugin **process** serving this response. Every counter below is in-memory and returns to zero when the process does, so two readings are comparable as a delta only when their `instance_id` matches. If it changed between two samples, the plugin restarted and any difference you computed is meaningless — including one that reads as zero. Prefer this over `uptime_seconds` for that check: a plugin that restarts early in a long sampling window and then runs longer than the first reading shows uptime going *up*, hiding the restart. |
 | `uptime_seconds` | — | Seconds since the plugin process started. Useful as an age, but see `instance_id` before using it to decide whether a restart happened. |
 | `active_endpoints` | — | DHCP managers currently registered (post-Join, pre-Leave). |
@@ -801,7 +805,7 @@ Compose-managed alternative (network lifecycle tied to the project):
 ```yaml
 networks:
   lan:
-    driver: ghcr.io/claymore666/docker-net-dhcp:v1.7.0
+    driver: ghcr.io/claymore666/docker-net-dhcp:v1.7.1
     driver_opts:
       mode: macvlan
       parent: eth0

@@ -247,7 +247,9 @@ You only need this if the forwarding policy is `DROP` — check with
 ## 2. Create the network
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.7.0 \
+# On arm64 use the -arm64 tag — a network stores this exact reference
+# as its driver, so it must name the plugin you installed.
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.7.1 \
   --ipam-driver null -o bridge=my-bridge my-dhcp-net
 ```
 
@@ -255,7 +257,8 @@ With IPv6 as well (the `docker network create --ipv6` flag does **not**
 work with the null IPAM driver; use the `ipv6` driver option instead):
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.7.0 \
+# arm64: the -arm64 tag here too.
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.7.1 \
   --ipam-driver null -o bridge=my-bridge -o ipv6=true my-dhcp-net
 ```
 
@@ -313,7 +316,8 @@ services:
       - dhcp
 networks:
   dhcp:
-    driver: ghcr.io/claymore666/docker-net-dhcp:v1.7.0
+    # arm64: the -arm64 tag, matching the plugin you installed.
+    driver: ghcr.io/claymore666/docker-net-dhcp:v1.7.1
     driver_opts:
       bridge: my-bridge
       ipv6: 'true'

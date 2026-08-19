@@ -59,6 +59,62 @@ assessment above is retained here as the audit trail. If it becomes
 reachable again the gate fails loudly rather than silently
 re-accepting it.
 
+## v1.7.1
+
+A documentation release. **No plugin change** — nothing in this release
+touches the plugin source, its Dockerfile, or its dependencies, so the
+reference digests in [Verifying
+releases](https://claymore666.github.io/docker-net-dhcp/latest/verifying-releases/)
+are unchanged from v1.7.0: the same source builds the same bytes, and
+the release workflow checks that claim against the binaries it just
+built. Upgrade if you want the tag to match the documentation you are
+reading; there is no functional reason to.
+
+### The arm64 instructions were incomplete
+
+v1.7.0 introduced per-architecture tags (`:vX.Y.Z-arm64`), and the pages
+carrying the `docker plugin install` line said so. Three places did not:
+
+- **The mode guides.** *Bridge mode* and *macvlan / ipvlan modes* carry
+  copy-pasteable `docker network create` commands and a Compose
+  `driver:` — and never mentioned arm64. Both are linked from the quick
+  starts for the one-time host setup, so a reader reaches them directly
+  and copies a driver reference naming a plugin their host does not
+  have. A network stores that exact string, so it fails at create time
+  with nothing pointing at the tag.
+- **The install-failure recovery.** The recovery for the most common
+  install failure — the missing state directory — named the bare tag on
+  every page, including the three that were otherwise correct.
+- **The explanatory comments** carried a version number that the
+  release tooling could not see or update, so they would have gone
+  stale on this release with nothing reporting it. They now state the
+  rule without a version.
+
+If you run arm64: the `-arm64` tag replaces the bare one in **every**
+snippet that names the image, not only the install line.
+
+### `/Plugin.Health` documented the wrong healthy contract
+
+The `healthy` field's own row in the driver reference listed three
+counters that flip it to `false`. There are four — `address_conflicts`
+has been one since v1.6.0, and the table's healthy-affecting column and
+the At a glance summary both said so. Only the row an operator reads
+first was wrong.
+
+If you alert on `healthy`, nothing about your alerting changes: the
+plugin's behaviour was always the documented four. What changes is that
+the page now agrees with itself, and a CI gate fails if the two ever
+part company again.
+
+### Also
+
+- The roadmap reported both upstream Docker Engine pull requests as
+  awaiting review. The `interface_name` pass-through that Compose
+  `interface_name` support depends on has since been **approved** and is
+  milestoned for engine **29.8.0**.
+- A duplicated sentence in *Verifying releases*, left over from the
+  arm64 digest block.
+
 ## v1.7.0
 
 The release that ships arm64, and closes the last of the lease-leak
