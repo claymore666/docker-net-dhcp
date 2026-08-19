@@ -83,10 +83,61 @@ fi
 # Only test-bearing files. Weakening production code is a different
 # problem with different reviewers; this gate is about destroying a
 # finding a test just produced.
+TEST_PATHS=('*_test.go' 'test/integration/harness/*.go')
+
 mapfile -t FILES < <(git diff --name-only --diff-filter=d "$DIFF_RANGE" -- \
-    '*_test.go' 'test/integration/harness/*.go' 2>/dev/null || true)
+    "${TEST_PATHS[@]}" 2>/dev/null || true)
+
+# --- work the range cannot see (#569) --------------------------------
+#
+# This gate judges a COMMIT RANGE. Run by hand with test changes written
+# but not yet committed — which is exactly when someone runs it, to find
+# out whether what they just wrote is about to be flagged — the range
+# holds no test file, and the gate printed
+#
+#     test-weakening gate: no test files changed
+#
+# and exited 0. A clean pass over work it never opened.
+#
+# That is the third gate here with the same shape: check-version-pins
+# matched only well-formed pins, so a broken one was invisible (#487);
+# check-license-headers walked only tracked files, so a file being
+# written was invisible (#564). Each was green in CI and blind in a
+# working checkout, and each reported SUCCESS rather than "nothing to
+# compare" — which is what makes this worse than silence.
+#
+# The fix is not to judge uncommitted work. Inferring intent from a
+# half-written tree is its own trap, and a gate that fires on work in
+# progress gets ignored. The fix is to stop implying that it did.
+# Staged and unstaged changes to tracked files, plus untracked test
+# files, all count: each is a test file the verdict below does not cover.
+#
+# Exit codes are unchanged. This is a refusal to claim a verdict, not a
+# failure.
+mapfile -t DIRTY < <(
+    {
+        git diff --name-only HEAD -- "${TEST_PATHS[@]}" 2>/dev/null || true
+        git ls-files --others --exclude-standard -- "${TEST_PATHS[@]}" 2>/dev/null || true
+    } | sort -u
+)
+
+# Printed alongside EVERY verdict, not just the empty-range one. "clean
+# (4 test file(s) inspected)" with three more sitting uncommitted makes
+# the same claim the empty range did, just less obviously.
+note_dirty() {
+    [ "${#DIRTY[@]}" -eq 0 ] && return 0
+    echo "  NOT INSPECTED — ${#DIRTY[@]} test file(s) have uncommitted changes, which are"
+    echo "  outside the range '$RANGE'. This gate judges commits; commit them and run"
+    echo "  it again for a verdict on them:"
+    printf '    %s\n' "${DIRTY[@]}"
+}
 
 if [ "${#FILES[@]}" -eq 0 ]; then
+    if [ "${#DIRTY[@]}" -ne 0 ]; then
+        echo "test-weakening gate: NO VERDICT — the range '$RANGE' changes no test file."
+        note_dirty
+        exit 0
+    fi
     echo "test-weakening gate: no test files changed"
     exit 0
 fi
@@ -296,10 +347,12 @@ fi
 
 if [ "$findings" -eq 0 ]; then
     echo "test-weakening gate: clean (${#FILES[@]} test file(s) inspected)"
+    note_dirty
     exit 0
 fi
 
 echo
+note_dirty
 if [ -n "$waiver" ]; then
     echo "test-weakening gate: $findings finding(s), WAIVED by an issue reference in $waiver."
     echo "  Recorded rather than blocked — the rule is that this cannot happen silently,"
