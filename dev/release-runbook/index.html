@@ -1222,15 +1222,30 @@ default.</p>
 </code></pre></div>
 <p>Watch the run; every step including <strong>verify-install</strong> and, since
 v1.7.0, <strong>release-arm64</strong> / <strong>verify-install-arm64</strong> must be green.</p>
-<p><strong>The rc window is also when the arm64 integration lane runs</strong> (#531).
-It is dispatch-only and must run only against release candidates: the
-arm64 runner pool it targets (label <code>dhcp-ci-arm64</code>) is provided for
-that window, not for day-to-day PRs. Once the rc tag exists:</p>
+<p><strong>The rc tag also starts the arm64 integration lane</strong> (#531) — pushing
+it triggers <code>integration-arm64</code> on its own. Nothing to dispatch, and
+nothing to remember: the tag is the gate, so what the rc proves follows
+from the tag. The lane still runs only against release candidates
+(<code>v*-rc*</code> never matches a bare release tag), because the runner pool it
+targets — label <code>dhcp-ci-arm64</code> — is provided for that window and not
+for day-to-day PRs.</p>
+<p>An arm64 runner has to be online for the rc, which today means minting
+a JIT config and launching it (the amd64 pool has an orchestrator; the
+arm64 side does not yet — that is the open half of #531). Do it around
+the time you push the tag; the lane waits 25 minutes.</p>
+<p>Two jobs to read, and they say different things:</p>
+<ul>
+<li><strong><code>arm64-suite</code></strong> — the verdict. Must be green before the real tag.</li>
+<li><strong><code>arm64-lane-present</code></strong> — red means the suite never <em>started</em>: no
+  runner carried <code>dhcp-ci-arm64</code> within the wait, so this candidate has
+  <strong>no arm64 verdict at all</strong>. It exists because a job with no runner
+  sits queued for hours and queued renders as "in progress", which is
+  indistinguishable from a lane still working. Treat it as "bring a
+  runner up and re-dispatch", never as a flake to wave through.</li>
+</ul>
+<p>To re-run the lane against a tag that already exists:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>gh<span class="w"> </span>workflow<span class="w"> </span>run<span class="w"> </span>integration-arm64.yml<span class="w"> </span>--ref<span class="w"> </span>vX.Y.Z-rcN
 </code></pre></div>
-<p>Its <code>arm64-suite</code> job must be green before the real tag. A job that
-sits queued means no arm64 runner is online — that is a "bring the
-pool up" question for whoever runs it, not a CI outage.</p>
 <p>The rc window is the <strong>enforcement gate</strong> for the
 documentation review (procedure step 3): every PR on the milestone
 must be reconciled against README, <code>docs/</code>, and the RELEASE_NOTES
