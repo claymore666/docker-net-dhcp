@@ -482,6 +482,19 @@ jobs:
           fi
           echo "fixture deps present: dnsmasq $(dnsmasq --version 2>/dev/null | head -1 | awk '{print $3}'), kea $(kea-dhcp4 -v 2>/dev/null)"
 
+      # The replayed request fixtures (#644) are a recording of ONE
+      # engine. This is the only host that knows which engine the suite
+      # actually talks to, so it is the only place the recording can be
+      # checked against reality — everywhere else the comparison would
+      # be against an unrelated daemon.
+      #
+      # Without it the fixtures decay into an assumption that agrees
+      # with itself forever, with a green test next to it. That is worse
+      # than the hand-built structs they replaced, because it looks like
+      # evidence.
+      - name: Fixture engine drift
+        run: bash scripts/check-fixture-engine-drift.sh
+
       # Best-effort: clean any orphans from a previous run that
       # panicked mid-setup. Safe to run even on a clean state.
       - name: Cleanup orphans from previous runs

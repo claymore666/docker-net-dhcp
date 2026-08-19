@@ -6,11 +6,15 @@ package plugin
 import (
 	"bytes"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/claymore666/docker-net-dhcp/pkg/util"
 )
 
 // Replay of captured libnetwork requests (#644).
@@ -171,9 +175,14 @@ func newRequestValue(method string) (interface{}, bool) {
 
 // THE POINT OF THIS FILE.
 //
-// Decoding with DisallowUnknownFields turns "the daemon sends a field we
-// do not model" from something discovered on a privileged runner — or in
-// production, or never — into a unit-test failure.
+// Replaying each captured body through util.ParseJSONOrErrorResponse —
+// the first statement of every apiXxx handler — turns "the daemon sends
+// a field we do not model" from something discovered on a privileged
+// runner, or in production, or never, into a unit-test failure.
+//
+// It is not a soft failure in production either: that parser decodes
+// with DisallowUnknownFields, so an unmodelled field is a 400 and the
+// container does not start.
 //
 // It is the assertion #218 and #125 are both waiting on. Each is blocked
 // on moby forwarding a field to a call we already receive
@@ -192,14 +201,21 @@ func TestFixtures_NoUnmodelledFields(t *testing.T) {
 			if !ok {
 				continue
 			}
-			dec := json.NewDecoder(bytes.NewReader(call.body))
-			dec.DisallowUnknownFields()
-			if err := dec.Decode(v); err != nil {
-				t.Errorf("%s/%s (engine %s): %v\n"+
+			// Through the handler's own parser, not a lookalike
+			// decoder. Every apiXxx handler starts with exactly this
+			// call, so a change to it — dropping DisallowUnknownFields,
+			// say — changes what this test asserts, instead of leaving
+			// the test agreeing with a rule production no longer has.
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/"+call.method, bytes.NewReader(call.body))
+			if err := util.ParseJSONOrErrorResponse(v, rec, req); err != nil {
+				t.Errorf("%s/%s (engine %s): handler would answer %d: %v\n"+
 					"The daemon sent a field this package does not model, or a field "+
-					"changed type. Decide whether it matters, then either model it or "+
-					"record why it is ignored.",
-					flow.name, call.file, flow.manifest.Engine, err)
+					"changed type, and ParseJSONOrErrorResponse decodes with "+
+					"DisallowUnknownFields — so this is a 400 on a live container "+
+					"start, not a warning. Decide whether it matters, then either "+
+					"model it or record why it is ignored.",
+					flow.name, call.file, flow.manifest.Engine, rec.Code, err)
 			}
 		}
 	}
@@ -284,5 +300,42 @@ func TestFixtures_ReportProvenance(t *testing.T) {
 		t.Logf("flow %-24s engine %-10s captured %s  commit %s  (%d calls) — %s",
 			flow.name, flow.manifest.Engine, flow.manifest.Captured,
 			flow.manifest.Commit, len(flow.calls), flow.manifest.Flow)
+	}
+}
+
+// The plugin's whole reason to exist is that the daemon does NOT assign
+// the address — libnetwork hands us an endpoint with an empty Interface
+// and we go and lease one. resolveExplicitV4 is where that assumption is
+// cashed, and #298 is what it costs to assume wrongly about a field at
+// CreateEndpoint.
+//
+// Asserted against the real bodies rather than a struct we wrote, so the
+// day an engine starts populating Interface.Address in an ordinary
+// `docker run` — not `--ip`, which is a different flow and would
+// legitimately carry one — this says so.
+func TestFixtures_NoExplicitAddressInOrdinaryFlows(t *testing.T) {
+	for _, flow := range loadFixtureFlows(t) {
+		for _, call := range flow.calls {
+			if call.method != "NetworkDriver.CreateEndpoint" {
+				continue
+			}
+			var req CreateEndpointRequest
+			if err := json.Unmarshal(call.body, &req); err != nil {
+				t.Errorf("%s/%s: %v", flow.name, call.file, err)
+				continue
+			}
+			ip, err := resolveExplicitV4(req)
+			if err != nil {
+				t.Errorf("%s/%s: resolveExplicitV4 on a real request: %v", flow.name, call.file, err)
+				continue
+			}
+			if ip != "" {
+				t.Errorf("%s/%s (engine %s): the daemon supplied %s at CreateEndpoint. "+
+					"None of these flows passes --ip, so the address the plugin leases "+
+					"is no longer the only one in play — decide which wins before this "+
+					"reaches a user.",
+					flow.name, call.file, flow.manifest.Engine, ip)
+			}
+		}
 	}
 }
