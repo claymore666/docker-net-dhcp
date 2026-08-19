@@ -231,13 +231,36 @@ the same MAC to the server across an event the container did not choose.
 
 ## Running the tests
 
-Three loops, cheapest first. Only the last two need root or a plugin.
+Four loops, cheapest first. Only the last needs root or a plugin.
 
 | what | command | needs |
 | --- | --- | --- |
 | unit + gate scripts | `go test ./...` | nothing — seconds |
 | the suite's own guards | `go test ./test/integration/harness/` | nothing |
+| **the whole fast CI lane** | `make check` | nothing — about a minute |
 | both integration suites | `sudo make integration-local` | root, Docker |
+
+**`make check` is the one to run before pushing.** It runs the same
+gates as the `test` job — build, vet, format, the race suite, the short
+fuzz, every `check-*.sh`, and the gate self-tests — with no privileges
+and no host mutation, so the answer you get locally is the answer CI
+will give. The lane's contents live in `scripts/local-lane.sh`, and
+`scripts/check-local-lane.sh` fails CI if that file lists fewer gates
+than the workflow runs; a local target that hand-listed them would
+quietly cover less the first time a gate was added (#636, the same
+shape as #542).
+
+Three things it does **not** do, each declared rather than absent —
+`scripts/local-lane.sh --list-exempt` prints them with reasons. The two
+attribution gates judge a commit range against a pull-request body, and
+`govulncheck` needs the network and a pinned install, so a local answer
+would be a different one.
+
+A step whose tool is missing (`staticcheck`, `actionlint`, `shellcheck`)
+is **skipped loudly** and named in the summary rather than passing
+silently. `STRICT=1 make check` turns any skip into a failure — use that
+anywhere a green exit is read as coverage instead of by a person who can
+see the summary.
 
 CI shards the main suite across three jobs (#381, #468); `integration-local`
 deliberately does not — a local run is one machine, so sharding would

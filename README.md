@@ -221,6 +221,12 @@ Contributions are welcome.
     target rather than `make integration-test` directly: the latter does
     not rebuild, so it silently tests whatever plugin is already
     installed.
+  - **Before you push:** `make check` runs the whole fast CI lane
+    locally — build, vet, format, the race suite, the short fuzz, and
+    every gate script — in about a minute, with no privileges and no
+    host mutation. It is the same set the `test` job runs, kept in step
+    by a gate, so it will not tell you a branch is green when CI would
+    not.
   - **Authorship:** commits and pull request descriptions must not carry
     AI-assistant attribution — no `Co-authored-by:` trailer naming an
     assistant or an assistant's no-reply address, no "Generated with …"

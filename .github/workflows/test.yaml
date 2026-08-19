@@ -287,6 +287,17 @@ jobs:
       - name: Dispatch-ref guard coverage
         run: bash scripts/check-dispatch-ref-guard.sh
 
+      # The local lane must not test less than this job does (#636).
+      # scripts/local-lane.sh is what `make check` runs before a push;
+      # the moment it lists fewer gates than the steps above, it exits 0
+      # having skipped one and the developer reads that as green. Same
+      # shape as #542, one level up — so the lane ships with a gate
+      # reconciling it against this file rather than on trust. A gate
+      # that cannot run on a workstation is declared out of lane with a
+      # reason; it is never simply absent.
+      - name: Local-lane coverage
+        run: bash scripts/check-local-lane.sh
+
   staticcheck:
     runs-on: ubuntu-latest
     timeout-minutes: 15
