@@ -47,6 +47,21 @@ set -uo pipefail
 
 cd "$(dirname "$0")/.." || exit 2
 
+# Find tools installed the way this project tells people to install them.
+# The release runbook's tooling table is all `go install`, which puts
+# binaries in $(go env GOPATH)/bin — a directory that is NOT on PATH by
+# default. Without this, a developer who followed our own instructions
+# gets `staticcheck` and `actionlint` reported as missing and silently
+# unchecked, which is the exact failure this lane exists to remove.
+if command -v go >/dev/null 2>&1; then
+    gobin="$(go env GOBIN 2>/dev/null)"
+    [ -n "$gobin" ] || gobin="$(go env GOPATH 2>/dev/null)/bin"
+    [ -d "$gobin" ] && case ":$PATH:" in
+        *":$gobin:"*) ;;
+        *) PATH="$PATH:$gobin"; export PATH ;;
+    esac
+fi
+
 # --- the lane ----------------------------------------------------------
 # "label|required-tool|command".  required-tool is checked with
 # `command -v`; "-" means the step needs nothing beyond a shell.
