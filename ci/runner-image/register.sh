@@ -47,11 +47,21 @@ RUNNER_URL="${RUNNER_URL:-https://github.com/claymore666/docker-net-dhcp}"
 RUNNER_NAME="${RUNNER_NAME:-$(hostname)}"
 RUNNER_LABELS="${RUNNER_LABELS:-dhcp-ci-arm64}"
 
-# The files config.sh writes that together ARE the runner's identity.
-# .credentials_rsakey is the private key; without it the other two
-# cannot authenticate, which is why a partial set is treated as no
-# identity at all rather than as something to repair.
-RUNNER_IDENTITY_FILES=(.runner .credentials .credentials_rsakey)
+# The files config.sh writes that together ARE the runner's identity:
+# the agent record, the OAuth credential, and the private key the
+# credential authenticates with. Without the key the other two are
+# useless, which is why a partial set is treated as no identity at all
+# rather than as something to repair.
+#
+# The key file is matched by PATTERN, not by name. It is
+# `.credentials_rsaparams` on runner 2.x with FIPS crypto and has been
+# spelled otherwise before; hardcoding one name means a runner upgrade
+# that renames it would persist two of three files and produce a
+# registration that cannot authenticate — while every "did it work"
+# check passed. Requiring at least one match keeps that fatal without
+# betting on the spelling.
+RUNNER_IDENTITY_FIXED=(.runner .credentials)
+RUNNER_IDENTITY_KEY_GLOB='.credentials_rsa*'
 
 reglog() { echo "[register] $*" >&2; }
 
@@ -59,11 +69,29 @@ reglog() { echo "[register] $*" >&2; }
 # Returns 0 only when all of them are present and non-empty.
 runner_identity_missing() {
     local dir="$1" f missing=()
-    for f in "${RUNNER_IDENTITY_FILES[@]}"; do
+    for f in "${RUNNER_IDENTITY_FIXED[@]}"; do
         [ -s "$dir/$f" ] || missing+=("$f")
     done
+    [ -n "$(runner_identity_keys "$dir")" ] || missing+=("$RUNNER_IDENTITY_KEY_GLOB")
     [ "${#missing[@]}" -eq 0 ] || printf '%s\n' "${missing[@]}"
     [ "${#missing[@]}" -eq 0 ]
+}
+
+# The private-key file(s) config.sh left in a directory, one per line.
+runner_identity_keys() {
+    local dir="$1" f
+    for f in "$dir"/$RUNNER_IDENTITY_KEY_GLOB; do
+        [ -s "$f" ] && printf '%s\n' "$(basename "$f")"
+    done
+    return 0
+}
+
+# Every identity file present in a directory: the fixed two plus
+# whatever key files are actually there.
+runner_identity_all() {
+    local dir="$1"
+    printf '%s\n' "${RUNNER_IDENTITY_FIXED[@]}"
+    runner_identity_keys "$dir"
 }
 
 runner_state_writable() {
@@ -123,10 +151,14 @@ runner_labels_ok() {
 # boot failure as an unmounted state dir.
 runner_persist_identity() {
     local f missing
-    for f in "${RUNNER_IDENTITY_FILES[@]}"; do
-        [ -s "$RUNNER_HOME/$f" ] || { reglog "FATAL: config.sh left no $f in $RUNNER_HOME"; return 1; }
+    if ! missing=$(runner_identity_missing "$RUNNER_HOME"); then
+        reglog "FATAL: config.sh reported success but left no $(tr "\n" " " <<<"$missing") in $RUNNER_HOME"
+        return 1
+    fi
+    while read -r f; do
+        [ -n "$f" ] || continue
         cp -f "$RUNNER_HOME/$f" "$RUNNER_STATE_DIR/$f" || { reglog "FATAL: could not persist $f"; return 1; }
-    done
+    done < <(runner_identity_all "$RUNNER_HOME")
     chmod 600 "$RUNNER_STATE_DIR"/.credentials* 2>/dev/null || true
     if ! missing=$(runner_identity_missing "$RUNNER_STATE_DIR"); then
         reglog "FATAL: identity did not land in $RUNNER_STATE_DIR (missing: $(tr "\n" " " <<<"$missing"))"
@@ -138,9 +170,10 @@ runner_persist_identity() {
 
 runner_restore_identity() {
     local f
-    for f in "${RUNNER_IDENTITY_FILES[@]}"; do
+    while read -r f; do
+        [ -n "$f" ] || continue
         cp -f "$RUNNER_STATE_DIR/$f" "$RUNNER_HOME/$f" || { reglog "FATAL: could not restore $f"; return 1; }
-    done
+    done < <(runner_identity_all "$RUNNER_STATE_DIR")
     chmod 600 "$RUNNER_HOME"/.credentials* 2>/dev/null || true
     reglog "restored an existing registration from $RUNNER_STATE_DIR (name=$RUNNER_NAME)"
     return 0
@@ -149,8 +182,25 @@ runner_restore_identity() {
 # The token is passed by env and never echoed: it is short-lived, but it
 # is still a credential and this log goes to the host's journal.
 runner_configure() {
-    local token="$1"
+    local token="$1" f
     runner_labels_ok "$RUNNER_LABELS" || return 1
+
+    # config.sh refuses to run against an already-configured home
+    # ("Cannot configure the runner because it is already configured"),
+    # and with --restart=always that home is guaranteed to be dirty:
+    # restarting a container reuses its writable layer, so a first
+    # attempt that registered and then failed leaves .runner behind and
+    # every retry afterwards dies on it — a restart loop that never
+    # recovers, which is how this was found.
+    #
+    # The stale files are removed rather than `config.sh remove`d: that
+    # subcommand DEREGISTERS the runner from GitHub and needs a removal
+    # token, whereas --replace already handles the server side. Only the
+    # local leftovers are in the way.
+    while read -r f; do
+        [ -n "$f" ] && rm -f "$RUNNER_HOME/$f"
+    done < <(runner_identity_all "$RUNNER_HOME")
+
     reglog "registering '$RUNNER_NAME' at $RUNNER_URL with labels [$RUNNER_LABELS]"
     ( cd "$RUNNER_HOME" && RUNNER_ALLOW_RUNASROOT=1 ./config.sh \
         --unattended --replace \
@@ -194,7 +244,7 @@ runner_prepare() {
     # A partial identity is not repairable — the three files are written
     # together by one config.sh run — so it is reported as such and
     # re-registered from scratch, never patched up.
-    present=$(( ${#RUNNER_IDENTITY_FILES[@]} - $(printf '%s\n' "$missing" | grep -c .) ))
+    present=$(( ${#RUNNER_IDENTITY_FIXED[@]} + 1 - $(printf '%s\n' "$missing" | grep -c .) ))
     if [ "$present" -gt 0 ]; then
         reglog "WARNING: $RUNNER_STATE_DIR holds a PARTIAL registration (missing: $(tr "\n" " " <<<"$missing"))"
         reglog "Re-registering from scratch; a partial identity cannot authenticate."

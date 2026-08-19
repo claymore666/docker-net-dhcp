@@ -53,12 +53,23 @@ run_case() {
     cat > "$home/config.sh" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$@" > "$(dirname "$0")/config-args"
+# The real config.sh refuses an already-configured home, which is what a
+# --restart=always retry always hands it. Reproduced here so the caller
+# is required to clear the leftovers itself.
+if [ -e "$(dirname "$0")/.runner" ]; then
+    echo "Cannot configure the runner because it is already configured." >&2
+    exit 1
+fi
 [ "${CONFIG_RC:-0}" = "0" ] || exit "${CONFIG_RC}"
-for f in ${CONFIG_WRITES:-.runner .credentials .credentials_rsakey}; do
+for f in ${CONFIG_WRITES:-.runner .credentials .credentials_rsaparams}; do
     echo "written-by-stub" > "$(dirname "$0")/$f"
 done
 STUB
     chmod +x "$home/config.sh"
+
+    if [ "${DIRTY_HOME:-0}" = "1" ]; then
+        echo "leftover-from-a-failed-attempt" > "$home/.runner"
+    fi
 
     if [ "$state_has" != "none" ]; then
         local f
@@ -93,13 +104,13 @@ grep -qx -- '--unattended' "$args" && grep -qx -- '--replace' "$args" \
 grep -qx -- '--ephemeral' "$args" \
     && { echo "FAIL: --ephemeral passed — the runner would deregister after one job, which is the state #632 removes"; fails=1; } \
     || echo "PASS: not --ephemeral (a standing runner, not a single-use one)"
-got=$(grep -c . "$TMP/first/state/.credentials_rsakey" 2>/dev/null || echo 0)
+got=$(grep -c . "$TMP/first/state/.credentials_rsaparams" 2>/dev/null || echo 0)
 check "identity persisted to the state dir" 1 "$got"
 got=$(grep -c TOKENSECRET "$TMP/first/log" || true)
 check "the registration token is never logged" 0 "$got"
 
 # --- 2. every later boot: identity present, NO token -------------------
-got=$(RUNNER_LABELS=dhcp-ci-arm64 run_case reboot .runner,.credentials,.credentials_rsakey)
+got=$(RUNNER_LABELS=dhcp-ci-arm64 run_case reboot .runner,.credentials,.credentials_rsaparams)
 check "a later boot with no token restores and runs" ok "$got"
 got=$([ -f "$TMP/reboot/home/config-args" ] && echo called || echo not-called)
 check "config.sh is NOT re-run when an identity exists" not-called "$got"
@@ -124,6 +135,31 @@ grep -q "PARTIAL registration" "$TMP/partial/log" \
 
 got=$(RUNNER_LABELS=dhcp-ci-arm64 run_case partial_notoken .runner,.credentials)
 check "a partial identity with no token fails (does not half-restore)" fail "$got"
+
+# --- 4b. a dirty runner home must not wedge the retry loop -------------
+# Found on the real host: a first attempt that registered and then failed
+# leaves .runner in the container's writable layer, --restart=always
+# reuses that layer, and config.sh refuses every retry afterwards. The
+# runner never comes back without a human — the exact state #632 removes,
+# reached by the mechanism meant to prevent it.
+mkdir -p "$TMP/dirty/home"
+got=$(RUNNER_REGISTRATION_TOKEN=T RUNNER_LABELS=dhcp-ci-arm64 \
+      DIRTY_HOME=1 run_case dirty none)
+check "a re-register against an already-configured home succeeds" ok "$got"
+
+# --- 4c. the key file is matched by pattern, not by name ---------------
+# .credentials_rsaparams is runner 2.x with FIPS crypto; the name has
+# been spelled otherwise before. A rename must keep working, and its
+# ABSENCE must still be fatal.
+got=$(CONFIG_WRITES=".runner .credentials .credentials_rsakey" \
+      RUNNER_REGISTRATION_TOKEN=T RUNNER_LABELS=dhcp-ci-arm64 run_case renamedkey none)
+check "a differently-spelled .credentials_rsa* key still registers" ok "$got"
+got=$([ -s "$TMP/renamedkey/state/.credentials_rsakey" ] && echo persisted || echo lost)
+check "the renamed key file is persisted" persisted "$got"
+
+got=$(CONFIG_WRITES=".runner .credentials" \
+      RUNNER_REGISTRATION_TOKEN=T RUNNER_LABELS=dhcp-ci-arm64 run_case nokey none)
+check "no key file at all is still fatal" fail "$got"
 
 # --- 5. the state dir must actually persist ----------------------------
 got=$(FIXTURE_UNMOUNTED=1 RUNNER_REGISTRATION_TOKEN=T RUNNER_LABELS=dhcp-ci-arm64 run_case nomount none)
@@ -166,7 +202,7 @@ check "config.sh exiting 0 with an incomplete identity fails the boot" fail "$go
 # then fail on the server. Driven by shadowing cp, which is the only way
 # to produce it deterministically.
 mkdir -p "$TMP/lostcopy/home" "$TMP/lostcopy/state"
-for f in .runner .credentials .credentials_rsakey; do echo x > "$TMP/lostcopy/home/$f"; done
+for f in .runner .credentials .credentials_rsaparams; do echo x > "$TMP/lostcopy/home/$f"; done
 got=$(
     set +e
     export RUNNER_HOME="$TMP/lostcopy/home" RUNNER_STATE_DIR="$TMP/lostcopy/state"
