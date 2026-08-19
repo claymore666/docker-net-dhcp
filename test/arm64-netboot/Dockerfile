@@ -1,3 +1,22 @@
+# Build stage for nfs-watchdog, the resident petter that resets the Pi
+# when its NFS root stops answering (#632). Built here rather than on the
+# target because the target has no toolchain and its root filesystem is
+# the very thing the binary exists to distrust. Statically linked so it
+# depends on no shared library it would have to fault in off that share
+# during an outage. Same digest pin as the repo's own builder.
+FROM golang:1.26.6-alpine@sha256:3889b425f035be855a72fb4755265311293b6d414521f0a519d819df32222d83 AS watchdog-builder
+# The program is stdlib-only on purpose, so it compiles here from a
+# throwaway module without the repo's go.mod being in this build context
+# — the context is this directory, and widening it to the repo root to
+# fetch two files would pull the whole tree in. The same source is part
+# of the root module, so `go build ./...`, `go vet` and `go test` in CI
+# cover exactly this file.
+WORKDIR /src
+COPY nfs-watchdog/ ./
+RUN printf 'module nfs-watchdog\ngo 1.26\n' > go.mod \
+    && CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags='-s -w' \
+        -o /out/nfs-watchdog .
+
 # Netboot server for the native arm64 CI runner lane (#531).
 #
 # Serves a Raspberry Pi its boot firmware over TFTP and its root filesystem
@@ -41,6 +60,8 @@ COPY patch-target.sh /usr/local/bin/patch-target.sh
 COPY iscsi-target.sh /usr/local/bin/iscsi-target.sh
 COPY sync-boot.sh /usr/local/bin/sync-boot.sh
 COPY templates/    /usr/local/share/netboot-templates/
+# Installed into the Pi's root filesystem by patch-target.sh.
+COPY --from=watchdog-builder /out/nfs-watchdog /usr/local/share/netboot-templates/nfs-watchdog
 RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/provision.sh \
         /usr/local/bin/patch-target.sh /usr/local/bin/iscsi-target.sh \
         /usr/local/bin/sync-boot.sh

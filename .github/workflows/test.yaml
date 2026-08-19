@@ -230,6 +230,16 @@ jobs:
       - name: License-header check
         run: bash scripts/check-license-headers.sh
 
+      # The arm64 host's NFS-outage watchdog is wired across four files
+      # and both ways of getting it wrong are silent: systemd keeping
+      # /dev/watchdog (nothing pets, host unprotected) and systemd
+      # releasing it with nothing enabled to take over (a healthy host
+      # resets a minute after boot). Nothing in CI builds the netboot
+      # image, so without this the breakage surfaces at the next
+      # reprovision of that host instead of here (#632).
+      - name: Pi watchdog wiring
+        run: bash scripts/check-pi-watchdog-wiring.sh
+
       # A parent NIC registers one rx_handler, so it is a macvlan port
       # or an ipvlan port and never both. Every child link attached to a
       # parent has to be serialised by Plugin.lockParent or it can be
