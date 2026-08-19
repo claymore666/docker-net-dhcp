@@ -18,7 +18,7 @@ PLUGIN_COVER_TAG ?= golang-cover
 TEST_OUTAGE_TICK ?= 2s
 TEST_OUTAGE_GRACE ?= 10s
 
-.PHONY: all debug build create enable disable pdebug push clean integration-test \
+.PHONY: all debug build create enable disable pdebug push clean check integration-test \
         integration-test-failure integration-test-shard integration-local integration-cleanup \
         build-cover plugin-cover create-cover enable-cover disable-cover
 
@@ -157,6 +157,22 @@ ITEST_FAILURE_LOG = $(ITEST_LOG_DIR)/integration-failure-$(ITEST_STAMP).log
 # wrong in both directions from one cause. Rebuilding reproduced CI
 # exactly.
 #
+# The fast CI lane, locally (#636). No privileges, no host mutation, no
+# network — the counterpart to integration-local, which covers the
+# privileged lane.
+#
+# It is a thin call on purpose. The lane's contents live in
+# scripts/local-lane.sh so that scripts/check-local-lane.sh can reconcile
+# them against test.yaml; listing the gates here instead would rebuild the
+# #542 hole, where a gate added to CI silently never runs locally and the
+# target still exits 0.
+#
+# A step whose tool is missing is skipped LOUDLY and named in the summary.
+# STRICT=1 makes a skip a failure — use it anywhere a green exit is read
+# as coverage rather than by a human who can see the summary.
+check:
+	@bash scripts/local-lane.sh
+
 # Orphan cleanup runs FIRST, mirroring the CI job's own first step.
 # Without it a single container left behind by an earlier aborted run
 # fails the next local run with a name conflict, days later, in a test
