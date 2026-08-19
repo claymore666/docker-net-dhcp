@@ -994,7 +994,12 @@ Recover with:</p>
 <a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="c1"># create this directory for you, and `plugin install` fails at</span>
 <a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="c1"># start-up without it.</span>
 <a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>sudo<span class="w"> </span>mkdir<span class="w"> </span>-p<span class="w"> </span>/var/lib/net-dhcp
-<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>docker<span class="w"> </span>plugin<span class="w"> </span>install<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v1.7.0
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="c1"># amd64</span>
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>docker<span class="w"> </span>plugin<span class="w"> </span>install<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v1.7.0
+<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>
+<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="c1"># arm64 (v1.7.0 onward) — the architecture is in the tag, see below</span>
+<a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a>docker<span class="w"> </span>plugin<span class="w"> </span>install<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v1.7.0-arm64
 </code></pre></div>
 <p>It requests <code>host</code> networking, the host PID namespace, the Docker
 socket, a bind mount of the state directory above, a read-only bind
@@ -1005,10 +1010,12 @@ proceed.
 <p>Create a bridge-mode network and run a container on it (assumes you
 already have a host bridge <code>my-bridge</code> on your LAN — see
 <a href="bridge-mode/">Bridge mode</a> for that one-time setup):</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>docker<span class="w"> </span>network<span class="w"> </span>create<span class="w"> </span>-d<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v1.7.0<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">  </span>--ipam-driver<span class="w"> </span>null<span class="w"> </span>-o<span class="w"> </span><span class="nv">bridge</span><span class="o">=</span>my-bridge<span class="w"> </span>my-dhcp-net
-<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>
-<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>docker<span class="w"> </span>run<span class="w"> </span>--rm<span class="w"> </span>-ti<span class="w"> </span>--network<span class="w"> </span>my-dhcp-net<span class="w"> </span>alpine<span class="w"> </span>ip<span class="w"> </span>address<span class="w"> </span>show
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="c1"># On arm64 use ...:v1.7.0-arm64 here too — a network stores this exact</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="c1"># reference as its driver, so it must name the plugin you installed.</span>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>docker<span class="w"> </span>network<span class="w"> </span>create<span class="w"> </span>-d<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v1.7.0<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="w">  </span>--ipam-driver<span class="w"> </span>null<span class="w"> </span>-o<span class="w"> </span><span class="nv">bridge</span><span class="o">=</span>my-bridge<span class="w"> </span>my-dhcp-net
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>
+<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>docker<span class="w"> </span>run<span class="w"> </span>--rm<span class="w"> </span>-ti<span class="w"> </span>--network<span class="w"> </span>my-dhcp-net<span class="w"> </span>alpine<span class="w"> </span>ip<span class="w"> </span>address<span class="w"> </span>show
 </code></pre></div>
 <p>The <code>null</code> IPAM driver is <strong>mandatory</strong> — it stops Docker handing out
 addresses that would collide with the real LAN.</p>
@@ -1072,8 +1079,10 @@ installed from a multi-architecture manifest list at all: the daemon
 reads a plugin's privileges before pulling it, its manifest handler
 matches single manifests only, and an index therefore fails with <code>did
 not find plugin config for specified reference</code> on every architecture —
-with no <code>--platform</code> to steer it. On an arm64 host, install the
-<code>-arm64</code> tag; everything else in these pages applies unchanged.</p>
+with no <code>--platform</code> to steer it. The <code>-arm64</code> tag replaces the bare
+one in <strong>every</strong> snippet that names the image, including
+<code>docker network create -d</code>: a network stores the tagged reference as
+its driver, so a bare tag there names a plugin the host does not have.</p>
 <ul>
 <li><a href="https://github.com/claymore666/docker-net-dhcp/pkgs/container/docker-net-dhcp">GHCR package</a></li>
 <li><a href="https://github.com/claymore666/docker-net-dhcp/releases">GitHub Releases</a>
