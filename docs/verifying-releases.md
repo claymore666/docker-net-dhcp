@@ -125,11 +125,11 @@ sha256sum rootfs/usr/sbin/net-dhcp \
           rootfs/usr/lib/net-dhcp/dhcp-handler
 ```
 
-The two pairs of digests must match. For **v1.6.0** (`linux/amd64`) they are:
+The two pairs of digests must match. For **v1.7.0** (`linux/amd64`) they are:
 
 ```
-eade3423468fa55c5f2c82bd16c28f4f6e8e447096c291fe37459b36e22ac78e  net-dhcp
-140f4f14dc9a48d7991e33186c824da790f30d184fc6e014ebbeb447f22132ca  dhcp-handler
+6698436fdf3de94deea0ef157fdde850a170589129a43403525976cc07713579  net-dhcp
+be7290f060c4af1b5c7f841b1e31e04332e9d3bc2c1b50746431d39f57c1a4a9  dhcp-handler
 ```
 
 Since v1.7.0 each release also ships arm64 binaries under the `-arm64`
