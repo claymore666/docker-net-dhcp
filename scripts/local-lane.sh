@@ -74,7 +74,7 @@ LANE=(
   "vet|go|go vet ./..."
   "format|gofmt|test -z \"\$(gofmt -l .)\" || { echo 'gofmt -l found unformatted files:'; gofmt -l .; false; }"
   "staticcheck|staticcheck|staticcheck ./..."
-  "shellcheck (scripts)|shellcheck|shellcheck -S warning scripts/*.sh"
+  "shellcheck (scripts+runner image)|shellcheck|shellcheck -S warning scripts/*.sh ci/runner-image/*.sh"
   "actionlint|actionlint|actionlint"
   "option-docs drift|-|bash scripts/check-option-docs.sh"
   "starter-task links|-|bash scripts/check-good-first-issues.sh --static"

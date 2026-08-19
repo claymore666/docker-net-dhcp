@@ -7,17 +7,19 @@
 #
 # Differences from the amd64 lane, all deliberate:
 #
-#   - One unsharded job instead of a 4-job matrix. There is one Pi, and
-#     its runner is JIT single-job-then-exit: a matrix would run
-#     serially at best and deadlock at worst (later jobs waiting for a
-#     runner that exited after the first).
+#   - One unsharded job instead of a 4-job matrix. There is one Pi, so a
+#     matrix would run serially at best. It no longer deadlocks — the
+#     runner is standing rather than single-use (#632) — but sharding
+#     across one machine buys nothing, so this stays unsharded until
+#     there is a second arm64 host.
 #   - Not a required check. This lane runs at release-candidate time,
-#     not per PR — the arm64 runner pool is brought up for the rc window
-#     and is not held online for day-to-day development.
-#   - The runner must be launched for the rc (JIT mint + docker run on
-#     the Pi). A queued job here with no runner online means nobody
-#     launched one, not a CI outage — which is what `lane-present`
-#     exists to say out loud.
+#     not per PR — the tag is what spends the arm64 host, not a push.
+#   - The runner registers itself at boot and reconnects unattended
+#     (`register` mode, #632), so a queued job here means the host is
+#     powered off or its boot server is down — not that someone forgot
+#     to launch a container, and not a CI outage. Either way it is
+#     something a human must fix before the rc can be called green,
+#     which is what `lane-present` exists to say out loud.
 #
 # The rc tag is the human gate of a release; what an rc proves must
 # follow from that tag alone. So this fires on `v*-rc*` and nothing

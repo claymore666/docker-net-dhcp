@@ -118,7 +118,8 @@ RUN cd /tmp/cache-src && go build -tags integration ./... && go vet -tags integr
 
 COPY --from=seeder /seed /seed
 COPY ci/runner-image/entrypoint.sh /entrypoint.sh
-RUN chmod 755 /entrypoint.sh
+COPY ci/runner-image/register.sh /register.sh
+RUN chmod 755 /entrypoint.sh && chmod 644 /register.sh
 
 # The nested daemon's data root must be a real filesystem — overlay2 on
 # top of the container's own overlayfs silently degrades to vfs. An
