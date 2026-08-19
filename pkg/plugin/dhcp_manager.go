@@ -536,207 +536,262 @@ func (m *dhcpManager) findContainerPID(ctx context.Context) (int, error) {
 	return 0, fmt.Errorf("endpoint %s not found in network %s container list", shortID(m.joinReq.EndpointID), shortID(m.joinReq.NetworkID))
 }
 
+// renew applies one accepted lease to the container's netns. Each
+// phase below is a separate method so it can be exercised on its own;
+// the order they run in is load-bearing and is documented at each
+// call site rather than inside the phases.
 func (m *dhcpManager) renew(v6 bool, info dhcp.Info) error {
-	v4, v6Last := m.lastIPs()
-	lastIP := v4
-	if v6 {
-		lastIP = v6Last
-	}
-
 	ip, err := netlink.ParseAddr(info.IP)
 	if err != nil {
 		return fmt.Errorf("failed to parse IP address: %w", err)
 	}
 
-	if lastIP != nil && !ip.Equal(*lastIP) {
-		// libnetwork has no in-place endpoint-IP swap RPC, so Docker's
-		// NetworkSettings.IPAddress still reports the previous address
-		// — `docker inspect` lies until the container is recreated.
-		// Bump the counter so operators can alert on the truthfulness
-		// gap; design discussion for a deeper fix is deferred (issue #104).
-		if m.plugin != nil {
-			bumpFamily(&m.plugin.leaseChanged, &m.plugin.leaseChangedV6, v6)
-		}
-		log.
-			WithFields(m.logFields(v6)).
-			WithField("old_ip", lastIP).
-			WithField("new_ip", ip).
-			Warn("dhcp renew with changed IP — Docker's view is now stale")
-
-		// Apply the re-acquired lease to the link. Found by
-		// TestFailure_LeaseRefusedOnRenewal (#128): without this the
-		// kernel keeps the ORIGINAL address forever — the container
-		// answers on an address the server may already have handed to
-		// someone else, and after a server-side renumbering the
-		// default-route replacement below failed with "network is
-		// unreachable" (no address in the new subnet), aborting the
-		// bind and black-holing the endpoint. Address first, routes
-		// after — same ordering the kernel itself requires.
-		//
-		// Applies to both families now (#152): dhcpcd pins the same
-		// DUID-LL/IAID for the one-shot and persistent clients, so the
-		// persistent v6 client renews the SAME address Docker was told
-		// — a "changed IP" is therefore a genuine renumber to re-apply,
-		// not the old IA-split steady state. (Previously the v6 arm was
-		// disabled because busybox's per-process random IAID made every
-		// ipv6=true container look like it changed address seconds after
-		// start.)
-		//
-		// netHandle/ctrLink are always live on the production path
-		// (renew runs from the event loop, post-Start); the guard
-		// keeps pre-Start unit tests of the counter semantics valid.
-		if m.netHandle != nil && m.ctrLink != nil {
-			if err := m.netHandle.AddrReplace(m.ctrLink, ip); err != nil {
-				return fmt.Errorf("failed to apply re-acquired address %v: %w", ip, err)
-			}
-			if err := m.netHandle.AddrDel(m.ctrLink, lastIP); err != nil {
-				// Non-fatal: a lingering stale address is strictly
-				// better than failing the bind on cleanup.
-				log.
-					WithError(err).
-					WithFields(m.logFields(v6)).
-					WithField("stale_ip", lastIP).
-					Warn("Failed to remove stale address after lease change")
-			}
-		}
+	// Address first, routes after — the ordering the kernel itself
+	// requires (see applyAddressChange).
+	if err := m.applyAddressChange(v6, ip); err != nil {
+		return err
 	}
 
-	// Surface DHCP options the plugin captures but doesn't auto-apply
-	// (NTP servers, TFTP server, boot-file name, search list when not
-	// propagating DNS). Operators can grep plugin logs for these
-	// without flipping LOG_LEVEL=trace. Only emits when at least one
-	// is non-empty so plain LANs don't get a noisy line per renewal.
-	if len(info.NTPServers) > 0 || info.TFTPServer != "" || info.BootFile != "" || len(info.SearchList) > 0 ||
-		info.WPAD != "" || info.PosixTimezone != "" || info.TZDBTimezone != "" || info.TimeOffset != "" {
-		fields := m.logFields(v6)
-		if len(info.NTPServers) > 0 {
-			fields["ntp"] = info.NTPServers
-		}
-		if info.TFTPServer != "" {
-			fields["tftp"] = info.TFTPServer
-		}
-		if info.BootFile != "" {
-			fields["bootfile"] = info.BootFile
-		}
-		if len(info.SearchList) > 0 {
-			fields["search"] = info.SearchList
-		}
-		// Observe-only informational extras (#262): WPAD URL (opt 252),
-		// RFC 4833 timezone (opt 100/101), legacy time offset (opt 2).
-		if info.WPAD != "" {
-			fields["wpad"] = info.WPAD
-		}
-		if info.PosixTimezone != "" {
-			fields["posix_tz"] = info.PosixTimezone
-		}
-		if info.TZDBTimezone != "" {
-			fields["tzdb_tz"] = info.TZDBTimezone
-		}
-		if info.TimeOffset != "" {
-			fields["time_offset"] = info.TimeOffset
-		}
-		log.WithFields(fields).Info("DHCP options received")
-	}
+	m.logObservedOptions(v6, info)
 
 	// Track the freshly-bound address so Leave can hand it to the
 	// tombstone (and thus the next CreateEndpoint's `request`-directive
 	// hint). Without this the manager keeps reporting whatever the very
 	// first CreateEndpoint DISCOVER produced, even if dhcpcd has
-	// moved to a different lease since.
+	// moved to a different lease since. After applyAddressChange, which
+	// needs the previous value.
 	m.setLastIP(v6, ip)
 
-	// Apply DHCP option 6 / 23 (DNS server list) when opt-in and the
-	// server actually supplied servers. Empty list is a no-op rather
-	// than a clobber — see resolvconf.go for the rationale. v6 path
-	// uses DHCPv6 option 23, populated by the dhcpcd handler into the
-	// same DNSServers slice.
-	if m.opts.PropagateDNS && len(info.DNSServers) > 0 {
-		ctx, cancel := context.WithTimeout(context.Background(), dnsPropagateTimeout)
-		pid, err := m.findContainerPID(ctx)
-		cancel()
-		if err != nil {
-			log.
-				WithError(err).
-				WithFields(m.logFields(v6)).
-				Warn("Skipping DNS propagation — could not resolve container PID")
-		} else if err := writeContainerResolvConf(pid, info.DNSServers, info.SearchList, info.Domain); err != nil {
-			log.
-				WithError(err).
-				WithFields(m.logFields(v6)).
-				WithField("dns", info.DNSServers).
-				Error("Failed to write container resolv.conf")
-		} else {
-			log.
-				WithFields(m.logFields(v6)).
-				WithField("dns", info.DNSServers).
-				Debug("Propagated DHCP DNS servers to container resolv.conf")
-		}
+	m.propagateDNS(v6, info)
+	m.propagateMTU(v6, info)
+
+	return m.reconcileDefaultRoute(v6, info)
+}
+
+// applyAddressChange re-applies the lease to the link when the server
+// handed back a different address than the one currently recorded. A
+// no-op on the steady-state renewal path, which is the common case.
+func (m *dhcpManager) applyAddressChange(v6 bool, ip *netlink.Addr) error {
+	v4, v6Last := m.lastIPs()
+	lastIP := v4
+	if v6 {
+		lastIP = v6Last
+	}
+	if lastIP == nil || ip.Equal(*lastIP) {
+		return nil
 	}
 
-	// Apply DHCP option 26 (Interface MTU) when both opt-in and
-	// non-zero. Skipping zero is mandatory: dhcp-handler emits 0
-	// when the server didn't supply the option, and forcing MTU 0
-	// on a kernel link is undefined / disallowed.
-	if m.opts.PropagateMTU && info.MTU > 0 {
-		current := m.ctrLink.Attrs().MTU
-		if current != info.MTU {
-			if err := m.netHandle.LinkSetMTU(m.ctrLink, info.MTU); err != nil {
-				// Don't fail the renewal — IP/gateway are usable; MTU
-				// is a perf-correctness knob. Log loudly so operators
-				// notice; a surprise small MTU under a never-applied
-				// large MTU is exactly the kind of latent
-				// black-hole bug worth surfacing.
-				log.
-					WithError(err).
-					WithFields(m.logFields(v6)).
-					WithField("mtu", info.MTU).
-					Error("Failed to apply DHCP-supplied MTU; container link MTU unchanged")
-			} else {
-				log.
-					WithFields(m.logFields(v6)).
-					WithField("old_mtu", current).
-					WithField("new_mtu", info.MTU).
-					Info("Applied DHCP-supplied MTU")
-			}
-		}
+	// libnetwork has no in-place endpoint-IP swap RPC, so Docker's
+	// NetworkSettings.IPAddress still reports the previous address
+	// — `docker inspect` lies until the container is recreated.
+	// Bump the counter so operators can alert on the truthfulness
+	// gap; design discussion for a deeper fix is deferred (issue #104).
+	if m.plugin != nil {
+		bumpFamily(&m.plugin.leaseChanged, &m.plugin.leaseChangedV6, v6)
+	}
+	log.
+		WithFields(m.logFields(v6)).
+		WithField("old_ip", lastIP).
+		WithField("new_ip", ip).
+		Warn("dhcp renew with changed IP — Docker's view is now stale")
+
+	// Apply the re-acquired lease to the link. Found by
+	// TestFailure_LeaseRefusedOnRenewal (#128): without this the
+	// kernel keeps the ORIGINAL address forever — the container
+	// answers on an address the server may already have handed to
+	// someone else, and after a server-side renumbering the
+	// default-route replacement in reconcileDefaultRoute failed with
+	// "network is unreachable" (no address in the new subnet),
+	// aborting the bind and black-holing the endpoint. Address first,
+	// routes after — same ordering the kernel itself requires.
+	//
+	// Applies to both families now (#152): dhcpcd pins the same
+	// DUID-LL/IAID for the one-shot and persistent clients, so the
+	// persistent v6 client renews the SAME address Docker was told
+	// — a "changed IP" is therefore a genuine renumber to re-apply,
+	// not the old IA-split steady state. (Previously the v6 arm was
+	// disabled because busybox's per-process random IAID made every
+	// ipv6=true container look like it changed address seconds after
+	// start.)
+	//
+	// netHandle/ctrLink are always live on the production path
+	// (renew runs from the event loop, post-Start); the guard
+	// keeps pre-Start unit tests of the counter semantics valid.
+	if m.netHandle == nil || m.ctrLink == nil {
+		return nil
+	}
+	if err := m.netHandle.AddrReplace(m.ctrLink, ip); err != nil {
+		return fmt.Errorf("failed to apply re-acquired address %v: %w", ip, err)
+	}
+	if err := m.netHandle.AddrDel(m.ctrLink, lastIP); err != nil {
+		// Non-fatal: a lingering stale address is strictly
+		// better than failing the bind on cleanup.
+		log.
+			WithError(err).
+			WithFields(m.logFields(v6)).
+			WithField("stale_ip", lastIP).
+			Warn("Failed to remove stale address after lease change")
+	}
+	return nil
+}
+
+// logObservedOptions surfaces DHCP options the plugin captures but
+// doesn't auto-apply (NTP servers, TFTP server, boot-file name, search
+// list when not propagating DNS). Operators can grep plugin logs for
+// these without flipping LOG_LEVEL=trace. Only emits when at least one
+// is non-empty so plain LANs don't get a noisy line per renewal.
+func (m *dhcpManager) logObservedOptions(v6 bool, info dhcp.Info) {
+	if len(info.NTPServers) == 0 && info.TFTPServer == "" && info.BootFile == "" && len(info.SearchList) == 0 &&
+		info.WPAD == "" && info.PosixTimezone == "" && info.TZDBTimezone == "" && info.TimeOffset == "" {
+		return
 	}
 
-	// Skip gateway-from-DHCP renewal handling when the operator pinned a
-	// gateway override on the network — leave their override in place.
-	if !v6 && info.Gateway != "" && m.opts.Gateway == "" {
-		newGateway := net.ParseIP(info.Gateway)
+	fields := m.logFields(v6)
+	if len(info.NTPServers) > 0 {
+		fields["ntp"] = info.NTPServers
+	}
+	if info.TFTPServer != "" {
+		fields["tftp"] = info.TFTPServer
+	}
+	if info.BootFile != "" {
+		fields["bootfile"] = info.BootFile
+	}
+	if len(info.SearchList) > 0 {
+		fields["search"] = info.SearchList
+	}
+	// Observe-only informational extras (#262): WPAD URL (opt 252),
+	// RFC 4833 timezone (opt 100/101), legacy time offset (opt 2).
+	if info.WPAD != "" {
+		fields["wpad"] = info.WPAD
+	}
+	if info.PosixTimezone != "" {
+		fields["posix_tz"] = info.PosixTimezone
+	}
+	if info.TZDBTimezone != "" {
+		fields["tzdb_tz"] = info.TZDBTimezone
+	}
+	if info.TimeOffset != "" {
+		fields["time_offset"] = info.TimeOffset
+	}
+	log.WithFields(fields).Info("DHCP options received")
+}
 
-		routes, err := m.netHandle.RouteListFiltered(unix.AF_INET, &netlink.Route{
+// propagateDNS applies DHCP option 6 / 23 (DNS server list) when opt-in
+// and the server actually supplied servers. Empty list is a no-op rather
+// than a clobber — see resolvconf.go for the rationale. v6 path
+// uses DHCPv6 option 23, populated by the dhcpcd handler into the
+// same DNSServers slice. Never fails the renewal: name resolution is
+// recoverable, the lease is not.
+func (m *dhcpManager) propagateDNS(v6 bool, info dhcp.Info) {
+	if !m.opts.PropagateDNS || len(info.DNSServers) == 0 {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), dnsPropagateTimeout)
+	pid, err := m.findContainerPID(ctx)
+	cancel()
+	if err != nil {
+		log.
+			WithError(err).
+			WithFields(m.logFields(v6)).
+			Warn("Skipping DNS propagation — could not resolve container PID")
+		return
+	}
+
+	if err := writeContainerResolvConf(pid, info.DNSServers, info.SearchList, info.Domain); err != nil {
+		log.
+			WithError(err).
+			WithFields(m.logFields(v6)).
+			WithField("dns", info.DNSServers).
+			Error("Failed to write container resolv.conf")
+		return
+	}
+
+	log.
+		WithFields(m.logFields(v6)).
+		WithField("dns", info.DNSServers).
+		Debug("Propagated DHCP DNS servers to container resolv.conf")
+}
+
+// propagateMTU applies DHCP option 26 (Interface MTU) when both opt-in
+// and non-zero. Skipping zero is mandatory: dhcp-handler emits 0
+// when the server didn't supply the option, and forcing MTU 0
+// on a kernel link is undefined / disallowed.
+func (m *dhcpManager) propagateMTU(v6 bool, info dhcp.Info) {
+	if !m.opts.PropagateMTU || info.MTU <= 0 {
+		return
+	}
+
+	current := m.ctrLink.Attrs().MTU
+	if current == info.MTU {
+		return
+	}
+
+	if err := m.netHandle.LinkSetMTU(m.ctrLink, info.MTU); err != nil {
+		// Don't fail the renewal — IP/gateway are usable; MTU
+		// is a perf-correctness knob. Log loudly so operators
+		// notice; a surprise small MTU under a never-applied
+		// large MTU is exactly the kind of latent
+		// black-hole bug worth surfacing.
+		log.
+			WithError(err).
+			WithFields(m.logFields(v6)).
+			WithField("mtu", info.MTU).
+			Error("Failed to apply DHCP-supplied MTU; container link MTU unchanged")
+		return
+	}
+
+	log.
+		WithFields(m.logFields(v6)).
+		WithField("old_mtu", current).
+		WithField("new_mtu", info.MTU).
+		Info("Applied DHCP-supplied MTU")
+}
+
+// reconcileDefaultRoute points the container's default route at the
+// gateway the server just supplied. Skipped when the operator pinned a
+// gateway override on the network — leave their override in place — and
+// on the v6 path, where the router advertises itself.
+func (m *dhcpManager) reconcileDefaultRoute(v6 bool, info dhcp.Info) error {
+	if v6 || info.Gateway == "" || m.opts.Gateway != "" {
+		return nil
+	}
+
+	newGateway := net.ParseIP(info.Gateway)
+
+	routes, err := m.netHandle.RouteListFiltered(unix.AF_INET, &netlink.Route{
+		LinkIndex: m.ctrLink.Attrs().Index,
+		Dst:       nil,
+	}, netlink.RT_FILTER_OIF|netlink.RT_FILTER_DST)
+	if err != nil {
+		return fmt.Errorf("failed to list routes: %w", err)
+	}
+
+	if len(routes) == 0 {
+		log.
+			WithFields(m.logFields(v6)).
+			WithField("gateway", newGateway).
+			Info("dhcp renew adding default route")
+
+		if err := m.netHandle.RouteAdd(&netlink.Route{
 			LinkIndex: m.ctrLink.Attrs().Index,
-			Dst:       nil,
-		}, netlink.RT_FILTER_OIF|netlink.RT_FILTER_DST)
-		if err != nil {
-			return fmt.Errorf("failed to list routes: %w", err)
+			Gw:        newGateway,
+		}); err != nil {
+			return fmt.Errorf("failed to add default route: %w", err)
 		}
+		return nil
+	}
 
-		if len(routes) == 0 {
-			log.
-				WithFields(m.logFields(v6)).
-				WithField("gateway", newGateway).
-				Info("dhcp renew adding default route")
+	if !newGateway.Equal(routes[0].Gw) {
+		log.
+			WithFields(m.logFields(v6)).
+			WithField("old_gateway", routes[0].Gw).
+			WithField("new_gateway", newGateway).
+			Info("dhcp renew replacing default route")
 
-			if err := m.netHandle.RouteAdd(&netlink.Route{
-				LinkIndex: m.ctrLink.Attrs().Index,
-				Gw:        newGateway,
-			}); err != nil {
-				return fmt.Errorf("failed to add default route: %w", err)
-			}
-		} else if !newGateway.Equal(routes[0].Gw) {
-			log.
-				WithFields(m.logFields(v6)).
-				WithField("old_gateway", routes[0].Gw).
-				WithField("new_gateway", newGateway).
-				Info("dhcp renew replacing default route")
-
-			routes[0].Gw = newGateway
-			if err := m.netHandle.RouteReplace(&routes[0]); err != nil {
-				return fmt.Errorf("failed to replace default route: %w", err)
-			}
+		routes[0].Gw = newGateway
+		if err := m.netHandle.RouteReplace(&routes[0]); err != nil {
+			return fmt.Errorf("failed to replace default route: %w", err)
 		}
 	}
 
