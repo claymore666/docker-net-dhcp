@@ -176,18 +176,34 @@ git tag -s v1.0.0-rc1 -m "v1.0.0-rc1" && git push origin v1.0.0-rc1
 Watch the run; every step including **verify-install** and, since
 v1.7.0, **release-arm64** / **verify-install-arm64** must be green.
 
-**The rc window is also when the arm64 integration lane runs** (#531).
-It is dispatch-only and must run only against release candidates: the
-arm64 runner pool it targets (label `dhcp-ci-arm64`) is provided for
-that window, not for day-to-day PRs. Once the rc tag exists:
+**The rc tag also starts the arm64 integration lane** (#531) — pushing
+it triggers `integration-arm64` on its own. Nothing to dispatch, and
+nothing to remember: the tag is the gate, so what the rc proves follows
+from the tag. The lane still runs only against release candidates
+(`v*-rc*` never matches a bare release tag), because the runner pool it
+targets — label `dhcp-ci-arm64` — is provided for that window and not
+for day-to-day PRs.
+
+An arm64 runner has to be online for the rc, which today means minting
+a JIT config and launching it (the amd64 pool has an orchestrator; the
+arm64 side does not yet — that is the open half of #531). Do it around
+the time you push the tag; the lane waits 25 minutes.
+
+Two jobs to read, and they say different things:
+
+- **`arm64-suite`** — the verdict. Must be green before the real tag.
+- **`arm64-lane-present`** — red means the suite never *started*: no
+  runner carried `dhcp-ci-arm64` within the wait, so this candidate has
+  **no arm64 verdict at all**. It exists because a job with no runner
+  sits queued for hours and queued renders as "in progress", which is
+  indistinguishable from a lane still working. Treat it as "bring a
+  runner up and re-dispatch", never as a flake to wave through.
+
+To re-run the lane against a tag that already exists:
 
 ```sh
 gh workflow run integration-arm64.yml --ref vX.Y.Z-rcN
 ```
-
-Its `arm64-suite` job must be green before the real tag. A job that
-sits queued means no arm64 runner is online — that is a "bring the
-pool up" question for whoever runs it, not a CI outage.
 
 The rc window is the **enforcement gate** for the
 documentation review (procedure step 3): every PR on the milestone
