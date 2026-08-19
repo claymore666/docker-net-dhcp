@@ -19,6 +19,44 @@ The Makefile target wraps `go test -tags integration
 entirely thanks to the `//go:build integration` tag on every file
 here, so the unit-test cadence stays fast.
 
+## Environment knobs
+
+Two different things get called "settings" around this suite, and
+mixing them up is how a run ends up testing something other than what
+you meant.
+
+**Read by the test process** — set these in the environment of
+`make integration-test`:
+
+| variable | default | what it does |
+| --- | --- | --- |
+| `INTEGRATION_PLUGIN_REF` | `ghcr.io/claymore666/docker-net-dhcp:golang` | Which installed plugin the suite drives (`harness.PluginRef`). |
+| `PLUGIN_BUILD_DIR` | search `plugin/`, then `plugin-cover/` | Where `harness.BuiltPluginDir` looks for the rootfs the lane built. Leave unset in the lanes — the search already knows both. |
+| `ITEST_LOG_DIR` | `logs` | Where the Makefile tees the run's output (#378). |
+| `SHARD` / `OF` | — | Required by `make integration-test-shard`; 1-based shard and total. |
+
+**`INTEGRATION_PLUGIN_REF` is the one to get right.** The harness
+deliberately does not install or enable anything — that is a global
+daemon mutation — so with the variable unset the suite drives whatever
+is currently installed under `:golang`. That may be an older build than
+the tree you are sitting in. The suite passes and tells you nothing
+about your change, with no warning that it did so. When verifying a
+code change locally, build and install it under its own tag and point
+the variable at that tag.
+
+**Applied to the plugin, not exported to the test run** — these are
+`docker plugin set` values, and setting them in your shell before
+`make integration-test` does nothing:
+
+| setting | what it does |
+| --- | --- |
+| `LOG_LEVEL` | Plugin log verbosity. The lanes set `trace`; `make create` does too. |
+| `STATE_DIR` | The plugin's state directory, bind-mounted from the host. |
+| `GOCOVERDIR` | Where the `-cover` build writes counter files. Only meaningful for the instrumented plugin — see [Coverage harvesting](#coverage-harvesting). |
+
+`docker plugin set` requires the plugin to be disabled, so changing one
+means `docker plugin disable`, `set`, `enable`.
+
 ## Prerequisites
 
 - Linux host with `iproute2`, `dnsmasq`, `kea-dhcp4-server`, and
