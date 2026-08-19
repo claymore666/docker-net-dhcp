@@ -85,6 +85,7 @@ LANE=(
   "manifest parity|-|bash scripts/check-manifest-parity.sh"
   "issue label map|-|bash scripts/check-issue-label-map.sh"
   "dockerfile pins|-|bash scripts/check-dockerfile-pins.sh"
+  "python deps|-|bash scripts/check-python-deps.sh"
   "license headers|-|bash scripts/check-license-headers.sh"
   "parent-gate accounting|-|bash scripts/check-parent-gate-accounting.sh"
   "doc invariants|-|bash scripts/check-doc-invariants.sh"
