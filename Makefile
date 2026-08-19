@@ -20,7 +20,15 @@ TEST_OUTAGE_GRACE ?= 10s
 
 .PHONY: all debug build create enable disable pdebug push clean check integration-test \
         integration-test-failure integration-test-shard integration-local integration-cleanup \
-        build-cover plugin-cover create-cover enable-cover disable-cover
+        build-cover plugin-cover create-cover enable-cover disable-cover capture-fixtures
+
+# These targets' prerequisites are a SEQUENCE, not a set: `enable` needs
+# `create` to have finished, and integration-local's cleanup must precede
+# the install it cleans up for. Under `make -jN` make is free to run
+# prerequisites concurrently, which would race the plugin install against
+# the suite that uses it. Scoped .NOTPARALLEL (GNU Make >= 4.4) serialises
+# only these, leaving -j useful everywhere else.
+.NOTPARALLEL: all pdebug integration-local
 
 all: create enable
 
@@ -280,3 +288,125 @@ integration-cleanup:
 		exit 1; \
 	fi
 	bash test/integration/cleanup-orphans.sh
+
+# Regenerate the captured libnetwork request fixtures (#644).
+#
+# WHY THIS TARGET EXISTS AT ALL
+#
+# pkg/plugin/testdata/requests holds the raw request bodies the daemon
+# actually sends. The unit tests replay them instead of hand-building
+# request structs, which is the difference between asserting against
+# what libnetwork sends and asserting against our model of it. #298 is
+# the worked example of that gap: stable_lease was designed against an
+# assumed CreateEndpoint payload and was reverted from v1.3.0 once the
+# endpoint identity turned out to be unresolvable in the real flows.
+#
+# A fixture nobody can regenerate decays into an assumption that agrees
+# with itself forever, so regeneration is one command and the manifest
+# it writes records which engine produced the capture.
+#
+# HOW IT WORKS
+#
+# The capture knob lives in config-cover.json only (alongside
+# GOCOVERDIR), so this drives the :golang-cover plugin and points the
+# harness at it via INTEGRATION_PLUGIN_REF. The shipped manifest, and
+# therefore every production install, is untouched.
+#
+# One flow at a time, each into a cleared directory: the capture is a
+# flat sequence of files, so two flows in one run would interleave into
+# a transcript that never happened.
+CAPTURE_HOST_DIR ?= /var/lib/dh-capture
+FIXTURE_DIR      ?= pkg/plugin/testdata/requests
+COVER_PLUGIN_REF  = $(PLUGIN_NAME):$(PLUGIN_COVER_TAG)
+
+# Overridable because the recipe runs as root against a checkout the
+# invoking user owns: git refuses that as dubious ownership and would
+# leave `commit` empty, producing a fixture nobody can attribute.
+# Pass it from the unprivileged shell instead:
+#   sudo make capture-fixtures CAPTURE_COMMIT=$(git rev-parse --short HEAD)
+CAPTURE_COMMIT ?= $(shell git rev-parse --short HEAD)
+
+# One flow per line, three parallel variables rather than a single
+# colon-packed list. The list form was word-split by the shell: the
+# descriptions contain spaces, so `for spec in $(CAPTURE_FLOWS)` turned
+# every word of a description into its own bogus flow. Expanding at make
+# time with $(foreach)/$(call) keeps the quoting intact.
+CAPTURE_FLOWS ?= macvlan-run bridge-run macvlan-restart
+
+CAPTURE_TEST_macvlan-run     = TestLifecycleMacvlan_GoldenPath
+CAPTURE_DESC_macvlan-run     = docker run on a macvlan DHCP network, to exit
+CAPTURE_TEST_bridge-run      = TestLifecycleBridge_GoldenPath
+CAPTURE_DESC_bridge-run      = docker run on a bridge DHCP network, to exit
+CAPTURE_TEST_macvlan-restart = TestTombstoneRestart_PreservesMACAndIP
+CAPTURE_DESC_macvlan-restart = docker restart on a macvlan DHCP network
+
+# $(1) is the flow name. Runs inside the recipe's single shell, so `rc`
+# accumulates across flows and one failure does not abandon the rest.
+define capture_one_flow
+	echo "==> capturing flow '$(1)' from $(CAPTURE_TEST_$(1))"; \
+	rm -rf $(CAPTURE_HOST_DIR)/*; \
+	if ! INTEGRATION_PLUGIN_REF=$(COVER_PLUGIN_REF) \
+	     go test -tags integration -count=1 -timeout 20m \
+	     -run '^$(CAPTURE_TEST_$(1))$$' ./test/integration/; then \
+		echo "!!  $(CAPTURE_TEST_$(1)) failed; flow '$(1)' NOT refreshed"; rc=1; \
+	else \
+		n=$$(find $(CAPTURE_HOST_DIR) -maxdepth 1 -name '*.json' | wc -l); \
+		if [ "$$n" -eq 0 ]; then \
+			echo "!!  $(CAPTURE_TEST_$(1)) passed but captured NOTHING — the plugin is probably"; \
+			echo "!!  not the cover build, or REQUEST_CAPTURE_DIR is unset on it."; \
+			echo "!!  Flow '$(1)' NOT refreshed."; \
+			rc=1; \
+		else \
+			rm -rf $(FIXTURE_DIR)/$(1); mkdir -p $(FIXTURE_DIR)/$(1); \
+			cp $(CAPTURE_HOST_DIR)/*.json $(FIXTURE_DIR)/$(1)/; \
+			jq -n --arg e "$$engine" --arg c "$$stamp" --arg g "$$commit" \
+			      --arg f '$(CAPTURE_DESC_$(1))' \
+			   '{engine:$$e, captured:$$c, commit:$$g, flow:$$f}' \
+			   > $(FIXTURE_DIR)/$(1)/manifest.json; \
+			echo "==> $(1): $$n call(s)"; \
+		fi; \
+	fi;
+endef
+
+# The mkdir comes BEFORE create/enable, not after: config-cover.json
+# bind-mounts CAPTURE_HOST_DIR into the plugin, and a bind source that
+# does not yet exist fails `docker plugin enable` outright — the same
+# lazily-created-bind-source trap as #588. create-cover mkdirs the state
+# dir for exactly this reason; this is its capture twin.
+# The fixtures are written by root and land in the working tree, so
+# without the chown below every regeneration leaves a checkout its own
+# owner cannot rebase, `git clean`, or check out over — git refuses to
+# replace a file it has no permission to unlink. SUDO_UID/SUDO_GID name
+# the invoking user; when the target is run as real root they are unset
+# and root-owned is the correct answer.
+# The teardown calls `docker plugin disable` directly rather than
+# $(MAKE) disable-cover. GNU Make executes any recipe line containing the
+# recursion marker even under -n; the standalone $(MAKE) lines above are
+# fine, because -n propagates through MAKEFLAGS and the sub-make only
+# prints. But the whole flow loop is ONE recipe line, so a marker inside
+# it made `make -n capture-fixtures` run every integration test for real.
+capture-fixtures:
+	@if [ "$$(id -u)" -ne 0 ]; then \
+		echo "capture-fixtures must run as root (it drives the integration suite). Re-run with sudo."; \
+		exit 1; \
+	fi
+	@command -v jq >/dev/null || { echo "capture-fixtures needs jq"; exit 1; }
+	@mkdir -p $(CAPTURE_HOST_DIR) $(FIXTURE_DIR)
+	$(MAKE) create-cover
+	docker plugin set $(COVER_PLUGIN_REF) REQUEST_CAPTURE_DIR=/capture
+	$(MAKE) enable-cover
+	@engine=$$(docker version --format '{{.Server.Version}}'); \
+	 commit='$(CAPTURE_COMMIT)'; \
+	 if [ -z "$$commit" ]; then \
+		echo "CAPTURE_COMMIT is empty (git could not read this checkout as root)."; \
+		echo "Re-run as: sudo make capture-fixtures CAPTURE_COMMIT=\$$(git rev-parse --short HEAD)"; \
+		exit 1; \
+	 fi; \
+	 stamp=$$(date -u +%Y-%m-%d); \
+	 rc=0; \
+	 $(foreach f,$(CAPTURE_FLOWS),$(call capture_one_flow,$(f))) \
+	 if [ -n "$${SUDO_UID:-}" ]; then \
+		chown -R "$$SUDO_UID:$${SUDO_GID:-$$SUDO_UID}" $(FIXTURE_DIR); \
+	 fi; \
+	 docker plugin disable $(COVER_PLUGIN_REF) || true; \
+	 exit $$rc

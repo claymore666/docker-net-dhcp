@@ -893,6 +893,7 @@ var enableTimeMountSources = map[string]string{
 	"/var/run/docker":      "created at daemon start — it holds plugins/, which must exist before any plugin can be enabled",
 	"/var/lib/net-dhcp":    "STATE_DIR, created by the operator; every install doc says so (#440)",
 	"/var/lib/dh-cover":    "GOCOVERDIR for the instrumented plugin; coverage.yml mkdir -p's it before enabling, and it never ships in config.json",
+	"/var/lib/dh-capture":  "REQUEST_CAPTURE_DIR for the instrumented plugin (#644); `make capture-fixtures` mkdir -p's it before create/enable, and it never ships in config.json",
 }
 
 // lazyMountSources are paths the daemon creates on demand rather than at
