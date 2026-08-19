@@ -53,9 +53,9 @@ cd "$(dirname "$0")/.." || exit 2
 DIR="${1:-pkg/plugin}"
 [ -d "$DIR" ] || { echo "check-lock-discipline: $DIR is not a directory" >&2; exit 2; }
 
-# Tombstone entry points: the store's own methods, and the Plugin
-# wrappers that call them.
-ENTRY='p\.tombstones\.(add|consume)\(|p\.(addTombstone|consumeTombstone)\('
+# The awk binary is indirected so the self-test can prove what this
+# gate does when its own engine dies. See the exit-status check below.
+AWK="${AWK:-awk}"
 
 mapfile -t files < <(find "$DIR" -maxdepth 1 -name '*.go' ! -name '*_test.go' | sort)
 if [ "${#files[@]}" -eq 0 ]; then
@@ -66,10 +66,22 @@ fi
 
 # Scan function by function. Production Go here is gofmt'd, so a
 # top-level func starts at column 0 and its closing brace is a bare "}".
-violations=$(awk -v entry="$ENTRY" '
-    /^func / { infunc = 1; body = ""; name = $0; sub(/\(.*/, "", name); fname = $0; next }
+#
+# The tombstone entry points — the store's own methods and the Plugin
+# wrappers around them — are written as an awk regex LITERAL, not passed
+# in with -v. POSIX leaves undefined escape sequences in a -v assignment
+# undefined: some awks keep `\.`, others strip the backslash. Stripped,
+# this pattern's `\(` becomes an unbalanced `(` and the regex no longer
+# compiles, so awk dies and the gate reports the repository clean. That
+# is exactly what happened — it passed on the author's machine and let a
+# planted violation through on CI, in the direction that does not fail
+# loudly. A regex literal is read by the awk parser and never goes
+# through -v processing.
+violations=$($AWK '
+    /^func / { infunc = 1; body = ""; fname = $0; next }
     infunc && /^}/ {
-        if (body ~ /\.mu\.Lock\(\)/ && body ~ entry) {
+        if (body ~ /\.mu\.Lock\(\)/ &&
+            body ~ /p\.tombstones\.(add|consume)\(|p\.(addTombstone|consumeTombstone)\(/) {
             printf "%s:%d\t%s\n", FILENAME, start, fname
         }
         infunc = 0; next
@@ -79,6 +91,16 @@ violations=$(awk -v entry="$ENTRY" '
         body = body "\n" $0
     }
 ' "${files[@]}")
+awk_status=$?
+
+# A gate whose engine failed has not found nothing — it has found out
+# nothing. Without this, a broken regex, an unreadable file or a missing
+# awk all render as an empty $violations and a PASS.
+if [ "$awk_status" -ne 0 ]; then
+    echo "::error title=Lock-discipline scan did not run::${AWK} exited ${awk_status}; no file was judged." >&2
+    echo "This gate would otherwise pass having inspected nothing." >&2
+    exit 2
+fi
 
 # The store itself locks its own mu and does not touch Plugin — assert
 # that structurally, because the whole separation rests on it.

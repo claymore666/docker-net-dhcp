@@ -126,8 +126,81 @@ check "a directory with no Go files exits 2" 2 "$got"
 got=$(cd "$REPO" && bash "$CHECK" "$TMP/does-not-exist" >/dev/null 2>&1; echo $?)
 check "a missing directory exits 2" 2 "$got"
 
+# --- the scan must not depend on how awk treats -v ---------------------
+# POSIX leaves undefined escape sequences in a -v assignment undefined.
+# The gate used to hand awk its pattern that way; the awk on the author's
+# machine kept the backslashes and the one on CI did not, and a stripped
+# `\(` left an unbalanced paren that would not compile. awk died, the
+# violation list came back empty, and the gate said PASS on a planted
+# violation. It failed in the silent direction, which is the only
+# direction that matters for a gate.
+#
+# This drives the real gate through an awk that strips those escapes, so
+# the property is proven rather than asserted about the source text.
+STRIPPING_AWK="$TMP/stripping-awk"
+cat > "$STRIPPING_AWK" <<'STUB'
+#!/usr/bin/env bash
+# Emulates an awk that strips undefined escape sequences from -v
+# assignments. Anything not passed via -v is handed through untouched.
+args=()
+while [ $# -gt 0 ]; do
+    if [ "$1" = "-v" ] && [ $# -ge 2 ]; then
+        args+=(-v "${2//\\/}")
+        shift 2
+        continue
+    fi
+    args+=("$1")
+    shift
+done
+exec awk "${args[@]}"
+STUB
+chmod +x "$STRIPPING_AWK"
+
+d=$(mk stripped)
+cat > "$d/network.go" <<'GO'
+package plugin
+
+func (p *Plugin) somethingUnderLock() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.consumeTombstone("net", "host")
+}
+GO
+# The exit code is asserted exactly, not merely as non-zero: with the
+# pattern handed through -v the scan dies and the engine check below
+# exits 2, which a pass/fail assertion cannot tell apart from the 1 that
+# means "violation found". 1 is the only answer that says the gate still
+# did its job.
+got=$(cd "$REPO" && AWK="$STRIPPING_AWK" bash "$CHECK" "$d" >/dev/null 2>&1; echo $?)
+check "an awk that strips -v escapes still catches the violation" 1 "$got"
+
+# --- a dead scan engine is not a clean tree ----------------------------
+# Whatever kills awk — an uncompilable pattern, an unreadable file, no
+# awk at all — must not render as "no violations found".
+cat > "$TMP/broken-awk" <<'STUB'
+#!/usr/bin/env bash
+exit 3
+STUB
+chmod +x "$TMP/broken-awk"
+
+d=$(mk deadengine)
+cat > "$d/network.go" <<'GO'
+package plugin
+
+func (p *Plugin) somethingUnderLock() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.consumeTombstone("net", "host")
+}
+GO
+got=$(cd "$REPO" && AWK="$TMP/broken-awk" bash "$CHECK" "$d" >"$TMP/log" 2>&1; echo $?)
+check "a scan engine that dies exits 2, not 0" 2 "$got"
+grep "inspected nothing" "$TMP/log" >/dev/null \
+    && echo "PASS: says it judged nothing rather than reporting clean" \
+    || { echo "FAIL: exited 2 without saying the scan never ran"; fails=1; }
+
 if [ "$fails" -ne 0 ]; then
     echo "lock discipline meta-test FAILED"
     exit 1
 fi
-echo "PASS  the lock-discipline gate catches both call shapes, the reach-back, and refuses to judge nothing"
+echo "PASS  the lock-discipline gate catches both call shapes, the reach-back, a stripped -v, a dead engine, and refuses to judge nothing"
