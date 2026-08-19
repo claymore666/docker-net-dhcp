@@ -194,6 +194,15 @@ jobs:
       - name: Dockerfile digest-pin check
         run: bash scripts/check-dockerfile-pins.sh
 
+      # A gate self-test that builds a git fixture must pin that repo's
+      # own identity and signing config. Inheriting the developer's
+      # means `git commit` blocks on a hardware-key touch that never
+      # comes: `make check` hangs with no output rather than failing.
+      # Hosted CI has no signing config, so this was green here and
+      # stuck in a working checkout.
+      - name: Git-fixture hygiene check
+        run: bash scripts/check-selftest-fixtures.sh
+
       # A declared Python dependency has to be reachable from something
       # (#535). scripts/requirements.txt named two distributions for a
       # manifest-list helper whose callers were removed with #507:

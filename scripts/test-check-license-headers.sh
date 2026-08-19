@@ -216,6 +216,13 @@ mkdir -p "$REPO"
     git init -q .
     git config user.email t@example.com
     git config user.name t
+    # Without this the fixture inherits the developer's global signing
+    # config. On a machine that signs with a hardware key that is not a
+    # failure but a HANG: `git commit` blocks forever waiting for a
+    # touch nobody is there to give, and `make check` stops with no
+    # output at all. Hosted CI has no signing config, so this was green
+    # there and stuck in a working checkout.
+    git config commit.gpgsign false
     printf '// Copyright the docker-net-dhcp contributors.\n// SPDX-License-Identifier: GPL-3.0-only\n\npackage x\n' > tracked.go
     git add tracked.go
     git commit -qm init

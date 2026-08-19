@@ -32,7 +32,14 @@ H=3600
 failures=0
 n=0
 
-git_q() { git -C "$1" -c user.email=t@example.invalid -c user.name=t "${@:2}"; }
+# gpgSign is pinned off here, not left to the developer. Inheriting a
+# global `commit.gpgsign true` backed by a hardware key does not fail
+# this suite — it HANGS it, waiting for a touch nobody is there to
+# give. Hosted CI has no signing config, so it was green there.
+git_q() {
+    git -C "$1" -c user.email=t@example.invalid -c user.name=t \
+        -c commit.gpgSign=false -c tag.gpgSign=false "${@:2}"
+}
 
 # newrepo DIR — a repo with main at one commit and dev equal to it.
 newrepo() {
