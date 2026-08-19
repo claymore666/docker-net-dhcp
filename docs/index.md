@@ -39,6 +39,10 @@ like any other machine. Bridge, macvlan, and ipvlan attachment modes.
     docker plugin enable ghcr.io/claymore666/docker-net-dhcp:v1.7.0
     ```
 
+    On arm64, enable the `-arm64` plugin instead — that is the one
+    that was installed, and the bare reference names nothing on that
+    host.
+
     Nothing is lost or corrupted. Full detail:
     [the reference](reference.md#install-upgrade-uninstall).
 
@@ -71,7 +75,7 @@ already have a host bridge `my-bridge` on your LAN — see
 [Bridge mode](bridge-mode.md) for that one-time setup):
 
 ```bash
-# On arm64 use ...:v1.7.0-arm64 here too — a network stores this exact
+# On arm64 use the -arm64 tag here too — a network stores this exact
 # reference as its driver, so it must name the plugin you installed.
 docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.7.0 \
   --ipam-driver null -o bridge=my-bridge my-dhcp-net

@@ -93,6 +93,52 @@ rm -rf "$dir"
 out=$(bash "$CHECK" /nonexistent-path-for-the-gate-test 2>&1); rc=$?
 [ $rc -eq 2 ] && ok "a missing root exits 2" || no "a missing root exits 2 (rc=$rc: $out)"
 
+# --- discovery: what the repository tracks, not what the disk holds -----
+#
+# The gate used to walk the filesystem (#639), so it judged Dockerfiles in
+# ignored trees — git worktrees under .claude/, vendored sources, build
+# output. CI checks out fresh and has none, so it stayed green there and
+# went red only on a maintainer's machine: a false failure that appears
+# exactly where nobody can see it is enforced.
+#
+# These three drive DISCOVERY (no PIN_GATE_FILES), which is the part
+# that changed. The middle one is what keeps the first honest — skipping
+# ignored files must not turn into skipping everything.
+
+mk_repo() {
+    local dir; dir=$(mktemp -d)
+    git -C "$dir" init -q
+    printf 'ignored/\n' > "$dir/.gitignore"
+    mkdir -p "$dir/ignored"
+    printf 'FROM debian:trixie-slim\n' > "$dir/ignored/Dockerfile"   # unpinned, untracked
+    printf 'FROM debian:trixie-slim@%s\n' "$D" > "$dir/Dockerfile"
+    git -C "$dir" add -A .gitignore Dockerfile >/dev/null 2>&1
+    printf '%s' "$dir"
+}
+
+dir=$(mk_repo)
+out=$(bash "$CHECK" "$dir" 2>&1); rc=$?
+[ $rc -eq 0 ] && ok "an unpinned Dockerfile in an ignored tree is not judged" \
+               || no "an ignored Dockerfile failed the gate (rc=$rc: $out)"
+rm -rf "$dir"
+
+dir=$(mk_repo)
+printf 'FROM debian:trixie-slim\n' > "$dir/Dockerfile"
+out=$(bash "$CHECK" "$dir" 2>&1); rc=$?
+[ $rc -eq 1 ] && ok "a TRACKED unpinned Dockerfile is still found by discovery" \
+               || no "discovery missed a tracked unpinned Dockerfile (rc=$rc: $out)"
+rm -rf "$dir"
+
+# Outside a checkout — a release tarball — there is no index to ask, and
+# the filesystem walk is the only answer available.
+dir=$(mktemp -d)
+printf 'FROM debian:trixie-slim\n' > "$dir/Dockerfile"
+out=$(bash "$CHECK" "$dir" 2>&1); rc=$?
+[ $rc -eq 1 ] && ok "outside a checkout the filesystem walk still discovers" \
+               || no "the non-repo fallback found nothing (rc=$rc: $out)"
+rm -rf "$dir"
+
+
 # --- the repository itself ---------------------------------------------
 
 out=$(bash "$CHECK" "$HERE/.." 2>&1); rc=$?

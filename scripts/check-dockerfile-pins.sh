@@ -4,12 +4,12 @@
 
 # Dockerfile base-image pin gate (#633).
 #
-# Every `FROM` in the tree must name its image by digest. Scorecard
-# reported `test/arm64-netboot/Dockerfile` as unpinned (alert 95) while
-# the other three Dockerfiles pinned by digest — including the sibling
-# that pins the SAME base image. So the convention was already
-# universal, and nothing enforced it: one file was added without a
-# digest and only an advisory external scan noticed.
+# Every `FROM` the repository tracks must name its image by digest.
+# Scorecard reported `test/arm64-netboot/Dockerfile` as unpinned (alert
+# 95) while every other FROM in the tree carried a digest — including
+# the sibling that pins the SAME base image. So the convention was
+# already universal, and nothing enforced it: one file was added
+# without a digest and only an advisory external scan noticed.
 #
 # It matters most where it was missing. That image serves the arm64
 # runner its root filesystem, so an unpinned base means the machine
@@ -51,7 +51,19 @@ annotate() {
 
 if [ -n "${PIN_GATE_FILES:-}" ]; then
     files="$PIN_GATE_FILES"
+elif git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    # Judge what the repository actually ships (#639). A bare walk
+    # also descends into ignored trees — git worktrees under .claude/,
+    # vendored sources, build output — and fails on a Dockerfile this
+    # repo neither owns nor publishes. That shape of bug is the worst
+    # one a gate can have: CI checks out fresh and stays green, so the
+    # false red only ever appears on a maintainer's machine, where it
+    # teaches whoever hits it that the gate is noise.
+    files=$(git -C "$ROOT" ls-files -z -- \
+                '*Dockerfile' '*Dockerfile.*' '*.Dockerfile' 2>/dev/null \
+            | tr '\0' '\n' | grep -v '^$' | sed "s#^#${ROOT%/}/#" | sort)
 else
+    # Not a checkout (a release tarball, the self-test's fixtures).
     files=$(find "$ROOT" \
                 -path '*/.git' -prune -o \
                 -type f \( -name 'Dockerfile' -o -name 'Dockerfile.*' -o -name '*.Dockerfile' \) \
