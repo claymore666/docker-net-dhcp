@@ -309,8 +309,8 @@ func TestTombstones_EmptyHostnameMatchesAny(t *testing.T) {
 }
 
 // TestTombstones_ConcurrentAddDoesNotLose asserts that N parallel
-// addTombstone calls all land on disk. tombstoneMu serializes the
-// read-modify-write today; a refactor that drops the mutex would
+// addTombstone calls all land on disk. tombstoneStore's own mutex
+// serializes the read-modify-write today; a refactor that drops it would
 // silently lose entries because each writer's load+marshal loses
 // concurrent peers' updates. Run with -race for the full guarantee.
 func TestTombstones_ConcurrentAddDoesNotLose(t *testing.T) {

@@ -230,6 +230,15 @@ jobs:
       - name: License-header check
         run: bash scripts/check-license-headers.sh
 
+      # Plugin.mu and the tombstone lock must never be held together:
+      # taking them in opposite orders on two paths deadlocks the plugin,
+      # and a deadlocked network driver takes every `docker run` on the
+      # host with it. That rule lived in a comment on the mutex
+      # declaration — not on the call sites where the mistake is made —
+      # for most of this project's life (#643).
+      - name: Lock discipline
+        run: bash scripts/check-lock-discipline.sh
+
       # The arm64 host's NFS-outage watchdog is wired across four files
       # and both ways of getting it wrong are silent: systemd keeping
       # /dev/watchdog (nothing pets, host unprotected) and systemd
