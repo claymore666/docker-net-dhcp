@@ -407,8 +407,12 @@ jobs:
       # whether every self-hosted job's environment comes up at all —
       # nested daemon, cgroup posture, proxy wiring, and now the arm64
       # runner's own registration — and nothing linted it either.
-      - name: Shellcheck the gate and runner-image scripts
-        run: shellcheck -S warning scripts/*.sh ci/runner-image/*.sh
+      # test/arm64-netboot/*.sh joins for the third application of the
+      # same argument (#632): patch-target.sh is what installs the arm64
+      # host's watchdog and its systemd hand-off, so a defect there is a
+      # host that boots unprotected — and nothing was linting it either.
+      - name: Shellcheck the gate, runner-image and netboot scripts
+        run: shellcheck -S warning scripts/*.sh ci/runner-image/*.sh test/arm64-netboot/*.sh
 
   # This fork is published as the maintainer's own work, so no commit
   # or PR may credit an AI assistant. The rule predates the repo's CI
