@@ -51,7 +51,12 @@ Install the plugin:
 # create this directory for you, and `plugin install` fails at
 # start-up without it.
 sudo mkdir -p /var/lib/net-dhcp
+
+# amd64
 docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.7.0
+
+# arm64 (v1.7.0 onward) — the architecture is in the tag, see below
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.7.0-arm64
 ```
 
 It requests `host` networking, the host PID namespace, the Docker
@@ -66,6 +71,8 @@ already have a host bridge `my-bridge` on your LAN — see
 [Bridge mode](bridge-mode.md) for that one-time setup):
 
 ```bash
+# On arm64 use ...:v1.7.0-arm64 here too — a network stores this exact
+# reference as its driver, so it must name the plugin you installed.
 docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.7.0 \
   --ipam-driver null -o bridge=my-bridge my-dhcp-net
 
@@ -120,8 +127,10 @@ installed from a multi-architecture manifest list at all: the daemon
 reads a plugin's privileges before pulling it, its manifest handler
 matches single manifests only, and an index therefore fails with `did
 not find plugin config for specified reference` on every architecture —
-with no `--platform` to steer it. On an arm64 host, install the
-`-arm64` tag; everything else in these pages applies unchanged.
+with no `--platform` to steer it. The `-arm64` tag replaces the bare
+one in **every** snippet that names the image, including
+`docker network create -d`: a network stores the tagged reference as
+its driver, so a bare tag there names a plugin the host does not have.
 
 - [GHCR package](https://github.com/claymore666/docker-net-dhcp/pkgs/container/docker-net-dhcp)
 - [GitHub Releases](https://github.com/claymore666/docker-net-dhcp/releases)
