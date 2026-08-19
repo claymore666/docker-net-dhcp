@@ -72,3 +72,35 @@ func (p *Plugin) newServeMux() *http.ServeMux {
 	}
 	return mux
 }
+
+// unroutedRPCs are libnetwork RPCs the daemon DOES call on this socket
+// and we deliberately do not serve — see the routes() comment for why
+// the resulting bare 404 is the contract rather than an accident.
+//
+// They are listed rather than described because two things need them by
+// name: TestRoutes_UnimplementedMethodsAnswer404, which pins the 404,
+// and request capture (#644), which must record them under their real
+// names. A capture that filed them as "unknown" would erase precisely
+// the evidence that established this contract in the first place.
+func unroutedRPCs() []string {
+	return []string{
+		"/NetworkDriver.ProgramExternalConnectivity",
+		"/NetworkDriver.RevokeExternalConnectivity",
+	}
+}
+
+// capturablePaths is every path request capture may name: the ones we
+// serve, plus the ones we knowingly do not (#644).
+//
+// It is built from the SAME table the mux is built from, so a route
+// added to routes() is captured without anyone remembering a second
+// place. Anything outside both lists is captured as "unknown" — the
+// filename can only ever be a constant from this file, never a string
+// from the request.
+func capturablePaths(rs []apiRoute) []string {
+	paths := make([]string, 0, len(rs)+2)
+	for _, r := range rs {
+		paths = append(paths, r.path)
+	}
+	return append(paths, unroutedRPCs()...)
+}

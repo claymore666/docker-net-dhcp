@@ -72,6 +72,12 @@ const (
 type captureState struct {
 	dir string
 
+	// allowed maps a served path to the filename fragment recorded for
+	// it. Built from the routing table, so the set of names this can
+	// ever write is CLOSED and comes from constants in routes.go rather
+	// than from the request — see methodName.
+	allowed map[string]string
+
 	mu       sync.Mutex
 	seq      int
 	stopped  bool
@@ -85,12 +91,16 @@ type captureState struct {
 // The returned handler is safe for concurrent use: the plugin serves
 // RPCs concurrently, and Join for one container can overlap
 // CreateEndpoint for another.
-func captureHandler(next http.Handler, dir string) http.Handler {
+func captureHandler(next http.Handler, dir string, paths []string) http.Handler {
 	if dir == "" {
 		return next
 	}
 
-	st := &captureState{dir: dir}
+	allowed := make(map[string]string, len(paths))
+	for _, path := range paths {
+		allowed[path] = strings.TrimPrefix(path, "/")
+	}
+	st := &captureState{dir: dir, allowed: allowed}
 
 	// Fail loudly at construction rather than silently at the first
 	// request: a capture that was asked for and never happened is the
@@ -184,30 +194,29 @@ func (s *captureState) nextName(urlPath string) (string, bool) {
 	}
 
 	s.seq++
-	return fmt.Sprintf("%04d-%s.json", s.seq, methodName(urlPath)), true
+	return fmt.Sprintf("%04d-%s.json", s.seq, s.methodName(urlPath)), true
 }
 
-// methodName turns "/NetworkDriver.CreateEndpoint" into
-// "NetworkDriver.CreateEndpoint", and anything unexpected into a name
-// that is still a legal, obviously-odd filename rather than a path
-// traversal. The URL path is attacker-controlled only by whoever can
-// already reach the plugin socket, but a capture that can write outside
-// its directory is not a trade worth making for a debug feature.
-func methodName(urlPath string) string {
-	name := strings.TrimPrefix(urlPath, "/")
-	if name == "" {
-		return "unknown"
+// methodName maps a served path to the fragment used in its filename.
+//
+// It is a LOOKUP, not a transformation, and that is the point. The path
+// arrives from the socket, so deriving a filename from its characters
+// means a filename that depends on request data — and proving that safe
+// requires a reader (and a scanner) to follow the sanitiser and agree it
+// is airtight. A closed map keyed by the routing table removes the
+// question instead of answering it: every name this can write is a
+// constant from routes.go, and anything else becomes "unknown".
+//
+// An unrouted path reaching here is not hypothetical — the daemon calls
+// ProgramExternalConnectivity and RevokeExternalConnectivity on every
+// container start and stop, and nothing serves them (#646). Those are
+// worth recording as evidence, which is why this returns a name at all
+// rather than declining to capture.
+func (s *captureState) methodName(urlPath string) string {
+	if name, ok := s.allowed[urlPath]; ok {
+		return name
 	}
-	return strings.Map(func(r rune) rune {
-		switch {
-		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
-			return r
-		case r == '.', r == '-', r == '_':
-			return r
-		default:
-			return '_'
-		}
-	}, name)
+	return "unknown"
 }
 
 // errReader yields one error and nothing else. It is what lets a failed

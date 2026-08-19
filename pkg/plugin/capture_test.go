@@ -15,6 +15,11 @@ import (
 	"testing"
 )
 
+// allRoutePaths is the real routing table, so these tests build the same
+// capture allowlist production does rather than a hand-written stand-in
+// that could drift from it.
+func allRoutePaths() []string { return capturablePaths((&Plugin{}).routes()) }
+
 // bodyEcho is the downstream handler under every test here. It records
 // what the handler ACTUALLY received, which is the property that
 // matters: capture reads the body, so a bug in restoring it would make
@@ -48,7 +53,7 @@ func post(h http.Handler, path, body string) *httptest.ResponseRecorder {
 func TestCaptureHandler_DisabledIsPassthrough(t *testing.T) {
 	var got []string
 	inner := bodyEcho(t, &got)
-	h := captureHandler(inner, "")
+	h := captureHandler(inner, "", allRoutePaths())
 
 	post(h, "/NetworkDriver.CreateEndpoint", `{"EndpointID":"abc"}`)
 
@@ -60,7 +65,7 @@ func TestCaptureHandler_DisabledIsPassthrough(t *testing.T) {
 func TestCaptureHandler_WritesBodyAndPreservesIt(t *testing.T) {
 	dir := t.TempDir()
 	var got []string
-	h := captureHandler(bodyEcho(t, &got), dir)
+	h := captureHandler(bodyEcho(t, &got), dir, allRoutePaths())
 
 	const body = `{"NetworkID":"net1","EndpointID":"ep1"}`
 	rec := post(h, "/NetworkDriver.CreateEndpoint", body)
@@ -88,7 +93,7 @@ func TestCaptureHandler_WritesBodyAndPreservesIt(t *testing.T) {
 func TestCaptureHandler_SequenceRecordsOrder(t *testing.T) {
 	dir := t.TempDir()
 	var got []string
-	h := captureHandler(bodyEcho(t, &got), dir)
+	h := captureHandler(bodyEcho(t, &got), dir, allRoutePaths())
 
 	post(h, "/NetworkDriver.CreateEndpoint", `{"n":1}`)
 	post(h, "/NetworkDriver.Join", `{"n":2}`)
@@ -123,7 +128,7 @@ func TestCaptureHandler_SequenceRecordsOrder(t *testing.T) {
 func TestCaptureHandler_SkipsEmptyBodies(t *testing.T) {
 	dir := t.TempDir()
 	var got []string
-	h := captureHandler(bodyEcho(t, &got), dir)
+	h := captureHandler(bodyEcho(t, &got), dir, allRoutePaths())
 
 	post(h, "/NetworkDriver.GetCapabilities", "")
 
@@ -144,7 +149,7 @@ func TestCaptureHandler_SkipsEmptyBodies(t *testing.T) {
 func TestCaptureHandler_OversizedBodyIsNotWrittenButIsDelivered(t *testing.T) {
 	dir := t.TempDir()
 	var got []string
-	h := captureHandler(bodyEcho(t, &got), dir)
+	h := captureHandler(bodyEcho(t, &got), dir, allRoutePaths())
 
 	big := strings.Repeat("x", captureMaxBodyBytes+1)
 	post(h, "/NetworkDriver.CreateEndpoint", big)
@@ -165,7 +170,7 @@ func TestCaptureHandler_OversizedBodyIsNotWrittenButIsDelivered(t *testing.T) {
 func TestCaptureHandler_StopsAtFileCap(t *testing.T) {
 	dir := t.TempDir()
 	var got []string
-	h := captureHandler(bodyEcho(t, &got), dir)
+	h := captureHandler(bodyEcho(t, &got), dir, allRoutePaths())
 
 	for i := 0; i < captureMaxFiles+5; i++ {
 		post(h, "/NetworkDriver.Join", fmt.Sprintf(`{"n":%d}`, i))
@@ -196,7 +201,7 @@ func TestCaptureHandler_UnusableDirIsPassthrough(t *testing.T) {
 	}
 
 	var got []string
-	h := captureHandler(bodyEcho(t, &got), filepath.Join(f, "capture"))
+	h := captureHandler(bodyEcho(t, &got), filepath.Join(f, "capture"), allRoutePaths())
 
 	const body = `{"EndpointID":"ep1"}`
 	rec := post(h, "/NetworkDriver.Join", body)
@@ -212,24 +217,102 @@ func TestCaptureHandler_UnusableDirIsPassthrough(t *testing.T) {
 // The URL path reaches a filename. Whoever can drive these RPCs already
 // owns the plugin socket, but a debug feature that can write outside
 // its own directory is not a trade worth making.
-func TestMethodName_NeutralisesPathSeparators(t *testing.T) {
+// The filename fragment must come from a CLOSED set of constants, not
+// from the request. The old version of this test asserted the weaker
+// property that separators were stripped, which required trusting a
+// character-level sanitiser; this asserts that a hostile path produces a
+// name that was never derived from it at all.
+func TestMethodName_IsAClosedSetFromTheRoutingTable(t *testing.T) {
+	// Built the way production builds it, so this cannot pass against a
+	// stand-in allowlist that the real one has diverged from.
+	allowed := map[string]string{}
+	for _, p := range capturablePaths((&Plugin{}).routes()) {
+		allowed[p] = strings.TrimPrefix(p, "/")
+	}
+	st := &captureState{allowed: allowed}
+
 	for _, tc := range []struct {
 		in, want string
 	}{
 		{"/NetworkDriver.CreateEndpoint", "NetworkDriver.CreateEndpoint"},
 		{"/Plugin.Health", "Plugin.Health"},
+
+		// Everything below is unrouted, and every one of them must land
+		// on the same constant rather than on anything shaped like the
+		// input.
 		{"/", "unknown"},
 		{"", "unknown"},
-		{"/../../etc/passwd", ".._.._etc_passwd"},
-		{"/a/b", "a_b"},
-		{"/weird name\x00", "weird_name_"},
+		{"/../../etc/passwd", "unknown"},
+		{"/a/b", "unknown"},
+		{"/weird name\x00", "unknown"},
+		{"/NetworkDriver.CreateEndpoint/../../x", "unknown"},
+		// NOT "unknown": unrouted, but knowingly so, and the fixture
+		// set's whole value here is knowing WHICH RPC the daemon sent
+		// (#646). Erasing the name would erase the evidence.
+		{"/NetworkDriver.ProgramExternalConnectivity", "NetworkDriver.ProgramExternalConnectivity"},
 	} {
-		got := methodName(tc.in)
+		got := st.methodName(tc.in)
 		if got != tc.want {
 			t.Errorf("methodName(%q) = %q, want %q", tc.in, got, tc.want)
 		}
 		if strings.ContainsAny(got, `/\`) {
-			t.Errorf("methodName(%q) = %q, which still contains a path separator", tc.in, got)
+			t.Errorf("methodName(%q) = %q, which contains a path separator", tc.in, got)
+		}
+	}
+}
+
+// The allowlist and the mux must be built from the same table, or a new
+// RPC would be served and silently never captured — a fixture set that
+// looks complete while missing the request someone added last week.
+func TestCapture_AllowlistCoversEveryServedRoute(t *testing.T) {
+	p := &Plugin{}
+	paths := capturablePaths(p.routes())
+	if len(paths) == 0 {
+		t.Fatal("routes() returned nothing; this test would pass having compared nothing")
+	}
+
+	dir := t.TempDir()
+	h := captureHandler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}), dir, paths)
+
+	for _, path := range paths {
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"x":1}`))
+		h.ServeHTTP(httptest.NewRecorder(), req)
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != len(paths) {
+		t.Fatalf("captured %d files for %d routes", len(entries), len(paths))
+	}
+	for _, e := range entries {
+		if strings.Contains(e.Name(), "unknown") {
+			t.Errorf("a served route was captured as %q — the allowlist and the mux have drifted", e.Name())
+		}
+	}
+
+	// The RPCs we knowingly do not serve must still be captured under
+	// their own names; they are the evidence behind the 404 contract
+	// (#646), and "unknown" would throw that away.
+	for _, path := range unroutedRPCs() {
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"x":1}`))
+		h.ServeHTTP(httptest.NewRecorder(), req)
+	}
+	entries, err = os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range unroutedRPCs() {
+		name := strings.TrimPrefix(want, "/")
+		var found bool
+		for _, e := range entries {
+			if strings.HasSuffix(e.Name(), name+".json") {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("%s was not captured under its own name", want)
 		}
 	}
 }
@@ -248,7 +331,7 @@ func TestCaptureHandler_ReadErrorIsReplayedNotSwallowed(t *testing.T) {
 		_, gotErr = io.ReadAll(r.Body)
 		w.WriteHeader(http.StatusOK)
 	})
-	h := captureHandler(inner, dir)
+	h := captureHandler(inner, dir, allRoutePaths())
 
 	req := httptest.NewRequest(http.MethodPost, "/NetworkDriver.Join",
 		io.MultiReader(strings.NewReader(`{"partial":`), errReader{wantErr}))
@@ -276,7 +359,7 @@ func TestCaptureHandler_ReadErrorIsReplayedNotSwallowed(t *testing.T) {
 func TestCaptureHandler_ConcurrentRequestsDoNotCollide(t *testing.T) {
 	dir := t.TempDir()
 	var got []string
-	h := captureHandler(bodyEcho(t, &got), dir)
+	h := captureHandler(bodyEcho(t, &got), dir, allRoutePaths())
 
 	const n = 50
 	var wg sync.WaitGroup

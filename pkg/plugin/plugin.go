@@ -1546,7 +1546,7 @@ func NewPlugin(opts Options) (*Plugin, error) {
 	// capture directory set — every shipped plugin — captureHandler
 	// returns the mux itself and this line is a no-op (#644).
 	p.server = http.Server{
-		Handler: handlers.CustomLoggingHandler(nil, captureHandler(mux, opts.RequestCaptureDir), util.WriteAccessLog),
+		Handler: handlers.CustomLoggingHandler(nil, captureHandler(mux, opts.RequestCaptureDir, capturablePaths(p.routes())), util.WriteAccessLog),
 	}
 
 	// Run endpoint recovery synchronously before NewPlugin returns
