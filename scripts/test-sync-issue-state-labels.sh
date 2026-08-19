@@ -387,7 +387,7 @@ if [ ! -f "$WF" ]; then
 else
     # Comments stripped first: a `# ref: dev` must not satisfy this.
     wf_body=$(sed 's/[[:space:]]*#.*$//' "$WF")
-    if printf '%s\n' "$wf_body" | grep -qE '^[[:space:]]+ref:[[:space:]]*dev[[:space:]]*$'; then
+    if printf '%s\n' "$wf_body" | grep -E '^[[:space:]]+ref:[[:space:]]*dev[[:space:]]*$' >/dev/null; then
         echo "PASS: the workflow pins its checkout to dev"
     else
         echo "FAIL: the workflow pins its checkout to dev"

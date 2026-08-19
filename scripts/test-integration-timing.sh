@@ -30,14 +30,14 @@ EOF
 out="$(GITHUB_STEP_SUMMARY="" "$TOOL" "$log")"
 
 want() { # description, pattern
-  if printf '%s\n' "$out" | grep -qE "$2"; then
+  if printf '%s\n' "$out" | grep -E "$2" >/dev/null; then
     :
   else
     echo "FAIL: $1"; fail=1
   fi
 }
 wantnot() { # description, pattern
-  if printf '%s\n' "$out" | grep -qE "$2"; then
+  if printf '%s\n' "$out" | grep -E "$2" >/dev/null; then
     echo "FAIL: $1"; fail=1
   fi
 }

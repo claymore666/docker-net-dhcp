@@ -102,7 +102,7 @@ assert_recipe() {
 
   # The NIC must end up address-less — the recipe's whole point, and
   # what locks people out when they get it wrong.
-  docker exec "$cname" sh -c "ip -4 addr show $NIC 2>/dev/null | grep -q 'inet '" \
+  docker exec "$cname" sh -c "ip -4 addr show $NIC 2>/dev/null | grep 'inet ' >/dev/null" \
     && problems+="$NIC still has an IPv4 address; it must be address-less; "
 
   # And the bridge must hold a lease the SERVER agrees it issued —

@@ -85,6 +85,9 @@ LANE=(
   "manifest parity|-|bash scripts/check-manifest-parity.sh"
   "issue label map|-|bash scripts/check-issue-label-map.sh"
   "dockerfile pins|-|bash scripts/check-dockerfile-pins.sh"
+  "python deps|-|bash scripts/check-python-deps.sh"
+  "fixture hygiene|-|bash scripts/check-selftest-fixtures.sh"
+  "pipefail consumers|-|bash scripts/check-pipefail-consumers.sh"
   "license headers|-|bash scripts/check-license-headers.sh"
   "parent-gate accounting|-|bash scripts/check-parent-gate-accounting.sh"
   "doc invariants|-|bash scripts/check-doc-invariants.sh"
@@ -139,7 +142,7 @@ fi
 # there is indistinguishable from a pass. Say so up front so the failure
 # reads as a missing locale rather than a broken gate.
 locale_note=""
-if ! locale -a 2>/dev/null | grep -qi '^de_DE'; then
+if ! locale -a 2>/dev/null | grep -i '^de_DE' >/dev/null; then
     locale_note="the de_DE.UTF-8 locale is absent — 'gate self-tests' will fail on the shard locale case (#554). Fix: sudo locale-gen de_DE.UTF-8"
     printf '\033[33mNOTE\033[0m  %s\n\n' "$locale_note"
 fi
@@ -185,6 +188,28 @@ if [ "$fail" -gt 0 ]; then
     echo "failed:"
     printf '  %s\n' "${failed[@]}"
     [ -n "$locale_note" ] && echo "note: $locale_note"
+fi
+
+# Several gates discover their input through `git ls-files` rather than a
+# filesystem walk, because a walk descends into gitignored worktrees and
+# judges another branch's files (#639). The cost of that choice is that a
+# file you have just written is invisible to them until it is staged —
+# and "invisible" reads here as a clean pass.
+#
+# This is not hypothetical: check-pipefail-consumers.sh was written,
+# run green by this lane, pushed, and went red in CI on its own
+# self-test, because the self-test was still untracked when the lane
+# ran. Twice in one afternoon, and it is the same shape as #569.
+#
+# So the lane says what it could not see. It does not stage anything —
+# guessing at a half-written tree is its own trap — and it does not
+# fail: this is a refusal to claim full coverage, not a verdict.
+mapfile -t untracked < <(git ls-files --others --exclude-standard 2>/dev/null | head -20)
+if [ "${#untracked[@]}" -ne 0 ]; then
+    echo
+    echo "NOT INSPECTED — ${#untracked[@]} untracked file(s). Gates that discover through"
+    echo "  the git index cannot see these; \`git add\` them and re-run for a full verdict:"
+    printf '    %s\n' "${untracked[@]}"
 fi
 
 echo

@@ -46,7 +46,7 @@ found=$(grep -E '^Vulnerability #' "$REPORT" | grep -oE 'GO-[0-9]{4}-[0-9]+' | s
 allowed=$(grep -vE '^[[:space:]]*(#|$)' "$ALLOWLIST" | grep -oE 'GO-[0-9]{4}-[0-9]+' | sort -u)
 
 for id in $found; do
-    if printf '%s\n' "$allowed" | grep -qx "$id"; then
+    if printf '%s\n' "$allowed" | grep -x "$id" >/dev/null; then
         echo "ALLOW $id: reported, accepted via $ALLOWLIST"
     else
         echo "FAIL  $id: reachable vulnerability not in $ALLOWLIST — fix the dependency or add a reviewed entry"
@@ -55,7 +55,7 @@ for id in $found; do
 done
 
 for id in $allowed; do
-    if ! printf '%s\n' "$found" | grep -qx "$id"; then
+    if ! printf '%s\n' "$found" | grep -x "$id" >/dev/null; then
         echo "WARN  $id: allowlisted but no longer reported — likely fixed; remove it from $ALLOWLIST"
     fi
 done

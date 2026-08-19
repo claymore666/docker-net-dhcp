@@ -64,7 +64,7 @@ esac
 
 # No shard may select a failure-suite test: those run in their own job
 # with their own fixture, and pulling one in here would run it twice.
-if names_of 1 1 | grep -q '^TestFailure_'; then
+if names_of 1 1 | grep '^TestFailure_' >/dev/null; then
     no "a shard selected a TestFailure_ test"
 else
     ok "no shard selects failure-suite tests"

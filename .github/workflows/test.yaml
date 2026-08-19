@@ -194,6 +194,33 @@ jobs:
       - name: Dockerfile digest-pin check
         run: bash scripts/check-dockerfile-pins.sh
 
+      # Under pipefail a `grep -q` kills its producer with SIGPIPE the
+      # moment it matches, so the pipeline reports failure on success —
+      # timing-dependent, therefore invisible locally and on a re-run.
+      # check-python-deps shipped that way and reported that nothing
+      # installs a file two workflow lines install. Same class as #297.
+      - name: Pipefail-consumer check
+        run: bash scripts/check-pipefail-consumers.sh
+
+      # A gate self-test that builds a git fixture must pin that repo's
+      # own identity and signing config. Inheriting the developer's
+      # means `git commit` blocks on a hardware-key touch that never
+      # comes: `make check` hangs with no output rather than failing.
+      # Hosted CI has no signing config, so this was green here and
+      # stuck in a working checkout.
+      - name: Git-fixture hygiene check
+        run: bash scripts/check-selftest-fixtures.sh
+
+      # A declared Python dependency has to be reachable from something
+      # (#535). scripts/requirements.txt named two distributions for a
+      # manifest-list helper whose callers were removed with #507:
+      # nothing installed the file, nothing imported the module, and
+      # both read as live build tooling for months. A reader chasing
+      # #507 concluded the deps were undeclared — they were declared,
+      # and nothing pointed at them.
+      - name: Python dependency-reachability check
+        run: bash scripts/check-python-deps.sh
+
       # Every tracked source file must carry the copyright line and
       # SPDX-License-Identifier (#454). A file added without them breaks
       # no build and fails no test, so this gate is the only thing that

@@ -101,7 +101,7 @@ fi
 
 # 1. Pull-request refs, by shape. `refs/pull/<N>/head`, the bare
 #    `pull/<N>/merge`, and anything else carrying that path segment.
-if printf '%s' "$REF" | grep -Eq '(^|/)pull/[0-9]+/'; then
+if printf '%s' "$REF" | grep -E '(^|/)pull/[0-9]+/' >/dev/null; then
     echo "::error title=Pull-request ref rejected::'$REF' is a pull-request ref." \
          "A fork's PR head is fetchable from this repository, so dispatching it" \
          "would check outside code out into a context that HAS the repository" \

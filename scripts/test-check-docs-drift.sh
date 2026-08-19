@@ -66,7 +66,7 @@ expect() { # <want-exit> <label> <must-contain-or-empty>
     if [ "$rc" -ne "$want" ]; then
         echo "FAIL: $label — exit $rc, want $want"; printf '    %s\n' "$out"; fail=1; return
     fi
-    if [ -n "$needle" ] && ! printf '%s' "$out" | grep -qF "$needle"; then
+    if [ -n "$needle" ] && ! printf '%s' "$out" | grep -F "$needle" >/dev/null; then
         echo "FAIL: $label — output missing '$needle'"; printf '    %s\n' "$out"; fail=1; return
     fi
     echo "PASS: $label"
