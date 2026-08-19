@@ -1345,7 +1345,12 @@ the <code>vX.Y.Z</code> milestone (the workflow leans on this for the
      stale version references deletes it in good faith. <strong>Keep it.</strong></li>
 <li><strong>Counted claims.</strong> "Four flip <code>healthy</code> to <code>false</code>" is right until
      a fifth is added, and the sentence still parses. Check any stated
-     count against the code.</li>
+     count against the code. That particular claim is now enforced by
+     <code>scripts/check-health-contract.sh</code> (#638) — it had drifted for two
+     releases <em>under this instruction</em>, which is the argument for a
+     gate over a rule: the sentence is checked on every PR now, not
+     when someone remembers to. The instruction still stands for every
+     other counted claim, none of which has one.</li>
 </ul>
 <p><strong>Verify each finding against the artifact, not from reasoning.</strong>
    Run the command, <code>config</code> the snippet, <code>ls</code> the path on the test

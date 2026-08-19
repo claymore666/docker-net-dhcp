@@ -985,6 +985,9 @@ Recover with:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>sudo<span class="w"> </span>mkdir<span class="w"> </span>-p<span class="w"> </span>/var/lib/net-dhcp
 <a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>docker<span class="w"> </span>plugin<span class="w"> </span><span class="nb">enable</span><span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v1.7.0
 </code></pre></div>
+<p>On arm64, enable the <code>-arm64</code> plugin instead — that is the one
+that was installed, and the bare reference names nothing on that
+host.</p>
 <p>Nothing is lost or corrupted. Full detail:
 <a href="reference/#install-upgrade-uninstall">the reference</a>.</p>
 </div>
@@ -1010,7 +1013,7 @@ proceed.
 <p>Create a bridge-mode network and run a container on it (assumes you
 already have a host bridge <code>my-bridge</code> on your LAN — see
 <a href="bridge-mode/">Bridge mode</a> for that one-time setup):</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="c1"># On arm64 use ...:v1.7.0-arm64 here too — a network stores this exact</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="c1"># On arm64 use the -arm64 tag here too — a network stores this exact</span>
 <a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="c1"># reference as its driver, so it must name the plugin you installed.</span>
 <a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>docker<span class="w"> </span>network<span class="w"> </span>create<span class="w"> </span>-d<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v1.7.0<span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="w">  </span>--ipam-driver<span class="w"> </span>null<span class="w"> </span>-o<span class="w"> </span><span class="nv">bridge</span><span class="o">=</span>my-bridge<span class="w"> </span>my-dhcp-net

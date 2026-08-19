@@ -1701,6 +1701,9 @@ plugin that is already there:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>sudo<span class="w"> </span>mkdir<span class="w"> </span>-p<span class="w"> </span>/var/lib/net-dhcp
 <a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>docker<span class="w"> </span>plugin<span class="w"> </span><span class="nb">enable</span><span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v1.7.0
 </code></pre></div>
+<p>On arm64 that second line takes the <code>-arm64</code> tag, like every other
+reference on this page — the bare one names a plugin the host never
+installed.</p>
 <p>Nothing is lost or corrupted by the failed install. (Behaviour verified
 against Docker 26.1.5, #494.)</p>
 <p>Privileges requested: <code>network: host</code>, host PID namespace, the Docker
@@ -2304,7 +2307,7 @@ diagnosing a specific container from them alone is not.</p>
 <tr>
 <td><code>healthy</code></td>
 <td>—</td>
-<td><code>false</code> when <code>recovery_failed</code>, <code>join_start_failures</code>, or <code>tombstone_write_failures</code> is non-zero — an operator should look. The plugin keeps serving fresh attaches either way.</td>
+<td><code>false</code> when <code>recovery_failed</code>, <code>join_start_failures</code>, <code>tombstone_write_failures</code>, or <code>address_conflicts</code> is non-zero — an operator should look. Those four, and only those, are the ones marked <strong>yes</strong> in this column. The plugin keeps serving fresh attaches either way.</td>
 </tr>
 <tr>
 <td><code>instance_id</code></td>

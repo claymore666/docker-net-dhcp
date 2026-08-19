@@ -1303,13 +1303,16 @@ rule needs the distro's own persistence mechanism:</p>
 <p>You only need this if the forwarding policy is <code>DROP</code> — check with
 <code>sudo iptables -S FORWARD | head -1</code>.</p>
 <h2 id="2-create-the-network">2. Create the network<a class="headerlink" href="#2-create-the-network" title="Permanent link">&para;</a></h2>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a>docker<span class="w"> </span>network<span class="w"> </span>create<span class="w"> </span>-d<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v1.7.0<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a><span class="w">  </span>--ipam-driver<span class="w"> </span>null<span class="w"> </span>-o<span class="w"> </span><span class="nv">bridge</span><span class="o">=</span>my-bridge<span class="w"> </span>my-dhcp-net
+<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="c1"># On arm64 use the -arm64 tag — a network stores this exact reference</span>
+<a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a><span class="c1"># as its driver, so it must name the plugin you installed.</span>
+<a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a>docker<span class="w"> </span>network<span class="w"> </span>create<span class="w"> </span>-d<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v1.7.0<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a><span class="w">  </span>--ipam-driver<span class="w"> </span>null<span class="w"> </span>-o<span class="w"> </span><span class="nv">bridge</span><span class="o">=</span>my-bridge<span class="w"> </span>my-dhcp-net
 </code></pre></div>
 <p>With IPv6 as well (the <code>docker network create --ipv6</code> flag does <strong>not</strong>
 work with the null IPAM driver; use the <code>ipv6</code> driver option instead):</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a>docker<span class="w"> </span>network<span class="w"> </span>create<span class="w"> </span>-d<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v1.7.0<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a><span class="w">  </span>--ipam-driver<span class="w"> </span>null<span class="w"> </span>-o<span class="w"> </span><span class="nv">bridge</span><span class="o">=</span>my-bridge<span class="w"> </span>-o<span class="w"> </span><span class="nv">ipv6</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span>my-dhcp-net
+<div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="c1"># arm64: the -arm64 tag here too.</span>
+<a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a>docker<span class="w"> </span>network<span class="w"> </span>create<span class="w"> </span>-d<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v1.7.0<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a><span class="w">  </span>--ipam-driver<span class="w"> </span>null<span class="w"> </span>-o<span class="w"> </span><span class="nv">bridge</span><span class="o">=</span>my-bridge<span class="w"> </span>-o<span class="w"> </span><span class="nv">ipv6</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span>my-dhcp-net
 </code></pre></div>
 <blockquote>
 <p><strong>The <code>null</code> IPAM driver is mandatory.</strong> Without it Docker allocates
@@ -1356,12 +1359,13 @@ on <code>compose down</code>):</p>
 <a id="__codelineno-15-6" name="__codelineno-15-6" href="#__codelineno-15-6"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">dhcp</span>
 <a id="__codelineno-15-7" name="__codelineno-15-7" href="#__codelineno-15-7"></a><span class="nt">networks</span><span class="p">:</span>
 <a id="__codelineno-15-8" name="__codelineno-15-8" href="#__codelineno-15-8"></a><span class="w">  </span><span class="nt">dhcp</span><span class="p">:</span>
-<a id="__codelineno-15-9" name="__codelineno-15-9" href="#__codelineno-15-9"></a><span class="w">    </span><span class="nt">driver</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ghcr.io/claymore666/docker-net-dhcp:v1.7.0</span>
-<a id="__codelineno-15-10" name="__codelineno-15-10" href="#__codelineno-15-10"></a><span class="w">    </span><span class="nt">driver_opts</span><span class="p">:</span>
-<a id="__codelineno-15-11" name="__codelineno-15-11" href="#__codelineno-15-11"></a><span class="w">      </span><span class="nt">bridge</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">my-bridge</span>
-<a id="__codelineno-15-12" name="__codelineno-15-12" href="#__codelineno-15-12"></a><span class="w">      </span><span class="nt">ipv6</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;true&#39;</span>
-<a id="__codelineno-15-13" name="__codelineno-15-13" href="#__codelineno-15-13"></a><span class="w">    </span><span class="nt">ipam</span><span class="p">:</span>
-<a id="__codelineno-15-14" name="__codelineno-15-14" href="#__codelineno-15-14"></a><span class="w">      </span><span class="nt">driver</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;null&#39;</span>
+<a id="__codelineno-15-9" name="__codelineno-15-9" href="#__codelineno-15-9"></a><span class="w">    </span><span class="c1"># arm64: the -arm64 tag, matching the plugin you installed.</span>
+<a id="__codelineno-15-10" name="__codelineno-15-10" href="#__codelineno-15-10"></a><span class="w">    </span><span class="nt">driver</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ghcr.io/claymore666/docker-net-dhcp:v1.7.0</span>
+<a id="__codelineno-15-11" name="__codelineno-15-11" href="#__codelineno-15-11"></a><span class="w">    </span><span class="nt">driver_opts</span><span class="p">:</span>
+<a id="__codelineno-15-12" name="__codelineno-15-12" href="#__codelineno-15-12"></a><span class="w">      </span><span class="nt">bridge</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">my-bridge</span>
+<a id="__codelineno-15-13" name="__codelineno-15-13" href="#__codelineno-15-13"></a><span class="w">      </span><span class="nt">ipv6</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;true&#39;</span>
+<a id="__codelineno-15-14" name="__codelineno-15-14" href="#__codelineno-15-14"></a><span class="w">    </span><span class="nt">ipam</span><span class="p">:</span>
+<a id="__codelineno-15-15" name="__codelineno-15-15" href="#__codelineno-15-15"></a><span class="w">      </span><span class="nt">driver</span><span class="p">:</span><span class="w"> </span><span class="s">&#39;null&#39;</span>
 </code></pre></div>
 <p>Notes:</p>
 <ul>

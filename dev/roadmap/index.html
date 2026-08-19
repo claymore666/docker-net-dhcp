@@ -1141,9 +1141,13 @@ Docker's own engine carries a change. They stay open on purpose:</p>
 </tr>
 </tbody>
 </table>
-<p>Both PRs were filed in June 2026 and are awaiting review. Neither issue
-here will be closed as "won't fix" while that is the only thing in the
-way; the fork's own half of each is written and waiting.</p>
+<p>Both were filed in June 2026. The <code>interface_name</code> pass-through
+(<a href="https://github.com/moby/moby/pull/52866">moby/moby#52866</a>) has since been <strong>approved</strong> and is milestoned for
+engine <strong>29.8.0</strong>; it unblocks <a href="https://github.com/claymore666/docker-net-dhcp/issues/125">#125</a> once an engine carrying it is
+released. The endpoint-name change (<a href="https://github.com/moby/moby/pull/52871">moby/moby#52871</a>) is still
+awaiting review. Neither issue here will be closed as "won't fix" while
+that is the only thing in the way; the fork's own half of each is
+written and waiting.</p>
 <h2 id="what-this-project-will-deliberately-not-do">What this project will deliberately not do<a class="headerlink" href="#what-this-project-will-deliberately-not-do" title="Permanent link">&para;</a></h2>
 <p>Turning these down is not a backlog. They are decided, and the reasoning
 is recorded so a contributor can read it before writing the PR.</p>
