@@ -35,9 +35,9 @@ type HealthResponse struct {
 	PendingHints    int     `json:"pending_hints"`
 	RecoveredOK     int32   `json:"recovered_ok"`
 	RecoveryFailed  int32   `json:"recovery_failed"`
-	// RecoveryFailed has two benign twins, at the two points recovery
-	// can stop early for a reason that is not a plugin fault. Neither is
-	// healthy-affecting.
+	// RecoveryFailed has three benign twins, at the three points
+	// recovery can stop early for a reason that is not a plugin fault.
+	// None is healthy-affecting.
 	//
 	// RecoveryDeferred is the entry gate: the daemon was not serving yet
 	// when recovery ran, so it was retried after the socket came up.
@@ -47,7 +47,14 @@ type HealthResponse struct {
 	// container had already exited by the time recovery reached it
 	// (#376).
 	RecoveryAbortedContainerGone int32 `json:"recovery_aborted_container_gone"`
-	JoinStartFailures            int32 `json:"join_start_failures"`
+	// RecoveryNetworkGone is the per-network case: the network was
+	// removed between the listing that found it and the read of its
+	// detail, so the whole network is skipped (#648). The list recovery
+	// walks is a snapshot, and a suite that creates and removes networks
+	// continuously hits this. Until #648 it landed in RecoveryFailed and
+	// failed a run in which every test passed.
+	RecoveryNetworkGone int32 `json:"recovery_network_gone"`
+	JoinStartFailures   int32 `json:"join_start_failures"`
 	// JoinAbortedContainerGone is the benign twin of JoinStartFailures:
 	// the container exited before the persistent client was up. Not
 	// healthy-affecting (#373).
@@ -187,7 +194,7 @@ var floorCounters = []floorCounter{
 		name:  "recovery_failed",
 		read:  func(h *HealthResponse) int32 { return h.RecoveryFailed },
 		fatal: true,
-		why:   "recovery could not rebuild a RUNNING container's renewal client, so its lease will not renew until it is restarted. Fatal since #421: both benign paths that used to land here are counted separately — recovery_deferred for a daemon that was not serving yet (#383) and recovery_aborted_container_gone for a container that had already exited (#376) — and the probation runs this counter was left non-fatal for came back clean",
+		why:   "recovery could not rebuild a RUNNING container's renewal client, so its lease will not renew until it is restarted. Fatal since #421: the benign paths that used to land here are counted separately — recovery_deferred for a daemon that was not serving yet (#383), recovery_aborted_container_gone for a container that had already exited (#376), and recovery_network_gone for a network removed out from under the walk (#648) — and the probation runs this counter was left non-fatal for came back clean",
 	},
 	{
 		name:  "address_conflicts",
@@ -261,8 +268,9 @@ const healthyWhy = "the plugin reports itself unhealthy while every counter this
 //
 // Note this is deliberately NOT `!h.Healthy`, though it is now one
 // step away from it. All three counters behind that flag mean exactly
-// one thing since #376 split the benign container-exit out of
-// recovery_failed; what is left is wanting a few runs of evidence
+// one thing since #376 split the benign container-exit, and #648 the
+// removed network, out of recovery_failed; what is left is wanting a
+// few runs of evidence
 // before promoting recovery_failed to fatal, because the cost of
 // getting that wrong is a red suite nobody can explain. When it is
 // promoted, this table collapses into a single check of h.Healthy.

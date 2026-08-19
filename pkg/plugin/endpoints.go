@@ -297,6 +297,15 @@ type HealthResponse struct {
 	// The recovery-side twin of JoinAbortedContainerGone, and normal
 	// after a daemon restart that outlived some containers.
 	RecoveryAbortedContainerGone int32 `json:"recovery_aborted_container_gone"`
+	// RecoveryNetworkGone counts networks skipped during post-restart
+	// recovery because they had been removed between the NetworkList
+	// that found them and the NetworkInspect that reads their detail
+	// (#648). Not Healthy-affecting: a network that is gone leaves no
+	// running container without a renewal client. Counted rather than
+	// silent so a host churning networks under a restarting daemon is
+	// still visible. It landed in recovery_failed until #648, where it
+	// was fatal.
+	RecoveryNetworkGone int32 `json:"recovery_network_gone"`
 	// JoinStartFailures counts persistent-client Start failures at
 	// Join time (#317): a running container with no renewal client.
 	// Healthy-affecting — same operator action as recovery_failed
@@ -509,13 +518,15 @@ func (p *Plugin) apiHealth(w http.ResponseWriter, r *http.Request) {
 		RecoveredOK:       p.recoveredOK.Load(),
 		RecoveryFailed:    failed,
 		JoinStartFailures: joinFails,
-		// The two below are deliberately absent from the Healthy
+		// The three below are deliberately absent from the Healthy
 		// expression above, like JoinAbortedContainerGone. A daemon that
-		// was still starting (#383) and a container that had already
-		// exited when recovery reached it (#376) both leave nothing
+		// was still starting (#383), a container that had already
+		// exited when recovery reached it (#376), and a network removed
+		// out from under the recovery walk (#648) all leave nothing
 		// behind to be unhealthy about.
 		RecoveryDeferred:             p.recoveryDeferred.Load(),
 		RecoveryAbortedContainerGone: p.recoveryAbortedContainerGone.Load(),
+		RecoveryNetworkGone:          p.recoveryNetworkGone.Load(),
 		JoinAbortedContainerGone:     p.joinAbortedContainerGone.Load(),
 		JoinAbortedNoContainer:       p.joinAbortedNoContainer.Load(),
 		JoinAttachSlow:               p.joinAttachSlow.Load(),
