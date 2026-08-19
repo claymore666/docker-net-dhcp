@@ -13,21 +13,56 @@
 #     runner that exited after the first).
 #   - Not a required check. This lane runs at release-candidate time,
 #     not per PR — the arm64 runner pool is brought up for the rc window
-#     and is not held online for day-to-day development. Dispatch it on
-#     the rc tag (docs/release-runbook.md, "Pre-release dry-run").
-#   - The runner must be launched before this workflow runs (JIT mint +
-#     docker run on the Pi); a queued job here with no runner online
-#     means nobody launched one, not a CI outage.
+#     and is not held online for day-to-day development.
+#   - The runner must be launched for the rc (JIT mint + docker run on
+#     the Pi). A queued job here with no runner online means nobody
+#     launched one, not a CI outage — which is what `lane-present`
+#     exists to say out loud.
+#
+# The rc tag is the human gate of a release; what an rc proves must
+# follow from that tag alone. So this fires on `v*-rc*` and nothing
+# else: never on a PR, never on a dev push, never on a schedule, and
+# never on the real `vX.Y.Z` tag. Dispatch stays for re-running a lane
+# against a tag that has already been cut.
 #
 name: integration-arm64
 
 on:
+  push:
+    tags:
+      # Release candidates only. `v*-rc*` cannot match a bare release
+      # tag, so the pool the admins lend us for the rc window is the
+      # only thing this ever spends.
+      - 'v*-rc*'
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
+  # Turns "no arm64 runner was online" from a job that quietly waits into
+  # a red check. Hosted, so it reports even when the self-hosted side is
+  # the thing that is missing; see scripts/check-arm64-lane.sh for why
+  # queued-looks-like-running is the failure worth spending a job on.
+  lane-present:
+    name: arm64-lane-present
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    # The gate's own wait is 25 minutes; this is that plus margin, so the
+    # job never dies before the gate can speak.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Wait for the arm64 suite to start
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GATE_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: bash scripts/check-arm64-lane.sh "$RUN_ID" 25
+
   suite:
     name: arm64-suite
     runs-on: [self-hosted, Linux, ARM64, dhcp-ci-arm64]
