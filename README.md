@@ -62,7 +62,12 @@ Install the plugin:
 # create this directory for you, and `plugin install` fails at
 # start-up without it.
 sudo mkdir -p /var/lib/net-dhcp
+
+# amd64
 docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.7.0
+
+# arm64 (v1.7.0 onward) — the architecture is in the tag, see below
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.7.0-arm64
 ```
 
 It requests `host` networking, the host PID namespace, the Docker
@@ -77,6 +82,8 @@ already have a host bridge `my-bridge` on your LAN — see
 [bridge mode](docs/bridge-mode.md) for that one-time setup):
 
 ```bash
+# On arm64 use ...:v1.7.0-arm64 here too — a network stores this exact
+# reference as its driver, so it must name the plugin you installed.
 docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.7.0 \
   --ipam-driver null -o bridge=my-bridge my-dhcp-net
 
@@ -150,12 +157,11 @@ reads a plugin's privileges before pulling it and its manifest handler
 matches single manifests only, so an index fails with `did not find
 plugin config for specified reference` — for every architecture,
 including the one you are on — and `docker plugin install` has no
-`--platform` to steer it. On an arm64 host the `-arm64` tag replaces the bare one in **every**
-snippet that names the image, not just the install line — a network
-records the tagged plugin reference as its driver, so
-`docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.7.0`
-on a host where only `:v1.7.0-arm64` is installed names a plugin that
-is not there. Both architectures are signed and attested identically
+`--platform` to steer it. The `-arm64` tag replaces the bare one in
+**every** snippet that names the image, not only the install line: a
+network stores the tagged reference as its driver, so a bare tag in
+`docker network create -d` would name a plugin the host does not have.
+Both architectures are signed and attested identically
 (see below). 32-bit ARM is not built.
 
 ## Verifying releases
