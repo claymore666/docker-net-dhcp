@@ -1245,7 +1245,7 @@ kinds of restart. Their <em>observable</em> behaviour is documented in the
 DHCP servers key on it, and everything above is in service of presenting
 the same MAC to the server across an event the container did not choose.</p>
 <h2 id="running-the-tests">Running the tests<a class="headerlink" href="#running-the-tests" title="Permanent link">&para;</a></h2>
-<p>Three loops, cheapest first. Only the last two need root or a plugin.</p>
+<p>Four loops, cheapest first. Only the last needs root or a plugin.</p>
 <table>
 <thead>
 <tr>
@@ -1266,12 +1266,36 @@ the same MAC to the server across an event the container did not choose.</p>
 <td>nothing</td>
 </tr>
 <tr>
+<td><strong>the whole fast CI lane</strong></td>
+<td><code>make check</code></td>
+<td>nothing — about a minute</td>
+</tr>
+<tr>
 <td>both integration suites</td>
 <td><code>sudo make integration-local</code></td>
 <td>root, Docker</td>
 </tr>
 </tbody>
 </table>
+<p><strong><code>make check</code> is the one to run before pushing.</strong> It runs the same
+gates as the <code>test</code> job — build, vet, format, the race suite, the short
+fuzz, every <code>check-*.sh</code>, and the gate self-tests — with no privileges
+and no host mutation, so the answer you get locally is the answer CI
+will give. The lane's contents live in <code>scripts/local-lane.sh</code>, and
+<code>scripts/check-local-lane.sh</code> fails CI if that file lists fewer gates
+than the workflow runs; a local target that hand-listed them would
+quietly cover less the first time a gate was added (#636, the same
+shape as #542).</p>
+<p>Three things it does <strong>not</strong> do, each declared rather than absent —
+<code>scripts/local-lane.sh --list-exempt</code> prints them with reasons. The two
+attribution gates judge a commit range against a pull-request body, and
+<code>govulncheck</code> needs the network and a pinned install, so a local answer
+would be a different one.</p>
+<p>A step whose tool is missing (<code>staticcheck</code>, <code>actionlint</code>, <code>shellcheck</code>)
+is <strong>skipped loudly</strong> and named in the summary rather than passing
+silently. <code>STRICT=1 make check</code> turns any skip into a failure — use that
+anywhere a green exit is read as coverage instead of by a person who can
+see the summary.</p>
 <p>CI shards the main suite across three jobs (#381, #468); <code>integration-local</code>
 deliberately does not — a local run is one machine, so sharding would
 serialise the shards and only add overhead. If you want to reproduce a
