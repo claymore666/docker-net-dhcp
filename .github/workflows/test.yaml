@@ -178,6 +178,14 @@ jobs:
       - name: Issue label map check
         run: bash scripts/check-issue-label-map.sh
 
+      # Every FROM in the tree must name its base by digest (#633).
+      # Three of four Dockerfiles already did, including the sibling that
+      # pins the same base as the one that did not — so the convention
+      # was universal and unenforced, and only an advisory external scan
+      # noticed. Dependabot cannot bump a digest that was never written.
+      - name: Dockerfile digest-pin check
+        run: bash scripts/check-dockerfile-pins.sh
+
       # Every tracked source file must carry the copyright line and
       # SPDX-License-Identifier (#454). A file added without them breaks
       # no build and fails no test, so this gate is the only thing that

@@ -4,7 +4,10 @@
 # over NFS, so the runner has no local OS media and cannot drift between
 # boots. Deliberately carries no DHCP server: the site DHCP server keeps
 # that role and the Pi is pointed here by TFTP_IP in its bootloader EEPROM.
-FROM debian:trixie-slim
+# Pinned by digest like every other base image here (#633): this image
+# serves the runner its ROOT FILESYSTEM, so an unpinned base lets the
+# machine under the integration suite change between two builds.
+FROM debian:trixie-slim@sha256:3a39a0592364683e6bab97937b72cad5a8fa6dcbbee90edb3bb48c7f8e94f258
 
 # dnsmasq   - TFTP only (DHCP and DNS are disabled in the config)
 # nfs-*     - kernel NFS server; klibc nfsmount in the Pi initramfs is v2/v3
