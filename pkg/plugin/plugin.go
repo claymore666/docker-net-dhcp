@@ -1527,23 +1527,8 @@ func NewPlugin(opts Options) (*Plugin, error) {
 	}
 	p.ledger = newLeaseLedger(filepath.Join(stateDir, ledgerFileName), &p.ledgerWriteFailures)
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/NetworkDriver.GetCapabilities", p.apiGetCapabilities)
-
-	mux.HandleFunc("/NetworkDriver.CreateNetwork", p.apiCreateNetwork)
-	mux.HandleFunc("/NetworkDriver.DeleteNetwork", p.apiDeleteNetwork)
-
-	mux.HandleFunc("/NetworkDriver.CreateEndpoint", p.apiCreateEndpoint)
-	mux.HandleFunc("/NetworkDriver.EndpointOperInfo", p.apiEndpointOperInfo)
-	mux.HandleFunc("/NetworkDriver.DeleteEndpoint", p.apiDeleteEndpoint)
-
-	mux.HandleFunc("/NetworkDriver.Join", p.apiJoin)
-	mux.HandleFunc("/NetworkDriver.Leave", p.apiLeave)
-
-	// Plugin observability — not part of the libnetwork RPC contract,
-	// but lives on the same socket so anything that can talk to the
-	// plugin can also poll its state.
-	mux.HandleFunc("/Plugin.Health", p.apiHealth)
+	// Routing table, and the RPCs deliberately left off it: routes.go.
+	mux := p.newServeMux()
 
 	p.server = http.Server{
 		Handler: handlers.CustomLoggingHandler(nil, mux, util.WriteAccessLog),
