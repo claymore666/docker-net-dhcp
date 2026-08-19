@@ -139,15 +139,9 @@ in step 4.
 The two pairs of digests must match. For **v1.7.0** (`linux/arm64`) they are:
 
 ```
-0000000000000000000000000000000000000000000000000000000000000000  net-dhcp
-0000000000000000000000000000000000000000000000000000000000000000  dhcp-handler
+a93a71a22cb7584c9585c28da7264a99b2075a9486461baaf1a39aca30da2c74  net-dhcp
+b513b9bc9ad9d4e04d234a0ea90d03123236f023ca0f10133058156157615827  dhcp-handler
 ```
-
-(The zeroed digests are placeholders: no arm64 binary exists before the
-first v1.7.0 release candidate builds one. The release workflow's digest
-gate fails on them at that rc and prints the real block to paste —
-runbook step 10b, the same flow the amd64 digests follow on every
-release.)
 
 Note that step 4 needs no separate digest list from us: the binaries you
 are comparing against are the ones inside the signed tarball, and
