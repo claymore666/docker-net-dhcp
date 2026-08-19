@@ -14,6 +14,9 @@ GATE="$(cd "$(dirname "$0")" && pwd)/check-pipefail-consumers.sh"
 pass=0
 fail=0
 Q='q'
+# Same reason as Q: the head fixture below must not make THIS file a
+# finding of the gate it is testing.
+H='head'
 
 ok() { printf 'PASS  %s\n' "$1"; pass=$((pass + 1)); }
 no() { printf 'FAIL  %s\n' "$1" >&2; fail=$((fail + 1)); }
@@ -74,18 +77,18 @@ echo fine"
 # is exactly what is read, so that is where it is rejected.
 run_case "a head pipeline in a condition is reported" 1 \
     "scripts/x.sh:::set -uo pipefail
-if producer | head -1; then echo hi; fi"
+if producer | ${H} -1; then echo hi; fi"
 
 run_case "a head pipeline inside a substitution is clean" 0 \
     "scripts/x.sh:::set -uo pipefail
-first=\$(producer | head -1)
+first=\$(producer | ${H} -1)
 echo \"\$first\""
 
 # A substitution INSIDE a condition is still a substitution: the status
 # belongs to the test, not to the pipeline.
 run_case "a substitution inside a condition is clean" 0 \
     "scripts/x.sh:::set -uo pipefail
-if [ -n \"\$(producer | head -1)\" ]; then echo hi; fi"
+if [ -n \"\$(producer | ${H} -1)\" ]; then echo hi; fi"
 
 # Inspecting nothing is not a pass.
 run_case "a repo with no shell scripts exits 2" 2 \
