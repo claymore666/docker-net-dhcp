@@ -172,7 +172,7 @@ fi
 # gofmt is the arbiter of whether the result is still well-formed Go.
 if command -v gofmt >/dev/null 2>&1; then
     for f in fixme.go tagged.go; do
-        if gofmt -l "$TMP/$f" 2>&1 | grep -q .; then
+        if gofmt -l "$TMP/$f" 2>&1 | grep . >/dev/null; then
             fail "gofmt accepts the fixed $f" "$(gofmt -l "$TMP/$f" 2>&1)"
         else
             pass "gofmt accepts the fixed $f"
@@ -242,7 +242,7 @@ fi
 printf 'package y\n' > "$REPO/untracked.go"
 out=$(cd "$REPO" && bash "$CHECK" 2>&1)
 rc=$?
-if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q "untracked.go"; then
+if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep "untracked.go" >/dev/null; then
     pass "an untracked file with no header is found, not silently skipped"
 else
     fail "an untracked file with no header is found, not silently skipped" "exit $rc" "$out"
@@ -267,7 +267,7 @@ fi
 # problem it cannot fix and the fixer becomes something to work around.
 printf 'package w\n' > "$REPO/newly-written.go"
 (cd "$REPO" && bash "$CHECK" --fix) >/dev/null 2>&1
-if head -2 "$REPO/newly-written.go" | grep -q "SPDX-License-Identifier: GPL-3.0-only"; then
+if head -2 "$REPO/newly-written.go" | grep "SPDX-License-Identifier: GPL-3.0-only" >/dev/null; then
     pass "--fix reaches an untracked file too"
 else
     fail "--fix reaches an untracked file too" "header not inserted" "$(cat "$REPO/newly-written.go")"

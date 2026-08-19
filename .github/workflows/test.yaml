@@ -194,6 +194,14 @@ jobs:
       - name: Dockerfile digest-pin check
         run: bash scripts/check-dockerfile-pins.sh
 
+      # Under pipefail a `grep -q` kills its producer with SIGPIPE the
+      # moment it matches, so the pipeline reports failure on success —
+      # timing-dependent, therefore invisible locally and on a re-run.
+      # check-python-deps shipped that way and reported that nothing
+      # installs a file two workflow lines install. Same class as #297.
+      - name: Pipefail-consumer check
+        run: bash scripts/check-pipefail-consumers.sh
+
       # A gate self-test that builds a git fixture must pin that repo's
       # own identity and signing config. Inheriting the developer's
       # means `git commit` blocks on a hardware-key touch that never

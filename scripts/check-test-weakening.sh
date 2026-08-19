@@ -151,7 +151,7 @@ TRAILER='[Tt]est-weakening:[[:space:]]*#[0-9]+'
 waiver=""
 if [ -n "$BODY" ] && [ -f "$BODY" ] && grep -qE "$TRAILER" "$BODY"; then
     waiver="the PR body"
-elif git log --format='%B' "$RANGE" | grep -qE "$TRAILER"; then
+elif git log --format='%B' "$RANGE" | grep -E "$TRAILER" >/dev/null; then
     waiver="a commit message"
 fi
 
@@ -241,7 +241,7 @@ for f in "${FILES[@]}"; do
 
     # 1. A skip is the highest-confidence signal there is. A test that
     #    is skipped is a test that found nothing.
-    if printf '%s\n' "$added" | grep -qE '\bt\.Skipf?\('; then
+    if printf '%s\n' "$added" | grep -E '\bt\.Skipf?\(' >/dev/null; then
         report "$f" "adds t.Skip" \
             "A skipped test cannot fail, so it cannot report. If the condition is genuinely unsupported here, say which issue tracks it."
     fi
@@ -262,8 +262,8 @@ for f in "${FILES[@]}"; do
     #    is a poll and not a smell.
     if [[ "$f" == *_test.go ]]; then
         ctx=$(git diff -U8 "$DIFF_RANGE" -- "$f" 2>/dev/null | grep -E '^\+' | grep -v '^+++' || true)
-        if printf '%s\n' "$added" | grep -qE '\btime\.Sleep\('; then
-            if ! printf '%s\n' "$ctx" | grep -qE 'deadline|Deadline|time\.Now\(\)\.Before|[Bb]udget|for .*range|Await\('; then
+        if printf '%s\n' "$added" | grep -E '\btime\.Sleep\(' >/dev/null; then
+            if ! printf '%s\n' "$ctx" | grep -E 'deadline|Deadline|time\.Now\(\)\.Before|[Bb]udget|for .*range|Await\(' >/dev/null; then
                 report "$f" "adds a bare time.Sleep" \
                     "A sleep that is not the interval of a bounded poll waits a race out instead of removing it: it passes on a fast machine and fails on a loaded one. Poll against a deadline, or say which issue tracks the race."
             fi
@@ -331,7 +331,7 @@ for f in "${FILES[@]}"; do
 
     # 5. The exact shape that caused this: a harness helper whose
     #    purpose is to switch a check off.
-    if printf '%s\n' "$added" | grep -qE '\bfunc\s+[A-Za-z]*(NoInit|NoWait|NoCheck|SkipCheck|OptOut|Unchecked|Disable[A-Z])[A-Za-z]*\s*\('; then
+    if printf '%s\n' "$added" | grep -E '\bfunc\s+[A-Za-z]*(NoInit|NoWait|NoCheck|SkipCheck|OptOut|Unchecked|Disable[A-Z])[A-Za-z]*\s*\(' >/dev/null; then
         report "$f" "adds an opt-out helper" \
             "A helper that exists to bypass a check is the shape that hid #402 and #408. An assertion that the bypassed condition holds is almost always what was wanted instead."
     fi

@@ -69,7 +69,7 @@ mapfile -t CANDIDATES < <(git -C "$ROOT" ls-files -- '*.sh' | sort)
 FIXTURES=()
 for f in "${CANDIDATES[@]}"; do
     if grep -vE '^[[:space:]]*#' "$ROOT/$f" 2>/dev/null \
-         | grep -qE 'git[A-Za-z0-9_]*.*[[:space:]]commit([[:space:]]|$)'; then
+         | grep -E 'git[A-Za-z0-9_]*.*[[:space:]]commit([[:space:]]|$)' >/dev/null; then
         FIXTURES+=("$f")
     fi
 done
@@ -99,7 +99,7 @@ for f in "${FIXTURES[@]}"; do
     # not. Demanded only from the scripts that make one, so this stays
     # a rule about what a fixture actually does.
     if grep -vE '^[[:space:]]*#' "$ROOT/$f" 2>/dev/null \
-         | grep -qE 'git[A-Za-z0-9_]*.*[[:space:]]tag[[:space:]].*[[:space:]]-[ams]'; then
+         | grep -E 'git[A-Za-z0-9_]*.*[[:space:]]tag[[:space:]].*[[:space:]]-[ams]' >/dev/null; then
         has 'tag\.gpgsign' "$f" || missing+=("tag.gpgsign false")
     fi
     if [ "${#missing[@]}" -ne 0 ]; then

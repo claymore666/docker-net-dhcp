@@ -87,6 +87,7 @@ LANE=(
   "dockerfile pins|-|bash scripts/check-dockerfile-pins.sh"
   "python deps|-|bash scripts/check-python-deps.sh"
   "fixture hygiene|-|bash scripts/check-selftest-fixtures.sh"
+  "pipefail consumers|-|bash scripts/check-pipefail-consumers.sh"
   "license headers|-|bash scripts/check-license-headers.sh"
   "parent-gate accounting|-|bash scripts/check-parent-gate-accounting.sh"
   "doc invariants|-|bash scripts/check-doc-invariants.sh"
@@ -141,7 +142,7 @@ fi
 # there is indistinguishable from a pass. Say so up front so the failure
 # reads as a missing locale rather than a broken gate.
 locale_note=""
-if ! locale -a 2>/dev/null | grep -qi '^de_DE'; then
+if ! locale -a 2>/dev/null | grep -i '^de_DE' >/dev/null; then
     locale_note="the de_DE.UTF-8 locale is absent — 'gate self-tests' will fail on the shard locale case (#554). Fix: sudo locale-gen de_DE.UTF-8"
     printf '\033[33mNOTE\033[0m  %s\n\n' "$locale_note"
 fi

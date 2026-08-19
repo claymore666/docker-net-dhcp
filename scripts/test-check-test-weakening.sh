@@ -521,10 +521,10 @@ run_dirty() {
     rm -rf "$dir"
     local bad=""
     [ "$rc" = "$want_rc" ] || bad="exit $rc, want $want_rc"
-    if [ -n "$want_present" ] && ! printf '%s\n' "$out" | grep -qF "$want_present"; then
+    if [ -n "$want_present" ] && ! printf '%s\n' "$out" | grep -F "$want_present" >/dev/null; then
         bad="${bad:+$bad; }missing '$want_present'"
     fi
-    if [ -n "$want_absent" ] && printf '%s\n' "$out" | grep -qF "$want_absent"; then
+    if [ -n "$want_absent" ] && printf '%s\n' "$out" | grep -F "$want_absent" >/dev/null; then
         bad="${bad:+$bad; }must not print '$want_absent'"
     fi
     if [ -z "$bad" ]; then ok "$name"; else no "$name ($bad)"; fi

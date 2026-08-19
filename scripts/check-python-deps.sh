@@ -79,7 +79,7 @@ report() {
 # --- A. a declaration nobody installs --------------------------------
 for req in "${REQS[@]}"; do
     if git -C "$ROOT" grep -nI -F -e "$req" -- ":!$req" 2>/dev/null \
-         | grep -qE 'pip[0-9.]*[[:space:]]+install|pip_install'; then
+         | grep -E 'pip[0-9.]*[[:space:]]+install|pip_install' >/dev/null; then
         continue
     fi
     report "$req" "declared but no 'pip install' line names it — nothing ever installs these."
