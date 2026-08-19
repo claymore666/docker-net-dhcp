@@ -97,9 +97,11 @@ The architecture lives in the tag because a Docker plugin cannot be
 installed from a multi-architecture manifest list at all, and
 `docker plugin install` has no `--platform` to steer one — an index
 fails with `did not find plugin config for specified reference` for
-every architecture, including the one you are on. On arm64, substitute
-the `-arm64` tag in the install line below; nothing else differs. The
-README covers the daemon-side reason in full.
+every architecture, including the one you are on. Substitute the
+`-arm64` tag in **every** reference below, not only the install line:
+`docker network create -d` records the tagged reference as the
+network's driver, and a bare tag there names a plugin that was never
+installed. The README covers the daemon-side reason in full.
 
 **Install** (interactive privilege grant, or `--grant-all-permissions`
 for unattended):
@@ -110,7 +112,12 @@ for unattended):
 # for you, and `plugin install` fails with a mount error if it is
 # missing — see "If the directory is missing" below.
 sudo mkdir -p /var/lib/net-dhcp
+
+# amd64
 docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.7.0
+
+# arm64 (v1.7.0 onward) — the architecture is in the tag, see below
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.7.0-arm64
 ```
 
 **If the directory is missing**, the install pulls the plugin, then
