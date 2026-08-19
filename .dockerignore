@@ -1,6 +1,19 @@
 /bin/
 /plugin/
+# The cover twin of /plugin/, and root-owned for the same reason:
+# `sudo make create-cover` writes it (the coverage lane, and
+# `make capture-fixtures` — #644). Missing here while present in
+# .gitignore, it broke every unprivileged `docker build` from the
+# repo root on any tree that had built the instrumented plugin.
+/plugin-cover/
 /multiarch/
+# Integration-suite output (#378). The suite targets are root-only, so
+# logs/ is created root-owned — the same context-walk hazard as the
+# plugin build directories above.
+/logs/
+# mkdocs-material build output (#133). Never part of the image, and
+# large enough that shipping it is pure context bloat.
+/site/
 .git/
 # Nothing in the image needs .claude/, and it is where per-instance git
 # worktrees live. A worktree that ever ran `sudo make create` leaves a
