@@ -125,7 +125,7 @@ sha256sum rootfs/usr/sbin/net-dhcp \
           rootfs/usr/lib/net-dhcp/dhcp-handler
 ```
 
-The two pairs of digests must match. For **v1.7.0** (`linux/amd64`) they are:
+The two pairs of digests must match. For **v1.7.1** (`linux/amd64`) they are:
 
 ```
 6698436fdf3de94deea0ef157fdde850a170589129a43403525976cc07713579  net-dhcp
@@ -135,7 +135,7 @@ be7290f060c4af1b5c7f841b1e31e04332e9d3bc2c1b50746431d39f57c1a4a9  dhcp-handler
 Since v1.7.0 each release also ships arm64 binaries under the `-arm64`
 tags; rebuild them the same way on an arm64 host (the build follows the
 host architecture) and unpack `net-dhcp-plugin-VERSION-linux-arm64.tar.gz`
-in step 4. For **v1.7.0** (`linux/arm64`) they are:
+in step 4. For **v1.7.1** (`linux/arm64`) they are:
 
 ```
 a93a71a22cb7584c9585c28da7264a99b2075a9486461baaf1a39aca30da2c74  net-dhcp
