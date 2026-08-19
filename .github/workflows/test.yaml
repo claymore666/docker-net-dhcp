@@ -391,8 +391,14 @@ jobs:
       #
       # Suppressions carry a reason inline. A repo-wide exclude list
       # would recreate exactly the blind spot this closes.
-      - name: Shellcheck the gate scripts
-        run: shellcheck -S warning scripts/*.sh
+      #
+      # ci/runner-image/*.sh is in scope for the same reason and was
+      # found by the same argument (#632): it is the shell that decides
+      # whether every self-hosted job's environment comes up at all —
+      # nested daemon, cgroup posture, proxy wiring, and now the arm64
+      # runner's own registration — and nothing linted it either.
+      - name: Shellcheck the gate and runner-image scripts
+        run: shellcheck -S warning scripts/*.sh ci/runner-image/*.sh
 
   # This fork is published as the maintainer's own work, so no commit
   # or PR may credit an AI assistant. The rule predates the repo's CI
