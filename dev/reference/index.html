@@ -2245,9 +2245,11 @@ using (option 50) so the server ACKs it rather than allocating a new one.</p>
 <p>Recovery runs synchronously inside plugin startup, before the socket
 accepts requests, so a fresh <code>CreateEndpoint</code> arriving during enable
 cannot race it. Results land on <code>/Plugin.Health</code> as <code>recovered_ok</code>,
-<code>recovery_failed</code> and <code>recovery_aborted_container_gone</code> — the last
-covering containers that had already exited when recovery reached
-them, which is not a failure and does not flip <code>healthy</code>.</p>
+<code>recovery_failed</code>, <code>recovery_aborted_container_gone</code> and
+<code>recovery_network_gone</code> — the last two covering containers that had
+already exited when recovery reached them, and networks removed between
+the listing and the read of their detail. Neither is a failure and
+neither flips <code>healthy</code>.</p>
 <p>One case cannot be finished there. On a daemon restart Docker respawns
 the plugin while the daemon itself is still coming up, so recovery's
 first API call can time out against a daemon that is not serving yet.
@@ -2337,7 +2339,7 @@ diagnosing a specific container from them alone is not.</p>
 <tr>
 <td><code>recovery_failed</code></td>
 <td>yes</td>
-<td>Post-restart rebuilds that failed <strong>for a container that is still running</strong> — it runs without lease renewal and loses its IP at expiry; restart it. Two things are deliberately <em>not</em> counted here, because neither leaves a running container without a renewal client: a daemon that is merely still starting (<code>recovery_deferred</code>, #383) and a container that had already exited when recovery reached it (<code>recovery_aborted_container_gone</code>, #376).</td>
+<td>Post-restart rebuilds that failed <strong>for a container that is still running</strong> — it runs without lease renewal and loses its IP at expiry; restart it. Two things are deliberately <em>not</em> counted here, because neither leaves a running container without a renewal client: a daemon that is merely still starting (<code>recovery_deferred</code>, #383), a container that had already exited when recovery reached it (<code>recovery_aborted_container_gone</code>, #376), and a network removed out from under the recovery walk (<code>recovery_network_gone</code>, #648).</td>
 </tr>
 <tr>
 <td><code>recovery_deferred</code></td>
@@ -2348,6 +2350,11 @@ diagnosing a specific container from them alone is not.</p>
 <td><code>recovery_aborted_container_gone</code></td>
 <td>no</td>
 <td>(v1.4.0+) Recoveries abandoned because the container had already exited, or been removed, by the time post-restart recovery reached it. Not a fault: nothing is left running without a renewal client, so this never flips <code>healthy</code>. The recovery-side twin of <code>join_aborted_container_gone</code>, and normal after a daemon restart that outlived some containers (#376).</td>
+</tr>
+<tr>
+<td><code>recovery_network_gone</code></td>
+<td>no</td>
+<td>(v1.8.0+) Networks skipped during post-restart recovery because they had been removed between the listing that found them and the read of their detail. Not a fault: a network that is gone leaves no running container without a renewal client, so this never flips <code>healthy</code>. Counted rather than passed over in silence — a host where this climbs steadily is churning networks under a restarting daemon, which is worth knowing even though no single occurrence is a problem. Until v1.8.0 it landed in <code>recovery_failed</code>, where an ordinary <code>docker network rm</code> racing a daemon restart reported the plugin's most serious fault (#648).</td>
 </tr>
 <tr>
 <td><code>join_start_failures</code></td>
