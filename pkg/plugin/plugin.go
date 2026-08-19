@@ -500,6 +500,29 @@ type Plugin struct {
 	// declined to assert on it at all.
 	recoveryAbortedContainerGone atomic.Int32
 
+	// recoveryNetworkGone counts networks skipped during post-restart
+	// recovery because they no longer existed by the time we asked for
+	// their detail (#648). recoverEndpoints lists networks and then
+	// re-inspects each one for container detail; a `docker network rm`
+	// landing between those two calls answers the second with a 404.
+	//
+	// Deliberately NOT healthy-affecting, for the same reason as
+	// recoveryAbortedContainerGone: a network that is gone has no
+	// running container left without a renewal client, so nothing is
+	// wrong. It was counted as recoveryFailed until #648 — fatal, and
+	// enough to flip healthy — which made an ordinary network removal
+	// racing a daemon restart look like the plugin's most serious
+	// fault. Found by an integration run that went red with every test
+	// passing; only the health floor saw it.
+	//
+	// This is the third benign path carved out of recoveryFailed, after
+	// recoveryDeferred (#383) and recoveryAbortedContainerGone (#376).
+	// The counter is kept rather than dropping to a log line so the
+	// rate stays visible: a host where this climbs steadily is churning
+	// networks under a restarting daemon, which is worth knowing even
+	// though no single occurrence is a fault.
+	recoveryNetworkGone atomic.Int32
+
 	// joinStartFailures counts persistent-DHCP-client Start failures
 	// at Join time (#317). Each bump is a running container that got
 	// its initial lease but has NO renewal client: the lease silently
@@ -1119,10 +1142,20 @@ func (p *Plugin) recoverEndpoints(ctx context.Context, daemonWait time.Duration)
 	// without this, NetworkInspect / netOptions / recoverOneEndpoint
 	// failures would only show up in the log line and not on the
 	// health endpoint operators page on (W-2 in the 2026-05-05 review).
-	var recovered, failed int
+	var recovered, failed, gone int
 	recordSyncFailure := func() {
 		failed++
 		p.recoveryFailed.Add(1)
+	}
+	// A network that has been removed is not a recovery failure (#648).
+	// The list we are walking is a snapshot; anything in it can be gone
+	// by the time we ask for its detail, and a network that is gone has
+	// no container left to rebuild a renewal client for.
+	recordNetworkGone := func(id string, err error) {
+		gone++
+		p.recoveryNetworkGone.Add(1)
+		log.WithError(err).WithField("network", shortID(id)).
+			Info("recovery: network removed before it could be read; skipping")
 	}
 	waitCtx, waitCancel := context.WithTimeout(ctx, daemonWait)
 	nets, err := p.listNetworksWhenReady(waitCtx)
@@ -1143,6 +1176,10 @@ func (p *Plugin) recoverEndpoints(ctx context.Context, daemonWait time.Duration)
 		netInfo, err := p.docker.NetworkInspect(netCtx, n.ID, dNetwork.InspectOptions{})
 		if err != nil {
 			netCancel()
+			if cerrdefs.IsNotFound(err) {
+				recordNetworkGone(n.ID, err)
+				continue
+			}
 			log.WithError(err).WithField("network", shortID(n.ID)).
 				Warn("recovery: NetworkInspect failed; skipping")
 			recordSyncFailure()
@@ -1151,6 +1188,13 @@ func (p *Plugin) recoverEndpoints(ctx context.Context, daemonWait time.Duration)
 		opts, err := p.netOptions(netCtx, n.ID)
 		netCancel()
 		if err != nil {
+			// netOptions prefers the on-disk cache and only reaches the
+			// daemon when that misses, so a 404 here is the same race one
+			// call later.
+			if cerrdefs.IsNotFound(err) {
+				recordNetworkGone(n.ID, err)
+				continue
+			}
 			log.WithError(err).WithField("network", shortID(n.ID)).
 				Warn("recovery: failed to load network options; skipping")
 			recordSyncFailure()
@@ -1175,10 +1219,11 @@ func (p *Plugin) recoverEndpoints(ctx context.Context, daemonWait time.Duration)
 			recovered++
 		}
 	}
-	if recovered > 0 || failed > 0 {
+	if recovered > 0 || failed > 0 || gone > 0 {
 		log.WithFields(log.Fields{
-			"recovered": recovered,
-			"failed":    failed,
+			"recovered":    recovered,
+			"failed":       failed,
+			"network_gone": gone,
 		}).Info("Plugin recovery complete")
 	}
 	return false
