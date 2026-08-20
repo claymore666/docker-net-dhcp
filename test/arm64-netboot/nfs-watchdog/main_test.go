@@ -246,3 +246,89 @@ func tail(s string) string {
 	}
 	return s
 }
+
+// The board this program runs on has a 15s hardware watchdog, while the
+// defaults describe a 60s one. Before fitToHardware that combination
+// was fatal: the process refused to start, and because PID 1 had
+// already released the device the board then ran unwatched. Refusing to
+// run is the one outcome a watchdog must never choose, so each way back
+// into it is driven here.
+func TestFitToHardware(t *testing.T) {
+	defaults := func(hw time.Duration) config {
+		return config{
+			petInterval:   10 * time.Second,
+			probeInterval: 10 * time.Second,
+			staleAfter:    45 * time.Second,
+			hwTimeout:     hw,
+		}
+	}
+
+	t.Run("a 60s device keeps the tuned defaults", func(t *testing.T) {
+		c := defaults(60 * time.Second)
+		got, changed := fitToHardware(c, nil)
+		if len(changed) != 0 {
+			t.Fatalf("rescaled a config that already fits: %v", changed)
+		}
+		if got != c {
+			t.Fatalf("config changed: %+v -> %+v", c, got)
+		}
+	})
+
+	t.Run("a 15s device is scaled instead of rejected", func(t *testing.T) {
+		got, changed := fitToHardware(defaults(15*time.Second), nil)
+		if err := got.validate(); err != nil {
+			t.Fatalf("scaled config still invalid: %v", err)
+		}
+		if len(changed) != 3 {
+			t.Fatalf("want all three timings scaled, got %v", changed)
+		}
+		// The values proven by hand on the board.
+		if got.petInterval != 3*time.Second ||
+			got.probeInterval != 3*time.Second ||
+			got.staleAfter != 9*time.Second {
+			t.Fatalf("want 3s/3s/9s, got %s/%s/%s",
+				got.petInterval, got.probeInterval, got.staleAfter)
+		}
+	})
+
+	t.Run("an explicit timing is never silently overridden", func(t *testing.T) {
+		explicit := map[string]bool{"stale-after": true}
+		got, changed := fitToHardware(defaults(15*time.Second), explicit)
+		if got.staleAfter != 45*time.Second {
+			t.Fatalf("overrode an operator's own number: stale-after = %s", got.staleAfter)
+		}
+		for _, name := range changed {
+			if name == "stale-after" {
+				t.Fatal("reported scaling a value it was told not to touch")
+			}
+		}
+		// And the contradiction still has to surface rather than being
+		// papered over by the values around it.
+		if err := got.validate(); err == nil {
+			t.Fatal("an unusable explicit stale-after validated clean")
+		}
+	})
+
+	t.Run("the scaled timings validate across the plausible range", func(t *testing.T) {
+		// Whatever device this lands on next, the ratios have to hold.
+		for hw := 5 * time.Second; hw <= 120*time.Second; hw += time.Second {
+			got, _ := fitToHardware(defaults(hw), nil)
+			if err := got.validate(); err != nil {
+				t.Fatalf("hw=%s scaled to %s/%s/%s which is invalid: %v",
+					hw, got.petInterval, got.probeInterval, got.staleAfter, err)
+			}
+		}
+	})
+
+	t.Run("a hardware timeout too small to be usable stays fatal", func(t *testing.T) {
+		// Scaling must not manufacture a zero or sub-second petter and
+		// call it healthy: below a usable timeout the honest answer is
+		// still the error.
+		got, _ := fitToHardware(defaults(2*time.Second), nil)
+		if got.petInterval <= 0 || got.probeInterval <= 0 || got.staleAfter <= 0 {
+			if err := got.validate(); err == nil {
+				t.Fatal("a degenerate scaling validated clean")
+			}
+		}
+	})
+}

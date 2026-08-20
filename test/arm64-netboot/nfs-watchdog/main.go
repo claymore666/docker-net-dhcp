@@ -9,9 +9,11 @@
 //
 // The OS image already arms this device: it ships
 // /usr/lib/systemd/system.conf.d/40-rpi-enable-watchdog.conf with
-// RuntimeWatchdogSec=1m, and PID 1 holds /dev/watchdog0 with a 60s
-// hardware timeout. It was armed during the outage that motivated this
-// and the board still had to be power-cycled.
+// RuntimeWatchdogSec=1m, and PID 1 holds /dev/watchdog0. The minute it
+// asks for is not what it gets: this SoC's watchdog caps at 15s and the
+// kernel clamps the request without saying so. It was armed during the
+// outage that motivated this and the board still had to be
+// power-cycled.
 //
 // The reason is the failure itself. systemd is resident in memory and
 // its event loop never touches the root filesystem, so it keeps petting
@@ -111,6 +113,48 @@ func (c config) validate() error {
 			"otherwise one missed tick resets the board", c.petInterval, c.hwTimeout)
 	}
 	return nil
+}
+
+// fitToHardware rescales the timings the operator did not set so the
+// built-in defaults survive a device whose timeout is smaller than they
+// assume.
+//
+// The defaults describe a 60s watchdog. The BCM2835 on the arm64 CI
+// board maxes out at 15s and silently clamps to it, so every default
+// above is out of range at once and validate rejects all of them. That
+// verdict is correct and the consequence was still wrong: the process
+// exited, PID 1 had already handed the device over, and the board ran
+// with NO watchdog at all — the failure mode this program exists to
+// remove, reached by refusing to start.
+//
+// So a default that does not fit the hardware is rescaled to it rather
+// than being fatal. Ratios, not constants: pet five times per timeout,
+// tolerate staleness for three fifths of it. Those satisfy validate for
+// any timeout large enough to be usable, and on a 15s device they give
+// the 3s/3s/9s that was proven by hand on the board.
+//
+// Only untouched values move. An operator who names a number gets it or
+// gets an error — silently overriding an explicit flag would make the
+// running configuration something nobody wrote down.
+func fitToHardware(c config, explicit map[string]bool) (config, []string) {
+	if c.validate() == nil {
+		return c, nil
+	}
+	pet, probe, stale := c.hwTimeout/5, c.hwTimeout/5, c.hwTimeout*3/5
+	var changed []string
+	if !explicit["pet-interval"] && c.petInterval != pet {
+		c.petInterval = pet
+		changed = append(changed, "pet-interval")
+	}
+	if !explicit["probe-interval"] && c.probeInterval != probe {
+		c.probeInterval = probe
+		changed = append(changed, "probe-interval")
+	}
+	if !explicit["stale-after"] && c.staleAfter != stale {
+		c.staleAfter = stale
+		changed = append(changed, "stale-after")
+	}
+	return c, changed
 }
 
 // shouldPet is the whole decision, kept separate from the clock and the
@@ -232,6 +276,13 @@ func main() {
 		logf("device reports a %s hardware timeout (configured %s); using the device's", real, c.hwTimeout)
 		c.hwTimeout = real
 	}
+	if fitted, changed := fitToHardware(c, explicitTimings()); len(changed) > 0 {
+		logf("the default %s do not fit a %s hardware timeout; scaled to %s/%s/%s "+
+			"(pet/probe/stale) rather than refusing to run and leaving the board unwatched",
+			strings.Join(changed, ", "), c.hwTimeout,
+			fitted.petInterval, fitted.probeInterval, fitted.staleAfter)
+		c = fitted
+	}
 	if err := c.validate(); err != nil {
 		logf("FATAL: %v", err)
 		os.Exit(2)
@@ -313,6 +364,24 @@ func run(w *watchdog, p *prober, c config, sig <-chan os.Signal, stop chan struc
 			}
 		}
 	}
+}
+
+// explicitTimings names the timings the operator stated, by flag or by
+// environment. Both are somebody writing a number down on purpose, so
+// both are left alone by fitToHardware.
+func explicitTimings() map[string]bool {
+	explicit := map[string]bool{}
+	flag.Visit(func(f *flag.Flag) { explicit[f.Name] = true })
+	for name, env := range map[string]string{
+		"pet-interval":   "PET_INTERVAL",
+		"probe-interval": "PROBE_INTERVAL",
+		"stale-after":    "STALE_AFTER",
+	} {
+		if _, ok := os.LookupEnv(env); ok {
+			explicit[name] = true
+		}
+	}
+	return explicit
 }
 
 func envOr(key, def string) string {
