@@ -27,6 +27,9 @@ var (
 	ErrParentDown = errors.New("parent interface is down")
 	// ErrModeMismatch indicates an option that doesn't apply to the chosen mode was set
 	ErrModeMismatch = errors.New("option does not apply to selected mode")
+	// ErrInvalidServerList indicates dhcp_servers or dhcp_deny_servers
+	// could not be parsed, or the two contradict each other
+	ErrInvalidServerList = errors.New("invalid DHCP server list")
 	// ErrMACAddress indicates an invalid MAC address
 	ErrMACAddress = errors.New("invalid MAC address")
 	// ErrNoLease indicates a DHCP lease was not obtained from dhcpcd
@@ -58,7 +61,7 @@ func ErrToStatus(err error) int {
 		errors.Is(err, ErrBridgeUsed), errors.Is(err, ErrMACAddress),
 		errors.Is(err, ErrInvalidMode), errors.Is(err, ErrParentRequired),
 		errors.Is(err, ErrParentInvalid), errors.Is(err, ErrParentDown),
-		errors.Is(err, ErrModeMismatch):
+		errors.Is(err, ErrModeMismatch), errors.Is(err, ErrInvalidServerList):
 		return http.StatusBadRequest
 
 	// Upstream DHCP server didn't respond — not our fault, not the

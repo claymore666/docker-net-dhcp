@@ -435,11 +435,15 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 				v6str = "v6"
 			}
 
-			tCtx, cancel := context.WithTimeout(ctx, timeout)
-			defer cancel()
+			// Server preference ladder (#111) / deny-list (#669),
+			// through the same helper the bridge path uses so the two
+			// cannot drift.
+			pol, err := resolveServerPolicy(opts)
+			if err != nil {
+				return err
+			}
 
-			clientOpts := &dhcp.DHCPClientOptions{
-				V6:          v6,
+			base := dhcp.DHCPClientOptions{
 				Hostname:    hostname,
 				FQDN:        opts.fqdnMode(),
 				ClientID:    clientID,
@@ -454,11 +458,12 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 				MAC: mac,
 			}
 			if v6 {
-				clientOpts.PreferredV6 = requestedV6
+				base.PreferredV6 = requestedV6
 			} else {
-				clientOpts.RequestedIP = requestedIP
+				base.RequestedIP = requestedIP
 			}
-			info, err := dhcp.GetIP(tCtx, la.Name, clientOpts)
+
+			info, err := p.acquireWithPolicy(ctx, la.Name, pol, v6, timeout, r.EndpointID, base)
 			if err != nil {
 				return fmt.Errorf("failed to get initial IP%v address via DHCP%v: %w", v6str, v6str, err)
 			}

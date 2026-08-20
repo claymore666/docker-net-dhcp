@@ -935,11 +935,33 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 			preferredV6 = v6Addr.IP.String()
 		}
 	}
+	// The persistent client gets the WHOLE allowed set, not the single
+	// tier that won acquisition: it must still be able to rebind after
+	// the preferred server goes away, and a whitelist pinned to that one
+	// server would strand the endpoint with no lease rather than fail
+	// over. Preference is an acquisition-time concept (#111) — the lease
+	// then stays put on its own, because renewal is unicast to whoever
+	// granted it. v6 gets neither list; both directives are v4-only.
+	//
+	// The options were validated at CreateNetwork, so an error here means
+	// the persisted state is corrupt. Refuse rather than silently start
+	// an unrestricted client, which would ignore a deny-list.
+	pol, err := resolveServerPolicy(m.opts)
+	if err != nil {
+		return nil, fmt.Errorf("invalid persisted DHCP server policy: %w", err)
+	}
+	var allowServers, denyServers []string
+	if !v6 {
+		allowServers, denyServers = pol.allowList(), pol.denyList()
+	}
+
 	client, err := dhcp.NewDHCPClient(m.ctrLink.Attrs().Name, &dhcp.DHCPClientOptions{
-		Hostname:  m.hostname,
-		FQDN:      m.opts.fqdnMode(),
-		V6:        v6,
-		Namespace: m.nsPath,
+		Hostname:     m.hostname,
+		AllowServers: allowServers,
+		DenyServers:  denyServers,
+		FQDN:         m.opts.fqdnMode(),
+		V6:           v6,
+		Namespace:    m.nsPath,
 		// Same MAC the CreateEndpoint one-shot used (this is the same
 		// link, moved into the netns), so dhcpcd derives the identical
 		// DUID-LL/IAID and the persistent client renews the very lease

@@ -53,6 +53,14 @@ func validateIPAMData(ipv4 []*IPAMData) error {
 // Returning an error wrapped with fmt.Errorf preserves errors.Is so
 // the HTTP layer can map sentinels to 400 status codes.
 func validateModeOptions(opts DHCPNetworkOptions) error {
+	// Mode-independent: both server lists apply to every mode, and a
+	// malformed or self-contradicting one must fail the create rather
+	// than be discovered as "the container got an address from the
+	// wrong server" later.
+	if _, err := resolveServerPolicy(opts); err != nil {
+		return err
+	}
+
 	switch opts.effectiveMode() {
 	case ModeMacvlan, ModeIPvlan:
 		if opts.Parent == "" {
@@ -313,8 +321,15 @@ func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 			// it puts its own child on the parent for up to
 			// preflightProbeBudget and so is a holder as well as a
 			// waiter.
+			// Already validated by validateModeOptions above, so this
+			// cannot fail here; resolved again rather than threaded so
+			// the probe reads the same source of truth as acquisition.
+			probePolicy, err := resolveServerPolicy(opts)
+			if err != nil {
+				return err
+			}
 			ctx, cancel := context.WithTimeout(context.Background(), preflightProbeBudget+5*time.Second)
-			err := p.runDHCPProbe(ctx, opts.Parent, mode)
+			err = p.runDHCPProbe(ctx, opts.Parent, mode, probePolicy)
 			cancel()
 			if err != nil {
 				return err
@@ -784,11 +799,15 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 				v6str = "v6"
 			}
 
-			timeoutCtx, cancel := context.WithTimeout(ctx, timeout)
-			defer cancel()
+			// Server preference ladder (#111) / deny-list (#669). With
+			// neither option set this is a single unrestricted attempt
+			// with the whole budget — the historical behaviour.
+			pol, err := resolveServerPolicy(opts)
+			if err != nil {
+				return err
+			}
 
-			clientOpts := &dhcp.DHCPClientOptions{
-				V6:          v6,
+			base := dhcp.DHCPClientOptions{
 				Hostname:    hostname,
 				FQDN:        opts.fqdnMode(),
 				ClientID:    clientID,
@@ -803,11 +822,12 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 			// for v4, `ia_na / ADDR` for v6 (#213). Empty values omit
 			// the directive, so an unhinted endpoint behaves as before.
 			if v6 {
-				clientOpts.PreferredV6 = requestedV6
+				base.PreferredV6 = requestedV6
 			} else {
-				clientOpts.RequestedIP = requestedIP
+				base.RequestedIP = requestedIP
 			}
-			info, err := dhcp.GetIP(timeoutCtx, ctrName, clientOpts)
+
+			info, err := p.acquireWithPolicy(ctx, ctrName, pol, v6, timeout, r.EndpointID, base)
 			if err != nil {
 				return fmt.Errorf("failed to get initial IP%v address via DHCP%v: %w", v6str, v6str, err)
 			}

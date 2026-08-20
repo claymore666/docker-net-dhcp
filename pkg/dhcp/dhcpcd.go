@@ -105,6 +105,19 @@ type dhcpcdParams struct {
 	PreferredV6 string // v6 IA_NA preferred address; "" omits
 	Broadcast   bool   // request a broadcast reply (v4 only; ipvlan-L2 shared MAC)
 
+	// AllowServers restricts which DHCPv4 servers may be accepted, as
+	// dhcpcd `whitelist` entries (IPv4 only — dhcp6.c never consults
+	// them). Empty imposes no restriction. Set from the network's
+	// dhcp_servers preference list (#111).
+	AllowServers []string
+	// DenyServers rejects specific DHCPv4 servers, as dhcpcd
+	// `blacklist` entries (#669). The caller must leave this empty
+	// whenever AllowServers is set: dhcpcd ignores a blacklist once a
+	// whitelist exists (src/dhcp.c:3181-3196), so emitting both would
+	// advertise a denial that is not enforced. serverPolicy.denyList
+	// is what guarantees this.
+	DenyServers []string
+
 	Handler    string // hook script path (-c)
 	ConfigPath string // where the rendered config will be written (-f)
 	EventFIFO  string // FIFO the handler writes events to (env directive); "" omits
@@ -209,6 +222,29 @@ func renderConfig(p dhcpcdParams) string {
 	// `-R`). The one-shot acquisition deliberately keeps its lease (-1 -p).
 	if !p.Once {
 		fmt.Fprintf(&b, "release\n")
+	}
+
+	// Server preference / denial (#111, #669). These match the packet's
+	// IP SOURCE address, not the Server Identifier it advertises
+	// (dhcpcd 10.3.2 src/dhcp.c:3641 takes `from` from ip->ip_src, and
+	// :3181/:3190 test that), so behind a DHCP relay every offer looks
+	// like it came from the relay and neither list can tell servers
+	// apart. v4 only: dhcp6.c never reads them.
+	// The if/else is a GUARD, not a shortcut. dhcpcd stops consulting the
+	// blacklist entirely once a whitelist exists, so emitting both would
+	// write a directive that is never read — a config file claiming a
+	// denial the client does not enforce. Callers are supposed to prevent
+	// this (serverPolicy.denyList returns nil when a preference is set),
+	// but a caller assembling dhcpcdParams by hand would not, and a
+	// comment asking them not to would decay silently.
+	if len(p.AllowServers) > 0 {
+		for _, srv := range p.AllowServers {
+			fmt.Fprintf(&b, "whitelist %s\n", srv)
+		}
+	} else {
+		for _, srv := range p.DenyServers {
+			fmt.Fprintf(&b, "blacklist %s\n", srv)
+		}
 	}
 
 	// ipvlan-L2 slaves all share the parent NIC's MAC, so a unicast
