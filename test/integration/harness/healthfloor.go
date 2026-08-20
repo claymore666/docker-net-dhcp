@@ -35,9 +35,9 @@ type HealthResponse struct {
 	PendingHints    int     `json:"pending_hints"`
 	RecoveredOK     int32   `json:"recovered_ok"`
 	RecoveryFailed  int32   `json:"recovery_failed"`
-	// RecoveryFailed has three benign twins, at the three points
-	// recovery can stop early for a reason that is not a plugin fault.
-	// None is healthy-affecting.
+	// RecoveryFailed has four benign twins, at the four points recovery
+	// can stop early for a reason that is not a plugin fault. None is
+	// healthy-affecting.
 	//
 	// RecoveryDeferred is the entry gate: the daemon was not serving yet
 	// when recovery ran, so it was retried after the socket came up.
@@ -54,7 +54,12 @@ type HealthResponse struct {
 	// continuously hits this. Until #648 it landed in RecoveryFailed and
 	// failed a run in which every test passed.
 	RecoveryNetworkGone int32 `json:"recovery_network_gone"`
-	JoinStartFailures   int32 `json:"join_start_failures"`
+	// RecoveryAlreadyManaged is the per-endpoint case on the other side:
+	// a Join reached the endpoint first, so recovery yielded and left
+	// that client in place (#480). Expected whenever a deferred recovery
+	// overlaps containers coming back.
+	RecoveryAlreadyManaged int32 `json:"recovery_already_managed"`
+	JoinStartFailures      int32 `json:"join_start_failures"`
 	// JoinAbortedContainerGone is the benign twin of JoinStartFailures:
 	// the container exited before the persistent client was up. Not
 	// healthy-affecting (#373).

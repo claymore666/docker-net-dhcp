@@ -222,6 +222,41 @@ func (f *Fixture) DumpBridgeLogs(write func(string)) {
 	write("--- bridge dnsmasq log ---\n" + string(data))
 }
 
+// CountBridgeLogLines counts bridge-fixture dnsmasq log lines
+// containing every one of the given substrings (case-insensitive), e.g.
+// ("DHCPRELEASE", mac). The bridge-side twin of Fixture.CountLogLines,
+// so an assertion about the wire conversation reads the same on either
+// segment.
+//
+// Counts rather than reports a boolean for the same reason its macvlan
+// twin does: the fixture is shared and its log accumulates every test's
+// traffic, so only a delta across a window says anything about the
+// endpoint under test.
+func (f *Fixture) CountBridgeLogLines(substrings ...string) int {
+	if f.bridgeDnsmasqLog == "" {
+		return 0
+	}
+	data, err := os.ReadFile(f.bridgeDnsmasqLog)
+	if err != nil {
+		return 0
+	}
+	count := 0
+	for _, line := range strings.Split(string(data), "\n") {
+		l := strings.ToLower(line)
+		all := true
+		for _, s := range substrings {
+			if !strings.Contains(l, strings.ToLower(s)) {
+				all = false
+				break
+			}
+		}
+		if all && strings.TrimSpace(line) != "" {
+			count++
+		}
+	}
+	return count
+}
+
 // IsInBridgePool reports whether ip falls in the bridge fixture's
 // DHCP-handed range. Symmetric with IsInPool for the macvlan side.
 func IsInBridgePool(ip net.IP) bool {

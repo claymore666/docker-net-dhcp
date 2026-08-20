@@ -74,9 +74,15 @@ func TestPlugin_RecoverOneEndpointIsIdempotent(t *testing.T) {
 	// Call should bail early because an entry already exists.
 	// We pass a syntactically-invalid MAC to confirm the early-out
 	// runs before MAC parsing — if it didn't, this would error.
-	err := p.recoverOneEndpoint(t.Context(), "ctr-1", "net-1", "ep-existing", "not-a-mac", "", "", DHCPNetworkOptions{})
+	adopted, err := p.recoverOneEndpoint(t.Context(), "ctr-1", "net-1", "ep-existing", "not-a-mac", "", "", DHCPNetworkOptions{})
 	if err != nil {
 		t.Errorf("recoverOneEndpoint should be idempotent on existing entry, got %v", err)
+	}
+	if adopted {
+		t.Error("recoverOneEndpoint reported it adopted an endpoint that was already managed")
+	}
+	if got := p.recoveryAlreadyManaged.Load(); got != 1 {
+		t.Errorf("recovery_already_managed = %d, want 1", got)
 	}
 
 	// Confirm we still hold the original manager, not a replacement.

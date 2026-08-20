@@ -499,6 +499,16 @@ type Plugin struct {
 	recoveredOK    atomic.Int32
 	recoveryFailed atomic.Int32
 
+	// recoveryAlreadyManaged counts endpoints a recovery walk found
+	// someone else already managing and therefore left alone. Not a
+	// failure and not healthy-affecting: the endpoint has a renewal
+	// client, just not one this walk built. It is here because the
+	// event was previously invisible except as an inflated "recovered"
+	// in one log line, and it is the only outward sign of recovery
+	// racing a Join — the window that made a compare-and-set necessary
+	// in the first place (#480).
+	recoveryAlreadyManaged atomic.Int32
+
 	// recoveryDeferred counts the times recovery could not start because
 	// the daemon was not answering yet and had to be retried after the
 	// socket came up (#383). Docker respawns us during its own startup,
@@ -898,6 +908,48 @@ func (p *Plugin) registerDHCPManager(endpointID string, m *dhcpManager) *dhcpMan
 	return old
 }
 
+// dhcpManagerExists reports whether endpointID already has a registered
+// manager. Advisory only — the answer can be stale the instant it is
+// read, which is why the recovery path still registers through a
+// compare-and-set rather than acting on this alone.
+func (p *Plugin) dhcpManagerExists(endpointID string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	_, exists := p.persistentDHCP[endpointID]
+	return exists
+}
+
+// registerDHCPManagerIfAbsent registers m only if no manager is already
+// registered for endpointID, and reports whether it did. It is the
+// recovery path's counterpart to registerDHCPManager: recovery adopts an
+// endpoint precisely because nobody is managing it, so "register" and
+// "only if unmanaged" have to be one operation.
+//
+// They used to be two. recoverOneEndpoint read the map, released the
+// lock, built a manager, and registered it — and dropped the manager
+// that registration displaced, which is exactly what registerDHCPManager
+// says a caller must never do. A Join landing in that window had its
+// live manager evicted from the registry while its dhcpcd kept running:
+// untracked, unstoppable, and competing with recovery's fresh client on
+// the same interface. Join guards the mirror-image case (network.go)
+// because a Join is newer truth than a recovery and may displace it;
+// recovery is older truth and must yield instead, which a
+// compare-and-set expresses and a stop-what-I-displaced does not.
+//
+// The window is small — microseconds per endpoint — but the case that
+// widens it is a real one: a plugin restart whose deferred recovery
+// (#383) runs while a host full of restart-policy containers is
+// rejoining, which is what an abrupt daemon death produces (#480).
+func (p *Plugin) registerDHCPManagerIfAbsent(endpointID string, m *dhcpManager) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if _, exists := p.persistentDHCP[endpointID]; exists {
+		return false
+	}
+	p.persistentDHCP[endpointID] = m
+	return true
+}
+
 // removeDHCPManagerIfSame deletes the registry entry for endpointID only
 // if it still holds m. The failed-Start goroutines use this instead of
 // takeDHCPManager: between Start failing (which unblocks a pending
@@ -1121,7 +1173,7 @@ func (p *Plugin) recoverEndpoints(ctx context.Context, daemonWait time.Duration)
 	// without this, NetworkInspect / netOptions / recoverOneEndpoint
 	// failures would only show up in the log line and not on the
 	// health endpoint operators page on (W-2 in the 2026-05-05 review).
-	var recovered, failed, gone int
+	var recovered, failed, gone, alreadyManaged int
 	recordSyncFailure := func() {
 		failed++
 		p.recoveryFailed.Add(1)
@@ -1187,7 +1239,8 @@ func (p *Plugin) recoverEndpoints(ctx context.Context, daemonWait time.Duration)
 			if strings.HasPrefix(cid, "ep-") {
 				continue
 			}
-			if err := p.recoverOneEndpoint(ctx, cid, n.ID, info.EndpointID, info.MacAddress, info.IPv4Address, info.IPv6Address, opts); err != nil {
+			adopted, err := p.recoverOneEndpoint(ctx, cid, n.ID, info.EndpointID, info.MacAddress, info.IPv4Address, info.IPv6Address, opts)
+			if err != nil {
 				log.WithError(err).WithFields(log.Fields{
 					"network":  shortID(n.ID),
 					"endpoint": shortID(info.EndpointID),
@@ -1195,14 +1248,19 @@ func (p *Plugin) recoverEndpoints(ctx context.Context, daemonWait time.Duration)
 				recordSyncFailure()
 				continue
 			}
+			if !adopted {
+				alreadyManaged++
+				continue
+			}
 			recovered++
 		}
 	}
-	if recovered > 0 || failed > 0 || gone > 0 {
+	if recovered > 0 || failed > 0 || gone > 0 || alreadyManaged > 0 {
 		log.WithFields(log.Fields{
-			"recovered":    recovered,
-			"failed":       failed,
-			"network_gone": gone,
+			"recovered":       recovered,
+			"failed":          failed,
+			"network_gone":    gone,
+			"already_managed": alreadyManaged,
 		}).Info("Plugin recovery complete")
 	}
 	return false
@@ -1280,19 +1338,29 @@ func (p *Plugin) containerGone(ctx context.Context, containerID string) bool {
 // if a manager already exists for the endpoint (e.g. because libnetwork
 // raced with us and called Join concurrently), we skip.
 //
+// Returns adopted=false for that skip, so the caller can tell an endpoint
+// this recovery took responsibility for from one it merely looked at. The
+// completion log used to count both as recovered, which put "recovered=1"
+// in the log of a run whose recovered_ok stayed 0 — the counter was right
+// and the line an operator reads was not (#480).
+//
 // containerID is carried through solely so the async Start failure can
 // tell a real failure from a container that has since exited (#376).
-func (p *Plugin) recoverOneEndpoint(ctx context.Context, containerID, networkID, endpointID, macStr, ipv4Cidr, ipv6Cidr string, opts DHCPNetworkOptions) error {
-	p.mu.Lock()
-	_, exists := p.persistentDHCP[endpointID]
-	p.mu.Unlock()
-	if exists {
-		return nil
+func (p *Plugin) recoverOneEndpoint(ctx context.Context, containerID, networkID, endpointID, macStr, ipv4Cidr, ipv6Cidr string, opts DHCPNetworkOptions) (adopted bool, err error) {
+	// Cheap pre-check, and it has to come before the parse: an endpoint
+	// somebody else is already managing is fine no matter what Docker
+	// reports for its MAC, and reaching the parse would turn that into a
+	// recovery_failed — a healthy-affecting counter — for an endpoint
+	// with a working renewal client. The compare-and-set below is what
+	// actually closes the race; this only spares the work.
+	if p.dhcpManagerExists(endpointID) {
+		p.recoveryAlreadyManaged.Add(1)
+		return false, nil
 	}
 
 	mac, err := net.ParseMAC(macStr)
 	if err != nil {
-		return fmt.Errorf("parse MAC %q: %w", macStr, err)
+		return false, fmt.Errorf("parse MAC %q: %w", macStr, err)
 	}
 
 	var ipv4, ipv6 *netlink.Addr
@@ -1315,7 +1383,15 @@ func (p *Plugin) recoverOneEndpoint(ctx context.Context, containerID, networkID,
 	m.setLastIP(false, ipv4)
 	m.setLastIP(true, ipv6)
 	m.MacAddress = mac
-	p.registerDHCPManager(endpointID, m)
+	// Checked and registered in one operation, so a Join that arrives
+	// mid-recovery keeps its own manager instead of having it evicted
+	// by ours. Building the manager first costs nothing when we lose:
+	// it was never published, so nothing can reach it and it holds no
+	// dhcpcd — Start is only spawned below, after we have won.
+	if !p.registerDHCPManagerIfAbsent(endpointID, m) {
+		p.recoveryAlreadyManaged.Add(1)
+		return false, nil
+	}
 
 	go func() {
 		startCtx, cancel := context.WithTimeout(context.Background(), p.awaitTimeout)
@@ -1356,7 +1432,7 @@ func (p *Plugin) recoverOneEndpoint(ctx context.Context, containerID, networkID,
 		}
 		p.recoveredOK.Add(1)
 	}()
-	return nil
+	return true, nil
 }
 
 // lookupEndpointMAC reads the MAC address Docker has stored for an

@@ -248,6 +248,16 @@ jobs:
       - name: Lock discipline
         run: bash scripts/check-lock-discipline.sh
 
+      # registerDHCPManager returns the manager it displaced, and
+      # dropping that return value leaks a running dhcpcd nothing can
+      # stop, bidding for the same lease on the same interface. The
+      # rule was on the declaration; the recovery path broke it at a
+      # call site three hundred lines away, and an unused return value
+      # is legal Go — the compiler, vet and staticcheck all pass it
+      # (#480).
+      - name: Manager registration
+        run: bash scripts/check-manager-registration.sh
+
       # The arm64 host's NFS-outage watchdog is wired across four files
       # and both ways of getting it wrong are silent: systemd keeping
       # /dev/watchdog (nothing pets, host unprotected) and systemd

@@ -126,6 +126,91 @@ func RestartDockerDaemon(t *testing.T, ctx context.Context) {
 	}
 }
 
+// KillDockerDaemon takes the daemon down ABRUPTLY — SIGKILL, no
+// shutdown sequence, no Leave on any endpoint — and blocks until a
+// replacement daemon process exists. It is what RestartDockerDaemon
+// deliberately is not: the OOM kill, the crash, the hung dockerd killed
+// by hand.
+//
+// It answers to one supervisor rule rather than two branches. systemd
+// and the containerized runner's relaunch loop both watch the process
+// and both restart it after a SIGKILL, so unlike the graceful path
+// there is nothing environment-specific to decide. If no supervisor
+// brings a new daemon back, the test fails loudly — there is no skip
+// path, for the same reason RestartDockerDaemon has none.
+//
+// WHAT THIS ACTUALLY EXERCISES, measured rather than assumed (#480).
+// It is NOT "the plugin comes back to endpoints still attached":
+//
+//   - containerd is dockerd's child and dies with it, so the running
+//     containers' shims are orphaned. The relaunched daemon cannot
+//     reattach to them ("cleaning up dead shim"), removes each sandbox
+//     as stale, and any restart policy then starts a FRESH container
+//     with a fresh endpoint — new MAC, new address.
+//   - the plugin itself never dies abruptly. Roughly a second after the
+//     SIGKILL it receives a clean SIGTERM and runs its full shutdown,
+//     releasing every lease. That release is asserted by the caller,
+//     because it is the property an operator depends on: an abrupt
+//     daemon death must not burn a pool address until it expires.
+//
+// So recovery has nothing to re-adopt here, and recovered_ok stays 0.
+// Turning on --live-restore does not open that path either — it keeps
+// the container AND the plugin process alive, so recovery never runs at
+// all. The two settings are mutually exclusive and neither reaches it.
+//
+// **Side effects on the runner host**, larger than the graceful path's.
+// Every container on the host is killed outright, and only a restart
+// policy brings one back.
+func KillDockerDaemon(t *testing.T, ctx context.Context) {
+	t.Helper()
+
+	oldPID, err := dockerdPID()
+	if err != nil {
+		t.Fatalf("abrupt daemon death: no running dockerd found (%v) — this environment "+
+			"cannot be tested for it. Containerized runners must supervise dockerd as a "+
+			"restartable child process (issue #145).", err)
+	}
+	t.Logf("abrupt daemon death: SIGKILL dockerd pid %d (no shutdown sequence, no Leave)", oldPID)
+
+	if err := syscall.Kill(oldPID, syscall.SIGKILL); err != nil {
+		t.Fatalf("SIGKILL dockerd (pid %d): %v", oldPID, err)
+	}
+
+	// SIGKILL is not catchable, so this is the kernel reaping the
+	// process, not a drain. Seconds rather than milliseconds only
+	// because a large process image takes a moment to tear down.
+	exitDeadline := time.Now().Add(15 * time.Second)
+	for processAlive(oldPID) {
+		if time.Now().After(exitDeadline) {
+			t.Fatalf("dockerd (pid %d) still alive 15s after SIGKILL — it is not the process "+
+				"the pidfile names, or it is unkillable (uninterruptible sleep)", oldPID)
+		}
+		if err := sleepCtx(ctx, 100*time.Millisecond); err != nil {
+			t.Fatalf("abrupt daemon death interrupted: %v", err)
+		}
+	}
+
+	// The supervisor must produce a replacement. Same PID means nothing
+	// restarted and we are reading a stale pidfile — fail, don't loop.
+	spawnDeadline := time.Now().Add(60 * time.Second)
+	for {
+		if newPID, err := dockerdPID(); err == nil {
+			if newPID == oldPID {
+				t.Fatalf("dockerd PID unchanged (%d) after SIGKILL — stale pidfile or nothing actually restarted", oldPID)
+			}
+			t.Logf("abrupt daemon death: new dockerd pid %d", newPID)
+			return
+		}
+		if time.Now().After(spawnDeadline) {
+			t.Fatalf("no new dockerd appeared within 60s of killing pid %d — the environment "+
+				"does not supervise dockerd (issue #145)", oldPID)
+		}
+		if err := sleepCtx(ctx, 300*time.Millisecond); err != nil {
+			t.Fatalf("abrupt daemon death interrupted: %v", err)
+		}
+	}
+}
+
 // dockerdPID locates the running dockerd: pidfile first (authoritative
 // when present and alive), /proc comm scan as fallback for daemons
 // started with a non-default --pidfile.

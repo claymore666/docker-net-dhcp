@@ -159,7 +159,7 @@ func recoverAndAwaitCounter(t *testing.T, f *fakeDocker, containerID string) *Pl
 		awaitTimeout:   150 * time.Millisecond,
 	}
 
-	if err := p.recoverOneEndpoint(t.Context(), containerID, "net-1", "ep-1",
+	if _, err := p.recoverOneEndpoint(t.Context(), containerID, "net-1", "ep-1",
 		"02:42:ac:11:00:02", "", "", DHCPNetworkOptions{}); err != nil {
 		t.Fatalf("recoverOneEndpoint: %v", err)
 	}
