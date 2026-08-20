@@ -328,8 +328,17 @@ Check, in order:
    you only need it by hand after running a suite target directly. A
    single leftover container fails an unrelated test with a name
    conflict and reads exactly like a regression.
-3. Engine version — `interface_name` (#125) needs Docker ≥28 and skips
-   below it, so a skip locally and a pass in CI can both be correct.
+
+The `interface_name` tests (#125) are not a local-vs-CI divergence:
+they probe whether the engine applies a remote driver's `DstName` and
+skip when it does not. The probe (`engineAppliesIfname`, used by
+`TestInterfaceName_MultiNetworkDeterministic`) runs a throwaway
+container and checks the interface the engine actually created — there
+is no version threshold to hit. Today the probe fails on every engine,
+because the upstream fix (moby/moby#52866, stopping the remote-driver
+proxy from dropping `DstName`) has not shipped; until it does, those
+tests skip in CI and locally alike. A skip is expected, not a signal
+that the run diverged.
 
 ## Request fixtures
 
