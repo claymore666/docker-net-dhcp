@@ -371,7 +371,29 @@ exactly how #298 got through.
 
 ### Regenerating them
 
-One command, on a host with Docker and the integration prerequisites:
+**Dispatch the `Capture fixtures` workflow.** It runs on the integration
+lane, so the capture happens against the daemon the suite actually talks
+to, and it opens a pull request with the re-recorded bodies:
+
+```console
+$ gh workflow run capture-fixtures.yml --ref <branch>
+```
+
+A pull request rather than a push, deliberately. A changed request body on
+an engine bump is a finding — it is the signal #218 and #125 are blocked
+on — so the diff wants eyes rather than an automatic commit. Before it
+opens anything the job re-runs `check-fixture-engine-drift.sh` against its
+own output, so a capture that recorded nothing fails there instead of on
+somebody else's pull request days later. `check-capture-lane.sh` keeps the
+job on the lane, which is the half the drift gate cannot check: on a
+hosted runner the recorded engine and the checked engine move together,
+agree with each other, and both describe a daemon the suite never speaks
+to.
+
+#### By hand
+
+The workflow drives one command, and you can run it yourself on a host
+with Docker and the integration prerequisites:
 
 ```console
 $ sudo make capture-fixtures CAPTURE_COMMIT=$(git rev-parse --short HEAD)
