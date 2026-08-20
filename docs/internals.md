@@ -379,6 +379,16 @@ to, and it opens a pull request with the re-recorded bodies:
 $ gh workflow run capture-fixtures.yml --ref <branch>
 ```
 
+> **Not available until v1.8.0 ships.** GitHub only exposes a
+> `workflow_dispatch` workflow from the repository's *default* branch —
+> `main` here — not from the branch you pass to `--ref`. This workflow
+> merged to `dev`, so until the next release carries it to `main` the
+> command above answers `404`, which reads like a typo rather than "not
+> yet". Use the by-hand route below in the meantime. The condition is
+> declared in `.github/dispatch-pending.txt` and enforced by
+> `scripts/check-dispatch-reachable.sh`, which also fails once the entry
+> stops being true.
+
 A pull request rather than a push, deliberately. A changed request body on
 an engine bump is a finding — it is the signal #218 and #125 are blocked
 on — so the diff wants eyes rather than an automatic commit. Before it

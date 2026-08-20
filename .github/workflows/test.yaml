@@ -353,6 +353,18 @@ jobs:
       - name: Fixture capture runs on the lane
         run: bash scripts/check-capture-lane.sh
 
+      # A workflow_dispatch workflow is only exposed from the DEFAULT
+      # branch. This project develops on `dev` and releases to `main`,
+      # so a new dispatch-only workflow is undispatchable for a whole
+      # release cycle after it merges — `gh workflow run` answers 404,
+      # which reads like a typo rather than "not yet". capture-fixtures
+      # shipped in that state with docs naming it the primary route
+      # (#665). Pending workflows are declared in
+      # .github/dispatch-pending.txt with what clears them; a stale
+      # declaration fails too.
+      - name: Dispatch targets are reachable
+        run: bash scripts/check-dispatch-reachable.sh
+
       # The local lane must not test less than this job does (#636).
       # scripts/local-lane.sh is what `make check` runs before a push;
       # the moment it lists fewer gates than the steps above, it exits 0
