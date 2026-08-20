@@ -37,31 +37,45 @@ func TestRoutes_UnimplementedMethodsAnswer404(t *testing.T) {
 		t.Fatalf("GetCapabilities: got %d, want 200 — the mux under test is not the real one", rec.Code)
 	}
 
-	unimplemented := []struct {
-		path string
-		why  string
-	}{
-		{
-			"/NetworkDriver.ProgramExternalConnectivity",
-			"sent on every container start; tolerated by libnetwork only on 404",
-		},
-		{
-			"/NetworkDriver.RevokeExternalConnectivity",
-			"sent on every container stop; tolerated by libnetwork only on 404",
-		},
-		{
-			"/NetworkDriver.NoSuchMethodExists",
-			"an RPC from a future engine we have never seen",
-		},
-	}
-	for _, c := range unimplemented {
-		t.Run(c.path, func(t *testing.T) {
+	// Driven from unroutedRPCs() rather than a second hand-written
+	// list. Request capture allowlists the same function so those calls
+	// can be recorded as evidence (#644); if the two lists were
+	// independent, implementing one of these RPCs would leave the other
+	// list quietly describing a world that no longer exists.
+	unimplemented := append(unroutedRPCs(), "/NetworkDriver.NoSuchMethodExists")
+
+	for _, path := range unimplemented {
+		t.Run(path, func(t *testing.T) {
 			rec := httptest.NewRecorder()
-			mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, c.path, nil))
+			mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, path, nil))
 			if rec.Code != http.StatusNotFound {
-				t.Errorf("%s: got %d, want 404 (%s)", c.path, rec.Code, c.why)
+				t.Errorf("%s: got %d, want 404 — libnetwork tolerates an unimplemented "+
+					"RPC on the status code alone, so any other answer fails the "+
+					"container operation that triggered it", path, rec.Code)
 			}
 		})
+	}
+}
+
+// unroutedRPCs and routes must not contradict each other. They are two
+// halves of one statement — "these we serve, those we knowingly do not"
+// — and capturablePaths concatenates them, so an entry in both would
+// also mean a duplicate capture name.
+func TestRoutes_UnroutedRPCsAreNotAlsoRouted(t *testing.T) {
+	served := map[string]bool{}
+	for _, r := range (&Plugin{}).routes() {
+		served[r.path] = true
+	}
+	for _, path := range unroutedRPCs() {
+		if served[path] {
+			t.Errorf("%s is listed as deliberately unimplemented but is also served. "+
+				"If it was implemented on purpose, drop it from unroutedRPCs() and "+
+				"update the comment in routes.go that says why it is absent.", path)
+		}
+	}
+	if len(unroutedRPCs()) == 0 {
+		t.Error("unroutedRPCs() is empty; the 404 contract test would then assert " +
+			"nothing but the synthetic path")
 	}
 }
 

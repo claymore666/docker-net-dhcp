@@ -331,6 +331,128 @@ Check, in order:
 3. Engine version — `interface_name` (#125) needs Docker ≥28 and skips
    below it, so a skip locally and a pass in CI can both be correct.
 
+## Request fixtures
+
+`pkg/plugin/testdata/requests/` holds the raw request bodies the Docker
+daemon actually sent, recorded during an integration run. The unit tests
+in `pkg/plugin/fixtures_test.go` replay them instead of hand-building
+`CreateEndpointRequest` / `JoinRequest` values.
+
+The difference matters more than it looks. A hand-built request asserts
+the code against *our model* of what libnetwork sends. When the model and
+the daemon disagree, every unit test still passes and the disagreement
+surfaces on a privileged runner — or in production. That is not
+hypothetical: `stable_lease` was designed against an assumed
+`CreateEndpoint` payload and had to be reverted from v1.3.0 once the
+endpoint identity turned out to be unresolvable in the `docker run` and
+Compose flows (#298, #219). The request shape *was* the defect.
+
+The handler decodes with `DisallowUnknownFields`, so a field the daemon
+adds and we do not model is a `400` at runtime, not a warning. The
+fixture tests replay through that same parser, which turns "the engine
+started sending something new" into a unit-test failure instead of a
+container that will not start.
+
+### Layout
+
+```
+pkg/plugin/testdata/requests/
+  macvlan-run/
+    manifest.json                              engine, date, commit, flow
+    0001-NetworkDriver.CreateNetwork.json      one raw body per call,
+    0002-NetworkDriver.CreateEndpoint.json     numbered in the order the
+    ...                                        daemon issued them
+  bridge-run/
+  macvlan-restart/
+```
+
+Three flows, because the flows are where the payloads differ — that is
+exactly how #298 got through.
+
+### Regenerating them
+
+One command, on a host with Docker and the integration prerequisites:
+
+```console
+$ sudo make capture-fixtures CAPTURE_COMMIT=$(git rev-parse --short HEAD)
+```
+
+**Capture against the daemon the suite runs, not the one your shell talks
+to.** These are not always the same machine's engine: the integration job
+runs *inside* the CI runner container, against that container's nested
+`dockerd`, which can be several minor versions ahead of the host's. A
+capture taken on the host is a recording of a daemon the suite never talks
+to, and `check-fixture-engine-drift.sh` will reject it — which is exactly
+what happened the first time these fixtures met the gate (26.1 recorded,
+29.7 running). To record against the lane's engine, run the capture inside
+the runner image:
+
+```console
+$ docker run -d --name dh-capture --privileged -v "$PWD":/work \
+    --entrypoint bash ghcr.io/claymore666/dhcp-ci-runner:latest \
+    -c 'RUNNER_JIT_CONFIG=x /entrypoint.sh || true; sleep infinity'
+$ docker exec -w /work -e PATH=/usr/local/go/bin:$PATH \
+    -e SUDO_UID=$(id -u) -e SUDO_GID=$(id -g) \
+    dh-capture make capture-fixtures CAPTURE_COMMIT=$(git rev-parse --short HEAD)
+```
+
+The entrypoint brings up the same supervised daemon the suite uses and then
+fails its runner exec, leaving that daemon running; `go` lives in
+`/usr/local/go/bin`, which a bare `docker exec` does not put on `PATH`; and
+`SUDO_UID`/`SUDO_GID` make the recipe hand the regenerated files back to
+you instead of leaving them owned by root.
+
+It builds the instrumented (`-cover`) plugin, sets `REQUEST_CAPTURE_DIR`
+on it, runs one integration test per flow into a cleared directory, and
+writes each flow's `manifest.json`. Pass `CAPTURE_COMMIT` from the
+unprivileged shell as shown: the recipe runs as root against a checkout
+you own, and git refuses that as dubious ownership, which would leave the
+commit field empty and produce a capture nobody can attribute.
+
+`REQUEST_CAPTURE_DIR` is declared in `config-cover.json` only — the same
+place `GOCOVERDIR` lives, and for the same reason. It is test
+instrumentation, so the shipped manifest never grows a setting whose only
+use is regenerating this repository's fixtures. With it unset,
+`captureHandler` returns the mux unchanged and the plugin carries no
+extra allocation, syscall, or failure mode.
+
+### Why they cannot quietly rot
+
+A fixture nobody refreshes is a fossilised assumption that agrees with
+itself forever — the same "asserts our model" problem, now with a green
+test sitting next to it, which is worse, because it looks like evidence.
+Three things stop that:
+
+- **A missing or empty fixture fails.** `loadFixtureFlows` calls
+  `t.Fatalf`, never `t.Skip`; a suite that replayed nothing would
+  otherwise report green.
+- **A manifest without provenance fails.** Empty `engine`, `captured`,
+  `commit` or `flow` is an error, because a capture nobody can date
+  cannot be reviewed for staleness.
+- **`scripts/check-fixture-engine-drift.sh`** compares each manifest's
+  engine against the daemon the integration suite actually runs, and
+  fails on a `major.minor` difference. It runs in the self-hosted suite
+  job, which is the only host that knows what that engine is; patch
+  releases and distro suffixes (`26.1.5` vs `26.1.5+dfsg1`) are not
+  drift. Its self-test is `scripts/test-check-fixture-engine-drift.sh`.
+
+### What to do when the unknown-field test fails
+
+It is not automatically a defect. A new field may be irrelevant to us. It
+means the request contract moved and somebody has to decide — which is
+the point, because today nothing else would say it moved at all. Model
+the field, or record why it is ignored.
+
+Two open items are waiting on exactly this signal: #218 (stable MAC,
+needs `netlabel.EndpointName` at `CreateEndpoint`) and #125 (Compose
+`interface_name`, needs plugin-returned `DstName` honoured at `Join`).
+The captures confirm both fields are absent on engine 29.7 — the day a
+capture from a newer engine carries one, the test names it. The 26.1 -> 29.7
+re-record is the worked example: it introduced
+`com.docker.network.enable_ipv4` on `CreateNetwork`, which is carried
+inside `Options` (a map) and so costs nothing, but it arrived unannounced
+and the fixtures are what showed it.
+
 ## See also
 
 - [Driver reference](reference.md) — every option, counter, and behaviour

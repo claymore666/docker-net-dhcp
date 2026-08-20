@@ -1,6 +1,6 @@
 {
-  "engine": "26.1.5+dfsg1",
-  "captured": "2026-08-19",
-  "commit": "018a651",
+  "engine": "29.7.2",
+  "captured": "2026-08-20",
+  "commit": "c24e2aa",
   "flow": "docker run on a bridge DHCP network, to exit"
 }

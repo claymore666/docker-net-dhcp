@@ -79,9 +79,14 @@ push: create
 # Coverage-instrumented build path. Produces a parallel plugin tagged
 # :golang-cover with `go build -cover` instrumentation. On graceful
 # shutdown the runtime flushes counter files into /coverage inside the
-# plugin namespace, which is bind-mounted from the host's /var/lib/dh-cover
-# (must exist and be writable; create it once with `mkdir -p
-# /var/lib/dh-cover` before the first `make create-cover`).
+# plugin namespace, which is bind-mounted from the host's /var/lib/dh-cover.
+# `create-cover` creates every /var/lib bind source its manifest declares,
+# derived from config-cover.json rather than listed here: a bind source
+# whose creation is prose is a bind source that eventually is not created,
+# and dockerd does not degrade when one is missing -- it fails the mount,
+# and an already-enabled plugin takes the daemon down with it (#588, #660).
+# The /var/lib filter is deliberate: /var/run/docker.sock is a bind source
+# too, and `mkdir -p` over a socket path would replace it with a directory.
 #
 # This path is for the integration coverage workflow only — production
 # installs continue to use `make create enable` / the unparameterized
@@ -99,7 +104,9 @@ plugin-cover: plugin-cover/rootfs config-cover.json
 	cp config-cover.json $@/config.json
 
 create-cover: plugin-cover
-	mkdir -p /var/lib/net-dhcp
+	@command -v jq >/dev/null || { echo "create-cover needs jq"; exit 1; }
+	@jq -r '.mounts[]? | select(.type=="bind") | .source | select(startswith("/var/lib/"))' \
+	    config-cover.json | xargs -r mkdir -p
 	docker plugin rm -f $(PLUGIN_NAME):$(PLUGIN_COVER_TAG) || true
 	docker plugin create $(PLUGIN_NAME):$(PLUGIN_COVER_TAG) $<
 	docker plugin set $(PLUGIN_NAME):$(PLUGIN_COVER_TAG) LOG_LEVEL=trace \
