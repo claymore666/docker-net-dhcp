@@ -202,6 +202,15 @@ jobs:
       - name: Pipefail-consumer check
         run: bash scripts/check-pipefail-consumers.sh
 
+      # A v2 plugin's bind sources must exist before `docker plugin
+      # enable`; a missing one kills container init rather than degrading
+      # the mount (#440, #588). The Makefile derives them from the
+      # manifest, but five workflows each reimplement the install with a
+      # hardcoded list — so #662 adding a source to config-cover.json
+      # broke the coverage lane and nothing local saw it (#666).
+      - name: Plugin bind-source check
+        run: bash scripts/check-plugin-bind-sources.sh
+
       # A gate self-test that builds a git fixture must pin that repo's
       # own identity and signing config. Inheriting the developer's
       # means `git commit` blocks on a hardware-key touch that never

@@ -151,8 +151,16 @@ jobs:
         run: |
           make plugin-cover
           docker plugin rm -f "${COVER_PLUGIN_REF}" 2>/dev/null || true
-          # See integration.yml — the bind source must pre-exist (#440).
-          mkdir -p /var/lib/net-dhcp
+          # Every bind source must pre-exist or `docker plugin enable`
+          # fails the mount (#440). Derive them from the manifest we are
+          # about to install rather than naming one: config-cover.json
+          # carries sources config.json does not (dh-cover, dh-capture),
+          # and a hardcoded list here silently rots when one is added
+          # (#660, #666). /var/lib only — /var/run/docker.sock is a
+          # socket, and mkdir -p would replace it with a directory.
+          jq -r '.mounts[]? | select(.type=="bind") | .source
+                 | select(startswith("/var/lib/"))' \
+              plugin-cover/config.json | xargs -r mkdir -p
           docker plugin create "${COVER_PLUGIN_REF}" plugin-cover
           # Same test-only cadence as integration.yml (#278) — this job
           # runs the failure suite too, so it pays the same waits.
