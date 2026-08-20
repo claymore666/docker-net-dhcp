@@ -5,6 +5,7 @@ package plugin
 
 import (
 	"errors"
+	"net/netip"
 	"strings"
 	"testing"
 	"time"
@@ -230,4 +231,75 @@ func TestAcquisitionAttempts(t *testing.T) {
 			t.Fatalf("deny = %v", got[0].Deny)
 		}
 	})
+}
+
+// TestPolicyRestricted pins which acquisitions count as an exhausted
+// policy when they fail. The counter's whole job is to separate "the
+// servers you named are silent" from "DHCP is broken", so the boundary
+// it draws is the boundary between those two operator actions.
+//
+// The single-entry row is the one that matters most: an earlier version
+// keyed the counter on having more than one tier, which left the most
+// likely real failure — a network naming one server, and that server
+// going quiet — reading as an ordinary timeout.
+func TestPolicyRestricted(t *testing.T) {
+	cases := []struct {
+		name string
+		pol  serverPolicy
+		v6   bool
+		want bool
+	}{
+		{
+			name: "no policy at all is an ordinary acquisition",
+			pol:  serverPolicy{},
+			want: false,
+		},
+		{
+			name: "one preferred server still counts",
+			pol:  serverPolicy{Prefer: mustAddrs(t, "192.0.2.1")},
+			want: true,
+		},
+		{
+			name: "several preferred servers count",
+			pol:  serverPolicy{Prefer: mustAddrs(t, "192.0.2.1", "192.0.2.2")},
+			want: true,
+		},
+		{
+			name: "a deny-list alone counts: it narrowed the exchange too",
+			pol:  serverPolicy{Deny: mustAddrs(t, "192.0.2.9")},
+			want: true,
+		},
+		{
+			// v6 is handed neither list (dhcpcd's directives are
+			// DHCPv4-only), so nothing was restricted and a failure
+			// there is a plain timeout however the network is
+			// configured.
+			name: "a v4 policy does not restrict the v6 exchange",
+			pol:  serverPolicy{Prefer: mustAddrs(t, "192.0.2.1", "192.0.2.2")},
+			v6:   true,
+			want: false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := policyRestricted(acquisitionAttempts(tc.pol, tc.v6, 10*time.Second))
+			if got != tc.want {
+				t.Errorf("policyRestricted = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func mustAddrs(t *testing.T, in ...string) []netip.Addr {
+	t.Helper()
+	out := make([]netip.Addr, 0, len(in))
+	for _, s := range in {
+		a, err := netip.ParseAddr(s)
+		if err != nil {
+			t.Fatalf("ParseAddr(%q): %v", s, err)
+		}
+		out = append(out, a)
+	}
+	return out
 }

@@ -238,6 +238,24 @@ func denyForFamily(pol serverPolicy, v6 bool) []string {
 	return pol.denyList()
 }
 
+// policyRestricted reports whether the network's server policy actually
+// narrowed this acquisition, which is the condition under which a total
+// failure is an exhausted policy rather than a plain DHCP timeout.
+//
+// It reads the attempts rather than the serverPolicy on purpose: the
+// carve-outs live in acquisitionAttempts (v6 gets neither list however
+// the network is configured; a preference emptied by nothing at all
+// yields one unrestricted attempt), and re-deriving the answer from the
+// policy would let the counter drift away from what was really sent.
+func policyRestricted(attempts []acquisitionAttempt) bool {
+	for _, a := range attempts {
+		if len(a.Allow) > 0 || len(a.Deny) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // acquireWithPolicy runs one initial DHCP acquisition through the
 // network's server-preference ladder and returns the first lease won.
 //
@@ -292,7 +310,15 @@ func (p *Plugin) acquireWithPolicy(
 	// Distinguish "the servers you named are all silent" from "DHCP is
 	// broken". They are identical in a timeout log and call for
 	// different operator action.
-	if len(attempts) > 1 {
+	//
+	// Any policy-restricted acquisition counts, not only a multi-tier
+	// one. A single-entry dhcp_servers that goes quiet is the purest
+	// form of this failure — the network names one server and that
+	// server stopped answering — and it is the case an operator is
+	// most likely to hit. Keying on len(attempts) > 1 would have left
+	// it indistinguishable from an ordinary DHCP timeout, which is the
+	// exact confusion the counter exists to remove.
+	if policyRestricted(attempts) {
 		p.dhcpServerPolicyExhausted.Add(1)
 	}
 	return info, lastErr
