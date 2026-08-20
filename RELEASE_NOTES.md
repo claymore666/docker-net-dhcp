@@ -178,6 +178,28 @@ option the older one never did. None of that was visible before.
   #536, #636)
 - The integration harness's environment knobs are documented, rather
   than discoverable only by reading the harness. (#534)
+- The arm64 lane's four boot states are named, and its docs no longer
+  claim the board always recovers on its own. A bootloader whose
+  download was cut mid-flight does not restart the sequence: it answers
+  ARP, issues no TFTP requests, and stays there until power is removed —
+  measured at 10.5 minutes of silence with the boot server fully back
+  up, where a looping board would have asked about eight times. The
+  server's TFTP log is the discriminator; "no ping" never was. Only one
+  of the four states needs hands, and the coincidence that produces it
+  is recorded as accepted rather than left implied. (#654)
+- `docs/internals.md` presented the `interface_name` tests as gated on
+  an engine version. They are not: they probe whether the engine applies
+  a remote driver's `DstName` and skip when it does not — which today is
+  every engine, pending moby/moby#52866. Describing a capability probe
+  as a version check taught the weaker pattern as house style, on a page
+  that exists to teach the stronger one. (#673)
+
+### With thanks to
+
+- **[@Dev9269](https://github.com/Dev9269)** — found that
+  `docs/internals.md` described the `interface_name` capability probe as
+  a Docker version threshold, and rewrote it to say what the code does
+  ([#675](https://github.com/claymore666/docker-net-dhcp/pull/675)).
 
 ## v1.7.1
 
