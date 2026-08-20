@@ -117,6 +117,31 @@ jobs:
             exit 1
           fi
 
+      # The host's own recovery path, checked on the host rather than in
+      # the tree that provisions it (#677). The netbooted root is an
+      # image: a baseline older than #661 restores an nfs-watchdog that
+      # refuses to start on this 15s device, and the board then runs
+      # unwatched while every provisioning file still reads correctly.
+      # This lane is the only thing that executes on that host, so it is
+      # the only place the live state can be asserted at all.
+      #
+      # Not fatal on exit 2. The arming verdict comes from sysfs and is
+      # never lost; 2 means only that the kernel ring buffer has aged
+      # past this boot, so the daemon's identity could not be confirmed —
+      # a consequence of uptime, not a defect, and not worth reddening a
+      # release candidate. It is annotated so it cannot pass unseen.
+      - name: Verify the host's NFS-outage watchdog
+        run: |
+          set +e
+          bash scripts/check-host-watchdog.sh
+          rc=$?
+          set -e
+          if [ "$rc" -eq 2 ]; then
+            echo "::warning title=Host watchdog only partly verified::The board is armed and being petted, but the kernel ring buffer no longer reaches this boot, so nfs-watchdog could not be confirmed as the holder (#677)."
+            exit 0
+          fi
+          exit "$rc"
+
       - name: Cleanup orphans from previous runs
         run: bash test/integration/cleanup-orphans.sh
 
