@@ -705,6 +705,67 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#request-fixtures" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Request fixtures
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Request fixtures">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#layout" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Layout
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#regenerating-them" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Regenerating them
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#why-they-cannot-quietly-rot" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Why they cannot quietly rot
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#what-to-do-when-the-unknown-field-test-fails" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What to do when the unknown-field test fails
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#see-also" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -984,6 +1045,67 @@
     <span class="md-ellipsis">
       
         If a local run disagrees with CI
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#request-fixtures" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Request fixtures
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Request fixtures">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#layout" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Layout
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#regenerating-them" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Regenerating them
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#why-they-cannot-quietly-rot" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Why they cannot quietly rot
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#what-to-do-when-the-unknown-field-test-fails" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What to do when the unknown-field test fails
       
     </span>
   </a>
@@ -1356,6 +1478,106 @@ clean: an unreadable instrument is not a clean result.</p>
 <li>Engine version — <code>interface_name</code> (#125) needs Docker ≥28 and skips
    below it, so a skip locally and a pass in CI can both be correct.</li>
 </ol>
+<h2 id="request-fixtures">Request fixtures<a class="headerlink" href="#request-fixtures" title="Permanent link">&para;</a></h2>
+<p><code>pkg/plugin/testdata/requests/</code> holds the raw request bodies the Docker
+daemon actually sent, recorded during an integration run. The unit tests
+in <code>pkg/plugin/fixtures_test.go</code> replay them instead of hand-building
+<code>CreateEndpointRequest</code> / <code>JoinRequest</code> values.</p>
+<p>The difference matters more than it looks. A hand-built request asserts
+the code against <em>our model</em> of what libnetwork sends. When the model and
+the daemon disagree, every unit test still passes and the disagreement
+surfaces on a privileged runner — or in production. That is not
+hypothetical: <code>stable_lease</code> was designed against an assumed
+<code>CreateEndpoint</code> payload and had to be reverted from v1.3.0 once the
+endpoint identity turned out to be unresolvable in the <code>docker run</code> and
+Compose flows (#298, #219). The request shape <em>was</em> the defect.</p>
+<p>The handler decodes with <code>DisallowUnknownFields</code>, so a field the daemon
+adds and we do not model is a <code>400</code> at runtime, not a warning. The
+fixture tests replay through that same parser, which turns "the engine
+started sending something new" into a unit-test failure instead of a
+container that will not start.</p>
+<h3 id="layout">Layout<a class="headerlink" href="#layout" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>pkg/plugin/testdata/requests/
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>  macvlan-run/
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    manifest.json                              engine, date, commit, flow
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    0001-NetworkDriver.CreateNetwork.json      one raw body per call,
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    0002-NetworkDriver.CreateEndpoint.json     numbered in the order the
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    ...                                        daemon issued them
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>  bridge-run/
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>  macvlan-restart/
+</code></pre></div>
+<p>Three flows, because the flows are where the payloads differ — that is
+exactly how #298 got through.</p>
+<h3 id="regenerating-them">Regenerating them<a class="headerlink" href="#regenerating-them" title="Permanent link">&para;</a></h3>
+<p>One command, on a host with Docker and the integration prerequisites:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="gp">$ </span>sudo<span class="w"> </span>make<span class="w"> </span>capture-fixtures<span class="w"> </span><span class="nv">CAPTURE_COMMIT</span><span class="o">=</span><span class="k">$(</span>git<span class="w"> </span>rev-parse<span class="w"> </span>--short<span class="w"> </span>HEAD<span class="k">)</span>
+</code></pre></div>
+<p><strong>Capture against the daemon the suite runs, not the one your shell talks
+to.</strong> These are not always the same machine's engine: the integration job
+runs <em>inside</em> the CI runner container, against that container's nested
+<code>dockerd</code>, which can be several minor versions ahead of the host's. A
+capture taken on the host is a recording of a daemon the suite never talks
+to, and <code>check-fixture-engine-drift.sh</code> will reject it — which is exactly
+what happened the first time these fixtures met the gate (26.1 recorded,
+29.7 running). To record against the lane's engine, run the capture inside
+the runner image:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="gp">$ </span>docker<span class="w"> </span>run<span class="w"> </span>-d<span class="w"> </span>--name<span class="w"> </span>dh-capture<span class="w"> </span>--privileged<span class="w"> </span>-v<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$PWD</span><span class="s2">&quot;</span>:/work<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">    </span>--entrypoint<span class="w"> </span>bash<span class="w"> </span>ghcr.io/claymore666/dhcp-ci-runner:latest<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">    </span>-c<span class="w"> </span><span class="s1">&#39;RUNNER_JIT_CONFIG=x /entrypoint.sh || true; sleep infinity&#39;</span>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="gp">$ </span>docker<span class="w"> </span><span class="nb">exec</span><span class="w"> </span>-w<span class="w"> </span>/work<span class="w"> </span>-e<span class="w"> </span><span class="nv">PATH</span><span class="o">=</span>/usr/local/go/bin:<span class="nv">$PATH</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="w">    </span>-e<span class="w"> </span><span class="nv">SUDO_UID</span><span class="o">=</span><span class="k">$(</span>id<span class="w"> </span>-u<span class="k">)</span><span class="w"> </span>-e<span class="w"> </span><span class="nv">SUDO_GID</span><span class="o">=</span><span class="k">$(</span>id<span class="w"> </span>-g<span class="k">)</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="w">    </span>dh-capture<span class="w"> </span>make<span class="w"> </span>capture-fixtures<span class="w"> </span><span class="nv">CAPTURE_COMMIT</span><span class="o">=</span><span class="k">$(</span>git<span class="w"> </span>rev-parse<span class="w"> </span>--short<span class="w"> </span>HEAD<span class="k">)</span>
+</code></pre></div>
+<p>The entrypoint brings up the same supervised daemon the suite uses and then
+fails its runner exec, leaving that daemon running; <code>go</code> lives in
+<code>/usr/local/go/bin</code>, which a bare <code>docker exec</code> does not put on <code>PATH</code>; and
+<code>SUDO_UID</code>/<code>SUDO_GID</code> make the recipe hand the regenerated files back to
+you instead of leaving them owned by root.</p>
+<p>It builds the instrumented (<code>-cover</code>) plugin, sets <code>REQUEST_CAPTURE_DIR</code>
+on it, runs one integration test per flow into a cleared directory, and
+writes each flow's <code>manifest.json</code>. Pass <code>CAPTURE_COMMIT</code> from the
+unprivileged shell as shown: the recipe runs as root against a checkout
+you own, and git refuses that as dubious ownership, which would leave the
+commit field empty and produce a capture nobody can attribute.</p>
+<p><code>REQUEST_CAPTURE_DIR</code> is declared in <code>config-cover.json</code> only — the same
+place <code>GOCOVERDIR</code> lives, and for the same reason. It is test
+instrumentation, so the shipped manifest never grows a setting whose only
+use is regenerating this repository's fixtures. With it unset,
+<code>captureHandler</code> returns the mux unchanged and the plugin carries no
+extra allocation, syscall, or failure mode.</p>
+<h3 id="why-they-cannot-quietly-rot">Why they cannot quietly rot<a class="headerlink" href="#why-they-cannot-quietly-rot" title="Permanent link">&para;</a></h3>
+<p>A fixture nobody refreshes is a fossilised assumption that agrees with
+itself forever — the same "asserts our model" problem, now with a green
+test sitting next to it, which is worse, because it looks like evidence.
+Three things stop that:</p>
+<ul>
+<li><strong>A missing or empty fixture fails.</strong> <code>loadFixtureFlows</code> calls
+  <code>t.Fatalf</code>, never <code>t.Skip</code>; a suite that replayed nothing would
+  otherwise report green.</li>
+<li><strong>A manifest without provenance fails.</strong> Empty <code>engine</code>, <code>captured</code>,
+  <code>commit</code> or <code>flow</code> is an error, because a capture nobody can date
+  cannot be reviewed for staleness.</li>
+<li><strong><code>scripts/check-fixture-engine-drift.sh</code></strong> compares each manifest's
+  engine against the daemon the integration suite actually runs, and
+  fails on a <code>major.minor</code> difference. It runs in the self-hosted suite
+  job, which is the only host that knows what that engine is; patch
+  releases and distro suffixes (<code>26.1.5</code> vs <code>26.1.5+dfsg1</code>) are not
+  drift. Its self-test is <code>scripts/test-check-fixture-engine-drift.sh</code>.</li>
+</ul>
+<h3 id="what-to-do-when-the-unknown-field-test-fails">What to do when the unknown-field test fails<a class="headerlink" href="#what-to-do-when-the-unknown-field-test-fails" title="Permanent link">&para;</a></h3>
+<p>It is not automatically a defect. A new field may be irrelevant to us. It
+means the request contract moved and somebody has to decide — which is
+the point, because today nothing else would say it moved at all. Model
+the field, or record why it is ignored.</p>
+<p>Two open items are waiting on exactly this signal: #218 (stable MAC,
+needs <code>netlabel.EndpointName</code> at <code>CreateEndpoint</code>) and #125 (Compose
+<code>interface_name</code>, needs plugin-returned <code>DstName</code> honoured at <code>Join</code>).
+The captures confirm both fields are absent on engine 29.7 — the day a
+capture from a newer engine carries one, the test names it. The 26.1 -&gt; 29.7
+re-record is the worked example: it introduced
+<code>com.docker.network.enable_ipv4</code> on <code>CreateNetwork</code>, which is carried
+inside <code>Options</code> (a map) and so costs nothing, but it arrived unannounced
+and the fixtures are what showed it.</p>
 <h2 id="see-also">See also<a class="headerlink" href="#see-also" title="Permanent link">&para;</a></h2>
 <ul>
 <li><a href="../reference/">Driver reference</a> — every option, counter, and behaviour</li>

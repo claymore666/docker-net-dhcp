@@ -2339,7 +2339,7 @@ diagnosing a specific container from them alone is not.</p>
 <tr>
 <td><code>recovery_failed</code></td>
 <td>yes</td>
-<td>Post-restart rebuilds that failed <strong>for a container that is still running</strong> — it runs without lease renewal and loses its IP at expiry; restart it. Two things are deliberately <em>not</em> counted here, because neither leaves a running container without a renewal client: a daemon that is merely still starting (<code>recovery_deferred</code>, #383), a container that had already exited when recovery reached it (<code>recovery_aborted_container_gone</code>, #376), and a network removed out from under the recovery walk (<code>recovery_network_gone</code>, #648).</td>
+<td>Post-restart rebuilds that failed <strong>for a container that is still running</strong> — it runs without lease renewal and loses its IP at expiry; restart it. Three things are deliberately <em>not</em> counted here, because none of them leaves a running container without a renewal client: a daemon that is merely still starting (<code>recovery_deferred</code>, #383), a container that had already exited when recovery reached it (<code>recovery_aborted_container_gone</code>, #376), and a network removed out from under the recovery walk (<code>recovery_network_gone</code>, #648).</td>
 </tr>
 <tr>
 <td><code>recovery_deferred</code></td>
