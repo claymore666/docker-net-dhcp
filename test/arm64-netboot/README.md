@@ -29,11 +29,14 @@ Only a power cycle clears it.
 The SoC watchdog does not save you here, and it is worth being precise
 about why, because it is already switched on. Raspberry Pi OS ships
 `/usr/lib/systemd/system.conf.d/40-rpi-enable-watchdog.conf` with
-`RuntimeWatchdogSec=1m`, and PID 1 holds `/dev/watchdog0` with a 60s
-hardware timeout. It was armed through the outage that motivated this and
-the board still needed hands, because systemd is resident in memory and
-its event loop never touches the root filesystem — it keeps petting for
-as long as the outage lasts.
+`RuntimeWatchdogSec=1m`, and PID 1 holds `/dev/watchdog0`. Note that it
+does *not* get the minute it asks for: the BCM2835 watchdog tops out at
+**15s**, and the kernel clamps the request down to that silently — read
+the real figure from `/sys/class/watchdog/watchdog0/timeout` rather than
+from the unit file. It was armed through the outage that motivated this
+and the board still needed hands anyway, because systemd is resident in
+memory and its event loop never touches the root filesystem — it keeps
+petting for as long as the outage lasts.
 
 So provisioning hands the device to `nfs-watchdog` (`nfs-watchdog/`),
 which pets it only while `statfs` on `/` still reaches the server:
@@ -52,6 +55,13 @@ which pets it only while `statfs` on `/` still reaches the server:
   wrong reason.
 - it logs to `/dev/kmsg`, because journald can block a writer and its
   storage is on the share.
+- its timings are derived from the device, not assumed. The tuned
+  defaults suit a 60s watchdog; on hardware that caps lower they would be
+  refused as invalid, and a watchdog daemon that exits leaves the board
+  *less* protected than one that never started. So it reads the real
+  hardware timeout and scales the pet, probe and staleness intervals by
+  ratio, reporting what it changed. Timings you set explicitly are never
+  overridden — a contradiction you asked for is still an error (#632).
 
 Recovery is then automatic: the board resets, and `BOOT_ORDER=0xf2` loops
 network boot until this server answers again.
@@ -59,7 +69,8 @@ network boot until this server answers again.
 Both halves of the wiring fail silently on their own — without the
 `RuntimeWatchdogSec=0` drop-in the service gets `EBUSY` and the host runs
 unprotected; without the unit enabled, nothing pets and a *healthy* host
-resets a minute after boot. `scripts/check-pi-watchdog-wiring.sh` gates
+resets as soon as the hardware timeout expires — 15s on this board, not
+the minute the unit file names. `scripts/check-pi-watchdog-wiring.sh` gates
 the pair, and `scripts/test-check-pi-watchdog-wiring.sh` proves it
 catches both directions.
 
@@ -221,5 +232,24 @@ live demonstration of why `static` is the production shape.
 
 ## Still open
 
-The runner is not enrolled as a GitHub Actions runner, and the `dhcp-ci-runner`
-image is amd64-only. 2 GB of RAM is tight for Go builds over an NFS root.
+Both of the things this section used to name are done, and are recorded
+here rather than deleted because the gap between them is the useful part:
+
+- **The board is enrolled.** It runs as a standing self-hosted runner
+  (`register` mode, #632) carrying the `dhcp-ci-arm64` label, and it
+  reconnects on its own after a reboot with no token and no hands.
+- **The image is multi-arch.** `runner-image.yml` builds `amd64` and
+  `arm64` natively — no emulation — and each job asserts its own
+  architecture rather than trusting the runner it landed on.
+
+What genuinely remains:
+
+- **2 GB of RAM is tight for Go builds over an NFS root.** Unchanged, and
+  the reason the image cache on the iSCSI volume is worth keeping across
+  jobs rather than running this host ephemerally.
+- **The board reads `offline` whenever this server is down**, because its
+  root filesystem is the share. That is expected, not an outage: it does
+  not fail, it hangs, and it recovers by itself once the server answers
+  again. Pool monitoring counts `rpi-arm64-*` separately for this reason.
+- **The pre-shutdown hook lives on this server, not in this tree**, so
+  nothing here can test or fix it.

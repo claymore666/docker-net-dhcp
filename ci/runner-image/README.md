@@ -54,6 +54,25 @@ docker run --rm --privileged \
   `auth.docker.io`, `production.cloudflare.docker.com`,
   `proxy.golang.org`, `sum.golang.org`, `go.dev`, `dl.google.com`.
 
+### The plugin's bind source
+
+The entrypoint creates the plugin state directory (`PLUGIN_BIND_SOURCE`,
+default `/var/lib/net-dhcp`) before it starts the nested daemon, and the
+ordering is the whole point rather than a detail.
+
+`/var/lib/docker` is a persistent volume while this container's root
+filesystem is not, so a *recreated* container starts a daemon that
+restores an already-enabled `docker-net-dhcp` whose bind source is gone.
+Docker does not degrade there: the mount request fails, libnetwork
+registers the remote driver anyway, and the nil plugin client SIGSEGVs
+the daemon — which the supervisor then relaunches into the same panic
+forever, while the runner still reports **online** to GitHub. Creating
+the directory after dockerd starts is indistinguishable from not creating
+it at all, because the daemon has already restored and crashed by then.
+
+`scripts/test-runner-plugin-bind-source.sh` asserts both halves — that it
+is created, and that it is created first.
+
 ## Standing runner (`register` mode)
 
 For a host with no orchestrator — the arm64 machine — the container
