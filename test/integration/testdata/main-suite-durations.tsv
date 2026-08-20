@@ -6,11 +6,18 @@
 # incomplete. scripts/test-integration-shard.sh asserts completeness
 # independently of this file.
 #
-# One entry is not from that run: TestRecovery_DaemonKilled_...  post-dates
-# it and is a local measurement (22.36s, median of six). It is here rather
-# than left to the mean because the mean is 6.66s and a 22s test costed at
-# 6.66 puts its shard a quarter over. Refreshing from a green run replaces
-# it with a CI number and this note can go.
+# Two entries post-date that run and are local measurements:
+#
+#   TestRecovery_DaemonKilled_LeaseIsReleasedAndReacquired (22.36s, median
+#   of six). It is here rather than left to the mean because the mean is
+#   6.66s, and a 22s test costed at 6.66 puts its shard a quarter over.
+#
+#   TestMetrics_SocketServesTheFullSurface (0.55s, against a real installed
+#   plugin). It does no waiting — it scrapes one endpoint — so its cost is
+#   nearly all fixture setup, which its shard already pays.
+#
+# Refreshing from a green run replaces both with CI numbers and this note
+# can go.
 #
 # To refresh, from a green run:
 #   gh run view <id> --log | grep -oE -- '--- PASS: [A-Za-z_0-9]+ \([0-9.]+s\)' \
@@ -80,6 +87,7 @@ TestLifecycleBridge_IPv6_GoldenPath	9.79
 TestLifecycleIPvlan_GoldenPath	7.88
 TestLifecycleMacvlan_GoldenPath	7.05
 TestLifecycleMacvlan_IPv6_GoldenPath	11.17
+TestMetrics_SocketServesTheFullSurface	0.55
 TestMTUPropagate_DefaultIsUnchanged	7.45
 TestMTUPropagate_OptInSetsLinkMTU	10.56
 TestNonRootContainer_PersistentClientStarts	25.33

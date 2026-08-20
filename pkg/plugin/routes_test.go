@@ -96,6 +96,7 @@ func TestRoutes_RegisteredSetIsPinned(t *testing.T) {
 		"/NetworkDriver.Join",
 		"/NetworkDriver.Leave",
 		"/Plugin.Health",
+		"/metrics",
 	}
 
 	got := map[string]bool{}

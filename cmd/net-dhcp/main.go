@@ -180,6 +180,18 @@ func main() {
 		fatalCleanup(err, "Failed to create plugin")
 	}
 
+	// Optional Prometheus scrape target (#651). /metrics is always on
+	// the plugin socket; this opens it on TCP as well. Off unless set,
+	// because the plugin runs privileged on the host network namespace
+	// — see (*Plugin).ListenMetrics. Bound before the socket server
+	// starts so a bad address is a startup failure an operator sees,
+	// not a silent absence they discover from a missing dashboard.
+	if addr := os.Getenv("METRICS_ADDR"); addr != "" {
+		if err := p.ListenMetrics(addr); err != nil {
+			fatalCleanup(err, "Failed to start metrics listener")
+		}
+	}
+
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, unix.SIGINT, unix.SIGTERM)
 

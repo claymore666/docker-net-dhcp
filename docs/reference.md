@@ -398,6 +398,7 @@ Set with `docker plugin set <plugin> NAME=value`; take effect after
 | `STATE_DIR` | `/var/lib/net-dhcp` | Where per-network options, the tombstone file, and the `audit_log` ledger persist. **Bind-mounted from the host at this exact path since v1.5.0**, so its contents survive `docker plugin rm` — before that they lived in the plugin rootfs and every upgrade destroyed them. Two consequences: durability begins with the version that introduced the mount (an upgrade *onto* v1.5.0 still starts from nothing, because the old state was never on the host), and **repointing this setting opts out** — a path other than the mounted one is inside the rootfs again and is wiped by the next upgrade. |
 | `OUTAGE_TICK` | `30s` | How often the DHCP-outage watchdog re-checks each client, and so the resolution of `dhcp_timeouts` — the counter climbs about once per tick while a server is unreachable. Lower it for a finer-grained signal at the cost of a little more wakeup churn. |
 | `OUTAGE_GRACE` | `25s` | Settling time before the watchdog will call an outage, added **on top of** the lease lifetime, so detection lands at `lease + grace`. Also the window a never-yet-bound client gets before its first failure is reported. |
+| `METRICS_ADDR` | *(empty)* | (v1.8.0+) TCP address for the Prometheus `/metrics` endpoint, e.g. `127.0.0.1:9099`. Empty means **no TCP listener**, which is the default and the recommended state unless you are scraping it. `/metrics` is always available on the plugin socket regardless of this setting. **Bind it to loopback or a management interface, never `0.0.0.0`** — see the security note under [`/metrics`](#metrics). A malformed address fails plugin startup rather than being ignored. |
 
 > **`OUTAGE_GRACE` must stay above your clients' normal acquisition
 > time.** The grace is what stops one slow DHCP exchange from
@@ -721,6 +722,88 @@ diagnosing a specific container from them alone is not.
 | `parent_link_wait_timeouts` | no | (v1.6.0+) The same wait giving up after its budget, after which the operation asks the kernel anyway and may fail with `device or resource busy`. Deliberately bounded well below the reclaim's own budget so a wedged reclaim degrades to the pre-v1.6.0 behaviour instead of stalling a container start. Not `healthy`-affecting, but the actionable one of the pair: any non-zero value means something held a parent far longer than a DHCP round trip should take, and container starts on that NIC were refused as a result. |
 | `ledger_write_failures` | no | Failed `audit_log` ledger appends — degrades forensics, not networking. Operators using `audit_log` alert on this. |
 | `lease_changed_v6`, `leases_obtained_v6`, `leases_renewed_v6`, `dhcp_timeouts_v6`, `naks_received_v6` | no | (v1.2.0+) The IPv6-only share of the matching aggregate above (#212). Each counts only the v6 client's events; the v4 share is the aggregate minus its `*_v6`. On a dual-stack host this isolates the v6-specific NAK/timeout signal the aggregate hides. `lease_release_failures_v6` (v1.7.0+, #608) joins the split with the same rule; `ledger_write_failures` has no per-family split. |
+
+### `/metrics`
+
+*(v1.8.0+)* The same counters as `/Plugin.Health`, in Prometheus text
+exposition format. Both views render from one snapshot, so they cannot
+disagree, and a unit test asserts by reflection that **every**
+`/Plugin.Health` field is exposed here — a counter added later cannot
+quietly go missing from your dashboards.
+
+On the plugin socket, always:
+
+```bash
+PLUGIN_ID=$(docker plugin inspect -f '{{.Id}}' ghcr.io/claymore666/docker-net-dhcp:v1.7.1)
+sudo curl -s --unix-socket /run/docker/plugins/$PLUGIN_ID/net-dhcp.sock \
+    http://localhost/metrics
+```
+
+Prometheus cannot scrape a UNIX socket, so for an actual scrape target
+set `METRICS_ADDR`:
+
+```bash
+docker plugin set ghcr.io/claymore666/docker-net-dhcp:v1.7.1 METRICS_ADDR=127.0.0.1:9099
+docker plugin disable ... && docker plugin enable ...
+```
+
+> **This opens a port in the host's network namespace.** The plugin runs
+> with `CAP_NET_ADMIN`, `CAP_SYS_ADMIN` and `CAP_SYS_PTRACE` and
+> `"network": {"type": "host"}`, so a listener it opens is on the host
+> directly, not in a container namespace. Bind loopback or a management
+> interface; do not bind `0.0.0.0` on a machine reachable from anywhere
+> you do not control. The listener serves `/metrics` **and nothing
+> else** — the libnetwork RPCs are not routed on it, and a test asserts
+> that — but an open port is still an open port. It is off by default so
+> that enabling it is a decision rather than something inherited from an
+> upgrade.
+
+#### Metric names and the `family` label
+
+Counters are `net_dhcp_<name>_total`, gauges are `net_dhcp_<name>`.
+
+Six counters carry a `family` label — `leases_obtained`,
+`leases_renewed`, `lease_changed`, `dhcp_timeouts`, `naks_received` and
+`lease_release_failures`:
+
+```
+net_dhcp_leases_obtained_total{family="ipv4"} 42
+net_dhcp_leases_obtained_total{family="ipv6"} 7
+```
+
+**`family="ipv4"` is derived, not stored.** In `/Plugin.Health` the
+unsuffixed counter is the v4+v6 **total** and the `_v6` one is a subset
+of it (#212), so the v4 series here is `total - v6` computed at render
+time. This is the shape an operator expects from a `family` label, and
+it is worth knowing if you compare the two endpoints side by side: the
+JSON `leases_obtained` will not equal the `family="ipv4"` series. Every
+other counter has no family dimension and does not gain an invented one.
+
+#### Counter resets
+
+`net_dhcp_build_info` carries the plugin's `instance_id` as a label:
+
+```
+net_dhcp_build_info{instance_id="..."} 1
+```
+
+The counters are process-lifetime and reset when the plugin restarts.
+Because the id changes with the process, a restart appears to Prometheus
+as a **new series** rather than as a counter that silently rewound —
+which `rate()` already handles correctly. This is the one place the
+metrics view is strictly better than reading the JSON, where an operator
+has to compare `instance_id` by hand to know whether two readings are
+comparable at all.
+
+`net_dhcp_healthy` is `1`/`0`, mirroring the `healthy` field, so the one
+derived judgement the plugin makes stays alertable.
+
+#### Not exposed
+
+Per-endpoint and per-network labels. Endpoint IDs are unbounded and turn
+over with container lifecycle, so labelling by them would be a
+cardinality problem in exactly the deployments where these metrics
+matter most. Aggregates only.
 
 ### Verifying that renewal works
 

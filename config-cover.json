@@ -67,6 +67,14 @@
             "settable": [
                 "value"
             ]
+        },
+        {
+            "description": "Optional TCP address for the Prometheus /metrics endpoint (e.g. 127.0.0.1:9099); empty means no TCP listener",
+            "name": "METRICS_ADDR",
+            "value": "",
+            "settable": [
+                "value"
+            ]
         }
     ],
     "workdir": "/",

@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -466,6 +467,20 @@ type Plugin struct {
 
 	docker dockerClient
 	server http.Server
+
+	// metricsServer is the OPTIONAL TCP listener for /metrics, nil
+	// unless METRICS_ADDR was set. It is a second server rather than a
+	// second listener on p.server for one reason, and it is a security
+	// boundary rather than a style choice: p.server routes every
+	// libnetwork RPC — CreateNetwork, Join, DeleteEndpoint — and this
+	// plugin runs with CAP_NET_ADMIN, CAP_SYS_ADMIN and CAP_SYS_PTRACE
+	// in the host network namespace. Serving p.server on a TCP port
+	// would expose all of that to anyone who can reach the port.
+	// ListenMetrics builds a mux carrying /metrics and nothing else.
+	metricsServer *http.Server
+	// metricsListener is kept so a test can learn the address the
+	// kernel actually assigned when METRICS_ADDR named port 0.
+	metricsListener net.Listener
 
 	// mu guards joinHints, persistentDHCP, and endpointFingerprints.
 	// libnetwork dispatches CreateEndpoint / Join / Leave from
@@ -1688,6 +1703,46 @@ func waitBounded(wg *sync.WaitGroup, d time.Duration) bool {
 // upgrade or `docker plugin disable` would orphan every active lease at
 // the upstream DHCP server, defeating the release-on-stop contract
 // Leave normally honors.
+// ListenMetrics starts the optional TCP listener for /metrics.
+//
+// Off unless METRICS_ADDR is set, and that default is deliberate. The
+// plugin holds CAP_NET_ADMIN, CAP_SYS_ADMIN and CAP_SYS_PTRACE with
+// "network": {"type": "host"} in config.json, so any port it opens is on
+// the host's own network namespace. Opening one has to be a decision an
+// operator made, not something they inherited by upgrading (#651).
+//
+// The mux here carries /metrics ALONE. See the metricsServer field for
+// why that is load-bearing rather than tidy.
+//
+// Returns once the listener is bound, so a bad METRICS_ADDR fails at
+// startup where an operator will see it, rather than in a goroutine that
+// logs and leaves the plugin running without the endpoint they asked for.
+func (p *Plugin) ListenMetrics(addr string) error {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/metrics", p.apiMetrics)
+
+	l, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("metrics listener on %q: %w", addr, err)
+	}
+
+	p.metricsListener = l
+	p.metricsServer = &http.Server{
+		Handler: mux,
+		// A scrape is a small GET; anything slower than this is not a
+		// Prometheus server. Bounded so an idle or hostile connection
+		// cannot pin a goroutine for the process lifetime.
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	go func() {
+		if err := p.metricsServer.Serve(l); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.WithError(err).Error("Metrics listener stopped")
+		}
+	}()
+	log.WithField("addr", addr).Info("Serving /metrics over TCP")
+	return nil
+}
+
 func (p *Plugin) Close() error {
 	// Stop the deferred-recovery retry first (#383). It can be sitting
 	// in a 60s wait for a daemon that is going away with us, and a
@@ -1721,6 +1776,14 @@ func (p *Plugin) Close() error {
 	// guarantee above does NOT hold and we fall back to the old
 	// speculative behaviour. Rare, not impossible — keep it explicit
 	// instead of assuming it away.
+	// The metrics listener carries no plugin state and no in-flight
+	// work worth draining, so it is closed outright rather than given a
+	// slice of the shutdown budget. Doing it first stops a scrape
+	// arriving mid-drain and reading a registry that is being emptied.
+	if p.metricsServer != nil {
+		_ = p.metricsServer.Close()
+	}
+
 	forced := false
 	serverErr := p.server.Shutdown(shutdownCtx)
 	if serverErr != nil {

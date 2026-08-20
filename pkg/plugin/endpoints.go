@@ -512,6 +512,26 @@ type HealthResponse struct {
 }
 
 func (p *Plugin) apiHealth(w http.ResponseWriter, r *http.Request) {
+	util.JSONResponse(w, p.healthSnapshot(), http.StatusOK)
+}
+
+// healthSnapshot builds one consistent view of the plugin's counters.
+//
+// It exists so that /Plugin.Health and /metrics cannot disagree (#651).
+// Both render from this and only this, which makes "two views, one
+// source" a property of the code rather than something a reviewer has
+// to keep noticing. The alternative — a metrics handler that reads the
+// atomics itself — would be a second hand-maintained list of 45 fields,
+// and this repo has watched that shape rot more than once (#542, #636).
+//
+// The counters are read without a lock and are therefore not a single
+// atomic instant: two of them can be a few nanoseconds apart. That is
+// deliberate and harmless for both consumers — these are monotonic
+// counters read for rates and alerting, not an accounting ledger — and
+// it is the behaviour /Plugin.Health has always had. Only the two map
+// lengths need p.mu, because reading a map during a concurrent write is
+// a data race rather than a stale number.
+func (p *Plugin) healthSnapshot() HealthResponse {
 	p.mu.Lock()
 	active := len(p.persistentDHCP)
 	pending := len(p.joinHints)
@@ -521,7 +541,7 @@ func (p *Plugin) apiHealth(w http.ResponseWriter, r *http.Request) {
 	joinFails := p.joinStartFailures.Load()
 	tsFails := p.tombstoneWriteFailures.Load()
 	conflicts := p.addressConflicts.Load()
-	util.JSONResponse(w, HealthResponse{
+	return HealthResponse{
 		// Healthy is false on any condition that means an operator
 		// should look: a recovery or join-start failure means a running
 		// container has no renewal goroutine; a tombstone-write failure
@@ -579,5 +599,5 @@ func (p *Plugin) apiHealth(w http.ResponseWriter, r *http.Request) {
 		DHCPTimeoutsV6:               p.dhcpTimeoutsV6.Load(),
 		NAKsReceivedV6:               p.naksReceivedV6.Load(),
 		LeaseReleaseFailuresV6:       p.leaseReleaseFailuresV6.Load(),
-	}, http.StatusOK)
+	}
 }
