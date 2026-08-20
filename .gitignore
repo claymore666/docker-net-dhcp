@@ -37,3 +37,6 @@ code-review-report.md
 .netrc
 secrets/
 credentials/
+
+# `go build` inside the watchdog module drops its binary next to the source
+test/arm64-netboot/nfs-watchdog/nfs-watchdog
