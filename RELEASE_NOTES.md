@@ -61,16 +61,56 @@ re-accepting it.
 
 ## v1.8.0
 
-One operator-visible fix, and a cycle of work on the machinery that
-decides whether this project's tests mean anything. If you are running
-v1.7.1 happily, the reason to upgrade is the health-counter fix below;
-everything else is about making the next release safer to trust.
+A network can now say which DHCP server it will lease from, plus one
+operator-visible fix and a cycle of work on the machinery that decides
+whether this project's tests mean anything. If you are running v1.7.1
+happily, the reasons to upgrade are the server-selection options and
+the health-counter fix below.
 
-**This release does touch the plugin source** (two refactors under
-`pkg/plugin`), so the reference digests differ from v1.7.1. The
-behaviour they implement is intended to be identical — both are covered
-by the existing suite plus new unit tests — but "intended" is the honest
-word, not "proven".
+**This release changes plugin behaviour**, not only its packaging: two
+new network options and two new health counters, alongside two refactors
+under `pkg/plugin`. The reference digests differ from v1.7.1
+accordingly. The refactors are intended to be behaviour-identical — both
+are covered by the existing suite plus new unit tests — but "intended"
+is the honest word there, not "proven".
+
+### Choosing which DHCP server a network leases from
+
+On a segment with more than one DHCP server the plugin took whichever
+answered first, and there was no way to say otherwise. Two new network
+options decide it instead. They answer deliberately different questions
+and are not interchangeable:
+
+- **`dhcp_servers`** is an *ordering* — "use 192.168.1.1 over
+  192.168.1.2". Acquisition tries each server in turn, restricted to
+  that one, and takes the first lease offered.
+- **`dhcp_deny_servers`** is a *permission* — "never lease from
+  192.168.1.3". Everything else may answer.
+
+Set both and the denial wins, including for a server that also appears
+in `dhcp_servers`.
+
+Two properties are worth knowing before you enable this:
+
+- **The list is exhaustive.** If none of the servers you named answers,
+  the endpoint fails rather than accepting whichever server happened to
+  reply. Naming your servers is what makes the list complete — a policy
+  that widened under pressure would hand you the one outcome you
+  configured it to prevent. `dhcp_server_policy_exhausted` counts this,
+  so it is distinguishable from an ordinary DHCP timeout;
+  `dhcp_server_tier_fallbacks` counts a preferred server going quiet and
+  the next one answering, which is the only signal that a ranked server
+  has gone away.
+- **It never makes `docker run` slower.** The preference ladder divides
+  the existing `lease_timeout` budget rather than extending it. Raise
+  `lease_timeout` if you want each server given more time.
+
+Two limits are structural, not oversights. Both options are **DHCPv4
+only** — the underlying client has no v6 equivalent, so a v6 entry is
+rejected at `docker network create` rather than silently ignored. And
+they are **not supported behind a DHCP relay**: the filter matches the
+packet's source address, not the Server Identifier, and through a relay
+every offer looks identical. (#111, #669)
 
 ### An ordinary `docker network rm` could report the plugin's worst fault
 
@@ -125,8 +165,19 @@ option the older one never did. None of that was visible before.
   it took the nested Docker daemon down with it, permanently, while
   continuing to report itself online to GitHub. The directory is now
   created before the daemon starts, and the ordering is asserted. (#660)
+- That fix reached one caller and not its copies: every workflow that
+  installs the plugin names the directories itself, so each copy rots
+  independently the moment a manifest gains a bind source. A gate now
+  holds every such step to the manifest it actually installs. The one
+  that had already drifted — the coverage lane, whose manifest carries
+  two sources the shipped one does not — derives them from it instead of
+  naming them. (#666)
 - Several gates were reporting success over work they had never
-  inspected. (#569, #535, #636)
+  inspected, and one fixture pinned no negative cases at all, so it
+  could not have caught a rule that matched too much. (#569, #535,
+  #536, #636)
+- The integration harness's environment knobs are documented, rather
+  than discoverable only by reading the harness. (#534)
 
 ## v1.7.1
 
