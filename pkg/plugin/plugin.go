@@ -464,10 +464,13 @@ type Plugin struct {
 	// own copy.
 	endpointFingerprints map[string]endpointFingerprint
 
-	// tombstoneMu serializes the tombstones.json read-modify-write
-	// path. Held only across that small operation; never combined
-	// with mu so the two locks can't deadlock against each other.
-	tombstoneMu sync.Mutex
+	// tombstones owns the tombstones.json read-modify-write path and
+	// the lock that serialises it (tombstone_store.go). Held only
+	// across that small operation; never combined with mu so the two
+	// locks cannot deadlock against each other — a rule that
+	// scripts/check-lock-discipline.sh enforces, because this comment
+	// alone did not.
+	tombstones tombstoneStore
 
 	// recoveredOK and recoveryFailed are bumped by recoverOneEndpoint's
 	// background Start goroutine and reported via /Plugin.Health, so
@@ -996,22 +999,7 @@ func (p *Plugin) addTombstone(networkID, hostname, mac, ipv4, ipv6 string) {
 	if mac == "" {
 		return
 	}
-	p.tombstoneMu.Lock()
-	defer p.tombstoneMu.Unlock()
-	ts, err := loadTombstones()
-	if err != nil {
-		log.WithError(err).Warn("Failed to load tombstones; starting fresh")
-		ts = nil
-	}
-	ts = append(pruneTombstones(ts), tombstone{
-		NetworkID:   networkID,
-		Hostname:    hostname,
-		MacAddress:  mac,
-		IPAddress:   ipv4,
-		IPv6Address: ipv6,
-		DeletedAt:   time.Now(),
-	})
-	if err := saveTombstones(ts); err != nil {
+	if err := p.tombstones.add(networkID, hostname, mac, ipv4, ipv6); err != nil {
 		p.tombstoneWriteFailures.Add(1)
 		log.WithError(err).Warn("Failed to persist tombstone; container restart may pick a new MAC/IP")
 	}
@@ -1026,70 +1014,9 @@ func (p *Plugin) addTombstone(networkID, hostname, mac, ipv4, ipv6 string) {
 // hostname-less containers and races where the lookup didn't return
 // in time). The "exactly one" rule still applies after filtering.
 func (p *Plugin) consumeTombstone(networkID, hostname string) (mac, ipv4, ipv6 string, ok bool) {
-	p.tombstoneMu.Lock()
-	defer p.tombstoneMu.Unlock()
-	ts, err := loadTombstones()
-	if err != nil {
-		log.WithError(err).Warn("Failed to load tombstones; treating as empty")
+	mac, ipv4, ipv6, ok = p.tombstones.consume(networkID, hostname)
+	if !ok {
 		return "", "", "", false
-	}
-	preLen := len(ts)
-	ts = pruneTombstones(ts)
-	pruned := len(ts) != preLen
-	matchIdx := -1
-	matches := 0
-	for i, t := range ts {
-		if t.NetworkID != networkID {
-			continue
-		}
-		// When the caller knows the hostname, only match tombstones
-		// whose hostname agrees. Tombstones written by a v0.5.0 build
-		// (or with hostname-lookup races) have empty Hostname; treat
-		// them as "matches anything" so we don't regress those.
-		if hostname != "" && t.Hostname != "" && t.Hostname != hostname {
-			continue
-		}
-		matches++
-		matchIdx = i
-	}
-	if matches != 1 {
-		// More than one match → ambiguous. Drop *all* matches so the
-		// next consumeTombstone for this network/hostname doesn't keep
-		// hitting the same poisoned set for the rest of the TTL window.
-		// Zero matches is harmless; the prune still gets persisted iff
-		// it changed something.
-		dirty := pruned
-		if matches > 1 {
-			kept := ts[:0]
-			for _, t := range ts {
-				if t.NetworkID == networkID {
-					if hostname != "" && t.Hostname != "" && t.Hostname != hostname {
-						kept = append(kept, t)
-						continue
-					}
-					continue
-				}
-				kept = append(kept, t)
-			}
-			ts = kept
-			dirty = true
-		}
-		// Skip the rewrite when nothing changed (I-10 in the
-		// 2026-05-05 review): the common no-op consume on a quiet
-		// network used to fsync a file write per CreateEndpoint.
-		if dirty {
-			if err := saveTombstones(ts); err != nil {
-				log.WithError(err).Debug("Failed to persist pruned tombstones")
-			}
-		}
-		return "", "", "", false
-	}
-	mac = ts[matchIdx].MacAddress
-	ipv4 = ts[matchIdx].IPAddress
-	ipv6 = ts[matchIdx].IPv6Address
-	ts = append(ts[:matchIdx], ts[matchIdx+1:]...)
-	if err := saveTombstones(ts); err != nil {
-		log.WithError(err).Warn("Failed to persist tombstones after consume")
 	}
 	// Counted here rather than at the two call sites (network.go,
 	// parent_attached.go) so a third caller cannot forget it and quietly

@@ -89,6 +89,7 @@ LANE=(
   "fixture hygiene|-|bash scripts/check-selftest-fixtures.sh"
   "pipefail consumers|-|bash scripts/check-pipefail-consumers.sh"
   "license headers|-|bash scripts/check-license-headers.sh"
+  "lock discipline|-|bash scripts/check-lock-discipline.sh"
   "pi watchdog wiring|-|bash scripts/check-pi-watchdog-wiring.sh"
   "parent-gate accounting|-|bash scripts/check-parent-gate-accounting.sh"
   "doc invariants|-|bash scripts/check-doc-invariants.sh"
