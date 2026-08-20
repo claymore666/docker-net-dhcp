@@ -623,6 +623,15 @@ is preserved either by recovery (when the daemon's shutdown never called
 `Leave`) or by the tombstone (when it did) — the outcome is the same
 either way.
 
+A deferred retry runs while the host's containers are coming back, so it
+can meet an endpoint a `Join` has already claimed. Recovery yields:
+registration is a compare-and-set, and losing it leaves the `Join`'s
+client in place and counts `recovery_already_managed` (v1.8.0+). A
+`Join` arriving the other way round still displaces a recovery-built
+manager and stops it — that direction is `displaced_stops`. Both
+directions end with exactly one DHCP client on the interface, which is
+the property that matters (#480).
+
 ### State persistence
 
 Per-network options are written to `STATE_DIR/<network_id>.json` at
@@ -682,6 +691,7 @@ diagnosing a specific container from them alone is not.
 | `recovery_deferred` | no | (v1.4.0+) Recovery met a daemon that was not serving yet and was retried once the plugin socket came up (#383). Expected on a daemon restart. Only worth attention paired with `recovery_failed`, which together mean the retry ran out too. |
 | `recovery_aborted_container_gone` | no | (v1.4.0+) Recoveries abandoned because the container had already exited, or been removed, by the time post-restart recovery reached it. Not a fault: nothing is left running without a renewal client, so this never flips `healthy`. The recovery-side twin of `join_aborted_container_gone`, and normal after a daemon restart that outlived some containers (#376). |
 | `recovery_network_gone` | no | (v1.8.0+) Networks skipped during post-restart recovery because they had been removed between the listing that found them and the read of their detail. Not a fault: a network that is gone leaves no running container without a renewal client, so this never flips `healthy`. Counted rather than passed over in silence — a host where this climbs steadily is churning networks under a restarting daemon, which is worth knowing even though no single occurrence is a problem. Until v1.8.0 it landed in `recovery_failed`, where an ordinary `docker network rm` racing a daemon restart reported the plugin's most serious fault (#648). |
+| `recovery_already_managed` | no | (v1.8.0+) Endpoints a recovery walk found already registered to another manager, and therefore left alone — a `Join` reached them first. Not a fault: the endpoint has a renewal client, it just is not the one this walk would have built. It is counted because it is the only outward evidence of recovery racing a `Join`, the window that made the registration a compare-and-set rather than a read followed by a write; before v1.8.0 those endpoints were reported as *recovered* in the completion log while `recovered_ok` correctly did not move (#480). |
 | `join_start_failures` | yes | (v1.3.3+) Persistent-client start failures at attach time **for a container that is still running** — it got its initial lease but runs without renewal, and the lease is never released on disconnect (#317). The plugin log carries the cause; fix it and restart the container. A container that *exited* mid-attach is counted separately and is not a fault — see below (#373). |
 | `join_aborted_container_gone` | no | (v1.4.0+) Attaches abandoned because the container exited before the persistent client was up. Not a fault: there is no running container missing a renewal client, so this never flips `healthy`. A sustained rise still says something real — containers dying seconds after start, e.g. a crash-loop (#373). Recognised three ways: the daemon answering "no such container", the container's netns having gone, or its sandbox key being unlinked. An attach that fails for any other reason is counted as a fault, not excused (#401). |
 | `join_aborted_no_container` | no | (v1.6.0+) Attaches abandoned because no container ever claimed the endpoint on the network, and whose leased address was released rather than left to expire. Not a fault: nothing is running without a renewal client, because nothing is running — so this never flips `healthy`. Distinct from `join_aborted_container_gone`, which needs the daemon to say "no such container" or the sandbox netns to be visibly gone; this one covers the case where the endpoint is simply unclaimed after the attach budget, which previously fell through to `join_start_failures` and leaked the address (#566). |

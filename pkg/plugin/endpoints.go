@@ -306,6 +306,14 @@ type HealthResponse struct {
 	// still visible. It landed in recovery_failed until #648, where it
 	// was fatal.
 	RecoveryNetworkGone int32 `json:"recovery_network_gone"`
+	// RecoveryAlreadyManaged counts endpoints a recovery walk found
+	// already registered to another manager and therefore left alone —
+	// a Join reached them first. Not Healthy-affecting: the endpoint has
+	// a renewal client, it just is not the one this walk would have
+	// built. Counted because it is the only outward evidence of recovery
+	// racing a Join, and because the completion log used to report those
+	// endpoints as recovered (#480).
+	RecoveryAlreadyManaged int32 `json:"recovery_already_managed"`
 	// JoinStartFailures counts persistent-client Start failures at
 	// Join time (#317): a running container with no renewal client.
 	// Healthy-affecting — same operator action as recovery_failed
@@ -537,6 +545,7 @@ func (p *Plugin) apiHealth(w http.ResponseWriter, r *http.Request) {
 		RecoveryDeferred:             p.recoveryDeferred.Load(),
 		RecoveryAbortedContainerGone: p.recoveryAbortedContainerGone.Load(),
 		RecoveryNetworkGone:          p.recoveryNetworkGone.Load(),
+		RecoveryAlreadyManaged:       p.recoveryAlreadyManaged.Load(),
 		JoinAbortedContainerGone:     p.joinAbortedContainerGone.Load(),
 		JoinAbortedNoContainer:       p.joinAbortedNoContainer.Load(),
 		JoinAttachSlow:               p.joinAttachSlow.Load(),
