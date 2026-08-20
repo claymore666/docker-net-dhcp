@@ -1612,6 +1612,15 @@ the <code>vX.Y.Z</code> milestone (the workflow leans on this for the
   release PR's <code>Closes</code> list). Verify with
   <code>gh issue list --milestone vX.Y.Z --state open</code> — should be
   empty.</li>
+<li><strong>Anything listed in <code>.github/dispatch-pending.txt</code> is now
+  dispatchable — exercise it once and remove the entry.</strong> A
+  <code>workflow_dispatch</code> workflow is only exposed from the default branch,
+  so one that merged to <code>dev</code> during this cycle has never run, and this
+  release is the first moment it can. Dispatch it, confirm it does what
+  its documentation claims, then drop the entry —
+  <code>scripts/check-dispatch-reachable.sh</code> fails on a declaration that has
+  stopped being true, so a forgotten one surfaces on the next PR rather
+  than a year later.</li>
 </ul>
 <h2 id="troubleshooting">Troubleshooting<a class="headerlink" href="#troubleshooting" title="Permanent link">&para;</a></h2>
 <table>

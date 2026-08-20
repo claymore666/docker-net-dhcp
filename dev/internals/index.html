@@ -1548,6 +1548,17 @@ lane, so the capture happens against the daemon the suite actually talks
 to, and it opens a pull request with the re-recorded bodies:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="gp">$ </span>gh<span class="w"> </span>workflow<span class="w"> </span>run<span class="w"> </span>capture-fixtures.yml<span class="w"> </span>--ref<span class="w"> </span>&lt;branch&gt;
 </code></pre></div>
+<blockquote>
+<p><strong>Not available until v1.8.0 ships.</strong> GitHub only exposes a
+<code>workflow_dispatch</code> workflow from the repository's <em>default</em> branch —
+<code>main</code> here — not from the branch you pass to <code>--ref</code>. This workflow
+merged to <code>dev</code>, so until the next release carries it to <code>main</code> the
+command above answers <code>404</code>, which reads like a typo rather than "not
+yet". Use the by-hand route below in the meantime. The condition is
+declared in <code>.github/dispatch-pending.txt</code> and enforced by
+<code>scripts/check-dispatch-reachable.sh</code>, which also fails once the entry
+stops being true.</p>
+</blockquote>
 <p>A pull request rather than a push, deliberately. A changed request body on
 an engine bump is a finding — it is the signal #218 and #125 are blocked
 on — so the diff wants eyes rather than an automatic commit. Before it
