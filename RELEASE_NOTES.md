@@ -68,11 +68,11 @@ happily, the reasons to upgrade are the server-selection options and
 the health-counter fix below.
 
 **This release changes plugin behaviour**, not only its packaging: two
-new network options and two new health counters, alongside two refactors
-under `pkg/plugin`. The reference digests differ from v1.7.1
-accordingly. The refactors are intended to be behaviour-identical — both
-are covered by the existing suite plus new unit tests — but "intended"
-is the honest word there, not "proven".
+new network options, four new health counters and one lifecycle fix,
+alongside two refactors under `pkg/plugin`. The reference digests
+differ from v1.7.1 accordingly. The refactors are intended to be
+behaviour-identical — both are covered by the existing suite plus new
+unit tests — but "intended" is the honest word there, not "proven".
 
 ### Choosing which DHCP server a network leases from
 
@@ -131,6 +131,32 @@ Those are now counted as `recovery_network_gone`, which never affects
 where it climbs steadily is churning networks under a restarting daemon,
 which is worth knowing even though no single occurrence is a problem.
 (#648)
+
+### Two DHCP clients could end up renewing one lease
+
+When the plugin starts it walks the endpoints Docker still knows about
+and builds a lease-renewal client for each one it is not already
+managing. If a container's `Join` arrives for an endpoint that walk has
+already claimed, the `Join` wins — it is the newer truth — and the
+manager it displaces is stopped, so its DHCP client does not go on
+renewing the same lease on the same interface.
+
+That held in one order and not the other. The recovery walk read the
+registry, released the lock, built its manager and then registered it;
+a `Join` landing inside that window had its live manager evicted and
+dropped, with its DHCP client still running and now untracked — the
+collision the displacement code exists to prevent, arrived at from the
+other side. Recovery now registers through a compare-and-set and yields
+to whoever already holds the endpoint, so older truth can no longer
+overwrite newer.
+
+Narrow, but not hypothetical: the test written to explore an unrelated
+question hit this window on its first run, and hit it again in CI.
+`recovery_already_managed` counts it. That counter does not affect
+`healthy` — an endpoint someone else is already managing *has* a renewal
+client, it simply is not the one this walk would have built — and until
+now the event was invisible except as an inflated "recovered" in a
+single log line. (#679)
 
 ### The tests now replay what the daemon actually sends
 
@@ -193,6 +219,28 @@ option the older one never did. None of that was visible before.
   every engine, pending moby/moby#52866. Describing a capability probe
   as a version check taught the weaker pattern as house style, on a page
   that exists to teach the stronger one. (#673)
+
+- Killing the Docker daemon outright is now covered by the integration
+  suite, and what it does turned out not to be what the issue asking for
+  the test assumed. The plugin never dies abruptly: about a second after
+  the daemon is killed the replacement daemon sends it a clean shutdown,
+  and it releases every lease on the way out. Nor does the container
+  survive — the daemon discards it during its own restore and a restart
+  policy builds a new one — so no live endpoint is left to re-adopt. The
+  test asserts what is true of that path instead, and asserts it against
+  the DHCP server's log rather than the plugin's own counters: the lease
+  held before the kill is released rather than left to expire, and the
+  container that comes back holds a lease the server actually granted.
+  (#480)
+- The arm64 lane checked that the tree *would* install a working NFS
+  watchdog, and never that the host had *booted* one. That host's root
+  is a netbooted image, so the two drift apart without a single file in
+  the tree being wrong: a root predating the timeout-scaling fix
+  installs a daemon that exits at boot, and the board runs unwatched
+  while every source-side check still passes. The lane now asks the
+  kernel whether the watchdog is armed and which process holds it, and
+  reports "cannot check" rather than a pass when that evidence has aged
+  out of the ring buffer. (#677)
 
 ### With thanks to
 
