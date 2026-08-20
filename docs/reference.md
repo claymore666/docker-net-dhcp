@@ -116,10 +116,10 @@ for unattended):
 sudo mkdir -p /var/lib/net-dhcp
 
 # amd64
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.7.1
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.8.0
 
 # arm64 (v1.7.0 onward) — the architecture is in the tag, see below
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.7.1-arm64
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.8.0-arm64
 ```
 
 **If the directory is missing**, the install pulls the plugin, then
@@ -133,7 +133,7 @@ plugin that is already there:
 
 ```bash
 sudo mkdir -p /var/lib/net-dhcp
-docker plugin enable ghcr.io/claymore666/docker-net-dhcp:v1.7.1
+docker plugin enable ghcr.io/claymore666/docker-net-dhcp:v1.8.0
 ```
 
 On arm64 that second line takes the `-arm64` tag, like every other
@@ -258,7 +258,7 @@ You bring an existing Linux bridge that is L2-connected to the LAN
 (see [`bridge-mode.md`](bridge-mode.md) for the bridge setup itself):
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.7.1 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.8.0 \
     --ipam-driver null \
     -o bridge=my-bridge \
     my-dhcp-net
@@ -270,7 +270,7 @@ No host changes — containers get per-container kernel-generated MACs
 as macvlan children of a host NIC:
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.7.1 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.8.0 \
     --ipam-driver null \
     -o mode=macvlan -o parent=eth0 \
     lan-dhcp
@@ -284,7 +284,7 @@ security, hostile vSwitches, some Wi-Fi APs). The DHCP server must
 key reservations on DHCP option 61 (client identifier), not MAC:
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.7.1 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.8.0 \
     --ipam-driver null \
     -o mode=ipvlan -o parent=eth0 \
     lan-dhcp
@@ -563,7 +563,7 @@ Runs a second persistent client (`dhcpcd -6`) alongside the v4 one —
 not work with the null IPAM driver and is not what you want:
 
 ```bash
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.7.1 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.8.0 \
     --ipam-driver null \
     -o mode=macvlan -o parent=eth0 -o ipv6=true \
     lan-dhcp6
@@ -665,7 +665,7 @@ without it `curl -s` swallows the permission error and prints nothing,
 which looks exactly like a dead endpoint:
 
 ```bash
-PLUGIN_ID=$(docker plugin inspect -f '{{.Id}}' ghcr.io/claymore666/docker-net-dhcp:v1.7.1)
+PLUGIN_ID=$(docker plugin inspect -f '{{.Id}}' ghcr.io/claymore666/docker-net-dhcp:v1.8.0)
 sudo curl -s --unix-socket /run/docker/plugins/$PLUGIN_ID/net-dhcp.sock \
     http://localhost/Plugin.Health | jq .
 ```
@@ -907,7 +907,7 @@ Compose-managed alternative (network lifecycle tied to the project):
 ```yaml
 networks:
   lan:
-    driver: ghcr.io/claymore666/docker-net-dhcp:v1.7.1
+    driver: ghcr.io/claymore666/docker-net-dhcp:v1.8.0
     driver_opts:
       mode: macvlan
       parent: eth0

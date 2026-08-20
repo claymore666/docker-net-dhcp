@@ -59,6 +59,75 @@ assessment above is retained here as the audit trail. If it becomes
 reachable again the gate fails loudly rather than silently
 re-accepting it.
 
+## v1.8.0
+
+One operator-visible fix, and a cycle of work on the machinery that
+decides whether this project's tests mean anything. If you are running
+v1.7.1 happily, the reason to upgrade is the health-counter fix below;
+everything else is about making the next release safer to trust.
+
+**This release does touch the plugin source** (two refactors under
+`pkg/plugin`), so the reference digests differ from v1.7.1. The
+behaviour they implement is intended to be identical — both are covered
+by the existing suite plus new unit tests — but "intended" is the honest
+word, not "proven".
+
+### An ordinary `docker network rm` could report the plugin's worst fault
+
+`recovery_failed` means something specific and serious: after a daemon
+restart, a container that is *still running* failed to get its lease
+renewal client back, so it will lose its IP when the lease expires. It
+is one of the four counters that flip `healthy` to `false`.
+
+A network removed between the listing that found it and the read of its
+detail was landing in that counter. Nothing was wrong — a network that
+is gone leaves no running container without a renewal client — but an
+operator who removed a network while the daemon happened to be
+restarting saw the plugin report its most serious failure, and an alert
+on `healthy` would have fired for it.
+
+Those are now counted as `recovery_network_gone`, which never affects
+`healthy`. It is counted rather than passed over in silence: a host
+where it climbs steadily is churning networks under a restarting daemon,
+which is worth knowing even though no single occurrence is a problem.
+(#648)
+
+### The tests now replay what the daemon actually sends
+
+The unit tests used to assert against request structs we wrote
+ourselves, which means they confirmed our model of libnetwork rather
+than libnetwork. That is not a hypothetical failure mode here — it is
+how `stable_lease` was designed against an assumed `CreateEndpoint`
+payload and had to be reverted from v1.3.0 once the real one turned out
+not to carry what it needed.
+
+Three real flows are now captured from a live daemon and replayed, with
+provenance recorded, and a gate that fails when the recording stops
+describing the engine the suite runs against. That gate earned itself
+immediately: it found that the captures had been recorded against a
+different Docker engine than the integration suite actually exercises,
+and the re-record showed the daemon had quietly started sending an
+option the older one never did. None of that was visible before.
+(#644, #646)
+
+### Internal
+
+- The tombstone store and the six phases of lease renewal are now
+  separable units with their own tests, rather than two long functions
+  reachable only through the privileged suite. (#643)
+- The arm64 lane runs a standing self-hosted runner that registers once
+  and reconnects on every boot, so a release candidate no longer needs
+  anyone to start it by hand. Its watchdog now scales its timings to the
+  hardware it finds instead of refusing to run on a device whose
+  watchdog is shorter than the defaults assume — refusing to run left
+  the board unprotected, which is the opposite of the intent. (#632)
+- A CI runner whose plugin state directory went missing did not degrade;
+  it took the nested Docker daemon down with it, permanently, while
+  continuing to report itself online to GitHub. The directory is now
+  created before the daemon starts, and the ordering is asserted. (#660)
+- Several gates were reporting success over work they had never
+  inspected. (#569, #535, #636)
+
 ## v1.7.1
 
 A documentation release. **No plugin change** — nothing in this release
