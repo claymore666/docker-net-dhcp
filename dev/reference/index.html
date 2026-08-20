@@ -2286,6 +2286,14 @@ that runs out of budget counts <code>recovery_failed</code>.</p>
 is preserved either by recovery (when the daemon's shutdown never called
 <code>Leave</code>) or by the tombstone (when it did) — the outcome is the same
 either way.</p>
+<p>A deferred retry runs while the host's containers are coming back, so it
+can meet an endpoint a <code>Join</code> has already claimed. Recovery yields:
+registration is a compare-and-set, and losing it leaves the <code>Join</code>'s
+client in place and counts <code>recovery_already_managed</code> (v1.8.0+). A
+<code>Join</code> arriving the other way round still displaces a recovery-built
+manager and stops it — that direction is <code>displaced_stops</code>. Both
+directions end with exactly one DHCP client on the interface, which is
+the property that matters (#480).</p>
 <h3 id="state-persistence">State persistence<a class="headerlink" href="#state-persistence" title="Permanent link">&para;</a></h3>
 <p>Per-network options are written to <code>STATE_DIR/&lt;network_id&gt;.json</code> at
 <code>docker network create</code>, so the per-endpoint handlers never have to call
@@ -2379,6 +2387,11 @@ diagnosing a specific container from them alone is not.</p>
 <td><code>recovery_network_gone</code></td>
 <td>no</td>
 <td>(v1.8.0+) Networks skipped during post-restart recovery because they had been removed between the listing that found them and the read of their detail. Not a fault: a network that is gone leaves no running container without a renewal client, so this never flips <code>healthy</code>. Counted rather than passed over in silence — a host where this climbs steadily is churning networks under a restarting daemon, which is worth knowing even though no single occurrence is a problem. Until v1.8.0 it landed in <code>recovery_failed</code>, where an ordinary <code>docker network rm</code> racing a daemon restart reported the plugin's most serious fault (#648).</td>
+</tr>
+<tr>
+<td><code>recovery_already_managed</code></td>
+<td>no</td>
+<td>(v1.8.0+) Endpoints a recovery walk found already registered to another manager, and therefore left alone — a <code>Join</code> reached them first. Not a fault: the endpoint has a renewal client, it just is not the one this walk would have built. It is counted because it is the only outward evidence of recovery racing a <code>Join</code>, the window that made the registration a compare-and-set rather than a read followed by a write; before v1.8.0 those endpoints were reported as <em>recovered</em> in the completion log while <code>recovered_ok</code> correctly did not move (#480).</td>
 </tr>
 <tr>
 <td><code>join_start_failures</code></td>
