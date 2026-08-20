@@ -286,6 +286,16 @@ jobs:
       - name: Build-context check
         run: bash scripts/check-build-context.sh
 
+      # The deterministic twin of the build-context check above (#644).
+      # That one asserts the property, but can only observe it on a tree
+      # that happens to carry root-owned residue — on a fresh CI checkout
+      # it passes whatever .dockerignore says. This one compares the two
+      # ignore files directly and needs no residue, which is why
+      # /plugin-cover/ and /logs/ sat missing from .dockerignore while
+      # the property check was green.
+      - name: dockerignore/gitignore parity
+        run: bash scripts/check-dockerignore-parity.sh
+
       # Every job that builds an image on the shared self-hosted pool
       # must authenticate to Docker Hub before it pulls (#562). Pulled
       # anonymously, base images are billed to a per-address quota the

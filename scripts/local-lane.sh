@@ -94,6 +94,7 @@ LANE=(
   "doc invariants|-|bash scripts/check-doc-invariants.sh"
   "build-dir refs|-|bash scripts/check-build-dir-refs.sh"
   "build context|-|bash scripts/check-build-context.sh"
+  "dockerignore parity|-|bash scripts/check-dockerignore-parity.sh"
   "registry login|-|bash scripts/check-registry-login.sh"
   "cosign docs|-|bash scripts/check-cosign-docs.sh"
   "dispatch-ref guard|-|bash scripts/check-dispatch-ref-guard.sh"

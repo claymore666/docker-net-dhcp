@@ -1,0 +1,6 @@
+{
+  "engine": "26.1.5+dfsg1",
+  "captured": "2026-08-19",
+  "commit": "018a651",
+  "flow": "docker run on a macvlan DHCP network, to exit"
+}

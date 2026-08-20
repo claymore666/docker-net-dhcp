@@ -168,6 +168,13 @@ func main() {
 		}).Warn("DHCP-outage watchdog cadence overridden; defaults are 30s/25s")
 	}
 
+	// Request capture (#644). Test instrumentation for regenerating the
+	// replay fixtures; declared in config-cover.json only, so reaching
+	// this on a shipped plugin means someone set it deliberately.
+	// captureHandler warns again on its own, but an operator reading
+	// startup rather than steady-state logs should see it here too.
+	opts.RequestCaptureDir = os.Getenv("REQUEST_CAPTURE_DIR")
+
 	p, err := plugin.NewPlugin(opts)
 	if err != nil {
 		fatalCleanup(err, "Failed to create plugin")

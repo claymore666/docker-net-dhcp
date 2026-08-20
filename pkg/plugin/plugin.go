@@ -420,6 +420,16 @@ type Options struct {
 	// takes to acquire its first lease — below that, ordinary start-up
 	// registers as an outage. OUTAGE_GRACE, default 25s.
 	OutageGrace time.Duration
+
+	// RequestCaptureDir, when non-empty, tees every libnetwork request
+	// body into that directory so an integration run can be turned into
+	// the replay fixtures under pkg/plugin/testdata/requests (#644).
+	// REQUEST_CAPTURE_DIR, default empty (disabled).
+	//
+	// Test instrumentation: it is declared in config-cover.json only,
+	// alongside GOCOVERDIR, and empty here costs the shipped plugin
+	// nothing — captureHandler returns the mux unwrapped.
+	RequestCaptureDir string
 }
 
 // Plugin is the DHCP network plugin
@@ -1530,8 +1540,13 @@ func NewPlugin(opts Options) (*Plugin, error) {
 	// Routing table, and the RPCs deliberately left off it: routes.go.
 	mux := p.newServeMux()
 
+	// Capture sits INSIDE the access-logging handler so a captured
+	// request is one that was actually served, and outside the mux so
+	// it sees the raw body before any handler decodes it. With no
+	// capture directory set — every shipped plugin — captureHandler
+	// returns the mux itself and this line is a no-op (#644).
 	p.server = http.Server{
-		Handler: handlers.CustomLoggingHandler(nil, mux, util.WriteAccessLog),
+		Handler: handlers.CustomLoggingHandler(nil, captureHandler(mux, opts.RequestCaptureDir, capturablePaths(p.routes())), util.WriteAccessLog),
 	}
 
 	// Run endpoint recovery synchronously before NewPlugin returns
