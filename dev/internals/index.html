@@ -1509,9 +1509,17 @@ clean: an unreadable instrument is not a clean result.</p>
    you only need it by hand after running a suite target directly. A
    single leftover container fails an unrelated test with a name
    conflict and reads exactly like a regression.</li>
-<li>Engine version — <code>interface_name</code> (#125) needs Docker ≥28 and skips
-   below it, so a skip locally and a pass in CI can both be correct.</li>
 </ol>
+<p>The <code>interface_name</code> tests (#125) are not a local-vs-CI divergence:
+they probe whether the engine applies a remote driver's <code>DstName</code> and
+skip when it does not. The probe (<code>engineAppliesIfname</code>, used by
+<code>TestInterfaceName_MultiNetworkDeterministic</code>) runs a throwaway
+container and checks the interface the engine actually created — there
+is no version threshold to hit. Today the probe fails on every engine,
+because the upstream fix (moby/moby#52866, stopping the remote-driver
+proxy from dropping <code>DstName</code>) has not shipped; until it does, those
+tests skip in CI and locally alike. A skip is expected, not a signal
+that the run diverged.</p>
 <h2 id="request-fixtures">Request fixtures<a class="headerlink" href="#request-fixtures" title="Permanent link">&para;</a></h2>
 <p><code>pkg/plugin/testdata/requests/</code> holds the raw request bodies the Docker
 daemon actually sent, recorded during an integration run. The unit tests
