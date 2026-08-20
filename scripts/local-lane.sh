@@ -99,6 +99,7 @@ LANE=(
   "registry login|-|bash scripts/check-registry-login.sh"
   "cosign docs|-|bash scripts/check-cosign-docs.sh"
   "dispatch-ref guard|-|bash scripts/check-dispatch-ref-guard.sh"
+  "capture lane|-|bash scripts/check-capture-lane.sh"
   # The lane checks itself: if test.yaml gains a gate this file does
   # not list, a local run says so instead of quietly covering less.
   "local-lane coverage|-|bash scripts/check-local-lane.sh"

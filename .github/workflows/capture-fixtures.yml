@@ -1,0 +1,236 @@
+name: Capture fixtures
+
+# Re-record the request fixtures ON THE ENGINE THE SUITE ACTUALLY TALKS TO.
+#
+# WHY THIS IS A WORKFLOW AND NOT A README PARAGRAPH. The fixtures under
+# pkg/plugin/testdata/requests are recordings of real libnetwork calls,
+# and scripts/check-fixture-engine-drift.sh fails the suite when the
+# recorded engine no longer matches the running one (#644). That gate is
+# only as useful as the remedy it names — and the remedy was, for one
+# release, unreachable in practice:
+#
+#   the suite runs INSIDE the dhcp-ci runner container, on its own
+#   nested daemon, and that daemon is a different Docker Engine from
+#   the one on any workstation or the runner HOST.
+#
+# So `sudo make capture-fixtures` run by hand re-records the *host's*
+# engine, the gate stays red, and the obvious next move is to weaken the
+# gate. The fixtures merged that way once already: recorded on 26.1.5,
+# replayed against 29.7.2, asserting against a transcript of a daemon
+# the suite never speaks to.
+#
+# Dispatching this workflow is therefore the primary route. The local
+# recipe in docs/internals.md still works and is documented, but it has
+# to reconstruct this environment by hand; here the environment IS the
+# lane, which is the whole point.
+#
+# WHAT KEEPS IT HONEST. Capturing in the right place is a claim, and a
+# claim needs a check pointed at it:
+#
+#   - after the capture, this job runs the drift gate itself. If the
+#     capture silently took nothing, or took it against some other
+#     daemon, the gate goes red here rather than three PRs later.
+#   - scripts/check-capture-lane.sh asserts this job still runs on the
+#     self-hosted lane. That is the failure the drift gate CANNOT see:
+#     on a hosted runner the capture and the check would agree with each
+#     other and both be wrong, because they would compare the hosted
+#     engine against itself.
+#
+# WHY THERE IS NO `ref` INPUT. A dispatch context carries repository
+# secrets, and #593 is the record of what happens when such a context
+# takes an arbitrary ref and hands it to actions/checkout: a fork's PR
+# head is fetchable from this repository, so `-f ref=refs/pull/<N>/head`
+# reached a secret-bearing job. integration.yml now guards that input
+# with the dispatch-ref job. This workflow does not need the input at
+# all — `gh workflow run --ref` already selects a branch or tag, and a
+# pull-request ref is not dispatchable — so the hazard is absent by
+# construction rather than guarded. Do not add an input here without
+# also adding the guard job; scripts/check-dispatch-ref-guard.sh will
+# fail the build if you do.
+on:
+  workflow_dispatch:
+
+# Shares integration.yml's and coverage.yml's group (#390): this job is
+# privileged, installs a plugin, and drives the integration suite, so it
+# must not run alongside that ref's own suite. Per-ref for the same
+# reason they are — a capture on one branch has no reason to queue
+# behind a suite on another.
+concurrency:
+  group: selfhosted-privileged-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  capture:
+    runs-on: [self-hosted, dhcp-ci]
+    # Three flows, each a full integration test against a freshly built
+    # cover plugin. The suites budget 25 minutes for a sharded third of
+    # one; this runs three whole lifecycles back to back, plus the build.
+    timeout-minutes: 40
+
+    # Narrower than the workflow default, and only here: this is the one
+    # job that writes. It pushes a branch and opens the PR that carries
+    # the re-recorded fixtures.
+    permissions:
+      contents: write
+      pull-requests: write
+
+    env:
+      COVER_PLUGIN_REF: ghcr.io/claymore666/docker-net-dhcp:golang-cover
+      # Same shape as integration.yml and release.yml: a step-level `if:`
+      # cannot read `secrets` directly, so materialize it at job level and
+      # compare against the literal string.
+      HAS_HUB_CREDS: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
+
+    steps:
+      # No `ref:` — see the header. The checked-out ref is the one the
+      # dispatch selected, which required write access to this repository.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # The cover plugin build pulls golang:*-alpine and alpine:* from
+      # Docker Hub. Anonymously those are billed to a per-address quota
+      # shared by the whole pool, which run 31939915811 exhausted (#562).
+      - name: Log in to Docker Hub
+        if: env.HAS_HUB_CREDS == 'true'
+        uses: docker/login-action@184bdaa0721073962dff0199f1fb9940f07167d1 # v3.5.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Note anonymous pulls
+        if: env.HAS_HUB_CREDS != 'true'
+        run: echo "::notice::No Docker Hub credentials in this context; base images pull anonymously."
+
+      # Fail in five seconds naming the fix, rather than two minutes in
+      # as a fixture readiness timeout with the real cause buried in a
+      # captured server log (#449). jq is in this list and not in
+      # integration.yml's because capture-fixtures writes the manifest
+      # with it — without jq the capture runs to completion and then
+      # cannot record which engine produced it.
+      - name: Verify capture dependencies
+        run: |
+          missing=""
+          for tool in dnsmasq kea-dhcp4 ip iptables jq; do
+            command -v "$tool" >/dev/null || missing="$missing $tool"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::dhcp-ci runner image is missing:$missing"
+            echo "The capture drives the integration fixtures (see ci/runner-image/Dockerfile)."
+            exit 1
+          fi
+          echo "engine: $(docker version --format '{{.Server.Version}}')"
+
+      - name: Cleanup orphans from previous runs
+        run: bash test/integration/cleanup-orphans.sh
+
+      # CAPTURE_COMMIT is passed explicitly even though the Makefile
+      # defaults to the same expression. The default is evaluated inside
+      # a root recipe against a checkout git may consider dubiously
+      # owned, which yields an EMPTY commit field and a fixture nobody
+      # can attribute. Passing it from this step is the documented form.
+      - name: Capture the fixtures
+        run: make capture-fixtures CAPTURE_COMMIT="$(git rev-parse --short HEAD)"
+
+      # The capture's own claim, checked rather than trusted. A capture
+      # that silently recorded nothing leaves the old files in place and
+      # this goes red; so does one taken against an unexpected daemon.
+      - name: Fixtures now describe this engine
+        run: bash scripts/check-fixture-engine-drift.sh
+
+      - name: Summarize the diff
+        id: diff
+        run: |
+          if git diff --quiet -- pkg/plugin/testdata/requests; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "### No change"
+              echo
+              echo "The fixtures already describe engine \`$(docker version --format '{{.Server.Version}}')\`."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Re-recorded on \`$(docker version --format '{{.Server.Version}}')\`"
+            echo
+            echo '```'
+            git diff --stat -- pkg/plugin/testdata/requests
+            echo '```'
+            echo
+            echo "Per-flow call counts:"
+            echo
+            for d in pkg/plugin/testdata/requests/*/; do
+              n=$(find "$d" -maxdepth 1 -name '0*.json' | wc -l)
+              printf '%s\n' "- \`$(basename "$d")\` — ${n} call(s)"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Author identity is the Actions bot because a bot is what made
+      # this commit; attributing a machine regeneration to a person
+      # would be the dishonest option. scripts/check-no-ai-attribution.sh
+      # judges assistant credit specifically and is untroubled by this.
+      - name: Open the re-record PR
+        if: steps.diff.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BASE: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          branch="ci/recapture-fixtures-${GITHUB_RUN_ID}"
+          engine="$(docker version --format '{{.Server.Version}}')"
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$branch"
+          git add pkg/plugin/testdata/requests
+          git commit -m "test(plugin): re-record the request fixtures on engine ${engine} (#644)" \
+                     -m "Captured by the Capture fixtures workflow, run ${GITHUB_RUN_ID}, on the
+          dhcp-ci lane — the daemon the integration suite actually talks to.
+
+          Review the payload diff rather than the diffstat: a changed request
+          body on an engine bump is exactly what #218 and #125 are waiting to
+          see, and is the reason this is a pull request and not a push."
+          git push origin "$branch"
+
+          # curl + jq, not gh: the dhcp-ci runner image ships curl, git,
+          # make and jq, and does NOT ship the GitHub CLI. A gate written
+          # against `gh` was merged once and failed on first contact for
+          # exactly this reason (#311/#312).
+          body=$(printf '%s\n' \
+            "Re-recorded on Docker Engine \`${engine}\` by the \`Capture fixtures\` workflow ([run](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}))." \
+            "" \
+            "The capture ran on the integration lane, so these bodies describe the daemon the suite replays them against." \
+            "" \
+            "**Review the payload diff, not the diffstat.** A changed request body on an engine bump is a finding, not noise — it is the signal #218 and #125 are blocked on." \
+            "" \
+            "Refs #644." | jq -Rs .)
+
+          printf '{"title":%s,"head":%s,"base":%s,"body":%s}\n' \
+            "$(printf 'test(plugin): re-record the request fixtures on engine %s (#644)' "$engine" | jq -Rs .)" \
+            "$(printf '%s' "$branch" | jq -Rs .)" \
+            "$(printf '%s' "$BASE" | jq -Rs .)" \
+            "$body" > /tmp/pr.json
+
+          url=$(curl -sS -X POST \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            --data-binary @/tmp/pr.json \
+            "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/pulls" | jq -r '.html_url // empty')
+
+          if [ -z "$url" ]; then
+            echo "::error::PR creation returned no html_url — the branch is pushed as ${branch}."
+            exit 1
+          fi
+          echo "::notice::Opened ${url}"
+          echo "Opened [$url]($url)" >> "$GITHUB_STEP_SUMMARY"
+
+      # Always: the capture leaves the cover plugin installed on failure
+      # paths the Makefile's own teardown does not reach.
+      - name: Tear down the cover plugin
+        if: always()
+        run: |
+          docker plugin disable "${COVER_PLUGIN_REF}" 2>/dev/null || true
+          docker plugin rm -f "${COVER_PLUGIN_REF}" 2>/dev/null || true
