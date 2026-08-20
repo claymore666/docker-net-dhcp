@@ -77,7 +77,7 @@ fi
 
 # The regression itself: a hardcoded directory name in the recipe is the
 # thing that rotted. Derivation is the fix, so name it directly.
-if printf '%s\n' "$RECIPE" | grep -Eq 'mkdir -p +/var/'; then
+if printf '%s\n' "$RECIPE" | grep -E 'mkdir -p +/var/' >/dev/null; then
     echo "FAIL: create-cover hardcodes a bind-source path — derive it from the manifest instead"
     fails=1
 else

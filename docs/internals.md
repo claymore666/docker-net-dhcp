@@ -377,6 +377,31 @@ One command, on a host with Docker and the integration prerequisites:
 $ sudo make capture-fixtures CAPTURE_COMMIT=$(git rev-parse --short HEAD)
 ```
 
+**Capture against the daemon the suite runs, not the one your shell talks
+to.** These are not always the same machine's engine: the integration job
+runs *inside* the CI runner container, against that container's nested
+`dockerd`, which can be several minor versions ahead of the host's. A
+capture taken on the host is a recording of a daemon the suite never talks
+to, and `check-fixture-engine-drift.sh` will reject it — which is exactly
+what happened the first time these fixtures met the gate (26.1 recorded,
+29.7 running). To record against the lane's engine, run the capture inside
+the runner image:
+
+```console
+$ docker run -d --name dh-capture --privileged -v "$PWD":/work \
+    --entrypoint bash ghcr.io/claymore666/dhcp-ci-runner:latest \
+    -c 'RUNNER_JIT_CONFIG=x /entrypoint.sh || true; sleep infinity'
+$ docker exec -w /work -e PATH=/usr/local/go/bin:$PATH \
+    -e SUDO_UID=$(id -u) -e SUDO_GID=$(id -g) \
+    dh-capture make capture-fixtures CAPTURE_COMMIT=$(git rev-parse --short HEAD)
+```
+
+The entrypoint brings up the same supervised daemon the suite uses and then
+fails its runner exec, leaving that daemon running; `go` lives in
+`/usr/local/go/bin`, which a bare `docker exec` does not put on `PATH`; and
+`SUDO_UID`/`SUDO_GID` make the recipe hand the regenerated files back to
+you instead of leaving them owned by root.
+
 It builds the instrumented (`-cover`) plugin, sets `REQUEST_CAPTURE_DIR`
 on it, runs one integration test per flow into a cleared directory, and
 writes each flow's `manifest.json`. Pass `CAPTURE_COMMIT` from the
@@ -421,8 +446,12 @@ the field, or record why it is ignored.
 Two open items are waiting on exactly this signal: #218 (stable MAC,
 needs `netlabel.EndpointName` at `CreateEndpoint`) and #125 (Compose
 `interface_name`, needs plugin-returned `DstName` honoured at `Join`).
-The captures confirm both fields are absent on engine 26.1 — the day a
-capture from a newer engine carries one, the test names it.
+The captures confirm both fields are absent on engine 29.7 — the day a
+capture from a newer engine carries one, the test names it. The 26.1 -> 29.7
+re-record is the worked example: it introduced
+`com.docker.network.enable_ipv4` on `CreateNetwork`, which is carried
+inside `Options` (a map) and so costs nothing, but it arrived unannounced
+and the fixtures are what showed it.
 
 ## See also
 
