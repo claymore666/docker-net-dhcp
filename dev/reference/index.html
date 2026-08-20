@@ -1584,6 +1584,16 @@ each group.</p>
 <td><code>false</code></td>
 </tr>
 <tr>
+<td><code>dhcp_servers</code></td>
+<td>all</td>
+<td><em>(none)</em></td>
+</tr>
+<tr>
+<td><code>dhcp_deny_servers</code></td>
+<td>all</td>
+<td><em>(none)</em></td>
+</tr>
+<tr>
 <td><code>register_dns</code></td>
 <td>all</td>
 <td><code>false</code></td>
@@ -1934,6 +1944,20 @@ limitations) are catalogued in
 <td><code>false</code></td>
 <td>v0.9.0</td>
 <td>Pre-flight probe at <code>docker network create</code>: one-shot DHCP exchange on a temporary child of the parent, rejecting the network if no server answers within 8s. Catches isolated parents / blocked UDP 67-68 / broken VLAN tags at create time. Costs one transient lease per probe. Bridge mode rejects the option. <strong>Since v1.6.0 the probe link is the same kind the network's endpoints will be</strong> — a macvlan child for a macvlan network, an ipvlan L2 child for an ipvlan one (#486). It used to build a macvlan whatever the mode was, on the reasoning that reachability is mode-agnostic; reachability is, but the parent is not. One parent cannot carry both kinds, so a macvlan probe on an ipvlan network was refused outright whenever an ipvlan container was already running on that NIC — <code>validate_dhcp</code> failing for a reason that had nothing to do with DHCP, which is the opposite of what the flag is for. <strong>What MAC you will see at the server:</strong> on macvlan, a random locally-administered address. On ipvlan, the <strong>parent's</strong> address — an ipvlan child cannot have its own, by kernel design. The random address is still generated and still reaches <code>dhcpcd</code>, where it becomes the probe's DUID and IAID, so the probe's DHCP <em>identity</em> is its own either way; it is only the link-layer address in <code>chaddr</code> that is shared. Don't go looking for a random MAC in an ipvlan probe's lease log.</td>
+</tr>
+<tr>
+<td><code>dhcp_servers</code></td>
+<td>all</td>
+<td><em>(none)</em></td>
+<td>v1.8.0</td>
+<td>Ordered preference list of DHCPv4 servers, e.g. <code>1.1.1.1,2.2.2.2</code>. The initial acquisition tries each in turn, restricted to that one server, and takes the first lease offered. <strong>The list is exhaustive</strong>: if none of them answers, the endpoint fails rather than accepting whichever server happened to reply — naming your servers is what makes the list complete. The ladder <strong>divides</strong> the existing acquisition budget (<code>lease_timeout</code>) rather than extending it, so enabling this never makes <code>docker run</code> slower. Once a lease is held it stays with the server that granted it, because renewal is unicast. <strong>DHCPv4 only</strong> — <code>dhcpcd</code> has no v6 equivalent, and a v6 entry is rejected at <code>docker network create</code> rather than silently ignored. <strong>Not supported behind a DHCP relay</strong>: the underlying filter matches the packet's source address, not the Server Identifier (option 54), so through a relay every offer looks identical. (#111)</td>
+</tr>
+<tr>
+<td><code>dhcp_deny_servers</code></td>
+<td>all</td>
+<td><em>(none)</em></td>
+<td>v1.8.0</td>
+<td>Unordered list of DHCPv4 servers this network must never take a lease from, e.g. <code>3.3.3.3</code> — a rogue appliance or a second router on the segment. This is a <em>permission</em>, not a preference: it composes with <code>dhcp_servers</code> rather than competing with it, and a server named in both is removed from the preference list. Denying every entry of <code>dhcp_servers</code> is refused at create time, since it would otherwise collapse to accepting any server at all. Same <strong>DHCPv4-only</strong> and <strong>no-relay</strong> limits as <code>dhcp_servers</code>. (#669)</td>
 </tr>
 <tr>
 <td><code>register_dns</code></td>
@@ -2430,6 +2454,16 @@ diagnosing a specific container from them alone is not.</p>
 <td><code>leases_renewed</code></td>
 <td>no</td>
 <td><code>dhcpcd</code> <code>RENEW</code>/<code>REBIND</code> events. v4+v6 aggregate.</td>
+</tr>
+<tr>
+<td><code>dhcp_server_tier_fallbacks</code></td>
+<td>no</td>
+<td>(v1.8.0+) Initial acquisitions that fell through to a lower-priority entry of <code>dhcp_servers</code> because the preferred one did not answer in its slice of the budget (#111). Not healthy-affecting — the endpoint still got an address. This is the only outside signal that a preferred server is silently dead: a steady rise while every container still starts fine is exactly the condition that otherwise goes unnoticed until the standby fails too.</td>
+</tr>
+<tr>
+<td><code>dhcp_server_policy_exhausted</code></td>
+<td>no</td>
+<td>(v1.8.0+) Initial acquisitions abandoned because <strong>no</strong> server listed in <code>dhcp_servers</code> answered (#111). Not healthy-affecting on its own: the acquisition failure it accompanies already fails the operation and is counted. It exists because "the servers you named are all silent" and "DHCP is broken" look identical in a timeout log and call for different action.</td>
 </tr>
 <tr>
 <td><code>dhcp_timeouts</code></td>
