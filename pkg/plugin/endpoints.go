@@ -424,10 +424,20 @@ type HealthResponse struct {
 	// existing fields above; the issue's proposal listed them with
 	// `_total` for documentation clarity but the wire field is the
 	// shorter form.
-	LeasesObtained       int32 `json:"leases_obtained"`
-	LeasesRenewed        int32 `json:"leases_renewed"`
-	DHCPTimeouts         int32 `json:"dhcp_timeouts"`
-	LeaseReleaseFailures int32 `json:"lease_release_failures"`
+	LeasesObtained int32 `json:"leases_obtained"`
+	LeasesRenewed  int32 `json:"leases_renewed"`
+	// DHCPServerTierFallbacks counts acquisitions that fell through to a
+	// lower-priority entry of dhcp_servers because the preferred one did
+	// not answer (#111). Not Healthy-affecting — the endpoint still got
+	// an address; a steady rise is how a silently-dead primary shows up.
+	DHCPServerTierFallbacks int32 `json:"dhcp_server_tier_fallbacks"`
+	// DHCPServerPolicyExhausted counts acquisitions abandoned because no
+	// server listed in dhcp_servers answered (#111). Not Healthy-
+	// affecting on its own: the acquisition failure it accompanies is
+	// already counted and already fails the operation.
+	DHCPServerPolicyExhausted int32 `json:"dhcp_server_policy_exhausted"`
+	DHCPTimeouts              int32 `json:"dhcp_timeouts"`
+	LeaseReleaseFailures      int32 `json:"lease_release_failures"`
 	// NAKsReceived counts server NAKs on renewal/rebind. Not
 	// Healthy-affecting on its own — dhcpcd recovers by
 	// re-DISCOVERing — but each NAK-triggered re-bind widens the
@@ -543,6 +553,8 @@ func (p *Plugin) apiHealth(w http.ResponseWriter, r *http.Request) {
 		SandboxNetnsVisible:          sandboxNetnsVisibleIn(sandboxNetnsDirs),
 		LeasesObtained:               p.leasesObtained.Load(),
 		LeasesRenewed:                p.leasesRenewed.Load(),
+		DHCPServerTierFallbacks:      p.dhcpServerTierFallbacks.Load(),
+		DHCPServerPolicyExhausted:    p.dhcpServerPolicyExhausted.Load(),
 		DHCPTimeouts:                 p.dhcpTimeouts.Load(),
 		LeaseReleaseFailures:         p.leaseReleaseFailures.Load(),
 		NAKsReceived:                 p.naksReceived.Load(),

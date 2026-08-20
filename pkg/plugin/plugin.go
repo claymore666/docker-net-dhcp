@@ -333,6 +333,25 @@ type DHCPNetworkOptions struct {
 	// in deliberately. Append failures bump ledger_write_failures on
 	// /Plugin.Health and never affect lease handling.
 	AuditLog bool `mapstructure:"audit_log"`
+
+	// DHCPServers is an ordered preference list of DHCPv4 server
+	// addresses, e.g. "1.1.1.1,2.2.2.2": the first that answers within
+	// its slice of the acquisition budget wins, and the list is
+	// exhaustive — if none answers, acquisition fails rather than
+	// falling back to whichever server happened to reply. Naming your
+	// servers is what makes the list complete (#111).
+	//
+	// Empty (the default) accepts whichever OFFER arrives first, the
+	// historical behaviour.
+	DHCPServers string `mapstructure:"dhcp_servers"`
+	// DenyServers is an unordered list of DHCPv4 server addresses this
+	// network must never take a lease from, e.g. "3.3.3.3" — a rogue
+	// appliance or a second router on the segment (#669).
+	//
+	// This is a permission, not a preference: it composes with
+	// DHCPServers rather than competing with it. See serverPolicy for
+	// why the two cannot both be handed to dhcpcd as directives.
+	DenyServers string `mapstructure:"dhcp_deny_servers"`
 }
 
 // effectiveMode returns Mode with the empty default normalized to ModeBridge.
@@ -592,6 +611,29 @@ type Plugin struct {
 	// join_start_failures moves, the grace is not the mechanism doing
 	// the work and the fix needs re-examining.
 	joinAttachSlow atomic.Int32
+
+	// dhcpServerTierFallbacks counts initial acquisitions where a
+	// preferred DHCP server did not answer inside its slice of the
+	// budget and the next entry in dhcp_servers was tried (#111).
+	//
+	// Not healthy-affecting: falling back is the feature working, not
+	// failing — the endpoint still gets an address. It is here because
+	// it is the only signal from outside that a preferred server is
+	// not answering. A steady rise means the primary is effectively
+	// down while every container still comes up fine, which is exactly
+	// the condition that otherwise goes unnoticed until the standby
+	// fails too.
+	dhcpServerTierFallbacks atomic.Int32
+
+	// dhcpServerPolicyExhausted counts initial acquisitions abandoned
+	// because no server in dhcp_servers answered (#111).
+	//
+	// Not healthy-affecting on its own: the acquisition failure it
+	// accompanies already fails the operation visibly and is counted.
+	// It is separate because the operator action differs — this one
+	// says the address was refused by policy rather than that DHCP is
+	// broken, and the two look identical in a timeout log.
+	dhcpServerPolicyExhausted atomic.Int32
 
 	// restartLinkUpWaited counts child links that came up only after
 	// waiting out the departing link's hold on the address — the #408

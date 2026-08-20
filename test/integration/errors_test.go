@@ -68,6 +68,54 @@ var errorCases = []struct {
 		ipam:       &network.IPAM{Driver: "default"},
 		wantSubstr: "null IPAM driver",
 	},
+	{
+		// dhcp_servers / dhcp_deny_servers are validated before any
+		// mode-specific check, so these rows use the cheapest valid
+		// mode rather than saying anything about macvlan.
+		name: "DHCPServersNotAnIP",
+		opts: map[string]string{
+			"mode":         "macvlan",
+			"parent":       harness.HostVeth,
+			"dhcp_servers": "dhcp.example.com",
+		},
+		wantSubstr: "is not an IP address",
+	},
+	{
+		// A v6 entry is refused rather than ignored: dhcpcd's
+		// whitelist/blacklist are DHCPv4-only, so accepting it would
+		// leave the operator believing a server was ranked when
+		// nothing had been (#111).
+		name: "DHCPServersIPv6",
+		opts: map[string]string{
+			"mode":         "macvlan",
+			"parent":       harness.HostVeth,
+			"dhcp_servers": "fd00::1",
+		},
+		wantSubstr: "DHCPv4-only",
+	},
+	{
+		name: "DenyServersNotAnIP",
+		opts: map[string]string{
+			"mode":              "macvlan",
+			"parent":            harness.HostVeth,
+			"dhcp_deny_servers": "192.168.100.1/24",
+		},
+		wantSubstr: "is not an IP address",
+	},
+	{
+		// Denying every preference leaves no server at all. Accepting
+		// it would degrade the network into "any server will do",
+		// which is the opposite of what both options were set to
+		// achieve (#669).
+		name: "DenyEmptiesPreference",
+		opts: map[string]string{
+			"mode":              "macvlan",
+			"parent":            harness.HostVeth,
+			"dhcp_servers":      "192.168.100.1",
+			"dhcp_deny_servers": "192.168.100.1",
+		},
+		wantSubstr: "leaving no server to lease from",
+	},
 }
 
 // TestErrors_NetworkCreateValidation walks the validation matrix.

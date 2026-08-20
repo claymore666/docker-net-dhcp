@@ -171,6 +171,18 @@ type DHCPClientOptions struct {
 	// pinned IA_NA. v6 only.
 	PreferredV6 string
 
+	// AllowServers restricts which DHCPv4 servers this client may accept
+	// a lease from (dhcpcd `whitelist`). Empty imposes no restriction.
+	// The plugin derives it from the network's dhcp_servers preference
+	// list; for a tiered acquisition it holds a single tier, and for the
+	// persistent client the whole allowed set so renew/rebind can still
+	// reach a surviving server (#111).
+	AllowServers []string
+	// DenyServers rejects specific DHCPv4 servers (dhcpcd `blacklist`).
+	// Must be empty whenever AllowServers is set — dhcpcd ignores a
+	// blacklist once a whitelist exists (#669).
+	DenyServers []string
+
 	// ClientID, when non-empty, is sent as DHCPv4 option 61 (dhcpcd
 	// `clientid`), prefixed with the type-0 ("opaque") byte the busybox
 	// path used so existing server reservations keyed on it keep
@@ -246,20 +258,22 @@ func NewDHCPClient(iface string, opts *DHCPClientOptions) (*DHCPClient, error) {
 
 	configPath := filepath.Join(workDir, "dhcpcd.conf")
 	params := dhcpcdParams{
-		Iface:       iface,
-		MAC:         opts.MAC,
-		V6:          opts.V6,
-		Once:        opts.Once,
-		Hostname:    opts.Hostname,
-		FQDN:        opts.FQDN,
-		VendorClass: vendor,
-		ClientID:    opts.ClientID,
-		RequestedIP: opts.RequestedIP,
-		PreferredV6: opts.PreferredV6,
-		Broadcast:   opts.Broadcast,
-		Handler:     handler,
-		ConfigPath:  configPath,
-		EventFIFO:   fifoPath,
+		Iface:        iface,
+		MAC:          opts.MAC,
+		V6:           opts.V6,
+		Once:         opts.Once,
+		Hostname:     opts.Hostname,
+		FQDN:         opts.FQDN,
+		VendorClass:  vendor,
+		ClientID:     opts.ClientID,
+		RequestedIP:  opts.RequestedIP,
+		PreferredV6:  opts.PreferredV6,
+		Broadcast:    opts.Broadcast,
+		AllowServers: opts.AllowServers,
+		DenyServers:  opts.DenyServers,
+		Handler:      handler,
+		ConfigPath:   configPath,
+		EventFIFO:    fifoPath,
 		// Forward our own GOCOVERDIR to the hook so its coverage counters
 		// survive dhcpcd's environment scrub (cover build only; unset and
 		// thus omitted in production). See renderConfig.

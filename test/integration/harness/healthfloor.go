@@ -119,6 +119,16 @@ type HealthResponse struct {
 	// Neither is healthy-affecting.
 	ParentLinkWaits        int32 `json:"parent_link_waits"`
 	ParentLinkWaitTimeouts int32 `json:"parent_link_wait_timeouts"`
+	// DHCPServerTierFallbacks / DHCPServerPolicyExhausted cover the
+	// dhcp_servers preference list (#111) and dhcp_deny_servers (#669).
+	// Fallbacks means a preferred server was silent and the next one in
+	// the list answered — the feature working, and the only signal that
+	// a ranked server has gone away. Exhausted means every server the
+	// network was allowed to use stayed silent, which is what separates
+	// "the servers you named are down" from "DHCP is broken". Neither
+	// is healthy-affecting: both describe the segment, not the plugin.
+	DHCPServerTierFallbacks   int32 `json:"dhcp_server_tier_fallbacks"`
+	DHCPServerPolicyExhausted int32 `json:"dhcp_server_policy_exhausted"`
 
 	// published is the key set of the payload this value was decoded
 	// from. It exists because an absent JSON field decodes to zero,

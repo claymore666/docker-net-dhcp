@@ -114,7 +114,7 @@ const preflightProbeBudget = 8 * time.Second
 // move was safe HERE only because this function already spans the whole
 // hold — DORA and teardown both — so taking the gate at its top changes
 // where the lock is written and not how long it is held (#577).
-func (p *Plugin) runDHCPProbe(ctx context.Context, parent, mode string) error {
+func (p *Plugin) runDHCPProbe(ctx context.Context, parent, mode string, pol serverPolicy) error {
 	// First statement, before the parent is even looked up: the hold
 	// must cover everything the caller used to wrap, or this is a
 	// change to the gate's duration rather than to its location.
@@ -174,6 +174,17 @@ func (p *Plugin) runDHCPProbe(ctx context.Context, parent, mode string) error {
 		// false negatives when class-based policy denies the
 		// probe but would accept the real container.
 		MAC: probeMAC,
+		// Honour the network's server policy (#111, #669). The probe is
+		// deliberately identity-neutral — it asks "is anyone listening?"
+		// rather than "would my exact client be accepted?" — but a
+		// server this network will never take a lease from is not an
+		// answer to that question. Without this, validate_dhcp passes
+		// on a segment where the only responder is denied, and every
+		// container then fails at CreateEndpoint. Flat lists, not the
+		// tier ladder: the probe asks whether ANY acceptable server is
+		// there, not which one is preferred.
+		AllowServers: pol.allowList(),
+		DenyServers:  pol.denyList(),
 		// Request a broadcast reply (#243). The probe is a transient
 		// reachability check from a brand-new random MAC; asking the
 		// server to broadcast its OFFER makes the probe robust whether
