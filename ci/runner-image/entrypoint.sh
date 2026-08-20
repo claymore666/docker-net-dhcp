@@ -107,6 +107,32 @@ EOF
 }
 setup_proxy
 
+# --- plugin bind source ------------------------------------------------
+# The plugin's state directory is a BIND SOURCE in its manifest, and the
+# nested /var/lib/docker is a persistent volume while this container's
+# root filesystem is not. So a recreated container starts a daemon that
+# restores an already-enabled docker-net-dhcp with its bind source gone:
+#
+#   failed to enable plugin: ... runc create failed: unable to start
+#   container process: failed to fulfil mount request:
+#   open /var/lib/net-dhcp: no such file or directory
+#
+# libnetwork registers the remote driver anyway and calls getCapabilities
+# on the nil client, so dockerd does not degrade — it SIGSEGVs, and the
+# supervisor above relaunches it into the same panic forever. The runner
+# still reports online, so the failure surfaces as jobs that die on a
+# dead daemon.
+#
+# The workflows create this directory before installing the plugin, but
+# that is job time: the daemon has already restored and crashed. It has
+# to exist before dockerd's first start, which is here.
+ensure_plugin_bind_source() {
+    local dir="${PLUGIN_BIND_SOURCE:-/var/lib/net-dhcp}"
+    mkdir -p "$dir"
+    log "plugin bind source ready: $dir"
+}
+ensure_plugin_bind_source
+
 # --- supervised dockerd ------------------------------------------------
 # Plain relaunch loop. dockerd must NOT be the container's main
 # process: the daemon-restart test SIGTERMs it and expects a fresh
