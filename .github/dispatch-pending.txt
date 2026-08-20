@@ -1,0 +1,24 @@
+# Workflows that declare workflow_dispatch but are not yet on the
+# default branch (#644), enforced by scripts/check-dispatch-reachable.sh.
+#
+# GitHub only exposes a dispatchable workflow from the DEFAULT branch.
+# This project develops on `dev` and releases to `main`, and `main` is
+# the default, so a new dispatch-only workflow is undispatchable for one
+# release cycle after it merges. That is normal; being undispatchable
+# and DOCUMENTED AS A ROUTE is not.
+#
+# Rules:
+#   - An entry requires a reason and what clears it. No bare paths.
+#   - The documentation for the workflow must say it is not available
+#     yet, for as long as the entry is here.
+#   - The gate fails when an entry stops being needed — the workflow
+#     reached the default branch, so remove the entry. An allowlist
+#     nobody prunes is how a temporary exception becomes permanent.
+#
+# .github/workflows/capture-fixtures.yml: re-records the request fixtures
+#   on the integration lane (#665). Merged to `dev` on 2026-08-20; the
+#   first dispatch answered 404, which is what this gate now exists to
+#   catch. Cleared by the v1.8.0 release, when `dev` reaches `main` —
+#   at which point it should be dispatched once to verify it end to end
+#   (docs/release-runbook.md, "Verifying"), and this entry removed.
+.github/workflows/capture-fixtures.yml

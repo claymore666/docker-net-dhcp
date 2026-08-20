@@ -608,6 +608,15 @@ After the workflow succeeds:
   release PR's `Closes` list). Verify with
   `gh issue list --milestone vX.Y.Z --state open` — should be
   empty.
+- **Anything listed in `.github/dispatch-pending.txt` is now
+  dispatchable — exercise it once and remove the entry.** A
+  `workflow_dispatch` workflow is only exposed from the default branch,
+  so one that merged to `dev` during this cycle has never run, and this
+  release is the first moment it can. Dispatch it, confirm it does what
+  its documentation claims, then drop the entry —
+  `scripts/check-dispatch-reachable.sh` fails on a declaration that has
+  stopped being true, so a forgotten one surfaces on the next PR rather
+  than a year later.
 
 ## Troubleshooting
 
