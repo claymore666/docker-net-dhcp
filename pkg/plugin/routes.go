@@ -61,6 +61,14 @@ func (p *Plugin) routes() []apiRoute {
 		// contract, but lives on the same socket so anything that can
 		// talk to the plugin can also poll its state.
 		{"/Plugin.Health", p.apiHealth},
+
+		// The same counters in Prometheus text format (#651). On the
+		// socket unconditionally: it costs nothing, and it lets an
+		// operator with a socket-aware scrape path collect metrics
+		// without the plugin opening a port at all. The optional TCP
+		// listener is METRICS_ADDR, off by default — see
+		// (*Plugin).ListenMetrics.
+		{"/metrics", p.apiMetrics},
 	}
 }
 

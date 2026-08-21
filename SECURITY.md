@@ -39,6 +39,28 @@ necessarily trusts the server for addressing (that is its job), but
 memory-unsafe or injection-style handling of server-supplied bytes is
 a bug.
 
+### The optional metrics port
+
+Since v1.8.0 the plugin can expose a Prometheus `/metrics` endpoint over
+TCP, enabled only by setting `METRICS_ADDR` (see
+[Reference](docs/reference.md#metrics)). It is **off by default** and
+should be bound to loopback or a management interface.
+
+Two properties are deliberate and worth reporting against if either
+turns out to be false:
+
+- the TCP listener serves `/metrics` and nothing else — the libnetwork
+  RPCs that create networks and join endpoints are not routed on it,
+  which matters because this listener is on the **host** network
+  namespace, not a container's;
+- the exposition carries aggregate counters only. No endpoint IDs,
+  container names, addresses or MACs appear in it, so scraping it does
+  not disclose which container holds which lease.
+
+`/metrics` is also served on the plugin's UNIX socket unconditionally,
+which is unchanged ground: that socket is `root`-only, and anything able
+to read it can already call every RPC.
+
 ## Supported versions
 
 Only the latest released version is supported with security fixes.

@@ -1,0 +1,161 @@
+# HELP net_dhcp_build_info Plugin instance identity. The instance_id label changes on every plugin restart, so a counter reset appears as a new series rather than as a rewind.
+# TYPE net_dhcp_build_info gauge
+net_dhcp_build_info{instance_id="fixture-instance"} 1
+
+# HELP net_dhcp_healthy 1 when the plugin reports itself healthy, 0 when an operator should look. Mirrors the healthy field of /Plugin.Health.
+# TYPE net_dhcp_healthy gauge
+net_dhcp_healthy 1
+
+# HELP net_dhcp_uptime_seconds Seconds since this plugin process started.
+# TYPE net_dhcp_uptime_seconds gauge
+net_dhcp_uptime_seconds 1234.5
+
+# HELP net_dhcp_active_endpoints Endpoints with a live DHCP renewal client.
+# TYPE net_dhcp_active_endpoints gauge
+net_dhcp_active_endpoints 420
+
+# HELP net_dhcp_pending_hints CreateEndpoint hints waiting for their Join.
+# TYPE net_dhcp_pending_hints gauge
+net_dhcp_pending_hints 410
+
+# HELP net_dhcp_sandbox_netns_visible Sandbox netns entries the plugin can see; -1 means the directory is unreadable and sandbox-liveness answers carry no evidence.
+# TYPE net_dhcp_sandbox_netns_visible gauge
+net_dhcp_sandbox_netns_visible 200
+
+# HELP net_dhcp_leases_obtained_total Leases obtained from the DHCP server.
+# TYPE net_dhcp_leases_obtained_total counter
+net_dhcp_leases_obtained_total{family="ipv4"} 140
+net_dhcp_leases_obtained_total{family="ipv6"} 50
+
+# HELP net_dhcp_leases_renewed_total Lease renewals accepted by the DHCP server.
+# TYPE net_dhcp_leases_renewed_total counter
+net_dhcp_leases_renewed_total{family="ipv4"} 140
+net_dhcp_leases_renewed_total{family="ipv6"} 40
+
+# HELP net_dhcp_lease_changed_total Renewals that came back with a different address than the client held.
+# TYPE net_dhcp_lease_changed_total counter
+net_dhcp_lease_changed_total{family="ipv4"} 190
+net_dhcp_lease_changed_total{family="ipv6"} 60
+
+# HELP net_dhcp_dhcp_timeouts_total Acquisitions or renewals that expired without an answer.
+# TYPE net_dhcp_dhcp_timeouts_total counter
+net_dhcp_dhcp_timeouts_total{family="ipv4"} 120
+net_dhcp_dhcp_timeouts_total{family="ipv6"} 30
+
+# HELP net_dhcp_naks_received_total DHCPNAKs received from the server.
+# TYPE net_dhcp_naks_received_total counter
+net_dhcp_naks_received_total{family="ipv4"} 110
+net_dhcp_naks_received_total{family="ipv6"} 20
+
+# HELP net_dhcp_lease_release_failures_total Leases whose release did not complete cleanly at shutdown, leaving the address held until it expires.
+# TYPE net_dhcp_lease_release_failures_total counter
+net_dhcp_lease_release_failures_total{family="ipv4"} 130
+net_dhcp_lease_release_failures_total{family="ipv6"} 10
+
+# HELP net_dhcp_dhcp_server_tier_fallbacks_total Acquisitions that fell through to a lower-priority dhcp_servers entry because the preferred server did not answer. The only outside signal that a preferred server is silently dead.
+# TYPE net_dhcp_dhcp_server_tier_fallbacks_total counter
+net_dhcp_dhcp_server_tier_fallbacks_total 170
+
+# HELP net_dhcp_dhcp_server_policy_exhausted_total Acquisitions abandoned because no server listed in dhcp_servers answered.
+# TYPE net_dhcp_dhcp_server_policy_exhausted_total counter
+net_dhcp_dhcp_server_policy_exhausted_total 160
+
+# HELP net_dhcp_recovered_ok_total Endpoints whose renewal client was rebuilt after a plugin restart.
+# TYPE net_dhcp_recovered_ok_total counter
+net_dhcp_recovered_ok_total 400
+
+# HELP net_dhcp_recovery_failed_total Post-restart rebuilds that failed for a container that is still running; it runs without lease renewal and loses its IP at expiry. Healthy-affecting.
+# TYPE net_dhcp_recovery_failed_total counter
+net_dhcp_recovery_failed_total 390
+
+# HELP net_dhcp_recovery_deferred_total Recovery walks postponed because the daemon was still starting (#383). Not a fault.
+# TYPE net_dhcp_recovery_deferred_total counter
+net_dhcp_recovery_deferred_total 380
+
+# HELP net_dhcp_recovery_aborted_container_gone_total Endpoints skipped during recovery because their container had already exited. Not a fault.
+# TYPE net_dhcp_recovery_aborted_container_gone_total counter
+net_dhcp_recovery_aborted_container_gone_total 370
+
+# HELP net_dhcp_recovery_network_gone_total Networks skipped during recovery because they were removed mid-walk. Not a fault.
+# TYPE net_dhcp_recovery_network_gone_total counter
+net_dhcp_recovery_network_gone_total 360
+
+# HELP net_dhcp_recovery_already_managed_total Endpoints a recovery walk left alone because a Join had already claimed them. Not a fault; the only outward evidence of recovery racing a Join.
+# TYPE net_dhcp_recovery_already_managed_total counter
+net_dhcp_recovery_already_managed_total 350
+
+# HELP net_dhcp_join_start_failures_total Joins whose DHCP client failed to start, leaving a running container without lease renewal. Healthy-affecting.
+# TYPE net_dhcp_join_start_failures_total counter
+net_dhcp_join_start_failures_total 340
+
+# HELP net_dhcp_join_aborted_container_gone_total Joins abandoned because the container disappeared mid-attach. Not a fault.
+# TYPE net_dhcp_join_aborted_container_gone_total counter
+net_dhcp_join_aborted_container_gone_total 330
+
+# HELP net_dhcp_join_aborted_no_container_total Joins abandoned because no container was ever found for the endpoint. Not a fault.
+# TYPE net_dhcp_join_aborted_no_container_total counter
+net_dhcp_join_aborted_no_container_total 320
+
+# HELP net_dhcp_join_aborted_endpoint_left_total Joins abandoned because a Leave arrived while the attach was in flight. Not a fault.
+# TYPE net_dhcp_join_aborted_endpoint_left_total counter
+net_dhcp_join_aborted_endpoint_left_total 280
+
+# HELP net_dhcp_join_attach_slow_total Attaches that outran their expected window and needed the daemon-busy grace.
+# TYPE net_dhcp_join_attach_slow_total counter
+net_dhcp_join_attach_slow_total 310
+
+# HELP net_dhcp_displaced_stops_total DHCP managers stopped because a Join displaced them. Counts the intent to stop; it is not evidence the client went away.
+# TYPE net_dhcp_displaced_stops_total counter
+net_dhcp_displaced_stops_total 120
+
+# HELP net_dhcp_restart_link_up_waited_total Container restarts that had to wait for the interface to come back up.
+# TYPE net_dhcp_restart_link_up_waited_total counter
+net_dhcp_restart_link_up_waited_total 300
+
+# HELP net_dhcp_restart_link_up_timeouts_total Container restarts where the interface never came up inside the wait.
+# TYPE net_dhcp_restart_link_up_timeouts_total counter
+net_dhcp_restart_link_up_timeouts_total 290
+
+# HELP net_dhcp_address_conflict_probes_total Conflict probes that reached a verdict. Read this before believing address_conflicts is zero: zero here means the detector never ran.
+# TYPE net_dhcp_address_conflict_probes_total counter
+net_dhcp_address_conflict_probes_total 210
+
+# HELP net_dhcp_address_conflicts_total Leased addresses found already in use by another host. Healthy-affecting.
+# TYPE net_dhcp_address_conflicts_total counter
+net_dhcp_address_conflicts_total 240
+
+# HELP net_dhcp_conflict_probe_failures_total Conflict probes that could not reach a verdict.
+# TYPE net_dhcp_conflict_probe_failures_total counter
+net_dhcp_conflict_probe_failures_total 230
+
+# HELP net_dhcp_conflict_probe_stale_routes_total Leftover probe routes reclaimed from a probe cut short before it cleaned up.
+# TYPE net_dhcp_conflict_probe_stale_routes_total counter
+net_dhcp_conflict_probe_stale_routes_total 220
+
+# HELP net_dhcp_orphaned_leases_released_total Addresses reclaimed for a container that exited before its renewal client could attach. One per address.
+# TYPE net_dhcp_orphaned_leases_released_total counter
+net_dhcp_orphaned_leases_released_total 110
+
+# HELP net_dhcp_orphaned_lease_release_failures_total Orphaned-lease reclaims that failed, leaving the address held until it expires.
+# TYPE net_dhcp_orphaned_lease_release_failures_total counter
+net_dhcp_orphaned_lease_release_failures_total 100
+
+# HELP net_dhcp_parent_link_waits_total Endpoint creations that waited for their parent interface to appear.
+# TYPE net_dhcp_parent_link_waits_total counter
+net_dhcp_parent_link_waits_total 90
+
+# HELP net_dhcp_parent_link_wait_timeouts_total Endpoint creations where the parent interface never appeared inside the wait.
+# TYPE net_dhcp_parent_link_wait_timeouts_total counter
+net_dhcp_parent_link_wait_timeouts_total 80
+
+# HELP net_dhcp_tombstone_write_failures_total Tombstone writes that failed, so the next restart of that container picks a new MAC and address. Healthy-affecting.
+# TYPE net_dhcp_tombstone_write_failures_total counter
+net_dhcp_tombstone_write_failures_total 270
+
+# HELP net_dhcp_tombstones_consumed_total Tombstones read back to preserve a container's MAC and address across a restart.
+# TYPE net_dhcp_tombstones_consumed_total counter
+net_dhcp_tombstones_consumed_total 260
+
+# HELP net_dhcp_ledger_write_failures_total Lease-ledger writes that failed.
+# TYPE net_dhcp_ledger_write_failures_total counter
+net_dhcp_ledger_write_failures_total 70
