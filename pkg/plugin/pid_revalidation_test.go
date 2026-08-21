@@ -64,6 +64,10 @@ func TestCgroupNamesContainer(t *testing.T) {
 // TestCgroupNamesContainer instead.
 func selfCgroup(t *testing.T, pid int) string {
 	t.Helper()
+	// proc-path-discipline: allow -- this is the test harness reading
+	// its OWN cgroup to build a matching container ID. The hazard the
+	// gate guards is a path built from a PID that came from Docker and
+	// may have been recycled since; this PID is os.Getpid().
 	b, err := os.ReadFile(fmt.Sprintf("/proc/%d/cgroup", pid))
 	if err != nil {
 		t.Fatalf("read /proc/%d/cgroup: %v (the guard this test covers reads the same file)", pid, err)

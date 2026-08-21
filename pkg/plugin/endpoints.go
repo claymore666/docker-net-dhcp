@@ -374,6 +374,12 @@ type HealthResponse struct {
 	// a write that would otherwise have gone to an unrelated host
 	// process.
 	DNSPropagationPIDMismatches int32 `json:"dns_propagation_pid_mismatches"`
+	// NetnsPIDMismatches counts sandbox network-namespace opens refused
+	// because the container PID resolved through Docker no longer named
+	// that container. The attach fails, so this is not silent -- but the
+	// failure looks like a slow start; only this counter distinguishes a
+	// recycled PID from one.
+	NetnsPIDMismatches int32 `json:"netns_pid_mismatches"`
 	// TombstonesConsumed counts CreateEndpoints that replayed a fresh
 	// tombstone and so handed a recreated container its previous
 	// MAC/IP. Not Healthy-affecting: this is the address-stability
@@ -591,6 +597,7 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		TombstoneWriteFailures:       tsFails,
 		UnsafeHostnamesRejected:      p.unsafeHostnamesRejected.Load(),
 		DNSPropagationPIDMismatches:  p.dnsPropagationPIDMismatches.Load(),
+		NetnsPIDMismatches:           p.netnsPIDMismatches.Load(),
 		TombstonesConsumed:           p.tombstonesConsumed.Load(),
 		LeaseChanged:                 p.leaseChanged.Load(),
 		AddressConflicts:             conflicts,

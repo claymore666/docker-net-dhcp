@@ -248,6 +248,16 @@ jobs:
       - name: Lock discipline
         run: bash scripts/check-lock-discipline.sh
 
+      # The plugin runs in the HOST PID namespace, so a container PID
+      # from Docker names an arbitrary task by the time it is used.
+      # #688 closed that for resolv.conf with openContainerProc, whose
+      # own comment says re-deriving the path as a string afterwards
+      # reopens the window — and the sandbox netns open did exactly
+      # that, in the same release, three files away, reaching netlink
+      # and a root dhcpcd instead of one file.
+      - name: Proc-path discipline
+        run: bash scripts/check-proc-path-discipline.sh
+
       # registerDHCPManager returns the manager it displaced, and
       # dropping that return value leaks a running dhcpcd nothing can
       # stop, bidding for the same lease on the same interface. The

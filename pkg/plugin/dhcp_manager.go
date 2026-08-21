@@ -306,7 +306,6 @@ type dhcpManager struct {
 	// bridge mode.
 	MacAddress net.HardwareAddr
 
-	nsPath    string
 	hostname  string
 	nsHandle  netns.NsHandle
 	netHandle *netlink.Handle
@@ -972,7 +971,7 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 		DenyServers:  denyServers,
 		FQDN:         m.opts.fqdnMode(),
 		V6:           v6,
-		Namespace:    m.nsPath,
+		NetNS:        &m.nsHandle,
 		// Same MAC the CreateEndpoint one-shot used (this is the same
 		// link, moved into the netns), so dhcpcd derives the identical
 		// DUID-LL/IAID and the persistent client renews the very lease
@@ -1297,15 +1296,21 @@ func (m *dhcpManager) Start(ctx context.Context) (err error) {
 
 	phases.mark("inspect_container")
 
-	// Using the "sandbox key" directly causes issues on some platforms
-	m.nsPath = fmt.Sprintf("/proc/%v/ns/net", ctr.State.Pid)
 	// Config-only: m.hostname reaches the generated dhcpcd.conf and
 	// nothing that makes an identity decision, so a refusal is just an
 	// omitted directive here.
 	m.hostname, _ = m.plugin.safeHostname(ctr.Config.Hostname)
 
-	m.nsHandle, err = util.AwaitNetNS(ctx, m.nsPath, pollTime)
+	// Using the "sandbox key" directly causes issues on some platforms,
+	// so the namespace is reached through the container's PID -- but
+	// never through a /proc path rebuilt as a string, and never as a
+	// path handed onward to be resolved a second time. See
+	// openContainerNetNS.
+	m.nsHandle, err = awaitContainerNetNS(ctx, ctr.State.Pid, ctrID, pollTime)
 	if err != nil {
+		if errors.Is(err, errPIDNotContainer) && m.plugin != nil {
+			m.plugin.netnsPIDMismatches.Add(1)
+		}
 		return fmt.Errorf("failed to get sandbox network namespace: %w", err)
 	}
 
@@ -1428,7 +1433,7 @@ func (m *dhcpManager) stop(leaving bool) error {
 	}
 
 	// Guard against zero handles: Stop can be called against a manager
-	// whose Start failed before AwaitNetNS / NewHandleAt set these
+	// whose Start failed before awaitContainerNetNS / NewHandleAt set these
 	// (see C-2 fix), in which case the deferred Close on the zero
 	// value emits a noisy EBADF.
 	defer func() {

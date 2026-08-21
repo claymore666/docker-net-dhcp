@@ -147,10 +147,22 @@ func (w *tailWriter) condense() string {
 var validIfaceName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,14}$`).MatchString
 
 type DHCPClientOptions struct {
-	Hostname  string
-	V6        bool
-	Once      bool
-	Namespace string
+	Hostname string
+	V6       bool
+	Once     bool
+	// NetNS is the network namespace to spawn dhcpcd in, as an OPEN
+	// FILE DESCRIPTOR. nil means "spawn in the caller's namespace".
+	//
+	// This is deliberately not a path. It used to be one, and the
+	// caller built it from a container PID; Start then re-resolved that
+	// string independently of the caller's own resolution, so the two
+	// could land in different namespaces if the PID was recycled in
+	// between (#688's hazard, reaching netlink and a root dhcpcd). A
+	// descriptor cannot be re-resolved into something else.
+	//
+	// The handle is BORROWED: Start enters it and never closes it, so
+	// its lifetime belongs to whoever opened it.
+	NetNS *netns.NsHandle
 
 	// MAC is the endpoint's (pinned) hardware address. It is the sole
 	// input to the DUID-LL and IAID pinned in the generated config, so
@@ -344,7 +356,7 @@ func NewDHCPClient(iface string, opts *DHCPClientOptions) (*DHCPClient, error) {
 // the FIFO. The channel is closed when the dhcpcd process exits (on its
 // own for one-shot, or via Finish for the persistent client).
 //
-// Concurrency contract: when Opts.Namespace is non-empty, Start enters
+// Concurrency contract: when Opts.NetNS is set, Start enters
 // the target netns by locking the calling goroutine to its OS thread,
 // switching netns, spawning the child (which inherits the netns), and
 // switching back. It is *not* re-entrant on the same goroutine.
@@ -352,7 +364,7 @@ func NewDHCPClient(iface string, opts *DHCPClientOptions) (*DHCPClient, error) {
 // failure the calling thread is deliberately leaked so the wrong-netns
 // state never re-enters Go's thread pool.
 func (c *DHCPClient) Start() (chan Event, error) {
-	if c.Opts.Namespace != "" {
+	if c.Opts.NetNS != nil {
 		runtime.LockOSThread()
 		defer runtime.UnlockOSThread()
 
@@ -366,17 +378,8 @@ func (c *DHCPClient) Start() (chan Event, error) {
 			}
 		}()
 
-		ns, err := netns.GetFromPath(c.Opts.Namespace)
-		if err != nil {
-			return nil, fmt.Errorf("failed to open network namespace `%v`: %w", c.Opts.Namespace, err)
-		}
-		defer func() {
-			if err := ns.Close(); err != nil {
-				log.WithError(err).Debug("netns close failed")
-			}
-		}()
-
-		if err := netns.Set(ns); err != nil {
+		// Borrowed, so no Close here -- see DHCPClientOptions.NetNS.
+		if err := netns.Set(*c.Opts.NetNS); err != nil {
 			return nil, fmt.Errorf("failed to enter network namespace: %w", err)
 		}
 
