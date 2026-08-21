@@ -1930,8 +1930,9 @@ upstream DHCP server after every upgrade.
   addresses (`0.0.0.0`, `0.0.0.0/0`, `0.0.0.0/24`).
 - `TestTombstones_AmbiguousMatchesDropped` pins the W-3 fix.
 
-Phase D smoke on gpu1 walked through D2 (LAN IP), plugin
-disable/enable (lease persisted across the bounce), teardown.
+Phase D smoke on the integration host walked through D2 (LAN
+IP), plugin disable/enable (lease persisted across the bounce),
+teardown.
 
 ## v0.5.1
 
@@ -1949,9 +1950,9 @@ Fixed by extending the tombstone with the container's hostname (which
 survives `docker restart`) and narrowing `consumeTombstone` to match
 on NetworkID + Hostname when both sides know it. v0.5.0 tombstones
 without a hostname still match — the new rule is "when both sides
-know the hostname they must agree." Verified live on gpu1 with a
-two-container sequential restart: each container kept its own MAC,
-no swap.
+know the hostname they must agree." Verified live on the
+integration host with a two-container sequential restart: each
+container kept its own MAC, no swap.
 
 ### Recovery failures are now visible to operators (C-4)
 
@@ -2004,9 +2005,10 @@ Two new tests pinning the C-5 fix:
 - `TestTombstones_EmptyHostnameMatchesAny` — v0.5.0 tombstone
   without hostname is still consumable by a v0.5.1 binary.
 
-Phase D walkthrough re-run on gpu1: D2, restart-stability, C-5
-sequential-restart, D6 distinct-leases, C-4 health counters, D9
-plugin disable/enable recovery, D7 release-on-stop — all green.
+Phase D walkthrough re-run on the integration host: D2,
+restart-stability, C-5 sequential-restart, D6 distinct-leases, C-4
+health counters, D9 plugin disable/enable recovery, D7
+release-on-stop — all green.
 
 ## v0.5.0
 
