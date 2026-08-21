@@ -25,7 +25,7 @@ type ContainerInspector interface {
 
 // AwaitContainerInspect polls docker.ContainerInspect until it succeeds,
 // ctx is cancelled, or interval-paced retries exhaust. Synchronous for
-// the same reason as AwaitNetNS — the previous async form leaked a
+// the same reason as AwaitLinkByIndex — the previous async form leaked a
 // poller goroutine on ctx-cancel that kept hitting the Docker API forever.
 //
 // "No such container" ends the wait immediately instead of being
@@ -43,7 +43,7 @@ type ContainerInspector interface {
 // can classify with cerrdefs.IsNotFound.
 //
 // Other errors are still retried, and the last one is reported
-// alongside the deadline — the same contract AwaitNetNS and
+// alongside the deadline — the same contract AwaitLinkByIndex and
 // AwaitLinkByIndex already keep. Discarding it here was why a Join
 // timeout said only "context deadline exceeded" while its sibling
 // failures named a missing file.

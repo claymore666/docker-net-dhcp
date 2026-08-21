@@ -707,6 +707,20 @@ type Plugin struct {
 	// the propagation window.
 	dnsPropagationPIDMismatches atomic.Int32
 
+	// netnsPIDMismatches counts sandbox netns opens refused because the
+	// PID resolved through Docker no longer belonged to the container
+	// it came from -- the same hazard as the counter above, on the path
+	// with the larger blast radius.
+	//
+	// What the refusal prevents is not one file: the netlink handle
+	// built from that namespace carries every address, MTU and route
+	// the manager applies, with CAP_NET_ADMIN, and dhcpcd is spawned
+	// into it as root. Refusing fails the attach, so unlike the DNS
+	// case this one is at least visible as an error -- but the error
+	// reads like a slow container start, and only the counter says the
+	// PID belonged to something else.
+	netnsPIDMismatches atomic.Int32
+
 	// tombstoneWriteFailures counts saveTombstones failures (disk full,
 	// EROFS) from addTombstone. Reported on /Plugin.Health so operators
 	// can detect a degraded restart-stability window — every failure

@@ -132,6 +132,7 @@ func metricDefs() []metricDef {
 		{name: "tombstones_consumed", counter: true, help: "Tombstones read back to preserve a container's MAC and address across a restart.", field: "tombstones_consumed"},
 		{name: "unsafe_hostnames_rejected", counter: true, help: "Container hostnames dropped before reaching the DHCP client config because they carried a control character. A legitimate hostname never does, so any rise is deliberate (#692).", field: "unsafe_hostnames_rejected"},
 		{name: "dns_propagation_pid_mismatches", counter: true, help: "DNS propagations refused because the container PID resolved through Docker no longer belonged to that container. The plugin shares the host PID namespace, so each one is a resolv.conf write that would otherwise have landed in an unrelated host process (#688).", field: "dns_propagation_pid_mismatches"},
+		{name: "netns_pid_mismatches", counter: true, help: "Sandbox network-namespace opens refused because the container PID resolved through Docker no longer belonged to that container. Each one is a netlink handle, and a root dhcpcd, that would otherwise have been bound to an unrelated host process's network namespace.", field: "netns_pid_mismatches"},
 		{name: "ledger_write_failures", counter: true, help: "Lease-ledger writes that failed.", field: "ledger_write_failures"},
 	}
 }
