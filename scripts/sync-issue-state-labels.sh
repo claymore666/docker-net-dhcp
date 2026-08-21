@@ -84,6 +84,9 @@
 #   sync-issue-state-labels.sh --dry-run    print the plan, change nothing
 #   sync-issue-state-labels.sh --parse      read subjects on stdin, print
 #                                           the refs — offline, no gh
+#   sync-issue-state-labels.sh --parse-body read PR prose on stdin, print
+#                                           the closing-keyword refs —
+#                                           offline, no gh
 #   sync-issue-state-labels.sh --plan DIR   print the plan for a directory
 #                                           of subjects.txt / issues.json /
 #                                           prs.json, plus an optional
@@ -107,6 +110,7 @@ case "${1:-}" in
     "") ;;
     --dry-run) MODE="dry-run" ;;
     --parse) MODE="parse" ;;
+    --parse-body) MODE="parse-body" ;;
     --plan|--unresolved)
         MODE="${1#--}"
         PLAN_DIR="${2:-}"
@@ -120,7 +124,7 @@ case "${1:-}" in
         exit 0
         ;;
     *)
-        echo "usage: $0 [--dry-run|--parse|--plan DIR|--unresolved DIR]" >&2
+        echo "usage: $0 [--dry-run|--parse|--parse-body|--plan DIR|--unresolved DIR]" >&2
         exit 2
         ;;
 esac
@@ -139,6 +143,10 @@ import re
 # else. The digit cap keeps a pathological subject from producing a
 # number no issue could ever have.
 _GROUP = re.compile(r"\(\s*#\d{1,7}(?:\s*,\s*#\d{1,7})*\s*\)\s*$")
+# GitHub's default subject for the "Create a merge commit" button. It is
+# the ONLY thing such a commit says, and it names the PR, never the
+# issue — so it is a pure input to the one hop below (#718).
+_MERGE_SUBJECT = re.compile(r"^Merge pull request #(\d{1,7}) from \S")
 _NUM = re.compile(r"#(\d{1,7})")
 _HTML_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
 _CLOSES = re.compile(
@@ -165,6 +173,24 @@ def refs(subject):
             if n and n not in out:
                 out.append(n)
     return out
+
+
+def commit_refs(subject):
+    """Refs from a COMMIT subject: the trailing-group rule, plus the
+    merge-commit form.
+
+    Kept separate from refs() rather than folded into it because the two
+    have different trust properties. refs() is also run over PR titles,
+    which are attacker-controlled and intersected DIRECTLY with the open
+    issues; teaching it the merge form would let a PR titled "Merge pull
+    request #500 from x" mark issue #500. A commit subject on `dev` has
+    already passed review, and the number it yields is only ever a
+    candidate for the hop.
+    """
+    m = _MERGE_SUBJECT.match(subject.strip())
+    if m:
+        return [int(m.group(1))]
+    return refs(subject)
 
 
 def body_refs(body):
@@ -205,8 +231,25 @@ import sys
 exec(os.environ["PARSER"])  # noqa: S102 - defines refs()
 
 for line in sys.stdin:
-    for n in refs(line.rstrip("\n")):
+    for n in commit_refs(line.rstrip("\n")):
         print(f"#{n}")
+'
+    exit $?
+fi
+
+# The body half of the same parser, exposed for scripts/check-issue-ref.sh
+# (#718). A gate that re-implemented body_refs would be a second copy free
+# to drift from the one that actually decides the labels, which is the
+# failure this whole file exists to prevent one level down.
+if [ "$MODE" = "parse-body" ]; then
+    PARSER="$PARSER" python3 -c '
+import os
+import sys
+
+exec(os.environ["PARSER"])  # noqa: S102 - defines body_refs()
+
+for n in body_refs(sys.stdin.read()):
+    print(f"#{n}")
 '
     exit $?
 fi
@@ -227,7 +270,7 @@ open_numbers = {i["number"] for i in issues}
 current = {i["number"]: {lbl["name"] for lbl in i["labels"]} for i in issues}
 
 with open(f"{tmp}/subjects.txt", encoding="utf-8") as fh:
-    subject_refs = {n for line in fh for n in refs(line.rstrip("\n"))}
+    subject_refs = {n for line in fh for n in commit_refs(line.rstrip("\n"))}
 
 # A ref that is not an open issue is either a PR or an issue already
 # closed. Both are things we must not label, and the first is the thing
@@ -343,7 +386,14 @@ if ! git rev-parse --verify --quiet "origin/$BASE_BRANCH" >/dev/null ||
     echo "FAIL  need both origin/$BASE_BRANCH and origin/$DEV_BRANCH — fetch them first" >&2
     exit 2
 fi
-git log "origin/$BASE_BRANCH..origin/$DEV_BRANCH" --format='%s' --no-merges > "$TMP/subjects.txt"
+# Merges INCLUDED (#718). `--no-merges` was here, and it meant a branch
+# whose own commits never named their issue was invisible: the merge
+# commit is the only place the PR number survives, and it was being
+# thrown away before the parser ever saw it. Eleven fully-implemented
+# issues read as untouched for exactly this reason. Ordinary merge
+# subjects ("Merge branch 'main' into dev") parse to nothing and cost
+# only a line.
+git log "origin/$BASE_BRANCH..origin/$DEV_BRANCH" --format='%s' > "$TMP/subjects.txt"
 
 gh issue list --repo "$REPO" --state open --limit 1000 \
     --json number,labels > "$TMP/issues.json" || exit 1
