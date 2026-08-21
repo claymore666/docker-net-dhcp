@@ -1288,7 +1288,7 @@ func (m *dhcpManager) Start(ctx context.Context) (err error) {
 
 	// Using the "sandbox key" directly causes issues on some platforms
 	m.nsPath = fmt.Sprintf("/proc/%v/ns/net", ctr.State.Pid)
-	m.hostname = ctr.Config.Hostname
+	m.hostname = m.plugin.safeHostname(ctr.Config.Hostname)
 
 	m.nsHandle, err = util.AwaitNetNS(ctx, m.nsPath, pollTime)
 	if err != nil {

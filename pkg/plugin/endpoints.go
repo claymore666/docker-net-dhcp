@@ -358,6 +358,13 @@ type HealthResponse struct {
 	// renewal client.
 	JoinAbortedEndpointLeft int32 `json:"join_aborted_endpoint_left"`
 	TombstoneWriteFailures  int32 `json:"tombstone_write_failures"`
+	// UnsafeHostnamesRejected counts container hostnames dropped before
+	// reaching the generated DHCP client config because they carried a
+	// control character (#692). NOT healthy-affecting: the drop is the
+	// safe outcome and the lease proceeds. It is reported because a
+	// legitimate hostname never contains one, so a rising value is
+	// somebody probing rather than background noise.
+	UnsafeHostnamesRejected int32 `json:"unsafe_hostnames_rejected"`
 	// TombstonesConsumed counts CreateEndpoints that replayed a fresh
 	// tombstone and so handed a recreated container its previous
 	// MAC/IP. Not Healthy-affecting: this is the address-stability
@@ -573,6 +580,7 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		RestartLinkUpTimeouts:        p.restartLinkUpTimeouts.Load(),
 		JoinAbortedEndpointLeft:      p.joinAbortedEndpointLeft.Load(),
 		TombstoneWriteFailures:       tsFails,
+		UnsafeHostnamesRejected:      p.unsafeHostnamesRejected.Load(),
 		TombstonesConsumed:           p.tombstonesConsumed.Load(),
 		LeaseChanged:                 p.leaseChanged.Load(),
 		AddressConflicts:             conflicts,
