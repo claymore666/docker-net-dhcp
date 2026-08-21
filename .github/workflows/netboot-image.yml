@@ -20,6 +20,12 @@ name: Netboot image
 # be added to the required status checks — a required context that never
 # fires on an unrelated PR blocks it forever, which is the failure this
 # repository has already met from the other side (#418).
+#
+# The `workflow_dispatch` below is NOT usable yet: GitHub exposes a
+# dispatchable workflow from the default branch only, and this file
+# reaches `main` at the next release. Declared in
+# .github/dispatch-pending.txt until then. Nothing depends on it — the
+# push and pull_request triggers are what make this gate.
 on:
   pull_request:
     paths:
