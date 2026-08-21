@@ -1,0 +1,88 @@
+name: Netboot image
+
+# Build the arm64 lane's boot server image (test/arm64-netboot/).
+#
+# Nothing in CI built this image. It is the one thing in the tree whose
+# breakage surfaces at a REPROVISION rather than at a push: the arm64
+# runner's root filesystem is served out of this container, so a
+# Dockerfile or script change that does not build is found by whoever
+# next rebuilds the boot server — typically while recovering from
+# something else, on a board whose only console is a serial cable.
+# check-pi-watchdog-wiring.sh already gates how the watchdog is wired
+# across these files and check-dockerfile-pins.sh gates the base
+# digests; neither of them compiles anything.
+#
+# Build only. This image is never published: it runs privileged with the
+# host's /dev on the serving machine and has no registry consumer.
+#
+# Path-filtered, because the directory changes rarely and the build is
+# pure cost on every other push. That is also the reason this must NOT
+# be added to the required status checks — a required context that never
+# fires on an unrelated PR blocks it forever, which is the failure this
+# repository has already met from the other side (#418).
+on:
+  pull_request:
+    paths:
+      - test/arm64-netboot/**
+      - .github/workflows/netboot-image.yml
+  push:
+    branches:
+      - dev
+      - main
+    paths:
+      - test/arm64-netboot/**
+      - .github/workflows/netboot-image.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Build
+        run: docker build -t rpi-netboot:ci test/arm64-netboot
+
+      # The scripts are COPYed in and chmod'ed in a single RUN; a rename
+      # in either half leaves the image building cleanly and the server
+      # exiting at start.
+      - name: The image carries its scripts, executable
+        run: |
+          docker run --rm --entrypoint sh rpi-netboot:ci -c '
+            set -e
+            for s in entrypoint provision patch-target iscsi-target sync-boot; do
+              test -x "/usr/local/bin/$s.sh" || { echo "missing or not executable: $s.sh"; exit 1; }
+            done
+            for t in meta-data network-config user-data.tmpl nfs-watchdog; do
+              test -e "/usr/local/share/netboot-templates/$t" || { echo "missing template: $t"; exit 1; }
+            done'
+
+      # This image is built on amd64 and installs into an arm64 root
+      # filesystem. nfs-watchdog is the one artifact that leaves it for
+      # the Pi, and it is cross-compiled by an explicit GOARCH — drop
+      # that and the build still succeeds, shipping a binary the board
+      # cannot exec. It would then fail on the host where systemd has
+      # already released the watchdog device, so the board runs
+      # unprotected rather than visibly broken.
+      #
+      # Static for the same reason it is petting at all: a dynamic
+      # binary faults its loader in off the very share it is watching.
+      - name: The watchdog it installs is a static arm64 binary
+        run: |
+          cid=$(docker create rpi-netboot:ci)
+          docker cp "$cid:/usr/local/share/netboot-templates/nfs-watchdog" ./nfs-watchdog
+          docker rm "$cid" >/dev/null
+          desc=$(file -b ./nfs-watchdog)
+          echo "$desc"
+          case "$desc" in
+            *"ARM aarch64"*) ;;
+            *) echo "not an arm64 binary"; exit 1 ;;
+          esac
+          case "$desc" in
+            *"statically linked"*) ;;
+            *) echo "not statically linked"; exit 1 ;;
+          esac

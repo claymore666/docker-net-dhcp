@@ -30,8 +30,11 @@
 #   6. The program stays stdlib-only. The image compiles it as a
 #      throwaway module, because this build context is the netboot
 #      directory rather than the repo root — an added dependency breaks
-#      that build, and nothing in CI builds the netboot image, so it
-#      would surface at the next reprovision of the host.
+#      that build. The netboot-image workflow compiles it now, so this
+#      is no longer the only thing between a dependency and a host that
+#      cannot be reprovisioned — but that workflow is path-filtered and
+#      this gate is not, and a check that names the rule beats a Go
+#      compile error three layers inside a docker build.
 #   7. The unit stays OUT of the shutdown ordering. systemd.special(7)
 #      names Before=shutdown.target plus Conflicts=shutdown.target as the
 #      idiom for a unit that should be stopped before shutdown proceeds;
@@ -129,8 +132,8 @@ if [ -n "$imports" ]; then
     printf '  %s\n' $imports >&2
     echo "  The netboot image compiles it as a throwaway module (this build" >&2
     echo "  context is $DIR, not the repo root), so a dependency breaks that" >&2
-    echo "  build — and nothing in CI builds that image, so it would surface at" >&2
-    echo "  the next reprovision of the host instead of here." >&2
+    echo "  build — and that image is how the host is reprovisioned, so the" >&2
+    echo "  cost of finding out later is a boot server that will not rebuild." >&2
 else
     echo "ok    nfs-watchdog is stdlib-only (the image builds it as its own module)"
 fi

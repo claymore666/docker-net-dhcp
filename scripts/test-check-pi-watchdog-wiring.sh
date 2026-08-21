@@ -82,8 +82,9 @@ got=$(fixture noship break_image)
 check "an image that does not ship the binary fails" fail "$got"
 
 # --- a non-stdlib import -----------------------------------------------
-# This one is here because nothing in CI builds the netboot image, so the
-# breakage would otherwise surface at the next reprovision of the host.
+# The netboot-image workflow compiles it too, but only on changes under
+# that directory, and it reports a Go compile error rather than the rule
+# that was broken. This gate runs on every push and names the rule.
 break_import() {
     sed -i 's|^\t"strconv"$|\t"strconv"\n\n\t"golang.org/x/sys/unix"|' "$1/nfs-watchdog/main.go"
 }
