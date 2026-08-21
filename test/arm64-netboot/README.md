@@ -118,7 +118,7 @@ creates on the host is otherwise invisible), and `/lib/modules` so it can load
 
 ```sh
 docker run -d --name rpi-netboot \
-  --privileged --network host \
+  --privileged --network host --restart=always \
   -v /dev:/dev \
   -v /lib/modules:/lib/modules:ro \
   -v /srv/rpi-netboot:/srv/netboot \
@@ -128,6 +128,22 @@ docker run -d --name rpi-netboot \
   -e PI_SSH_AUTHORIZED_KEY="$(cat ~/.ssh/id_ed25519.pub)" \
   rpi-netboot:dev
 ```
+
+`--restart=always` is not boilerplate. This container *is* the runner's
+root filesystem, so a host reboot that does not bring it back leaves the
+board looping on a TFTP server that never answers — the harmless state,
+but a permanent one, and nothing reports it: the runner reads `offline`,
+which is also its normal reading between release candidates, so the lane
+stays dark until `scripts/check-arm64-lane.sh` turns an rc red for want
+of an arm64 verdict.
+
+`always` rather than `unless-stopped`, and the difference is
+load-bearing here. The pre-shutdown hook below stops this service on
+purpose, after rebooting the board; under `unless-stopped` that stop
+would persist across the host's next boot and the Pi would loop
+forever. `always` restores it whenever the daemon comes up, which is
+what the hook's ordering assumes. The standing runner on the board
+carries the same flag.
 
 The two `*_ALLOWED_CLIENTS` lines are not paranoia: without them the ACLs
 default to the whole /24, which offers a root-writable filesystem and a raw

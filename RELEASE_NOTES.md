@@ -292,13 +292,38 @@ option the older one never did. None of that was visible before.
   kernel whether the watchdog is armed and which process holds it, and
   reports "cannot check" rather than a pass when that evidence has aged
   out of the ring buffer. (#677)
+- `docker build` uploads the whole context to the daemon before any
+  `COPY` is considered, and `.dockerignore` carried no counterpart to
+  the credential block `.gitignore` has had since it was written — so a
+  maintainer's local `secrets/` went with every build from the repo
+  root. Nothing reached an image; the transfer happens regardless. The
+  gate that exists to stop that drift could not see it, because it
+  matched root-anchored directories only and that block is written
+  unanchored — a blind spot its own comment named while it went green.
+  It now judges every ignored directory and every credential-shaped
+  path, and goes red rather than quiet if either class turns up empty.
+- The arm64 lane's boot server image is now built in CI, and what it
+  installs is checked. Nothing compiled that directory before, so a
+  change that did not build waited for whoever next reprovisioned the
+  host — usually mid-recovery from something else. Its run recipe also
+  carried no restart policy, unlike the runner it serves, so a reboot of
+  the serving host left the board looping on a boot server that never
+  came back. That reads as a runner reporting `offline`, which is also
+  its normal reading between release candidates, so nothing would have
+  said so until an rc went red for want of an arm64 verdict.
+- The tree names none of the project's own machines any more. Three
+  release-note entries and the actionlint config carried an internal
+  hostname, the last of them as a standing exception that is no longer
+  one.
 
 ### With thanks to
 
-- **[@Dev9269](https://github.com/Dev9269)** — found that
-  `docs/internals.md` described the `interface_name` capability probe as
-  a Docker version threshold, and rewrote it to say what the code does
-  ([#675](https://github.com/claymore666/docker-net-dhcp/pull/675)).
+- **[@Dev9269](https://github.com/Dev9269)** — wrote the replacement
+  text for `docs/internals.md`, describing the `interface_name` gate as
+  the capability probe it is and dropping it from the local-vs-CI
+  checklist, where a skip on every engine explains no divergence
+  ([#675](https://github.com/claymore666/docker-net-dhcp/pull/675), on
+  [#673](https://github.com/claymore666/docker-net-dhcp/issues/673)).
 
 ## v1.7.1
 
@@ -1930,8 +1955,9 @@ upstream DHCP server after every upgrade.
   addresses (`0.0.0.0`, `0.0.0.0/0`, `0.0.0.0/24`).
 - `TestTombstones_AmbiguousMatchesDropped` pins the W-3 fix.
 
-Phase D smoke on gpu1 walked through D2 (LAN IP), plugin
-disable/enable (lease persisted across the bounce), teardown.
+Phase D smoke on the integration host walked through D2 (LAN
+IP), plugin disable/enable (lease persisted across the bounce),
+teardown.
 
 ## v0.5.1
 
@@ -1949,9 +1975,9 @@ Fixed by extending the tombstone with the container's hostname (which
 survives `docker restart`) and narrowing `consumeTombstone` to match
 on NetworkID + Hostname when both sides know it. v0.5.0 tombstones
 without a hostname still match — the new rule is "when both sides
-know the hostname they must agree." Verified live on gpu1 with a
-two-container sequential restart: each container kept its own MAC,
-no swap.
+know the hostname they must agree." Verified live on the
+integration host with a two-container sequential restart: each
+container kept its own MAC, no swap.
 
 ### Recovery failures are now visible to operators (C-4)
 
@@ -2004,9 +2030,10 @@ Two new tests pinning the C-5 fix:
 - `TestTombstones_EmptyHostnameMatchesAny` — v0.5.0 tombstone
   without hostname is still consumable by a v0.5.1 binary.
 
-Phase D walkthrough re-run on gpu1: D2, restart-stability, C-5
-sequential-restart, D6 distinct-leases, C-4 health counters, D9
-plugin disable/enable recovery, D7 release-on-stop — all green.
+Phase D walkthrough re-run on the integration host: D2,
+restart-stability, C-5 sequential-restart, D6 distinct-leases, C-4
+health counters, D9 plugin disable/enable recovery, D7
+release-on-stop — all green.
 
 ## v0.5.0
 

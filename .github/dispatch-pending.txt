@@ -22,3 +22,13 @@
 #   at which point it should be dispatched once to verify it end to end
 #   (docs/release-runbook.md, "Verifying"), and this entry removed.
 .github/workflows/capture-fixtures.yml
+
+# .github/workflows/netboot-image.yml: builds the arm64 lane's boot server
+#   image and checks what it installs into the Pi's root filesystem.
+#   Merged to `dev` after v1.8.0's release branch was cut, so it is
+#   undispatchable until the next release carries it to `main`. It needs
+#   no dispatch to do its job — it fires on pull requests and pushes that
+#   touch test/arm64-netboot/ — so nothing is blocked meanwhile. Cleared
+#   by the next release, when `dev` reaches `main`; remove this entry
+#   then.
+.github/workflows/netboot-image.yml
