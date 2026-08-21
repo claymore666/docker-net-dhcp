@@ -2644,6 +2644,11 @@ diagnosing a specific container from them alone is not.</p>
 <td>(v1.8.0+) DNS propagations refused because the container PID resolved through Docker no longer belonged to that container by the time the plugin acted on it (#688). Only reachable with <code>propagate_dns</code> opted in. Refusing is the safe outcome — the container keeps the <code>resolv.conf</code> it had, and the next renewal propagates again — so this is not <code>healthy</code>-affecting. It is reported because the plugin runs in the host PID namespace: each one is a <code>/etc/resolv.conf</code> write that would otherwise have landed in an unrelated host process that inherited the recycled PID. A sustained rise means containers are exiting inside the propagation window; an isolated one is a container that stopped at the wrong moment.</td>
 </tr>
 <tr>
+<td><code>netns_pid_mismatches</code></td>
+<td>no</td>
+<td>(v1.8.0+) Sandbox network-namespace opens refused because the container PID resolved through Docker no longer belonged to that container. The sibling of <code>dns_propagation_pid_mismatches</code> above, on the path with the larger blast radius and with no opt-in: what the refusal prevents is not one file but a netlink handle carrying every address, MTU and route the plugin applies, with <code>CAP_NET_ADMIN</code>, plus a DHCP client spawned into that namespace as root. Refusing fails the attach, so unlike the DNS case it is not silent — but the error reads like a slow container start, and only this counter says the PID belonged to something else. Not <code>healthy</code>-affecting: the attach failure is reported to Docker, and the container simply does not come up on this network. Any non-zero value is worth reading: it means a container exited inside the attach window and the kernel handed its PID to another task.</td>
+</tr>
+<tr>
 <td><code>ledger_write_failures</code></td>
 <td>no</td>
 <td>Failed <code>audit_log</code> ledger appends — degrades forensics, not networking. Operators using <code>audit_log</code> alert on this.</td>
