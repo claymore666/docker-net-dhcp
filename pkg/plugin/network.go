@@ -52,6 +52,27 @@ func validateIPAMData(ipv4 []*IPAMData) error {
 //
 // Returning an error wrapped with fmt.Errorf preserves errors.Is so
 // the HTTP layer can map sentinels to 400 status codes.
+// Interface names in the options are validated here, in the PURE phase,
+// before any kernel-facing call.
+//
+// opts.Bridge and opts.Parent come straight out of decodeOpts with no
+// name validation of their own, and netlink hands a name to the kernel
+// zero-terminated: the kernel reads it as a C string and stops at the
+// first NUL. So "br0\x00evil" resolves br0, while the reuse guard below
+// compares the full Go string (otherOpts.Bridge == opts.Bridge) and
+// misses -- two DHCP networks then share one bridge, which is exactly
+// what ErrBridgeUsed exists to prevent.
+//
+// BOTH HALVES MEASURED, and the first is why this is reachable rather
+// than latent: the daemon forwards a NUL in a driver option value
+// verbatim (a create carrying one reached fork/exec of iptables, which
+// rejected it only because execve refuses NUL in argv), and
+// netlink.LinkByName("docker0\x00evil") resolved docker0 index 7 while
+// "docker0evil" was not found. #705.
+//
+// ValidIfaceName is the repo's existing rule for exactly this, applied
+// to the client interface since v1.0; it also rejects over-length names,
+// ".." and "/", all of which reached the kernel before.
 func validateModeOptions(opts DHCPNetworkOptions) error {
 	// Mode-independent: both server lists apply to every mode, and a
 	// malformed or self-contradicting one must fail the create rather
@@ -69,12 +90,18 @@ func validateModeOptions(opts DHCPNetworkOptions) error {
 		if opts.Bridge != "" {
 			return fmt.Errorf("%w: bridge cannot be set in mode=%v", util.ErrModeMismatch, opts.effectiveMode())
 		}
+		if !dhcp.ValidIfaceName(opts.Parent) {
+			return fmt.Errorf("%w: invalid parent %q: not a kernel-legal interface name", util.ErrIPAM, opts.Parent)
+		}
 	case ModeBridge:
 		if opts.Bridge == "" {
 			return util.ErrBridgeRequired
 		}
 		if opts.Parent != "" {
 			return fmt.Errorf("%w: parent cannot be set in mode=bridge", util.ErrModeMismatch)
+		}
+		if !dhcp.ValidIfaceName(opts.Bridge) {
+			return fmt.Errorf("%w: invalid bridge %q: not a kernel-legal interface name", util.ErrIPAM, opts.Bridge)
 		}
 		// validate_dhcp on bridge mode is a v0.9.0 carve-out: the
 		// probe semantics differ (parent is an existing bridge, not
@@ -1215,6 +1242,17 @@ func parseIfnameOption(options map[string]interface{}) (string, error) {
 	}
 	if s == "." || s == ".." || strings.ContainsAny(s, "/ \t\n\r") {
 		return "", fmt.Errorf("invalid interface_name %q: must not contain '/', whitespace, or be '.'/'..': %w", s, util.ErrIPAM)
+	}
+	// The kernel is NOT the guard here. Measured: it accepts "-cfoo",
+	// "-c", "-" and ".x" as link names and refuses only embedded
+	// whitespace -- and this name becomes DstName, the container link is
+	// renamed to it, and the name is read back and placed LAST in the
+	// dhcpcd argv, where getopt permutation re-reads a flag-shaped
+	// trailing positional as an option. Apply the same rule the client
+	// side has always applied, so the request fails at CreateEndpoint
+	// rather than surviving to the argv (#706).
+	if !dhcp.ValidIfaceName(s) {
+		return "", fmt.Errorf("invalid interface_name %q: must start with a letter or digit and contain only letters, digits, '.', '-' and '_': %w", s, util.ErrIPAM)
 	}
 	return s, nil
 }

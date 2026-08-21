@@ -79,6 +79,21 @@ const (
 	stderrTailMax = 4 << 10
 )
 
+// unsharePath is the absolute path to unshare(1).
+//
+// Absolute rather than "unshare", which exec.Command resolves through
+// LookPath against the inherited PATH — measured: cmd.Path came out as
+// /usr/bin/unshare, chosen by an environment variable. /bin/sh, the
+// dhcpcd handler and the generated config are all already absolute, and
+// this was the one binary in the tree whose identity depended on the
+// environment. No impact today (PATH is image-set inside a root-owned
+// rootfs) and the fix costs nothing (#707).
+//
+// The path is Alpine's, matching the base image. It is asserted in the
+// argv test alongside /bin/sh and the handler, so moving the binary
+// fails a test instead of silently changing which executable runs.
+const unsharePath = "/usr/bin/unshare"
+
 // mountPrep is the shell run inside the `unshare -m` mount namespace
 // before exec'ing dhcpcd. It (1) shadows the host-shared dhcpcd state
 // dir with a private tmpfs (see dhcpcdStateDir), (2) shadows dhcpcd's
@@ -134,17 +149,35 @@ func (w *tailWriter) condense() string {
 	return strings.Join(lines, "; ")
 }
 
-// validIfaceName accepts only a kernel-legal network interface name: 1–15
-// characters (IFNAMSIZ-1), starting with an alphanumeric (so it can never
-// be mistaken for a dhcpcd flag) and otherwise limited to alphanumerics,
-// dot, dash and underscore. The interface name originates from the driver
-// request and is interpolated into the dhcpcd argv that runs under
-// `unshare -m /bin/sh -c '… exec "$0" "$@"'`; validating it here keeps any
-// shell-meaningful or flag-shaped value from ever reaching that command
-// (go/command-injection, CWE-78). The `"$@"` quoting already prevents
-// re-splitting, so this is defence-in-depth, but it is also simply the
-// correct contract — these names are never anything but flat tokens.
-var validIfaceName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,14}$`).MatchString
+// ValidIfaceName accepts only a kernel-legal network interface name: 1–15
+// characters (IFNAMSIZ-1), starting with an alphanumeric and otherwise
+// limited to alphanumerics, dot, dash and underscore.
+//
+// WHAT THE LEADING-ALPHANUMERIC RULE ACTUALLY GUARDS. Not re-splitting.
+// The interface name is interpolated into the dhcpcd argv that runs
+// under `unshare -m /bin/sh -c '… exec "$0" "$@"'`, and the `"$@"`
+// quoting does prevent re-splitting — which is why this comment used to
+// call the alnum-first rule "defence-in-depth". That reason was wrong,
+// and a rule whose stated reason is wrong is a rule someone relaxes.
+//
+// The real mechanism is getopt PERMUTATION. dhcpcd 10.3.2's getopt
+// permutes, so the interface — which renderArgs places LAST, as a
+// trailing positional — is re-read as an option if it looks like one.
+// Measured: with the interface replaced by `-c/out/evil.sh`, dhcpcd ran
+// that script as uid 0 for PREINIT and CARRIER. Nothing about quoting
+// enters into it; `"$@"` delivered the argument faithfully and dhcpcd
+// parsed it as a flag.
+//
+// The rule holds today because no `-c<abs-path>` payload fits inside
+// IFNAMSIZ once a leading alphanumeric is required and the kernel
+// refuses '/' in a name — but that is a consequence of THIS rule, not
+// an independent guard, and the argument only works if the reason is
+// written down correctly. See #706 and, for the precedent, #638.
+//
+// Exported because pkg/plugin applies the same rule one step earlier, at
+// CreateNetwork and CreateEndpoint, so a bad name fails the request
+// loudly instead of surviving to the argv (#705, #706).
+var ValidIfaceName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,14}$`).MatchString
 
 type DHCPClientOptions struct {
 	Hostname string
@@ -241,7 +274,7 @@ type DHCPClient struct {
 // identity + observe-only + the event FIFO) and the event FIFO itself,
 // and builds the (mount-namespace-wrapped) command. Start runs it.
 func NewDHCPClient(iface string, opts *DHCPClientOptions) (*DHCPClient, error) {
-	if !validIfaceName(iface) {
+	if !ValidIfaceName(iface) {
 		return nil, fmt.Errorf("invalid interface name %q", iface)
 	}
 	handler := opts.HandlerScript
@@ -322,7 +355,7 @@ func NewDHCPClient(iface string, opts *DHCPClientOptions) (*DHCPClient, error) {
 	// Wait target it directly. `sh -c '... exec "$0" "$@"'` passes the
 	// dhcpcd argv as $0/$@, avoiding any quoting of paths.
 	dargs := renderArgs(params)
-	wrapped := append([]string{"unshare", "-m", "/bin/sh", "-c", mountPrep()}, dargs...)
+	wrapped := append([]string{unsharePath, "-m", "/bin/sh", "-c", mountPrep()}, dargs...)
 
 	c := &DHCPClient{
 		Opts:     opts,
