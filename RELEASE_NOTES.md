@@ -318,10 +318,12 @@ option the older one never did. None of that was visible before.
 
 ### With thanks to
 
-- **[@Dev9269](https://github.com/Dev9269)** — found that
-  `docs/internals.md` described the `interface_name` capability probe as
-  a Docker version threshold, and rewrote it to say what the code does
-  ([#675](https://github.com/claymore666/docker-net-dhcp/pull/675)).
+- **[@Dev9269](https://github.com/Dev9269)** — wrote the replacement
+  text for `docs/internals.md`, describing the `interface_name` gate as
+  the capability probe it is and dropping it from the local-vs-CI
+  checklist, where a skip on every engine explains no divergence
+  ([#675](https://github.com/claymore666/docker-net-dhcp/pull/675), on
+  [#673](https://github.com/claymore666/docker-net-dhcp/issues/673)).
 
 ## v1.7.1
 
