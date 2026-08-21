@@ -54,6 +54,24 @@ func TestRenewPhases_SkipPathsTouchNoKernelState(t *testing.T) {
 			},
 		},
 		{
+			// Opted in, and the server supplied an MTU below the
+			// range we will apply. The refusal must come BEFORE
+			// m.ctrLink.Attrs(), like the two guards above -- and
+			// with the bound removed this case dereferences nil and
+			// panics, which is what makes it a check on the bound
+			// rather than on the constant (#702).
+			name: "MTU propagation opted in with an out-of-range option 26",
+			run: func(m *dhcpManager) error {
+				m.opts.PropagateMTU = true
+				m.plugin = &Plugin{}
+				m.propagateMTU(false, dhcp.Info{MTU: 68})
+				if got := m.plugin.mtuRefused.Load(); got != 1 {
+					t.Errorf("mtu_refused = %d, want 1", got)
+				}
+				return nil
+			},
+		},
+		{
 			// DHCPv6 has no gateway option — the router advertises
 			// itself — so the v6 arm must never reach netlink.
 			name: "default route on the v6 path",

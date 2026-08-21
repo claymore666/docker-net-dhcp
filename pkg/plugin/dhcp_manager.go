@@ -158,15 +158,23 @@ func newOutageTracker(now time.Time) outageTracker {
 // one instant that needs no assumption about which retry succeeded.
 // Zero when the server supplied no lifetime, in which case no deadline
 // is enforced at all.
-func leaseDeadline(data dhcp.Info) time.Duration {
+//
+// Bounded above by maxLeaseDeadline, and reports whether it had to be.
+// The bound is on the DEADLINE only: data.LeaseSeconds still reaches the
+// log and the ledger unchanged, because the anomaly is the thing worth
+// seeing and rewriting it would hide it. See maxLeaseDeadline for why an
+// unbounded lifetime disables this watchdog outright.
+func leaseDeadline(data dhcp.Info) (time.Duration, bool) {
 	if data.LeaseSeconds > 0 {
-		return time.Duration(data.LeaseSeconds) * time.Second
+		return clampLeaseDeadline(time.Duration(data.LeaseSeconds) * time.Second)
 	}
-	return 0
+	return 0, false
 }
 
-// observe folds one client event into the tracker.
-func (o *outageTracker) observe(eventType string, data dhcp.Info, now time.Time) {
+// observe folds one client event into the tracker, reporting whether the
+// lease lifetime it carried had to be clamped to stay usable as a
+// deadline (see leaseDeadline).
+func (o *outageTracker) observe(eventType string, data dhcp.Info, now time.Time) (clamped bool) {
 	prev := o.acquiring
 	o.acquiring = nextAcquiring(prev, eventType)
 	if o.acquiring && !prev {
@@ -179,8 +187,9 @@ func (o *outageTracker) observe(eventType string, data dhcp.Info, now time.Time)
 	// the acquiring state alone and is a refusal, not service.
 	if eventType == "bound" || eventType == "renew" {
 		o.lastAffirmed = now
-		o.lapseAfter = leaseDeadline(data)
+		o.lapseAfter, clamped = leaseDeadline(data)
 	}
+	return clamped
 }
 
 // due reports whether this tick counts a DHCP timeout, and whether it is
@@ -732,6 +741,24 @@ func (m *dhcpManager) propagateMTU(v6 bool, info dhcp.Info) {
 		return
 	}
 
+	// Neither dhcpcd nor the kernel holds the bottom of this range: a
+	// server-supplied 68 was exported verbatim and accepted by the
+	// kernel, which destroys throughput and black-holes path MTU
+	// discovery for the container, re-applied on every renewal. Refuse
+	// and keep the MTU the link has (#702).
+	if !mtuAcceptable(info.MTU) {
+		if m.plugin != nil {
+			m.plugin.mtuRefused.Add(1)
+		}
+		log.
+			WithFields(m.logFields(v6)).
+			WithField("mtu", info.MTU).
+			WithField("min", minPropagatedMTU).
+			WithField("max", maxPropagatedMTU).
+			Warn("Refusing DHCP-supplied MTU outside the acceptable range; container link MTU unchanged")
+		return
+	}
+
 	current := m.ctrLink.Attrs().MTU
 	if current == info.MTU {
 		return
@@ -1072,7 +1099,14 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 					errChan <- nil
 					return
 				}
-				tracker.observe(event.Type, event.Data, time.Now())
+				if tracker.observe(event.Type, event.Data, time.Now()) && m.plugin != nil {
+					m.plugin.leaseTimeClamped.Add(1)
+					log.
+						WithFields(m.logFields(v6)).
+						WithField("lease_seconds", event.Data.LeaseSeconds).
+						WithField("deadline", maxLeaseDeadline).
+						Warn("DHCP lease lifetime too long to use as an outage deadline; clamped for the watchdog only")
+				}
 				m.handleEvent(event, v6)
 
 			case <-m.stopChan:
