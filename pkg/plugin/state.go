@@ -13,6 +13,21 @@ import (
 	"time"
 )
 
+// stateFileMode is the mode every file the plugin writes under stateDir
+// carries, and the lease ledger with it.
+//
+// 0600 because /var/lib/net-dhcp is an rbind rw HOST mount (config.json),
+// so at 0644 the container MACs, IPs, hostnames and the full lease audit
+// trail were readable by any user on the host. Not a privilege boundary
+// -- nothing stored is a credential and the writer is root either way --
+// but there is no reason for it to be world-readable, and an operator who
+// reads leases.jsonl as a non-root user now needs sudo (#708).
+//
+// Existing files are re-chmod'd on the next write: the state writes go
+// through a temp file and a rename, and the ledger chmods on append, so
+// an upgrade tightens what it finds rather than leaving old files open.
+const stateFileMode = 0o600
+
 // stateDir is the directory where per-network options are persisted.
 // Lives inside the plugin's writable filesystem; survives plugin
 // disable/enable cycles but is reset on `docker plugin rm` or upgrade,
@@ -154,7 +169,12 @@ func saveTombstones(ts []tombstone) error {
 		_ = os.Remove(tmpName)
 		return fmt.Errorf("failed to close tombstones temp file: %w", err)
 	}
-	if err := os.Chmod(tmpName, 0o644); err != nil {
+	// 0600, not 0644. /var/lib/net-dhcp is an rbind rw HOST mount, so
+	// this file's contents -- container MACs, IPs and hostnames -- were
+	// readable by any user on the host. Nothing here is a credential and
+	// the plugin runs as root either way, so this is not a privilege
+	// boundary; 0600 simply costs nothing (#708).
+	if err := os.Chmod(tmpName, stateFileMode); err != nil {
 		_ = os.Remove(tmpName)
 		return fmt.Errorf("failed to chmod tombstones temp file: %w", err)
 	}
@@ -217,7 +237,8 @@ func saveOptions(networkID string, opts DHCPNetworkOptions) error {
 		_ = os.Remove(tmpName)
 		return fmt.Errorf("failed to close temp options file: %w", err)
 	}
-	if err := os.Chmod(tmpName, 0o644); err != nil {
+	// See the tombstone write above for why this is 0600 (#708).
+	if err := os.Chmod(tmpName, stateFileMode); err != nil {
 		_ = os.Remove(tmpName)
 		return fmt.Errorf("failed to chmod temp options file: %w", err)
 	}

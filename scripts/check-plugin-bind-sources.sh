@@ -92,7 +92,23 @@ for wf in "$WORKFLOW_DIR"/*.yml; do
         missing=()
         while IFS= read -r src; do
             [ -n "$src" ] || continue
-            printf '%s\n' "$window" | grep -E "mkdir[[:space:]]+(-[a-z]+[[:space:]]+)*${src}(\$|[[:space:]])" >/dev/null \
+            # LITERAL comparison, not a regex. The path used to be
+            # interpolated into an ERE, where '.' is a metacharacter — so
+            # /var/lib/net-dhcp.d matched /var/lib/net-dhcpXd, and any
+            # dotted bind source could be reported as created by a line
+            # that creates something else. A false pass here is expensive
+            # and silent: the missing source SIGSEGVs dockerd while the
+            # runner still reports online.
+            #
+            # Cut each mkdir invocation down to its own argument list
+            # (everything after `mkdir`, up to the next command
+            # separator) and compare whole tokens with grep -Fx. Flags
+            # like -p simply never equal a path.
+            printf '%s\n' "$window" \
+                | sed -n 's/.*mkdir//p' \
+                | sed 's/[;&|].*//' \
+                | tr ' \t' '\n\n' \
+                | grep -Fx -- "$src" >/dev/null \
                 || missing+=("$src")
         done < <(jq -r '.mounts[]? | select(.type=="bind") | .source | select(startswith("/var/lib/"))' "$manifest")
 
