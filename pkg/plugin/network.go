@@ -848,9 +848,14 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 					if opts.Gateway != "" {
 						hint.Gateway = opts.Gateway
 					}
-					// DHCP option-121 classless static routes (RFC 3442);
-					// the parser already folded any default route into
-					// info.Gateway, so these are non-default routes only.
+					// DHCP option-121 classless static routes (RFC 3442).
+					// The parser folded a LITERAL 0.0.0.0/0 entry into
+					// info.Gateway, so none of these is a default route
+					// by itself. That is all it guarantees: a set of
+					// non-default prefixes can still cover the whole
+					// address space between them and win on
+					// longest-prefix match. See routesSupersedeDefault,
+					// which is what says so out loud at Join.
 					hint.Routes = dhcpStaticRoutes(info.Routes)
 				}
 			})
@@ -1035,6 +1040,60 @@ func dhcpStaticRoutes(routes []dhcp.Route) []*StaticRoute {
 			sr.NextHop = r.Gateway
 		}
 		out = append(out, sr)
+	}
+	return out
+}
+
+// appendDHCPStaticRoutes hands Docker the DHCP option-121 classless
+// static routes (RFC 3442) captured from the initial v4 exchange in
+// CreateEndpoint. These ride the hint alongside the gateway;
+// `skip_routes=true` opts out, matching the host-link copy in addRoutes
+// (the opt-121 default route, folded into res.Gateway, is unaffected --
+// skip_routes governs static routes, not the default gateway).
+//
+// Split out of Join so the evidence it produces is testable without a
+// container: the routes below can take every destination away from the
+// gateway in the same response without changing a byte of it (#700).
+func (p *Plugin) appendDHCPStaticRoutes(opts DHCPNetworkOptions, r JoinRequest, hint joinHint, res *JoinResponse) {
+	if opts.SkipRoutes || len(hint.Routes) == 0 {
+		return
+	}
+
+	res.StaticRoutes = append(res.StaticRoutes, hint.Routes...)
+	p.dhcpRoutesApplied.Add(int32(len(hint.Routes)))
+
+	// Log the destinations and next hops, not a count. A count cannot
+	// answer "where did this container's traffic go" after the fact,
+	// and that is the only question these routes raise.
+	fields := log.Fields{
+		"network":  shortID(r.NetworkID),
+		"endpoint": shortID(r.EndpointID),
+		"sandbox":  r.SandboxKey,
+		"routes":   describeStaticRoutes(hint.Routes),
+		"gateway":  res.Gateway,
+	}
+	if routesSupersedeDefault(hint.Routes) {
+		p.dhcpDefaultRouteSuperseded.Add(1)
+		log.WithFields(fields).Warn("[Join] DHCP classless static routes (option 121) cover the whole address space; they supersede the gateway above on longest-prefix match")
+		return
+	}
+	log.WithFields(fields).Info("[Join] Adding DHCP classless static routes (option 121)")
+}
+
+// describeStaticRoutes renders routes for a log field as
+// "dest via nexthop" / "dest onlink", so the log carries the routing
+// decision itself rather than how many of them there were.
+func describeStaticRoutes(routes []*StaticRoute) []string {
+	out := make([]string, 0, len(routes))
+	for _, r := range routes {
+		if r == nil {
+			continue
+		}
+		if r.NextHop != "" {
+			out = append(out, r.Destination+" via "+r.NextHop)
+			continue
+		}
+		out = append(out, r.Destination+" onlink")
 	}
 	return out
 }
@@ -1308,21 +1367,7 @@ func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) 
 		}
 	}
 
-	// Append DHCP option-121 classless static routes (RFC 3442) captured
-	// from the initial v4 exchange in CreateEndpoint. These ride the hint
-	// alongside the gateway; `skip_routes=true` opts out, matching the
-	// host-link copy in addRoutes (the opt-121 default route, folded into
-	// res.Gateway, is unaffected — skip_routes governs static routes, not
-	// the default gateway).
-	if !opts.SkipRoutes && len(hint.Routes) > 0 {
-		res.StaticRoutes = append(res.StaticRoutes, hint.Routes...)
-		log.WithFields(log.Fields{
-			"network":  shortID(r.NetworkID),
-			"endpoint": shortID(r.EndpointID),
-			"sandbox":  r.SandboxKey,
-			"count":    len(hint.Routes),
-		}).Info("[Join] Adding DHCP classless static routes (option 121)")
-	}
+	p.appendDHCPStaticRoutes(opts, r, hint, &res)
 
 	// Register the manager BEFORE spawning the start goroutine so that a
 	// fast Leave can find it. Stop blocks until Start has completed

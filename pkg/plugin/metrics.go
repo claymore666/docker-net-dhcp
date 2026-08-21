@@ -91,6 +91,12 @@ func metricDefs() []metricDef {
 		{name: "naks_received", counter: true, help: "DHCPNAKs received from the server.", field: "naks_received", v6field: "naks_received_v6"},
 		{name: "lease_release_failures", counter: true, help: "Leases whose release did not complete cleanly at shutdown, leaving the address held until it expires.", field: "lease_release_failures", v6field: "lease_release_failures_v6"},
 
+		// Server-supplied values the plugin bounds or must evidence (#699).
+		{name: "dhcp_routes_applied", counter: true, help: "DHCP option-121 classless static routes handed to Docker. Counts routes, not Joins.", field: "dhcp_routes_applied"},
+		{name: "dhcp_default_route_superseded", counter: true, help: "Joins whose option-121 routes cover 0.0.0.0/0 by union rather than by a literal default entry, so container egress follows those next hops even though the reported gateway still names the option-3 router. Legitimate in split-tunnel setups; the point is that it is now visible.", field: "dhcp_default_route_superseded"},
+		{name: "lease_time_clamped", counter: true, help: "Option-51 lease lifetimes cut down before use as the outage watchdog's deadline. The reported lease time is unchanged. Non-zero means a server granted a container a lease long enough to switch silent-lapse detection off.", field: "lease_time_clamped"},
+		{name: "mtu_refused", counter: true, help: "Option-26 MTUs outside the range the plugin will apply; the container link keeps the MTU it had.", field: "mtu_refused"},
+
 		// Server selection (#111).
 		{name: "dhcp_server_tier_fallbacks", counter: true, help: "Acquisitions that fell through to a lower-priority dhcp_servers entry because the preferred server did not answer. The only outside signal that a preferred server is silently dead.", field: "dhcp_server_tier_fallbacks"},
 		{name: "dhcp_server_policy_exhausted", counter: true, help: "Acquisitions abandoned because no server listed in dhcp_servers answered.", field: "dhcp_server_policy_exhausted"},

@@ -380,6 +380,29 @@ type HealthResponse struct {
 	// failure looks like a slow start; only this counter distinguishes a
 	// recycled PID from one.
 	NetnsPIDMismatches int32 `json:"netns_pid_mismatches"`
+	// DHCPRoutesApplied counts DHCP option-121 classless static routes
+	// handed to Docker. DHCPDefaultRouteSuperseded counts the Joins
+	// where those routes cover 0.0.0.0/0 by union rather than by a
+	// literal default entry -- i.e. the container's egress goes to the
+	// option-121 next hop even though the reported gateway, and
+	// `docker inspect`, still name the router from option 3. Neither is
+	// healthy-affecting: this is legitimate split-tunnel behaviour as
+	// often as it is not. They are the evidence trail (#700).
+	DHCPRoutesApplied          int32 `json:"dhcp_routes_applied"`
+	DHCPDefaultRouteSuperseded int32 `json:"dhcp_default_route_superseded"`
+	// LeaseTimeClamped counts option-51 lifetimes cut down before use
+	// as the outage watchdog's deadline. NOT healthy-affecting -- the
+	// clamp is the safe outcome and the lease time reported to
+	// operators is unchanged. Any non-zero value is worth reading: an
+	// over-long lease is how a server switches this plugin's only
+	// silent-lapse detector off (#701).
+	LeaseTimeClamped int32 `json:"lease_time_clamped"`
+	// MTURefused counts option-26 MTUs outside the range the plugin
+	// will apply; the link keeps the MTU it had. NOT healthy-affecting.
+	// Read it because the alternative was silent: a link clamped near
+	// the RFC floor black-holes path MTU discovery and looks like a
+	// slow network, not a misconfiguration (#702).
+	MTURefused int32 `json:"mtu_refused"`
 	// TombstonesConsumed counts CreateEndpoints that replayed a fresh
 	// tombstone and so handed a recreated container its previous
 	// MAC/IP. Not Healthy-affecting: this is the address-stability
@@ -598,6 +621,10 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		UnsafeHostnamesRejected:      p.unsafeHostnamesRejected.Load(),
 		DNSPropagationPIDMismatches:  p.dnsPropagationPIDMismatches.Load(),
 		NetnsPIDMismatches:           p.netnsPIDMismatches.Load(),
+		DHCPRoutesApplied:            p.dhcpRoutesApplied.Load(),
+		DHCPDefaultRouteSuperseded:   p.dhcpDefaultRouteSuperseded.Load(),
+		LeaseTimeClamped:             p.leaseTimeClamped.Load(),
+		MTURefused:                   p.mtuRefused.Load(),
 		TombstonesConsumed:           p.tombstonesConsumed.Load(),
 		LeaseChanged:                 p.leaseChanged.Load(),
 		AddressConflicts:             conflicts,

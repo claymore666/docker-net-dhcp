@@ -721,6 +721,45 @@ type Plugin struct {
 	// PID belonged to something else.
 	netnsPIDMismatches atomic.Int32
 
+	// dhcpRoutesApplied counts DHCP option-121 classless static routes
+	// handed to Docker, and dhcpDefaultRouteSuperseded counts the
+	// Joins where those routes, taken together, cover 0.0.0.0/0.
+	//
+	// Applying them is correct client behaviour and is not the problem.
+	// The problem was that a server could take every destination
+	// without ever sending a default route -- `0.0.0.0/1 g
+	// 128.0.0.0/1 g` -- and nothing in the plugin's output changed:
+	// res.Gateway, `docker inspect` and the log all still named the
+	// legitimate router, and the routes themselves were logged as a
+	// count with no destinations and no next hops. Neither counter is
+	// healthy-affecting; a superseded default is legitimate in
+	// split-tunnel setups. They exist so "where did this container's
+	// traffic go" has an answer after the fact (#700).
+	dhcpRoutesApplied          atomic.Int32
+	dhcpDefaultRouteSuperseded atomic.Int32
+
+	// leaseTimeClamped counts leases whose option-51 lifetime was too
+	// long to use as the outage watchdog's deadline and was cut to
+	// maxLeaseDeadline.
+	//
+	// Not healthy-affecting -- the clamp is the safe outcome, and the
+	// reported lease time is untouched. Read it anyway: a legitimate
+	// server does not grant a container a lease measured in years, and
+	// before the clamp one such ACK followed by silence left
+	// dhcp_timeouts at zero through a total outage (#701).
+	leaseTimeClamped atomic.Int32
+
+	// mtuRefused counts DHCP option-26 MTUs outside the range
+	// propagateMTU will apply, which leave the link's MTU alone.
+	//
+	// Not healthy-affecting: refusing is the safe outcome. It is
+	// reported because the failure it prevents is silent -- a link
+	// clamped to 68 bytes has its throughput destroyed and its path MTU
+	// discovery black-holed, re-applied on every renewal, and the only
+	// previous evidence was one Info line saying the MTU had been
+	// applied (#702).
+	mtuRefused atomic.Int32
+
 	// tombstoneWriteFailures counts saveTombstones failures (disk full,
 	// EROFS) from addTombstone. Reported on /Plugin.Health so operators
 	// can detect a degraded restart-stability window — every failure
