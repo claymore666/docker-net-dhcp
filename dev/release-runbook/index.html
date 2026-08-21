@@ -1423,12 +1423,23 @@ the <code>vX.Y.Z</code> milestone (the workflow leans on this for the
    <code>git tag -v vX.Y.Z</code> (or the green "Verified" on the tag page).
    The workflow fires on <code>tags: v*</code>. Watch it at
    <a href="https://github.com/claymore666/docker-net-dhcp/actions/workflows/release.yml">https://github.com/claymore666/docker-net-dhcp/actions/workflows/release.yml</a>.
-   Expected steps: Resolve tag → checkout → setup-go →
-   GHCR login → Hub login (or skip) → Push to GHCR → Push to
-   Hub (or skip) → Sync Hub description → Install cosign →
-   <strong>Sign published images (cosign)</strong> → <strong>Generate SBOM (syft)</strong> →
-   <strong>Package and sign release artifact</strong> → <strong>Attest provenance
-   (artifacts + image)</strong> → Workflow summary →
+   Expected steps, in the order the <code>release</code> job runs them and under
+   the names the run shows: Resolve release tag → checkout → setup-go →
+   Install crane → Log in to GHCR → Log in to Docker Hub (or <em>Warn if
+   Docker Hub credentials missing</em>) → Push to GHCR → <strong>Check the
+   documented reference digests against this build</strong> (the gate step 10b
+   is about — on the first rc of a new version it is <em>expected</em> to fail
+   and print the block to paste into the doc) → Tag :latest to the
+   published GHCR digest (not on an rc) → Push to Docker Hub (or skip)
+   → Tag :latest to the published Docker Hub digest (or skip; not on an
+   rc) → <strong>Verify :latest resolves to the signed version digest</strong> (not
+   on an rc) → Sync Docker Hub description from README (or skip) →
+   Install cosign → <strong>Record and gate the cosign version</strong> → <strong>Sign
+   published images (cosign keyless)</strong> → Install syft → <strong>Generate SBOM
+   (SPDX + CycloneDX)</strong> → <strong>Package and sign release artifact</strong> →
+   <strong>Attest release-artifact provenance</strong> → <strong>Attest image provenance
+   (GHCR)</strong> → <strong>Upload signed artifacts for the release job</strong> →
+   Workflow summary →
    <strong>verify-install</strong> (separate job: installs the just-published
    plugin from GHCR on a clean hosted runner and asserts it
    enables — a red verify-install means users can't install what

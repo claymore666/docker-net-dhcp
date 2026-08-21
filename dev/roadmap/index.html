@@ -1072,9 +1072,16 @@ for exactly that reason.</p>
 <h2 id="where-the-project-is-today">Where the project is today<a class="headerlink" href="#where-the-project-is-today" title="Permanent link">&para;</a></h2>
 <p>Bridge, macvlan and ipvlan attachment; DHCPv4 and DHCPv6; addresses that
 survive <code>docker restart</code>, plugin restart and daemon restart; a
-<code>/Plugin.Health</code> counter surface; signed, attested, reproducible
-releases. The <a href="../reference/">driver reference</a> is the authority on what
-exists right now — if this page and that one disagree, that one is right.</p>
+<code>/Plugin.Health</code> counter surface and the same counters in Prometheus
+form on <code>/metrics</code> (<a href="https://github.com/claymore666/docker-net-dhcp/issues/651">#651</a>); per-network choice of which DHCP server to
+lease from (<a href="https://github.com/claymore666/docker-net-dhcp/issues/111">#111</a>, <a href="https://github.com/claymore666/docker-net-dhcp/issues/669">#669</a>); signed, attested, reproducible releases.
+v1.8.0 also carries the first human review of the design and its trust
+boundaries (<a href="https://github.com/claymore666/docker-net-dhcp/issues/457">#457</a>, <a href="https://github.com/claymore666/docker-net-dhcp/issues/699">#699</a>) — pulled into this release because it is the
+one that opens a TCP port in a process holding <code>CAP_NET_ADMIN</code>. Every
+finding was fixed inside the same cycle rather than carried forward, and
+each one ends in a test or a counter rather than a paragraph. The
+<a href="../reference/">driver reference</a> is the authority on what exists right
+now — if this page and that one disagree, that one is right.</p>
 <h2 id="direction">Direction<a class="headerlink" href="#direction" title="Permanent link">&para;</a></h2>
 <p>Five themes, in rough order of how much they change for a user. Issue
 numbers are anchors, not a queue.</p>

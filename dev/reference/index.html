@@ -1573,10 +1573,18 @@ behaviour, observability, Compose usage, and troubleshooting.</p>
 <p>This file is versioned with the code: the copy in your installed
 version's tag is the truth for that version. CI enforces that every
 driver-option key the code parses, every health counter the plugin
-emits, and every plugin setting it accepts appears in this document —
-and that none of them is documented a second time somewhere else
-(<code>scripts/check-option-docs.sh</code>, <code>scripts/check-docs-drift.sh</code>). Neither
-staleness nor a divergent copy is possible without turning CI red.</p>
+emits, and every setting the <strong>shipped</strong> plugin accepts appears in this
+document — and that none of them is documented a second time somewhere
+else (<code>scripts/check-option-docs.sh</code>, <code>scripts/check-docs-drift.sh</code>).
+The claims made <em>about</em> those counters — which four flip <code>healthy</code> —
+are enforced separately, wherever this page states them
+(<code>scripts/check-health-contract.sh</code>). Neither staleness nor a divergent
+copy is possible without turning CI red.</p>
+<p>The one deliberate gap: the coverage-instrumented build used by CI
+declares two extra settings that the shipped plugin does not have. They
+are exempt from this page by name — documenting a knob you cannot set
+would be worse than omitting it — and are defined in the contributor
+documentation instead, which the same gate requires.</p>
 <p>The other pages are deliberately narrow:</p>
 <table>
 <thead>
@@ -1753,6 +1761,10 @@ each group.</p>
 <tr>
 <td><code>OUTAGE_GRACE</code></td>
 <td><code>25s</code></td>
+</tr>
+<tr>
+<td><code>METRICS_ADDR</code></td>
+<td><em>(empty)</em></td>
 </tr>
 </tbody>
 </table>
@@ -2050,7 +2062,7 @@ limitations) are catalogued in
 <td>all</td>
 <td><em>(none)</em></td>
 <td>v1.8.0</td>
-<td>Ordered preference list of DHCPv4 servers, e.g. <code>1.1.1.1,2.2.2.2</code>. The initial acquisition tries each in turn, restricted to that one server, and takes the first lease offered. <strong>The list is exhaustive</strong>: if none of them answers, the endpoint fails rather than accepting whichever server happened to reply — naming your servers is what makes the list complete. The ladder <strong>divides</strong> the existing acquisition budget (<code>lease_timeout</code>) rather than extending it, so enabling this never makes <code>docker run</code> slower. Once a lease is held it stays with the server that granted it, because renewal is unicast. <strong>DHCPv4 only</strong> — <code>dhcpcd</code> has no v6 equivalent, and a v6 entry is rejected at <code>docker network create</code> rather than silently ignored. <strong>Not supported behind a DHCP relay</strong>: the underlying filter matches the packet's source address, not the Server Identifier (option 54), so through a relay every offer looks identical. (#111)</td>
+<td>Ordered preference list of DHCPv4 servers, e.g. <code>1.1.1.1,2.2.2.2</code>. The initial acquisition tries each in turn, restricted to that one server, and takes the first lease offered. <strong>The list is exhaustive</strong>: if none of them answers, the endpoint fails rather than accepting whichever server happened to reply — naming your servers is what makes the list complete. The ladder <strong>divides</strong> the existing acquisition budget (<code>lease_timeout</code>) rather than extending it, so enabling this never makes <code>docker run</code> slower. Once a lease is held it stays with the server that granted it, because renewal is unicast. <strong>DHCPv4 only</strong> — <code>dhcpcd</code> has no v6 equivalent, and a v6 entry is rejected at <code>docker network create</code> rather than silently ignored. The list itself is validated the same way: an empty entry (a trailing or doubled comma), an entry that is not an IP address, and a repeated address each fail the create rather than being quietly dropped. <strong>Not supported behind a DHCP relay</strong>: the underlying filter matches the packet's source address, not the Server Identifier (option 54), so through a relay every offer looks identical. (#111)</td>
 </tr>
 <tr>
 <td><code>dhcp_deny_servers</code></td>
@@ -2144,7 +2156,13 @@ is no <code>ip6</code> <em>driver-opt</em> channel — use <code>--ip6</code> / 
 <hr />
 <h2 id="plugin-settings">Plugin settings<a class="headerlink" href="#plugin-settings" title="Permanent link">&para;</a></h2>
 <p>Set with <code>docker plugin set &lt;plugin&gt; NAME=value</code>; take effect after
-<code>docker plugin disable &amp;&amp; docker plugin enable</code>:</p>
+<code>docker plugin disable &amp;&amp; docker plugin enable</code>.</p>
+<p>The three duration settings (<code>AWAIT_TIMEOUT</code>, <code>OUTAGE_TICK</code>,
+<code>OUTAGE_GRACE</code>) take Go duration strings such as <code>45s</code> or <code>2m</code>. A value
+that does not parse, or that is zero or negative, <strong>fails plugin
+startup</strong> rather than falling back to the default — the same rule
+<code>METRICS_ADDR</code> follows for a malformed address. An unset or empty
+variable is not an error and takes the default below.</p>
 <table>
 <thead>
 <tr>
@@ -2172,7 +2190,7 @@ is no <code>ip6</code> <em>driver-opt</em> channel — use <code>--ip6</code> / 
 <tr>
 <td><code>OUTAGE_TICK</code></td>
 <td><code>30s</code></td>
-<td>How often the DHCP-outage watchdog re-checks each client, and so the resolution of <code>dhcp_timeouts</code> — the counter climbs about once per tick while a server is unreachable. Lower it for a finer-grained signal at the cost of a little more wakeup churn.</td>
+<td>How often the DHCP-outage watchdog re-checks each client, and so the resolution of <code>dhcp_timeouts</code> — the counter climbs about once per tick while a server is unreachable. Lower it for a finer-grained signal at the cost of a little more wakeup churn, down to a floor of <strong>100ms</strong> — a smaller value is accepted and silently raised to the floor, so it does not buy a finer signal.</td>
 </tr>
 <tr>
 <td><code>OUTAGE_GRACE</code></td>
@@ -2372,8 +2390,10 @@ endpoint on a plugin-served network, and rebuilds a DHCP manager for
 each. The first acquisition requests the address the container is already
 using (option 50) so the server ACKs it rather than allocating a new one.</p>
 <p>Recovery runs synchronously inside plugin startup, before the socket
-accepts requests, so a fresh <code>CreateEndpoint</code> arriving during enable
-cannot race it. Results land on <code>/Plugin.Health</code> as <code>recovered_ok</code>,
+accepts requests, whenever the daemon is answering — the normal case.
+When it is not, the walk is deferred until after the socket is up and
+can meet a <code>CreateEndpoint</code>; registration is a compare-and-set, so the
+<code>Join</code> keeps its client and recovery stands down (see below). Results land on <code>/Plugin.Health</code> as <code>recovered_ok</code>,
 <code>recovery_failed</code>, <code>recovery_aborted_container_gone</code> and
 <code>recovery_network_gone</code> — the last two covering containers that had
 already exited when recovery reached them, and networks removed between
@@ -2641,7 +2661,7 @@ diagnosing a specific container from them alone is not.</p>
 <tr>
 <td><code>unsafe_option_values_dropped</code></td>
 <td>no</td>
-<td>(v1.8.0+) Server-chosen DHCP string values refused before use because they carried a control character — options 66, 67, 100, 101 and 252 — plus option-15 domains truncated at their first space. <code>dhcpcd</code> validates only its <code>dname</code>-typed options; the <code>string</code>-typed ones pass <code>\n</code> and <code>\r</code> through verbatim, and a space in option 15 turns one search domain into several with the server's first in the order. The sibling of <code>unsafe_hostnames_rejected</code>, for the values the <em>server</em> chooses rather than the container. A legitimate server sends none of these, so any rise is deliberate.</td>
+<td>(v1.8.0+) Server-chosen DHCP string values refused before use because they carried a control character, plus option-15 domains truncated at their first space. The filter is reflective and covers every string value in the lease, so a new one is covered the day it is added; the ones it exists for are options 67, 100, 101 and 252, which <code>dhcpcd</code> passes through unvalidated because they are <code>string</code>-typed rather than <code>dname</code>-typed. Option 66 is <code>dname</code>-typed and <code>dhcpcd</code> type-checks it, but it is filtered here too rather than trusted. <code>dhcpcd</code> validates only its <code>dname</code>-typed options; the <code>string</code>-typed ones pass <code>\n</code> and <code>\r</code> through verbatim, and a space in option 15 turns one search domain into several with the server's first in the order. The sibling of <code>unsafe_hostnames_rejected</code>, for the values the <em>server</em> chooses rather than the container. A legitimate server sends none of these, so any rise is deliberate.</td>
 </tr>
 <tr>
 <td><code>dns_propagation_pid_mismatches</code></td>
@@ -2940,8 +2960,8 @@ consumer-side:</p>
 </tr>
 <tr>
 <td><code>healthy: false</code> on <code>/Plugin.Health</code></td>
-<td>Recovery or tombstone-write failure</td>
-<td>See the field table above; restart affected containers; for a tombstone-write failure check space and writability on the filesystem holding <a href="#plugin-settings"><code>STATE_DIR</code></a> — the host's <code>/var/lib/net-dhcp</code> since v1.5.0, the plugin rootfs before that</td>
+<td>Exactly four counters flip it, and they call for different action: <code>recovery_failed</code>, <code>join_start_failures</code>, <code>tombstone_write_failures</code>, <code>address_conflicts</code></td>
+<td>Read the four in the field table above to see which one moved — the flag alone does not say. <code>recovery_failed</code> / <code>join_start_failures</code>: restart the affected containers. <code>tombstone_write_failures</code>: check space and writability on the filesystem holding <a href="#plugin-settings"><code>STATE_DIR</code></a> — the host's <code>/var/lib/net-dhcp</code> since v1.5.0, the plugin rootfs before that. <code>address_conflicts</code>: the lease collided with a host already using that address, so the fault is on the DHCP server or the segment, not the plugin</td>
 </tr>
 <tr>
 <td>Container came back on a <strong>different IP</strong> after a plugin upgrade</td>

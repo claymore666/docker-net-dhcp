@@ -622,6 +622,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#how-a-network-chooses-its-dhcp-server" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How a network chooses its DHCP server
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#how-a-lease-is-checked-against-the-segment" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -659,6 +670,17 @@
     <span class="md-ellipsis">
       
         How state outlives a process
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#how-the-counters-are-exposed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How the counters are exposed
       
     </span>
   </a>
@@ -991,6 +1013,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#how-a-network-chooses-its-dhcp-server" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How a network chooses its DHCP server
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#how-a-lease-is-checked-against-the-segment" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1028,6 +1061,17 @@
     <span class="md-ellipsis">
       
         How state outlives a process
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#how-the-counters-are-exposed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How the counters are exposed
       
     </span>
   </a>
@@ -1271,6 +1315,56 @@ lifecycle, the event plumbing, and everything below are identical.</p>
   visible from inside that namespace, so reading it means
   <code>nsenter -t &lt;dhcpcd-pid&gt; -m</code> (see
   <a href="../reference/#verifying-that-renewal-works">verifying renewal</a>).</p>
+<h2 id="how-a-network-chooses-its-dhcp-server">How a network chooses its DHCP server<a class="headerlink" href="#how-a-network-chooses-its-dhcp-server" title="Permanent link">&para;</a></h2>
+<p><code>dhcp_servers</code> ranks the servers a network may lease from and
+<code>dhcp_deny_servers</code> names ones it must never lease from (#111, #669).
+The operator-facing rules are in the
+<a href="../reference/">driver reference</a>; the shape of the implementation
+follows from two properties of the <code>dhcpcd</code> directives underneath.</p>
+<ul>
+<li><strong>Both lists match the packet's source address, not the Server
+  Identifier it advertises.</strong> <code>dhcpcd</code>'s <code>whitelist</code> / <code>blacklist</code>
+  compare the offer's IP source, so behind a DHCP relay every offer
+  looks like it came from the relay and neither list can tell servers
+  apart — the no-relay limit is a property of the mechanism, not a gap
+  in the implementation. They are DHCPv4-only for the same kind of
+  reason: <code>dhcpcd</code> stores both as <code>in_addr_t</code> and its v6 path never
+  reads them, so a v6 entry is refused at <code>docker network create</code>
+  rather than applying to nothing while the operator believes a server
+  was ranked or denied.</li>
+<li><strong>A whitelist switches the blacklist off, so the plugin never emits
+  both.</strong> <code>dhcpcd</code> consults its blacklist only when no whitelist is
+  configured, so a network setting both options would get a denial the
+  client silently does not enforce. The deny list is subtracted from the
+  preference list at parse time instead: after that there is one truth
+  about what is allowed, and the renderer emits one kind of directive.
+  A preference list that denies its way to empty fails the network
+  create, because the alternative is degrading into "accept any server
+  at all" — the opposite of what both options were set to achieve. The
+  renderer carries the same either/or as a guard rather than trusting
+  the caller, since a comment asking callers not to emit both would
+  decay silently.</li>
+<li><strong>Ordering is not expressible to <code>dhcpcd</code>, so preference is an
+  acquisition-time ladder.</strong> The initial acquisition runs one attempt
+  per preferred server, in the operator's order, each restricted to
+  that server alone. The ladder <strong>divides</strong> the existing acquisition
+  budget rather than extending it — a preference list must not make
+  <code>docker run</code> slower, and the one-shot at <code>CreateEndpoint</code> already
+  runs against a tight ceiling — with the remainder of the division
+  dropped rather than handed to the last tier, so the attempts can only
+  sum to at most the budget. <code>dhcp_server_tier_fallbacks</code> counts a
+  fall-through to a lower tier, which is the only outside signal that a
+  preferred server has gone quiet while every container still starts;
+  <code>dhcp_server_policy_exhausted</code> counts a restricted acquisition where
+  nothing answered, which is otherwise indistinguishable from an
+  ordinary DHCP timeout.</li>
+<li><strong>The persistent client gets the whole allowed set, not the tier that
+  won.</strong> It has to be able to rebind after the preferred server goes
+  away, and a whitelist pinned to the winning tier would strand the
+  endpoint with no lease instead of failing over. Preference is an
+  acquisition-time concept; once a lease is held it stays with whoever
+  granted it, because renewal is unicast to that server.</li>
+</ul>
 <h2 id="how-a-lease-is-checked-against-the-segment">How a lease is checked against the segment<a class="headerlink" href="#how-a-lease-is-checked-against-the-segment" title="Permanent link">&para;</a></h2>
 <p>Since v1.6.0 the plugin asks, after each IPv4 lease, whether some <em>other</em>
 device already holds the address it was just given (#524). The counters
@@ -1393,13 +1487,96 @@ kinds of restart. Their <em>observable</em> behaviour is documented in the
 <li><strong>Recovery → a walk of Docker's network list at startup.</strong> For every
   endpoint on a plugin-served network, a DHCP manager is rebuilt and its
   first acquisition requests the address the container already holds
-  (option 50). This runs synchronously inside plugin construction,
-  before the socket accepts requests, so an incoming <code>CreateEndpoint</code>
-  cannot race it.</li>
+  (option 50). It runs synchronously inside plugin construction when the
+  daemon answers, which is the normal case and finishes before the
+  socket accepts anything. When the daemon is <strong>not</strong> serving yet the
+  walk cannot run there at all: Docker respawns the plugin during its
+  own startup, so blocking would make us unreachable to the very daemon
+  we are waiting on. Recovery is handed to <code>Listen</code> instead and runs in
+  a goroutine <em>after</em> the socket is up (#383) — which puts it in the
+  same window as the <code>Join</code>s a restarting host is issuing.
+  <code>recovery_deferred</code> counts that postponement; it is not a fault, and
+  only an exhausted retry budget lands on <code>recovery_failed</code>.</li>
 </ul>
+<p><strong>The deferred path is what makes the compare-and-set load-bearing.</strong>
+  Recovery builds a manager and registers it only if no manager is
+  already registered for the endpoint, in one locked operation. The
+  check and the registration used to be two, and a <code>Join</code> landing in
+  the gap had its live manager evicted from the registry while its
+  <code>dhcpcd</code> kept running — untracked, unstoppable, and competing with
+  recovery's fresh client on the same interface. A <code>Join</code> is newer
+  truth than a recovery walk and may displace it; recovery is older
+  truth and must yield, which is what a compare-and-set expresses and a
+  stop-what-I-displaced does not. <code>recovery_already_managed</code> counts an
+  endpoint left alone — not healthy-affecting, since that endpoint
+  <em>has</em> a renewal client, and the only outward sign the race happened
+  at all (#480, #679).</p>
 <p>The plugin's identity is a MAC. Both stability mechanisms exist because
 DHCP servers key on it, and everything above is in service of presenting
 the same MAC to the server across an event the container did not choose.</p>
+<h2 id="how-the-counters-are-exposed">How the counters are exposed<a class="headerlink" href="#how-the-counters-are-exposed" title="Permanent link">&para;</a></h2>
+<p><code>/Plugin.Health</code> and <code>/metrics</code> are two renderings of one snapshot
+(#651). What each of them says is in the
+<a href="../reference/#observability">driver reference</a>; the mechanism is that
+one function builds that snapshot and both handlers render it and
+nothing else.</p>
+<ul>
+<li><strong>One source, because two hand-kept lists rot.</strong> A metrics handler
+  that read the atomics itself would be a second list of every counter,
+  and this repository has watched that shape decay more than once
+  (#542, #636) — a stale list is invisible until an alert that should
+  have fired does not. The exposition is a table keyed by the
+  <code>HealthResponse</code> JSON tag it renders, and a unit test walks that
+  struct by reflection and fails on a field nobody claimed. Adding a
+  counter without exposing it is a red unit test rather than a hole in
+  somebody's dashboard.</li>
+<li><strong>The snapshot is not a single atomic instant, and that is
+  deliberate.</strong> The counters are read without a lock, so two of them
+  can be a few nanoseconds apart. They are monotonic counters read for
+  rates and alerting, not an accounting ledger, and this is what
+  <code>/Plugin.Health</code> has always done. Only the two map lengths take the
+  mutex, because reading a map during a concurrent write is a data race
+  rather than a stale number.</li>
+<li><strong>The <code>ipv4</code> series is derived, never read.</strong> The family-split
+  counters bump the aggregate on <em>every</em> event and the <code>_v6</code> sibling
+  only on v6 ones (#212), so <code>_v6</code> is a subset of the total rather than
+  a peer, and <code>family="ipv4"</code> has to be total-minus-v6 at render time.
+  A total below its v6 subset would mean a bump reached the sibling and
+  not the aggregate — a real bug — but a negative counter makes the
+  whole scrape unparseable and buries the signal it was supposed to
+  show, so it clamps to zero and the rest of the metrics still arrive.</li>
+<li><strong>Two exposure paths, and only one of them opens a port.</strong> <code>/metrics</code>
+  is on the plugin socket unconditionally: it costs nothing, and it
+  lets an operator with a socket-aware scrape path collect metrics
+  without the plugin listening anywhere. The TCP listener is
+  <code>METRICS_ADDR</code>, and it is off unless set. The plugin runs with
+  <code>"network": {"type": "host"}</code> and holds <code>CAP_NET_ADMIN</code>,
+  <code>CAP_SYS_ADMIN</code> and <code>CAP_SYS_PTRACE</code>, so any port it opens is on the
+  host's own network namespace — opening one has to be a decision an
+  operator made, not something they inherited by upgrading. That
+  listener's mux carries <code>/metrics</code> and nothing else, so no libnetwork
+  RPC becomes reachable over TCP; it binds before the call returns, so
+  an unusable address fails at startup where somebody sees it rather
+  than in a goroutine that logs and leaves the plugin running without
+  the endpoint that was asked for; and a wildcard bind is said out loud
+  rather than refused. What a wildcard leaks is not a lease inventory —
+  the exposition is aggregate counters plus a per-process instance UUID,
+  with no endpoint IDs, container names, addresses or MACs, which
+  <code>SECURITY.md</code> promises and
+  <code>TestMetricsExposition_NoPerEndpointIdentifiers</code> pins — it is this
+  plugin's operational telemetry, published on every interface the host
+  has, since the plugin runs in the host's network namespace (#709).</li>
+<li><strong>The socket's mode is pinned rather than inherited.</strong> Serving
+  <code>/metrics</code> on the plugin socket is unchanged ground only because that
+  socket is root-only: anything able to read it can already call every
+  RPC. A UNIX socket is created <code>0777 &amp;^ umask</code>, so until #687 that
+  property was whatever umask the plugin runtime happened to hand us —
+  true under the usual <code>0022</code>, false under <code>0002</code>, and nothing said
+  which. <code>Listen</code> now chmods the socket to <code>0600</code> and refuses to serve
+  if it cannot, since an unknown mode is exactly the state being
+  guarded against. Only the daemon speaks this protocol and it connects
+  as root, so nothing legitimate needs group or other.</li>
+</ul>
 <h2 id="running-the-tests">Running the tests<a class="headerlink" href="#running-the-tests" title="Permanent link">&para;</a></h2>
 <p>Four loops, cheapest first. Only the last needs root or a plugin.</p>
 <table>
@@ -1412,7 +1589,7 @@ the same MAC to the server across an event the container did not choose.</p>
 </thead>
 <tbody>
 <tr>
-<td>unit + gate scripts</td>
+<td>the Go unit tests</td>
 <td><code>go test ./...</code></td>
 <td>nothing — seconds</td>
 </tr>
