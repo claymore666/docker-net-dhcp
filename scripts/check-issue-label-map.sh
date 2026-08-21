@@ -112,14 +112,45 @@ def compile_pattern(pattern):
     return re.compile(body, flags)
 
 
+def block_scalar(text, key, path, failures):
+    r"""Read a `key: |` block by INDENTATION, not by regex.
+
+    The obvious regex — `key:\s*\|\s*\n((?:\s+\S.*\n)+)` — is wrong,
+    and wrong in the direction that hides itself: `\s` matches a newline,
+    so `\s+` walks straight through the blank line that ends the block and
+    keeps going to the end of the file. On this repository's own workflow it
+    returned 108 entries where 8 were meant (#715).
+
+    That defect survived because the only consumer asked "is every rule
+    label IN this set?" — a subset test, which a polluted superset can only
+    make pass more easily. A guard fails in one direction; this one was
+    never asked the question that would have exposed it.
+    """
+    lines = text.splitlines()
+    want = key + ":"
+    for i, ln in enumerate(lines):
+        stripped = ln.strip()
+        if stripped not in (want + " |", want + " |-", want + " |+"):
+            continue
+        indent = len(ln) - len(ln.lstrip())
+        out = []
+        for rest in lines[i + 1:]:
+            if not rest.strip():
+                out.append("")
+                continue
+            if len(rest) - len(rest.lstrip()) <= indent:
+                break
+            out.append(rest.strip())
+        return [x for x in out if x]
+    failures.append(f"{path}: no {key} block found")
+    return None
+
+
 def allowed_labels(path):
     """Pull the ALLOWED_LABELS block out of the workflow."""
     text = open(path, encoding="utf-8").read()
-    m = re.search(r"^\s*ALLOWED_LABELS:\s*\|\s*\n((?:\s+\S.*\n)+)", text, re.MULTILINE)
-    if not m:
-        failures.append(f"{path}: no ALLOWED_LABELS block found")
-        return set()
-    return {ln.strip() for ln in m.group(1).splitlines() if ln.strip()}
+    names = block_scalar(text, "ALLOWED_LABELS", path, failures)
+    return set(names or ())
 
 
 rules = parse_map(map_path)

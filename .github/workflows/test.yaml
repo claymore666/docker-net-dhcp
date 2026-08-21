@@ -186,6 +186,14 @@ jobs:
       - name: Issue label map check
         run: bash scripts/check-issue-label-map.sh
 
+      # The label taxonomy declared in .github/labels.yml (#715). This is
+      # the half that is a property of the TREE: the declaration is well
+      # formed, and the labeller's rule map and ALLOWED_LABELS are both
+      # subsets of it. Whether the tracker still matches needs the API and
+      # runs on a schedule instead — see .github/workflows/label-taxonomy.yml.
+      - name: Label taxonomy check
+        run: bash scripts/check-label-taxonomy.sh --static
+
       # Every FROM in the tree must name its base by digest (#633).
       # Three of four Dockerfiles already did, including the sibling that
       # pins the same base as the one that did not — so the convention

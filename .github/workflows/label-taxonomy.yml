@@ -1,0 +1,74 @@
+name: Label taxonomy
+
+# Does the tracker still match .github/labels.yml (#715)?
+#
+# The taxonomy — which labels exist, what role each plays, and the rule that
+# an issue carries exactly one type — was consolidated once and rotted twice.
+# Both rots were found by a person reading the tracker. The second, caught
+# immediately before the v1.8.0 release PR: a duplicate type label `tests`
+# with no description, a `security` label created during a review with no
+# description and no entry in the labeller's allow-list, ten open issues
+# carrying two type labels and seven carrying none.
+#
+# None of it was catchable until #715, because no file said which labels may
+# exist. `.github/issue-labeler.yml` and `ALLOWED_LABELS` are inputs to the
+# labeller: a label missing from them is invisible to the automation, not
+# forbidden.
+#
+# WHY THIS IS NOT IN test.yaml. The claim can become false with nobody
+# touching the tree — somebody adds a label or edits an issue in the web UI —
+# so gating a pull request on it would charge that cost to whoever pushed
+# next, and would fail on a tracker API blip. The half that IS a property of
+# the tree (the declaration is well formed; the labeller's two lists are
+# subsets of it) runs there instead, as `Label taxonomy check`. Same split,
+# and the same accepted cost, as Milestone scope and Starter tasks.
+#
+# A red schedule is easier to ignore than a red PR. That is affordable here
+# because the risk window is long: a wrong label sits for days before it
+# misleads anybody, and the thing it ultimately corrupts — a release PR's
+# `Closes` list, built from milestone membership — is a deliberate act
+# somebody schedules.
+#
+# A RED RUN IS A PROMPT TO LOOK, NOT PROOF. The tracker's label index lags
+# the issue itself by up to about a minute, so a run firing just after
+# somebody fixes a label can still report it. Confirm with
+# `gh issue view <N> --json labels` before acting; the next run clears on its
+# own. scripts/check-milestone-scope.sh's header explains at length why that
+# is left alone rather than retried around.
+#
+# The check exits 2 rather than 1 when it cannot see — an empty label list or
+# an empty issue list is "cannot check", never a clean pass — so "the API was
+# down" stays distinguishable from "the taxonomy is wrong" in the run log.
+#
+# NOT CHECKED HERE ON PURPOSE: `backlog` never coexisting with a milestone.
+# That invariant already has a gate, Milestone scope, which also knows how to
+# tell its two fixes apart using `in-dev`. One defect should go red in one
+# place.
+#
+# NOTE ON WHICH COPY RUNS. Scheduled workflows only ever fire from the
+# default branch, so this file's behaviour is whatever is on `main` — not
+# what is on `dev`. Changes here take effect at the next release, not at
+# merge.
+on:
+  schedule:
+    # Daily, offset from Milestone scope (23 6) and Starter tasks (41 7) so
+    # three API-reading jobs do not land together. Labels change at human
+    # pace; hourly would only add noise.
+    - cron: '7 8 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: read
+
+jobs:
+  label-taxonomy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: The tracker matches the declared taxonomy
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash scripts/check-label-taxonomy.sh --live

@@ -134,6 +134,48 @@ check "fixture row without a tab fails" 1 \
 check "missing map is a usage error" 2 \
     "$TMP/nope.yml" "$WF" "$GOOD_FIXTURE" "missing"
 
+# The allowlist block is read by INDENTATION, not by a regex (#715).
+#
+# The reader here used to be
+#   ALLOWED_LABELS:\s*\|\s*\n((?:\s+\S.*\n)+)
+# in which `\s` matches a newline, so `\s+` steps over the blank line that
+# ends the block and consumes every indented line to the end of the file. On
+# the real workflow that returned 108 entries where 8 were meant.
+#
+# It hid because this gate only ever asked "is every rule label IN the
+# allowlist?" — a subset test, which a polluted superset can only make pass
+# more easily. A guard fails in one direction, and nothing had ever asked
+# this one the question that exposes it.
+#
+# The fixture is that exact shape: `testing` is NOT in the allowlist, but the
+# word appears on its own line inside a later `run:` block. Under the old
+# reader it was accepted as an allowlist entry and the case passed; the check
+# below therefore goes red on the old parser and green on the new one.
+WF_TRAP="$TMP/workflow-trap.yml"
+cat > "$WF_TRAP" <<'EOF'
+env:
+  ALLOWED_LABELS: |
+    bug
+    ci
+
+jobs:
+  label:
+    steps:
+      - name: A step whose body mentions a label name
+        run: |
+          echo picking a lane
+          testing
+EOF
+TRAP_MAP="$TMP/trap-map.yml"
+cat > "$TRAP_MAP" <<'EOF'
+testing:
+  - '/^tests?(\([^)]*\))?!?:/i'
+EOF
+TRAP_FIXTURE="$TMP/trap-fixture.tsv"
+printf 'test(harness): a fixture change\ttesting\n' > "$TRAP_FIXTURE"
+check "a label named past the allowlist block is not in the allowlist" 1 \
+    "$TRAP_MAP" "$WF_TRAP" "$TRAP_FIXTURE" "not in ALLOWED_LABELS"
+
 if [ "$failures" -ne 0 ]; then
     echo "$failures test(s) failed" >&2
     exit 1

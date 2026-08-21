@@ -1,0 +1,132 @@
+# The label taxonomy (#715).
+#
+# THIS FILE IS THE DECLARATION. Before it existed, the taxonomy lived in
+# nobody's file: `.github/issue-labeler.yml` and the `ALLOWED_LABELS` block
+# in `.github/workflows/issue-labeler.yml` are inputs to the labeller, not a
+# statement of what may exist, so a label absent from both was not forbidden
+# — only invisible. The taxonomy was consolidated once and rotted twice, and
+# both rots were found by a person reading the tracker.
+#
+# `scripts/check-label-taxonomy.sh` reads this file:
+#   --static  every entry is well formed, and the labeller's two lists are
+#             subsets of it. A property of the tree, so it gates pull requests.
+#   --live    the tracker's labels match this file in BOTH directions, and no
+#             open issue violates the rules below. Needs the API, so it runs
+#             on a schedule.
+#
+# THE RULES THE ROLES ENCODE
+#
+#   type        exactly one per issue, derived from the conventional-commit
+#               prefix in the title. `ci` covers workflows/gates/runners and
+#               release plumbing; `testing` covers suites/harness/fixtures —
+#               both are types, not areas, so a `test(harness):` issue is
+#               `testing`, not `enhancement`.
+#   area        optional, any number.
+#   severity    only ever on an issue that also carries `code-review`.
+#   status      workflow state. `backlog` must never coexist with a milestone
+#               — the milestone is the scheduling truth. That one pairing is
+#               enforced by scripts/check-milestone-scope.sh and is
+#               deliberately NOT restated by the taxonomy gate.
+#   dependabot  applied by Dependabot to its own pull requests. Never apply
+#               one by hand; `github_actions` in particular had been borrowed
+#               as a "CI work" marker, which is what `ci` is for.
+#
+# COLOUR IS DELIBERATELY NOT DECLARED. It carries no rule, and gating on it
+# would turn a cosmetic edit in the web UI into a red run.
+#
+# Adding a label means adding it here in the same change. A label created on
+# the tracker alone goes red on the next scheduled run, which is the entire
+# point: `tests` — a duplicate of `testing`, no description, one issue — got
+# in exactly that way.
+
+- name: bug
+  role: type
+  description: Something isn't working
+
+- name: enhancement
+  role: type
+  description: New feature or request
+
+- name: documentation
+  role: type
+  description: Improvements or additions to documentation
+
+- name: refactor
+  role: type
+  description: Code restructuring without behavior change
+
+- name: ci
+  role: type
+  description: CI, gates, runners, release plumbing
+
+- name: testing
+  role: type
+  description: Test suites, harness, fixtures
+
+- name: lifecycle
+  role: area
+  description: Endpoint/plugin lifecycle correctness
+
+- name: concurrency
+  role: area
+  description: Concurrency / goroutine / race / leak
+
+- name: security
+  role: area
+  description: 'Area: trust boundaries, input from the network or the daemon'
+
+- name: critical
+  role: severity
+  description: 'Critical: data loss, crash, or correctness bug'
+
+- name: warning
+  role: severity
+  description: 'Warning: performance / robustness / maintainability concern'
+
+- name: info
+  role: severity
+  description: 'Info: minor improvement or style nit'
+
+- name: code-review
+  role: status
+  description: Found during a code review pass
+
+- name: backlog
+  role: status
+  description: Tracked, not scheduled for a release
+
+- name: blocked
+  role: status
+  description: Blocked on an external dependency or another issue
+
+- name: in-dev
+  role: status
+  description: Work merged into dev — done, awaiting release
+
+- name: has-pr
+  role: status
+  description: An open PR references this issue
+
+- name: good first issue
+  role: status
+  description: Self-contained starter task — no deep project context needed
+
+- name: dependencies
+  role: dependabot
+  description: Pull requests that update a dependency file
+
+- name: github_actions
+  role: dependabot
+  description: Pull requests that update GitHub Actions code
+
+- name: go
+  role: dependabot
+  description: Pull requests that update go code
+
+- name: docker
+  role: dependabot
+  description: Pull requests that update docker code
+
+- name: python
+  role: dependabot
+  description: Pull requests that update python code
