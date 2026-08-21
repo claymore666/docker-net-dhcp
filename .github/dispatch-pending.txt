@@ -32,3 +32,14 @@
 #   by the next release, when `dev` reaches `main`; remove this entry
 #   then.
 .github/workflows/netboot-image.yml
+
+# .github/workflows/label-taxonomy.yml: the live half of the label-taxonomy
+#   gate (#715). Declares both `schedule` and `workflow_dispatch`, and
+#   NEITHER fires off the default branch — so between merging to `dev` and
+#   the next release this workflow does not run at all. Nothing is blocked
+#   meanwhile: the half that gates pull requests is
+#   `check-label-taxonomy.sh --static` in test.yaml, and the live half can
+#   be run by hand with `bash scripts/check-label-taxonomy.sh --live`.
+#   Cleared by the next release, when `dev` reaches `main`; dispatch it once
+#   to verify it end to end, then remove this entry.
+.github/workflows/label-taxonomy.yml

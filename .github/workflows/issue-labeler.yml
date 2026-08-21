@@ -52,6 +52,7 @@ env:
     testing
     lifecycle
     concurrency
+    security
 
 jobs:
   label:
@@ -140,8 +141,10 @@ jobs:
               testing       test suites, harness, fixtures
               lifecycle     endpoint/plugin lifecycle correctness
               concurrency   races, goroutine leaks, locking
-            The first six are types — pick exactly one. The last two are
-            areas — add one only when it clearly applies.
+              security      trust boundaries, input from the network
+                            or the daemon
+            The first six are types — pick exactly one. The last three
+            are areas — add one only when it clearly applies.
 
             Write your answer with the Write tool to ./labels.txt: one
             label per line, nothing else, no commentary, no formatting.
