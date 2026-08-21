@@ -117,8 +117,11 @@ while IFS= read -r line; do
     # says WHY, so looking only at the immediately preceding line would
     # push the reason away from the marker.
     prev=$((lineno - 1))
+    # grep without -q on purpose: -q exits at the first match, the
+    # SIGPIPE kills the producer, and under pipefail the pipeline then
+    # reports failure ON SUCCESS. Redirecting reads to EOF instead.
     if [ "$prev" -ge 1 ] && head -n "$prev" "$file" | tac | awk '/^[[:space:]]*\/\//{print;next}{exit}' \
-        | grep -q 'proc-path-discipline: allow'; then
+        | grep 'proc-path-discipline: allow' >/dev/null; then
         continue
     fi
 
