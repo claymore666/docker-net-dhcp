@@ -8,9 +8,9 @@
 # cases keep meaning after the next counter is added.
 #
 # The case that keeps the rest honest is the last positive one: a
-# FIFTH counter, agreed everywhere, must pass. Without it a gate
-# hardcoded to today's four would satisfy every other case here while
-# blocking the next real change.
+# FIFTH counter, agreed everywhere — the Troubleshooting row included —
+# must pass. Without it a gate hardcoded to today's four would satisfy
+# every other case here while blocking the next real change.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -22,12 +22,16 @@ no() { printf 'FAIL  %s\n' "$1" >&2; fail=$((fail + 1)); }
 DIR=$(mktemp -d)
 trap 'rm -rf "$DIR"' EXIT
 
-# mkdoc <file> <count-word> <summary-list> <row-list> <yes-list>
+# mkdoc <file> <count-word> <summary-list> <row-list> <yes-list> [<trouble-list>]
 #   lists are space-separated counter names; <yes-list> gets `yes` in
 #   the healthy-affecting column, and two `no` counters are always
 #   present so the column is judged and not merely echoed.
+#   <trouble-list> is the cause cell of the Troubleshooting row an
+#   operator lands on after seeing `healthy: false`; it defaults to the
+#   column so a case that is not about that row stays about its own
+#   subject.
 mkdoc() {
-    local f="$1" word="$2" summary="$3" row="$4" yes="$5" n
+    local f="$1" word="$2" summary="$3" row="$4" yes="$5" trouble="${6-$5}" n
     {
         printf '## At a glance\n\n'
         printf '**[Health counters](#pluginhealth)** — `/Plugin.Health` on the socket. %s flip `healthy` to `false`:' "$word"
@@ -39,6 +43,11 @@ mkdoc() {
         for n in $yes; do printf '| `%s` | yes | a fault. |\n' "$n"; done
         printf '| `leases_renewed` | no | not a fault. |\n'
         printf '| `pending_hints` | no | not a fault. |\n'
+        printf '\n## Troubleshooting\n\n| symptom | likely cause | fix |\n| --- | --- | --- |\n'
+        printf '| `healthy: false` on `/Plugin.Health` | non-zero'
+        for n in $trouble; do printf ' `%s`,' "$n"; done
+        printf ' | read the counter that is non-zero and follow its row. |\n'
+        printf '| `docker plugin disable` refuses | networks still reference it | remove them first. |\n'
     } > "$f"
 }
 
@@ -57,7 +66,7 @@ FOUR="recovery_failed join_start_failures tombstone_write_failures address_confl
 # --- agreement ---------------------------------------------------------
 mkdoc "$DIR/ok.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/ok.go" 4
 out=$(bash "$CHECK" "$DIR/ok.md" "$DIR/ok.go" 2>&1); rc=$?
-[ $rc -eq 0 ] && ok "three agreeing statements and a matching expression pass" \
+[ $rc -eq 0 ] && ok "four agreeing statements and a matching expression pass" \
                || no "agreement failed (rc=$rc: $out)"
 
 # --- the #638 shape: the row went a counter stale ----------------------
@@ -87,6 +96,32 @@ out=$(bash "$CHECK" "$DIR/code.md" "$DIR/code.go" 2>&1); rc=$?
 [ $rc -eq 1 ] && ok "a fifth term in the code with no doc change fails" \
                || no "the code side is not judged (rc=$rc: $out)"
 
+# --- the fourth copy: the Troubleshooting row ---------------------------
+# The row an operator reaches AFTER seeing `healthy: false`. It shipped
+# naming two of the four counters, and the gate that guarded the other
+# three copies could not see it.
+TWO="recovery_failed tombstone_write_failures"
+mkdoc "$DIR/trouble.md" Four "$FOUR" "$FOUR" "$FOUR" "$TWO"; mkgo "$DIR/trouble.go" 4
+out=$(bash "$CHECK" "$DIR/trouble.md" "$DIR/trouble.go" 2>&1); rc=$?
+[ $rc -eq 1 ] && ok "a troubleshooting row naming 2 of 4 counters fails" \
+               || no "the troubleshooting row is not judged (rc=$rc: $out)"
+case "$out" in *join_start_failures*) ok "the failure names a counter the row omits" ;;
+  *) no "the failure does not name the omitted counter: $out" ;; esac
+
+# The shipped shape exactly: prose that names no counter at all.
+mkdoc "$DIR/trouble0.md" Four "$FOUR" "$FOUR" "$FOUR" ""; mkgo "$DIR/trouble0.go" 4
+out=$(bash "$CHECK" "$DIR/trouble0.md" "$DIR/trouble0.go" 2>&1); rc=$?
+[ $rc -eq 1 ] && ok "a troubleshooting row naming no counter fails" \
+               || no "an unbackticked cause cell passed (rc=$rc: $out)"
+
+# A row that names a name which is not a counter must not count as
+# naming one — `STATE_DIR` is a setting, and the shipped row cited it.
+mkdoc "$DIR/troubleset.md" Four "$FOUR" "$FOUR" "$FOUR" ""; mkgo "$DIR/troubleset.go" 4
+sed -i 's/| non-zero |/| non-zero — check `STATE_DIR` |/' "$DIR/troubleset.md"
+out=$(bash "$CHECK" "$DIR/troubleset.md" "$DIR/troubleset.go" 2>&1); rc=$?
+[ $rc -eq 1 ] && ok "a cause cell citing a setting rather than a counter still fails" \
+               || no "a non-counter backtick satisfied the row (rc=$rc: $out)"
+
 # --- growth must be possible -------------------------------------------
 # The gate must not encode today's four. Add a fifth everywhere: pass.
 FIVE="$FOUR ledger_write_failures"
@@ -94,6 +129,13 @@ mkdoc "$DIR/five.md" Five "$FIVE" "$FIVE" "$FIVE"; mkgo "$DIR/five.go" 5
 out=$(bash "$CHECK" "$DIR/five.md" "$DIR/five.go" 2>&1); rc=$?
 [ $rc -eq 0 ] && ok "a fifth counter agreed everywhere passes" \
                || no "the gate blocks a legitimate new counter (rc=$rc: $out)"
+
+# A missing troubleshooting row is "cannot see", not "nothing to check".
+mkdoc "$DIR/notrouble.md" Four "$FOUR" "$FOUR" "$FOUR"
+grep -v '^| `healthy: false`' "$DIR/notrouble.md" > "$DIR/notrouble2.md"
+out=$(bash "$CHECK" "$DIR/notrouble2.md" "$DIR/ok.go" 2>&1); rc=$?
+[ $rc -eq 2 ] && ok "a missing troubleshooting row exits 2" \
+               || no "a missing troubleshooting row returned $rc (: $out)"
 
 # --- cannot see: every one of these must be loud -----------------------
 mkdoc "$DIR/shape.md" Four "$FOUR" "$FOUR" "$FOUR"

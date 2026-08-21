@@ -20,7 +20,8 @@ TEST_OUTAGE_GRACE ?= 10s
 
 .PHONY: all debug build create enable disable pdebug push clean check integration-test \
         integration-test-failure integration-test-shard integration-local integration-cleanup \
-        build-cover plugin-cover create-cover enable-cover disable-cover capture-fixtures
+        build-cover plugin-cover create-cover enable-cover disable-cover capture-fixtures \
+        verify-bridge-recipes verify-bridge-boot verify-bridge-docs
 
 # These targets' prerequisites are a SEQUENCE, not a set: `enable` needs
 # `create` to have finished, and integration-local's cleanup must precede
@@ -28,7 +29,10 @@ TEST_OUTAGE_GRACE ?= 10s
 # prerequisites concurrently, which would race the plugin install against
 # the suite that uses it. Scoped .NOTPARALLEL (GNU Make >= 4.4) serialises
 # only these, leaving -j useful everywhere else.
-.NOTPARALLEL: all pdebug integration-local
+# verify-bridge-docs joins them for a different reason: both halves build
+# a fake LAN on 192.168.77.0/24, so running them concurrently puts two
+# DHCP servers on one subnet and each would answer the other's clients.
+.NOTPARALLEL: all pdebug integration-local verify-bridge-docs
 
 all: create enable
 
@@ -295,6 +299,52 @@ integration-cleanup:
 		exit 1; \
 	fi
 	bash test/integration/cleanup-orphans.sh
+
+# Verify docs/bridge-mode.md's persistent-bridge recipes by RUNNING them.
+#
+# WHY THESE HAVE A TARGET AND NOT A WORKFLOW
+#
+# scripts/verify-bridge-recipes.sh and scripts/verify-bridge-boot.sh
+# were written to catch a class of defect no test can reach: the page
+# ships copy-pasteable network configuration for four distro stacks, and
+# a wrong key is silent. The systemd-networkd stanza shipped
+# `ForwardDelay` where the key is `ForwardDelaySec`; systemd ignores an
+# unknown key, so the bridge came up healthy with the setting doing
+# nothing. Unfindable by reading, found in five seconds by applying it.
+#
+# Both scripts existed with NO caller — not here, not in a workflow, not
+# in scripts/local-lane.sh, not in the release runbook. A verification
+# nobody can name is a verification nobody runs, so the release
+# documentation review had no way to reach them. This target is that
+# name.
+#
+# They are deliberately NOT wired into CI. Each one starts privileged
+# containers, `apt-get install`s a network stack inside three distro
+# images, and waits on real DHCP; verify-bridge-boot additionally runs
+# systemd as PID 1 with --cgroupns=host, which is exactly the nesting
+# shape that broke plugin enable/disable in the runner image (#158). In
+# the hosted lane that is minutes of network per recipe and a red build
+# the next time a distro repackages something — noise on commits that
+# touch no documentation. Run them when docs/bridge-mode.md changes and
+# in the release documentation review, on a host with a real Docker
+# daemon.
+#
+# RECIPE=<name> runs a single stack (ifupdown, netplan,
+# systemd-networkd, networkmanager) instead of all of them.
+RECIPE ?=
+
+verify-bridge-recipes:
+	bash scripts/verify-bridge-recipes.sh $(RECIPE)
+
+verify-bridge-boot:
+	bash scripts/verify-bridge-boot.sh $(RECIPE)
+
+# The pair. `recipes` proves each stanza is correct as written;
+# `boot` proves the init system applies it at boot from disk. Neither
+# covers the host's own docker.service-vs-network ordering, which still
+# needs a real machine — the scripts say so in their own summaries, and
+# a green run here must not be read as more than they claim.
+verify-bridge-docs: verify-bridge-recipes verify-bridge-boot
 
 # Regenerate the captured libnetwork request fixtures (#644).
 #
