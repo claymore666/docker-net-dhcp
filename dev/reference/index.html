@@ -2182,7 +2182,7 @@ is no <code>ip6</code> <em>driver-opt</em> channel — use <code>--ip6</code> / 
 <tr>
 <td><code>METRICS_ADDR</code></td>
 <td><em>(empty)</em></td>
-<td>(v1.8.0+) TCP address for the Prometheus <code>/metrics</code> endpoint, e.g. <code>127.0.0.1:9099</code>. Empty means <strong>no TCP listener</strong>, which is the default and the recommended state unless you are scraping it. <code>/metrics</code> is always available on the plugin socket regardless of this setting. <strong>Bind it to loopback or a management interface, never <code>0.0.0.0</code></strong> — see the security note under <a href="#metrics"><code>/metrics</code></a>. A malformed address fails plugin startup rather than being ignored.</td>
+<td>(v1.8.0+) TCP address for the Prometheus <code>/metrics</code> endpoint, e.g. <code>127.0.0.1:9099</code>. Empty means <strong>no TCP listener</strong>, which is the default and the recommended state unless you are scraping it. <code>/metrics</code> is always available on the plugin socket regardless of this setting. <strong>Bind it to loopback or a management interface, never <code>0.0.0.0</code></strong> — see the security note under <a href="#metrics"><code>/metrics</code></a>. A malformed address fails plugin startup rather than being ignored, and a wildcard bind (<code>:9099</code>, <code>0.0.0.0:…</code>, <code>[::]:…</code>) logs a warning at startup naming what the endpoint exposes — it is not refused, because it is a legitimate choice on a private segment, but it should be a choice.</td>
 </tr>
 </tbody>
 </table>
@@ -2647,6 +2647,26 @@ diagnosing a specific container from them alone is not.</p>
 <td><code>netns_pid_mismatches</code></td>
 <td>no</td>
 <td>(v1.8.0+) Sandbox network-namespace opens refused because the container PID resolved through Docker no longer belonged to that container. The sibling of <code>dns_propagation_pid_mismatches</code> above, on the path with the larger blast radius and with no opt-in: what the refusal prevents is not one file but a netlink handle carrying every address, MTU and route the plugin applies, with <code>CAP_NET_ADMIN</code>, plus a DHCP client spawned into that namespace as root. Refusing fails the attach, so unlike the DNS case it is not silent — but the error reads like a slow container start, and only this counter says the PID belonged to something else. Not <code>healthy</code>-affecting: the attach failure is reported to Docker, and the container simply does not come up on this network. Any non-zero value is worth reading: it means a container exited inside the attach window and the kernel handed its PID to another task.</td>
+</tr>
+<tr>
+<td><code>dhcp_routes_applied</code></td>
+<td>no</td>
+<td>(v1.8.0+) DHCP option-121 classless static routes handed to Docker at Join — routes, not Joins. <code>skip_routes=true</code> opts out and then this never moves. Read it as the denominator for the row below.</td>
+</tr>
+<tr>
+<td><code>dhcp_default_route_superseded</code></td>
+<td>no</td>
+<td>(v1.8.0+) Joins whose option-121 routes cover <code>0.0.0.0/0</code> <strong>by union</strong> rather than by a literal default entry — e.g. <code>0.0.0.0/1 g</code> plus <code>128.0.0.0/1 g</code>. Neither half is a default route, so the gateway reported to Docker (and shown by <code>docker inspect</code>) is still the one from option 3, while every packet follows the option-121 next hop instead. This is legitimate in split-tunnel setups and the routes are applied either way; the counter exists because before it, nothing in the plugin's output distinguished the two cases. The accompanying log line names each destination and next hop.</td>
+</tr>
+<tr>
+<td><code>lease_time_clamped</code></td>
+<td>no</td>
+<td>(v1.8.0+) Option-51 lease lifetimes too long to use as the outage watchdog's deadline, cut to 24h <strong>for the watchdog only</strong> — the lifetime reported in logs and the ledger is untouched. Any non-zero value is worth reading: <code>leaseDeadline</code> is the only trigger that can detect a silently lapsed lease under <code>--noconfigure</code>, so one ACK carrying <code>0xFFFFFFFF</code> followed by silence used to leave <code>dhcp_timeouts</code> at zero through a total outage for that endpoint.</td>
+</tr>
+<tr>
+<td><code>mtu_refused</code></td>
+<td>no</td>
+<td>(v1.8.0+) Option-26 MTUs outside <code>[576, 65535]</code>, refused with the container link left at the MTU it had. Only moves with <code>propagate_mtu=true</code>. Neither <code>dhcpcd</code> nor the kernel holds the bottom of that range — a server-supplied 68 is exported verbatim and accepted — and the result is destroyed throughput plus black-holed path MTU discovery, re-applied on every renewal, which looks like a slow network rather than a misconfiguration.</td>
 </tr>
 <tr>
 <td><code>ledger_write_failures</code></td>
