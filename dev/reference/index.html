@@ -2634,6 +2634,16 @@ diagnosing a specific container from them alone is not.</p>
 <td>(v1.6.0+) The same wait giving up after its budget, after which the operation asks the kernel anyway and may fail with <code>device or resource busy</code>. Deliberately bounded well below the reclaim's own budget so a wedged reclaim degrades to the pre-v1.6.0 behaviour instead of stalling a container start. Not <code>healthy</code>-affecting, but the actionable one of the pair: any non-zero value means something held a parent far longer than a DHCP round trip should take, and container starts on that NIC were refused as a result.</td>
 </tr>
 <tr>
+<td><code>unsafe_hostnames_rejected</code></td>
+<td>no</td>
+<td>(v1.8.0+) Container hostnames dropped before they could reach the generated DHCP client config, because they carried a control character (#692). The drop is the safe outcome and the lease proceeds — the hostname only decorates the DHCP exchange and the opt-in <code>register_dns</code> registration — so this is not <code>healthy</code>-affecting. Read it as an intent signal rather than a fault: Docker does not validate <code>--hostname</code>, and a legitimate one never contains a newline, so a non-zero value means something deliberately tried to append directives to the client config. Underscores and other technically-illegal-but-common hostnames are <strong>not</strong> counted; the rule is about the config file's structure, not about RFC 1123.</td>
+</tr>
+<tr>
+<td><code>dns_propagation_pid_mismatches</code></td>
+<td>no</td>
+<td>(v1.8.0+) DNS propagations refused because the container PID resolved through Docker no longer belonged to that container by the time the plugin acted on it (#688). Only reachable with <code>propagate_dns</code> opted in. Refusing is the safe outcome — the container keeps the <code>resolv.conf</code> it had, and the next renewal propagates again — so this is not <code>healthy</code>-affecting. It is reported because the plugin runs in the host PID namespace: each one is a <code>/etc/resolv.conf</code> write that would otherwise have landed in an unrelated host process that inherited the recycled PID. A sustained rise means containers are exiting inside the propagation window; an isolated one is a container that stopped at the wrong moment.</td>
+</tr>
+<tr>
 <td><code>ledger_write_failures</code></td>
 <td>no</td>
 <td>Failed <code>audit_log</code> ledger appends — degrades forensics, not networking. Operators using <code>audit_log</code> alert on this.</td>
