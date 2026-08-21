@@ -107,4 +107,15 @@ type Route struct {
 type Event struct {
 	Type string
 	Data Info
+	// UnsafeValuesDropped is how many server-chosen string values
+	// BuildEvent refused because they carried a control character
+	// (#703).
+	//
+	// It rides the event because the filter runs in the dhcpcd hook
+	// process and the health counter lives in the plugin, which is a
+	// different process on the other side of the FIFO. Without it the
+	// drop would be invisible to operators, and a filter whose work
+	// leaves no trace is indistinguishable from an attack that was
+	// never attempted.
+	UnsafeValuesDropped int `json:",omitempty"`
 }

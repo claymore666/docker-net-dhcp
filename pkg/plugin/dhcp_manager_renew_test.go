@@ -235,3 +235,22 @@ func captureLog(t *testing.T, fn func()) string {
 	fn()
 	return buf.String()
 }
+
+// TestHandleEvent_CountsDroppedOptionValues is the plugin half of #703:
+// the filter runs in the dhcpcd hook process, so the only way its work
+// reaches an operator is the count riding the event across the FIFO. A
+// drop that leaves no trace is indistinguishable from an attack that was
+// never attempted.
+func TestHandleEvent_CountsDroppedOptionValues(t *testing.T) {
+	p := &Plugin{}
+	m := &dhcpManager{plugin: p}
+
+	// "nak" carries no lease data, so this touches no kernel state --
+	// and it is the case that proves the count is folded in for every
+	// event type, not just the lease-bearing ones.
+	m.handleEvent(dhcp.Event{Type: "nak", UnsafeValuesDropped: 3}, false)
+
+	if got := p.unsafeOptionValuesDropped.Load(); got != 3 {
+		t.Errorf("unsafe_option_values_dropped = %d, want 3", got)
+	}
+}

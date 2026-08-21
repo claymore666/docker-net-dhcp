@@ -99,3 +99,27 @@ func TestBuildResolvConf_KeepsOrdinaryValues(t *testing.T) {
 		}
 	}
 }
+
+// TestBuildResolvConf_DomainYieldsOneSearchDomain closes the gap #689
+// recorded one character short: SafeDirectiveValue rejects r < 0x20, and
+// 0x20 -- the space -- is the field separator of the file it protects.
+// So a space passed the filter and one search domain became three, with
+// the server's choices ahead of the operator's.
+//
+// Removing the FirstSearchDomain call in buildResolvConf turns this red.
+func TestBuildResolvConf_DomainYieldsOneSearchDomain(t *testing.T) {
+	out := string(buildResolvConf([]string{"10.99.0.53"}, nil, "a.attacker.test b.attacker.test corp.example"))
+
+	var search string
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, "search ") {
+			search = line
+		}
+	}
+	if search != "search a.attacker.test" {
+		t.Errorf("search line = %q, want exactly one domain", search)
+	}
+	if strings.Contains(out, "b.attacker.test") || strings.Contains(out, "corp.example") {
+		t.Errorf("a second domain reached the file:\n%s", out)
+	}
+}
