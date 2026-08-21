@@ -210,14 +210,18 @@ func TestRun_StopsPettingWhenTheProbeGoesStale(t *testing.T) {
 	sig <- os.Interrupt
 	<-done
 
-	// A deliberate stop must disarm, or debugging this service would
-	// reset the host a minute later.
+	// Stopping while the share is silent must NOT disarm. This is the
+	// shutdown path: systemd stops units before it unmounts, so the
+	// SIGTERM that ends this process arrives BEFORE the unmount that is
+	// going to hang. Disarming here removes the only thing left that
+	// could end that hang, which is what the board did for 14 minutes
+	// on 2026-08-20.
 	b, err := os.ReadFile(dev.Name())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasSuffix(string(b), magicClose) {
-		t.Fatalf("the magic-close byte was not written on shutdown; tail is %q", tail(string(b)))
+	if strings.Contains(string(b), magicClose) {
+		t.Fatalf("the watchdog was disarmed on a stop taken while the filesystem was already gone; tail is %q", tail(string(b)))
 	}
 
 	var sawRefusal bool
@@ -331,4 +335,48 @@ func TestFitToHardware(t *testing.T) {
 			}
 		}
 	})
+}
+
+// The stop path has to tell two identical SIGTERMs apart, and it gets
+// exactly one piece of evidence: whether the filesystem still answers.
+// Both directions are driven here because they fail in opposite ways —
+// disarming on the shutdown path leaves a wedged board nothing can end,
+// and staying armed on an operator's stop resets a healthy host seconds
+// after somebody deliberately stopped the service to look at it.
+func TestRun_DisarmsOnlyWhileTheFilesystemAnswers(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		lastGood   time.Duration // age of the last successful probe
+		wantDisarm bool
+	}{
+		{"an operator stopping the service on a healthy board disarms", 0, true},
+		{"a stop taken while the share is silent stays armed", time.Hour, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dev, err := os.CreateTemp(t.TempDir(), "watchdog")
+			if err != nil {
+				t.Fatal(err)
+			}
+			w := &watchdog{f: dev}
+
+			p := &prober{path: "/irrelevant", interval: time.Hour, statfs: statfsProbe}
+			p.last.Store(time.Now().Add(-tc.lastGood).UnixNano())
+
+			c := config{petInterval: time.Hour, probeInterval: time.Millisecond,
+				staleAfter: 40 * time.Millisecond, hwTimeout: time.Second,
+				probePath: "/irrelevant"}
+
+			sig := make(chan os.Signal, 1)
+			sig <- os.Interrupt
+			run(w, p, c, sig, make(chan struct{}), func(string, ...any) {})
+
+			b, err := os.ReadFile(dev.Name())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := strings.Contains(string(b), magicClose); got != tc.wantDisarm {
+				t.Fatalf("disarmed=%v, want %v (device holds %q)", got, tc.wantDisarm, string(b))
+			}
+		})
+	}
 }

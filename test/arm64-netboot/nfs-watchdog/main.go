@@ -50,6 +50,20 @@
 // a petter that stops petting for the wrong reason — and, worse, one
 // that would have reset a healthy box. mlockall keeps this process whole.
 //
+// # WHY STOPPING IS CONDITIONAL
+//
+// A deliberate `systemctl stop` on a healthy board must not reset it a
+// few seconds later, so the stop path writes the magic-close byte and
+// the kernel disarms the timer. But shutdown sends that same SIGTERM,
+// and a shutdown blocking on a dead share is one of the wedges this
+// exists to end -- disarming there would remove the only thing that
+// could. So the decision is the same one the petting loop makes: if the
+// filesystem is still answering, this is somebody stopping the service
+// and we disarm; if it has gone silent, we close the device WITHOUT the
+// magic byte, which the kernel reads as "closed unexpectedly" and leaves
+// the timer running. Both halves are pinned by
+// TestRun_DisarmsOnlyWhileTheFilesystemAnswers.
+//
 // WHY IT LOGS TO /dev/kmsg
 //
 // journald can block a writer when its buffers fill, and its own storage
@@ -249,9 +263,20 @@ func (w *watchdog) pet() error {
 
 // disarm writes the magic-close byte so a deliberate stop does not leave
 // a timer running. Without it, stopping this service to debug something
-// would reset the box a minute later.
+// would reset the box a minute later. Only correct while the filesystem
+// still answers -- see release.
 func (w *watchdog) disarm() {
 	_, _ = w.f.WriteString(magicClose)
+	_ = w.f.Close()
+}
+
+// release closes the device WITHOUT the magic byte. The kernel's watchdog
+// core treats that as "closed unexpectedly": it declines to stop the
+// timer and pings once more, so the board resets one hardware timeout
+// later. That is the wanted outcome when this process is asked to stop
+// while the share is already gone, because the thing asking is a
+// shutdown that is about to hang.
+func (w *watchdog) release() {
 	_ = w.f.Close()
 }
 
@@ -334,8 +359,28 @@ func run(w *watchdog, p *prober, c config, sig <-chan os.Signal, stop chan struc
 		select {
 		case <-sig:
 			close(stop)
-			logf("stopping on signal; disarming the watchdog so this does not reset the host")
-			w.disarm()
+			// systemd sends this SIGTERM both when an operator stops
+			// the service and when the host is shutting down, and the
+			// two want opposite things from the device. The filesystem
+			// answers the question: a stop on a healthy board is
+			// somebody at a keyboard, and disarming is right; a stop
+			// while the share is silent is a shutdown that is about to
+			// block on it, and the timer is the only thing that will
+			// end that.
+			last := p.lastGood()
+			if shouldPet(time.Now(), last, c.staleAfter) {
+				logf("stopping on signal with %s still answering; disarming so this does not reset the host", c.probePath)
+				w.disarm()
+				return
+			}
+			age := "never"
+			if !last.IsZero() {
+				age = time.Since(last).Round(time.Second).String()
+			}
+			logf("stopping on signal, but the last successful probe of %s was %s ago (limit %s): "+
+				"LEAVING THE WATCHDOG ARMED. A shutdown that blocks on the dead share "+
+				"will be ended by the hardware — that is deliberate.", c.probePath, age, c.staleAfter)
+			w.release()
 			return
 		case now := <-tick.C:
 			last := p.lastGood()

@@ -99,6 +99,37 @@ allow_stdlib() { sed -i 's|^\t"strconv"$|\t"strconv"\n\t"path/filepath"|' "$1/nf
 got=$(fixture stdlibdup allow_stdlib)
 check "duplicate stdlib imports are not read as dependencies" pass "$got"
 
+# --- ordered against shutdown ------------------------------------------
+# The regression this check exists for: both lines were in the unit, under
+# a comment saying the unit survives shutdown, and the board hung for 14
+# minutes on a shutdown that blocked on its dead NFS root (2026-08-20).
+# Each line is driven separately — either one alone is enough to have
+# systemd stop the unit, so a gate that only looked for the pair would
+# pass a tree that is still broken.
+break_shutdown_conflicts() {
+    sed -i 's|^After=sysinit.target$|After=sysinit.target\nConflicts=shutdown.target|' "$1/patch-target.sh"
+}
+got=$(fixture shutdownconflict break_shutdown_conflicts)
+check "Conflicts=shutdown.target in the unit fails" fail "$got"
+grep -q "NOTHING armed" "$TMP/shutdownconflict.log" \
+    && echo "PASS: says what is left running the board during a hung shutdown" \
+    || { echo "FAIL: rejected without naming the consequence"; fails=1; }
+
+break_shutdown_before() {
+    sed -i 's|^After=sysinit.target$|After=sysinit.target\nBefore=shutdown.target|' "$1/patch-target.sh"
+}
+got=$(fixture shutdownbefore break_shutdown_before)
+check "Before=shutdown.target in the unit fails" fail "$got"
+
+# ...and the check must read the [Unit] section only. A [Service] line
+# mentioning the same target is not an ordering dependency, and flagging
+# it would train the next reader to ignore this check.
+allow_shutdown_elsewhere() {
+    sed -i 's|^OOMScoreAdjust=-1000$|OOMScoreAdjust=-1000\nEnvironment=NOTE=Before=shutdown.target|' "$1/patch-target.sh"
+}
+got=$(fixture shutdownelsewhere allow_shutdown_elsewhere)
+check "the same text outside [Unit] is not read as an ordering dep" pass "$got"
+
 # --- cannot check is not a pass ----------------------------------------
 got=$(cd "$REPO" && bash "$CHECK" "$TMP/does-not-exist" >/dev/null 2>&1; echo $?)
 check "a missing directory exits 2, not 0" 2 "$got"

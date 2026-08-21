@@ -73,13 +73,40 @@ anything this server was sending has stopped. A server that dies *during* a
 transfer is a different case with a different outcome — see "Four states,
 and only one of them needs hands" below.
 
-Both halves of the wiring fail silently on their own — without the
+It also has to survive the host's own shutdown, and that is a second
+thing the unit gets wrong easily. A shutdown blocking on a dead NFS
+server is one of the two wedges this exists to end — and it is not a
+remote case here, because the pre-shutdown hook's whole job is to *reboot
+this board*. The unit therefore sets `DefaultDependencies=no` and adds
+nothing back: `Before=shutdown.target` with `Conflicts=shutdown.target` is
+systemd's documented idiom for "stop me before shutdown proceeds", so
+writing them out — as this unit did until #632 was reopened — makes
+systemd hand the timer back at the first instant of every reboot. The
+daemon completes the pair: shutdown sends the same `SIGTERM` an operator
+does, so it disarms only while `statfs` still answers, and otherwise
+closes the device *without* the magic byte, which the kernel reads as
+"closed unexpectedly" and leaves running. An operator stopping the
+service to debug it still gets a board that does not reset underneath
+them; a shutdown that hangs on the dead share still gets ended by the
+hardware.
+
+Every one of these fails silently on its own — without the
 `RuntimeWatchdogSec=0` drop-in the service gets `EBUSY` and the host runs
 unprotected; without the unit enabled, nothing pets and a *healthy* host
 resets as soon as the hardware timeout expires — 15s on this board, not
-the minute the unit file names. `scripts/check-pi-watchdog-wiring.sh` gates
-the pair, and `scripts/test-check-pi-watchdog-wiring.sh` proves it
-catches both directions.
+the minute the unit file names; ordered against `shutdown.target` it looks
+perfect and covers one case fewer than it claims.
+`scripts/check-pi-watchdog-wiring.sh` gates all three,
+`scripts/test-check-pi-watchdog-wiring.sh` proves it catches each
+direction, and the daemon's half is pinned by
+`TestRun_DisarmsOnlyWhileTheFilesystemAnswers`.
+
+None of that reaches a board that is already running: the root is an
+image, so a host provisioned before this fix keeps the old unit until it
+is reprovisioned. `scripts/check-host-watchdog.sh` cannot see the
+difference — it reads sysfs and `/dev/kmsg` from inside a container and
+never sees systemd's view of the unit — so this one is checked at
+provisioning time, not on the live host.
 
 ## Running it
 

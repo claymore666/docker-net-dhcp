@@ -179,13 +179,22 @@ cat > "${NFSROOT_DIR}/etc/systemd/system/nfs-watchdog.service" <<'EOF'
 [Unit]
 Description=Reset this host when its NFS root stops answering (#632)
 Documentation=https://github.com/claymore666/docker-net-dhcp/issues/632
-# Starts before anything that could block on the share, and is not
-# stopped during shutdown -- a shutdown that hangs on a dead NFS server
+# Starts before anything that could block on the share, and stays
+# running through shutdown -- a shutdown that hangs on a dead NFS server
 # is one of the cases this exists for.
+#
+# DefaultDependencies=no is here for exactly that reason, and it is the
+# whole mechanism: per systemd.special(7), Before=shutdown.target plus
+# Conflicts=shutdown.target is the documented idiom for a unit that
+# should be STOPPED before shutdown proceeds. Those two lines were once
+# written out here explicitly, directly under a comment claiming the
+# opposite, which handed the SoC timer back at the first instant of every
+# reboot: systemd stopped this unit, the daemon disarmed on SIGTERM, and a
+# shutdown that then blocked on the dead share hung forever with nothing
+# armed to end it. Do not add them back -- check-pi-watchdog-wiring.sh
+# fails if they return.
 DefaultDependencies=no
 After=sysinit.target
-Before=shutdown.target
-Conflicts=shutdown.target
 
 [Service]
 Type=simple
