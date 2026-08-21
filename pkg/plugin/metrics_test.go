@@ -329,3 +329,65 @@ func TestMetrics_UnknownFieldIsAnError(t *testing.T) {
 		t.Errorf("error does not name the offending field: %v", err)
 	}
 }
+
+// TestMetricsExposition_NoPerEndpointIdentifiers pins the property the
+// project's security posture rests on: /metrics is an aggregate counter
+// surface, and discloses nothing about WHICH container holds which
+// lease.
+//
+// SECURITY.md states it as a promise to operators ("No endpoint IDs,
+// container names, addresses or MACs appear in it"), docs/reference.md
+// repeats it, and warnOnWildcardMetricsBind's text depends on it to
+// describe what a wildcard bind actually leaks. Three prose copies of
+// one claim, and prose is what rots: the wildcard warning shipped
+// asserting the opposite — MACs and leased IPs — and contradicted
+// SECURITY.md in the same release without anything going red.
+//
+// The check is deliberately an ALLOW-LIST of label names rather than a
+// scan for address-shaped values. A regex for MACs and IPs only catches
+// the identifiers someone thought of; requiring that every label name
+// be one of two known-safe ones means a per-endpoint label of ANY shape
+// — a container name, an endpoint ID, a network ID — fails here, and
+// adding one deliberately forces whoever does it past this comment and
+// back to SECURITY.md.
+func TestMetricsExposition_NoPerEndpointIdentifiers(t *testing.T) {
+	// instance_id is a per-process UUID, not a container identifier;
+	// family is "ipv4"/"ipv6". Both are documented as safe.
+	allowed := map[string]bool{"instance_id": true, "family": true}
+
+	var buf bytes.Buffer
+	if err := writeExposition(&buf, fixtureSnapshot(t)); err != nil {
+		t.Fatalf("writeExposition: %v", err)
+	}
+
+	for _, line := range strings.Split(buf.String(), "\n") {
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		open := strings.Index(line, "{")
+		if open < 0 {
+			continue // an unlabelled series
+		}
+		close := strings.LastIndex(line, "}")
+		if close < open {
+			t.Errorf("malformed labelled series: %q", line)
+			continue
+		}
+		for _, pair := range strings.Split(line[open+1:close], ",") {
+			eq := strings.Index(pair, "=")
+			if eq < 0 {
+				t.Errorf("malformed label %q in %q", pair, line)
+				continue
+			}
+			name := strings.TrimSpace(pair[:eq])
+			if !allowed[name] {
+				t.Errorf("exposition carries label %q, which is not one of the "+
+					"identifiers SECURITY.md promises are absent.\n"+
+					"If this label is genuinely safe, add it to the allow-list "+
+					"here AND update SECURITY.md and docs/reference.md in the "+
+					"same change — the promise and the code must move together.\n"+
+					"line: %s", name, line)
+			}
+		}
+	}
+}
