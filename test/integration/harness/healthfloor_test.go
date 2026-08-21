@@ -306,7 +306,7 @@ func TestCheckHealthFloorPresence(t *testing.T) {
 		},
 		{
 			name: "counters outside the floor may be absent freely",
-			// The floor reads three counters. Everything else on the
+			// The floor reads the counters in floorCounters. Everything else on the
 			// health surface is free to come and go without turning a
 			// run red — otherwise the check becomes a schema test.
 			payload:    complete,

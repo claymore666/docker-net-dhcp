@@ -39,9 +39,17 @@ ARG RUNNER_VERSION
 # agent says x64/arm64. Both are derived here rather than duplicated.
 ARG TARGETARCH
 
-# Base tooling + Docker Engine from download.docker.com (Debian 13's
-# docker.io is 26.x; the nested daemon must be >= 28 — engine-gated
-# tests, #125).
+# Base tooling + Docker Engine from download.docker.com. The reason is
+# the source, not a version threshold: Debian 13 ships docker.io 26.x,
+# and we want the lane driving a current engine rather than the distro's
+# frozen one. No test in test/integration/ conditions on an engine or API
+# version, so treat ">= 28" as what current docker-ce happens to give us,
+# not as a floor anything asserts.
+#
+# Note this is NOT what gates #125: `interface_name` waits on the
+# upstream remote-driver change (moby/moby#52866), not on an engine
+# version, so no engine floor here can unblock it. The suite decides at
+# runtime with the `engineAppliesIfname` capability probe (#673).
 #
 # TWO DHCP servers, deliberately, for the duration of the #356
 # migration. dnsmasq is what the fixture uses today; kea is what it is

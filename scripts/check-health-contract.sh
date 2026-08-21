@@ -2,19 +2,28 @@
 # Copyright the docker-net-dhcp contributors.
 # SPDX-License-Identifier: GPL-3.0-only
 
-# The `healthy` contract must say the same thing in all three places
+# The `healthy` contract must say the same thing in all four places
 # that state it (#638).
 #
 # WHY THIS EXISTS
 #
 # `/Plugin.Health` returns one boolean an operator is expected to alert
-# on, and which counters flip it is stated three times: the counter
+# on, and which counters flip it is stated four times: the counter
 # table's healthy-affecting column, the prose in the `healthy` row
-# itself, and the At a glance summary. v1.6.0 added a fourth counter
-# (`address_conflicts`) to the code and to two of those three. The
-# `healthy` row kept listing three for two releases — and it is the one
-# an operator reads first, because it is the row for the field they are
-# asking about.
+# itself, the At a glance summary, and the Troubleshooting row an
+# operator lands on when they have already seen `healthy: false`.
+# v1.6.0 added a fourth counter (`address_conflicts`) to the code and to
+# two of those statements. The `healthy` row kept listing three for two
+# releases — and it is the one an operator reads first, because it is
+# the row for the field they are asking about.
+#
+# THE FOURTH COPY. The gate originally guarded three of them, and the
+# Troubleshooting row — the one reached by the operator who is already
+# in trouble — named two of the four counters and sent every reader to
+# check disk space, which is the remedy for exactly one of them. Same
+# bug, one table further down the same file: a claim ABOUT the counters,
+# stated in a place nothing read. Guarding three copies of a fact that
+# exists in four is not a gate, it is a sample.
 #
 # Nothing could see it. check-docs-drift.sh reconciles the *set of
 # fields* against the code's json tags, so every counter involved was
@@ -26,7 +35,7 @@
 #
 # WHAT IT CHECKS
 #
-#   1. the three doc statements name exactly the same counters
+#   1. the four doc statements name exactly the same counters
 #   2. the number word in the summary matches how many that is
 #   3. the code's Healthy expression has that many terms
 #
@@ -39,7 +48,7 @@
 # that cannot see must not report clean.
 #
 # Usage: check-health-contract.sh [<reference-doc>] [<go-file>]
-# Exit:  0 the three agree, 1 they disagree, 2 cannot check.
+# Exit:  0 the four agree, 1 they disagree, 2 cannot check.
 set -uo pipefail
 
 DOC="${1:-docs/reference.md}"
@@ -82,6 +91,17 @@ glance=$(grep -E 'flip `healthy` to `false`' "$DOC" | head -1)
 [ -n "$glance" ] || { echo "check-health-contract: no At-a-glance healthy summary in $DOC" >&2; exit 2; }
 glance_set=$(counters_on "$glance")
 
+# --- 4. the Troubleshooting row ---------------------------------------
+# Keyed on the symptom cell, because that is what the row IS: the entry
+# an operator finds by searching for what they just saw. Its cause cell
+# has to name every counter that can produce that symptom — a cause list
+# that names two of four sends three readers in four to the wrong
+# remedy, and the reader who arrives here has already stopped reading
+# the field table.
+trouble=$(grep -E '^\|[[:space:]]*`healthy: false`' "$DOC" | head -1)
+[ -n "$trouble" ] || { echo "check-health-contract: no \`healthy: false\` row in the Troubleshooting table of $DOC" >&2; exit 2; }
+trouble_set=$(counters_on "$trouble")
+
 if [ "$column_set" != "$row_set" ]; then
     note "the \`healthy\` row and the healthy-affecting column disagree:"
     diff <(printf '%s\n' "$column_set") <(printf '%s\n' "$row_set") \
@@ -91,6 +111,14 @@ if [ "$column_set" != "$glance_set" ]; then
     note "the At a glance summary and the healthy-affecting column disagree:"
     diff <(printf '%s\n' "$column_set") <(printf '%s\n' "$glance_set") \
         | sed 's/^</  only marked yes in the column: /; s/^>/  only named in the summary: /' >&2
+fi
+if [ -z "$trouble_set" ]; then
+    note "the Troubleshooting \`healthy: false\` row names no health counter at all — it must name every counter marked healthy-affecting:"
+    echo "  $trouble" >&2
+elif [ "$column_set" != "$trouble_set" ]; then
+    note "the Troubleshooting \`healthy: false\` row and the healthy-affecting column disagree:"
+    diff <(printf '%s\n' "$column_set") <(printf '%s\n' "$trouble_set") \
+        | sed 's/^</  only marked yes in the column: /; s/^>/  only named in the troubleshooting row: /' >&2
 fi
 
 n_doc=$(printf '%s\n' "$column_set" | grep -c .)
@@ -127,11 +155,11 @@ fi
 
 if [ "$fail" -ne 0 ]; then
     echo >&2
-    echo "\`healthy\` is the one boolean operators alert on. All three doc" >&2
+    echo "\`healthy\` is the one boolean operators alert on. All four doc" >&2
     echo "statements and the code must name the same counters — see the" >&2
     echo "header of this script for why the row is the one that rots." >&2
     exit 1
 fi
 
-echo "PASS  healthy contract agrees in 3 doc statements and ${n_code} code term(s): $(printf '%s' "$column_set" | tr '\n' ' ')"
+echo "PASS  healthy contract agrees in 4 doc statements and ${n_code} code term(s): $(printf '%s' "$column_set" | tr '\n' ' ')"
 exit 0

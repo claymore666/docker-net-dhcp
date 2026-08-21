@@ -31,6 +31,33 @@ for field in '.linux.capabilities' '.network.type' '.pidhost' '.interface.types'
     fi
 done
 
+# Every setting the SHIPPED manifest declares must also exist in the
+# cover manifest, with the same default and the same settability. The
+# reverse is deliberately not required: cover-only instrumentation
+# (GOCOVERDIR, REQUEST_CAPTURE_DIR) is the documented asymmetry, and
+# check-docs-drift.sh rule 2b is what keeps those from going
+# undocumented.
+#
+# The direction is the whole point. A setting added to config.json and
+# forgotten in config-cover.json leaves the coverage lane exercising a
+# plugin that is missing a shipped setting — #317's shape one field
+# over, and invisible until some suite happens to set it. A default
+# that drifts is worse than an absence, because the run looks right.
+while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    a=$(jq -cS --arg n "$name" 'first(.env[]? | select(.name==$n) | {value,settable})' "$MAIN")
+    b=$(jq -cS --arg n "$name" 'first(.env[]? | select(.name==$n) | {value,settable})' "$COVER")
+    if [ "$b" = "null" ] || [ -z "$b" ]; then
+        echo "FAIL  $COVER declares no $name — the coverage lane would run a plugin missing a shipped setting (#317)"
+        fails=1
+    elif [ "$a" != "$b" ]; then
+        echo "FAIL  env $name differs: $MAIN=$a $COVER=$b"
+        fails=1
+    else
+        echo "ok    env $name $a"
+    fi
+done < <(jq -r '.env[]?.name' "$MAIN")
+
 # The STATE_DIR mount is compared even though other mounts are not
 # (#440). It is what makes tombstones, per-network options and the
 # audit ledger survive `docker plugin rm` — the documented upgrade path

@@ -151,12 +151,22 @@ jobs:
         run: bash scripts/check-docs-drift.sh
 
       # Presence is not agreement (#638). check-docs-drift proves every
-      # counter is documented; this proves the three places that say
+      # counter is documented; this proves the four places that say
       # WHICH ones flip `healthy` still say the same thing, and that the
       # code computes that many. The `healthy` row listed three for two
-      # releases while the column beside it and the code both said four.
+      # releases while the column beside it and the code both said four;
+      # the Troubleshooting row named two of four for longer still.
       - name: Health-contract check
         run: bash scripts/check-health-contract.sh
+
+      # An issue the roadmap lists as blocked upstream must not be
+      # described as waiting on a Docker engine version (#673). The
+      # correction landed under docs/ and the same sentence stayed in
+      # ci/runner-image/, where a docs-scoped review never looked — and
+      # it tells whoever rebuilds that image that an engine bump will
+      # turn the skipped tests on.
+      - name: Upstream-blocker claim check
+        run: bash scripts/check-upstream-blocker-claims.sh
 
       # Every published-image pin in README/docs must agree on one
       # version — catches a partial release bump (#251). Bump them with

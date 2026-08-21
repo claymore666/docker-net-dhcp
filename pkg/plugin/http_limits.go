@@ -104,13 +104,23 @@ func limitBody(next http.Handler) http.Handler {
 // warnOnWildcardMetricsBind says something when METRICS_ADDR binds every
 // interface.
 //
-// /metrics carries container MACs and addresses, and the plugin runs
-// with "network": {"type": "host"}, so a wildcard bind publishes that
-// inventory on every interface the host has — including ones the
+// The exposition is aggregate counters plus an instance UUID — no
+// endpoint IDs, container names, addresses or MACs, which is the
+// property SECURITY.md rests on and TestMetricsExposition_NoPerEndpointIdentifiers
+// pins. So what a wildcard bind leaks is not a lease inventory: it is
+// the plugin's operational telemetry, and the fact that this host runs
+// the plugin at all. The plugin runs with "network": {"type": "host"},
+// so the wildcard is the host's every interface — including ones the
 // operator was not thinking about when they set the variable. Binding a
 // wildcard is a legitimate choice in a private network and is not
 // refused; it is said out loud, because the alternative is that it is
 // never noticed (#709).
+//
+// The warning text is load-bearing and was wrong once: it claimed MACs
+// and leased IPs, contradicting SECURITY.md in the same release. An
+// operator acts on a security warning, so overstating it is not a
+// harmless excess of caution — it spends attention on the wrong thing
+// and teaches that these warnings are approximate.
 func warnOnWildcardMetricsBind(addr string) bool {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -126,6 +136,6 @@ func warnOnWildcardMetricsBind(addr string) bool {
 		}
 	}
 	log.WithField("addr", addr).
-		Warn("METRICS_ADDR binds every interface; /metrics exposes container MAC addresses and leased IPs to anything that can reach this host")
+		Warn("METRICS_ADDR binds every interface; /metrics exposes this plugin's counters and instance ID to anything that can reach this host. It carries no container names, addresses or MACs — bind loopback or a management interface unless every network reaching this host is trusted")
 	return true
 }

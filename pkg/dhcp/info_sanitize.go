@@ -15,11 +15,19 @@ import (
 //
 // # WHY THIS EXISTS AT ALL, GIVEN NOTHING IS EXPLOITABLE TODAY
 //
-// Five options reach Info as raw server-chosen strings —
-// new_tftp_server_name, new_bootfile_name, new_wpad, new_posix_timezone
-// and new_tzdb_timezone. dhcpcd validates only its `dname`-typed options
-// (12, 15, 66); these are `string`-typed and it passes \n and \r through
-// verbatim, measured. From Info they go straight into logrus fields.
+// Four options reach Info as raw server-chosen strings —
+// new_bootfile_name (67), new_posix_timezone (100), new_tzdb_timezone
+// (101) and new_wpad (252). dhcpcd validates only its `dname`-typed
+// options (12, 15, 66); these four are `string`-typed and it passes \n
+// and \r through verbatim, measured. From Info they go straight into
+// logrus fields.
+//
+// new_tftp_server_name (66) IS dname-typed and so IS validated by
+// dhcpcd. It is filtered here anyway: this function is reflective (see
+// below), and an exemption would be a hand-maintained claim about
+// someone else's parser. Four is the number that needs this filter;
+// five is the number of server-chosen string options, and the two get
+// confused — docs/reference.md states both and says which is which.
 //
 // Today that is safe by accident and by one thing only: logrus's default
 // TextFormatter quotes the value, so a forged `level=error msg=...` stays
