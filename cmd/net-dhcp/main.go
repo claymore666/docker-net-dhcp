@@ -86,7 +86,14 @@ func main() {
 	// (#385). Removing it would delete the suite's only instrument that
 	// spans a plugin restart. Both outputs, not one.
 	openLogFile := func() error {
-		f, err := os.OpenFile(*logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+		// 0644 and O_NOFOLLOW. Operators do read this file, so it stays
+		// world-READABLE -- but a root-written log at 0666 is
+		// gratuitous, and re-opening a path on SIGHUP without
+		// O_NOFOLLOW means a symlink swapped in between opens decides
+		// where root appends. The path is operator-supplied inside a
+		// root-owned rootfs, so neither is a privilege boundary; both
+		// cost nothing (#708).
+		f, err := os.OpenFile(*logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND|unix.O_NOFOLLOW, 0644)
 		if err != nil {
 			return err
 		}

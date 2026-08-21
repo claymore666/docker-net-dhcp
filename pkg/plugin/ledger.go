@@ -91,10 +91,17 @@ func (l *leaseLedger) Append(e ledgerEntry) {
 		log.WithError(err).Warn("Lease ledger rotation failed")
 	}
 
-	f, err := os.OpenFile(l.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	f, err := os.OpenFile(l.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, stateFileMode)
 	if err != nil {
 		l.fail("open", err)
 		return
+	}
+	// O_CREATE's mode applies only when the file is created, and this
+	// ledger outlives upgrades on a host bind mount. Tighten what is
+	// already there so a file created by an older version does not stay
+	// world-readable forever (#708).
+	if err := f.Chmod(stateFileMode); err != nil {
+		log.WithError(err).Debug("lease ledger chmod failed")
 	}
 	defer func() {
 		if err := f.Close(); err != nil {

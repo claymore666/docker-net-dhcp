@@ -107,6 +107,36 @@ jobs:
 YML
 check "a comment mentioning the command is not an install" 0 "$ws"
 
+# 9. The metacharacter false pass (#710). The bind path used to be
+#    interpolated into an ERE, so '.' matched any character: a source of
+#    /var/lib/net-dhcp.d was reported as created by a line that creates
+#    /var/lib/net-dhcpXd, which is a different directory. The source is
+#    genuinely absent here, and this fixture PASSED the old gate.
+#
+#    ORTHOGONALITY: run `git stash`-free — the previous version of this
+#    check is reproduced inline below and asserted to accept the same
+#    fixture, so this case proves the fix rather than restating it.
+ws=$(mkws)
+jq '.mounts += [{"name":"dotted","description":"x","destination":"/var/lib/net-dhcp.d","source":"/var/lib/net-dhcp.d","type":"bind","options":["rbind","rw"]}]' \
+    "$ws/config.json" > "$ws/config.json.t" && mv "$ws/config.json.t" "$ws/config.json"
+# The decoy: a literal mkdir of a DIFFERENT directory that the old regex
+# matched because '.' is a metacharacter.
+sed -i 's|^\( *\)mkdir -p /var/lib/net-dhcp$|\1mkdir -p /var/lib/net-dhcpXd /var/lib/net-dhcp|' \
+    "$ws/.github/workflows/integration.yml"
+
+# Prove the old check accepted it, so the case below is not a tautology.
+if printf '%s\n' "          mkdir -p /var/lib/net-dhcpXd /var/lib/net-dhcp" \
+    | grep -E "mkdir[[:space:]]+(-[a-z]+[[:space:]]+)*/var/lib/net-dhcp.d(\$|[[:space:]])" >/dev/null; then
+    echo "ok: the old regex accepted the decoy (orthogonality confirmed)"
+    pass=$((pass + 1))
+else
+    echo "FAIL: the old regex did NOT accept the decoy — this fixture does not"
+    echo "      reproduce #710, so the case below proves nothing."
+    fail=$((fail + 1))
+fi
+
+check "a dotted bind source is not matched by a lookalike mkdir" 1 "$ws" "/var/lib/net-dhcp.d"
+
 echo
 echo "passed: $pass  failed: $fail"
 [ "$fail" -eq 0 ]

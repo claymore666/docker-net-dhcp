@@ -227,6 +227,24 @@ and the re-record showed the daemon had quietly started sending an
 option the older one never did. None of that was visible before.
 (#644, #646)
 
+### State files under `/var/lib/net-dhcp` are no longer world-readable
+
+`tombstones.json`, the per-network options files and the `leases.jsonl`
+lease ledger were created `0644`. That directory is a read-write bind
+mount from the **host**, so container MAC addresses, leased IPs,
+hostnames and the full lease audit trail were readable by any user on
+the host. Nothing stored there is a credential and the plugin writes as
+root either way, so this was never a privilege boundary — but there is
+no reason for it to be open, and it costs nothing to close.
+
+**If you read `leases.jsonl` as a non-root user, you will now need
+`sudo`.** Files that already exist are tightened on the next write, so
+an upgrade fixes hosts that have been running for a while rather than
+only new installs. The plugin's `-logfile` stays world-readable at
+`0644` — operators do read it — but drops from `0666` and is now opened
+`O_NOFOLLOW`, so a symlink swapped in before a `SIGHUP` re-open cannot
+decide where root appends. (#708)
+
 ### Internal
 
 - The tombstone store and the six phases of lease renewal are now

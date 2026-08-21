@@ -1671,8 +1671,16 @@ func NewPlugin(opts Options) (*Plugin, error) {
 	// it sees the raw body before any handler decodes it. With no
 	// capture directory set — every shipped plugin — captureHandler
 	// returns the mux itself and this line is a no-op (#644).
+	// limitBody sits OUTSIDE the logging and capture handlers so the cap
+	// applies to the body before either reads it. Timeouts and the cap
+	// are explained in http_limits.go -- in particular why WriteTimeout
+	// is zero here and not on the metrics server.
 	p.server = http.Server{
-		Handler: handlers.CustomLoggingHandler(nil, captureHandler(mux, opts.RequestCaptureDir, capturablePaths(p.routes())), util.WriteAccessLog),
+		Handler:           limitBody(handlers.CustomLoggingHandler(nil, captureHandler(mux, opts.RequestCaptureDir, capturablePaths(p.routes())), util.WriteAccessLog)),
+		ReadHeaderTimeout: socketReadHeaderTimeout,
+		ReadTimeout:       socketReadTimeout,
+		WriteTimeout:      socketWriteTimeout,
+		IdleTimeout:       socketIdleTimeout,
 	}
 
 	// Run endpoint recovery synchronously before NewPlugin returns
@@ -1802,18 +1810,23 @@ func (p *Plugin) ListenMetrics(addr string) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/metrics", p.apiMetrics)
 
+	warnOnWildcardMetricsBind(addr)
+
 	l, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("metrics listener on %q: %w", addr, err)
 	}
 
 	p.metricsListener = l
+	// A scrape is a small GET whose handler renders one snapshot, so
+	// unlike the plugin socket this server can carry a write timeout
+	// safely. See http_limits.go.
 	p.metricsServer = &http.Server{
-		Handler: mux,
-		// A scrape is a small GET; anything slower than this is not a
-		// Prometheus server. Bounded so an idle or hostile connection
-		// cannot pin a goroutine for the process lifetime.
-		ReadHeaderTimeout: 5 * time.Second,
+		Handler:           limitBody(mux),
+		ReadHeaderTimeout: metricsReadHeaderTimeout,
+		ReadTimeout:       metricsReadTimeout,
+		WriteTimeout:      metricsWriteTimeout,
+		IdleTimeout:       metricsIdleTimeout,
 	}
 	go func() {
 		if err := p.metricsServer.Serve(l); err != nil && !errors.Is(err, http.ErrServerClosed) {
