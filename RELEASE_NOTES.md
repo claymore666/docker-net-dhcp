@@ -61,19 +61,314 @@ re-accepting it.
 
 ## v1.8.0
 
-A network can now say which DHCP server it will lease from, plus one
-operator-visible fix and a cycle of work on the machinery that decides
-whether this project's tests mean anything. If you are running v1.7.1
-happily, the reasons to upgrade are the server-selection options, the
-new `/metrics` endpoint and the health-counter fix below.
+The release that got a human security review. Seventeen findings came
+out of it and all seventeen are fixed here — #699 indexes them, and two
+are recorded against the pull requests that fixed them rather than
+against an issue of their own. Alongside that: a network can
+now say which DHCP server it will lease from, the health counters are
+scrapeable by Prometheus, and two lifecycle faults are gone.
 
-**This release changes plugin behaviour**, not only its packaging: two
-new network options, a Prometheus `/metrics` endpoint, four new health
-counters and one lifecycle fix, alongside two refactors under
-`pkg/plugin`. The reference digests
-differ from v1.7.1 accordingly. The refactors are intended to be
+If you are running v1.7.1, the reason to upgrade is the review. v1.7.1
+writes a container's `--hostname` into the generated `dhcpcd.conf`
+without validating it, and Docker validates it no further — which is
+enough for one container to present another endpoint's DHCP identity and
+be handed its reservation. The rest of the release is the
+server-selection options, the new `/metrics` endpoint and the
+health-counter fixes below.
+
+**This release changes plugin behaviour**, not only its packaging.
+Reading no further than this paragraph, these are the things that change
+under an operator who upgrades:
+
+- A container hostname carrying a control character is now **dropped**
+  rather than written into the DHCP client's config. The lease proceeds
+  without it, and the endpoint attaches with a fresh identity.
+- DHCP option 15 is filtered before it reaches a container's
+  `resolv.conf`, and truncated at its first space. Four more
+  server-chosen string options are filtered the same way.
+- The plugin socket is `chmod`ed to `0600`, and the plugin **refuses to
+  start** if that fails.
+- An attach whose container PID no longer belongs to that container now
+  **fails** rather than proceeding; the same check refuses a DNS
+  propagation silently.
+- `propagate_mtu` **refuses** an option-26 MTU outside `[576, 65535]`,
+  leaving the container link at the MTU it had.
+- An option-51 lease lifetime longer than 24h is **clamped for the
+  outage watchdog only**. The lifetime reported in logs and the ledger
+  is untouched.
+- State files and the lease ledger under `/var/lib/net-dhcp` are no
+  longer world-readable, so reading `leases.jsonl` as a non-root user
+  now needs `sudo`.
+
+On top of those: two new network options, a Prometheus `/metrics`
+endpoint, twelve new health counters and two lifecycle fixes, alongside
+two refactors under `pkg/plugin`. The reference digests differ from
+v1.7.1 accordingly. The refactors are intended to be
 behaviour-identical — both are covered by the existing suite plus new
 unit tests — but "intended" is the honest word there, not "proven".
+
+### The v1.5.0 precondition still applies
+
+```bash
+sudo mkdir -p /var/lib/net-dhcp
+```
+
+Unchanged since v1.5.0, and still required on every host before
+`docker plugin install`. Docker does not create a missing bind source,
+and skipping it leaves the plugin installed but disabled with an error
+that does not say why. See the v1.5.0 notes below for recovery.
+
+### The security review
+
+The project had substantial automated security coverage — CodeQL,
+staticcheck, govulncheck, image scanning, the race detector, fuzz tests
+over the DHCP parsing path — and no human review of the design or its
+trust boundaries. v1.8.0 opens the first TCP listener in a process
+holding `CAP_NET_ADMIN`, `CAP_SYS_ADMIN` and `CAP_SYS_PTRACE` on the
+host network, so the release was held while that review was done.
+
+Five surfaces were audited independently: the Docker-facing driver RPCs,
+the `/metrics` endpoint, the DHCP-server input path, the
+filesystem/argv/env sinks, and the CI gate scripts. Everything found is
+fixed in this release; nothing was deferred. #699 is the public index
+of the whole exercise — what was found, what shipped, and the three
+results that belong to no single finding.
+
+Two things are worth stating plainly:
+
+- **No advisory was issued, and that was a decision rather than an
+  omission.** A draft advisory was opened for the hostname-injection
+  finding and closed unpublished, for the reason that follows.
+  Setting `--hostname` requires container-creation rights, which in
+  almost every deployment means Docker API access — already
+  root-equivalent on this host by the plugin's documented design. No
+  code execution is available on any of these paths.
+- **Two of the findings came out of re-auditing the tree *after* a fix
+  merged rather than before**, and they are not the same kind of thing.
+  #694 was a true regression: the fix for #692 created it, it lived only
+  in `dev`, and no released version carries it. #695 was the opposite —
+  the fix for #688 hardened one call site and left its neighbour three
+  files away doing what its own comment forbade, so what #695 describes
+  is **present in v1.7.1 and every release before it**, not something
+  this cycle introduced. Re-auditing after the fix is what found both;
+  only one of them was ours to have caused.
+
+(#457, #699)
+
+### A hostname could become another endpoint's identity
+
+The container's hostname reached the generated `dhcpcd.conf`
+unvalidated, and Docker performs no validation on it — measured against
+the engine: `docker create --hostname $'a\nfoo'` succeeds and reads back
+with the newline intact. A newline there does not produce a malformed
+directive; it produces an additional, caller-chosen one, and dhcpcd
+applies it. Measured against dhcpcd 10.3.2 from our own `:rootfs` image:
+an unknown directive prints `unknown option:` and dhcpcd continues, and
+a repeated directive resolves **last-wins**.
+
+The plugin writes `duid` near the top of the generated file and the
+hostname near the bottom, so an injected `duid` always won. The pinned
+DUID derives solely from the endpoint MAC, and on a bridge or macvlan
+network every endpoint's MAC is observable on the same segment — so a
+container could present another endpoint's DHCP identity and be handed
+its binding or reservation. It reaches DHCPv4 too on networks without an
+explicit `client_id`, since dhcpcd derives the v4 client identifier from
+the DUID by default. Not code execution: `script` is a valid directive
+and an injected one parses, but the plugin always passes `-c <handler>`
+and the command line wins. The `-c` flag is load-bearing security
+machinery, which nothing previously said.
+
+**This one is present in v1.7.1.** The `dhcp_deny_servers` bypass it also
+enabled is not — `whitelist`/`blacklist` lines arrive with #111/#669 in
+this release.
+
+A control character in the hostname now drops it, counted as
+`unsafe_hostnames_rejected`. Underscores and other
+technically-illegal-but-common hostnames are **not** affected: the rule
+is about the config file's structure, not about RFC 1123. (#692)
+
+The fix for that then produced the sharpest finding of the cycle, in
+`dev` only — no released version carries it. The sanitiser signalled a
+refusal by returning an empty string, and `tombstoneStore.consume` reads
+an empty hostname as **"match any tombstone on this network"**. That
+carve-out is deliberate and honest — v0.5.0 tombstones carry no
+hostname, and `CreateEndpoint` can run before the container is
+registered with the daemon — and it was safe precisely because nothing
+attacker-controlled could produce an empty string. After the fix,
+something could: a container started with one control character in
+`--hostname` matched the first live tombstone on the network, inherited
+another endpoint's MAC, and asked the DHCP server for its address.
+Tombstones live 60s, so the window was any container stopping on the
+same network.
+
+A refusal is now distinguishable from an absence: the sanitiser reports
+whether it refused, the guard sits inside `consumeTombstone` so a third
+caller cannot forget to pass it, and a refused hostname consumes no
+tombstone — the endpoint attaches with a fresh identity, which is the
+right answer for a value nobody should have sent. (#694)
+
+### Values from the DHCP server are bounded, not just typed
+
+Every finding in the second round of the review was one shape: a value
+validated for its *type* and then applied with no *range* and no
+*counter*. The plugin's own health surface read clean through all of
+them.
+
+- **Option 15 reached `resolv.conf` whole.** The address is `ParseCIDR`'d,
+  the MTU range-checked, routes validated individually, and the DNS
+  server and search lists both go through `strings.Fields` — `Domain`
+  was the one field taken as-is, so a newline in it injected arbitrary
+  `resolv.conf` lines, most obviously a `nameserver` redirecting the
+  container's name resolution. It is now filtered (#689) — and then
+  filtered properly: the first fix rejected bytes below `0x20`, and
+  `0x20` itself is the *sink's own separator*, so a space still turned
+  one search domain into several with the server's first in the order
+  (#704). Option 15 is now truncated at its first space.
+- **Four more string options carried raw newlines** into `dhcp.Info`
+  with no filter at any layer — `bootfile_name`, `wpad`,
+  `posix_timezone`, `tzdb_timezone`. `dhcpcd` validates only its
+  `dname`-typed options; the `string`-typed ones pass `\n` and `\r`
+  through verbatim. Not exploitable today only because logrus's default
+  formatter quotes them, and no test pinned that. All five values are
+  now filtered at the boundary, in the hook process, and refusals are
+  carried across the FIFO as `unsafe_option_values_dropped`. (#703)
+- **An option-121 `/1` pair superseded the default route silently.**
+  `0.0.0.0/1 gw` plus `128.0.0.0/1 gw`: neither half is a default route,
+  both install as ordinary static routes, and between them they take
+  every destination — while the gateway reported to Docker and shown by
+  `docker inspect` still names the legitimate router. Applying them is
+  correct client behaviour and legitimate split-tunnel setups rely on
+  it; the defect was that nothing distinguished the two cases. The log
+  line now names each destination and next hop, and
+  `dhcp_default_route_superseded` counts it against `dhcp_routes_applied`.
+  Measured end to end. (#700)
+- **An infinite lease disabled the outage watchdog permanently.**
+  Option 51 = `0xFFFFFFFF` is exported verbatim and sets a 136-year
+  deadline, and `leaseDeadline` is the only trigger that can detect a
+  silently lapsed lease under `--noconfigure` — so one such ACK followed
+  by silence left `dhcp_timeouts` at zero through a total outage for
+  that endpoint. That is the exact failure #353 exists to catch,
+  re-opened by a number the server chooses. The deadline is now clamped
+  to 24h and `lease_time_clamped` says so; the lease lifetime the plugin
+  reports is unchanged. (#701)
+- **`propagate_mtu` had no lower bound.** The kernel accepts 68, dhcpcd
+  exports it unchanged, and the result — destroyed throughput plus
+  black-holed path MTU discovery, re-applied on every renewal — looks
+  like a slow network rather than a misconfiguration. The accepted range
+  is now `[576, 65535]`, counted as `mtu_refused`, with the container
+  link left at the MTU it had. The ceiling is deliberately *not* the
+  parent's MTU: raising a container link above its parent is the
+  documented jumbo-frame use case, and the kernel enforces the real
+  device maximum itself. (#702)
+
+### A privileged handle is now pinned to the task it was checked against
+
+The plugin runs with `pidhost: true`, so a container PID resolved
+through Docker names a task in the **host's** PID namespace by the time
+anything is done with it.
+
+`propagateDNS` resolved a PID through `ContainerInspect` and handed it
+straight to a function that opened `/proc/<pid>/ns/mnt`, `setns`ed into
+it and wrote `/etc/resolv.conf` — with no re-check that the PID still
+belonged to that container. If the container exited in that window and
+the kernel recycled the PID, DHCP-server-supplied content was written
+into whatever host process now held it, possibly one in the host's root
+mount namespace. Reachable only with `propagate_dns` opted in, and the
+race is not attacker-triggerable, which is why it is robustness rather
+than an advisory — but the consequence should not rest on the window
+being short. The PID's cgroup is now confirmed to name the expected
+container, and the check returns a **directory fd**: procfs invalidates
+a `/proc/<pid>` dentry when the task exits, so every `openat` below that
+fd either reaches the same task or fails `ESRCH`. Refusals count
+`dns_propagation_pid_mismatches`. (#688)
+
+That fix reached one call site and left its neighbour three files away,
+in the same release, doing exactly what its own comment forbade:
+`dhcp_manager.go` built `/proc/%v/ns/net` from the same PID as a string
+and resolved it **twice, independently** — once for the manager's
+netlink handle, once inside `DHCPClient.Start`. Two resolutions of one
+string can disagree. The sink there is not one file: the netlink handle
+carries every `AddrReplace`, `AddrDel`, `LinkSetMTU` and `RouteAdd` the
+manager makes, with `CAP_NET_ADMIN`, and `dhcpcd` is spawned into that
+namespace as root. The window is 70s; PID wrap against
+`pid_max = 4194304` was measured at roughly nine minutes of unprivileged
+forking, and PIDs are host-global here.
+
+The netns is now opened relative to the fd the identity check returned,
+the wait polls *that* rather than a path — so a wait spanning a
+container exit re-runs the check every attempt instead of waiting for
+anything at all to turn up at that PID — and the client takes a borrowed
+handle rather than a path string, which deletes the second resolution
+rather than hardening it. Refusals count `netns_pid_mismatches`, and
+unlike the DNS case the refusal fails the attach, so it is not silent.
+The live race was not demonstrated end to end: proving it needs root and
+a real container mid-attach. The primitive is confirmed; the exploit is
+reasoned. **This one is present in v1.7.1** — `dhcp_manager.go` there
+builds `/proc/<pid>/ns/net` as a string and resolves it twice, with no
+identity check, and so does every release before it. (#695)
+
+### The plugin's own surfaces
+
+- **The socket's root-only property was inherited, not enforced.** A
+  UNIX socket is created `0777 &^ umask`, so the access control on the
+  entire RPC surface was whatever umask the plugin runtime handed us —
+  `0755` today, `0775` under a umask of `0002`, `0777` under `0`.
+  SECURITY.md argues that serving `/metrics` on that socket is unchanged
+  ground *because* the socket is root-only, a contract stated in prose
+  and established nowhere in the code. It is now `chmod`ed to `0600`,
+  and a failure to do so **refuses plugin startup** rather than serving
+  on a socket whose mode is unknown. (#687)
+- **A NUL byte defeated the bridge-reuse guard.** The kernel truncates
+  an interface name at NUL and a Go string comparison does not, so two
+  networks could be brought to share one bridge. This was latent only in
+  the write-up: a `POST /networks/create` carrying
+  `com.docker.network.bridge.name` with an embedded NUL transports
+  through the whole daemon untouched, and
+  `netlink.LinkByName("docker0\x00evil")` resolves `docker0` while
+  `"docker0evil"` is not found. `ValidIfaceName` already existed in
+  `pkg/dhcp` and was never applied to the network options; it now runs
+  in the pure-validation phase against `bridge` and `parent` alike.
+  (#705)
+- **`parseIfnameOption` accepted flag-shaped names**, blocked in
+  practice by a leading-alphanumeric rule whose comment gave the wrong
+  reason for itself — the real threat is getopt permutation, not
+  re-splitting. The rule stays and now says why, and the option is now
+  validated by `ValidIfaceName` as well, so a flag-shaped name fails at
+  `CreateEndpoint` rather than surviving as far as the argv. (#706)
+- **`unshare` was the one binary resolved through `$PATH`** rather than
+  absolutely. It is pinned to `/usr/bin/unshare`. (#707)
+- **Neither HTTP server had timeouts or a body cap.** Both now carry
+  `ReadHeaderTimeout`, `ReadTimeout` and `IdleTimeout` plus a request
+  body limit. The socket server's `WriteTimeout` is deliberately left at
+  zero and a test permits a future non-zero value only if it clears the
+  worst-case budget the handler constants add up to — which is not an
+  upper bound on reality, since `lease_timeout` is operator-settable,
+  and that is exactly why the timeout is zero: it is a deadline on the whole exchange and does not
+  know a handler is still working, while `CreateEndpoint` legitimately
+  holds a link wait, a DHCP acquisition and two probe budgets against an
+  operator-settable `lease_timeout` with no cap. Firing mid-handler
+  would hand libnetwork a truncated response for an endpoint that was
+  already created. (#709)
+- **A CI gate self-waived on any bind path containing a dot**, because
+  it interpolated its needle into a regex. `grep -F` closes it. (#710)
+
+### State files under `/var/lib/net-dhcp` are no longer world-readable
+
+`tombstones.json`, the per-network options files and the `leases.jsonl`
+lease ledger were created `0644`. That directory is a read-write bind
+mount from the **host**, so container MAC addresses, leased IPs,
+hostnames and the full lease audit trail were readable by any user on
+the host. Nothing stored there is a credential and the plugin writes as
+root either way, so this was never a privilege boundary — but there is
+no reason for it to be open, and it costs nothing to close.
+
+**If you read `leases.jsonl` as a non-root user, you will now need
+`sudo`.** Files that already exist are tightened on the next write, so
+an upgrade fixes hosts that have been running for a while rather than
+only new installs. The plugin's `-logfile` stays world-readable at
+`0644` — operators do read it — but drops from `0666` and is now opened
+`O_NOFOLLOW`, so a symlink swapped in before a `SIGHUP` re-open cannot
+decide where root appends. (#708)
 
 ### Choosing which DHCP server a network leases from
 
@@ -163,6 +458,27 @@ IDs are unbounded and turn over with container lifecycle, so labelling
 by them would be a cardinality problem in exactly the deployments where
 these metrics matter most. (#651)
 
+### Twelve new health counters
+
+None of the twelve affects `healthy`; the four counters that flip it are
+unchanged. `docs/reference.md` carries the full description of each,
+including what a rise means and what to do about it.
+
+| counter | what it says |
+| ------- | ------------ |
+| `unsafe_hostnames_rejected` | Container hostnames dropped for carrying a control character (#692). |
+| `unsafe_option_values_dropped` | Server-chosen string options refused for the same reason, plus option-15 domains truncated at their first space (#703, #704). |
+| `dns_propagation_pid_mismatches` | DNS propagations refused because the container PID no longer belonged to that container (#688). |
+| `netns_pid_mismatches` | Sandbox netns opens refused for the same reason — the attach fails (#695). |
+| `dhcp_routes_applied` | Option-121 classless static routes handed to Docker at Join. The denominator for the row below (#700). |
+| `dhcp_default_route_superseded` | Joins whose option-121 routes cover `0.0.0.0/0` by union rather than by a literal default entry (#700). |
+| `lease_time_clamped` | Option-51 lifetimes cut to 24h for the outage watchdog only (#701). |
+| `mtu_refused` | Option-26 MTUs outside `[576, 65535]`, with the link left as it was (#702). |
+| `dhcp_server_tier_fallbacks` | Acquisitions that fell through to a lower-priority `dhcp_servers` entry — the only outside signal that a preferred server is silently dead (#111). |
+| `dhcp_server_policy_exhausted` | Acquisitions abandoned because no listed server answered, as distinct from DHCP being broken (#111). |
+| `recovery_network_gone` | Networks removed out from under the post-restart recovery walk (#648). |
+| `recovery_already_managed` | Endpoints a recovery walk found already registered to another manager (#480). |
+
 ### An ordinary `docker network rm` could report the plugin's worst fault
 
 `recovery_failed` means something specific and serious: after a daemon
@@ -227,24 +543,6 @@ and the re-record showed the daemon had quietly started sending an
 option the older one never did. None of that was visible before.
 (#644, #646)
 
-### State files under `/var/lib/net-dhcp` are no longer world-readable
-
-`tombstones.json`, the per-network options files and the `leases.jsonl`
-lease ledger were created `0644`. That directory is a read-write bind
-mount from the **host**, so container MAC addresses, leased IPs,
-hostnames and the full lease audit trail were readable by any user on
-the host. Nothing stored there is a credential and the plugin writes as
-root either way, so this was never a privilege boundary — but there is
-no reason for it to be open, and it costs nothing to close.
-
-**If you read `leases.jsonl` as a non-root user, you will now need
-`sudo`.** Files that already exist are tightened on the next write, so
-an upgrade fixes hosts that have been running for a while rather than
-only new installs. The plugin's `-logfile` stays world-readable at
-`0644` — operators do read it — but drops from `0666` and is now opened
-`O_NOFOLLOW`, so a symlink swapped in before a `SIGHUP` re-open cannot
-decide where root appends. (#708)
-
 ### Internal
 
 - The tombstone store and the six phases of lease renewal are now
@@ -256,6 +554,24 @@ decide where root appends. (#708)
   hardware it finds instead of refusing to run on a device whose
   watchdog is shorter than the defaults assume — refusing to run left
   the board unprotected, which is the opposite of the intent. (#632)
+- That watchdog then turned out to cover only half of what it exists
+  for. Its unit declared `DefaultDependencies=no` and wrote
+  `Before=shutdown.target` and `Conflicts=shutdown.target` back out
+  explicitly — the documented idiom for a unit that should be *stopped*
+  before shutdown proceeds — so systemd stopped it at the first instant
+  of every reboot, the daemon disarmed unconditionally on `SIGTERM`, and
+  the board entered the rest of the shutdown with nothing armed. A
+  shutdown blocking on a dead NFS share is one of the two wedges the
+  watchdog was written for, and the unit file asserted the opposite
+  three lines above the code that broke it. Measured on the host as a
+  14-minute hang. Both halves are fixed, because either alone leaves it
+  broken: the unit adds nothing back to the shutdown ordering, and the
+  daemon disarms only while `statfs` still answers — so an operator's
+  `systemctl stop` on a healthy board still stops cleanly, while a stop
+  taken once the share has gone silent closes the device without the
+  magic byte and lets the timer end the hang. Both are gated, since the
+  whole failure was a comment asserting what nothing checked. (#632,
+  #684)
 - A CI runner whose plugin state directory went missing did not degrade;
   it took the nested Docker daemon down with it, permanently, while
   continuing to report itself online to GitHub. The directory is now
@@ -288,7 +604,6 @@ decide where root appends. (#708)
   every engine, pending moby/moby#52866. Describing a capability probe
   as a version check taught the weaker pattern as house style, on a page
   that exists to teach the stronger one. (#673)
-
 - Killing the Docker daemon outright is now covered by the integration
   suite, and what it does turned out not to be what the issue asking for
   the test assumed. The plugin never dies abruptly: about a second after

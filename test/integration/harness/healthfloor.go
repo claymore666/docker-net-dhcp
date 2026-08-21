@@ -282,7 +282,7 @@ const healthyWhy = "the plugin reports itself unhealthy while every counter this
 // from the branch under test, so this is not a dev-box-only guard.
 //
 // Note this is deliberately NOT `!h.Healthy`, though it is now one
-// step away from it. All three counters behind that flag mean exactly
+// step away from it. Every counter behind that flag means exactly
 // one thing since #376 split the benign container-exit, and #648 the
 // removed network, out of recovery_failed; what is left is wanting a
 // few runs of evidence
@@ -396,8 +396,8 @@ const floorEvidenceMaxFaultLines = 200
 // Two sections, both bounded:
 //
 //   - every error- and warning-level line, wherever it falls in the run.
-//     This is not a heuristic: each of the three counters the floor can
-//     report is incremented next to a log.Error or log.Warn at every one
+//     This is not a heuristic: each counter the floor can report is
+//     incremented next to a log.Error or log.Warn at every one
 //     of its increment sites, so the line that explains a finding is
 //     always in this section. Warnings are included as well as errors
 //     because the counter's own line is sometimes a Warn (the tombstone

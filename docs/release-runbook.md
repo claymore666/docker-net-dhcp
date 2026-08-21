@@ -503,12 +503,23 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
    `git tag -v vX.Y.Z` (or the green "Verified" on the tag page).
    The workflow fires on `tags: v*`. Watch it at
    <https://github.com/claymore666/docker-net-dhcp/actions/workflows/release.yml>.
-   Expected steps: Resolve tag → checkout → setup-go →
-   GHCR login → Hub login (or skip) → Push to GHCR → Push to
-   Hub (or skip) → Sync Hub description → Install cosign →
-   **Sign published images (cosign)** → **Generate SBOM (syft)** →
-   **Package and sign release artifact** → **Attest provenance
-   (artifacts + image)** → Workflow summary →
+   Expected steps, in the order the `release` job runs them and under
+   the names the run shows: Resolve release tag → checkout → setup-go →
+   Install crane → Log in to GHCR → Log in to Docker Hub (or *Warn if
+   Docker Hub credentials missing*) → Push to GHCR → **Check the
+   documented reference digests against this build** (the gate step 10b
+   is about — on the first rc of a new version it is *expected* to fail
+   and print the block to paste into the doc) → Tag :latest to the
+   published GHCR digest (not on an rc) → Push to Docker Hub (or skip)
+   → Tag :latest to the published Docker Hub digest (or skip; not on an
+   rc) → **Verify :latest resolves to the signed version digest** (not
+   on an rc) → Sync Docker Hub description from README (or skip) →
+   Install cosign → **Record and gate the cosign version** → **Sign
+   published images (cosign keyless)** → Install syft → **Generate SBOM
+   (SPDX + CycloneDX)** → **Package and sign release artifact** →
+   **Attest release-artifact provenance** → **Attest image provenance
+   (GHCR)** → **Upload signed artifacts for the release job** →
+   Workflow summary →
    **verify-install** (separate job: installs the just-published
    plugin from GHCR on a clean hosted runner and asserts it
    enables — a red verify-install means users can't install what

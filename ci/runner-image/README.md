@@ -141,7 +141,7 @@ directory and on any new host.
 
 | Piece | Why |
 |---|---|
-| Docker Engine ≥ 28 (docker-ce) | nested daemon runs the plugin under test; ≥ 28 unblocks engine-gated tests (#125) |
+| Docker Engine ≥ 28 (docker-ce) | nested daemon runs the plugin under test, and Debian 13's `docker.io` is 26.x — the engine the suite drives comes from download.docker.com so the lane exercises the plugin against a current daemon rather than the distro's. Note what this floor is *not*: `interface_name` (#125) is gated by a capability probe (`engineAppliesIfname`), not by an engine version. The probe runs a throwaway container and checks the interface the engine actually created; it fails on every engine today, because the upstream fix that stops the remote-driver proxy dropping `DstName` (moby/moby#52866) has not shipped. Those tests skip in this lane too, and no engine bump changes that (#673). |
 | supervised dockerd (relaunch loop under tini) | daemon-restart recovery test must be able to bounce the daemon without killing the environment (#145) |
 | cgroup v2 nesting prep (entrypoint evacuates the root cgroup into an `init` leaf, then delegates controllers) | running dockerd bare leaves every process in the cgroup-namespace root; cgroup v2's no-internal-processes rule then forces the nested daemon's plugin/container cgroups to be *threaded*, and `cgroup.kill` (runc task teardown, docker-ce ≥ 29) is unsupported on threaded cgroups → `docker plugin disable/enable` fails with EOPNOTSUPP (#158). systemd / `docker:dind` do the same evacuation |
 | Go toolchain (go.mod's version) | test compilation on the runner, mirrors `install-go-runner.sh` |

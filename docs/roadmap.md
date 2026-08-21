@@ -24,9 +24,16 @@ for exactly that reason.
 
 Bridge, macvlan and ipvlan attachment; DHCPv4 and DHCPv6; addresses that
 survive `docker restart`, plugin restart and daemon restart; a
-`/Plugin.Health` counter surface; signed, attested, reproducible
-releases. The [driver reference](reference.md) is the authority on what
-exists right now — if this page and that one disagree, that one is right.
+`/Plugin.Health` counter surface and the same counters in Prometheus
+form on `/metrics` ([#651]); per-network choice of which DHCP server to
+lease from ([#111], [#669]); signed, attested, reproducible releases.
+v1.8.0 also carries the first human review of the design and its trust
+boundaries ([#457], [#699]) — pulled into this release because it is the
+one that opens a TCP port in a process holding `CAP_NET_ADMIN`. Every
+finding was fixed inside the same cycle rather than carried forward, and
+each one ends in a test or a counter rather than a paragraph. The
+[driver reference](reference.md) is the authority on what exists right
+now — if this page and that one disagree, that one is right.
 
 ## Direction
 
@@ -161,11 +168,15 @@ someone asks.
 [#219]: https://github.com/claymore666/docker-net-dhcp/issues/219
 [#403]: https://github.com/claymore666/docker-net-dhcp/issues/403
 [#452]: https://github.com/claymore666/docker-net-dhcp/issues/452
+[#457]: https://github.com/claymore666/docker-net-dhcp/issues/457
 [#507]: https://github.com/claymore666/docker-net-dhcp/issues/507
 [#524]: https://github.com/claymore666/docker-net-dhcp/issues/524
 [#528]: https://github.com/claymore666/docker-net-dhcp/issues/528
 [#531]: https://github.com/claymore666/docker-net-dhcp/issues/531
+[#651]: https://github.com/claymore666/docker-net-dhcp/issues/651
+[#669]: https://github.com/claymore666/docker-net-dhcp/issues/669
 [#682]: https://github.com/claymore666/docker-net-dhcp/issues/682
+[#699]: https://github.com/claymore666/docker-net-dhcp/issues/699
 [moby/moby#52865]: https://github.com/moby/moby/issues/52865
 [moby/moby#52866]: https://github.com/moby/moby/pull/52866
 [moby/moby#52870]: https://github.com/moby/moby/issues/52870

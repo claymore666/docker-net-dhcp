@@ -47,8 +47,10 @@ const healthFloorBudget = 30 * time.Second
 //     Since #385 the verdict says which of the two it is instead of
 //     printing an unqualified "clean" — see FloorCleanLine. Making the
 //     floor actually span the whole run is the remaining half of #385.
-//   - It asserts h.Healthy since #421, alongside the three counters
-//     behind that flag. All three are now fatal — the benign paths that
+//   - It asserts h.Healthy since #421, alongside every counter behind
+//     that flag (floorCounters is the list; it is four today, and the
+//     count is deliberately not repeated in prose). All of them are
+//     now fatal — the benign paths that
 //     used to be folded into recovery_failed are counted separately as
 //     recovery_deferred (#383) and recovery_aborted_container_gone
 //     (#376) — and the flag is checked as well as the table, so a

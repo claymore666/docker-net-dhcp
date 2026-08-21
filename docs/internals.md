@@ -85,6 +85,57 @@ lifecycle, the event plumbing, and everything below are identical.
   `nsenter -t <dhcpcd-pid> -m` (see
   [verifying renewal](reference.md#verifying-that-renewal-works)).
 
+## How a network chooses its DHCP server
+
+`dhcp_servers` ranks the servers a network may lease from and
+`dhcp_deny_servers` names ones it must never lease from (#111, #669).
+The operator-facing rules are in the
+[driver reference](reference.md); the shape of the implementation
+follows from two properties of the `dhcpcd` directives underneath.
+
+- **Both lists match the packet's source address, not the Server
+  Identifier it advertises.** `dhcpcd`'s `whitelist` / `blacklist`
+  compare the offer's IP source, so behind a DHCP relay every offer
+  looks like it came from the relay and neither list can tell servers
+  apart — the no-relay limit is a property of the mechanism, not a gap
+  in the implementation. They are DHCPv4-only for the same kind of
+  reason: `dhcpcd` stores both as `in_addr_t` and its v6 path never
+  reads them, so a v6 entry is refused at `docker network create`
+  rather than applying to nothing while the operator believes a server
+  was ranked or denied.
+- **A whitelist switches the blacklist off, so the plugin never emits
+  both.** `dhcpcd` consults its blacklist only when no whitelist is
+  configured, so a network setting both options would get a denial the
+  client silently does not enforce. The deny list is subtracted from the
+  preference list at parse time instead: after that there is one truth
+  about what is allowed, and the renderer emits one kind of directive.
+  A preference list that denies its way to empty fails the network
+  create, because the alternative is degrading into "accept any server
+  at all" — the opposite of what both options were set to achieve. The
+  renderer carries the same either/or as a guard rather than trusting
+  the caller, since a comment asking callers not to emit both would
+  decay silently.
+- **Ordering is not expressible to `dhcpcd`, so preference is an
+  acquisition-time ladder.** The initial acquisition runs one attempt
+  per preferred server, in the operator's order, each restricted to
+  that server alone. The ladder **divides** the existing acquisition
+  budget rather than extending it — a preference list must not make
+  `docker run` slower, and the one-shot at `CreateEndpoint` already
+  runs against a tight ceiling — with the remainder of the division
+  dropped rather than handed to the last tier, so the attempts can only
+  sum to at most the budget. `dhcp_server_tier_fallbacks` counts a
+  fall-through to a lower tier, which is the only outside signal that a
+  preferred server has gone quiet while every container still starts;
+  `dhcp_server_policy_exhausted` counts a restricted acquisition where
+  nothing answered, which is otherwise indistinguishable from an
+  ordinary DHCP timeout.
+- **The persistent client gets the whole allowed set, not the tier that
+  won.** It has to be able to rebind after the preferred server goes
+  away, and a whitelist pinned to the winning tier would strand the
+  endpoint with no lease instead of failing over. Preference is an
+  acquisition-time concept; once a lease is held it stays with whoever
+  granted it, because renewal is unicast to that server.
+
 ## How a lease is checked against the segment
 
 Since v1.6.0 the plugin asks, after each IPv4 lease, whether some *other*
@@ -221,13 +272,98 @@ kinds of restart. Their *observable* behaviour is documented in the
 - **Recovery → a walk of Docker's network list at startup.** For every
   endpoint on a plugin-served network, a DHCP manager is rebuilt and its
   first acquisition requests the address the container already holds
-  (option 50). This runs synchronously inside plugin construction,
-  before the socket accepts requests, so an incoming `CreateEndpoint`
-  cannot race it.
+  (option 50). It runs synchronously inside plugin construction when the
+  daemon answers, which is the normal case and finishes before the
+  socket accepts anything. When the daemon is **not** serving yet the
+  walk cannot run there at all: Docker respawns the plugin during its
+  own startup, so blocking would make us unreachable to the very daemon
+  we are waiting on. Recovery is handed to `Listen` instead and runs in
+  a goroutine *after* the socket is up (#383) — which puts it in the
+  same window as the `Join`s a restarting host is issuing.
+  `recovery_deferred` counts that postponement; it is not a fault, and
+  only an exhausted retry budget lands on `recovery_failed`.
+
+  **The deferred path is what makes the compare-and-set load-bearing.**
+  Recovery builds a manager and registers it only if no manager is
+  already registered for the endpoint, in one locked operation. The
+  check and the registration used to be two, and a `Join` landing in
+  the gap had its live manager evicted from the registry while its
+  `dhcpcd` kept running — untracked, unstoppable, and competing with
+  recovery's fresh client on the same interface. A `Join` is newer
+  truth than a recovery walk and may displace it; recovery is older
+  truth and must yield, which is what a compare-and-set expresses and a
+  stop-what-I-displaced does not. `recovery_already_managed` counts an
+  endpoint left alone — not healthy-affecting, since that endpoint
+  *has* a renewal client, and the only outward sign the race happened
+  at all (#480, #679).
 
 The plugin's identity is a MAC. Both stability mechanisms exist because
 DHCP servers key on it, and everything above is in service of presenting
 the same MAC to the server across an event the container did not choose.
+
+## How the counters are exposed
+
+`/Plugin.Health` and `/metrics` are two renderings of one snapshot
+(#651). What each of them says is in the
+[driver reference](reference.md#observability); the mechanism is that
+one function builds that snapshot and both handlers render it and
+nothing else.
+
+- **One source, because two hand-kept lists rot.** A metrics handler
+  that read the atomics itself would be a second list of every counter,
+  and this repository has watched that shape decay more than once
+  (#542, #636) — a stale list is invisible until an alert that should
+  have fired does not. The exposition is a table keyed by the
+  `HealthResponse` JSON tag it renders, and a unit test walks that
+  struct by reflection and fails on a field nobody claimed. Adding a
+  counter without exposing it is a red unit test rather than a hole in
+  somebody's dashboard.
+- **The snapshot is not a single atomic instant, and that is
+  deliberate.** The counters are read without a lock, so two of them
+  can be a few nanoseconds apart. They are monotonic counters read for
+  rates and alerting, not an accounting ledger, and this is what
+  `/Plugin.Health` has always done. Only the two map lengths take the
+  mutex, because reading a map during a concurrent write is a data race
+  rather than a stale number.
+- **The `ipv4` series is derived, never read.** The family-split
+  counters bump the aggregate on *every* event and the `_v6` sibling
+  only on v6 ones (#212), so `_v6` is a subset of the total rather than
+  a peer, and `family="ipv4"` has to be total-minus-v6 at render time.
+  A total below its v6 subset would mean a bump reached the sibling and
+  not the aggregate — a real bug — but a negative counter makes the
+  whole scrape unparseable and buries the signal it was supposed to
+  show, so it clamps to zero and the rest of the metrics still arrive.
+- **Two exposure paths, and only one of them opens a port.** `/metrics`
+  is on the plugin socket unconditionally: it costs nothing, and it
+  lets an operator with a socket-aware scrape path collect metrics
+  without the plugin listening anywhere. The TCP listener is
+  `METRICS_ADDR`, and it is off unless set. The plugin runs with
+  `"network": {"type": "host"}` and holds `CAP_NET_ADMIN`,
+  `CAP_SYS_ADMIN` and `CAP_SYS_PTRACE`, so any port it opens is on the
+  host's own network namespace — opening one has to be a decision an
+  operator made, not something they inherited by upgrading. That
+  listener's mux carries `/metrics` and nothing else, so no libnetwork
+  RPC becomes reachable over TCP; it binds before the call returns, so
+  an unusable address fails at startup where somebody sees it rather
+  than in a goroutine that logs and leaves the plugin running without
+  the endpoint that was asked for; and a wildcard bind is said out loud
+  rather than refused. What a wildcard leaks is not a lease inventory —
+  the exposition is aggregate counters plus a per-process instance UUID,
+  with no endpoint IDs, container names, addresses or MACs, which
+  `SECURITY.md` promises and
+  `TestMetricsExposition_NoPerEndpointIdentifiers` pins — it is this
+  plugin's operational telemetry, published on every interface the host
+  has, since the plugin runs in the host's network namespace (#709).
+- **The socket's mode is pinned rather than inherited.** Serving
+  `/metrics` on the plugin socket is unchanged ground only because that
+  socket is root-only: anything able to read it can already call every
+  RPC. A UNIX socket is created `0777 &^ umask`, so until #687 that
+  property was whatever umask the plugin runtime happened to hand us —
+  true under the usual `0022`, false under `0002`, and nothing said
+  which. `Listen` now chmods the socket to `0600` and refuses to serve
+  if it cannot, since an unknown mode is exactly the state being
+  guarded against. Only the daemon speaks this protocol and it connects
+  as root, so nothing legitimate needs group or other.
 
 ## Running the tests
 
@@ -235,7 +371,7 @@ Four loops, cheapest first. Only the last needs root or a plugin.
 
 | what | command | needs |
 | --- | --- | --- |
-| unit + gate scripts | `go test ./...` | nothing — seconds |
+| the Go unit tests | `go test ./...` | nothing — seconds |
 | the suite's own guards | `go test ./test/integration/harness/` | nothing |
 | **the whole fast CI lane** | `make check` | nothing — about a minute |
 | both integration suites | `sudo make integration-local` | root, Docker |
