@@ -292,6 +292,29 @@ option the older one never did. None of that was visible before.
   kernel whether the watchdog is armed and which process holds it, and
   reports "cannot check" rather than a pass when that evidence has aged
   out of the ring buffer. (#677)
+- `docker build` uploads the whole context to the daemon before any
+  `COPY` is considered, and `.dockerignore` carried no counterpart to
+  the credential block `.gitignore` has had since it was written — so a
+  maintainer's local `secrets/` went with every build from the repo
+  root. Nothing reached an image; the transfer happens regardless. The
+  gate that exists to stop that drift could not see it, because it
+  matched root-anchored directories only and that block is written
+  unanchored — a blind spot its own comment named while it went green.
+  It now judges every ignored directory and every credential-shaped
+  path, and goes red rather than quiet if either class turns up empty.
+- The arm64 lane's boot server image is now built in CI, and what it
+  installs is checked. Nothing compiled that directory before, so a
+  change that did not build waited for whoever next reprovisioned the
+  host — usually mid-recovery from something else. Its run recipe also
+  carried no restart policy, unlike the runner it serves, so a reboot of
+  the serving host left the board looping on a boot server that never
+  came back. That reads as a runner reporting `offline`, which is also
+  its normal reading between release candidates, so nothing would have
+  said so until an rc went red for want of an arm64 verdict.
+- The tree names none of the project's own machines any more. Three
+  release-note entries and the actionlint config carried an internal
+  hostname, the last of them as a standing exception that is no longer
+  one.
 
 ### With thanks to
 
