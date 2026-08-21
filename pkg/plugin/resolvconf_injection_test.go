@@ -72,7 +72,10 @@ func TestBuildResolvConf_EveryFieldIsFiltered(t *testing.T) {
 // call, so this pins that the WRITER's emptiness guard sees the filtered
 // list rather than the raw one.
 func TestWriteContainerResolvConf_RefusesWhenFilteringEmptiesTheList(t *testing.T) {
-	err := writeContainerResolvConf(1, []string{"bad\nnameserver 203.0.113.9"}, nil, "")
+	// The container ID is irrelevant here: the emptiness guard fires
+	// before the PID is ever looked at, which is itself part of the
+	// contract -- filtering must not be reachable only via /proc.
+	err := writeContainerResolvConf(1, "0123456789abcdef", []string{"bad\nnameserver 203.0.113.9"}, nil, "")
 	if err == nil {
 		t.Fatal("expected a refusal, got nil — an empty resolv.conf would have been written")
 	}

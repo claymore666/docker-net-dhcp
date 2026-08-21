@@ -59,7 +59,10 @@ turns out to be false:
 
 `/metrics` is also served on the plugin's UNIX socket unconditionally,
 which is unchanged ground: that socket is `root`-only, and anything able
-to read it can already call every RPC.
+to read it can already call every RPC. Since v1.8.0 the plugin sets that
+mode itself (`0600`) instead of inheriting whatever the plugin runtime's
+umask happened to give it, and a test fails if the socket ever comes up
+readable by group or other.
 
 ## Supported versions
 

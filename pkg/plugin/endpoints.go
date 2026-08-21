@@ -365,6 +365,15 @@ type HealthResponse struct {
 	// legitimate hostname never contains one, so a rising value is
 	// somebody probing rather than background noise.
 	UnsafeHostnamesRejected int32 `json:"unsafe_hostnames_rejected"`
+	// DNSPropagationPIDMismatches counts DNS propagations refused
+	// because the container PID resolved through Docker no longer
+	// belonged to that container by the time the plugin acted on it
+	// (#688). NOT healthy-affecting: refusing is the safe outcome and
+	// the container keeps the resolv.conf it had. It is reported
+	// because the plugin shares the host PID namespace, so each one is
+	// a write that would otherwise have gone to an unrelated host
+	// process.
+	DNSPropagationPIDMismatches int32 `json:"dns_propagation_pid_mismatches"`
 	// TombstonesConsumed counts CreateEndpoints that replayed a fresh
 	// tombstone and so handed a recreated container its previous
 	// MAC/IP. Not Healthy-affecting: this is the address-stability
@@ -581,6 +590,7 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		JoinAbortedEndpointLeft:      p.joinAbortedEndpointLeft.Load(),
 		TombstoneWriteFailures:       tsFails,
 		UnsafeHostnamesRejected:      p.unsafeHostnamesRejected.Load(),
+		DNSPropagationPIDMismatches:  p.dnsPropagationPIDMismatches.Load(),
 		TombstonesConsumed:           p.tombstonesConsumed.Load(),
 		LeaseChanged:                 p.leaseChanged.Load(),
 		AddressConflicts:             conflicts,

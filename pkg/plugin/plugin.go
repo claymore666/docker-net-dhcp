@@ -695,6 +695,18 @@ type Plugin struct {
 	// which is exactly why it would otherwise be invisible.
 	unsafeHostnamesRejected atomic.Int32
 
+	// dnsPropagationPIDMismatches counts DNS propagations refused
+	// because the PID resolved through Docker no longer belonged to the
+	// container it came from (#688).
+	//
+	// The plugin runs in the host PID namespace, so a recycled PID here
+	// means the write would have landed in an unrelated host process.
+	// Refusing is the safe outcome and leaves the container's
+	// resolv.conf as it was, so without a counter the near-miss would
+	// be invisible; a sustained rise says containers are exiting inside
+	// the propagation window.
+	dnsPropagationPIDMismatches atomic.Int32
+
 	// tombstoneWriteFailures counts saveTombstones failures (disk full,
 	// EROFS) from addTombstone. Reported on /Plugin.Health so operators
 	// can detect a degraded restart-stability window — every failure
@@ -1654,6 +1666,21 @@ func (p *Plugin) Listen(bindSock string) error {
 	l, err := net.Listen("unix", bindSock)
 	if err != nil {
 		return err
+	}
+
+	// A UNIX socket is created with 0777 &^ umask, so without this the
+	// access control on our entire RPC surface would be whatever umask
+	// the plugin runtime happened to hand us -- 0755 today, 0775 under
+	// a umask of 0002, 0777 under 0. SECURITY.md argues that serving
+	// /metrics here is unchanged ground *because* the socket is
+	// root-only; that property is now enforced rather than inherited
+	// (#687). Only the daemon speaks this protocol and it connects as
+	// root, so nothing legitimate needs group or other.
+	if err := os.Chmod(bindSock, 0o600); err != nil {
+		// Refuse to serve on a socket whose mode we could not pin:
+		// an unknown mode is exactly the state this guards against.
+		l.Close()
+		return fmt.Errorf("restricting the plugin socket to the owner: %w", err)
 	}
 
 	// The socket exists now, so the daemon can reach us even while we

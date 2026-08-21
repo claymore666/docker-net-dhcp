@@ -4,7 +4,9 @@
 package plugin
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"runtime"
 	"strings"
@@ -14,6 +16,86 @@ import (
 
 	"github.com/claymore666/docker-net-dhcp/pkg/dhcp"
 )
+
+// errPIDNotContainer is returned when the PID handed to
+// writeContainerResolvConf no longer belongs to the container it was
+// resolved from. Callers count it: a rise means the plugin came that
+// close to writing DHCP-supplied content into an unrelated process.
+var errPIDNotContainer = errors.New("pid no longer belongs to the expected container")
+
+// cgroupNamesContainer reports whether the contents of a
+// /proc/<pid>/cgroup file place that task inside container ctrID.
+//
+// A substring match on the container ID, and that is deliberate: the ID
+// is 64 hex characters, so it cannot collide with anything else in the
+// path, while the path around it varies by cgroup driver (`/docker/<id>`
+// for cgroupfs, `docker-<id>.scope` for systemd), by cgroup version
+// (v1 writes one line per controller) and by namespace (a private
+// cgroup namespace prefixes the path). Parsing that shape would be
+// brittle in the direction that matters -- a parse that failed to
+// recognise a valid layout would refuse a legitimate container and
+// silently disable DNS propagation.
+//
+// An empty ctrID is never a match. It is what a future caller that
+// forgot to thread the ID through would pass, and "check nothing" is
+// not an acceptable reading of it.
+func cgroupNamesContainer(cgroup, ctrID string) bool {
+	if ctrID == "" {
+		return false
+	}
+	return strings.Contains(cgroup, ctrID)
+}
+
+// openContainerProc opens /proc/<pid> and confirms the task behind it
+// still belongs to ctrID before anything is done with it (#688).
+//
+// Both halves matter, and neither is sufficient alone:
+//
+//   - The cgroup check answers "is this still that container?". The
+//     PID is resolved through Docker (NetworkInspect -> ContainerInspect)
+//     and nothing between that call and the setns re-checks it. The
+//     plugin runs with pidhost: true, so if the container exits in
+//     that window and the kernel recycles the PID, the victim is an
+//     arbitrary *host* process -- possibly one in the host's root
+//     mount namespace. A liveness check would not help: the whole
+//     failure mode is that something else is alive at that PID.
+//   - The returned directory fd pins the answer. procfs invalidates a
+//     /proc/<pid> dentry when the task exits, so every openat below
+//     this fd either reaches the same task or fails with ESRCH -- a
+//     PID recycled after the check cannot be reached through it.
+//     Re-deriving the path as a string afterwards would reopen the
+//     window the check just closed.
+//
+// The container ID appears in the cgroup path under both cgroup
+// drivers (`/docker/<id>` for cgroupfs, `docker-<id>.scope` for
+// systemd) and survives a private cgroup namespace, which only
+// prefixes the path. A substring match on the 64-hex ID is therefore
+// both sufficient and unambiguous.
+func openContainerProc(pid int, ctrID string) (*os.File, error) {
+	d, err := os.Open(fmt.Sprintf("/proc/%d", pid))
+	if err != nil {
+		return nil, fmt.Errorf("open /proc/%d: %w", pid, err)
+	}
+
+	fd, err := unix.Openat(int(d.Fd()), "cgroup", unix.O_RDONLY, 0)
+	if err != nil {
+		d.Close()
+		return nil, fmt.Errorf("%w: reading the cgroup of pid %d: %v", errPIDNotContainer, pid, err)
+	}
+	cgroup, err := io.ReadAll(os.NewFile(uintptr(fd), "cgroup"))
+	if err != nil {
+		d.Close()
+		return nil, fmt.Errorf("%w: reading the cgroup of pid %d: %v", errPIDNotContainer, pid, err)
+	}
+
+	if !cgroupNamesContainer(string(cgroup), ctrID) {
+		d.Close()
+		return nil, fmt.Errorf("%w: pid %d is in cgroup %q, which does not name container %s",
+			errPIDNotContainer, pid, strings.TrimSpace(string(cgroup)), shortID(ctrID))
+	}
+
+	return d, nil
+}
 
 // writeContainerResolvConf enters the mount namespace of the process
 // identified by pid and rewrites /etc/resolv.conf with the
@@ -51,7 +133,7 @@ import (
 //     single-entry option 15 (`domain`, dhcpcd env `new_domain_name`) when option 119
 //     isn't supplied. RFC 3397 specifies option 119 supersedes option
 //     15 when both are present.
-func writeContainerResolvConf(pid int, dns []string, searchList []string, searchDomain string) error {
+func writeContainerResolvConf(pid int, ctrID string, dns []string, searchList []string, searchDomain string) error {
 	// Drop anything that would restructure the file before the emptiness
 	// guard below, so "every nameserver the server sent was unusable"
 	// lands on that guard rather than producing a resolv.conf with no
@@ -70,6 +152,15 @@ func writeContainerResolvConf(pid int, dns []string, searchList []string, search
 		return fmt.Errorf("refusing to write empty resolv.conf")
 	}
 
+	// Before locking a thread or touching a namespace: confirm the PID
+	// still belongs to the container it was resolved from, and keep the
+	// directory fd that proves it (#688).
+	procDir, err := openContainerProc(pid, ctrID)
+	if err != nil {
+		return err
+	}
+	defer procDir.Close()
+
 	runtime.LockOSThread()
 
 	// Open self-thread's mnt ns through /proc/self/task/<tid>/ns/mnt
@@ -84,11 +175,14 @@ func writeContainerResolvConf(pid int, dns []string, searchList []string, search
 	}
 	defer origMnt.Close()
 
-	targetMnt, err := os.Open(fmt.Sprintf("/proc/%d/ns/mnt", pid))
+	// Through procDir, not by path: see openContainerProc. Reopening
+	// /proc/<pid>/ns/mnt as a string would let a recycled PID back in.
+	targetFd, err := unix.Openat(int(procDir.Fd()), "ns/mnt", unix.O_RDONLY, 0)
 	if err != nil {
 		runtime.UnlockOSThread()
 		return fmt.Errorf("open container mnt ns (pid %d): %w", pid, err)
 	}
+	targetMnt := os.NewFile(uintptr(targetFd), "ns/mnt")
 	defer targetMnt.Close()
 
 	// Detach this thread's filesystem state (CWD, root, umask) from
