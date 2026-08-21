@@ -875,6 +875,18 @@ func bumpFamily(total, v6Counter *atomic.Int32, v6 bool) {
 }
 
 func (m *dhcpManager) handleEvent(event dhcp.Event, v6 bool) {
+	// The hook process already dropped these; all that is left here is
+	// to make the drop visible. Counted for every event type, including
+	// the data-less ones, because the count describes the exchange and
+	// not the lease (#703).
+	if event.UnsafeValuesDropped > 0 && m.plugin != nil {
+		m.plugin.unsafeOptionValuesDropped.Add(int32(event.UnsafeValuesDropped))
+		log.
+			WithFields(m.logFields(v6)).
+			WithField("dropped", event.UnsafeValuesDropped).
+			Warn("DHCP option values dropped before use: they carried control characters")
+	}
+
 	switch event.Type {
 	// "deconfig" is intentionally not handled. Deleting the
 	// container's IP from the kernel would also wipe the

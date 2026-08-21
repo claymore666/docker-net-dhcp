@@ -365,6 +365,14 @@ type HealthResponse struct {
 	// legitimate hostname never contains one, so a rising value is
 	// somebody probing rather than background noise.
 	UnsafeHostnamesRejected int32 `json:"unsafe_hostnames_rejected"`
+	// UnsafeOptionValuesDropped counts server-chosen DHCP string
+	// values refused before use because they carried a control
+	// character, plus option-15 domains truncated at their first space.
+	// NOT healthy-affecting: dropping is the safe outcome and the lease
+	// proceeds. Its sibling above covers the value the CONTAINER
+	// chooses; this one covers the values the SERVER chooses, which is
+	// the larger set and the one nothing filtered before (#703, #704).
+	UnsafeOptionValuesDropped int32 `json:"unsafe_option_values_dropped"`
 	// DNSPropagationPIDMismatches counts DNS propagations refused
 	// because the container PID resolved through Docker no longer
 	// belonged to that container by the time the plugin acted on it
@@ -619,6 +627,7 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		JoinAbortedEndpointLeft:      p.joinAbortedEndpointLeft.Load(),
 		TombstoneWriteFailures:       tsFails,
 		UnsafeHostnamesRejected:      p.unsafeHostnamesRejected.Load(),
+		UnsafeOptionValuesDropped:    p.unsafeOptionValuesDropped.Load(),
 		DNSPropagationPIDMismatches:  p.dnsPropagationPIDMismatches.Load(),
 		NetnsPIDMismatches:           p.netnsPIDMismatches.Load(),
 		DHCPRoutesApplied:            p.dhcpRoutesApplied.Load(),

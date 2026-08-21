@@ -760,6 +760,18 @@ type Plugin struct {
 	// applied (#702).
 	mtuRefused atomic.Int32
 
+	// unsafeOptionValuesDropped counts server-chosen DHCP string values
+	// refused because they carried a control character -- option 66,
+	// 67, 100, 101 and the plugin's own 252, plus the option-15 domain
+	// truncated at its first space.
+	//
+	// Not healthy-affecting: dropping is the safe outcome and the lease
+	// proceeds. Read it for the same reason as
+	// unsafe_hostnames_rejected: no legitimate server sends one, so any
+	// rise is deliberate. The count is produced in the dhcpcd hook
+	// process and rides the event across the FIFO (#703, #704).
+	unsafeOptionValuesDropped atomic.Int32
+
 	// tombstoneWriteFailures counts saveTombstones failures (disk full,
 	// EROFS) from addTombstone. Reported on /Plugin.Health so operators
 	// can detect a degraded restart-stability window — every failure
