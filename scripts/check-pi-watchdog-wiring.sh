@@ -32,10 +32,24 @@
 #      directory rather than the repo root — an added dependency breaks
 #      that build, and nothing in CI builds the netboot image, so it
 #      would surface at the next reprovision of the host.
+#   7. The unit stays OUT of the shutdown ordering. systemd.special(7)
+#      names Before=shutdown.target plus Conflicts=shutdown.target as the
+#      idiom for a unit that should be stopped before shutdown proceeds;
+#      both were once written here explicitly, under a comment claiming
+#      the unit survives shutdown. It did not: every reboot stopped it at
+#      the first instant, the daemon disarmed on SIGTERM, and a shutdown
+#      that then blocked on the dead share hung with nothing armed — the
+#      exact case the unit exists for. Measured on the host as a
+#      14-minute hang, 2026-08-20.
 #
 # Points 1 and 2 are the pair worth the whole script: they fail in
 # OPPOSITE directions, so a reader checking for one can be satisfied
 # while the other is broken.
+#
+# The other half of point 7 is not greppable and is not checked here: the
+# daemon must disarm only while the filesystem still answers, because
+# shutdown sends the same SIGTERM an operator does. That one is pinned by
+# TestRun_DisarmsOnlyWhileTheFilesystemAnswers in nfs-watchdog.
 #
 # Usage: check-pi-watchdog-wiring.sh [<netboot-dir>]
 # Exit: 0 wired, 1 drift, 2 cannot check.
@@ -119,6 +133,23 @@ if [ -n "$imports" ]; then
     echo "  the next reprovision of the host instead of here." >&2
 else
     echo "ok    nfs-watchdog is stdlib-only (the image builds it as its own module)"
+fi
+
+# 7. the unit must not be ordered against shutdown, or systemd stops it
+#    (and the daemon hands back the device) before shutdown proceeds.
+shutdown_deps=$(awk '/^\[Unit\]/{u=1;next} /^\[/{u=0} u' "$PATCH" \
+    | grep -E '^(Before|Conflicts)=.*shutdown\.target' || true)
+if [ -n "$shutdown_deps" ]; then
+    note "nfs-watchdog.service is ordered against shutdown.target:"
+    printf '  %s\n' $shutdown_deps >&2
+    echo "  systemd.special(7): that pair is the idiom for \"stop me before" >&2
+    echo "  shutdown proceeds\". systemd stops the unit at the first instant of" >&2
+    echo "  every reboot, the daemon closes the device, and a shutdown that then" >&2
+    echo "  blocks on a dead NFS server hangs forever with NOTHING armed to end" >&2
+    echo "  it — which is one of the two cases this watchdog exists for." >&2
+    echo "  DefaultDependencies=no on its own keeps the unit out of that." >&2
+else
+    echo "ok    the unit is not ordered against shutdown.target (it survives shutdown)"
 fi
 
 if [ "$fail" -ne 0 ]; then
