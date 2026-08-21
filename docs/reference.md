@@ -734,7 +734,7 @@ quietly go missing from your dashboards.
 On the plugin socket, always:
 
 ```bash
-PLUGIN_ID=$(docker plugin inspect -f '{{.Id}}' ghcr.io/claymore666/docker-net-dhcp:v1.7.1)
+PLUGIN_ID=$(docker plugin inspect -f '{{.Id}}' ghcr.io/claymore666/docker-net-dhcp:v1.8.0)
 sudo curl -s --unix-socket /run/docker/plugins/$PLUGIN_ID/net-dhcp.sock \
     http://localhost/metrics
 ```
@@ -743,7 +743,7 @@ Prometheus cannot scrape a UNIX socket, so for an actual scrape target
 set `METRICS_ADDR`:
 
 ```bash
-docker plugin set ghcr.io/claymore666/docker-net-dhcp:v1.7.1 METRICS_ADDR=127.0.0.1:9099
+docker plugin set ghcr.io/claymore666/docker-net-dhcp:v1.8.0 METRICS_ADDR=127.0.0.1:9099
 docker plugin disable ... && docker plugin enable ...
 ```
 

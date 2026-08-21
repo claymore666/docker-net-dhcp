@@ -64,12 +64,13 @@ re-accepting it.
 A network can now say which DHCP server it will lease from, plus one
 operator-visible fix and a cycle of work on the machinery that decides
 whether this project's tests mean anything. If you are running v1.7.1
-happily, the reasons to upgrade are the server-selection options and
-the health-counter fix below.
+happily, the reasons to upgrade are the server-selection options, the
+new `/metrics` endpoint and the health-counter fix below.
 
 **This release changes plugin behaviour**, not only its packaging: two
-new network options, four new health counters and one lifecycle fix,
-alongside two refactors under `pkg/plugin`. The reference digests
+new network options, a Prometheus `/metrics` endpoint, four new health
+counters and one lifecycle fix, alongside two refactors under
+`pkg/plugin`. The reference digests
 differ from v1.7.1 accordingly. The refactors are intended to be
 behaviour-identical — both are covered by the existing suite plus new
 unit tests — but "intended" is the honest word there, not "proven".
@@ -111,6 +112,56 @@ rejected at `docker network create` rather than silently ignored. And
 they are **not supported behind a DHCP relay**: the filter matches the
 packet's source address, not the Server Identifier, and through a relay
 every offer looks identical. (#111, #669)
+
+### A scrape target, so alerting is not a per-operator project
+
+`/Plugin.Health` answers "is it healthy right now" for a human with
+`curl`. It does not answer "has the NAK rate risen since the DHCP server
+was reconfigured", which only a time series can answer — and getting the
+counters into one meant writing an exporter, teaching it the
+`HealthResponse` schema, reaching a UNIX socket Prometheus cannot
+scrape, and handling counter resets by hand.
+
+The plugin holds the counters, so the plugin now speaks the scrape
+format. `/metrics` is served on the plugin socket unconditionally, in
+Prometheus text exposition format, rendered from the same snapshot that
+backs `/Plugin.Health` — the two views cannot disagree about a counter,
+and a test asserts by reflection that every health field reaches the
+exposition, so one added later cannot go quietly missing from your
+dashboards.
+
+Prometheus cannot scrape a UNIX socket, so there is also an optional TCP
+listener:
+
+```
+docker plugin set <plugin> METRICS_ADDR=127.0.0.1:9099
+```
+
+**It is off by default, and should stay off unless you scrape it.** The
+plugin runs with `CAP_NET_ADMIN`, `CAP_SYS_ADMIN` and `CAP_SYS_PTRACE`
+with host networking, so a port it opens is on the host itself. Bind
+loopback or a management interface, never `0.0.0.0`. The listener serves
+`/metrics` and nothing else — the libnetwork RPCs are not routed on it,
+and a test drives every registered route over TCP to prove it — and a
+malformed address fails plugin startup rather than leaving you without
+the endpoint you asked for.
+
+Two things to know before building dashboards:
+
+- **`family="ipv4"` is derived.** Six counters carry a `family` label,
+  and in the JSON the unsuffixed counter is the v4+v6 *total* while the
+  `_v6` one is a subset of it (#212). The metrics view computes the v4
+  share as `total - v6`, which is what a `family` label ought to mean —
+  so the JSON `leases_obtained` will not equal the `family="ipv4"`
+  series, and that is correct rather than a bug.
+- **Counter resets are visible.** `net_dhcp_build_info` carries the
+  plugin's `instance_id` as a label, so a plugin restart appears as a
+  new series rather than as a counter that silently rewound.
+
+Per-endpoint and per-network labels are deliberately absent: endpoint
+IDs are unbounded and turn over with container lifecycle, so labelling
+by them would be a cardinality problem in exactly the deployments where
+these metrics matter most. (#651)
 
 ### An ordinary `docker network rm` could report the plugin's worst fault
 
