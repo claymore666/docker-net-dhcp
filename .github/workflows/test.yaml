@@ -518,6 +518,24 @@ jobs:
         with:
           # The gate walks base..head; a shallow clone cannot resolve it.
           fetch-depth: 0
+      # An issue must be reachable from this PR after it merges (#718).
+      # Same event and the same range as the gate above, for the same
+      # reason: it needs the PR's title and body, which a push does not
+      # supply. Eleven implemented issues read as unstarted because
+      # nothing here noticed a PR that left no readable reference.
+      - name: Check the PR references an issue
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          printf '%s' "$PR_TITLE" > "$RUNNER_TEMP/pr-title.txt"
+          printf '%s' "$PR_BODY" > "$RUNNER_TEMP/pr-body-ref.md"
+          bash scripts/check-issue-ref.sh \
+            "$BASE_SHA..$HEAD_SHA" \
+            "$RUNNER_TEMP/pr-title.txt" "$RUNNER_TEMP/pr-body-ref.md"
+
       - name: Check commits and PR body for AI attribution
         env:
           # Through env, never inlined into run: — a PR description is

@@ -427,6 +427,89 @@ bash "$SYNC" --nonsense >/dev/null 2>&1
     failures=$((failures + 1))
 }
 
+# --- the merge-commit carrier (#718) -----------------------------------
+#
+# A branch whose own commits never name their issue leaves the PR number
+# in exactly one place: the merge commit GitHub writes. That subject was
+# being discarded twice over — `--no-merges` kept it out of the input,
+# and the trailing-group rule would not have matched it anyway. Eleven
+# fully-implemented issues (#700-#710) read as untouched because of it.
+parse "the merge-commit subject yields its PR" \
+    'Merge pull request #712 from claymore666/fix/699-string-values' \
+    '#712'
+parse "a plain branch merge yields nothing" \
+    "Merge branch 'main' into dev" '-'
+parse "a merge subject with no source ref is not the GitHub form" \
+    'Merge pull request #712 from' '-'
+parse "the form must be anchored at the start" \
+    'chore: revert Merge pull request #712 from x/y' '-'
+parse "an absurd PR number is refused here too" \
+    'Merge pull request #123456789012345 from x/y' '-'
+
+# ORTHOGONALITY. Assert the OLD rule produced nothing for that subject
+# before trusting that the new one produces #712 — otherwise the case
+# above only restates current behaviour and would have passed against
+# the parser it was written to replace.
+old_got=$(python3 - <<'PYEOF'
+import re
+_GROUP = re.compile(r"\(\s*#\d{1,7}(?:\s*,\s*#\d{1,7})*\s*\)\s*$")
+subject = "Merge pull request #712 from claymore666/fix/699-string-values"
+print("hit" if _GROUP.search(subject.rstrip()) else "none")
+PYEOF
+)
+if [ "$old_got" = "none" ]; then
+    echo "PASS: ORTHOGONALITY the trailing-group rule never matched a merge subject"
+else
+    echo "FAIL: ORTHOGONALITY the old rule matched — this case proves nothing"
+    failures=$((failures + 1))
+fi
+
+# THE TRUST SEPARATION. commit_refs() knows the merge form; refs() must
+# not, because refs() is also run over PR titles, and a title is
+# attacker-controlled text intersected DIRECTLY with the open issues. A
+# PR titled "Merge pull request #<an open issue> from x" must not be
+# able to mark that issue.
+D=$(fixture merge-title \
+    'chore: nothing here' \
+    '[{"number":300,"labels":[]}]' \
+    '[{"number":901,"title":"Merge pull request #300 from evil/branch"}]')
+bash "$SYNC" --plan "$D" > "$TMP/out" 2>&1
+if grep -q '	300	' "$TMP/out"; then
+    echo "FAIL: a PR title in the merge form must not label an issue"
+    sed 's/^/    /' "$TMP/out"
+    failures=$((failures + 1))
+else
+    echo "PASS: a PR title in the merge form must not label an issue"
+fi
+
+# END TO END, the real #718 shape: the merge subject names only the PR,
+# and the issue is reachable solely through that PR's body.
+D=$(fixture merge-hop \
+    'Merge pull request #712 from claymore666/fix/699-string-values' \
+    '[{"number":703,"labels":[]},{"number":704,"labels":[]}]' \
+    '[]' \
+    '{"712":"fix(dhcp): filter the server'"'"'s string options at the boundary"}' \
+    '{"712":"Closes #703, closes #704.\n\nSome prose."}')
+plan "a merge subject reaches the issue through the PR body" 0 "$D" $'ADD\t703\tin-dev'
+plan "and the second issue in that body too" 0 "$D" $'ADD\t704\tin-dev'
+
+# The negative control: same fixture, no bodies. The hop contributes
+# nothing and neither issue is labelled — which is precisely the state
+# that shipped, so this case pins the defect as well as the fix.
+D=$(fixture merge-hop-nobody \
+    'Merge pull request #712 from claymore666/fix/699-string-values' \
+    '[{"number":703,"labels":[]},{"number":704,"labels":[]}]' \
+    '[]' \
+    '{"712":"fix(dhcp): filter the server'"'"'s string options at the boundary"}')
+bash "$SYNC" --plan "$D" > "$TMP/out" 2>&1
+if grep -qE '	in-dev' "$TMP/out"; then
+    echo "FAIL: with no body to read, nothing should earn in-dev"
+    sed 's/^/    /' "$TMP/out"
+    failures=$((failures + 1))
+else
+    echo "PASS: with no body to read, nothing earns in-dev"
+fi
+
 if [ "$failures" -ne 0 ]; then
     echo "$failures test(s) failed" >&2
     exit 1
