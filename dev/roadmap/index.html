@@ -1109,7 +1109,7 @@ defect. An opt-out helper added to make a restart test pass hid a
 user-facing <code>docker restart</code> failure for months. So the rule — <strong>a test
 that only passes once you weaken something is a bug report</strong> — is
 enforced by a gate rather than by a paragraph, and the remaining
-soft spots (<a href="https://github.com/claymore666/docker-net-dhcp/issues/480">#480</a>, <a href="https://github.com/claymore666/docker-net-dhcp/issues/486">#486</a>, <a href="https://github.com/claymore666/docker-net-dhcp/issues/403">#403</a>) are on the list for the same reason
+soft spots (<a href="https://github.com/claymore666/docker-net-dhcp/issues/682">#682</a>, <a href="https://github.com/claymore666/docker-net-dhcp/issues/403">#403</a>) are on the list for the same reason
 features are.</p>
 <h3 id="5-supply-chain-and-documentation">5. Supply chain and documentation<a class="headerlink" href="#5-supply-chain-and-documentation" title="Permanent link">&para;</a></h3>
 <p>Releases are already cosign-signed, provenanced, SBOM'd and
@@ -1155,9 +1155,11 @@ is recorded so a contributor can read it before writing the PR.</p>
 <li><strong>It will not become a DHCP server.</strong> No lease serving, no built-in
   pool, no failover of its own. The point of the plugin is that your
   existing server is the authority; a second one would recreate the
-  problem it solves. (Interoperating with more than one server is a
-  different question — <a href="https://github.com/claymore666/docker-net-dhcp/issues/111">#111</a> — and is design-first backlog, not a
-  commitment.)</li>
+  problem it solves. Interoperating with more than one server is a
+  different question, and v1.8.0 answers it: <code>dhcp_servers</code> and
+  <code>dhcp_deny_servers</code> decide which existing server a network leases
+  from (<a href="https://github.com/claymore666/docker-net-dhcp/issues/111">#111</a>). That stays on this side of the line — the plugin picks
+  among authorities, it never becomes one.</li>
 <li><strong>It will not reconfigure the host's networking.</strong> Bridge mode needs a
   bridge you maintain, and the parent-attached modes will not bring a NIC
   up, add an address, or edit netplan/<code>systemd-networkd</code>. The plugin

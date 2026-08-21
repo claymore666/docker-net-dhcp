@@ -818,50 +818,6 @@
   
 </li>
       
-        <li class="md-nav__item">
-  <a href="#per-release-procedure" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Per-release procedure
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#verifying" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Verifying
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#troubleshooting" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Troubleshooting
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#backports-between-dev-and-main" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Backports between dev and main
-      
-    </span>
-  </a>
-  
-</li>
-      
     </ul>
   
 </nav>
@@ -984,50 +940,6 @@
         
       </ul>
     </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#per-release-procedure" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Per-release procedure
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#verifying" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Verifying
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#troubleshooting" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Troubleshooting
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#backports-between-dev-and-main" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Backports between dev and main
-      
-    </span>
-  </a>
   
 </li>
       
@@ -1229,10 +1141,12 @@ from the tag. The lane still runs only against release candidates
 (<code>v*-rc*</code> never matches a bare release tag), because the runner pool it
 targets — label <code>dhcp-ci-arm64</code> — is provided for that window and not
 for day-to-day PRs.</p>
-<p>An arm64 runner has to be online for the rc, which today means minting
-a JIT config and launching it (the amd64 pool has an orchestrator; the
-arm64 side does not yet — that is the open half of #531). Do it around
-the time you push the tag; the lane waits 25 minutes.</p>
+<p>An arm64 runner has to be online for the rc. Since v1.8.0 (#632) that
+needs no action: the board carries a standing runner that registers
+itself at boot and reconnects on its own, so pushing the tag is the
+whole procedure. Nothing to mint, nothing to launch. If the lane
+reports no runner anyway, the board is down rather than unstarted —
+that is a host problem, not a release step.</p>
 <p>Two jobs to read, and they say different things:</p>
 <ul>
 <li><strong><code>arm64-suite</code></strong> — the verdict. Must be green before the real tag.</li>
@@ -1240,9 +1154,22 @@ the time you push the tag; the lane waits 25 minutes.</p>
   runner carried <code>dhcp-ci-arm64</code> within the wait, so this candidate has
   <strong>no arm64 verdict at all</strong>. It exists because a job with no runner
   sits queued for hours and queued renders as "in progress", which is
-  indistinguishable from a lane still working. Treat it as "bring a
-  runner up and re-dispatch", never as a flake to wave through.</li>
+  indistinguishable from a lane still working. Treat it as "bring the
+  board up and re-dispatch", never as a flake to wave through.</li>
 </ul>
+<p>Inside <code>arm64-suite</code>, one step is worth knowing about before it
+surprises you: <strong>Verify the host's NFS-outage watchdog</strong> (v1.8.0+,</p>
+<h1 id="677-it-asks-the-board-whether-it-actually-booted-a-working">677). It asks the board whether it actually <em>booted</em> a working<a class="headerlink" href="#677-it-asks-the-board-whether-it-actually-booted-a-working" title="Permanent link">&para;</a></h1>
+<p>watchdog, which the source-side check cannot know — that root is a
+netbooted image and can predate a fix the tree already carries. If it
+fails the suite fails, and it means the board is running unwatched: an
+NFS outage will wedge it until someone visits it physically. Fix the
+image; do not wave it through.</p>
+<p>It can also come back <strong>only partly verified</strong>, which surfaces as a
+workflow annotation and does <em>not</em> fail the step. That means the kernel
+ring buffer has aged past this boot, so the watchdog's <em>holder</em> could
+not be confirmed. The arming verdict comes from sysfs and is never the
+part that is lost, so an annotation here does not block the tag.</p>
 <p>To re-run the lane against a tag that already exists:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>gh<span class="w"> </span>workflow<span class="w"> </span>run<span class="w"> </span>integration-arm64.yml<span class="w"> </span>--ref<span class="w"> </span>vX.Y.Z-rcN
 </code></pre></div>
