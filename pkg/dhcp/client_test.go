@@ -66,7 +66,14 @@ func TestNewDHCPClient_RejectsInvalidIface(t *testing.T) {
 	// leading dashes, over-length names, and the empty string.
 	bad := []string{
 		"",
-		"-rf",                // flag-shaped
+		"-rf", // flag-shaped
+		// The measured getopt-permutation payload: dhcpcd 10.3.2 reads
+		// a trailing positional that looks like an option AS one, and
+		// -c names the hook script it runs as root (#706).
+		"-c/tmp/evil.sh",
+		"-c",
+		"-",
+		".x",
 		"eth0; rm -rf /",     // shell injection attempt
 		"eth0 rm",            // whitespace
 		"eth/0",              // path separator
@@ -106,8 +113,25 @@ func TestNewDHCPClient_V4CommandAndConfig(t *testing.T) {
 	})
 
 	// Command: dhcpcd wrapped in a private mount namespace.
-	if c.cmd.Args[0] != "unshare" || !hasArg(c.cmd.Args, "-m") {
-		t.Errorf("expected unshare -m wrapper; args: %v", c.cmd.Args)
+	// The wrapper binary is pinned by ABSOLUTE path: exec.Command
+	// resolves a bare name through LookPath against the inherited PATH,
+	// which made unshare the one binary in the tree whose identity
+	// depended on an environment variable (#707). Asserting the path --
+	// like /bin/sh and the handler below -- means moving the binary
+	// fails here instead of silently changing which executable runs.
+	if c.cmd.Args[0] != unsharePath || !hasArg(c.cmd.Args, "-m") {
+		t.Errorf("expected %s -m wrapper; args: %v", unsharePath, c.cmd.Args)
+	}
+	if !strings.HasPrefix(unsharePath, "/") {
+		t.Errorf("unsharePath %q is not absolute; PATH decides which binary runs", unsharePath)
+	}
+	if c.cmd.Path != unsharePath {
+		t.Errorf("cmd.Path = %q, want %q -- a bare name here is resolved through $PATH", c.cmd.Path, unsharePath)
+	}
+	for _, want := range []string{"/bin/sh", DefaultHandler} {
+		if !hasArg(c.cmd.Args, want) {
+			t.Errorf("command missing pinned absolute path %q; args: %v", want, c.cmd.Args)
+		}
 	}
 	for _, want := range []string{"dhcpcd", "--noconfigure", "-4", "eth0", DefaultHandler} {
 		if !hasArg(c.cmd.Args, want) {
