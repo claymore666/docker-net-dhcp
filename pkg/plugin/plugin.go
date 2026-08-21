@@ -1147,7 +1147,24 @@ func (p *Plugin) addTombstone(networkID, hostname, mac, ipv4, ipv6 string) {
 // to NetworkID-only matching (preserves the v0.5.0 contract for
 // hostname-less containers and races where the lookup didn't return
 // in time). The "exactly one" rule still applies after filtering.
-func (p *Plugin) consumeTombstone(networkID, hostname string) (mac, ipv4, ipv6 string, ok bool) {
+func (p *Plugin) consumeTombstone(networkID, hostname string, hostnameTrusted bool) (mac, ipv4, ipv6 string, ok bool) {
+	// hostnameTrusted is a parameter rather than a check at the two call
+	// sites for the same reason tombstonesConsumed is counted here: a
+	// third caller cannot forget what it is forced to pass.
+	//
+	// consume() reads an empty hostname as "match any tombstone on this
+	// network" — deliberate, for v0.5.0 tombstones and for the
+	// CreateEndpoint/container-registration race, both honest absences.
+	// safeHostname also yields an empty string when it REFUSES a
+	// hostname, and routing that into the same wildcard turned the
+	// sanitiser into a wildcard generator: one \x01 in --hostname and the
+	// container inherited another endpoint's MAC and asked the DHCP
+	// server for its address. An untrusted hostname therefore consumes
+	// nothing: the container still attaches, with a fresh identity, which
+	// is the right answer for a value nobody should have sent.
+	if !hostnameTrusted {
+		return "", "", "", false
+	}
 	mac, ipv4, ipv6, ok = p.tombstones.consume(networkID, hostname)
 	if !ok {
 		return "", "", "", false
@@ -1537,7 +1554,13 @@ func (p *Plugin) reacquireEndpoint(ctx context.Context, r JoinRequest, opts DHCP
 // persistent renewal client populates the hostname later regardless,
 // so the worst case is "first lease appears in the upstream DHCP
 // server's UI without a hostname for a few minutes".
-func (p *Plugin) initialDHCPHostname(ctx context.Context, networkID, endpointID string) string {
+//
+// The second return value is false when a hostname was found and REFUSED
+// (see safeHostname), as opposed to not found at all. Both produce an
+// empty hostname and they must not be treated alike: an absent hostname
+// is an honest unknown that tombstone matching deliberately treats as a
+// wildcard, while a refused one is attacker-supplied and must not buy it.
+func (p *Plugin) initialDHCPHostname(ctx context.Context, networkID, endpointID string) (string, bool) {
 	ctx, cancel := context.WithTimeout(ctx, initialDHCPHostnameLookupTimeout)
 	defer cancel()
 
@@ -1551,6 +1574,10 @@ func (p *Plugin) initialDHCPHostname(ctx context.Context, networkID, endpointID 
 	const dockerCallTimeout = 200 * time.Millisecond
 
 	var hostname string
+	// Defaults to true: a lookup that never finds the container returns
+	// an empty hostname that nobody chose, which is the honest-unknown
+	// case. Only an actual refusal below flips it.
+	trusted := true
 	_ = util.AwaitCondition(ctx, func() (bool, error) {
 		inner, innerCancel := context.WithTimeout(ctx, dockerCallTimeout)
 		defer innerCancel()
@@ -1574,12 +1601,12 @@ func (p *Plugin) initialDHCPHostname(ctx context.Context, networkID, endpointID 
 			if err != nil {
 				return false, nil
 			}
-			hostname = p.safeHostname(ctr.Config.Hostname)
+			hostname, trusted = p.safeHostname(ctr.Config.Hostname)
 			return true, nil
 		}
 		return false, nil
 	}, 100*time.Millisecond)
-	return hostname
+	return hostname, trusted
 }
 
 // NewPlugin creates a new Plugin. Zero-valued Options fields take the
@@ -1909,7 +1936,7 @@ func (p *Plugin) Close() error {
 }
 
 // safeHostname returns h when it can be carried into the generated dhcpcd
-// config unchanged, and "" when it cannot (#692).
+// config unchanged, and ("", false) when it cannot (#692).
 //
 // The hostname is the container's own and Docker does not validate it, so
 // it is the one value on this path chosen by whoever started the
@@ -1922,12 +1949,27 @@ func (p *Plugin) Close() error {
 // only decorates the DHCP exchange (and the opt-in FQDN registration), so
 // refusing the container over it would turn a cosmetic problem into an
 // outage the attacker chose.
-func (p *Plugin) safeHostname(h string) string {
+// WHY THERE IS A SECOND RETURN VALUE
+//
+// The first version of this returned a bare "" and that was a
+// vulnerability, not a rough edge. The hostname is not only decoration:
+// it is also the key that narrows tombstone matching to the container
+// that wrote the tombstone, and in tombstoneStore.consume an EMPTY
+// hostname means "match any tombstone on this network" — a deliberate
+// carve-out for v0.5.0 tombstones and for the lookup race, both honest.
+// Collapsing "I refused this value" into that same "" handed the caller a
+// wildcard, so one control character in --hostname let a container
+// inherit another endpoint's MAC and request its address.
+//
+// A refusal therefore has to be distinguishable from an absence. The
+// caller that only writes the DHCP config can keep ignoring the
+// difference; the caller that makes an identity decision must not.
+func (p *Plugin) safeHostname(h string) (string, bool) {
 	if dhcp.SafeDirectiveValue(h) {
-		return h
+		return h, true
 	}
 	p.unsafeHostnamesRejected.Add(1)
 	log.WithField("hostname", fmt.Sprintf("%q", h)).
 		Warn("Dropping container hostname: it carries a control character and cannot be written to the DHCP client config")
-	return ""
+	return "", false
 }

@@ -681,7 +681,7 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 	// to the same container (prevents identity swap during sequential
 	// `compose restart`). Best-effort: if the lookup misses or returns
 	// empty, consumeTombstone falls back to network-only matching.
-	hostname := p.initialDHCPHostname(ctx, r.NetworkID, r.EndpointID)
+	hostname, hostnameTrusted := p.initialDHCPHostname(ctx, r.NetworkID, r.EndpointID)
 
 	// MAC/IP selection priority:
 	//   1. Explicit values from libnetwork (`--mac-address`, `--ip`)
@@ -694,7 +694,7 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 	requestedIP := explicitV4
 	requestedV6 := explicitV6
 	if effectiveMAC == "" {
-		if mac, ip, ipv6, ok := p.consumeTombstone(r.NetworkID, hostname); ok {
+		if mac, ip, ipv6, ok := p.consumeTombstone(r.NetworkID, hostname, hostnameTrusted); ok {
 			effectiveMAC = mac
 			if requestedIP == "" {
 				requestedIP = ip

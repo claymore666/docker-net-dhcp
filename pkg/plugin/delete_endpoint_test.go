@@ -71,7 +71,7 @@ func TestDeleteEndpoint_WritesTombstoneForBridgeMode(t *testing.T) {
 		t.Fatalf("DeleteEndpoint: %v", err)
 	}
 
-	mac, ipv4, ipv6, ok := p.consumeTombstone(netID, hostname)
+	mac, ipv4, ipv6, ok := p.consumeTombstone(netID, hostname, true)
 	if !ok {
 		t.Fatal("expected a tombstone for the deleted endpoint, found none")
 	}
@@ -110,7 +110,7 @@ func TestDeleteEndpoint_IPvlanSkipsTombstone(t *testing.T) {
 		t.Fatalf("DeleteEndpoint (ipvlan, link absent): %v", err)
 	}
 
-	if _, _, _, ok := p.consumeTombstone(netID, hostname); ok {
+	if _, _, _, ok := p.consumeTombstone(netID, hostname, true); ok {
 		t.Error("ipvlan must not leave a tombstone — the MAC is the parent's, not the container's")
 	}
 }

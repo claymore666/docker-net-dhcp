@@ -305,12 +305,12 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 	// to the same container (prevents identity swap during sequential
 	// `compose restart`). Best-effort: if the lookup misses or returns
 	// empty, consumeTombstone falls back to network-only matching.
-	hostname := p.initialDHCPHostname(ctx, r.NetworkID, r.EndpointID)
+	hostname, hostnameTrusted := p.initialDHCPHostname(ctx, r.NetworkID, r.EndpointID)
 
 	requestedIP := explicitV4
 	requestedV6 := explicitV6
 	if mode == ModeMacvlan && effectiveMAC == "" {
-		if tombMAC, tombIP, tombIPv6, ok := p.consumeTombstone(r.NetworkID, hostname); ok {
+		if tombMAC, tombIP, tombIPv6, ok := p.consumeTombstone(r.NetworkID, hostname, hostnameTrusted); ok {
 			effectiveMAC = tombMAC
 			if requestedIP == "" {
 				requestedIP = tombIP

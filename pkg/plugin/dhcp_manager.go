@@ -1299,7 +1299,10 @@ func (m *dhcpManager) Start(ctx context.Context) (err error) {
 
 	// Using the "sandbox key" directly causes issues on some platforms
 	m.nsPath = fmt.Sprintf("/proc/%v/ns/net", ctr.State.Pid)
-	m.hostname = m.plugin.safeHostname(ctr.Config.Hostname)
+	// Config-only: m.hostname reaches the generated dhcpcd.conf and
+	// nothing that makes an identity decision, so a refusal is just an
+	// omitted directive here.
+	m.hostname, _ = m.plugin.safeHostname(ctr.Config.Hostname)
 
 	m.nsHandle, err = util.AwaitNetNS(ctx, m.nsPath, pollTime)
 	if err != nil {
