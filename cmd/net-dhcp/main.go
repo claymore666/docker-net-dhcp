@@ -186,10 +186,8 @@ func main() {
 	// — see (*Plugin).ListenMetrics. Bound before the socket server
 	// starts so a bad address is a startup failure an operator sees,
 	// not a silent absence they discover from a missing dashboard.
-	if addr := os.Getenv("METRICS_ADDR"); addr != "" {
-		if err := p.ListenMetrics(addr); err != nil {
-			fatalCleanup(err, "Failed to start metrics listener")
-		}
+	if err := listenMetricsFromEnv(p, os.Getenv("METRICS_ADDR")); err != nil {
+		fatalCleanup(err, "Failed to start metrics listener")
 	}
 
 	sigs := make(chan os.Signal, 1)
