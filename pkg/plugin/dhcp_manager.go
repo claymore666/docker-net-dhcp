@@ -5,6 +5,7 @@ package plugin
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"strings"
@@ -511,14 +512,21 @@ func bareIP(cidr string) string {
 }
 
 // findContainerPID resolves the host PID of the container that owns
-// this manager's endpoint. Returns an error if the endpoint is not
-// found in the network's container list (rare race during teardown)
-// or if the container has no PID (not running). Mirrors
+// this manager's endpoint, together with the container ID it came
+// from. Returns an error if the endpoint is not found in the
+// network's container list (rare race during teardown) or if the
+// container has no PID (not running). Mirrors
 // Plugin.lookupEndpointMAC's lookup shape.
-func (m *dhcpManager) findContainerPID(ctx context.Context) (int, error) {
+//
+// The container ID is returned, not discarded, because the PID alone
+// is not enough to act on: by the time anything opens /proc/<pid> the
+// container may have exited and the kernel may have handed that PID
+// to an unrelated host process. Callers pair the two and let
+// openContainerProc decide (#688).
+func (m *dhcpManager) findContainerPID(ctx context.Context) (int, string, error) {
 	dockerNet, err := m.docker.NetworkInspect(ctx, m.joinReq.NetworkID, dNetwork.InspectOptions{})
 	if err != nil {
-		return 0, fmt.Errorf("NetworkInspect: %w", err)
+		return 0, "", fmt.Errorf("NetworkInspect: %w", err)
 	}
 	for ctrID, info := range dockerNet.Containers {
 		if info.EndpointID != m.joinReq.EndpointID {
@@ -526,14 +534,14 @@ func (m *dhcpManager) findContainerPID(ctx context.Context) (int, error) {
 		}
 		ins, err := m.docker.ContainerInspect(ctx, ctrID)
 		if err != nil {
-			return 0, fmt.Errorf("ContainerInspect(%s): %w", shortID(ctrID), err)
+			return 0, "", fmt.Errorf("ContainerInspect(%s): %w", shortID(ctrID), err)
 		}
 		if ins.State == nil || ins.State.Pid == 0 {
-			return 0, fmt.Errorf("container %s has no PID (state=%+v)", shortID(ctrID), ins.State)
+			return 0, "", fmt.Errorf("container %s has no PID (state=%+v)", shortID(ctrID), ins.State)
 		}
-		return ins.State.Pid, nil
+		return ins.State.Pid, ctrID, nil
 	}
-	return 0, fmt.Errorf("endpoint %s not found in network %s container list", shortID(m.joinReq.EndpointID), shortID(m.joinReq.NetworkID))
+	return 0, "", fmt.Errorf("endpoint %s not found in network %s container list", shortID(m.joinReq.EndpointID), shortID(m.joinReq.NetworkID))
 }
 
 // renew applies one accepted lease to the container's netns. Each
@@ -688,7 +696,7 @@ func (m *dhcpManager) propagateDNS(v6 bool, info dhcp.Info) {
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), dnsPropagateTimeout)
-	pid, err := m.findContainerPID(ctx)
+	pid, ctrID, err := m.findContainerPID(ctx)
 	cancel()
 	if err != nil {
 		log.
@@ -698,7 +706,10 @@ func (m *dhcpManager) propagateDNS(v6 bool, info dhcp.Info) {
 		return
 	}
 
-	if err := writeContainerResolvConf(pid, info.DNSServers, info.SearchList, info.Domain); err != nil {
+	if err := writeContainerResolvConf(pid, ctrID, info.DNSServers, info.SearchList, info.Domain); err != nil {
+		if errors.Is(err, errPIDNotContainer) && m.plugin != nil {
+			m.plugin.dnsPropagationPIDMismatches.Add(1)
+		}
 		log.
 			WithError(err).
 			WithFields(m.logFields(v6)).
@@ -1288,7 +1299,7 @@ func (m *dhcpManager) Start(ctx context.Context) (err error) {
 
 	// Using the "sandbox key" directly causes issues on some platforms
 	m.nsPath = fmt.Sprintf("/proc/%v/ns/net", ctr.State.Pid)
-	m.hostname = ctr.Config.Hostname
+	m.hostname = m.plugin.safeHostname(ctr.Config.Hostname)
 
 	m.nsHandle, err = util.AwaitNetNS(ctx, m.nsPath, pollTime)
 	if err != nil {

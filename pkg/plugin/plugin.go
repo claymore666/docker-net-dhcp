@@ -27,6 +27,7 @@ import (
 	log "github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
 
+	"github.com/claymore666/docker-net-dhcp/pkg/dhcp"
 	"github.com/claymore666/docker-net-dhcp/pkg/util"
 )
 
@@ -681,6 +682,30 @@ type Plugin struct {
 	// but a sustained rise says containers are being torn down inside
 	// the attach window (#406).
 	joinAbortedEndpointLeft atomic.Int32
+
+	// unsafeHostnamesRejected counts container hostnames dropped before
+	// they could reach the generated dhcpcd config because they carried a
+	// control character (#692).
+	//
+	// A counter rather than only a log line, because this is the one
+	// finding from the #457 review with a deliberate actor behind it: a
+	// legitimate hostname does not contain a newline, so a non-zero value
+	// here is not noise, it is somebody trying. Dropping the directive is
+	// the safe outcome — the hostname is cosmetic and the lease proceeds —
+	// which is exactly why it would otherwise be invisible.
+	unsafeHostnamesRejected atomic.Int32
+
+	// dnsPropagationPIDMismatches counts DNS propagations refused
+	// because the PID resolved through Docker no longer belonged to the
+	// container it came from (#688).
+	//
+	// The plugin runs in the host PID namespace, so a recycled PID here
+	// means the write would have landed in an unrelated host process.
+	// Refusing is the safe outcome and leaves the container's
+	// resolv.conf as it was, so without a counter the near-miss would
+	// be invisible; a sustained rise says containers are exiting inside
+	// the propagation window.
+	dnsPropagationPIDMismatches atomic.Int32
 
 	// tombstoneWriteFailures counts saveTombstones failures (disk full,
 	// EROFS) from addTombstone. Reported on /Plugin.Health so operators
@@ -1549,7 +1574,7 @@ func (p *Plugin) initialDHCPHostname(ctx context.Context, networkID, endpointID 
 			if err != nil {
 				return false, nil
 			}
-			hostname = ctr.Config.Hostname
+			hostname = p.safeHostname(ctr.Config.Hostname)
 			return true, nil
 		}
 		return false, nil
@@ -1641,6 +1666,21 @@ func (p *Plugin) Listen(bindSock string) error {
 	l, err := net.Listen("unix", bindSock)
 	if err != nil {
 		return err
+	}
+
+	// A UNIX socket is created with 0777 &^ umask, so without this the
+	// access control on our entire RPC surface would be whatever umask
+	// the plugin runtime happened to hand us -- 0755 today, 0775 under
+	// a umask of 0002, 0777 under 0. SECURITY.md argues that serving
+	// /metrics here is unchanged ground *because* the socket is
+	// root-only; that property is now enforced rather than inherited
+	// (#687). Only the daemon speaks this protocol and it connects as
+	// root, so nothing legitimate needs group or other.
+	if err := os.Chmod(bindSock, 0o600); err != nil {
+		// Refuse to serve on a socket whose mode we could not pin:
+		// an unknown mode is exactly the state this guards against.
+		l.Close()
+		return fmt.Errorf("restricting the plugin socket to the owner: %w", err)
 	}
 
 	// The socket exists now, so the daemon can reach us even while we
@@ -1866,4 +1906,28 @@ func (p *Plugin) Close() error {
 	}
 
 	return nil
+}
+
+// safeHostname returns h when it can be carried into the generated dhcpcd
+// config unchanged, and "" when it cannot (#692).
+//
+// The hostname is the container's own and Docker does not validate it, so
+// it is the one value on this path chosen by whoever started the
+// container rather than by an operator or by us. dhcpcd.directive would
+// drop it anyway — that is the structural guarantee — but doing it here
+// means the event reaches a counter, and a counter is the only form an
+// operator can alert on.
+//
+// Dropping rather than failing the endpoint is deliberate: the hostname
+// only decorates the DHCP exchange (and the opt-in FQDN registration), so
+// refusing the container over it would turn a cosmetic problem into an
+// outage the attacker chose.
+func (p *Plugin) safeHostname(h string) string {
+	if dhcp.SafeDirectiveValue(h) {
+		return h
+	}
+	p.unsafeHostnamesRejected.Add(1)
+	log.WithField("hostname", fmt.Sprintf("%q", h)).
+		Warn("Dropping container hostname: it carries a control character and cannot be written to the DHCP client config")
+	return ""
 }
