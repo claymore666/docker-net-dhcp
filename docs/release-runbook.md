@@ -184,10 +184,12 @@ from the tag. The lane still runs only against release candidates
 targets — label `dhcp-ci-arm64` — is provided for that window and not
 for day-to-day PRs.
 
-An arm64 runner has to be online for the rc, which today means minting
-a JIT config and launching it (the amd64 pool has an orchestrator; the
-arm64 side does not yet — that is the open half of #531). Do it around
-the time you push the tag; the lane waits 25 minutes.
+An arm64 runner has to be online for the rc. Since v1.8.0 (#632) that
+needs no action: the board carries a standing runner that registers
+itself at boot and reconnects on its own, so pushing the tag is the
+whole procedure. Nothing to mint, nothing to launch. If the lane
+reports no runner anyway, the board is down rather than unstarted —
+that is a host problem, not a release step.
 
 Two jobs to read, and they say different things:
 
@@ -196,8 +198,23 @@ Two jobs to read, and they say different things:
   runner carried `dhcp-ci-arm64` within the wait, so this candidate has
   **no arm64 verdict at all**. It exists because a job with no runner
   sits queued for hours and queued renders as "in progress", which is
-  indistinguishable from a lane still working. Treat it as "bring a
-  runner up and re-dispatch", never as a flake to wave through.
+  indistinguishable from a lane still working. Treat it as "bring the
+  board up and re-dispatch", never as a flake to wave through.
+
+Inside `arm64-suite`, one step is worth knowing about before it
+surprises you: **Verify the host's NFS-outage watchdog** (v1.8.0+,
+#677). It asks the board whether it actually *booted* a working
+watchdog, which the source-side check cannot know — that root is a
+netbooted image and can predate a fix the tree already carries. If it
+fails the suite fails, and it means the board is running unwatched: an
+NFS outage will wedge it until someone visits it physically. Fix the
+image; do not wave it through.
+
+It can also come back **only partly verified**, which surfaces as a
+workflow annotation and does *not* fail the step. That means the kernel
+ring buffer has aged past this boot, so the watchdog's *holder* could
+not be confirmed. The arming verdict comes from sysfs and is never the
+part that is lost, so an annotation here does not block the tag.
 
 To re-run the lane against a tag that already exists:
 

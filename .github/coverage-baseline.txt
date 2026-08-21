@@ -147,8 +147,61 @@
 #     what its tests cover. Claiming that headroom would have failed
 #     this release. Do not raise this floor on a measurement alone; it
 #     needs a change that earns it.
+#
+# v1.8.0 recorded decision (measured on Coverage run 32455281413 against
+#   dev at 3b64ee6, dispatched rather than taken from the release PR so
+#   the numbers describe what the release actually contains):
+#
+#   Read this entry as the answer to the three cycles above it. No floor
+#   moved at v1.6.0, v1.7.0 or v1.7.1, while the ratchet printed "raise
+#   the floor" on every package on every run. The v1.4.0 entry warned
+#   that deferring a third time would make "deferred" a synonym for
+#   "untracked"; that is precisely what happened. Two floors move here,
+#   and the three that do not each say why, so the next reader inherits
+#   a decision rather than a silence.
+#
+#   - pkg/plugin 85.0 -> 86.8: RAISED. Measured 87.3, floor 0.5 under,
+#     the margin this file uses. Nine commits touched this package and
+#     every one arrived with its own tests: the tombstone store and the
+#     six renew phases extracted with unit tests over their guards
+#     (#643), the recovery compare-and-set plus its registry tests
+#     (#679), server preference and deny lists (#111), and metrics.go
+#     with a reflection test asserting every health field reaches the
+#     exposition (#651). This continues the repayment the v1.0.0 entry
+#     asked for when the floor was deliberately dropped to 77.5.
+#   - cmd/net-dhcp 77.5 -> 77.8: RAISED. Measured 78.3, floor 0.5 under.
+#     Worth reading twice, because this package is the reason the run
+#     above exists. #651 wired METRICS_ADDR into main() and the package
+#     FELL to 76.5 — below its floor — because main() is executed only
+#     by the cover plugin during the integration suite, and that plugin
+#     does not set METRICS_ADDR. The gate caught a real hole: the
+#     endpoint shipped with its listener covered and the switch in front
+#     of it covered by nothing. #685 answered it with tests rather than
+#     a lowered floor, and the package now measures 78.3 — above the
+#     77.9 it held before the feature landed.
+#   - pkg/dhcp LEFT AT 89.5, measured 90.1. #111 did add code here with
+#     tests (dhcpcd.go +36, dhcpcd_servers_test.go +87), so this is not
+#     the usual "nothing changed" case. It is left because the headroom
+#     is mostly wobble: the same tree measured 89.9 on 2026-08-20 (run
+#     32384008443) and 90.1 today, so 0.2 of the 0.6 is run-to-run. A
+#     floor at 89.6 would buy 0.1 of real protection and add a way for a
+#     future release to fail on noise. Raise it when a change earns
+#     something worth the epsilon.
+#   - cmd/dhcp-handler LEFT AT 74.0, measured 75.0 — the same 75.0 it has
+#     measured at every release since v1.3.1, with no commit touching the
+#     package this cycle. The v1.3.1 entry already recorded why the
+#     number is coarse: it is one ~16-statement main(), so a single
+#     statement is worth about six points. A floor of 74.5 protects
+#     nothing that 74.0 does not, because any real regression here is a
+#     six-point fall, not a half-point one.
+#   - pkg/util LEFT AT 95.0, measured 96.2. The v1.5.0 entry settled
+#     this: the number tracks how hard the integration suite happens to
+#     exercise its Await* poll paths, not what its tests cover (98.5 at
+#     v1.4.0, 96.2 at v1.5.0 and again now, with no util change beyond a
+#     header and one error-message line). Do not raise it on a
+#     measurement alone.
 github.com/claymore666/docker-net-dhcp/pkg/util 95.0
-github.com/claymore666/docker-net-dhcp/pkg/plugin 85.0
+github.com/claymore666/docker-net-dhcp/pkg/plugin 86.8
 github.com/claymore666/docker-net-dhcp/pkg/dhcp 89.5
-github.com/claymore666/docker-net-dhcp/cmd/net-dhcp 77.5
+github.com/claymore666/docker-net-dhcp/cmd/net-dhcp 77.8
 github.com/claymore666/docker-net-dhcp/cmd/dhcp-handler 74.0

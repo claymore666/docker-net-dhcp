@@ -59,6 +59,247 @@ assessment above is retained here as the audit trail. If it becomes
 reachable again the gate fails loudly rather than silently
 re-accepting it.
 
+## v1.8.0
+
+A network can now say which DHCP server it will lease from, plus one
+operator-visible fix and a cycle of work on the machinery that decides
+whether this project's tests mean anything. If you are running v1.7.1
+happily, the reasons to upgrade are the server-selection options, the
+new `/metrics` endpoint and the health-counter fix below.
+
+**This release changes plugin behaviour**, not only its packaging: two
+new network options, a Prometheus `/metrics` endpoint, four new health
+counters and one lifecycle fix, alongside two refactors under
+`pkg/plugin`. The reference digests
+differ from v1.7.1 accordingly. The refactors are intended to be
+behaviour-identical — both are covered by the existing suite plus new
+unit tests — but "intended" is the honest word there, not "proven".
+
+### Choosing which DHCP server a network leases from
+
+On a segment with more than one DHCP server the plugin took whichever
+answered first, and there was no way to say otherwise. Two new network
+options decide it instead. They answer deliberately different questions
+and are not interchangeable:
+
+- **`dhcp_servers`** is an *ordering* — "use 192.168.1.1 over
+  192.168.1.2". Acquisition tries each server in turn, restricted to
+  that one, and takes the first lease offered.
+- **`dhcp_deny_servers`** is a *permission* — "never lease from
+  192.168.1.3". Everything else may answer.
+
+Set both and the denial wins, including for a server that also appears
+in `dhcp_servers`.
+
+Two properties are worth knowing before you enable this:
+
+- **The list is exhaustive.** If none of the servers you named answers,
+  the endpoint fails rather than accepting whichever server happened to
+  reply. Naming your servers is what makes the list complete — a policy
+  that widened under pressure would hand you the one outcome you
+  configured it to prevent. `dhcp_server_policy_exhausted` counts this,
+  so it is distinguishable from an ordinary DHCP timeout;
+  `dhcp_server_tier_fallbacks` counts a preferred server going quiet and
+  the next one answering, which is the only signal that a ranked server
+  has gone away.
+- **It never makes `docker run` slower.** The preference ladder divides
+  the existing `lease_timeout` budget rather than extending it. Raise
+  `lease_timeout` if you want each server given more time.
+
+Two limits are structural, not oversights. Both options are **DHCPv4
+only** — the underlying client has no v6 equivalent, so a v6 entry is
+rejected at `docker network create` rather than silently ignored. And
+they are **not supported behind a DHCP relay**: the filter matches the
+packet's source address, not the Server Identifier, and through a relay
+every offer looks identical. (#111, #669)
+
+### A scrape target, so alerting is not a per-operator project
+
+`/Plugin.Health` answers "is it healthy right now" for a human with
+`curl`. It does not answer "has the NAK rate risen since the DHCP server
+was reconfigured", which only a time series can answer — and getting the
+counters into one meant writing an exporter, teaching it the
+`HealthResponse` schema, reaching a UNIX socket Prometheus cannot
+scrape, and handling counter resets by hand.
+
+The plugin holds the counters, so the plugin now speaks the scrape
+format. `/metrics` is served on the plugin socket unconditionally, in
+Prometheus text exposition format, rendered from the same snapshot that
+backs `/Plugin.Health` — the two views cannot disagree about a counter,
+and a test asserts by reflection that every health field reaches the
+exposition, so one added later cannot go quietly missing from your
+dashboards.
+
+Prometheus cannot scrape a UNIX socket, so there is also an optional TCP
+listener:
+
+```
+docker plugin set <plugin> METRICS_ADDR=127.0.0.1:9099
+```
+
+**It is off by default, and should stay off unless you scrape it.** The
+plugin runs with `CAP_NET_ADMIN`, `CAP_SYS_ADMIN` and `CAP_SYS_PTRACE`
+with host networking, so a port it opens is on the host itself. Bind
+loopback or a management interface, never `0.0.0.0`. The listener serves
+`/metrics` and nothing else — the libnetwork RPCs are not routed on it,
+and a test drives every registered route over TCP to prove it — and a
+malformed address fails plugin startup rather than leaving you without
+the endpoint you asked for.
+
+Two things to know before building dashboards:
+
+- **`family="ipv4"` is derived.** Six counters carry a `family` label,
+  and in the JSON the unsuffixed counter is the v4+v6 *total* while the
+  `_v6` one is a subset of it (#212). The metrics view computes the v4
+  share as `total - v6`, which is what a `family` label ought to mean —
+  so the JSON `leases_obtained` will not equal the `family="ipv4"`
+  series, and that is correct rather than a bug.
+- **Counter resets are visible.** `net_dhcp_build_info` carries the
+  plugin's `instance_id` as a label, so a plugin restart appears as a
+  new series rather than as a counter that silently rewound.
+
+Per-endpoint and per-network labels are deliberately absent: endpoint
+IDs are unbounded and turn over with container lifecycle, so labelling
+by them would be a cardinality problem in exactly the deployments where
+these metrics matter most. (#651)
+
+### An ordinary `docker network rm` could report the plugin's worst fault
+
+`recovery_failed` means something specific and serious: after a daemon
+restart, a container that is *still running* failed to get its lease
+renewal client back, so it will lose its IP when the lease expires. It
+is one of the four counters that flip `healthy` to `false`.
+
+A network removed between the listing that found it and the read of its
+detail was landing in that counter. Nothing was wrong — a network that
+is gone leaves no running container without a renewal client — but an
+operator who removed a network while the daemon happened to be
+restarting saw the plugin report its most serious failure, and an alert
+on `healthy` would have fired for it.
+
+Those are now counted as `recovery_network_gone`, which never affects
+`healthy`. It is counted rather than passed over in silence: a host
+where it climbs steadily is churning networks under a restarting daemon,
+which is worth knowing even though no single occurrence is a problem.
+(#648)
+
+### Two DHCP clients could end up renewing one lease
+
+When the plugin starts it walks the endpoints Docker still knows about
+and builds a lease-renewal client for each one it is not already
+managing. If a container's `Join` arrives for an endpoint that walk has
+already claimed, the `Join` wins — it is the newer truth — and the
+manager it displaces is stopped, so its DHCP client does not go on
+renewing the same lease on the same interface.
+
+That held in one order and not the other. The recovery walk read the
+registry, released the lock, built its manager and then registered it;
+a `Join` landing inside that window had its live manager evicted and
+dropped, with its DHCP client still running and now untracked — the
+collision the displacement code exists to prevent, arrived at from the
+other side. Recovery now registers through a compare-and-set and yields
+to whoever already holds the endpoint, so older truth can no longer
+overwrite newer.
+
+Narrow, but not hypothetical: the test written to explore an unrelated
+question hit this window on its first run, and hit it again in CI.
+`recovery_already_managed` counts it. That counter does not affect
+`healthy` — an endpoint someone else is already managing *has* a renewal
+client, it simply is not the one this walk would have built — and until
+now the event was invisible except as an inflated "recovered" in a
+single log line. (#679)
+
+### The tests now replay what the daemon actually sends
+
+The unit tests used to assert against request structs we wrote
+ourselves, which means they confirmed our model of libnetwork rather
+than libnetwork. That is not a hypothetical failure mode here — it is
+how `stable_lease` was designed against an assumed `CreateEndpoint`
+payload and had to be reverted from v1.3.0 once the real one turned out
+not to carry what it needed.
+
+Three real flows are now captured from a live daemon and replayed, with
+provenance recorded, and a gate that fails when the recording stops
+describing the engine the suite runs against. That gate earned itself
+immediately: it found that the captures had been recorded against a
+different Docker engine than the integration suite actually exercises,
+and the re-record showed the daemon had quietly started sending an
+option the older one never did. None of that was visible before.
+(#644, #646)
+
+### Internal
+
+- The tombstone store and the six phases of lease renewal are now
+  separable units with their own tests, rather than two long functions
+  reachable only through the privileged suite. (#643)
+- The arm64 lane runs a standing self-hosted runner that registers once
+  and reconnects on every boot, so a release candidate no longer needs
+  anyone to start it by hand. Its watchdog now scales its timings to the
+  hardware it finds instead of refusing to run on a device whose
+  watchdog is shorter than the defaults assume — refusing to run left
+  the board unprotected, which is the opposite of the intent. (#632)
+- A CI runner whose plugin state directory went missing did not degrade;
+  it took the nested Docker daemon down with it, permanently, while
+  continuing to report itself online to GitHub. The directory is now
+  created before the daemon starts, and the ordering is asserted. (#660)
+- That fix reached one caller and not its copies: every workflow that
+  installs the plugin names the directories itself, so each copy rots
+  independently the moment a manifest gains a bind source. A gate now
+  holds every such step to the manifest it actually installs. The one
+  that had already drifted — the coverage lane, whose manifest carries
+  two sources the shipped one does not — derives them from it instead of
+  naming them. (#666)
+- Several gates were reporting success over work they had never
+  inspected, and one fixture pinned no negative cases at all, so it
+  could not have caught a rule that matched too much. (#569, #535,
+  #536, #636)
+- The integration harness's environment knobs are documented, rather
+  than discoverable only by reading the harness. (#534)
+- The arm64 lane's four boot states are named, and its docs no longer
+  claim the board always recovers on its own. A bootloader whose
+  download was cut mid-flight does not restart the sequence: it answers
+  ARP, issues no TFTP requests, and stays there until power is removed —
+  measured at 10.5 minutes of silence with the boot server fully back
+  up, where a looping board would have asked about eight times. The
+  server's TFTP log is the discriminator; "no ping" never was. Only one
+  of the four states needs hands, and the coincidence that produces it
+  is recorded as accepted rather than left implied. (#654)
+- `docs/internals.md` presented the `interface_name` tests as gated on
+  an engine version. They are not: they probe whether the engine applies
+  a remote driver's `DstName` and skip when it does not — which today is
+  every engine, pending moby/moby#52866. Describing a capability probe
+  as a version check taught the weaker pattern as house style, on a page
+  that exists to teach the stronger one. (#673)
+
+- Killing the Docker daemon outright is now covered by the integration
+  suite, and what it does turned out not to be what the issue asking for
+  the test assumed. The plugin never dies abruptly: about a second after
+  the daemon is killed the replacement daemon sends it a clean shutdown,
+  and it releases every lease on the way out. Nor does the container
+  survive — the daemon discards it during its own restore and a restart
+  policy builds a new one — so no live endpoint is left to re-adopt. The
+  test asserts what is true of that path instead, and asserts it against
+  the DHCP server's log rather than the plugin's own counters: the lease
+  held before the kill is released rather than left to expire, and the
+  container that comes back holds a lease the server actually granted.
+  (#480)
+- The arm64 lane checked that the tree *would* install a working NFS
+  watchdog, and never that the host had *booted* one. That host's root
+  is a netbooted image, so the two drift apart without a single file in
+  the tree being wrong: a root predating the timeout-scaling fix
+  installs a daemon that exits at boot, and the board runs unwatched
+  while every source-side check still passes. The lane now asks the
+  kernel whether the watchdog is armed and which process holds it, and
+  reports "cannot check" rather than a pass when that evidence has aged
+  out of the ring buffer. (#677)
+
+### With thanks to
+
+- **[@Dev9269](https://github.com/Dev9269)** — found that
+  `docs/internals.md` described the `interface_name` capability probe as
+  a Docker version threshold, and rewrote it to say what the code does
+  ([#675](https://github.com/claymore666/docker-net-dhcp/pull/675)).
+
 ## v1.7.1
 
 A documentation release. **No plugin change** — nothing in this release
