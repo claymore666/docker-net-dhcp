@@ -440,7 +440,7 @@ func TestInitialDHCPHostname_Success(t *testing.T) {
 	}
 	p := &Plugin{docker: f}
 
-	if got := p.initialDHCPHostname(context.Background(), netID, epID); got != "myhost" {
+	if got, _ := p.initialDHCPHostname(context.Background(), netID, epID); got != "myhost" {
 		t.Fatalf("hostname: got %q want myhost", got)
 	}
 }
@@ -480,7 +480,7 @@ func TestInitialDHCPHostname_EmptyOnFailure(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
 			defer cancel()
 			p := &Plugin{docker: c.f}
-			if got := p.initialDHCPHostname(ctx, netID, epID); got != "" {
+			if got, _ := p.initialDHCPHostname(ctx, netID, epID); got != "" {
 				t.Fatalf("hostname: got %q want empty", got)
 			}
 		})
