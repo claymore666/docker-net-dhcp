@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -399,22 +400,38 @@ func TestRenderArgs_FamilyExclusive(t *testing.T) {
 	}
 }
 
-// TestDhcpcdBinMatchesDockerfile keeps the absolute path from becoming
-// two independent facts.
+// TestDockerfileGuaranteesEveryAbsoluteBinary keeps the absolute paths
+// from becoming two independent facts.
 //
-// dhcpcdBin names a path that only exists because the Dockerfile
-// installs it, and the Dockerfile asserts `test -x /sbin/dhcpcd` so an
-// Alpine relocation fails the build. Those are two copies of one
-// literal, and a fix that reaches one copy and not the other is this
-// repository's most repeated failure — the constant would keep pointing
-// at a path the build had stopped guaranteeing, and the first symptom
-// would be a container's first lease failing with "not found".
+// This package names three binaries absolutely — dhcpcdBin, mountBin
+// and mkdirBin — and each exists only because the Dockerfile installs
+// it. The Dockerfile asserts them with `test -x` so an Alpine or
+// busybox relocation fails the build instead of failing a container's
+// first lease with "not found". Those are two copies of one set, and a
+// fix that reaches one copy and not the other is this repository's most
+// repeated failure.
+//
+// It compares SETS, in both directions, which is the part that earns
+// its keep. The previous version filtered operands to the one
+// containing "dhcpcd", so when mountBin and mkdirBin were added it went
+// on reporting parity while guaranteeing neither. A test that inspects
+// one element of a set it claims to check is green over an incomplete
+// examination.
+//
+// It also collects EVERY `test -x` on a line, not just the first, which
+// is what makes the chained `a && test -x b && test -x c` spelling
+// readable back. The one-line `test -x a b c` form is not an option to
+// re-introduce: busybox sh answers it "unknown operand" and exits 2
+// whatever the files are, and this test would then see one operand
+// against three constants and fail — which is the outcome we want,
+// since that line cannot build. An `-a` chain fails here too, by
+// putting "-a" and "-x" in the operand set.
 //
 // This reads the real Dockerfile rather than a fixture, so there is
-// nothing to keep in sync. It fails loudly if the assertion line is
-// gone, because a parity test with nothing to compare against is the
+// nothing to keep in sync. It fails loudly when no assertion is found,
+// because a parity test with nothing to compare against is the
 // green-over-an-empty-examination case.
-func TestDhcpcdBinMatchesDockerfile(t *testing.T) {
+func TestDockerfileGuaranteesEveryAbsoluteBinary(t *testing.T) {
 	const marker = "test -x "
 
 	b, err := os.ReadFile(filepath.Join("..", "..", "Dockerfile"))
@@ -422,33 +439,54 @@ func TestDhcpcdBinMatchesDockerfile(t *testing.T) {
 		t.Fatalf("reading Dockerfile: %v", err)
 	}
 
-	var paths []string
+	got := map[string]bool{}
 	for _, line := range strings.Split(string(b), "\n") {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "#") {
 			continue
 		}
-		i := strings.Index(trimmed, marker)
-		if i < 0 {
-			continue
-		}
-		rest := strings.TrimSpace(trimmed[i+len(marker):])
-		rest = strings.TrimSuffix(rest, " && \\")
-		rest = strings.TrimSuffix(rest, "\\")
-		if f := strings.Fields(rest); len(f) > 0 && strings.Contains(f[0], "dhcpcd") {
-			paths = append(paths, f[0])
+		for i := strings.Index(trimmed, marker); i >= 0; i = strings.Index(trimmed, marker) {
+			rest := strings.TrimSpace(trimmed[i+len(marker):])
+			if f := strings.Fields(rest); len(f) > 0 {
+				got[f[0]] = true
+			}
+			trimmed = trimmed[i+len(marker):]
 		}
 	}
 
-	if len(paths) == 0 {
-		t.Fatalf("the Dockerfile no longer asserts `test -x <path-to-dhcpcd>`; "+
-			"nothing now guarantees %q exists in the image, and this test "+
-			"would otherwise pass having compared nothing", dhcpcdBin)
+	want := map[string]bool{dhcpcdBin: true, mountBin: true, mkdirBin: true}
+
+	if len(got) == 0 {
+		t.Fatalf("the Dockerfile no longer asserts `test -x <path>` for anything; "+
+			"nothing now guarantees %v exist in the image, and this test would "+
+			"otherwise pass having compared nothing", keysOf(want))
 	}
-	for _, p := range paths {
-		if p != dhcpcdBin {
-			t.Errorf("Dockerfile asserts %q but dhcpcdBin is %q; the two must "+
-				"name the same binary", p, dhcpcdBin)
+
+	for p := range want {
+		if !got[p] {
+			t.Errorf("this package runs %q by absolute path, but the Dockerfile "+
+				"does not `test -x` it; a relocation would break a container at "+
+				"run time instead of breaking the build", p)
 		}
 	}
+	for p := range got {
+		if !want[p] {
+			t.Errorf("the Dockerfile asserts %q, which no constant in this package "+
+				"names; either a binary lost its constant, or the assertion line "+
+				"is not the chained `test -x a && test -x b` form this parses "+
+				"(operands got: %v)", p, keysOf(got))
+		}
+	}
+}
+
+// keysOf renders a set in a stable order so a failure message reads the
+// same on every run; map iteration order would otherwise make two
+// identical failures look like two different ones.
+func keysOf(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }

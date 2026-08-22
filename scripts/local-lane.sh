@@ -234,7 +234,7 @@ if [ "${#untracked[@]}" -ne 0 ]; then
 fi
 
 # No image is built here, so nothing in this lane executes a line of the
-# Dockerfile. Several gates READ it -- TestDhcpcdBinMatchesDockerfile
+# Dockerfile. Several gates READ it -- TestDockerfileGuaranteesEveryAbsoluteBinary
 # parses the binary path back out -- and reading it is not running it: a
 # `test -x a b c` parses fine, is rc=2 on busybox sh whatever the files
 # are, and turned this lane's own 50/0/0 into a Dockerfile that could

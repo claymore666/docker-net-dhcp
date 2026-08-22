@@ -260,7 +260,6 @@ func (m *dhcpManager) notePIDMismatch(err error, kind pidMismatchKind) {
 }
 
 // observeLease folds one client event into the tracker and counts the
-// observeLease folds one client event into the tracker and counts the
 // clamp if there was one.
 //
 // The pairing lives here rather than at the event-loop call site for the
