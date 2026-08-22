@@ -147,7 +147,12 @@ fi
 # Matched case-insensitively with flexible spacing so a reasonable
 # person writing it by hand gets it right first time, but it still has
 # to be this line and not an incidental issue mention.
-TRAILER='[Tt]est-weakening:[[:space:]]*#[0-9]+'
+# Anchored at column 0. A trailer is a trailer — its own line, no
+# indent — so a commit or PR body that QUOTES the trailer while
+# explaining it does not thereby waive anything. Unanchored, the gate
+# could be switched off by any text describing it, which is how the
+# sibling gate in #735 was first caught waiving itself.
+TRAILER='^[Tt]est-weakening:[[:space:]]*#[0-9]+'
 waiver=""
 if [ -n "$BODY" ] && [ -f "$BODY" ] && grep -qE "$TRAILER" "$BODY"; then
     waiver="the PR body"

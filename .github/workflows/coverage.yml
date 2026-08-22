@@ -22,6 +22,17 @@ on:
   # ratchet below guarantees no release ships with regressed coverage.
   # Feature PRs into dev stay on-demand via workflow_dispatch — the
   # ~15-20 min cost is a release gate, not a per-PR tax (#127).
+  #
+  # THAT GAP IS ACCEPTED, AND IT IS NOT UNWATCHED (#735). Measuring
+  # coverage on every dev PR would put a third and fourth self-hosted
+  # job on a pool of eight, where two concurrent integration runs
+  # already saturate it. What was actually dangerous about the gap was
+  # narrower than the measurement: a floor could be LOWERED on the way
+  # into dev, seen by no coverage run at all, and the release PR would
+  # then ratchet against the already-lowered number. That half needs no
+  # counters — it is two git blobs — so it runs on every pull request
+  # as `scripts/check-coverage-floor.sh` in test.yaml. The expensive
+  # half stays here.
   pull_request:
     branches:
       - main
@@ -97,6 +108,10 @@ jobs:
       HAS_HUB_CREDS: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The ratchet reads the baseline from the merge base, not from
+          # this branch (#735); a shallow clone cannot resolve it.
+          fetch-depth: 0
 
       # Same reasoning as integration.yml's login (#562): the cover
       # build pulls the same two Hub base images, from the same pool,
@@ -242,7 +257,17 @@ jobs:
       # in .github/coverage-baseline.txt. No `if: always()` on purpose —
       # a failed suite produces partial counters and would false-alarm;
       # the ratchet only judges complete runs (#127).
+      #
+      # THE FLOORS COME FROM THE MERGE BASE, NOT FROM THIS BRANCH (#735).
+      # Passing the PR's own copy meant a branch that lowered a floor was
+      # measured against the number it had just lowered — the comparison
+      # was with itself, and it always passed. The only control was a
+      # sentence in the script's header, and a sentence is not a check.
+      # On a push or a dispatch there is no merge base, so the working
+      # copy is the honest answer and is used as-is.
       - name: Coverage ratchet
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.sha }}
         run: |
           if ls coverage-unit/covcounters.* >/dev/null 2>&1; then
             go tool covdata percent -i="${COVER_DIR}",coverage-unit > /tmp/covdata-percent.txt
@@ -251,7 +276,20 @@ jobs:
             exit 1
           fi
           cat /tmp/covdata-percent.txt
-          bash scripts/coverage-ratchet.sh /tmp/covdata-percent.txt .github/coverage-baseline.txt
+
+          # The resolution lives in a script, not here, because this
+          # workflow triggers only on pull requests into main: inline,
+          # its first execution would be the release PR, with a defect
+          # failing a required check while the release is in flight.
+          # scripts/test-coverage-baseline-at.sh runs on every PR.
+          baseline=.github/coverage-baseline.txt
+          if [ -n "${BASE_REF:-}" ]; then
+            bash scripts/coverage-baseline-at.sh "$BASE_REF" /tmp/coverage-baseline-base.txt
+            baseline=/tmp/coverage-baseline-base.txt
+          else
+            echo "No pull_request context — ratcheting against the working copy's baseline."
+          fi
+          bash scripts/coverage-ratchet.sh /tmp/covdata-percent.txt "$baseline"
 
       - name: Generate coverage reports
         if: always()
