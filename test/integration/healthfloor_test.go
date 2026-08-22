@@ -54,7 +54,7 @@ const healthFloorBudget = 30 * time.Second
 //     used to be folded into recovery_failed are counted separately as
 //     recovery_deferred (#383) and recovery_aborted_container_gone
 //     (#376) — and the flag is checked as well as the table, so a
-//     fourth healthy-affecting counter added to the plugin cannot slip
+//     further healthy-affecting counter added to the plugin cannot slip
 //     past this suite's mirror of it.
 //
 // floorHealthBaseline / floorLogBaseline are the plugin's counters and

@@ -460,8 +460,10 @@ these metrics matter most. (#651)
 
 ### Twelve new health counters
 
-None of the twelve affects `healthy`; the four counters that flip it are
-unchanged. `docs/reference.md` carries the full description of each,
+None of the twelve affects `healthy`. The set that does is not unchanged
+in this release: `tombstone_quarantines` joins it (#724), and a corrupt
+tombstone file now flips the flag instead of being written over in
+silence. `docs/reference.md` carries the full description of each,
 including what a rise means and what to do about it.
 
 | counter | what it says |
@@ -484,7 +486,7 @@ including what a rise means and what to do about it.
 `recovery_failed` means something specific and serious: after a daemon
 restart, a container that is *still running* failed to get its lease
 renewal client back, so it will lose its IP when the lease expires. It
-is one of the four counters that flip `healthy` to `false`.
+is one of the counters that flip `healthy` to `false`.
 
 A network removed between the listing that found it and the read of its
 detail was landing in that counter. Nothing was wrong — a network that

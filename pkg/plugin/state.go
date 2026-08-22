@@ -5,6 +5,7 @@ package plugin
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -28,11 +29,190 @@ import (
 // an upgrade tightens what it finds rather than leaving old files open.
 const stateFileMode = 0o600
 
+// stateSchemaVersion is the version stamped on the per-network options
+// file. It is NOT stamped on tombstones.json; see syncEphemeral for why
+// a 60-second cache neither needs a version nor deserves one.
+//
+// Version 1 is what every build writes today. A file written before the
+// field existed carries no "v" at all and is read AS version 1, because
+// that is what it is: the field was added to give a future change
+// somewhere to branch, not to describe a change that already happened.
+//
+// The field is additive. Options are a flat JSON object, so "v" is one
+// more key an older build's encoding/json ignores, and the file stays
+// readable by every build that predates this one. A nested
+// {"v":1,"options":{...}} would have read as an all-zero options struct
+// on an older build -- no mode, no parent -- which is the failure a
+// version field exists to prevent, committed by the commit that adds
+// one.
+//
+// It earns its place because this file is long-lived and crosses
+// versions: it is written from CreateNetwork, it lives on a host bind
+// mount (see stateDir), and it survives `docker plugin rm` and upgrade
+// by design (#440). A downgrade or a partial upgrade WILL read a file
+// some other build wrote.
+//
+// On read, a version this build does not understand is refused rather
+// than guessed at. The caller falls back to the docker API, which is
+// authoritative for everything in the struct, so the refusal costs a
+// lookup -- whereas a v1 reading of a v2 file could attach a network in
+// the wrong mode or on the wrong parent.
+const stateSchemaVersion = 1
+
+// syncPolicy says whether a state write must reach the disk before it is
+// reported as done.
+//
+// It is a parameter rather than two writers because the two files want
+// opposite things and the difference is one axis, not one function's
+// worth of divergent code. Making it explicit at each call site is the
+// point: the choice is a decision about the data, and it should be
+// visible where the data is written.
+type syncPolicy int
+
+const (
+	// syncDurable fsyncs the file before the rename and the directory
+	// after it. For state that must survive a power cut: the options
+	// file is written rarely, read on every daemon restart, and outlives
+	// the build that wrote it.
+	syncDurable syncPolicy = iota
+
+	// syncEphemeral skips both fsyncs. For tombstones.json, and it is a
+	// deliberate refusal rather than an omission.
+	//
+	// The only crash an fsync survives is power loss or a panic -- a
+	// clean `systemctl restart docker` never loses the page cache. But
+	// tombstoneTTL is 60 seconds, and no host boots, starts dockerd and
+	// reaches this file within 60 seconds of a power cut, so every entry
+	// in it prunes as stale on the first read afterwards. Durability
+	// there buys nothing: the data it protects is guaranteed worthless
+	// by the time anything can read it.
+	//
+	// And it is not free. This file is written from `add` on every
+	// DeleteEndpoint and from `consume` whenever a prune changed
+	// something, so an fsync here lands on the endpoint path -- the cost
+	// tombstone_store.go's "I-10" note deliberately removed.
+	//
+	// #724 asked for fsync on both files on the grounds that "both files
+	// exist specifically to survive restarts". That is true of the
+	// options file and false of this one, for the TTL reason above.
+	syncEphemeral
+)
+
+// syncDir fsyncs a directory so a rename into it is durable.
+//
+// A rename is atomic against process death without this -- a reader sees
+// the old file or the new one, never a torn one -- but atomic is not
+// durable. After a power cut or a hard host reset the rename can be
+// absent, or present while the file it names is empty, because the
+// directory entry and the file's data are separate writeback (#724).
+func syncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return fmt.Errorf("failed to open state dir %v for sync: %w", dir, err)
+	}
+	defer func() { _ = d.Close() }()
+	if err := d.Sync(); err != nil {
+		return fmt.Errorf("failed to sync state dir %v: %w", dir, err)
+	}
+	return nil
+}
+
+// writeStateFileAtomic writes data to final atomically: temp file in the
+// same directory, chmod, rename. Under syncDurable it also fsyncs the
+// file before the rename and the directory after it.
+//
+// Both persisted files go through here rather than each open-coding the
+// sequence. They were already structurally identical -- CreateTemp,
+// write, Chmod, Rename -- so leaving them as two copies means the next
+// fix to this sequence has two places to land and misses one. What
+// differs between them is the sync policy, and that is the one thing
+// each caller states.
+//
+// Every error is returned, none is logged-and-continued. A Sync whose
+// error is dropped is the same defect as the missing Sync was: it looks
+// durable and is not.
+//
+// pattern is an os.CreateTemp pattern and never carries caller-supplied
+// input -- "*" already guarantees uniqueness, and keeping request data
+// out of it removes the pattern as a path-injection sink. what names the
+// file in error messages.
+func writeStateFileAtomic(final, pattern string, data []byte, what string, sync syncPolicy) error {
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		return fmt.Errorf("failed to create state dir %v: %w", stateDir, err)
+	}
+	tmp, err := os.CreateTemp(stateDir, pattern)
+	if err != nil {
+		return fmt.Errorf("failed to create %s temp file: %w", what, err)
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("failed to write %s temp file: %w", what, err)
+	}
+	// Before the rename, not after: the rename is what publishes the
+	// file, so the bytes have to have reached the disk by the time
+	// anything can observe the name.
+	if sync == syncDurable {
+		if err := tmp.Sync(); err != nil {
+			_ = tmp.Close()
+			_ = os.Remove(tmpName)
+			return fmt.Errorf("failed to sync %s temp file: %w", what, err)
+		}
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("failed to close %s temp file: %w", what, err)
+	}
+	// 0600, not 0644. /var/lib/net-dhcp is an rbind rw HOST mount, so
+	// these files' contents -- container MACs, IPs and hostnames -- were
+	// readable by any user on the host. Nothing here is a credential and
+	// the plugin runs as root either way, so this is not a privilege
+	// boundary; 0600 simply costs nothing (#708).
+	if err := os.Chmod(tmpName, stateFileMode); err != nil {
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("failed to chmod %s temp file: %w", what, err)
+	}
+	if err := os.Rename(tmpName, final); err != nil {
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("failed to rename %s file into place: %w", what, err)
+	}
+	// The rename is only durable once the directory entry is. Fatal
+	// rather than logged: the data is visible either way, but "we wrote
+	// it" and "it survives a power cut" are different claims, and under
+	// syncDurable this function makes the second one. The caller counts
+	// the failure and the write is retried on the next event.
+	if sync == syncDurable {
+		if err := syncDir(filepath.Dir(final)); err != nil {
+			return fmt.Errorf("failed to sync %s file into place: %w", what, err)
+		}
+	}
+	return nil
+}
+
 // stateDir is the directory where per-network options are persisted.
-// Lives inside the plugin's writable filesystem; survives plugin
-// disable/enable cycles but is reset on `docker plugin rm` or upgrade,
-// which is fine — the disk-state read in netOptions falls back to the
-// docker API for any network that hasn't been re-saved yet.
+//
+// It is a HOST path, not plugin-private storage. config.json declares
+// `/var/lib/net-dhcp` as a bind mount with source and destination both
+// equal to that path, rbind and rw, and this default is exactly it. So
+// the contents survive plugin disable/enable, `docker plugin rm`, and
+// upgrade — `plugin rm` removes the plugin's rootfs, not the bind
+// source. That is deliberate (#440): a network's options outlive the
+// build that wrote them.
+//
+// This comment used to say the opposite — that the directory lived
+// inside the plugin's writable filesystem and was reset on `plugin rm`
+// or upgrade, "which is fine". It was false, and it was false 14 lines
+// below stateFileMode's comment saying correctly that this is an rbind
+// rw host mount. It is corrected here rather than in passing because
+// the whole justification for stateSchemaVersion rests on which of the
+// two was right: a file that were genuinely reset on upgrade could
+// never be read by a build other than the one that wrote it, and would
+// need no version at all (#724).
+//
+// The disk-state read in netOptions still falls back to the docker API
+// for any network that has not been saved yet, which is what makes
+// networks predating persistence keep working.
 //
 // Configurable via the STATE_DIR env var so test runs can point at a
 // scratch directory.
@@ -89,6 +269,11 @@ const tombstoneTTL = 60 * time.Second
 // the common one). Concurrent restarts of multiple containers on the
 // same network within the TTL fall through to a fresh MAC because
 // consumeTombstone requires exactly one match.
+// Deliberately carries NO schema version, unlike the options file. A
+// 60-second cache has nothing to migrate: by the time any build other
+// than the writer could read this file, every record in it has expired.
+// The right handling of a shape this build cannot parse is to discard
+// it, which is what loadTombstones does (#724).
 type tombstone struct {
 	NetworkID  string `json:"network_id"`
 	MacAddress string `json:"mac_address"`
@@ -124,10 +309,63 @@ func tombstoneFilePath() string {
 	return filepath.Join(stateDir, "tombstones.json")
 }
 
+// quarantineTombstones moves an unreadable tombstone file aside and
+// returns the path it was moved to.
+//
+// It exists because the alternative is destruction. loadTombstones'
+// callers treat a load error as "start from nothing" and then write:
+// the store's add path used to log a warning, set the slice to nil, and
+// save one entry OVER the unreadable file, deleting every other
+// tombstone in it. That is silent, unrecoverable, and happens at
+// precisely the moment an operator would want the bytes -- a corrupt
+// tombstone file means every container restarting in the next 60s picks
+// a new MAC and a new address, and the file is the only evidence of why
+// (#724).
+//
+// The quarantined file is never reaped. It is small, corruption is
+// rare, and something that cleans up the evidence of a fault is the
+// wrong instinct; an operator deletes it after reading it.
+func quarantineTombstones() (string, error) {
+	final := tombstoneFilePath()
+	// Millisecond resolution so two quarantines in the same second do
+	// not overwrite each other -- the whole point is not to lose bytes.
+	aside := final + ".corrupt-" + time.Now().UTC().Format("20060102T150405.000Z")
+	if err := os.Rename(final, aside); err != nil {
+		return "", fmt.Errorf("failed to quarantine corrupt tombstones file: %w", err)
+	}
+	// Durable for the same reason the write path is: the operator reads
+	// this file after a crash, which is when a lost rename costs most.
+	if err := syncDir(filepath.Dir(final)); err != nil {
+		return aside, err
+	}
+	return aside, nil
+}
+
+// errTombstonesQuarantined marks the one load failure that is safe to
+// continue past: the file's contents were unparseable, so they have been
+// moved aside and there is definitively nothing to recover.
+//
+// It exists so callers can tell a REFUSAL from an ABSENCE. Every other
+// load failure -- EIO, EMFILE, a read losing a race with a writer -- is
+// transient and says nothing about the file's contents, which may be
+// perfectly good. Treating those the same way means overwriting live
+// data because a file descriptor was briefly unavailable. That is the
+// #693 lesson in a different file: "I could not read it" must not be
+// handled as "there was nothing there".
+var errTombstonesQuarantined = errors.New("tombstones file was corrupt and has been quarantined")
+
 // loadTombstones reads the tombstone list from disk, returning an
-// empty slice when no file exists yet. A corrupt file is treated as
-// fatal-ish — we surface the parse error so a higher layer can decide
-// whether to log+continue or bail.
+// empty slice when no file exists yet.
+//
+// An unparseable file is moved aside (see quarantineTombstones) and the
+// error wraps errTombstonesQuarantined. Moving it aside is what makes a
+// caller's "start fresh" safe: the next write lands on a name nothing
+// occupies instead of on top of the evidence.
+//
+// A file this build cannot parse is discarded rather than migrated, and
+// that is the whole forward-compatibility story for tombstones -- see
+// the type comment. Sixty seconds of address stability is the entire
+// value at stake.
 func loadTombstones() ([]tombstone, error) {
 	data, err := os.ReadFile(tombstoneFilePath())
 	if err != nil {
@@ -138,51 +376,27 @@ func loadTombstones() ([]tombstone, error) {
 	}
 	var ts []tombstone
 	if err := json.Unmarshal(data, &ts); err != nil {
-		return nil, fmt.Errorf("tombstones file is corrupt: %w", err)
+		aside, qErr := quarantineTombstones()
+		if qErr != nil {
+			// The file could not even be moved. Do NOT report this as
+			// quarantined: the caller would start fresh and write over
+			// contents that are still sitting there.
+			return nil, fmt.Errorf("tombstones file is corrupt and could not be quarantined (%v): %w", err, qErr)
+		}
+		return nil, fmt.Errorf("%w as %s: %v", errTombstonesQuarantined, aside, err)
 	}
 	return ts, nil
 }
 
-// saveTombstones atomically rewrites the tombstone list. Same
-// temp-file + rename pattern as saveOptions so a crash mid-write
-// leaves the previous file intact.
+// saveTombstones atomically rewrites the tombstone list. Atomic, not
+// durable: see syncEphemeral for why an fsync on this path would buy
+// nothing and cost something.
 func saveTombstones(ts []tombstone) error {
-	if err := os.MkdirAll(stateDir, 0o755); err != nil {
-		return fmt.Errorf("failed to create state dir %v: %w", stateDir, err)
-	}
 	data, err := json.Marshal(ts)
 	if err != nil {
 		return fmt.Errorf("failed to encode tombstones: %w", err)
 	}
-	final := tombstoneFilePath()
-	tmp, err := os.CreateTemp(stateDir, ".tombstones.*.tmp")
-	if err != nil {
-		return fmt.Errorf("failed to create tombstones temp file: %w", err)
-	}
-	tmpName := tmp.Name()
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		_ = os.Remove(tmpName)
-		return fmt.Errorf("failed to write tombstones temp file: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpName)
-		return fmt.Errorf("failed to close tombstones temp file: %w", err)
-	}
-	// 0600, not 0644. /var/lib/net-dhcp is an rbind rw HOST mount, so
-	// this file's contents -- container MACs, IPs and hostnames -- were
-	// readable by any user on the host. Nothing here is a credential and
-	// the plugin runs as root either way, so this is not a privilege
-	// boundary; 0600 simply costs nothing (#708).
-	if err := os.Chmod(tmpName, stateFileMode); err != nil {
-		_ = os.Remove(tmpName)
-		return fmt.Errorf("failed to chmod tombstones temp file: %w", err)
-	}
-	if err := os.Rename(tmpName, final); err != nil {
-		_ = os.Remove(tmpName)
-		return fmt.Errorf("failed to rename tombstones file: %w", err)
-	}
-	return nil
+	return writeStateFileAtomic(tombstoneFilePath(), ".tombstones.*.tmp", data, "tombstones", syncEphemeral)
 }
 
 // pruneTombstones returns ts with entries older than tombstoneTTL
@@ -209,44 +423,31 @@ func pruneTombstones(ts []tombstone) []tombstone {
 // loadOptions falling back to the docker API on parse error, which
 // works but is the wrong default.)
 func saveOptions(networkID string, opts DHCPNetworkOptions) error {
-	if err := os.MkdirAll(stateDir, 0o755); err != nil {
-		return fmt.Errorf("failed to create state dir %v: %w", stateDir, err)
-	}
 	final, err := stateFilePath(networkID)
 	if err != nil {
 		return err
 	}
-	data, err := json.Marshal(opts)
+	data, err := json.Marshal(versionedOptions{DHCPNetworkOptions: opts, V: stateSchemaVersion})
 	if err != nil {
 		return fmt.Errorf("failed to encode options: %w", err)
 	}
-	// The temp name carries no networkID — CreateTemp's "*" already
-	// guarantees uniqueness, and keeping caller-supplied input out of the
-	// pattern removes it as a path-injection sink.
-	tmp, err := os.CreateTemp(stateDir, ".state-*.tmp")
-	if err != nil {
-		return fmt.Errorf("failed to create temp options file: %w", err)
-	}
-	tmpName := tmp.Name()
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		_ = os.Remove(tmpName)
-		return fmt.Errorf("failed to write temp options file: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpName)
-		return fmt.Errorf("failed to close temp options file: %w", err)
-	}
-	// See the tombstone write above for why this is 0600 (#708).
-	if err := os.Chmod(tmpName, stateFileMode); err != nil {
-		_ = os.Remove(tmpName)
-		return fmt.Errorf("failed to chmod temp options file: %w", err)
-	}
-	if err := os.Rename(tmpName, final); err != nil {
-		_ = os.Remove(tmpName)
-		return fmt.Errorf("failed to rename options file into place: %w", err)
-	}
-	return nil
+	return writeStateFileAtomic(final, ".state-*.tmp", data, "options", syncDurable)
+}
+
+// versionedOptions is the on-disk shape of a network's options: the
+// options themselves plus the schema version.
+//
+// DHCPNetworkOptions is embedded rather than nested because
+// encoding/json flattens an untagged embedded struct. The file therefore
+// stays the same flat object it has always been, with one extra "v" key
+// that any older build's decoder ignores -- so this change is readable
+// by builds that predate it, which a nested {"v":1,"options":{...}}
+// would not be. DHCPNetworkOptions itself stays untouched: it is also
+// the mapstructure target for user-supplied `docker network create`
+// options, and a storage concern has no business appearing there.
+type versionedOptions struct {
+	DHCPNetworkOptions
+	V int `json:"v"`
 }
 
 // loadOptions reads previously-persisted options for a network. Returns
@@ -262,10 +463,20 @@ func loadOptions(networkID string) (DHCPNetworkOptions, error) {
 	if err != nil {
 		return opts, err
 	}
-	if err := json.Unmarshal(data, &opts); err != nil {
+	var vo versionedOptions
+	if err := json.Unmarshal(data, &vo); err != nil {
 		return opts, fmt.Errorf("persisted options for %v are corrupt: %w", networkID, err)
 	}
-	return opts, nil
+	// A version we do not understand is refused, not guessed at. The
+	// caller's fallback is the docker API, which is authoritative for
+	// everything in this struct, so refusing costs nothing but a lookup
+	// -- whereas decoding a v2 file with v1 semantics could silently
+	// attach a network in the wrong mode or on the wrong parent.
+	// V == 0 is a file written before the field existed; that is v1.
+	if vo.V > stateSchemaVersion {
+		return opts, fmt.Errorf("persisted options for %v are schema v%d, this build understands v%d", networkID, vo.V, stateSchemaVersion)
+	}
+	return vo.DHCPNetworkOptions, nil
 }
 
 // deleteOptions removes the persisted options for a network. Called from

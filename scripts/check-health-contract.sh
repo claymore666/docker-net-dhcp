@@ -2,16 +2,17 @@
 # Copyright the docker-net-dhcp contributors.
 # SPDX-License-Identifier: GPL-3.0-only
 
-# The `healthy` contract must say the same thing in all four places
-# that state it (#638).
+# The `healthy` contract must say the same thing in every place that
+# states it (#638).
 #
 # WHY THIS EXISTS
 #
 # `/Plugin.Health` returns one boolean an operator is expected to alert
-# on, and which counters flip it is stated four times: the counter
-# table's healthy-affecting column, the prose in the `healthy` row
-# itself, the At a glance summary, and the Troubleshooting row an
-# operator lands on when they have already seen `healthy: false`.
+# on, and which counters flip it is restated all over the reference: the
+# counter table's healthy-affecting column, the prose in the `healthy`
+# row itself, the At a glance summary, and the Troubleshooting row an
+# operator lands on when they have already seen `healthy: false`. Three
+# of those also carry the count in words.
 # v1.6.0 added a fourth counter (`address_conflicts`) to the code and to
 # two of those statements. The `healthy` row kept listing three for two
 # releases — and it is the one an operator reads first, because it is
@@ -33,10 +34,17 @@
 # healthy contract") — the fix then was to delete the duplicate, which
 # left three copies inside one file unguarded.
 #
+# This gate therefore states no total of its own. It counts the
+# statements it actually read and prints that in the PASS line — a
+# hardcoded "all four" in here is the same rot one file over, and this
+# header carried one until #724 added a fifth counter and a third
+# count-word check.
+#
 # WHAT IT CHECKS
 #
-#   1. the four doc statements name exactly the same counters
-#   2. the number word in the summary matches how many that is
+#   1. every doc statement that lists the counters lists the same ones
+#   2. every doc statement that carries the count in words carries the
+#      count that list actually has
 #   3. the code's Healthy expression has that many terms
 #
 # (3) is deliberately weak: it counts terms rather than resolving the
@@ -48,7 +56,7 @@
 # that cannot see must not report clean.
 #
 # Usage: check-health-contract.sh [<reference-doc>] [<go-file>]
-# Exit:  0 the four agree, 1 they disagree, 2 cannot check.
+# Exit:  0 they all agree, 1 they disagree, 2 cannot check.
 set -uo pipefail
 
 DOC="${1:-docs/reference.md}"
@@ -60,6 +68,12 @@ done
 
 fail=0
 note() { echo "FAIL  $*" >&2; fail=1; }
+
+# Tallies for the PASS line. A gate that hardcodes how much it covers is
+# the same rot it exists to catch, one file over: #638 shipped because a
+# comment said three copies and there were four. These count reads.
+n_lists=0
+n_words=0
 
 # Every counter the table documents: the superset the three statements
 # are allowed to draw from. Matched first so a claim can be judged
@@ -80,15 +94,18 @@ counters_on() {
 column_set=$(grep -oE '^\| `[a-z0-9_]+` \| \*{0,2}yes\*{0,2} \|' "$DOC" \
     | sed -E 's/^\| `([a-z0-9_]+)`.*/\1/' | sort -u)
 [ -n "$column_set" ] || { echo "check-health-contract: no rows marked healthy-affecting in $DOC" >&2; exit 2; }
+n_lists=$((n_lists + 1))
 
 # --- 2. the prose in the `healthy` row --------------------------------
 healthy_row=$(grep -E '^\| `healthy` \|' "$DOC" | head -1)
 [ -n "$healthy_row" ] || { echo "check-health-contract: no \`healthy\` row in $DOC" >&2; exit 2; }
+n_lists=$((n_lists + 1))
 row_set=$(counters_on "$healthy_row")
 
 # --- 3. the At a glance summary ---------------------------------------
 glance=$(grep -E 'flip `healthy` to `false`' "$DOC" | head -1)
 [ -n "$glance" ] || { echo "check-health-contract: no At-a-glance healthy summary in $DOC" >&2; exit 2; }
+n_lists=$((n_lists + 1))
 glance_set=$(counters_on "$glance")
 
 # --- 4. the Troubleshooting row ---------------------------------------
@@ -100,6 +117,7 @@ glance_set=$(counters_on "$glance")
 # the field table.
 trouble=$(grep -E '^\|[[:space:]]*`healthy: false`' "$DOC" | head -1)
 [ -n "$trouble" ] || { echo "check-health-contract: no \`healthy: false\` row in the Troubleshooting table of $DOC" >&2; exit 2; }
+n_lists=$((n_lists + 1))
 trouble_set=$(counters_on "$trouble")
 
 if [ "$column_set" != "$row_set" ]; then
@@ -125,14 +143,49 @@ n_doc=$(printf '%s\n' "$column_set" | grep -c .)
 
 # The summary opens with the count in words, which is exactly the part
 # that survives an edit that adds a counter to the list below it.
-word=$(printf '%s' "$glance" | grep -oE '[A-Za-z]+ flip `healthy`' | awk '{print tolower($1)}')
-case "$word" in
-    one) n_word=1 ;; two) n_word=2 ;; three) n_word=3 ;; four) n_word=4 ;;
-    five) n_word=5 ;; six) n_word=6 ;; seven) n_word=7 ;; eight) n_word=8 ;;
-    nine) n_word=9 ;;
-    *) echo "check-health-contract: cannot read the count word in: $glance" >&2; exit 2 ;;
-esac
-[ "$n_word" = "$n_doc" ] && : || note "the summary says '$word' but $n_doc counters are marked healthy-affecting"
+#
+# THREE STATEMENTS CARRY THE NUMBER, NOT ONE. The check started on the
+# At-a-glance line only, and that left the same bug it was written to
+# stop: the Troubleshooting row opens "Exactly four counters flip it"
+# and the preamble says "which four flip `healthy`", and NEITHER was
+# read. A fifth counter added correctly to all four name-lists still
+# shipped two rows saying "four" over a list of five — including the row
+# an operator reaches after they have already seen `healthy: false`,
+# which is the exact reader #638 was about (#724).
+word_to_n() {
+    case "$1" in
+        one) echo 1 ;; two) echo 2 ;; three) echo 3 ;; four) echo 4 ;;
+        five) echo 5 ;; six) echo 6 ;; seven) echo 7 ;; eight) echo 8 ;;
+        nine) echo 9 ;;
+        *) echo "" ;;
+    esac
+}
+
+# Each entry: a label, the line, and the regex that pulls the count word
+# out of it. A line that matches nothing is exit 2, never a pass — a
+# gate that cannot see must not report clean.
+check_word() {
+    label=$1; line=$2; pattern=$3
+    w=$(printf '%s' "$line" | grep -oE "$pattern" | head -1 | grep -oE '^[A-Za-z]+' | tr '[:upper:]' '[:lower:]')
+    n=$(word_to_n "$w")
+    if [ -z "$n" ]; then
+        echo "check-health-contract: cannot read the count word in the $label: $line" >&2
+        exit 2
+    fi
+    n_words=$((n_words + 1))
+    [ "$n" = "$n_doc" ] || note "the $label says '$w' but $n_doc counters are marked healthy-affecting"
+}
+
+check_word "At a glance summary" "$glance" '[A-Za-z]+ flip `healthy`'
+
+# The Troubleshooting row: "Exactly four counters flip it".
+check_word "Troubleshooting \`healthy: false\` row" \
+    "$(printf '%s' "$trouble" | sed -E 's/.*[Ee]xactly //')" '[A-Za-z]+ counters flip'
+
+# The preamble: "which four flip `healthy`".
+preamble=$(grep -E 'which [a-z]+ flip `healthy`' "$DOC" | head -1)
+[ -n "$preamble" ] || { echo "check-health-contract: no 'which N flip \`healthy\`' preamble in $DOC" >&2; exit 2; }
+check_word "preamble" "$(printf '%s' "$preamble" | sed -E 's/.*which //')" '[A-Za-z]+ flip `healthy`'
 
 # --- 4. the code -------------------------------------------------------
 expr=$(grep -hE '^[[:space:]]*Healthy:' "$SRC" | head -1)
@@ -155,11 +208,12 @@ fi
 
 if [ "$fail" -ne 0 ]; then
     echo >&2
-    echo "\`healthy\` is the one boolean operators alert on. All four doc" >&2
-    echo "statements and the code must name the same counters — see the" >&2
-    echo "header of this script for why the row is the one that rots." >&2
+    echo "\`healthy\` is the one boolean operators alert on. Every doc" >&2
+    echo "statement and the code must name the same counters, and every" >&2
+    echo "statement that carries the count must carry the right one — see" >&2
+    echo "the header of this script for why the row is the one that rots." >&2
     exit 1
 fi
 
-echo "PASS  healthy contract agrees in 4 doc statements and ${n_code} code term(s): $(printf '%s' "$column_set" | tr '\n' ' ')"
+echo "PASS  healthy contract agrees in ${n_lists} doc counter-list(s), ${n_words} doc count-word(s) and ${n_code} code term(s): $(printf '%s' "$column_set" | tr '\n' ' ')"
 exit 0

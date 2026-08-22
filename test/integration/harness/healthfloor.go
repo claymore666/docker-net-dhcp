@@ -86,6 +86,10 @@ type HealthResponse struct {
 	RestartLinkUpTimeouts   int32 `json:"restart_link_up_timeouts"`
 	JoinAbortedEndpointLeft int32 `json:"join_aborted_endpoint_left"`
 	TombstoneWriteFailures  int32 `json:"tombstone_write_failures"`
+	// TombstoneQuarantines is healthy-affecting (#724): the tombstone
+	// file was unparseable and was moved aside, taking every live
+	// tombstone on the host with it.
+	TombstoneQuarantines int32 `json:"tombstone_quarantines"`
 	// TombstonesConsumed is RecoveredOK's counterpart: the address was
 	// preserved by replaying a tombstone rather than by recovery
 	// re-adopting a live endpoint. Together they let a restart test say
@@ -214,6 +218,12 @@ var floorCounters = []floorCounter{
 		why:   "the plugin could not persist its tombstone state to disk; an endpoint will not keep its address across a restart",
 	},
 	{
+		name:  "tombstone_quarantines",
+		read:  func(h *HealthResponse) int32 { return h.TombstoneQuarantines },
+		fatal: true,
+		why:   "the tombstone file was unparseable and was quarantined as tombstones.json.corrupt-<ts>; every live tombstone on the host went with it, so any container that restarts inside the TTL window comes back with a different MAC and a different address. Strictly worse than tombstone_write_failures, which costs one container the same thing (#724). The quarantined file is still on disk under STATE_DIR and nothing reaps it — read it before deleting it, it is the only evidence of what was lost",
+	},
+	{
 		name:  "recovery_failed",
 		read:  func(h *HealthResponse) int32 { return h.RecoveryFailed },
 		fatal: true,
@@ -330,7 +340,7 @@ func CheckHealthFloor(h *HealthResponse) []FloorFinding {
 	// Every counter in floorCounters is now fatal, so in principle this
 	// is redundant — and that is exactly why it is worth having. The
 	// table is this suite's *mirror* of pkg/plugin's Healthy
-	// expression, and a mirror drifts: add a fourth healthy-affecting
+	// expression, and a mirror drifts: add another healthy-affecting
 	// counter to the plugin and the floor keeps reporting clean until
 	// somebody remembers this file. Asking the plugin directly closes
 	// that gap without waiting for the mirror to catch up.
