@@ -50,23 +50,60 @@ and they are the reason the file exists at all:
 
 ## How to read an entry
 
-Three labels, and they are not a ranking:
+Four labels. Only the last is optional.
 
-- **Rule** — mechanically followable with an observable output. The
-  diagnostic is *can someone else check you did it?* If not, it is not a
-  Rule.
-- **Case** — a measured story that teaches by pattern and commands
-  nothing. Most of the best material here is Cases.
-- **Preference** — no measurement behind it. Labelled as such, and never
-  cited as authority.
+- **Rule** — the observer is **built**, shared, and has been driven red
+  against a violation. Binding, and violations are caught.
+- **Rule, owed** — **binding**. The observer is buildable and not yet
+  built; recorded as owed, **with a named owner**, until it is. This is
+  not a weaker Rule. It is a Rule enforced by memory, which is the
+  weakest way to enforce anything, so the owner is the point.
+- **Case** — a **measured** incident that is unmechanisable *in
+  principle*. Binding on judgement; cited rather than enforced.
+- **Preference** — no measurement behind it. Genuinely optional, and
+  never cited as authority.
 
-**The standing hazard, and it is the one that would wreck this file: a
-memorable Case wants to be promoted to a Rule**, because Rules feel more
-useful. Resist it. A Case turned into a Rule is a Preference with a good
-story attached.
+**Built, not named.** The distinction is the whole taxonomy and it was
+paid for. The lead's merge-verdict script called a **41-second-old**
+healthy head STALLED, when their own notes had said for days that a
+freshly pushed SHA looks exactly like a stalled one and the check must
+hold across two polls. That is a mechanism *named* — precise enough to
+implement from the sentence alone — and it was never built. **A proposal
+that stops at "named" does not prevent its own founding incident.**
+Naming is free; building is the bar.
+
+**Measured-but-unmechanisable routes to Case, never to Preference.**
+Preference means *no measurement behind it*, full stop. Routing a
+measured finding there would strip its evidence and make it un-citable —
+which is exactly the invisibility the demotion was meant to avoid,
+arriving by the route nobody checked. I9 is the test case: unmechanisable
+in principle, measured, and one of the most valuable entries here.
+
+**The standing hazard: a memorable Case wants to be promoted to a
+Rule**, because Rules feel more useful. Resist it. A Case turned into a
+Rule is a Preference with a good story attached.
+
+**Constitutive carve-out.** Rules about how rules are made cannot be
+mechanised from inside the system they govern. They are **Rule, owed —
+owner: the lead, permanently.** The taxonomy's first casualty was
+itself, and saying so is cheaper than pretending otherwise.
 
 A rule adopted without input from an active session is labelled
 **provisional**, so the next reader knows which ones nobody argued with.
+
+### How this taxonomy was decided, since the file exists to retain that
+
+Proposed as *"adopted only with the mechanism **named**"*. Objected to on
+the ground that it fails its own founding incident, with the two-poll
+clause as the worked example. **Amended to "built" and adopted.** Three
+sessions converged on the same word from three different incidents,
+independently, which is about as strong a signal as this process
+produces.
+
+A second objection — that demoting unmechanisable things to Preference
+makes them invisible — was raised *by the proposer* and answered by
+routing them to Case instead. **"Rule, owed" was the tier nobody had**,
+added from the other side by oversight, and it is where R14 landed.
 
 ### Kill reasons
 
@@ -238,6 +275,47 @@ Same family: `gh api --jq` writes a 4xx error **body to stdout**, so a
 failed call is not empty and walks straight past `[ -z "$SHA" ]`. Guard
 on **shape** — 40 hex — not on emptiness. *(client2)*
 
+## I12 — the rule was right and the application was one short
+
+Within one commit: R14 (enumerate a claim's carriers) was written down,
+and the tag-time comment applying it named **two** carriers of the
+nothing-was-deferred claim. There were **three** — the security-review
+section also says *"Everything found is fixed in this release; nothing
+was deferred"*, scoped to #457/#699 rather than to all three reviews.
+
+**What caught it:** a mechanical sweep — count-words and merge-state
+verbs over all 1,179 lines of the section, with a refuse-below-200-lines
+floor. Not a careful reread. The prose had already been read twice.
+
+oversight's statement of it is better than the one this file started
+with, and is kept verbatim:
+
+> **The rule was right and the application was one short, which is the
+> ordinary way rules fail. Not by being wrong. By being applied by the
+> person who just wrote them, in the same sitting, when they are the
+> least able to see what they have missed.**
+
+The same sweep found two more, both also in prose its author had reread:
+a merge-state count (*"the seven described below are merged"*) and a
+parenthetical describing a branch that merges *before* the file
+containing it. *(client3, framing by oversight)*
+
+## I13 — a documented derivation that does not reproduce its own table
+
+Not a failure — a check that could have been one, recorded because the
+*method* is the transferable part. #768 shipped an HTML comment carrying
+the command that derives the counter table. oversight's re-check ran
+**that command** rather than their own grep, and diffed its 16 names
+against the table's 16 rows, empty both directions.
+
+> A documented command that does not reproduce its own table is the same
+> defect one layer down.
+
+The author had verified the table against their own command, in their
+own shell, in the session that wrote it — I12's position exactly. The
+first independent evidence the comment was worth anything came from
+someone running the comment. *(oversight)*
+
 ---
 
 # Rules
@@ -259,8 +337,33 @@ Each names its incident and the condition under which it dies.
 | R11 (6a) | **A CLEAR names its SHA.** A CLEAR whose SHA is not the current head is refused. | I1 | A merge queue makes the reviewed head and the merged head the same object. |
 | R12 | Green **and** CLEAR are both required. Either alone is nothing. | I2 instance 3 — green *and* CLEAR, still unmergeable | Something evaluates the merge product before it becomes dev. |
 | R13 | Derive names from the declaration, not from a naming rule, and **refuse below a floor**. Report what you inspected. | I4 | The floor rule ships as a declaration gate (v1.9.0 ledger item 16). |
-| R14 | Every claim enumerates its carriers where a re-check will see them: **both, or neither**. | I8, I3 | A tool can find a claim by meaning rather than by symbol. |
+| R14 | Every claim enumerates its carriers where a re-check will see them: **both, or neither**. **Rule, owed — owner: client3.** | I8, I3, I12 | The carrier-enumeration gate exists. |
 | R15 | You may push a head that is with a reviewer; you **must** tell them in the same minute, and the restarted pass is on you. | replaces the killed 6b, below | R11 stops being the detector. |
+
+## Owed — R14, and why it is hard
+
+R14 is binding and has no observer. It was volunteered for demotion by
+its own owner and kept binding instead, on the grounds that honesty
+about a rule's weakness is not licence to weaken it: R14 has caught
+three instances in one evening, two of them in its own author's prose,
+and is enforced entirely by memory.
+
+**What has been considered, so the next person does not rebuild the
+thing already ruled out.** The obvious shape — a gate that reads changed
+prose and recognises "claims" — is the fuzzy pattern-matching that
+produced `check-version-pins` matching only well-formed pins. A gate
+cannot derive what a claim *is*. Do not build that.
+
+**The only shape worth trying is the declaration form**, the same as the
+floor gate: a change touching a claim-bearing document declares which
+claims it moved, and the gate checks mechanically that every declared
+claim's carriers were all touched — not that the declaration is
+*correct*, which is unknowable, but that it is *complete with respect to
+itself*. **The gate cannot know what a claim is. The author can.**
+
+That is a sketch and not a design. "We tried and here is why it is hard"
+is a legitimate entry, and it is worth more here than an unattempted
+promise.
 
 ## Killed
 
@@ -309,6 +412,17 @@ worth more than a rule followed.
   fix with no failure mode; correcting it is a fix with a shelf life.
   *Removing the number also exposed the list being wrong, which the
   number had been hiding.*
+- **I12 — run the mechanical sweep against your own work FIRST, not
+  last.** A rule enforced by its own author in the same sitting is
+  enforced by memory at its weakest point. Both residuals the #768 sweep
+  found were the author's, in prose already reread twice, and the sweep
+  found them only because it was mechanical rather than careful. This is
+  also the strongest argument for the mechanism proposal, arriving from
+  a direction neither party used to make it.
+- **I13 — check a documented derivation by RUNNING it, not by
+  reproducing its result.** Agreement between your grep and their table
+  proves the table. Only running their command proves the *comment*, and
+  the comment is what the next reader will use.
 - **Resolve a generated file by regenerating, never by taking a side** —
   taking a side is a hand-written expectation wearing a generated file's
   clothes. Then **write down the churn you predict before you diff**. A
