@@ -5,6 +5,8 @@ package plugin
 
 import (
 	"encoding/binary"
+	"errors"
+	"fmt"
 	"math"
 	"net"
 	"testing"
@@ -676,4 +678,92 @@ func TestObserveLease_AdvancesTheTracker(t *testing.T) {
 	if tracker.acquiring {
 		t.Fatal("a bound must clear the acquiring state; observeLease dropped the fold")
 	}
+}
+
+// TestNoteDNSPropagationPIDMismatch_CountsTheEffect asserts the counter
+// that container_netns_test.go:37 and :95 say they are protecting.
+//
+// Those two tests assert the error still carries errPIDNotContainer,
+// with comments reading "so the counter can fire" and "or the mismatch
+// is never counted". Both were true about the precondition and neither
+// touched the effect: deleting the `.Add(1)` line left `go test ./...`
+// green across the whole tree, with those comments still standing guard
+// in writing over nothing.
+//
+// The cases that carry the weight are the ones that must NOT count. A
+// mismatch is the signal that a PID was reused between resolution and
+// use; if any other failure counted too, the counter stops separating
+// that from an ordinary error and an operator cannot act on it.
+//
+// netnsPIDMismatches is asserted here only in the negative. It is
+// counted inside openSandboxNetNS, which owns it, and this method must
+// not touch it — an earlier version of this method took a `kind` and
+// covered both, which double-counted once #731's opener landed.
+func TestNoteDNSPropagationPIDMismatch_CountsTheEffect(t *testing.T) {
+	other := errors.New("some other failure")
+	wrapped := fmt.Errorf("failed to open: %w", errPIDNotContainer)
+
+	for _, tc := range []struct {
+		name    string
+		calls   []error
+		wantDNS int32
+	}{
+		{
+			name:    "a mismatch counts",
+			calls:   []error{errPIDNotContainer},
+			wantDNS: 1,
+		},
+		{
+			// The call site hands this method a wrapped error, never
+			// the sentinel itself -- writeContainerResolvConf wraps. A
+			// predicate written with == instead of errors.Is passes
+			// every other case here.
+			name:    "a wrapped sentinel still counts",
+			calls:   []error{wrapped},
+			wantDNS: 1,
+		},
+		{
+			name:    "an unrelated failure counts nothing",
+			calls:   []error{other},
+			wantDNS: 0,
+		},
+		{
+			// A PID reused twice is twice the fault, not one event
+			// with a flag. A counter set to 1 rather than incremented
+			// passes every single-call case above.
+			name:    "each mismatch counts, not just the first",
+			calls:   []error{errPIDNotContainer, errPIDNotContainer, errPIDNotContainer},
+			wantDNS: 3,
+		},
+		{
+			name:    "a nil error is not a mismatch",
+			calls:   []error{nil},
+			wantDNS: 0,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &Plugin{}
+			m := &dhcpManager{plugin: p}
+			for _, err := range tc.calls {
+				m.noteDNSPropagationPIDMismatch(err)
+			}
+			if got := p.dnsPropagationPIDMismatches.Load(); got != tc.wantDNS {
+				t.Errorf("dns_propagation_pid_mismatches = %d, want %d", got, tc.wantDNS)
+			}
+			if got := p.netnsPIDMismatches.Load(); got != 0 {
+				t.Errorf("netns_pid_mismatches = %d, want 0: this method must not touch "+
+					"the netns counter, which openSandboxNetNS owns. It did once, and the "+
+					"result was one refusal counted twice", got)
+			}
+		})
+	}
+}
+
+// TestNoteDNSPropagationPIDMismatch_SurvivesANilPlugin pins the guard the
+// call site relied on before the extraction. Unit tests that do not stand
+// up a Plugin leave dhcpManager.plugin nil, and a refusal is still a
+// refusal when there is no counter to bump.
+func TestNoteDNSPropagationPIDMismatch_SurvivesANilPlugin(t *testing.T) {
+	m := &dhcpManager{}
+	m.noteDNSPropagationPIDMismatch(errPIDNotContainer)
 }

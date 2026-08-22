@@ -254,14 +254,14 @@ func TestMountPrep_RemountsProcSysRW(t *testing.T) {
 	// mount namespace before exec (#247). It must still mount the
 	// per-client tmpfs state dir and exec dhcpcd via $0/$@.
 	for _, want := range []string{
-		"mount -t tmpfs tmpfs " + dhcpcdStateDir,
+		mountBin + " -t tmpfs tmpfs " + dhcpcdStateDir,
 		// dhcpcd's runtime dir (pidfile + control sockets, keyed by
 		// interface name only) must be private per client, or the
 		// second same-named-interface client forwards its argv into
 		// the first container's dhcpcd and exits without doing DHCP.
-		"mkdir -p " + dhcpcdRunDir,
-		"mount -t tmpfs tmpfs " + dhcpcdRunDir,
-		"mount -o remount,bind,rw " + procSysPath,
+		mkdirBin + " -p " + dhcpcdRunDir,
+		mountBin + " -t tmpfs tmpfs " + dhcpcdRunDir,
+		mountBin + " -o remount,bind,rw " + procSysPath,
 		`exec "$0" "$@"`,
 	} {
 		if !strings.Contains(script, want) {
@@ -558,5 +558,133 @@ func TestFinish_WithoutStartIsSafe(t *testing.T) {
 	defer cancel()
 	if err := c.Finish(ctx); err != nil {
 		t.Fatalf("Finish without Start: %v", err)
+	}
+}
+
+// TestMountPrep_NamesEveryBinaryAbsolutely pins the property #707 was
+// actually about, rather than the one instance of it that got fixed.
+//
+// The whole mountPrep string is handed to `sh -c`. A shell resolves
+// EVERY command word through PATH, not only the one that reaches
+// execve — so `$0` was never special, it was just the word the audit
+// happened to be looking at. dhcpcdBin was absolutized on exactly that
+// reasoning; the four commands in the same string are the same
+// exposure by the same mechanism.
+//
+// Asserting the shape rather than the four spellings is deliberate.
+// The literal pins in TestMountPrep_RemountsProcSysRW say the string
+// has not drifted; they cannot say it is right, and before this change
+// they pinned the bare forms — which is how a test written to stop
+// drift ends up holding the wrong value still.
+//
+// # WHAT THIS TEST UNIQUELY CONTRIBUTES, AND WHAT IT DOES NOT
+//
+// Not much, and the honest statement is short. Mutate either of the two
+// commands mountPrep names today back to a bare `mount` or `mkdir` and
+// TestMountPrep_RemountsProcSysRW goes red as well, because its literal
+// pins hold those exact spellings. Both tests catch both mutants.
+//
+// The one thing only this test catches is a command word the file has
+// NEVER SEEN: a fifth command, added later, spelled bare. The pins
+// cannot go red for a string they were never given, and that is the
+// entire margin. It is worth a test because that is exactly how #707
+// arrived — three times, each time as a word nobody had looked at yet.
+//
+// # THE SPLIT IS THE POINT
+//
+// FieldsFunc over `;`, `&` and `|`, not Split on `;`.
+//
+// Every one of those characters ENDS a command in sh, so the word after
+// one is a fresh command word that the shell will resolve through PATH.
+// Splitting on `;` alone reads `a && b` as a single statement and looks
+// only at `a` — so a command appended with `&&`, `||`, `|` or `&` is
+// invisible to it, and invisible in the specific way that reads as
+// PASSING.
+//
+// That is the same defect as the one this test exists to catch, one
+// level up. The audit looked at `$0` because `$0` was the word it was
+// looking at; a Split(";") version of this test looks at the first word
+// of each `;` because that is the word it is looking at. mountPrep uses
+// only `;` today, so this change moves nothing — it removes the way the
+// fourth instance would arrive.
+//
+// `exec` is skipped because it is a shell builtin: there is no PATH
+// lookup to pin, and its argument is $0, which is dhcpcdBin.
+func TestMountPrep_NamesEveryBinaryAbsolutely(t *testing.T) {
+	prep := mountPrep()
+	words := 0
+	for _, stmt := range strings.FieldsFunc(prep, func(r rune) bool {
+		return r == ';' || r == '&' || r == '|'
+	}) {
+		fields := strings.Fields(stmt)
+		if len(fields) == 0 || fields[0] == "exec" {
+			continue
+		}
+		words++
+		if !strings.HasPrefix(fields[0], "/") {
+			t.Errorf("mountPrep runs %q, resolved through PATH by the shell; "+
+				"name it absolutely as dhcpcdBin and unsharePath are\n---\n%s",
+				fields[0], prep)
+		}
+	}
+	// The loop body is a rule about command words that exist, so it is
+	// satisfied completely by there being none — which is what a
+	// mountPrep rewritten into a form this splitter cannot read would
+	// look like, and it would look green.
+	if words < 4 {
+		t.Errorf("found %d command words in mountPrep, want at least 4; either it stopped "+
+			"preparing a mount it used to prepare, or it is now written in a form this "+
+			"test cannot read and is checking less than it reports\n---\n%s", words, prep)
+	}
+}
+
+// TestMountPrep_DoesNotSwallowDiagnostics is the observer for the thing
+// that had none.
+//
+// Every command in mountPrep carried `2>/dev/null` from the day it was
+// written, and NOTHING in this package saw it. The literal pins in
+// TestMountPrep_RemountsProcSysRW are `strings.Contains` checks on
+// command-and-argument prefixes, so the redirection sat past the end of
+// every pin: adding it or removing it left the entire suite green. It
+// was removed on measurement, and this test exists so that removal is a
+// decision rather than a state that can revert unnoticed.
+//
+// WHAT IT COSTS TO SWALLOW IT, measured rather than argued. mountPrep's
+// four commands are separated by `;`, so a failure does not stop the
+// chain, and the `exec` that follows is unconditional, so the exit
+// status belongs to dhcpcd. Properties (1) and (2) — the private tmpfs
+// over the state and run directories — have no downstream observer at
+// all: if they do not land, dhcpcd runs correctly against the SHARED
+// directories, which is the collision mountPrep exists to prevent, and
+// reports nothing, because from dhcpcd's point of view nothing is
+// wrong. Only property (3) has a fallback, since dhcpcd fails loudly on
+// a blocked sysctl write.
+//
+// End to end, on the pinned base image: the shell inherits fd 2 from the
+// unshare process and `exec` keeps its descriptors, and NewDHCPClient
+// points that fd at io.MultiWriter(logrus-at-debug, the bounded stderr
+// tail). With the redirection the parent captured an empty string; with
+// it gone the parent captured `mount: can't find /proc/sys in
+// /proc/mounts`.
+//
+// This deliberately does NOT assert that the commands are fatal. The
+// remount at (3) legitimately fails under a --privileged runtime, where
+// /proc/sys is not a separate mount and is already writable, so `set -e`
+// would kill a client on a host that is fine. Audible, not fatal.
+func TestMountPrep_DoesNotSwallowDiagnostics(t *testing.T) {
+	prep := mountPrep()
+	for _, swallow := range []string{
+		"2>/dev/null",
+		"2> /dev/null",
+		"2>&-",
+	} {
+		if strings.Contains(prep, swallow) {
+			t.Errorf("mountPrep redirects a command's stderr away with %q. A failed tmpfs "+
+				"there is undetectable: the commands are `;`-separated so the chain "+
+				"continues, `exec` is unconditional so the exit status is dhcpcd's, and "+
+				"dhcpcd cannot tell it is using the shared state dir instead of a private "+
+				"one. Leave the diagnostic on fd 2, which NewDHCPClient already tees into "+
+				"the plugin log and the exit-error tail\n---\n%s", swallow, prep)
+		}
 	}
 }

@@ -45,22 +45,61 @@ FROM alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6ee
 # share one identity association). A silent regression here would land in
 # plugin builds without warning, so pin and bump deliberately. dhcpcd 10.x
 # is required (the per-interface model used here is removed in dhcpcd 11).
-# `sh`, `mount`, and `unshare` (per-client mount-namespace isolation of
-# dhcpcd's state dir) come from the base Alpine busybox.
+# `sh`, `mount`, `mkdir` and `unshare` (per-client mount-namespace
+# isolation of dhcpcd's state dir) come from the base Alpine busybox.
+# All four are asserted below; this sentence listed three of them and
+# omitted mkdir, which is the same off-by-one the assertion itself
+# carried.
 #
 # The `test -x` is not belt-and-braces. pkg/dhcp names dhcpcd by the
 # ABSOLUTE path /sbin/dhcpcd (#707) — a bare name would be resolved out
 # of PATH by the shell that execs it — so an Alpine bump that relocates
 # the binary would turn every lease into a "not found" at runtime,
-# discovered by a container, not by a build. TestDhcpcdBinMatchesDockerfile
-# keeps this line and that constant naming the same path.
+# discovered by a container, not by a build.
+#
+# THIS LIST IS NOT MAINTAINED BY HAND, and it is not allowed to be.
+# TestDockerfileGuaranteesEveryAbsoluteBinary derives the binaries
+# pkg/dhcp actually runs — from its exec sites, its argv literals and
+# the command words inside mountPrep's `sh -c` body — and compares that
+# set against the operands below, in both directions. Adding a binary to
+# the package without adding it here fails that test; asserting one here
+# that nothing runs fails it too.
+#
+# The list grew from three to five when the derivation replaced the
+# hand-written one, which is the reason it is derived now. mount and
+# mkdir were missed by the original audit, then sh and unshare were
+# missed by the audit that added mount and mkdir — three passes, each
+# looking at the words the previous one had happened to be looking at.
+# All five would break the per-client mount namespace, and until the
+# same change that derived this list they would have broken it SILENTLY:
+# every call in mountPrep carried 2>/dev/null. Their stderr now reaches
+# the plugin log.
+#
+# Separate `test -x` per path, not `test -x a b c`. The one-line form is
+# not a shorthand for them: busybox sh answers it
+# `sh: /bin/mount: unknown operand`, rc=2, whatever the files are.
+# Measured on this exact digest, all arguments present and executable
+# still exits 2 — it checks nothing and fails the build.
 RUN mkdir -p /run/docker/plugins /var/lib/net-dhcp && \
     apk add --no-cache \
         dhcpcd=10.3.2-r0 \
         iproute2=7.0.0-r0 && \
-    test -x /sbin/dhcpcd
+    test -x /sbin/dhcpcd && test -x /bin/mount && test -x /bin/mkdir && \
+    test -x /bin/sh && test -x /usr/bin/unshare
 
 COPY --from=builder /usr/local/src/docker-net-dhcp/bin/net-dhcp /usr/sbin/
 COPY --from=builder /usr/local/src/docker-net-dhcp/bin/dhcp-handler /usr/lib/net-dhcp/dhcp-handler
+
+# The handler is a binary this image runs, so it is asserted like the
+# rest — separately, because it arrives by COPY and cannot be checked
+# before the layer that creates it.
+#
+# It is dhcpcd's hook script (`-c <handler>`, pkg/dhcp.DefaultHandler),
+# executed on every lease event, and it is the one path where the
+# destination above and the constant naming it are two copies of one
+# fact. If they drift, dhcpcd reports the missing script per event and
+# the plugin sees no lease — a run-time failure from a build-time typo,
+# which is precisely what the assertions above exist to prevent.
+RUN test -x /usr/lib/net-dhcp/dhcp-handler
 
 ENTRYPOINT ["/usr/sbin/net-dhcp"]

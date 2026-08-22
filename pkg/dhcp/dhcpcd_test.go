@@ -5,8 +5,6 @@ package dhcp
 
 import (
 	"net"
-	"os"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -396,59 +394,5 @@ func TestRenderArgs_FamilyExclusive(t *testing.T) {
 	v6 := renderArgs(dhcpcdParams{Iface: "eth0", V6: true})
 	if !hasArg(v6, "-6") || hasArg(v6, "-4") {
 		t.Errorf("v6 args family flags wrong: %v", v6)
-	}
-}
-
-// TestDhcpcdBinMatchesDockerfile keeps the absolute path from becoming
-// two independent facts.
-//
-// dhcpcdBin names a path that only exists because the Dockerfile
-// installs it, and the Dockerfile asserts `test -x /sbin/dhcpcd` so an
-// Alpine relocation fails the build. Those are two copies of one
-// literal, and a fix that reaches one copy and not the other is this
-// repository's most repeated failure — the constant would keep pointing
-// at a path the build had stopped guaranteeing, and the first symptom
-// would be a container's first lease failing with "not found".
-//
-// This reads the real Dockerfile rather than a fixture, so there is
-// nothing to keep in sync. It fails loudly if the assertion line is
-// gone, because a parity test with nothing to compare against is the
-// green-over-an-empty-examination case.
-func TestDhcpcdBinMatchesDockerfile(t *testing.T) {
-	const marker = "test -x "
-
-	b, err := os.ReadFile(filepath.Join("..", "..", "Dockerfile"))
-	if err != nil {
-		t.Fatalf("reading Dockerfile: %v", err)
-	}
-
-	var paths []string
-	for _, line := range strings.Split(string(b), "\n") {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "#") {
-			continue
-		}
-		i := strings.Index(trimmed, marker)
-		if i < 0 {
-			continue
-		}
-		rest := strings.TrimSpace(trimmed[i+len(marker):])
-		rest = strings.TrimSuffix(rest, " && \\")
-		rest = strings.TrimSuffix(rest, "\\")
-		if f := strings.Fields(rest); len(f) > 0 && strings.Contains(f[0], "dhcpcd") {
-			paths = append(paths, f[0])
-		}
-	}
-
-	if len(paths) == 0 {
-		t.Fatalf("the Dockerfile no longer asserts `test -x <path-to-dhcpcd>`; "+
-			"nothing now guarantees %q exists in the image, and this test "+
-			"would otherwise pass having compared nothing", dhcpcdBin)
-	}
-	for _, p := range paths {
-		if p != dhcpcdBin {
-			t.Errorf("Dockerfile asserts %q but dhcpcdBin is %q; the two must "+
-				"name the same binary", p, dhcpcdBin)
-		}
 	}
 }

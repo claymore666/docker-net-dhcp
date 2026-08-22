@@ -207,6 +207,53 @@ func leaseDeadline(data dhcp.Info) (time.Duration, bool) {
 // verbatim, and it is the conventional encoding for "permanent".
 const maxOption51Seconds = 0xFFFFFFFF
 
+// noteDNSPropagationPIDMismatch counts a DNS propagation refused because
+// the PID it resolved turned out not to belong to the container it was
+// resolved for (#317).
+//
+// # THIS METHOD USED TO COVER BOTH REFUSALS, AND MUST NOT AGAIN
+//
+// It was written against a tree where the netns refusal was counted at
+// its call site in Start, and it took a `kind` so one predicate served
+// both. #731 then moved the netns count INSIDE openSandboxNetNS, at the
+// chokepoint a caller cannot bypass — the better placement, and for the
+// same reason given below. Neither change conflicted textually and both
+// were green on their own head; rebased together they counted one
+// refusal TWICE, and TestCountingWrappers_AreTheOnlyCallers is what
+// said so. If a second kind is ever wanted here, check first whether
+// the operation it guards already has an opener that can own it.
+//
+// The pairing lives here rather than at the call site for the reason
+// observeLease does. The site read:
+//
+//	if errors.Is(err, errPIDNotContainer) && m.plugin != nil {
+//		m.plugin.<counter>.Add(1)
+//	}
+//
+// three lines each, inside methods that need a live container and a
+// real netns to reach — so nothing could drive them, and deleting BOTH
+// Add(1) lines left `go test ./...` completely green. Meanwhile
+// container_netns_test.go:37 and :95 assert that the error still
+// carries errPIDNotContainer, with comments saying in writing that
+// they do it "so the counter can fire" and "or the mismatch is never
+// counted". The sentinel's survival was pinned deliberately, naming
+// the counter as the reason; the counter itself was pinned by nothing.
+//
+// That is the precondition asserted in place of the effect: whether
+// the plugin DECIDED a mismatch is not what an operator reads, and a
+// test whose message names an effect it does not assert is how a
+// counter ends up with no reader while looking guarded.
+//
+// The nil check is on plugin, not on the error: unit tests that do not
+// stand up a Plugin leave it nil (see dhcpManager.plugin), and the
+// refusal is still a refusal when there is no counter to bump.
+func (m *dhcpManager) noteDNSPropagationPIDMismatch(err error) {
+	if !errors.Is(err, errPIDNotContainer) || m.plugin == nil {
+		return
+	}
+	m.plugin.dnsPropagationPIDMismatches.Add(1)
+}
+
 // observeLease folds one client event into the tracker and counts the
 // clamp if there was one.
 //
@@ -780,9 +827,7 @@ func (m *dhcpManager) propagateDNS(v6 bool, info dhcp.Info) {
 	}
 
 	if err := writeContainerResolvConf(pid, ctrID, info.DNSServers, info.SearchList, info.Domain); err != nil {
-		if errors.Is(err, errPIDNotContainer) && m.plugin != nil {
-			m.plugin.dnsPropagationPIDMismatches.Add(1)
-		}
+		m.noteDNSPropagationPIDMismatch(err)
 		log.
 			WithError(err).
 			WithFields(m.logFields(v6)).

@@ -49,7 +49,7 @@ import (
 // `sh -c 'exec "$0" "$@"'` wrapper this code uses.
 //
 // The Dockerfile asserts the binary is there at build time, and
-// TestDhcpcdBinMatchesDockerfile asserts the two name the same path, so
+// TestDockerfileGuaranteesEveryAbsoluteBinary asserts the two name the same path, so
 // an Alpine relocation fails the build instead of failing a container's
 // first lease with "not found".
 const dhcpcdBin = "/sbin/dhcpcd"

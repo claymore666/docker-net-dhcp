@@ -233,6 +233,20 @@ if [ "${#untracked[@]}" -ne 0 ]; then
     printf '    %s\n' "${untracked[@]}"
 fi
 
+# No image is built here, so nothing in this lane executes a line of the
+# Dockerfile. Several gates READ it -- TestDockerfileGuaranteesEveryAbsoluteBinary
+# parses the binary path back out -- and reading it is not running it: a
+# `test -x a b c` parses fine, is rc=2 on busybox sh whatever the files
+# are, and turned this lane's own 50/0/0 into a Dockerfile that could
+# not build. Stated unconditionally rather than only when the file
+# changed, because deciding "changed" needs the base branch, which is
+# the guess check-coverage-floor.sh is exempted for above.
+echo
+echo "NOT BUILT — no container image is produced by this lane. Dockerfile lines are"
+echo "  parsed by some gates, executed by none. CI covers it on a pull request:"
+echo "  reproducible-build.yml and trivy.yml both fire on a Dockerfile path change,"
+echo "  and integration builds the image; \`make build\` runs it here."
+
 echo
 echo "Not run here, by declaration (scripts/local-lane.sh --list-exempt):"
 for e in "${OUT_OF_LANE[@]}"; do printf '  %s — %s\n' "${e%%|*}" "${e#*|}"; done
