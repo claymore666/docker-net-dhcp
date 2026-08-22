@@ -424,9 +424,36 @@ while read -r number; do
     # Written as JSON rather than two delimited values because a body is
     # multi-line arbitrary text — any hand-rolled framing here would be a
     # parser bug waiting to happen.
-    gh api "repos/$REPO/pulls/$number" \
-        --jq '{title: .title, body: (.body // "")}' > "$TMP/pr.$number" 2>/dev/null || continue
-    [ -s "$TMP/pr.$number" ] || continue
+    if ! gh api "repos/$REPO/pulls/$number" \
+            --jq '{title: .title, body: (.body // "")}' > "$TMP/pr.$number" 2>/dev/null ||
+       [ ! -s "$TMP/pr.$number" ]; then
+        # A 404 IS AN ANSWER; EVERY OTHER FAILURE IS NOT (#739).
+        #
+        # `|| continue` treated them alike, and the two are opposites
+        # here. A 404 means the ref was a closed issue rather than a PR,
+        # so it legitimately contributes nothing. A 403 secondary rate
+        # limit, a 5xx or a dropped connection means we did not find
+        # out — and because the planner recomputes desired state from
+        # scratch, a ref that contributes nothing becomes REMOVE in-dev
+        # on issues that are in dev. This lane runs 40-67 times a day
+        # and this repo has hit GitHub's secondary rate limiting before
+        # (see missing-runs.yml), so it is not a theoretical branch.
+        #
+        # Two places in this same file already reason about exactly this
+        # hazard and refuse; this was the third and it failed open.
+        #
+        # -i for the classification rather than for the whole call: the
+        # status line is only needed when something went wrong, and the
+        # happy path keeps its single --jq request.
+        status=$(gh api "repos/$REPO/pulls/$number" -i 2>/dev/null | awk 'NR == 1 { print $2 }')
+        if [ "$status" = "404" ]; then
+            continue
+        fi
+        echo "FAIL  could not read repos/$REPO/pulls/$number (HTTP ${status:-unknown})." >&2
+        echo "      A ref that cannot be read is not a ref that resolves to nothing." >&2
+        echo "      Continuing would plan REMOVE in-dev for issues that ARE in dev." >&2
+        exit 2
+    fi
     resolved=$((resolved + 1))
 done < "$TMP/unresolved"
 

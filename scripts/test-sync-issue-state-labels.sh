@@ -510,6 +510,91 @@ else
     echo "PASS: with no body to read, nothing earns in-dev"
 fi
 
+# --- the one hop, driven end to end against a stubbed gh (#739) ------
+#
+# --plan cannot reach this: the hop happens before a plan exists. So
+# these three cases run the whole script with a fake `gh` on PATH and a
+# throwaway repo supplying origin/main..origin/dev.
+#
+# It has to be an end-to-end case. The defect was one `|| continue`, and
+# no unit of this script owns it: the damage appears two stages later,
+# as the planner recomputing desired state from scratch and emitting
+# REMOVE for a ref it never managed to read.
+SYNC_ABS="$(cd "$(dirname "$SYNC")" && pwd)/$(basename "$SYNC")"
+
+# <want-not-in-output> is the planner's own line ("REMOVE 703 in-dev"),
+# not the bare word: the refusal message names REMOVE while explaining
+# what it is refusing to do, and matching that would pass for the wrong
+# reason.
+hop_case() { # hop_case <name> <pulls-status> <want-exit> <want-not-in-output>
+    local name="$1" status="$2" want_exit="$3" forbid="$4"
+    local dir got_exit
+    dir=$(mktemp -d)
+    mkdir -p "$dir/bin" "$dir/repo"
+
+    # The stub answers the three calls the script makes, and gives the
+    # PR lookup whatever status the case is about.
+    cat > "$dir/bin/gh" <<STUB
+#!/usr/bin/env bash
+case "\$*" in
+    *"issue list"*)  printf '%s' '[{"number":703,"labels":[{"name":"in-dev"}]}]' ;;
+    *"pr list"*)     printf '%s' '[]' ;;
+    *"pulls/712"*)
+        if [ "$status" = "200" ]; then
+            printf '%s' '{"title":"fix(dhcp): the boundary (#703)","body":""}'
+            exit 0
+        fi
+        # -i asks for the status line; the plain call just fails.
+        case "\$*" in
+            *-i*) printf 'HTTP/2.0 $status Something\n\n' ;;
+        esac
+        exit 1
+        ;;
+    *) printf '%s' '{}' ;;
+esac
+STUB
+    chmod +x "$dir/bin/gh"
+
+    (
+        cd "$dir/repo" || exit 2
+        git init -q .
+        git config user.email t@t; git config user.name t
+        git config commit.gpgsign false
+        printf 'x\n' > f; git add -A; git commit -qm "base"
+        git update-ref refs/remotes/origin/main HEAD
+        git commit -q --allow-empty -m "Merge pull request #712 from claymore666/fix/x"
+        git update-ref refs/remotes/origin/dev HEAD
+        PATH="$dir/bin:$PATH" GITHUB_REPOSITORY=owner/repo \
+            bash "$SYNC_ABS" --dry-run > "$dir/out" 2>&1
+        echo $?
+    ) > "$dir/rc" 2>/dev/null
+    got_exit=$(tail -1 "$dir/rc")
+
+    if [ "$got_exit" != "$want_exit" ]; then
+        echo "FAIL: $name (exit $got_exit, want $want_exit)"
+        sed 's/^/    /' "$dir/out" 2>/dev/null
+        failures=$((failures + 1))
+    elif [ -n "$forbid" ] && grep -q "$forbid" "$dir/out" 2>/dev/null; then
+        echo "FAIL: $name (output contained '"'"'$forbid'"'"')"
+        sed 's/^/    /' "$dir/out"
+        failures=$((failures + 1))
+    else
+        echo "PASS: $name"
+    fi
+    rm -rf "$dir"
+}
+
+# A 403 is the live shape: this lane runs 40-67 times a day and the repo
+# has hit secondary rate limiting before. It must stop, not strip.
+hop_case "a 403 on the hop stops the run instead of stripping in-dev" 403 2 "REMOVE 703"
+hop_case "a 5xx on the hop stops the run instead of stripping in-dev" 502 2 "REMOVE 703"
+
+# The negative control, and the reason this cannot just be "fail on any
+# error": a 404 is the ordinary answer for a ref that was a closed issue
+# rather than a PR. If this ever goes non-zero the gate has become a
+# daily false alarm and will be turned off.
+hop_case "a 404 on the hop is an answer, not a failure" 404 0 ""
+
 if [ "$failures" -ne 0 ]; then
     echo "$failures test(s) failed" >&2
     exit 1
