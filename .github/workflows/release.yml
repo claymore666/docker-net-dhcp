@@ -999,6 +999,12 @@ jobs:
   # Both arches promote here. They were separate before only because the
   # retag sat in whichever job had just pushed; nothing about `crane tag`
   # needs an arm64 host.
+  # KEEP THIS `needs:` ON ONE LINE. scripts/check-latest-promotion.sh reads
+  # a job's dependency list from the single line the key sits on, so a
+  # wrapped flow sequence makes it under-read and report that promotion is
+  # not behind gates it IS behind. That is a confusing red, not a silent
+  # green -- which is why this is a comment and not a change to the
+  # checker -- but the red names the wrong problem and costs an evening.
   promote-latest:
     needs: [release, release-arm64, verify-install, verify-install-arm64, verify-install-hub, verify-install-hub-arm64]
     runs-on: ubuntu-latest
@@ -1197,6 +1203,9 @@ jobs:
   # workflow, incl. verify-install, is green). Satisfies Scorecard
   # Signed-Releases: every tag (incl. rc dry-runs) produces a Release
   # carrying the cosign-signed checksum manifest (#163).
+  # One line here too -- not because the checker reads this job, but
+  # because a reformatter reaching for these two identical lines will
+  # take both, and only one of them says why it must not be wrapped.
   github-release:
     needs: [release, release-arm64, verify-install, verify-install-arm64, verify-install-hub, verify-install-hub-arm64]
     runs-on: ubuntu-latest
