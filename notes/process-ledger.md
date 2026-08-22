@@ -591,16 +591,33 @@ milestone 22 + code-review + lifecycle : 11    <- eleven, not ten
 the script whose whole job is catching magic numbers.** `sub_issues_
 summary.total > 0` removes it by shape instead.
 
-**Fourth instance of the day, in the fourth file, and the first that
-would have been shipped knowingly** — after `familyPairs` against a
-literal `6`, an AST table keyed on a name, and a `want` set that was a
-third copy of the thing it guarded (I17). The common property is not
-carelessness: every one was written by someone who had just been
-thinking about this exact class.
+**Five instances, five files, five authors, one night** — and the first
+that would have been shipped knowingly:
+
+1. `familyPairs()` checked against a literal `6`.
+2. An AST table keyed on a name rather than a field.
+3. `want` as a **third** copy of the set it guards (I17).
+4. This tripwire, transcribing the ten it exists to check.
+5. The test harness itself: a `gh` stub answered the history query with
+   a **pre-computed scalar**, so `verdict.sh`'s own jq never ran and p90
+   was indistinguishable from max *by construction* — a stub written
+   specifically to stop the suite mirroring the script, mirroring it at
+   exactly the call the change under test lived in.
+
+**The common property is not carelessness: every one was written by
+someone who had just been thinking about this exact class.** And the
+pattern across the five is sharper than that — **we spent the evening
+checking the code for mirrors and never checked the instruments.**
 
 **What deriving the subject buys, stated narrowly:** it widens what the
 check can *see*. It does not make it fire, and it does not replace the
-sequencing constraint. *(oversight, verified independently by client3)*
+sequencing constraint.
+
+> **A derived check that nobody runs is a transcribed check with better
+> provenance.**
+
+*(oversight, verified independently by client3; framing from
+master-release)*
 
 **Caveat that ships with it:** it reads labels and milestones, which are
 human artefacts — it derives the labels' state, not the code's. Strictly
