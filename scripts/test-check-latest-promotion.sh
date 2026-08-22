@@ -20,6 +20,10 @@
 #   - `noassert` — promotion NOT conditioned, but nothing asserts the rc
 #     left `:latest` alone. Must also fail. Without this case, deleting
 #     rule (4) from the checker would go unnoticed.
+#   - `norecency` — promotion correctly ordered, unconditional, aimed at
+#     a computed tag and asserted for rc-immutability, but with nothing
+#     stopping a dispatch of an OLDER tag. Rules (1)-(4) all pass on it.
+#     Must fail on rule (5) alone.
 #
 # MUTANT COVERAGE: the suite contains cases expecting exit 0, exit 1 and
 # exit 2, so a checker mutated to `exit 0` unconditionally fails the
@@ -122,6 +126,8 @@ jobs:
     needs: [release, release-arm64, verify-install, verify-install-arm64]
     runs-on: ubuntu-latest
     steps:
+      - name: Refuse to promote a floating tag backwards
+        run: bash scripts/assert-newest-release-tag.sh "${TAG}"
       - name: Promote the GHCR floating tags
         run: |
           crane tag "${GHCR_NAME}:${TAG}" "${LATEST}"
@@ -146,6 +152,25 @@ check "skipped: an rc exercises nothing" 1 "$TMP/skipped.yml" \
 sed '/Assert a pre-release did not move/,$d' "$TMP/fixed.yml" > "$TMP/noassert.yml"
 check "noassert: nothing proves an rc left :latest untouched" 1 "$TMP/noassert.yml" \
       "no prerelease-conditional step"
+
+# --- direction C: nothing stops a dispatch of an OLDER tag ------------
+# The promotion is ordered last, unconditional, aimed at a computed tag
+# and asserted for rc-immutability — every earlier rule passes. It is
+# simply pointed at the wrong release, which is what
+# `gh workflow run release.yml -f tag=v1.6.0` does, and what the
+# runbook offers as its recovery step for a failed release.
+sed '/Refuse to promote a floating tag backwards/,+1d' "$TMP/fixed.yml" \
+    > "$TMP/norecency.yml"
+check "norecency: an older tag could be promoted over a newer one" 1 \
+      "$TMP/norecency.yml" "assert-newest-release-tag.sh"
+
+# The recency call must be a STEP, not prose about one. Same trap as the
+# `commented` case below: this file explains rule (5) in comments that
+# name the script.
+sed 's|      - name: Refuse to promote a floating tag backwards|      # - name: Refuse to promote a floating tag backwards|; s|        run: bash scripts/assert-newest-release-tag.sh|        # run: bash scripts/assert-newest-release-tag.sh|' \
+    "$TMP/fixed.yml" > "$TMP/recency-commented.yml"
+check "a commented-out recency call does not count" 1 \
+      "$TMP/recency-commented.yml" "assert-newest-release-tag.sh"
 
 # --- transitive reach counts ------------------------------------------
 # promote-latest needs a job that needs verify-install*. A failed gate
@@ -181,6 +206,8 @@ jobs:
     needs: collect
     runs-on: ubuntu-latest
     steps:
+      - name: Refuse to promote a floating tag backwards
+        run: bash scripts/assert-newest-release-tag.sh "${TAG}"
       - run: crane tag "${GHCR_NAME}:${TAG}" "${LATEST}"
       - name: Assert a pre-release did not move :latest
         if: needs.release.outputs.prerelease == 'true'
@@ -220,6 +247,8 @@ jobs:
     needs: [verify-install, verify-install-arm64]
     runs-on: ubuntu-latest
     steps:
+      - name: Refuse to promote a floating tag backwards
+        run: bash scripts/assert-newest-release-tag.sh "${TAG}"
       - run: crane tag "${GHCR_NAME}:${TAG}" "${LATEST}"
       - name: Assert a pre-release did not move :latest
         if: needs.release.outputs.prerelease == 'true'

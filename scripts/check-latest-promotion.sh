@@ -36,6 +36,13 @@
 #      step. That is the rc-immutability assertion — the check that
 #      `:latest` really did not move — and without it (2) and (3) rest
 #      on reading an expression correctly rather than on evidence.
+#   5. The promotion job runs scripts/assert-newest-release-tag.sh.
+#      `crane tag` does not know what the floating tag currently points
+#      at, so a dispatch of an OLD tag moves `:latest` backwards — and
+#      the runbook offers exactly that dispatch as its recovery step for
+#      a failed release. Nothing about (1)-(4) stops it: the retag is
+#      correctly ordered, correctly unconditional and correctly aimed;
+#      it is just aimed at the wrong release.
 #
 # (2) and (4) point in opposite directions on purpose: (2) forbids the
 # promotion from being skipped on an rc, (4) requires the run to prove
@@ -76,6 +83,7 @@ fi
 #   cranetag   — a step running `crane tag`; detail is the destination
 #   crane_if   — a `crane tag` step whose own `if:` names prerelease
 #   pre_if     — any step in the job whose `if:` names prerelease
+#   recency    — a step running assert-newest-release-tag.sh
 #
 # Steps are buffered rather than scanned line by line, because the
 # question "is THIS retag conditional?" is about the step the line sits
@@ -85,6 +93,8 @@ scan() {
     function flush_step(   i, dest, has_crane, cond) {
         has_crane = 0; cond = 0; dest = ""
         for (i = 1; i <= sn; i++) {
+            if (sbuf[i] ~ /assert-newest-release-tag\.sh/)
+                printf "%s\t-\trecency\t%d\t-\n", job, sline[i]
             if (sbuf[i] ~ /crane[[:space:]]+tag/) {
                 has_crane = 1
                 if (dest == "") {
@@ -155,7 +165,7 @@ scan() {
     ' "$1"
 }
 
-declare -A NEEDS=() HAS_PRE_IF=()
+declare -A NEEDS=() HAS_PRE_IF=() HAS_RECENCY=()
 jobs=()
 crane_jobs=()
 crane_records=()
@@ -180,6 +190,9 @@ while IFS=$'\t' read -r job needs kind line detail; do
             ;;
         pre_if)
             HAS_PRE_IF["$job"]=1
+            ;;
+        recency)
+            HAS_RECENCY["$job"]=1
             ;;
     esac
 done < <(scan "$FILE")
@@ -254,6 +267,13 @@ for job in $(printf '%s\n' "${crane_jobs[@]}" | sort -u); do
     fi
 done
 
+# (5) the promotion job must also refuse to move the tag backwards.
+for job in $(printf '%s\n' "${crane_jobs[@]}" | sort -u); do
+    if [ -z "${HAS_RECENCY[$job]:-}" ]; then
+        findings+=("$job	0	promotes the floating tag without running assert-newest-release-tag.sh — a dispatch of an older tag would move it backwards, which is the runbook's own recovery step")
+    fi
+done
+
 if [ "${#findings[@]}" -ne 0 ]; then
     echo "::error title=Floating tag is promoted unsafely::the release workflow" \
          "moves ':latest' in a way #736 exists to prevent:" >&2
@@ -277,6 +297,7 @@ if [ "${#findings[@]}" -ne 0 ]; then
     echo "  promote-latest:" >&2
     echo "    needs: [release, release-arm64, verify-install, verify-install-arm64]" >&2
     echo "    steps:" >&2
+    echo "      - run: bash scripts/assert-newest-release-tag.sh \"\${TAG}\"" >&2
     echo "      - run: crane tag \"\${GHCR_NAME}:\${TAG}\" \"\${LATEST}\"" >&2
     echo "      - name: Assert a pre-release did not move :latest" >&2
     echo "        if: needs.release.outputs.prerelease == 'true'" >&2
@@ -288,5 +309,6 @@ if [ "${#findings[@]}" -ne 0 ]; then
 fi
 
 echo "OK: ${#crane_records[@]} floating-tag promotion step(s) in" \
-     "$(basename "$FILE"), all behind ${REQUIRED_GATES[*]}, all exercised by an rc."
+     "$(basename "$FILE"), all behind ${REQUIRED_GATES[*]}, all exercised by an" \
+     "rc, none able to move the tag backwards."
 exit 0

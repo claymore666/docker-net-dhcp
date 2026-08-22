@@ -762,11 +762,34 @@ jobs:
       PRERELEASE: ${{ needs.release.outputs.prerelease }}
 
     steps:
-      # Checked out only for go.mod — the toolchain version is pinned by
-      # the released tree rather than by a literal in this file.
+      # Checked out for go.mod — the toolchain version is pinned by the
+      # released tree rather than by a literal in this file — and for
+      # the tag list the recency guard below needs.
+      #
+      # fetch-depth: 0 is load-bearing, not tidiness. The default fetch
+      # brings one commit and NO tags, and a guard that cannot see the
+      # newer tag would report that none exists.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.release.outputs.ref }}
+          fetch-depth: 0
+
+      # Refuse before anything is touched. `crane tag ...:$TAG $LATEST`
+      # has no idea what the floating tag already points at, so
+      # `gh workflow run release.yml -f tag=v1.6.0` would move `:latest`
+      # BACK to v1.6.0 on both registries — and this workflow has no
+      # rollback, because rebuilding the plugin re-tars the rootfs
+      # non-reproducibly and orphans the previous signature.
+      #
+      # That dispatch is not a hypothetical: docs/release-runbook.md
+      # offers it as the recovery procedure for a failed release, in the
+      # same file that forbids moving `:latest` backwards. This is the
+      # executable end of that postmortem.
+      #
+      # It REFUSES rather than skips. A skip during an incident is not
+      # noticed, and an incident is exactly when this fires.
+      - name: Refuse to promote a floating tag backwards
+        run: bash scripts/assert-newest-release-tag.sh "${TAG}"
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
