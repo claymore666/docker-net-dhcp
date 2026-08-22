@@ -5,8 +5,10 @@ package plugin
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -14,6 +16,7 @@ import (
 	"sync"
 
 	log "github.com/sirupsen/logrus"
+	"golang.org/x/sys/unix"
 )
 
 // Request capture (#644).
@@ -209,27 +212,69 @@ func (s *captureState) capture(r *http.Request) {
 
 // writeBody writes one captured body at captureFileMode.
 //
-// The unlink is what makes the mode apply. os.WriteFile's mode argument
-// is O_CREATE's, so over a file that already exists it is ignored and
-// the old mode stands -- and these names DO recur: nextName's sequence
-// restarts at 0001 in every plugin process, so a second capture into
-// the same directory lands on the first capture's filenames. Removing
-// first means the file is always created, and a file that is always
-// created always carries the mode it was created with.
+// It never opens a file that already exists, and that is the whole
+// mechanism. os.WriteFile's mode argument is O_CREATE's, so over an
+// existing file it is ignored and the old mode stands -- and these
+// names DO recur: nextName's sequence restarts at 0001 in every plugin
+// process, so a second capture into the same directory lands on the
+// first capture's names. A file that is always created always carries
+// the mode it was created with.
 //
-// It also unlinks a symlink left at this name rather than writing
-// through it, since Remove removes the link and not its target. Worth
-// having, and not the reason for the call.
-//
-// A failed Remove is not reported: anything about it that matters to
-// the capture arrives as the WriteFile error immediately below, and
-// ErrNotExist -- every capture but a rerun into the same directory --
-// is not a failure at all.
+// The earlier version of this unlinked first and then wrote, which got
+// the same result by a SEQUENCE rather than by a property, and left one
+// silent hole: if the unlink failed and the write then SUCCEEDED over
+// the existing file, there was no error anywhere and the file kept its
+// old mode -- exactly the defect this exists to fix. Creating
+// exclusively removes the case instead of relying on the first call
+// having worked.
 func (s *captureState) writeBody(path string, body []byte) {
-	_ = os.Remove(path)
-	if err := os.WriteFile(path, body, captureFileMode); err != nil {
+	f, err := createCaptureFile(path)
+	if err != nil {
+		s.warn("could not write captured request", err)
+		return
+	}
+	if err := writeAndClose(f, body); err != nil {
 		s.warn("could not write captured request", err)
 	}
+}
+
+// createCaptureFile creates path at captureFileMode, replacing anything
+// already at that name -- but only ever by creating, never by opening
+// what is there.
+//
+// O_NOFOLLOW is not observable from the suite, and is here for the
+// window between the Remove and the retry rather than for anything a
+// test can reach: after ensureCaptureDir the only writers are root and
+// the directory's owner, who is the operator running
+// `make capture-fixtures`. It costs nothing and it means the flag says
+// what the function claims.
+func createCaptureFile(path string) (*os.File, error) {
+	const flags = os.O_WRONLY | os.O_CREATE | os.O_EXCL | unix.O_NOFOLLOW
+
+	f, err := os.OpenFile(path, flags, captureFileMode)
+	if !errors.Is(err, fs.ErrExist) {
+		return f, err
+	}
+
+	// The name is in use. Unlink it and create again: Remove takes the
+	// link and not its target, so a symlink at this name is removed
+	// rather than written through. A Remove that fails is REPORTED
+	// here, where the old shape let a successful write past it.
+	if err := os.Remove(path); err != nil {
+		return nil, err
+	}
+	return os.OpenFile(path, flags, captureFileMode)
+}
+
+// writeAndClose writes body and closes f, reporting the first failure.
+// A close error is a write error on a file whose data may not have
+// reached the filesystem, so it is not discarded.
+func writeAndClose(f *os.File, body []byte) error {
+	_, err := f.Write(body)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	return err
 }
 
 // ensureCaptureDir creates the capture directory and restricts it to its
@@ -241,6 +286,15 @@ func (s *captureState) writeBody(path string, body []byte) {
 // mkdirs CAPTURE_HOST_DIR before enabling the plugin, because a bind
 // source that does not yet exist fails `docker plugin enable` (#588) --
 // so the plugin is handed a directory made by someone else's umask.
+//
+// It tightens the directory and never its existing contents, which is
+// safe here and not in general: in the capture flow nothing writes into
+// that directory before the plugin runs. Makefile:451 is a bare
+// `mkdir -p`, and every other operation on it -- the `rm -rf`, the
+// `find`, the `cp` out of it -- lives in capture_one_flow, which runs
+// after enable-cover. A flow that did create files there first would
+// leave them at their own modes, and tightening them would be a
+// different change.
 func ensureCaptureDir(dir string) error {
 	if err := os.MkdirAll(dir, captureDirMode); err != nil {
 		return err

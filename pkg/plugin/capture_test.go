@@ -542,3 +542,57 @@ func TestCaptureHandler_UnwritableNameIsNotARequestFailure(t *testing.T) {
 		t.Fatalf("stat %s = (%v, %v), want it still a directory — the case did not exercise a write failure", blocked, fi, err)
 	}
 }
+
+// The comment on createCaptureFile claims a symlink at one of these
+// names is unlinked rather than written through. Nothing observed that
+// claim until this existed, which is the same shape as the modes
+// themselves: a property stated in prose and checked by nobody.
+//
+// Not a live vulnerability, and it is not dressed as one. After
+// ensureCaptureDir the only writers in that directory are root and its
+// owner, and the owner is the operator who ran `make capture-fixtures`.
+// This is defence in depth, and the test is here because the sentence
+// is here.
+func TestCaptureHandler_DoesNotWriteThroughASymlink(t *testing.T) {
+	dir := t.TempDir()
+	victim := filepath.Join(t.TempDir(), "victim")
+	const original = "do not overwrite me"
+	if err := os.WriteFile(victim, []byte(original), 0o644); err != nil {
+		t.Fatalf("seeding: %v", err)
+	}
+	name := filepath.Join(dir, "0001-NetworkDriver.Join.json")
+	if err := os.Symlink(victim, name); err != nil {
+		t.Fatalf("seeding: %v", err)
+	}
+
+	var got []string
+	h := captureHandler(bodyEcho(t, &got), dir, allRoutePaths())
+
+	const body = `{"EndpointID":"ep1"}`
+	post(h, "/NetworkDriver.Join", body)
+
+	if b, err := os.ReadFile(victim); err != nil || string(b) != original {
+		t.Errorf("victim = (%q, %v), want %q unchanged — the capture was written through the symlink",
+			b, err, original)
+	}
+
+	// And the capture still happened, into a real file at the restricted
+	// mode. A version that merely refused to follow the link would pass
+	// the assertion above while silently recording nothing.
+	fi, err := os.Lstat(name)
+	if err != nil {
+		t.Fatalf("lstat %s: %v", name, err)
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		t.Fatalf("%s is still a symlink — nothing was created in its place", name)
+	}
+	if !fi.Mode().IsRegular() {
+		t.Fatalf("%s is not a regular file (%v)", name, fi.Mode())
+	}
+	if perm := fi.Mode().Perm(); perm&0o077 != 0 {
+		t.Errorf("captured file mode = %04o, want no group or other bits (%04o)", perm, captureFileMode)
+	}
+	if b, err := os.ReadFile(name); err != nil || string(b) != body {
+		t.Errorf("captured %q (%v), want %q", b, err, body)
+	}
+}
