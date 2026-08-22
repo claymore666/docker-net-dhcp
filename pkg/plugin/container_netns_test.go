@@ -34,7 +34,8 @@ func TestOpenContainerNetNS_RefusesAPIDThatIsNotTheContainer(t *testing.T) {
 		t.Fatal("opened the network namespace of a PID that does not belong to the container")
 	}
 	if !errors.Is(err, errPIDNotContainer) {
-		t.Errorf("error must be errPIDNotContainer so the counter can fire, got: %v", err)
+		t.Errorf("error must be errPIDNotContainer, which is the cause netns_pid_mismatches keys off "+
+			"(the counter itself is asserted in TestOpenSandboxNetNS_CountsAPIDMismatch, not here), got: %v", err)
 	}
 	if ns.IsOpen() {
 		t.Errorf("a refused open must not return a live descriptor, got %v", ns)
@@ -92,7 +93,9 @@ func TestAwaitContainerNetNS_RefusalSurvivesTheDeadline(t *testing.T) {
 		t.Errorf("error must wrap context.DeadlineExceeded, got: %v", err)
 	}
 	if !errors.Is(err, errPIDNotContainer) {
-		t.Errorf("error must still carry errPIDNotContainer, or the mismatch is never counted: %v", err)
+		t.Errorf("error must still carry errPIDNotContainer through the deadline wrap, or the cause "+
+			"netns_pid_mismatches keys off is lost (the count itself is asserted in "+
+			"TestOpenSandboxNetNS_CountsAPIDMismatch): %v", err)
 	}
 	if !strings.Contains(err.Error(), "last attempt:") {
 		t.Errorf("error must carry the last attempt's cause (#317), got: %v", err)

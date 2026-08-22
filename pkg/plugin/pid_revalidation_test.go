@@ -95,7 +95,8 @@ func TestWriteContainerResolvConf_RefusesAPIDThatIsNotTheContainer(t *testing.T)
 		t.Fatal("expected a refusal: the plugin would have written resolv.conf into a process that is not the container")
 	}
 	if !errors.Is(err, errPIDNotContainer) {
-		t.Fatalf("refused for the wrong reason, so the counter would not fire: %v", err)
+		t.Fatalf("refused for the wrong reason: dns_propagation_pid_mismatches keys off this cause, and "+
+			"the count is asserted in TestPropagateDNS_CountsAPIDMismatch: %v", err)
 	}
 }
 

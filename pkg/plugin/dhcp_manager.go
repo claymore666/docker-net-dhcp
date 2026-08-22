@@ -1418,6 +1418,27 @@ func (p *joinPhases) total() time.Duration {
 	return time.Since(p.start)
 }
 
+// openSandboxNetNS opens the container's network namespace and counts a
+// PID-reuse refusal as netns_pid_mismatches.
+//
+// The count lives HERE, wrapped around the open, rather than at the call
+// site in Start, and that placement is the point: a caller cannot get
+// the namespace without going through this, so the counter cannot be
+// lost by a future path that opens the namespace and forgets to look
+// for the sentinel. It also makes the branch reachable from a unit test
+// -- Start needs Docker, netlink and a live namespace, and until this
+// existed nothing executed the increment at all. docs/reference.md says
+// this counter is the ONLY thing that distinguishes a PID-reuse refusal
+// from a slow container start, so an operator reads its zero as "did
+// not happen" (#731 review).
+func (m *dhcpManager) openSandboxNetNS(ctx context.Context, pid int, ctrID string, interval time.Duration) (netns.NsHandle, error) {
+	ns, err := awaitContainerNetNS(ctx, pid, ctrID, interval)
+	if errors.Is(err, errPIDNotContainer) && m.plugin != nil {
+		m.plugin.netnsPIDMismatches.Add(1)
+	}
+	return ns, err
+}
+
 func (m *dhcpManager) Start(ctx context.Context) (err error) {
 	phases := newJoinPhases()
 	defer func() {
@@ -1477,11 +1498,8 @@ func (m *dhcpManager) Start(ctx context.Context) (err error) {
 	// never through a /proc path rebuilt as a string, and never as a
 	// path handed onward to be resolved a second time. See
 	// openContainerNetNS.
-	m.nsHandle, err = awaitContainerNetNS(ctx, ctr.State.Pid, ctrID, pollTime)
+	m.nsHandle, err = m.openSandboxNetNS(ctx, ctr.State.Pid, ctrID, pollTime)
 	if err != nil {
-		if errors.Is(err, errPIDNotContainer) && m.plugin != nil {
-			m.plugin.netnsPIDMismatches.Add(1)
-		}
 		return fmt.Errorf("failed to get sandbox network namespace: %w", err)
 	}
 
