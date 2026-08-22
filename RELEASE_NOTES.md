@@ -518,13 +518,45 @@ v1.7.1^{commit}` returns `018a651`, and so does `origin/main`. The
 three agree only once the tag is dereferenced, and an invitation
 that fails under the command a reader will actually type is worse
 than no invitation.
-The one described below that is *not* older than this cycle is #729,
-which was introduced by one of the security fixes above. So they are, in the main, not this cycle's
-mistakes — they are what a second reader found in code that had already
-been reviewed once, by someone looking for a different kind of thing.
+
+Resolving the tag is only half of driving it. For five of the six the
+defect *is* the absence of a mechanism, so the fix's distinctive token
+being absent at `v1.7.1^{commit}` is the proof:
+
+| # | grep at `v1.7.1^{commit}` | what it shows |
+|---|---|---|
+| #720 | `spawnOrphanRelease` in `pkg/plugin/dhcp_manager.go` | called **unconditionally** at `:1335` on the Start-failed path; the fix guards it on `leaving` |
+| #721 | `rememberEndpoint` inside `recoverOneEndpoint` (`plugin.go:1261`) | the function exists and calls it **zero** times |
+| #722 | `Setpgid`, `SweepOrphans` | neither exists; `client.go:303` is a bare `exec.Command` |
+| #724 | `.Sync()`, `schemaVersion` in `pkg/plugin/state.go` | neither; the file writes with `os.Rename` at `:161` and `:224` |
+| #727 | `checkStoredOptions` | absent, while `CreateNetwork` at `:285` does validate — so validation was create-time only |
+| #728 | `net.ParseIP(event.Data.Gateway)` | absent; `event_builder.go:250`/`:252` assign the gateway unvalidated |
+
+**#721 is the one that shows why the others are not enough.** `git grep
+fingerprint` at the tag returns twenty hits in `plugin.go` and reads as
+*present, therefore not the defect* — which ends the investigation in
+the wrong direction. The defect is a missing **call at one site**, so
+the grep has to run inside `recoverOneEndpoint`'s body. A name-level
+grep answers a name-level question, and most of these defects are not
+name-level.
+
+Three of the ten are this cycle's rather than older: #729, introduced
+by one of the security fixes above, and #730 and #731, which are defects
+in code that ships here for the first time — see below. The other seven
+are what a second reader found in code that had already been reviewed
+once, by someone looking for a different kind of thing.
 
 The remaining three — #723, #730 and #731 — complete the ten, and ship
-in this release with the other seven.
+in this release with the other seven. Their ages differ, and the
+difference is drivable rather than asserted: `pkg/plugin/conflict_probe.go`
+exists at `v1.7.1^{commit}`, so **#723 predates the cycle**. Neither of
+the other two surfaces does — `git grep -c metrics v1.7.1^{commit} --
+pkg/plugin/` and the same query for the server-policy tokens both return
+nothing, while `LeasesObtained` returns hits at the tag and the policy
+tokens return five files on `dev`, so the absences are real rather than
+a mistyped path. **#730 lives in `/metrics` and #731 in the server-policy
+ladder, and both of those ship for the first time here** — a defect
+cannot be older than the code it lives in.
 
 The pass also recorded two structural notes that are not blockers and
 are not fixed here: `plugin.go` grew again this cycle and its three
@@ -1253,9 +1285,16 @@ option the older one never did. None of that was visible before.
     is a required status check whose "no issue" waiver matched an
     indented copy — and matched the gate's own failure text, so a run
     that quoted the rule satisfied it. (#758)
-  - Eight one-to-five-line correctness fixes across five workflows. Six
-    of the eight defects reproduced on inspection, two did not, and one
-    of those six had a third instance the issue had not listed. (#742)
+  - Eight one-to-five-line correctness fixes across five workflows
+    (`apk-pin-check`, `capture-fixtures`, `integration-arm64`,
+    `integration-hosted`, `test.yaml`). As recorded in `0279233`'s
+    commit message, six of the eight reports reproduced on inspection
+    and two did not — those two still carry a change, made for an
+    adjacent reason, which is why the fix count is eight and the defect
+    count is six. One of the six had a third instance the issue had not
+    listed. Those three are review judgements: they live in that message
+    and in #742, not in the tree, so they are checkable against a named
+    source rather than re-derivable from a diff. (#742)
   - Two detectors were mis-reporting at the time they were read. The
     label reconciler looked up unresolved references with a fallback
     that treated a rate limit, a 5xx and a dropped connection exactly
@@ -1263,8 +1302,15 @@ option the older one never did. None of that was visible before.
     planner recomputes desired state from scratch, a reference that
     contributes nothing becomes an instruction to strip `in-dev` from
     issues that are in dev. The other demanded a check-run GitHub never
-    creates, and had been red for 42% of its last 60 runs. (#739, #740)
-  - **The only new security gate in the release.** `allow-ghsas` in
+    creates, and had been red for 25 of the 60 runs preceding `c139419`
+    — 42%, in streaks. Naming the window matters: the same query over a
+    later 60 runs returns a different number and both are right. Since
+    the fix the last eight scheduled runs on `main` are green, the
+    oldest at `2026-08-22T17:30:27Z`, and every failure in the window
+    predates it — verified by execution rather than by merge, which is
+    the only thing that distinguishes a detector that was repaired from
+    one that was merged. (#739, #740)
+  - **The new gate on the dependency-advisory path.** `allow-ghsas` in
     `.github/dependency-review-config.yml` carried advisories that
     `.github/vuln-allowlist.txt` had already rejected, so
     dependency-review was *looser* than govulncheck: a pull request
@@ -1287,9 +1333,13 @@ option the older one never did. None of that was visible before.
   release that failed verification had already moved the tag every
   `docker plugin install` without a version follows; it is promoted last
   now. A dispatch input was expanded directly into a `run:` body in the
-  job that holds the signing identity. The guard that was supposed to
-  restrict dispatches matched a literal input name, so two workflows
-  were ungated by it. And a sparse checkout persists into the next
+  job that holds the signing identity — `${{ ... }}` is substituted
+  before bash parses the line, so validating it afterwards validates
+  nothing, and that job holds `id-token: write`. Values reach `run:`
+  through `env:` now, and `scripts/check-run-expansions.sh` fails a
+  workflow that goes back to interpolating one. The guard that was
+  supposed to restrict dispatches matched a literal input name, so two
+  workflows were ungated by it. And a sparse checkout persists into the next
   checkout at the same path, which would have run the docs deploy
   against a tree missing most of its files. (#736, #737, #738)
 - The documentation was read against what the code actually does rather
