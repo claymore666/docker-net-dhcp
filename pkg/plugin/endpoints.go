@@ -601,18 +601,32 @@ type HealthResponse struct {
 	// halves being derived from it.
 	LeasesObtained int32 `json:"leases_obtained"`
 	LeasesRenewed  int32 `json:"leases_renewed"`
-	// DHCPServerTierFallbacks counts acquisitions that fell through to a
-	// lower-priority entry of dhcp_servers because the preferred one did
-	// not answer (#111). Not Healthy-affecting — the endpoint still got
-	// an address; a steady rise is how a silently-dead primary shows up.
+	// DHCPServerTierFallbacks counts STEPS DOWN the dhcp_servers
+	// ladder: one per preferred entry that did not answer inside its
+	// slice of the budget and handed on to the next (#111). One
+	// acquisition against three silent preferred servers adds 2, not
+	// 1 — the counter measures how far down the list acquisition had
+	// to walk, which is the number worth having and is what the code
+	// has always produced. Three of the four places this was described
+	// said "acquisitions" instead, and #731 is that drift.
+	//
+	// Not healthy-affecting — the endpoint still got an address; a
+	// steady rise is how a silently-dead primary shows up.
 	DHCPServerTierFallbacks int32 `json:"dhcp_server_tier_fallbacks"`
 	// DHCPServerPolicyExhausted counts acquisitions abandoned because no
 	// server listed in dhcp_servers answered (#111). Not Healthy-
 	// affecting on its own: the acquisition failure it accompanies is
 	// already counted and already fails the operation.
 	DHCPServerPolicyExhausted int32 `json:"dhcp_server_policy_exhausted"`
-	DHCPTimeouts              int32 `json:"dhcp_timeouts"`
-	LeaseReleaseFailures      int32 `json:"lease_release_failures"`
+	// DHCPServerPolicyTimeouts counts dhcp_timeouts on endpoints whose
+	// renewal client is restricted to dhcp_servers (#731). A strict
+	// subset of DHCPTimeouts and NOT Healthy-affecting: every tick it
+	// counts is already counted there, and weighting one outage twice
+	// would make a policy-restricted endpoint look worse than an
+	// unrestricted one failing identically.
+	DHCPServerPolicyTimeouts int32 `json:"dhcp_server_policy_timeouts"`
+	DHCPTimeouts             int32 `json:"dhcp_timeouts"`
+	LeaseReleaseFailures     int32 `json:"lease_release_failures"`
 	// NAKsReceived counts server NAKs on renewal/rebind. Not
 	// Healthy-affecting on its own — dhcpcd recovers by
 	// re-DISCOVERing — but each NAK-triggered re-bind widens the
@@ -812,6 +826,7 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		LeasesRenewed:                leasesRenewedV4 + leasesRenewedV6,
 		DHCPServerTierFallbacks:      p.dhcpServerTierFallbacks.Load(),
 		DHCPServerPolicyExhausted:    p.dhcpServerPolicyExhausted.Load(),
+		DHCPServerPolicyTimeouts:     p.dhcpServerPolicyTimeouts.Load(),
 		DHCPTimeouts:                 dhcpTimeoutsV4 + dhcpTimeoutsV6,
 		LeaseReleaseFailures:         leaseReleaseFailuresV4 + leaseReleaseFailuresV6,
 		NAKsReceived:                 naksReceivedV4 + naksReceivedV6,

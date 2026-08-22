@@ -197,6 +197,51 @@ type acquisitionAttempt struct {
 	Budget time.Duration
 }
 
+// minAttemptBudget is the smallest slice of the acquisition budget one
+// attempt may be given.
+//
+// This is a POLICY CHOICE, not a measurement, and saying so is the
+// point: nothing here has timed a dhcpcd spawn on the hosts this runs
+// on. What it encodes is that an attempt costs an unshare, a process
+// spawn, FIFO setup and a DHCP round trip before it can succeed, so
+// below some slice an attempt cannot answer the question it was given
+// and the ladder is spending the budget on nothing.
+//
+// The number is the adjustable part. The guarantee is not: no attempt
+// is ever handed less than this AS LONG AS THE BUDGET CAN FUND ONE
+// ATTEMPT, and TestAcquisitionAttempts_NoAttemptIsStarved pins that
+// rather than pinning 3s.
+//
+// That qualifier is load-bearing and it is not a gap. lease_timeout is
+// operator-settable with no validated minimum, so a total below this
+// floor is reachable, and no arrangement of the ladder can pay for a
+// full attempt out of it. What the ladder owes there is to spend the
+// whole of a too-small budget on ONE question rather than shred it
+// across the list -- the honest failure instead of the guaranteed one.
+// Said the other way round: the ladder never starves an attempt it
+// could have funded.
+const minAttemptBudget = 3 * time.Second
+
+// packTiers folds a tier list down to n attempts by merging the tail
+// into the last one. The first n-1 keep their own attempt and so keep
+// strict ordering; everything after is asked as a single group.
+//
+// Merging the TAIL and not the head is the whole design: the operator
+// wrote the list in preference order, so the entries that lose their
+// individual attempt must be the ones they cared about least.
+func packTiers(tiers [][]string, n int) [][]string {
+	if n < 1 || len(tiers) <= n {
+		return tiers
+	}
+	out := make([][]string, 0, n)
+	out = append(out, tiers[:n-1]...)
+	tail := make([]string, 0, len(tiers)-n+1)
+	for _, t := range tiers[n-1:] {
+		tail = append(tail, t...)
+	}
+	return append(out, tail)
+}
+
 // acquisitionAttempts expands a policy into the ordered attempts the
 // initial acquisition should make within total.
 //
@@ -216,7 +261,53 @@ func acquisitionAttempts(pol serverPolicy, v6 bool, total time.Duration) []acqui
 		return []acquisitionAttempt{{Deny: denyForFamily(pol, v6), Budget: total}}
 	}
 
+	// The number of ATTEMPTS the budget can pay for, which is not the
+	// same as the number of servers named.
+	//
+	// Dividing total by the list length with no floor is what #731
+	// found: every attempt is a full dhcp.NewDHCPClient -- an unshare,
+	// a dhcpcd spawn, FIFO setup, then a DHCP round trip -- so a slice
+	// too small to hold one exchange is not a fast attempt, it is a
+	// guaranteed failure. Six preferred servers bought 1.66s each and
+	// twenty bought 500ms, which made an operator's careful ordering
+	// FAIL where naming nothing would have succeeded. An option that
+	// gets worse the more carefully it is filled in is not an option.
+	//
+	// Packing rather than refusing or overrunning. A per-tier floor
+	// would extend total and break the property this ladder is built
+	// on -- a preference list must never make `docker run` slower than
+	// it is today (#403, #417). Capping the LIST at validation time
+	// would refuse a legitimate configuration for an implementation
+	// reason. Instead the tail shares one attempt: dhcpcd's whitelist
+	// takes several servers, so [a] [b] [c d e ... t] tries the top
+	// preferences in strict order and asks the rest as a group.
+	//
+	// What degrades is strict ordering WITHIN the last attempt, and
+	// only once the list outgrows the budget. What does not degrade is
+	// the total, or the guarantee that every attempt gets enough time
+	// to be a real question.
 	tiers := pol.tiers()
+	// BELOW THE FLOOR, COLLAPSE TO ONE -- do not fall through.
+	//
+	// int(total / minAttemptBudget) is 0 when the budget cannot fund a
+	// single attempt, and a guard of `>= 1` then skips the packing
+	// entirely, dividing the budget across the whole list exactly as
+	// the code #731 was filed against did. Twenty servers on a 1.5s
+	// lease_timeout took 75ms each -- worse than the 500ms the issue
+	// named as a guaranteed failure -- and it reached that by way of
+	// the fix.
+	//
+	// A budget too small for one attempt cannot be rescued; what it
+	// can be is spent once. One question with the whole 1.5s can be
+	// answered by a fast server, twenty questions of 75ms cannot be
+	// answered by anything.
+	maxAttempts := int(total / minAttemptBudget)
+	if maxAttempts < 1 {
+		maxAttempts = 1
+	}
+	if len(tiers) > maxAttempts {
+		tiers = packTiers(tiers, maxAttempts)
+	}
 	// Integer division deliberately: the remainder is dropped rather
 	// than handed to the last tier, so the sum of the slices can only
 	// be <= total.
@@ -256,6 +347,14 @@ func policyRestricted(attempts []acquisitionAttempt) bool {
 	return false
 }
 
+// dhcpGetIP indirects the one-shot acquisition, in the same shape and
+// for the same reason as the netlink seam: the ladder below could not
+// be tested at all otherwise, because every attempt spawns dhcpcd in a
+// new namespace. That left the counter semantics #731 found -- one
+// bump per STEP down the ladder, not one per acquisition -- described
+// in four places, wrong in three, and pinned by nothing.
+var dhcpGetIP = dhcp.GetIP
+
 // acquireWithPolicy runs one initial DHCP acquisition through the
 // network's server-preference ladder and returns the first lease won.
 //
@@ -292,7 +391,7 @@ func (p *Plugin) acquireWithPolicy(
 		clientOpts.DenyServers = attempt.Deny
 
 		attemptCtx, cancel := context.WithTimeout(ctx, attempt.Budget)
-		info, lastErr = dhcp.GetIP(attemptCtx, iface, &clientOpts)
+		info, lastErr = dhcpGetIP(attemptCtx, iface, &clientOpts)
 		cancel()
 		if lastErr == nil {
 			return info, nil

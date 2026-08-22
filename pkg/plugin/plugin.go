@@ -689,6 +689,27 @@ type Plugin struct {
 	// broken, and the two look identical in a timeout log.
 	dhcpServerPolicyExhausted atomic.Int32
 
+	// dhcpServerPolicyTimeouts counts outage ticks on endpoints whose
+	// RENEWAL client is restricted to an operator-named dhcp_servers
+	// allow-list (#731). The exhausted counter above is the acquisition
+	// half and cannot cover this one: nothing is exhausted at renewal,
+	// because the persistent client has no ladder to walk. It holds one
+	// whitelist and simply gets no answers, so the only visible symptom
+	// is a dhcp_timeouts tick indistinguishable from a real outage.
+	//
+	// A strict subset of dhcpTimeouts, deliberately: the two rising
+	// together says the allow-list is the cause, dhcpTimeouts rising
+	// alone says it is not.
+	//
+	// Not healthy-affecting: every tick it counts is already counted by
+	// dhcpTimeouts, and weighting one outage twice would make a
+	// policy-restricted endpoint look worse than an unrestricted one
+	// failing in exactly the same way.
+	//
+	// Not family-split: the allow-list is applied to v4 only (see
+	// setupClient), so a v6 sibling would be a permanent zero.
+	dhcpServerPolicyTimeouts atomic.Int32
+
 	// restartLinkUpWaited counts child links that came up only after
 	// waiting out the departing link's hold on the address — the #408
 	// window actually arising and the fix carrying the restart.
