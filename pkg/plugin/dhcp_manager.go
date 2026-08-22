@@ -956,6 +956,51 @@ func bumpFamily(total, v6Counter *atomic.Int32, v6 bool) {
 	}
 }
 
+// clientServerLists returns the allow/deny lists the persistent client
+// for this family is started under.
+//
+// Both dhcp_servers directives are v4-only, and this is the single
+// place that is decided (#111). Split out of setupClient so the rule
+// can be asserted directly: dhcp_server_policy_timeouts is deliberately
+// not family-split, and the reason it can be is that a v6 client is
+// never restricted. That premise lived in a comment beside a two-line
+// `if`, which is exactly the shape of thing this project has now twice
+// found to be wrong in prose while right in code, and once the other
+// way round.
+func clientServerLists(pol serverPolicy, v6 bool) (allow, deny []string) {
+	if v6 {
+		return nil, nil
+	}
+	return pol.allowList(), pol.denyList()
+}
+
+// countOutageTick records one watchdog outage tick.
+//
+// Split out of the goroutine in setupClient so the accounting can be
+// exercised without a live dhcpcd. The whole meaning of
+// dhcp_server_policy_timeouts is a relationship to dhcp_timeouts --
+// strict subset -- and a relationship between two counters is not a
+// thing a comment can hold: it has to be written by one function that a
+// test can call twice.
+func (m *dhcpManager) countOutageTick(v6, policyRestricted bool) {
+	bumpFamily(&m.plugin.dhcpTimeouts, &m.plugin.dhcpTimeoutsV6, v6)
+	if !policyRestricted {
+		return
+	}
+	// The renewal half of #731. dhcp_server_policy_exhausted covers the
+	// acquisition half only: acquireWithPolicy walks a ladder and can
+	// run off the end of it, while this client holds one whitelist and
+	// simply gets no answers. Without this, an allow-list that has gone
+	// stale -- the named server renumbered, retired or firewalled -- is
+	// indistinguishable from the DHCP server being down.
+	//
+	// NOT healthy-affecting, and the subset relationship is why: this
+	// tick was already counted above, and counting one outage twice
+	// would weight a policy-restricted endpoint worse than an
+	// unrestricted one failing in exactly the same way.
+	m.plugin.dhcpServerPolicyTimeouts.Add(1)
+}
+
 func (m *dhcpManager) handleEvent(event dhcp.Event, v6 bool) {
 	// The hook process already dropped these; all that is left here is
 	// to make the drop visible. Counted for every event type, including
@@ -1081,10 +1126,15 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 	if err != nil {
 		return nil, fmt.Errorf("invalid persisted DHCP server policy: %w", err)
 	}
-	var allowServers, denyServers []string
-	if !v6 {
-		allowServers, denyServers = pol.allowList(), pol.denyList()
-	}
+	allowServers, denyServers := clientServerLists(pol, v6)
+
+	// Whether THIS client is restricted to an operator-named server
+	// list. Captured here rather than re-resolved in the watchdog
+	// goroutine below, which outlives these locals: a second
+	// resolveServerPolicy could disagree with what the client was
+	// actually started with, and then the counter would describe a
+	// policy that is not in force.
+	policyRestricted := len(allowServers) > 0
 
 	client, err := dhcp.NewDHCPClient(m.ctrLink.Attrs().Name, &dhcp.DHCPClientOptions{
 		Hostname:     m.hostname,
@@ -1145,7 +1195,7 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 			case <-ticker.C:
 				if count, silentLapse := tracker.due(time.Now(), outageGrace); count {
 					if m.plugin != nil {
-						bumpFamily(&m.plugin.dhcpTimeouts, &m.plugin.dhcpTimeoutsV6, v6)
+						m.countOutageTick(v6, policyRestricted)
 					}
 					msg := "DHCP server still unreachable; lease not (re)acquired"
 					if silentLapse {

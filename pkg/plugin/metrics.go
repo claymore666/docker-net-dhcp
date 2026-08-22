@@ -100,6 +100,7 @@ func metricDefs() []metricDef {
 		// Server selection (#111).
 		{name: "dhcp_server_tier_fallbacks", counter: true, help: "Steps down the dhcp_servers ladder: one per preferred entry that did not answer inside its slice of the budget and handed on to the next. One acquisition against three silent preferred servers adds 2, not 1. The only outside signal that a preferred server is silently dead.", field: "dhcp_server_tier_fallbacks"},
 		{name: "dhcp_server_policy_exhausted", counter: true, help: "Acquisitions abandoned because no server listed in dhcp_servers answered.", field: "dhcp_server_policy_exhausted"},
+		{name: "dhcp_server_policy_timeouts", counter: true, help: "dhcp_timeouts on endpoints whose renewal client is restricted to dhcp_servers.", field: "dhcp_server_policy_timeouts"},
 
 		// Post-restart recovery.
 		{name: "recovered_ok", counter: true, help: "Endpoints whose renewal client was rebuilt after a plugin restart.", field: "recovered_ok"},
