@@ -514,12 +514,15 @@ the endpoint you asked for.
 
 Two things to know before building dashboards:
 
-- **`family="ipv4"` is derived.** Six counters carry a `family` label,
-  and in the JSON the unsuffixed counter is the v4+v6 *total* while the
-  `_v6` one is a subset of it (#212). The metrics view computes the v4
-  share as `total - v6`, which is what a `family` label ought to mean —
-  so the JSON `leases_obtained` will not equal the `family="ipv4"`
-  series, and that is correct rather than a bug.
+- **Both `family` series are stored, and the JSON total is their sum.**
+  Six counters carry a `family` label (#212). Each has a `_v4` and a
+  `_v6` field in `/Plugin.Health`, and the unsuffixed counter is
+  `_v4 + _v6` — so the JSON `leases_obtained` will not equal the
+  `family="ipv4"` series, and that is correct rather than a bug. An
+  earlier cut of this release derived the v4 share as `total - v6`
+  instead; subtracting two independently updated counters can read
+  below the previous scrape, which Prometheus treats as a reset (#730).
+  If you reconstruct the v4 share in a query, prefer the `_v4` field.
 - **Counter resets are visible.** `net_dhcp_build_info` carries the
   plugin's `instance_id` as a label, so a plugin restart appears as a
   new series rather than as a counter that silently rewound.

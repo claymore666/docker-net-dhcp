@@ -164,8 +164,8 @@ func TestApplyAddressChange_NoOpWithoutAChange(t *testing.T) {
 		if err := m.applyAddressChange(true, other); err != nil {
 			t.Fatalf("applyAddressChange: %v", err)
 		}
-		if got := m.plugin.leaseChanged.Load(); got != 0 {
-			t.Errorf("leaseChanged = %d, want 0 (a first v6 bind is not a change)", got)
+		if got := m.plugin.leaseChangedV4.Load(); got != 0 {
+			t.Errorf("leaseChangedV4 = %d, want 0 (a first v6 bind is not a change)", got)
 		}
 	})
 }

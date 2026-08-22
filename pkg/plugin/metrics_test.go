@@ -23,11 +23,14 @@ import (
 // in metricDefs must show up in the golden diff as a number, not as a 0
 // that reads like an untouched counter.
 //
-// Values descend with field index so that every v4+v6 aggregate — all of
-// which are declared before their _v6 siblings — is larger than its
-// sibling, mirroring the real invariant that the aggregate counts both
-// families. assertFixtureIsNotDegenerate enforces that rather than
-// trusting the declaration order to stay put.
+// Values descend with field index, which makes them distinct without
+// anyone maintaining a list. Since #730 the family aggregate is no
+// longer rendered as a series of its own — the two stored halves are —
+// so what the fixture has to guarantee is that the aggregate, the v4
+// half and the v6 half read as three DIFFERENT numbers, or a def that
+// named the wrong one of the three would render identically.
+// assertFixtureIsNotDegenerate enforces that rather than trusting the
+// declaration order to stay put.
 func fixtureSnapshot(t *testing.T) HealthResponse {
 	t.Helper()
 	var h HealthResponse
@@ -53,14 +56,18 @@ func fixtureSnapshot(t *testing.T) HealthResponse {
 	return h
 }
 
-// assertFixtureIsNotDegenerate fails if any aggregate is not strictly
-// greater than its _v6 sibling.
+// assertFixtureIsNotDegenerate fails if a family metric's three tags —
+// aggregate, v4 half, v6 half — do not hold three distinct non-zero
+// values.
 //
-// Without this, reordering HealthResponse could silently make an
-// aggregate smaller than its sibling; familySplit would then clamp the
-// ipv4 series to 0, the golden file would be regenerated to match, and
-// the test that is supposed to prove the derivation works would be
-// asserting that it does nothing.
+// Distinctness is what gives the golden file its power here. The two
+// labelled series are now READ from stored halves rather than derived
+// (#730), so the mis-wirings worth catching are a def whose v4field
+// names the aggregate (the pre-#730 double-count), or one whose v4field
+// and v6field name the same tag. Both make two numbers equal, and with
+// distinct fixture values both move the golden. If the fixture ever
+// stops distinguishing them, the golden would pass over the mis-wiring
+// and prove nothing.
 func assertFixtureIsNotDegenerate(t *testing.T, h HealthResponse) {
 	t.Helper()
 	byTag := healthFieldsByTag(h)
@@ -68,18 +75,21 @@ func assertFixtureIsNotDegenerate(t *testing.T, h HealthResponse) {
 		if d.v6field == "" {
 			continue
 		}
-		total, err := strconv.Atoi(byTag[d.field])
-		if err != nil {
-			t.Fatalf("%s: aggregate %q not numeric: %v", d.name, d.field, err)
-		}
-		v6, err := strconv.Atoi(byTag[d.v6field])
-		if err != nil {
-			t.Fatalf("%s: sibling %q not numeric: %v", d.name, d.v6field, err)
-		}
-		if total <= v6 {
-			t.Fatalf("degenerate fixture: %s aggregate (%d) is not greater than %s (%d); "+
-				"the ipv4 series would clamp to zero and the golden file would stop proving the derivation",
-				d.field, total, d.v6field, v6)
+		seen := make(map[int]string, 3)
+		for _, tag := range []string{d.field, d.v4field, d.v6field} {
+			n, err := strconv.Atoi(byTag[tag])
+			if err != nil {
+				t.Fatalf("%s: %q not numeric: %v", d.name, tag, err)
+			}
+			if n == 0 {
+				t.Fatalf("degenerate fixture: %s reads 0, so the golden could not tell a "+
+					"missing series from an idle counter", tag)
+			}
+			if prev, dup := seen[n]; dup {
+				t.Fatalf("degenerate fixture: %s and %s both read %d; a def that wired one "+
+					"of them to the other's tag would not move the golden", prev, tag, n)
+			}
+			seen[n] = tag
 		}
 	}
 }
@@ -106,6 +116,9 @@ func TestMetrics_EveryHealthFieldIsExposed(t *testing.T) {
 	}
 	for _, d := range metricDefs() {
 		claim(d.field, d.name, t)
+		if d.v4field != "" {
+			claim(d.v4field, d.name+"{family=ipv4}", t)
+		}
 		if d.v6field != "" {
 			claim(d.v6field, d.name+"{family=ipv6}", t)
 		}
@@ -163,19 +176,81 @@ func TestMetrics_GoldenExposition(t *testing.T) {
 	}
 }
 
-// TestMetrics_FamilySplitDerivesIPv4 checks the derivation in the
-// direction an operator relies on: a v6-only event must not appear in the
-// ipv4 series.
+// TestMetrics_NoSeriesRendersNegative is what survives of
+// TestMetrics_FamilySplitClampsRatherThanEmitNegative (#730).
 //
-// This is the case that catches the tempting wrong implementation —
-// rendering the aggregate straight into family="ipv4" — which would
+// That test pinned two things. Half of it — that a family series clamps
+// to 0 when the aggregate reads below its v6 sibling — describes a
+// mechanism this change deletes; there is no aggregate counter left to
+// read low. The other half is still a live promise and is kept here: no
+// counter this plugin renders may be negative, because no scraper will
+// take one.
+//
+// The input is deliberately the old test's: an aggregate SMALLER than
+// its v6 half. Under the current renderer that combination is simply
+// not consulted — the ipv4 series is the stored v4 field — so it is
+// harmless. It stops being harmless the moment someone reintroduces
+// aggregate-minus-v6, which is precisely what this asserts against.
+// Mutating writeExposition back to a subtraction makes this test emit
+// -4 and fail; that is the mutant it was written to kill.
+func TestMetrics_NoSeriesRendersNegative(t *testing.T) {
+	hostile := HealthResponse{LeasesObtained: 1, LeasesObtainedV6: 5}
+	for _, tc := range []struct {
+		name string
+		h    HealthResponse
+	}{
+		{"a v6 half above the aggregate", hostile},
+		{"the full fixture", fixtureSnapshot(t)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			if err := writeExposition(&buf, tc.h); err != nil {
+				t.Fatalf("writeExposition: %v", err)
+			}
+			checked := 0
+			for _, line := range strings.Split(buf.String(), "\n") {
+				if line == "" || strings.HasPrefix(line, "#") {
+					continue
+				}
+				sp := strings.LastIndex(line, " ")
+				if sp < 0 {
+					t.Errorf("malformed series line: %q", line)
+					continue
+				}
+				v, err := strconv.ParseFloat(line[sp+1:], 64)
+				if err != nil {
+					t.Errorf("series value in %q is not a number: %v", line, err)
+					continue
+				}
+				checked++
+				if v < 0 {
+					t.Errorf("negative counter, which no scraper will accept: %s", line)
+				}
+			}
+			// Without this the loop passes by having read nothing —
+			// an empty render would look exactly like a clean one.
+			if checked < 20 {
+				t.Fatalf("only %d series values inspected; the exposition did not render", checked)
+			}
+		})
+	}
+}
+
+// TestMetrics_FamilySeriesReadTheStoredHalves checks the property an
+// operator relies on: each family series carries that family's own
+// count and nothing else.
+//
+// It replaces TestMetrics_FamilySplitDerivesIPv4, which checked that
+// aggregate-minus-v6 landed in the ipv4 series. That subtraction is
+// gone (#730). The wrong implementation it guarded against is still
+// worth guarding: rendering the AGGREGATE into family="ipv4" would
 // double-count every v6 event and inflate a v4 dashboard nobody would
-// think to doubt.
-func TestMetrics_FamilySplitDerivesIPv4(t *testing.T) {
-	// Six v6 acquisitions and nothing else: bumpFamily bumps the
-	// aggregate on every event and the sibling on v6 ones, so both read
-	// 6 and the v4 share is zero.
-	h := HealthResponse{LeasesObtained: 6, LeasesObtainedV6: 6}
+// think to doubt. The aggregate here is deliberately not the sum of the
+// halves, so a renderer that reads it produces a number that appears in
+// neither expectation.
+func TestMetrics_FamilySeriesReadTheStoredHalves(t *testing.T) {
+	// v6-only traffic: the v4 half never moved.
+	h := HealthResponse{LeasesObtained: 6, LeasesObtainedV4: 0, LeasesObtainedV6: 6}
 	var buf bytes.Buffer
 	if err := writeExposition(&buf, h); err != nil {
 		t.Fatalf("writeExposition: %v", err)
@@ -191,40 +266,173 @@ func TestMetrics_FamilySplitDerivesIPv4(t *testing.T) {
 		t.Errorf("missing %q in:\n%s", wantV6, out)
 	}
 
-	// And the mixed case, so the test is not satisfied by a renderer
-	// that always emits zero.
-	h = HealthResponse{LeasesObtained: 10, LeasesObtainedV6: 4}
+	// Mixed, with three distinct numbers: a renderer that emitted the
+	// aggregate, or the wrong half, or a constant zero, fails one of
+	// these. 99 is not 6+4 precisely so that reading it stands out.
+	h = HealthResponse{LeasesObtained: 99, LeasesObtainedV4: 6, LeasesObtainedV6: 4}
 	buf.Reset()
 	if err := writeExposition(&buf, h); err != nil {
 		t.Fatalf("writeExposition: %v", err)
 	}
-	if want := `net_dhcp_leases_obtained_total{family="ipv4"} 6`; !strings.Contains(buf.String(), want) {
-		t.Errorf("want %q in:\n%s", want, buf.String())
+	out = buf.String()
+	for _, want := range []string{
+		`net_dhcp_leases_obtained_total{family="ipv4"} 6`,
+		`net_dhcp_leases_obtained_total{family="ipv6"} 4`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("want %q in:\n%s", want, out)
+		}
+	}
+	// The aggregate is claimed by the def but must not be emitted as a
+	// bare series; if it were, it would be a third number for the same
+	// counter and a dashboard summing the labels would double.
+	if bare := "\nnet_dhcp_leases_obtained_total 99\n"; strings.Contains(out, bare) {
+		t.Errorf("aggregate emitted as its own series; the two labelled series carry it:\n%s", out)
 	}
 }
 
-// TestMetrics_FamilySplitClampsRatherThanEmitNegative pins what happens
-// when the aggregate is smaller than its v6 sibling.
+// TestMetrics_FamilySeriesCannotGoBackwards is the regression test for
+// #730, written against the interleaving that produced the defect.
 //
-// That state is a bug in the counter bumps, not a legal reading. But a
-// negative counter is not valid exposition, and a scrape that fails to
-// parse loses every OTHER metric in the payload — turning one broken
-// counter into total blindness. Clamping keeps the rest of the surface
-// arriving. This test exists so the choice is recorded rather than
-// discovered.
-func TestMetrics_FamilySplitClampsRatherThanEmitNegative(t *testing.T) {
-	h := HealthResponse{LeasesObtained: 1, LeasesObtainedV6: 5}
-	var buf bytes.Buffer
-	if err := writeExposition(&buf, h); err != nil {
-		t.Fatalf("writeExposition: %v", err)
+// A v6 event landing BETWEEN healthSnapshot's two reads of a family pair
+// used to give the renderer old-aggregate / new-v6, and the ipv4 series
+// — computed as the difference — came out one lower than the previous
+// scrape. Prometheus reads any counter decrease as a reset and bills the
+// whole accumulated value as an increase on the next scrape, so one
+// dropped unit became a rate spike of the entire count.
+//
+// This drives the real snapshot path rather than a hand-built struct,
+// because the defect lived in how the pair was READ and not in how it
+// was rendered. What it pins is that the ipv4 series equals the stored
+// v4 half at every step — so a renderer that went back to arithmetic
+// over two rendered fields is caught the moment the two stop agreeing.
+// The interleaving itself needs concurrency and is covered by
+// TestMetrics_FamilySeriesSurviveAConcurrentV6Bump below.
+func TestMetrics_FamilySeriesCannotGoBackwards(t *testing.T) {
+	p := &Plugin{}
+
+	read := func() int {
+		t.Helper()
+		var buf bytes.Buffer
+		if err := writeExposition(&buf, p.healthSnapshot()); err != nil {
+			t.Fatalf("writeExposition: %v", err)
+		}
+		const prefix = `net_dhcp_leases_obtained_total{family="ipv4"} `
+		for _, line := range strings.Split(buf.String(), "\n") {
+			if !strings.HasPrefix(line, prefix) {
+				continue
+			}
+			n, err := strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(line, prefix)))
+			if err != nil {
+				t.Fatalf("ipv4 series %q is not an integer: %v", line, err)
+			}
+			return n
+		}
+		t.Fatalf("no ipv4 series in:\n%s", buf.String())
+		return 0
 	}
-	out := buf.String()
-	if strings.Contains(out, "-") && strings.Contains(out, `net_dhcp_leases_obtained_total{family="ipv4"} -`) {
-		t.Errorf("emitted a negative counter, which no scraper will accept:\n%s", out)
+
+	// A steady v4 count with v6 events arriving throughout. Every
+	// scrape must be >= the one before it; the v4 series must also
+	// never move on a v6 event, which is what makes "monotonic" more
+	// than "we only ever added".
+	prev := read()
+	for i := 0; i < 64; i++ {
+		if i%4 == 0 {
+			bumpFamily(&p.leasesObtainedV4, &p.leasesObtainedV6, false)
+		}
+		bumpFamily(&p.leasesObtainedV4, &p.leasesObtainedV6, true)
+
+		got := read()
+		if got < prev {
+			t.Fatalf("ipv4 series went backwards at iteration %d: %d -> %d; "+
+				"Prometheus reads that as a counter reset and bills the whole value as a rate spike",
+				i, prev, got)
+		}
+		if want := int(p.leasesObtainedV4.Load()); got != want {
+			t.Fatalf("ipv4 series = %d at iteration %d, want the stored v4 half %d", got, i, want)
+		}
+		prev = got
 	}
-	if want := `net_dhcp_leases_obtained_total{family="ipv4"} 0`; !strings.Contains(out, want) {
-		t.Errorf("want %q in:\n%s", want, out)
+
+	// The aggregate is the sum of the halves, not a third counter.
+	h := p.healthSnapshot()
+	if want := h.LeasesObtainedV4 + h.LeasesObtainedV6; h.LeasesObtained != want {
+		t.Errorf("leases_obtained = %d, want v4+v6 = %d", h.LeasesObtained, want)
 	}
+}
+
+// TestMetrics_FamilySeriesSurviveAConcurrentV6Bump is the same property
+// under the condition that actually produced #730: a v6 event landing
+// while a scrape is in flight.
+//
+// The sequential test above cannot reach the defect. Its scrapes are not
+// concurrent with anything, so the two halves of a pair are never read
+// either side of a bump — which is why it is not the regression test on
+// its own. This one runs a v6 bumper against a scraping loop, so the
+// window between healthSnapshot's reads is landed in repeatedly rather
+// than argued about.
+//
+// The v4 half never moves here. Every ipv4 reading must therefore be the
+// SAME number, which is a stronger assertion than non-decreasing and
+// fails on a dip of one.
+func TestMetrics_FamilySeriesSurviveAConcurrentV6Bump(t *testing.T) {
+	p := &Plugin{}
+	p.leasesObtainedV4.Store(7)
+
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				bumpFamily(&p.leasesObtainedV4, &p.leasesObtainedV6, true)
+			}
+		}
+	}()
+
+	const prefix = `net_dhcp_leases_obtained_total{family="ipv4"} `
+	for i := 0; i < 2000; i++ {
+		h := p.healthSnapshot()
+
+		// The snapshot must be internally consistent: the aggregate is
+		// the sum of the two halves IT rendered, which holds only while
+		// each half is loaded exactly once. A second .Load() of a half
+		// puts a bump between the sum and the rendered value, and any
+		// consumer subtracting one from the other — an operator on the
+		// JSON, or a future renderer — inherits #730 all over again.
+		if want := h.LeasesObtainedV4 + h.LeasesObtainedV6; h.LeasesObtained != want {
+			close(stop)
+			<-done
+			t.Fatalf("snapshot %d is internally inconsistent: leases_obtained=%d but v4+v6=%d; "+
+				"a half was loaded more than once", i, h.LeasesObtained, want)
+		}
+
+		var buf bytes.Buffer
+		if err := writeExposition(&buf, h); err != nil {
+			close(stop)
+			<-done
+			t.Fatalf("writeExposition: %v", err)
+		}
+		for _, line := range strings.Split(buf.String(), "\n") {
+			if !strings.HasPrefix(line, prefix) {
+				continue
+			}
+			got := strings.TrimSpace(strings.TrimPrefix(line, prefix))
+			if got != "7" {
+				close(stop)
+				<-done
+				t.Fatalf("ipv4 series = %s at scrape %d, want 7 — a concurrent v6 bump moved "+
+					"a counter it does not belong to; Prometheus reads the dip as a reset",
+					got, i)
+			}
+		}
+	}
+	close(stop)
+	<-done
 }
 
 // TestMetrics_LabelValuesAreEscaped covers the one injection surface

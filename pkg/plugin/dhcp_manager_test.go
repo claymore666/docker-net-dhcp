@@ -24,7 +24,7 @@ import (
 
 // TestRenew_LeaseChangedCounter pins the v0.9.0 / T1-4 counter
 // behaviour: when dhcpcd returns a different IP than the manager's
-// recorded lastIP, p.leaseChanged.Add(1) fires.
+// recorded lastIP, p.leaseChangedV4.Add(1) fires.
 //
 // We don't need a live netlink/netns fixture — the counter bump
 // happens in the early part of renew, before any kernel-touching
@@ -50,8 +50,8 @@ func TestRenew_LeaseChangedCounter(t *testing.T) {
 			t.Fatalf("renew: %v", err)
 		}
 
-		if got := p.leaseChanged.Load(); got != 1 {
-			t.Errorf("leaseChanged = %d, want 1", got)
+		if got := p.leaseChangedV4.Load(); got != 1 {
+			t.Errorf("leaseChangedV4 = %d, want 1", got)
 		}
 	})
 
@@ -64,8 +64,8 @@ func TestRenew_LeaseChangedCounter(t *testing.T) {
 			t.Fatalf("renew: %v", err)
 		}
 
-		if got := p.leaseChanged.Load(); got != 0 {
-			t.Errorf("leaseChanged = %d, want 0 (same IP shouldn't count as a change)", got)
+		if got := p.leaseChangedV4.Load(); got != 0 {
+			t.Errorf("leaseChangedV4 = %d, want 0 (same IP shouldn't count as a change)", got)
 		}
 	})
 
@@ -83,12 +83,16 @@ func TestRenew_LeaseChangedCounter(t *testing.T) {
 			t.Fatalf("renew: %v", err)
 		}
 
-		if got := p.leaseChanged.Load(); got != 0 {
-			t.Errorf("leaseChanged = %d, want 0 (first bind shouldn't count as a change)", got)
+		if got := p.leaseChangedV4.Load(); got != 0 {
+			t.Errorf("leaseChangedV4 = %d, want 0 (first bind shouldn't count as a change)", got)
 		}
 	})
 
-	t.Run("v6 changed IP bumps aggregate and v6 sibling", func(t *testing.T) {
+	t.Run("v6 changed IP bumps the v6 half only", func(t *testing.T) {
+		// Since #730 each family owns a counter and a v6 event bumps
+		// exactly one of them. The v4 half staying at 0 is the whole
+		// point: it used to move on every event, which is what made
+		// the v4 number something that had to be subtracted back out.
 		p := &Plugin{}
 		m := &dhcpManager{plugin: p}
 		m.setLastIP(true, addr1)
@@ -97,8 +101,8 @@ func TestRenew_LeaseChangedCounter(t *testing.T) {
 			t.Fatalf("renew: %v", err)
 		}
 
-		if got := p.leaseChanged.Load(); got != 1 {
-			t.Errorf("leaseChanged aggregate = %d, want 1", got)
+		if got := p.leaseChangedV4.Load(); got != 0 {
+			t.Errorf("leaseChangedV4 = %d, want 0 — a v6 event must not move the v4 half", got)
 		}
 		if got := p.leaseChangedV6.Load(); got != 1 {
 			t.Errorf("leaseChangedV6 = %d, want 1", got)
@@ -114,8 +118,8 @@ func TestRenew_LeaseChangedCounter(t *testing.T) {
 			t.Fatalf("renew: %v", err)
 		}
 
-		if got := p.leaseChanged.Load(); got != 1 {
-			t.Errorf("leaseChanged aggregate = %d, want 1", got)
+		if got := p.leaseChangedV4.Load(); got != 1 {
+			t.Errorf("leaseChangedV4 aggregate = %d, want 1", got)
 		}
 		if got := p.leaseChangedV6.Load(); got != 0 {
 			t.Errorf("leaseChangedV6 = %d, want 0 (v4 change must not touch the v6 sibling)", got)
@@ -148,17 +152,22 @@ func TestHandleEvent_Counters(t *testing.T) {
 	}
 
 	cases := []struct {
-		event     string
-		aggregate func(p *Plugin) int32
-		v6        func(p *Plugin) int32
+		event string
+		v4    func(p *Plugin) int32
+		v6    func(p *Plugin) int32
 	}{
-		{"bound", func(p *Plugin) int32 { return p.leasesObtained.Load() }, func(p *Plugin) int32 { return p.leasesObtainedV6.Load() }},
-		{"renew", func(p *Plugin) int32 { return p.leasesRenewed.Load() }, func(p *Plugin) int32 { return p.leasesRenewedV6.Load() }},
-		{"leasefail", func(p *Plugin) int32 { return p.dhcpTimeouts.Load() }, func(p *Plugin) int32 { return p.dhcpTimeoutsV6.Load() }},
-		{"nak", func(p *Plugin) int32 { return p.naksReceived.Load() }, func(p *Plugin) int32 { return p.naksReceivedV6.Load() }},
+		{"bound", func(p *Plugin) int32 { return p.leasesObtainedV4.Load() }, func(p *Plugin) int32 { return p.leasesObtainedV6.Load() }},
+		{"renew", func(p *Plugin) int32 { return p.leasesRenewedV4.Load() }, func(p *Plugin) int32 { return p.leasesRenewedV6.Load() }},
+		{"leasefail", func(p *Plugin) int32 { return p.dhcpTimeoutsV4.Load() }, func(p *Plugin) int32 { return p.dhcpTimeoutsV6.Load() }},
+		{"nak", func(p *Plugin) int32 { return p.naksReceivedV4.Load() }, func(p *Plugin) int32 { return p.naksReceivedV6.Load() }},
 	}
-	// Each event under both families: the aggregate always moves; the v6
-	// sibling moves only for v6 events and stays put for v4 ones (#212).
+	// Each event under both families bumps EXACTLY ONE half (#212,
+	// #730). Asserting both halves — one moved, the other did not — is
+	// what makes this a contract rather than a count: before #730 the
+	// un-suffixed counter moved on every event, so a v6 event bumped
+	// two counters and the v4 number had to be recovered by
+	// subtracting them at render time. That subtraction is the defect
+	// #730 removed, and it is unreachable only while this holds.
 	for _, c := range cases {
 		for _, v6 := range []bool{false, true} {
 			family := "v4"
@@ -172,15 +181,15 @@ func TestHandleEvent_Counters(t *testing.T) {
 
 				m.handleEvent(dhcp.Event{Type: c.event, Data: dhcp.Info{IP: addr.String()}}, v6)
 
-				if got := c.aggregate(p); got != 1 {
-					t.Errorf("%s aggregate = %d, want 1", c.event, got)
-				}
-				wantV6 := int32(0)
+				wantV4, wantV6 := int32(1), int32(0)
 				if v6 {
-					wantV6 = 1
+					wantV4, wantV6 = 0, 1
+				}
+				if got := c.v4(p); got != wantV4 {
+					t.Errorf("%s v4 half = %d, want %d", c.event, got, wantV4)
 				}
 				if got := c.v6(p); got != wantV6 {
-					t.Errorf("%s v6 sibling = %d, want %d", c.event, got, wantV6)
+					t.Errorf("%s v6 half = %d, want %d", c.event, got, wantV6)
 				}
 			})
 		}
@@ -192,8 +201,13 @@ func TestHandleEvent_Counters(t *testing.T) {
 		for _, evt := range []string{"deconfig", "something-new"} {
 			m.handleEvent(dhcp.Event{Type: evt}, false)
 		}
-		total := p.leasesObtained.Load() + p.leasesRenewed.Load() +
-			p.dhcpTimeouts.Load() + p.naksReceived.Load()
+		// Both halves, not just the v4 one: these events are dispatched
+		// with v6=false, so a bump mis-routed to the v6 half would
+		// leave a v4-only sum at zero and pass.
+		total := p.leasesObtainedV4.Load() + p.leasesRenewedV4.Load() +
+			p.dhcpTimeoutsV4.Load() + p.naksReceivedV4.Load() +
+			p.leasesObtainedV6.Load() + p.leasesRenewedV6.Load() +
+			p.dhcpTimeoutsV6.Load() + p.naksReceivedV6.Load()
 		if total != 0 {
 			t.Errorf("counters moved on non-counting events: %d", total)
 		}
@@ -355,8 +369,13 @@ func TestStop_AuditsBothFamiliesIndependently(t *testing.T) {
 				t.Fatalf("Stop() = %v, want an error wrapping %v", err, tc.wantErr)
 			}
 
-			if got := p.leaseReleaseFailures.Load(); got != tc.wantFailures {
-				t.Errorf("leaseReleaseFailures = %d, want %d", got, tc.wantFailures)
+			// wantFailures is the total across both families, which
+			// since #730 is the sum of the two halves rather than a
+			// counter of its own. Asserting the sum keeps this case
+			// about Stop's auditing; which half moved is pinned by
+			// TestStop_BoundV6ReleaseFailureIsCountedPerFamily.
+			if got := p.leaseReleaseFailuresV4.Load() + p.leaseReleaseFailuresV6.Load(); got != tc.wantFailures {
+				t.Errorf("lease release failures (v4+v6) = %d, want %d", got, tc.wantFailures)
 			}
 
 			entries := readLedgerLines(t, p.ledger.path)
@@ -401,8 +420,8 @@ func TestStop_FailedStartIsANoOp(t *testing.T) {
 	if err := m.Stop(); err != nil {
 		t.Fatalf("Stop() on a failed-Start manager = %v, want nil", err)
 	}
-	if got := p.leaseReleaseFailures.Load(); got != 0 {
-		t.Errorf("leaseReleaseFailures = %d, want 0", got)
+	if got := p.leaseReleaseFailuresV4.Load(); got != 0 {
+		t.Errorf("leaseReleaseFailuresV4 = %d, want 0", got)
 	}
 	if _, err := os.Stat(p.ledger.path); !os.IsNotExist(err) {
 		t.Errorf("ledger written for a manager that never held a lease (stat err: %v)", err)
@@ -579,8 +598,8 @@ func TestStop_NeverBoundClientReclaimsInsteadOfClaimingRelease(t *testing.T) {
 		t.Errorf("orphaned_lease_release_failures = %d, want 1 — the lease the "+
 			"one-shot acquired was never handed to the reclaim", got)
 	}
-	if got := p.leaseReleaseFailures.Load(); got != 0 {
-		t.Errorf("leaseReleaseFailures = %d, want 0 — nothing we were running "+
+	if got := p.leaseReleaseFailuresV4.Load(); got != 0 {
+		t.Errorf("leaseReleaseFailuresV4 = %d, want 0 — nothing we were running "+
 			"failed to release; no client ever held this lease", got)
 	}
 
@@ -743,8 +762,8 @@ func TestStop_NeverBoundClientKilledBySignalIsStillNeverBound(t *testing.T) {
 					"signal before it bound, which does not change what is owed",
 					got, tc.wantReclaim)
 			}
-			if got := p.leaseReleaseFailures.Load(); got != 0 {
-				t.Errorf("leaseReleaseFailures = %d, want 0 — no client we were "+
+			if got := p.leaseReleaseFailuresV4.Load(); got != 0 {
+				t.Errorf("leaseReleaseFailuresV4 = %d, want 0 — no client we were "+
 					"running failed to hand a lease back; none ever held one", got)
 			}
 
@@ -1276,7 +1295,7 @@ func TestStop_NeverBoundV6ClientIsNotAuditedAsReleased(t *testing.T) {
 			if got := p.orphanedLeaseReleaseFailures.Load(); got != tc.wantReclaim {
 				t.Errorf("reclaim ran %d time(s), want %d", got, tc.wantReclaim)
 			}
-			if got := p.leaseReleaseFailures.Load() + p.leaseReleaseFailuresV6.Load(); got != 0 {
+			if got := p.leaseReleaseFailuresV4.Load() + p.leaseReleaseFailuresV6.Load(); got != 0 {
 				t.Errorf("lease_release_failures(+v6) = %d, want 0 — no client we were "+
 					"running failed to hand a lease back", got)
 			}
@@ -1326,8 +1345,15 @@ func TestStop_BoundV6ReleaseFailureIsCountedPerFamily(t *testing.T) {
 			}
 			p.orphanReleases.Wait()
 
-			if got := p.leaseReleaseFailures.Load(); got != tc.wantAgg {
-				t.Errorf("lease_release_failures = %d, want %d", got, tc.wantAgg)
+			// wantAgg is the total across both families. Since #730 it
+			// is their sum, so assert the sum AND the v4 half: the two
+			// together say which counter moved, not merely how many
+			// bumps happened.
+			if got := p.leaseReleaseFailuresV4.Load() + p.leaseReleaseFailuresV6.Load(); got != tc.wantAgg {
+				t.Errorf("lease_release_failures (v4+v6) = %d, want %d", got, tc.wantAgg)
+			}
+			if got, wantV4 := p.leaseReleaseFailuresV4.Load(), tc.wantAgg-tc.want; got != wantV4 {
+				t.Errorf("lease_release_failures_v4 = %d, want %d", got, wantV4)
 			}
 			if got := p.leaseReleaseFailuresV6.Load(); got != tc.want {
 				t.Errorf("lease_release_failures_v6 = %d, want %d", got, tc.want)
