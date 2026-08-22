@@ -178,6 +178,30 @@ jobs:
       - name: Docs-drift check
         run: bash scripts/check-docs-drift.sh
 
+      # RELEASE_NOTES.md merges last and describes code that is still
+      # moving, so it is the one document whose claims can go stale
+      # between being written and being true (#732). Three of the file's
+      # own tag-time re-check comments already re-derive a COUNT or a
+      # SET; none re-derives a symbol NAME, and that is where the
+      # fiction accumulated -- a paragraph named a function and a test
+      # that existed nowhere but in the paragraph.
+      #
+      # Every backticked identifier in the file must resolve in the Go
+      # tree, with COMMENTS AND STRING LITERALS STRIPPED. That is the
+      # substance and not a detail: a plain grep resolves a symbol
+      # against prose ABOUT the symbol, which is how a renamed field
+      # would have been waived on the strength of somebody having
+      # mentioned it in a comment.
+      #
+      # Waivers live in .github/release-notes-symbol-waivers.txt, each
+      # with a reason and a commit. Frozen release sections describing
+      # symbols that were real when written are HISTORICAL -- rewriting
+      # them to satisfy a check would be falsifying history. A CURRENT
+      # release section gets no such category: if a symbol there does
+      # not resolve, the prose is wrong and the fix is to correct it.
+      - name: Release-notes symbol check
+        run: bash scripts/check-release-notes-symbols.sh
+
       # `docker plugin set` is REFUSED while the plugin is enabled, so a
       # snippet with the steps in the wrong order does not fail subtly —
       # it fails on its first line, and hands the reader an error that
