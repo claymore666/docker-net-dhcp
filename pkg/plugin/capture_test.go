@@ -14,6 +14,9 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	log "github.com/sirupsen/logrus"
+	logtest "github.com/sirupsen/logrus/hooks/test"
 )
 
 // allRoutePaths is the real routing table, so these tests build the same
@@ -629,7 +632,15 @@ func TestCaptureHandler_DoesNotWriteThroughASymlink(t *testing.T) {
 // Keyed on the failing operation rather than on O_EXCL, so any
 // implementation that reports its own failed removal passes, whether or
 // not it uses exclusive creation.
-// not it uses exclusive creation.
+//
+// IT PINS THE HELPER'S CONTRACT AND NOTHING ELSE. A caller that stops
+// routing through createCaptureFile keeps this test green while the
+// property it protects is gone -- and that mutant is not hypothetical,
+// it is `git show 83d31a1:pkg/plugin/capture.go`. The call site is
+// observed separately, by
+// TestCaptureHandler_AFailedUnlinkIsReportedThroughTheHandler. Both are
+// needed: a general observer cannot pin a specific contract, and a
+// specific one cannot see a caller walk away from it.
 func TestCreateCaptureFile_ReportsAFailedUnlinkRatherThanFallingThrough(t *testing.T) {
 	dir := t.TempDir()
 	name := filepath.Join(dir, "0001-NetworkDriver.Join.json")
@@ -662,5 +673,76 @@ func TestCreateCaptureFile_ReportsAFailedUnlinkRatherThanFallingThrough(t *testi
 			"An error from the open means the unlink failure was swallowed and the "+
 			"open proceeded over whatever was already at the name — the silent hole "+
 			"#786 exists to close.", err)
+	}
+}
+
+// TestCaptureHandler_AFailedUnlinkIsReportedThroughTheHandler observes
+// the property that actually protects the plugin: NO CAPTURE IS EVER
+// WRITTEN INTO A NAME THAT ALREADY EXISTED.
+//
+// That is a statement about the request path, not about a helper, and
+// the difference is not academic. Restoring writeBody's pre-#786 body --
+//
+//	_ = os.Remove(path)
+//	os.WriteFile(path, body, captureFileMode)
+//
+// -- leaves createCaptureFile in the file, perfect and unreferenced, so
+// its own test still passes while every request is back to
+// unlink-then-write with the silent hole restored. staticcheck's unused
+// check cannot fire either: the function is still referenced, by its
+// test. A test on a helper cannot see a caller that stops using it.
+//
+// The seeded name is a non-empty directory, so the unlink fails with
+// ENOTEMPTY for root and non-root alike -- no uid gate, no skip, no
+// chmod to undo. It does not assert a write-through (nothing writes
+// through a directory); it asserts WHICH operation reported the
+// failure, which is exactly what separates reporting a failed unlink
+// from swallowing it:
+//
+//	shipped   remove ...: directory not empty   <- the unlink is reported
+//	rejected  open ...: is a directory          <- the unlink was swallowed
+//
+// Keyed on the STRUCTURED error, not the rendered line: warn passes the
+// error to logrus as a value, so the test recovers it from the entry
+// and matches on os.PathError.Op. A change in log formatting cannot
+// silently retire this.
+func TestCaptureHandler_AFailedUnlinkIsReportedThroughTheHandler(t *testing.T) {
+	dir := t.TempDir()
+	name := filepath.Join(dir, "0001-NetworkDriver.Join.json")
+	if err := os.MkdirAll(filepath.Join(name, "occupied"), 0o700); err != nil {
+		t.Fatalf("seeding: %v", err)
+	}
+
+	hook := logtest.NewLocal(log.StandardLogger())
+	defer hook.Reset()
+
+	var got []string
+	h := captureHandler(bodyEcho(t, &got), dir, allRoutePaths())
+	post(h, "/NetworkDriver.Join", `{"EndpointID":"ep1"}`)
+
+	// The premise, asserted rather than assumed: if the name turned out
+	// to be removable, the case exercised nothing and a pass would mean
+	// nothing.
+	if err := os.Remove(name); err == nil {
+		t.Fatalf("the seeded name was removable after all — this case did not exercise " +
+			"a failed unlink and its verdict means nothing")
+	}
+
+	entry := hook.LastEntry()
+	if entry == nil {
+		t.Fatalf("the capture failed and NOTHING was logged; a silent failure is the " +
+			"condition this whole change is about")
+	}
+	raw, ok := entry.Data[log.ErrorKey]
+	if !ok {
+		t.Fatalf("the warning carried no error value: %+v", entry.Data)
+	}
+	err, _ := raw.(error)
+	var pe *os.PathError
+	if !errors.As(err, &pe) || pe.Op != "remove" {
+		t.Errorf("the reported failure was %v, want the failed REMOVE.\n"+
+			"An error from the OPEN means the unlink failure was swallowed and the "+
+			"write proceeded over whatever was already at the name — the silent hole "+
+			"this change exists to close.", err)
 	}
 }
