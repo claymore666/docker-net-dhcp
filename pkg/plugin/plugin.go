@@ -883,6 +883,36 @@ type Plugin struct {
 	// stopped mid-probe — and a detector that silently repairs itself is
 	// how the last one stopped being trustworthy.
 	conflictProbeStaleRoutes atomic.Int32
+
+	// conflictProbeStaleAddrs counts leftover BORROWED PROBE SOURCE
+	// addresses reclaimed from the parent NIC (#723).
+	//
+	// The sibling above reclaims the leftover /32 route, and it can,
+	// because that route's destination is the address being probed --
+	// so a later probe for the same address collides with the leftover
+	// and recognises it. The borrowed source has random third and
+	// fourth octets by design (#575, so two concurrent probes on one
+	// parent cannot delete each other's), and randomness is exactly
+	// what makes it unrecognisable: no future probe ever collides with
+	// it. It accumulated on the operator's NIC, one per stop-inside-
+	// the-window, forever, visible only in `ip addr`.
+	//
+	// Not healthy-affecting, for the same reason as the sibling: the
+	// probe it appears in went on to run. Counted because the repair
+	// hides the event that caused it.
+	conflictProbeStaleAddrs atomic.Int32
+
+	// probeAddrsInUse holds the borrowed probe source addresses this
+	// process currently has on a parent NIC, keyed by CIDR string.
+	// Guarded by mu; created on first use so &Plugin{} stays valid.
+	//
+	// It exists so reclaimStaleProbeAddrs can tell a leftover from a
+	// LIVE sibling: both carry the same label, and deleting a live
+	// one mid-probe is #575 -- the failure that produced these
+	// leftovers in the first place. A crash takes this map with it,
+	// which is exactly right: after a restart nothing is live, so
+	// everything labelled is stale.
+	probeAddrsInUse map[string]struct{}
 	// addressConflictProbes counts probes that ran to a verdict —
 	// conflict or clean. Not Healthy-affecting, and the reason it
 	// exists at all: without it, "the segment is clean" and "the
