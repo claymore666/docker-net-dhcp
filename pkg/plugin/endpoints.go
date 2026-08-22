@@ -545,6 +545,12 @@ type HealthResponse struct {
 	// run — but a rising count means the plugin is being stopped inside
 	// probe windows.
 	ConflictProbeStaleRoutes int32 `json:"conflict_probe_stale_routes"`
+	// ConflictProbeStaleAddrs counts leftover borrowed probe SOURCE
+	// addresses reclaimed from the parent NIC (#723). Its sibling
+	// above covers the leftover route; this one covers the address the
+	// route was sourced from, which nothing recognised because it is
+	// randomly chosen. NOT healthy-affecting: the probe went on to run.
+	ConflictProbeStaleAddrs int32 `json:"conflict_probe_stale_addrs"`
 	// AddressConflictProbes counts probes that reached a verdict. Read
 	// it before believing address_conflicts=0: a zero here means the
 	// detector did not run, not that the segment is clean.
@@ -751,6 +757,7 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		AddressConflicts:             conflicts,
 		ConflictProbeFailures:        p.conflictProbeFailures.Load(),
 		ConflictProbeStaleRoutes:     p.conflictProbeStaleRoutes.Load(),
+		ConflictProbeStaleAddrs:      p.conflictProbeStaleAddrs.Load(),
 		AddressConflictProbes:        p.addressConflictProbes.Load(),
 		SandboxNetnsVisible:          sandboxNetnsVisibleIn(sandboxNetnsDirs),
 		LeasesObtained:               p.leasesObtained.Load(),

@@ -78,6 +78,13 @@ func (p *Plugin) probeAddressConflict(ctx context.Context, parent string, ip net
 	}
 	idx := parentLink.Attrs().Index
 
+	// Before anything else: clear our own leftovers from a run that
+	// was cut short. Unconditional rather than gated on whether THIS
+	// probe will borrow, because the leftover is on the parent either
+	// way and a probe that happens to find an on-subnet source is
+	// still the only occasion we have to look.
+	p.reclaimStaleProbeAddrs(parentLink)
+
 	// Probing from the PARENT is not a convenience — it is the only
 	// vantage point where an answer means anything, and both
 	// alternatives were tried and measured (#524, #528).
@@ -107,11 +114,13 @@ func (p *Plugin) probeAddressConflict(ctx context.Context, parent string, ip net
 		return nil, fmt.Errorf("probe source address: %w", err)
 	}
 	if src.borrowed {
-		if err := netlink.AddrAdd(parentLink, src.addr); err != nil {
+		if err := nlAddrAdd(parentLink, src.addr); err != nil {
 			return nil, fmt.Errorf("add probe source to %s: %w", parent, err)
 		}
+		p.holdProbeAddr(src.addr.IPNet.String())
 		defer func() {
-			if err := netlink.AddrDel(parentLink, src.addr); err != nil {
+			p.releaseProbeAddr(src.addr.IPNet.String())
+			if err := nlAddrDel(parentLink, src.addr); err != nil {
 				log.WithError(err).WithFields(log.Fields{
 					"parent": parent, "addr": src.addr.IPNet.String(),
 				}).Warn("[conflict-probe] could not remove the temporary probe address; remove it with `ip addr del`")
@@ -344,7 +353,135 @@ func pickProbeSource(parentLink netlink.Link, target net.IP, subnet *net.IPNet) 
 	if err != nil {
 		return probeSource{}, err
 	}
+	// Stamped here rather than in newProbeLinkLocal because the label
+	// is derived from the parent, and the generator deliberately knows
+	// nothing about which link it is for. An empty label is legal and
+	// means "unmarked": see probeAddrLabel.
+	ll.Label = probeAddrLabel(parentLink.Attrs().Name)
 	return probeSource{addr: ll, borrowed: true}, nil
+}
+
+// linkLocalV4 is 169.254.0.0/16, the range a borrowed probe source is
+// drawn from. Reclaim will not touch an address outside it even if the
+// label matches, because a label is a string an operator can type.
+var linkLocalV4 = &net.IPNet{IP: net.IPv4(169, 254, 0, 0), Mask: net.CIDRMask(16, 32)}
+
+// holdProbeAddr / releaseProbeAddr / probeAddrInUse track the borrowed
+// sources THIS process currently has on a parent, so reclaim cannot
+// delete a concurrent probe's address out from under it.
+//
+// The map is created on first use rather than in a constructor: tests
+// build &Plugin{} directly, and a field that had to be initialised
+// would turn those into nil-map panics -- a behaviour change smuggled
+// in by a fix that is supposed to change one thing.
+func (p *Plugin) holdProbeAddr(cidr string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.probeAddrsInUse == nil {
+		p.probeAddrsInUse = make(map[string]struct{})
+	}
+	p.probeAddrsInUse[cidr] = struct{}{}
+}
+
+func (p *Plugin) releaseProbeAddr(cidr string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	delete(p.probeAddrsInUse, cidr)
+}
+
+func (p *Plugin) probeAddrInUse(cidr string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	_, ok := p.probeAddrsInUse[cidr]
+	return ok
+}
+
+// probeAddrLabel is the IFA_LABEL stamped on a borrowed probe source so
+// a later probe can tell OUR leftover apart from an address the
+// operator put there.
+//
+// A marker is the whole difficulty of #723. The leftover route could be
+// reclaimed on sight because its destination IS the address being
+// probed, so a repeat probe collides with it. The borrowed source's
+// third and fourth octets are random on purpose (#575) and therefore
+// collide with nothing, ever. Without a marker the only rule available
+// would be "delete link-local /32s off the operator's NIC", which is a
+// worse bug than the leak.
+//
+// The kernel restricts an IPv4 label to the interface name, optionally
+// followed by ":suffix", within IFNAMSIZ. Verified against the kernel
+// rather than the man page: "dummy0:dh" was accepted and read back on a
+// 169.254/32, and a label built on a 15-character interface name was
+// refused outright with "Attribute failed policy validation".
+//
+// So a parent whose name leaves no room returns "", and reclaim then
+// declines to act. That is a real blind spot and it is stated rather
+// than hidden: a parent named longer than 12 characters gets no
+// reclaim, because the alternative is deleting an address we cannot
+// prove is ours.
+func probeAddrLabel(parent string) string {
+	label := parent + ":dh"
+	if len(label) > unix.IFNAMSIZ-1 {
+		return ""
+	}
+	return label
+}
+
+// reclaimStaleProbeAddrs removes borrowed probe sources this plugin left
+// on the parent when an earlier probe was cut short.
+//
+// Three conditions, all required: our label, inside 169.254.0.0/16, and
+// a /32. Any one of them alone would eventually delete something that
+// is not ours.
+//
+// The fourth condition is the one that is easy to miss. A CONCURRENT
+// probe on the same parent right now carries the same label, and
+// deleting its source mid-flight is #575 exactly -- the failure that
+// made these /32s in the first place. So an address this process is
+// currently using is skipped. A crash takes the live set with it, which
+// is why everything with the label is stale after a restart and nothing
+// is stale during one.
+func (p *Plugin) reclaimStaleProbeAddrs(parentLink netlink.Link) {
+	parent := parentLink.Attrs().Name
+	label := probeAddrLabel(parent)
+	if label == "" {
+		log.WithField("parent", parent).Debug(
+			"[conflict-probe] parent name leaves no room for a probe address label; leftover probe sources on it cannot be reclaimed (#723)")
+		return
+	}
+
+	addrs, err := nlAddrList(parentLink, unix.AF_INET)
+	if err != nil {
+		// Not fatal: the probe itself can still run. Reclaim is
+		// housekeeping for a previous run, not a precondition of this
+		// one.
+		log.WithError(err).WithField("parent", parent).
+			Debug("[conflict-probe] could not list addresses to reclaim leftover probe sources")
+		return
+	}
+
+	for i := range addrs {
+		a := &addrs[i]
+		if a.Label != label || a.IPNet == nil || !linkLocalV4.Contains(a.IP) {
+			continue
+		}
+		if ones, bits := a.Mask.Size(); ones != 32 || bits != 32 {
+			continue
+		}
+		if p.probeAddrInUse(a.IPNet.String()) {
+			continue
+		}
+		if err := nlAddrDel(parentLink, a); err != nil {
+			log.WithError(err).WithFields(log.Fields{
+				"parent": parent, "addr": a.IPNet.String(),
+			}).Warn("[conflict-probe] could not reclaim a leftover probe address; remove it with `ip addr del`")
+			continue
+		}
+		p.conflictProbeStaleAddrs.Add(1)
+		log.WithFields(log.Fields{
+			"parent": parent, "addr": a.IPNet.String(),
+		}).Info("[conflict-probe] reclaimed a leftover probe source address; a previous probe was cut short before it could clean up")
+	}
 }
 
 // newProbeLinkLocal returns a random 169.254.x.y/32 address for the
