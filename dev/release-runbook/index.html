@@ -1682,15 +1682,103 @@ the <code>vX.Y.Z</code> milestone (the workflow leans on this for the
    Skipping this leaves the next feature branch starting from the
    previous version's README/docs, and the next release PR has to
    re-bump them. Forgotten once after v0.9.0 — that's why
-   <code>release.yml</code>'s header comment carries the same checklist.
+   <code>release.yml</code>'s header comment carries the same checklist.</p>
+<p><strong>Do this before merging anything else into <code>dev</code>.</strong> Forgetting is
+   the mild failure. The one that has actually happened is
+   <em>foreclosure</em>: the <code>--ff-only</code> is possible only while <code>dev</code> has no
+   commits of its own since the release, so the window opens when the
+   release PR lands and closes on the next merge into <code>dev</code> —
+   permanently, and by doing something otherwise correct.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a><span class="c1"># is a back-merge OWED?  prints a count</span>
+<a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a>git<span class="w"> </span>rev-list<span class="w"> </span>--count<span class="w"> </span>origin/dev..origin/main
+<a id="__codelineno-14-3" name="__codelineno-14-3" href="#__codelineno-14-3"></a><span class="c1"># does `dev` carry commits of its own?  (--is-ancestor prints nothing)</span>
+<a id="__codelineno-14-4" name="__codelineno-14-4" href="#__codelineno-14-4"></a>git<span class="w"> </span>merge-base<span class="w"> </span>--is-ancestor<span class="w"> </span>origin/dev<span class="w"> </span>origin/main<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-14-5" name="__codelineno-14-5" href="#__codelineno-14-5"></a><span class="w">    </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">echo</span><span class="w"> </span><span class="s2">&quot;dev is contained in main&quot;</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-14-6" name="__codelineno-14-6" href="#__codelineno-14-6"></a><span class="w">    </span><span class="o">||</span><span class="w"> </span><span class="nb">echo</span><span class="w"> </span><span class="s2">&quot;dev has commits of its own&quot;</span>
+</code></pre></div>
+<p><strong>Two different questions, and neither answers the other.</strong> The count
+   is commits on <code>main</code> that <code>dev</code> lacks — it says a back-merge is
+   <em>owed</em>. The predicate asks whether <code>dev</code> has commits of its own, which
+   is what <code>--ff-only</code> needs. Both outcomes of both, because a documented
+   command with only one outcome written down leaves the reader to supply
+   the other by negation:</p>
+<table>
+<thead>
+<tr>
+<th>count</th>
+<th><code>dev</code> contained in <code>main</code>?</th>
+<th>state</th>
+<th>do</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>non-zero</td>
+<td>yes</td>
+<td><strong>owed and available</strong> — the normal post-tag state</td>
+<td>run the <code>--ff-only</code> above, now</td>
+</tr>
+<tr>
+<td>non-zero</td>
+<td>no</td>
+<td>owed, and <strong>foreclosed</strong></td>
+<td>back-merge PR</td>
+</tr>
+<tr>
+<td>zero</td>
+<td>yes</td>
+<td><code>main</code> and <code>dev</code> identical</td>
+<td>nothing</td>
+</tr>
+<tr>
+<td>zero</td>
+<td>no</td>
+<td><code>dev</code> ahead mid-cycle — the ordinary state</td>
+<td>nothing</td>
+</tr>
+</tbody>
+</table>
+<p>A non-zero count is not bad news: at the v1.6.0 tag it was <strong>4</strong>, and
+   the fast-forward worked. It is the warning the CI advisory prints, in
+   those words — <em>"While that is true, <code>git merge --ff-only main</code> still
+   works."</em></p>
+<p>Once foreclosed the recovery is a back-merge PR, <code>main</code> → <code>dev</code>,
+   <strong>merged with a merge commit — a squash does not put <code>main</code>'s commits
+   on <code>dev</code></strong>, which is the entire point of this step.</p>
+<p><strong>The failure is silent, which is why this needs a command and not a
+   reminder.</strong> The divergence carries no content: every release merge
+   has a <code>dev</code> commit as its second parent — because step 5 merged the
+   release branch into <code>dev</code> before the tag — so <code>git diff main dev</code> is
+   clean and the whole suite passes while the graph is wrong. Nothing
+   reads as broken, so nothing prompts the check.</p>
+<p>Worked instance: v1.6.0 published at 23:11:30Z on 2026-08-16; three
+   Dependabot PRs went into <code>dev</code> at 23:26, <strong>fifteen minutes later</strong>,
+   before anyone looked at <code>main</code>. That foreclosed it; recovered by #597
+   at 23:38. Fifteen minutes is not a window anyone watches by hand.</p>
+<p><strong>CI warns, but it cannot block.</strong>
+   <code>.github/workflows/release-backmerge.yml</code> runs
+   <code>scripts/check-release-backmerge.sh</code> in two modes:</p>
+<ul>
+<li><strong>Advisory, on every PR into <code>dev</code></strong> — warns on any divergence and
+     <strong>ignores the grace window</strong>, because the fresh divergence is the
+     only case this mode exists for. It warns and never blocks, on
+     purpose — reasoning in the workflow header. An annotation can be
+     scrolled past, which is why the command stays in this step.</li>
+<li><strong>Enforcing, on the nightly schedule</strong> — the backstop for the
+     <em>permanent</em> omission, and the only mode <code>BACKMERGE_GRACE_HOURS</code>
+     (default 24) applies to, so a release in flight is not a false red.</li>
+</ul>
+<p>One caveat on the recovery: the back-merge diff is not always empty.
+   #597 was, but <code>6af0749</code> carried three real files. Hitting a conflict
+   there does not mean you have done something wrong.
 12. <strong>Prune merged branches.</strong> The repo has <em>Automatically delete head
    branches</em> enabled, so merged PR head branches are removed on merge.
    Two things that setting doesn't cover, so clean them now:
-   <div class="highlight"><pre><span></span><code><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a><span class="c1"># the release branch is merged but was never a PR head:</span>
-<a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a>git<span class="w"> </span>push<span class="w"> </span>origin<span class="w"> </span>--delete<span class="w"> </span>release/vX.Y.Z
-<a id="__codelineno-14-3" name="__codelineno-14-3" href="#__codelineno-14-3"></a><span class="c1"># sweep for any other branch already merged into dev that lingered:</span>
-<a id="__codelineno-14-4" name="__codelineno-14-4" href="#__codelineno-14-4"></a>git<span class="w"> </span>fetch<span class="w"> </span>--prune<span class="w"> </span>origin
-<a id="__codelineno-14-5" name="__codelineno-14-5" href="#__codelineno-14-5"></a>git<span class="w"> </span>branch<span class="w"> </span>-r<span class="w"> </span>--merged<span class="w"> </span>origin/dev<span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span>-vE<span class="w"> </span><span class="s1">&#39;origin/(dev|main|HEAD)$&#39;</span>
+   <div class="highlight"><pre><span></span><code><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a><span class="c1"># the release branch is merged but was never a PR head:</span>
+<a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a>git<span class="w"> </span>push<span class="w"> </span>origin<span class="w"> </span>--delete<span class="w"> </span>release/vX.Y.Z
+<a id="__codelineno-15-3" name="__codelineno-15-3" href="#__codelineno-15-3"></a><span class="c1"># sweep for any other branch already merged into dev that lingered:</span>
+<a id="__codelineno-15-4" name="__codelineno-15-4" href="#__codelineno-15-4"></a>git<span class="w"> </span>fetch<span class="w"> </span>--prune<span class="w"> </span>origin
+<a id="__codelineno-15-5" name="__codelineno-15-5" href="#__codelineno-15-5"></a>git<span class="w"> </span>branch<span class="w"> </span>-r<span class="w"> </span>--merged<span class="w"> </span>origin/dev<span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span>-vE<span class="w"> </span><span class="s1">&#39;origin/(dev|main|HEAD)$&#39;</span>
 </code></pre></div>
    Delete what that sweep lists. Leave alone: open-PR branches,
    Dependabot branches (it recreates its own — close via the PR), and
