@@ -62,20 +62,25 @@ re-accepting it.
 ## v1.8.0
 
 The release that got reviewed by people rather than only by tools —
-three times, by three different pairs of eyes, and each pass found things
-the one before it had read past. The first was a security review of the
-trust boundaries (#457, indexed by #699): **sixteen** findings — five in
-the first round and eleven in the second — all sixteen fixed here. The
-second was an architecture review of `dev` after those fixes landed,
-which found **ten** lifecycle faults: #720–#724, filed individually, and
-#727–#731, tracked together as #726. All ten are fixed in this release,
-and six — #720, #721, #722, #724, #727 and #728 — are verified present
-in v1.7.1, so they predate this cycle entirely. The third read the CI
-machinery itself (#732) and found gates reporting success over input
-they had never looked at. Alongside all of that: a network can now
-say which DHCP server it will lease from, the health counters are
-scrapeable by Prometheus, and the plugin's own state survives a power
-cut.
+three times, by three different pairs of eyes, and each pass found
+things the one before it had read past. The first was a security review
+of the trust boundaries (#457, indexed by #699): the five in #699's
+shipped table and #700–#710 from the second round, **all fixed here**.
+That list is written out rather than counted because a count is the one
+form of this sentence that can go false on somebody else's commit. **It
+is also not everything the review produced**: it raised #690 and #691 —
+what each capability in `config.json` actually buys, and whether a
+restricted socket proxy would serve the three read-only Docker API calls
+the plugin makes — and both are on v1.9.0. The second was an
+architecture review of `dev` after those fixes landed, which found
+**ten** lifecycle faults: #720–#724, filed individually, and #727–#731,
+tracked together as #726. All ten are fixed in this release, and six —
+#720, #721, #722, #724, #727 and #728 — are verified present in v1.7.1,
+so they predate this cycle entirely. The third read the CI machinery
+itself (#732) and found gates reporting success over input they had
+never looked at. Alongside all of that: a network can now say which DHCP
+server it will lease from, the health counters are scrapeable by
+Prometheus, and the plugin's own state survives a power cut.
 
 If you are running v1.7.1, the reason to upgrade is the reviews. Three
 things in v1.7.1 are worth naming, and none of them announces itself in
@@ -161,10 +166,21 @@ host network, so the release was held while that review was done.
 
 Five surfaces were audited independently: the Docker-facing driver RPCs,
 the `/metrics` endpoint, the DHCP-server input path, the
-filesystem/argv/env sinks, and the CI gate scripts. Everything found is
-fixed in this release; nothing was deferred. #699 is the public index
-of the whole exercise — what was found, what shipped, and the three
-results that belong to no single finding.
+filesystem/argv/env sinks, and the CI gate scripts. **Every defect found
+is fixed in this release.** Two things the review raised are not defects
+and are deferred: **#690**, establishing what each capability in
+`config.json` actually buys, and **#691**, whether the read-write Docker
+socket can be narrowed to the three read-only calls the plugin makes.
+Both are on v1.9.0, and both open with the words *"Found during the
+security review in #457."*
+
+They are named here because **#699 does not list them.** It is the
+public index of the exercise — what was found, what shipped, and the
+three results that belong to no single finding — and its own header
+promises "what is still open" while its body uses that phrase for a
+*class* of finding rather than for these two issues. A reader who
+follows the pointer will not reach them, which is the whole reason to
+put the numbers in this paragraph instead.
 
 Two things are worth stating plainly:
 
@@ -458,12 +474,45 @@ are fixed in this release** — the count belongs to the review, not to
 either issue, which is worth stating because #726 names only its own
 five.
 
-<!-- RE-DERIVE THE TEN-ISSUE CLAIM AT TAG TIME. This is the last claim
-     in the file that nothing reproduces. The counter table below cannot
-     go stale silently because a command rebuilds it; this one is
-     carried by three sentences (here, the opening paragraph, and "the
-     remaining three ... complete the ten") and only a human re-running
-     the query sees a change.
+<!-- RE-DERIVE THE TEN-ISSUE CLAIM AT TAG TIME. The counter table below
+     cannot go stale silently because a command rebuilds it; this one is
+     carried by five sentences and only a human re-running the query
+     sees a change. Grep `\bten\b` -- the list is here (":471"), the
+     opening paragraph (":76"), "Six of the ten are verified present"
+     (":549"), "By age, three of the ten are this cycle's" (":594"),
+     and "the same ten issues cut two ways" (":602").
+
+     THAT LIST WAS WRONG WHEN CHECKED. It named three sentences, and
+     one of them -- "the remaining three ... complete the ten" -- had
+     been DELETED by the partition fix earlier the same evening, which
+     replaced it with an enumeration of the four the table does not
+     reach. A pointer in a comment is a copy of the thing it points at,
+     and the edit that changed the target did not reach the pointer.
+     Re-derive this list with the grep rather than trusting the line
+     numbers, which move.
+
+     THIS USED TO SAY "the last claim in the file that nothing
+     reproduces". That was itself unreproduced -- and it is the sentence
+     that decides whether the person cutting the tag looks any further,
+     so it was the worst one in the file to leave uncheckable. Nine
+     lines above it the opening paragraph said "sixteen findings", which
+     `grep -n sixteen` found and nothing rebuilt. Replaced by the list
+     of what was actually swept on 2026-08-23, which is
+     delete-the-count-keep-the-list applied to a gate's own reach:
+
+       - the ten-issue claim -- HERE, and no command rebuilds it; that
+         is why this block exists.
+       - the #457 count -- was a bare "sixteen", now the list "#699's
+         shipped table and #700-#710", so it reproduces by reading.
+       - the six-of-ten table -- a grep at the tag rebuilds every row.
+       - the /metrics counter table -- a command rebuilds it.
+       - "four more string options ... all five values" -- a universal
+         that SURVIVES, because "more" points at the bullet above it.
+         A universal is fine when it carries its population within
+         reading distance; a list is the cheapest way to carry one.
+
+     A claim about the file as a whole cannot be checked without reading
+     the whole file, which is the work the claim exists to save.
 
        gh api 'repos/claymore666/docker-net-dhcp/issues?milestone=22&state=all&per_page=100' \\
          --jq '.[] | select(.pull_request == null)
@@ -508,23 +557,118 @@ five.
      three sentences; strictly weaker than the counter-table derivation
      below, which reads the source. -->
 
-**Six of the ten are verified present on `main` as well**: #720, #721,
-#722, #724, #727 and #728. `origin/main`, `v1.7.1` and `018a651` are the
-same commit, so that is a claim any reader can drive rather than
-take — with one keystroke of care, because the obvious command
-refutes it. Bare `git rev-parse v1.7.1` returns `0589c44`: that is
-the annotated **tag object**, not a commit. `git rev-parse
-v1.7.1^{commit}` returns `018a651`, and so does `origin/main`. The
-three agree only once the tag is dereferenced, and an invitation
-that fails under the command a reader will actually type is worse
-than no invitation.
-The one described below that is *not* older than this cycle is #729,
-which was introduced by one of the security fixes above. So they are, in the main, not this cycle's
-mistakes — they are what a second reader found in code that had already
-been reviewed once, by someone looking for a different kind of thing.
+**Six of the ten are verified present at `018a651`, the commit `main`
+sat at while this audit ran**: #720, #721, #722, #724, #727 and #728.
+`v1.7.1^{commit}` and `018a651` are the same commit, so that is a claim
+any reader can drive rather than take — with one keystroke of care,
+because the obvious command refutes it. Bare `git rev-parse v1.7.1`
+returns `0589c44`: that is the annotated **tag object**, not a commit.
+`git rev-parse v1.7.1^{commit}` returns `018a651`. The two agree only
+once the tag is dereferenced, and an invitation that fails under the
+command a reader will actually type is worse than no invitation.
 
-The remaining three — #723, #730 and #731 — complete the ten, and ship
-in this release with the other seven.
+The anchor is the tag rather than `origin/main` on purpose, and the
+earlier draft of this paragraph had it the other way. `origin/main`
+was `018a651` throughout the audit, so the claim was true when
+written — and it stops being true at the moment these notes merge,
+because merging them is what moves that branch. **A branch name
+cannot anchor a claim in a document that ships by moving the
+branch.**
+
+Resolving the tag is only half of driving it. For four of the six —
+#722, #724, #727 and #728 — the defect *is* the absence of a mechanism,
+so the fix's distinctive token being absent at `v1.7.1^{commit}` is the
+whole proof. For #720 and #721 the token is **present** at the tag and
+the defect is what surrounds it: a call made unconditionally that needed
+a guard, and a function that is never called at all.
+
+| # | grep at `v1.7.1^{commit}` | what it shows |
+|---|---|---|
+| #720 | `spawnOrphanRelease` in `pkg/plugin/dhcp_manager.go` | two sites; the Start-failed path at `:1335` calls it **unconditionally** and the fix guards it on `leaving`. The sibling at `:1415` is a different path and is left alone |
+| #721 | `rememberEndpoint` inside `recoverOneEndpoint` (`plugin.go:1261`) | the function exists and calls it **zero** times |
+| #722 | `Setpgid`, `SweepOrphans` | neither exists; `client.go:303` is a bare `exec.Command` |
+| #724 | `.Sync()`, `stateSchemaVersion` in `pkg/plugin/state.go` | neither; the file writes with `os.Rename` at `:161` and `:224` |
+| #727 | `checkStoredOptions` | absent, while `CreateNetwork` at `:285` does validate — so validation was create-time only |
+| #728 | `net.ParseIP(event.Data.Gateway)` | absent; `event_builder.go:250`/`:252` assign the gateway unvalidated |
+
+**#721 is the one that shows why a name-level grep is not enough — but
+the misleading token is `fingerprint`, not `rememberEndpoint`.**
+`git grep -ci fingerprint` at the tag returns twenty matching lines in
+`plugin.go` (six without `-i`) and reads as *present, therefore not the
+defect*, which ends the investigation in the wrong direction. The
+function name is the easy case and settles outright: `rememberEndpoint`
+appears exactly twice at the tag, a doc comment at `:886` and the
+definition at `:890`, and is **called nowhere**. The lesson survives in
+the direction that matters — the defect is a missing call, and a grep
+for the *concept* reports the concept present.
+
+By age, three of the ten are this cycle's: #729, introduced by one of
+the security fixes above, and #730 and #731, which are defects in code
+that ships here for the first time. The older seven are #720, #721,
+#722, #723, #724, #727 and #728 — what a second reader found in code
+that had already been reviewed once, by someone looking for a different
+kind of thing.
+
+**That split is not the one the table above makes**, and the two are
+easy to confuse because they are the same ten issues cut two ways. The
+table settles six — #720, #721, #722, #724, #727 and #728 — with a grep
+at the tag. The four it does not reach are **#723, #729, #730 and
+#731**, and they fall out for two different reasons.
+
+Three of the four have no surface at the tag to grep at all: a token
+that does not exist there cannot show a defect present, so there is
+nothing for a row to assert. #723 is the opposite case — its surface
+**does** exist at the tag, which settles its age and still leaves the
+defect unsettled, and the defect is what a row in that table claims.
+
+So the two splits disagree at both ends rather than one: #723 is in the
+older group and outside the table, and #729 is in this cycle's group
+and outside it too. A bare "the other seven" or "the remaining three"
+would therefore point at a different set depending on which split the
+reader had in mind, which is why every group in this section is named
+by its members — and why the count of the complement is written out
+here rather than left to be inferred.
+
+All four ages are drivable rather than asserted.
+`pkg/plugin/conflict_probe.go` exists at `v1.7.1^{commit}`, so **#723
+predates the cycle**. The other three surfaces do not exist there:
+
+    git grep -c 'openContainerProc' 'v1.7.1^{commit}' -- pkg/plugin/resolvconf.go  # nothing
+    git cat-file -e 'v1.7.1^{commit}:pkg/plugin/resolvconf.go'; echo $?            # 0   CONTROL
+
+    git grep -c   'metrics'        'v1.7.1^{commit}' -- pkg/plugin/   # nothing
+    git grep -c   'LeasesObtained' 'v1.7.1^{commit}' -- pkg/plugin/   # endpoints.go:4   CONTROL
+
+    git grep -cEi 'server_polic|serverpolic|dhcp_server|preferred_server|deny_server' \
+                  'v1.7.1^{commit}' -- pkg/                           # nothing
+    git grep -cEi 'server_polic|serverpolic|dhcp_server|preferred_server|deny_server' \
+                  origin/dev -- pkg/                                  # matches          CONTROL
+
+#729's control is the stronger of the three, and deliberately: the
+**file** it names is present at the tag and the **function** is not, so
+the empty result cannot be blamed on the path.
+
+Every absence is paired with a control, because an empty result from a
+mistyped pathspec looks exactly like an absence. A control's job is
+nonzero-ness rather than size, which is why the one control that reads
+a **moving** ref carries no number: `v1.7.1^{commit}` is frozen and
+`origin/dev` is not, so a count written beside it is stale by the next
+merge.
+
+**#730 lives in `/metrics` and #731 in the server-policy ladder, and
+both of those ship for the first time here** — a defect cannot be older
+than the code it lives in. **#729 is the one that sentence does not
+cover.** Its surface is new this cycle as well, but it did not arrive
+with a feature: `openContainerProc` is introduced by `df7cf42`, *"pin
+the socket mode, and the PID the DNS write lands in (#687, #688)"* —
+one of the security fixes this release is named for. The leaked
+descriptor came in with the fix that closed the recycled-PID hazard.
+
+    git log -S'func openContainerProc' -- pkg/plugin/   # df7cf42, and nothing older
+
+A release can introduce the defect it is auditing, and this audit found
+one of its own. That is an argument for having run the second pass, not
+against it.
 
 The pass also recorded two structural notes that are not blockers and
 are not fixed here: `plugin.go` grew again this cycle and its three
@@ -1253,9 +1397,16 @@ option the older one never did. None of that was visible before.
     is a required status check whose "no issue" waiver matched an
     indented copy — and matched the gate's own failure text, so a run
     that quoted the rule satisfied it. (#758)
-  - Eight one-to-five-line correctness fixes across five workflows. Six
-    of the eight defects reproduced on inspection, two did not, and one
-    of those six had a third instance the issue had not listed. (#742)
+  - Eight one-to-five-line correctness fixes across five workflows
+    (`apk-pin-check`, `capture-fixtures`, `integration-arm64`,
+    `integration-hosted`, `test.yaml`). As recorded in `0279233`'s
+    commit message, six of the eight reports reproduced on inspection
+    and two did not — those two still carry a change, made for an
+    adjacent reason, which is why the fix count is eight and the defect
+    count is six. One of the six had a third instance the issue had not
+    listed. Those three are review judgements: they live in that message
+    and in #742, not in the tree, so they are checkable against a named
+    source rather than re-derivable from a diff. (#742)
   - Two detectors were mis-reporting at the time they were read. The
     label reconciler looked up unresolved references with a fallback
     that treated a rate limit, a 5xx and a dropped connection exactly
@@ -1263,8 +1414,24 @@ option the older one never did. None of that was visible before.
     planner recomputes desired state from scratch, a reference that
     contributes nothing becomes an instruction to strip `in-dev` from
     issues that are in dev. The other demanded a check-run GitHub never
-    creates, and had been red for 42% of its last 60 runs. (#739, #740)
-  - **The only new security gate in the release.** `allow-ghsas` in
+    creates, and had been red for 34 of the 60 runs between
+    `2026-08-20T14:48Z` and `2026-08-22T13:39Z` — 57%, in streaks. The
+    endpoints are given rather than an anchor and a count because "the
+    last 60" names a different set an hour later: three separate 60-run
+    windows in this workflow's history each contain exactly 25 failures,
+    so an anchored count does not identify a window.
+
+    The repair has **unit** evidence and no execution evidence, and the
+    two are worth separating because the stronger one is the easy thing
+    to claim. `scripts/test-check-missing-runs.sh` ran in the fixing
+    PR's own lane. The repaired detector has never executed in the
+    scheduled role this paragraph is about: `missing-runs.yml` checks
+    out with no `ref:`, so a `schedule` run gets the default branch, and
+    every run it has ever had — all of them on `main`, by that cause —
+    executed `main`'s copy, which does not carry the fix. Green runs on `main` after the merge are evidence
+    that the *old* detector stopped failing, which is not a fact about
+    this change at all. (#739, #740)
+  - **The new gate on the dependency-advisory path.** `allow-ghsas` in
     `.github/dependency-review-config.yml` carried advisories that
     `.github/vuln-allowlist.txt` had already rejected, so
     dependency-review was *looser* than govulncheck: a pull request
@@ -1287,9 +1454,13 @@ option the older one never did. None of that was visible before.
   release that failed verification had already moved the tag every
   `docker plugin install` without a version follows; it is promoted last
   now. A dispatch input was expanded directly into a `run:` body in the
-  job that holds the signing identity. The guard that was supposed to
-  restrict dispatches matched a literal input name, so two workflows
-  were ungated by it. And a sparse checkout persists into the next
+  job that holds the signing identity — `${{ ... }}` is substituted
+  before bash parses the line, so validating it afterwards validates
+  nothing, and that job holds `id-token: write`. Values reach `run:`
+  through `env:` now, and `scripts/check-run-expansions.sh` fails a
+  workflow that goes back to interpolating one. The guard that was
+  supposed to restrict dispatches matched a literal input name, so two
+  workflows were ungated by it. And a sparse checkout persists into the next
   checkout at the same path, which would have run the docs deploy
   against a tree missing most of its files. (#736, #737, #738)
 - The documentation was read against what the code actually does rather
@@ -1359,20 +1530,40 @@ option the older one never did. None of that was visible before.
      the others is the exact defect this release documents three times
      over -- all three, or none:
 
-       1. "Everything found is fixed in this release; nothing was
-          deferred" (the security-review section; scoped to #457/#699).
-       2. "Every finding from all three reviews is fixed in this
+       1. "Every defect found is fixed in this release" (the
+          security-review section; scoped to #457/#699).
+       2. "Every defect from all three reviews is fixed in this
           release" (below; the widest of the three).
-       3. "Two is the entire list" (below). -->
+       3. "Those two are the entire list" (below).
 
-**Every finding from all three reviews is fixed in this release.** No
+     ALL THREE SAY *DEFECT*, AND THAT IS LOAD-BEARING. They said
+     "everything found" and "every finding" until 2026-08-23, and both
+     were FALSE: #690 and #691 open with "Found during the security
+     review in #457", are not defects, and are deferred to v1.9.0.
+     Widening any of them back to "finding" or "everything" re-breaks
+     all three at once.
+
+     The reason it survived: #699 is cited as the index of the exercise
+     and DOES NOT LIST #690/#691. Its header promises "what is still
+     open"; its body uses that phrase for a class of finding instead.
+     So the pointer a reader is given cannot refute the sentence, and
+     checking the sentence against its own citation returns clean. If
+     #699 ever gains those two, this paragraph can shorten -- until
+     then the numbers live here. -->
+
+**Every defect from all three reviews is fixed in this release.** No
 defect was carried, and a fault this cycle introduced was fixed this
-cycle rather than triaged forward.
+cycle rather than triaged forward. *Defect* is doing real work in that
+sentence: #690 and #691 came out of the same security review, are
+deferred to v1.9.0, and are named in the security section above. Neither
+is a defect; both would be counter-examples to a claim about
+"findings".
 
-What is deferred is two structural observations. Two is the entire
-list — this section is short because the reviews closed, not because it
-was trimmed to fit. Both are worth naming separately precisely because
-neither is a defect anyone can point at:
+What is deferred *as a defect* is nothing, and what is deferred as a
+structural observation is two. Those two are the entire list — this
+section is short because the reviews closed, not because it was trimmed
+to fit. Those two structural observations are worth naming separately
+precisely because neither is a defect anyone can point at:
 
 - **The release invariant is decided at five sites, in prose.** Whether
   it is safe to hand a lease back to the DHCP server is settled
