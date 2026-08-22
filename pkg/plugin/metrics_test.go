@@ -25,14 +25,35 @@ import (
 // in metricDefs must show up in the golden diff as a number, not as a 0
 // that reads like an untouched counter.
 //
-// Values descend with field index, which makes them distinct without
-// anyone maintaining a list. Since #730 the family aggregate is no
-// longer rendered as a series of its own — the two stored halves are —
-// so what the fixture has to guarantee is that the aggregate, the v4
-// half and the v6 half read as three DIFFERENT numbers, or a def that
-// named the wrong one of the three would render identically.
-// assertFixtureIsNotDegenerate enforces that rather than trusting the
-// declaration order to stay put.
+// Values are derived from the field's NAME, not its index, and that is
+// the whole point of fixtureValue: a field's value must be a property
+// of the field and of nothing else.
+//
+// Values used to descend with field index — (n-i)*10 — which is
+// distinct without a maintained list but couples every field to every
+// other. Adding one field shifts n and reindexes everything below it,
+// so a change of one series presented as a wall of renumbered values:
+// measured, inserting a single field in the middle of HealthResponse
+// that renders NO series at all (json:"-") moved 74 lines of the
+// golden. That is a check whose output is unreadable in exactly the
+// situation it exists for, and a diff that large reads as "regenerate
+// it" — which is the discharge that ships a defect. It is not
+// hypothetical: the golden has already been regenerated twice under
+// that scheme (1aef0da, 34ef250), both times by someone reading a
+// large diff and judging it fine.
+//
+// Under name-keying the same insertion moves ZERO lines, and a real
+// series change is the only thing in the diff.
+//
+// Since #730 the family aggregate is no longer rendered as a series of
+// its own — the two stored halves are — so what the fixture has to
+// guarantee is that the aggregate, the v4 half and the v6 half read as
+// three DIFFERENT numbers, or a def that named the wrong one of the
+// three would render identically. assertFixtureIsNotDegenerate
+// enforces that. Name-keying preserves distinctness rather than
+// constructing it, so assertFixtureValuesDoNotCollide makes a hash
+// collision a loud failure with a named remedy instead of two fields
+// that quietly render the same number.
 func fixtureSnapshot(t *testing.T) HealthResponse {
 	t.Helper()
 	var h HealthResponse
@@ -42,7 +63,7 @@ func fixtureSnapshot(t *testing.T) HealthResponse {
 		f := v.Field(i)
 		switch f.Kind() {
 		case reflect.Int32, reflect.Int, reflect.Int64:
-			f.SetInt(int64((n - i) * 10))
+			f.SetInt(fixtureValue(v.Type().Field(i).Name))
 		case reflect.Float64:
 			f.SetFloat(1234.5)
 		case reflect.Bool:
@@ -54,8 +75,67 @@ func fixtureSnapshot(t *testing.T) HealthResponse {
 				v.Type().Field(i).Name, f.Kind())
 		}
 	}
+	assertFixtureValuesDoNotCollide(t)
 	assertFixtureIsNotDegenerate(t, h)
 	return h
+}
+
+// fixtureValue maps a field NAME to the value the fixture gives it.
+//
+// FNV-1a over the name, folded into a seven-digit range so the values
+// are readable in a diff and can never be 0 — a zero would read like an
+// idle counter and hide a field that metricDefs forgot.
+//
+// Written out rather than taken from hash/fnv so that nothing about the
+// numbering can change under this test from outside the file. It must
+// also stay deterministic across runs and platforms, which rules out
+// hash/maphash: that is seeded randomly per process, and a fixture that
+// renders different numbers on each run cannot have a golden at all.
+func fixtureValue(name string) int64 {
+	const offset64 = 2166136261
+	const prime = 16777619
+	h := uint32(offset64)
+	for i := 0; i < len(name); i++ {
+		h ^= uint32(name[i])
+		h *= prime
+	}
+	return int64(h%9_000_000) + 1_000_000
+}
+
+// assertFixtureValuesDoNotCollide fails if two HealthResponse fields
+// hash to the same fixture value.
+//
+// Index numbering made distinctness structural; name numbering makes it
+// probable, and probable is not the same thing. Two fields rendering
+// the same number is precisely the condition the golden cannot see
+// through — a def wired to the wrong one of them would render
+// identically, which is the mis-wiring assertFixtureIsNotDegenerate
+// exists to catch and would then miss.
+//
+// So the collision is caught here, loudly, with a remedy, rather than
+// being left to chance. It names both fields, because "there is a
+// collision" is not actionable and "these two collide" is.
+func assertFixtureValuesDoNotCollide(t *testing.T) {
+	t.Helper()
+	typ := reflect.TypeOf(HealthResponse{})
+	byValue := make(map[int64]string, typ.NumField())
+	for i := 0; i < typ.NumField(); i++ {
+		name := typ.Field(i).Name
+		switch typ.Field(i).Type.Kind() {
+		case reflect.Int32, reflect.Int, reflect.Int64:
+		default:
+			continue
+		}
+		val := fixtureValue(name)
+		if prev, dup := byValue[val]; dup {
+			t.Fatalf("fixture values collide: %s and %s both hash to %d.\n"+
+				"  Two fields rendering the same number is the one thing the golden cannot see\n"+
+				"  through -- a def wired to the wrong one of the pair renders identically.\n"+
+				"  Widen the range in fixtureValue, or rename one of the two fields.",
+				prev, name, val)
+		}
+		byValue[val] = name
+	}
 }
 
 // assertFixtureIsNotDegenerate fails if a family metric's three tags —
