@@ -640,6 +640,20 @@ Labelled, and not citable as authority.
 # Standing question, every round
 
 **Which rule is costing more than it returns?** Answer it with a kill
-reason from the four types, or say "none" and mean it. On 2026-08-22
+reason from the four types, or say "none" and mean it.
+
+**Judge a rule on recall, not precision, when the miss is silent and the
+false positive is a glance.** R17's first run over a release-notes
+section produced **26 candidates, 25 of them ordinary pronouns and one
+real** — a count that had borrowed the wrong noun from its neighbouring
+sentence, in prose its author had reread four times. A rule judged on
+precision dies at 1-in-26. The value was never the hit rate; it was that
+the one real instance was invisible to four careful readings and took a
+mechanical pass forty seconds to surface.
+
+This matters *because* of the kill question rather than despite it: a
+kill test that measures precision removes the good rules first. The cost
+side of the ratio is what a false positive costs to dismiss, not how
+many there are. On 2026-08-22
 eight rules were added and one was killed. That ratio is the thing this
 section exists to move.
