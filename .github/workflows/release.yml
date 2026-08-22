@@ -78,16 +78,34 @@ jobs:
       HAS_HUB_CREDS: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
 
     steps:
+      # The dispatch input reaches the shell as DATA, through env, and is
+      # never expanded into the script text (#737). `${{ }}` is
+      # substituted before bash parses the line, so a value carrying a
+      # quote and a semicolon becomes commands — and this job is the
+      # worst place in the tree for that: it holds packages: write,
+      # id-token: write (keyless Sigstore — code running here can sign an
+      # arbitrary artifact as this repository's OIDC identity),
+      # attestations: write, and both registry tokens. Validating the
+      # value on the next line does not help when the shell has already
+      # parsed it. The same treatment the tree already applies in
+      # coverage-presence.yml, pages.yml, release-backmerge.yml and
+      # throughout test.yaml.
       - name: Resolve release tag
         id: tag
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
         run: |
-          if [ -n "${{ inputs.tag }}" ]; then
-            TAG="${{ inputs.tag }}"
-          else
-            TAG="${GITHUB_REF_NAME}"
-          fi
-          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]]; then
-            echo "Tag $TAG does not look like vX.Y.Z; refusing." >&2
+          set -euo pipefail
+          TAG="${INPUT_TAG:-$GITHUB_REF_NAME}"
+          # Anchored, and the pre-release suffix is spelled out. The old
+          # pattern had no `$`, so `v1.2.3junk` and `v1.2.3.4` passed —
+          # and then failed the bare-version test below, silently
+          # becoming a "pre-release": `:latest` untouched, a DRAFT
+          # GitHub Release, and a run that looks like it succeeded. A
+          # typo'd release tag is a release nobody can see, so it must
+          # stop here instead.
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc[0-9]+)?$ ]]; then
+            echo "::error::tag '$TAG' is not vX.Y.Z or vX.Y.Z-rcN; refusing." >&2
             exit 1
           fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
@@ -166,7 +184,9 @@ jobs:
       # is why promotion can happen after signing without needing a
       # second signature.
       - name: Push to GHCR
-        run: make PLUGIN_NAME="${GHCR_NAME}" PLUGIN_TAG="${{ steps.tag.outputs.tag }}" push
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: make PLUGIN_NAME="${GHCR_NAME}" PLUGIN_TAG="${TAG}" push
 
       # The reference digests in docs/verifying-releases.md must describe
       # the binaries this tag actually publishes (#502).
@@ -190,9 +210,11 @@ jobs:
       # paste into the doc. That is runbook step 10b becoming enforced
       # rather than remembered.
       - name: Check the documented reference digests against this build
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
         run: |
           bash scripts/check-reference-digests.sh \
-            "${{ steps.tag.outputs.tag }}" \
+            "${TAG}" \
             plugin/rootfs/usr/sbin/net-dhcp \
             plugin/rootfs/usr/lib/net-dhcp/dhcp-handler
 
@@ -201,7 +223,9 @@ jobs:
       # Docker image layer cache is reused so this is cheap.
       - name: Push to Docker Hub
         if: env.HAS_HUB_CREDS == 'true'
-        run: make PLUGIN_NAME="${HUB_NAME}" PLUGIN_TAG="${{ steps.tag.outputs.tag }}" push
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: make PLUGIN_NAME="${HUB_NAME}" PLUGIN_TAG="${TAG}" push
 
       # Refresh the Docker Hub long description from the repo's README
       # so the Hub page never drifts from what's on GitHub. Short
@@ -375,21 +399,24 @@ jobs:
       # them prominently.
       - name: Workflow summary
         if: always()
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          LATEST: ${{ steps.tag.outputs.latest_tag }}
         run: |
           {
-            echo "## Published ${{ steps.tag.outputs.tag }}"
+            echo "## Published ${TAG}"
             echo
-            echo "Version tag only. \`${{ steps.tag.outputs.latest_tag }}\` is moved by"
+            echo "Version tag only. \`${LATEST}\` is moved by"
             echo "the \`promote-latest\` job, after verify-install (#736)."
             echo
             echo "### Install from GHCR"
             echo '```'
-            echo "docker plugin install ${GHCR_NAME}:${{ steps.tag.outputs.tag }}"
+            echo "docker plugin install ${GHCR_NAME}:${TAG}"
             echo '```'
             if [ "${HAS_HUB_CREDS}" = "true" ]; then
               echo "### Install from Docker Hub"
               echo '```'
-              echo "docker plugin install ${HUB_NAME}:${{ steps.tag.outputs.tag }}"
+              echo "docker plugin install ${HUB_NAME}:${TAG}"
               echo '```'
             else
               echo "_Docker Hub push skipped — set DOCKERHUB_USERNAME / DOCKERHUB_TOKEN secrets to enable._"
@@ -575,12 +602,18 @@ jobs:
       packages: read   # pulls the just-published plugin from GHCR
     env:
       GHCR_NAME: ghcr.io/claymore666/docker-net-dhcp
+      TAG: ${{ needs.release.outputs.tag }}
     steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Install released plugin from GHCR
         run: |
-          TAG="${{ needs.release.outputs.tag }}"
           REF="${GHCR_NAME}:${TAG}"
-          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
           # The published plugin bind-mounts STATE_DIR, and the daemon
           # does not create a missing bind source (#440). verify-install
           # must do exactly what the docs tell an operator to do.
@@ -599,7 +632,6 @@ jobs:
 
       - name: Assert plugin is enabled
         run: |
-          TAG="${{ needs.release.outputs.tag }}"
           REF="${GHCR_NAME}:${TAG}"
           ENABLED="$(docker plugin inspect -f '{{.Enabled}}' "$REF")"
           if [ "$ENABLED" != "true" ]; then
@@ -622,12 +654,18 @@ jobs:
       packages: read
     env:
       GHCR_NAME: ghcr.io/claymore666/docker-net-dhcp
+      TAG: ${{ needs.release.outputs.tag }}-arm64
     steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Install released arm64 plugin from GHCR
         run: |
-          TAG="${{ needs.release.outputs.tag }}-arm64"
           REF="${GHCR_NAME}:${TAG}"
-          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
           # Same rule as verify-install: nothing but the documented
           # STATE_DIR mkdir. This host's value is that it has never run
           # a container (#588).
@@ -637,7 +675,6 @@ jobs:
 
       - name: Assert plugin is enabled
         run: |
-          TAG="${{ needs.release.outputs.tag }}-arm64"
           REF="${GHCR_NAME}:${TAG}"
           ENABLED="$(docker plugin inspect -f '{{.Enabled}}' "$REF")"
           if [ "$ENABLED" != "true" ]; then

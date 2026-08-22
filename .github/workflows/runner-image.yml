@@ -55,12 +55,20 @@ jobs:
           echo "Building with actions/runner v${ver}"
 
       - name: Log in to GHCR
-        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build
+        env:
+          # Read out of a third-party API response one step above, so it
+          # is external data and reaches the shell through env (#737).
+          RUNNER_VERSION: ${{ steps.agent.outputs.version }}
         run: |
           docker build -f ci/runner-image/Dockerfile \
-            --build-arg RUNNER_VERSION="${{ steps.agent.outputs.version }}" \
+            --build-arg RUNNER_VERSION="${RUNNER_VERSION}" \
             -t "${IMAGE}:${GITHUB_SHA::7}-${{ matrix.arch }}" \
             .
 
@@ -113,7 +121,11 @@ jobs:
       packages: write
     steps:
       - name: Log in to GHCR
-        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Create and push manifest list
         run: |

@@ -425,6 +425,20 @@ jobs:
       - name: Floating-tag promotion order
         run: bash scripts/check-latest-promotion.sh
 
+      # No dispatch input, event free-text field, or secret may be
+      # expanded into a `run:` body (#737). `${{ }}` is substituted
+      # before bash parses the line, so validating the value on the next
+      # line validates something the shell has already executed. The
+      # tree already did this correctly in four workflows and still had
+      # it wrong in release.yml — the one job holding `id-token: write`,
+      # where running code can sign an arbitrary artifact as this
+      # repository's OIDC identity. Known, written down, unenforced, and
+      # therefore drifted in the place it mattered most.
+      #
+      # Hosted, no pool slot: it reads workflow text.
+      - name: Run-body expansion check
+        run: bash scripts/check-run-expansions.sh
+
       # The fixture capture has to run where the suite runs (#644). The
       # drift gate next to it cannot enforce that: move the capture to a
       # hosted runner and the recorded engine and the checked engine move
