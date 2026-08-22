@@ -42,14 +42,17 @@ func TestCountingWrappers_AreTheOnlyCallers(t *testing.T) {
 				"docs/reference.md tells operators that counter is the only thing distinguishing that " +
 				"refusal from a slow container start",
 		},
-		// A second row belongs here once dhcpManager.observeLease lands
-		// (lease_time_clamped, same disease, same fix):
-		//
-		//   {callee: "observe", wrapper: "observeLease", why: "..."},
-		//
-		// It is one line, deliberately: the point of the table is that
-		// the next instance of this shape costs a row rather than
-		// another near-identical test.
+		{
+			callee:  "observe",
+			wrapper: "observeLease",
+			why: "lease_time_clamped is counted around the fold, so a second caller would take a clamped " +
+				"lease time into the tracker without counting the clamp -- and the clamp is the only " +
+				"signal that a server's lease time was overridden, which /metrics publishes and " +
+				"nothing else records",
+		},
+		// The row above cost one line, which was the point of the
+		// table: the next instance of this shape adds a row rather
+		// than another near-identical test.
 	}
 
 	for _, tc := range tests {
