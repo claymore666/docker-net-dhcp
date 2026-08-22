@@ -397,6 +397,35 @@ What caught it was not arithmetic: *"six new fields produce six new
 series"* did not sound right for a change whose entire purpose is that
 the series already existed. *(client3)*
 
+## I17 — three hand-written mirror guards, one evening, three authors
+
+A check whose expectation is **written by the same hand, in the same
+sitting, as the thing it checks**. Three instances, in three files, by
+three different people, all measured on 2026-08-22:
+
+- `familyPairs()` checked against a literal `6`.
+- The counting-wrapper AST table keyed on a **name**.
+- `want := map[string]bool{dhcpcdBin, mountBin, mkdirBin}` — **a third
+  copy of the set the test exists to stop becoming two copies.** It
+  guarantees three of five: `unsharePath` and `/bin/sh` are unguarded,
+  and both oversight and client2 proved it independently — relocate
+  `unsharePath` and the whole repo stays green.
+
+**This is I12 generalised out of prose and into code.** There, a rule's
+author under-counted its subject in the commit that introduced the rule.
+Here, an author wrote a test specifically to stop this class and
+instantiated the class while writing it. Same failure, and the same
+argument: **mechanical, not careful.**
+
+The corollary, with three instances behind it:
+
+> **An expectation must be derived from the thing it checks, or the check
+> is a copy with a test's name on it.**
+
+All three fixes are one move — derive `familyPairs` from `metricDefs()`,
+key the AST row on the field, derive `want` from the package's own `^/`
+constants. *(master-release, with oversight and client2)*
+
 ---
 
 # Rules
