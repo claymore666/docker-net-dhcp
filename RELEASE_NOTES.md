@@ -62,20 +62,24 @@ re-accepting it.
 ## v1.8.0
 
 The release that got reviewed by people rather than only by tools —
-three times, by three different pairs of eyes, and each pass found things
-the one before it had read past. The first was a security review of the
-trust boundaries (#457, indexed by #699): **sixteen** findings — five in
-the first round and eleven in the second — all sixteen fixed here. The
-second was an architecture review of `dev` after those fixes landed,
-which found **ten** lifecycle faults: #720–#724, filed individually, and
-#727–#731, tracked together as #726. All ten are fixed in this release,
-and six — #720, #721, #722, #724, #727 and #728 — are verified present
-in v1.7.1, so they predate this cycle entirely. The third read the CI
-machinery itself (#732) and found gates reporting success over input
-they had never looked at. Alongside all of that: a network can now
-say which DHCP server it will lease from, the health counters are
-scrapeable by Prometheus, and the plugin's own state survives a power
-cut.
+three times, by three different pairs of eyes, and each pass found
+things the one before it had read past. The first was a security review
+of the trust boundaries (#457, indexed by #699): **sixteen** findings —
+five in the first round and eleven in the second — all sixteen fixed
+here. **Sixteen is the count of findings fixed, not of everything that
+review produced**: it also raised #690 and #691 — what each capability
+in `config.json` actually buys, and whether a restricted socket proxy
+would serve the three read-only Docker API calls the plugin makes — and
+both are on v1.9.0. The second was an architecture review of `dev` after
+those fixes landed, which found **ten** lifecycle faults: #720–#724,
+filed individually, and #727–#731, tracked together as #726. All ten are
+fixed in this release, and six — #720, #721, #722, #724, #727 and #728 —
+are verified present in v1.7.1, so they predate this cycle entirely. The
+third read the CI machinery itself (#732) and found gates reporting
+success over input they had never looked at. Alongside all of that: a
+network can now say which DHCP server it will lease from, the health
+counters are scrapeable by Prometheus, and the plugin's own state
+survives a power cut.
 
 If you are running v1.7.1, the reason to upgrade is the reviews. Three
 things in v1.7.1 are worth naming, and none of them announces itself in
