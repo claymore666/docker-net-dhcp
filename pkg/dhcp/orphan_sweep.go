@@ -5,7 +5,9 @@ package dhcp
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -209,7 +211,12 @@ func isOrphanedClient(pid int) bool {
 		return false
 	}
 
-	if commOf(pid) != commComparand() {
+	comm, ok := commOf(pid)
+	if !ok || comm != commComparand() {
+		// Unreadable is "no", explicitly. This direction was already
+		// right when the error was folded into ""; it is spelled out
+		// now so it stays right by construction rather than by the
+		// accident of which way the comparison happened to point.
 		return false
 	}
 
@@ -236,7 +243,35 @@ func isOrphanedClient(pid int) bool {
 	// rather than init, so testing for 1 would MISS real orphans and
 	// leave the duplicate-client bug in place on exactly the hosts this
 	// plugin runs on.
-	return commOf(ppid) != selfComm
+	pcomm, ok := commOf(ppid)
+	if ok {
+		return pcomm != selfComm
+	}
+	// The comm could not be read, and THAT IS TWO DIFFERENT FACTS. They
+	// must not share a branch, because they have opposite answers.
+	//
+	// The entry is gone: the parent exited between the status read and
+	// this one, so nothing is managing this client. That is the case the
+	// sweep exists for.
+	//
+	// The entry is there but its comm is not readable: we cannot tell
+	// whether the parent is a sibling instance of this plugin. The
+	// question this answers is whether to SIGKILL, as root, against the
+	// host PID namespace — so unknown is "no", the same rule the rest of
+	// this function already follows.
+	//
+	// THE KILLING VALUE IS `known && gone`, AND IT IS SPELLED OUT HERE
+	// RATHER THAN LEFT TO THE HELPER because that is the mistake this
+	// very line made an hour ago: it read `!procEntryExists(ppid)`, and
+	// the negation quietly turned "I could not find out" into "it is
+	// gone". A caller has to name the direction to compile now, and
+	// naming it in a comment as well means the next reader does not have
+	// to re-derive which of the two booleans is the dangerous one.
+	//
+	// Only a determinate absence kills. Unknown falls on the sparing
+	// side, the same way every other read in this function does.
+	gone, known := procEntryGone(ppid)
+	return known && gone
 }
 
 // commComparand is the value /proc/<pid>/comm is matched against.
@@ -261,13 +296,81 @@ func commComparand() string {
 	return filepath.Base(dhcpcdBin)
 }
 
-// commOf returns a process's comm, or "" if it cannot be read.
-func commOf(pid int) string {
+// commOf returns a process's comm and whether it could be read.
+//
+// THE SECOND RESULT IS THE WHOLE POINT, and it replaces a "" sentinel
+// that shipped in this release. An error folded into an in-band value
+// has no direction of its own: it inherits one from the comparison it
+// lands in. The same helper was read twice, twenty-seven lines apart,
+// with opposite meanings —
+//
+//	if commOf(pid) != commComparand() { return false }   // "" -> "no"  SAFE
+//	return commOf(ppid) != selfComm                      // "" -> "yes" KILL
+//
+// — and no amount of reading commOf could have told you which one it
+// was. Its safety was a property of the call site. A second result
+// makes that property impossible to leave unstated: a caller must
+// choose a direction to compile.
+//
+// That is a guard against forgetting, not against choosing wrongly. It
+// cannot stop a caller writing `comm, _ :=` and reproducing the bug; it
+// only stops one doing it silently.
+func commOf(pid int) (string, bool) {
 	comm, err := os.ReadFile(filepath.Join(procRoot, strconv.Itoa(pid), "comm"))
 	if err != nil {
-		return ""
+		return "", false
 	}
-	return string(bytes.TrimSpace(comm))
+	return string(bytes.TrimSpace(comm)), true
+}
+
+// procEntryGone reports whether /proc/<pid> is absent, and separately
+// whether that could be determined at all.
+//
+// THE SECOND RESULT EXISTS BECAUSE THE FIRST VERSION OF THIS FUNCTION
+// REPRODUCED, NINETEEN LINES BELOW THE COMMENT NAMING IT, THE DEFECT
+// THIS FILE WAS BEING FIXED FOR. It read:
+//
+//	_, err := os.Stat(...)
+//	return err == nil
+//
+// and its caller inverted that into "the parent is gone". But err != nil
+// is not "the entry vanished". It is "the entry vanished OR I could not
+// find out", and the caller gave the second reading the direction KILL,
+// as root, against the host PID namespace. Splitting commOf into
+// (string, bool) guarded the read I was looking at; this is a new read
+// underneath it with the same shape, which is the whole lesson: the
+// guard was against forgetting, and I forgot in the next function down.
+//
+// Absence has exactly one errno. ENOENT is the parent exiting. ENOTDIR,
+// ELOOP, EACCES, ENOMEM, a procRoot that is not a procfs mount — every
+// one of those is "I cannot tell", and only ENOENT may authorise a kill.
+func procEntryGone(pid int) (gone bool, known bool) {
+	_, err := os.Stat(filepath.Join(procRoot, strconv.Itoa(pid)))
+	switch {
+	case err == nil:
+		return false, true
+	case errors.Is(err, fs.ErrNotExist):
+		return true, true
+	default:
+		// `gone` IS SET TO THE DANGEROUS VALUE ON PURPOSE. Do not
+		// "correct" it to false.
+		//
+		// `known` is false here, and the only caller writes
+		// `known && gone`, so this value is never read and the shipped
+		// behaviour is identical either way. What it changes is what
+		// happens to a caller who ignores the second result: with
+		// `false` here, `gone, _ :=` is silently SAFE and would pass
+		// every test in this package, so the comment at the call site
+		// claiming a caller "has to name the direction to compile"
+		// would be aspirational. With `true`, that caller kills on an
+		// unstattable parent and the control pair goes red.
+		//
+		// Returning false would also be one more in-band value
+		// carrying a direction of its own -- the safe one, this time,
+		// which is exactly the reasoning that made `!procEntryExists`
+		// look fine an hour ago.
+		return true, false
+	}
 }
 
 // parentPID reads a process's parent pid, reporting whether it could.

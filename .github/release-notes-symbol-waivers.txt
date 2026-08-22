@@ -1,0 +1,80 @@
+# Release-notes symbol waivers — symbols RELEASE_NOTES.md names that no
+# longer resolve in the tree, enforced by
+# scripts/check-release-notes-symbols.sh.
+#
+# WHAT IS ENFORCED AND WHAT IS REVIEWED. All three rules below were
+# stated here and enforced by NOTHING until #779 -- a file of rules for
+# a gate that exists because prose decays, in prose the gate never read.
+# Three of the four are mechanical and now fail the build. The fourth
+# cannot be, and pretending otherwise would turn a human judgement into
+# a green tick:
+#
+#   ENFORCED  an entry belongs to a CATEGORY LINE (below), and the
+#             category is printed beside the symbol on every pass.
+#   ENFORCED  a waiver whose symbol resolves, or that these notes no
+#             longer mention, is stale and fails. Unlike the vuln
+#             allowlist -- which goes stale when a remote database
+#             moves, and only warns -- a waiver here goes stale because
+#             somebody edited THIS tree, in the pull request being
+#             checked.
+#   ENFORCED  a symbol in the CURRENT release section cannot be waived.
+#   REVIEWED  whether the reason is a REASON. "Renamed" is a word, not
+#             an argument. No parser can tell a decision from a shrug,
+#             so a person reads this file and the gate says so rather
+#             than simulating it.
+#
+# Rules, following .github/vuln-allowlist.txt:
+#   - An entry requires a reason. No bare tokens. "The gate complained"
+#     is a suppression, not a decision. The entry is introduced by a
+#     CATEGORY LINE -- a comment beginning `HISTORICAL` or `EXTERNAL`
+#     after one space -- and every token until the next non-token line
+#     belongs to it. A blank `#` inside a reason does not end it.
+#   - Two categories, and the reason must say which:
+#       HISTORICAL — the symbol was real when the sentence was written
+#                    and has since been renamed or removed. Name the
+#                    commit that changed it. Frozen release sections
+#                    describe the tree as it was; rewriting them would
+#                    be falsifying history to satisfy a check.
+#       EXTERNAL   — the symbol belongs to a dependency, not to us, so
+#                    it will never resolve in a tracked *.go file.
+#   - A CURRENT release section has no third category. If a symbol in
+#     the section being written does not resolve, the prose is wrong and
+#     the fix is to correct it, not to waive it.
+#
+# HISTORICAL — v0.5.0, line 3110. `LastIP` / `LastIPv6` were exported
+#   fields on dhcpManager when v0.5.0 shipped (introduced by b95679c,
+#   "Track latest IP from bound/renew"). 9c46e87 unexported them to
+#   lastIP / lastIPv6 behind ipMu during the post-v0.5.3 concurrency
+#   pass. Both fields still exist; only their case changed.
+#
+#   Worth recording why this pair is the reason the check strips
+#   comments: `LastIP` matched a tracked .go file right up until it did,
+#   on one code comment at dhcp_manager.go:1090. A resolver that reads
+#   comments would have waived `LastIP` and flagged `LastIPv6` — two
+#   different answers for one renamed pair.
+LastIP
+LastIPv6
+#
+# HISTORICAL — v0.5.3, lines 2947 and 2951. `AwaitNetNS` and
+#   netns.GetFromPath were both removed by 79d4d2f, "open the sandbox
+#   netns by fd, not by /proc path" (#695). The paragraph describes the
+#   /proc-path era accurately; the replacement is awaitContainerNetNS.
+AwaitNetNS
+GetFromPath
+#
+# HISTORICAL — v0.6.0, line 2790. `tombstoneMu` was the mutex guarding
+#   the tombstone read-modify-write path. 6463aaa extracted the
+#   tombstone store and moved the locking rule inside it (#658).
+tombstoneMu
+#
+# HISTORICAL — v0.6.0, line 2832, and this one is self-describing: the
+#   sentence exists to record that util.ParseJSONBody was RENAMED to
+#   ParseJSONOrErrorResponse, which is present in the tree today. The
+#   old name has to appear for the sentence to mean anything.
+ParseJSONBody
+#
+# EXTERNAL — "Changes vs. upstream", line 3292. NetworkInspectOptions is
+#   a Docker API type (github.com/docker/docker/api/types), named in a
+#   list of upstream API changes. It is not ours and will not resolve
+#   here.
+NetworkInspectOptions
