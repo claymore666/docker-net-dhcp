@@ -19,9 +19,26 @@ import (
 // Nothing else can enforce it. Every test of such a counter drives the
 // wrapper, so a caller that reverts to the wrapped function directly
 // leaves the whole suite green while the counter silently stops firing
-// on the only path in production that reaches it. Both rows below were
+// on the only path in production that reaches it. The rows below were
 // found that way -- as surviving mutants, by running them, not by
-// reading the code.
+// reading the code, and so was the third.
+//
+// WHAT THIS TABLE DOES NOT SEE, and it must be said here rather than
+// discovered later. It matches names and binds in one package's AST. It
+// is a real step up from a grep -- it will not be fooled by a comment
+// or a string -- but it is not alias analysis, and an author determined
+// to reach a subject some other way can:
+//
+//   - hand the subject through a struct field, a map, a closure capture
+//     or an interface, none of which is inspected;
+//   - reach it from another package, which is never parsed;
+//   - reach it by reflection.
+//
+// The direct bind forms ARE covered, because those are the ones a
+// normal person reaches for when the plain call is inconvenient: taking
+// its address, assigning it to a local, or binding it at package scope.
+// That is the population a wiring gate is aimed at, and the limit above
+// is the honest boundary rather than a to-do.
 //
 // The property is about Go source, so this is a Go test using go/ast
 // rather than a shell gate: no lane entry, no OUT_OF_LANE declaration
@@ -58,11 +75,19 @@ func TestCountingWrappers_AreTheOnlyCallers(t *testing.T) {
 				"second refusal path and operators reading netns_pid_mismatches could no longer tell " +
 				"which one fired",
 		},
-		// The three rows above cost one line each, which was the point
+		{
+			callee:  "dhcpServerPolicyTimeouts",
+			wrapper: "countOutageTick",
+			why: "dhcp_server_policy_timeouts is a strict subset of dhcp_timeouts, counted in one place so " +
+				"the subset relation is a property of the code rather than of two call sites agreeing -- a " +
+				"second bumper of the outer counter on a policy-restricted path would leave the subset " +
+				"intact while silently under-reporting the inner one",
+		},
+		// The four rows above cost one line each, which was the point
 		// of the table: the next instance of this shape adds a row
 		// rather than another near-identical test.
 		//
-		// The last row names a FIELD, not a function, and that is
+		// Two of them name a FIELD, not a function, and that is
 		// deliberate. Its increment is `...netnsPIDMismatches.Add(1)`,
 		// and a row keyed on `Add` would be useless: `Add` has 56
 		// production call sites in this package, one of them a
@@ -112,13 +137,67 @@ func assertSoleCaller(t *testing.T, callee, wrapper, why string) {
 	}
 
 	var callers []string
+	seenAt := map[string]bool{}
+	note := func(fnName string, pos token.Pos) {
+		at := fnName + " (" + fset.Position(pos).String() + ")"
+		if seenAt[at] {
+			return
+		}
+		seenAt[at] = true
+		callers = append(callers, at)
+	}
 	for _, file := range files {
 		for _, decl := range file.Decls {
-			fn, ok := decl.(*ast.FuncDecl)
-			if !ok {
-				continue
+			// PACKAGE SCOPE IS A SITE TOO. Walking only FuncDecls
+			// misses `var zzAwait = awaitContainerNetNS` at file
+			// level, which is the laundering mutant in its shortest
+			// form -- it survived the first version of the bind rule
+			// for exactly this reason, and only driving it showed
+			// that. The enclosing name is then the file rather than a
+			// function, which is what the report should say.
+			where := "package scope"
+			if fn, ok := decl.(*ast.FuncDecl); ok {
+				where = fn.Name.Name
 			}
-			ast.Inspect(fn, func(n ast.Node) bool {
+			ast.Inspect(decl, func(n ast.Node) bool {
+				// A BIND IS A CALL SITE, and matching only CallExpr
+				// makes this a matcher of NAMES that one local walks
+				// straight past:
+				//
+				//   c := &m.plugin.netnsPIDMismatches; c.Add(1)
+				//   var zzAwait = awaitContainerNetNS; zzAwait(...)
+				//
+				// Both compile, both give the subject a second reachable
+				// site, and both were SURVIVING mutants until this case
+				// existed -- found by driving them, not by reading. It
+				// is the same failure the proc-path gate had, where
+				// "/proc" + "/" + strconv.Itoa(pid) walked past a regex
+				// that caught fmt.Sprintf.
+				//
+				// Deliberately not alias analysis. Only the TOP-LEVEL
+				// value of an assignment or var spec is examined, never
+				// its interior, so `x := Foo{N: p.counter.Load()}` stays
+				// uncounted -- reads must not become violations (see the
+				// mutates() note below). A determined author can still
+				// get around this; it catches the spelling a normal
+				// person reaches for when the direct one is
+				// inconvenient, which is the whole population a wiring
+				// gate is aimed at.
+				switch bind := n.(type) {
+				case *ast.AssignStmt:
+					for _, rhs := range bind.Rhs {
+						if boundName(rhs) == callee {
+							note(where, rhs.Pos())
+						}
+					}
+				case *ast.ValueSpec:
+					for _, v := range bind.Values {
+						if boundName(v) == callee {
+							note(where, v.Pos())
+						}
+					}
+				}
+
 				call, ok := n.(*ast.CallExpr)
 				if !ok {
 					return true
@@ -150,11 +229,11 @@ func assertSoleCaller(t *testing.T, callee, wrapper, why string) {
 				switch f := call.Fun.(type) {
 				case *ast.Ident:
 					if f.Name == callee {
-						callers = append(callers, fn.Name.Name+" ("+fset.Position(call.Pos()).String()+")")
+						note(where, call.Pos())
 					}
 				case *ast.SelectorExpr:
 					if f.Sel.Name == callee || (trailingName(f.X) == callee && mutates(f.Sel.Name)) {
-						callers = append(callers, fn.Name.Name+" ("+fset.Position(call.Pos()).String()+")")
+						note(where, call.Pos())
 					}
 				}
 				return true
@@ -218,4 +297,23 @@ func mutates(method string) bool {
 		return true
 	}
 	return false
+}
+
+// boundName returns the name a bound VALUE refers to -- the subject of
+// `= awaitContainerNetNS`, of `= m.plugin.netnsPIDMismatches` and of
+// `= &m.plugin.netnsPIDMismatches` -- or "" for anything else,
+// including a call, a literal or a composite. Only these three shapes
+// hand the subject itself to another identifier; everything else has
+// already been reduced to a value.
+func boundName(e ast.Expr) string {
+	if u, ok := e.(*ast.UnaryExpr); ok && u.Op == token.AND {
+		e = u.X
+	}
+	switch x := e.(type) {
+	case *ast.Ident:
+		return x.Name
+	case *ast.SelectorExpr:
+		return x.Sel.Name
+	}
+	return ""
 }
