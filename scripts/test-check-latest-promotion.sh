@@ -122,8 +122,18 @@ jobs:
     runs-on: ubuntu-24.04-arm
     steps:
       - run: docker plugin install "$REF"
+  verify-install-hub:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - run: docker plugin install "$HUB_REF"
+  verify-install-hub-arm64:
+    needs: release
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - run: docker plugin install "$HUB_REF"
   promote-latest:
-    needs: [release, release-arm64, verify-install, verify-install-arm64]
+    needs: [release, release-arm64, verify-install, verify-install-arm64, verify-install-hub, verify-install-hub-arm64]
     runs-on: ubuntu-latest
     steps:
       - name: Refuse to promote a floating tag backwards
@@ -136,7 +146,7 @@ jobs:
         run: |
           crane digest "${GHCR_NAME}:latest"
 YAML
-check "fixed: promotion behind both verify-install jobs" 0 "$TMP/fixed.yml" \
+check "fixed: promotion behind all four install proofs" 0 "$TMP/fixed.yml" \
       "all exercised by an rc"
 
 # --- direction A: promotion skipped on an rc --------------------------
@@ -172,6 +182,29 @@ sed 's|      - name: Refuse to promote a floating tag backwards|      # - name: 
 check "a commented-out recency call does not count" 1 \
       "$TMP/recency-commented.yml" "assert-newest-release-tag.sh"
 
+# --- direction D: the Hub proofs run, but nothing waits for them ------
+# The shape #776 could have shipped: both Hub install jobs present and
+# green, and `promote-latest` behind only the GHCR pair. Rules (2)-(5)
+# all pass, and so does rule (1) for two of its four gates -- so the run
+# is green while `:latest` moves without the Docker Hub half of the
+# deliverable ever having been proven installable. Without this case,
+# deleting the two Hub entries from REQUIRED_GATES would go unnoticed.
+sed 's|, verify-install-hub, verify-install-hub-arm64\]|]|' \
+    "$TMP/fixed.yml" > "$TMP/nohub.yml"
+# The mutation has to have applied, and it has to have removed only the
+# `needs:` entries. A fixture that lost the jobs themselves would fail
+# rule (1) for a different reason and prove nothing about REQUIRED_GATES.
+if ! grep -q '^  verify-install-hub:' "$TMP/nohub.yml"; then
+    echo "FAIL: nohub fixture lost the Hub jobs themselves; it would fail for the wrong reason"
+    failures=$((failures + 1))
+fi
+if grep -q 'needs:.*verify-install-hub' "$TMP/nohub.yml"; then
+    echo "FAIL: nohub fixture still lists a Hub gate in needs; the mutation did not apply"
+    failures=$((failures + 1))
+fi
+check "nohub: :latest moves without the Docker Hub install proof" 1 \
+      "$TMP/nohub.yml" "verify-install-hub"
+
 # --- transitive reach counts ------------------------------------------
 # promote-latest needs a job that needs verify-install*. A failed gate
 # skips everything downstream of it however many hops away, so this must
@@ -197,8 +230,18 @@ jobs:
     runs-on: ubuntu-24.04-arm
     steps:
       - run: docker plugin install "$REF"
+  verify-install-hub:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - run: docker plugin install "$HUB_REF"
+  verify-install-hub-arm64:
+    needs: release
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - run: docker plugin install "$HUB_REF"
   collect:
-    needs: [verify-install, verify-install-arm64]
+    needs: [verify-install, verify-install-arm64, verify-install-hub, verify-install-hub-arm64]
     runs-on: ubuntu-latest
     steps:
       - run: echo collected
@@ -243,8 +286,18 @@ jobs:
     runs-on: ubuntu-24.04-arm
     steps:
       - run: docker plugin install "$REF"
+  verify-install-hub:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - run: docker plugin install "$HUB_REF"
+  verify-install-hub-arm64:
+    needs: release
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - run: docker plugin install "$HUB_REF"
   promote-latest:
-    needs: [verify-install, verify-install-arm64]
+    needs: [verify-install, verify-install-arm64, verify-install-hub, verify-install-hub-arm64]
     runs-on: ubuntu-latest
     steps:
       - name: Refuse to promote a floating tag backwards
