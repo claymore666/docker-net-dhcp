@@ -1576,7 +1576,7 @@ driver-option key the code parses, every health counter the plugin
 emits, and every setting the <strong>shipped</strong> plugin accepts appears in this
 document — and that none of them is documented a second time somewhere
 else (<code>scripts/check-option-docs.sh</code>, <code>scripts/check-docs-drift.sh</code>).
-The claims made <em>about</em> those counters — which four flip <code>healthy</code> —
+The claims made <em>about</em> those counters — which five flip <code>healthy</code> —
 are enforced separately, wherever this page states them
 (<code>scripts/check-health-contract.sh</code>). Neither staleness nor a divergent
 copy is possible without turning CI red.</p>
@@ -1768,7 +1768,7 @@ each group.</p>
 </tr>
 </tbody>
 </table>
-<p><strong><a href="#pluginhealth">Health counters</a></strong> — <code>/Plugin.Health</code> on the plugin socket. Four flip <code>healthy</code> to <code>false</code>: <code>recovery_failed</code>, <code>join_start_failures</code>, <code>tombstone_write_failures</code>, <code>address_conflicts</code>.</p>
+<p><strong><a href="#pluginhealth">Health counters</a></strong> — <code>/Plugin.Health</code> on the plugin socket. Five flip <code>healthy</code> to <code>false</code>: <code>recovery_failed</code>, <code>join_start_failures</code>, <code>tombstone_write_failures</code>, <code>tombstone_quarantines</code>, <code>address_conflicts</code>. The flag latches for the life of the plugin process — see <a href="#pluginhealth"><code>healthy</code></a>.</p>
 <hr />
 <h2 id="install-upgrade-uninstall">Install, upgrade, uninstall<a class="headerlink" href="#install-upgrade-uninstall" title="Permanent link">&para;</a></h2>
 <blockquote>
@@ -2469,7 +2469,7 @@ diagnosing a specific container from them alone is not.</p>
 <tr>
 <td><code>healthy</code></td>
 <td>—</td>
-<td><code>false</code> when <code>recovery_failed</code>, <code>join_start_failures</code>, <code>tombstone_write_failures</code>, or <code>address_conflicts</code> is non-zero — an operator should look. Those four, and only those, are the ones marked <strong>yes</strong> in this column. The plugin keeps serving fresh attaches either way.</td>
+<td><code>false</code> when <code>recovery_failed</code>, <code>join_start_failures</code>, <code>tombstone_write_failures</code>, <code>tombstone_quarantines</code>, or <code>address_conflicts</code> is non-zero — an operator should look. Those five, and only those, are the ones marked <strong>yes</strong> in this column. The plugin keeps serving fresh attaches either way. <strong>It latches:</strong> every counter behind the flag is monotonic, so <code>false</code> means "a fault occurred at some point during this plugin process", not "something is wrong right now". Fixing the condition does not clear it — only restarting the plugin does, and that tears down the renewal client of every managed endpoint on the host. Read it together with the <em>instance_id</em> field: the same ID means the same process is still reporting a fault it recorded earlier.</td>
 </tr>
 <tr>
 <td><code>instance_id</code></td>
@@ -2554,7 +2554,12 @@ diagnosing a specific container from them alone is not.</p>
 <tr>
 <td><code>tombstone_write_failures</code></td>
 <td>yes</td>
-<td>Failed tombstone saves (disk full, EROFS) — the next restart of some container will pick a fresh MAC/IP instead of inheriting.</td>
+<td>Failed tombstone saves (disk full, EROFS) — the next restart of some container will pick a fresh MAC/IP instead of inheriting. Since v1.8.0 it also moves when the tombstone file could not be <strong>read</strong> for a transient reason (EIO, a read racing a writer): the plugin refuses to rewrite the file from nothing rather than destroy contents that may be perfectly good, and the consequence for that endpoint is identical to a failed write. The name is narrower than the meaning; the meaning is "an endpoint will not keep its address across a restart" (#724).</td>
+</tr>
+<tr>
+<td><code>tombstone_quarantines</code></td>
+<td>yes</td>
+<td>(v1.8.0+) Times the tombstone file was found <strong>unparseable</strong> and moved aside as <code>tombstones.json.corrupt-&lt;timestamp&gt;</code> in <a href="#plugin-settings"><code>STATE_DIR</code></a> (#724). Strictly worse than <code>tombstone_write_failures</code>: that costs one container its MAC and address, this costs every one of them, because the whole live tombstone set went with the file — any container restarting for the next 60 seconds comes back with a new identity. Kept separate from the write counter on purpose, since the two call for different action. <strong>The quarantined file is never reaped.</strong> Read it before deleting it: it is the only record of what was lost, and its contents say whether this was a truncated write, a filesystem fault, or something else writing to that path.</td>
 </tr>
 <tr>
 <td><code>tombstones_consumed</code></td>
@@ -2968,8 +2973,8 @@ consumer-side:</p>
 </tr>
 <tr>
 <td><code>healthy: false</code> on <code>/Plugin.Health</code></td>
-<td>Exactly four counters flip it, and they call for different action: <code>recovery_failed</code>, <code>join_start_failures</code>, <code>tombstone_write_failures</code>, <code>address_conflicts</code></td>
-<td>Read the four in the field table above to see which one moved — the flag alone does not say. <code>recovery_failed</code> / <code>join_start_failures</code>: restart the affected containers. <code>tombstone_write_failures</code>: check space and writability on the filesystem holding <a href="#plugin-settings"><code>STATE_DIR</code></a> — the host's <code>/var/lib/net-dhcp</code> since v1.5.0, the plugin rootfs before that. <code>address_conflicts</code>: the lease collided with a host already using that address, so the fault is on the DHCP server or the segment, not the plugin</td>
+<td>Exactly five counters flip it, and they call for different action: <code>recovery_failed</code>, <code>join_start_failures</code>, <code>tombstone_write_failures</code>, <code>tombstone_quarantines</code>, <code>address_conflicts</code></td>
+<td>Read the five in the field table above to see which one moved — the flag alone does not say. <code>recovery_failed</code> / <code>join_start_failures</code>: restart the affected containers. <code>tombstone_write_failures</code>: check space and writability on the filesystem holding <a href="#plugin-settings"><code>STATE_DIR</code></a> — the host's <code>/var/lib/net-dhcp</code> since v1.5.0, the plugin rootfs before that. <code>tombstone_quarantines</code>: read the <code>tombstones.json.corrupt-&lt;timestamp&gt;</code> file that was left in <code>STATE_DIR</code>, then check the same filesystem — nothing reaps that file, and it is the only record of what was lost. <code>address_conflicts</code>: the lease collided with a host already using that address, so the fault is on the DHCP server or the segment, not the plugin. <strong>Doing any of this will not clear the flag</strong> — the counters are monotonic and <code>healthy</code> latches for the life of the plugin process. Only restarting the plugin resets it, which tears down every managed endpoint's renewal client on the host, so it is not a step to take just to silence the flag. Compare <em>instance_id</em> across reads to tell a still-latched process from a new one that has already gone bad</td>
 </tr>
 <tr>
 <td>Container came back on a <strong>different IP</strong> after a plugin upgrade</td>
