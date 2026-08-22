@@ -458,9 +458,66 @@ are fixed in this release** — the count belongs to the review, not to
 either issue, which is worth stating because #726 names only its own
 five.
 
+<!-- RE-DERIVE THE TEN-ISSUE CLAIM AT TAG TIME. This is the last claim
+     in the file that nothing reproduces. The counter table below cannot
+     go stale silently because a command rebuilds it; this one is
+     carried by three sentences (here, the opening paragraph, and "the
+     remaining three ... complete the ten") and only a human re-running
+     the query sees a change.
+
+       gh api 'repos/claymore666/docker-net-dhcp/issues?milestone=22&state=all&per_page=100' \\
+         --jq '.[] | select(.pull_request == null)
+                   | select([.labels[].name] | index("code-review"))
+                   | select([.labels[].name] | index("lifecycle"))
+                   | select(.sub_issues_summary.total == 0)
+                   | select([.labels[].name] | index("in-dev") | not)
+                   | "  NOT in-dev: #\(.number)  \(.title[0:55])"'
+
+     NOTE WHAT IS NOT IN IT: no issue number. Transcribing the ten would
+     check whether *the ten we wrote down* are on dev, and could never
+     see the other failure -- that the ten are not the ten. An eleventh
+     finding, an issue moved off the milestone, or one of the five
+     reparented away from #726 would all pass a transcribed check. That
+     is the same defect as a test asserting a hand-written 6, one level
+     up, and this repo has already labelled the wrong issue once by
+     following a `(#675)` in a subject into a pull request body.
+
+     The tracker excludes ITSELF via `sub_issues_summary.total == 0`
+     rather than by naming #726: the query returns ELEVEN, and #726 is
+     the one with five sub-issues. Excluding it by number would put the
+     transcription back in the hardest place to notice.
+
+     Sanity: findings should come to ten and the trackers list to #726
+     alone. If either moves, the prose above moved with it.
+
+     `in-dev` means merged into dev and not yet released. The query
+     prints nothing when the claim holds. **Anything it prints is an
+     issue this release does NOT fix**, and all three sentences are then
+     wrong -- fix all three or none.
+
+     It printed #731 before #769 merged, which is why #768 was held
+     behind it rather than reworded: "nine of ten" would have been wrong
+     the other way, and wrong after the tag, which is when it matters
+     most.
+
+     TRUST IT EXACTLY THIS FAR. `in-dev` is a LABEL, and a label is a
+     human artefact: this derives the labels' state, not the code's. A
+     mislabelled issue fools it, and mislabelling is a real failure mode
+     here -- a ref that resolves to a PR gets followed into its body, so
+     subjects have carried the wrong issue before. Strictly better than
+     three sentences; strictly weaker than the counter-table derivation
+     below, which reads the source. -->
+
 **Six of the ten are verified present on `main` as well**: #720, #721,
 #722, #724, #727 and #728. `origin/main`, `v1.7.1` and `018a651` are the
-same commit, so that is a claim any reader can drive rather than take.
+same commit, so that is a claim any reader can drive rather than
+take — with one keystroke of care, because the obvious command
+refutes it. Bare `git rev-parse v1.7.1` returns `0589c44`: that is
+the annotated **tag object**, not a commit. `git rev-parse
+v1.7.1^{commit}` returns `018a651`, and so does `origin/main`. The
+three agree only once the tag is dereferenced, and an invitation
+that fails under the command a reader will actually type is worse
+than no invitation.
 The one described below that is *not* older than this cycle is #729,
 which was introduced by one of the security fixes above. So they are, in the main, not this cycle's
 mistakes — they are what a second reader found in code that had already
@@ -897,7 +954,7 @@ a rise means and what to do about it.
 
      To check the table at tag time, derive rather than read:
 
-       for r in v1.7.1 origin/dev; do
+       for r in 'v1.7.1^{commit}' origin/dev; do
          git show $r:pkg/plugin/endpoints.go \
            | sed -n '/type HealthResponse struct {/,/^}/p' \
            | grep -oE 'json:"[a-z0-9_]+' | cut -d'"' -f2 | sort > /tmp/$$.$r
@@ -907,8 +964,16 @@ a rise means and what to do about it.
      a SET both directions -- a row with no field and a field with no row
      are different defects and only one of them is obvious.
 
-     Last derived after #766 landed: 41 -> 63 tags, 22 new, 22 rows,
-     set-equal with an empty difference each way. If anything else adds
+     Last derived against dev at 192e5f4: 41 -> 64 json tags, 23 new,
+     23 rows, set-equal with an empty difference each way. The SHA
+     is here rather than an issue number because "after #769
+     landed" stops being checkable the moment anything else does.
+     The ^{commit} above is belt and braces, not a fix: `git show
+     <rev>:<path>` dereferences an annotated tag by itself, and
+     the recipe returns 41 either way. It is `git rev-parse` that
+     hands back the tag object -- which is what a reader typing
+     the invitation in the #726 section will use, and why that
+     paragraph spells the dereference out. If anything else adds
      a HealthResponse field before the tag, this table is short by
      exactly that much and nothing else will say so. -->
 
@@ -924,6 +989,7 @@ a rise means and what to do about it.
 | `mtu_refused` | Option-26 MTUs outside `[576, 65535]`, with the link left as it was (#702). |
 | `dhcp_server_tier_fallbacks` | Acquisitions that fell through to a lower-priority `dhcp_servers` entry — the only outside signal that a preferred server is silently dead (#111). |
 | `dhcp_server_policy_exhausted` | Acquisitions abandoned because no listed server answered, as distinct from DHCP being broken (#111). |
+| `dhcp_server_policy_timeouts` | The subset of `dhcp_timeouts` falling on endpoints whose renewal client is restricted to `dhcp_servers`. Deliberately not `healthy`-affecting: every tick it counts is already counted in `dhcp_timeouts`, and weighting one outage twice would make a policy-restricted endpoint look worse than an unrestricted one failing identically (#731). |
 | `recovery_network_gone` | Networks removed out from under the post-restart recovery walk (#648). |
 | `recovery_already_managed` | Endpoints a recovery walk found already registered to another manager (#480). |
 | `recovery_fingerprints_skipped` | Endpoints recovery adopted but could not describe, so they keep their renewal client and lose their tombstone (#721). |
@@ -1173,6 +1239,18 @@ option the older one never did. None of that was visible before.
     contributes nothing becomes an instruction to strip `in-dev` from
     issues that are in dev. The other demanded a check-run GitHub never
     creates, and had been red for 42% of its last 60 runs. (#739, #740)
+  - **The only new security gate in the release.** `allow-ghsas` in
+    `.github/dependency-review-config.yml` carried advisories that
+    `.github/vuln-allowlist.txt` had already rejected, so
+    dependency-review was *looser* than govulncheck: a pull request
+    reintroducing one of them passed the check that exists to stop
+    exactly that, at `fail-on-severity: high`, and nothing said so. The
+    two lists are reconciled now by `scripts/check-allowlist-parity.sh`,
+    which fails when dependency-review allows what the allowlist does
+    not. It deliberately does **not** check the reverse direction — an
+    advisory present only in `vuln-allowlist.txt` — because that one
+    fails safe: dependency-review blocks something govulncheck would
+    have waived. (#741)
 - Eleven fully-implemented issues read as untouched on the tracker,
   because the reference had gone into the pull request body rather than
   the commit subject, the loader skipped merge commits, and the parser
