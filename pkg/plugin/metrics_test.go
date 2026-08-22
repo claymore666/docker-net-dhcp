@@ -431,6 +431,21 @@ func familyPairs() []familyPair {
 // Compare the NAMES in both directions and print the difference, the
 // way a golden conflict is resolved. A count — even a derived one —
 // would pass two disjoint sets of six.
+//
+// The name is built here the way the renderer builds it at
+// metrics.go:181, and that duplication is DELIBERATE: a shared
+// seriesName() helper would make both sides agree by construction —
+// a wrong prefix or a missing suffix would move production and this
+// reconciliation together, `rendered` would match `walked` perfectly,
+// and the test would be green over a broken exposition. That is the
+// mirror property this whole change exists to remove. The restatement
+// is independent, and independence is the only thing that makes
+// disagreement detectable; divergence fires in direction 2 below.
+//
+// The line moves if the renderer's naming ever grows branches — a
+// third suffix, a per-kind rule — because then this stops being a
+// restatement and becomes a reimplementation with its own bugs. Two
+// lines is not that.
 func assertFamilyPairsCoverProduction(t *testing.T, pairs []familyPair) {
 	t.Helper()
 
@@ -487,7 +502,57 @@ func assertFamilyPairsCoverProduction(t *testing.T, pairs []familyPair) {
 // aggregate exceed the halves the same snapshot rendered.
 //
 // So: both families bump, on all six pairs, and every scrape is judged
-// on all six. Three properties, each killing a different mutant.
+// on all six, against three properties.
+//
+// What each property is worth was MEASURED, by disabling one at a time
+// and re-running the mutants, rather than reasoned about. Over the 24
+// double-load mutants — both halves of all six pairs, in the aggregate
+// and in the rendered half:
+//
+//	property 1 alone     kills all 24
+//	property 2 alone     kills none of them
+//	property 3 alone     kills none of them
+//	properties 1+2       still 24, so 3 adds nothing here
+//
+// And over three renderer mutants, which property 1 structurally cannot
+// see because it judges the SNAPSHOT and a renderer does not touch it.
+// The middle column is THIS DOC BLOCK ONLY; the right one is the whole
+// package, because a -run filter narrows the observer set and a claim
+// that nothing catches something cannot be made from inside one test:
+//
+//	                                        of these 3   in the package
+//	renders v6 under family="ipv4"          property 2   +Backwards, Golden
+//	renders the aggregate under ipv4        property 2   +Backwards, Golden
+//	derives ipv4 as (aggregate - v6)        none         ReadTheStoredHalves,
+//	                                                     NoSeriesRendersNegative,
+//	                                                     Golden
+//
+// The last row is the interesting one and it says something narrower
+// than it looks. Within a snapshot that satisfies property 1,
+// `aggregate - v6` IS v4 to the byte -- so nothing in this doc block
+// can see that mutant, and nothing here should be expected to. The
+// tests that DO catch it are the ones fed a deliberately inconsistent
+// snapshot: TestMetrics_NoSeriesRendersNegative hands the renderer a v6
+// half ABOVE the aggregate and the mutant emits -4 where the stored
+// half says 6, which is #730's literal symptom.
+//
+// So the honest statement is not "subtraction is safe now". It is that
+// the old subtraction was wrong because the two counters could
+// DISAGREE, not because subtraction is wrong -- and the coverage for
+// the disagreement lives in a different test, with a hostile fixture,
+// on purpose. Do not read this block as evidence that that test is
+// redundant. It is the one that covers the case #730 actually shipped.
+//
+// Property 3 killed none of the 27 mutants above — the same scope
+// caveat applies, it is a statement about those mutants and not about
+// the world — and it stays. It is the only property
+// in the operator's terms — Prometheus reads a counter decrease as a
+// reset and repays the whole accumulated count as a rate spike — and
+// the only one that would still fire if the load-once invariant held
+// and a series went backwards for a reason nobody has thought of yet.
+// A symptom observer looks idle right up until the day it is the only
+// thing watching, and a redundancy measurement is not a deletion
+// argument.
 //
 //  1. INTERNAL CONSISTENCY. aggregate == v4 + v6, on every pair of every
 //     snapshot. This is the load-once property stated directly: a second
