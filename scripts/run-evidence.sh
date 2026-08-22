@@ -96,7 +96,20 @@ echo "Evidence for tree ${TREE}  (workflow: ${WORKFLOW}, repo: ${REPO})"
 echo
 
 matched=0
-while IFS=$'\t' read -r id sha branch status conclusion started ended attempt; do
+# The unit separator, not a tab. `read` collapses runs of IFS
+# WHITESPACE, so with IFS=$'\t' an empty field cannot be represented
+# and every column after it shifts left by one. `.conclusion` is null
+# for every run that has not finished, which is most of them while a
+# release is being assembled:
+#
+#   printf 'a\tb\t\td\n' | IFS=$'\t' read -r p q r s  ->  p=[a] q=[b] r=[d] s=[]
+#   printf 'a|b||d\n'     | IFS='|'    read -r p q r s  ->  p=[a] q=[b] r=[]  s=[d]
+#
+# The collapse is worse than a blank, because it feeds the timing
+# guard below plausible non-empty wrong values -- run_attempt landing
+# in `ended` -- so the guard passes and the overlap query silently
+# searches a window that does not exist.
+while IFS=$'\x1f' read -r id sha branch status conclusion started ended attempt; do
     [ -z "$id" ] && continue
     # Resolve this run's head commit to its tree. A commit we cannot
     # resolve is skipped loudly rather than assumed to be a mismatch.
@@ -121,8 +134,25 @@ while IFS=$'\t' read -r id sha branch status conclusion started ended attempt; d
                       | select(.started != null and .ended != null)
                       | select(.started < $e and .ended > $s)
                       | "\(.name)[\(.branch)]" ] | unique | join(", ")')
+            # A run that has not completed has an open window: `ended`
+            # is updated_at, which is when it was last touched, not when
+            # it finished. Anything that starts after this instant will
+            # still have shared the pool with it. So an empty result here
+            # means "nothing has overlapped YET", which is not the same
+            # claim as "ran alone" -- and this script exists to keep
+            # those two apart.
+            #
+            # Presence is not affected. An overlap the query CAN see
+            # already happened, and stays a fact whether or not the run
+            # is finished; only its absence is provisional.
             if [ -z "$names" ]; then
-                overlap="none — ran alone"
+                if [ "$status" != "completed" ]; then
+                    overlap="unknown — this run has not completed (status: ${status}), so its window is still open"
+                else
+                    overlap="none — ran alone"
+                fi
+            elif [ "$status" != "completed" ]; then
+                overlap="$names (so far — this run has not completed)"
             else
                 overlap="$names"
             fi
@@ -132,7 +162,8 @@ while IFS=$'\t' read -r id sha branch status conclusion started ended attempt; d
     printf '  run %s  attempt %s  %s/%s  branch %s\n' "$id" "$attempt" "$status" "${conclusion:-<none>}" "$branch"
     printf '      window   %s .. %s\n' "$started" "$ended"
     printf '      overlap  %s\n\n' "$overlap"
-done < <(printf '%s' "$runs" | jq -r '.[] | [.id, .sha, .branch, .status, .conclusion, .started, .ended, .attempt] | @tsv')
+done < <(printf '%s' "$runs" | jq -r '.[] | [.id, .sha, .branch, .status, .conclusion, .started, .ended, .attempt]
+               | map(if . == null then "" else tostring end) | join("\u001f")')
 
 if [ "$matched" -eq 0 ]; then
     echo "  no runs found for this tree."
