@@ -55,6 +55,34 @@
 # way to say so is to say so, in the artifact a reviewer reads, rather than
 # to leave the reader unable to tell that case from an oversight.
 #
+# THE WAIVER IS ANCHORED AT COLUMN 0, and its own FAIL text below shows the
+# line INDENTED. Both halves are deliberate, and together they are the fix
+# for this gate waiving itself.
+#
+# Unanchored, the waiver matched leading whitespace. The gate's failure
+# message teaches the waiver string indented by four spaces, and the most
+# natural reaction to a failing required check is to paste its output into
+# the PR body to talk about it. That paste matched — `<reason>` is enough to
+# satisfy the trailing `\S` — so a REQUIRED check reported green and printed
+# its own help text back as the waiver reason. The single most obvious
+# response to the failure switched the failure off.
+#
+# `check-coverage-floor.sh` and `check-test-weakening.sh` already anchor at
+# column 0 for exactly this reason: #735 caught one of them waiving itself
+# and both were fixed. This one was not, so the fix did not reach the third
+# copy. Keeping the FAIL text indented as well means neither mechanism is
+# load-bearing alone.
+#
+# THE SAME MESSAGE MUST NOT CARRY A WORKED REFERENCE EITHER. Anchoring the
+# waiver is only half of it: the FAIL text also demonstrated the carriers,
+# and `Closes #123` in a pasted failure satisfied the BODY parser, so the
+# gate passed on the reference path instead of the waiver path — same
+# action, same silent green, different route. The parser is not the thing
+# to fix there: GitHub honours closing keywords anywhere in a body, indent
+# and all, and `sync-issue-state-labels.sh` mirrors GitHub on purpose. So
+# the message uses `#<n>` placeholders, exactly as `check-coverage-floor.sh`
+# writes `Coverage-floor: #<issue>`.
+#
 # Exit: 0 reachable, 1 nothing references an issue, 2 cannot check.
 
 set -u
@@ -134,9 +162,14 @@ fi
 
 # The waiver, checked only once the check has otherwise failed, so a PR that
 # carries both a reference and a waiver line is reported on its reference.
+#
+# Anchored at column 0 — see the header. An indented copy is deliberately
+# inert, so the gate can be quoted, explained, or have its own failure output
+# pasted into a body without thereby being switched off.
+WAIVER='^No issue:[[:space:]]*\S'
 if [ -n "$BODY_FILE" ] && [ -f "$BODY_FILE" ] &&
-   command grep -qiE '^[[:space:]]*No issue:[[:space:]]*\S' "$BODY_FILE"; then
-    reason="$(command grep -iE '^[[:space:]]*No issue:[[:space:]]*\S' "$BODY_FILE" | head -1 | sed 's/^[[:space:]]*//')"
+   command grep -qiE "$WAIVER" "$BODY_FILE"; then
+    reason="$(command grep -iE "$WAIVER" "$BODY_FILE" | head -1)"
     echo "Issue reference waived — $reason"
     exit 0
 fi
@@ -152,13 +185,25 @@ FAIL  nothing in this pull request references an issue.
 
   Any ONE of these fixes it:
 
-    - a commit subject ending in a ref group:  fix(plugin): a thing (#123)
+    - a commit subject ending in a ref group:  fix(plugin): a thing (#<n>)
     - the same group at the end of the PR title
-    - a closing keyword in the PR body:        Closes #123
+    - a closing keyword in the PR body:        Closes #<n>
 
-  If this pull request genuinely has no issue, say so in the body:
+  `#<n>` stands for the number. It is written that way rather than as a
+  real one because this message gets pasted into pull request bodies, and
+  GitHub's closing keywords — which the shared parser deliberately mirrors —
+  are recognised anywhere in a body, indent and all. A worked example here
+  would satisfy the very check it is explaining.
 
-    No issue: <reason>
+  If this pull request genuinely has no issue, say so in the body, as a line
+  of its own starting at column 0:
+
+    No issue: <why there is no issue>
+
+  It is shown indented here ON PURPOSE. This message is most often read by
+  pasting it into the pull request to discuss it, and an indented copy must
+  not waive the gate it is quoting — which is what an unanchored waiver used
+  to do, printing this very text back as the reason it passed.
 
 MSG
 exit 1

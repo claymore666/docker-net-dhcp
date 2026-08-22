@@ -138,6 +138,53 @@ run "a reference wins over a waiver" 0 "the PR body" \
     "$BASE..HEAD" 'fix(plugin): a thing' 'Closes #123.
 No issue: left over from an earlier draft.'
 
+# --- the waiver must survive the gate's OWN failure message ------------
+#
+# THE CASE THAT CARRIES THE WEIGHT. The waiver used to allow leading
+# whitespace, and the FAIL text below teaches the waiver string indented by
+# four spaces. The most natural reaction to a failing required check is to
+# paste its output into the pull request to talk about it — and that paste
+# matched, so the check went green and printed its own help text back as the
+# reason it passed.
+#
+# The fixture is GENERATED from the script, never transcribed. A copy typed
+# out here would drift from the message the moment anyone reworded it, and
+# this case would keep passing while testing nothing.
+git -C "$REPO" reset -q --hard "$BASE"
+commit_on 'chore: a change that references nothing'
+
+printf '%s' 'chore: a change that references nothing' > "$TMP/gen-title.txt"
+: > "$TMP/gen-body.md"
+( cd "$REPO" && bash "$CHECK" "$BASE..HEAD" "$TMP/gen-title.txt" "$TMP/gen-body.md" ) \
+    > "$TMP/failure.txt" 2>&1
+
+# If the message stops teaching the waiver string, the case below is
+# vacuous — it would be asserting that text containing no waiver fails to
+# waive. Say so loudly rather than keep a green case that proves nothing.
+if command grep -q 'No issue:' "$TMP/failure.txt"; then
+    echo "PASS: the failure text still teaches the waiver string (fixture is live)"
+else
+    echo "FAIL: the failure text no longer contains 'No issue:' — the self-paste case now tests nothing"
+    failures=$((failures + 1))
+fi
+
+run "the gate's own failure output pasted into the body does NOT waive" 1 \
+    "references an issue" "$BASE..HEAD" 'chore: a change that references nothing' \
+    "$(cat "$TMP/failure.txt")"
+
+# The same property stated directly, so the rule survives a rewording of
+# the message that the generated case above is pinned to.
+run "an indented waiver does not pass" 1 "references an issue" \
+    "$BASE..HEAD" 'chore: fix a typo' '    No issue: indented, so inert.'
+
+run "a tab-indented waiver does not pass" 1 "references an issue" \
+    "$BASE..HEAD" 'chore: fix a typo' '	No issue: indented, so inert.'
+
+# ...and the other direction, so anchoring cannot be "fixed" by making the
+# waiver unreachable altogether.
+run "a column-0 waiver still passes" 0 "waived" \
+    "$BASE..HEAD" 'chore: fix a typo' 'No issue: a typo in a comment, nothing to track.'
+
 # --- the parser is shared, not copied ----------------------------------
 # If check-issue-ref.sh ever grew its own regex, this would drift silently.
 # Assert the two agree on a subject the shared parser deliberately refuses.

@@ -25,6 +25,14 @@ run_case() {
         git init -q .
         git config user.email t@t; git config user.name t
         git config commit.gpgsign false
+        # This file carries `git tag -a` inside fixture BODIES it never
+        # executes, and the gate matches text rather than execution (the
+        # documented "match the superset, then judge" tradeoff). Pinning
+        # tag.gpgsign here costs one line and makes this file satisfy the
+        # rule it enforces. Before the value-match fix it passed on a
+        # MENTION of tag.gpgsign in a case name — the same defect being
+        # fixed, in the self-test of the gate that fixes it.
+        git config tag.gpgsign false
         while [ "$#" -gt 0 ]; do
             local path="${1%%:::*}" body="${1#*:::}"
             mkdir -p "$(dirname "$path")"
@@ -101,6 +109,48 @@ git config user.name t
 git config commit.gpgSign false
 git commit -qm fixture"
 
+# THE VALUE IS THE POINT, NOT THE KEY. This gate used to match the
+# substring `commit.gpgsign`, which `git config commit.gpgsign true`
+# satisfies — while the label it reports says `false`. A fixture with
+# signing ON does not fail the suite, it HANGS it waiting for a hardware
+# touch, which is the precise outcome this gate exists to prevent: the
+# gate read the right file and the wrong half of the line.
+run_case "commit.gpgsign TRUE is reported, not accepted" 1 \
+    "scripts/test-x.sh:::git init -q .
+git config user.email t@t
+git config user.name t
+git config commit.gpgsign true
+git commit -qm fixture"
+
+run_case "tag.gpgsign TRUE is reported, not accepted" 1 \
+    "scripts/test-x.sh:::$FULL
+git config tag.gpgsign true
+git tag -a v1.0.0 -m release"
+
+# Prose is not configuration. A file that merely NAMES the setting —
+# this one does, in its own case names — must not be counted as pinning
+# it, which is how the substring match went unnoticed for so long.
+run_case "a comment naming commit.gpgsign does not count as setting it" 1 \
+    "scripts/test-x.sh:::git init -q .
+git config user.email t@t
+git config user.name t
+# remember to set commit.gpgsign here
+git commit -qm fixture"
+
+# Both spellings in the tree must keep working, or this becomes a gate
+# that flags a correct fixture — and a gate that flags working code is
+# waived.
+run_case "the -c key=false form counts" 0 \
+    "scripts/test-x.sh:::git init -q .
+git -c user.email=t@t -c user.name=t -c commit.gpgsign=false commit -qm fixture"
+
+run_case "a quoted value counts" 0 \
+    "scripts/test-x.sh:::git init -q .
+git config user.email t@t
+git config user.name t
+git config commit.gpgsign \"false\"
+git commit -qm fixture"
+
 # An annotated tag is signed under a global tag.gpgsign and blocks the
 # same way; a lightweight one is not signed at all. The demand follows
 # what the fixture actually does, in both directions.
@@ -142,6 +192,14 @@ untracked_case() {
         git init -q .
         git config user.email t@t; git config user.name t
         git config commit.gpgsign false
+        # This file carries `git tag -a` inside fixture BODIES it never
+        # executes, and the gate matches text rather than execution (the
+        # documented "match the superset, then judge" tradeoff). Pinning
+        # tag.gpgsign here costs one line and makes this file satisfy the
+        # rule it enforces. Before the value-match fix it passed on a
+        # MENTION of tag.gpgsign in a case name — the same defect being
+        # fixed, in the self-test of the gate that fixes it.
+        git config tag.gpgsign false
         while [ "$#" -gt 0 ]; do
             local path="${1%%:::*}" body="${1#*:::}"
             mkdir -p "$(dirname "$path")"
