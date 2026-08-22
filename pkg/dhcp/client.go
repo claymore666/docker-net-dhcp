@@ -94,6 +94,19 @@ const (
 // fails a test instead of silently changing which executable runs.
 const unsharePath = "/usr/bin/unshare"
 
+// workDirPrefix names every dhcpcd work directory this plugin creates.
+//
+// It is not decoration. dhcpcd's `-f <workdir>/dhcpcd.conf` puts the
+// directory's absolute path into the child's argv, and that string is
+// the ONLY thing on the host that identifies a running dhcpcd as this
+// plugin's. dhcpcd's own pidfile directory is deliberately shadowed by
+// the per-client tmpfs (see mountPrep, #332) so that concurrent clients
+// cannot collide, which also means the usual way of finding a dhcpcd
+// does not work here. SweepOrphans matches on this prefix; changing it
+// in one place and not the other silently retires the sweep, which is
+// why both sides read this constant.
+const workDirPrefix = "net-dhcp-dhcpcd-"
+
 // mountPrep is the shell run inside the `unshare -m` mount namespace
 // before exec'ing dhcpcd. It (1) shadows the host-shared dhcpcd state
 // dir with a private tmpfs (see dhcpcdStateDir), (2) shadows dhcpcd's
@@ -286,7 +299,7 @@ func NewDHCPClient(iface string, opts *DHCPClientOptions) (*DHCPClient, error) {
 		vendor = VendorID
 	}
 
-	workDir, err := os.MkdirTemp("", "net-dhcp-dhcpcd-")
+	workDir, err := os.MkdirTemp("", workDirPrefix)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create dhcpcd work dir: %w", err)
 	}
@@ -357,9 +370,34 @@ func NewDHCPClient(iface string, opts *DHCPClientOptions) (*DHCPClient, error) {
 	dargs := renderArgs(params)
 	wrapped := append([]string{unsharePath, "-m", "/bin/sh", "-c", mountPrep()}, dargs...)
 
+	cmd := exec.Command(wrapped[0], wrapped[1:]...)
+	// Give the child its own process group.
+	//
+	// Two reasons, both about signals reaching the wrong process. A
+	// signal sent to the plugin's process group — which is what a
+	// terminal, a supervisor, or a `kill -- -<pgid>` sends — otherwise
+	// reaches every live dhcpcd as well, and the persistent client
+	// omits dhcpcd's -p, so it would RELEASE the lease of a container
+	// that is still running. And in the other direction, a group of its
+	// own is what makes the client killable as a unit later, including
+	// the short-lived hook processes dhcpcd spawns.
+	//
+	// Deliberately NOT Pdeathsig. Linux delivers PR_SET_PDEATHSIG on the
+	// death of the spawning THREAD, not the process, and Go moves
+	// goroutines between threads; Start locks the OS thread only for the
+	// duration of the netns switch and unlocks it before returning. The
+	// netns-restore-failure path is worse: it re-locks the thread
+	// precisely so the thread DIES, which under Pdeathsig would SIGTERM
+	// a dhcpcd that had just started correctly inside the right netns —
+	// killing a live container's renewal client on the one path where
+	// nothing else has gone wrong for that container. SweepOrphans
+	// covers the same ground deterministically, at the only moment it
+	// matters, without that failure mode (#722).
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+
 	c := &DHCPClient{
 		Opts:     opts,
-		cmd:      exec.Command(wrapped[0], wrapped[1:]...),
+		cmd:      cmd,
 		workDir:  workDir,
 		fifoRead: fifoRead,
 		fifoKeep: fifoKeep,
