@@ -136,7 +136,7 @@ func TestCgroupNamesContainer_DelegatedSubtreeIsAcceptedByDesign(t *testing.T) {
 // the blindness this replaces, quietly.
 func selfCgroupLeaf(t *testing.T, pid int) string {
 	t.Helper()
-	raw := selfCgroup(t, pid)
+	raw := string(selfCgroup(t, pid))
 	for _, line := range strings.Split(raw, "\n") {
 		// "hierarchy-ID:controller-list:cgroup-path" in both cgroup
 		// versions. Split at the SECOND colon and take everything after
@@ -163,7 +163,35 @@ func selfCgroupLeaf(t *testing.T, pid int) string {
 	return ""
 }
 
-func selfCgroup(t *testing.T, pid int) string {
+// cgroupFileContents is the whole text of a /proc/<pid>/cgroup file.
+//
+// IT IS A DISTINCT TYPE SO IT CANNOT BE PASSED WHERE A CONTAINER ID IS
+// WANTED. That is not decoration: seven call sites did exactly that,
+// which made the guard's accept path Contains(x, x) and the suite unable
+// to fail (#788).
+//
+// Repairing those call sites was not enough on its own. Reverting them
+// to selfCgroup left selfCgroupLeaf in the file -- correct, tested, and
+// on no path any test takes -- and the whole package stayed GREEN, so
+// the suite silently became a mirror again. A test on a helper cannot
+// see a caller that stops using the helper, and neither can a gate keyed
+// on the helper.
+//
+// The property is about the CALLER, so it is enforced where the caller
+// is written: passing this where a string ctrID is expected does not
+// compile, so the seven accidental call sites cannot recur as
+// accidents.
+//
+// It does NOT make the mirror impossible. string(...) still converts
+// it, and selfCgroupLeaf above needs exactly that -- so a caller can
+// still write cgroupNamesContainer(string(f), string(f)) and get
+// Contains(x, x) back, compiling and green. Measured, not assumed. A
+// named type proves a conversion was WRITTEN; it cannot prove the
+// value is the right one. What this buys is that the mirror becomes a
+// deliberate act instead of an accident, which is what the seven were.
+type cgroupFileContents string
+
+func selfCgroup(t *testing.T, pid int) cgroupFileContents {
 	t.Helper()
 	// proc-path-discipline: allow -- this is the test harness reading
 	// its OWN cgroup to build a matching container ID. The hazard the
@@ -177,7 +205,7 @@ func selfCgroup(t *testing.T, pid int) string {
 	if s == "" {
 		t.Fatalf("/proc/%d/cgroup is empty; the guard has nothing to match on", pid)
 	}
-	return s
+	return cgroupFileContents(s)
 }
 
 // TestWriteContainerResolvConf_RefusesAPIDThatIsNotTheContainer is the
