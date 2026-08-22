@@ -127,6 +127,31 @@ out=$(run_it "$INPROG" "[$ANCHOR,{\"id\":9,\"name\":\"Integration\",\"branch\":\
 case "$out" in *"Integration[feature/x]"*) ok "an unfinished run still names the overlaps it can see" ;;
   *) no "an overlap that had already happened went unnamed: $out" ;; esac
 
+# --- a row with too many fields is skipped, not misread ---------------
+# `read` absorbs surplus fields into its last variable without a word of
+# complaint, so a nine-field row would set attempt="1<US>surprise" and
+# report it as fact. The delimiter cannot appear in real data -- git
+# refuses control characters in ref names, and `.branch` is the only
+# free-text field -- so this drives the arity guard directly through the
+# stub rather than pretending the API could produce it.
+# The delimiter goes in as the JSON escape \u001f, not as a raw byte:
+# jq rejects an unescaped control character outright, so a raw one made
+# this case fail for a reason that had nothing to do with the guard --
+# the stub never produced a row at all. jq expands the escape into the
+# real byte in the field value, which is what the read loop then has to
+# survive.
+NINE='[{"id":3,"sha":"c3","branch":"dev\u001fu","status":"completed","conclusion":"success","started":"2026-08-01T12:00:00Z","ended":"2026-08-01T12:10:00Z","attempt":1}]'
+
+out=$(run_it "$NINE" "[$ANCHOR]")
+case "$out" in
+  *"malformed row"*) ok "a row carrying the delimiter is skipped and says so" ;;
+  *) no "a nine-field row was parsed as if it were eight -- the surplus lands in attempt silently: $out" ;;
+esac
+case "$out" in
+  *"run 3 "*) no "the malformed row was reported as a result: $out" ;;
+  *) ok "the malformed row produces no run line at all" ;;
+esac
+
 # --- no runs for the tree --------------------------------------------
 out=$(run_it '[]' '[]')
 case "$out" in *"no evidence"*) ok "an untested tree says 'no evidence', not 'no failures'" ;;

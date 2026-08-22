@@ -109,8 +109,32 @@ matched=0
 # guard below plausible non-empty wrong values -- run_attempt landing
 # in `ended` -- so the guard passes and the overlap query silently
 # searches a window that does not exist.
-while IFS=$'\x1f' read -r id sha branch status conclusion started ended attempt; do
+#
+# `rest` is a ninth variable and it is the row's own arity check. `read`
+# absorbs every surplus field into its LAST variable, silently -- a
+# nine-field row would land the extra one in `attempt` and produce a
+# plausible wrong value rather than an error, which is precisely the
+# failure this rewrite exists to remove. `@tsv` escaped a literal tab
+# inside a field; a bare join escapes nothing.
+#
+# It is not reachable today: the only free-text field is `.branch`, and
+# git refuses control characters in ref names (`git check-ref-format`
+# rejects both \x1f and a newline), so no field can carry the
+# delimiter. The guard is here because nothing else states that
+# assumption, and the assumption is about git rather than about this
+# script.
+#
+# AND IT CATCHES ONLY THE LONG ROW, not a short one. A short row leaves
+# the trailing variables empty, equally silently. That case is not
+# producible either -- jq emits a fixed eight-element array per run --
+# but the two facts are stated separately so this does not read as
+# complete coverage of a malformed row.
+while IFS=$'\x1f' read -r id sha branch status conclusion started ended attempt rest; do
     [ -z "$id" ] && continue
+    if [ -n "$rest" ]; then
+        echo "  run ${id}: malformed row — a field contained the delimiter — SKIPPED" >&2
+        continue
+    fi
     # Resolve this run's head commit to its tree. A commit we cannot
     # resolve is skipped loudly rather than assumed to be a mismatch.
     t=$(gh api "repos/${REPO}/commits/${sha}" --jq '.commit.tree.sha' 2>/dev/null) || {
