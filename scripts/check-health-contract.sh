@@ -65,14 +65,39 @@
 # shape this cannot parse is an explicit exit 2, never a pass — a gate
 # that cannot see must not report clean.
 #
-# Usage: check-health-contract.sh [<reference-doc>] [<go-file>]
+# TWO MORE CODE SURFACES RESTATE THE SAME SET, and neither was read.
+#
+#   pkg/plugin/metrics.go -- every healthy-affecting counter's help
+#   string ends "Healthy-affecting.", and that sentence is served to
+#   operators on /metrics. The exposition golden is REGENERATED from
+#   these strings, so it agrees with whatever they say and proves
+#   nothing about whether they are true; check-docs-drift.sh reconciles
+#   the SET OF FIELD NAMES, not the sentence. #709 already shipped a
+#   /metrics warning naming data it did not carry -- the failure mode
+#   is not hypothetical, it is one release old.
+#
+#   test/integration/harness/healthfloor.go -- floorCounters is the
+#   list the integration health floor fails a run over. Its own type
+#   comment calls it "one healthy-affecting counter", so equality with
+#   the doc column is the intent already written down. Nothing enforced
+#   it, and a new healthy-affecting counter could ship with no
+#   integration run watching it while every file above agreed.
+#
+# Both are the #638 shape one file over: a claim ABOUT the counters,
+# restated somewhere nothing reads. They are checked here rather than
+# in a new gate because this is the gate that owns the question.
+#
+# Usage: check-health-contract.sh [<reference-doc>] [<endpoints.go>]
+#                                 [<metrics.go>] [<healthfloor.go>]
 # Exit:  0 they all agree, 1 they disagree, 2 cannot check.
 set -uo pipefail
 
 DOC="${1:-docs/reference.md}"
 SRC="${2:-pkg/plugin/endpoints.go}"
+METRICS="${3:-pkg/plugin/metrics.go}"
+FLOOR="${4:-test/integration/harness/healthfloor.go}"
 
-for f in "$DOC" "$SRC"; do
+for f in "$DOC" "$SRC" "$METRICS" "$FLOOR"; do
     [ -f "$f" ] || { echo "check-health-contract: $f does not exist" >&2; exit 2; }
 done
 
@@ -263,6 +288,67 @@ if [ "$n_code" != "$n_doc" ]; then
     echo "  $rest" >&2
 fi
 
+# --- 5. the /metrics help strings --------------------------------------
+# Operator-facing text, served on the wire. Name and help sit on one
+# line in metricDefs, so this reads that line. If the shape ever
+# changes the set comes back empty, which is exit 2 -- a gate reading a
+# file it no longer understands must not print PASS over it.
+metrics_set=$(grep -F 'Healthy-affecting.' "$METRICS" \
+    | grep -oE 'name:[[:space:]]*"[a-z0-9_]+"' \
+    | sed -E 's/.*"([a-z0-9_]+)".*/\1/' | sort -u)
+if [ -z "$metrics_set" ]; then
+    echo "check-health-contract: no metric help string in $METRICS ends 'Healthy-affecting.'" >&2
+    echo "  Either the sentence was dropped from every counter, or metricDefs no" >&2
+    echo "  longer puts name and help on one line and this check has gone blind." >&2
+    echo "  Teach it the new shape rather than letting it pass unread." >&2
+    exit 2
+fi
+if [ "$column_set" != "$metrics_set" ]; then
+    note "the /metrics help strings and the healthy-affecting column disagree:"
+    diff <(printf '%s\n' "$column_set") <(printf '%s\n' "$metrics_set") \
+        | sed 's/^</  marked yes in the doc, but its help string does not say "Healthy-affecting.": /; s/^>/  its help string says "Healthy-affecting.", but the doc does not mark it: /' >&2
+fi
+n_metrics=$(printf '%s\n' "$metrics_set" | grep -c .)
+
+# --- 6. the integration health floor -----------------------------------
+# floorCounters is what an integration run FAILS over. A healthy-
+# affecting counter missing from it ships with nothing watching it, and
+# the file reads as complete either way.
+floor_set=$(awk '
+    /^var floorCounters = \[\]floorCounter\{/ { inblock = 1; next }
+    inblock && /^\}/                          { inblock = 0 }
+    inblock && /name:[[:space:]]*"/ {
+        line = $0
+        sub(/.*name:[[:space:]]*"/, "", line)
+        sub(/".*/, "", line)
+        print line
+    }
+' "$FLOOR" | sort -u)
+if [ -z "$floor_set" ]; then
+    echo "check-health-contract: no floorCounters entries found in $FLOOR" >&2
+    echo "  The var block was not recognised, so this check read nothing." >&2
+    exit 2
+fi
+if [ "$column_set" != "$floor_set" ]; then
+    note "the integration health floor and the healthy-affecting column disagree:"
+    diff <(printf '%s\n' "$column_set") <(printf '%s\n' "$floor_set") \
+        | sed 's/^</  marked yes in the doc, but no integration run watches it: /; s/^>/  in floorCounters, but not marked healthy-affecting: /' >&2
+fi
+
+# Every entry fatal, which is what the floor MEANS. A healthy-affecting
+# counter present but non-fatal is watched and then waved through, which
+# reads greener than being absent.
+n_floor=$(printf '%s\n' "$floor_set" | grep -c .)
+n_fatal=$(awk '
+    /^var floorCounters = \[\]floorCounter\{/ { inblock = 1; next }
+    inblock && /^\}/                          { inblock = 0 }
+    inblock && /fatal:[[:space:]]*true/       { n++ }
+    END { print n + 0 }
+' "$FLOOR")
+if [ "$n_fatal" != "$n_floor" ]; then
+    note "floorCounters has $n_floor entr(ies) but only $n_fatal marked fatal — a healthy-affecting counter the floor does not fail on is watched and waved through"
+fi
+
 if [ "$fail" -ne 0 ]; then
     echo >&2
     echo "\`healthy\` is the one boolean operators alert on. Every doc" >&2
@@ -272,5 +358,5 @@ if [ "$fail" -ne 0 ]; then
     exit 1
 fi
 
-echo "PASS  healthy contract agrees in ${n_lists} doc counter-list(s), ${n_words} doc count-word(s) and ${n_code} code term(s): $(printf '%s' "$column_set" | tr '\n' ' ')"
+echo "PASS  healthy contract agrees in ${n_lists} doc counter-list(s), ${n_words} doc count-word(s), ${n_code} code term(s), ${n_metrics} /metrics help string(s) and ${n_floor} integration floor entr(ies): $(printf '%s' "$column_set" | tr '\n' ' ')"
 exit 0
