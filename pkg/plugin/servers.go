@@ -208,9 +208,18 @@ type acquisitionAttempt struct {
 // and the ladder is spending the budget on nothing.
 //
 // The number is the adjustable part. The guarantee is not: no attempt
-// is ever handed less than this, whatever the operator lists, and
-// TestAcquisitionAttempts_NoAttemptIsStarved pins that rather than
-// pinning 3s.
+// is ever handed less than this AS LONG AS THE BUDGET CAN FUND ONE
+// ATTEMPT, and TestAcquisitionAttempts_NoAttemptIsStarved pins that
+// rather than pinning 3s.
+//
+// That qualifier is load-bearing and it is not a gap. lease_timeout is
+// operator-settable with no validated minimum, so a total below this
+// floor is reachable, and no arrangement of the ladder can pay for a
+// full attempt out of it. What the ladder owes there is to spend the
+// whole of a too-small budget on ONE question rather than shred it
+// across the list -- the honest failure instead of the guaranteed one.
+// Said the other way round: the ladder never starves an attempt it
+// could have funded.
 const minAttemptBudget = 3 * time.Second
 
 // packTiers folds a tier list down to n attempts by merging the tail
@@ -278,7 +287,25 @@ func acquisitionAttempts(pol serverPolicy, v6 bool, total time.Duration) []acqui
 	// the total, or the guarantee that every attempt gets enough time
 	// to be a real question.
 	tiers := pol.tiers()
-	if maxAttempts := int(total / minAttemptBudget); maxAttempts >= 1 && len(tiers) > maxAttempts {
+	// BELOW THE FLOOR, COLLAPSE TO ONE -- do not fall through.
+	//
+	// int(total / minAttemptBudget) is 0 when the budget cannot fund a
+	// single attempt, and a guard of `>= 1` then skips the packing
+	// entirely, dividing the budget across the whole list exactly as
+	// the code #731 was filed against did. Twenty servers on a 1.5s
+	// lease_timeout took 75ms each -- worse than the 500ms the issue
+	// named as a guaranteed failure -- and it reached that by way of
+	// the fix.
+	//
+	// A budget too small for one attempt cannot be rescued; what it
+	// can be is spent once. One question with the whole 1.5s can be
+	// answered by a fast server, twenty questions of 75ms cannot be
+	// answered by anything.
+	maxAttempts := int(total / minAttemptBudget)
+	if maxAttempts < 1 {
+		maxAttempts = 1
+	}
+	if len(tiers) > maxAttempts {
 		tiers = packTiers(tiers, maxAttempts)
 	}
 	// Integer division deliberately: the remainder is dropped rather

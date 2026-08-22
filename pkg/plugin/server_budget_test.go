@@ -6,6 +6,7 @@ package plugin
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/netip"
 	"testing"
 	"time"
@@ -176,12 +177,27 @@ func TestAcquisitionAttempts_UnrestrictedPathIsUntouched(t *testing.T) {
 // the total budget is ever configured below one floor, the ladder must
 // collapse to a single attempt rather than to zero — an acquisition
 // that makes no attempt at all fails without ever asking anybody.
+//
+// ONE, and the count is the assertion. An earlier version of this test
+// said "collapse to a single attempt" in its name and its comment and
+// asserted only that the count was non-zero and that no server was
+// dropped. It ran the 3-server sub-floor case, got THREE attempts of a
+// third of a too-small budget each, and passed -- so it stated the
+// property while discriminating nothing, and the defect it was named
+// for sat underneath it. Prose in a test is not an assertion, and a
+// test whose name over-claims is worse than one that says less: this
+// one read as covered.
 func TestPackTiers_ATinyBudgetStillRunsOnce(t *testing.T) {
 	pol := preferPolicy(t, "10.0.0.1", "10.0.0.2", "10.0.0.3")
 	attempts := acquisitionAttempts(pol, false, minAttemptBudget/2)
 
-	if len(attempts) == 0 {
-		t.Fatal("no attempts for a sub-floor budget; the acquisition would fail without asking any server")
+	if len(attempts) != 1 {
+		t.Fatalf("a sub-floor budget produced %d attempts, want exactly 1.\n"+
+			"  Zero would fail without asking anybody; more than one shreds a budget that could not fund\n"+
+			"  even a single attempt into slices that certainly cannot -- which is #731's defect reached by\n"+
+			"  way of its own fix. The whole of a too-small budget spent on ONE question can still be\n"+
+			"  answered by a fast server.",
+			len(attempts))
 	}
 	seen := 0
 	for _, a := range attempts {
@@ -189,6 +205,61 @@ func TestPackTiers_ATinyBudgetStillRunsOnce(t *testing.T) {
 	}
 	if seen != 3 {
 		t.Errorf("attempts name %d servers, want 3 — a short budget may collapse the ladder, not shorten the list", seen)
+	}
+	if attempts[0].Budget != minAttemptBudget/2 {
+		t.Errorf("the single attempt got %v of a %v budget; a collapsed ladder must hand its one attempt "+
+			"the whole of what there is", attempts[0].Budget, minAttemptBudget/2)
+	}
+}
+
+// TestAcquisitionAttempts_NoLadderIsStarvedBelowTheFloor is the
+// behaviour table oversight measured on the unfixed head, kept as a
+// test because the single 3-server case above is one point on a curve
+// and the defect was visible only at the ends.
+//
+// lease_timeout is operator-settable with no validated minimum, so
+// every row here is reachable configuration rather than a hypothetical.
+func TestAcquisitionAttempts_NoLadderIsStarvedBelowTheFloor(t *testing.T) {
+	servers := make([]string, 0, 20)
+	for i := 1; i <= 20; i++ {
+		servers = append(servers, fmt.Sprintf("10.0.0.%d", i))
+	}
+
+	cases := []struct {
+		name         string
+		servers      int
+		total        time.Duration
+		wantAttempts int
+	}{
+		{"20 servers, 10s -- above the floor, packed to what it can fund", 20, 10 * time.Second, 3},
+		{"20 servers, 3s -- exactly one floor", 20, 3 * time.Second, 1},
+		{"20 servers, 1.5s -- below the floor", 20, 1500 * time.Millisecond, 1},
+		{"20 servers, 900ms -- far below", 20, 900 * time.Millisecond, 1},
+		{"6 servers, 1.5s -- below the floor with a short list", 6, 1500 * time.Millisecond, 1},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			pol := preferPolicy(t, servers[:tc.servers]...)
+			attempts := acquisitionAttempts(pol, false, tc.total)
+			if len(attempts) != tc.wantAttempts {
+				t.Fatalf("got %d attempts, want %d", len(attempts), tc.wantAttempts)
+			}
+			for i, a := range attempts {
+				// Above the floor every attempt must clear it. Below
+				// it there is exactly one attempt and it holds
+				// everything there was -- starved by the operator's
+				// budget, not by the ladder.
+				want := minAttemptBudget
+				if tc.total < minAttemptBudget {
+					want = tc.total
+				}
+				if a.Budget < want {
+					t.Errorf("attempt %d got %v, want at least %v: the ladder starved an attempt it could have funded",
+						i, a.Budget, want)
+				}
+			}
+		})
 	}
 }
 
