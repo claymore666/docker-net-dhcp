@@ -781,26 +781,32 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
 
    **The failure is silent, which is why this needs a command and not a
    reminder.** The divergence carries no content: every release merge
-   has a `dev` commit as its second parent, so `git diff main dev` is
+   has a `dev` commit as its second parent — because step 5 merged the
+   release branch into `dev` before the tag — so `git diff main dev` is
    clean and the whole suite passes while the graph is wrong. Nothing
    reads as broken, so nothing prompts the check.
 
-   Worked instance: v1.6.0 shipped on 2026-08-17 and three Dependabot
-   PRs went into `dev` a few hours later, before anyone looked at
-   `main`. That foreclosed it; recovered by #597.
+   Worked instance: v1.6.0 published at 23:11:30Z on 2026-08-16; three
+   Dependabot PRs went into `dev` at 23:26, **fifteen minutes later**,
+   before anyone looked at `main`. That foreclosed it; recovered by #597
+   at 23:38. Fifteen minutes is not a window anyone watches by hand.
 
-   **The scheduled gate does not cover this case.**
-   `scripts/check-release-backmerge.sh` (#598 / PR #599) asserts that
-   every commit reachable from `main` is reachable from `dev`, but only
-   once the oldest `main`-only commit is older than
-   `BACKMERGE_GRACE_HOURS` (default 24) — the grace exists so a release
-   in flight is not a false red, and it is exactly the window this
-   failure lives in. #598 scoped itself to the *permanent* omission and
-   left the merge-time signal unimplemented, wanting a decision on shape
-   (advisory annotation vs. blocking check) first; **it was then closed,
-   so nothing tracks that case today.** Knowing a gate exists here is
-   worse than not knowing it, if its existence is read as this being
-   watched.
+   **CI warns, but it cannot block.**
+   `.github/workflows/release-backmerge.yml` runs
+   `scripts/check-release-backmerge.sh` in two modes:
+
+   - **Advisory, on every PR into `dev`** — warns on any divergence and
+     **ignores the grace window**, because the fresh divergence is the
+     only case this mode exists for. It warns and never blocks, on
+     purpose — reasoning in the workflow header. An annotation can be
+     scrolled past, which is why the command stays in this step.
+   - **Enforcing, on the nightly schedule** — the backstop for the
+     *permanent* omission, and the only mode `BACKMERGE_GRACE_HOURS`
+     (default 24) applies to, so a release in flight is not a false red.
+
+   One caveat on the recovery: the back-merge diff is not always empty.
+   #597 was, but `6af0749` carried three real files. Hitting a conflict
+   there does not mean you have done something wrong.
 12. **Prune merged branches.** The repo has *Automatically delete head
    branches* enabled, so merged PR head branches are removed on merge.
    Two things that setting doesn't cover, so clean them now:
