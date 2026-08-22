@@ -759,6 +759,18 @@ worth more than a rule followed.
   This is the correct counter to the instinct to delete what nothing
   observes, and it is the same reason *"it never fired"* is not a valid
   kill reason. *(client1)*
+- **Measure the object, not the thing standing next to it** — the tree
+  not the pull request, the field count not the series count, the claim
+  not the proxy. Four times in one evening.
+
+  **And the honest half: three of those four times the proxy would have
+  given the same answer.** It cost a round trip each time and paid once.
+  That is the same shape as R17's 26 candidates producing one real
+  finding, and it is the same defence: **judged on precision this habit
+  dies; judged on recall it is the only thing that caught #766's series
+  claim, the transcribed tripwire, and a table that was six rows short.**
+  The two belong together — when the miss is silent and the false
+  positive is a glance, cheap-and-usually-redundant is the correct trade.
 - **Wait on the effect, not on the precondition.** A waiter armed for
   #766 watched `origin/dev`'s tree — the `HealthResponse` json tags —
   rather than the pull request's merge state. *"The PR merged"* and
