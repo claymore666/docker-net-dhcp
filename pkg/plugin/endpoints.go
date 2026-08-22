@@ -463,6 +463,17 @@ type HealthResponse struct {
 	// chooses; this one covers the values the SERVER chooses, which is
 	// the larger set and the one nothing filtered before (#703, #704).
 	UnsafeOptionValuesDropped int32 `json:"unsafe_option_values_dropped"`
+	// NetworkOptionsRejected counts endpoint operations that met a
+	// network's stored options and would not act on them as written:
+	// an interface name the kernel would not accept, or a mode this
+	// plugin does not implement (#727). DeleteEndpoint counts without
+	// refusing, so a rise does not mean nothing was torn down. NOT
+	// healthy-affecting: refusing is the safe outcome and the
+	// operation already fails visibly to Docker; one network's record
+	// is broken, not the plugin. A non-zero value means options
+	// written before name validation existed (#705), or a hand-edited
+	// state directory.
+	NetworkOptionsRejected int32 `json:"network_options_rejected"`
 	// DNSPropagationPIDMismatches counts DNS propagations refused
 	// because the container PID resolved through Docker no longer
 	// belonged to that container by the time the plugin acted on it
@@ -728,6 +739,7 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		TombstoneQuarantines:         tsQuarantines,
 		UnsafeHostnamesRejected:      p.unsafeHostnamesRejected.Load(),
 		UnsafeOptionValuesDropped:    p.unsafeOptionValuesDropped.Load(),
+		NetworkOptionsRejected:       p.networkOptionsRejected.Load(),
 		DNSPropagationPIDMismatches:  p.dnsPropagationPIDMismatches.Load(),
 		NetnsPIDMismatches:           p.netnsPIDMismatches.Load(),
 		DHCPRoutesApplied:            p.dhcpRoutesApplied.Load(),

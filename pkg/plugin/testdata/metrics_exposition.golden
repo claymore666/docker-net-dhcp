@@ -12,11 +12,11 @@ net_dhcp_uptime_seconds 1234.5
 
 # HELP net_dhcp_active_endpoints Endpoints with a live DHCP renewal client.
 # TYPE net_dhcp_active_endpoints gauge
-net_dhcp_active_endpoints 520
+net_dhcp_active_endpoints 530
 
 # HELP net_dhcp_pending_hints CreateEndpoint hints waiting for their Join.
 # TYPE net_dhcp_pending_hints gauge
-net_dhcp_pending_hints 510
+net_dhcp_pending_hints 520
 
 # HELP net_dhcp_sandbox_netns_visible Sandbox netns entries the plugin can see; -1 means the directory is unreadable and sandbox-liveness answers carry no evidence.
 # TYPE net_dhcp_sandbox_netns_visible gauge
@@ -78,51 +78,51 @@ net_dhcp_dhcp_server_policy_exhausted_total 160
 
 # HELP net_dhcp_recovered_ok_total Endpoints whose renewal client was rebuilt after a plugin restart.
 # TYPE net_dhcp_recovered_ok_total counter
-net_dhcp_recovered_ok_total 500
+net_dhcp_recovered_ok_total 510
 
 # HELP net_dhcp_recovery_failed_total Post-restart rebuilds that failed for a container that is still running; it runs without lease renewal and loses its IP at expiry. Healthy-affecting.
 # TYPE net_dhcp_recovery_failed_total counter
-net_dhcp_recovery_failed_total 490
+net_dhcp_recovery_failed_total 500
 
 # HELP net_dhcp_recovery_deferred_total Recovery walks postponed because the daemon was still starting (#383). Not a fault.
 # TYPE net_dhcp_recovery_deferred_total counter
-net_dhcp_recovery_deferred_total 480
+net_dhcp_recovery_deferred_total 490
 
 # HELP net_dhcp_recovery_aborted_container_gone_total Endpoints skipped during recovery because their container had already exited. Not a fault.
 # TYPE net_dhcp_recovery_aborted_container_gone_total counter
-net_dhcp_recovery_aborted_container_gone_total 470
+net_dhcp_recovery_aborted_container_gone_total 480
 
 # HELP net_dhcp_recovery_network_gone_total Networks skipped during recovery because they were removed mid-walk. Not a fault.
 # TYPE net_dhcp_recovery_network_gone_total counter
-net_dhcp_recovery_network_gone_total 460
+net_dhcp_recovery_network_gone_total 470
 
 # HELP net_dhcp_recovery_fingerprints_skipped_total Endpoints recovery adopted but could not describe, because the container inspect gave no hostname. Not healthy-affecting: they keep their renewal client and lose only address stability across their next restart.
 # TYPE net_dhcp_recovery_fingerprints_skipped_total counter
-net_dhcp_recovery_fingerprints_skipped_total 450
+net_dhcp_recovery_fingerprints_skipped_total 460
 
 # HELP net_dhcp_recovery_already_managed_total Endpoints a recovery walk left alone because a Join had already claimed them. Not a fault; the only outward evidence of recovery racing a Join.
 # TYPE net_dhcp_recovery_already_managed_total counter
-net_dhcp_recovery_already_managed_total 440
+net_dhcp_recovery_already_managed_total 450
 
 # HELP net_dhcp_join_start_failures_total Joins whose DHCP client failed to start, leaving a running container without lease renewal. Healthy-affecting.
 # TYPE net_dhcp_join_start_failures_total counter
-net_dhcp_join_start_failures_total 430
+net_dhcp_join_start_failures_total 440
 
 # HELP net_dhcp_join_aborted_container_gone_total Joins abandoned because the container disappeared mid-attach. Not a fault.
 # TYPE net_dhcp_join_aborted_container_gone_total counter
-net_dhcp_join_aborted_container_gone_total 420
+net_dhcp_join_aborted_container_gone_total 430
 
 # HELP net_dhcp_join_aborted_no_container_total Joins abandoned because no container was ever found for the endpoint. Not a fault.
 # TYPE net_dhcp_join_aborted_no_container_total counter
-net_dhcp_join_aborted_no_container_total 410
+net_dhcp_join_aborted_no_container_total 420
 
 # HELP net_dhcp_join_aborted_endpoint_left_total Joins abandoned because a Leave arrived while the attach was in flight. Not a fault.
 # TYPE net_dhcp_join_aborted_endpoint_left_total counter
-net_dhcp_join_aborted_endpoint_left_total 370
+net_dhcp_join_aborted_endpoint_left_total 380
 
 # HELP net_dhcp_join_attach_slow_total Attaches that outran their expected window and needed the daemon-busy grace.
 # TYPE net_dhcp_join_attach_slow_total counter
-net_dhcp_join_attach_slow_total 400
+net_dhcp_join_attach_slow_total 410
 
 # HELP net_dhcp_displaced_stops_total DHCP managers stopped because a Join displaced them. Counts the intent to stop; it is not evidence the client went away.
 # TYPE net_dhcp_displaced_stops_total counter
@@ -130,11 +130,11 @@ net_dhcp_displaced_stops_total 120
 
 # HELP net_dhcp_restart_link_up_waited_total Container restarts that had to wait for the interface to come back up.
 # TYPE net_dhcp_restart_link_up_waited_total counter
-net_dhcp_restart_link_up_waited_total 390
+net_dhcp_restart_link_up_waited_total 400
 
 # HELP net_dhcp_restart_link_up_timeouts_total Container restarts where the interface never came up inside the wait.
 # TYPE net_dhcp_restart_link_up_timeouts_total counter
-net_dhcp_restart_link_up_timeouts_total 380
+net_dhcp_restart_link_up_timeouts_total 390
 
 # HELP net_dhcp_address_conflict_probes_total Conflict probes that reached a verdict. Read this before believing address_conflicts is zero: zero here means the detector never ran.
 # TYPE net_dhcp_address_conflict_probes_total counter
@@ -170,11 +170,11 @@ net_dhcp_parent_link_wait_timeouts_total 80
 
 # HELP net_dhcp_tombstone_write_failures_total Tombstone writes that failed, so the next restart of that container picks a new MAC and address. Healthy-affecting.
 # TYPE net_dhcp_tombstone_write_failures_total counter
-net_dhcp_tombstone_write_failures_total 360
+net_dhcp_tombstone_write_failures_total 370
 
 # HELP net_dhcp_tombstone_quarantines_total Times the tombstone file was found unparseable and moved aside as tombstones.json.corrupt-<ts>; every live tombstone on the host was lost with it, so containers restarting in the next TTL window come back with new MACs and addresses. Healthy-affecting.
 # TYPE net_dhcp_tombstone_quarantines_total counter
-net_dhcp_tombstone_quarantines_total 350
+net_dhcp_tombstone_quarantines_total 360
 
 # HELP net_dhcp_tombstones_consumed_total Tombstones read back to preserve a container's MAC and address across a restart.
 # TYPE net_dhcp_tombstones_consumed_total counter
@@ -182,11 +182,15 @@ net_dhcp_tombstones_consumed_total 260
 
 # HELP net_dhcp_unsafe_hostnames_rejected_total Container hostnames dropped before reaching the DHCP client config because they carried a control character. A legitimate hostname never does, so any rise is deliberate (#692).
 # TYPE net_dhcp_unsafe_hostnames_rejected_total counter
-net_dhcp_unsafe_hostnames_rejected_total 340
+net_dhcp_unsafe_hostnames_rejected_total 350
 
 # HELP net_dhcp_unsafe_option_values_dropped_total Server-chosen DHCP string values refused before use because they carried a control character, plus option-15 domains truncated at their first space. dhcpcd validates only its dname-typed options; the string-typed ones pass newlines through (#703, #704).
 # TYPE net_dhcp_unsafe_option_values_dropped_total counter
-net_dhcp_unsafe_option_values_dropped_total 330
+net_dhcp_unsafe_option_values_dropped_total 340
+
+# HELP net_dhcp_network_options_rejected_total Endpoint operations that met a network's stored options and would not act on them as written: an interface name the kernel would not accept, or a mode this plugin does not implement. DeleteEndpoint counts without refusing, so a rise does not mean nothing was torn down. Not healthy-affecting: refusing is the safe outcome and the operation already fails visibly to Docker. A rise means options persisted before name validation existed, or a hand-edited state directory (#727).
+# TYPE net_dhcp_network_options_rejected_total counter
+net_dhcp_network_options_rejected_total 330
 
 # HELP net_dhcp_dns_propagation_pid_mismatches_total DNS propagations refused because the container PID resolved through Docker no longer belonged to that container. The plugin shares the host PID namespace, so each one is a resolv.conf write that would otherwise have landed in an unrelated host process (#688).
 # TYPE net_dhcp_dns_propagation_pid_mismatches_total counter

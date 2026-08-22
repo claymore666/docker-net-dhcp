@@ -800,6 +800,33 @@ type Plugin struct {
 	// process and rides the event across the FIFO (#703, #704).
 	unsafeOptionValuesDropped atomic.Int32
 
+	// networkOptionsRejected counts endpoint operations that met a
+	// network's STORED options and would not act on them as written --
+	// an interface name the kernel would not accept, or a mode this
+	// plugin does not implement (#727).
+	//
+	// Every handler but one refuses outright. DeleteEndpoint
+	// contributes without refusing: teardown must run for a broken
+	// record or the link and the lease outlive the container, so it
+	// counts the fault and proceeds. So a rise here does not mean
+	// nothing was torn down.
+	//
+	// Not healthy-affecting: the refusal is the safe outcome, and the
+	// operation it refused already fails visibly back to Docker. The
+	// plugin is not degraded — one network's record is, and no counter
+	// value will fix that record. Flipping unhealthy here would page an
+	// operator over a fault only they can clear, while every other
+	// network on the host keeps working.
+	//
+	// It is reported because the refusal is otherwise invisible in
+	// aggregate: a single `docker run` failure looks like the container
+	// author's problem, and it takes seeing the same network refuse
+	// repeatedly to recognise a broken record from before #705. A
+	// non-zero value means one of two things, and both want a human:
+	// options written before name validation existed, or somebody
+	// writing the state directory directly.
+	networkOptionsRejected atomic.Int32
+
 	// tombstoneWriteFailures counts saveTombstones failures (disk full,
 	// EROFS) from addTombstone. Reported on /Plugin.Health so operators
 	// can detect a degraded restart-stability window — every failure

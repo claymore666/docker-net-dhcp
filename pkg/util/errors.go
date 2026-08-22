@@ -18,7 +18,7 @@ var (
 	// ErrBridgeUsed indicates that a bridge is already in use
 	ErrBridgeUsed = errors.New("bridge already in use by Docker")
 	// ErrInvalidMode indicates an unsupported value was passed for the `mode` option
-	ErrInvalidMode = errors.New("invalid mode (must be 'bridge' or 'macvlan')")
+	ErrInvalidMode = errors.New("invalid mode (must be 'bridge', 'macvlan' or 'ipvlan')")
 	// ErrParentRequired indicates `parent` was not provided when mode=macvlan
 	ErrParentRequired = errors.New("parent required (mode=macvlan)")
 	// ErrParentInvalid indicates the parent interface cannot host macvlan children
