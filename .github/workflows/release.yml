@@ -833,6 +833,18 @@ jobs:
       # skipping the arm64 Hub verification on every release while the
       # job stayed green. Every other `needs.*` in this file names a
       # job without a hyphen, so this is the first one that needs it.
+      #
+      # DO NOT REACH FOR actionlint TO CHECK THIS. It was driven on both
+      # forms and passes both (v1.7.12), and it does not merely stay
+      # silent: given `needs: [release]` and a reference to
+      # `needs.release-nosuchjob.outputs.x` it reports `property
+      # "release-nosuchjob" is not defined`, naming the whole hyphenated
+      # token as ONE property. Its expression parser treats `-` as part
+      # of an identifier where the documented GitHub grammar treats it
+      # as an operator, so it affirmatively VALIDATES the dot form and
+      # resolves it to the right job's output type. A green from it here
+      # means the opposite of what it looks like. What caught this was
+      # grepping for precedent and finding only the new line itself.
       HUB_PUSHED: ${{ needs['release-arm64'].outputs.hub_pushed }}
       HAS_HUB_CREDS: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
     steps:
