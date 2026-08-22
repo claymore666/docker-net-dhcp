@@ -47,10 +47,18 @@ FROM alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6ee
 # is required (the per-interface model used here is removed in dhcpcd 11).
 # `sh`, `mount`, and `unshare` (per-client mount-namespace isolation of
 # dhcpcd's state dir) come from the base Alpine busybox.
+#
+# The `test -x` is not belt-and-braces. pkg/dhcp names dhcpcd by the
+# ABSOLUTE path /sbin/dhcpcd (#707) — a bare name would be resolved out
+# of PATH by the shell that execs it — so an Alpine bump that relocates
+# the binary would turn every lease into a "not found" at runtime,
+# discovered by a container, not by a build. TestDhcpcdBinMatchesDockerfile
+# keeps this line and that constant naming the same path.
 RUN mkdir -p /run/docker/plugins /var/lib/net-dhcp && \
     apk add --no-cache \
         dhcpcd=10.3.2-r0 \
-        iproute2=7.0.0-r0
+        iproute2=7.0.0-r0 && \
+    test -x /sbin/dhcpcd
 
 COPY --from=builder /usr/local/src/docker-net-dhcp/bin/net-dhcp /usr/sbin/
 COPY --from=builder /usr/local/src/docker-net-dhcp/bin/dhcp-handler /usr/lib/net-dhcp/dhcp-handler

@@ -30,7 +30,29 @@ import (
 // shared host-wide and unusable for per-endpoint identity — see the
 // mount-namespace isolation in the client runtime).
 
-const dhcpcdBin = "dhcpcd"
+// dhcpcdBin is the ABSOLUTE path to dhcpcd(8) in the plugin rootfs.
+//
+// It reaches execve as `$0` of `unshare -m /bin/sh -c '… exec "$0" "$@"'`,
+// and sh resolves a bare name through PATH exactly as exec.Command's
+// LookPath does. So while #707 pinned unshare, it also recorded that
+// unshare "was the one binary in the tree whose identity depended on the
+// environment" — and that was not true when it was written. This one was
+// the other, sitting one argv position away, hidden by being a shell's
+// PATH lookup rather than Go's (#707).
+//
+// The path is Alpine's, matching the pinned base image, and it is
+// measured rather than assumed: on
+// alpine:3.24.1@sha256:28bd5fe8… with dhcpcd=10.3.2-r0 installed,
+// `command -v dhcpcd` is /sbin/dhcpcd and /usr/sbin/dhcpcd does not
+// exist. dhcpcd does not vary its behaviour on argv[0]; the absolute
+// and bare forms produce identical output, checked under the same
+// `sh -c 'exec "$0" "$@"'` wrapper this code uses.
+//
+// The Dockerfile asserts the binary is there at build time, and
+// TestDhcpcdBinMatchesDockerfile asserts the two name the same path, so
+// an Alpine relocation fails the build instead of failing a container's
+// first lease with "not found".
+const dhcpcdBin = "/sbin/dhcpcd"
 
 // EventFIFOEnv is the environment variable, pushed to dhcpcd's hook via
 // the `env` config directive, that tells the handler where to write its
