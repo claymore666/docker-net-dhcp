@@ -106,6 +106,9 @@ LANE=(
   "dispatch-ref guard|-|bash scripts/check-dispatch-ref-guard.sh"
   "capture lane|-|bash scripts/check-capture-lane.sh"
   "dispatch reachable|-|bash scripts/check-dispatch-reachable.sh"
+  "concurrency parity|-|bash scripts/check-concurrency-parity.sh"
+  "lane hygiene|-|bash scripts/check-lane-hygiene.sh"
+  "allowlist parity|-|bash scripts/check-allowlist-parity.sh"
   # The lane checks itself: if test.yaml gains a gate this file does
   # not list, a local run says so instead of quietly covering less.
   "local-lane coverage|-|bash scripts/check-local-lane.sh"

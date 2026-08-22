@@ -55,10 +55,21 @@ if ! git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     exit 2
 fi
 
-mapfile -t FILES < <(git -C "$ROOT" ls-files -- '*.sh' | sort)
+# UNTRACKED FILES COUNT TOO (#743). A file written but not yet `git
+# add`ed is invisible to `ls-files` alone, and that is precisely the
+# state a source file is in for the whole time someone is writing it.
+# This gate runs in scripts/local-lane.sh, where an uncommitted working
+# tree is the NORMAL state — so the blind spot sat exactly where the
+# gate is meant to be useful, and never showed in CI, where a fresh
+# checkout makes tracked and present mean the same thing. Same argument
+# and same fix as check-license-headers.sh:74.
+mapfile -t FILES < <({
+    git -C "$ROOT" ls-files -- '*.sh'
+    git -C "$ROOT" ls-files --others --exclude-standard -- '*.sh'
+} | sort -u)
 
 if [ "${#FILES[@]}" -eq 0 ]; then
-    echo "::error title=Nothing to inspect::no tracked *.sh files in $ROOT." \
+    echo "::error title=Nothing to inspect::no *.sh files in $ROOT." \
          "This gate would otherwise report a clean pass having read nothing." >&2
     exit 2
 fi

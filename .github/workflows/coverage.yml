@@ -146,7 +146,14 @@ jobs:
         with:
           go-version: '1.26.6'
 
+      # The ref is passed explicitly because this lane's plugin is
+      # COVER_PLUGIN_REF, not the :integration tag the other lanes use.
+      # cleanup-orphans re-enables a plugin a panicked recovery test may
+      # have left disabled, and it can only do that for the tag it is
+      # told about (#742).
       - name: Cleanup orphans from previous runs
+        env:
+          INTEGRATION_PLUGIN_REF: ${{ env.COVER_PLUGIN_REF }}
         run: bash test/integration/cleanup-orphans.sh
 
       # Wipe any counter/meta files from a previous coverage run so
@@ -195,7 +202,16 @@ jobs:
       # suite can't reach (NAK handling, post-expiry retry loop) — the
       # ratchet counts both runs' coverage, so both must drive the
       # instrumented plugin.
+      #
+      # if: always() for the same reason as the other lanes (#742), and
+      # with an extra one here: a red main suite would otherwise skip
+      # this step, the counters flushed below would hold data from one
+      # suite instead of two, and the ratchet at the end of this job
+      # would compare a partial measurement against a full baseline.
+      # Found by scripts/check-lane-hygiene.sh, not by #742, which
+      # listed only the two non-gating lanes.
       - name: Run failure-injection tests against cover plugin
+        if: always()
         env:
           INTEGRATION_PLUGIN_REF: ${{ env.COVER_PLUGIN_REF }}
         run: make integration-test-failure

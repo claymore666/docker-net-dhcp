@@ -82,6 +82,10 @@
 # Usage:
 #   sync-issue-state-labels.sh              apply the plan
 #   sync-issue-state-labels.sh --dry-run    print the plan, change nothing
+#   sync-issue-state-labels.sh --parse-title read PR titles on stdin, print
+#                                           the refs the RECONCILER would
+#                                           see — refs(), not the
+#                                           merge-aware commit_refs()
 #   sync-issue-state-labels.sh --parse      read subjects on stdin, print
 #                                           the refs — offline, no gh
 #   sync-issue-state-labels.sh --parse-body read PR prose on stdin, print
@@ -110,6 +114,7 @@ case "${1:-}" in
     "") ;;
     --dry-run) MODE="dry-run" ;;
     --parse) MODE="parse" ;;
+    --parse-title) MODE="parse-title" ;;
     --parse-body) MODE="parse-body" ;;
     --plan|--unresolved)
         MODE="${1#--}"
@@ -124,7 +129,7 @@ case "${1:-}" in
         exit 0
         ;;
     *)
-        echo "usage: $0 [--dry-run|--parse|--parse-body|--plan DIR|--unresolved DIR]" >&2
+        echo "usage: $0 [--dry-run|--parse|--parse-title|--parse-body|--plan DIR|--unresolved DIR]" >&2
         exit 2
         ;;
 esac
@@ -219,6 +224,39 @@ def pr_refs(pr):
     return out
 PY
 )
+
+if [ "$MODE" = "parse-title" ]; then
+    # THE TITLE HALF, BOUND TO refs() AND NOT commit_refs() (#742).
+    # scripts/check-issue-ref.sh used to run --parse over the PR title,
+    # which is commit_refs() — the merge-aware variant. commit_refs()'s
+    # docstring above says in as many words why the two must not be the
+    # same function over a title: a title is attacker-controlled, and the
+    # merge form would let "Merge pull request #500 from x" name issue
+    # #500.
+    #
+    # The consequence was the mirror of that and just as bad. The
+    # reconciler reads titles with refs() (:307), so a merge-form title
+    # satisfied the GATE while leaving the reconciler nothing to read —
+    # the exact false green the gate exists to prevent. Measured:
+    #   printf 'Merge pull request #500 from evil/branch' | ... --parse
+    #     -> #500          (gate: PASS)
+    #   refs('Merge pull request #500 from evil/branch')
+    #     -> []            (reconciler: nothing)
+    #
+    # The gate is right not to carry its own regex — that is how two
+    # copies drift. It needed the other half exposed, which is this.
+    PARSER="$PARSER" python3 -c '
+import os
+import sys
+
+exec(os.environ["PARSER"])  # noqa: S102 - defines refs()
+
+for line in sys.stdin:
+    for n in refs(line.rstrip("\n")):
+        print(f"#{n}")
+'
+    exit $?
+fi
 
 if [ "$MODE" = "parse" ]; then
     # python3 -c, not a heredoc: `python3 - <<PY` makes the heredoc the

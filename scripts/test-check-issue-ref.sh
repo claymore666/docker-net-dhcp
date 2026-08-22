@@ -88,6 +88,23 @@ run "the #718 shape is reachable" 0 "#123" \
 
 Some prose about the change.'
 
+# --- the title is read the way the RECONCILER reads it (#742) ----------
+# The gate used to parse titles with `--parse`, i.e. commit_refs(), the
+# merge-aware variant. The reconciler parses titles with refs(). So a
+# merge-form title satisfied the gate while giving the reconciler
+# nothing to read — a green check for a PR whose reference no downstream
+# consumer can see, which is the false green this gate exists to
+# prevent. It is also the direction commit_refs()'s own docstring warns
+# about: a PR title is attacker-controlled, and the merge form names a
+# PR, never an issue.
+run "a merge-form PR title is NOT a reference" 1 "references an issue" \
+    "$BASE..HEAD" 'Merge pull request #500 from someone/branch' 'Just some prose.'
+
+# ...and the ordinary trailing-group title still is, or the fix would
+# just be a gate nobody can satisfy from a title.
+run "an ordinary trailing-group title still passes" 0 "the PR title" \
+    "$BASE..HEAD" 'fix(plugin): a thing with no reference (#123)' 'Just some prose.'
+
 # --- the failure the gate exists for -----------------------------------
 run "nothing anywhere is red" 1 "references an issue" \
     "$BASE..HEAD" 'fix(plugin): a thing with no reference' 'Just some prose.'

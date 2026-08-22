@@ -30,30 +30,43 @@ fail-on-severity: high
 # visible as a red required check, and the full report is written to the
 # job summary either way.
 
-# All three are daemon-side / `docker cp`-side Moby vulnerabilities in
-# github.com/docker/docker. This plugin uses that module only as a
-# CLIENT library; its sole call-sites are NetworkList, NetworkInspect,
-# and ContainerInspect. It never invokes the AuthZ, archive-PUT, or
-# `docker cp` handlers where these live. The Go vuln DB imported the
-# `docker cp`/archive advisories on 2026-06-28; govulncheck now reports
-# all of them via init-chain traces, and they are accepted with the
-# same justification in .github/vuln-allowlist.txt (#291/#292). No fix
-# is available: the github.com/docker/docker module is frozen at
-# v28.5.2; the successor github.com/moby/moby/v2 migration is tracked in
-# #178, at which point these acceptances are re-evaluated. Reviewed
-# 2026-06-14 (#193); re-reviewed 2026-07-03 (#291).
+# THIS LIST HAD DRIFTED FROM vuln-allowlist.txt (#741). It carried
+# three GHSAs and asserted, right here, that all three were "accepted
+# with the same justification in .github/vuln-allowlist.txt". Two of
+# them were not, and had not been for weeks:
 #
-# Not listed (below fail-on-severity, so this gate never acts on them;
-# accepted in vuln-allowlist.txt only): GHSA-pxq6-2prw-chj9
-# (= GO-2026-4883, medium) and GHSA-vp62-88p7-qqf5 (= GO-2026-5668,
-# medium, `docker cp` symlink-swap empty-file race).
+#   GHSA-x86f-5xw2-fm2r (= GO-2026-5746) removed 2026-07-28 — govulncheck
+#     stopped reporting it as reachable from our call graph, which is
+#     that file's documented trigger for dropping an entry;
+#   GHSA-rg2x-37c3-w2rh (= GO-2026-5617) removed 2026-08-14 in #525 —
+#     "an entry that accepts nothing is an entry nobody will re-review".
+#
+# So this gate, which runs at fail-on-severity: high, would have waved
+# through a PR reintroducing either one — after this project's own
+# reachability review had concluded they should no longer be accepted.
+# Both files state the sync rule in their headers and neither enforced
+# it. This is the "allowlist nobody prunes" failure both of them warn
+# about, reached by the route neither anticipated: the pruning DID
+# happen, in one file. scripts/check-allowlist-parity.sh now compares
+# them, through the declared mapping in .github/ghsa-go-map.txt.
+#
+# The surviving entry is daemon-side Moby, in github.com/docker/docker.
+# This plugin uses that module only as a CLIENT library; its sole
+# call-sites are NetworkList, NetworkInspect and ContainerInspect. It
+# never invokes the AuthZ handler where this one lives. govulncheck
+# reports it via init-chain traces, and it is accepted with the same
+# justification in .github/vuln-allowlist.txt (#291/#292). No fix is
+# available: the github.com/docker/docker module is frozen at v28.5.2;
+# the successor github.com/moby/moby/v2 migration is tracked in #178,
+# at which point the acceptance is re-evaluated. Reviewed 2026-06-14
+# (#193); re-reviewed 2026-07-03 (#291); reconciled 2026-08-22 (#741).
+#
+# Not listed (below fail-on-severity, so this gate never acts on them):
+# GHSA-pxq6-2prw-chj9 (= GO-2026-4883, medium, live in
+# vuln-allowlist.txt) and GHSA-vp62-88p7-qqf5 (= GO-2026-5668, medium,
+# `docker cp` symlink-swap empty-file race, removed from
+# vuln-allowlist.txt on 2026-08-14 alongside GO-2026-5617).
 allow-ghsas:
   # AuthZ plugin bypass on oversized request bodies (= GO-2026-4887,
   # also in vuln-allowlist.txt for the govulncheck gate).
   - GHSA-x744-4wpc-v9h2
-  # `PUT /containers/{id}/archive` executes container binary on the
-  # host (= GO-2026-5746).
-  - GHSA-x86f-5xw2-fm2r
-  # Race condition in `docker cp` allows bind-mount redirection to a
-  # host path (= GO-2026-5617).
-  - GHSA-rg2x-37c3-w2rh

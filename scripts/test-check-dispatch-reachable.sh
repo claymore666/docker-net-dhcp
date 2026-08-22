@@ -108,6 +108,69 @@ grep -F 'another.yml' "$TMP/out" >/dev/null \
     && { echo "FAIL: the declared entry was not honoured through comments"; fails=1; } \
     || echo "PASS: the declared entry was honoured through comments and blanks"
 
+# --- an empty directory is not a clean bill of health (#743) ------------
+# A MISSING directory was already rc2; an EMPTY one passed, printing
+# "PASS  every workflow_dispatch workflow is on origin/main" having read
+# no files at all. Both of these fail against the pre-#743 gate.
+mkdir -p "$TMP/emptywf"
+empty_rc=$( cd "$REPO" && BASE_REF=main bash "$CHECK" "$TMP/emptywf" >/dev/null 2>&1; echo $? )
+check "an empty workflow directory is rc2, not a pass" 2 "$empty_rc"
+
+# --- and neither is a directory where nothing is dispatchable -----------
+# Zero subjects out of N files is the shape a BROKEN DETECTOR takes. It
+# is a legitimate answer today, so the gate states it instead of folding
+# it into a PASS — the point is that it can never again be silent.
+mkdir -p "$TMP/nodispatch"
+push_only only > "$TMP/nodispatch/only.yml"
+none_rc=$( cd "$REPO" && BASE_REF=main bash "$CHECK" "$TMP/nodispatch" >/dev/null 2>&1; echo $? )
+check "a directory with no dispatchable workflow is rc2, not a pass" 2 "$none_rc"
+
+# --- the inline `on:` spellings are workflows too (#743) ----------------
+# The comment above the detector said "`on:` may be block or inline";
+# the pattern was '^[[:space:]]*workflow_dispatch:' and matched only the
+# block form. Every workflow in the tree happens to use the block form,
+# so this was latent — and a latent blind spot in a gate that ALSO
+# passed over an empty input set is how a reformat silently retires a
+# check. GitHub accepts all three spellings below.
+REPO2="$TMP/repo2"
+mkdir -p "$REPO2/.github/workflows"
+git -C "$REPO2" init -q -b main
+git -C "$REPO2" config user.email t@example.com
+git -C "$REPO2" config user.name t
+git -C "$REPO2" config commit.gpgsign false
+dispatchable onmain > "$REPO2/.github/workflows/onmain.yml"
+git -C "$REPO2" add -A && git -C "$REPO2" commit -qm base
+git -C "$REPO2" checkout -q -b work
+
+verdict2() {
+    ( cd "$REPO2" && BASE_REF=main bash "$CHECK" >"$TMP/out2" 2>&1 ) \
+        && echo pass || echo "rc$?"
+}
+check "the baseline repo passes" pass "$(verdict2)"
+
+printf 'name: seq\non: [workflow_dispatch]\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps: [{run: "true"}]\n' \
+    > "$REPO2/.github/workflows/seq.yml"
+check "a flow-sequence 'on: [workflow_dispatch]' is detected" rc1 "$(verdict2)"
+grep -F 'seq.yml' "$TMP/out2" >/dev/null \
+    && echo "PASS: and the flow-sequence workflow is the one named" \
+    || { echo "FAIL: flow-sequence workflow not named"; fails=1; }
+rm -f "$REPO2/.github/workflows/seq.yml"
+
+printf 'name: map\non: {workflow_dispatch: null}\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps: [{run: "true"}]\n' \
+    > "$REPO2/.github/workflows/map.yml"
+check "a flow-mapping 'on: {workflow_dispatch: null}' is detected" rc1 "$(verdict2)"
+grep -F 'map.yml' "$TMP/out2" >/dev/null \
+    && echo "PASS: and the flow-mapping workflow is the one named" \
+    || { echo "FAIL: flow-mapping workflow not named"; fails=1; }
+rm -f "$REPO2/.github/workflows/map.yml"
+
+# The other direction: widening a detector must not make it match prose.
+# A workflow that only TALKS about workflow_dispatch does not declare it,
+# and reporting it would be a false failure on a file nobody can fix.
+{ push_only prose; printf '# this one is not run by workflow_dispatch on purpose\n'; } \
+    > "$REPO2/.github/workflows/prose.yml"
+check "a workflow merely mentioning workflow_dispatch in prose is out of scope" pass "$(verdict2)"
+
 # --- the real repository ------------------------------------------------
 # The shipped state must satisfy its own gate.
 real=$( cd "$(dirname "$CHECK")/.." && bash "$CHECK" >/dev/null 2>&1 && echo pass || echo "rc$?" )
