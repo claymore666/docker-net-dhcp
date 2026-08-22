@@ -587,7 +587,7 @@ a guard, and a function that is never called at all.
 | #720 | `spawnOrphanRelease` in `pkg/plugin/dhcp_manager.go` | two sites; the Start-failed path at `:1335` calls it **unconditionally** and the fix guards it on `leaving`. The sibling at `:1415` is a different path and is left alone |
 | #721 | `rememberEndpoint` inside `recoverOneEndpoint` (`plugin.go:1261`) | the function exists and calls it **zero** times |
 | #722 | `Setpgid`, `SweepOrphans` | neither exists; `client.go:303` is a bare `exec.Command` |
-| #724 | `.Sync()`, `schemaVersion` in `pkg/plugin/state.go` | neither; the file writes with `os.Rename` at `:161` and `:224` |
+| #724 | `.Sync()`, `stateSchemaVersion` in `pkg/plugin/state.go` | neither; the file writes with `os.Rename` at `:161` and `:224` |
 | #727 | `checkStoredOptions` | absent, while `CreateNetwork` at `:285` does validate — so validation was create-time only |
 | #728 | `net.ParseIP(event.Data.Gateway)` | absent; `event_builder.go:250`/`:252` assign the gateway unvalidated |
 
