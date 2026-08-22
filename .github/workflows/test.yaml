@@ -413,6 +413,18 @@ jobs:
       - name: Dispatch-ref guard coverage
         run: bash scripts/check-dispatch-ref-guard.sh
 
+      # `:latest` must be moved only after the version tag is signed,
+      # attested and proven installable — and a pre-release must run
+      # that code rather than skip it (#736). Both halves are text
+      # properties of release.yml and neither fails loudly on its own:
+      # appending a step after the retag simply publishes a tip nothing
+      # verified, and a skipped promote path just means the rc rehearsed
+      # everything except the part with no rollback behind it.
+      #
+      # Hosted, no pool slot: it reads workflow text.
+      - name: Floating-tag promotion order
+        run: bash scripts/check-latest-promotion.sh
+
       # The fixture capture has to run where the suite runs (#644). The
       # drift gate next to it cannot enforce that: move the capture to a
       # hosted runner and the recorded engine and the checked engine move

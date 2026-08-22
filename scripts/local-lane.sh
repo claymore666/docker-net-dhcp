@@ -104,6 +104,7 @@ LANE=(
   "registry login|-|bash scripts/check-registry-login.sh"
   "cosign docs|-|bash scripts/check-cosign-docs.sh"
   "dispatch-ref guard|-|bash scripts/check-dispatch-ref-guard.sh"
+  "latest promotion order|-|bash scripts/check-latest-promotion.sh"
   "capture lane|-|bash scripts/check-capture-lane.sh"
   "dispatch reachable|-|bash scripts/check-dispatch-reachable.sh"
   "concurrency parity|-|bash scripts/check-concurrency-parity.sh"

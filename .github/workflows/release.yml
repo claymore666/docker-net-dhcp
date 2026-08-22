@@ -9,8 +9,10 @@ name: Release
 # Trigger shapes:
 #   - `git tag v0.8.0 && git push --tags` → automatic
 #   - `git tag v1.0.0-rc1 && git push --tags` → automatic, pre-release
-#     mode: full chain runs but `:latest` is NOT moved — the zero-impact
-#     end-to-end dry-run to do before every real release tag
+#     mode: the full chain runs, including the promote-latest job, but
+#     it aims at `:latest-rc` / `:latest-rc-arm64` — so `:latest` is NOT
+#     moved and the dry-run still exercises every step (#736). This is
+#     the zero-impact end-to-end rehearsal to do before every real tag.
 #   - GitHub UI → "Run workflow" → enter tag → manual re-run of an
 #     existing tag (NOTE: a bare vX.Y.Z here rebuilds and re-points
 #     that tag AND `:latest` — prefer the rc-tag dry-run)
@@ -58,6 +60,8 @@ jobs:
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
       prerelease: ${{ steps.tag.outputs.prerelease }}
+      latest_tag: ${{ steps.tag.outputs.latest_tag }}
+      latest_arm_tag: ${{ steps.tag.outputs.latest_arm_tag }}
 
     env:
       # GHCR is always pushed. Hub repo only pushed when secrets are set.
@@ -95,10 +99,20 @@ jobs:
           # before the real vX.Y.Z tag (see docs/release-runbook.md).
           if [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "prerelease=false" >> "$GITHUB_OUTPUT"
+            echo "latest_tag=latest" >> "$GITHUB_OUTPUT"
+            echo "latest_arm_tag=latest-arm64" >> "$GITHUB_OUTPUT"
             echo "Releasing tag: $TAG"
           else
             echo "prerelease=true" >> "$GITHUB_OUTPUT"
-            echo "Pre-release tag: $TAG — :latest will not be moved"
+            # An rc does not skip the promotion — it aims it somewhere
+            # harmless. Skipping made the promote path the one part of
+            # this workflow an rc could not exercise, so the ordering
+            # fixed in #736 would first execute on a real tag. Pointing
+            # it at `latest-rc` runs the identical steps, in the identical
+            # job, against tags no install command names.
+            echo "latest_tag=latest-rc" >> "$GITHUB_OUTPUT"
+            echo "latest_arm_tag=latest-rc-arm64" >> "$GITHUB_OUTPUT"
+            echo "Pre-release tag: $TAG — promoting :latest-rc, :latest is not moved"
           fi
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -111,15 +125,6 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-
-      # crane retags `:latest` onto the version manifest's exact digest
-      # (#267) — `docker buildx imagetools create` re-wraps a plugin
-      # manifest in a new index, changing the digest; crane preserves it.
-      # Go is already set up above, so install pinned from source.
-      - name: Install crane
-        run: |
-          go install github.com/google/go-containerregistry/cmd/crane@v0.21.6
-          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
       - name: Log in to GHCR
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
@@ -146,17 +151,20 @@ jobs:
       # default PLUGIN_NAME already points at GHCR — passing it
       # explicitly here keeps the workflow self-documenting.
       #
+      # This job publishes the VERSION TAG ONLY. The floating tag is
+      # moved by the `promote-latest` job, after this build is signed,
+      # attested and proven installable (#736) — see the comment there.
+      #
       # `:latest` is published by RETAGGING the version tag's pushed
       # manifest, not by a second build (#267). A separate `make push`
       # re-ran `docker plugin create`, which re-tars the rootfs
       # non-reproducibly — so the old `:latest` got its own digest,
       # distinct from `:vX.Y.Z` AND uncovered by the cosign signature
-      # (cosign signs by digest). `imagetools create --tag` points
-      # `:latest` at the exact manifest `:vX.Y.Z` already has, so the two
-      # share one digest and the single signature below covers both.
-      # `:latest` is guarded: pre-release tags never move it (and this
-      # also stops a dispatch of an OLD tag from silently regressing what
-      # `:latest` points at — only bare vX.Y.Z tags may move it).
+      # (cosign signs by digest). `crane tag` points the floating tag at
+      # the exact manifest `:vX.Y.Z` already has, so the two share one
+      # digest and the single signature made below covers both — which
+      # is why promotion can happen after signing without needing a
+      # second signature.
       - name: Push to GHCR
         run: make PLUGIN_NAME="${GHCR_NAME}" PLUGIN_TAG="${{ steps.tag.outputs.tag }}" push
 
@@ -164,11 +172,12 @@ jobs:
       # the binaries this tag actually publishes (#502).
       #
       # Placed here deliberately: `make push` above has just built
-      # plugin/, so this is the earliest point the binaries exist, and it
-      # is still BEFORE `:latest` moves. A failure therefore leaves a
-      # published `:vX.Y.Z` with `:latest` untouched — recoverable by
-      # fixing the doc and re-running, with nothing user-visible pointing
-      # at a release that was never announced.
+      # plugin/, so this is the earliest point the binaries exist. Since
+      # #736 every failure in this job is ahead of the floating tag, not
+      # just this one — a failure leaves a published `:vX.Y.Z` with
+      # `:latest` untouched, recoverable by fixing the doc and re-running,
+      # with nothing user-visible pointing at a release that was never
+      # announced.
       #
       # It fails the release rather than warning, and it fails on an rc
       # too. That is the point: the rc dry-run is where a documentation
@@ -187,40 +196,12 @@ jobs:
             plugin/rootfs/usr/sbin/net-dhcp \
             plugin/rootfs/usr/lib/net-dhcp/dhcp-handler
 
-      - name: Tag :latest to the published GHCR digest
-        if: steps.tag.outputs.prerelease != 'true'
-        run: crane tag "${GHCR_NAME}:${{ steps.tag.outputs.tag }}" latest
-
       # Same plugin to Docker Hub when credentials are present. Make
       # rebuilds the rootfs with the Hub-prefixed name; the underlying
       # Docker image layer cache is reused so this is cheap.
       - name: Push to Docker Hub
         if: env.HAS_HUB_CREDS == 'true'
         run: make PLUGIN_NAME="${HUB_NAME}" PLUGIN_TAG="${{ steps.tag.outputs.tag }}" push
-
-      - name: Tag :latest to the published Docker Hub digest
-        if: env.HAS_HUB_CREDS == 'true' && steps.tag.outputs.prerelease != 'true'
-        run: crane tag "${HUB_NAME}:${{ steps.tag.outputs.tag }}" latest
-
-      # Guard against #267 ever regressing: a real release must leave
-      # `:latest` resolving to the exact digest the version tag (and the
-      # cosign signature) carries. Hard-fail the release otherwise.
-      - name: Verify :latest resolves to the signed version digest
-        if: steps.tag.outputs.prerelease != 'true'
-        env:
-          TAG: ${{ steps.tag.outputs.tag }}
-        run: |
-          set -euo pipefail
-          v=$(crane digest "${GHCR_NAME}:${TAG}")
-          l=$(crane digest "${GHCR_NAME}:latest")
-          [ "$v" = "$l" ] || { echo "::error::GHCR :latest ($l) != :${TAG} ($v)"; exit 1; }
-          echo "GHCR  :latest == :${TAG}  ($v)"
-          if [ "${HAS_HUB_CREDS}" = "true" ]; then
-            hv=$(crane digest "${HUB_NAME}:${TAG}")
-            hl=$(crane digest "${HUB_NAME}:latest")
-            [ "$hv" = "$hl" ] || { echo "::error::Hub :latest ($hl) != :${TAG} ($hv)"; exit 1; }
-            echo "Hub   :latest == :${TAG}  ($hv)"
-          fi
 
       # Refresh the Docker Hub long description from the repo's README
       # so the Hub page never drifts from what's on GitHub. Short
@@ -300,10 +281,11 @@ jobs:
       # Sign the published plugin images by digest (#173). docker plugins
       # are OCI artifacts, so cosign signs them like any image once we
       # resolve the registry manifest digest — `docker buildx imagetools
-      # inspect` reads it despite the plugin media type. Because `:latest`
-      # is retagged to the version manifest above (#267), the two share one
-      # digest, so this one signature per registry covers both. The GHCR
-      # digest is exported for the provenance step below.
+      # inspect` reads it despite the plugin media type. The floating tag
+      # is retagged onto this same manifest later, in `promote-latest`
+      # (#267, #736), so the two share one digest and this one signature
+      # per registry covers both. The GHCR digest is exported for the
+      # provenance step below.
       - name: Sign published images (cosign keyless)
         id: signimg
         env:
@@ -395,24 +377,19 @@ jobs:
         if: always()
         run: |
           {
-            echo "## Released ${{ steps.tag.outputs.tag }}"
+            echo "## Published ${{ steps.tag.outputs.tag }}"
             echo
-            if [ "${{ steps.tag.outputs.prerelease }}" = "true" ]; then
-              echo "**Pre-release dry-run** — \`:latest\` was not moved."
-            else
-              echo "Each registry receives both \`:${{ steps.tag.outputs.tag }}\` (pin) and \`:latest\` (tip)."
-            fi
+            echo "Version tag only. \`${{ steps.tag.outputs.latest_tag }}\` is moved by"
+            echo "the \`promote-latest\` job, after verify-install (#736)."
             echo
             echo "### Install from GHCR"
             echo '```'
             echo "docker plugin install ${GHCR_NAME}:${{ steps.tag.outputs.tag }}"
-            echo "docker plugin install ${GHCR_NAME}:latest"
             echo '```'
             if [ "${HAS_HUB_CREDS}" = "true" ]; then
               echo "### Install from Docker Hub"
               echo '```'
               echo "docker plugin install ${HUB_NAME}:${{ steps.tag.outputs.tag }}"
-              echo "docker plugin install ${HUB_NAME}:latest"
               echo '```'
             else
               echo "_Docker Hub push skipped — set DOCKERHUB_USERNAME / DOCKERHUB_TOKEN secrets to enable._"
@@ -471,11 +448,6 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Install crane
-        run: |
-          go install github.com/google/go-containerregistry/cmd/crane@v0.21.6
-          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
-
       - name: Log in to GHCR
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
@@ -513,34 +485,9 @@ jobs:
             plugin/rootfs/usr/lib/net-dhcp/dhcp-handler \
             arm64
 
-      - name: Tag :latest-arm64 to the published GHCR digest
-        if: needs.release.outputs.prerelease != 'true'
-        run: crane tag "${GHCR_NAME}:${ARM_TAG}" latest-arm64
-
       - name: Push to Docker Hub
         if: env.HAS_HUB_CREDS == 'true'
         run: make PLUGIN_NAME="${HUB_NAME}" PLUGIN_TAG="${ARM_TAG}" push
-
-      - name: Tag :latest-arm64 to the published Docker Hub digest
-        if: env.HAS_HUB_CREDS == 'true' && needs.release.outputs.prerelease != 'true'
-        run: crane tag "${HUB_NAME}:${ARM_TAG}" latest-arm64
-
-      # Same invariant as `:latest` (#267): the floating tag must resolve
-      # to the exact digest the version tag and its signature carry.
-      - name: Verify :latest-arm64 resolves to the signed version digest
-        if: needs.release.outputs.prerelease != 'true'
-        run: |
-          set -euo pipefail
-          v=$(crane digest "${GHCR_NAME}:${ARM_TAG}")
-          l=$(crane digest "${GHCR_NAME}:latest-arm64")
-          [ "$v" = "$l" ] || { echo "::error::GHCR :latest-arm64 ($l) != :${ARM_TAG} ($v)"; exit 1; }
-          echo "GHCR  :latest-arm64 == :${ARM_TAG}  ($v)"
-          if [ "${HAS_HUB_CREDS}" = "true" ]; then
-            hv=$(crane digest "${HUB_NAME}:${ARM_TAG}")
-            hl=$(crane digest "${HUB_NAME}:latest-arm64")
-            [ "$hv" = "$hl" ] || { echo "::error::Hub :latest-arm64 ($hl) != :${ARM_TAG} ($hv)"; exit 1; }
-            echo "Hub   :latest-arm64 == :${ARM_TAG}  ($hv)"
-          fi
 
       - name: Install cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
@@ -699,6 +646,204 @@ jobs:
             exit 1
           fi
           echo "Plugin ${REF} installs and enables cleanly." >> "$GITHUB_STEP_SUMMARY"
+
+  # Move the floating tag — LAST, and only onto bytes that are signed,
+  # attested, and proven to install (#736).
+  #
+  # ORDER IS THE WHOLE POINT. Until this job existed, `crane tag latest`
+  # ran inside `release`, over a hundred lines ahead of `cosign sign` and
+  # a whole job ahead of verify-install. Every failure in between left
+  # `:latest` publicly resolving to an image that was unsigned,
+  # unattested, or never proven installable. That is not hypothetical:
+  # the v1.7.0-rc2 run failed in release-arm64 after `make push` had
+  # already published, and on a bare tag that same failure ships exactly
+  # that state to users.
+  #
+  # It matters more here than the usual "publish last" hygiene, because
+  # this workflow has no rollback. Re-dispatching a bare `vX.Y.Z`
+  # rebuilds the plugin, and `docker plugin create` re-tars the rootfs
+  # non-reproducibly, so the rebuilt tag necessarily carries a NEW digest
+  # and orphans the signature and attestation of the first one. A bad
+  # promotion therefore cannot be undone, only overwritten with something
+  # equally new. Ordering is the fix; a recovery step is not available.
+  #
+  # AN RC EXERCISES THIS JOB. `latest_tag` resolves to `latest-rc` on a
+  # suffixed tag instead of the job being skipped, so the rc dry-run runs
+  # the same job, the same steps, and the same digest assertion against a
+  # tag no documented install command names. The old
+  # `if: prerelease != 'true'` skip made promotion the one part of this
+  # workflow an rc could not reach — which meant a change to the promote
+  # ordering would first execute on a real tag, with no rollback behind
+  # it. The rc-immutability assertion below proves `:latest` itself is
+  # still untouched, and proves it from the registry rather than from
+  # this file.
+  #
+  # Both arches promote here. They were separate before only because the
+  # retag sat in whichever job had just pushed; nothing about `crane tag`
+  # needs an arm64 host.
+  promote-latest:
+    needs: [release, release-arm64, verify-install, verify-install-arm64]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write   # retagging in GHCR is a registry write
+
+    env:
+      GHCR_NAME: ghcr.io/claymore666/docker-net-dhcp
+      HUB_NAME: claymore666/net-dhcp
+      HAS_HUB_CREDS: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
+      TAG: ${{ needs.release.outputs.tag }}
+      ARM_TAG: ${{ needs.release.outputs.tag }}-arm64
+      LATEST: ${{ needs.release.outputs.latest_tag }}
+      LATEST_ARM: ${{ needs.release.outputs.latest_arm_tag }}
+      PRERELEASE: ${{ needs.release.outputs.prerelease }}
+
+    steps:
+      # Checked out only for go.mod — the toolchain version is pinned by
+      # the released tree rather than by a literal in this file.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.release.outputs.tag }}
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      # crane retags onto the version manifest's EXACT digest (#267) —
+      # `docker buildx imagetools create` re-wraps a plugin manifest in a
+      # new index and changes the digest; crane preserves it, which is
+      # what lets the version tag's signature cover the floating tag.
+      - name: Install crane
+        run: |
+          go install github.com/google/go-containerregistry/cmd/crane@v0.21.6
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to Docker Hub
+        if: env.HAS_HUB_CREDS == 'true'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # Read `:latest` BEFORE touching anything, so the pre-release
+      # assertion at the end of this job compares registry state against
+      # registry state rather than against an assumption about which
+      # steps ran. `absent` is recorded explicitly: a repository with no
+      # `:latest` yet must assert "still absent", not silently compare
+      # two empty strings.
+      - name: Record what :latest resolves to before promotion
+        id: before
+        run: |
+          set -uo pipefail
+          g=$(crane digest "${GHCR_NAME}:latest" 2>/dev/null) || g="absent"
+          echo "ghcr=${g}" >> "$GITHUB_OUTPUT"
+          echo "GHCR :latest before = ${g}"
+          if [ "${HAS_HUB_CREDS}" = "true" ]; then
+            h=$(crane digest "${HUB_NAME}:latest" 2>/dev/null) || h="absent"
+            echo "hub=${h}" >> "$GITHUB_OUTPUT"
+            echo "Hub  :latest before = ${h}"
+          fi
+
+      - name: Promote the GHCR floating tags
+        run: |
+          set -euo pipefail
+          crane tag "${GHCR_NAME}:${TAG}" "${LATEST}"
+          crane tag "${GHCR_NAME}:${ARM_TAG}" "${LATEST_ARM}"
+          echo "GHCR ${LATEST} -> ${TAG}, ${LATEST_ARM} -> ${ARM_TAG}"
+
+      - name: Promote the Docker Hub floating tags
+        if: env.HAS_HUB_CREDS == 'true'
+        run: |
+          set -euo pipefail
+          crane tag "${HUB_NAME}:${TAG}" "${LATEST}"
+          crane tag "${HUB_NAME}:${ARM_TAG}" "${LATEST_ARM}"
+          echo "Hub ${LATEST} -> ${TAG}, ${LATEST_ARM} -> ${ARM_TAG}"
+
+      # Guard against #267 ever regressing: the floating tag must resolve
+      # to the exact digest the version tag — and therefore the cosign
+      # signature — carries. Hard-fail otherwise. Every pair is compared
+      # before failing, so one run reports every mismatch instead of
+      # hiding the second behind the first.
+      - name: Verify the floating tags resolve to the signed digests
+        run: |
+          set -uo pipefail
+          fail=0
+          cmp_tag() {
+            local reg="$1" ver="$2" float="$3" v l
+            v=$(crane digest "${reg}:${ver}") || { echo "::error::cannot read ${reg}:${ver}"; fail=1; return; }
+            l=$(crane digest "${reg}:${float}") || { echo "::error::cannot read ${reg}:${float}"; fail=1; return; }
+            if [ "$v" = "$l" ]; then
+              echo "OK  ${reg}:${float} == :${ver}  ($v)"
+            else
+              echo "::error::${reg}:${float} ($l) != :${ver} ($v)"
+              fail=1
+            fi
+          }
+          cmp_tag "${GHCR_NAME}" "${TAG}" "${LATEST}"
+          cmp_tag "${GHCR_NAME}" "${ARM_TAG}" "${LATEST_ARM}"
+          if [ "${HAS_HUB_CREDS}" = "true" ]; then
+            cmp_tag "${HUB_NAME}" "${TAG}" "${LATEST}"
+            cmp_tag "${HUB_NAME}" "${ARM_TAG}" "${LATEST_ARM}"
+          fi
+          [ "$fail" -eq 0 ]
+
+      # The rc contract, asserted from the registry: a pre-release run
+      # may exercise every step above, but `:latest` must be exactly what
+      # it was when this job started. Without this, redirecting the rc to
+      # `latest-rc` would rest on reading the `latest_tag` expression
+      # correctly — and a typo there ships an rc to every user pulling
+      # `:latest`.
+      - name: Assert a pre-release did not move :latest
+        if: needs.release.outputs.prerelease == 'true'
+        env:
+          BEFORE_GHCR: ${{ steps.before.outputs.ghcr }}
+          BEFORE_HUB: ${{ steps.before.outputs.hub }}
+        run: |
+          set -uo pipefail
+          fail=0
+          check() {
+            local reg="$1" before="$2" now
+            now=$(crane digest "${reg}:latest" 2>/dev/null) || now="absent"
+            if [ "$now" = "$before" ]; then
+              echo "OK  ${reg}:latest unchanged by this pre-release (${now})"
+            else
+              echo "::error::pre-release moved ${reg}:latest — was ${before}, now ${now}"
+              fail=1
+            fi
+          }
+          check "${GHCR_NAME}" "${BEFORE_GHCR}"
+          if [ "${HAS_HUB_CREDS}" = "true" ]; then
+            check "${HUB_NAME}" "${BEFORE_HUB}"
+          fi
+          [ "$fail" -eq 0 ]
+
+      - name: Workflow summary
+        if: always()
+        run: |
+          {
+            if [ "${PRERELEASE}" = "true" ]; then
+              echo "## Promoted \`${LATEST}\` / \`${LATEST_ARM}\` (pre-release dry-run)"
+              echo
+              echo "\`:latest\` was not moved — asserted against the registry."
+            else
+              echo "## Promoted \`${LATEST}\` / \`${LATEST_ARM}\` -> ${TAG}"
+              echo
+              echo "Each registry now serves \`:${TAG}\` (pin) and \`:latest\` (tip)."
+              echo
+              echo "### Install from GHCR"
+              echo '```'
+              echo "docker plugin install ${GHCR_NAME}:latest"
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
 
   # Cut the GitHub Release with the signed artifacts attached. Gated on
   # verify-install so a plugin that doesn't install/enable never gets an
