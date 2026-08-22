@@ -563,32 +563,63 @@ kind of thing.
 **That split is not the one the table above makes**, and the two are
 easy to confuse because they are the same ten issues cut two ways. The
 table settles six — #720, #721, #722, #724, #727 and #728 — with a grep
-at the tag. #723, #730 and #731 are the ones it does not reach, so
-#723 is in the older group but not in the table, and #729 is in this
-cycle's group but not among #723, #730 and #731. A bare "the other
-seven" or "the remaining three" would therefore point at a different
-set depending on which split the reader had in mind, which is why every
-group in this section is named by its members.
+at the tag. The four it does not reach are **#723, #729, #730 and
+#731**, and they fall out for two different reasons.
 
-The ages of #723, #730 and #731 are drivable rather than asserted.
+Three of the four have no surface at the tag to grep at all: a token
+that does not exist there cannot show a defect present, so there is
+nothing for a row to assert. #723 is the opposite case — its surface
+**does** exist at the tag, which settles its age and still leaves the
+defect unsettled, and the defect is what a row in that table claims.
+
+So the two splits disagree at both ends rather than one: #723 is in the
+older group and outside the table, and #729 is in this cycle's group
+and outside it too. A bare "the other seven" or "the remaining three"
+would therefore point at a different set depending on which split the
+reader had in mind, which is why every group in this section is named
+by its members — and why the count of the complement is written out
+here rather than left to be inferred.
+
+All four ages are drivable rather than asserted.
 `pkg/plugin/conflict_probe.go` exists at `v1.7.1^{commit}`, so **#723
-predates the cycle**. Neither of the other two surfaces does:
+predates the cycle**. The other three surfaces do not exist there:
+
+    git grep -c 'openContainerProc' 'v1.7.1^{commit}' -- pkg/plugin/resolvconf.go  # nothing
+    git cat-file -e 'v1.7.1^{commit}:pkg/plugin/resolvconf.go'; echo $?            # 0   CONTROL
 
     git grep -c   'metrics'        'v1.7.1^{commit}' -- pkg/plugin/   # nothing
     git grep -c   'LeasesObtained' 'v1.7.1^{commit}' -- pkg/plugin/   # endpoints.go:4   CONTROL
+
     git grep -cEi 'server_polic|serverpolic|dhcp_server|preferred_server|deny_server' \
                   'v1.7.1^{commit}' -- pkg/                           # nothing
     git grep -cEi 'server_polic|serverpolic|dhcp_server|preferred_server|deny_server' \
                   origin/dev -- pkg/                                  # matches          CONTROL
 
+#729's control is the stronger of the three, and deliberately: the
+**file** it names is present at the tag and the **function** is not, so
+the empty result cannot be blamed on the path.
+
 Every absence is paired with a control, because an empty result from a
 mistyped pathspec looks exactly like an absence. A control's job is
-nonzero-ness rather than size, which is why only the control at the tag
-carries a count: `v1.7.1^{commit}` is frozen, `origin/dev` is not, and
-a number written beside a moving ref is stale by the next merge.
+nonzero-ness rather than size, which is why the one control that reads
+a **moving** ref carries no number: `v1.7.1^{commit}` is frozen and
+`origin/dev` is not, so a count written beside it is stale by the next
+merge.
+
 **#730 lives in `/metrics` and #731 in the server-policy ladder, and
 both of those ship for the first time here** — a defect cannot be older
-than the code it lives in.
+than the code it lives in. **#729 is the one that sentence does not
+cover.** Its surface is new this cycle as well, but it did not arrive
+with a feature: `openContainerProc` is introduced by `df7cf42`, *"pin
+the socket mode, and the PID the DNS write lands in (#687, #688)"* —
+one of the security fixes this release is named for. The leaked
+descriptor came in with the fix that closed the recycled-PID hazard.
+
+    git log -S'func openContainerProc' -- pkg/plugin/   # df7cf42, and nothing older
+
+A release can introduce the defect it is auditing, and this audit found
+one of its own. That is an argument for having run the second pass, not
+against it.
 
 The pass also recorded two structural notes that are not blockers and
 are not fixed here: `plugin.go` grew again this cycle and its three
