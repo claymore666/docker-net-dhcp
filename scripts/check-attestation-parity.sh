@@ -128,7 +128,15 @@ done
 case "$ghcr_answer" in
     count:*) ghcr_count="${ghcr_answer#count:}" ;;
     notfound)
-        refuse "the GHCR attestations endpoint returned 404 for $GHCR_DIGEST after $CONTROL_ATTEMPTS attempt(s). That is the CONTROL side going dark: with no positive answer from it, a Docker Hub 404 is indistinguishable from a broken query, so this refuses instead of reporting the asymmetry it expected to find." ;;
+        # TWO CAUSES, AND THE FIRST ONE IS THE LIKELY ONE. A digest with
+        # no attestations answers 404, not `count:0` -- measured on the
+        # shipped v1.7.1. So if GHCR ever LOSES provenance, this is the
+        # branch that fires, not the `count:0` branch below whose message
+        # names the attest step. A refusal that said only "the control
+        # side went dark" would send whoever reads it at 02:00 to the
+        # token, the rate limit and the path -- everything except the
+        # step that actually broke.
+        refuse "the GHCR attestations endpoint returned 404 for $GHCR_DIGEST after $CONTROL_ATTEMPTS attempt(s), and this run cannot tell which of two causes it is. FIRST, and most likely: the GHCR image LOST its provenance -- an image with no attestations answers 404, so check that the 'Attest image provenance (GHCR)' step still runs and still names this digest. SECOND: the attestations endpoint is unreachable for this run -- a token, a permission or a rate limit. Either way there is no positive answer from the control, so a Docker Hub 404 is indistinguishable from a broken query and this refuses rather than reporting the asymmetry it expected to find." ;;
     error:*)
         refuse "the GHCR attestations endpoint could not be reached for $GHCR_DIGEST: ${ghcr_answer#error:}. The control side went dark." ;;
     *)
@@ -137,6 +145,13 @@ esac
 
 [[ "$ghcr_count" =~ ^[0-9]+$ ]] || refuse "the GHCR attestation count is not a number (got '${ghcr_count:0:40}')."
 
+# KEPT DELIBERATELY, THOUGH PROBABLY UNREACHABLE. A digest with no
+# attestations was measured to answer 404, which lands in the `notfound`
+# branch above, not here. But "probably unreachable" is not "unreachable":
+# producing a resolvable-but-unattested digest to prove it would need an
+# unattested image in the package, which nobody has been able to
+# construct. So this branch is neither deleted nor trusted -- it costs
+# nothing and it is right if the API ever answers this way.
 if [ "$ghcr_count" -eq 0 ]; then
     echo "::error title=GHCR provenance regressed::The attestations endpoint resolved for $GHCR_DIGEST and reported ZERO attestations." \
          "This is not the documented asymmetry -- it is the GHCR image, the one that IS attested, losing its provenance." \

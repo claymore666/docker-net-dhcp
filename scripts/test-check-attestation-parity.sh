@@ -102,7 +102,13 @@ want_in "'>= 1'"
 # like a correct run. Only the control can tell them apart.
 check "a query that 404s for everything cannot judge" 2 \
       "$(fake_query dark404 'notfound' 'notfound')"
-want_in "CONTROL side going dark"
+# The refusal must name the LIKELY cause first. A digest with no
+# attestations answers 404, so this branch -- not the count:0 one -- is
+# what fires if GHCR loses provenance, and a message that named only the
+# transport would aim the next hour at the token and the rate limit.
+want_in "LOST its provenance"
+want_in "Attest image provenance (GHCR)"
+want_in "a token, a permission or a rate limit"
 
 check "the control endpoint errors" 2 \
       "$(fake_query gerr 'error:dial tcp: lookup api.github.com' 'notfound')"
@@ -152,6 +158,42 @@ esac
 EOF
 chmod +x "$TMP/q-count.sh"
 check "a control that indexes late still reaches a verdict" 0 "$TMP/q-count.sh"
+
+# --- the pinned side is asked only AFTER the control has resolved -----
+# The counters above say HOW MANY times each side is asked and nothing
+# about WHEN. Swap the two blocks in the checker and all of the cases
+# above still pass -- the property holds by construction and is observed
+# by nothing, which is the same shape as a true-but-unguarded claim.
+#
+# It matters on the day someone wires provenance for the Hub push: the
+# store is eventually consistent, and a Hub ask made before the control
+# has proven the endpoint live can read 404 inside the indexing window
+# and report "pinned as documented", swallowing the good news.
+#
+# So record the order and assert it.
+cat > "$TMP/q-order.sh" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$1" >> "$TMP/ask-order"
+if [ "\$1" = "$GHCR" ]; then
+    n=\$(grep -c . "$TMP/ask-order")
+    if [ "\$n" -eq 1 ]; then printf 'notfound'; else printf 'count:1'; fi
+else
+    printf 'notfound'
+fi
+EOF
+chmod +x "$TMP/q-order.sh"
+rm -f "$TMP/ask-order"
+check "ordering: the control resolves before the pinned side is asked" 0 "$TMP/q-order.sh"
+n=$((n + 1))
+first_hub=$(grep -n -F -x -- "$HUB" "$TMP/ask-order" | head -1 | cut -d: -f1)
+first_ok=$(awk -v g="$GHCR" 'NR>1 && $0==g {print NR; exit}' "$TMP/ask-order")
+if [ -n "$first_hub" ] && [ -n "$first_ok" ] && [ "$first_hub" -gt "$first_ok" ]; then
+    echo "PASS: the pinned side was asked at call $first_hub, after the control resolved at call $first_ok"
+else
+    echo "FAIL: ask order -- pinned side at '${first_hub:-never}', control resolved at '${first_ok:-never}'; the pinned side must come later"
+    sed 's/^/    /' "$TMP/ask-order" 2>/dev/null
+    failures=$((failures + 1))
+fi
 n=$((n + 1))
 gcalls=$(cat "$TMP/calls-$(printf '%s' "$GHCR" | tail -c 8)" 2>/dev/null || echo 0)
 hcalls=$(cat "$TMP/calls-$(printf '%s' "$HUB" | tail -c 8)" 2>/dev/null || echo 0)
