@@ -46,6 +46,14 @@
 # edits THIS tree, in the pull request that is being checked, so the
 # person who made it stale is present and the fix is one line.
 #
+# DO NOT HARMONISE THE TWO. They share the word "stale" and nothing
+# else: what decides warn-versus-fail is whether the person seeing the
+# red can act on it. A govulncheck red for a moved database is a false
+# alarm charged to whoever pushed next; a stale waiver here is a note
+# addressed to its own author. Parity would be parity of vocabulary,
+# not of meaning -- and harmonising DOWNWARD, to a warning, costs
+# nothing to do and everything to notice.
+#
 # COMMENTS AND STRING LITERALS ARE STRIPPED BEFORE RESOLUTION, AND THAT
 # IS THE POINT. A plain grep resolves a symbol against prose ABOUT the
 # symbol. Measured: `LastIP` and `lastIP` are the same field, unexported
