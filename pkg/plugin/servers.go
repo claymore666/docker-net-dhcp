@@ -269,6 +269,24 @@ func packTiers(tiers [][]string, n int) [][]string {
 // if-options.c stores both as in_addr_t), so applying them to a v6
 // exchange would restrict nothing while implying it had.
 func acquisitionAttempts(pol serverPolicy, v6 bool, total time.Duration) []acquisitionAttempt {
+	return acquisitionAttemptsWithFloor(pol, v6, total, minAttemptBudget)
+}
+
+// acquisitionAttemptsWithFloor is acquisitionAttempts with the floor as
+// an argument, and it exists so the GUARANTEE can be driven instead of
+// described.
+//
+// The comment on minAttemptBudget says the number is pinned but the
+// guarantee is derived. That sentence was wrong once already -- it used
+// to say the number was adjustable, and a run contradicted it -- so it
+// does not get to be the only thing holding the claim up. With the
+// floor as a parameter, TestAcquisitionAttempts_TheGuaranteeHoldsAtEveryFloor
+// asserts the property at several floors rather than at 3s, and a
+// change that only works because the floor happens to be 3s goes red.
+//
+// Unexported and called from exactly one place in production, so the
+// shipped behaviour is what it always was.
+func acquisitionAttemptsWithFloor(pol serverPolicy, v6 bool, total, floor time.Duration) []acquisitionAttempt {
 	if v6 || len(pol.Prefer) == 0 {
 		return []acquisitionAttempt{{Deny: denyForFamily(pol, v6), Budget: total}}
 	}
@@ -313,7 +331,7 @@ func acquisitionAttempts(pol serverPolicy, v6 bool, total time.Duration) []acqui
 	// can be is spent once. One question with the whole 1.5s can be
 	// answered by a fast server, twenty questions of 75ms cannot be
 	// answered by anything.
-	maxAttempts := int(total / minAttemptBudget)
+	maxAttempts := int(total / floor)
 	if maxAttempts < 1 {
 		maxAttempts = 1
 	}

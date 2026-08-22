@@ -347,3 +347,104 @@ func TestAcquireWithPolicy_FallbacksCountStepsNotAcquisitions(t *testing.T) {
 		})
 	}
 }
+
+// TestAcquisitionAttempts_TheGuaranteeHoldsAtEveryFloor drives the
+// property the constant's comment claims, at floors other than the one
+// that ships.
+//
+// The comment used to say "the number is the adjustable part". A run
+// contradicted it: moving minAttemptBudget 3s -> 5s or 3s -> 7s reddens
+// TestAcquisitionAttempts, TestAcquisitionAttempts_OrderingIsKeptWhereItFits
+// and TestAcquireWithPolicy_FallbacksCountStepsNotAcquisitions, and
+// 3s -> 2s reddens the ordering one -- three test functions transcribing
+// the value, pinning it in BOTH directions. The comment now says so.
+//
+// But a corrected comment is still a comment, and this is the same
+// species the table above exists for: a claim about behaviour with
+// nothing driving it. Prose decays silently; a check fails loudly. So
+// the ladder takes the floor as an argument and the guarantee is
+// asserted across a spread of them. A future change that holds only
+// because the floor happens to be 3s goes red here, at the floor where
+// it does not hold, rather than shipping.
+func TestAcquisitionAttempts_TheGuaranteeHoldsAtEveryFloor(t *testing.T) {
+	servers := make([]string, 0, 20)
+	for i := 1; i <= 20; i++ {
+		servers = append(servers, fmt.Sprintf("10.0.0.%d", i))
+	}
+
+	// Deliberately including a floor far below the shipped one and one
+	// far above: the arithmetic that broke was integer division, which
+	// misbehaves at the ends and not in the middle.
+	floors := []time.Duration{
+		250 * time.Millisecond,
+		2 * time.Second,
+		minAttemptBudget,
+		5 * time.Second,
+		7 * time.Second,
+	}
+	// Every total is a multiple of the floor under test, never a
+	// duration -- the rule this file exists to enforce applies to the
+	// test that enforces it.
+	multiples := []struct {
+		name string
+		of   func(time.Duration) time.Duration
+	}{
+		{"a third of a floor", func(f time.Duration) time.Duration { return f / 3 }},
+		{"half a floor", func(f time.Duration) time.Duration { return f / 2 }},
+		{"exactly one floor", func(f time.Duration) time.Duration { return f }},
+		{"three floors and change", func(f time.Duration) time.Duration { return 3*f + f/3 }},
+		{"ten floors", func(f time.Duration) time.Duration { return 10 * f }},
+	}
+
+	for _, nServers := range []int{3, 6, 20} {
+		pol := preferPolicy(t, servers[:nServers]...)
+		for _, floor := range floors {
+			for _, m := range multiples {
+				total := m.of(floor)
+				name := fmt.Sprintf("%d servers/floor %v/%s", nServers, floor, m.name)
+				t.Run(name, func(t *testing.T) {
+					attempts := acquisitionAttemptsWithFloor(pol, false, total, floor)
+
+					if len(attempts) == 0 {
+						t.Fatalf("no attempts at all: a ladder that asks nobody cannot be answered")
+					}
+
+					var spent time.Duration
+					seen := 0
+					for i, a := range attempts {
+						spent += a.Budget
+						seen += len(a.Allow)
+						// THE GUARANTEE: never less than one floor,
+						// as long as the budget can fund one attempt.
+						// Below the floor there is exactly one attempt
+						// and it holds everything there was.
+						want := floor
+						if total < floor {
+							want = total
+						}
+						if a.Budget < want {
+							t.Errorf("attempt %d got %v, want at least %v (floor %v, total %v): "+
+								"the ladder starved an attempt it could have funded",
+								i, a.Budget, want, floor, total)
+						}
+					}
+					if total < floor && len(attempts) != 1 {
+						t.Errorf("a sub-floor budget produced %d attempts, want exactly 1: "+
+							"a budget too small for one attempt can still be spent once, "+
+							"but it cannot be shredded into slices that certainly fail",
+							len(attempts))
+					}
+					// The ladder DIVIDES total; it never extends it.
+					if spent > total {
+						t.Errorf("attempts spend %v of a %v budget: the ladder may not make "+
+							"`docker run` slower than it is today (#403, #417)", spent, total)
+					}
+					if seen != nServers {
+						t.Errorf("attempts name %d of %d servers; packing merges the tail, "+
+							"it never drops it", seen, nServers)
+					}
+				})
+			}
+		}
+	}
+}
