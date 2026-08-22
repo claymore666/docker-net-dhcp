@@ -1474,7 +1474,33 @@ func (m *dhcpManager) stop(leaving bool) error {
 		// up" and return. That was true of the manager's own state and
 		// false of the lease, which is how 17 of 32 containers in one
 		// integration run leaked an address.
-		m.plugin.spawnOrphanRelease(m)
+		//
+		// Only when the endpoint is leaving, though - the same condition
+		// the sibling reclaim below consults, for the reason
+		// StopForLeave's comment gives. stop(false) arrives here from
+		// plugin Close, from DeleteNetwork and from the displacement in
+		// Join, and in all three the container behind this manager is
+		// still running and still using its address. A failed Start does
+		// not change that: recovery rebuilds a manager for a *live*
+		// container and seeds lastIP from Docker's record, and that
+		// manager's Start can fail for reasons the container knows
+		// nothing about. Reclaiming there tells the server an address is
+		// free while a live container holds it - the duplicate assignment
+		// #524 added detection for, manufactured by the plugin (#720).
+		//
+		// The other way costs a lease held until it expires. That is the
+		// safe direction of the two, and it is the one the sibling
+		// already takes.
+		if leaving {
+			m.plugin.spawnOrphanRelease(m)
+		} else if v4, v6 := m.lastIPs(); v4 != nil || v6 != nil {
+			log.WithFields(m.logFields(false)).
+				WithField("ip", auditIP(v4)).
+				WithField("ipv6", auditIP(v6)).
+				Info("Start failed with the one-shot's lease outstanding; " +
+					"holding it until it expires because the endpoint is not " +
+					"leaving and its container may still be using the address")
+		}
 		return nil
 	}
 

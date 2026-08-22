@@ -409,6 +409,136 @@ func TestStop_FailedStartIsANoOp(t *testing.T) {
 	}
 }
 
+// failedStartManager builds the manager TestStop_FailedStartIsANoOp
+// could not: Start errored, and the CreateEndpoint one-shot's address is
+// still recorded on it.
+//
+// That combination is the whole subject of #720. The older test seeds no
+// lastIP, so releaseOrphanedLease finds nothing to act on and the call
+// is a no-op for the wrong reason - it would have stayed green through
+// the entire defect.
+//
+// As in TestStop_NeverBoundClientReclaimsInsteadOfClaimingRelease, the
+// network has neither parent nor bridge, so a reclaim that does run has
+// no path to the wire and lands on orphanedLeaseReleaseFailures. That is
+// what makes "the reclaim ran at all" observable without a kernel.
+func failedStartManager(t *testing.T, p *Plugin) *dhcpManager {
+	t.Helper()
+
+	m := newDHCPManager(nil, JoinRequest{NetworkID: "net1", EndpointID: "ep1"},
+		DHCPNetworkOptions{AuditLog: true}).withPlugin(p)
+
+	v4, err := netlink.ParseAddr("192.168.99.50/24")
+	if err != nil {
+		t.Fatalf("ParseAddr v4: %v", err)
+	}
+	m.setLastIP(false, v4)
+
+	m.startErr = errors.New("start boom")
+	close(m.startedCh)
+	return m
+}
+
+// TestStop_FailedStartReclaimsOnlyWhenLeaving pins #720 in both
+// directions.
+//
+// stop() has two paths that hand the one-shot's lease back, and until
+// this test only the second consulted `leaving`. StopForLeave's own
+// comment states why that word is load-bearing: on plugin Close, on
+// DeleteNetwork and on the manager displacement in Join the container is
+// still running and still using its address, so a DHCPRELEASE sent there
+// tells the server an address is free while a live container holds it -
+// the duplicate assignment #524 added detection for, manufactured by us.
+//
+// A failed Start is not evidence the container is gone. Recovery
+// rebuilds a manager for a live container and seeds lastIP from Docker's
+// record; that manager's Start can fail on, say, the netns open
+// joinStartFailures counts. The container then restarts, Join displaces
+// the stale manager, and displaced.Stop() reaches this branch with the
+// address the NEW endpoint was just ACKed.
+//
+// Both rows are asserted deliberately. Guarding a reclaim fails in one
+// direction and dropping it fails in the other, and #370 - 17 of 32
+// containers in one integration run leaking an address - is the other
+// direction. A test that only proved the release was suppressed would be
+// green for a patch that deleted the reclaim outright.
+func TestStop_FailedStartReclaimsOnlyWhenLeaving(t *testing.T) {
+	cases := []struct {
+		name         string
+		leaving      bool
+		wantReclaims int32
+		why          string
+	}{
+		{
+			name:         "close_of_a_live_endpoint_holds_the_lease",
+			leaving:      false,
+			wantReclaims: 0,
+			why: "the endpoint is not leaving, so the container may still " +
+				"hold this address; releasing it invites the server to " +
+				"hand the same address to somebody else",
+		},
+		{
+			name:         "leave_still_hands_the_lease_back",
+			leaving:      true,
+			wantReclaims: 1,
+			why: "the endpoint is going away and nobody ever took the " +
+				"one-shot's lease over, so it must be reclaimed (#370)",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var ledgerFailures atomic.Int32
+			p := &Plugin{}
+			p.ledger = testLedger(t, &ledgerFailures)
+
+			m := failedStartManager(t, p)
+
+			var err error
+			if tc.leaving {
+				err = m.StopForLeave()
+			} else {
+				err = m.Stop()
+			}
+			if err != nil {
+				t.Fatalf("stop(leaving=%v) on a failed-Start manager = %v, want nil",
+					tc.leaving, err)
+			}
+			// spawnOrphanRelease increments the WaitGroup before it
+			// starts the goroutine, so this is a real barrier in both
+			// rows rather than a race the zero row always wins.
+			p.orphanReleases.Wait()
+
+			got := p.orphanedLeaseReleaseFailures.Load() + p.orphanedLeasesReleased.Load()
+			if got != tc.wantReclaims {
+				t.Errorf("reclaim attempts = %d, want %d - %s", got, tc.wantReclaims, tc.why)
+			}
+
+			// The ledger is the operator-visible half. A reclaim that
+			// ran writes release or release_failed for the address; one
+			// that was correctly withheld writes nothing at all, and on
+			// this manager nothing else writes either, so the file is
+			// still absent.
+			if !tc.leaving {
+				if _, err := os.Stat(p.ledger.path); !os.IsNotExist(err) {
+					for _, e := range readLedgerLines(t, p.ledger.path) {
+						t.Errorf("ledger recorded %q for %s on a Stop that is "+
+							"not a Leave - %s", e.Kind, e.IP, tc.why)
+					}
+				}
+				return
+			}
+			var kinds []string
+			for _, e := range readLedgerLines(t, p.ledger.path) {
+				kinds = append(kinds, e.Kind)
+			}
+			if len(kinds) != 1 || kinds[0] != "release_failed" {
+				t.Errorf("ledger kinds = %v, want [release_failed] - %s", kinds, tc.why)
+			}
+		})
+	}
+}
+
 // TestStop_NeverBoundClientReclaimsInsteadOfClaimingRelease pins the
 // third state Stop used to fall between (#549).
 //
