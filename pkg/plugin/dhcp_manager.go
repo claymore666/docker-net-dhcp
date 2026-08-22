@@ -172,6 +172,15 @@ func newOutageTracker(now time.Time) outageTracker {
 // qualify, and why applying it to every long lease is worse than not
 // having it.
 func leaseDeadline(data dhcp.Info) (time.Duration, bool) {
+	// This guard is for the READER, not for behaviour, and narrowing it
+	// to `< 0` is an EQUIVALENT change rather than a bug: 0 would fall
+	// through, fail `0 > maxOption51Seconds`, and reach
+	// clampLeaseDeadline(0), which returns (0, false) — the same pair
+	// this line returns. There is no input that distinguishes the two,
+	// so no test can pin it and any test written to try would be
+	// asserting nothing. Kept because "no lifetime" and "a lifetime we
+	// clamped to zero" are different statements about the server, and
+	// saying which one this is here costs nothing.
 	if data.LeaseSeconds <= 0 {
 		return 0, false
 	}
@@ -197,6 +206,35 @@ func leaseDeadline(data dhcp.Info) (time.Duration, bool) {
 // option can carry: four octets, so 0xFFFFFFFF. dhcpcd exports it
 // verbatim, and it is the conventional encoding for "permanent".
 const maxOption51Seconds = 0xFFFFFFFF
+
+// observeLease folds one client event into the tracker and counts the
+// clamp if there was one.
+//
+// The pairing lives here rather than at the event-loop call site for the
+// same reason the netns mismatch counter moved inside its opener: a
+// caller cannot fold an event into the tracker without going through
+// this method, so a future path cannot observe a clamp and forget to
+// count it. The event loop needs a live dhcpcd to reach, so three lines
+// there are three lines nothing can assert — which is exactly how
+// lease_time_clamped came to be documented, exposed on /metrics, and
+// read by no test at all.
+//
+// The nil check is on plugin, not on the clamp: unit tests that do not
+// drive lease events pass a nil plugin (see dhcpManager.plugin), and a
+// clamp is still worth logging when there is no counter to bump.
+func (m *dhcpManager) observeLease(o *outageTracker, event dhcp.Event, now time.Time, v6 bool) {
+	if !o.observe(event.Type, event.Data, now) {
+		return
+	}
+	if m.plugin != nil {
+		m.plugin.leaseTimeClamped.Add(1)
+	}
+	log.
+		WithFields(m.logFields(v6)).
+		WithField("lease_seconds", event.Data.LeaseSeconds).
+		WithField("deadline", maxLeaseDeadline).
+		Warn("DHCP lease lifetime too long to use as an outage deadline; clamped for the watchdog only")
+}
 
 // observe folds one client event into the tracker, reporting whether the
 // lease lifetime it carried had to be clamped to stay usable as a
@@ -1155,14 +1193,7 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 					errChan <- nil
 					return
 				}
-				if tracker.observe(event.Type, event.Data, time.Now()) && m.plugin != nil {
-					m.plugin.leaseTimeClamped.Add(1)
-					log.
-						WithFields(m.logFields(v6)).
-						WithField("lease_seconds", event.Data.LeaseSeconds).
-						WithField("deadline", maxLeaseDeadline).
-						Warn("DHCP lease lifetime too long to use as an outage deadline; clamped for the watchdog only")
-				}
+				m.observeLease(&tracker, event, time.Now(), v6)
 				m.handleEvent(event, v6)
 
 			case <-m.stopChan:

@@ -554,3 +554,126 @@ func TestSpansCover(t *testing.T) {
 		})
 	}
 }
+
+// TestObserveLease_ClampIsCounted asserts the COUNTER, not the tracker's
+// return value.
+//
+// lease_time_clamped shipped documented, exposed in HealthResponse and
+// listed in metricDefs, and every test that reached this code asserted
+// what leaseDeadline returned. Commenting out the Add(1) left the whole
+// package green, so an instrument reference.md points operators at could
+// have been deleted by a refactor with nothing going red. Asserting that
+// the clamp was DECIDED is the precondition; asserting that it was
+// RECORDED is the effect, and only the second one is what an operator
+// reads.
+func TestObserveLease_ClampIsCounted(t *testing.T) {
+	// A day and a second: over maxLeaseDeadline, comfortably under
+	// maxRenewableLease. This is an ordinary lease that a client renews
+	// from, and it must NOT be treated as an anomaly.
+	ordinary := dhcp.Info{LeaseSeconds: int(24*time.Hour/time.Second) + 1}
+	// Past maxRenewableLease: no client renews from this, so the
+	// watchdog deadline is substituted and the substitution is reported.
+	unrenewable := dhcp.Info{LeaseSeconds: int(2 * 365 * 24 * time.Hour / time.Second)}
+	// Wider than option 51 can encode. Reaches leaseDeadline's overflow
+	// branch rather than clampLeaseDeadline, and must count the same:
+	// the two branches are one anomaly reached two ways, and a counter
+	// that only sees one of them under-reports exactly the case that
+	// arrived by arithmetic rather than off the wire.
+	overflowing := dhcp.Info{LeaseSeconds: math.MaxInt32}
+
+	for _, tc := range []struct {
+		name   string
+		events []dhcp.Event
+		want   int32
+	}{
+		{
+			name:   "an ordinary long lease is not counted",
+			events: []dhcp.Event{{Type: "bound", Data: ordinary}},
+			want:   0,
+		},
+		{
+			name:   "an unrenewable lease is counted once",
+			events: []dhcp.Event{{Type: "bound", Data: unrenewable}},
+			want:   1,
+		},
+		{
+			name:   "an overflowing lifetime is counted too",
+			events: []dhcp.Event{{Type: "bound", Data: overflowing}},
+			want:   1,
+		},
+		{
+			name: "each clamped renewal is counted, not just the first",
+			events: []dhcp.Event{
+				{Type: "bound", Data: unrenewable},
+				{Type: "renew", Data: unrenewable},
+				{Type: "renew", Data: unrenewable},
+			},
+			want: 3,
+		},
+		{
+			name: "a clamped bound followed by ordinary renewals counts once",
+			events: []dhcp.Event{
+				{Type: "bound", Data: unrenewable},
+				{Type: "renew", Data: ordinary},
+				{Type: "renew", Data: ordinary},
+			},
+			want: 1,
+		},
+		{
+			// A NAK carries no lifetime and must not reach the clamp at
+			// all. Without this row, a change that counted every event
+			// with a zero lifetime would pass every row above.
+			name:   "a refusal carries no lifetime and is not counted",
+			events: []dhcp.Event{{Type: "nak", Data: dhcp.Info{}}},
+			want:   0,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &Plugin{}
+			m := &dhcpManager{plugin: p}
+			tracker := newOutageTracker(time.Now())
+			now := time.Now()
+			for i, ev := range tc.events {
+				m.observeLease(&tracker, ev, now.Add(time.Duration(i)*time.Minute), false)
+			}
+			if got := p.leaseTimeClamped.Load(); got != tc.want {
+				t.Fatalf("lease_time_clamped = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestObserveLease_SurvivesANilPlugin pins the branch the production
+// nil check exists for. dhcpManager.plugin is documented as nil-able for
+// unit tests that do not drive lease events, and observeLease is now on
+// the path that does drive them — so the clamp must still be reported
+// without a counter to bump rather than panicking the event goroutine.
+func TestObserveLease_SurvivesANilPlugin(t *testing.T) {
+	m := &dhcpManager{}
+	tracker := newOutageTracker(time.Now())
+	m.observeLease(&tracker, dhcp.Event{
+		Type: "bound",
+		Data: dhcp.Info{LeaseSeconds: int(2 * 365 * 24 * time.Hour / time.Second)},
+	}, time.Now(), false)
+}
+
+// TestObserveLease_AdvancesTheTracker guards the other half of the
+// extraction. observeLease replaced a call to tracker.observe at the
+// event-loop call site; if it counted the clamp but dropped the fold,
+// the watchdog would stop being told the server had answered and every
+// test above would still pass. So: a bound must clear the acquiring
+// state the tracker starts in.
+func TestObserveLease_AdvancesTheTracker(t *testing.T) {
+	m := &dhcpManager{plugin: &Plugin{}}
+	tracker := newOutageTracker(time.Now())
+	if !tracker.acquiring {
+		t.Fatal("a fresh tracker must start acquiring, or this test proves nothing")
+	}
+	m.observeLease(&tracker, dhcp.Event{
+		Type: "bound",
+		Data: dhcp.Info{LeaseSeconds: 3600},
+	}, time.Now(), false)
+	if tracker.acquiring {
+		t.Fatal("a bound must clear the acquiring state; observeLease dropped the fold")
+	}
+}
