@@ -475,7 +475,7 @@ func TestSweepOrphans_ReparentedToASubreaperIsStillAnOrphan(t *testing.T) {
 // the safe side. A missing or unparseable status file means we cannot
 // tell whether anything still manages the process, and the question this
 // answers is whether to send SIGKILL.
-func TestSweepOrphans_UnreadableParentIsNotAMatch(t *testing.T) {
+func TestSweepOrphans_MissingPPidIsNotAMatch(t *testing.T) {
 	pinSelfComm(t, "net-dhcp")
 
 	ourDir := filepath.Join(os.TempDir(), workDirPrefix+"abc123")
@@ -489,6 +489,14 @@ func TestSweepOrphans_UnreadableParentIsNotAMatch(t *testing.T) {
 	}
 	// 602: a status file with no PPid line — present, unreadable for
 	// this purpose, which is a different failure from absent.
+	//
+	// BOTH OF THESE FAIL INSIDE parentPID and return at its !ok branch.
+	// Neither reaches the comm read that decides whether the parent is a
+	// live sibling, and this test was called
+	// ...UnreadableParentIsNotAMatch for two pull requests while covering
+	// one of the two ways a parent can be unreadable — the one that was
+	// already safe. See TestSweepOrphans_ParentCommUnreadableIsNotAMatch
+	// for the other, which was a kill.
 	if err := os.WriteFile(filepath.Join(procRoot, "602", "status"),
 		[]byte("Name:\tdhcpcd\nState:\tS (sleeping)\n"), 0o644); err != nil {
 		t.Fatalf("write status: %v", err)
@@ -512,6 +520,193 @@ func TestSweepOrphans_UnreadableParentIsNotAMatch(t *testing.T) {
 // live client from an orphan must refuse rather than guess — the same
 // rule as a missing /proc root. Reporting zero would read as "there was
 // nothing to do".
+// TestSweepOrphans_ParentCommUnreadableIsNotAMatch covers the one read
+// in isOrphanedClient whose failure direction is KILL.
+//
+// Every other read there fails safe: cmdline err -> false, parentPID
+// !ok -> false, ppid == getpid -> false. The last line is
+//
+//	return commOf(ppid) != selfComm
+//
+// and commOf folds its error into "", so an unreadable /proc/<ppid>/comm
+// produces "" != selfComm -> true -> orphan -> SIGKILL, as root, against
+// the host PID namespace. The function's own doc comment forbids exactly
+// that: "treating an unreadable /proc entry as a match would make the
+// sweep kill on absence of evidence."
+//
+// THE THREE CASES DIFFER IN ONE PIECE OF STATE and give three different
+// verdicts, which is what makes the middle one admissible. Without the
+// controls, a test asserting "no kill" cannot distinguish the fix from a
+// fixture that was never going to kill anything.
+func TestSweepOrphans_ParentCommUnreadableIsNotAMatch(t *testing.T) {
+	const parent = 700
+
+	// setup builds a client 601 parented to 700, and hands the caller
+	// the parent's directory to modify. Identical in all three cases.
+	setup := func(t *testing.T) string {
+		t.Helper()
+		pinSelfComm(t, "net-dhcp")
+		ourDir := filepath.Join(os.TempDir(), workDirPrefix+"abc123")
+		fakeProc(t, map[int][2]string{
+			601:    {clientArgv(ourDir), realKernelComm},
+			parent: {"/usr/local/bin/net-dhcp", "net-dhcp"},
+		})
+		setParent(t, 601, parent)
+		return filepath.Join(procRoot, strconv.Itoa(parent))
+	}
+
+	t.Run("parent alive and readable is spared", func(t *testing.T) {
+		setup(t)
+		pids, _ := recordKills(t, nil)
+		n, err := SweepOrphans()
+		if err != nil {
+			t.Fatalf("SweepOrphans: %v", err)
+		}
+		if n != 0 || len(*pids) != 0 {
+			t.Errorf("killed %d %v, want none — the parent is a live "+
+				"instance of this plugin and its clients are not ours", n, *pids)
+		}
+	})
+
+	t.Run("parent gone is an orphan", func(t *testing.T) {
+		dir := setup(t)
+		// The whole /proc entry, not just comm: the parent has exited.
+		if err := os.RemoveAll(dir); err != nil {
+			t.Fatalf("RemoveAll: %v", err)
+		}
+		pids, _ := recordKills(t, nil)
+		n, err := SweepOrphans()
+		if err != nil {
+			t.Fatalf("SweepOrphans: %v", err)
+		}
+		if n != 1 || len(*pids) != 1 || (*pids)[0] != 601 {
+			t.Errorf("killed %d %v, want [601] — nothing is managing this "+
+				"client, which is the case the sweep exists for", n, *pids)
+		}
+	})
+
+	t.Run("parent present but comm unreadable is not a match", func(t *testing.T) {
+		dir := setup(t)
+		// ONE FILE, and it is the difference between the two cases
+		// above. The parent is still there; we simply cannot read what
+		// it calls itself. "Cannot tell" is not "gone".
+		if err := os.Remove(filepath.Join(dir, "comm")); err != nil {
+			t.Fatalf("remove comm: %v", err)
+		}
+		pids, _ := recordKills(t, nil)
+		n, err := SweepOrphans()
+		if err != nil {
+			t.Fatalf("SweepOrphans: %v", err)
+		}
+		if n != 0 || len(*pids) != 0 {
+			t.Errorf("killed %d %v, want none — an unreadable parent comm "+
+				"is absence of evidence, and this sends SIGKILL as root "+
+				"against the host PID namespace", n, *pids)
+		}
+	})
+}
+
+// TestSweepOrphans_NoUnreadableProcFileAuthorisesAKill is keyed on the
+// PROPERTY, not on the mechanism, and that is the difference between a
+// test that outlives this fix and one that does not.
+//
+// The mechanism-keyed version of this — "commOf returns (string, bool)
+// and the parent check reads the bool" — is green forever and blind to
+// the fifth /proc read somebody adds below it in v1.9.0. The property is
+// the thing isOrphanedClient's own doc comment already states:
+//
+//	No unreadable /proc entry, at ANY read, may produce a kill.
+//
+// So this does not enumerate the reads. It enumerates the FIXTURE:
+// every file the fake /proc contains, removed one at a time, with the
+// parent's entry left in place. A read added later reaches for a file
+// that is either already in this walk or has to be added to the
+// fixture — and either way it is covered without anyone remembering to
+// come back here.
+//
+// REMOVAL RATHER THAN chmod 000. CI runs these as root inside a
+// container, where a 000 file is still readable, so a permissions-based
+// fixture would pass locally and cover nothing where it matters.
+//
+// The parent entry itself is never removed: a vanished parent IS a kill,
+// correctly, and TestSweepOrphans_ParentCommUnreadableIsNotAMatch pins
+// that direction with a one-file control against this one.
+func TestSweepOrphans_NoUnreadableProcFileAuthorisesAKill(t *testing.T) {
+	const parent = 700
+
+	build := func(t *testing.T) {
+		t.Helper()
+		pinSelfComm(t, "net-dhcp")
+		ourDir := filepath.Join(os.TempDir(), workDirPrefix+"abc123")
+		fakeProc(t, map[int][2]string{
+			601:    {clientArgv(ourDir), realKernelComm},
+			parent: {"/usr/local/bin/net-dhcp", "net-dhcp"},
+		})
+		setParent(t, 601, parent)
+	}
+
+	// One build to discover the fixture's files. The paths are relative
+	// so they survive the rebuild each subtest does under a fresh
+	// TempDir.
+	build(t)
+	var files []string
+	root := procRoot
+	if err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		rel, rerr := filepath.Rel(root, path)
+		if rerr != nil {
+			return rerr
+		}
+		files = append(files, rel)
+		return nil
+	}); err != nil {
+		t.Fatalf("walk fixture: %v", err)
+	}
+	slices.Sort(files)
+
+	// A walk over an empty list is a green test that read nothing.
+	if len(files) < 6 {
+		t.Fatalf("fixture yielded %d files (%v), want at least 6 — a walk "+
+			"over too few files passes without covering the reads", len(files), files)
+	}
+
+	// The unmodified fixture must NOT kill, or every case below is
+	// green for a reason that has nothing to do with the removals.
+	pids, _ := recordKills(t, nil)
+	if n, err := SweepOrphans(); err != nil || n != 0 || len(*pids) != 0 {
+		t.Fatalf("intact fixture killed %d %v (err %v), want none — the "+
+			"walk below cannot mean anything if the baseline kills", n, *pids, err)
+	}
+
+	for _, rel := range files {
+		t.Run("without "+rel, func(t *testing.T) {
+			build(t)
+			victim := filepath.Join(procRoot, rel)
+			if err := os.Remove(victim); err != nil {
+				t.Fatalf("remove %s: %v", rel, err)
+			}
+			pids, _ := recordKills(t, nil)
+			n, err := SweepOrphans()
+			if err != nil {
+				// A refusal is a legitimate answer to "I cannot see".
+				// A kill is not.
+				return
+			}
+			if n != 0 || len(*pids) != 0 {
+				t.Errorf("removing %s produced %d kill(s) %v — an unreadable "+
+					"/proc entry must never authorise a SIGKILL, and this one "+
+					"does it as root against the host PID namespace",
+					rel, n, *pids)
+			}
+		})
+	}
+}
+
 func TestSweepOrphans_WithoutOurOwnCommRefuses(t *testing.T) {
 	pinSelfComm(t, "")
 

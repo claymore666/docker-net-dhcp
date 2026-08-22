@@ -209,7 +209,12 @@ func isOrphanedClient(pid int) bool {
 		return false
 	}
 
-	if commOf(pid) != commComparand() {
+	comm, ok := commOf(pid)
+	if !ok || comm != commComparand() {
+		// Unreadable is "no", explicitly. This direction was already
+		// right when the error was folded into ""; it is spelled out
+		// now so it stays right by construction rather than by the
+		// accident of which way the comparison happened to point.
 		return false
 	}
 
@@ -236,7 +241,23 @@ func isOrphanedClient(pid int) bool {
 	// rather than init, so testing for 1 would MISS real orphans and
 	// leave the duplicate-client bug in place on exactly the hosts this
 	// plugin runs on.
-	return commOf(ppid) != selfComm
+	pcomm, ok := commOf(ppid)
+	if ok {
+		return pcomm != selfComm
+	}
+	// The comm could not be read, and THAT IS TWO DIFFERENT FACTS. They
+	// must not share a branch, because they have opposite answers.
+	//
+	// The entry is gone: the parent exited between the status read and
+	// this one, so nothing is managing this client. That is the case the
+	// sweep exists for.
+	//
+	// The entry is there but its comm is not readable: we cannot tell
+	// whether the parent is a sibling instance of this plugin. The
+	// question this answers is whether to SIGKILL, as root, against the
+	// host PID namespace — so unknown is "no", the same rule the rest of
+	// this function already follows.
+	return !procEntryExists(ppid)
 }
 
 // commComparand is the value /proc/<pid>/comm is matched against.
@@ -261,13 +282,43 @@ func commComparand() string {
 	return filepath.Base(dhcpcdBin)
 }
 
-// commOf returns a process's comm, or "" if it cannot be read.
-func commOf(pid int) string {
+// commOf returns a process's comm and whether it could be read.
+//
+// THE SECOND RESULT IS THE WHOLE POINT, and it replaces a "" sentinel
+// that shipped in this release. An error folded into an in-band value
+// has no direction of its own: it inherits one from the comparison it
+// lands in. The same helper was read twice, twenty-seven lines apart,
+// with opposite meanings —
+//
+//	if commOf(pid) != commComparand() { return false }   // "" -> "no"  SAFE
+//	return commOf(ppid) != selfComm                      // "" -> "yes" KILL
+//
+// — and no amount of reading commOf could have told you which one it
+// was. Its safety was a property of the call site. A second result
+// makes that property impossible to leave unstated: a caller must
+// choose a direction to compile.
+//
+// That is a guard against forgetting, not against choosing wrongly. It
+// cannot stop a caller writing `comm, _ :=` and reproducing the bug; it
+// only stops one doing it silently.
+func commOf(pid int) (string, bool) {
 	comm, err := os.ReadFile(filepath.Join(procRoot, strconv.Itoa(pid), "comm"))
 	if err != nil {
-		return ""
+		return "", false
 	}
-	return string(bytes.TrimSpace(comm))
+	return string(bytes.TrimSpace(comm)), true
+}
+
+// procEntryExists reports whether /proc/<pid> is still there.
+//
+// It answers a different question from "could I read this file inside
+// it", and conflating the two is what made an unreadable parent look
+// like a dead one. A vanished entry means the process is gone; a
+// present entry with an unreadable file inside it means we cannot tell.
+// Only the first authorises a kill.
+func procEntryExists(pid int) bool {
+	_, err := os.Stat(filepath.Join(procRoot, strconv.Itoa(pid)))
+	return err == nil
 }
 
 // parentPID reads a process's parent pid, reporting whether it could.
