@@ -69,8 +69,8 @@ the first round and eleven in the second — all sixteen fixed here. The
 second was an architecture review of `dev` after those fixes landed,
 which found **ten** lifecycle faults: #720–#724, filed individually, and
 #727–#731, tracked together as #726. All ten are fixed in this release,
-and six of them are verified present in v1.7.1 — they predate this cycle
-entirely. The third read the CI
+and six — #720, #721, #722, #724, #727 and #728 — are verified present
+in v1.7.1, so they predate this cycle entirely. The third read the CI
 machinery itself (#732) and found gates reporting success over input
 they had never looked at. Alongside all of that: a network can now
 say which DHCP server it will lease from, the health counters are
@@ -878,6 +878,13 @@ these metrics matter most. (#651)
 ### The new health counters
 
 Exactly one of them affects `healthy`, and it is marked in the table.
+Six of the entries are the v4 halves of counters that already existed:
+the `/metrics` `family="ipv4"` series used to be derived by subtracting
+the v6 half from an aggregate, and two independently-updated atomics
+combined that way can read lower than the previous scrape — which is a
+counter reset to Prometheus. They are stored now, and the table lists
+them because they are fields an operator can scrape, not because six new
+things are being measured (#730).
 `docs/reference.md` carries the full description of each, including what
 a rise means and what to do about it.
 
@@ -896,10 +903,14 @@ a rise means and what to do about it.
            | grep -oE 'json:"[a-z0-9_]+' | cut -d'"' -f2 | sort > /tmp/$$.$r
        done
 
-     Diff the two and every name added must have a row here. At the time
-     of writing that diff was 16 (41 -> 57 tags) and the table had 16
-     rows. #766 adds six `*_v4` fields when it lands; they need six rows,
-     and their absence is what this comment exists to catch. -->
+     Diff the two and every name added must have a row here, checked as
+     a SET both directions -- a row with no field and a field with no row
+     are different defects and only one of them is obvious.
+
+     Last derived after #766 landed: 41 -> 63 tags, 22 new, 22 rows,
+     set-equal with an empty difference each way. If anything else adds
+     a HealthResponse field before the tag, this table is short by
+     exactly that much and nothing else will say so. -->
 
 | counter | what it says |
 | ------- | ------------ |
@@ -919,6 +930,12 @@ a rise means and what to do about it.
 | `network_options_rejected` | Endpoint operations that met stored network options they would not act on as written (#727). |
 | `tombstone_quarantines` | **The one counter that affects `healthy`.** A corrupt tombstone file now flips the flag instead of being written over in silence (#724). |
 | `conflict_probe_stale_addrs` | Leftover conflict-probe source addresses reclaimed from the parent NIC — the borrowed `169.254.x.y/32` a probe sources from when the parent has no address of its own, which nothing used to clean up because its octets are random by design (#723). |
+| `lease_changed_v4` | The v4 half of `lease_changed`. Stored rather than derived, so the `/metrics` series cannot fabricate a counter reset (#730). |
+| `leases_obtained_v4` | The v4 half of `leases_obtained`. Stored rather than derived, so the `/metrics` series cannot fabricate a counter reset (#730). |
+| `leases_renewed_v4` | The v4 half of `leases_renewed`. Stored rather than derived, so the `/metrics` series cannot fabricate a counter reset (#730). |
+| `dhcp_timeouts_v4` | The v4 half of `dhcp_timeouts`. Stored rather than derived, so the `/metrics` series cannot fabricate a counter reset (#730). |
+| `naks_received_v4` | The v4 half of `naks_received`. Stored rather than derived, so the `/metrics` series cannot fabricate a counter reset (#730). |
+| `lease_release_failures_v4` | The v4 half of `lease_release_failures`. Stored rather than derived, so the `/metrics` series cannot fabricate a counter reset (#730). |
 
 ### Two of those counters had no observer at all
 
