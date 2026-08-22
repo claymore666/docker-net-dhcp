@@ -107,6 +107,18 @@ var attachDaemonBusyGrace = 60 * time.Second
 
 const initialDHCPHostnameLookupTimeout = 2 * time.Second
 
+// recoveryHostnameLookupTimeout bounds the one ContainerInspect recovery
+// makes per endpoint to learn the hostname its fingerprint needs (#721).
+//
+// Tighter than recoveryPerNetworkTimeout on purpose. By the time we get
+// here the daemon has already answered NetworkList and NetworkInspect,
+// so a slow answer means it is degrading — and the recovery budget is
+// better spent on the DHCP exchanges the endpoints actually need. An
+// endpoint that loses its hostname loses address stability across one
+// restart; a budget that runs out loses the renewal client of every
+// endpoint on the host.
+const recoveryHostnameLookupTimeout = 500 * time.Millisecond
+
 // recoveryBudget caps the wall-time the plugin spends rebuilding its
 // in-memory state for already-attached endpoints on startup. Each
 // endpoint's recovery does its own DHCP DISCOVER through dhcpcd with
@@ -1455,6 +1467,39 @@ func (p *Plugin) containerGone(ctx context.Context, containerID string) bool {
 	return ctr.State == nil || !ctr.State.Running
 }
 
+// recoveredHostname returns the container hostname to record in a
+// recovered endpoint's fingerprint, and whether it may be recorded at
+// all.
+//
+// ok=false means "record no fingerprint for this endpoint", and it
+// deliberately covers two different things:
+//
+//   - the inspect did not answer, so the hostname is simply unknown;
+//   - safeHostname REFUSED the hostname because it carries a control
+//     character (#693).
+//
+// Both end in the same place because of what an empty Hostname means
+// downstream: tombstoneStore.consume reads a tombstone with no hostname
+// as "matches any container on this network". Recording an empty one
+// here would not write a weaker tombstone, it would write a wildcard
+// one, and the next container to attach to this network would inherit a
+// MAC and an address that were never its own. Recording nothing leaves
+// this endpoint exactly the behaviour it has today, which is the only
+// direction that cannot hurt a container that did nothing wrong.
+func (p *Plugin) recoveredHostname(ctx context.Context, containerID string) (string, bool) {
+	if containerID == "" {
+		return "", false
+	}
+	ctx, cancel := context.WithTimeout(ctx, recoveryHostnameLookupTimeout)
+	defer cancel()
+
+	ctr, err := p.docker.ContainerInspect(ctx, containerID)
+	if err != nil || ctr.Config == nil || ctr.Config.Hostname == "" {
+		return "", false
+	}
+	return p.safeHostname(ctr.Config.Hostname)
+}
+
 // recoverOneEndpoint synthesises a JoinRequest and dhcpManager for a
 // single existing endpoint, then spawns Start in a goroutine. Idempotent:
 // if a manager already exists for the endpoint (e.g. because libnetwork
@@ -1513,6 +1558,37 @@ func (p *Plugin) recoverOneEndpoint(ctx context.Context, containerID, networkID,
 	if !p.registerDHCPManagerIfAbsent(endpointID, m) {
 		p.recoveryAlreadyManaged.Add(1)
 		return false, nil
+	}
+
+	// Recovery is the only path that takes ownership of a live endpoint
+	// without a CreateEndpoint, and it used to leave the fingerprint map
+	// untouched (#721). DeleteEndpoint lays a tombstone only for an
+	// endpoint it holds a fingerprint for, so every endpoint that had
+	// lived through a plugin restart lost address stability on its next
+	// `docker restart` — silently, with tombstones_consumed simply
+	// staying flat. Recorded after the compare-and-set above rather than
+	// before it: an endpoint a concurrent Join won is that Join's to
+	// describe, and overwriting its fingerprint with ours would hand its
+	// tombstone our idea of the hostname.
+	//
+	// Ifname is deliberately left empty. Docker's record does not carry
+	// the custom interface name (#125), so a recovered endpoint falls
+	// back to the default on its next Join. Losing the name is visible
+	// and the operator can restore it; inventing one is neither.
+	if hostname, ok := p.recoveredHostname(ctx, containerID); ok {
+		fpIPv4, fpIPv6 := "", ""
+		if ipv4 != nil {
+			fpIPv4 = ipv4.IP.String()
+		}
+		if ipv6 != nil {
+			fpIPv6 = ipv6.IP.String()
+		}
+		p.rememberEndpoint(endpointID, endpointFingerprint{
+			MAC:      mac.String(),
+			IPv4:     fpIPv4,
+			IPv6:     fpIPv6,
+			Hostname: hostname,
+		})
 	}
 
 	go func() {
