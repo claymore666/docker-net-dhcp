@@ -4,6 +4,7 @@
 package plugin
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -594,5 +595,72 @@ func TestCaptureHandler_DoesNotWriteThroughASymlink(t *testing.T) {
 	}
 	if b, err := os.ReadFile(name); err != nil || string(b) != body {
 		t.Errorf("captured %q (%v), want %q", b, err, body)
+	}
+}
+
+// WHAT THIS OBSERVES, AND WHY THE SYMLINK TEST DOES NOT OBSERVE IT.
+//
+// createCaptureFile's guarantee is not "the symlink got removed" -- it
+// is "this function never writes into something that was already at the
+// name". The difference only shows when the unlink FAILS, and
+// TestCaptureHandler_DoesNotWriteThroughASymlink cannot reach that: its
+// Remove succeeds, so the rejected pre-#786 shape
+//
+//	_ = os.Remove(path)
+//	return os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, captureFileMode)
+//
+// passes it, and passes the whole capture family. Measured against
+// a0008f3: 16 tests, 0 failures, with the silent hole restored.
+//
+// So the suite could not tell the shipped design from the one that was
+// rejected as unsound -- exactly the "a sequence producing the right
+// result is not a property that cannot produce the wrong one"
+// distinction the redesign was made for.
+//
+// A name that EXISTS and CANNOT be unlinked is constructible without
+// privilege: a non-empty directory (Remove -> ENOTEMPTY). No write can
+// go through it, so this does not assert the write-through -- it
+// asserts WHICH operation reported the failure, which is what separates
+// reporting a failed unlink from ignoring it:
+//
+//	shipped   remove ...: directory not empty     <- unlink reported
+//	rejected  open ...: is a directory            <- unlink swallowed
+//
+// Keyed on the failing operation rather than on O_EXCL, so any
+// implementation that reports its own failed removal passes, whether or
+// not it uses exclusive creation.
+// not it uses exclusive creation.
+func TestCreateCaptureFile_ReportsAFailedUnlinkRatherThanFallingThrough(t *testing.T) {
+	dir := t.TempDir()
+	name := filepath.Join(dir, "0001-NetworkDriver.Join.json")
+
+	// Occupied so it cannot be unlinked; a bare empty dir would be
+	// removable and the case would exercise nothing.
+	if err := os.MkdirAll(filepath.Join(name, "occupied"), 0o700); err != nil {
+		t.Fatalf("seeding: %v", err)
+	}
+
+	f, err := createCaptureFile(name)
+	if err == nil {
+		f.Close()
+		t.Fatalf("createCaptureFile succeeded over a name it could not unlink")
+	}
+
+	// The premise: the name really is unremovable, so a pass means the
+	// failure was reported and not that nothing was attempted.
+	if rmErr := os.Remove(name); rmErr == nil {
+		t.Fatalf("the seeded name was removable after all — this case did not " +
+			"exercise a failed unlink and its verdict means nothing")
+	}
+
+	// Keyed on the structured Op field, not on the rendered prefix: the
+	// property is "the failure that surfaced was the REMOVE", and a
+	// change in error formatting must not silently retire this check.
+	var pe *os.PathError
+	if !errors.As(err, &pe) || pe.Op != "remove" {
+		t.Errorf("createCaptureFile reported %q, want the failed REMOVE.\n"+
+			"An error from the open means the unlink failure was swallowed and the "+
+			"open proceeded over whatever was already at the name — the silent hole "+
+			"#786 exists to close.", err)
 	}
 }
