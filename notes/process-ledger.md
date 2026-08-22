@@ -510,6 +510,31 @@ printing**. Corrected figures: 57 series both sides, 48 changed,
 arithmetic, which is v1.9.0 item 18's evidence with the right
 denominator. *(client1)*
 
+## I20 — a claim that goes false under a NON-merge
+
+Every other claim this cycle went false when *something else merged*.
+This one goes false when something else **does not**.
+
+`RELEASE_NOTES.md` asserts that all ten lifecycle faults are fixed in
+this release. Derived from the milestone rather than from memory: nine of
+the ten carry `in-dev`; **#731 carries `has-pr`**, so it is not on `dev`.
+The sentence is a forward claim resting entirely on #769 landing.
+
+**And there is no durable phrasing.** "Nine of ten" is wrong the other
+way, and wrong at exactly the moment it matters most — after the tag. The
+sentence is not a claim about the present that decays; it is a claim
+about *the release*, and the only way to make it true is to make it true.
+
+> **This is a sequencing constraint, not a staleness bug. #768 must not
+> merge before #769.**
+
+Worth separating from the rest because every control built for the other
+species is useless here: the table cannot go stale silently because a
+derivation reproduces it, but **nothing derives the ten-issue claim** —
+three sentences carry it and only a human re-running the milestone query
+sees a change. Careful wording does not touch it either. It belongs on
+the merge order, not in the text. *(client3, framing by oversight)*
+
 ---
 
 # Rules
