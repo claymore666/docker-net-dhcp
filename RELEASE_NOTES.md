@@ -61,19 +61,39 @@ re-accepting it.
 
 ## v1.8.0
 
-The release that got a human security review. Seventeen findings came
-out of it and all seventeen are fixed here — #699 indexes them, and two
-are recorded against the pull requests that fixed them rather than
-against an issue of their own. Alongside that: a network can
-now say which DHCP server it will lease from, the health counters are
-scrapeable by Prometheus, and two lifecycle faults are gone.
+The release that got reviewed by people rather than only by tools —
+three times, by three different pairs of eyes, and each pass found things
+the one before it had read past. The first was a security review of the
+trust boundaries (#457, indexed by #699): seventeen findings, all
+seventeen fixed here. The second was an architecture review of `dev`
+after those fixes landed (#726), which found ten lifecycle faults —
+seven fixed here, three carried to v1.9.0, and six of the seven present
+in v1.7.1 and every release before it. The third read
+the CI machinery itself (#732) and found gates reporting success over
+input they had never looked at. Alongside all of that: a network can now
+say which DHCP server it will lease from, the health counters are
+scrapeable by Prometheus, and the plugin's own state survives a power
+cut.
 
-If you are running v1.7.1, the reason to upgrade is the review. v1.7.1
-writes a container's `--hostname` into the generated `dhcpcd.conf`
-without validating it, and Docker validates it no further — which is
-enough for one container to present another endpoint's DHCP identity and
-be handed its reservation. The rest of the release is the
-server-selection options, the new `/metrics` endpoint and the
+If you are running v1.7.1, the reason to upgrade is the reviews. Three
+things in v1.7.1 are worth naming, and none of them announces itself in
+your logs:
+
+- v1.7.1 writes a container's `--hostname` into the generated
+  `dhcpcd.conf` without validating it, and Docker validates it no
+  further — which is enough for one container to present another
+  endpoint's DHCP identity and be handed its reservation (#692).
+- v1.7.1 leaves a DHCP client running for every endpoint if the plugin
+  is killed rather than stopped. Those clients keep renewing inside the
+  container, the restarted plugin starts a second client per endpoint,
+  and the two disagree about the binding at release time (#722).
+- v1.7.1 loses address stability the first time the plugin restarts.
+  Every endpoint that lived through a restart gets a fresh MAC — and in
+  general a different address — on its next `docker restart`, with no
+  counter moving to say so (#721).
+
+The rest of the release is the server-selection options, the new
+`/metrics` endpoint, the durability of the plugin's own state, and the
 health-counter fixes below.
 
 **This release changes plugin behaviour**, not only its packaging.
@@ -93,16 +113,26 @@ under an operator who upgrades:
   propagation silently.
 - `propagate_mtu` **refuses** an option-26 MTU outside `[576, 65535]`,
   leaving the container link at the MTU it had.
-- An option-51 lease lifetime longer than 24h is **clamped for the
-  outage watchdog only**. The lifetime reported in logs and the ledger
-  is untouched.
+- An option-51 lease lifetime **longer than a year** — one no client
+  will ever renew from — has a 24h deadline substituted **for the outage
+  watchdog only**, counted as `lease_time_clamped`. Ordinary long
+  leases, a week included, are left exactly as granted. The lifetime
+  reported in logs and the ledger is untouched either way.
+- An option-3 gateway that does not parse is **dropped** rather than
+  applied. v1.7.1 handed the unparsed value to netlink, where it means
+  "no gateway" and installs `default dev ethX scope link` — an on-link
+  default route that makes the container ARP for every off-net
+  destination. The container keeps the route it had.
+- A DHCP client left behind by a killed plugin is **found and killed**
+  at startup, before recovery starts its replacement.
 - State files and the lease ledger under `/var/lib/net-dhcp` are no
   longer world-readable, so reading `leases.jsonl` as a non-root user
   now needs `sudo`.
 
 On top of those: two new network options, a Prometheus `/metrics`
-endpoint, twelve new health counters and two lifecycle fixes, alongside
-two refactors under `pkg/plugin`. The reference digests differ from
+endpoint, fifteen new health counters, an fsynced and versioned state
+file, and the lifecycle fixes below, alongside two refactors under
+`pkg/plugin`. The reference digests differ from
 v1.7.1 accordingly. The refactors are intended to be
 behaviour-identical — both are covered by the existing suite plus new
 unit tests — but "intended" is the honest word there, not "proven".
@@ -241,16 +271,47 @@ them.
   it; the defect was that nothing distinguished the two cases. The log
   line now names each destination and next hop, and
   `dhcp_default_route_superseded` counts it against `dhcp_routes_applied`.
-  Measured end to end. (#700)
+  Measured end to end.
+
+  The predicate driving that decided coverage by *pattern* — so a route
+  set that genuinely covers everything routable, but does not look like
+  the expected shape, returned false, and one could be constructed to
+  slip past it. It now computes actual span coverage over the routable
+  unicast v4 ranges. **The blast radius there is the warning, not the
+  routing table**: the predicate picks a log level and increments a
+  counter, and nothing routing-behavioural hangs off it. No route was
+  installed or withheld wrongly, before or after. (#700, #762)
 - **An infinite lease disabled the outage watchdog permanently.**
   Option 51 = `0xFFFFFFFF` is exported verbatim and sets a 136-year
   deadline, and `leaseDeadline` is the only trigger that can detect a
   silently lapsed lease under `--noconfigure` — so one such ACK followed
   by silence left `dhcp_timeouts` at zero through a total outage for
   that endpoint. That is the exact failure #353 exists to catch,
-  re-opened by a number the server chooses. The deadline is now clamped
-  to 24h and `lease_time_clamped` says so; the lease lifetime the plugin
-  reports is unchanged. (#701)
+  re-opened by a number the server chooses. A lifetime that no client
+  will ever renew from now has a 24h deadline substituted, and
+  `lease_time_clamped` says so; the lease lifetime the plugin reports is
+  unchanged.
+
+  The first version of that fix drew the line at 24h, which is not an
+  anomaly — it is a Friday. Measured against it, a 7-day lease produced
+  **14,759 fabricated timeouts per endpoint per lease**: the watchdog
+  told thousands of times that a server answering perfectly well had
+  stopped. An instrument that reads high on normal operation is worse
+  than no instrument, because it teaches an operator to ignore it. The
+  two questions are now separate constants — how long a deadline may be,
+  and which lifetimes are anomalous at all — and only a lifetime over a
+  year is treated as anomalous. A day and a second, two days, and a week
+  are asserted to pass through unchanged and unreported.
+
+  A second, sharper case was reached by arithmetic rather than by a
+  value on the wire. `LeaseSeconds` is an `int` and `time.Duration`
+  counts nanoseconds, so a large enough lifetime **wraps negative** —
+  and a negative duration reads to the tracker as "no deadline is
+  enforced". A garbage lifetime therefore switched silent-lapse
+  detection off entirely, counting nothing and logging nothing. Anything
+  wider than the four octets option 51 can carry is now treated as
+  permanent, which is the direction whose failure mode is an armed
+  watchdog and a counter rather than a disarmed one. (#701, #762)
 - **`propagate_mtu` had no lower bound.** The kernel accepts 68, dhcpcd
   exports it unchanged, and the result — destroyed throughput plus
   black-holed path MTU discovery, re-applied on every renewal — looks
@@ -335,8 +396,23 @@ identity check, and so does every release before it. (#695)
   re-splitting. The rule stays and now says why, and the option is now
   validated by `ValidIfaceName` as well, so a flag-shaped name fails at
   `CreateEndpoint` rather than surviving as far as the argv. (#706)
-- **`unshare` was the one binary resolved through `$PATH`** rather than
-  absolutely. It is pinned to `/usr/bin/unshare`. (#707)
+- **`unshare` was resolved through `$PATH`** rather than absolutely, and
+  is now pinned to `/usr/bin/unshare`. The issue closing that also
+  recorded — in its own body, and in the pinned constant's comment —
+  that `unshare` was *the one* binary in the tree whose identity
+  depended on an environment variable. It was not, and the sentence
+  asserting otherwise is what made the second one durable: a surface
+  declared clear does not get re-checked. `dhcpcd` itself sat one argv
+  position to the right in the same command line. The plugin builds
+  `unshare -m /bin/sh -c '…; exec "$0" "$@"' dhcpcd …`, so `$0` is a
+  bare name that `sh` resolves through `PATH` — the process performing
+  the entire DHCP exchange as uid 0, selected by an environment
+  variable. It is now `/sbin/dhcpcd`, measured against the pinned base
+  image rather than assumed. The audit missed it because it searched for
+  `exec.Command` call sites, and this argument reaches `execve` through
+  a shell. The old comment is corrected in place rather than deleted, so
+  the next reader gets the method that produced the gap and not just the
+  conclusion. (#707)
 - **Neither HTTP server had timeouts or a body cap.** Both now carry
   `ReadHeaderTimeout`, `ReadTimeout` and `IdleTimeout` plus a request
   body limit. The socket server's `WriteTimeout` is deliberately left at
@@ -369,6 +445,26 @@ only new installs. The plugin's `-logfile` stays world-readable at
 `0644` — operators do read it — but drops from `0666` and is now opened
 `O_NOFOLLOW`, so a symlink swapped in before a `SIGHUP` re-open cannot
 decide where root appends. (#708)
+
+### The second review, and ten faults older than this cycle
+
+The security fixes above were merged and then `dev` was read again, this
+time for architecture rather than for trust boundaries. That pass found
+ten lifecycle faults. Seven are fixed here and three are carried to
+v1.9.0 (named at the end of this section), and the thing worth saying
+about the seven up front is that **six of them are verified present on
+`main` as well** — the seventh was introduced by one of the security
+fixes above and exists in `dev` only. They are, in the main, not this
+cycle's mistakes. They are what a second reader found in code that had
+already been reviewed once, by someone looking for a different kind of
+thing.
+
+The pass also recorded two structural notes that are not blockers and
+are not fixed here: `plugin.go` grew again this cycle and its three
+largest functions remain at 0% unit coverage, and a growing number of
+invariants are held by CI gates rather than by types — a reasonable
+answer to a release deadline, and a deferral rather than a resolution.
+Both are written down in #726 rather than left as an impression.
 
 ### What the plugin persists survives a power cut, and says what wrote it
 
@@ -438,6 +534,238 @@ configuration does not survive an upgrade and the schema version
 guards nothing. That is a legitimate thing to do for a test rig and a
 silent disaster otherwise, so the plugin now says so once at startup
 instead of leaving it to be discovered at the next upgrade. (#724)
+
+### A failed start could release a live container's address
+
+The plugin has two paths that hand a lease back to the DHCP server, and
+only one of them asked whether the container was actually leaving.
+
+A failed `Start` is not evidence that the container is gone. Recovery
+rebuilds a manager for a **live** container; that manager's `Start` can
+fail for reasons the container knows nothing about. The container then
+restarts, `Join` displaces the stale manager, and the displaced `Stop`
+released the address the **new** endpoint had just been ACKed — telling
+the server an address is free while a container is using it, which
+invites it to be handed to somebody else. That is the duplicate
+assignment this release added conflict detection for, manufactured by
+the plugin itself.
+
+The reclaim now runs only when the endpoint is genuinely leaving. When
+it does not run, the lease is held until it expires, and that is logged
+with the address rather than passing silently — the leak is the safe
+direction of the two, but an operator should still be able to see it
+happened.
+
+**What catches it now**, since the previous test did not:
+`TestStop_FailedStartIsANoOp` built a manager with no recorded address,
+so the reclaim had nothing to act on and the call was a no-op for the
+wrong reason — it would have stayed green through the entire defect.
+`TestStop_FailedStartReclaimsOnlyWhenLeaving` supplies the combination
+none of the existing tests had, and pins **both** directions: against
+the real pre-fix file the not-leaving row is red on both of its
+assertions, and against a mutant that deletes the reclaim entirely the
+leaving row is red. A test proving only that the release was suppressed
+would have been green for a patch that reintroduced #370's leak.
+
+The finding underneath is bigger than the branch, and is deferred rather
+than fixed: "is it safe to hand this address back?" is decided
+independently at **five** sites. Four were right. The entire safety
+argument for the most dangerous thing the plugin does lives in five
+callers' prose, and prose decays silently where a check fails loudly.
+Collapsing them to one predicate touches a file being edited
+concurrently, so it is filed for v1.9.0. (#720)
+
+### Address stability was lost the first time the plugin restarted
+
+`rememberEndpoint` had two call sites and both were on the
+`CreateEndpoint` path. Recovery rebuilt the DHCP manager for an
+already-attached endpoint and recorded nothing — and `DeleteEndpoint`
+lays a tombstone only for an endpoint it holds a fingerprint for.
+
+So **every endpoint that lived through a plugin or daemon restart lost
+address stability on its next `docker restart`**: no tombstone, a fresh
+MAC, and in general a different address from the DHCP server. A custom
+interface name rides the same fingerprint and was lost the same way.
+Nothing reported it. `tombstones_consumed` simply stayed flat, which is
+also what it does when everything is fine.
+
+Recovery now records the fingerprint from what it already holds, and
+does so **after** the compare-and-set that decides ownership: an
+endpoint a concurrent `Join` won is that `Join`'s to describe.
+
+Two things about the fix are worth stating because they cost something:
+
+- The fingerprint needs a hostname and recovery does not have one, so it
+  now makes one bounded `ContainerInspect` — with the **same** budget
+  the `CreateEndpoint` path gives the same call, deliberately not a
+  tighter one. A tighter budget was drafted and rejected against a
+  measured counterexample: dockerd has been observed answering other
+  calls normally while blocking on `ContainerInspect` for a container it
+  was inside `ContainerStart` for. Recovery runs while the daemon
+  restarts every container on the host, so mid-`ContainerStart` is the
+  *modal* state of what it walks, and the tighter budget would have
+  expired in exactly the scenario this fix exists for. The cost is that
+  a wedged daemon can spend more of the 30s recovery budget on lookups —
+  capped by what remains rather than added on top — and a counter is
+  what makes that trade visible rather than invisible.
+- When the hostname cannot be had, **no fingerprint is recorded at
+  all** — not one with an empty hostname. An empty hostname in a
+  tombstone means "matches any container on this network", so recording
+  one would not lay a weaker tombstone; it would lay a wildcard, and the
+  next container to attach would inherit a MAC and an address that were
+  never its own. (#721)
+
+### DHCP clients outlived the plugin, and could not be found afterwards
+
+A plugin that dies without running its shutdown path — SIGKILL, an OOM
+kill, a panic that skips `Close` — left every persistent DHCP client
+running and renewing inside its container's still-live network
+namespace. The plugin restarts, recovery starts a **second** client per
+endpoint with the same DUID, IAID and client-id, and two clients manage
+one binding. On the eventual leave one sends a DHCPRELEASE while the
+other keeps renewing, and the server may reallocate an address that is
+still in use.
+
+Two parts, and both are needed:
+
+- **The child now gets a process group of its own.** It had no
+  `SysProcAttr` at all, so it shared the plugin's — meaning a signal
+  aimed at the group, from a supervisor's shutdown or a terminal,
+  reached every live DHCP client too. The persistent client is spawned
+  without dhcpcd's `-p`, so each one so signalled would release the
+  lease of a container that is still running.
+- **Leftovers are found and killed at startup**, before recovery starts
+  anything. Every orphan the sweep does not reach first becomes the
+  second client described above.
+
+**SIGKILL, not SIGTERM**, and that is the part that is easy to get
+backwards. When the plugin restarts the containers are still running. A
+SIGTERM sweep would make each orphan release the lease of a live
+container on its way out — the same duplicate assignment again, this
+time manufactured by the cleanup. SIGKILL leaves the binding untouched
+at the server, so the address stays allocated to this host until the
+replacement client claims it back. The signal has its own test, because
+the wrong one passes every other test in the file.
+
+The issue said the leftovers were unidentifiable — a generic
+`unshare -m /bin/sh -c … dhcpcd …` argv with nothing naming this plugin.
+That was not so: dhcpcd's `-f <workdir>/dhcpcd.conf` puts an absolute
+path into the argv and that directory carries a `net-dhcp-dhcpcd-`
+prefix. They had been identifiable all along; nobody had looked. The
+prefix is now a named constant both sides read, and a test asserts it is
+really present in a real client's argv — without which this is a sweep
+that runs on every boot, stays green, and matches nothing forever.
+
+That is not hypothetical, because it happened here. The sweep runs on
+the host PID namespace and sends SIGKILL, so it requires two independent
+facts before killing: the marker in the argv **and** a process name of
+`dhcpcd`. The name check compared against the plugin's own `dhcpcd`
+constant — which the `$PATH` fix above had just made absolute. The
+kernel writes a process name as a **basename**, truncated to 15 bytes,
+whatever path was executed, so the comparison could never be true and
+the sweep found nothing on every host, confidently. Seventeen test
+fixtures agreed with it, because they spelled that same constant on both
+sides of the comparison; making it absolute moved both sides in step and
+the suite stayed green.
+
+**What catches it now**, named rather than asserted: the fixtures spell
+out what the kernel would actually have written, so they are no longer a
+mirror of the value under test —
+`TestIsOrphanedClient_MatchesTheKernelsComm` goes red against the
+pre-fix code. And `TestComm_IsAlwaysABasename` starts a real process by
+absolute path and reads the kernel's own `/proc/<pid>/comm` back, so the
+premise the whole comparison rests on is verified against the kernel
+rather than restated in a comment. (#722)
+
+### An unparseable option 3 became an on-link default route
+
+`net.ParseIP` returning `nil` is not a refusal. It is a valid netlink
+argument meaning "no gateway" — and with no destination that installs
+`default dev ethX scope link`. An on-link default route makes the
+container ARP for every off-net destination, which hands interception to
+anyone on the same L2 segment.
+
+Option 3 was the one path into the gateway that was not validated on the
+way in: the option-121 gateway comes out of a parser that validates
+every address it returns, while option 3 was taken verbatim from the
+wire and never checked again. **This one is present in v1.7.1**, where
+the same unvalidated value reaches `RouteAdd`.
+
+It is refused at the ingress and again at the sink, and those are not
+redundant — the first runs in the dhcpcd hook, a different process
+entirely. A gateway that does not parse is left **empty** rather than
+substituted, because empty is a state the sink already understands: it
+returns without touching the route, leaving the container whatever it
+had. Refusals count on the existing `unsafe_option_values_dropped`.
+
+Both directions again, deliberately: a guard that refused *both*
+gateways would silently drop every classless default route, invisible
+until somebody's traffic stopped. The table keeps an ordinary gateway,
+the first of several, and an IPv6 router, and pins RFC 3442's precedence
+of option 121 over option 3. Rehearsed against the real pre-fix tree,
+four rows are red and each on both assertions — the bad value survived
+*and* nothing counted the drop. On the issue's own confidence note: this
+closes a hole reachable by construction, not a demonstrated delivery.
+(#728)
+
+### Interface names were validated where they are written, not where they are used
+
+The NUL-byte fix above validates a network's `bridge` and `parent` on the
+**create** path, which is where a name first arrives. It is not where a
+name is first *used*. Every endpoint handler re-reads the stored options
+and hands what it finds to netlink — endpoint creation, join, the route
+copy, operational info, the parent-attached paths, orphan release and
+daemon-restart recovery — and none of them re-validated, because
+`CreateNetwork` was assumed to have.
+
+That assumption does not hold for records `CreateNetwork` never saw, and
+those are ordinary rather than exotic. **Any network created before that
+fix shipped had its unvalidated name persisted then and replayed on
+every endpoint call now, so an upgrade is the reproduction and no
+attacker is required.** The same is true of networks old enough to
+predate option persistence, which are backfilled to disk through a path
+that never called the validator, and of the state directory itself,
+which is a plain file tree.
+
+The check therefore moves to the read path: the options accessor becomes
+a funnel that decodes and then refuses an unknown mode or a name the
+kernel would not accept, counting `network_options_rejected`.
+
+One shape in it is deliberate. `DeleteEndpoint` must still run for a
+network whose options are refused — otherwise the veth pair, the ledger
+entry and the lease outlive the container, and a refusal that leaks is
+worse than the name it refused. It reads no stored name to do its work,
+so it takes the mode without the rest. (#727)
+
+### A descriptor leak on the DNS-propagation hot path
+
+The file wrapping a container's cgroup handle was never closed — not on
+success, not on read error, not on a mismatch. Those arms close the
+*directory* handle, and this was a second, independent descriptor.
+
+The function runs on every `bound` and `renew` event when
+`propagate_dns=true`, and on every attach. A host with many endpoints
+renewing regularly therefore grows descriptors until the garbage
+collector happens to run a finalizer, in a process that also holds
+netlink sockets, FIFOs and the plugin's listening sockets. **Exhaustion
+surfaces as `accept` failures on the libnetwork socket: container starts
+failing for a reason that looks nothing like its cause.** Introduced by
+one of the security fixes above, so it exists in `dev` only and no
+released version carries it.
+
+**What catches it now**: a regression test that counts descriptors *by
+target* rather than in total, so an unrelated open elsewhere in the test
+binary cannot flake it and no tolerance has to be given — a tolerance
+being exactly how a leak of one-per-call becomes invisible again. It
+also deliberately forces no GC, since a `runtime.GC()` would run the
+finalizer and hide the defect the test exists to catch. Before the fix,
+64 calls leaked 64 descriptors on the success path and 64 more on the
+refusal path.
+
+The same file omitted `O_CLOEXEC` on both of its opens, while its
+sibling passes it — and one of those is an open handle on a container's
+mount namespace, inheritable by a concurrently spawned child. That half
+cannot have a test, so it has a gate instead. (#729)
 
 ### Choosing which DHCP server a network leases from
 
@@ -529,13 +857,13 @@ IDs are unbounded and turn over with container lifecycle, so labelling
 by them would be a cardinality problem in exactly the deployments where
 these metrics matter most. (#651)
 
-### Twelve new health counters
+### Fifteen new health counters
 
-None of the twelve affects `healthy`. The set that does is not unchanged
-in this release: `tombstone_quarantines` joins it (#724), and a corrupt
-tombstone file now flips the flag instead of being written over in
-silence. `docs/reference.md` carries the full description of each,
-including what a rise means and what to do about it.
+Fourteen of the fifteen do not affect `healthy`. The one that does is
+`tombstone_quarantines` (#724) — a corrupt tombstone file now flips the
+flag instead of being written over in silence. `docs/reference.md`
+carries the full description of each, including what a rise means and
+what to do about it.
 
 | counter | what it says |
 | ------- | ------------ |
@@ -545,12 +873,14 @@ including what a rise means and what to do about it.
 | `netns_pid_mismatches` | Sandbox netns opens refused for the same reason — the attach fails (#695). |
 | `dhcp_routes_applied` | Option-121 classless static routes handed to Docker at Join. The denominator for the row below (#700). |
 | `dhcp_default_route_superseded` | Joins whose option-121 routes cover `0.0.0.0/0` by union rather than by a literal default entry (#700). |
-| `lease_time_clamped` | Option-51 lifetimes cut to 24h for the outage watchdog only (#701). |
+| `lease_time_clamped` | Option-51 lifetimes no client could renew from — over a year — given a 24h deadline for the outage watchdog only. An ordinary long lease is left as granted (#701, #762). |
 | `mtu_refused` | Option-26 MTUs outside `[576, 65535]`, with the link left as it was (#702). |
 | `dhcp_server_tier_fallbacks` | Acquisitions that fell through to a lower-priority `dhcp_servers` entry — the only outside signal that a preferred server is silently dead (#111). |
 | `dhcp_server_policy_exhausted` | Acquisitions abandoned because no listed server answered, as distinct from DHCP being broken (#111). |
 | `recovery_network_gone` | Networks removed out from under the post-restart recovery walk (#648). |
 | `recovery_already_managed` | Endpoints a recovery walk found already registered to another manager (#480). |
+| `recovery_fingerprints_skipped` | Endpoints recovery adopted but could not describe, so they keep their renewal client and lose their tombstone (#721). |
+| `network_options_rejected` | Endpoint operations that met stored network options they would not act on as written (#727). |
 
 ### An ordinary `docker network rm` could report the plugin's worst fault
 
@@ -721,6 +1051,103 @@ option the older one never did. None of that was visible before.
   release-note entries and the actionlint config carried an internal
   hostname, the last of them as a standing exception that is no longer
   one.
+- **The CI machinery got its own review** (#732), on the principle that a
+  gate reporting success over input it never looked at is worse than no
+  gate: it is a green check that means nothing, and it is indistinguishable
+  from one that means something.
+  - The coverage ratchet — the required check on `main`, under which
+    every product fix in this milestone was merged — read its baseline
+    with a loop that exited 0 when the file was missing, empty, or
+    comments-only. That baseline is 258 lines of which 253 are
+    commentary, so a rebase dropping the five data lines leaves a file
+    that still looks populated. It now counts its comparisons and
+    refuses a verdict at zero. A PR could also lower its own floor, on a
+    branch where nothing would have measured it. (#734, #735)
+  - Four gates judged a subject set they never fully read. Three
+    discovered subjects with `git ls-files` alone, so they were blind to
+    untracked files — which is to say blind in exactly the window the
+    local lane exists for, since the lane is what you run on what you
+    just wrote, and CI never showed it because a fresh checkout makes
+    *tracked* and *present* the same set. The fourth rendered a verdict
+    over an empty directory. Widening the subjects then made one gate
+    briefly *worse*, because its evidence set was not widened with
+    them — caught by the self-test written for the first half of the
+    same fix. (#743)
+  - Three more matched something narrower than the sentence in their own
+    header, which is why review passed them: reviewers read headers. One
+    is a required status check whose "no issue" waiver matched an
+    indented copy — and matched the gate's own failure text, so a run
+    that quoted the rule satisfied it. (#758)
+  - Eight one-to-five-line correctness fixes across five workflows. Six
+    reproduced, two did not, and one of the six had a third instance the
+    issue had not listed. (#742)
+  - Two detectors were mis-reporting at the time they were read. The
+    label reconciler looked up unresolved references with a fallback
+    that treated a rate limit, a 5xx and a dropped connection exactly
+    like the 404 that legitimately means "not a PR" — and since the
+    planner recomputes desired state from scratch, a reference that
+    contributes nothing becomes an instruction to strip `in-dev` from
+    issues that are in dev. The other demanded a check-run GitHub never
+    creates, and had been red for 42% of its last 60 runs. (#739, #740)
+- Eleven fully-implemented issues read as untouched on the tracker,
+  because the reference had gone into the pull request body rather than
+  the commit subject, the loader skipped merge commits, and the parser
+  would not have matched that subject anyway — three things that had to
+  be true at once, and were. The subject is now the carrier, and a PR
+  naming no issue is gated rather than merged and noticed later. (#718)
+- The release path was reviewed before it was used. `:latest` was
+  retagged **before** anything was signed or proven installable, so a
+  release that failed verification had already moved the tag every
+  `docker plugin install` without a version follows; it is promoted last
+  now. A dispatch input was expanded directly into a `run:` body in the
+  job that holds the signing identity. The guard that was supposed to
+  restrict dispatches matched a literal input name, so two workflows
+  were ungated by it. And a sparse checkout persists into the next
+  checkout at the same path, which would have run the docs deploy
+  against a tree missing most of its files. (#736, #737, #738)
+- The documentation was read against what the code actually does rather
+  than against what the last release said, and one gate turned out to be
+  running nowhere at all — no workflow invoked it, and the three rules
+  meant to catch that all start from what the workflows invoke, so it
+  was invisible to every one of them. The fourth rule closes that
+  direction. (#724, #736)
+
+### What is not fixed here
+
+<!-- RE-DERIVE THIS LIST AT TAG TIME. It was true when written and the
+     person running the tag will not be the person who wrote it:
+
+       gh api 'repos/claymore666/docker-net-dhcp/issues?milestone=22&state=open&per_page=100' \
+         --jq '.[] | select(.pull_request == null)
+                   | select([.labels[].name] | index("in-dev") | not)
+                   | "#\(.number) \(.title)"'
+
+     `in-dev` means merged into dev and not yet released, so an issue
+     carrying it is NOT a deferral — it ships in this release and closes
+     at the tag. The query above excludes them.
+
+     CAVEAT, and it is the trap: that command also returns the tracking
+     issues (#457, #699, #726, #732). Four issue numbers that look like
+     deferrals and are not. Drop them by hand; they close with the
+     milestone. -->
+
+Three findings from the reviews above are carried to v1.9.0 rather than
+rushed into this one, and they are named because a review that ships
+only its easy half is not a review.
+
+- **The conflict probe's borrowed link-local is never reclaimed after an
+  interrupted probe** (#723).
+- **The `/metrics` `family="ipv4"` series can fabricate a counter
+  reset** (#730) — a scrape artefact, so the surface most likely to be
+  believed by an alerting rule.
+- **The server-policy ladder divides a fixed budget with no per-tier
+  floor** (#731).
+
+Two structural items are deferred with them and are worth naming
+separately, because neither is a defect anyone can point at: the five
+independent decisions about whether a lease may be handed back (#720
+above), and the growing set of invariants held by a shell gate rather
+than by a type. Both are recorded in #726.
 
 ### With thanks to
 
