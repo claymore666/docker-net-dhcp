@@ -77,7 +77,7 @@ MD
 run "$WORK/bad.md"
 if [ "$RC" != 1 ]; then
     no "an invented symbol did not exit 1 (got $RC): $OUT"
-elif ! printf '%s' "$OUT" | grep -q 'notInvented'; then
+elif ! printf '%s' "$OUT" | grep 'notInvented' >/dev/null; then
     no "exit 1, but the message does not name notInvented -- redness without attribution: $OUT"
 else
     ok "an invented symbol exits 1 and the message names it"
@@ -92,7 +92,7 @@ MD
 run "$WORK/comment.md"
 if [ "$RC" != 1 ]; then
     no "a symbol present only in a COMMENT was accepted (exit $RC): $OUT"
-elif ! printf '%s' "$OUT" | grep -q 'noteDNSPropagationPIDMismatch'; then
+elif ! printf '%s' "$OUT" | grep 'noteDNSPropagationPIDMismatch' >/dev/null; then
     no "flagged, but did not name the comment-only symbol: $OUT"
 else
     ok "a symbol present only in a comment does not resolve"
@@ -123,7 +123,7 @@ printf '# a reason, as the format requires\nnotInvented\n' > "$WORK/waivers.txt"
 run "$WORK/bad.md"
 if [ "$RC" != 0 ]; then
     no "a waived symbol still failed (exit $RC): $OUT"
-elif ! printf '%s' "$OUT" | grep -q 'Waived'; then
+elif ! printf '%s' "$OUT" | grep 'Waived' >/dev/null; then
     no "the waiver was honoured silently -- a waiver nobody can see is a hole: $OUT"
 else
     ok "a waived symbol passes and the waiver is printed"
@@ -134,12 +134,12 @@ fi
 # A verdict with no tree is the defect this gate exists to prevent,
 # applied to the gate itself.
 run "$WORK/ok.md"
-printf '%s' "$OUT" | grep -qE 'at [0-9a-f]{7,}|at unknown-tree' \
+printf '%s' "$OUT" | grep -E 'at [0-9a-f]{7,}|at unknown-tree' >/dev/null \
     && ok "the pass line names the tree it resolved against" \
     || no "a green verdict with no SHA is unfalsifiable: $OUT"
 
 run "$WORK/bad.md"
-printf '%s' "$OUT" | grep -qE 'at [0-9a-f]{7,}|at unknown-tree' \
+printf '%s' "$OUT" | grep -E 'at [0-9a-f]{7,}|at unknown-tree' >/dev/null \
     && ok "the failure names the tree it resolved against" \
     || no "a failing verdict with no SHA: $OUT"
 
@@ -167,7 +167,7 @@ MD
 run "$WORK/prose.md"
 if [ "$RC" != 0 ]; then
     no "ordinary backticked prose was treated as symbols: $OUT"
-elif ! printf '%s' "$OUT" | grep -q '0 candidate'; then
+elif ! printf '%s' "$OUT" | grep '0 candidate' >/dev/null; then
     no "expected zero candidates from prose, got: $OUT"
 else
     ok "backticked prose without a camelCase hump is not a candidate"

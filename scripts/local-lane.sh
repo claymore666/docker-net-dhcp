@@ -88,6 +88,7 @@ LANE=(
   "manifest parity|-|bash scripts/check-manifest-parity.sh"
   "issue label map|-|bash scripts/check-issue-label-map.sh"
   "label taxonomy|-|bash scripts/check-label-taxonomy.sh --static"
+  "release-notes symbols|-|bash scripts/check-release-notes-symbols.sh"
   "dockerfile pins|-|bash scripts/check-dockerfile-pins.sh"
   "python deps|-|bash scripts/check-python-deps.sh"
   "fixture hygiene|-|bash scripts/check-selftest-fixtures.sh"
