@@ -353,20 +353,40 @@ nothing else.
   counter without exposing it is a red unit test rather than a hole in
   somebody's dashboard.
 - **The snapshot is not a single atomic instant, and that is
-  deliberate.** The counters are read without a lock, so two of them
-  can be a few nanoseconds apart. They are monotonic counters read for
-  rates and alerting, not an accounting ledger, and this is what
-  `/Plugin.Health` has always done. Only the two map lengths take the
-  mutex, because reading a map during a concurrent write is a data race
-  rather than a stale number.
-- **The `ipv4` series is derived, never read.** The family-split
-  counters bump the aggregate on *every* event and the `_v6` sibling
-  only on v6 ones (#212), so `_v6` is a subset of the total rather than
-  a peer, and `family="ipv4"` has to be total-minus-v6 at render time.
-  A total below its v6 subset would mean a bump reached the sibling and
-  not the aggregate — a real bug — but a negative counter makes the
-  whole scrape unparseable and buries the signal it was supposed to
-  show, so it clamps to zero and the rest of the metrics still arrive.
+  deliberate — but only for values read one at a time.** The counters
+  are read without a lock, so two of them can be a few nanoseconds
+  apart. For a counter an operator reads on its own that is harmless:
+  they are monotonic counters read for rates and alerting, not an
+  accounting ledger, and this is what `/Plugin.Health` has always done.
+  Only the two map lengths take the mutex, because reading a map during
+  a concurrent write is a data race rather than a stale number.
+
+  It stops being harmless the moment a rendered value is **combined**
+  from two of them, and #730 is what that costs. Each family pair is
+  therefore loaded exactly once into a local, and the aggregate is the
+  sum of those two locals — never a second `.Load()` of a half that was
+  already read.
+- **Both family series are stored; neither is derived.** Six counters
+  carry a `family` label. `bumpFamily` increments **exactly one** of a
+  pair — the v4 half or the v6 half, never both and never a third
+  aggregate — so `_v4` and `_v6` are peers, and the unsuffixed counter
+  an operator alerts on is their **sum**, computed at snapshot time
+  (#212, #730).
+
+  Until v1.8.0 the aggregate was the stored counter and `family="ipv4"`
+  was `total - v6` at render time, clamped at zero. Two independently
+  updated counters combined by **subtraction** can be read in an order
+  that yields a value below the previous scrape, and Prometheus reads
+  any counter decrease as a **reset**, repaying the whole accumulated
+  value as an increase on the next scrape — a one-event skew surfacing
+  as a rate spike of the entire count. The clamp hid the extreme case
+  and did nothing about the dip. Adding two monotonic counters has no
+  such failure mode, because neither operand can decrease; subtracting
+  them does, in either read order.
+
+  If a family series ever needs computing rather than reading again,
+  the arithmetic belongs in `healthSnapshot` where both halves are
+  loaded once, not in the renderer.
 - **Two exposure paths, and only one of them opens a port.** `/metrics`
   is on the plugin socket unconditionally: it costs nothing, and it
   lets an operator with a socket-aware scrape path collect metrics

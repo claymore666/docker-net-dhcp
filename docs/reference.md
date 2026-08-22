@@ -784,7 +784,8 @@ diagnosing a specific container from them alone is not.
 | `lease_time_clamped` | no | (v1.8.0+) Option-51 lease lifetimes too long to use as the outage watchdog's deadline, cut to 24h **for the watchdog only** — the lifetime reported in logs and the ledger is untouched. Any non-zero value is worth reading: `leaseDeadline` is the only trigger that can detect a silently lapsed lease under `--noconfigure`, so one ACK carrying `0xFFFFFFFF` followed by silence used to leave `dhcp_timeouts` at zero through a total outage for that endpoint. |
 | `mtu_refused` | no | (v1.8.0+) Option-26 MTUs outside `[576, 65535]`, refused with the container link left at the MTU it had. Only moves with `propagate_mtu=true`. Neither `dhcpcd` nor the kernel holds the bottom of that range — a server-supplied 68 is exported verbatim and accepted — and the result is destroyed throughput plus black-holed path MTU discovery, re-applied on every renewal, which looks like a slow network rather than a misconfiguration. |
 | `ledger_write_failures` | no | Failed `audit_log` ledger appends — degrades forensics, not networking. Operators using `audit_log` alert on this. |
-| `lease_changed_v6`, `leases_obtained_v6`, `leases_renewed_v6`, `dhcp_timeouts_v6`, `naks_received_v6` | no | (v1.2.0+) The IPv6-only share of the matching aggregate above (#212). Each counts only the v6 client's events; the v4 share is the aggregate minus its `*_v6`. On a dual-stack host this isolates the v6-specific NAK/timeout signal the aggregate hides. `lease_release_failures_v6` (v1.7.0+, #608) joins the split with the same rule; `ledger_write_failures` has no per-family split. |
+| `lease_changed_v6`, `leases_obtained_v6`, `leases_renewed_v6`, `dhcp_timeouts_v6`, `naks_received_v6` | no | (v1.2.0+) The IPv6-only share of the matching counter above (#212). Each counts only the v6 client's events. On a dual-stack host this isolates the v6-specific NAK/timeout signal the combined number hides. `lease_release_failures_v6` (v1.7.0+, #608) joins the split with the same rule; `ledger_write_failures` has no per-family split. |
+| `lease_changed_v4`, `leases_obtained_v4`, `leases_renewed_v4`, `dhcp_timeouts_v4`, `naks_received_v4`, `lease_release_failures_v4` | no | (v1.8.0+, #730) The IPv4-only share, on the same rule. Both halves are now stored and the unsuffixed counter is their **sum** — it is not a counter in its own right and nothing increments it. Before v1.8.0 the v4 share was not stored: it was recovered as `aggregate − *_v6` at render time, which could read one lower than the previous scrape and make Prometheus treat the whole counter as reset. Use `*_v4` rather than doing that subtraction yourself. |
 
 ### `/metrics`
 
@@ -836,13 +837,26 @@ net_dhcp_leases_obtained_total{family="ipv4"} 42
 net_dhcp_leases_obtained_total{family="ipv6"} 7
 ```
 
-**`family="ipv4"` is derived, not stored.** In `/Plugin.Health` the
-unsuffixed counter is the v4+v6 **total** and the `_v6` one is a subset
-of it (#212), so the v4 series here is `total - v6` computed at render
-time. This is the shape an operator expects from a `family` label, and
-it is worth knowing if you compare the two endpoints side by side: the
-JSON `leases_obtained` will not equal the `family="ipv4"` series. Every
-other counter has no family dimension and does not gain an invented one.
+**Both family series are stored, not derived** (v1.8.0+, #730). Each of
+the six has a `_v4` and a `_v6` field in `/Plugin.Health`, and the
+unsuffixed counter is their **sum**. So `leases_obtained` equals
+`leases_obtained_v4 + leases_obtained_v6`, and the `family="ipv4"`
+series is the `_v4` field read straight out. Every other counter has no
+family dimension and does not gain an invented one.
+
+Until v1.8.0 only the aggregate and the `_v6` share were stored, and the
+v4 series was computed as `total - v6` at render time. Two independently
+updated counters combined by subtraction can be read in an order that
+yields a value **below the previous scrape**, and Prometheus reads any
+counter decrease as a reset — attributing the whole accumulated value as
+an increase on the next scrape. A one-off skew of a single event
+therefore showed up as a rate spike of the entire count. Adding two
+monotonic counters has no such failure mode; subtracting them does.
+
+If you have a dashboard or recording rule that reconstructed the v4
+share as `leases_obtained - leases_obtained_v6`, it still gives the same
+answer, but prefer `leases_obtained_v4`: the subtraction is what this
+change removed, and doing it in the query reintroduces it.
 
 #### Counter resets
 

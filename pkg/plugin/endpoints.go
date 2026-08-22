@@ -592,6 +592,13 @@ type HealthResponse struct {
 	// existing fields above; the issue's proposal listed them with
 	// `_total` for documentation clarity but the wire field is the
 	// shorter form.
+	//
+	// Each of these is the SUM of its *_v4 and *_v6 halves below, added
+	// in healthSnapshot (#730). It is not a counter in its own right,
+	// and nothing increments it. The meaning operators alert on is
+	// unchanged — it was a v4+v6 total before and it is a v4+v6 total
+	// now — but it is now derived from the halves rather than the
+	// halves being derived from it.
 	LeasesObtained int32 `json:"leases_obtained"`
 	LeasesRenewed  int32 `json:"leases_renewed"`
 	// DHCPServerTierFallbacks counts acquisitions that fell through to a
@@ -655,11 +662,28 @@ type HealthResponse struct {
 	// alert on this directly.
 	LedgerWriteFailures int32 `json:"ledger_write_failures"`
 
-	// Per-family (IPv6) breakdown of the wire counters (#212). Each
-	// counts only the v6 client's events; the un-suffixed fields above
-	// remain v4+v6 aggregates, so the v4 share is the aggregate minus
-	// the matching *_v6 value. On a dual-stack host this isolates the
-	// v6-specific failure signal (NAK/timeout) the aggregate hides.
+	// Per-family breakdown of the wire counters (#212, #730). Both
+	// halves are STORED; the un-suffixed field above is their sum,
+	// computed in healthSnapshot from the same two values rendered
+	// here. It is not a third counter, and neither half is a subset of
+	// it. On a dual-stack host this isolates the v6-specific failure
+	// signal (NAK/timeout) the aggregate hides.
+	//
+	// Until #730 the v4 share was not stored at all: the un-suffixed
+	// field was the counter and the v4 number was recovered by
+	// subtracting *_v6 from it at render time. Two independently
+	// updated atomics combined by subtraction can produce a value lower
+	// than the previous read, and a counter that decreases is a reset
+	// to Prometheus. Storing both and adding for the total is
+	// monotonic under every interleaving; subtracting is not.
+	LeaseChangedV4   int32 `json:"lease_changed_v4"`
+	LeasesObtainedV4 int32 `json:"leases_obtained_v4"`
+	LeasesRenewedV4  int32 `json:"leases_renewed_v4"`
+	DHCPTimeoutsV4   int32 `json:"dhcp_timeouts_v4"`
+	NAKsReceivedV4   int32 `json:"naks_received_v4"`
+	// LeaseReleaseFailuresV4 is the v4 half of LeaseReleaseFailures.
+	LeaseReleaseFailuresV4 int32 `json:"lease_release_failures_v4"`
+
 	LeaseChangedV6   int32 `json:"lease_changed_v6"`
 	LeasesObtainedV6 int32 `json:"leases_obtained_v6"`
 	LeasesRenewedV6  int32 `json:"leases_renewed_v6"`
@@ -685,12 +709,21 @@ func (p *Plugin) apiHealth(w http.ResponseWriter, r *http.Request) {
 // and this repo has watched that shape rot more than once (#542, #636).
 //
 // The counters are read without a lock and are therefore not a single
-// atomic instant: two of them can be a few nanoseconds apart. That is
-// deliberate and harmless for both consumers — these are monotonic
-// counters read for rates and alerting, not an accounting ledger — and
-// it is the behaviour /Plugin.Health has always had. Only the two map
-// lengths need p.mu, because reading a map during a concurrent write is
-// a data race rather than a stale number.
+// atomic instant: two of them can be a few nanoseconds apart. For an
+// individual monotonic counter read for rates and alerting that is
+// harmless, and it is the behaviour /Plugin.Health has always had. Only
+// the two map lengths need p.mu, because reading a map during a
+// concurrent write is a data race rather than a stale number.
+//
+// It is NOT harmless for a value COMBINED from two of them, and #730 is
+// what that costs. Each family pair is therefore loaded exactly once
+// here, into a local, and the aggregate is the sum of those two locals
+// — so the pair a caller sees is internally consistent even though the
+// two loads are nanoseconds apart. Adding is what makes the skew
+// tolerable: the sum of two monotonic counters is monotonic under every
+// interleaving. The previous shape subtracted, and subtraction is not.
+// Do not reintroduce a second .Load() of one of these halves; that is
+// the defect, not the arithmetic.
 func (p *Plugin) healthSnapshot() HealthResponse {
 	p.mu.Lock()
 	active := len(p.persistentDHCP)
@@ -702,6 +735,21 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 	tsFails := p.tombstoneWriteFailures.Load()
 	conflicts := p.addressConflicts.Load()
 	tsQuarantines := p.tombstones.quarantines.Load()
+
+	// One load per half, used for both the half and the sum.
+	leaseChangedV4 := p.leaseChangedV4.Load()
+	leaseChangedV6 := p.leaseChangedV6.Load()
+	leasesObtainedV4 := p.leasesObtainedV4.Load()
+	leasesObtainedV6 := p.leasesObtainedV6.Load()
+	leasesRenewedV4 := p.leasesRenewedV4.Load()
+	leasesRenewedV6 := p.leasesRenewedV6.Load()
+	dhcpTimeoutsV4 := p.dhcpTimeoutsV4.Load()
+	dhcpTimeoutsV6 := p.dhcpTimeoutsV6.Load()
+	naksReceivedV4 := p.naksReceivedV4.Load()
+	naksReceivedV6 := p.naksReceivedV6.Load()
+	leaseReleaseFailuresV4 := p.leaseReleaseFailuresV4.Load()
+	leaseReleaseFailuresV6 := p.leaseReleaseFailuresV6.Load()
+
 	return HealthResponse{
 		// Healthy is false on any condition that means an operator
 		// should look: a recovery or join-start failure means a running
@@ -753,31 +801,37 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		LeaseTimeClamped:             p.leaseTimeClamped.Load(),
 		MTURefused:                   p.mtuRefused.Load(),
 		TombstonesConsumed:           p.tombstonesConsumed.Load(),
-		LeaseChanged:                 p.leaseChanged.Load(),
+		LeaseChanged:                 leaseChangedV4 + leaseChangedV6,
 		AddressConflicts:             conflicts,
 		ConflictProbeFailures:        p.conflictProbeFailures.Load(),
 		ConflictProbeStaleRoutes:     p.conflictProbeStaleRoutes.Load(),
 		ConflictProbeStaleAddrs:      p.conflictProbeStaleAddrs.Load(),
 		AddressConflictProbes:        p.addressConflictProbes.Load(),
 		SandboxNetnsVisible:          sandboxNetnsVisibleIn(sandboxNetnsDirs),
-		LeasesObtained:               p.leasesObtained.Load(),
-		LeasesRenewed:                p.leasesRenewed.Load(),
+		LeasesObtained:               leasesObtainedV4 + leasesObtainedV6,
+		LeasesRenewed:                leasesRenewedV4 + leasesRenewedV6,
 		DHCPServerTierFallbacks:      p.dhcpServerTierFallbacks.Load(),
 		DHCPServerPolicyExhausted:    p.dhcpServerPolicyExhausted.Load(),
-		DHCPTimeouts:                 p.dhcpTimeouts.Load(),
-		LeaseReleaseFailures:         p.leaseReleaseFailures.Load(),
-		NAKsReceived:                 p.naksReceived.Load(),
+		DHCPTimeouts:                 dhcpTimeoutsV4 + dhcpTimeoutsV6,
+		LeaseReleaseFailures:         leaseReleaseFailuresV4 + leaseReleaseFailuresV6,
+		NAKsReceived:                 naksReceivedV4 + naksReceivedV6,
 		DisplacedStops:               p.displacedStopsTotal.Load(),
 		OrphanedLeasesReleased:       p.orphanedLeasesReleased.Load(),
 		OrphanedLeaseReleaseFailures: p.orphanedLeaseReleaseFailures.Load(),
 		ParentLinkWaits:              p.parentLinkWaits.Load(),
 		ParentLinkWaitTimeouts:       p.parentLinkWaitTimeouts.Load(),
 		LedgerWriteFailures:          p.ledgerWriteFailures.Load(),
-		LeaseChangedV6:               p.leaseChangedV6.Load(),
-		LeasesObtainedV6:             p.leasesObtainedV6.Load(),
-		LeasesRenewedV6:              p.leasesRenewedV6.Load(),
-		DHCPTimeoutsV6:               p.dhcpTimeoutsV6.Load(),
-		NAKsReceivedV6:               p.naksReceivedV6.Load(),
-		LeaseReleaseFailuresV6:       p.leaseReleaseFailuresV6.Load(),
+		LeaseChangedV4:               leaseChangedV4,
+		LeasesObtainedV4:             leasesObtainedV4,
+		LeasesRenewedV4:              leasesRenewedV4,
+		DHCPTimeoutsV4:               dhcpTimeoutsV4,
+		NAKsReceivedV4:               naksReceivedV4,
+		LeaseReleaseFailuresV4:       leaseReleaseFailuresV4,
+		LeaseChangedV6:               leaseChangedV6,
+		LeasesObtainedV6:             leasesObtainedV6,
+		LeasesRenewedV6:              leasesRenewedV6,
+		DHCPTimeoutsV6:               dhcpTimeoutsV6,
+		NAKsReceivedV6:               naksReceivedV6,
+		LeaseReleaseFailuresV6:       leaseReleaseFailuresV6,
 	}
 }

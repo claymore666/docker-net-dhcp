@@ -847,7 +847,7 @@ type Plugin struct {
 	// indistinguishable from success (#386).
 	tombstonesConsumed atomic.Int32
 
-	// leaseChanged counts renewals where dhcpcd returned a different
+	// leaseChangedV4 counts renewals where dhcpcd returned a different
 	// IP than the manager last recorded. Container's
 	// NetworkSettings.IPAddress in `docker inspect` does NOT update
 	// — libnetwork has no in-place endpoint-IP swap RPC. This counter
@@ -855,7 +855,7 @@ type Plugin struct {
 	// (forced container restart on lease change, or an out-of-band
 	// docker-socket update) lands. See issue #104 for the design
 	// discussion deferred from v0.9.0.
-	leaseChanged atomic.Int32
+	leaseChangedV4 atomic.Int32
 
 	// addressConflicts counts leases whose address was found to be
 	// already held by another device on the segment (#524).
@@ -921,32 +921,36 @@ type Plugin struct {
 	// evidence of a clean segment if this advanced.
 	addressConflictProbes atomic.Int32
 
-	// leasesObtained / leasesRenewed / dhcpTimeouts / leaseReleaseFailures
+	// leasesObtainedV4 / leasesRenewedV4 / dhcpTimeoutsV4 / leaseReleaseFailuresV4
 	// expose DHCP-wire-level counters via /Plugin.Health (T2-4). They
 	// complement the lease_changed signal and let operators alert on
 	// regressions in the DHCP exchange itself without scraping dnsmasq
 	// logs server-side or running the plugin at trace level. Bumped
 	// from dhcpManager:
-	//   - leasesObtained: "bound" event — first successful
+	//   - leasesObtainedV4: "bound" event — first successful
 	//     DHCPACK on either initial bind or after a NAK / lease loss
-	//   - leasesRenewed: "renew" event — a renewal DHCPACK
-	//   - dhcpTimeouts: "leasefail" event — a bound lease lapsed
+	//   - leasesRenewedV4: "renew" event — a renewal DHCPACK
+	//   - dhcpTimeoutsV4: "leasefail" event — a bound lease lapsed
 	//     (dhcpcd EXPIRE) or the outage watchdog fired without an
 	//     OFFER or ACK
-	//   - leaseReleaseFailures: client.Finish returned an error in
+	//   - leaseReleaseFailuresV4: client.Finish returned an error in
 	//     Stop, meaning the SIGTERM-driven DHCPRELEASE didn't complete
 	//     cleanly (timeout, exit code, or pipe closure)
-	leasesObtained       atomic.Int32
-	leasesRenewed        atomic.Int32
-	dhcpTimeouts         atomic.Int32
-	leaseReleaseFailures atomic.Int32
+	//
+	// Each counts the v4 client only. The unsuffixed JSON field an
+	// operator alerts on (`leases_obtained`) is this atom PLUS its *V6
+	// sibling, summed in healthSnapshot rather than stored (#730).
+	leasesObtainedV4       atomic.Int32
+	leasesRenewedV4        atomic.Int32
+	dhcpTimeoutsV4         atomic.Int32
+	leaseReleaseFailuresV4 atomic.Int32
 
 	// orphanedLeasesReleased / orphanedLeaseReleaseFailures cover the
 	// lease the CreateEndpoint one-shot acquired when no persistent
 	// client ever took ownership of it — a container that exited before
 	// Join's async Start could attach (#370). See releaseOrphanedLease.
 	//
-	// Deliberately separate from leaseReleaseFailures: that counter
+	// Deliberately separate from leaseReleaseFailuresV4: that counter
 	// means "a client we were running failed to hand its lease back",
 	// which points at upstream reachability. These mean "no client was
 	// running at all", which points at container churn. Merging them
@@ -982,25 +986,26 @@ type Plugin struct {
 	parentLinkWaits        atomic.Int32
 	parentLinkWaitTimeouts atomic.Int32
 
-	// naksReceived counts "nak" events — the server refused a
+	// naksReceivedV4 counts "nak" events — the server refused a
 	// REQUEST (pool reconfigured, address reassigned, lease revoked).
 	// Until v1.0.0 a NAK was only a warn-level log line, invisible to
 	// operators (#128). A NAK is followed by dhcpcd re-DISCOVERing, so
 	// pair this with lease_changed: naks_received climbing while
 	// lease_changed follows means containers are being re-addressed
-	// mid-life — Docker's inspect view goes stale (see leaseChanged
+	// mid-life — Docker's inspect view goes stale (see leaseChangedV4
 	// above / #104) and DNS or firewall rules keyed on the old IP need
 	// attention.
-	naksReceived atomic.Int32
+	naksReceivedV4 atomic.Int32
 
-	// Per-family (IPv6) breakdown of the wire counters above (#212).
-	// handleEvent/renew already receive a `v6 bool`; these atoms count
-	// only the v6 client's events. The fields above stay aggregates
-	// (v4+v6) so existing operator alerts keep their meaning — the v4
-	// share is the aggregate minus the matching *V6 atom. On a dual-
-	// stack host this is the only way to tell a v6-specific NAK or
-	// timeout (the signal #152 is landing against) from a v4 one on
-	// /Plugin.Health without scraping logs.
+	// The v6 half of each pair above (#212). handleEvent/renew already
+	// receive a `v6 bool`; these atoms count only the v6 client's
+	// events, and the *V4 atoms above count only the v4 client's.
+	// Neither is an aggregate: the v4+v6 total operator alerts read as
+	// `leases_obtained` is computed as the SUM of the pair in
+	// healthSnapshot (#730), which is what keeps it monotonic. On a
+	// dual-stack host the split is the only way to tell a v6-specific
+	// NAK or timeout (the signal #152 is landing against) from a v4 one
+	// on /Plugin.Health without scraping logs.
 	leaseChangedV6   atomic.Int32
 	leasesObtainedV6 atomic.Int32
 	leasesRenewedV6  atomic.Int32

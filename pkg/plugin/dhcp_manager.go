@@ -668,7 +668,7 @@ func (m *dhcpManager) applyAddressChange(v6 bool, ip *netlink.Addr) error {
 	// Bump the counter so operators can alert on the truthfulness
 	// gap; design discussion for a deeper fix is deferred (issue #104).
 	if m.plugin != nil {
-		bumpFamily(&m.plugin.leaseChanged, &m.plugin.leaseChangedV6, v6)
+		bumpFamily(&m.plugin.leaseChangedV4, &m.plugin.leaseChangedV6, v6)
 	}
 	log.
 		WithFields(m.logFields(v6)).
@@ -917,17 +917,6 @@ func (m *dhcpManager) reconcileDefaultRoute(v6 bool, info dhcp.Info) error {
 	return nil
 }
 
-// handleEvent dispatches one dhcpcd lifecycle event from the
-// persistent client: health counters, audit-ledger entries, and the
-// kernel-facing renew work. Extracted from the consumer goroutine so
-// the counter semantics are unit-testable — wire-level NAKs in
-// particular can't be provoked deterministically (dnsmasq silently
-// ignores refused renewals in several shapes instead of NAKing), so
-// the naks_received contract is pinned here rather than in an
-// integration test (#128).
-// bumpFamily increments the aggregate counter (always) and its IPv6
-// sibling (only for v6 events), so /Plugin.Health exposes a per-family
-// breakdown while the aggregate stays a true v4+v6 total (#212).
 // markBound records that the persistent client of one family holds
 // its binding. See boundV4 / boundV6 for what that proof is for.
 func (m *dhcpManager) markBound(v6 bool) {
@@ -949,13 +938,39 @@ func (m *dhcpManager) neverBound(v6 bool) bool {
 	return !m.boundV4.Load()
 }
 
-func bumpFamily(total, v6Counter *atomic.Int32, v6 bool) {
-	total.Add(1)
+// bumpFamily increments EXACTLY ONE of a counter pair: the v4 half or
+// the v6 half, never both and never a third aggregate (#212, #730).
+//
+// It used to bump an aggregate on every event and the _v6 sibling on v6
+// ones, which made the v6 counter a subset of the aggregate rather than
+// its peer, and left the v4 count to be recovered by subtracting them
+// at render time. Two independently-updated atomics combined by
+// subtraction can be read in an order that yields a value LOWER than
+// the previous read — and a counter that goes down is a reset to
+// Prometheus, which then attributes the whole accumulated value as an
+// increase. One dropped unit became a rate spike of the entire count.
+//
+// Storing both halves and adding them where a total is wanted has the
+// property subtraction does not: the sum of two monotonic counters is
+// monotonic under EVERY interleaving, because neither operand can
+// decrease. See healthSnapshot for the addition and #730 for the
+// arithmetic.
+func bumpFamily(v4Counter, v6Counter *atomic.Int32, v6 bool) {
 	if v6 {
 		v6Counter.Add(1)
+		return
 	}
+	v4Counter.Add(1)
 }
 
+// handleEvent dispatches one dhcpcd lifecycle event from the
+// persistent client: health counters, audit-ledger entries, and the
+// kernel-facing renew work. Extracted from the consumer goroutine so
+// the counter semantics are unit-testable — wire-level NAKs in
+// particular can't be provoked deterministically (dnsmasq silently
+// ignores refused renewals in several shapes instead of NAKing), so
+// the naks_received contract is pinned here rather than in an
+// integration test (#128).
 func (m *dhcpManager) handleEvent(event dhcp.Event, v6 bool) {
 	// The hook process already dropped these; all that is left here is
 	// to make the drop visible. Counted for every event type, including
@@ -988,7 +1003,7 @@ func (m *dhcpManager) handleEvent(event dhcp.Event, v6 bool) {
 		// on dhcpcd's own release. See boundV4 / boundV6.
 		m.markBound(v6)
 		if m.plugin != nil {
-			bumpFamily(&m.plugin.leasesObtained, &m.plugin.leasesObtainedV6, v6)
+			bumpFamily(&m.plugin.leasesObtainedV4, &m.plugin.leasesObtainedV6, v6)
 		}
 		m.audit("bound", bareIP(event.Data.IP))
 		if err := m.renew(v6, event.Data); err != nil {
@@ -1008,7 +1023,7 @@ func (m *dhcpManager) handleEvent(event dhcp.Event, v6 bool) {
 		// without a preceding bound.
 		m.markBound(v6)
 		if m.plugin != nil {
-			bumpFamily(&m.plugin.leasesRenewed, &m.plugin.leasesRenewedV6, v6)
+			bumpFamily(&m.plugin.leasesRenewedV4, &m.plugin.leasesRenewedV6, v6)
 		}
 		m.audit("renew", bareIP(event.Data.IP))
 		if err := m.renew(v6, event.Data); err != nil {
@@ -1021,12 +1036,12 @@ func (m *dhcpManager) handleEvent(event dhcp.Event, v6 bool) {
 		}
 	case "leasefail":
 		if m.plugin != nil {
-			bumpFamily(&m.plugin.dhcpTimeouts, &m.plugin.dhcpTimeoutsV6, v6)
+			bumpFamily(&m.plugin.dhcpTimeoutsV4, &m.plugin.dhcpTimeoutsV6, v6)
 		}
 		log.WithFields(m.logFields(v6)).Warn("dhcp failed to get a lease")
 	case "nak":
 		if m.plugin != nil {
-			bumpFamily(&m.plugin.naksReceived, &m.plugin.naksReceivedV6, v6)
+			bumpFamily(&m.plugin.naksReceivedV4, &m.plugin.naksReceivedV6, v6)
 		}
 		log.WithFields(m.logFields(v6)).Warn("dhcp client received NAK")
 	}
@@ -1145,7 +1160,7 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 			case <-ticker.C:
 				if count, silentLapse := tracker.due(time.Now(), outageGrace); count {
 					if m.plugin != nil {
-						bumpFamily(&m.plugin.dhcpTimeouts, &m.plugin.dhcpTimeoutsV6, v6)
+						bumpFamily(&m.plugin.dhcpTimeoutsV4, &m.plugin.dhcpTimeoutsV6, v6)
 					}
 					msg := "DHCP server still unreachable; lease not (re)acquired"
 					if silentLapse {
@@ -1715,7 +1730,7 @@ func (m *dhcpManager) settleFamily(v6 bool, last *netlink.Addr, exitErr error, l
 		// have seen. Both families are audited independently: a failed
 		// v4 release does not hide the v6 outcome from the ledger.
 		if m.plugin != nil {
-			bumpFamily(&m.plugin.leaseReleaseFailures, &m.plugin.leaseReleaseFailuresV6, v6)
+			bumpFamily(&m.plugin.leaseReleaseFailuresV4, &m.plugin.leaseReleaseFailuresV6, v6)
 		}
 		m.audit("release_failed", auditIP(last))
 	default:
