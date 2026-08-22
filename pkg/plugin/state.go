@@ -354,6 +354,15 @@ func quarantineTombstones() (string, error) {
 // handled as "there was nothing there".
 var errTombstonesQuarantined = errors.New("tombstones file was corrupt and has been quarantined")
 
+// errStateSchemaTooNew reports an options file written by a plugin newer
+// than this one. It is a REFUSAL, not an absence: the file is intact and
+// authoritative for a build that understands it, and this build must
+// leave it exactly as it found it. Callers distinguish it from
+// os.IsNotExist so that "I will not read this" can never be mistaken for
+// "there is nothing here" by anything that then writes -- the same split
+// errTombstonesQuarantined draws one file over.
+var errStateSchemaTooNew = errors.New("persisted options use a newer schema than this build understands")
+
 // loadTombstones reads the tombstone list from disk, returning an
 // empty slice when no file exists yet.
 //
@@ -467,14 +476,22 @@ func loadOptions(networkID string) (DHCPNetworkOptions, error) {
 	if err := json.Unmarshal(data, &vo); err != nil {
 		return opts, fmt.Errorf("persisted options for %v are corrupt: %w", networkID, err)
 	}
-	// A version we do not understand is refused, not guessed at. The
-	// caller's fallback is the docker API, which is authoritative for
-	// everything in this struct, so refusing costs nothing but a lookup
-	// -- whereas decoding a v2 file with v1 semantics could silently
-	// attach a network in the wrong mode or on the wrong parent.
+	// A version we do not understand is refused, not guessed at:
+	// decoding a v2 file with v1 semantics could silently attach a
+	// network in the wrong mode or on the wrong parent.
 	// V == 0 is a file written before the field existed; that is v1.
+	//
+	// REFUSING IS ONLY CHEAP IF NOBODY WRITES AFTERWARDS. The caller
+	// falls back to the docker API, which is authoritative for
+	// everything in this struct, so a refusal costs one lookup -- but
+	// netOptions used to follow that fallback with a backfill save,
+	// which would have replaced the v2 file it had just refused with a
+	// v1 one. A downgrade would then have DESTROYED the newer file
+	// rather than declining to read it, which is the exact failure a
+	// version field exists to prevent. netOptions now backfills only
+	// when the file was genuinely absent; see the comment there.
 	if vo.V > stateSchemaVersion {
-		return opts, fmt.Errorf("persisted options for %v are schema v%d, this build understands v%d", networkID, vo.V, stateSchemaVersion)
+		return opts, fmt.Errorf("%w: persisted options for %v are schema v%d, this build understands v%d", errStateSchemaTooNew, networkID, vo.V, stateSchemaVersion)
 	}
 	return vo.DHCPNetworkOptions, nil
 }

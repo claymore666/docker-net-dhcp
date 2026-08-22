@@ -192,6 +192,23 @@ out=$(bash "$CHECK" "$DIR/shape.md" "$DIR/shape.go" 2>&1); rc=$?
 [ $rc -eq 2 ] && ok "an expression shape it cannot parse exits 2, not clean" \
                || no "an unparseable Healthy expression returned $rc (: $out)"
 
+# TWO Healthy assignments must be "cannot see", not "read the first".
+# The gate used `head -1`, so a second literal added ABOVE the real one
+# — a degraded-mode response, a test helper that migrates in — would
+# have become the thing judged while the shipping expression went
+# unread. The decoy below carries the RIGHT number of terms, so a gate
+# that stops at the first match passes and never reaches the one under
+# it: the case has to be built so that only ordering can save it.
+mkdoc "$DIR/two.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/two.go" 4
+{
+    printf 'package plugin\n\nfunc degraded() {\n\t_ = HealthResponse{\n'
+    printf '\t\tHealthy:           a == 0 && b == 0 && c == 0 && d == 0,\n\t}\n}\n'
+    grep -v '^package plugin$' "$DIR/two.go"
+} > "$DIR/twohealth.go"
+out=$(bash "$CHECK" "$DIR/two.md" "$DIR/twohealth.go" 2>&1); rc=$?
+[ $rc -eq 2 ] && ok "two Healthy assignments exit 2 rather than judging the first" \
+               || no "a second Healthy assignment was read as the only one (rc=$rc: $out)"
+
 printf 'package plugin\n' > "$DIR/nohealth.go"
 out=$(bash "$CHECK" "$DIR/shape.md" "$DIR/nohealth.go" 2>&1); rc=$?
 [ $rc -eq 2 ] && ok "no Healthy assignment at all exits 2" || no "a missing Healthy returned $rc"

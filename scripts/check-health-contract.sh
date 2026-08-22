@@ -45,7 +45,8 @@
 #   1. every doc statement that lists the counters lists the same ones
 #   2. every doc statement that carries the count in words carries the
 #      count that list actually has
-#   3. the code's Healthy expression has that many terms
+#   3. the code's Healthy expression -- the only one in the file -- has
+#      that many terms
 #
 # (3) is deliberately weak: it counts terms rather than resolving the
 # locals in `failed == 0 && joinFails == 0 && ...` back to json names,
@@ -188,8 +189,23 @@ preamble=$(grep -E 'which [a-z]+ flip `healthy`' "$DOC" | head -1)
 check_word "preamble" "$(printf '%s' "$preamble" | sed -E 's/.*which //')" '[A-Za-z]+ flip `healthy`'
 
 # --- 4. the code -------------------------------------------------------
-expr=$(grep -hE '^[[:space:]]*Healthy:' "$SRC" | head -1)
-[ -n "$expr" ] || { echo "check-health-contract: no Healthy: field assignment in $SRC" >&2; exit 2; }
+# EXACTLY ONE, never `head -1`. The pattern is not guaranteed unique:
+# a second HealthResponse literal added above the real one -- a
+# degraded-mode response, a test helper that migrates in -- would
+# silently become the thing judged, and the expression that actually
+# ships would stop being read while this still printed PASS. Same rule
+# as everywhere else in here: a gate that cannot tell which line it is
+# looking at must exit 2, not pick one (#724).
+n_expr=$(grep -hcE '^[[:space:]]*Healthy:' "$SRC")
+if [ "$n_expr" != "1" ]; then
+    echo "check-health-contract: expected exactly one 'Healthy:' assignment in $SRC, found $n_expr" >&2
+    grep -hnE '^[[:space:]]*Healthy:' "$SRC" >&2
+    echo "  With more than one, this gate cannot know which expression ships." >&2
+    echo "  With none, there is nothing to judge. Teach it which is which" >&2
+    echo "  rather than letting it read the first and report clean." >&2
+    exit 2
+fi
+expr=$(grep -hE '^[[:space:]]*Healthy:' "$SRC")
 rest=$(printf '%s' "$expr" | sed -E 's/^[[:space:]]*Healthy:[[:space:]]*//; s/,[[:space:]]*$//')
 n_code=$(printf '%s' "$rest" | grep -oE '==[[:space:]]*0' | wc -l | tr -d ' ')
 shape=$(printf '%s' "$rest" \

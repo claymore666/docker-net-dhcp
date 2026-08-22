@@ -425,6 +425,28 @@ type HealthResponse struct {
 	// read-only, a quarantine leaves a file to read — and merging them
 	// would leave an operator unable to tell which one they are being
 	// paged for.
+	//
+	// WHY IT LATCHES `healthy`, WHICH IS NOT OBVIOUS. The argument
+	// against is real: the condition is self-healing by construction —
+	// the file is renamed away, the plugin continues correctly from an
+	// empty set, and the cost is bounded at one TTL window of address
+	// instability for containers that happen to restart in it. Against
+	// that, the remedy for a latched `healthy` is to restart the
+	// plugin, which tears down every managed endpoint's renewal client:
+	// strictly more damaging than the fault. On those terms alone it
+	// would not latch.
+	//
+	// It latches anyway, for two reasons. Consistency first:
+	// TombstoneWriteFailures is already healthy-affecting, and a
+	// quarantine is the same family — tombstones did not work. Splitting
+	// them would mean an I/O error latches and actual file corruption
+	// does not. And the one that decides it: a quarantine does not mean
+	// tombstones had a bad minute, it means SOMETHING WROTE GARBAGE
+	// into stateDir — a host bind mount that survives `docker plugin rm`
+	// and upgrade, and that now also holds the versioned options file.
+	// The self-healing is about the tombstones. The signal is about the
+	// disk, and that is worth an operator's attention even though this
+	// particular symptom cleared itself.
 	TombstoneQuarantines int32 `json:"tombstone_quarantines"`
 	// UnsafeHostnamesRejected counts container hostnames dropped before
 	// reaching the generated DHCP client config because they carried a
