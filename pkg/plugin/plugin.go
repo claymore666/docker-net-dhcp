@@ -581,6 +581,34 @@ type Plugin struct {
 	// though no single occurrence is a fault.
 	recoveryNetworkGone atomic.Int32
 
+	// recoveryFingerprintsSkipped counts endpoints that recovery
+	// adopted but could not describe: the ContainerInspect that would
+	// have given the hostname did not answer, or answered with no
+	// hostname at all (#721).
+	//
+	// It exists because the fix for #721 would otherwise have inherited
+	// the exact invisibility of the bug it closes. Recovery not
+	// recording a fingerprint means DeleteEndpoint lays no tombstone,
+	// which means that endpoint loses its address on its next
+	// `docker restart` — and the only outward sign was
+	// tombstonesConsumed staying flat, which is indistinguishable from
+	// a quiet host. An operator could not tell "recovery worked" from
+	// "recovery silently skipped half my endpoints".
+	//
+	// Deliberately NOT healthy-affecting. Losing address stability for
+	// one endpoint is a real regression for that container, but it is
+	// not a running container without a renewal client — the line
+	// recoveryFailed draws, and the one that decides what flips
+	// healthy.
+	//
+	// A hostname REFUSED by safeHostname is deliberately not counted
+	// here: it already moves unsafeHostnamesRejected, and keeping the
+	// two disjoint is what lets an operator tell "the daemon would not
+	// answer me" from "a container sent a hostname nobody should send".
+	// Summing them is then a choice the reader makes, rather than one
+	// this counter makes for them.
+	recoveryFingerprintsSkipped atomic.Int32
+
 	// joinStartFailures counts persistent-DHCP-client Start failures
 	// at Join time (#317). Each bump is a running container that got
 	// its initial lease but has NO renewal client: the lease silently
@@ -1455,6 +1483,61 @@ func (p *Plugin) containerGone(ctx context.Context, containerID string) bool {
 	return ctr.State == nil || !ctr.State.Running
 }
 
+// recoveredHostname returns the container hostname to record in a
+// recovered endpoint's fingerprint, and whether it may be recorded at
+// all.
+//
+// ok=false means "record no fingerprint for this endpoint", and it
+// deliberately covers two different things:
+//
+//   - the inspect did not answer, so the hostname is simply unknown;
+//   - safeHostname REFUSED the hostname because it carries a control
+//     character (#693).
+//
+// Both end in the same place because of what an empty Hostname means
+// downstream: tombstoneStore.consume reads a tombstone with no hostname
+// as "matches any container on this network". Recording an empty one
+// here would not write a weaker tombstone, it would write a wildcard
+// one, and the next container to attach to this network would inherit a
+// MAC and an address that were never its own. Recording nothing leaves
+// this endpoint exactly the behaviour it has today, which is the only
+// direction that cannot hurt a container that did nothing wrong.
+func (p *Plugin) recoveredHostname(ctx context.Context, containerID string) (string, bool) {
+	if containerID == "" {
+		p.recoveryFingerprintsSkipped.Add(1)
+		return "", false
+	}
+	// The SAME budget the CreateEndpoint path gives the same lookup, and
+	// deliberately not a tighter one. The first draft of this used
+	// 500ms, on the reasoning that the daemon had already answered
+	// NetworkList and NetworkInspect so a slow ContainerInspect meant it
+	// was degrading. #406 is the measured counterexample: dockerd
+	// answered other calls normally while blocking on ContainerInspect
+	// for a container it was inside ContainerStart for, and did not
+	// answer until it was done. Those two earlier calls say nothing
+	// about whether THIS container's inspect is blocked — and a
+	// container mid-ContainerStart is the expected state of most of what
+	// recovery walks, since recovery runs while the daemon is restarting
+	// every container on the host. A tighter budget would therefore
+	// expire in precisely the scenario #721 exists to fix, and no
+	// fixture would ever show it: they all answer instantly.
+	ctx, cancel := context.WithTimeout(ctx, initialDHCPHostnameLookupTimeout)
+	defer cancel()
+
+	ctr, err := p.docker.ContainerInspect(ctx, containerID)
+	if err != nil || ctr.Config == nil || ctr.Config.Hostname == "" {
+		// Counted, not logged: this is the arm that makes an endpoint
+		// quietly lose its address on its next restart, and a log line
+		// is not something an operator can alert on.
+		p.recoveryFingerprintsSkipped.Add(1)
+		return "", false
+	}
+	// A refusal is counted by safeHostname itself
+	// (unsafeHostnamesRejected); see the field comment for why it is not
+	// also counted here.
+	return p.safeHostname(ctr.Config.Hostname)
+}
+
 // recoverOneEndpoint synthesises a JoinRequest and dhcpManager for a
 // single existing endpoint, then spawns Start in a goroutine. Idempotent:
 // if a manager already exists for the endpoint (e.g. because libnetwork
@@ -1513,6 +1596,37 @@ func (p *Plugin) recoverOneEndpoint(ctx context.Context, containerID, networkID,
 	if !p.registerDHCPManagerIfAbsent(endpointID, m) {
 		p.recoveryAlreadyManaged.Add(1)
 		return false, nil
+	}
+
+	// Recovery is the only path that takes ownership of a live endpoint
+	// without a CreateEndpoint, and it used to leave the fingerprint map
+	// untouched (#721). DeleteEndpoint lays a tombstone only for an
+	// endpoint it holds a fingerprint for, so every endpoint that had
+	// lived through a plugin restart lost address stability on its next
+	// `docker restart` — silently, with tombstones_consumed simply
+	// staying flat. Recorded after the compare-and-set above rather than
+	// before it: an endpoint a concurrent Join won is that Join's to
+	// describe, and overwriting its fingerprint with ours would hand its
+	// tombstone our idea of the hostname.
+	//
+	// Ifname is deliberately left empty. Docker's record does not carry
+	// the custom interface name (#125), so a recovered endpoint falls
+	// back to the default on its next Join. Losing the name is visible
+	// and the operator can restore it; inventing one is neither.
+	if hostname, ok := p.recoveredHostname(ctx, containerID); ok {
+		fpIPv4, fpIPv6 := "", ""
+		if ipv4 != nil {
+			fpIPv4 = ipv4.IP.String()
+		}
+		if ipv6 != nil {
+			fpIPv6 = ipv6.IP.String()
+		}
+		p.rememberEndpoint(endpointID, endpointFingerprint{
+			MAC:      mac.String(),
+			IPv4:     fpIPv4,
+			IPv6:     fpIPv6,
+			Hostname: hostname,
+		})
 	}
 
 	go func() {

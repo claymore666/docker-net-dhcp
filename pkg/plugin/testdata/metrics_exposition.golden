@@ -12,11 +12,11 @@ net_dhcp_uptime_seconds 1234.5
 
 # HELP net_dhcp_active_endpoints Endpoints with a live DHCP renewal client.
 # TYPE net_dhcp_active_endpoints gauge
-net_dhcp_active_endpoints 500
+net_dhcp_active_endpoints 510
 
 # HELP net_dhcp_pending_hints CreateEndpoint hints waiting for their Join.
 # TYPE net_dhcp_pending_hints gauge
-net_dhcp_pending_hints 490
+net_dhcp_pending_hints 500
 
 # HELP net_dhcp_sandbox_netns_visible Sandbox netns entries the plugin can see; -1 means the directory is unreadable and sandbox-liveness answers carry no evidence.
 # TYPE net_dhcp_sandbox_netns_visible gauge
@@ -78,23 +78,27 @@ net_dhcp_dhcp_server_policy_exhausted_total 160
 
 # HELP net_dhcp_recovered_ok_total Endpoints whose renewal client was rebuilt after a plugin restart.
 # TYPE net_dhcp_recovered_ok_total counter
-net_dhcp_recovered_ok_total 480
+net_dhcp_recovered_ok_total 490
 
 # HELP net_dhcp_recovery_failed_total Post-restart rebuilds that failed for a container that is still running; it runs without lease renewal and loses its IP at expiry. Healthy-affecting.
 # TYPE net_dhcp_recovery_failed_total counter
-net_dhcp_recovery_failed_total 470
+net_dhcp_recovery_failed_total 480
 
 # HELP net_dhcp_recovery_deferred_total Recovery walks postponed because the daemon was still starting (#383). Not a fault.
 # TYPE net_dhcp_recovery_deferred_total counter
-net_dhcp_recovery_deferred_total 460
+net_dhcp_recovery_deferred_total 470
 
 # HELP net_dhcp_recovery_aborted_container_gone_total Endpoints skipped during recovery because their container had already exited. Not a fault.
 # TYPE net_dhcp_recovery_aborted_container_gone_total counter
-net_dhcp_recovery_aborted_container_gone_total 450
+net_dhcp_recovery_aborted_container_gone_total 460
 
 # HELP net_dhcp_recovery_network_gone_total Networks skipped during recovery because they were removed mid-walk. Not a fault.
 # TYPE net_dhcp_recovery_network_gone_total counter
-net_dhcp_recovery_network_gone_total 440
+net_dhcp_recovery_network_gone_total 450
+
+# HELP net_dhcp_recovery_fingerprints_skipped_total Endpoints recovery adopted but could not describe, because the container inspect gave no hostname. Not healthy-affecting: they keep their renewal client and lose only address stability across their next restart.
+# TYPE net_dhcp_recovery_fingerprints_skipped_total counter
+net_dhcp_recovery_fingerprints_skipped_total 440
 
 # HELP net_dhcp_recovery_already_managed_total Endpoints a recovery walk left alone because a Join had already claimed them. Not a fault; the only outward evidence of recovery racing a Join.
 # TYPE net_dhcp_recovery_already_managed_total counter

@@ -107,6 +107,7 @@ func metricDefs() []metricDef {
 		{name: "recovery_deferred", counter: true, help: "Recovery walks postponed because the daemon was still starting (#383). Not a fault.", field: "recovery_deferred"},
 		{name: "recovery_aborted_container_gone", counter: true, help: "Endpoints skipped during recovery because their container had already exited. Not a fault.", field: "recovery_aborted_container_gone"},
 		{name: "recovery_network_gone", counter: true, help: "Networks skipped during recovery because they were removed mid-walk. Not a fault.", field: "recovery_network_gone"},
+		{name: "recovery_fingerprints_skipped", counter: true, help: "Endpoints recovery adopted but could not describe, because the container inspect gave no hostname. Not healthy-affecting: they keep their renewal client and lose only address stability across their next restart.", field: "recovery_fingerprints_skipped"},
 		{name: "recovery_already_managed", counter: true, help: "Endpoints a recovery walk left alone because a Join had already claimed them. Not a fault; the only outward evidence of recovery racing a Join.", field: "recovery_already_managed"},
 
 		// Join / attach.

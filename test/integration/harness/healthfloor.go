@@ -54,6 +54,14 @@ type HealthResponse struct {
 	// continuously hits this. Until #648 it landed in RecoveryFailed and
 	// failed a run in which every test passed.
 	RecoveryNetworkGone int32 `json:"recovery_network_gone"`
+	// RecoveryFingerprintsSkipped is the endpoint-level sibling: recovery
+	// adopted the endpoint but could not learn its hostname, so it
+	// recorded no fingerprint and DeleteEndpoint will lay no tombstone
+	// for it (#721). Not fatal — the endpoint has a renewal client, it
+	// has lost only address stability across its next restart — but a
+	// suite where this climbs is one whose restart-stability assertions
+	// are being decided by something other than the code under test.
+	RecoveryFingerprintsSkipped int32 `json:"recovery_fingerprints_skipped"`
 	// RecoveryAlreadyManaged is the per-endpoint case on the other side:
 	// a Join reached the endpoint first, so recovery yielded and left
 	// that client in place (#480). Expected whenever a deferred recovery
