@@ -741,6 +741,61 @@ and said nothing.
 Same evening, same author, one turn after writing I23's rule about
 sampling the bucket an instrument calls empty.
 
+## I26 — every prose failure this cycle was a VERB error, not a number error
+
+Counted after the fact, across one evening's release-notes work:
+
+| claim | the wrong word | what the command said |
+|---|---|---|
+| "survives all three" | *survives* | it survived one |
+| "produced zero tiers" | *produced* | it produced tiers and dropped them |
+| bare `git rev-parse v1.7.1` "reads nothing at all" | *reads nothing* | `git show v1.7.1:<path>` returns 41 tags — `git show <rev>:<path>` dereferences an annotated tag by itself |
+
+**Not one of the three was a miscount.** Every number in them was right.
+The predicate was wrong: what the subject *does*, not how many of it
+there are. And every count rule in the table above is about quantities.
+
+**Provenance, because it matters here of all places:** the third row was
+measured by the author of this entry, who wrote the false claim. The
+first two are master-release's, cited as reported and not independently
+re-run — so the pattern across three is *theirs plus mine*, and if
+either of the first two turns out to be a count error rather than a verb
+error, the rule below still stands on the third and on I25, which are
+the two that were driven.
+
+The last one is the sharpest, because of where it was written. It went
+into an HTML comment **about** a claim that had failed the obvious
+check, **one paragraph after** adding the parenthetical that fixes it,
+by the person who had just been told about the trap — with the recipe it
+misdescribed printed three lines above the sentence.
+
+**The same defect ran one layer down, in the tooling, the same hour.**
+I25's pre-flight harness printed 63 twice, the correct number for the
+wrong tree. Its number was impeccable. Its *predicate* — "I substituted
+the dependency" — was false both times, and nothing checked it. **The
+instrument's claim about what it FOUND got all the scrutiny; its claim
+about what it DID got none.**
+
+> **When a sentence names what a command does, run the command. Not to
+> check the number — to check the verb.**
+
+**Why this one is cheap where the count rules are not:** a number needs a
+fresh derivation to check, and derivations go stale. A verb needs one
+paste. The output *is* the check, and it stays true about the moment it
+was taken.
+
+**And the convention it enforces needs its second half stated.** oversight's
+form is *put the command next to the claim, not the conclusion alone.*
+That is necessary and not sufficient: all three failures above were
+written next to perfectly good commands. **A command beside a claim is
+evidence that someone knew which command to name.** Only its output is
+evidence that anyone ran it — which is I22's "a derived check nobody
+runs is a transcribed check with better provenance", arriving from the
+prose side.
+
+*(rule from client3, adopted by master-release; the scope/relay/recall
+split it enforces is oversight's.)*
+
 ---
 
 # Rules
@@ -772,6 +827,7 @@ Each names its incident and the condition under which it dies.
 | R21 | **Sample the bucket your instrument calls empty.** A control set proves it can see a positive; only sampling the negatives proves it is not lying about the absence. | I23 | Never — it costs one file read, and absence is the answer this class always gives. |
 | R22 | A harness that substitutes a dependency **asserts the substitution fired**, and substitutes at a level the subject cannot shadow. | I25 | Never — one assertion, and it caught nothing twice because it was absent. |
 | R23 | Ask a diff what changed; ask the **set** what exists. A `+` line is evidence of a rewrite, not of an addition. | I24, I16 | A formatter stops realigning unrelated lines, which is not a thing formatters do. |
+| R24 | **When a sentence names what a command does, run the command — to check the VERB, not the number.** Paste the output beside the claim: a command alone shows someone knew which one to name. | I26, I25 | Never — one paste, and all three of the cycle's prose failures were predicates rather than counts. |
 
 ## Owed — R14, R16 and R17, and why they are hard
 
