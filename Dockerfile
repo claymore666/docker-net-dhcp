@@ -54,11 +54,16 @@ FROM alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6ee
 # the binary would turn every lease into a "not found" at runtime,
 # discovered by a container, not by a build. TestDhcpcdBinMatchesDockerfile
 # keeps this line and that constant naming the same path.
+#
+# mount and mkdir are asserted for the same reason and were missed by
+# the same audit: pkg/dhcp names them absolutely too (mountBin,
+# mkdirBin), so a busybox relocation would break the per-client mount
+# namespace — silently, because all four calls carry 2>/dev/null.
 RUN mkdir -p /run/docker/plugins /var/lib/net-dhcp && \
     apk add --no-cache \
         dhcpcd=10.3.2-r0 \
         iproute2=7.0.0-r0 && \
-    test -x /sbin/dhcpcd
+    test -x /sbin/dhcpcd /bin/mount /bin/mkdir
 
 COPY --from=builder /usr/local/src/docker-net-dhcp/bin/net-dhcp /usr/sbin/
 COPY --from=builder /usr/local/src/docker-net-dhcp/bin/dhcp-handler /usr/lib/net-dhcp/dhcp-handler

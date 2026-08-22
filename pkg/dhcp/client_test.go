@@ -254,14 +254,14 @@ func TestMountPrep_RemountsProcSysRW(t *testing.T) {
 	// mount namespace before exec (#247). It must still mount the
 	// per-client tmpfs state dir and exec dhcpcd via $0/$@.
 	for _, want := range []string{
-		"mount -t tmpfs tmpfs " + dhcpcdStateDir,
+		mountBin + " -t tmpfs tmpfs " + dhcpcdStateDir,
 		// dhcpcd's runtime dir (pidfile + control sockets, keyed by
 		// interface name only) must be private per client, or the
 		// second same-named-interface client forwards its argv into
 		// the first container's dhcpcd and exits without doing DHCP.
-		"mkdir -p " + dhcpcdRunDir,
-		"mount -t tmpfs tmpfs " + dhcpcdRunDir,
-		"mount -o remount,bind,rw " + procSysPath,
+		mkdirBin + " -p " + dhcpcdRunDir,
+		mountBin + " -t tmpfs tmpfs " + dhcpcdRunDir,
+		mountBin + " -o remount,bind,rw " + procSysPath,
 		`exec "$0" "$@"`,
 	} {
 		if !strings.Contains(script, want) {
@@ -558,5 +558,38 @@ func TestFinish_WithoutStartIsSafe(t *testing.T) {
 	defer cancel()
 	if err := c.Finish(ctx); err != nil {
 		t.Fatalf("Finish without Start: %v", err)
+	}
+}
+
+// TestMountPrep_NamesEveryBinaryAbsolutely pins the property #707 was
+// actually about, rather than the one instance of it that got fixed.
+//
+// The whole mountPrep string is handed to `sh -c`. A shell resolves
+// EVERY command word through PATH, not only the one that reaches
+// execve — so `$0` was never special, it was just the word the audit
+// happened to be looking at. dhcpcdBin was absolutized on exactly that
+// reasoning; the four commands in the same string are the same
+// exposure by the same mechanism.
+//
+// Asserting the shape rather than the four spellings is deliberate.
+// The literal pins in TestMountPrep_RemountsProcSysRW say the string
+// has not drifted; they cannot say it is right, and before this change
+// they pinned the bare forms — which is how a test written to stop
+// drift ends up holding the wrong value still. This one goes red for a
+// command word this file has never seen.
+//
+// `exec` is skipped because it is a shell builtin: there is no PATH
+// lookup to pin, and its argument is $0, which is dhcpcdBin.
+func TestMountPrep_NamesEveryBinaryAbsolutely(t *testing.T) {
+	for _, stmt := range strings.Split(mountPrep(), ";") {
+		fields := strings.Fields(stmt)
+		if len(fields) == 0 || fields[0] == "exec" {
+			continue
+		}
+		if !strings.HasPrefix(fields[0], "/") {
+			t.Errorf("mountPrep runs %q, resolved through PATH by the shell; "+
+				"name it absolutely as dhcpcdBin and unsharePath are\n---\n%s",
+				fields[0], mountPrep())
+		}
 	}
 }
