@@ -5,7 +5,9 @@ package dhcp
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -257,7 +259,19 @@ func isOrphanedClient(pid int) bool {
 	// question this answers is whether to SIGKILL, as root, against the
 	// host PID namespace — so unknown is "no", the same rule the rest of
 	// this function already follows.
-	return !procEntryExists(ppid)
+	//
+	// THE KILLING VALUE IS `known && gone`, AND IT IS SPELLED OUT HERE
+	// RATHER THAN LEFT TO THE HELPER because that is the mistake this
+	// very line made an hour ago: it read `!procEntryExists(ppid)`, and
+	// the negation quietly turned "I could not find out" into "it is
+	// gone". A caller has to name the direction to compile now, and
+	// naming it in a comment as well means the next reader does not have
+	// to re-derive which of the two booleans is the dangerous one.
+	//
+	// Only a determinate absence kills. Unknown falls on the sparing
+	// side, the same way every other read in this function does.
+	gone, known := procEntryGone(ppid)
+	return known && gone
 }
 
 // commComparand is the value /proc/<pid>/comm is matched against.
@@ -309,16 +323,37 @@ func commOf(pid int) (string, bool) {
 	return string(bytes.TrimSpace(comm)), true
 }
 
-// procEntryExists reports whether /proc/<pid> is still there.
+// procEntryGone reports whether /proc/<pid> is absent, and separately
+// whether that could be determined at all.
 //
-// It answers a different question from "could I read this file inside
-// it", and conflating the two is what made an unreadable parent look
-// like a dead one. A vanished entry means the process is gone; a
-// present entry with an unreadable file inside it means we cannot tell.
-// Only the first authorises a kill.
-func procEntryExists(pid int) bool {
+// THE SECOND RESULT EXISTS BECAUSE THE FIRST VERSION OF THIS FUNCTION
+// REPRODUCED, NINETEEN LINES BELOW THE COMMENT NAMING IT, THE DEFECT
+// THIS FILE WAS BEING FIXED FOR. It read:
+//
+//	_, err := os.Stat(...)
+//	return err == nil
+//
+// and its caller inverted that into "the parent is gone". But err != nil
+// is not "the entry vanished". It is "the entry vanished OR I could not
+// find out", and the caller gave the second reading the direction KILL,
+// as root, against the host PID namespace. Splitting commOf into
+// (string, bool) guarded the read I was looking at; this is a new read
+// underneath it with the same shape, which is the whole lesson: the
+// guard was against forgetting, and I forgot in the next function down.
+//
+// Absence has exactly one errno. ENOENT is the parent exiting. ENOTDIR,
+// ELOOP, EACCES, ENOMEM, a procRoot that is not a procfs mount — every
+// one of those is "I cannot tell", and only ENOENT may authorise a kill.
+func procEntryGone(pid int) (gone bool, known bool) {
 	_, err := os.Stat(filepath.Join(procRoot, strconv.Itoa(pid)))
-	return err == nil
+	switch {
+	case err == nil:
+		return false, true
+	case errors.Is(err, fs.ErrNotExist):
+		return true, true
+	default:
+		return false, false
+	}
 }
 
 // parentPID reads a process's parent pid, reporting whether it could.

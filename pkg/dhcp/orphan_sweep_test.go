@@ -4,6 +4,8 @@
 package dhcp
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -604,6 +606,52 @@ func TestSweepOrphans_ParentCommUnreadableIsNotAMatch(t *testing.T) {
 				"against the host PID namespace", n, *pids)
 		}
 	})
+
+	t.Run("parent present but unstattable is not a match", func(t *testing.T) {
+		dir := setup(t)
+		// The fourth verdict this pair can produce, and the one the
+		// first fix got wrong: /proc/<ppid> is neither readable NOR
+		// determinately absent. `os.Stat` failed, the helper folded
+		// every failure into "gone", and the caller negated that into a
+		// kill.
+		//
+		// A self-referential symlink gives ELOOP for every caller
+		// including root, which is what this fixture needs for the same
+		// reason removal beat `chmod 000`: CI runs as root in a
+		// container, so any construction that leans on permissions is
+		// green here and covers nothing there.
+		//
+		// ELOOP IS A PROBE, NOT A SCENARIO — /proc has no symlink loops.
+		// It stands in for the errnos that do occur and that this
+		// fixture cannot reach: an LSM denial (host AppArmor reaches
+		// this plugin even privileged), and ENOMEM under pressure. The
+		// errno is synthetic; the branch it drives is the real one.
+		if err := os.RemoveAll(dir); err != nil {
+			t.Fatalf("RemoveAll: %v", err)
+		}
+		if err := os.Symlink(strconv.Itoa(parent), dir); err != nil {
+			t.Fatalf("symlink loop: %v", err)
+		}
+		// The fixture must be proven to express what it claims. A
+		// construction that quietly produced ENOENT would make this
+		// subtest a duplicate of "parent gone is an orphan" with the
+		// opposite expectation, and it would fail for a reason that has
+		// nothing to do with the branch under test.
+		if _, err := os.Stat(dir); err == nil || errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("fixture produced stat error %v, want a non-ENOENT "+
+				"failure — the loop did not take", err)
+		}
+		pids, _ := recordKills(t, nil)
+		n, err := SweepOrphans()
+		if err != nil {
+			t.Fatalf("SweepOrphans: %v", err)
+		}
+		if n != 0 || len(*pids) != 0 {
+			t.Errorf("killed %d %v, want none — the parent entry could not "+
+				"be stat'd, and \"I could not find out\" is not \"it exited\"",
+				n, *pids)
+		}
+	})
 }
 
 // TestSweepOrphans_NoUnreadableProcFileAuthorisesAKill is keyed on the
@@ -627,6 +675,24 @@ func TestSweepOrphans_ParentCommUnreadableIsNotAMatch(t *testing.T) {
 // REMOVAL RATHER THAN chmod 000. CI runs these as root inside a
 // container, where a 000 file is still readable, so a permissions-based
 // fixture would pass locally and cover nothing where it matters.
+//
+// AND HERE IS WHAT THIS WALK CANNOT REACH, WHICH IT GOT WRONG ONCE AND
+// SHOULD NOT BE READ AS COVERING.
+//
+// The subject is derived — every file in the fixture — but the MUTATION
+// is not: os.Remove produces exactly one errno. Every "unreadable" this
+// walk can construct is ENOENT, while the property above ranges over
+// every way a read can fail. It also yields six FILES (d.IsDir() returns
+// early), and the read that let a kill through was a stat on a
+// DIRECTORY, so no sequence of removals here could have reached it.
+//
+// A property-keyed test is bounded by what its fixture can express, and
+// nothing in a green run compares the property statement to the
+// achievable mutation set. Enumerating every subject does not make a
+// check property-keyed if the verb applied to them has one failure mode.
+//
+// The non-ENOENT branch is driven in the control pair above, with a
+// symlink loop.
 //
 // The parent entry itself is never removed: a vanished parent IS a kill,
 // correctly, and TestSweepOrphans_ParentCommUnreadableIsNotAMatch pins
