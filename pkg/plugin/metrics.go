@@ -125,6 +125,7 @@ func metricDefs() []metricDef {
 		{name: "address_conflicts", counter: true, help: "Leased addresses found already in use by another host. Healthy-affecting.", field: "address_conflicts"},
 		{name: "conflict_probe_failures", counter: true, help: "Conflict probes that could not reach a verdict.", field: "conflict_probe_failures"},
 		{name: "conflict_probe_stale_routes", counter: true, help: "Leftover probe routes reclaimed from a probe cut short before it cleaned up.", field: "conflict_probe_stale_routes"},
+		{name: "conflict_probe_stale_addrs", counter: true, help: "Leftover borrowed probe SOURCE addresses reclaimed from the parent NIC. The sibling conflict_probe_stale_routes covers the leftover route, which is recognisable because its destination is the probed address; the source address has random octets by design (#575) so nothing ever collided with it and it accumulated on the operator's NIC, one per stop-inside-the-probe-window. Not healthy-affecting: the probe went on to run (#723).", field: "conflict_probe_stale_addrs"},
 
 		// Orphaned leases (#370).
 		{name: "orphaned_leases_released", counter: true, help: "Addresses reclaimed for a container that exited before its renewal client could attach. One per address.", field: "orphaned_leases_released"},

@@ -16,6 +16,7 @@ var (
 	nlLinkDel           = netlink.LinkDel
 	nlLinkSetUp         = netlink.LinkSetUp
 	nlAddrAdd           = netlink.AddrAdd
+	nlAddrDel           = netlink.AddrDel
 	nlAddrList          = netlink.AddrList
 	nlRouteListFiltered = netlink.RouteListFiltered
 	nlLinkList          = netlink.LinkList
