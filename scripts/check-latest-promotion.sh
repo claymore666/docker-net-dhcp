@@ -66,7 +66,15 @@ ROOT="$(cd "$HERE/.." && pwd)"
 FILE="${1:-$ROOT/.github/workflows/release.yml}"
 
 # The jobs that must stand between a build and its floating tag.
-REQUIRED_GATES=(verify-install verify-install-arm64)
+#
+# All four install proofs, not two. The Hub pair was split out of the
+# GHCR pair in #776 so that each registry's install lands on a daemon
+# that has never created a network sandbox (#588) -- and a proof that is
+# not named here is a proof somebody can quietly drop from `needs:` with
+# nothing going red, which is the exact failure mode rule (1) exists for.
+# `:latest` resolves for Docker Hub users too.
+REQUIRED_GATES=(verify-install verify-install-arm64
+                verify-install-hub verify-install-hub-arm64)
 
 if [ ! -f "$FILE" ]; then
     echo "::error title=Release workflow missing::$FILE is not a file." \
@@ -295,7 +303,8 @@ if [ "${#findings[@]}" -ne 0 ]; then
     echo "The shape this expects:" >&2
     echo >&2
     echo "  promote-latest:" >&2
-    echo "    needs: [release, release-arm64, verify-install, verify-install-arm64]" >&2
+    echo "    needs: [release, release-arm64, verify-install, verify-install-arm64," >&2
+    echo "            verify-install-hub, verify-install-hub-arm64]" >&2
     echo "    steps:" >&2
     echo "      - run: bash scripts/assert-newest-release-tag.sh \"\${TAG}\"" >&2
     echo "      - run: crane tag \"\${GHCR_NAME}:\${TAG}\" \"\${LATEST}\"" >&2
