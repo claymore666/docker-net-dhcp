@@ -37,16 +37,25 @@
 # This gate therefore states no total of its own. It counts the
 # statements it actually read and prints that in the PASS line — a
 # hardcoded "all four" in here is the same rot one file over, and this
-# header carried one until #724 added a fifth counter and a third
-# count-word check.
+# header carried one until #724 added a fifth counter and two more
+# count-word checks.
 #
 # WHAT IT CHECKS
 #
-#   1. every doc statement that lists the counters lists the same ones
-#   2. every doc statement that carries the count in words carries the
-#      count that list actually has
+#   1. each doc statement it knows about lists the same counters
+#   2. each doc statement it knows about that carries the count in
+#      words carries the count that list actually has
 #   3. the code's Healthy expression -- the only one in the file -- has
 #      that many terms
+#
+# WHAT IT CANNOT CHECK, stated because the PASS line looks total and is
+# not: it reads statements it was TAUGHT, by pattern, in ONE file. A
+# sixth statement added anywhere -- a new row, a new page, README,
+# SECURITY.md, a release note -- is invisible to it and will read as
+# covered, because the tally above will still print and still be
+# right about what it read. The tally is a receipt, not a proof of
+# completeness. Adding a statement about which counters flip `healthy`
+# means adding it here too.
 #
 # (3) is deliberately weak: it counts terms rather than resolving the
 # locals in `failed == 0 && joinFails == 0 && ...` back to json names,
@@ -145,7 +154,7 @@ n_doc=$(printf '%s\n' "$column_set" | grep -c .)
 # The summary opens with the count in words, which is exactly the part
 # that survives an edit that adds a counter to the list below it.
 #
-# THREE STATEMENTS CARRY THE NUMBER, NOT ONE. The check started on the
+# FIVE STATEMENTS CARRY THE NUMBER, NOT ONE. The check started on the
 # At-a-glance line only, and that left the same bug it was written to
 # stop: the Troubleshooting row opens "Exactly four counters flip it"
 # and the preamble says "which four flip `healthy`", and NEITHER was
@@ -153,6 +162,23 @@ n_doc=$(printf '%s\n' "$column_set" | grep -c .)
 # shipped two rows saying "four" over a list of five — including the row
 # an operator reaches after they have already seen `healthy: false`,
 # which is the exact reader #638 was about (#724).
+#
+# Counting the statements is itself the trap this gate is about, so it
+# was done by reading the file rather than from memory: `healthy` row
+# ("Those five, and only those") and the Troubleshooting row's second
+# sentence ("Read the five in the field table above") each carry the
+# number a second time, in the same two rows whose NAME LISTS were
+# already guarded. Guarding a row's list and not its count is the same
+# sampling error as guarding three copies of a claim that exists in
+# four — the row still ships a sentence that contradicts the list
+# directly above it.
+#
+# THE COST, stated so nobody has to rediscover it: five pinned prose
+# patterns are five ways for an honest rewording to exit 2. That is the
+# intended trade. A reword of a sentence stating how many counters flip
+# the one boolean operators alert on is exactly the edit that should
+# stop and be looked at, and the remedy is one line in the list below,
+# not a waiver.
 word_to_n() {
     case "$1" in
         one) echo 1 ;; two) echo 2 ;; three) echo 3 ;; four) echo 4 ;;
@@ -187,6 +213,21 @@ check_word "Troubleshooting \`healthy: false\` row" \
 preamble=$(grep -E 'which [a-z]+ flip `healthy`' "$DOC" | head -1)
 [ -n "$preamble" ] || { echo "check-health-contract: no 'which N flip \`healthy\`' preamble in $DOC" >&2; exit 2; }
 check_word "preamble" "$(printf '%s' "$preamble" | sed -E 's/.*which //')" '[A-Za-z]+ flip `healthy`'
+
+# The `healthy` row's own count: "Those four, and only those, are the
+# ones marked yes in this column." Its NAME LIST is checked above; the
+# sentence restating how long that list is was not, so the row could
+# name five counters and then tell the reader there are four, one
+# sentence later, in the row #638 exists because of.
+check_word "\`healthy\` row" "$(printf '%s' "$healthy_row" | sed -E 's/.*[Tt]hose //')" '[A-Za-z]+, and only those'
+
+# And the Troubleshooting row's second count: "Read the four in the
+# field table above". The remedy sentence, not the cause sentence — an
+# operator who reads "read the four" over a list of five stops looking
+# after the fourth, which is a wrong remedy rather than a cosmetic
+# disagreement.
+check_word "Troubleshooting remedy sentence" \
+    "$(printf '%s' "$trouble" | sed -E 's/.*Read the //')" '[A-Za-z]+ in the field table'
 
 # --- 4. the code -------------------------------------------------------
 # EXACTLY ONE, never `head -1`. The pattern is not guaranteed unique:

@@ -23,7 +23,8 @@ DIR=$(mktemp -d)
 trap 'rm -rf "$DIR"' EXIT
 
 # mkdoc <file> <count-word> <summary-list> <row-list> <yes-list> \
-#       [<trouble-list>] [<trouble-word>] [<preamble-word>]
+#       [<trouble-list>] [<trouble-word>] [<preamble-word>] \
+#       [<row-word>] [<remedy-word>]
 #   lists are space-separated counter names; <yes-list> gets `yes` in
 #   the healthy-affecting column, and two `no` counters are always
 #   present so the column is judged and not merely echoed.
@@ -31,14 +32,20 @@ trap 'rm -rf "$DIR"' EXIT
 #   operator lands on after seeing `healthy: false`; it defaults to the
 #   column so a case that is not about that row stays about its own
 #   subject.
-#   THREE statements carry the count in words, not one, and each takes
+#   FIVE statements carry the count in words, not one, and each takes
 #   its own word so a case can move exactly one of them: <count-word>
 #   is the At-a-glance summary's, <trouble-word> the Troubleshooting
-#   row's, <preamble-word> the preamble's, and the last two default to
-#   the first so a case that is not about them stays about its subject.
+#   row's cause cell, <preamble-word> the preamble's, <row-word> the
+#   `healthy` row's own restatement, <remedy-word> the Troubleshooting
+#   row's remedy sentence. All but the first default to the first, so a
+#   case that is not about them stays about its own subject.
+#
+#   The last two exist because their rows' NAME LISTS were guarded
+#   while the sentence restating the length of those lists, in the same
+#   two rows, was not.
 mkdoc() {
     local f="$1" word="$2" summary="$3" row="$4" yes="$5" trouble="${6-$5}" n
-    local tword="${7-$2}" pword="${8-$2}"
+    local tword="${7-$2}" pword="${8-$2}" rword="${9-$2}" mword="${10-$2}"
     {
         printf '# Reference\n\nThe claims made *about* those counters — which %s flip `healthy` —\nare gated.\n\n' "$(printf '%s' "$pword" | tr '[:upper:]' '[:lower:]')"
         printf '## At a glance\n\n'
@@ -47,14 +54,14 @@ mkdoc() {
         printf '\n\n## Counters\n\n| field | healthy-affecting | meaning |\n| --- | --- | --- |\n'
         printf '| `healthy` | — | `false` when'
         for n in $row; do printf ' `%s`,' "$n"; done
-        printf ' is non-zero. |\n'
+        printf ' is non-zero. Those %s, and only those, are the ones marked **yes** in this column. |\n' "$(printf '%s' "$rword" | tr '[:upper:]' '[:lower:]')"
         for n in $yes; do printf '| `%s` | yes | a fault. |\n' "$n"; done
         printf '| `leases_renewed` | no | not a fault. |\n'
         printf '| `pending_hints` | no | not a fault. |\n'
         printf '\n## Troubleshooting\n\n| symptom | likely cause | fix |\n| --- | --- | --- |\n'
         printf '| `healthy: false` on `/Plugin.Health` | Exactly %s counters flip it:' "$(printf '%s' "$tword" | tr '[:upper:]' '[:lower:]')"
         for n in $trouble; do printf ' `%s`,' "$n"; done
-        printf ' | read the counter that is non-zero and follow its row. |\n'
+        printf ' | Read the %s in the field table above to see which one moved. |\n' "$(printf '%s' "$mword" | tr '[:upper:]' '[:lower:]')"
         printf '| `docker plugin disable` refuses | networks still reference it | remove them first. |\n'
     } > "$f"
 }
@@ -117,6 +124,37 @@ out=$(bash "$CHECK" "$DIR/pword.md" "$DIR/pword.go" 2>&1); rc=$?
                || no "the preamble's count word is not judged (rc=$rc: $out)"
 case "$out" in *preamble*three*) ok "the failure names the preamble and the word it found" ;;
   *) no "the failure does not identify the preamble word: $out" ;; esac
+
+# The two rows whose LISTS were already guarded each restate the count
+# a second time. A row that names five counters and then says "those
+# four, and only those" contradicts itself inside one cell, and the
+# list check passes it because the list is right.
+mkdoc "$DIR/rword.md" Four "$FOUR" "$FOUR" "$FOUR" "$FOUR" Four Four Three; mkgo "$DIR/rword.go" 4
+out=$(bash "$CHECK" "$DIR/rword.md" "$DIR/rword.go" 2>&1); rc=$?
+[ $rc -eq 1 ] && ok "a stale count word inside the healthy row fails" \
+               || no "the healthy row's own count word is not judged (rc=$rc: $out)"
+case "$out" in *"\`healthy\` row"*three*) ok "the failure names the healthy row and the word it found" ;;
+  *) no "the failure does not identify the healthy row's word: $out" ;; esac
+
+# And the remedy sentence, which is the one that changes what an
+# operator DOES: "read the four in the field table above" over a list
+# of five stops them after the fourth.
+mkdoc "$DIR/mword.md" Four "$FOUR" "$FOUR" "$FOUR" "$FOUR" Four Four Four Three; mkgo "$DIR/mword.go" 4
+out=$(bash "$CHECK" "$DIR/mword.md" "$DIR/mword.go" 2>&1); rc=$?
+[ $rc -eq 1 ] && ok "a stale count word in the troubleshooting remedy sentence fails" \
+               || no "the remedy sentence's count word is not judged (rc=$rc: $out)"
+case "$out" in *remedy*three*) ok "the failure names the remedy sentence and the word it found" ;;
+  *) no "the failure does not identify the remedy word: $out" ;; esac
+
+# Every count word moving TOGETHER, to a real fifth counter agreed
+# everywhere, must pass -- otherwise these five checks have pinned the
+# doc to today's four and the next counter cannot be added at all.
+mkdoc "$DIR/five5.md" Five "$FIVE_" "$FIVE_" "$FIVE_" "$FIVE_" Five Five Five Five; mkgo "$DIR/five5.go" 5
+out=$(bash "$CHECK" "$DIR/five5.md" "$DIR/five5.go" 2>&1); rc=$?
+[ $rc -eq 0 ] && ok "five counters with all five count words moved pass" \
+               || no "a correct fifth counter is blocked (rc=$rc: $out)"
+case "$out" in *"5 doc count-word(s)"*) ok "the PASS line reports how many count words it read" ;;
+  *) no "the PASS line does not tally the count words: $out" ;; esac
 
 # All three words move together on a real edit: that must pass, or the
 # gate blocks the next counter instead of guarding it.
