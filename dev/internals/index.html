@@ -1366,8 +1366,14 @@ follows from two properties of the <code>dhcpcd</code> directives underneath.</p
   granted it, because renewal is unicast to that server.</li>
 </ul>
 <h2 id="how-a-lease-is-checked-against-the-segment">How a lease is checked against the segment<a class="headerlink" href="#how-a-lease-is-checked-against-the-segment" title="Permanent link">&para;</a></h2>
-<p>Since v1.6.0 the plugin asks, after each IPv4 lease, whether some <em>other</em>
-device already holds the address it was just given (#524). The counters
+<p>Since v1.6.0 the plugin asks, when an endpoint is created and gets an
+IPv4 address, whether some <em>other</em> device already holds it (#524). The
+probe fires from <code>CreateEndpoint</code> — both the bridge path and the
+parent-attached one — and from nowhere else: <code>checkAddressConflict</code> has
+exactly those two call sites, and nothing on the renew/rebind path calls
+it. So the check covers the address a new endpoint is about to be handed,
+not every address it ever holds. An address that changes mid-life is not
+re-probed. The counters
 and the operator-facing rules are in the
 <a href="../reference/#pluginhealth">driver reference</a>; this is the mechanism, and
 every part of it is a constraint rather than a preference.</p>
@@ -1379,11 +1385,17 @@ every part of it is a constraint rather than a preference.</p>
   "nobody holds it" with a squatter sitting on the address. An ordinary
   datagram to the discard port makes the kernel do the ARP instead; its
   delivery is irrelevant, the packet exists to resolve L2.</li>
-<li><strong>That also keeps the plugin inside its declared privileges.</strong> A real
-  RFC 5227 ARP probe needs <code>AF_PACKET</code> and therefore <code>CAP_NET_RAW</code>, which
-  <code>config.json</code> does not grant — adding it would force every operator to
-  re-approve the plugin's privileges on upgrade. Ordinary traffic gets
-  the same answer with <code>CAP_NET_ADMIN</code> alone. (<code>dhcpcd</code> itself runs with
+<li><strong>It also stays inside what <code>config.json</code> asks for.</strong> A real RFC 5227
+  ARP probe needs <code>AF_PACKET</code> and therefore <code>CAP_NET_RAW</code>, which
+  <code>config.json</code> does not request; ordinary traffic gets the same answer
+  from what it does. Note the premise this reasoning was originally
+  written on is <strong>wrong</strong>: Docker composes a plugin's capabilities
+  additively over the OCI defaults, so the process holds <code>CAP_NET_RAW</code>
+  already (<code>CapEff</code> on a running plugin decodes to seventeen
+  capabilities, not three). A <code>AF_PACKET</code> probe would therefore need no
+  new grant and no re-approval — see <a href="https://github.com/claymore666/docker-net-dhcp/issues/725">#725</a>. The datagram probe stands
+  on its own merits above; it does not stand on a capability we do not
+  have. (<code>dhcpcd</code> itself runs with
   <code>-A</code>, which turns <em>its</em> conflict detection off; this is what replaces
   it.)</li>
 <li><strong>The probe runs from the parent link, and compares MACs.</strong> Our own
@@ -1457,11 +1469,30 @@ refusing each other (#486, #549).</p>
 working. <code>parent_link_wait_timeouts</code> counts ones that gave up and
 proceeded anyway; they may still succeed, but the budget has stopped
 covering a reclaim's duration.</p>
-<p>The rule is enforced by the compiler, not by review: attaching a child
-link requires a guard value only the gate can produce, so a path that
-skipped it does not compile. An accounting file covers the one way
-around — a direct <code>netlink.LinkAdd</code>, which bridge mode needs, having no
-parent to contend for.</p>
+<p>The rule is enforced by <strong>two</strong> mechanisms, and it is worth being exact
+about where each one stops, because the guard type exists precisely to
+replace a prose guarantee about a property nothing checked.</p>
+<p>The compiler holds one half: <code>addChildLink</code> takes a guard value, so a
+path that never asks for one does not compile. It does <strong>not</strong> hold the
+other half. "Only <code>lockParent</code> makes a guard" is not something Go can
+express — the struct's zero value is valid, so <code>addChildLink(&amp;parentGuard{},
+link)</code> compiles and holds nothing, and <code>lockParent</code> returns exactly that
+literal on its own no-parent path, so the shape is already in the file as
+a pattern to copy. The realistic route to it is not malice: a new
+parent-attached call site, a compiler demanding a guard, and the zero
+value sitting right there.</p>
+<p>That half is enforced by <code>scripts/check-parent-gate-accounting.sh</code>, which
+fails the build on a <code>parentGuard</code> constructed anywhere but <code>lockParent</code>.
+A second accounting file, <code>.github/linkadd-accounting.txt</code>, covers the way
+around the type entirely — a direct <code>netlink.LinkAdd</code>, which bridge mode
+needs, having no parent to contend for.</p>
+<p>Nor does the guard say <em>which</em> parent it is for, so one taken on one NIC
+and handed to a link on another compiles. That is a deliberate
+non-goal — closing it means a runtime comparison, trading a compile error
+for a log line, on a mistake no current call site can make. The comment
+at the top of <code>pkg/plugin/parent_gate.go</code> is the authority on all of
+this; if this section and that comment ever disagree, the comment is
+right.</p>
 <h2 id="how-state-outlives-a-process">How state outlives a process<a class="headerlink" href="#how-state-outlives-a-process" title="Permanent link">&para;</a></h2>
 <p>Three separate mechanisms keep addresses stable across three different
 kinds of restart. Their <em>observable</em> behaviour is documented in the
