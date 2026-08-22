@@ -548,6 +548,14 @@ jobs:
       - name: Advisory allowlists agree
         run: bash scripts/check-allowlist-parity.sh
 
+      # The metrics golden must move only for the series that changed
+      # (#651). It inserts a field into the middle of HealthResponse,
+      # regenerates, and requires an empty diff -- so it edits the tree
+      # and restores it on exit. Anything after this step sees the tree
+      # it would have seen anyway.
+      - name: Golden fixture is keyed by field name
+        run: bash scripts/check-golden-fixture-name-keyed.sh
+
       # The local lane must not test less than this job does (#636).
       # scripts/local-lane.sh is what `make check` runs before a push;
       # the moment it lists fewer gates than the steps above, it exits 0
