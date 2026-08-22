@@ -2625,6 +2625,11 @@ diagnosing a specific container from them alone is not.</p>
 <td>(v1.6.0+) Leftover conflict-probe routes reclaimed from a probe that was cut short before it could clean up. The probe runs detached, so stopping the plugin inside its window (a daemon restart, <code>docker plugin disable</code>, an upgrade) leaves its temporary <code>/32</code> on the parent, and every later probe for that address is refused with <code>file exists</code> until something removes it — the address then silently stops being checked. The probe now replaces the leftover and carries on; a rising count means the plugin is being stopped inside probe windows, not that any address went unchecked (#572).</td>
 </tr>
 <tr>
+<td><code>conflict_probe_stale_addrs</code></td>
+<td>no</td>
+<td>(v1.8.0+) Leftover conflict-probe <strong>source addresses</strong> reclaimed from the parent NIC. The sibling above covers the leftover route; this covers the address that route was sourced from, when the parent held no address of its own and the probe had to borrow a <code>169.254.x.y/32</code>. Nothing reclaimed those: a probe route can be recognised because its destination is the address being probed, while a borrowed source has random octets by design (so two concurrent probes cannot delete each other's) and therefore collides with nothing, ever. One stray <code>/32</code> accumulated per stop-inside-the-probe-window, indefinitely, visible only in <code>ip addr</code>. Borrowed sources now carry the address label <code>&lt;parent&gt;:dh</code> and a later probe removes any that this plugin left. Two limits, both deliberate: an address in use by a probe running <em>right now</em> is never touched, and a parent whose name is longer than 12 characters leaves no room for the label under <code>IFNAMSIZ</code>, so leftovers on it are not reclaimed rather than guessed at (#723).</td>
+</tr>
+<tr>
 <td><code>leases_obtained</code></td>
 <td>no</td>
 <td><code>dhcpcd</code> bind events (<code>BOUND</code>/<code>REBOOT</code>, and the v6 equivalents): initial bind or re-bind after NAK/lease loss. v4+v6 aggregate.</td>
