@@ -1114,6 +1114,23 @@ option the older one never did. None of that was visible before.
 
 ### What is not fixed here
 
+<!-- RE-DERIVE THIS LIST AT TAG TIME. It was true when written and the
+     person running the tag will not be the person who wrote it:
+
+       gh api 'repos/claymore666/docker-net-dhcp/issues?milestone=22&state=open&per_page=100' \
+         --jq '.[] | select(.pull_request == null)
+                   | select([.labels[].name] | index("in-dev") | not)
+                   | "#\(.number) \(.title)"'
+
+     `in-dev` means merged into dev and not yet released, so an issue
+     carrying it is NOT a deferral — it ships in this release and closes
+     at the tag. The query above excludes them.
+
+     CAVEAT, and it is the trap: that command also returns the tracking
+     issues (#457, #699, #726, #732). Four issue numbers that look like
+     deferrals and are not. Drop them by hand; they close with the
+     milestone. -->
+
 Three findings from the reviews above are carried to v1.9.0 rather than
 rushed into this one, and they are named because a review that ships
 only its easy half is not a review.
