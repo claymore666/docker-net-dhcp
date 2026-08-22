@@ -126,6 +126,50 @@ git commit -qm fixture"
 run_case "a repo where nothing commits at all exits 2" 2 \
     "README.md:::nothing here"
 
+# --- an unstaged fixture is still a fixture (#743) ----------------------
+# The failure this gate exists for — an unsigned fixture repo HANGS the
+# suite waiting for a hardware touch that never comes, rather than
+# failing — is at its most likely in the minutes AFTER someone writes a
+# new self-test and BEFORE they stage it. Selecting subjects with
+# `ls-files` alone put the gate's blind spot exactly there, and CI never
+# showed it: a fresh checkout makes tracked and present the same set.
+untracked_case() {
+    local name="$1" want="$2"; shift 2
+    local dir rc out
+    dir=$(mktemp -d)
+    (
+        cd "$dir" || exit 2
+        git init -q .
+        git config user.email t@t; git config user.name t
+        git config commit.gpgsign false
+        while [ "$#" -gt 0 ]; do
+            local path="${1%%:::*}" body="${1#*:::}"
+            mkdir -p "$(dirname "$path")"
+            printf '%s\n' "$body" > "$path"
+            shift
+        done
+        # deliberately NO `git add` — that is the whole case
+    ) >/dev/null 2>&1
+    out=$(FIXTURE_ROOT="$dir" bash "$GATE" 2>&1)
+    rc=$?
+    rm -rf "$dir"
+    if [ "$rc" = "$want" ]; then
+        ok "$name"
+    else
+        no "$name (exit $rc, want $want)"
+        printf '      %s\n' "$out" >&2
+    fi
+}
+
+untracked_case "an UNTRACKED unsigned fixture is reported" 1 \
+    "scripts/test-x.sh:::git init -q .
+git config user.email t@t
+git config user.name t
+git commit -qm fixture"
+
+untracked_case "an UNTRACKED signed fixture reads as clean, not as absent" 0 \
+    "scripts/test-x.sh:::$FULL"
+
 dir=$(mktemp -d)
 if FIXTURE_ROOT="$dir" bash "$GATE" >/dev/null 2>&1; then
     no "a non-git directory should not report clean"

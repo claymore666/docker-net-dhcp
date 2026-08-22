@@ -49,6 +49,24 @@ BASE_REF="${BASE_REF:-origin/main}"
 
 [ -d "$WF_DIR" ] || { echo "FAIL  no workflow directory '$WF_DIR'" >&2; exit 2; }
 
+# A MISSING DIRECTORY WAS CAUGHT; AN EMPTY ONE WAS NOT (#743). This was
+# the last of the 47 gates that would render a verdict over no input:
+# `bash check-dispatch-reachable.sh /tmp/empty` printed "PASS  every
+# workflow_dispatch workflow is on origin/main" and exited 0, having
+# examined nothing. 46 of its siblings already refuse. The counter below
+# is what makes the detector's own narrowness loud instead of silent —
+# if the `workflow_dispatch` match ever stops matching, the gate goes to
+# zero subjects and says so rather than passing.
+shopt -s nullglob
+WF_FILES=("$WF_DIR"/*.yml "$WF_DIR"/*.yaml)
+shopt -u nullglob
+
+if [ "${#WF_FILES[@]}" -eq 0 ]; then
+    echo "::error title=Nothing to inspect::no *.yml or *.yaml files in $WF_DIR." \
+         "This gate would otherwise report a clean pass having read nothing." >&2
+    exit 2
+fi
+
 # The comparison target is a branch, not this checkout. CI clones one
 # ref; fetch the default branch rather than assuming it is present.
 if ! git rev-parse --verify --quiet "$BASE_REF" >/dev/null; then
@@ -75,10 +93,25 @@ fail=0
 note() { echo "FAIL  $*" >&2; fail=1; }
 
 pending=""
-for f in "$WF_DIR"/*.yml "$WF_DIR"/*.yaml; do
+inspected=0
+for f in "${WF_FILES[@]}"; do
     [ -e "$f" ] || continue
-    # `on:` may be block or inline; match the key wherever it sits.
-    grep -E '^[[:space:]]*workflow_dispatch:' "$f" >/dev/null || continue
+    # `on:` may be block or inline, and the comment above this line used
+    # to promise that while the pattern delivered only the block form
+    # (#743). Verified against GitHub's accepted spellings: `on:
+    # [workflow_dispatch]` and `on: {workflow_dispatch: null}` both
+    # produced zero matches. All 24 workflows happen to use the block
+    # form, so it was latent — but latent plus a vacuous pass means a
+    # reformat would have emptied this gate's input set with nothing to
+    # notice, which is the pairing that makes each half worse.
+    #
+    # A key in a block, an item in a flow sequence, or a key in a flow
+    # mapping. Anchored to a boundary either side so a workflow merely
+    # mentioning the word in prose is not counted as declaring it.
+    grep -E '(^|[[:space:]]|[[,{])workflow_dispatch([[:space:]]*:|[[:space:]]*[],}]|$)' \
+        "$f" >/dev/null || continue
+
+    inspected=$((inspected + 1))
 
     rel="${f#./}"
     if git cat-file -e "${BASE_REF}:${rel}" 2>/dev/null; then
@@ -108,8 +141,18 @@ if [ "$fail" -ne 0 ]; then
     exit 1
 fi
 
+# Zero dispatchable workflows out of a non-empty directory is a real
+# answer today, but it is also exactly what a broken detector looks
+# like, so it is stated rather than hidden inside a "PASS".
+if [ "$inspected" -eq 0 ]; then
+    echo "::error title=Nothing to inspect::${#WF_FILES[@]} workflow(s) in $WF_DIR" \
+         "and none declares workflow_dispatch. Either that is new, or this" \
+         "gate's detector has stopped matching the form in use." >&2
+    exit 2
+fi
+
 if [ -n "$pending" ]; then
-    echo "PASS  dispatch targets reachable on ${BASE_REF}; declared pending:$pending"
+    echo "PASS  ${inspected} dispatch target(s) reachable on ${BASE_REF}; declared pending:$pending"
 else
-    echo "PASS  every workflow_dispatch workflow is on ${BASE_REF}"
+    echo "PASS  all ${inspected} workflow_dispatch workflow(s) are on ${BASE_REF}"
 fi

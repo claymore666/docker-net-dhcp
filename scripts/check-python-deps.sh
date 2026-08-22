@@ -20,9 +20,9 @@
 # from coming back. It checks two directions, because a declaration and
 # its consumer can each go missing on their own:
 #
-#   A. every tracked requirements.txt is named by a `pip install` line
+#   A. every requirements.txt is named by a `pip install` line
 #      somewhere, so a declaration nobody installs goes red;
-#   B. every tracked .py is reachable — named by basename from another
+#   B. every .py is reachable — named by basename from another
 #      file, or imported as a module by another .py — so a consumer
 #      nobody calls goes red.
 #
@@ -58,14 +58,28 @@ fi
 # Discovery through the index, not a filesystem walk. A walk descends
 # into gitignored worktrees and judges another branch's files as if they
 # were this one's — check-dockerfile-pins hit exactly that (#639).
-mapfile -t REQS < <(git -C "$ROOT" ls-files -- '*requirements.txt' | sort)
-mapfile -t PYS  < <(git -C "$ROOT" ls-files -- '*.py' | sort)
+# UNTRACKED FILES COUNT TOO (#743). A file written but not yet `git
+# add`ed is invisible to `ls-files` alone, and that is precisely the
+# state a source file is in for the whole time someone is writing it.
+# This gate runs in scripts/local-lane.sh, where an uncommitted working
+# tree is the NORMAL state — so the blind spot sat exactly where the
+# gate is meant to be useful, and never showed in CI, where a fresh
+# checkout makes tracked and present mean the same thing. Same argument
+# and same fix as check-license-headers.sh:74.
+mapfile -t REQS < <({
+    git -C "$ROOT" ls-files -- '*requirements.txt'
+    git -C "$ROOT" ls-files --others --exclude-standard -- '*requirements.txt'
+} | sort -u)
+mapfile -t PYS < <({
+    git -C "$ROOT" ls-files -- '*.py'
+    git -C "$ROOT" ls-files --others --exclude-standard -- '*.py'
+} | sort -u)
 
 # Inspecting nothing is not a pass. Every gate here that reported success
 # over an empty input set was hiding something by the time anyone looked.
 if [ "${#REQS[@]}" -eq 0 ] && [ "${#PYS[@]}" -eq 0 ]; then
     echo "::error title=Nothing to inspect::no requirements.txt and no .py" \
-         "files are tracked in $ROOT. This gate would otherwise report a" \
+         "files in $ROOT. This gate would otherwise report a" \
          "clean pass having looked at nothing." >&2
     exit 2
 fi
@@ -77,9 +91,43 @@ report() {
 }
 
 # --- A. a declaration nobody installs --------------------------------
+#
+# THE PATH HAS TO MATCH AT A BOUNDARY, NOT AS A SUBSTRING (#743). A
+# fixed-string search for `requirements.txt` is satisfied by any line
+# naming `ci/runner-image/requirements.txt`, so a NEW orphan at the repo
+# root read as installed the moment any other requirements file was
+# installed anywhere. Found by running the untracked-file probe from
+# #743 against the fixed gate: it still passed, and the file selection
+# was no longer the reason.
+#
+# The boundary only has to be checked on the left. What produces a false
+# match is a longer path ending in this one, so rejecting a match
+# preceded by a path character is exactly the fix; a match preceded by a
+# space, a quote or the start of the line is a genuine reference.
+#
+# COMMENTS ARE NOT INSTALL LINES, and leaving them in made this gate
+# satisfy itself: its own header at :23 reads "every requirements.txt is
+# named by a `pip install` line", which contains the path at a word
+# boundary and the words `pip install`. So the sentence describing the
+# rule was accepted as evidence that the rule held. Sibling gates strip
+# comments for the mirror-image reason — check-selftest-fixtures.sh so
+# prose does not TRIP it; here so prose does not SATISFY it.
+#
+# THE EVIDENCE SET HAS TO MATCH THE SUBJECT SET (#743). Adding untracked
+# files to the subjects above without adding them here made this gate
+# WORSE, not better: a newly-written requirements.txt was now inspected,
+# but the newly-written workflow that installs it was still invisible,
+# so the local lane reported an orphan for every pair an author was in
+# the middle of writing. Caught by the self-test case for the fix to the
+# subject set — one half of a union is not a smaller version of the
+# union, it is a different, wrong question. `--untracked` searches
+# tracked plus untracked-not-ignored, which is exactly the subject set.
 for req in "${REQS[@]}"; do
-    if git -C "$ROOT" grep -nI -F -e "$req" -- ":!$req" 2>/dev/null \
-         | grep -E 'pip[0-9.]*[[:space:]]+install|pip_install' >/dev/null; then
+    req_re=$(printf '%s' "$req" | sed 's/[][\.*^$+?(){}|/]/\\&/g')
+    if git -C "$ROOT" grep --untracked -nI -F -e "$req" -- ":!$req" 2>/dev/null \
+         | grep -vE '^[^:]*:[0-9]+:[[:space:]]*#' \
+         | grep -E 'pip[0-9.]*[[:space:]]+install|pip_install' \
+         | grep -E "(^|[^[:alnum:]_./-])${req_re}([^[:alnum:]_.-]|\$)" >/dev/null; then
         continue
     fi
     report "$req" "declared but no 'pip install' line names it — nothing ever installs these."
@@ -92,12 +140,12 @@ for py in "${PYS[@]}"; do
 
     # Named by path or basename from anywhere else: a workflow step, a
     # Makefile recipe, a runbook, a self-test.
-    if git -C "$ROOT" grep -qI -F -e "$base" -- ":!$py" 2>/dev/null; then
+    if git -C "$ROOT" grep --untracked -qI -F -e "$base" -- ":!$py" 2>/dev/null; then
         continue
     fi
 
     # Or imported as a module, where the filename never appears.
-    if git -C "$ROOT" grep -qIE "^[[:space:]]*(import[[:space:]]+${mod}|from[[:space:]]+${mod}[[:space:]]+import)\b" \
+    if git -C "$ROOT" grep --untracked -qIE "^[[:space:]]*(import[[:space:]]+${mod}|from[[:space:]]+${mod}[[:space:]]+import)\b" \
          -- '*.py' ":!$py" 2>/dev/null; then
         continue
     fi

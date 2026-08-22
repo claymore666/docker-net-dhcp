@@ -64,7 +64,18 @@ fi
 # not make a script look like its own consumer. Comments are stripped
 # first: a script that only TALKS about committing has no fixture to
 # configure, and a gate that fires on prose is waived on its first run.
-mapfile -t CANDIDATES < <(git -C "$ROOT" ls-files -- '*.sh' | sort)
+# UNTRACKED FILES COUNT TOO (#743). A file written but not yet `git
+# add`ed is invisible to `ls-files` alone, and that is precisely the
+# state a source file is in for the whole time someone is writing it.
+# This gate runs in scripts/local-lane.sh, where an uncommitted working
+# tree is the NORMAL state — so the blind spot sat exactly where the
+# gate is meant to be useful, and never showed in CI, where a fresh
+# checkout makes tracked and present mean the same thing. Same argument
+# and same fix as check-license-headers.sh:74.
+mapfile -t CANDIDATES < <({
+    git -C "$ROOT" ls-files -- '*.sh'
+    git -C "$ROOT" ls-files --others --exclude-standard -- '*.sh'
+} | sort -u)
 
 FIXTURES=()
 for f in "${CANDIDATES[@]}"; do
