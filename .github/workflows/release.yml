@@ -283,9 +283,28 @@ jobs:
       # the runbook already treats the whole Hub path as optional
       # (GHCR alone still publishes). A description-sync auth failure
       # (e.g. a rotated / under-scoped token) must NOT fail the release
-      # job or block verify-install; it surfaces as a red step to fix
-      # out-of-band and re-syncs on the next release once the token is
-      # restored. v1.0.0-rc1 caught exactly this: Hub 403 on PATCH.
+      # job or block verify-install. v1.0.0-rc1 caught exactly this:
+      # Hub 403 on PATCH.
+      #
+      # WHAT THAT COSTS — stated here because this comment claimed the
+      # opposite until 2026-08-22, when it said the failure "surfaces
+      # as a red step to fix out-of-band":
+      #
+      # NOTHING REPORTS IT. The step goes red inside a job that stays
+      # GREEN, and that is the entire signal. It carries no `id:`, so
+      # no later step can read `steps.<id>.outcome` to mention it even
+      # if one wanted to; the job's `$GITHUB_STEP_SUMMARY` — the
+      # channel people actually read — never hears about it; and this
+      # is the only `continue-on-error` in the whole workflow tree, so
+      # there is no convention elsewhere to lean on either.
+      #
+      # The description therefore stays stale until somebody opens this
+      # job's log and scrolls to a green run. It does re-sync on the
+      # next release, but only because the step runs again — not
+      # because anyone was told to restore the token.
+      # docs/release-runbook.md carries the out-of-band fix: dispatch
+      # an rc tag, which re-runs this step against the same Hub
+      # repository without touching a bare release tag or `:latest`.
       - name: Sync Docker Hub description from README
         if: env.HAS_HUB_CREDS == 'true'
         continue-on-error: true
