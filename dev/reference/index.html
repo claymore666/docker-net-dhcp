@@ -2752,7 +2752,12 @@ diagnosing a specific container from them alone is not.</p>
 <tr>
 <td><code>lease_changed_v6</code>, <code>leases_obtained_v6</code>, <code>leases_renewed_v6</code>, <code>dhcp_timeouts_v6</code>, <code>naks_received_v6</code></td>
 <td>no</td>
-<td>(v1.2.0+) The IPv6-only share of the matching aggregate above (#212). Each counts only the v6 client's events; the v4 share is the aggregate minus its <code>*_v6</code>. On a dual-stack host this isolates the v6-specific NAK/timeout signal the aggregate hides. <code>lease_release_failures_v6</code> (v1.7.0+, #608) joins the split with the same rule; <code>ledger_write_failures</code> has no per-family split.</td>
+<td>(v1.2.0+) The IPv6-only share of the matching counter above (#212). Each counts only the v6 client's events. On a dual-stack host this isolates the v6-specific NAK/timeout signal the combined number hides. <code>lease_release_failures_v6</code> (v1.7.0+, #608) joins the split with the same rule; <code>ledger_write_failures</code> has no per-family split.</td>
+</tr>
+<tr>
+<td><code>lease_changed_v4</code>, <code>leases_obtained_v4</code>, <code>leases_renewed_v4</code>, <code>dhcp_timeouts_v4</code>, <code>naks_received_v4</code>, <code>lease_release_failures_v4</code></td>
+<td>no</td>
+<td>(v1.8.0+, #730) The IPv4-only share, on the same rule. Both halves are now stored and the unsuffixed counter is their <strong>sum</strong> — it is not a counter in its own right and nothing increments it. Before v1.8.0 the v4 share was not stored: it was recovered as <code>aggregate − *_v6</code> at render time, which could read one lower than the previous scrape and make Prometheus treat the whole counter as reset. Use <code>*_v4</code> rather than doing that subtraction yourself.</td>
 </tr>
 </tbody>
 </table>
@@ -2794,13 +2799,24 @@ upgrade.</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a>net_dhcp_leases_obtained_total{family=&quot;ipv4&quot;} 42
 <a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a>net_dhcp_leases_obtained_total{family=&quot;ipv6&quot;} 7
 </code></pre></div>
-<p><strong><code>family="ipv4"</code> is derived, not stored.</strong> In <code>/Plugin.Health</code> the
-unsuffixed counter is the v4+v6 <strong>total</strong> and the <code>_v6</code> one is a subset
-of it (#212), so the v4 series here is <code>total - v6</code> computed at render
-time. This is the shape an operator expects from a <code>family</code> label, and
-it is worth knowing if you compare the two endpoints side by side: the
-JSON <code>leases_obtained</code> will not equal the <code>family="ipv4"</code> series. Every
-other counter has no family dimension and does not gain an invented one.</p>
+<p><strong>Both family series are stored, not derived</strong> (v1.8.0+, #730). Each of
+the six has a <code>_v4</code> and a <code>_v6</code> field in <code>/Plugin.Health</code>, and the
+unsuffixed counter is their <strong>sum</strong>. So <code>leases_obtained</code> equals
+<code>leases_obtained_v4 + leases_obtained_v6</code>, and the <code>family="ipv4"</code>
+series is the <code>_v4</code> field read straight out. Every other counter has no
+family dimension and does not gain an invented one.</p>
+<p>Until v1.8.0 only the aggregate and the <code>_v6</code> share were stored, and the
+v4 series was computed as <code>total - v6</code> at render time. Two independently
+updated counters combined by subtraction can be read in an order that
+yields a value <strong>below the previous scrape</strong>, and Prometheus reads any
+counter decrease as a reset — attributing the whole accumulated value as
+an increase on the next scrape. A one-off skew of a single event
+therefore showed up as a rate spike of the entire count. Adding two
+monotonic counters has no such failure mode; subtracting them does.</p>
+<p>If you have a dashboard or recording rule that reconstructed the v4
+share as <code>leases_obtained - leases_obtained_v6</code>, it still gives the same
+answer, but prefer <code>leases_obtained_v4</code>: the subtraction is what this
+change removed, and doing it in the query reintroduces it.</p>
 <h4 id="counter-resets">Counter resets<a class="headerlink" href="#counter-resets" title="Permanent link">&para;</a></h4>
 <p><code>net_dhcp_build_info</code> carries the plugin's <code>instance_id</code> as a label:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a>net_dhcp_build_info{instance_id=&quot;...&quot;} 1

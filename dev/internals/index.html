@@ -1562,21 +1562,39 @@ nothing else.</p>
   counter without exposing it is a red unit test rather than a hole in
   somebody's dashboard.</li>
 <li><strong>The snapshot is not a single atomic instant, and that is
-  deliberate.</strong> The counters are read without a lock, so two of them
-  can be a few nanoseconds apart. They are monotonic counters read for
-  rates and alerting, not an accounting ledger, and this is what
-  <code>/Plugin.Health</code> has always done. Only the two map lengths take the
-  mutex, because reading a map during a concurrent write is a data race
-  rather than a stale number.</li>
-<li><strong>The <code>ipv4</code> series is derived, never read.</strong> The family-split
-  counters bump the aggregate on <em>every</em> event and the <code>_v6</code> sibling
-  only on v6 ones (#212), so <code>_v6</code> is a subset of the total rather than
-  a peer, and <code>family="ipv4"</code> has to be total-minus-v6 at render time.
-  A total below its v6 subset would mean a bump reached the sibling and
-  not the aggregate — a real bug — but a negative counter makes the
-  whole scrape unparseable and buries the signal it was supposed to
-  show, so it clamps to zero and the rest of the metrics still arrive.</li>
-<li><strong>Two exposure paths, and only one of them opens a port.</strong> <code>/metrics</code>
+  deliberate — but only for values read one at a time.</strong> The counters
+  are read without a lock, so two of them can be a few nanoseconds
+  apart. For a counter an operator reads on its own that is harmless:
+  they are monotonic counters read for rates and alerting, not an
+  accounting ledger, and this is what <code>/Plugin.Health</code> has always done.
+  Only the two map lengths take the mutex, because reading a map during
+  a concurrent write is a data race rather than a stale number.</li>
+</ul>
+<p>It stops being harmless the moment a rendered value is <strong>combined</strong>
+  from two of them, and #730 is what that costs. Each family pair is
+  therefore loaded exactly once into a local, and the aggregate is the
+  sum of those two locals — never a second <code>.Load()</code> of a half that was
+  already read.
+- <strong>Both family series are stored; neither is derived.</strong> Six counters
+  carry a <code>family</code> label. <code>bumpFamily</code> increments <strong>exactly one</strong> of a
+  pair — the v4 half or the v6 half, never both and never a third
+  aggregate — so <code>_v4</code> and <code>_v6</code> are peers, and the unsuffixed counter
+  an operator alerts on is their <strong>sum</strong>, computed at snapshot time
+  (#212, #730).</p>
+<p>Until v1.8.0 the aggregate was the stored counter and <code>family="ipv4"</code>
+  was <code>total - v6</code> at render time, clamped at zero. Two independently
+  updated counters combined by <strong>subtraction</strong> can be read in an order
+  that yields a value below the previous scrape, and Prometheus reads
+  any counter decrease as a <strong>reset</strong>, repaying the whole accumulated
+  value as an increase on the next scrape — a one-event skew surfacing
+  as a rate spike of the entire count. The clamp hid the extreme case
+  and did nothing about the dip. Adding two monotonic counters has no
+  such failure mode, because neither operand can decrease; subtracting
+  them does, in either read order.</p>
+<p>If a family series ever needs computing rather than reading again,
+  the arithmetic belongs in <code>healthSnapshot</code> where both halves are
+  loaded once, not in the renderer.
+- <strong>Two exposure paths, and only one of them opens a port.</strong> <code>/metrics</code>
   is on the plugin socket unconditionally: it costs nothing, and it
   lets an operator with a socket-aware scrape path collect metrics
   without the plugin listening anywhere. The TCP listener is
@@ -1596,8 +1614,8 @@ nothing else.</p>
   <code>SECURITY.md</code> promises and
   <code>TestMetricsExposition_NoPerEndpointIdentifiers</code> pins — it is this
   plugin's operational telemetry, published on every interface the host
-  has, since the plugin runs in the host's network namespace (#709).</li>
-<li><strong>The socket's mode is pinned rather than inherited.</strong> Serving
+  has, since the plugin runs in the host's network namespace (#709).
+- <strong>The socket's mode is pinned rather than inherited.</strong> Serving
   <code>/metrics</code> on the plugin socket is unchanged ground only because that
   socket is root-only: anything able to read it can already call every
   RPC. A UNIX socket is created <code>0777 &amp;^ umask</code>, so until #687 that
@@ -1606,8 +1624,7 @@ nothing else.</p>
   which. <code>Listen</code> now chmods the socket to <code>0600</code> and refuses to serve
   if it cannot, since an unknown mode is exactly the state being
   guarded against. Only the daemon speaks this protocol and it connects
-  as root, so nothing legitimate needs group or other.</li>
-</ul>
+  as root, so nothing legitimate needs group or other.</p>
 <h2 id="running-the-tests">Running the tests<a class="headerlink" href="#running-the-tests" title="Permanent link">&para;</a></h2>
 <p>Four loops, cheapest first. Only the last needs root or a plugin.</p>
 <table>
