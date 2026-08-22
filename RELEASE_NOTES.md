@@ -1146,8 +1146,8 @@ option the older one never did. None of that was visible before.
     indented copy — and matched the gate's own failure text, so a run
     that quoted the rule satisfied it. (#758)
   - Eight one-to-five-line correctness fixes across five workflows. Six
-    reproduced, two did not, and one of the six had a third instance the
-    issue had not listed. (#742)
+    of the eight defects reproduced on inspection, two did not, and one
+    of those six had a third instance the issue had not listed. (#742)
   - Two detectors were mis-reporting at the time they were read. The
     label reconciler looked up unresolved references with a fallback
     that treated a rate limit, a 5xx and a dropped connection exactly
