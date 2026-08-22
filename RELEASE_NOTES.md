@@ -508,16 +508,23 @@ five.
      three sentences; strictly weaker than the counter-table derivation
      below, which reads the source. -->
 
-**Six of the ten are verified present on `main` as well**: #720, #721,
-#722, #724, #727 and #728. `origin/main`, `v1.7.1` and `018a651` are the
-same commit, so that is a claim any reader can drive rather than
-take — with one keystroke of care, because the obvious command
-refutes it. Bare `git rev-parse v1.7.1` returns `0589c44`: that is
-the annotated **tag object**, not a commit. `git rev-parse
-v1.7.1^{commit}` returns `018a651`, and so does `origin/main`. The
-three agree only once the tag is dereferenced, and an invitation
-that fails under the command a reader will actually type is worse
-than no invitation.
+**Six of the ten are verified present at `018a651`, the commit `main`
+sat at while this audit ran**: #720, #721, #722, #724, #727 and #728.
+`v1.7.1^{commit}` and `018a651` are the same commit, so that is a claim
+any reader can drive rather than take — with one keystroke of care,
+because the obvious command refutes it. Bare `git rev-parse v1.7.1`
+returns `0589c44`: that is the annotated **tag object**, not a commit.
+`git rev-parse v1.7.1^{commit}` returns `018a651`. The two agree only
+once the tag is dereferenced, and an invitation that fails under the
+command a reader will actually type is worse than no invitation.
+
+The anchor is the tag rather than `origin/main` on purpose, and the
+earlier draft of this paragraph had it the other way. `origin/main`
+was `018a651` throughout the audit, so the claim was true when
+written — and it stops being true at the moment these notes merge,
+because merging them is what moves that branch. **A branch name
+cannot anchor a claim in a document that ships by moving the
+branch.**
 
 Resolving the tag is only half of driving it. For four of the six —
 #722, #724, #727 and #728 — the defect *is* the absence of a mechanism,
@@ -572,13 +579,16 @@ predates the cycle**. Neither of the other two surfaces does:
     git grep -cEi 'server_polic|serverpolic|dhcp_server|preferred_server|deny_server' \
                   'v1.7.1^{commit}' -- pkg/                           # nothing
     git grep -cEi 'server_polic|serverpolic|dhcp_server|preferred_server|deny_server' \
-                  origin/dev -- pkg/                                  # 5 files          CONTROL
+                  origin/dev -- pkg/                                  # matches          CONTROL
 
 Every absence is paired with a control, because an empty result from a
-mistyped pathspec looks exactly like an absence. **#730 lives in
-`/metrics` and #731 in the server-policy ladder, and both of those ship
-for the first time here** — a defect cannot be older than the code it
-lives in.
+mistyped pathspec looks exactly like an absence. A control's job is
+nonzero-ness rather than size, which is why only the control at the tag
+carries a count: `v1.7.1^{commit}` is frozen, `origin/dev` is not, and
+a number written beside a moving ref is stale by the next merge.
+**#730 lives in `/metrics` and #731 in the server-policy ladder, and
+both of those ship for the first time here** — a defect cannot be older
+than the code it lives in.
 
 The pass also recorded two structural notes that are not blockers and
 are not fixed here: `plugin.go` grew again this cycle and its three
