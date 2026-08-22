@@ -52,8 +52,11 @@ and they are the reason the file exists at all:
 
 Four labels. Only the last is optional.
 
-- **Rule** — the observer is **built**, shared, and has been driven red
-  against a violation. Binding, and violations are caught.
+- **Rule** — the observer is **built**, shared, and has been driven
+  **red against a violation with a message that names the violation**.
+  Binding, and violations are caught. Red alone is not enough: see I15,
+  where every other clause was satisfied and the message said
+  *regenerate the golden*.
 - **Rule, owed** — **binding**. The observer is buildable and not yet
   built; recorded as owed, **with a named owner**, until it is. This is
   not a weaker Rule. It is a Rule enforced by memory, which is the
@@ -322,6 +325,77 @@ The author had verified the table against their own command, in their
 own shell, in the session that wrote it — I12's position exactly. The
 first independent evidence the comment was worth anything came from
 someone running the comment. *(oversight)*
+
+## I14 — a mutant that panics names the wrong observer
+
+Dropping the nil-plugin guard in `notePIDMismatch` (#707) makes a
+full-package run report `--- FAIL: TestStart_SurvivesADaemonThatWillNotAnswer`.
+The actual guard, `TestNotePIDMismatch_SurvivesANilPlugin`, **never
+appears in the output at all**, though it kills the mutant correctly when
+run scoped. The panic aborts the test binary and Go credits whichever
+test the runner happened to be naming.
+
+**The survival direction is the one that bites.** An early panic can make
+an **innocent test look like coverage**: the run is red, someone reads
+the name, and a guard that does not exist gets written into a table as an
+observer. That is worse than a missed kill, because it manufactures
+evidence rather than losing it.
+
+**Rule, owed — owner: client1.** Any mutation row whose output contains
+`panic:` is unattributed until re-run with `-run '^TestExact$'`.
+*(client1)*
+
+## I15 — an observer that is red, shared, and still not enforcing
+
+A seventh family-split metric **does** go red today, on two tests. Every
+clause of *built, shared, driven red against a violation* is satisfied,
+so the rule grades as enforced. **It is not enforced**, because the
+failure message says *regenerate the golden*. The author regenerates,
+goes green, and ships the defect.
+
+Measured on both sides of the same tree: at `637cc8c` the mutant's
+message names the golden; at `05d94bc` it names the unheld counter.
+
+**So the standard is amended:** an observer must go **red, and its
+message must name the violation.** The diagnostic is client1's:
+
+> *When it fires, does the text tell someone who has never read the rule
+> what they actually broke?*
+
+This and I2 are one finding at two levels. **Git's silence is not
+evidence, and a detector's noise is not evidence either. What matters is
+whether the thing that fires is the thing that would have to be right.**
+*(client1)*
+
+## I16 — two measurements agreed, about different objects
+
+A hand-off about #766 stated *"the exposition goes 41 → 63 series, 22
+new"*. Measured on its actual head `05d94bc`, confirmed against
+`gh api .head.sha` rather than transcribed:
+
+```
+                                   dev      #766
+metrics_exposition.golden series    57        57     <- unchanged
+  of those carrying family=         12        12     <- unchanged
+HealthResponse json tags            57        63     <- +6
+```
+
+**#766 adds six fields and zero series.** The `family="ipv4"` series
+already rendered; #730's whole point is that they stop being derived by
+subtraction and start being stored. And `41` is not an exposition number
+in either direction — **there is no `metrics_exposition.golden` at
+v1.7.1**; 41 is the v1.7.1 json-tag count, a count of fields.
+
+63 and 22 are correct **for fields** and were attached to **series**. The
+recipient's own field measurements were also 63 and 22, so the two claims
+read as mutually confirming.
+
+> **Agreement between two measurements of different objects is worth less
+> than disagreement between two measurements of the same one.**
+
+What caught it was not arithmetic: *"six new fields produce six new
+series"* did not sound right for a change whose entire purpose is that
+the series already existed. *(client3)*
 
 ---
 
