@@ -48,7 +48,7 @@ func TestOpenContainerNetNS_RefusesAPIDThatIsNotTheContainer(t *testing.T) {
 func TestOpenContainerNetNS_OpensTheNamespaceOfAMatchingPID(t *testing.T) {
 	pid := os.Getpid()
 
-	ns, err := openContainerNetNS(pid, selfCgroup(t, pid))
+	ns, err := openContainerNetNS(pid, selfCgroupLeaf(t, pid))
 	if err != nil {
 		t.Fatalf("refused a PID whose cgroup names it: %v", err)
 	}

@@ -6,7 +6,6 @@ package plugin
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"golang.org/x/sys/unix"
@@ -41,26 +40,25 @@ func openCgroupFDs(t *testing.T) int {
 	return n
 }
 
-// selfCgroupID returns a string that is guaranteed to appear in this
-// process's own cgroup, so openContainerProc's identity check passes and
-// the SUCCESS path can be exercised against a real /proc entry — no
-// container, no root, no daemon.
+// selfCgroupID returns an ID that names this process, so
+// openContainerProc's identity check passes and the SUCCESS path can be
+// exercised against a real /proc entry — no container, no root, no
+// daemon.
 //
-// The check is strings.Contains(cgroup, ctrID), so any substring of the
-// live value serves. Reading the real file rather than hard-coding a
-// slice of one keeps the test honest on a host whose cgroup layout looks
-// nothing like the author's.
+// It used to return the whole /proc/self/cgroup FILE, on the reasoning
+// recorded here verbatim: "The check is strings.Contains(cgroup,
+// ctrID), so any substring of the live value serves."
+//
+// That was true and it was the defect. The file is a substring of
+// itself, so the check reduced to Contains(x, x) and passed for every
+// input — against a correct guard and a broken one alike. The success
+// path this comment claims to exercise was never exercised at all. It
+// is the reason a name-substring guard survived a suite that looks like
+// it covers it, and it is why the guard now matches a path SEGMENT and
+// this helper returns one. See selfCgroupLeaf.
 func selfCgroupID(t *testing.T) string {
 	t.Helper()
-	b, err := os.ReadFile("/proc/self/cgroup")
-	if err != nil {
-		t.Fatalf("read /proc/self/cgroup: %v", err)
-	}
-	id := strings.TrimSpace(string(b))
-	if id == "" {
-		t.Fatal("/proc/self/cgroup is empty; the identity check cannot be exercised")
-	}
-	return id
+	return selfCgroupLeaf(t, os.Getpid())
 }
 
 // TestOpenContainerProc_DoesNotLeakCgroupFD is the regression test for

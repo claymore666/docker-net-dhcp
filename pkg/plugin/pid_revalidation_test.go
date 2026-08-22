@@ -41,6 +41,9 @@ func TestCgroupNamesContainer(t *testing.T) {
 		{"v1, one line per controller",
 			"12:pids:/docker/" + id + "\n11:memory:/docker/" + id + "\n1:name=systemd:/docker/" + id + "\n", id, true},
 
+		{"v2, PID moved to a descendant of the scope (systemd in docker)",
+			"0::/system.slice/docker-" + id + ".scope/init.scope\n", id, true},
+
 		{"a different container", "0::/system.slice/docker-" + foreignCtrID + ".scope\n", id, false},
 		{"a host process", "0::/user.slice/user-1000.slice/session-3.scope\n", id, false},
 		{"the root cgroup", "0::/\n", id, false},
@@ -56,12 +59,110 @@ func TestCgroupNamesContainer(t *testing.T) {
 	}
 }
 
+// TestCgroupNamesContainer_DelegatedSubtreeIsAcceptedByDesign records
+// the residual hole as a TRUE, in the test name, so it is a decision on
+// the record rather than something rediscovered later as a surprise.
+//
+// A task in a cgroup subtree its own user controls can name a component
+// after any container ID it likes, and cgroupNamesContainer says yes.
+// That is reachable without privilege in one command -- see the doc
+// comment on the function -- and it is not something a better NAME
+// match can fix: a bare `<id>` component is exactly what the cgroupfs
+// driver emits, so refusing it would refuse legitimate containers, and
+// `docker-<id>.scope` is namable in a delegated slice just as easily.
+// The function is a filter; openContainerProc carries the identity
+// proof.
+//
+// THE POINT OF ASSERTING IT TRUE is that these cases go red the day
+// someone narrows the match and believes that closed the hole. A
+// narrowing to whole path components leaves every one of these
+// accepted, so a red here means the claim outran the change.
+func TestCgroupNamesContainer_DelegatedSubtreeIsAcceptedByDesign(t *testing.T) {
+	const id = "a0d1bfd9fa47a62f432c8e88db9dec21158008c6c87aae8f57dc66e7ec5b8abc"
+
+	cases := []struct {
+		name   string
+		cgroup string
+	}{
+		{"a bare ID segment in a user's own slice", "0::/user.slice/" + id + "\n"},
+		{"an ID segment with the task nested below it",
+			"0::/user.slice/" + id + "/nested/task.scope\n"},
+		{"the systemd spelling in a user's own slice",
+			"0::/user.slice/docker-" + id + ".scope\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if !cgroupNamesContainer(tc.cgroup, id) {
+				t.Errorf("cgroupNamesContainer(%q, id) = false, want true — this is a"+
+					" KNOWN and ACCEPTED hole, not a defect to close here; see the"+
+					" doc comment on cgroupNamesContainer", tc.cgroup)
+			}
+		})
+	}
+}
+
 // selfCgroup returns this process's own cgroup contents, and a value to
 // pass as the container ID that is guaranteed to match it. The whole
 // trimmed file is used rather than a parsed-out component: the point
 // here is to exercise the real /proc path with a matching ID on any
 // host, whatever its cgroup layout -- the match RULE is pinned by
 // TestCgroupNamesContainer instead.
+// selfCgroupLeaf returns a container ID that genuinely NAMES this
+// process: the leaf segment of the path field of its own cgroup line.
+//
+// # Why this exists, and what it replaces
+//
+// selfCgroup returns the whole /proc/<pid>/cgroup FILE. Seven call
+// sites passed that file where a CONTAINER ID was expected, so the
+// guard's accept path was
+//
+//	strings.Contains(cgroupFile, cgroupFile)   // Contains(x, x)
+//
+// which is true for every input. Every "the guard accepts a PID that
+// IS the container" assertion in this package passed because a string
+// contains itself, and would have passed against a correct guard and a
+// broken one alike. The accept path had never been exercised with a
+// container ID at all -- which is why the substring defect survived a
+// suite that looks like it covers this.
+//
+// The leaf segment is a real ID: it is the name of the cgroup this
+// process is actually in, so a guard that matches segments accepts it
+// and a guard that does not, does not. Paired with foreignCtrID as the
+// refusal control, the two together can tell the fix from the defect.
+//
+// A root cgroup ("0::/") has no segment to name, and then the accept
+// path genuinely cannot be exercised in this environment. That is a
+// FATAL with the reason, not a skip: skipping would restore exactly
+// the blindness this replaces, quietly.
+func selfCgroupLeaf(t *testing.T, pid int) string {
+	t.Helper()
+	raw := selfCgroup(t, pid)
+	for _, line := range strings.Split(raw, "\n") {
+		// "hierarchy-ID:controller-list:cgroup-path" in both cgroup
+		// versions. Split at the SECOND colon and take everything after
+		// it: a cgroup directory name may itself contain a colon, so
+		// splitting at the last one would truncate the path.
+		parts := strings.SplitN(line, ":", 3)
+		if len(parts) < 3 {
+			continue
+		}
+		segs := strings.Split(parts[2], "/")
+		if leaf := segs[len(segs)-1]; leaf != "" {
+			return leaf
+		}
+	}
+	// The observed value, not just the diagnosis. A red here has to name
+	// the remedy from ONE run: "0::/" means this process sits in the root
+	// cgroup and nothing can name it, which is a different cause with a
+	// different fix than a layout we failed to parse.
+	t.Fatalf("no line of /proc/%d/cgroup has a named leaf segment, so nothing names this "+
+		"process and the guard's ACCEPT path cannot be exercised in this environment.\n"+
+		"observed /proc/%d/cgroup:\n%s\n"+
+		"(a bare \"0::/\" means the root cgroup; anything else means the path field "+
+		"parsed empty and the layout is the thing to look at)", pid, pid, raw)
+	return ""
+}
+
 func selfCgroup(t *testing.T, pid int) string {
 	t.Helper()
 	// proc-path-discipline: allow -- this is the test harness reading
@@ -112,7 +213,7 @@ func TestOpenContainerProc_RefusesAnEmptyContainerID(t *testing.T) {
 // every PID would satisfy the two tests above and silently disable DNS
 // propagation for every user.
 func TestOpenContainerProc_AcceptsThePIDItWasResolvedFrom(t *testing.T) {
-	d, err := openContainerProc(os.Getpid(), selfCgroup(t, os.Getpid()))
+	d, err := openContainerProc(os.Getpid(), selfCgroupLeaf(t, os.Getpid()))
 	if err != nil {
 		t.Fatalf("a PID whose cgroup names the expected ID was rejected: %v", err)
 	}
@@ -163,7 +264,7 @@ func TestOpenContainerProc_FdCannotFollowARecycledPID(t *testing.T) {
 		_ = c.Wait()
 	}()
 
-	d, err := openContainerProc(pid, selfCgroup(t, pid))
+	d, err := openContainerProc(pid, selfCgroupLeaf(t, pid))
 	if err != nil {
 		t.Fatalf("openContainerProc on a live helper: %v", err)
 	}
