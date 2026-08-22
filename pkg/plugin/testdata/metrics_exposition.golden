@@ -68,7 +68,7 @@ net_dhcp_lease_time_clamped_total 280
 # TYPE net_dhcp_mtu_refused_total counter
 net_dhcp_mtu_refused_total 270
 
-# HELP net_dhcp_dhcp_server_tier_fallbacks_total Acquisitions that fell through to a lower-priority dhcp_servers entry because the preferred server did not answer. The only outside signal that a preferred server is silently dead.
+# HELP net_dhcp_dhcp_server_tier_fallbacks_total Steps down the dhcp_servers ladder: one per preferred entry that did not answer inside its slice of the budget and handed on to the next. One acquisition against three silent preferred servers adds 2, not 1. The only outside signal that a preferred server is silently dead.
 # TYPE net_dhcp_dhcp_server_tier_fallbacks_total counter
 net_dhcp_dhcp_server_tier_fallbacks_total 170
 
