@@ -1848,6 +1848,34 @@ func NewPlugin(opts Options) (*Plugin, error) {
 		IdleTimeout:       socketIdleTimeout,
 	}
 
+	// Kill dhcpcd clients left behind by a PREVIOUS plugin process
+	// before recovery can start new ones (#722).
+	//
+	// Placement is the whole point. Every orphan the sweep does not
+	// reach before recoverEndpoints runs becomes a second client on the
+	// same binding, with the same DUID, IAID and client-id -- and on the
+	// eventual Leave one of the pair sends a DHCPRELEASE while the other
+	// keeps renewing.
+	//
+	// Here covers BOTH recovery entry points. recoverEndpoints is called
+	// from two places: synchronously just below, and again from
+	// recoverEndpointsDeferred once the socket is up, for the case where
+	// the daemon was not serving yet (#383). The deferred walk cannot
+	// start a client before the synchronous one has run, so a sweep that
+	// precedes the synchronous call precedes both.
+	//
+	// A failure here is a warning, not a fatal: the plugin still has to
+	// come up. It is the case where recovery is about to start a second
+	// client for an endpoint whose first one is still alive, so it must
+	// not pass silently.
+	if n, err := dhcp.SweepOrphans(); err != nil {
+		log.WithError(err).
+			Warn("Could not sweep dhcpcd clients left by a previous plugin process; recovery may start a second client per endpoint")
+	} else if n > 0 {
+		log.WithField("killed", n).
+			Warn("Killed dhcpcd clients left by a previous plugin process")
+	}
+
 	// Run endpoint recovery synchronously before NewPlugin returns
 	// (and thus before Listen accepts the first RPC). Doing it on a
 	// background goroutine — the previous behaviour — opened a window
