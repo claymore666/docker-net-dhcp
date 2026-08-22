@@ -14,11 +14,17 @@
 # non-reproducibly, so the only way to undo it is to overwrite it with a
 # new digest, orphaning the previous signature.
 #
-# That dispatch is not hypothetical. docs/release-runbook.md offers it as
-# the RECOVERY procedure for a failed release, in the same file that
-# forbids moving `:latest` backwards. So the one operation nothing stops
-# is documented as the remedy, reached by someone already having a bad
-# day. This script is the executable end of that postmortem.
+# That dispatch was not hypothetical. Until 2026-08-22
+# docs/release-runbook.md OFFERED it as the recovery procedure for a
+# failed release, in the same file that forbids moving `:latest`
+# backwards — the one operation nothing stopped, documented as the
+# remedy, reached by someone already having a bad day. This script is
+# the executable end of that postmortem.
+#
+# The runbook has since been changed to send that reader to an rc
+# dry-run instead. Dating the sentence rather than deleting it is
+# deliberate: the history IS the justification, and a dispatch box
+# accepts any tag whatever the runbook says.
 #
 # WHAT IT ASSERTS. The tag being released is the newest tag IN ITS OWN
 # CLASS, where the class is:
@@ -44,11 +50,25 @@
 #     REFUSED. Moving `:latest` to it is then a deliberate manual
 #     `crane tag`. A backport must not become `:latest` by accident.
 #
-# WHAT IT DOES NOT COVER. Re-dispatching an rc of an ALREADY-RELEASED
-# version — v1.7.0-rc1 after v1.7.0 shipped — is not refused: it is the
-# newest rc of its own base. That moves `latest-rc`, which no documented
-# install command names, so it is left uncovered deliberately rather
-# than by oversight.
+# WHAT IT DOES NOT COVER, AND WHY THAT IS THE POINT. Re-dispatching an
+# rc of an ALREADY-RELEASED version — v1.7.0-rc1 after v1.7.0 shipped —
+# is not refused: it is the newest rc of its own base. That moves
+# `latest-rc`, which no documented install command names, so it is
+# uncovered deliberately rather than by oversight.
+#
+# That carve-out and the runbook's replacement remedy are the SAME
+# case, which is worth stating rather than leaving as a coincidence for
+# a reader to notice. The failure the remedy actually repairs is the
+# `Sync Docker Hub description from README` step: it is gated only on
+# HAS_HUB_CREDS, not on pre-release, and it PATCHes the same Hub
+# repository whichever tag ran it — so re-running the rc that preceded
+# the release genuinely fixes a 401, and this guard has nothing to
+# refuse when it does. The exit left open is exactly the exit the
+# documented remedy walks through.
+#
+# Worth knowing before you go looking for that 401: the step is
+# `continue-on-error: true`, so it fails INSIDE A GREEN JOB. Anyone
+# reading job status sees a clean release and never opens the log.
 #
 # It needs the tags to actually be present. A shallow checkout hands you
 # an empty list, and an empty list is an ERROR here, never a pass — the

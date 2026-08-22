@@ -795,10 +795,14 @@ jobs:
       # rollback, because rebuilding the plugin re-tars the rootfs
       # non-reproducibly and orphans the previous signature.
       #
-      # That dispatch is not a hypothetical: docs/release-runbook.md
-      # offers it as the recovery procedure for a failed release, in the
-      # same file that forbids moving `:latest` backwards. This is the
-      # executable end of that postmortem.
+      # That dispatch was not a hypothetical: until 2026-08-22
+      # docs/release-runbook.md OFFERED it as the recovery procedure for
+      # a failed release, in the same file that forbids moving
+      # `:latest` backwards. This is the executable end of that
+      # postmortem. The runbook has since been changed to send that
+      # reader to an rc dry-run instead; the sentence is dated rather
+      # than deleted because the history is the justification, and the
+      # dispatch box still accepts any tag.
       #
       # It REFUSES rather than skips. A skip during an incident is not
       # noticed, and an incident is exactly when this fires.
