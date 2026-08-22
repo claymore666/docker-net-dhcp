@@ -78,6 +78,37 @@ jobs:
     permissions:
       contents: write # mike commits + pushes the built site to gh-pages
     steps:
+      # OUR copy of the resolver, checked out first. The workflow's own
+      # ref is the trusted one; the resolver must not come from the tree
+      # the input names, or the value would be validated by code the
+      # value chose — the same reason integration.yml checks itself out
+      # before running its dispatch-ref guard (#593).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: scripts/resolve-dispatch-ref.sh
+          sparse-checkout-cone-mode: false
+
+      # The dispatch input is constrained to a fully qualified ref BEFORE
+      # anything is fetched (#738).
+      #
+      # This job holds contents: write, and what follows the checkout is
+      # `pip install --require-hashes -r docs/requirements.txt` from the
+      # checked-out tree and `mike`, which runs mkdocs — which executes
+      # the hooks named in the checked-out mkdocs.yml. So the tree is
+      # EXECUTED here, not merely read. The shape validation used to live
+      # inside the mike step, after both of those.
+      #
+      # scripts/resolve-dispatch-ref.sh emits `refs/heads/dev` or
+      # `refs/tags/vX.Y.Z[-rcN]` and nothing else, so an arbitrary SHA —
+      # a fork's pull-request head is one, and lives in this
+      # repository's object store — is not rejected by a rule, it is
+      # unexpressible. This job needs no gate job in its `needs:`
+      # because the value cannot name anything dangerous by the time
+      # checkout sees it.
+      #
+      # Two outputs, deliberately: `ref` is what checkout takes,
+      # `version` is the bare name mike labels the build with. Deriving
+      # the second by stripping the first would put the parsing back.
       - name: Resolve docs ref
         id: ref
         env:
@@ -85,14 +116,16 @@ jobs:
         run: |
           set -euo pipefail
           if [ -n "${INPUT_TAG}" ]; then
-            REF="${INPUT_TAG}"
+            VERSION="${INPUT_TAG}"
           elif [ "${GITHUB_REF_TYPE}" = "tag" ]; then
-            REF="${GITHUB_REF_NAME}"
+            VERSION="${GITHUB_REF_NAME}"
           else
-            REF="dev"
+            VERSION="dev"
           fi
+          REF="$(bash scripts/resolve-dispatch-ref.sh "${VERSION}")"
           echo "ref=${REF}" >> "$GITHUB_OUTPUT"
-          echo "Publishing docs for: ${REF}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Publishing docs for: ${VERSION} (${REF})"
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -121,7 +154,7 @@ jobs:
       # moving dev version (and bootstraps the default until a release exists).
       - name: Publish with mike
         env:
-          REF: ${{ steps.ref.outputs.ref }}
+          REF: ${{ steps.ref.outputs.version }}
         run: |
           set -euo pipefail
           if [ "${REF}" = "dev" ]; then
@@ -155,6 +188,10 @@ jobs:
             # Pre-release (vX.Y.Z-rcN): preview only — no alias, no default move.
             mike deploy --push "${REF}"
           else
+            # Unreachable: resolve-dispatch-ref.sh refused anything else
+            # before the checkout. Kept as the second half of the pair —
+            # if that script is ever loosened, this still refuses to
+            # publish a version it cannot classify.
             echo "Ref '${REF}' is neither dev nor a vX.Y.Z[-rcN] tag; refusing." >&2
             exit 1
           fi

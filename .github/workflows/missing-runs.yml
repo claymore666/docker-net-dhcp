@@ -63,4 +63,6 @@ jobs:
           # and a commit stays in range for well over a day of normal
           # traffic. Raising it costs one API call per extra commit.
           GATE_BRANCH_COMMITS: "15"
-        run: bash scripts/check-missing-runs.sh "${{ inputs.grace-minutes || '20' }}"
+          # Through env, not expanded into the script text (#737).
+          GRACE_MINUTES: ${{ inputs.grace-minutes || '20' }}
+        run: bash scripts/check-missing-runs.sh "${GRACE_MINUTES}"
