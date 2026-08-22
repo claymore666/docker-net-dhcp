@@ -116,7 +116,7 @@ func TestRecoverOneEndpoint_RecordsFingerprint(t *testing.T) {
 		t.Fatalf("DeleteEndpoint: %v", err)
 	}
 
-	gotMAC, gotIPv4, gotIPv6, ok := p.consumeTombstone(netID, hostname, true)
+	gotMAC, gotIPv4, gotIPv6, ok := p.consumeTombstone(netID, dhcpHostname{name: hostname})
 	if !ok {
 		t.Fatal("a recovered endpoint left no tombstone when it was deleted; the next docker restart gets a fresh MAC")
 	}
@@ -212,7 +212,7 @@ func TestRecoverOneEndpoint_NoHostnameNoWildcardTombstone(t *testing.T) {
 
 			// Asked with a DIFFERENT container's hostname: that is the
 			// theft this guards against. A wildcard tombstone answers it.
-			if gotMAC, gotIPv4, _, ok := p.consumeTombstone(netID, "some-other-container", true); ok {
+			if gotMAC, gotIPv4, _, ok := p.consumeTombstone(netID, dhcpHostname{name: "some-other-container"}); ok {
 				t.Errorf("another container inherited mac=%q ipv4=%q from a hostname-less recovery — %s", gotMAC, gotIPv4, tc.reason)
 			}
 
@@ -248,7 +248,7 @@ func TestRecoverOneEndpoint_LosingTheRaceRecordsNothing(t *testing.T) {
 	})
 	// What the winning Join left behind.
 	p.registerDHCPManager(epID, &dhcpManager{})
-	p.rememberEndpoint(epID, endpointFingerprint{MAC: "02:42:ac:11:00:09", Hostname: "app-1"})
+	p.rememberEndpoint(epID, endpointFingerprint{MAC: "02:42:ac:11:00:09"}, dhcpHostname{name: "app-1"})
 
 	if _, err := p.recoverOneEndpoint(
 		context.Background(), ctrID, netID, epID,

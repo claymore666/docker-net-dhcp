@@ -487,12 +487,27 @@ both addresses as hints. The TTL covers `docker restart` (sub-second) and
 `systemctl restart docker` (15–30s while the daemon re-attaches
 everything).
 
-- **MAC stability always works** — `docker inspect` and the LAN see the
-  same MAC across restarts.
+- **MAC stability holds whenever a tombstone was written** — `docker
+  inspect` and the LAN then see the same MAC across the restart. A
+  tombstone is written at `DeleteEndpoint` from what the plugin recorded
+  when it built the endpoint, so the condition is that the plugin still
+  holds that record. It does across `docker restart`. It did **not**
+  across a plugin restart before v1.8.0: endpoints rebuilt by recovery
+  were re-attached without re-recording, so the next `DeleteEndpoint`
+  laid down nothing and the container came back on a fresh MAC (#721).
+  Fixed, and stated as a condition rather than an absolute because the
+  absolute is what made that bug invisible to anyone reading this page
+  to decide whether they needed a reservation.
 - **IP stability depends on the server** honouring option 50, exactly as
   for an explicit request above. Where it doesn't, configure a
   reservation against the now-stable MAC and every restart gets that
-  address.
+  address — **in `bridge` and `macvlan` only**. `ipvlan` has no stable
+  per-container MAC to key a reservation on: its L2 slaves all inherit
+  the parent's, so a reservation would either match nothing or match the
+  parent and hand one address to every container on the network. The
+  plugin writes no tombstone for `ipvlan` at all, for the same reason.
+  See [DHCP identity](#dhcp-identity) for what `ipvlan` uses instead and
+  why it does not survive a restart (#219).
 
 Two things it deliberately does not do. Concurrent restarts of several
 containers on one network inside the 60-second window fall back to fresh
@@ -501,6 +516,16 @@ carry the container hostname so restarts in flight can be told apart when
 the hostname is known, and only when neither side knows it does the
 network-wide "exactly one match" rule apply. Sequential restarts, the
 normal case, always satisfy it.
+
+A container whose hostname the plugin **refuses** — one carrying a
+control character, which never reaches a DHCP packet (see
+`unsafe_hostnames_rejected`) — gets no tombstone at all, and so does not
+keep its MAC across a restart. That is deliberate and it is not the same
+as having no hostname: a hostname-less container writes a tombstone that
+matches network-wide, which is the v0.5.0 behaviour above and is correct
+for it. Writing one for a *refused* hostname would make the value the
+plugin declined to trust for a narrow match into a match against every
+container on the network.
 
 And the tombstone is keyed by **network ID**, so it survives a container
 restart but not the removal of the network itself — which is why a plugin
@@ -750,6 +775,7 @@ diagnosing a specific container from them alone is not.
 | `parent_link_wait_timeouts` | no | (v1.6.0+) The same wait giving up after its budget, after which the operation asks the kernel anyway and may fail with `device or resource busy`. Deliberately bounded well below the reclaim's own budget so a wedged reclaim degrades to the pre-v1.6.0 behaviour instead of stalling a container start. Not `healthy`-affecting, but the actionable one of the pair: any non-zero value means something held a parent far longer than a DHCP round trip should take, and container starts on that NIC were refused as a result. |
 | `unsafe_hostnames_rejected` | no | (v1.8.0+) Container hostnames dropped before they could reach the generated DHCP client config, because they carried a control character (#692). The drop is the safe outcome and the lease proceeds — the hostname only decorates the DHCP exchange and the opt-in `register_dns` registration — so this is not `healthy`-affecting. Read it as an intent signal rather than a fault: Docker does not validate `--hostname`, and a legitimate one never contains a newline, so a non-zero value means something deliberately tried to append directives to the client config. Underscores and other technically-illegal-but-common hostnames are **not** counted; the rule is about the config file's structure, not about RFC 1123. |
 | `unsafe_option_values_dropped` | no | (v1.8.0+) Server-chosen DHCP string values refused before use because they carried a control character, plus option-15 domains truncated at their first space. The filter is reflective and covers every string value in the lease, so a new one is covered the day it is added; the ones it exists for are options 67, 100, 101 and 252, which `dhcpcd` passes through unvalidated because they are `string`-typed rather than `dname`-typed. Option 66 is `dname`-typed and `dhcpcd` type-checks it, but it is filtered here too rather than trusted. `dhcpcd` validates only its `dname`-typed options; the `string`-typed ones pass `\n` and `\r` through verbatim, and a space in option 15 turns one search domain into several with the server's first in the order. The sibling of `unsafe_hostnames_rejected`, for the values the *server* chooses rather than the container. A legitimate server sends none of these, so any rise is deliberate. |
+| `network_options_rejected` | no | (v1.8.0+) Endpoint operations that met a network's stored options and would not act on them as written: an interface name the kernel would not accept, or a `mode` this plugin does not implement. Name validation runs when a network is *created* (#705); this check runs every time the stored options are *read*, which is where the name actually reaches netlink. Not healthy-affecting: refusing is the safe outcome, the operation already fails visibly to Docker, and one network's record being wrong does not make the plugin unwell — every other network on the host keeps working. A non-zero value means one network needs recreating: either it was created before name validation existed, or its options were written directly into the state directory. `DeleteEndpoint` is deliberately exempt so a refused network can still be torn down — it counts an unknown mode and proceeds, so a rise here does not mean nothing was torn down. Only the mode: teardown reads no stored name at all (it derives the link from the endpoint ID), so there is no name refusal available to it. |
 | `dns_propagation_pid_mismatches` | no | (v1.8.0+) DNS propagations refused because the container PID resolved through Docker no longer belonged to that container by the time the plugin acted on it (#688). Only reachable with `propagate_dns` opted in. Refusing is the safe outcome — the container keeps the `resolv.conf` it had, and the next renewal propagates again — so this is not `healthy`-affecting. It is reported because the plugin runs in the host PID namespace: each one is a `/etc/resolv.conf` write that would otherwise have landed in an unrelated host process that inherited the recycled PID. A sustained rise means containers are exiting inside the propagation window; an isolated one is a container that stopped at the wrong moment. |
 | `netns_pid_mismatches` | no | (v1.8.0+) Sandbox network-namespace opens refused because the container PID resolved through Docker no longer belonged to that container. The sibling of `dns_propagation_pid_mismatches` above, on the path with the larger blast radius and with no opt-in: what the refusal prevents is not one file but a netlink handle carrying every address, MTU and route the plugin applies, with `CAP_NET_ADMIN`, plus a DHCP client spawned into that namespace as root. Refusing fails the attach, so unlike the DNS case it is not silent — but the error reads like a slow container start, and only this counter says the PID belonged to something else. Not `healthy`-affecting: the attach failure is reported to Docker, and the container simply does not come up on this network. Any non-zero value is worth reading: it means a container exited inside the attach window and the kernel handed its PID to another task. |
 | `dhcp_routes_applied` | no | (v1.8.0+) DHCP option-121 classless static routes handed to Docker at Join — routes, not Joins. `skip_routes=true` opts out and then this never moves. Read it as the denominator for the row below. |

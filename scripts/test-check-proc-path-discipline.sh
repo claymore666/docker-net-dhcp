@@ -37,12 +37,39 @@ check() {
 # Fixtures are the real tree, copied, then broken in one specific way,
 # so a fixture starts out passing for the same reasons the repo does and
 # any failure is attributable to the single edit.
+#
+# Each mutator is checked to have actually CHANGED the tree. Every one of
+# them is a sed anchored on a verbatim line of production source, so an
+# unrelated edit to that line turns the mutation into a no-op silently --
+# and a no-op fixture is a PRISTINE tree, which the gate passes. The
+# result reads as "the gate stopped rejecting the shipped line", pointing
+# the reader at the gate when the fixture is what broke. It has happened
+# once: `m.hostname, _ = safeHostname(...)` became
+# `m.hostname = safeHostname(...).name` and this file's first case went
+# red with a diagnosis that named the wrong file.
 fixture() {
     local name="$1"; shift
     local d="$TMP/$name"
     mkdir -p "$d"
     cp -r "$REPO/pkg" "$REPO/cmd" "$d/"
-    [ "$#" -gt 0 ] && "$@" "$d"
+    if [ "$#" -gt 0 ]; then
+        local before
+        # sort, because `sed -i` rewrites a file even when its pattern
+        # matched nothing: the rename gives a new inode, find's raw order
+        # changes with it, and an unsorted checksum would differ for a
+        # mutation that did nothing at all.
+        before=$(find "$d" -name '*.go' -type f | sort | xargs cat | cksum)
+        "$@" "$d"
+        if [ "$(find "$d" -name '*.go' -type f | sort | xargs cat | cksum)" = "$before" ]; then
+            echo "FAIL: fixture '$name' changed nothing — its sed anchor no longer matches the source." >&2
+            echo "      Re-anchor the mutator; the gate itself is NOT what this case is reporting on." >&2
+            # A marker file, not fails=1: fixture runs inside $( ), so a
+            # variable set here dies with the subshell and the meta-test
+            # would report the very "silent pass" this check exists to
+            # stop.
+            touch "$TMP/fixture-noop"
+        fi
+    fi
     bash "$CHECK" "$d" >"$TMP/$name.log" 2>&1
     echo $?
 }
@@ -53,7 +80,7 @@ check "the real tree passes" 0 "$got"
 # --- the regression this gate exists for -------------------------------
 # Verbatim the line that shipped in dhcp_manager.go after #688.
 reintroduce_688() {
-    sed -i 's|^\tm.hostname, _ = m.plugin.safeHostname(ctr.Config.Hostname)$|\tm.nsPath = fmt.Sprintf("/proc/%v/ns/net", ctr.State.Pid)\n\tm.hostname, _ = m.plugin.safeHostname(ctr.Config.Hostname)|' \
+    sed -i 's|^\tm.hostname = m.plugin.safeHostname(ctr.Config.Hostname).name$|\tm.nsPath = fmt.Sprintf("/proc/%v/ns/net", ctr.State.Pid)\n\tm.hostname = m.plugin.safeHostname(ctr.Config.Hostname).name|' \
         "$1/pkg/plugin/dhcp_manager.go"
 }
 got=$(fixture reintroduced reintroduce_688)
@@ -118,7 +145,7 @@ check "the guard function going missing exits 2, not 0" 2 "$got"
 got=$(bash "$CHECK" "$TMP/does-not-exist" >/dev/null 2>&1; echo $?)
 check "a missing tree exits 2, not 0" 2 "$got"
 
-if [ "$fails" -ne 0 ]; then
+if [ -e "$TMP/fixture-noop" ] || [ "$fails" -ne 0 ]; then
     echo "proc-path discipline meta-test FAILED"
     exit 1
 fi
