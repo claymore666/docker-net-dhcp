@@ -620,11 +620,32 @@ func parseDriverOptIP(options map[string]interface{}) (string, error) {
 // daemon-restart deadlock when dockerd is calling our endpoint
 // handlers while not yet ready to serve API calls.
 func (p *Plugin) netOptions(ctx context.Context, id string) (DHCPNetworkOptions, error) {
-	if opts, err := loadOptions(id); err == nil {
-		return opts, nil
-	} else if !os.IsNotExist(err) {
-		log.WithError(err).WithField("network", id).
-			Warn("Failed to load persisted options; falling back to docker API")
+	cached, loadErr := loadOptions(id)
+	if loadErr == nil {
+		return cached, nil
+	}
+
+	// THE BACKFILL BELOW MAY ONLY RUN WHEN THERE WAS NOTHING TO READ.
+	//
+	// Everything that is not os.IsNotExist means the file exists and we
+	// declined or failed to read it -- a schema from a newer build
+	// (errStateSchemaTooNew), a corrupt file, or a transient EIO/EMFILE.
+	// Falling back to the docker API for THIS CALL is right in all of
+	// those cases; the API is authoritative for everything in the
+	// struct. Writing afterwards is not. Backfilling on a schema refusal
+	// would replace the v2 file with a v1 one, so a downgrade would
+	// destroy the newer file instead of declining to read it -- the
+	// exact failure stateSchemaVersion exists to prevent. Backfilling on
+	// a transient read error would overwrite a good file because the
+	// disk had a bad moment.
+	//
+	// This is the same split tombstoneStore.add draws: a refusal and an
+	// absence must not reach a writer as the same thing. Read-only
+	// fallback for every failure, a write for absence alone (#724).
+	absent := os.IsNotExist(loadErr)
+	if !absent {
+		log.WithError(loadErr).WithField("network", id).
+			Warn("Failed to load persisted options; falling back to the docker API for this call and leaving the file on disk untouched")
 	}
 
 	dummy := DHCPNetworkOptions{}
@@ -640,10 +661,13 @@ func (p *Plugin) netOptions(ctx context.Context, id string) (DHCPNetworkOptions,
 	}
 
 	// Backfill: persist options for networks that pre-date the
-	// persistence feature so the next call hits the disk path.
-	if err := saveOptions(id, opts); err != nil {
-		log.WithError(err).WithField("network", id).
-			Debug("Failed to backfill persisted options")
+	// persistence feature so the next call hits the disk path. Guarded
+	// on absence for the reason above -- there is no file to lose.
+	if absent {
+		if err := saveOptions(id, opts); err != nil {
+			log.WithError(err).WithField("network", id).
+				Debug("Failed to backfill persisted options")
+		}
 	}
 	return opts, nil
 }

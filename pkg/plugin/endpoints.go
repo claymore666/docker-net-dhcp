@@ -252,12 +252,39 @@ func (p *Plugin) apiLeave(w http.ResponseWriter, r *http.Request) {
 
 // HealthResponse is the payload returned by /Plugin.Health.
 //
-// Healthy is false when at least one plugin-restart recovery failed —
-// the plugin keeps serving requests for fresh attaches, but containers
-// that were running before the restart and got a recovery failure are
-// now running without lease renewal and will lose their IP at lease
-// expiry. Operators should restart those containers (which produces a
-// fresh CreateEndpoint and gets them back into the persistent map).
+// # WHAT `Healthy` MEANS
+//
+// False when any of FIVE counters is non-zero: recovery_failed,
+// join_start_failures, tombstone_write_failures, address_conflicts and
+// tombstone_quarantines. Each is marked Healthy-affecting on its field
+// below, and docs/reference.md states the same set in four more places;
+// scripts/check-health-contract.sh keeps those in step.
+//
+// This comment said "at least one plugin-restart recovery failed" —
+// ONE counter — from before v1.6.0 until #724. The expression 350 lines
+// below had four by then. It is the comment a developer reads first
+// when adding a counter, which is exactly how it stayed wrong for two
+// releases: the gate reads reference.md and the expression, not this.
+// Corrected here rather than only in the docs, because the next person
+// to add a Healthy-affecting counter reads this file (#638, #724).
+//
+// # IT LATCHES, AND THE OBVIOUS REMEDY DOES NOT CLEAR IT
+//
+// Every counter behind the flag is a monotonic atomic; nothing
+// decrements them. So `healthy: false` means "a fault occurred at some
+// point during THIS plugin process", not "something is wrong right
+// now". An operator who restarts the affected containers fixes the
+// condition — and the flag stays false. The only thing that clears it
+// is restarting the plugin, which tears down the renewal client of
+// every managed endpoint on the host, so it is not a free action and
+// must not be taken as routine hygiene. Pair a reading with InstanceID
+// to tell "still the same process, still latched" from "a new process
+// that has already gone bad".
+//
+// That is deliberate. An alert that goes quiet on its own is worse than
+// one that never clears, because the operator learns nothing from the
+// silence. If "unhealthy right now" is ever wanted, it is a new field,
+// not a change to this one.
 type HealthResponse struct {
 	Healthy bool `json:"healthy"`
 	// InstanceID identifies the plugin process that served this
@@ -374,7 +401,53 @@ type HealthResponse struct {
 	// healthy-affecting: there is no running container missing a
 	// renewal client.
 	JoinAbortedEndpointLeft int32 `json:"join_aborted_endpoint_left"`
-	TombstoneWriteFailures  int32 `json:"tombstone_write_failures"`
+	// TombstoneWriteFailures counts tombstone persistence failures.
+	// Healthy-affecting: an endpoint will not keep its address across a
+	// restart.
+	//
+	// It moves on a failed READ as well as a failed write. Since #724,
+	// a transient read error (EIO, EMFILE, a read racing a writer) makes
+	// the write path refuse rather than rewrite the file from nothing,
+	// and that refusal is counted here — the consequence is identical to
+	// a failed write, and the name being narrower than the meaning is
+	// worth one sentence rather than a fourth counter.
+	TombstoneWriteFailures int32 `json:"tombstone_write_failures"`
+	// TombstoneQuarantines counts times the tombstone file was found
+	// unparseable and moved aside as tombstones.json.corrupt-<ts>
+	// (#724). Healthy-affecting, and the counter that costs the most
+	// when it moves: a write failure loses ONE container's MAC and
+	// address, a quarantine loses every live tombstone on the host, so
+	// every container restarting for the rest of the TTL window comes
+	// back with a new identity.
+	//
+	// Separate from TombstoneWriteFailures on purpose. The two have
+	// different remedies — a write failure means the disk is full or
+	// read-only, a quarantine leaves a file to read — and merging them
+	// would leave an operator unable to tell which one they are being
+	// paged for.
+	//
+	// WHY IT LATCHES `healthy`, WHICH IS NOT OBVIOUS. The argument
+	// against is real: the condition is self-healing by construction —
+	// the file is renamed away, the plugin continues correctly from an
+	// empty set, and the cost is bounded at one TTL window of address
+	// instability for containers that happen to restart in it. Against
+	// that, the remedy for a latched `healthy` is to restart the
+	// plugin, which tears down every managed endpoint's renewal client:
+	// strictly more damaging than the fault. On those terms alone it
+	// would not latch.
+	//
+	// It latches anyway, for two reasons. Consistency first:
+	// TombstoneWriteFailures is already healthy-affecting, and a
+	// quarantine is the same family — tombstones did not work. Splitting
+	// them would mean an I/O error latches and actual file corruption
+	// does not. And the one that decides it: a quarantine does not mean
+	// tombstones had a bad minute, it means SOMETHING WROTE GARBAGE
+	// into stateDir — a host bind mount that survives `docker plugin rm`
+	// and upgrade, and that now also holds the versioned options file.
+	// The self-healing is about the tombstones. The signal is about the
+	// disk, and that is worth an operator's attention even though this
+	// particular symptom cleared itself.
+	TombstoneQuarantines int32 `json:"tombstone_quarantines"`
 	// UnsafeHostnamesRejected counts container hostnames dropped before
 	// reaching the generated DHCP client config because they carried a
 	// control character (#692). NOT healthy-affecting: the drop is the
@@ -611,14 +684,22 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 	joinFails := p.joinStartFailures.Load()
 	tsFails := p.tombstoneWriteFailures.Load()
 	conflicts := p.addressConflicts.Load()
+	tsQuarantines := p.tombstones.quarantines.Load()
 	return HealthResponse{
 		// Healthy is false on any condition that means an operator
 		// should look: a recovery or join-start failure means a running
 		// container has no renewal goroutine; a tombstone-write failure
 		// means the next restart of some container will pick a new
 		// MAC/IP; an address conflict means a container is up and
-		// reporting an address that belongs to someone else (#524).
-		Healthy:           failed == 0 && joinFails == 0 && tsFails == 0 && conflicts == 0,
+		// reporting an address that belongs to someone else (#524); a
+		// tombstone quarantine means the whole tombstone file was
+		// unreadable, so EVERY container restarting in the next TTL
+		// window picks a new MAC and address (#724).
+		//
+		// See HealthResponse's own comment for what this flag does and
+		// does not say — in particular that it latches for the life of
+		// the process.
+		Healthy:           failed == 0 && joinFails == 0 && tsFails == 0 && conflicts == 0 && tsQuarantines == 0,
 		InstanceID:        p.instanceID,
 		UptimeSeconds:     time.Since(p.startTime).Seconds(),
 		ActiveEndpoints:   active,
@@ -644,6 +725,7 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		RestartLinkUpTimeouts:        p.restartLinkUpTimeouts.Load(),
 		JoinAbortedEndpointLeft:      p.joinAbortedEndpointLeft.Load(),
 		TombstoneWriteFailures:       tsFails,
+		TombstoneQuarantines:         tsQuarantines,
 		UnsafeHostnamesRejected:      p.unsafeHostnamesRejected.Load(),
 		UnsafeOptionValuesDropped:    p.unsafeOptionValuesDropped.Load(),
 		DNSPropagationPIDMismatches:  p.dnsPropagationPIDMismatches.Load(),

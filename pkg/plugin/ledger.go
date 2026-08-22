@@ -103,6 +103,26 @@ func (l *leaseLedger) Append(e ledgerEntry) {
 	if err := f.Chmod(stateFileMode); err != nil {
 		log.WithError(err).Debug("lease ledger chmod failed")
 	}
+	// The ROTATED generation too, and this is the copy that matters.
+	// rotateIfNeeded moves the file with os.Rename, which does not touch
+	// the inode's mode, and nothing ever opens ".1" again -- so the
+	// tightening above reaches the active ledger and never reaches the
+	// one beside it. A host that rotated once before upgrading kept a
+	// world-readable full lease audit trail: every MAC, every leased
+	// address, every hostname, for the whole retention window.
+	//
+	// The inversion is what makes this worth a line here rather than at
+	// the rename: #708 promised the upgrade tightens hosts that have
+	// been running a while, and a host WITH a rotated ledger is exactly
+	// a host that has been running a while. Chmod'ing at the rename site
+	// would fix rotations from now on and leave the already-rotated file
+	// open forever -- fixing it everywhere except the population the
+	// promise was about (#724).
+	//
+	// ENOENT is the normal case: most hosts have never rotated.
+	if err := os.Chmod(l.path+".1", stateFileMode); err != nil && !os.IsNotExist(err) {
+		log.WithError(err).Debug("rotated lease ledger chmod failed")
+	}
 	defer func() {
 		if err := f.Close(); err != nil {
 			log.WithError(err).Debug("lease ledger close failed")

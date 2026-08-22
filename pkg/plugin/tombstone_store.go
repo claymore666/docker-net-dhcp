@@ -4,7 +4,10 @@
 package plugin
 
 import (
+	"errors"
+	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -38,6 +41,28 @@ import (
 // whose entire premise is that it changes nothing.
 type tombstoneStore struct {
 	mu sync.Mutex
+
+	// quarantines counts times the tombstone file was found unparseable
+	// and moved aside as tombstones.json.corrupt-<ts> (#724). Published
+	// as tombstone_quarantines and reported on /Plugin.Health, where it
+	// is healthy-affecting.
+	//
+	// Named for what it counts, not for where it was noticed. It is NOT
+	// "load failures": a transient EIO is a load failure and is not
+	// counted here, because it leaves nothing on disk to look at and
+	// nothing lost. A quarantine is a persistent, operator-actionable
+	// event with a file to read.
+	//
+	// It is deliberately NOT folded into tombstoneWriteFailures either.
+	// The two have different remedies -- a write failure means the disk
+	// is full or read-only, a quarantine means a file to inspect -- and
+	// merging them leaves an operator unable to tell which one they are
+	// being paged for.
+	//
+	// It lives here rather than on Plugin so the zero value stays usable
+	// -- tests construct &Plugin{} directly, and a counter that needed a
+	// constructor would turn those into nil-pointer panics.
+	quarantines atomic.Int32
 }
 
 // add appends a tombstone, pruning expired entries in the same write.
@@ -49,10 +74,38 @@ func (s *tombstoneStore) add(networkID, hostname, mac, ipv4, ipv6 string) error 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// This function is the only one that can destroy the file. It used
+	// to treat EVERY load error as "start fresh" -- set the list to nil
+	// and save -- which rewrote the file with a single entry and
+	// silently deleted every other live tombstone in it, at Warn, on a
+	// path nobody watches. The blast radius is the product's headline
+	// promise: every container mid-restart on this host loses its MAC
+	// and its IP hint (#724).
+	//
+	// So the two failures are separated. Only one of them is safe to
+	// continue past.
 	ts, err := loadTombstones()
-	if err != nil {
-		log.WithError(err).Warn("Failed to load tombstones; starting fresh")
+	switch {
+	case err == nil:
+	case errors.Is(err, errTombstonesQuarantined):
+		// The contents were unparseable and are now saved aside under
+		// their own name. There is nothing to preserve and nothing left
+		// to overwrite, so continuing with a fresh list is correct.
+		// Counted rather than only logged: a log line is not a surface
+		// anyone alerts on, and every tombstone that file held is gone
+		// from the live set.
+		s.quarantines.Add(1)
+		log.WithError(err).Warn("Tombstone file was corrupt and has been quarantined; restarting containers will pick new MACs and addresses until the window passes")
 		ts = nil
+	default:
+		// A transient read failure -- EIO, EMFILE, a read racing a
+		// writer. The file may be perfectly good, so writing here would
+		// destroy live data because a descriptor was briefly
+		// unavailable. Refuse instead. The caller counts it and this
+		// one endpoint loses its restart stability, which is the same
+		// outcome as a failed write and is what tombstone_write_failures
+		// already means.
+		return fmt.Errorf("refusing to rewrite tombstones after a failed read: %w", err)
 	}
 	ts = append(pruneTombstones(ts), tombstone{
 		NetworkID:   networkID,
@@ -79,6 +132,14 @@ func (s *tombstoneStore) consume(networkID, hostname string) (mac, ipv4, ipv6 st
 
 	ts, err := loadTombstones()
 	if err != nil {
+		// consume writes nothing on a load failure and always got this
+		// right; it is add that used to destroy the file. The quarantine
+		// is still counted here, because it is the same event with the
+		// same remedy whichever reader trips it first -- and on an idle
+		// host a consume can easily be the one that does.
+		if errors.Is(err, errTombstonesQuarantined) {
+			s.quarantines.Add(1)
+		}
 		log.WithError(err).Warn("Failed to load tombstones; treating as empty")
 		return "", "", "", false
 	}

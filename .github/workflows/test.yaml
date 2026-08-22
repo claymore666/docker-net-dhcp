@@ -174,11 +174,21 @@ jobs:
         run: bash scripts/check-docs-drift.sh
 
       # Presence is not agreement (#638). check-docs-drift proves every
-      # counter is documented; this proves the four places that say
-      # WHICH ones flip `healthy` still say the same thing, and that the
-      # code computes that many. The `healthy` row listed three for two
-      # releases while the column beside it and the code both said four;
-      # the Troubleshooting row named two of four for longer still.
+      # counter is documented; this proves the places that say WHICH
+      # ones flip `healthy` still say the same thing. The `healthy` row
+      # listed three for two releases while the column beside it and the
+      # code both said four; the Troubleshooting row named two of four
+      # for longer still.
+      #
+      # It reads six surfaces now, not four (#724): the doc's counter
+      # lists AND the sentences restating how many there are, the
+      # Healthy expression, the /metrics help strings that end
+      # "Healthy-affecting." -- operator-facing text served on the wire,
+      # which the exposition golden cannot judge because it is
+      # regenerated from it -- and floorCounters, the list an
+      # integration run fails over. Its PASS line tallies what it read;
+      # that number is the coverage, not the fact that this step is
+      # green.
       - name: Health-contract check
         run: bash scripts/check-health-contract.sh
 

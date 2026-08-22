@@ -136,6 +136,7 @@ func metricDefs() []metricDef {
 
 		// Persistence.
 		{name: "tombstone_write_failures", counter: true, help: "Tombstone writes that failed, so the next restart of that container picks a new MAC and address. Healthy-affecting.", field: "tombstone_write_failures"},
+		{name: "tombstone_quarantines", counter: true, help: "Times the tombstone file was found unparseable and moved aside as tombstones.json.corrupt-<ts>; every live tombstone on the host was lost with it, so containers restarting in the next TTL window come back with new MACs and addresses. Healthy-affecting.", field: "tombstone_quarantines"},
 		{name: "tombstones_consumed", counter: true, help: "Tombstones read back to preserve a container's MAC and address across a restart.", field: "tombstones_consumed"},
 		{name: "unsafe_hostnames_rejected", counter: true, help: "Container hostnames dropped before reaching the DHCP client config because they carried a control character. A legitimate hostname never does, so any rise is deliberate (#692).", field: "unsafe_hostnames_rejected"},
 		{name: "unsafe_option_values_dropped", counter: true, help: "Server-chosen DHCP string values refused before use because they carried a control character, plus option-15 domains truncated at their first space. dhcpcd validates only its dname-typed options; the string-typed ones pass newlines through (#703, #704).", field: "unsafe_option_values_dropped"},
