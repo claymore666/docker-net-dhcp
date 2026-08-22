@@ -864,3 +864,112 @@ func TestConflictProbeLine(t *testing.T) {
 		})
 	}
 }
+
+// RestartLinkUpLine has the same job as ConflictProbeLine one window
+// over: stop a zero from being read as evidence. The four branches are
+// four different answers to "does this run tell us anything about the
+// #408 budget", and the two that must never be confused are "the window
+// did not arise" and "the window arose and the budget held".
+func TestRestartLinkUpLine(t *testing.T) {
+	cases := []struct {
+		name string
+		h    *HealthResponse
+		want []string
+		deny []string
+	}{
+		{
+			name: "nil health says nothing",
+			h:    nil,
+			want: nil,
+		},
+		{
+			name: "no tombstoned restart is explicitly not a measurement",
+			h:    &HealthResponse{},
+			want: []string{"nothing exercised", "absence of a measurement"},
+			// The affirmative claim, not a substring of the honest
+			// answer: this branch is allowed to say the words "the
+			// budget", it is not allowed to say the budget held.
+			deny: []string{"made it inside the budget"},
+		},
+		{
+			name: "restarts that never hit the window prove nothing either way",
+			h:    &HealthResponse{TombstonesConsumed: 6},
+			want: []string{"6 restart(s)", "not evidence either way", "did not\n  arise"},
+			deny: []string{"made it inside the budget", "outlasted the budget"},
+		},
+		{
+			name: "the window arose and was survived is a positive measurement",
+			h:    &HealthResponse{TombstonesConsumed: 6, RestartLinkUpWaited: 2},
+			want: []string{"2 of 6", "made it inside the budget", "measured, not assumed"},
+			// This is the pair that matters. A run that hit the window
+			// and cleared it must never read as a run that never hit it,
+			// because only the first says anything about 3s.
+			deny: []string{"not evidence either way", "absence of a measurement"},
+		},
+		{
+			name: "a timeout is reported over the waits it came from",
+			h: &HealthResponse{
+				TombstonesConsumed: 9, RestartLinkUpWaited: 4, RestartLinkUpTimeouts: 1,
+			},
+			want: []string{"1 restart(s) outlasted", "out of 4 that had to wait", "9 that took the tombstone"},
+			deny: []string{"every one made it inside the budget", "not evidence either way"},
+		},
+		{
+			name: "a timeout outranks a clean wait count",
+			// Both non-zero, as they are on any real failing run: the
+			// timeout is the finding, and the waits are its denominator
+			// rather than a competing verdict.
+			h: &HealthResponse{
+				TombstonesConsumed: 3, RestartLinkUpWaited: 3, RestartLinkUpTimeouts: 3,
+			},
+			want: []string{"3 restart(s) outlasted"},
+			deny: []string{"was survived"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := RestartLinkUpLine(tc.h)
+			if tc.h == nil {
+				if got != "" {
+					t.Errorf("nil health produced %q, want empty", got)
+				}
+				return
+			}
+			if got == "" {
+				t.Fatal("produced no line; every non-nil case must say something")
+			}
+			for _, w := range tc.want {
+				if !strings.Contains(got, w) {
+					t.Errorf("line missing %q:\n%s", w, got)
+				}
+			}
+			for _, d := range tc.deny {
+				if strings.Contains(got, d) {
+					t.Errorf("line wrongly contains %q:\n%s", d, got)
+				}
+			}
+		})
+	}
+}
+
+// TestRestartLinkUpLine_EveryBranchIsReachable guards the switch itself.
+// The ordering is load-bearing -- timeouts before waits before
+// tombstones -- and an accidental reorder would leave a branch that no
+// input can reach, which the table above would not notice because each
+// of its cases would simply match an earlier arm and still contain the
+// substring it was looking for.
+func TestRestartLinkUpLine_EveryBranchIsReachable(t *testing.T) {
+	seen := map[string]bool{}
+	for _, h := range []*HealthResponse{
+		{},
+		{TombstonesConsumed: 1},
+		{TombstonesConsumed: 1, RestartLinkUpWaited: 1},
+		{TombstonesConsumed: 1, RestartLinkUpWaited: 1, RestartLinkUpTimeouts: 1},
+	} {
+		seen[RestartLinkUpLine(h)] = true
+	}
+	if len(seen) != 4 {
+		t.Errorf("four inputs produced %d distinct lines, want 4; a branch is "+
+			"unreachable, so some state of the #408 window reports as another", len(seen))
+	}
+}

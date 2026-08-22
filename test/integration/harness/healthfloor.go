@@ -609,6 +609,59 @@ func ConflictProbeLine(h *HealthResponse) string {
 	}
 }
 
+// RestartLinkUpLine reports whether the #408 window arose, and how the
+// 3s budget fared when it did.
+//
+// Third instance of the same shape as AttachGraceLine and
+// ConflictProbeLine, and it earned its place the hard way: two dev runs
+// failed on `address already in use (the address is still held by the
+// link this one replaces, after waiting 3s for it to be removed)`, and
+// nothing in any GREEN run's output could say whether that budget is
+// comfortable on this host or whether every previous pass had cleared
+// it by a hair. restart_link_up_waited and restart_link_up_timeouts both
+// existed, were both correct, and were printed nowhere — so the question
+// "is 3s enough here" had no answer short of re-running and hoping.
+//
+// The distinction this draws is the one childLinkUpBudget's own comment
+// says matters: the address frees itself once DeleteEndpoint lands, so
+// the wait is a race against teardown, and a host under load loses it.
+// A run where the window never arose proves nothing about the budget. A
+// run where it arose and was survived is evidence the budget holds HERE,
+// which is not the same claim and should not read as one.
+//
+// tombstones_consumed is the denominator because it counts exactly the
+// restarts that took the tombstone path — the only ones that can reach
+// this window at all.
+func RestartLinkUpLine(h *HealthResponse) string {
+	if h == nil {
+		return ""
+	}
+	switch {
+	case h.RestartLinkUpTimeouts > 0:
+		return fmt.Sprintf(
+			"RESTART LINK-UP: %d restart(s) outlasted the budget and failed with `address\n"+
+				"  already in use`, out of %d that had to wait and %d that took the tombstone\n"+
+				"  path. The departing link had not released the address in time -- a loaded\n"+
+				"  host, or a budget too short for this one (#408).\n",
+			h.RestartLinkUpTimeouts, h.RestartLinkUpWaited, h.TombstonesConsumed)
+	case h.RestartLinkUpWaited > 0:
+		return fmt.Sprintf(
+			"RESTART LINK-UP: %d of %d tombstoned restart(s) had to wait for the departing\n"+
+				"  link to release the address, and every one made it inside the budget. The\n"+
+				"  window arose and was survived -- measured, not assumed (#408).\n",
+			h.RestartLinkUpWaited, h.TombstonesConsumed)
+	case h.TombstonesConsumed > 0:
+		return fmt.Sprintf(
+			"RESTART LINK-UP: %d restart(s) took the tombstone path and none had to wait, so\n"+
+				"  this run is not evidence either way about the budget -- the window did not\n"+
+				"  arise (#408).\n", h.TombstonesConsumed)
+	default:
+		return "RESTART LINK-UP: no restart consumed a tombstone this run, so nothing exercised\n" +
+			"  the path at all. restart_link_up_waited=0 is the absence of a measurement, not\n" +
+			"  a clean one (#408).\n"
+	}
+}
+
 // joinStartFailureMsg is the log line the plugin emits at every real
 // join_start_failures increment. The benign twin logs something else
 // ("Container went away during attach"), so counting this message counts

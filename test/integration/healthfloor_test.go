@@ -144,6 +144,11 @@ func checkHealthFloor(suite time.Duration) int {
 	// run with address_conflicts=0 says nothing until this does.
 	fmt.Fprint(os.Stderr, harness.ConflictProbeLine(h))
 
+	// And the same question for the #408 restart window. This one is
+	// printed because two dev runs failed on the 3s budget and no green
+	// run's output could say whether the budget was ever close.
+	fmt.Fprint(os.Stderr, harness.RestartLinkUpLine(h))
+
 	findings := harness.CheckHealthFloor(h)
 
 	// The census above printed whether the detector ran; this is what
