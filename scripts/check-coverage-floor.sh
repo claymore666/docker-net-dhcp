@@ -169,6 +169,17 @@ line:
 
 Coverage-floor: #<issue>
 
+`#<issue>` is a PLACEHOLDER, and it must stay one. This message is
+printed at column 0 and gets pasted into pull request bodies, so a
+worked example with a real number here would satisfy the very waiver
+this paragraph is explaining — the column-0 anchor below would not
+help, because the anchor is what a pasted column-0 line satisfies. The
+sibling gate check-issue-ref.sh spelled its example out with a real
+number and was switched off by its own failure text exactly that way.
+This one has been safe only because `#<issue>` does not match
+`#[0-9]+`, which was luck rather than design until someone wrote it
+down. Do not "improve" it into a real number.
+
 It has to be that line rather than any mention of an issue, because
 almost every commit here cites one — a waiver that loose fires on
 everything, and a gate that always waives itself prevents nothing. It
