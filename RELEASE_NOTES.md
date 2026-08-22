@@ -64,22 +64,23 @@ re-accepting it.
 The release that got reviewed by people rather than only by tools —
 three times, by three different pairs of eyes, and each pass found
 things the one before it had read past. The first was a security review
-of the trust boundaries (#457, indexed by #699): **sixteen** findings —
-five in the first round and eleven in the second — all sixteen fixed
-here. **Sixteen is the count of findings fixed, not of everything that
-review produced**: it also raised #690 and #691 — what each capability
-in `config.json` actually buys, and whether a restricted socket proxy
-would serve the three read-only Docker API calls the plugin makes — and
-both are on v1.9.0. The second was an architecture review of `dev` after
-those fixes landed, which found **ten** lifecycle faults: #720–#724,
-filed individually, and #727–#731, tracked together as #726. All ten are
-fixed in this release, and six — #720, #721, #722, #724, #727 and #728 —
-are verified present in v1.7.1, so they predate this cycle entirely. The
-third read the CI machinery itself (#732) and found gates reporting
-success over input they had never looked at. Alongside all of that: a
-network can now say which DHCP server it will lease from, the health
-counters are scrapeable by Prometheus, and the plugin's own state
-survives a power cut.
+of the trust boundaries (#457, indexed by #699): the five in #699's
+shipped table and #700–#710 from the second round, **all fixed here**.
+That list is written out rather than counted because a count is the one
+form of this sentence that can go false on somebody else's commit. **It
+is also not everything the review produced**: it raised #690 and #691 —
+what each capability in `config.json` actually buys, and whether a
+restricted socket proxy would serve the three read-only Docker API calls
+the plugin makes — and both are on v1.9.0. The second was an
+architecture review of `dev` after those fixes landed, which found
+**ten** lifecycle faults: #720–#724, filed individually, and #727–#731,
+tracked together as #726. All ten are fixed in this release, and six —
+#720, #721, #722, #724, #727 and #728 — are verified present in v1.7.1,
+so they predate this cycle entirely. The third read the CI machinery
+itself (#732) and found gates reporting success over input they had
+never looked at. Alongside all of that: a network can now say which DHCP
+server it will lease from, the health counters are scrapeable by
+Prometheus, and the plugin's own state survives a power cut.
 
 If you are running v1.7.1, the reason to upgrade is the reviews. Three
 things in v1.7.1 are worth naming, and none of them announces itself in
@@ -473,12 +474,45 @@ are fixed in this release** — the count belongs to the review, not to
 either issue, which is worth stating because #726 names only its own
 five.
 
-<!-- RE-DERIVE THE TEN-ISSUE CLAIM AT TAG TIME. This is the last claim
-     in the file that nothing reproduces. The counter table below cannot
-     go stale silently because a command rebuilds it; this one is
-     carried by three sentences (here, the opening paragraph, and "the
-     remaining three ... complete the ten") and only a human re-running
-     the query sees a change.
+<!-- RE-DERIVE THE TEN-ISSUE CLAIM AT TAG TIME. The counter table below
+     cannot go stale silently because a command rebuilds it; this one is
+     carried by five sentences and only a human re-running the query
+     sees a change. Grep `\bten\b` -- the list is here (":471"), the
+     opening paragraph (":76"), "Six of the ten are verified present"
+     (":549"), "By age, three of the ten are this cycle's" (":594"),
+     and "the same ten issues cut two ways" (":602").
+
+     THAT LIST WAS WRONG WHEN CHECKED. It named three sentences, and
+     one of them -- "the remaining three ... complete the ten" -- had
+     been DELETED by the partition fix earlier the same evening, which
+     replaced it with an enumeration of the four the table does not
+     reach. A pointer in a comment is a copy of the thing it points at,
+     and the edit that changed the target did not reach the pointer.
+     Re-derive this list with the grep rather than trusting the line
+     numbers, which move.
+
+     THIS USED TO SAY "the last claim in the file that nothing
+     reproduces". That was itself unreproduced -- and it is the sentence
+     that decides whether the person cutting the tag looks any further,
+     so it was the worst one in the file to leave uncheckable. Nine
+     lines above it the opening paragraph said "sixteen findings", which
+     `grep -n sixteen` found and nothing rebuilt. Replaced by the list
+     of what was actually swept on 2026-08-23, which is
+     delete-the-count-keep-the-list applied to a gate's own reach:
+
+       - the ten-issue claim -- HERE, and no command rebuilds it; that
+         is why this block exists.
+       - the #457 count -- was a bare "sixteen", now the list "#699's
+         shipped table and #700-#710", so it reproduces by reading.
+       - the six-of-ten table -- a grep at the tag rebuilds every row.
+       - the /metrics counter table -- a command rebuilds it.
+       - "four more string options ... all five values" -- a universal
+         that SURVIVES, because "more" points at the bullet above it.
+         A universal is fine when it carries its population within
+         reading distance; a list is the cheapest way to carry one.
+
+     A claim about the file as a whole cannot be checked without reading
+     the whole file, which is the work the claim exists to save.
 
        gh api 'repos/claymore666/docker-net-dhcp/issues?milestone=22&state=all&per_page=100' \\
          --jq '.[] | select(.pull_request == null)
