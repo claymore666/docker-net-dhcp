@@ -686,10 +686,15 @@ container ARP for every off-net destination, which hands interception to
 anyone on the same L2 segment.
 
 Option 3 was the one path into the gateway that was not validated on the
-way in: the option-121 gateway comes out of a parser that validates
-every address it returns, while option 3 was taken verbatim from the
-wire and never checked again. **This one is present in v1.7.1**, where
-the same unvalidated value reaches `RouteAdd`.
+way in — and that sentence is worth the method rather than the
+conclusion, because a claim of completeness is what let the `$PATH`
+finding above sit undisturbed. There are exactly two writes into the
+lease's gateway from the wire, both in `pkg/dhcp/event_builder.go:313`
+and `:315`: the option-121 default route, which comes out of a parser
+that validates every address it returns, and option 3, which was
+`strings.Fields(new_routers)[0]` taken verbatim and never checked
+again. **This one is present in v1.7.1**, where the same unvalidated
+value reaches `RouteAdd`.
 
 It is refused at the ingress and again at the sink, and those are not
 redundant — the first runs in the dhcpcd hook, a different process
@@ -884,6 +889,31 @@ what to do about it.
 | `recovery_already_managed` | Endpoints a recovery walk found already registered to another manager (#480). |
 | `recovery_fingerprints_skipped` | Endpoints recovery adopted but could not describe, so they keep their renewal client and lose their tombstone (#721). |
 | `network_options_rejected` | Endpoint operations that met stored network options they would not act on as written (#727). |
+
+### Two of those counters had no observer at all
+
+Worth saying because the failure mode is invisible from the outside: a
+counter that never moves and a counter that *cannot* move look identical
+on a dashboard, and the safe-looking one is the second.
+
+`dns_propagation_pid_mismatches` and `netns_pid_mismatches` are the two
+refusal counters on the PID-recycle paths above. Both are hard to
+provoke — that is the nature of a race you are trying to prevent — and
+until this release the only artifact in the tree naming either of them
+was the golden `/metrics` exposition file. **A golden file pins a
+counter's name, its help text and how it renders. It establishes
+nothing about whether anything ever increments it**, and it would have
+stayed green with both increment sites deleted.
+
+Both now have real observers: the two call sites were extracted to one
+`notePIDMismatch`, and `pkg/plugin/dhcp_values_test.go:777` and `:780`
+assert each counter across six subtests, with four mutants dying to four
+different subsets of them. (At the time of writing that work is on an
+unmerged branch, not on `dev`.)
+
+The general form is the one worth keeping, because it applies to every
+counter here: **an artifact that proves a counter renders is not an
+observer of the counter.**
 
 ### An ordinary `docker network rm` could report the plugin's worst fault
 
