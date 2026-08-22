@@ -7,7 +7,9 @@ package integration
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -428,12 +430,34 @@ func findPluginPID(t *testing.T, ctx context.Context, cli *docker.Client) int {
 	// wrong remedy: when every readlink was refused the search was
 	// BLIND, and telling that reader to go look for a namespace
 	// boundary sends them at the wrong thing.
+	// Both arms below key on the PROPERTY, not on the mechanism that
+	// usually implies it. The first version keyed on the mechanism and
+	// was wrong in the same way twice, under a non-root reader:
+	//
+	//   - "stat failed" is not "the path is absent". os.Stat returns
+	//     EACCES as readily as ENOENT -- /var/lib/docker is 0710
+	//     root:root -- so an unprivileged run was told with confidence
+	//     that the plugin is not unpacked there.
+	//   - "every readlink failed" is not "the scan could see". The
+	//     property that licenses an absence verdict is that the scan
+	//     COULD have seen the target; ANY blindness makes the absence
+	//     inconclusive. Keying on errored == scanned meant a 70%-blind
+	//     scan fell through to INVISIBLE and named a namespace boundary
+	//     as the remedy -- a red naming the wrong remedy, inside the
+	//     change whose whole point was that class.
+	//
+	// Absent data is not a zero, and a partial read is not data.
 	var verdict string
 	switch {
-	case statErr != nil:
-		verdict = fmt.Sprintf("THE PATH IS WRONG — os.Stat(want): %v. The plugin is not "+
+	case errors.Is(statErr, fs.ErrNotExist):
+		verdict = fmt.Sprintf("THE PATH IS ABSENT — os.Stat(want): %v. The plugin is not "+
 			"unpacked where this test looks on this engine, so no spelling of the "+
 			"search would have found it.", statErr)
+	case statErr != nil:
+		verdict = fmt.Sprintf("THE SEARCH COULD NOT LOOK — os.Stat(want) failed with something "+
+			"other than not-exist: %v. This says NOTHING about whether the plugin is "+
+			"there; /var/lib/docker is 0710 root:root, so an unprivileged run lands "+
+			"here. Re-run with the privilege the suite expects.", statErr)
 	case scanned > 0 && linkErrs == scanned:
 		verdict = fmt.Sprintf("THE SEARCH WAS BLIND — all %d readlinks failed (first: %v), "+
 			"so this run has NO evidence about where the plugin is. Fix the read "+
@@ -442,8 +466,14 @@ func findPluginPID(t *testing.T, ctx context.Context, cli *docker.Client) int {
 		verdict = "THE MATCH IS SPELLED WRONG — the plugin's own ID appears in the roots " +
 			"listed below, under a form the exact comparison above does not equal. " +
 			"Correct the expected string to one of them; do not loosen the match."
+	case linkErrs > 0:
+		verdict = fmt.Sprintf("INCONCLUSIVE — the plugin's ID is in none of the roots this "+
+			"scan could read, but %d of %d readlinks failed (first: %v), so the "+
+			"target may be behind one of them. This is NOT evidence of a namespace "+
+			"boundary. Re-run where every /proc entry is readable.",
+			linkErrs, scanned, firstErr)
 	default:
-		verdict = "THE PROCESS IS INVISIBLE — the path exists, the scan could read roots, " +
+		verdict = "THE PROCESS IS INVISIBLE — the path exists, EVERY root was readable, " +
 			"and the plugin's ID appears in none of them. The plugin's PID is not in " +
 			"the /proc this test reads, which is a namespace boundary and invalidates " +
 			"WHERE the probe runs, not how it searches."
