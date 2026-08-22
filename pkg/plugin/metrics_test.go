@@ -515,22 +515,37 @@ func assertFamilyPairsCoverProduction(t *testing.T, pairs []familyPair) {
 //	properties 1+2       still 24, so 3 adds nothing here
 //
 // And over three renderer mutants, which property 1 structurally cannot
-// see because it judges the SNAPSHOT and a renderer does not touch it:
+// see because it judges the SNAPSHOT and a renderer does not touch it.
+// The middle column is THIS DOC BLOCK ONLY; the right one is the whole
+// package, because a -run filter narrows the observer set and a claim
+// that nothing catches something cannot be made from inside one test:
 //
-//	renders the v6 half under family="ipv4"    property 2, alone
-//	renders the aggregate under family="ipv4"  property 2, alone
-//	derives ipv4 as (aggregate - v6)           NOTHING catches it
+//	                                        of these 3   in the package
+//	renders v6 under family="ipv4"          property 2   +Backwards, Golden
+//	renders the aggregate under ipv4        property 2   +Backwards, Golden
+//	derives ipv4 as (aggregate - v6)        none         ReadTheStoredHalves,
+//	                                                     NoSeriesRendersNegative,
+//	                                                     Golden
 //
-// That last row is not a hole, and it is the clearest statement of what
-// #730 actually repaired. Property 1 forbids an inconsistent snapshot,
-// so within one snapshot `aggregate - v6` IS v4, to the byte: the
-// mutant emits identical output and there is nothing left to detect.
-// The old subtraction was wrong because the two counters could
-// DISAGREE, not because subtraction is wrong — so property 1 is what
-// makes that mutant harmless, and the three properties are only worth
-// reading as a set.
+// The last row is the interesting one and it says something narrower
+// than it looks. Within a snapshot that satisfies property 1,
+// `aggregate - v6` IS v4 to the byte -- so nothing in this doc block
+// can see that mutant, and nothing here should be expected to. The
+// tests that DO catch it are the ones fed a deliberately inconsistent
+// snapshot: TestMetrics_NoSeriesRendersNegative hands the renderer a v6
+// half ABOVE the aggregate and the mutant emits -4 where the stored
+// half says 6, which is #730's literal symptom.
 //
-// Property 3 kills nothing measured, and stays. It is the only property
+// So the honest statement is not "subtraction is safe now". It is that
+// the old subtraction was wrong because the two counters could
+// DISAGREE, not because subtraction is wrong -- and the coverage for
+// the disagreement lives in a different test, with a hostile fixture,
+// on purpose. Do not read this block as evidence that that test is
+// redundant. It is the one that covers the case #730 actually shipped.
+//
+// Property 3 killed none of the 27 mutants above — the same scope
+// caveat applies, it is a statement about those mutants and not about
+// the world — and it stays. It is the only property
 // in the operator's terms — Prometheus reads a counter decrease as a
 // reset and repays the whole accumulated count as a rate spike — and
 // the only one that would still fire if the load-once invariant held
