@@ -254,7 +254,19 @@ func TestNetOptionsRaw_HasNoOtherCallers(t *testing.T) {
 				strings.Contains(line, "func (p *Plugin) netOptionsRaw(") {
 				continue
 			}
-			if strings.Contains(line, "netOptionsRaw(") {
+			// No trailing "(" in the match, deliberately: a method
+			// VALUE carries none.
+			//
+			//	f := p.netOptionsRaw
+			//	o, err := f(ctx, id)
+			//
+			// survived the "netOptionsRaw(" form, and so did passing
+			// p.netOptionsRaw as an argument to a wrapper -- the more
+			// plausible of the two. A gate whose comment claims "no
+			// other callers" while its pattern only sees direct calls
+			// is a sentence wider than its check, which is the #758
+			// defect one file over.
+			if strings.Contains(line, "netOptionsRaw") {
 				got[enclosing] = true
 			}
 		}
