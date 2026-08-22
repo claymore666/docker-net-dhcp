@@ -85,6 +85,20 @@ jobs:
       # no validation at all (#593, #738).
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # ITS OWN PATH, and that is load-bearing. actions/checkout does
+          # NOT clear the sparse config a previous checkout left in the
+          # workspace, so a second checkout at the same path — one that
+          # passes no `sparse-checkout` of its own — inherits it and
+          # populates exactly this one file. That shipped: dev @ 9245f09
+          # deployed docs from a tree containing a single shell script
+          # and died on a `docs/requirements.txt` that was present in
+          # git the whole time.
+          #
+          # A separate path makes the two trees separate things, which
+          # is what the comment above already says they are. The main
+          # checkout cleans `.resolver` away on its way in; by then the
+          # resolver has already done its work.
+          path: .resolver
           sparse-checkout: scripts/resolve-dispatch-ref.sh
           sparse-checkout-cone-mode: false
 
@@ -118,7 +132,7 @@ jobs:
           # `:latest` untouched, a DRAFT GitHub Release, and a run that
           # looks like it succeeded. A typo'd release tag became a
           # release nobody could see. It now stops here.
-          REF="$(bash scripts/resolve-dispatch-ref.sh "$TAG")"
+          REF="$(bash .resolver/scripts/resolve-dispatch-ref.sh "$TAG")"
           # The resolver also accepts `dev`, which the docs site
           # publishes and a release must never build from.
           case "$REF" in
