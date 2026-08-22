@@ -2262,12 +2262,27 @@ both addresses as hints. The TTL covers <code>docker restart</code> (sub-second)
 <code>systemctl restart docker</code> (15–30s while the daemon re-attaches
 everything).</p>
 <ul>
-<li><strong>MAC stability always works</strong> — <code>docker inspect</code> and the LAN see the
-  same MAC across restarts.</li>
+<li><strong>MAC stability holds whenever a tombstone was written</strong> — <code>docker
+  inspect</code> and the LAN then see the same MAC across the restart. A
+  tombstone is written at <code>DeleteEndpoint</code> from what the plugin recorded
+  when it built the endpoint, so the condition is that the plugin still
+  holds that record. It does across <code>docker restart</code>. It did <strong>not</strong>
+  across a plugin restart before v1.8.0: endpoints rebuilt by recovery
+  were re-attached without re-recording, so the next <code>DeleteEndpoint</code>
+  laid down nothing and the container came back on a fresh MAC (#721).
+  Fixed, and stated as a condition rather than an absolute because the
+  absolute is what made that bug invisible to anyone reading this page
+  to decide whether they needed a reservation.</li>
 <li><strong>IP stability depends on the server</strong> honouring option 50, exactly as
   for an explicit request above. Where it doesn't, configure a
   reservation against the now-stable MAC and every restart gets that
-  address.</li>
+  address — <strong>in <code>bridge</code> and <code>macvlan</code> only</strong>. <code>ipvlan</code> has no stable
+  per-container MAC to key a reservation on: its L2 slaves all inherit
+  the parent's, so a reservation would either match nothing or match the
+  parent and hand one address to every container on the network. The
+  plugin writes no tombstone for <code>ipvlan</code> at all, for the same reason.
+  See <a href="#dhcp-identity">DHCP identity</a> for what <code>ipvlan</code> uses instead and
+  why it does not survive a restart (#219).</li>
 </ul>
 <p>Two things it deliberately does not do. Concurrent restarts of several
 containers on one network inside the 60-second window fall back to fresh
@@ -2276,6 +2291,15 @@ carry the container hostname so restarts in flight can be told apart when
 the hostname is known, and only when neither side knows it does the
 network-wide "exactly one match" rule apply. Sequential restarts, the
 normal case, always satisfy it.</p>
+<p>A container whose hostname the plugin <strong>refuses</strong> — one carrying a
+control character, which never reaches a DHCP packet (see
+<code>unsafe_hostnames_rejected</code>) — gets no tombstone at all, and so does not
+keep its MAC across a restart. That is deliberate and it is not the same
+as having no hostname: a hostname-less container writes a tombstone that
+matches network-wide, which is the v0.5.0 behaviour above and is correct
+for it. Writing one for a <em>refused</em> hostname would make the value the
+plugin declined to trust for a narrow match into a match against every
+container on the network.</p>
 <p>And the tombstone is keyed by <strong>network ID</strong>, so it survives a container
 restart but not the removal of the network itself — which is why a plugin
 upgrade changes the address (see the callout under
@@ -2679,6 +2703,11 @@ diagnosing a specific container from them alone is not.</p>
 <td><code>unsafe_option_values_dropped</code></td>
 <td>no</td>
 <td>(v1.8.0+) Server-chosen DHCP string values refused before use because they carried a control character, plus option-15 domains truncated at their first space. The filter is reflective and covers every string value in the lease, so a new one is covered the day it is added; the ones it exists for are options 67, 100, 101 and 252, which <code>dhcpcd</code> passes through unvalidated because they are <code>string</code>-typed rather than <code>dname</code>-typed. Option 66 is <code>dname</code>-typed and <code>dhcpcd</code> type-checks it, but it is filtered here too rather than trusted. <code>dhcpcd</code> validates only its <code>dname</code>-typed options; the <code>string</code>-typed ones pass <code>\n</code> and <code>\r</code> through verbatim, and a space in option 15 turns one search domain into several with the server's first in the order. The sibling of <code>unsafe_hostnames_rejected</code>, for the values the <em>server</em> chooses rather than the container. A legitimate server sends none of these, so any rise is deliberate.</td>
+</tr>
+<tr>
+<td><code>network_options_rejected</code></td>
+<td>no</td>
+<td>(v1.8.0+) Endpoint operations that met a network's stored options and would not act on them as written: an interface name the kernel would not accept, or a <code>mode</code> this plugin does not implement. Name validation runs when a network is <em>created</em> (#705); this check runs every time the stored options are <em>read</em>, which is where the name actually reaches netlink. Not healthy-affecting: refusing is the safe outcome, the operation already fails visibly to Docker, and one network's record being wrong does not make the plugin unwell — every other network on the host keeps working. A non-zero value means one network needs recreating: either it was created before name validation existed, or its options were written directly into the state directory. <code>DeleteEndpoint</code> is deliberately exempt so a refused network can still be torn down — it counts an unknown mode and proceeds, so a rise here does not mean nothing was torn down. Only the mode: teardown reads no stored name at all (it derives the link from the endpoint ID), so there is no name refusal available to it.</td>
 </tr>
 <tr>
 <td><code>dns_propagation_pid_mismatches</code></td>
