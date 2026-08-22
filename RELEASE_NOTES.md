@@ -165,10 +165,21 @@ host network, so the release was held while that review was done.
 
 Five surfaces were audited independently: the Docker-facing driver RPCs,
 the `/metrics` endpoint, the DHCP-server input path, the
-filesystem/argv/env sinks, and the CI gate scripts. Everything found is
-fixed in this release; nothing was deferred. #699 is the public index
-of the whole exercise — what was found, what shipped, and the three
-results that belong to no single finding.
+filesystem/argv/env sinks, and the CI gate scripts. **Every defect found
+is fixed in this release.** Two things the review raised are not defects
+and are deferred: **#690**, establishing what each capability in
+`config.json` actually buys, and **#691**, whether the read-write Docker
+socket can be narrowed to the three read-only calls the plugin makes.
+Both are on v1.9.0, and both open with the words *"Found during the
+security review in #457."*
+
+They are named here because **#699 does not list them.** It is the
+public index of the exercise — what was found, what shipped, and the
+three results that belong to no single finding — and its own header
+promises "what is still open" while its body uses that phrase for a
+*class* of finding rather than for these two issues. A reader who
+follows the pointer will not reach them, which is the whole reason to
+put the numbers in this paragraph instead.
 
 Two things are worth stating plainly:
 
@@ -1485,20 +1496,40 @@ option the older one never did. None of that was visible before.
      the others is the exact defect this release documents three times
      over -- all three, or none:
 
-       1. "Everything found is fixed in this release; nothing was
-          deferred" (the security-review section; scoped to #457/#699).
-       2. "Every finding from all three reviews is fixed in this
+       1. "Every defect found is fixed in this release" (the
+          security-review section; scoped to #457/#699).
+       2. "Every defect from all three reviews is fixed in this
           release" (below; the widest of the three).
-       3. "Two is the entire list" (below). -->
+       3. "Those two are the entire list" (below).
 
-**Every finding from all three reviews is fixed in this release.** No
+     ALL THREE SAY *DEFECT*, AND THAT IS LOAD-BEARING. They said
+     "everything found" and "every finding" until 2026-08-23, and both
+     were FALSE: #690 and #691 open with "Found during the security
+     review in #457", are not defects, and are deferred to v1.9.0.
+     Widening any of them back to "finding" or "everything" re-breaks
+     all three at once.
+
+     The reason it survived: #699 is cited as the index of the exercise
+     and DOES NOT LIST #690/#691. Its header promises "what is still
+     open"; its body uses that phrase for a class of finding instead.
+     So the pointer a reader is given cannot refute the sentence, and
+     checking the sentence against its own citation returns clean. If
+     #699 ever gains those two, this paragraph can shorten -- until
+     then the numbers live here. -->
+
+**Every defect from all three reviews is fixed in this release.** No
 defect was carried, and a fault this cycle introduced was fixed this
-cycle rather than triaged forward.
+cycle rather than triaged forward. *Defect* is doing real work in that
+sentence: #690 and #691 came out of the same security review, are
+deferred to v1.9.0, and are named in the security section above. Neither
+is a defect; both would be counter-examples to a claim about
+"findings".
 
-What is deferred is two structural observations. Two is the entire
-list — this section is short because the reviews closed, not because it
-was trimmed to fit. Both are worth naming separately precisely because
-neither is a defect anyone can point at:
+What is deferred *as a defect* is nothing, and what is deferred as a
+structural observation is two. Those two are the entire list — this
+section is short because the reviews closed, not because it was trimmed
+to fit. Those two structural observations are worth naming separately
+precisely because neither is a defect anyone can point at:
 
 - **The release invariant is decided at five sites, in prose.** Whether
   it is safe to hand a lease back to the DHCP server is settled
