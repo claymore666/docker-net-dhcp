@@ -229,7 +229,7 @@ paragraph being read first.
 A tag with a pre-release suffix (`v1.0.0-rc1`) runs the release
 workflow in **pre-release mode**: the full chain executes — build,
 push of `:v1.0.0-rc1` to both registries, Hub description sync,
-verify-install — but **`:latest` is not moved** and no bare
+the four install proofs — but **`:latest` is not moved** and no bare
 release tag is touched. Zero impact on anything a user pulls by
 default.
 
@@ -264,8 +264,9 @@ git checkout main && git pull --ff-only      # the release commit
 git tag -s v1.0.0-rc1 -m "v1.0.0-rc1" && git push origin v1.0.0-rc1
 ```
 
-Watch the run; every step including **verify-install** and, since
-v1.7.0, **release-arm64** / **verify-install-arm64** must be green —
+Watch the run; every step including **verify-install**, since
+v1.7.0 **release-arm64** / **verify-install-arm64**, and since #776
+**verify-install-hub** / **verify-install-hub-arm64** must be green —
 and since #736 **promote-latest**, which an rc now reaches. Its last
 step, *Assert a pre-release did not move :latest*, is the one that
 proves the dry-run stayed a dry-run.
@@ -667,9 +668,21 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
      just-published plugin from GHCR on a clean hosted runner and
      assert it enables. A red verify-install means users can't install
      what we just shipped.
+   - **verify-install-hub** / **verify-install-hub-arm64** — the same
+     proof for Docker Hub, which is the other place a user installs
+     from (#776). Each is its **own job on its own runner** and that is
+     deliberate: the value of these jobs is a daemon that has never
+     created a network sandbox, which is how v1.6.0-rc2 caught a bind
+     source the daemon creates lazily (#588). A second install appended
+     to `verify-install` would run after that property was already
+     spent, and `docker plugin rm` does not give it back. When a run
+     published no Hub image the steps are skipped and the job records
+     `⚠️ Docker Hub install not verified` in the summary, so a
+     GHCR-only run cannot be mistaken for a both-registries one.
    - **promote-latest** — since #736 this is where every floating tag
      moves, for both arches and both registries, and it runs only after
-     all four of the above are green. Steps: *Refuse to promote a
+     all six of the above are green. `scripts/check-latest-promotion.sh`
+     asserts that dependency, naming all four install proofs. Steps: *Refuse to promote a
      floating tag backwards* → Install crane → the two logins →
      *Record what :latest resolves to before promotion* → *Promote the
      GHCR floating tags* → *Promote the Docker Hub floating tags* →
@@ -686,13 +699,13 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
      runs only on an rc, and it is the one that proves the rc contract
      from outside.
    - **github-release** — does **not** wait for `promote-latest`; it
-     needs the same four jobs. Promotion and the Releases page are
+     needs the same six jobs. Promotion and the Releases page are
      siblings, so a refused promotion does not suppress the release.
 
    Every green checklist below includes the arm64 jobs.
 10. **Confirm the GitHub Release** — the `github-release` job now cuts
-   it automatically once `verify-install` is green (so a plugin that
-   doesn't install never gets an advertised Releases page). It attaches
+   it automatically once the install proofs are green (so a plugin
+   that doesn't install never gets an advertised Releases page). It attaches
    the cosign-signed artifacts and builds the body as: a generated lead
    line naming the project and version (it becomes the page's
    `og:description`, so it is what link previews show — #469), the

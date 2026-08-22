@@ -716,15 +716,7 @@ jobs:
       packages: read   # pulls the just-published plugin from GHCR
     env:
       GHCR_NAME: ghcr.io/claymore666/docker-net-dhcp
-      HUB_NAME: claymore666/net-dhcp
       TAG: ${{ needs.release.outputs.tag }}
-      # Both registries carry the same deliverable, and until #776 only
-      # one of them was install-tested. #507 shipped manifest lists that
-      # were uninstallable -- a defect every push step reports success
-      # on -- so proving one of the two places users install from left
-      # the other covered by nothing at all.
-      HUB_PUSHED: ${{ needs.release.outputs.hub_pushed }}
-      HAS_HUB_CREDS: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
     steps:
       - name: Log in to GHCR
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
@@ -763,50 +755,6 @@ jobs:
           fi
           echo "Plugin ${REF} installs and enables cleanly." >> "$GITHUB_STEP_SUMMARY"
 
-      # Docker Hub is the other half of the same deliverable. The image
-      # is public, so this needs no credentials to PULL -- the login is
-      # only to spend the authenticated rate limit instead of the
-      # anonymous one, and it is skipped when there are no credentials.
-      - name: Log in to Docker Hub
-        if: env.HUB_PUSHED == 'true' && env.HAS_HUB_CREDS == 'true'
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Install released plugin from Docker Hub
-        if: env.HUB_PUSHED == 'true'
-        run: |
-          set -euo pipefail
-          GHCR_REF="${GHCR_NAME}:${TAG}"
-          REF="${HUB_NAME}:${TAG}"
-          # The GHCR plugin goes first: both bind the same STATE_DIR and
-          # both would be enabled, and this job's claim is about a clean
-          # install onto a daemon that has none -- which is no longer
-          # what the second install would be measuring.
-          docker plugin disable "$GHCR_REF"
-          docker plugin rm "$GHCR_REF"
-          # No mkdir. Same rule as the GHCR install above: this runner's
-          # value is that it has never created a network sandbox (#588),
-          # and creating the bind source here would spend it.
-          docker plugin install --grant-all-permissions "$REF"
-          ENABLED="$(docker plugin inspect -f '{{.Enabled}}' "$REF")"
-          if [ "$ENABLED" != "true" ]; then
-            echo "::error::Plugin installed from Docker Hub but not enabled (Enabled=$ENABLED)"
-            docker plugin inspect "$REF"
-            exit 1
-          fi
-          echo "Plugin ${REF} installs and enables cleanly." >> "$GITHUB_STEP_SUMMARY"
-
-      # A skip that says so. Without this the summary of a GHCR-only
-      # run is indistinguishable from one that verified both, which is
-      # the same invisibility check-release-registries.sh exists for.
-      - name: Record that Docker Hub was not verified
-        if: env.HUB_PUSHED != 'true'
-        run: |
-          echo "::warning::Docker Hub install NOT verified: no Hub image was published by this run."
-          echo "⚠️ Docker Hub install **not verified** — nothing was pushed there by this run." >> "$GITHUB_STEP_SUMMARY"
-
   # The same post-publish proof for the arm64 tag, on an arm64 host.
   # Install mechanics only — enable proves the binary starts. Functional
   # proof on real hardware is the rc-time integration-arm64 run (#531);
@@ -820,33 +768,7 @@ jobs:
       packages: read
     env:
       GHCR_NAME: ghcr.io/claymore666/docker-net-dhcp
-      HUB_NAME: claymore666/net-dhcp
       TAG: ${{ needs.release.outputs.tag }}-arm64
-      # From release-arm64, not from release: the arm64 Hub image is a
-      # separate push and a separate tag, and the amd64 job's answer
-      # says nothing about whether this one exists.
-      #
-      # INDEX SYNTAX, NOT A DOT. A GitHub expression's property
-      # dereference accepts only [a-zA-Z0-9_], so `needs.release-arm64`
-      # parses `-` as SUBTRACTION and yields an empty string -- which
-      # here would read as "nothing was pushed to Hub", silently
-      # skipping the arm64 Hub verification on every release while the
-      # job stayed green. Every other `needs.*` in this file names a
-      # job without a hyphen, so this is the first one that needs it.
-      #
-      # DO NOT REACH FOR actionlint TO CHECK THIS. It was driven on both
-      # forms and passes both (v1.7.12), and it does not merely stay
-      # silent: given `needs: [release]` and a reference to
-      # `needs.release-nosuchjob.outputs.x` it reports `property
-      # "release-nosuchjob" is not defined`, naming the whole hyphenated
-      # token as ONE property. Its expression parser treats `-` as part
-      # of an identifier where the documented GitHub grammar treats it
-      # as an operator, so it affirmatively VALIDATES the dot form and
-      # resolves it to the right job's output type. A green from it here
-      # means the opposite of what it looks like. What caught this was
-      # grepping for precedent and finding only the new line itself.
-      HUB_PUSHED: ${{ needs['release-arm64'].outputs.hub_pushed }}
-      HAS_HUB_CREDS: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
     steps:
       - name: Log in to GHCR
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
@@ -876,6 +798,138 @@ jobs:
           fi
           echo "Plugin ${REF} installs and enables cleanly." >> "$GITHUB_STEP_SUMMARY"
 
+  # Docker Hub is the other half of the same deliverable, and until #776
+  # only one of the two was install-tested. #507 shipped manifest lists
+  # that were uninstallable — a defect every push step reports success
+  # on — so proving one of the two places users install from left the
+  # other covered by nothing at all.
+  #
+  # ITS OWN JOB, ON ITS OWN RUNNER, AND THAT IS THE POINT. The first
+  # shape of this check was a second install appended to verify-install.
+  # It would have run on a daemon that had already installed and enabled
+  # a plugin, after this workflow's own `sudo mkdir -p /var/lib/net-dhcp`
+  # — so the property the install jobs exist for, a daemon that has never
+  # created a network sandbox (#588, caught at v1.6.0-rc2), was already
+  # spent before the Hub install started. `docker plugin disable && rm`
+  # does not give it back: it removes the plugin's state, not the host
+  # directory and not whatever else the daemon created lazily. The Hub
+  # install would then have covered the #507 class only, under a comment
+  # claiming the #588 rule — a comment a reader would believe. A second
+  # hosted runner costs nothing scarce here (both verify jobs are
+  # GitHub-hosted; the self-hosted pool is untouched) and buys back the
+  # clean-daemon property for the Hub half as well.
+  #
+  # It also makes a Hub failure name Hub, instead of arriving after a
+  # GHCR teardown in a job whose title says GHCR.
+  #
+  # NO JOB-LEVEL `if`. The gate is on the steps, so that the "not
+  # verified" record below still runs and still lands in the summary.
+  # A skipped job writes nothing at all, which would restore exactly the
+  # invisibility this pair of jobs exists to remove: a GHCR-only run
+  # would once again be indistinguishable from a both-registries one.
+  verify-install-hub:
+    needs: release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      # No `packages: read`: nothing here touches GHCR. The Hub
+      # repository is public and needs no GitHub permission at all — the
+      # login below is for rate limits, not access.
+    env:
+      HUB_NAME: claymore666/net-dhcp
+      TAG: ${{ needs.release.outputs.tag }}
+      HUB_PUSHED: ${{ needs.release.outputs.hub_pushed }}
+      HAS_HUB_CREDS: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
+    steps:
+      # The image is public, so this needs no credentials to PULL. The
+      # login only spends the authenticated rate limit instead of the
+      # anonymous one, and is skipped when there are no credentials.
+      - name: Log in to Docker Hub
+        if: env.HUB_PUSHED == 'true' && env.HAS_HUB_CREDS == 'true'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Install released plugin from Docker Hub
+        if: env.HUB_PUSHED == 'true'
+        run: |
+          set -euo pipefail
+          REF="${HUB_NAME}:${TAG}"
+          # The documented operator step, and nothing else. Same rule as
+          # verify-install: this runner has never created a network
+          # sandbox, and creating any other missing path here would turn
+          # the one host that can see that class of bug into another host
+          # that cannot. Fix the manifest.
+          sudo mkdir -p /var/lib/net-dhcp
+          docker plugin install --grant-all-permissions "$REF"
+          docker plugin ls
+
+      - name: Assert plugin is enabled
+        if: env.HUB_PUSHED == 'true'
+        run: |
+          set -euo pipefail
+          REF="${HUB_NAME}:${TAG}"
+          ENABLED="$(docker plugin inspect -f '{{.Enabled}}' "$REF")"
+          if [ "$ENABLED" != "true" ]; then
+            echo "::error::Plugin installed from Docker Hub but not enabled (Enabled=$ENABLED)"
+            docker plugin inspect "$REF"
+            exit 1
+          fi
+          echo "Plugin ${REF} installs and enables cleanly." >> "$GITHUB_STEP_SUMMARY"
+
+      # A skip that says so, for the reason given above the job.
+      - name: Record that Docker Hub was not verified
+        if: env.HUB_PUSHED != 'true'
+        run: |
+          echo "::warning::Docker Hub install NOT verified: no Hub image was published by this run."
+          echo "⚠️ Docker Hub install **not verified** — nothing was pushed there by this run." >> "$GITHUB_STEP_SUMMARY"
+
+  # The Hub half for arm64, on an arm64 host. Same reasoning as
+  # verify-install-hub throughout, including why it is its own job.
+  verify-install-hub-arm64:
+    needs: [release, release-arm64]
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      HUB_NAME: claymore666/net-dhcp
+      TAG: ${{ needs.release.outputs.tag }}-arm64
+      # From release-arm64, not from release: the arm64 Hub image is a
+      # separate push and a separate tag, and the amd64 job's answer says
+      # nothing about whether this one exists.
+      #
+      # INDEX SYNTAX, NOT A DOT — because it is unambiguous under every
+      # reading, and costs nothing. It is the first hyphenated `needs.`
+      # dereference this file would have; here is what is actually known
+      # about the alternative, and what is not:
+      #
+      #   MEASURED: actionlint (v1.7.12) passes BOTH forms, and its check
+      #   is live rather than absent — given `needs: [release]` and a
+      #   reference to `needs.release-nosuchjob.outputs.x` it reports
+      #   `property "release-nosuchjob" is not defined`, naming the whole
+      #   hyphenated token as ONE property. So it does not distinguish
+      #   the two forms, and a green from it settles nothing here.
+      #
+      #   MEASURED, adjacent context: a hyphenated dereference RESOLVES
+      #   on GitHub in the `inputs.` context. A workflow_dispatch of
+      #   missing-runs.yml with grace-minutes=7 ran
+      #   `${{ inputs.grace-minutes || '20' }}` and the script echoed a
+      #   7m grace, not the 20m default.
+      #
+      #   NOT MEASURED: the `needs.` context on GitHub. Settling it would
+      #   mean landing a two-job workflow on the default branch purely to
+      #   ask, and nobody has. Do not assume it matches `inputs.` and do
+      #   not assume it differs.
+      #
+      # The bracket form is therefore not a workaround for a known
+      # defect. It is the form that is correct whichever way the
+      # unmeasured question turns out.
+      HUB_PUSHED: ${{ needs['release-arm64'].outputs.hub_pushed }}
+      HAS_HUB_CREDS: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
+    steps:
       - name: Log in to Docker Hub
         if: env.HUB_PUSHED == 'true' && env.HAS_HUB_CREDS == 'true'
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
@@ -887,13 +941,16 @@ jobs:
         if: env.HUB_PUSHED == 'true'
         run: |
           set -euo pipefail
-          GHCR_REF="${GHCR_NAME}:${TAG}"
           REF="${HUB_NAME}:${TAG}"
-          # Same reason as the amd64 job: one plugin at a time, so the
-          # second install is still an install onto a daemon with none.
-          docker plugin disable "$GHCR_REF"
-          docker plugin rm "$GHCR_REF"
+          sudo mkdir -p /var/lib/net-dhcp
           docker plugin install --grant-all-permissions "$REF"
+          docker plugin ls
+
+      - name: Assert plugin is enabled
+        if: env.HUB_PUSHED == 'true'
+        run: |
+          set -euo pipefail
+          REF="${HUB_NAME}:${TAG}"
           ENABLED="$(docker plugin inspect -f '{{.Enabled}}' "$REF")"
           if [ "$ENABLED" != "true" ]; then
             echo "::error::arm64 plugin installed from Docker Hub but not enabled (Enabled=$ENABLED)"
@@ -943,7 +1000,7 @@ jobs:
   # retag sat in whichever job had just pushed; nothing about `crane tag`
   # needs an arm64 host.
   promote-latest:
-    needs: [release, release-arm64, verify-install, verify-install-arm64]
+    needs: [release, release-arm64, verify-install, verify-install-arm64, verify-install-hub, verify-install-hub-arm64]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -1141,7 +1198,7 @@ jobs:
   # Signed-Releases: every tag (incl. rc dry-runs) produces a Release
   # carrying the cosign-signed checksum manifest (#163).
   github-release:
-    needs: [release, release-arm64, verify-install, verify-install-arm64]
+    needs: [release, release-arm64, verify-install, verify-install-arm64, verify-install-hub, verify-install-hub-arm64]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
