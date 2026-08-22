@@ -413,11 +413,17 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
    `govulncheck`, `attribution`, and CodeQL's `Analyze (go)` +
    `Analyze (actions)` — eight in total. Merge when green.
 
-   `main` requires those eight **plus `coverage`**, which is why the
-   ratchet first bites at the release PR in the next step and not
-   before. Branch protection is the authority here; if this list and
-   the settings disagree, the settings win and this list is the thing
-   to fix.
+   `main` requires those eight **plus `coverage` and
+   `coverage-present`**, which is why the ratchet first bites at the
+   release PR in the next step and not before. Branch protection is the
+   authority here; if this list and the settings disagree, the settings
+   win and this list is the thing to fix.
+
+   `coverage-present` became required in #735. It is the detector that
+   tells an *absent* coverage run apart from a pending one, and it was
+   advisory: it could go red without blocking the merge it exists to
+   protect, which is the failure it was built for happening to the
+   guard itself.
 6. **Open the release PR `dev` → `main`** with title
    `Release vX.Y.Z` and a `Closes #N` line for **every issue** in
    the milestone. The list is what auto-closes them when the PR
@@ -460,8 +466,10 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
    You should not have to notice this yourself: the **Coverage
    presence** check (`.github/workflows/coverage-presence.yml`, #504)
    watches the head and fails with the run id and the exact recovery
-   command when the run was evicted. If it is red, do what it says. The
-   manual form, for a head it did not cover:
+   command when the run was evicted. It is a required context on `main`
+   as of #735, so a red one blocks the release PR rather than sitting
+   in the list being ignored. If it is red, do what it says. The manual
+   form, for a head it did not cover:
 
    ```sh
    gh run list --workflow coverage.yml --limit 5   # look for "cancelled"
