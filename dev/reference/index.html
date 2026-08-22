@@ -2397,7 +2397,10 @@ can meet a <code>CreateEndpoint</code>; registration is a compare-and-set, so th
 <code>recovery_failed</code>, <code>recovery_aborted_container_gone</code> and
 <code>recovery_network_gone</code> — the last two covering containers that had
 already exited when recovery reached them, and networks removed between
-the listing and the read of their detail. Neither is a failure and
+the listing and the read of their detail. <code>recovery_fingerprints_skipped</code>
+covers a third: an endpoint recovery adopted but could not learn the
+hostname of, which keeps its renewal client but loses the tombstone that
+would have carried its address across its next restart (#721). Neither is a failure and
 neither flips <code>healthy</code>.</p>
 <p>One case cannot be finished there. On a daemon restart Docker respawns
 the plugin while the daemon itself is still coming up, so recovery's
@@ -2512,6 +2515,11 @@ diagnosing a specific container from them alone is not.</p>
 <td><code>recovery_network_gone</code></td>
 <td>no</td>
 <td>(v1.8.0+) Networks skipped during post-restart recovery because they had been removed between the listing that found them and the read of their detail. Not a fault: a network that is gone leaves no running container without a renewal client, so this never flips <code>healthy</code>. Counted rather than passed over in silence — a host where this climbs steadily is churning networks under a restarting daemon, which is worth knowing even though no single occurrence is a problem. Until v1.8.0 it landed in <code>recovery_failed</code>, where an ordinary <code>docker network rm</code> racing a daemon restart reported the plugin's most serious fault (#648).</td>
+</tr>
+<tr>
+<td><code>recovery_fingerprints_skipped</code></td>
+<td>no</td>
+<td>(v1.8.0+) Endpoints that post-restart recovery adopted but could not describe: the <code>ContainerInspect</code> that supplies the hostname did not answer, or answered with no hostname. <strong>No</strong> because the endpoint keeps its renewal client — nothing is running without one, which is the line <code>recovery_failed</code> draws. What it loses is the fingerprint, so <code>DeleteEndpoint</code> lays no tombstone and that container gets a fresh MAC, and in general a different address, on its next <code>docker restart</code>. Counted because before #721 the only sign was <code>tombstones_consumed</code> staying flat, which is also what a quiet host looks like — an operator could not tell "recovery worked" from "recovery silently skipped half my endpoints". A hostname <em>refused</em> for carrying a control character is not counted here; it moves <code>unsafe_hostnames_rejected</code> instead, so a degraded daemon stays distinguishable from a hostile container.</td>
 </tr>
 <tr>
 <td><code>recovery_already_managed</code></td>
