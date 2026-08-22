@@ -201,6 +201,32 @@ func BuildEvent(reason string, getenv Getenv) (Event, bool) {
 		event.UnsafeValuesDropped++
 	}
 
+	// Option 3 (routers) is the one path into Gateway that is not
+	// ParseIP-validated on the way in. The option-121 default gateway a
+	// few lines above comes out of parseClasslessRoutes, which parses
+	// every address it returns; this one is `strings.Fields(...)[0]`,
+	// taken verbatim from the wire.
+	//
+	// Downstream, net.ParseIP's nil is not a refusal -- it is a valid
+	// netlink argument meaning "no gateway", and reconcileDefaultRoute
+	// hands it straight to RouteAdd/RouteReplace. The result is
+	// `default dev ethX scope link`: an ON-LINK default route, which
+	// makes the container ARP for every off-net destination and hands
+	// interception to anyone on the L2 segment -- the attacker this
+	// threat model already assumes (#728).
+	//
+	// Refuse it here instead, where the value enters. An empty Gateway
+	// is a state the sink already knows: it returns without touching
+	// the route, leaving whatever the container already had. Failing
+	// closed costs a default route the server garbled; failing open
+	// costs the container's traffic.
+	if event.Data.Gateway != "" && net.ParseIP(event.Data.Gateway) == nil {
+		log.WithField("gateway", quoteForLog(event.Data.Gateway)).
+			Warn("DHCP gateway (option 3) is not an IP address; leaving the existing default route alone")
+		event.Data.Gateway = ""
+		event.UnsafeValuesDropped++
+	}
+
 	return event, true
 }
 

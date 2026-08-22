@@ -795,6 +795,23 @@ func (m *dhcpManager) reconcileDefaultRoute(v6 bool, info dhcp.Info) error {
 	}
 
 	newGateway := net.ParseIP(info.Gateway)
+	if newGateway == nil {
+		// Belt and braces with the refusal in BuildEvent (#728). The
+		// two are not redundant: that one runs in the dhcpcd hook, a
+		// different process, and this function is also reached by any
+		// future caller that builds an Info without going through the
+		// hook at all -- the recovery and replay paths already do.
+		//
+		// Nil is the dangerous value precisely because netlink accepts
+		// it. `Gw: nil` is not "no change", it is `default dev ethX
+		// scope link` -- an on-link default route. Returning here is
+		// the same thing the guard above does for an empty Gateway:
+		// leave the container's existing route as it is.
+		log.WithFields(m.logFields(v6)).
+			WithField("gateway", info.Gateway).
+			Warn("DHCP gateway is not an IP address; leaving the existing default route alone")
+		return nil
+	}
 
 	routes, err := m.netHandle.RouteListFiltered(unix.AF_INET, &netlink.Route{
 		LinkIndex: m.ctrLink.Attrs().Index,
