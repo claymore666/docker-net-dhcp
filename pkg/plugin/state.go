@@ -12,6 +12,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	log "github.com/sirupsen/logrus"
 )
 
 // stateFileMode is the mode every file the plugin writes under stateDir
@@ -220,8 +222,48 @@ var stateDir = func() string {
 	if d := os.Getenv("STATE_DIR"); d != "" {
 		return d
 	}
-	return "/var/lib/net-dhcp"
+	return manifestStateDir
 }()
+
+// manifestStateDir is the path config.json declares as both source and
+// destination of the rbind rw mount. It is the ONLY value of STATE_DIR
+// for which everything said above about durability is true.
+const manifestStateDir = "/var/lib/net-dhcp"
+
+// warnIfStateDirIsNotThePersistentOne logs once at startup when
+// STATE_DIR has been pointed somewhere other than the bind mount.
+//
+// A warning and not a refusal: STATE_DIR is documented as settable, the
+// consequence is documented (reference.md), and an operator who means it
+// -- a test rig, a host with a different layout -- should still be able
+// to do it. What is not acceptable is doing it by accident and finding
+// out months later.
+//
+// It exists because a guarantee this package leans on is conditional on
+// a setting nothing checked at runtime. stateSchemaVersion justifies
+// itself with "this file is long-lived and crosses versions: it lives on
+// a host bind mount and survives plugin rm and upgrade by design" --
+// true of manifestStateDir and false of anywhere else. Repointed, the
+// options file no longer crosses versions, the version field guards
+// nothing, and the tombstones and the lease ledger go with it. There was
+// no signal at all until an upgrade months later took the lot.
+//
+// scripts/check-plugin-bind-sources.sh already holds the manifest and
+// the installers to agreeing with each other. Nothing held the running
+// process to agreeing with either (#724).
+func warnIfStateDirIsNotThePersistentOne() {
+	if stateDir == manifestStateDir {
+		return
+	}
+	log.WithFields(log.Fields{
+		"state_dir": stateDir,
+		"expected":  manifestStateDir,
+	}).Warn("STATE_DIR is not the directory config.json bind-mounts from the host. " +
+		"Network options, tombstones and the lease ledger will live inside the plugin's " +
+		"own filesystem, which `docker plugin rm` and every upgrade destroy — a network's " +
+		"configuration will not survive an upgrade, and the schema version stamped on it " +
+		"guards nothing. Intentional for a test rig; otherwise unset STATE_DIR.")
+}
 
 // validNetworkID accepts only a flat token — the shape of a libnetwork
 // network ID (hex). It rejects path separators and traversal elements

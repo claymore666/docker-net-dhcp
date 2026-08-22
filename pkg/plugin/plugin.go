@@ -1792,6 +1792,7 @@ func (p *Plugin) initialDHCPHostname(ctx context.Context, networkID, endpointID 
 // documented defaults, so NewPlugin(Options{}) is a valid production
 // configuration.
 func NewPlugin(opts Options) (*Plugin, error) {
+	warnIfStateDirIsNotThePersistentOne()
 	if opts.AwaitTimeout <= 0 {
 		opts.AwaitTimeout = defaultAwaitTimeout
 	}
