@@ -507,6 +507,16 @@ the hostname is known, and only when neither side knows it does the
 network-wide "exactly one match" rule apply. Sequential restarts, the
 normal case, always satisfy it.
 
+A container whose hostname the plugin **refuses** — one carrying a
+control character, which never reaches a DHCP packet (see
+`unsafe_hostnames_rejected`) — gets no tombstone at all, and so does not
+keep its MAC across a restart. That is deliberate and it is not the same
+as having no hostname: a hostname-less container writes a tombstone that
+matches network-wide, which is the v0.5.0 behaviour above and is correct
+for it. Writing one for a *refused* hostname would make the value the
+plugin declined to trust for a narrow match into a match against every
+container on the network.
+
 And the tombstone is keyed by **network ID**, so it survives a container
 restart but not the removal of the network itself — which is why a plugin
 upgrade changes the address (see the callout under

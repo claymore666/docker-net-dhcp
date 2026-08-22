@@ -63,7 +63,7 @@ func TestDeleteEndpoint_WritesTombstoneForBridgeMode(t *testing.T) {
 		IPv4:     "192.168.0.166",
 		IPv6:     "2001:db8::1",
 		Hostname: hostname,
-	})
+	}, true)
 
 	if err := p.DeleteEndpoint(context.Background(), DeleteEndpointRequest{
 		NetworkID: netID, EndpointID: epID,
@@ -100,7 +100,7 @@ func TestDeleteEndpoint_IPvlanSkipsTombstone(t *testing.T) {
 		MAC:      "02:42:ac:11:00:02",
 		IPv4:     "192.168.0.167",
 		Hostname: hostname,
-	})
+	}, true)
 
 	// The parent-attached delete path is best-effort about an absent
 	// link for the same reason the bridge path is.

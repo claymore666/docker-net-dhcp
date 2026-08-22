@@ -486,3 +486,78 @@ func TestInitialDHCPHostname_EmptyOnFailure(t *testing.T) {
 		})
 	}
 }
+
+// TestInitialDHCPHostname_RefusalIsNotAnAbsence pins the SECOND return
+// value, which every other test here discards with `_`.
+//
+// Both outcomes produce an empty hostname and they mean opposite things
+// (#726). An absent hostname is an honest unknown, and tombstone
+// matching treats it as a wildcard on purpose — that is the v0.5.0
+// contract. A REFUSED hostname is attacker-supplied, and if it arrives
+// at the tombstone store looking like an absence it buys that wildcard:
+// one container with a control character in its hostname could then
+// consume the tombstone of any container on the network and inherit its
+// MAC and address.
+//
+// So the flag is the whole fix, and until this test it was asserted
+// nowhere at its source: TestInitialDHCPHostname_Success and
+// _EmptyOnFailure both read `got, _`.
+func TestInitialDHCPHostname_RefusalIsNotAnAbsence(t *testing.T) {
+	const netID, epID = "n1", "ep1"
+
+	tests := []struct {
+		name        string
+		hostname    string
+		wantTrusted bool
+		why         string
+	}{
+		{
+			name:        "an ordinary hostname is trusted",
+			hostname:    "myhost",
+			wantTrusted: true,
+			why:         "nothing was refused",
+		},
+		{
+			name:        "no hostname set at all is an honest absence",
+			hostname:    "",
+			wantTrusted: true,
+			why:         "an empty Config.Hostname is a container that named nothing, not one whose name was rejected",
+		},
+		{
+			name:        "a control character is a refusal, not an absence",
+			hostname:    "attacker-host\x01",
+			wantTrusted: false,
+			why:         "it reaches the store as an empty Hostname, which is the tombstone matcher's wildcard",
+		},
+		{
+			name:        "a NUL is a refusal",
+			hostname:    "web\x00evil",
+			wantTrusted: false,
+			why:         "a NUL survives dockerd and truncates in the C string on the other side",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &fakeDocker{
+				inspectResult: map[string]dNetwork.Inspect{
+					netID: {Containers: map[string]dNetwork.EndpointResource{
+						"realctr": {EndpointID: epID},
+					}},
+				},
+				containerResult: map[string]dContainer.InspectResponse{
+					"realctr": {Config: &dContainer.Config{Hostname: tc.hostname}},
+				},
+			}
+			p := &Plugin{docker: f}
+
+			got, trusted := p.initialDHCPHostname(context.Background(), netID, epID)
+			if trusted != tc.wantTrusted {
+				t.Errorf("trusted = %v, want %v — %s", trusted, tc.wantTrusted, tc.why)
+			}
+			if !tc.wantTrusted && got != "" {
+				t.Errorf("a refused hostname came back as %q; it must not reach the DHCP client config at all", got)
+			}
+		})
+	}
+}

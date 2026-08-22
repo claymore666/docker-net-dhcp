@@ -248,7 +248,7 @@ func TestRecoverOneEndpoint_LosingTheRaceRecordsNothing(t *testing.T) {
 	})
 	// What the winning Join left behind.
 	p.registerDHCPManager(epID, &dhcpManager{})
-	p.rememberEndpoint(epID, endpointFingerprint{MAC: "02:42:ac:11:00:09", Hostname: "app-1"})
+	p.rememberEndpoint(epID, endpointFingerprint{MAC: "02:42:ac:11:00:09", Hostname: "app-1"}, true)
 
 	if _, err := p.recoverOneEndpoint(
 		context.Background(), ctrID, netID, epID,

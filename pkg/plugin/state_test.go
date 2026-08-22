@@ -365,7 +365,7 @@ func TestTombstones_ExpiredEntriesPruned(t *testing.T) {
 
 func TestRememberAndTakeEndpoint(t *testing.T) {
 	p := newPluginForTest()
-	p.rememberEndpoint("ep-1", endpointFingerprint{MAC: "02:42:ac:11:00:02", IPv4: "192.168.0.10", IPv6: "fe80::10"})
+	p.rememberEndpoint("ep-1", endpointFingerprint{MAC: "02:42:ac:11:00:02", IPv4: "192.168.0.10", IPv6: "fe80::10"}, true)
 	fp, ok := p.takeEndpoint("ep-1")
 	if !ok || fp.MAC != "02:42:ac:11:00:02" || fp.IPv4 != "192.168.0.10" || fp.IPv6 != "fe80::10" {
 		t.Errorf("take after remember: got (%+v, %v)", fp, ok)
@@ -375,7 +375,7 @@ func TestRememberAndTakeEndpoint(t *testing.T) {
 	}
 	// Empty MAC must not be remembered (avoids polluting map for
 	// failed CreateEndpoints).
-	p.rememberEndpoint("ep-2", endpointFingerprint{MAC: "", IPv4: "10.0.0.1"})
+	p.rememberEndpoint("ep-2", endpointFingerprint{MAC: "", IPv4: "10.0.0.1"}, true)
 	if _, ok := p.takeEndpoint("ep-2"); ok {
 		t.Errorf("rememberEndpoint with empty MAC must be a no-op")
 	}
@@ -383,7 +383,7 @@ func TestRememberAndTakeEndpoint(t *testing.T) {
 
 func TestUpdateEndpointIPs_PreservesUnsetField(t *testing.T) {
 	p := newPluginForTest()
-	p.rememberEndpoint("ep-1", endpointFingerprint{MAC: "aa:bb:cc:dd:ee:ff", IPv4: "10.0.0.1", IPv6: "fe80::1"})
+	p.rememberEndpoint("ep-1", endpointFingerprint{MAC: "aa:bb:cc:dd:ee:ff", IPv4: "10.0.0.1", IPv6: "fe80::1"}, true)
 
 	// Update v4 only — v6 must survive.
 	p.updateEndpointIPs("ep-1", "10.0.0.2", "")
@@ -393,7 +393,7 @@ func TestUpdateEndpointIPs_PreservesUnsetField(t *testing.T) {
 	}
 
 	// Update v6 only — v4 must survive.
-	p.rememberEndpoint("ep-2", endpointFingerprint{MAC: "aa:bb:cc:dd:ee:ff", IPv4: "10.0.0.1", IPv6: "fe80::1"})
+	p.rememberEndpoint("ep-2", endpointFingerprint{MAC: "aa:bb:cc:dd:ee:ff", IPv4: "10.0.0.1", IPv6: "fe80::1"}, true)
 	p.updateEndpointIPs("ep-2", "", "fe80::2")
 	fp, _ = p.takeEndpoint("ep-2")
 	if fp.IPv4 != "10.0.0.1" || fp.IPv6 != "fe80::2" {

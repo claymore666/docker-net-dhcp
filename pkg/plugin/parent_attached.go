@@ -526,7 +526,7 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 	// them as a tombstone. macvlan only — for ipvlan the MAC is the
 	// parent's and there's nothing to stabilize.
 	if mode == ModeMacvlan {
-		p.rememberEndpoint(r.EndpointID, endpointFingerprint{MAC: hintMAC, IPv4: hintIPv4, IPv6: hintIPv6, Hostname: hostname, Ifname: p.hintIfname(r.EndpointID)})
+		p.rememberEndpoint(r.EndpointID, endpointFingerprint{MAC: hintMAC, IPv4: hintIPv4, IPv6: hintIPv6, Hostname: hostname, Ifname: p.hintIfname(r.EndpointID)}, hostnameTrusted)
 	}
 
 	// Is anyone else already using the address we were just given

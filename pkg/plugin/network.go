@@ -1130,7 +1130,7 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 	if mac == "" {
 		mac = res.Interface.MacAddress
 	}
-	p.rememberEndpoint(r.EndpointID, endpointFingerprint{MAC: mac, IPv4: v4IP, IPv6: v6IP, Hostname: hostname, Ifname: p.hintIfname(r.EndpointID)})
+	p.rememberEndpoint(r.EndpointID, endpointFingerprint{MAC: mac, IPv4: v4IP, IPv6: v6IP, Hostname: hostname, Ifname: p.hintIfname(r.EndpointID)}, hostnameTrusted)
 
 	// Same post-lease conflict probe as the parent-attached path (#524),
 	// against the bridge. Bridge mode is the case that makes the MAC
@@ -1242,7 +1242,19 @@ func (p *Plugin) DeleteEndpoint(ctx context.Context, r DeleteEndpointRequest) er
 	// the slot the "exactly one match" rule counts. Losing MAC
 	// stability once, on a network whose record is already broken, is
 	// the cheaper mistake.
-	if fp, ok := p.takeEndpoint(r.EndpointID); ok && modeKnown && mode != ModeIPvlan {
+	//
+	// A REFUSED hostname skips it as well, and for a reason that is
+	// the opposite of an absent one. Both reach here as Hostname ==
+	// "", and "" is the matcher's wildcard: a tombstone carrying it
+	// matches every container on the network, so the hostname we
+	// declined to trust for a narrow match would have become a match
+	// against everything -- handing this container's MAC and IP to
+	// whichever unrelated container next started on the network. A
+	// refusal must not look like an absence (#693, #726). The cost is
+	// that this one container does not keep its MAC across a restart,
+	// which is the correct price for a hostname the plugin would not
+	// put in a DHCP packet.
+	if fp, ok := p.takeEndpoint(r.EndpointID); ok && modeKnown && mode != ModeIPvlan && !fp.HostnameRefused {
 		p.addTombstone(r.NetworkID, fp.Hostname, fp.MAC, fp.IPv4, fp.IPv6)
 	}
 
