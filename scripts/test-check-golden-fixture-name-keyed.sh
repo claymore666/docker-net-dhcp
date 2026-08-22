@@ -26,6 +26,7 @@ check() {
     local got out
     out="$(bash "$GATE" "$root" 2>&1)"
     got=$?
+    LAST_OUT="$out"
     if [ "$got" -eq "$want" ]; then
         echo "PASS: $name (exit $got)"
     else
@@ -33,6 +34,18 @@ check() {
         printf '%s\n' "$out" | sed 's/^/    /'
         failures=$((failures + 1))
     fi
+}
+
+# want_in <needle> -- the last case's output must contain it. A red that
+# names the wrong property is barely better than no red: case 2b passes
+# the exit code either way, because the OTHER probe would also fail on a
+# tree this broken. The message is what says which one fired.
+want_in() {
+    # grep -q exits at the first match, SIGPIPEs the producer, and under
+    # pipefail the pipeline then reports FAILURE on a successful match.
+    printf '%s' "$LAST_OUT" | grep -F -- "$1" >/dev/null && return 0
+    echo "FAIL: the last case's output did not contain: $1"
+    failures=$((failures + 1))
 }
 
 # A working copy the cases can damage. Only the Go module is needed;
@@ -72,6 +85,52 @@ grep -q '(n - i) \* 10' "$INDEX/pkg/plugin/metrics_test.go" \
 # must fail on the COUPLING, not on a golden that was merely stale.
 ( cd "$INDEX" && UPDATE_GOLDEN=1 go test ./pkg/plugin/ -run TestMetrics_GoldenExposition -count=1 ) >/dev/null 2>&1
 check "index-keyed fixture is rejected" 1 "$INDEX"
+
+# --- case 2b: a fixture keyed on RENDERED rank is REJECTED --------------
+#
+# The case the gate was blind to until it grew a second probe. Values are
+# keyed on the field's rank among the json-TAGGED fields, with untagged
+# fields in a disjoint band so they cannot collide. Nothing is weakened:
+# every collision assertion stays, and the package is green.
+#
+# Under the json:"-" probe alone this tree passes -- that probe moves only
+# the unrendered index, which this scheme does not read -- while inserting
+# one real metric mid-struct moves 54 golden lines. Measured, on the same
+# insertion point, before the second probe was added:
+#
+#     json:"-" probe only          EXIT 0  PASS   <-- vacuous
+#     both probes                  EXIT 1  FAIL, 54 lines
+RANK="$TMP/rank"
+copy_tree "$RANK"
+python3 - "$RANK/pkg/plugin/metrics_test.go" <<'PY2'
+import sys
+p = sys.argv[1]
+s = open(p).read()
+old = "f.SetInt(fixtureValue(v.Type().Field(i).Name))"
+new = """rank, unrendered := 0, 0
+			for j := 0; j <= i; j++ {
+				if tg := v.Type().Field(j).Tag.Get("json"); tg != "" && tg != "-" {
+					rank++
+				} else {
+					unrendered++
+				}
+			}
+			if tg := v.Type().Field(i).Tag.Get("json"); tg != "" && tg != "-" {
+				f.SetInt(int64(1_000_000 + rank*10))
+			} else {
+				f.SetInt(int64(8_000_000 + unrendered*10))
+			}"""
+assert s.count(old) == 1, "anchor for the rendered-rank mutant not found"
+open(p, "w").write(s.replace(old, new, 1))
+PY2
+grep -q '1_000_000 + rank\*10' "$RANK/pkg/plugin/metrics_test.go" \
+    || { echo "FAIL: the rendered-rank mutant did not apply"; failures=$((failures + 1)); }
+grep -q 'assertFixtureValuesDoNotCollide' "$RANK/pkg/plugin/metrics_test.go" \
+    || { echo "FAIL: the rendered-rank mutant removed the collision assertion; its rejection would prove nothing"; failures=$((failures + 1)); }
+( cd "$RANK" && UPDATE_GOLDEN=1 go test ./pkg/plugin/ -run TestMetrics_GoldenExposition -count=1 ) >/dev/null 2>&1
+check "rendered-rank fixture is rejected" 1 "$RANK"
+want_in "ZZGoldenFixtureRenderedProbe"
+want_in "moves the RENDERED field index"
 
 # --- case 3: a tree it cannot judge REFUSES -----------------------------
 #
