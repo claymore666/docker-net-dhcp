@@ -565,6 +565,49 @@ This is the single strongest justification for requiring an explicit
 CLEAR alongside green, and it arrived as one command's output rather
 than as an argument. *(master-release)*
 
+## I22 — a check that transcribes its own subject, in the check built to catch that
+
+A tripwire was built to guard the release notes' claim that ten
+lifecycle faults ship. It read the milestone and refused if any of the
+ten lacked `in-dev`. Its author described it as a derivation. **The ten
+issue numbers were written into it by hand.**
+
+So it could see *"one of the ten I wrote down is missing"* and could
+never see *"the ten are not the ten"* — an eleventh finding, an issue
+moved off the milestone, one of the five reparented away from its
+tracker. All pass silently.
+
+**It is fully derivable, measured:**
+
+```
+milestone 22 + code-review + lifecycle : 11    <- eleven, not ten
+  #726 sub_issues_summary.total = 5            <- the tracker, excludes ITSELF
+  every other member             = 0
+  findings                             : 10
+  NOT in-dev: #731
+```
+
+**Excluding the tracker by number would have put a magic number inside
+the script whose whole job is catching magic numbers.** `sub_issues_
+summary.total > 0` removes it by shape instead.
+
+**Fourth instance of the day, in the fourth file, and the first that
+would have been shipped knowingly** — after `familyPairs` against a
+literal `6`, an AST table keyed on a name, and a `want` set that was a
+third copy of the thing it guarded (I17). The common property is not
+carelessness: every one was written by someone who had just been
+thinking about this exact class.
+
+**What deriving the subject buys, stated narrowly:** it widens what the
+check can *see*. It does not make it fire, and it does not replace the
+sequencing constraint. *(oversight, verified independently by client3)*
+
+**Caveat that ships with it:** it reads labels and milestones, which are
+human artefacts — it derives the labels' state, not the code's. Strictly
+better than a transcribed list; strictly weaker than a derivation that
+reads source. This repo has already labelled the wrong issue by
+following a `(#675)` in a subject into a pull-request body.
+
 ---
 
 # Rules
@@ -591,6 +634,7 @@ Each names its incident and the condition under which it dies.
 | R16 | Run the mechanical sweep against **your own** work first, not last. **Rule, owed — owner: client3.** | I12 | The carrier-enumeration gate exists — this is the same gate pointed at a different moment, so R14 and R16 may collapse into one piece of work. |
 | R17 | **Name the object, never the bare number.** "63 fields", not "63" — and never a noun borrowed from the neighbouring sentence. **Rule, owed — owner: client3.** | I16 | A gate can check that a numeral in changed prose is followed by the noun it counts; this may fall out of R14's gate for free. |
 | R18 | A summary count **reconciles against a second tool before it prints**, or it refuses. | I19 | Never — this is a shape, and it costs one assertion. |
+| R20 | A check **derives its own subject**. Writing the set it guards into itself makes "the set is wrong" invisible — and excluding a member by name is the same defect wearing a smaller costume. | I17, I22 | Never; four instances in one day, all by authors thinking about this class at the time. |
 | R19 | Where this file records that something happened, **prefer a SHA to a status word.** A SHA is checkable forever; a status word is a present-tense claim nothing updates. | I3, and the owed table below | Never. |
 
 ## Owed — R14, R16 and R17, and why they are hard
