@@ -209,7 +209,7 @@ func isOrphanedClient(pid int) bool {
 		return false
 	}
 
-	if commOf(pid) != dhcpcdBin {
+	if commOf(pid) != commComparand() {
 		return false
 	}
 
@@ -237,6 +237,28 @@ func isOrphanedClient(pid int) bool {
 	// leave the duplicate-client bug in place on exactly the hosts this
 	// plugin runs on.
 	return commOf(ppid) != selfComm
+}
+
+// commComparand is the value /proc/<pid>/comm is matched against.
+//
+// A BASENAME, never a path. The kernel fills comm from
+// task_struct.comm — the basename of the executable, truncated to
+// TASK_COMM_LEN-1 = 15 bytes — regardless of how the process was
+// invoked. dhcpcdBin is ours and absolute (#761), so comparing it
+// directly is a comparison that can never be true.
+//
+// The hazard is not that a path got absolutized. It is that ONE side of
+// this comparison comes from the kernel and the other from a constant we
+// control, and only one of them is ours to change. Anything compared
+// against a comm has to be reduced to what the kernel would have
+// written; the argv positions elsewhere in this package deliberately
+// keep the absolute path, because exec genuinely wants it.
+//
+// A function rather than an inline expression so a test can name the
+// value directly — see TestIsOrphanedClient_ComparandIsAComm, which
+// goes red for the whole class rather than for this instance.
+func commComparand() string {
+	return filepath.Base(dhcpcdBin)
 }
 
 // commOf returns a process's comm, or "" if it cannot be read.
