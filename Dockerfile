@@ -70,8 +70,10 @@ FROM alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6ee
 # mkdir were missed by the original audit, then sh and unshare were
 # missed by the audit that added mount and mkdir — three passes, each
 # looking at the words the previous one had happened to be looking at.
-# All five would break the per-client mount namespace silently, because
-# every call in mountPrep carries 2>/dev/null.
+# All five would break the per-client mount namespace, and until the
+# same change that derived this list they would have broken it SILENTLY:
+# every call in mountPrep carried 2>/dev/null. Their stderr now reaches
+# the plugin log.
 #
 # Separate `test -x` per path, not `test -x a b c`. The one-line form is
 # not a shorthand for them: busybox sh answers it

@@ -132,9 +132,11 @@ const unsharePath = "/usr/bin/unshare"
 // env vars and PATH is not among them, cmd.Env is never assigned, and
 // busybox ash falls back to a compiled-in /sbin:/usr/sbin:/bin:/usr/bin
 // when PATH is unset — so the bare names resolved. What they could not
-// survive is a PATH carrying a decoy, and the 2>/dev/null on all four
-// means a decoy that ran instead would report success and leave the
-// mounts unmade. See mountPrep on what that costs.
+// survive is a PATH carrying a decoy. Until this change all four calls
+// also carried 2>/dev/null, so a decoy that ran instead would have
+// reported success and left the mounts unmade with nothing said; the
+// stderr is no longer swallowed, which does not stop a decoy but does
+// mean it has to be silent as well as present. See mountPrep.
 const (
 	mountBin = "/bin/mount"
 	mkdirBin = "/bin/mkdir"
@@ -181,16 +183,63 @@ const workDirPrefix = "net-dhcp-dhcpcd-"
 // container's dhcpcd and exits without acquiring anything), and
 // (3) flips /proc/sys read-write so dhcpcd's interface-setup sysctl
 // writes succeed (see procSysPath, #247). All mounts are local to this
-// client's mount namespace. Their stderr is swallowed: each can
-// legitimately be a no-op (dir already private, /proc/sys already rw)
-// or refused (userns-locked mount) — a genuinely blocked sysctl write
-// still surfaces via dhcpcd's own stderr, captured into the exit error.
+// client's mount namespace.
+//
+// # WHY THE STDERR IS NO LONGER SWALLOWED
+//
+// Every one of these four carried `2>/dev/null` until now, justified by
+// this comment on the grounds that each can legitimately be a no-op or
+// be refused, and that "a genuinely blocked sysctl write still surfaces
+// via dhcpcd's own stderr, captured into the exit error".
+//
+// That argument is true, and it covers property (3) ONLY. dhcpcd fails
+// loudly when it cannot write a sysctl, so the /proc/sys remount has a
+// downstream observer. Properties (1) and (2) have none. If the tmpfs
+// does not land, dhcpcd runs perfectly against the SHARED state and run
+// directories — which is precisely the collision this function exists
+// to prevent — and reports nothing, because nothing went wrong from
+// dhcpcd's point of view. The commands are separated by `;`, so a
+// failure does not stop the chain, and `exec` is unconditional, so the
+// exit status is dhcpcd's. A justification that holds for one of three
+// properties was covering all three.
+//
+// Nothing here is fatal, deliberately. Measured on the pinned base
+// image (alpine:3.24.1@sha256:28bd5fe8…), the remount at (3) FAILS on a
+// --privileged runtime — `mount: can't find /proc/sys in /proc/mounts`,
+// because /proc/sys is not a separate mount there — and /proc/sys is
+// already writable, so the failure is correct and harmless. Under the
+// capability set this plugin actually declares (CAP_SYS_ADMIN,
+// CAP_NET_ADMIN, CAP_SYS_PTRACE, no --privileged) all four succeed. So
+// `set -e` or `|| exit` would convert a working host into a dead one
+// for a mount that host does not need, which is not a trade a hardening
+// release should make.
+//
+// What is left is audibility, which costs nothing and cannot break any
+// host: the diagnostic now reaches the plugin. Measured end to end —
+// the shell inherits fd 2 from the unshare process, `exec` replaces the
+// shell but keeps its descriptors, and NewDHCPClient sets that fd to
+// io.MultiWriter(logrus-at-debug, the bounded stderr tail). With
+// `2>/dev/null` the parent captured an empty string; without it the
+// parent captures `mount: can't find /proc/sys in /proc/mounts`, before
+// the exec, alongside dhcpcd's own later output. It also enters the
+// tail buffer, so a subsequent non-zero dhcpcd exit reports it.
+//
+// It lands at DEBUG level, which is as far as this can go without a new
+// observable: dhcpcd shares this exact descriptor after the exec, so
+// the shell's diagnostics cannot be raised to warn without raising all
+// of dhcpcd's routine stderr with them. A counter that makes a failed
+// isolation visible without reading logs is the right answer and is
+// filed for v1.9.0 — a new metric is new surface, and this is a
+// hardening release.
+//
+// NOT A CLAIM THAT A COLLISION HAS HAPPENED. It has not been observed.
+// The finding is that it could not have been observed.
 func mountPrep() string {
 	return fmt.Sprintf(
-		"%s -t tmpfs tmpfs %s 2>/dev/null; "+
-			"%s -p %s 2>/dev/null; "+
-			"%s -t tmpfs tmpfs %s 2>/dev/null; "+
-			"%s -o remount,bind,rw %s 2>/dev/null; "+
+		"%s -t tmpfs tmpfs %s; "+
+			"%s -p %s; "+
+			"%s -t tmpfs tmpfs %s; "+
+			"%s -o remount,bind,rw %s; "+
 			"exec \"$0\" \"$@\"",
 		mountBin, dhcpcdStateDir,
 		mkdirBin, dhcpcdRunDir,
