@@ -762,6 +762,45 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
    previous version's README/docs, and the next release PR has to
    re-bump them. Forgotten once after v0.9.0 — that's why
    `release.yml`'s header comment carries the same checklist.
+
+   **Do this before merging anything else into `dev`.** Forgetting is
+   the mild failure. The one that has actually happened is
+   *foreclosure*: the `--ff-only` is possible only while `dev` has no
+   commits of its own since the release, so the window opens when the
+   release PR lands and closes on the next merge into `dev` —
+   permanently, and by doing something otherwise correct.
+
+   ```sh
+   git rev-list --count origin/dev..origin/main   # non-zero → back-merge first
+   ```
+
+   Run that before merging anything post-tag. Non-zero means the
+   fast-forward is already gone, and the recovery is a back-merge PR,
+   `main` → `dev`, **merged with a merge commit — a squash does not put
+   `main`'s commits on `dev`**, which is the entire point of this step.
+
+   **The failure is silent, which is why this needs a command and not a
+   reminder.** The divergence carries no content: every release merge
+   has a `dev` commit as its second parent, so `git diff main dev` is
+   clean and the whole suite passes while the graph is wrong. Nothing
+   reads as broken, so nothing prompts the check.
+
+   Worked instance: v1.6.0 shipped on 2026-08-17 and three Dependabot
+   PRs went into `dev` a few hours later, before anyone looked at
+   `main`. That foreclosed it; recovered by #597.
+
+   **The scheduled gate does not cover this case.**
+   `scripts/check-release-backmerge.sh` (#598 / PR #599) asserts that
+   every commit reachable from `main` is reachable from `dev`, but only
+   once the oldest `main`-only commit is older than
+   `BACKMERGE_GRACE_HOURS` (default 24) — the grace exists so a release
+   in flight is not a false red, and it is exactly the window this
+   failure lives in. #598 scoped itself to the *permanent* omission and
+   left the merge-time signal unimplemented, wanting a decision on shape
+   (advisory annotation vs. blocking check) first; **it was then closed,
+   so nothing tracks that case today.** Knowing a gate exists here is
+   worse than not knowing it, if its existence is read as this being
+   watched.
 12. **Prune merged branches.** The repo has *Automatically delete head
    branches* enabled, so merged PR head branches are removed on merge.
    Two things that setting doesn't cover, so clean them now:
