@@ -195,6 +195,67 @@ untracked_case "a .gitignore'd script is not inspected" 2 \
 vendor/x.sh:::set -uo pipefail
 if git grep -n foo | grep -${Q}E 'bar'; then echo hi; fi"
 
+# =====================================================================
+# ARM FOUR: `set -e` reads the status on the script's own behalf.
+#
+# The gate's header used to CLAIM this consumer was absent from the
+# tree. It was not -- two scripts errexit -- and the claim was prose
+# nothing re-ran, in a gate whose whole subject is exemptions nobody
+# re-measures. The narrower fact that is actually true (neither of them
+# has the substitution in its own shell) is enforced here instead of
+# being asserted there.
+run_case "a bare head substitution under set -e is reported" 1 \
+    "scripts/x.sh:::set -e
+brip=\$(producer | ${H} -1)
+echo \"\$brip\""
+
+# THE CONTROL, and the one that decides whether the arm is keyed on
+# anything at all. Byte-identical but for the option letter: without
+# -e nothing reads the status, and the substitution stays exempt.
+run_case "the same line without set -e stays clean" 0 \
+    "scripts/x.sh:::set -uo pipefail
+brip=\$(producer | ${H} -1)
+echo \"\$brip\""
+
+# The exemption stated out loud -- a status discarded before -e can see
+# it. This is the shape setup-runner-storage.sh:44 actually has.
+run_case "a || true INSIDE the substitution exempts it under set -e" 0 \
+    "scripts/x.sh:::set -e
+DEV=\$(find /sys -maxdepth 1 | ${H} -1 || true)
+echo \"\$DEV\""
+
+# The documented non-coverage: the pipeline runs in ANOTHER shell, so
+# this script's -e does not reach it. verify-bridge-recipes.sh:111 is
+# this shape. Detected by an odd number of quotes before the pipe --
+# and if that heuristic ever breaks, this case is what says so.
+run_case "a pipeline inside a nested shell string is not arm four's" 0 \
+    "scripts/x.sh:::set -e
+brip=\$(docker exec \"\$c\" sh -c \"ip -4 addr | ${H} -1\")
+echo \"\$brip\""
+
+# =====================================================================
+# CONSUMER FOUR: `\$?`. No instance in the tree -- neither did the
+# two-dot receiver in check-release-notes-symbols.sh, which is why the
+# enumeration rather than the corpus is the spec.
+run_case "a \$? on the next line is reported" 1 \
+    "scripts/x.sh:::set -uo pipefail
+x=\$(producer | ${H} -1)
+if [ \"\$?\" -ne 0 ]; then echo bad; fi"
+
+run_case "a \$? on the same line is reported" 1 \
+    "scripts/x.sh:::set -uo pipefail
+x=\$(producer | ${H} -1); rc=\$?
+echo \"\$rc\""
+
+# The control that bounds it. Two lines down, \$? is the status of the
+# echo between them, not of the substitution -- flagging it would be a
+# red naming the wrong line.
+run_case "a \$? two lines down is not this substitution's status" 0 \
+    "scripts/x.sh:::set -uo pipefail
+x=\$(producer | ${H} -1)
+echo \"\$x\"
+rc=\$?"
+
 dir=$(mktemp -d)
 if PIPE_ROOT="$dir" bash "$GATE" >/dev/null 2>&1; then
     no "a non-git directory should not report clean"

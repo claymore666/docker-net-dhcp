@@ -36,21 +36,47 @@
 #   captured value is right. That was measured rather than assumed.
 #
 #   BUT AN EXEMPTION IS A MEASUREMENT WITH A TIMESTAMP, AND NOTHING
-#   RE-RUNS IT. The one above was true over the tree as it stood, and it
-#   depends entirely on nothing reading the status. Three things read
-#   it, and the original wording weighed only the first:
+#   RE-RUNS IT — AND THE FIRST DRAFT OF THIS PARAGRAPH PROVED ITS OWN
+#   POINT. It listed three consumers and said of the first, `set -e`,
+#   "genuinely absent here". That was false when written:
 #
-#     1. `set -e`                       — genuinely absent here.
-#     2. `x=$(... | head -1) || handler`  — reads it explicitly.
+#     verify-bridge-recipes.sh:1              set -e
+#     setup-runner-storage.sh:1               set -e
+#
+#   The true statement is narrower — no `set -e` script has a `$(... |
+#   head)` in ITS OWN shell — and a truer exemption is still an
+#   exemption with a timestamp. So it is not written here as a claim.
+#   It is an arm below, with fixtures, and it fails the build.
+#
+#   The consumers, and this list is the SPEC — a manifest with a missing
+#   member is how the first version got here:
+#
+#     1. `set -e`                                — arm four.
+#     2. `x=$(... | head -1) || handler`         — reads it explicitly.
 #     3. `if x=$(... | head -1); then`, and `&&` — the same.
+#     4. `$?`                                    — reads it afterwards.
+#
+#   Number four has no instance in the tree today. Neither did the
+#   two-dot receiver in check-release-notes-symbols.sh, which is exactly
+#   why it is here: the enumeration is the spec, and the cheapest time
+#   to close a member is while writing the arm next to it.
 #
 #   So the rule is not "a producer that can SIGPIPE". It is `$(... |
-#   head)` WHOSE EXIT STATUS IS CONSUMED BY ANYTHING, which needs no
-#   reasoning about `-e` and is decidable at the call site. Rule two
-#   still rejects a bare `head` pipeline in a condition; rule three
-#   rejects the status-consuming substitution. A `$(...)` used for its
-#   VALUE inside a condition — `if [ -n "$(p | head -1)" ]` — stays
+#   head)` WHOSE EXIT STATUS IS CONSUMED BY ANYTHING — by an operator,
+#   by `$?`, or by `-e` on the script's own behalf. A `$(...)` used for
+#   its VALUE inside a condition — `if [ -n "$(p | head -1)" ]` — stays
 #   clean: there the status belongs to the test.
+#
+#   WHAT ARM FOUR DELIBERATELY DOES NOT SEE, both documented rather than
+#   parsed, because an undocumented limit is the next stale exemption:
+#
+#     - a pipeline inside a nested shell string, `sh -c "a | head -1"`:
+#       it runs in another shell, so this script's `-e` does not reach
+#       it, and whether THAT shell sets pipefail is not visible here.
+#       Detected by an odd number of `"` before the pipe.
+#     - a nested substitution, `$( ... $(...) | head)`. The occurrence
+#       scanner stops at the first `)`, so the outer form is not
+#       matched at all.
 #
 #   `|| true` is excluded. It reads the status in order to throw it
 #   away, which is the exemption stated out loud, and the tree's single
@@ -104,6 +130,14 @@ HEAD_COND="^[[:space:]]*\(if\|elif\|while\|until\)[[:space:]].*[|][[:space:]]*he
 
 findings=0
 for f in "${FILES[@]}"; do
+    # Arm four needs to know whether the script errexits. Computed here
+    # rather than inside awk so the pattern is a shell regex like every
+    # other one in this gate: `set -e`, `set -eu`, `set -euo pipefail`.
+    if grep -qE '^[[:space:]]*set[[:space:]]+-[A-Za-z]*e' "$ROOT/$f"; then
+        sete=1
+    else
+        sete=0
+    fi
     # `[^|]` before the pipe so `||` is not read as a pipeline: there the
     # grep is a command in its own right and reads a file, not a pipe.
     while IFS=: read -r n line; do
@@ -129,22 +163,59 @@ for f in "${FILES[@]}"; do
             # line) is the shape this was actually found in, so it is not
             # optional: without it the sweep returns the same clean tree
             # for the wrong reason.
-            awk '
+            awk -v sete="$sete" '
               function consumed(after) {
                   if (after ~ /^[ \t]*\|\|[ \t]*true([ \t;)]|$)/) return 0
                   return (after ~ /^[ \t]*(\|\||&&)/)
               }
-              /^[ \t]*#/ { pend = 0; next }
+              # Is the pipe that feeds head at the substitution as
+              # written, or inside a string being handed to ANOTHER
+              # shell? An odd number of double quotes before it means
+              # the latter, and this script\47s -e does not reach there.
+              #
+              # match() writes RSTART and RLENGTH, which the caller\47s
+              # occurrence loop is still using, so they are saved and
+              # put back. Forgetting that turns the loop into an
+              # infinite one, silently.
+              function toplevel(t,   before, n, saveS, saveL, r) {
+                  saveS = RSTART; saveL = RLENGTH; r = 1
+                  if (match(t, /[|][ \t]*head/) > 0) {
+                      before = substr(t, 1, RSTART - 1)
+                      n = gsub(/"/, "\"", before)
+                      if (n % 2) r = 0
+                  }
+                  RSTART = saveS; RLENGTH = saveL
+                  return r
+              }
+              /^[ \t]*#/ { pend = 0; qpend = 0; next }
               {
                 if (pend && NR == pend + 1 && $0 ~ /^[ \t]*(\|\||&&)/ \
                     && $0 !~ /^[ \t]*\|\|[ \t]*true([ \t;)]|$)/) {
                     printf "%d:%s\n", pend, pendline
                 }
-                pend = 0
+                # Consumer four on the FOLLOWING line. `rc=$?` two lines
+                # down reads a different status; only the next one can
+                # still be reading this substitution.
+                if (qpend && NR == qpend + 1 && $0 ~ /[$][?]/) {
+                    printf "%d:%s\n", qpend, qpendline
+                }
+                pend = 0; qpend = 0
                 rest = $0
                 while (match(rest, /[$]\([^)]*\|[ \t]*head[^)]*\)/)) {
-                    after = substr(rest, RSTART + RLENGTH)
+                    rs = RSTART; rl = RLENGTH
+                    subst = substr(rest, rs, rl)
+                    after = substr(rest, rs + rl)
                     if (consumed(after)) { printf "%d:%s\n", NR, $0; break }
+                    # Consumer four, same line: `x=$(p | head -1); rc=$?`
+                    if (after ~ /[$][?]/) { printf "%d:%s\n", NR, $0; break }
+                    # Consumer one. A `|| true` INSIDE the substitution
+                    # already throws the status away before -e can see
+                    # it, which is the exemption stated out loud.
+                    if (sete == 1 && toplevel(subst) \
+                        && subst !~ /\|\|[ \t]*true/) {
+                        printf "%d:%s\n", NR, $0
+                        break
+                    }
                     # Nothing but a line continuation after the
                     # substitution: the operator, if any, is on the next
                     # line. `after` still holds that backslash, so
@@ -154,7 +225,12 @@ for f in "${FILES[@]}"; do
                     if (after ~ /^[ \t]*\\[ \t]*$/) {
                         pend = NR; pendline = $0
                     }
-                    if (RSTART + RLENGTH > length(rest)) break
+                    # Same for `$?`: an assignment with nothing after it
+                    # may still be read by the next line.
+                    if (after ~ /^[ \t]*(\\[ \t]*)?$/) {
+                        qpend = NR; qpendline = $0
+                    }
+                    if (rs + rl > length(rest)) break
                     rest = after
                 }
                 # `if x=$(... | head -1); then` -- there the reader is
