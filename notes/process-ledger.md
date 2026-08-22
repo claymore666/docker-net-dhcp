@@ -436,6 +436,21 @@ worth more than a rule followed.
   reproducing its result.** Agreement between your grep and their table
   proves the table. Only running their command proves the *comment*, and
   the comment is what the next reader will use.
+- **Wait on the effect, not on the precondition.** A waiter armed for
+  #766 watched `origin/dev`'s tree — the `HealthResponse` json tags —
+  rather than the pull request's merge state. *"The PR merged"* and
+  *"dev carries the fields"* are different claims, and only the second
+  is what the dependent work needs. A waiter keyed on merge state
+  asserts GitHub's opinion about a merge; one keyed on the tree asserts
+  the tree.
+
+  **This is the third costume the same class wore in one day.** The
+  first was `container_netns_test.go` asserting the plugin's opinion
+  (the error sentinel) and never the evidence (the counter). The second
+  was a golden exposition file proving a counter *renders* and
+  establishing nothing about whether anything increments it. Measured,
+  unmechanisable in general, and worth recognising by shape:
+  **something's opinion about the state is not the state.**
 - **Resolve a generated file by regenerating, never by taking a side** —
   taking a side is a hand-written expectation wearing a generated file's
   clothes. Then **write down the churn you predict before you diff**. A
