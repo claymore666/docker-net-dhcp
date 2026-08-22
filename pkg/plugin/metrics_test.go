@@ -431,6 +431,21 @@ func familyPairs() []familyPair {
 // Compare the NAMES in both directions and print the difference, the
 // way a golden conflict is resolved. A count — even a derived one —
 // would pass two disjoint sets of six.
+//
+// The name is built here the way the renderer builds it at
+// metrics.go:181, and that duplication is DELIBERATE: a shared
+// seriesName() helper would make both sides agree by construction —
+// a wrong prefix or a missing suffix would move production and this
+// reconciliation together, `rendered` would match `walked` perfectly,
+// and the test would be green over a broken exposition. That is the
+// mirror property this whole change exists to remove. The restatement
+// is independent, and independence is the only thing that makes
+// disagreement detectable; divergence fires in direction 2 below.
+//
+// The line moves if the renderer's naming ever grows branches — a
+// third suffix, a per-kind rule — because then this stops being a
+// restatement and becomes a reimplementation with its own bugs. Two
+// lines is not that.
 func assertFamilyPairsCoverProduction(t *testing.T, pairs []familyPair) {
 	t.Helper()
 
@@ -487,7 +502,42 @@ func assertFamilyPairsCoverProduction(t *testing.T, pairs []familyPair) {
 // aggregate exceed the halves the same snapshot rendered.
 //
 // So: both families bump, on all six pairs, and every scrape is judged
-// on all six. Three properties, each killing a different mutant.
+// on all six, against three properties.
+//
+// What each property is worth was MEASURED, by disabling one at a time
+// and re-running the mutants, rather than reasoned about. Over the 24
+// double-load mutants — both halves of all six pairs, in the aggregate
+// and in the rendered half:
+//
+//	property 1 alone     kills all 24
+//	property 2 alone     kills none of them
+//	property 3 alone     kills none of them
+//	properties 1+2       still 24, so 3 adds nothing here
+//
+// And over three renderer mutants, which property 1 structurally cannot
+// see because it judges the SNAPSHOT and a renderer does not touch it:
+//
+//	renders the v6 half under family="ipv4"    property 2, alone
+//	renders the aggregate under family="ipv4"  property 2, alone
+//	derives ipv4 as (aggregate - v6)           NOTHING catches it
+//
+// That last row is not a hole, and it is the clearest statement of what
+// #730 actually repaired. Property 1 forbids an inconsistent snapshot,
+// so within one snapshot `aggregate - v6` IS v4, to the byte: the
+// mutant emits identical output and there is nothing left to detect.
+// The old subtraction was wrong because the two counters could
+// DISAGREE, not because subtraction is wrong — so property 1 is what
+// makes that mutant harmless, and the three properties are only worth
+// reading as a set.
+//
+// Property 3 kills nothing measured, and stays. It is the only property
+// in the operator's terms — Prometheus reads a counter decrease as a
+// reset and repays the whole accumulated count as a rate spike — and
+// the only one that would still fire if the load-once invariant held
+// and a series went backwards for a reason nobody has thought of yet.
+// A symptom observer looks idle right up until the day it is the only
+// thing watching, and a redundancy measurement is not a deletion
+// argument.
 //
 //  1. INTERNAL CONSISTENCY. aggregate == v4 + v6, on every pair of every
 //     snapshot. This is the load-once property stated directly: a second
