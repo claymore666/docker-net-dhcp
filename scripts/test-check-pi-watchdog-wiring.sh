@@ -81,6 +81,42 @@ break_image() { sed -i '/netboot-templates\/nfs-watchdog/d' "$1/Dockerfile"; }
 got=$(fixture noship break_image)
 check "an image that does not ship the binary fails" fail "$got"
 
+# --- a comment is not wiring -------------------------------------------
+#
+# Every check above deleted or altered the line. These COMMENT IT OUT
+# instead, which is the state the gate was actually blind to: the token
+# is still in the file, so an unanchored substring match found it and
+# reported the host wired while nothing was installed. patch-target.sh
+# already carries a comment naming RuntimeWatchdogSec one screen above
+# the real drop-in, so the blindness was one deletion away from being
+# load-bearing.
+comment_dropin() { sed -i 's|^RuntimeWatchdogSec=0$|# RuntimeWatchdogSec=0|' "$1/patch-target.sh"; }
+got=$(fixture commented_dropin comment_dropin)
+check "a COMMENTED-OUT RuntimeWatchdogSec=0 fails" fail "$got"
+
+comment_enable() {
+    sed -i 's|^\(.*sysinit\.target\.wants/nfs-watchdog\.service.*\)$|#\1|' \
+        "$1/patch-target.sh"
+}
+got=$(fixture commented_enable comment_enable)
+check "a COMMENTED-OUT enable link fails" fail "$got"
+
+comment_ship() {
+    sed -i 's|^COPY --from=watchdog-builder|# COPY --from=watchdog-builder|' "$1/Dockerfile"
+}
+got=$(fixture commented_ship comment_ship)
+check "a COMMENTED-OUT COPY of the binary fails" fail "$got"
+
+# The other direction, so anchoring cannot be "fixed" by making the
+# tokens unmatchable: an indented real line must still count where the
+# token legitimately appears indented.
+indent_enable() {
+    sed -i 's|^\(  *\)\(.*sysinit\.target\.wants/nfs-watchdog\.service.*\)$|\1  \2|' \
+        "$1/patch-target.sh"
+}
+got=$(fixture indented_enable indent_enable)
+check "a further-indented enable link still counts" pass "$got"
+
 # --- a non-stdlib import -----------------------------------------------
 # The netboot-image workflow compiles it too, but only on changes under
 # that directory, and it reports a Go compile error rather than the rule

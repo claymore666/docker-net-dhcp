@@ -72,8 +72,29 @@ done
 fail=0
 note() { echo "FAIL  $*" >&2; fail=1; }
 
+# COMMENTS ARE NOT WIRING. Every match below reads the file with comment
+# lines removed, and anchors wherever the token's real position allows.
+#
+# Unanchored substring matches accepted a line that merely TALKED about
+# the setting. patch-target.sh:147 explains the systemd default in a
+# comment naming RuntimeWatchdogSec, one screen above the drop-in that
+# actually writes it; delete the drop-in and the prose alone kept this
+# green. Check 4 already got this right (`^LimitMEMLOCK=infinity`), so
+# the file carried its own correct form the whole time.
+uncommented() { grep -v '^[[:space:]]*#' "$1"; }
+
+# `grep -E ... >/dev/null`, never `grep -qE`, on the right-hand side of
+# these pipes: -q exits at the first match and SIGPIPEs `uncommented`,
+# so under `pipefail` the pipeline reports FAILURE exactly when the
+# wiring was found. Reading to EOF and discarding gives the real status.
+# scripts/check-pipefail-consumers.sh gates this repo-wide, and caught
+# this while the anchoring above was being written.
+
 # 1. systemd must be told to let go of the device.
-if grep -q 'RuntimeWatchdogSec=0' "$PATCH"; then
+#    Anchored both ends: it is written at column 0 into a drop-in, so
+#    there is no reason to accept it anywhere else, and `=0` must be the
+#    whole value rather than the start of `=0m`.
+if uncommented "$PATCH" | grep -E '^RuntimeWatchdogSec=0[[:space:]]*$' >/dev/null; then
     echo "ok    systemd releases /dev/watchdog (RuntimeWatchdogSec=0)"
 else
     note "$PATCH does not write a RuntimeWatchdogSec=0 drop-in."
@@ -82,7 +103,12 @@ else
 fi
 
 # 2. ...and something must actually pull the unit in.
-if grep -q 'sysinit.target.wants/nfs-watchdog.service\|systemctl enable nfs-watchdog' "$PATCH"; then
+#    Not anchorable — the link path appears mid-command, indented — so
+#    comment-stripping is the whole guard here. The dots are escaped:
+#    unescaped they matched any character, which is loose for no gain.
+if uncommented "$PATCH" \
+     | grep -E 'sysinit\.target\.wants/nfs-watchdog\.service|systemctl enable nfs-watchdog' \
+       >/dev/null; then
     echo "ok    the unit is enabled (linked into a .wants directory)"
 else
     note "nfs-watchdog.service is written but never enabled."
@@ -115,7 +141,11 @@ else
 fi
 
 # 5. the image must build and ship the binary the provisioner installs.
-if grep -q 'GOARCH=arm64 go build' "$DOCKERFILE" && grep -q 'netboot-templates/nfs-watchdog' "$DOCKERFILE"; then
+#    Both halves read the Dockerfile without its comments: a commented-out
+#    COPY is exactly the state this check exists to catch, and it used to
+#    satisfy it.
+if uncommented "$DOCKERFILE" | grep 'GOARCH=arm64 go build' >/dev/null \
+   && uncommented "$DOCKERFILE" | grep 'netboot-templates/nfs-watchdog' >/dev/null; then
     echo "ok    the netboot image builds nfs-watchdog and ships it to the templates dir"
 else
     note "$DOCKERFILE does not both build nfs-watchdog for arm64 and copy it into the templates directory."
