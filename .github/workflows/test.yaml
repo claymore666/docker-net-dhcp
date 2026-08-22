@@ -425,6 +425,23 @@ jobs:
       - name: Floating-tag promotion order
         run: bash scripts/check-latest-promotion.sh
 
+      # A checkout that sets `sparse-checkout:` must not share its
+      # workspace path with another checkout in the same job (#736).
+      # actions/checkout does not clear a sparse configuration it finds
+      # already there, so the second one inherits the first one's cone
+      # and populates a handful of files however full a tree it looks
+      # like it is asking for.
+      #
+      # This is here rather than anywhere else because NOTHING ELSE CAN
+      # SEE IT. It shipped in two files: pages.yml, where a push to dev
+      # surfaced it within the hour, and release.yml, which runs on a
+      # tag push or a dispatch and on nothing else — so its first
+      # execution would have been tag day, in the job holding the
+      # signing identity and both registry tokens. No pull-request run
+      # of any kind exercises either path.
+      - name: Sparse-checkout path isolation
+        run: bash scripts/check-sparse-checkout-paths.sh
+
       # No dispatch input, event free-text field, or secret may be
       # expanded into a `run:` body (#737). `${{ }}` is substituted
       # before bash parses the line, so validating the value on the next
