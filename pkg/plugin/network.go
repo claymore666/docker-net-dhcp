@@ -44,6 +44,37 @@ func validateIPAMData(ipv4 []*IPAMData) error {
 	return nil
 }
 
+// kernelIfaceName returns the name the KERNEL will act on for a given
+// Go string, which is not always the Go string.
+//
+// netlink puts the name in IFLA_IFNAME and the kernel reads it as a C
+// string, so it stops at the first NUL. Measured on this project's own
+// hardware for #705: netlink.LinkByName("docker0\x00evil") resolved
+// docker0 at index 7, while "docker0evil" was not found at all. A NUL in
+// a driver option also transports through dockerd untouched — the same
+// measurement — so a stored name can carry one.
+//
+// This exists because a guard that compares two Go strings while the
+// kernel compares truncated prefixes is not comparing the same thing.
+// #705 closed that for the name being CREATED, by validating it. It did
+// not close it for the names being COMPARED AGAINST: those come out of
+// Docker's record for other networks, and no write path of ours ever
+// touched them. "br0" != "br0\x00evil" is false to Go and true to the
+// kernel, so ErrBridgeUsed was skipped and two DHCP networks shared one
+// bridge.
+//
+// Truncation is the whole rule, deliberately, and not a call to
+// ValidIfaceName: NUL is the only way two different Go strings can name
+// one interface. Over-length names and names containing "/" are refused
+// by the kernel outright rather than aliased onto something else, so
+// they cannot collide with a name we would accept.
+func kernelIfaceName(name string) string {
+	if i := strings.IndexByte(name, 0); i >= 0 {
+		return name[:i]
+	}
+	return name
+}
+
 // validateModeOptions performs the pure-Go subset of CreateNetwork's
 // validation: mode value, and which other options are required or
 // forbidden for that mode. It does NOT touch netlink or the docker
@@ -378,7 +409,7 @@ func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 
 	// Bridge mode: pure validation already passed; do the kernel-facing
 	// and docker-API-facing checks.
-	link, err := netlink.LinkByName(opts.Bridge)
+	link, err := nlLinkByName(opts.Bridge)
 	if err != nil {
 		return fmt.Errorf("failed to lookup interface %v: %w", opts.Bridge, err)
 	}
@@ -387,11 +418,11 @@ func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 	}
 
 	if !opts.IgnoreConflicts {
-		v4Addrs, err := netlink.AddrList(link, unix.AF_INET)
+		v4Addrs, err := nlAddrList(link, unix.AF_INET)
 		if err != nil {
 			return fmt.Errorf("failed to retrieve IPv4 addresses for %v: %w", opts.Bridge, err)
 		}
-		v6Addrs, err := netlink.AddrList(link, unix.AF_INET6)
+		v6Addrs, err := nlAddrList(link, unix.AF_INET6)
 		if err != nil {
 			return fmt.Errorf("failed to retrieve IPv6 addresses for %v: %w", opts.Bridge, err)
 		}
@@ -411,7 +442,7 @@ func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 						WithField("network", n.Name).
 						WithError(err).
 						Warn("Failed to parse other DHCP network's options")
-				} else if otherOpts.Bridge == opts.Bridge {
+				} else if kernelIfaceName(otherOpts.Bridge) == kernelIfaceName(opts.Bridge) {
 					return util.ErrBridgeUsed
 				}
 			}
