@@ -39,34 +39,23 @@ type metricDef struct {
 	help string
 	// field is the HealthResponse json tag this renders.
 	field string
-	// v6field, when set, makes this a family-split metric: field is the
-	// v4+v6 aggregate and v6field is the v6 subset, so the ipv4 series
-	// is derived rather than read. See familySplit below.
+	// v4field and v6field, when set, make this a family-split metric:
+	// each names the stored half rendered under the matching family
+	// label. field then names the v4+v6 aggregate, which this metric
+	// CLAIMS (so the exposure guard counts it as covered) but does not
+	// emit as a series of its own — the two labelled series carry it.
+	//
+	// Both halves are read, never derived. This file used to compute
+	// the ipv4 series as aggregate-minus-v6 in a helper called
+	// familySplit; #730 removed it. Two independently updated counters
+	// combined by SUBTRACTION can yield a value below the previous
+	// scrape, which Prometheus reads as a counter reset and repays as a
+	// rate spike of the entire accumulated count. Do not reintroduce
+	// the arithmetic: if a family series ever needs computing rather
+	// than reading, the fix belongs in healthSnapshot, where both
+	// halves are loaded once.
+	v4field string
 	v6field string
-}
-
-// familySplit is the one piece of arithmetic in this file, and the one
-// place a reader is likely to assume wrongly.
-//
-// bumpFamily increments the aggregate on EVERY event and the _v6 sibling
-// only on v6 ones (#212). So leases_obtained is the v4+v6 total and
-// leases_obtained_v6 is a subset of it — not a peer. An operator reading
-// family="ipv4" expects the v4 count, which therefore has to be derived
-// as total-minus-v6 at render time. Reading the aggregate into
-// family="ipv4" would double-count every v6 event.
-//
-// The clamp is not defensive noise. total < v6 violates bumpFamily's
-// invariant and means a counter bump went to the sibling without going to
-// the aggregate — a real bug. But a negative value is not a legal counter,
-// and emitting one produces a scrape error that buries the signal instead
-// of showing it. Clamping keeps the exposition parseable so the rest of
-// the metrics still arrive; TestMetrics_FamilySplitClampsRatherThanEmitNegative
-// pins the behaviour so it is a decision rather than an accident.
-func familySplit(total, v6 int32) (v4 int32) {
-	if total < v6 {
-		return 0
-	}
-	return total - v6
 }
 
 // metricDefs is the complete exposition table.
@@ -84,12 +73,12 @@ func metricDefs() []metricDef {
 		{name: "sandbox_netns_visible", help: "Sandbox netns entries the plugin can see; -1 means the directory is unreadable and sandbox-liveness answers carry no evidence.", field: "sandbox_netns_visible"},
 
 		// Lease lifecycle. These six carry a family label.
-		{name: "leases_obtained", counter: true, help: "Leases obtained from the DHCP server.", field: "leases_obtained", v6field: "leases_obtained_v6"},
-		{name: "leases_renewed", counter: true, help: "Lease renewals accepted by the DHCP server.", field: "leases_renewed", v6field: "leases_renewed_v6"},
-		{name: "lease_changed", counter: true, help: "Renewals that came back with a different address than the client held.", field: "lease_changed", v6field: "lease_changed_v6"},
-		{name: "dhcp_timeouts", counter: true, help: "Acquisitions or renewals that expired without an answer.", field: "dhcp_timeouts", v6field: "dhcp_timeouts_v6"},
-		{name: "naks_received", counter: true, help: "DHCPNAKs received from the server.", field: "naks_received", v6field: "naks_received_v6"},
-		{name: "lease_release_failures", counter: true, help: "Leases whose release did not complete cleanly at shutdown, leaving the address held until it expires.", field: "lease_release_failures", v6field: "lease_release_failures_v6"},
+		{name: "leases_obtained", counter: true, help: "Leases obtained from the DHCP server.", field: "leases_obtained", v4field: "leases_obtained_v4", v6field: "leases_obtained_v6"},
+		{name: "leases_renewed", counter: true, help: "Lease renewals accepted by the DHCP server.", field: "leases_renewed", v4field: "leases_renewed_v4", v6field: "leases_renewed_v6"},
+		{name: "lease_changed", counter: true, help: "Renewals that came back with a different address than the client held.", field: "lease_changed", v4field: "lease_changed_v4", v6field: "lease_changed_v6"},
+		{name: "dhcp_timeouts", counter: true, help: "Acquisitions or renewals that expired without an answer.", field: "dhcp_timeouts", v4field: "dhcp_timeouts_v4", v6field: "dhcp_timeouts_v6"},
+		{name: "naks_received", counter: true, help: "DHCPNAKs received from the server.", field: "naks_received", v4field: "naks_received_v4", v6field: "naks_received_v6"},
+		{name: "lease_release_failures", counter: true, help: "Leases whose release did not complete cleanly at shutdown, leaving the address held until it expires.", field: "lease_release_failures", v4field: "lease_release_failures_v4", v6field: "lease_release_failures_v6"},
 
 		// Server-supplied values the plugin bounds or must evidence (#699).
 		{name: "dhcp_routes_applied", counter: true, help: "DHCP option-121 classless static routes handed to Docker. Counts routes, not Joins.", field: "dhcp_routes_applied"},
@@ -208,23 +197,18 @@ func writeExpositionWith(w io.Writer, h HealthResponse, defs []metricDef) error 
 			continue
 		}
 
-		total, ok := byTag[d.field]
-		if !ok {
+		if _, ok := byTag[d.field]; !ok {
 			return fmt.Errorf("metric %q names unknown health field %q", d.name, d.field)
+		}
+		v4, ok := byTag[d.v4field]
+		if !ok {
+			return fmt.Errorf("metric %q names unknown health field %q", d.name, d.v4field)
 		}
 		v6, ok := byTag[d.v6field]
 		if !ok {
 			return fmt.Errorf("metric %q names unknown health field %q", d.name, d.v6field)
 		}
-		t64, err := strconv.ParseInt(total, 10, 32)
-		if err != nil {
-			return fmt.Errorf("metric %q: aggregate %q is not an integer: %w", d.name, d.field, err)
-		}
-		v664, err := strconv.ParseInt(v6, 10, 32)
-		if err != nil {
-			return fmt.Errorf("metric %q: v6 sibling %q is not an integer: %w", d.name, d.v6field, err)
-		}
-		b.WriteString(name + `{family="ipv4"} ` + strconv.Itoa(int(familySplit(int32(t64), int32(v664)))) + "\n")
+		b.WriteString(name + `{family="ipv4"} ` + v4 + "\n")
 		b.WriteString(name + `{family="ipv6"} ` + v6 + "\n")
 	}
 

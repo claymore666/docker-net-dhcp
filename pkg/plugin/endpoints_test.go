@@ -114,23 +114,28 @@ func TestApiHealth_JoinStartFailureUnhealthy(t *testing.T) {
 	}
 }
 
-// TestApiHealth_PerFamilyCounters pins the #212 contract on the wire:
-// the un-suffixed counters stay v4+v6 aggregates while the *_v6 siblings
-// carry the v6 subset, and both surface under their snake_case keys.
+// TestApiHealth_PerFamilyCounters pins the #212 contract on the wire as
+// #730 restated it: BOTH halves are stored and rendered, and the
+// un-suffixed counter is their sum rather than a counter of its own.
+//
+// The values are chosen so the aggregate cannot be confused with either
+// half — no half equals another family's total — so a snapshot that
+// rendered the wrong field fails a specific assertion rather than
+// happening to match.
 func TestApiHealth_PerFamilyCounters(t *testing.T) {
 	p := &Plugin{
 		startTime:      time.Now(),
 		joinHints:      make(map[string]joinHint),
 		persistentDHCP: make(map[string]*dhcpManager),
 	}
-	// Aggregates are totals; the v6 siblings are a subset of them.
-	p.naksReceived.Add(5)
+	// Each family owns its counter; the un-suffixed field is the sum.
+	p.naksReceivedV4.Add(5)
 	p.naksReceivedV6.Add(2)
-	p.dhcpTimeouts.Add(3)
+	p.dhcpTimeoutsV4.Add(3)
 	p.dhcpTimeoutsV6.Add(1)
-	p.leaseChanged.Add(4)
-	p.leaseChangedV6.Add(4)
-	p.leaseReleaseFailures.Add(2)
+	p.leaseChangedV4.Add(4)
+	p.leaseChangedV6.Add(6)
+	p.leaseReleaseFailuresV4.Add(2)
 	p.leaseReleaseFailuresV6.Add(1)
 
 	req := httptest.NewRequest(http.MethodGet, "/Plugin.Health", nil)
@@ -141,21 +146,34 @@ func TestApiHealth_PerFamilyCounters(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if got.NAKsReceived != 5 || got.NAKsReceivedV6 != 2 {
-		t.Errorf("naks: aggregate=%d v6=%d, want 5 and 2", got.NAKsReceived, got.NAKsReceivedV6)
-	}
-	if got.DHCPTimeouts != 3 || got.DHCPTimeoutsV6 != 1 {
-		t.Errorf("timeouts: aggregate=%d v6=%d, want 3 and 1", got.DHCPTimeouts, got.DHCPTimeoutsV6)
-	}
-	if got.LeaseChanged != 4 || got.LeaseChangedV6 != 4 {
-		t.Errorf("lease_changed: aggregate=%d v6=%d, want 4 and 4", got.LeaseChanged, got.LeaseChangedV6)
-	}
-	if got.LeaseReleaseFailures != 2 || got.LeaseReleaseFailuresV6 != 1 {
-		t.Errorf("lease_release_failures: aggregate=%d v6=%d, want 2 and 1", got.LeaseReleaseFailures, got.LeaseReleaseFailuresV6)
+	for _, c := range []struct {
+		name           string
+		agg, v4, v6    int32
+		wantAgg, wantA int32
+		wantB          int32
+	}{
+		{"naks_received", got.NAKsReceived, got.NAKsReceivedV4, got.NAKsReceivedV6, 7, 5, 2},
+		{"dhcp_timeouts", got.DHCPTimeouts, got.DHCPTimeoutsV4, got.DHCPTimeoutsV6, 4, 3, 1},
+		{"lease_changed", got.LeaseChanged, got.LeaseChangedV4, got.LeaseChangedV6, 10, 4, 6},
+		{"lease_release_failures", got.LeaseReleaseFailures, got.LeaseReleaseFailuresV4, got.LeaseReleaseFailuresV6, 3, 2, 1},
+	} {
+		if c.v4 != c.wantA || c.v6 != c.wantB {
+			t.Errorf("%s: v4=%d v6=%d, want %d and %d", c.name, c.v4, c.v6, c.wantA, c.wantB)
+		}
+		if c.agg != c.wantAgg {
+			t.Errorf("%s: aggregate=%d, want %d (v4+v6)", c.name, c.agg, c.wantAgg)
+		}
 	}
 
-	// Pin the wire keys so the field names don't silently drift.
-	for _, key := range []string{"naks_received_v6", "dhcp_timeouts_v6", "leases_obtained_v6", "leases_renewed_v6", "lease_changed_v6", "lease_release_failures_v6"} {
+	// Pin the wire keys so the field names don't silently drift. Both
+	// halves, because #730's whole point is that the v4 number is now
+	// carried rather than reconstructed by a consumer.
+	for _, key := range []string{
+		"naks_received_v4", "dhcp_timeouts_v4", "leases_obtained_v4",
+		"leases_renewed_v4", "lease_changed_v4", "lease_release_failures_v4",
+		"naks_received_v6", "dhcp_timeouts_v6", "leases_obtained_v6",
+		"leases_renewed_v6", "lease_changed_v6", "lease_release_failures_v6",
+	} {
 		if !strings.Contains(rec.Body.String(), key) {
 			t.Errorf("Health JSON missing %q field", key)
 		}
