@@ -15,6 +15,37 @@
 # None re-derives a symbol NAME, and that is exactly where the fiction
 # accumulated. This closes that axis and nothing else.
 #
+# THE WAIVER FILE STATES THREE RULES AND THE FIRST VERSION OF THIS GATE
+# ENFORCED NONE OF THEM. That is this gate's own defect wearing this
+# gate's own subject: a check that exists because prose decays, with its
+# rules living in prose that nothing read. The parser took
+# `${line%%[[:space:]]*}` and dropped everything after the first field;
+# the waiver map was consulted only AFTER resolution failed, so a waiver
+# for a symbol that resolves was never read; and `WAIVED` was a flat map
+# with nowhere for a section to go. All three are now decided on rather
+# than described, except the one that cannot be:
+#
+#   ENFORCED   an entry belongs to a reason paragraph, and that
+#              paragraph opens with HISTORICAL or EXTERNAL.
+#   ENFORCED   a waiver whose symbol resolves, or that the notes no
+#              longer mention at all, is stale and fails.
+#   ENFORCED   a symbol in the CURRENT release section cannot be waived.
+#   NOT ENFORCED, AND SAID SO OUT LOUD: whether the reason is a REASON.
+#              "renamed" is a word, not an argument. No parser can tell
+#              a decision from a shrug, and a gate that appears to check
+#              something it cannot is worse than one that admits the
+#              gap -- it converts a human review into a green tick.
+#              The category and the paragraph are mechanical; the
+#              content is reviewed by a person, on purpose.
+#
+# A STALE WAIVER FAILS HERE WHERE THE VULN ALLOWLIST ONLY WARNS
+# (govulncheck-gate.sh:59), and the divergence is deliberate. That
+# allowlist goes stale when a REMOTE database changes, which can happen
+# between two runs over an identical tree and is nobody's commit to fix;
+# warning is right there. A symbol waiver goes stale only when someone
+# edits THIS tree, in the pull request that is being checked, so the
+# person who made it stale is present and the fix is one line.
+#
 # COMMENTS AND STRING LITERALS ARE STRIPPED BEFORE RESOLUTION, AND THAT
 # IS THE POINT. A plain grep resolves a symbol against prose ABOUT the
 # symbol. Measured: `LastIP` and `lastIP` are the same field, unexported
@@ -112,13 +143,93 @@ if [ ! -s "$CORPUS" ]; then
 fi
 
 # --------------------------------------------------------------- waivers
+# An entry is a run of token lines introduced by a CATEGORY LINE -- a
+# comment whose text begins `HISTORICAL` or `EXTERNAL`. Tokens in one
+# run share it, which is how `LastIP` and `LastIPv6` are one decision
+# and not two, and the category is consumed when the run opens so the
+# next run needs its own.
+#
+# NOT "the paragraph immediately above", WHICH IS WHAT I WROTE FIRST AND
+# THE FILE ITSELF REFUTED. A bare `#` in this file is a blank line
+# INSIDE a reason as often as it is a separator between reasons: the
+# LastIP entry has a second paragraph about why this check strips
+# comments, so the run directly above the token opens with "Worth
+# recording", and a rule keyed on adjacency called the file's most
+# carefully written entry a bare token. The category, not the position,
+# is what marks an entry -- and one space after the `#`, so the rules in
+# the file header (indented seven) cannot pose as one.
 declare -A WAIVED=()
+declare -A WAIVED_CAT=()
+bad_waivers=()
 if [ -f "$WAIVERS" ]; then
-    while IFS= read -r line; do
-        case "$line" in ''|'#'*) continue ;; esac
-        WAIVED["${line%%[[:space:]]*}"]=1
+    pending_cat=""
+    group_cat=""
+    in_group=0
+    lineno=0
+    while IFS= read -r line || [ -n "$line" ]; do
+        lineno=$((lineno + 1))
+        case "$line" in
+            ''|'#'*)
+                # Anything that is not a token ends the current run, so
+                # a token appended below a finished entry cannot inherit
+                # the reason that entry was given.
+                in_group=0
+                case "$line" in
+                    '# HISTORICAL'*) pending_cat="HISTORICAL" ;;
+                    '# EXTERNAL'*)   pending_cat="EXTERNAL" ;;
+                esac
+                continue
+                ;;
+        esac
+        if [ "$in_group" -eq 0 ]; then
+            group_cat="$pending_cat"
+            pending_cat=""
+            in_group=1
+        fi
+        sym="${line%%[[:space:]]*}"
+        if [ -z "$group_cat" ]; then
+            bad_waivers+=("${lineno}:${sym}")
+            continue
+        fi
+        WAIVED["$sym"]=1
+        WAIVED_CAT["$sym"]="$group_cat"
     done < "$WAIVERS"
 fi
+
+# ------------------------------------------------------- current section
+# The notes are newest-first, so the section being written is the first
+# `## vX.Y.Z` heading. A waiver cannot reach into it: if a symbol named
+# there does not resolve, the prose is wrong and the remedy is to fix
+# the prose. That is the one rule of the three that a flat waiver map
+# could not express at all -- there was nowhere for a section to go.
+CUR_START=$(awk '/^## v[0-9]/ {print NR; exit}' "$NOTES")
+if [ -n "$CUR_START" ]; then
+    CUR_END=$(awk -v a="$CUR_START" 'NR > a && /^## / {print NR; exit}' "$NOTES")
+    [ -z "$CUR_END" ] && CUR_END=$(($(wc -l < "$NOTES") + 1))
+else
+    CUR_END=""
+fi
+
+# sym_lines prints the line numbers where the notes name a symbol in a
+# backticked span, matching the same shapes the candidate extraction
+# accepts: a bare name, a trailing (), and a receiver prefix.
+sym_lines() {
+    awk -v s="$1" '
+        BEGIN { re = "`([A-Za-z_][A-Za-z0-9_]*\\.)?" s "(\\(\\))?`" }
+        $0 ~ re { print NR }
+    ' "$NOTES"
+}
+
+in_current_section() {
+    local l
+    [ -n "$CUR_START" ] || return 1
+    for l in $(sym_lines "$1"); do
+        if [ "$l" -ge "$CUR_START" ] && [ "$l" -lt "$CUR_END" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
 
 # --------------------------------------------------------------- candidates
 # Backticked tokens that look like Go identifiers: an inner lower->upper
@@ -135,26 +246,95 @@ echo "Release-notes symbols at ${SHA}: ${#CANDIDATES[@]} candidate(s) against ${
 
 missing=()
 waived_used=()
+stale_resolving=()
+current_waived=()
 for sym in "${CANDIDATES[@]}"; do
     if grep -qxF "$sym" "$CORPUS"; then
+        # RESOLVES. The old gate stopped here, which is why a waiver
+        # for a resolving symbol was never read: the map was consulted
+        # only on the failure path, so the one entry that can never
+        # fire is the one nothing could see.
+        if [ -n "${WAIVED[$sym]:-}" ]; then
+            stale_resolving+=("$sym")
+        fi
         continue
     fi
     if [ -n "${WAIVED[$sym]:-}" ]; then
-        waived_used+=("$sym")
+        if in_current_section "$sym"; then
+            current_waived+=("$sym")
+        else
+            waived_used+=("$sym")
+        fi
         continue
     fi
     missing+=("$sym")
 done
 
+# A waiver for a symbol the notes no longer mention is the other half of
+# stale, and it is the quieter one: nothing resolves it, nothing fails,
+# and it sits there covering a sentence that was deleted.
+stale_absent=()
+for sym in "${!WAIVED[@]}"; do
+    found=0
+    for cand in "${CANDIDATES[@]}"; do
+        if [ "$cand" = "$sym" ]; then found=1; break; fi
+    done
+    [ "$found" -eq 0 ] && stale_absent+=("$sym")
+done
+
 if [ "${#waived_used[@]}" -ne 0 ]; then
     echo "Waived at ${SHA} (see $(basename "$WAIVERS")):"
-    printf '  %s\n' "${waived_used[@]}"
+    for sym in "${waived_used[@]}"; do
+        echo "  ${sym} (${WAIVED_CAT[$sym]})"
+    done
+fi
+
+fail=0
+
+if [ "${#bad_waivers[@]}" -ne 0 ]; then
+    echo >&2
+    for entry in "${bad_waivers[@]}"; do
+        echo "::error file=$(basename "$WAIVERS"),line=${entry%%:*},title=Waiver with no reason::" \
+             "\`${entry#*:}\` is a bare token. An entry belongs to a comment paragraph" \
+             "opening with HISTORICAL or EXTERNAL. The gate checks that the paragraph is" \
+             "there and which category it claims; whether the reason is a REASON is" \
+             "reviewed by a person, and a bare token gives them nothing to review." >&2
+    done
+    fail=1
+fi
+
+if [ "${#current_waived[@]}" -ne 0 ]; then
+    echo >&2
+    for sym in "${current_waived[@]}"; do
+        line=$(sym_lines "$sym" | awk 'NR == 1 { print }')
+        echo "::error file=$(basename "$NOTES"),line=${line:-1},title=A current release section cannot be waived::" \
+             "\`${sym}\` is named in the section being written and does not resolve at ${SHA}," \
+             "and a waiver does not reach it. A frozen section describes the tree as it was;" \
+             "this one describes the tree as it is, so the prose is simply wrong." >&2
+    done
+    fail=1
+fi
+
+if [ "${#stale_resolving[@]}" -ne 0 ] || [ "${#stale_absent[@]}" -ne 0 ]; then
+    echo >&2
+    for sym in "${stale_resolving[@]}"; do
+        echo "::error file=$(basename "$WAIVERS"),title=Stale waiver::" \
+             "\`${sym}\` resolves in the tree at ${SHA}, so its waiver never fires." \
+             "Remove it. A waiver that cannot fire is a hole: the day the symbol goes" \
+             "away again, this gate stays silent and nobody chose that." >&2
+    done
+    for sym in "${stale_absent[@]}"; do
+        echo "::error file=$(basename "$WAIVERS"),title=Stale waiver::" \
+             "\`${sym}\` is not named by $(basename "$NOTES") at ${SHA}. The sentence it" \
+             "covered is gone; the waiver outlived it. Remove it." >&2
+    done
+    fail=1
 fi
 
 if [ "${#missing[@]}" -ne 0 ]; then
     echo >&2
     for sym in "${missing[@]}"; do
-        line=$(grep -n -m1 -F "\`${sym}\`" "$NOTES" | cut -d: -f1)
+        line=$(sym_lines "$sym" | awk 'NR == 1 { print }')
         echo "::error file=$(basename "$NOTES"),line=${line:-1},title=Release notes name a symbol the tree does not define::" \
              "\`${sym}\` does not resolve in any tracked Go file at ${SHA}." \
              "Either the prose is stale, or the symbol was renamed and the notes were not re-read." \
@@ -162,6 +342,10 @@ if [ "${#missing[@]}" -ne 0 ]; then
     done
     echo >&2
     echo "${#missing[@]} unresolved symbol(s) at ${SHA}: ${missing[*]}" >&2
+    fail=1
+fi
+
+if [ "$fail" -ne 0 ]; then
     exit 1
 fi
 

@@ -2,9 +2,33 @@
 # longer resolve in the tree, enforced by
 # scripts/check-release-notes-symbols.sh.
 #
+# WHAT IS ENFORCED AND WHAT IS REVIEWED. All three rules below were
+# stated here and enforced by NOTHING until #779 -- a file of rules for
+# a gate that exists because prose decays, in prose the gate never read.
+# Three of the four are mechanical and now fail the build. The fourth
+# cannot be, and pretending otherwise would turn a human judgement into
+# a green tick:
+#
+#   ENFORCED  an entry belongs to a CATEGORY LINE (below), and the
+#             category is printed beside the symbol on every pass.
+#   ENFORCED  a waiver whose symbol resolves, or that these notes no
+#             longer mention, is stale and fails. Unlike the vuln
+#             allowlist -- which goes stale when a remote database
+#             moves, and only warns -- a waiver here goes stale because
+#             somebody edited THIS tree, in the pull request being
+#             checked.
+#   ENFORCED  a symbol in the CURRENT release section cannot be waived.
+#   REVIEWED  whether the reason is a REASON. "Renamed" is a word, not
+#             an argument. No parser can tell a decision from a shrug,
+#             so a person reads this file and the gate says so rather
+#             than simulating it.
+#
 # Rules, following .github/vuln-allowlist.txt:
 #   - An entry requires a reason. No bare tokens. "The gate complained"
-#     is a suppression, not a decision.
+#     is a suppression, not a decision. The entry is introduced by a
+#     CATEGORY LINE -- a comment beginning `HISTORICAL` or `EXTERNAL`
+#     after one space -- and every token until the next non-token line
+#     belongs to it. A blank `#` inside a reason does not end it.
 #   - Two categories, and the reason must say which:
 #       HISTORICAL — the symbol was real when the sentence was written
 #                    and has since been renamed or removed. Name the
