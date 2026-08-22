@@ -23,8 +23,10 @@ import (
 // leaves no trace is indistinguishable from a value that was never sent.
 
 const (
-	// maxLeaseDeadline caps the outage watchdog's deadline, NOT the
-	// lease time reported to operators or written to the ledger.
+	// maxLeaseDeadline is the deadline substituted for a lease the
+	// client will never renew from. It caps the outage watchdog's
+	// deadline, NOT the lease time reported to operators or written to
+	// the ledger.
 	//
 	// leaseDeadline is the only trigger that can detect a silently
 	// lapsed lease under `--noconfigure` (see outageTracker) — the
@@ -36,10 +38,35 @@ const (
 	// to catch, re-opened from the wire.
 	//
 	// 24h is longer than any renewal interval that matters and short
-	// enough that a silent lapse is noticed the same day. A server that
-	// legitimately grants longer still renews long before this, so the
-	// clamp costs a healthy client nothing.
+	// enough that a silent lapse is noticed the same day.
 	maxLeaseDeadline = 24 * time.Hour
+
+	// maxRenewableLease decides WHICH leases maxLeaseDeadline is applied
+	// to, and it is the whole correctness of the clamp.
+	//
+	// Applying the 24h deadline to every long lease is wrong, and wrong
+	// in the direction that costs the most. Under `--noconfigure` the
+	// interface carries no address, so dhcpcd's T1 unicast renewal
+	// cannot succeed and every renewal lands at T2 — RFC 2131's
+	// 0.875 × lease (measured: 105s on a 120s lease, dhcpcd 10.3.2). A
+	// deadline of 24h therefore falls BEFORE the healthy client's own
+	// next contact with the server for any lease longer than about
+	// 27.4h, and `due` then counts a dhcp_timeout on every tick from
+	// 24h until the rebind actually happens. On a 7-day lease — an
+	// ordinary value, not an exotic one — that is roughly 14,800
+	// fabricated timeouts per endpoint per lease, each with its own
+	// "DHCP server still unreachable" log line, for a client that is
+	// working perfectly.
+	//
+	// So the clamp applies only where there is no renewal to wait for.
+	// A year is far above any operational lease anyone grants and far
+	// below what "permanent" encodes: 0xFFFFFFFF is 136 years. Above
+	// this line the client will never come back to the server on its
+	// own, so substituting a deadline invents nothing — below it, the
+	// client's own rebind restarts the deadline and the lease is the
+	// only instant that needs no assumption about which retry
+	// succeeded (see leaseDeadline).
+	maxRenewableLease = 365 * 24 * time.Hour
 
 	// minPropagatedMTU is the smallest MTU we will apply from option 26.
 	// 576 is the IPv4 minimum reassembly buffer (RFC 791) and the
@@ -60,11 +87,17 @@ const (
 	maxPropagatedMTU = 65535
 )
 
-// clampLeaseDeadline bounds a watchdog deadline to maxLeaseDeadline,
-// reporting whether it had to. See maxLeaseDeadline for why the bound is
-// only on the deadline and never on the value we report.
+// clampLeaseDeadline substitutes maxLeaseDeadline for a lease lifetime
+// the client will never renew from, reporting whether it had to.
+//
+// A lease at or below maxRenewableLease is returned UNCHANGED, however
+// long it is: the client rebinds at T2 and that restarts the deadline,
+// so shortening it here would count a healthy client as an outage on
+// every tick in between. See maxRenewableLease.
+//
+// The bound is on the deadline only, never on the value we report.
 func clampLeaseDeadline(d time.Duration) (time.Duration, bool) {
-	if d > maxLeaseDeadline {
+	if d > maxRenewableLease {
 		return maxLeaseDeadline, true
 	}
 	return d, false
@@ -77,9 +110,40 @@ func mtuAcceptable(mtu int) bool {
 	return mtu >= minPropagatedMTU && mtu <= maxPropagatedMTU
 }
 
+// v4Span is a closed interval of IPv4 address space, as unsigned
+// integers, so that prefix coverage is an arithmetic question rather
+// than a mask one.
+type v4Span struct{ lo, hi uint32 }
+
+// routableUnicastV4 is what "takes every destination that matters" means
+// for routesSupersedeDefault, and it is the whole reason that function
+// is not a test for covering 0.0.0.0/0.
+//
+// Demanding an exact cover of 0.0.0.0/0 is evadable by ARITHMETIC, with
+// no hole a container would ever notice. `0.0.0.0/1 128.0.0.0/2
+// 192.0.0.0/3 224.0.0.0/4` reaches 239.255.255.255 — every routable
+// unicast address plus all of multicast — leaving only 240.0.0.0/4,
+// which is reserved and unroutable. Three routes are enough if the
+// sender does not care about multicast. Under the old predicate all of
+// those returned false, so the one shape the detector existed to catch
+// was also the easiest one to slip past: add a prefix.
+//
+// These are therefore the ranges a full takeover must cover, with the
+// blocks no container routes through excluded: 0.0.0.0/8 (this
+// network), 127.0.0.0/8 (loopback), 169.254.0.0/16 (link-local),
+// 224.0.0.0/4 (multicast) and 240.0.0.0/4 (reserved). RFC 1918 space is
+// deliberately NOT excluded — a route set that omits the container's own
+// private ranges is a split tunnel, which is the legitimate case.
+var routableUnicastV4 = [...]v4Span{
+	{0x01000000, 0x7EFFFFFF}, // 1.0.0.0      – 126.255.255.255
+	{0x80000000, 0xA9FDFFFF}, // 128.0.0.0    – 169.253.255.255
+	{0xA9FF0000, 0xDFFFFFFF}, // 169.255.0.0  – 223.255.255.255
+}
+
 // routesSupersedeDefault reports whether the union of these IPv4 static
-// route destinations covers 0.0.0.0/0 — i.e. whether, taken together,
-// they beat the container's default route on longest-prefix match.
+// route destinations takes every routable unicast destination — i.e.
+// whether, taken together, they beat the container's default route on
+// longest-prefix match for any address it would actually talk to.
 //
 // This is NOT the literal-default test parseClasslessRoutes already
 // does. A server that wants the traffic without touching the reported
@@ -88,6 +152,17 @@ func mtuAcceptable(mtu int) bool {
 // them they take every destination while res.Gateway, `docker inspect`
 // and the log all still name the legitimate router.
 //
+// It remains a HEURISTIC, and the direction of its remaining error is
+// worth being explicit about: a sender that leaves a genuine hole in
+// routable space — one prefix it does not claim — is not reported, no
+// matter how small the hole is. That cannot be closed by making the
+// predicate stricter, because at some hole size the route set really is
+// a split tunnel and reporting it would be wrong. What bounds the damage
+// is that describeStaticRoutes logs every destination and next hop
+// regardless of this verdict (see network.go), so the evidence for
+// "where did this container's traffic go" is on record either way. This
+// function only decides whether a counter also moves.
+//
 // The routes are still applied — that is correct client behaviour, and
 // legitimate split-tunnel setups rely on it. The point is that the
 // operator gets a counter and a log line naming the next hops, so
@@ -95,9 +170,7 @@ func mtuAcceptable(mtu int) bool {
 //
 // IPv6 destinations are ignored: they cannot cover the v4 default.
 func routesSupersedeDefault(routes []*StaticRoute) bool {
-	type span struct{ lo, hi uint32 }
-
-	spans := make([]span, 0, len(routes))
+	spans := make([]v4Span, 0, len(routes))
 	for _, r := range routes {
 		if r == nil {
 			continue
@@ -119,19 +192,35 @@ func routesSupersedeDefault(routes []*StaticRoute) bool {
 		lo := binary.BigEndian.Uint32(v4)
 		// ones == 32 shifts the whole width, which Go defines as 0 for
 		// unsigned operands — a /32 is correctly a single address.
-		spans = append(spans, span{lo: lo, hi: lo | (math.MaxUint32 >> uint(ones))})
+		spans = append(spans, v4Span{lo: lo, hi: lo | (math.MaxUint32 >> uint(ones))})
 	}
 
 	sort.Slice(spans, func(i, j int) bool { return spans[i].lo < spans[j].lo })
 
-	// Walk the sorted spans looking for one contiguous run from
-	// 0.0.0.0 to 255.255.255.255. Any gap ends it.
-	var next uint32
+	for _, req := range routableUnicastV4 {
+		if !spansCover(spans, req.lo, req.hi) {
+			return false
+		}
+	}
+	return true
+}
+
+// spansCover reports whether the union of spans, ALREADY SORTED BY lo,
+// contains every address in [lo, hi].
+//
+// The walk carries `next`, the first address not yet covered. A span
+// starting beyond it is a gap and ends the question; anything else
+// extends the run. Overlap and containment need no special case, which
+// matters because a real route set repeats and nests prefixes freely.
+func spansCover(spans []v4Span, lo, hi uint32) bool {
+	next := lo
 	for _, s := range spans {
 		if s.lo > next {
 			return false
 		}
-		if s.hi == math.MaxUint32 {
+		if s.hi >= hi {
+			// Reached before computing s.hi+1, so a span ending at
+			// 255.255.255.255 cannot wrap to 0 and restart the walk.
 			return true
 		}
 		if s.hi+1 > next {

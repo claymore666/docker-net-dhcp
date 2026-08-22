@@ -125,10 +125,15 @@ func (m *dhcpManager) outageCadence() (tick, grace time.Duration) {
 // dhcp_timeouts stayed at zero through a total outage.
 //
 // The second trigger needs nothing from dhcpcd but the lease it already
-// reported at bind time. It cannot false-positive on a healthy client:
-// a client that is being served gets a fresh lease (as a REBIND at T2,
-// see leaseDeadline) well before the previous one runs out, and that
-// restarts the deadline.
+// reported at bind time. It does not false-positive on a healthy
+// client: a client that is being served gets a fresh lease (as a REBIND
+// at T2, see leaseDeadline) before the previous one runs out, and that
+// restarts the deadline. That holds only because the deadline is never
+// cut below the client's own rebind — see maxRenewableLease for what
+// went wrong when it was, and for the one case where a substituted
+// deadline can fire on a server that is in fact answering: a
+// "permanent" lease, from which the client never contacts the server
+// again, so there is nothing to distinguish an outage from silence.
 type outageTracker struct {
 	acquiring      bool
 	acquiringSince time.Time
@@ -159,17 +164,39 @@ func newOutageTracker(now time.Time) outageTracker {
 // Zero when the server supplied no lifetime, in which case no deadline
 // is enforced at all.
 //
-// Bounded above by maxLeaseDeadline, and reports whether it had to be.
-// The bound is on the DEADLINE only: data.LeaseSeconds still reaches the
-// log and the ledger unchanged, because the anomaly is the thing worth
-// seeing and rewriting it would hide it. See maxLeaseDeadline for why an
-// unbounded lifetime disables this watchdog outright.
+// A lifetime the client will never renew from is replaced by
+// maxLeaseDeadline, and that is reported. The substitution is on the
+// DEADLINE only: data.LeaseSeconds still reaches the log and the ledger
+// unchanged, because the anomaly is the thing worth seeing and
+// rewriting it would hide it. See maxRenewableLease for which lifetimes
+// qualify, and why applying it to every long lease is worse than not
+// having it.
 func leaseDeadline(data dhcp.Info) (time.Duration, bool) {
-	if data.LeaseSeconds > 0 {
-		return clampLeaseDeadline(time.Duration(data.LeaseSeconds) * time.Second)
+	if data.LeaseSeconds <= 0 {
+		return 0, false
 	}
-	return 0, false
+	if data.LeaseSeconds > maxOption51Seconds {
+		// Option 51 is four octets, so no DHCP server can have sent
+		// this. LeaseSeconds is an int decoded from the hook's JSON, and
+		// time.Duration counts NANOSECONDS: multiplying a large enough
+		// value by time.Second wraps, and a NEGATIVE duration reaches
+		// `due` as lapseAfter <= 0, which means "no deadline is
+		// enforced". A garbage lifetime would then switch the watchdog
+		// off silently — the same outcome as the 0xFFFFFFFF lease this
+		// clamp exists for, reached by arithmetic instead of by a value
+		// on the wire, and with nothing counted.
+		//
+		// Treated as permanent, so the failure direction is an armed
+		// watchdog and a counter rather than a disarmed one.
+		return maxLeaseDeadline, true
+	}
+	return clampLeaseDeadline(time.Duration(data.LeaseSeconds) * time.Second)
 }
+
+// maxOption51Seconds is the widest value DHCP's IP Address Lease Time
+// option can carry: four octets, so 0xFFFFFFFF. dhcpcd exports it
+// verbatim, and it is the conventional encoding for "permanent".
+const maxOption51Seconds = 0xFFFFFFFF
 
 // observe folds one client event into the tracker, reporting whether the
 // lease lifetime it carried had to be clamped to stay usable as a
