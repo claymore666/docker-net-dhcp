@@ -447,7 +447,7 @@ free tier only ever grows.
 
 | owed | owner | state |
 |---|---|---|
-| derive `familyPairs()` from `metricDefs()` | client1 | **closed** in #766 — the seventh-metric mutant re-run on `05d94bc` reddens with a message naming the defect rather than the golden |
+| derive `familyPairs()` from `metricDefs()` | client1 | **closed in `34ef250`** — the seventh-metric mutant re-run on `05d94bc` reddens with a message naming the defect rather than the golden |
 | key the counting-wrapper row on the field, not the name | client2 | open, in #769 |
 | derive `want` from the package's own `^/` constants | client1 | open, on `fix/707` |
 
@@ -484,6 +484,32 @@ merge — and do not touch the body in between. Otherwise the strong test
 flips back to NOT-YET-DONE indefinitely and the PR never converges.
 *(master-release, re-measured by client3)*
 
+## I19 — two instruments disagreed, and the one being quoted was wrong
+
+Chasing an unrelated correction, a golden-churn histogram reported **47
+changed lines** where `diff | grep -c '^<'` reported **48**. The
+histogram script had parsed **55 of 57 series** and **misread one value**
+— `lease_changed{family="ipv4"}` as `190 → 120` where dev holds `200` —
+so its `-80` bucket printed `-70` and its `+60` bucket was one short.
+
+That output had been quoted across two rebases and had reached a pull
+request body.
+
+**Fifth instrument-answered-confidently instance of the day, and the
+first found by cross-checking rather than by the answer looking wrong.**
+Note the direction of the failure: the broken instrument produced a
+**plausible** number, one off — not a crash, not a zero.
+
+> **A count that does not reconcile with the tool beside it is not a
+> measurement.**
+
+The replacement asserts parsed-count against series-count *and*
+changed-count against the diff count, and **refuses rather than
+printing**. Corrected figures: 57 series both sides, 48 changed,
+`{-80:1, -60:1, -40:1, -30:3, +60:42}` — 42 of the 48 pure index
+arithmetic, which is v1.9.0 item 18's evidence with the right
+denominator. *(client1)*
+
 ---
 
 # Rules
@@ -509,6 +535,8 @@ Each names its incident and the condition under which it dies.
 | R15 | You may push a head that is with a reviewer; you **must** tell them in the same minute, and the restarted pass is on you. | replaces the killed 6b, below | R11 stops being the detector. |
 | R16 | Run the mechanical sweep against **your own** work first, not last. **Rule, owed — owner: client3.** | I12 | The carrier-enumeration gate exists — this is the same gate pointed at a different moment, so R14 and R16 may collapse into one piece of work. |
 | R17 | **Name the object, never the bare number.** "63 fields", not "63" — and never a noun borrowed from the neighbouring sentence. **Rule, owed — owner: client3.** | I16 | A gate can check that a numeral in changed prose is followed by the noun it counts; this may fall out of R14's gate for free. |
+| R18 | A summary count **reconciles against a second tool before it prints**, or it refuses. | I19 | Never — this is a shape, and it costs one assertion. |
+| R19 | Where this file records that something happened, **prefer a SHA to a status word.** A SHA is checkable forever; a status word is a present-tense claim nothing updates. | I3, and the owed table below | Never. |
 
 ## Owed — R14, R16 and R17, and why they are hard
 
@@ -602,6 +630,19 @@ worth more than a rule followed.
   reproducing its result.** Agreement between your grep and their table
   proves the table. Only running their command proves the *comment*, and
   the comment is what the next reader will use.
+- **A symptom observer looks idle right up until the day it is the only
+  thing watching.** Driven over 24 double-load mutants, disabling one
+  property at a time: **P1 alone kills 24/24, P2 alone 0, P3 alone 0**,
+  and P1+P2 with P3 off still kills 24. So P3 kills nothing P1 does not
+  already kill — **and it stays**, because it is the only property
+  stated in the operator's terms, and the only one that would fire if
+  the load-once invariant held and a counter went backwards anyway.
+
+  > **A redundancy measurement is not a deletion argument.**
+
+  This is the correct counter to the instinct to delete what nothing
+  observes, and it is the same reason *"it never fired"* is not a valid
+  kill reason. *(client1)*
 - **Wait on the effect, not on the precondition.** A waiter armed for
   #766 watched `origin/dev`'s tree — the `HealthResponse` json tags —
   rather than the pull request's merge state. *"The PR merged"* and
