@@ -601,10 +601,17 @@ type HealthResponse struct {
 	// halves being derived from it.
 	LeasesObtained int32 `json:"leases_obtained"`
 	LeasesRenewed  int32 `json:"leases_renewed"`
-	// DHCPServerTierFallbacks counts acquisitions that fell through to a
-	// lower-priority entry of dhcp_servers because the preferred one did
-	// not answer (#111). Not Healthy-affecting — the endpoint still got
-	// an address; a steady rise is how a silently-dead primary shows up.
+	// DHCPServerTierFallbacks counts STEPS DOWN the dhcp_servers
+	// ladder: one per preferred entry that did not answer inside its
+	// slice of the budget and handed on to the next (#111). One
+	// acquisition against three silent preferred servers adds 2, not
+	// 1 — the counter measures how far down the list acquisition had
+	// to walk, which is the number worth having and is what the code
+	// has always produced. Three of the four places this was described
+	// said "acquisitions" instead, and #731 is that drift.
+	//
+	// Not healthy-affecting — the endpoint still got an address; a
+	// steady rise is how a silently-dead primary shows up.
 	DHCPServerTierFallbacks int32 `json:"dhcp_server_tier_fallbacks"`
 	// DHCPServerPolicyExhausted counts acquisitions abandoned because no
 	// server listed in dhcp_servers answered (#111). Not Healthy-

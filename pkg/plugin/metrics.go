@@ -87,7 +87,7 @@ func metricDefs() []metricDef {
 		{name: "mtu_refused", counter: true, help: "Option-26 MTUs outside the range the plugin will apply; the container link keeps the MTU it had.", field: "mtu_refused"},
 
 		// Server selection (#111).
-		{name: "dhcp_server_tier_fallbacks", counter: true, help: "Acquisitions that fell through to a lower-priority dhcp_servers entry because the preferred server did not answer. The only outside signal that a preferred server is silently dead.", field: "dhcp_server_tier_fallbacks"},
+		{name: "dhcp_server_tier_fallbacks", counter: true, help: "Steps down the dhcp_servers ladder: one per preferred entry that did not answer inside its slice of the budget and handed on to the next. One acquisition against three silent preferred servers adds 2, not 1. The only outside signal that a preferred server is silently dead.", field: "dhcp_server_tier_fallbacks"},
 		{name: "dhcp_server_policy_exhausted", counter: true, help: "Acquisitions abandoned because no server listed in dhcp_servers answered.", field: "dhcp_server_policy_exhausted"},
 
 		// Post-restart recovery.
