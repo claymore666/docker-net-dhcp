@@ -91,8 +91,8 @@ func TestDeleteEndpoint_ARefusedHostnameIsNotAnAbsentOne(t *testing.T) {
 				endpointFingerprints: make(map[string]endpointFingerprint),
 			}
 			p.rememberEndpoint("ep-1", endpointFingerprint{
-				MAC: "02:42:ac:11:00:02", IPv4: "192.168.0.50", Hostname: tc.hostname,
-			}, tc.hostnameTrusted)
+				MAC: "02:42:ac:11:00:02", IPv4: "192.168.0.50",
+			}, dhcpHostname{name: tc.hostname, refused: !tc.hostnameTrusted})
 
 			if err := p.DeleteEndpoint(context.Background(), DeleteEndpointRequest{
 				NetworkID: "n1", EndpointID: "ep-1",
@@ -126,13 +126,15 @@ func TestDeleteEndpoint_ARefusedHostnameIsNotAnAbsentOne(t *testing.T) {
 // The defect was never in the tombstone store. It was that both
 // CreateEndpoint paths HELD the trust bit -- they pass it to
 // consumeTombstone a screen earlier -- and then dropped it when they
-// built the fingerprint. Making it an argument means a future caller
-// cannot drop it silently; this checks the argument actually reaches
-// the field, so the compiler's half and the runtime's half both hold.
+// built the fingerprint. The hostname and its trust bit now arrive as
+// one value the caller cannot take apart; this checks that BOTH halves
+// of that value reach the record, because a struct that is passed whole
+// and then half-copied would fail in exactly the same way.
 func TestRememberEndpoint_TrustFlowsToTheFingerprint(t *testing.T) {
 	for _, trusted := range []bool{true, false} {
 		p := &Plugin{endpointFingerprints: make(map[string]endpointFingerprint)}
-		p.rememberEndpoint("ep-1", endpointFingerprint{MAC: "02:42:ac:11:00:02"}, trusted)
+		p.rememberEndpoint("ep-1", endpointFingerprint{MAC: "02:42:ac:11:00:02"},
+			dhcpHostname{name: "web", refused: !trusted})
 
 		fp, ok := p.takeEndpoint("ep-1")
 		if !ok {
@@ -141,6 +143,10 @@ func TestRememberEndpoint_TrustFlowsToTheFingerprint(t *testing.T) {
 		if fp.HostnameRefused == trusted {
 			t.Errorf("trusted=%v recorded HostnameRefused=%v; the two must be opposites or DeleteEndpoint "+
 				"reads the wrong instruction", trusted, fp.HostnameRefused)
+		}
+		if fp.Hostname != "web" {
+			t.Errorf("trusted=%v recorded Hostname=%q, want \"web\" -- rememberEndpoint fills the field from "+
+				"the hostname value now, so dropping the name is a live way to break narrow matching", trusted, fp.Hostname)
 		}
 	}
 }

@@ -305,12 +305,12 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 	// to the same container (prevents identity swap during sequential
 	// `compose restart`). Best-effort: if the lookup misses or returns
 	// empty, consumeTombstone falls back to network-only matching.
-	hostname, hostnameTrusted := p.initialDHCPHostname(ctx, r.NetworkID, r.EndpointID)
+	hostname := p.initialDHCPHostname(ctx, r.NetworkID, r.EndpointID)
 
 	requestedIP := explicitV4
 	requestedV6 := explicitV6
 	if mode == ModeMacvlan && effectiveMAC == "" {
-		if tombMAC, tombIP, tombIPv6, ok := p.consumeTombstone(r.NetworkID, hostname, hostnameTrusted); ok {
+		if tombMAC, tombIP, tombIPv6, ok := p.consumeTombstone(r.NetworkID, hostname); ok {
 			effectiveMAC = tombMAC
 			if requestedIP == "" {
 				requestedIP = tombIP
@@ -444,7 +444,9 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 			}
 
 			base := dhcp.DHCPClientOptions{
-				Hostname:    hostname,
+				// .name, not the whole value: see the sibling in
+				// network.go. Config, not identity.
+				Hostname:    hostname.name,
 				FQDN:        opts.fqdnMode(),
 				ClientID:    clientID,
 				VendorClass: opts.VendorClass,
@@ -526,7 +528,7 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 	// them as a tombstone. macvlan only — for ipvlan the MAC is the
 	// parent's and there's nothing to stabilize.
 	if mode == ModeMacvlan {
-		p.rememberEndpoint(r.EndpointID, endpointFingerprint{MAC: hintMAC, IPv4: hintIPv4, IPv6: hintIPv6, Hostname: hostname, Ifname: p.hintIfname(r.EndpointID)}, hostnameTrusted)
+		p.rememberEndpoint(r.EndpointID, endpointFingerprint{MAC: hintMAC, IPv4: hintIPv4, IPv6: hintIPv6, Ifname: p.hintIfname(r.EndpointID)}, hostname)
 	}
 
 	// Is anyone else already using the address we were just given

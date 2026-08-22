@@ -912,7 +912,7 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 	// to the same container (prevents identity swap during sequential
 	// `compose restart`). Best-effort: if the lookup misses or returns
 	// empty, consumeTombstone falls back to network-only matching.
-	hostname, hostnameTrusted := p.initialDHCPHostname(ctx, r.NetworkID, r.EndpointID)
+	hostname := p.initialDHCPHostname(ctx, r.NetworkID, r.EndpointID)
 
 	// MAC/IP selection priority:
 	//   1. Explicit values from libnetwork (`--mac-address`, `--ip`)
@@ -925,7 +925,7 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 	requestedIP := explicitV4
 	requestedV6 := explicitV6
 	if effectiveMAC == "" {
-		if mac, ip, ipv6, ok := p.consumeTombstone(r.NetworkID, hostname, hostnameTrusted); ok {
+		if mac, ip, ipv6, ok := p.consumeTombstone(r.NetworkID, hostname); ok {
 			effectiveMAC = mac
 			if requestedIP == "" {
 				requestedIP = ip
@@ -941,7 +941,7 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 			log.WithFields(log.Fields{
 				"network":      shortID(r.NetworkID),
 				"endpoint":     shortID(r.EndpointID),
-				"hostname":     hostname,
+				"hostname":     hostname.name,
 				"mac_address":  mac,
 				"requested_ip": requestedIP,
 				"prior_ipv6":   ipv6,
@@ -1039,7 +1039,10 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 			}
 
 			base := dhcp.DHCPClientOptions{
-				Hostname:    hostname,
+				// .name, not the whole value: this is the DHCP
+				// exchange, which is config and not an identity
+				// decision. A refused hostname is simply absent here.
+				Hostname:    hostname.name,
 				FQDN:        opts.fqdnMode(),
 				ClientID:    clientID,
 				VendorClass: opts.VendorClass,
@@ -1130,7 +1133,7 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 	if mac == "" {
 		mac = res.Interface.MacAddress
 	}
-	p.rememberEndpoint(r.EndpointID, endpointFingerprint{MAC: mac, IPv4: v4IP, IPv6: v6IP, Hostname: hostname, Ifname: p.hintIfname(r.EndpointID)}, hostnameTrusted)
+	p.rememberEndpoint(r.EndpointID, endpointFingerprint{MAC: mac, IPv4: v4IP, IPv6: v6IP, Ifname: p.hintIfname(r.EndpointID)}, hostname)
 
 	// Same post-lease conflict probe as the parent-attached path (#524),
 	// against the bridge. Bridge mode is the case that makes the MAC

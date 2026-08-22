@@ -36,12 +36,12 @@ func TestConsumeTombstone_ARefusedHostnameInheritsNothing(t *testing.T) {
 		p.addTombstone(net, victim, victimMAC, victimIP, "fe80::99")
 
 		// Exactly what CreateEndpoint does with an attacker's hostname.
-		hostname, trusted := p.safeHostname("attacker-host\x01")
-		if hostname != "" || trusted {
-			t.Fatalf("safeHostname = (%q, %v), want (\"\", false)", hostname, trusted)
+		hostname := p.safeHostname("attacker-host\x01")
+		if hostname.name != "" || hostname.trusted() {
+			t.Fatalf("safeHostname = (%q, trusted=%v), want (\"\", false)", hostname.name, hostname.trusted())
 		}
 
-		mac, ipv4, ipv6, ok := p.consumeTombstone(net, hostname, trusted)
+		mac, ipv4, ipv6, ok := p.consumeTombstone(net, hostname)
 		if ok {
 			t.Fatalf("a refused hostname inherited another endpoint's identity: mac=%q ipv4=%q ipv6=%q", mac, ipv4, ipv6)
 		}
@@ -52,11 +52,11 @@ func TestConsumeTombstone_ARefusedHostnameInheritsNothing(t *testing.T) {
 		p := newPluginForTest()
 		p.addTombstone(net, victim, victimMAC, victimIP, "fe80::99")
 
-		hostname, trusted := p.safeHostname("attacker-host")
-		if !trusted {
+		hostname := p.safeHostname("attacker-host")
+		if !hostname.trusted() {
 			t.Fatalf("an ordinary hostname was refused")
 		}
-		if _, _, _, ok := p.consumeTombstone(net, hostname, trusted); ok {
+		if _, _, _, ok := p.consumeTombstone(net, hostname); ok {
 			t.Error("a different container's tombstone was consumed by name")
 		}
 	})
@@ -66,8 +66,8 @@ func TestConsumeTombstone_ARefusedHostnameInheritsNothing(t *testing.T) {
 		p := newPluginForTest()
 		p.addTombstone(net, victim, victimMAC, victimIP, "fe80::99")
 
-		hostname, trusted := p.safeHostname(victim)
-		mac, ipv4, _, ok := p.consumeTombstone(net, hostname, trusted)
+		hostname := p.safeHostname(victim)
+		mac, ipv4, _, ok := p.consumeTombstone(net, hostname)
 		if !ok || mac != victimMAC || ipv4 != victimIP {
 			t.Fatalf("the tombstone was not consumable at all: (%q, %q, %v) — the refusals above prove nothing", mac, ipv4, ok)
 		}

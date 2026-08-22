@@ -53,7 +53,7 @@ check "the real tree passes" 0 "$got"
 # --- the regression this gate exists for -------------------------------
 # Verbatim the line that shipped in dhcp_manager.go after #688.
 reintroduce_688() {
-    sed -i 's|^\tm.hostname, _ = m.plugin.safeHostname(ctr.Config.Hostname)$|\tm.nsPath = fmt.Sprintf("/proc/%v/ns/net", ctr.State.Pid)\n\tm.hostname, _ = m.plugin.safeHostname(ctr.Config.Hostname)|' \
+    sed -i 's|^\tm.hostname = m.plugin.safeHostname(ctr.Config.Hostname).name$|\tm.nsPath = fmt.Sprintf("/proc/%v/ns/net", ctr.State.Pid)\n\tm.hostname = m.plugin.safeHostname(ctr.Config.Hostname).name|' \
         "$1/pkg/plugin/dhcp_manager.go"
 }
 got=$(fixture reintroduced reintroduce_688)

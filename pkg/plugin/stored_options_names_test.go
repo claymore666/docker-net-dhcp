@@ -187,8 +187,8 @@ func TestDeleteEndpoint_TearsDownDespiteARefusedName(t *testing.T) {
 		endpointFingerprints: make(map[string]endpointFingerprint),
 	}
 	p.rememberEndpoint("ep-1", endpointFingerprint{
-		MAC: "02:42:ac:11:00:02", IPv4: "192.168.0.50", Hostname: "web",
-	}, true)
+		MAC: "02:42:ac:11:00:02", IPv4: "192.168.0.50",
+	}, dhcpHostname{name: "web"})
 
 	// The host veth does not exist, which DeleteEndpoint treats as
 	// already-torn-down and reports as success -- the same path a
@@ -341,7 +341,7 @@ func TestDeleteEndpoint_UnknownModeSkipsTheTombstone(t *testing.T) {
 		docker:               &fakeDocker{inspectErr: errors.New("docker must not be called")},
 		endpointFingerprints: make(map[string]endpointFingerprint),
 	}
-	p.rememberEndpoint("ep-1", endpointFingerprint{MAC: "02:42:ac:11:00:02", IPv4: "192.168.0.50", Hostname: "web"}, true)
+	p.rememberEndpoint("ep-1", endpointFingerprint{MAC: "02:42:ac:11:00:02", IPv4: "192.168.0.50"}, dhcpHostname{name: "web"})
 
 	if err := p.DeleteEndpoint(context.Background(), DeleteEndpointRequest{
 		NetworkID: "n1", EndpointID: "ep-1",

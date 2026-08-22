@@ -1362,7 +1362,7 @@ func (m *dhcpManager) Start(ctx context.Context) (err error) {
 	// Config-only: m.hostname reaches the generated dhcpcd.conf and
 	// nothing that makes an identity decision, so a refusal is just an
 	// omitted directive here.
-	m.hostname, _ = m.plugin.safeHostname(ctr.Config.Hostname)
+	m.hostname = m.plugin.safeHostname(ctr.Config.Hostname).name
 
 	// Using the "sandbox key" directly causes issues on some platforms,
 	// so the namespace is reached through the container's PID -- but

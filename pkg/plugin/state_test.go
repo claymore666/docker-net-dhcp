@@ -143,18 +143,18 @@ func TestTombstones_RoundtripAndConsume(t *testing.T) {
 	p := newPluginForTest()
 
 	// Empty state: no tombstones to consume.
-	if mac, ip, ipv6, ok := p.consumeTombstone("net-A", "", true); ok {
+	if mac, ip, ipv6, ok := p.consumeTombstone("net-A", dhcpHostname{}); ok {
 		t.Errorf("consumeTombstone on empty state returned (%q, %q, %q, true), want (\"\", \"\", \"\", false)", mac, ip, ipv6)
 	}
 
 	// One tombstone for net-A → next consumeTombstone for net-A wins.
 	p.addTombstone("net-A", "", "02:42:ac:11:00:01", "192.168.0.166", "fe80::1")
-	mac, ip, ipv6, ok := p.consumeTombstone("net-A", "", true)
+	mac, ip, ipv6, ok := p.consumeTombstone("net-A", dhcpHostname{})
 	if !ok || mac != "02:42:ac:11:00:01" || ip != "192.168.0.166" || ipv6 != "fe80::1" {
 		t.Errorf("consumeTombstone net-A: got (%q, %q, %q, %v), want (02:42:ac:11:00:01, 192.168.0.166, fe80::1, true)", mac, ip, ipv6, ok)
 	}
 	// Tombstone is consumed exactly once.
-	if mac, ip, ipv6, ok := p.consumeTombstone("net-A", "", true); ok {
+	if mac, ip, ipv6, ok := p.consumeTombstone("net-A", dhcpHostname{}); ok {
 		t.Errorf("second consumeTombstone returned (%q, %q, %q, true); should be empty after consume", mac, ip, ipv6)
 	}
 }
@@ -175,7 +175,7 @@ func TestTombstones_ConsumedCounter(t *testing.T) {
 	// A miss must not count. This is the case that matters: the
 	// daemon-restart test reads the counter as evidence the tombstone
 	// path ran, so a lookup that found nothing must leave it alone.
-	if _, _, _, ok := p.consumeTombstone("net-A", "", true); ok {
+	if _, _, _, ok := p.consumeTombstone("net-A", dhcpHostname{}); ok {
 		t.Fatal("consumeTombstone on empty state returned ok=true")
 	}
 	if got := p.tombstonesConsumed.Load(); got != 0 {
@@ -183,7 +183,7 @@ func TestTombstones_ConsumedCounter(t *testing.T) {
 	}
 
 	p.addTombstone("net-A", "", "02:42:ac:11:00:01", "192.168.0.166", "")
-	if _, _, _, ok := p.consumeTombstone("net-A", "", true); !ok {
+	if _, _, _, ok := p.consumeTombstone("net-A", dhcpHostname{}); !ok {
 		t.Fatal("consumeTombstone did not find the tombstone just added")
 	}
 	if got := p.tombstonesConsumed.Load(); got != 1 {
@@ -192,7 +192,7 @@ func TestTombstones_ConsumedCounter(t *testing.T) {
 
 	// Consumed exactly once: the second lookup finds nothing, so the
 	// counter must not advance again.
-	if _, _, _, ok := p.consumeTombstone("net-A", "", true); ok {
+	if _, _, _, ok := p.consumeTombstone("net-A", dhcpHostname{}); ok {
 		t.Fatal("tombstone was consumable twice")
 	}
 	if got := p.tombstonesConsumed.Load(); got != 1 {
@@ -203,7 +203,7 @@ func TestTombstones_ConsumedCounter(t *testing.T) {
 	// consumeTombstone, and a declined match is not a replay.
 	p.addTombstone("net-B", "", "aa:aa:aa:aa:aa:aa", "10.0.0.1", "")
 	p.addTombstone("net-B", "", "bb:bb:bb:bb:bb:bb", "10.0.0.2", "")
-	if _, _, _, ok := p.consumeTombstone("net-B", "", true); ok {
+	if _, _, _, ok := p.consumeTombstone("net-B", dhcpHostname{}); ok {
 		t.Fatal("two candidates on one network should not resolve")
 	}
 	if got := p.tombstonesConsumed.Load(); got != 1 {
@@ -217,10 +217,10 @@ func TestTombstones_DifferentNetworksDoNotMix(t *testing.T) {
 	p.addTombstone("net-A", "", "aa:aa:aa:aa:aa:aa", "10.0.0.1", "")
 	p.addTombstone("net-B", "", "bb:bb:bb:bb:bb:bb", "10.0.0.2", "fe80::2")
 
-	if mac, ip, ipv6, ok := p.consumeTombstone("net-A", "", true); !ok || mac != "aa:aa:aa:aa:aa:aa" || ip != "10.0.0.1" || ipv6 != "" {
+	if mac, ip, ipv6, ok := p.consumeTombstone("net-A", dhcpHostname{}); !ok || mac != "aa:aa:aa:aa:aa:aa" || ip != "10.0.0.1" || ipv6 != "" {
 		t.Errorf("net-A consume: got (%q, %q, %q, %v)", mac, ip, ipv6, ok)
 	}
-	if mac, ip, ipv6, ok := p.consumeTombstone("net-B", "", true); !ok || mac != "bb:bb:bb:bb:bb:bb" || ip != "10.0.0.2" || ipv6 != "fe80::2" {
+	if mac, ip, ipv6, ok := p.consumeTombstone("net-B", dhcpHostname{}); !ok || mac != "bb:bb:bb:bb:bb:bb" || ip != "10.0.0.2" || ipv6 != "fe80::2" {
 		t.Errorf("net-B consume: got (%q, %q, %q, %v)", mac, ip, ipv6, ok)
 	}
 }
@@ -234,7 +234,7 @@ func TestTombstones_TwoOnSameNetworkBothSkipped(t *testing.T) {
 	// Two matches on same network → ambiguous, return ok=false.
 	// The point is to avoid handing one container's MAC to a
 	// concurrently-restarting peer.
-	if mac, ip, ipv6, ok := p.consumeTombstone("net-A", "", true); ok {
+	if mac, ip, ipv6, ok := p.consumeTombstone("net-A", dhcpHostname{}); ok {
 		t.Errorf("consumeTombstone with 2 candidates should return ok=false, got (%q, %q, %q, true)", mac, ip, ipv6)
 	}
 }
@@ -251,7 +251,7 @@ func TestTombstones_AmbiguousMatchesDropped(t *testing.T) {
 	p.addTombstone("net-A", "", "aa:aa:aa:aa:aa:aa", "10.0.0.1", "")
 	p.addTombstone("net-A", "", "bb:bb:bb:bb:bb:bb", "10.0.0.2", "")
 
-	if _, _, _, ok := p.consumeTombstone("net-A", "", true); ok {
+	if _, _, _, ok := p.consumeTombstone("net-A", dhcpHostname{}); ok {
 		t.Fatal("first consume must return ok=false (ambiguous)")
 	}
 	// Subsequent consume must also be ok=false but for "no match"
@@ -281,12 +281,12 @@ func TestTombstones_HostnameNarrowsMatch(t *testing.T) {
 	p.addTombstone("net-A", "beta", "bb:bb:bb:bb:bb:bb", "10.0.0.2", "")
 
 	// Consume narrowed by hostname returns only the matching MAC.
-	mac, ip, _, ok := p.consumeTombstone("net-A", "alpha", true)
+	mac, ip, _, ok := p.consumeTombstone("net-A", dhcpHostname{name: "alpha"})
 	if !ok || mac != "aa:aa:aa:aa:aa:aa" || ip != "10.0.0.1" {
 		t.Fatalf("alpha consume: got (%q, %q, %v), want alpha's tombstone", mac, ip, ok)
 	}
 	// beta's tombstone must still be there.
-	mac, ip, _, ok = p.consumeTombstone("net-A", "beta", true)
+	mac, ip, _, ok = p.consumeTombstone("net-A", dhcpHostname{name: "beta"})
 	if !ok || mac != "bb:bb:bb:bb:bb:bb" || ip != "10.0.0.2" {
 		t.Fatalf("beta consume: got (%q, %q, %v), want beta's tombstone", mac, ip, ok)
 	}
@@ -302,7 +302,7 @@ func TestTombstones_EmptyHostnameMatchesAny(t *testing.T) {
 	p := newPluginForTest()
 	// Pre-existing tombstone written by an older binary (no hostname).
 	p.addTombstone("net-A", "", "aa:aa:aa:aa:aa:aa", "10.0.0.1", "")
-	mac, _, _, ok := p.consumeTombstone("net-A", "alpha", true)
+	mac, _, _, ok := p.consumeTombstone("net-A", dhcpHostname{name: "alpha"})
 	if !ok || mac != "aa:aa:aa:aa:aa:aa" {
 		t.Errorf("v0.5.0 tombstone should still match: got (%q, %v)", mac, ok)
 	}
@@ -358,14 +358,14 @@ func TestTombstones_ExpiredEntriesPruned(t *testing.T) {
 		t.Fatalf("saveTombstones: %v", err)
 	}
 	p := newPluginForTest()
-	if mac, ip, ipv6, ok := p.consumeTombstone("net-A", "", true); ok {
+	if mac, ip, ipv6, ok := p.consumeTombstone("net-A", dhcpHostname{}); ok {
 		t.Errorf("expired tombstone should not be consumed, got (%q, %q, %q, true)", mac, ip, ipv6)
 	}
 }
 
 func TestRememberAndTakeEndpoint(t *testing.T) {
 	p := newPluginForTest()
-	p.rememberEndpoint("ep-1", endpointFingerprint{MAC: "02:42:ac:11:00:02", IPv4: "192.168.0.10", IPv6: "fe80::10"}, true)
+	p.rememberEndpoint("ep-1", endpointFingerprint{MAC: "02:42:ac:11:00:02", IPv4: "192.168.0.10", IPv6: "fe80::10"}, dhcpHostname{})
 	fp, ok := p.takeEndpoint("ep-1")
 	if !ok || fp.MAC != "02:42:ac:11:00:02" || fp.IPv4 != "192.168.0.10" || fp.IPv6 != "fe80::10" {
 		t.Errorf("take after remember: got (%+v, %v)", fp, ok)
@@ -375,7 +375,7 @@ func TestRememberAndTakeEndpoint(t *testing.T) {
 	}
 	// Empty MAC must not be remembered (avoids polluting map for
 	// failed CreateEndpoints).
-	p.rememberEndpoint("ep-2", endpointFingerprint{MAC: "", IPv4: "10.0.0.1"}, true)
+	p.rememberEndpoint("ep-2", endpointFingerprint{MAC: "", IPv4: "10.0.0.1"}, dhcpHostname{})
 	if _, ok := p.takeEndpoint("ep-2"); ok {
 		t.Errorf("rememberEndpoint with empty MAC must be a no-op")
 	}
@@ -383,7 +383,7 @@ func TestRememberAndTakeEndpoint(t *testing.T) {
 
 func TestUpdateEndpointIPs_PreservesUnsetField(t *testing.T) {
 	p := newPluginForTest()
-	p.rememberEndpoint("ep-1", endpointFingerprint{MAC: "aa:bb:cc:dd:ee:ff", IPv4: "10.0.0.1", IPv6: "fe80::1"}, true)
+	p.rememberEndpoint("ep-1", endpointFingerprint{MAC: "aa:bb:cc:dd:ee:ff", IPv4: "10.0.0.1", IPv6: "fe80::1"}, dhcpHostname{})
 
 	// Update v4 only — v6 must survive.
 	p.updateEndpointIPs("ep-1", "10.0.0.2", "")
@@ -393,7 +393,7 @@ func TestUpdateEndpointIPs_PreservesUnsetField(t *testing.T) {
 	}
 
 	// Update v6 only — v4 must survive.
-	p.rememberEndpoint("ep-2", endpointFingerprint{MAC: "aa:bb:cc:dd:ee:ff", IPv4: "10.0.0.1", IPv6: "fe80::1"}, true)
+	p.rememberEndpoint("ep-2", endpointFingerprint{MAC: "aa:bb:cc:dd:ee:ff", IPv4: "10.0.0.1", IPv6: "fe80::1"}, dhcpHostname{})
 	p.updateEndpointIPs("ep-2", "", "fe80::2")
 	fp, _ = p.takeEndpoint("ep-2")
 	if fp.IPv4 != "10.0.0.1" || fp.IPv6 != "fe80::2" {

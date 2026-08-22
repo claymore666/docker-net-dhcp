@@ -1188,23 +1188,77 @@ type endpointFingerprint struct {
 	Ifname string
 }
 
+// dhcpHostname is a container hostname TOGETHER WITH whether the plugin
+// trusts it. The two travel as one value because separating them is the
+// defect (#726).
+//
+// safeHostname yields "" for two opposite situations: a hostname it
+// REFUSED, and a container that honestly has none. Downstream,
+// tombstoneStore.consume reads an empty hostname as "match any tombstone
+// on this network" -- correct for the absence, catastrophic for the
+// refusal, where the value we declined to trust for a NARROW match
+// becomes a match against EVERY container on the network.
+//
+// So the trust bit is not optional context that a caller may carry
+// alongside the name; it is part of what the name MEANS, and a name
+// without it is not interpretable. Making it a struct field of the
+// hostname rather than a second local is what stops the two from
+// drifting apart across the two hundred lines of netlink and DHCP work
+// that separate where a hostname is produced from where it is recorded.
+//
+// Not exported and deliberately not stringly-typed: a bare string is
+// assignable from anything, and the whole failure was a bare "" arriving
+// where a trusted name was expected.
+type dhcpHostname struct {
+	// name is the hostname to put in the DHCP exchange, or "" for
+	// both "refused" and "none". Read it only alongside refused.
+	name string
+	// refused is true when the plugin declined the container's
+	// hostname (a control character, #692/#693) rather than failing
+	// to find one. See tombstoneStore.consume for why the two must
+	// not be collapsed.
+	refused bool
+}
+
+// trusted reports whether name may be used to make an IDENTITY
+// decision -- narrowing a tombstone match, or being recorded in a
+// fingerprint that will become one. An honestly absent hostname is
+// trusted: it buys the v0.5.0 network-wide match, which is the correct
+// answer for a container that has no hostname.
+func (h dhcpHostname) trusted() bool { return !h.refused }
+
 // rememberEndpoint stashes the fingerprint of an endpoint we just
 // created so DeleteEndpoint can resurrect it as a tombstone later.
 // No-op when the MAC is empty (avoids polluting the map for failed
 // CreateEndpoints).
 //
-// hostnameTrusted is a SEPARATE PARAMETER rather than a field the
-// caller fills in, because the bug this signature exists to prevent was
-// a caller not filling it in. Both CreateEndpoint paths held the trust
-// bit at their consumeTombstone call and then dropped it on the floor
-// two hundred lines later, writing a fingerprint whose empty Hostname
-// the tombstone store reads as "matches every container on this
-// network" (#726). A field is easy to forget; an argument is a compile
-// error. Pass true for a hostname you would put in a DHCP packet --
-// including one that is honestly absent, which must keep the v0.5.0
-// network-only tombstone -- and false only for one the plugin refused.
-func (p *Plugin) rememberEndpoint(endpointID string, fp endpointFingerprint, hostnameTrusted bool) {
-	fp.HostnameRefused = !hostnameTrusted
+// # WHY THE HOSTNAME IS A PARAMETER AND NOT A FIELD OF fp
+//
+// The bug this signature exists to prevent was a caller writing
+// `Hostname: hostname` into the fingerprint literal and losing the
+// trust bit that travelled beside it (#726). Both CreateEndpoint paths
+// did exactly that: each held the bit at its consumeTombstone call and
+// dropped it two hundred lines later, writing a fingerprint whose empty
+// Hostname the tombstone store reads as "matches every container on
+// this network".
+//
+// The first fix for that was a `hostnameTrusted bool` parameter, on the
+// reasoning that a field is easy to forget and an argument is a compile
+// error. That reasoning is HALF RIGHT AND THE MISSING HALF IS THE ONE
+// THAT MATTERS: a compile error forces a caller to pass SOMETHING, not
+// to pass the RIGHT something. `true` compiles. Substituting it at both
+// call sites left the whole package green while restoring #726 in full,
+// which is how this comment came to be rewritten.
+//
+// So the name and the bit are now ONE value the caller cannot take
+// apart, and the fingerprint's Hostname is filled in HERE from it
+// rather than by the caller. Passing the wrong thing now means
+// constructing a dhcpHostname literal beside a live one, which no
+// plausible edit does and which TestHostnameTrustIsWired refuses at the
+// source anyway.
+func (p *Plugin) rememberEndpoint(endpointID string, fp endpointFingerprint, h dhcpHostname) {
+	fp.Hostname = h.name
+	fp.HostnameRefused = h.refused
 	if fp.MAC == "" {
 		return
 	}
@@ -1294,10 +1348,11 @@ func (p *Plugin) addTombstone(networkID, hostname, mac, ipv4, ipv6 string) {
 // to NetworkID-only matching (preserves the v0.5.0 contract for
 // hostname-less containers and races where the lookup didn't return
 // in time). The "exactly one" rule still applies after filtering.
-func (p *Plugin) consumeTombstone(networkID, hostname string, hostnameTrusted bool) (mac, ipv4, ipv6 string, ok bool) {
-	// hostnameTrusted is a parameter rather than a check at the two call
-	// sites for the same reason tombstonesConsumed is counted here: a
-	// third caller cannot forget what it is forced to pass.
+func (p *Plugin) consumeTombstone(networkID string, h dhcpHostname) (mac, ipv4, ipv6 string, ok bool) {
+	// The trust bit arrives welded to the name rather than as a check at
+	// the two call sites, for the same reason tombstonesConsumed is
+	// counted here: a third caller cannot forget what it cannot take
+	// apart.
 	//
 	// consume() reads an empty hostname as "match any tombstone on this
 	// network" — deliberate, for v0.5.0 tombstones and for the
@@ -1309,10 +1364,10 @@ func (p *Plugin) consumeTombstone(networkID, hostname string, hostnameTrusted bo
 	// server for its address. An untrusted hostname therefore consumes
 	// nothing: the container still attaches, with a fresh identity, which
 	// is the right answer for a value nobody should have sent.
-	if !hostnameTrusted {
+	if !h.trusted() {
 		return "", "", "", false
 	}
-	mac, ipv4, ipv6, ok = p.tombstones.consume(networkID, hostname)
+	mac, ipv4, ipv6, ok = p.tombstones.consume(networkID, h.name)
 	if !ok {
 		return "", "", "", false
 	}
@@ -1556,10 +1611,10 @@ func (p *Plugin) containerGone(ctx context.Context, containerID string) bool {
 // MAC and an address that were never its own. Recording nothing leaves
 // this endpoint exactly the behaviour it has today, which is the only
 // direction that cannot hurt a container that did nothing wrong.
-func (p *Plugin) recoveredHostname(ctx context.Context, containerID string) (string, bool) {
+func (p *Plugin) recoveredHostname(ctx context.Context, containerID string) (dhcpHostname, bool) {
 	if containerID == "" {
 		p.recoveryFingerprintsSkipped.Add(1)
-		return "", false
+		return dhcpHostname{}, false
 	}
 	// The SAME budget the CreateEndpoint path gives the same lookup, and
 	// deliberately not a tighter one. The first draft of this used
@@ -1584,12 +1639,13 @@ func (p *Plugin) recoveredHostname(ctx context.Context, containerID string) (str
 		// quietly lose its address on its next restart, and a log line
 		// is not something an operator can alert on.
 		p.recoveryFingerprintsSkipped.Add(1)
-		return "", false
+		return dhcpHostname{}, false
 	}
 	// A refusal is counted by safeHostname itself
 	// (unsafeHostnamesRejected); see the field comment for why it is not
 	// also counted here.
-	return p.safeHostname(ctr.Config.Hostname)
+	h := p.safeHostname(ctr.Config.Hostname)
+	return h, h.trusted()
 }
 
 // recoverOneEndpoint synthesises a JoinRequest and dhcpManager for a
@@ -1675,19 +1731,18 @@ func (p *Plugin) recoverOneEndpoint(ctx context.Context, containerID, networkID,
 		if ipv6 != nil {
 			fpIPv6 = ipv6.IP.String()
 		}
-		// Trusted by construction, and that is why this is the one
-		// arm of recoveredHostname that reaches here: it returns ok
-		// only for a hostname safeHostname accepted. A refusal
-		// returns ("", false) and this block does not run, so no
-		// fingerprint is written -- which is the same answer the
-		// CreateEndpoint paths give a refusal, arrived at from the
-		// other side (#726).
+		// hostname is passed whole, and no literal appears here at
+		// all: this is the one arm of recoveredHostname that reaches
+		// this block, because it returns ok only for a hostname
+		// safeHostname accepted. A refusal returns ok=false, this
+		// block does not run, and no fingerprint is written -- the
+		// same answer the CreateEndpoint paths give a refusal,
+		// arrived at from the other side (#726).
 		p.rememberEndpoint(endpointID, endpointFingerprint{
-			MAC:      mac.String(),
-			IPv4:     fpIPv4,
-			IPv6:     fpIPv6,
-			Hostname: hostname,
-		}, true)
+			MAC:  mac.String(),
+			IPv4: fpIPv4,
+			IPv6: fpIPv6,
+		}, hostname)
 	}
 
 	go func() {
@@ -1800,7 +1855,7 @@ func (p *Plugin) reacquireEndpoint(ctx context.Context, r JoinRequest, opts DHCP
 // empty hostname and they must not be treated alike: an absent hostname
 // is an honest unknown that tombstone matching deliberately treats as a
 // wildcard, while a refused one is attacker-supplied and must not buy it.
-func (p *Plugin) initialDHCPHostname(ctx context.Context, networkID, endpointID string) (string, bool) {
+func (p *Plugin) initialDHCPHostname(ctx context.Context, networkID, endpointID string) dhcpHostname {
 	ctx, cancel := context.WithTimeout(ctx, initialDHCPHostnameLookupTimeout)
 	defer cancel()
 
@@ -1813,11 +1868,11 @@ func (p *Plugin) initialDHCPHostname(ctx context.Context, networkID, endpointID 
 	// retry interval. Cap the inner ctx at the poll interval.
 	const dockerCallTimeout = 200 * time.Millisecond
 
-	var hostname string
-	// Defaults to true: a lookup that never finds the container returns
-	// an empty hostname that nobody chose, which is the honest-unknown
-	// case. Only an actual refusal below flips it.
-	trusted := true
+	// The zero value is the honest-unknown case: a lookup that never
+	// finds the container yields an empty hostname that nobody chose,
+	// which is NOT a refusal and must keep the v0.5.0 network-wide
+	// tombstone match. Only safeHostname below can set refused.
+	var hostname dhcpHostname
 	_ = util.AwaitCondition(ctx, func() (bool, error) {
 		inner, innerCancel := context.WithTimeout(ctx, dockerCallTimeout)
 		defer innerCancel()
@@ -1841,12 +1896,12 @@ func (p *Plugin) initialDHCPHostname(ctx context.Context, networkID, endpointID 
 			if err != nil {
 				return false, nil
 			}
-			hostname, trusted = p.safeHostname(ctr.Config.Hostname)
+			hostname = p.safeHostname(ctr.Config.Hostname)
 			return true, nil
 		}
 		return false, nil
 	}, 100*time.Millisecond)
-	return hostname, trusted
+	return hostname
 }
 
 // NewPlugin creates a new Plugin. Zero-valued Options fields take the
@@ -2246,12 +2301,12 @@ func (p *Plugin) Close() error {
 // A refusal therefore has to be distinguishable from an absence. The
 // caller that only writes the DHCP config can keep ignoring the
 // difference; the caller that makes an identity decision must not.
-func (p *Plugin) safeHostname(h string) (string, bool) {
+func (p *Plugin) safeHostname(h string) dhcpHostname {
 	if dhcp.SafeDirectiveValue(h) {
-		return h, true
+		return dhcpHostname{name: h}
 	}
 	p.unsafeHostnamesRejected.Add(1)
 	log.WithField("hostname", fmt.Sprintf("%q", h)).
 		Warn("Dropping container hostname: it carries a control character and cannot be written to the DHCP client config")
-	return "", false
+	return dhcpHostname{refused: true}
 }

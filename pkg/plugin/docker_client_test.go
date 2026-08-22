@@ -440,8 +440,8 @@ func TestInitialDHCPHostname_Success(t *testing.T) {
 	}
 	p := &Plugin{docker: f}
 
-	if got, _ := p.initialDHCPHostname(context.Background(), netID, epID); got != "myhost" {
-		t.Fatalf("hostname: got %q want myhost", got)
+	if got := p.initialDHCPHostname(context.Background(), netID, epID); got.name != "myhost" {
+		t.Fatalf("hostname: got %q want myhost", got.name)
 	}
 }
 
@@ -480,8 +480,8 @@ func TestInitialDHCPHostname_EmptyOnFailure(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
 			defer cancel()
 			p := &Plugin{docker: c.f}
-			if got, _ := p.initialDHCPHostname(ctx, netID, epID); got != "" {
-				t.Fatalf("hostname: got %q want empty", got)
+			if got := p.initialDHCPHostname(ctx, netID, epID); got.name != "" {
+				t.Fatalf("hostname: got %q want empty", got.name)
 			}
 		})
 	}
@@ -551,12 +551,12 @@ func TestInitialDHCPHostname_RefusalIsNotAnAbsence(t *testing.T) {
 			}
 			p := &Plugin{docker: f}
 
-			got, trusted := p.initialDHCPHostname(context.Background(), netID, epID)
-			if trusted != tc.wantTrusted {
-				t.Errorf("trusted = %v, want %v — %s", trusted, tc.wantTrusted, tc.why)
+			got := p.initialDHCPHostname(context.Background(), netID, epID)
+			if got.trusted() != tc.wantTrusted {
+				t.Errorf("trusted = %v, want %v — %s", got.trusted(), tc.wantTrusted, tc.why)
 			}
-			if !tc.wantTrusted && got != "" {
-				t.Errorf("a refused hostname came back as %q; it must not reach the DHCP client config at all", got)
+			if !tc.wantTrusted && got.name != "" {
+				t.Errorf("a refused hostname came back as %q; it must not reach the DHCP client config at all", got.name)
 			}
 		})
 	}

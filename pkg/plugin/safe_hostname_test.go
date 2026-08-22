@@ -12,20 +12,21 @@ import "testing"
 func TestSafeHostname_DropsAndCounts(t *testing.T) {
 	p := &Plugin{}
 
-	if got, ok := p.safeHostname("web1"); got != "web1" || !ok {
-		t.Errorf("an ordinary hostname was altered: %q, ok=%v", got, ok)
+	if got := p.safeHostname("web1"); got.name != "web1" || !got.trusted() {
+		t.Errorf("an ordinary hostname was altered: %q, trusted=%v", got.name, got.trusted())
 	}
 	if n := p.unsafeHostnamesRejected.Load(); n != 0 {
 		t.Errorf("counted an ordinary hostname: %d", n)
 	}
 
-	got, ok := p.safeHostname("web1\nduid 00:03:00:01:be:ef:be:ef:be:ef")
-	if got != "" {
-		t.Errorf("an injecting hostname survived: %q", got)
+	got := p.safeHostname("web1\nduid 00:03:00:01:be:ef:be:ef:be:ef")
+	if got.name != "" {
+		t.Errorf("an injecting hostname survived: %q", got.name)
 	}
-	// The bool is the half that matters to the caller making an identity
-	// decision; "" alone cannot tell it apart from "no hostname found".
-	if ok {
+	// The refused bit is the half that matters to the caller making an
+	// identity decision; "" alone cannot tell it apart from "no hostname
+	// found". It travels welded to the name for that reason (#726).
+	if got.trusted() {
 		t.Error("a refused hostname reported itself as safe")
 	}
 	if n := p.unsafeHostnamesRejected.Load(); n != 1 {
@@ -44,8 +45,8 @@ func TestSafeHostname_DropsAndCounts(t *testing.T) {
 func TestSafeHostname_KeepsWhatDockerAccepts(t *testing.T) {
 	p := &Plugin{}
 	for _, h := range []string{"my_app", "MY-APP.example.com", "a.b.c", "hôte", ""} {
-		if got, ok := p.safeHostname(h); got != h || !ok {
-			t.Errorf("safeHostname(%q) = %q (ok=%v), want it unchanged and accepted", h, got, ok)
+		if got := p.safeHostname(h); got.name != h || !got.trusted() {
+			t.Errorf("safeHostname(%q) = %q (trusted=%v), want it unchanged and accepted", h, got.name, got.trusted())
 		}
 	}
 	if n := p.unsafeHostnamesRejected.Load(); n != 0 {

@@ -59,11 +59,10 @@ func TestDeleteEndpoint_WritesTombstoneForBridgeMode(t *testing.T) {
 
 	p := deleteEndpointPlugin(t, netID, DHCPNetworkOptions{Bridge: "br-test"})
 	p.rememberEndpoint(epID, endpointFingerprint{
-		MAC:      "02:42:ac:11:00:01",
-		IPv4:     "192.168.0.166",
-		IPv6:     "2001:db8::1",
-		Hostname: hostname,
-	}, true)
+		MAC:  "02:42:ac:11:00:01",
+		IPv4: "192.168.0.166",
+		IPv6: "2001:db8::1",
+	}, dhcpHostname{name: hostname})
 
 	if err := p.DeleteEndpoint(context.Background(), DeleteEndpointRequest{
 		NetworkID: netID, EndpointID: epID,
@@ -71,7 +70,7 @@ func TestDeleteEndpoint_WritesTombstoneForBridgeMode(t *testing.T) {
 		t.Fatalf("DeleteEndpoint: %v", err)
 	}
 
-	mac, ipv4, ipv6, ok := p.consumeTombstone(netID, hostname, true)
+	mac, ipv4, ipv6, ok := p.consumeTombstone(netID, dhcpHostname{name: hostname})
 	if !ok {
 		t.Fatal("expected a tombstone for the deleted endpoint, found none")
 	}
@@ -97,10 +96,9 @@ func TestDeleteEndpoint_IPvlanSkipsTombstone(t *testing.T) {
 		Parent: "eth-absent",
 	})
 	p.rememberEndpoint(epID, endpointFingerprint{
-		MAC:      "02:42:ac:11:00:02",
-		IPv4:     "192.168.0.167",
-		Hostname: hostname,
-	}, true)
+		MAC:  "02:42:ac:11:00:02",
+		IPv4: "192.168.0.167",
+	}, dhcpHostname{name: hostname})
 
 	// The parent-attached delete path is best-effort about an absent
 	// link for the same reason the bridge path is.
@@ -110,7 +108,7 @@ func TestDeleteEndpoint_IPvlanSkipsTombstone(t *testing.T) {
 		t.Fatalf("DeleteEndpoint (ipvlan, link absent): %v", err)
 	}
 
-	if _, _, _, ok := p.consumeTombstone(netID, hostname, true); ok {
+	if _, _, _, ok := p.consumeTombstone(netID, dhcpHostname{name: hostname}); ok {
 		t.Error("ipvlan must not leave a tombstone — the MAC is the parent's, not the container's")
 	}
 }
