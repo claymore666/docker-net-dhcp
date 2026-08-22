@@ -113,6 +113,20 @@ func recordKills(t *testing.T, fail map[int]error) (*[]int, *[]syscall.Signal) {
 	return &pids, &sigs
 }
 
+// THE TWO POSITIONS IN A FIXTURE ARE NOT THE SAME KIND OF VALUE, and
+// the asymmetry is deliberate.
+//
+// argv is ours: exec is handed dhcpcdBin, absolute, so the fixtures
+// below build argv from dhcpcdBin and must keep doing so. comm is the
+// KERNEL's: it writes the basename, truncated to 15 bytes, whatever we
+// passed to exec — so the fixtures spell out realKernelComm instead.
+//
+// Until #761 both positions read dhcpcdBin and the tests passed, because
+// making that constant absolute moved BOTH SIDES of `commOf(pid) !=
+// dhcpcdBin` in step. Seventeen fixtures agreed with the bug and the
+// suite stayed green. A mirror test cannot catch a change to the thing
+// it mirrors, so the comm side is no longer a mirror.
+//
 // clientArgv is the argv shape a real client produces: the marker
 // reaches the child only through dhcpcd's -f, pointing at the work
 // directory. If newClient ever stops putting the work dir in argv this
@@ -135,12 +149,12 @@ func TestSweepOrphans_KillsOnlyOurDhcpcds(t *testing.T) {
 
 	fakeProc(t, map[int][2]string{
 		// Ours: marker in argv, comm is dhcpcd.
-		101: {clientArgv(ourDir), dhcpcdBin},
-		102: {clientArgv(filepath.Join(os.TempDir(), workDirPrefix+"def456")), dhcpcdBin},
+		101: {clientArgv(ourDir), realKernelComm},
+		102: {clientArgv(filepath.Join(os.TempDir(), workDirPrefix+"def456")), realKernelComm},
 
 		// A dhcpcd that is NOT ours — someone else's on the same host.
 		// The plugin has no business signalling it.
-		201: {dhcpcdBin + " -B -f /etc/dhcpcd.conf eth0", dhcpcdBin},
+		201: {dhcpcdBin + " -B -f /etc/dhcpcd.conf eth0", realKernelComm},
 
 		// Names our work dir but is not dhcpcd: a shell, and the
 		// unshare wrapper before it has exec'd. Killing the wrapper
@@ -185,7 +199,7 @@ func TestSweepOrphans_KillsOnlyOurDhcpcds(t *testing.T) {
 // wrong one still passes every other test in this file.
 func TestSweepOrphans_UsesSIGKILLNotSIGTERM(t *testing.T) {
 	fakeProc(t, map[int][2]string{
-		101: {clientArgv(filepath.Join(os.TempDir(), workDirPrefix+"abc")), dhcpcdBin},
+		101: {clientArgv(filepath.Join(os.TempDir(), workDirPrefix+"abc")), realKernelComm},
 	})
 	_, sigs := recordKills(t, nil)
 
@@ -227,7 +241,7 @@ func TestSweepOrphans_EmptyProcIsNotAnError(t *testing.T) {
 // with SIGKILL.
 func TestSweepOrphans_UnreadableProcEntryIsNotAMatch(t *testing.T) {
 	fakeProc(t, map[int][2]string{
-		101: {clientArgv(filepath.Join(os.TempDir(), workDirPrefix+"abc")), dhcpcdBin},
+		101: {clientArgv(filepath.Join(os.TempDir(), workDirPrefix+"abc")), realKernelComm},
 	})
 	// A pid directory with neither cmdline nor comm — the shape left by
 	// a process that exited between ReadDir and the read.
@@ -260,8 +274,8 @@ func TestSweepOrphans_UnreadableProcEntryIsNotAMatch(t *testing.T) {
 // operator reads.
 func TestSweepOrphans_ESRCHIsNotCounted(t *testing.T) {
 	fakeProc(t, map[int][2]string{
-		101: {clientArgv(filepath.Join(os.TempDir(), workDirPrefix+"a")), dhcpcdBin},
-		102: {clientArgv(filepath.Join(os.TempDir(), workDirPrefix+"b")), dhcpcdBin},
+		101: {clientArgv(filepath.Join(os.TempDir(), workDirPrefix+"a")), realKernelComm},
+		102: {clientArgv(filepath.Join(os.TempDir(), workDirPrefix+"b")), realKernelComm},
 	})
 	recordKills(t, map[int]error{101: syscall.ESRCH})
 
@@ -280,9 +294,9 @@ func TestSweepOrphans_ESRCHIsNotCounted(t *testing.T) {
 // second client for every one this misses.
 func TestSweepOrphans_KillFailureDoesNotStopTheSweep(t *testing.T) {
 	fakeProc(t, map[int][2]string{
-		101: {clientArgv(filepath.Join(os.TempDir(), workDirPrefix+"a")), dhcpcdBin},
-		102: {clientArgv(filepath.Join(os.TempDir(), workDirPrefix+"b")), dhcpcdBin},
-		103: {clientArgv(filepath.Join(os.TempDir(), workDirPrefix+"c")), dhcpcdBin},
+		101: {clientArgv(filepath.Join(os.TempDir(), workDirPrefix+"a")), realKernelComm},
+		102: {clientArgv(filepath.Join(os.TempDir(), workDirPrefix+"b")), realKernelComm},
+		103: {clientArgv(filepath.Join(os.TempDir(), workDirPrefix+"c")), realKernelComm},
 	})
 	killed, _ := recordKills(t, map[int]error{102: syscall.EPERM})
 
@@ -377,9 +391,9 @@ func TestSweepOrphans_SparesALiveClientOfAnotherInstance(t *testing.T) {
 		// The other instance's plugin process, alive.
 		900: {"/net-dhcp", "net-dhcp"},
 		// Its client. Identical in every respect to one of ours.
-		901: {clientArgv(ourDir), dhcpcdBin},
+		901: {clientArgv(ourDir), realKernelComm},
 		// A genuine orphan: same marker, same comm, no plugin parent.
-		902: {clientArgv(ourDir), dhcpcdBin},
+		902: {clientArgv(ourDir), realKernelComm},
 		// init, so 902's parent is a real entry rather than a missing one.
 		1: {"/sbin/init", "systemd"},
 	})
@@ -411,7 +425,7 @@ func TestSweepOrphans_SparesOurOwnLiveClient(t *testing.T) {
 
 	ourDir := filepath.Join(os.TempDir(), workDirPrefix+"abc123")
 	fakeProc(t, map[int][2]string{
-		801: {clientArgv(ourDir), dhcpcdBin},
+		801: {clientArgv(ourDir), realKernelComm},
 		1:   {"/sbin/init", "systemd"},
 	})
 	setParent(t, 801, os.Getpid())
@@ -441,7 +455,7 @@ func TestSweepOrphans_ReparentedToASubreaperIsStillAnOrphan(t *testing.T) {
 	ourDir := filepath.Join(os.TempDir(), workDirPrefix+"abc123")
 	fakeProc(t, map[int][2]string{
 		700: {"/usr/bin/containerd-shim-runc-v2", "containerd-shim"},
-		701: {clientArgv(ourDir), dhcpcdBin},
+		701: {clientArgv(ourDir), realKernelComm},
 	})
 	setParent(t, 701, 700)
 
@@ -466,8 +480,8 @@ func TestSweepOrphans_UnreadableParentIsNotAMatch(t *testing.T) {
 
 	ourDir := filepath.Join(os.TempDir(), workDirPrefix+"abc123")
 	fakeProc(t, map[int][2]string{
-		601: {clientArgv(ourDir), dhcpcdBin},
-		602: {clientArgv(ourDir), dhcpcdBin},
+		601: {clientArgv(ourDir), realKernelComm},
+		602: {clientArgv(ourDir), realKernelComm},
 	})
 	// 601: no status file at all.
 	if err := os.Remove(filepath.Join(procRoot, "601", "status")); err != nil {
@@ -503,7 +517,7 @@ func TestSweepOrphans_WithoutOurOwnCommRefuses(t *testing.T) {
 
 	ourDir := filepath.Join(os.TempDir(), workDirPrefix+"abc123")
 	fakeProc(t, map[int][2]string{
-		501: {clientArgv(ourDir), dhcpcdBin},
+		501: {clientArgv(ourDir), realKernelComm},
 	})
 
 	pids, _ := recordKills(t, nil)
