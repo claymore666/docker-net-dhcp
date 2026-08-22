@@ -207,10 +207,22 @@ type acquisitionAttempt struct {
 // below some slice an attempt cannot answer the question it was given
 // and the ladder is spending the budget on nothing.
 //
-// The number is the adjustable part. The guarantee is not: no attempt
-// is ever handed less than this AS LONG AS THE BUDGET CAN FUND ONE
-// ATTEMPT, and TestAcquisitionAttempts_NoAttemptIsStarved pins that
-// rather than pinning 3s.
+// The number is NOT the adjustable part, and an earlier draft of this
+// comment said it was. Moving it is a BEHAVIOUR CHANGE, not a tuning
+// knob: driven 3s -> 5s and 3s -> 7s it reddens
+// TestAcquisitionAttempts, TestAcquisitionAttempts_OrderingIsKeptWhereItFits
+// and TestAcquireWithPolicy_FallbacksCountStepsNotAcquisitions, and
+// driven 3s -> 2s it still reddens the ordering one -- so the value is
+// pinned in both directions, by three test functions that transcribe
+// it rather than derive it. Anyone changing it is changing what the
+// ladder does and has those three to answer for.
+//
+// The GUARANTEE is the part that is derived, and it is the part that
+// matters: no attempt is ever handed less than this AS LONG AS THE
+// BUDGET CAN FUND ONE ATTEMPT. TestAcquisitionAttempts_NoAttemptIsStarved
+// and TestAcquisitionAttempts_NoLadderIsStarvedBelowTheFloor pin that
+// relationship rather than the number, and both survive every move
+// above.
 //
 // That qualifier is load-bearing and it is not a gap. lease_timeout is
 // operator-settable with no validated minimum, so a total below this

@@ -175,8 +175,20 @@ func TestAcquisitionAttempts_UnrestrictedPathIsUntouched(t *testing.T) {
 
 // TestPackTiers_ATinyBudgetStillRunsOnce guards the degenerate end. If
 // the total budget is ever configured below one floor, the ladder must
-// collapse to a single attempt rather than to zero — an acquisition
-// that makes no attempt at all fails without ever asking anybody.
+// collapse to a single attempt rather than shredding the budget across
+// the whole list.
+//
+// SHREDDING is what the unfixed tree actually did, and saying so
+// matters: int(total/minAttemptBudget) is 0 below one floor, and
+// packTiers returns its input unchanged for n < 1, so the ladder fell
+// through to one attempt PER SERVER -- 20 servers on half a floor got
+// 75ms each, worse than the 500ms #731 was filed against. It did not
+// produce zero attempts, and a reader told it did would go looking for
+// a crash instead of for silent starvation.
+//
+// The count assertion below excludes zero as well, because a count is
+// the only thing that can, but zero is the direction this code has
+// never taken.
 //
 // ONE, and the count is the assertion. An earlier version of this test
 // said "collapse to a single attempt" in its name and its comment and
@@ -225,17 +237,25 @@ func TestAcquisitionAttempts_NoLadderIsStarvedBelowTheFloor(t *testing.T) {
 		servers = append(servers, fmt.Sprintf("10.0.0.%d", i))
 	}
 
+	// Every total here is written AS A MULTIPLE OF THE FLOOR, and every
+	// row name states its relationship to the floor rather than a
+	// duration. The first draft transcribed 3s/1.5s/900ms, which made
+	// the rows a fourth copy of minAttemptBudget: moving the constant
+	// 3s -> 5s reddened four test functions, so "the number is the
+	// adjustable part" was already false, and a row named "below the
+	// floor" holding a literal 1.5s would have become a false statement
+	// about what it tests without anything going red to say so.
 	cases := []struct {
 		name         string
 		servers      int
 		total        time.Duration
 		wantAttempts int
 	}{
-		{"20 servers, 10s -- above the floor, packed to what it can fund", 20, 10 * time.Second, 3},
-		{"20 servers, 3s -- exactly one floor", 20, 3 * time.Second, 1},
-		{"20 servers, 1.5s -- below the floor", 20, 1500 * time.Millisecond, 1},
-		{"20 servers, 900ms -- far below", 20, 900 * time.Millisecond, 1},
-		{"6 servers, 1.5s -- below the floor with a short list", 6, 1500 * time.Millisecond, 1},
+		{"20 servers, three floors and change -- packed to what the budget funds", 20, 3*minAttemptBudget + minAttemptBudget/3, 3},
+		{"20 servers, exactly one floor", 20, minAttemptBudget, 1},
+		{"20 servers, half a floor -- below it", 20, minAttemptBudget / 2, 1},
+		{"20 servers, a third of a floor -- far below", 20, minAttemptBudget / 3, 1},
+		{"6 servers, half a floor -- below the floor with a short list", 6, minAttemptBudget / 2, 1},
 	}
 
 	for _, tc := range cases {
