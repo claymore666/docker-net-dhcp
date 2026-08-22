@@ -1343,11 +1343,16 @@ the <code>vX.Y.Z</code> milestone (the workflow leans on this for the
    its own plugin on the integration runner), <code>actionlint</code>,
    <code>govulncheck</code>, <code>attribution</code>, and CodeQL's <code>Analyze (go)</code> +
    <code>Analyze (actions)</code> — eight in total. Merge when green.</p>
-<p><code>main</code> requires those eight <strong>plus <code>coverage</code></strong>, which is why the
-   ratchet first bites at the release PR in the next step and not
-   before. Branch protection is the authority here; if this list and
-   the settings disagree, the settings win and this list is the thing
-   to fix.
+<p><code>main</code> requires those eight <strong>plus <code>coverage</code> and
+   <code>coverage-present</code></strong>, which is why the ratchet first bites at the
+   release PR in the next step and not before. Branch protection is the
+   authority here; if this list and the settings disagree, the settings
+   win and this list is the thing to fix.</p>
+<p><code>coverage-present</code> became required in #735. It is the detector that
+   tells an <em>absent</em> coverage run apart from a pending one, and it was
+   advisory: it could go red without blocking the merge it exists to
+   protect, which is the failure it was built for happening to the
+   guard itself.
 6. <strong>Open the release PR <code>dev</code> → <code>main</code></strong> with title
    <code>Release vX.Y.Z</code> and a <code>Closes #N</code> line for <strong>every issue</strong> in
    the milestone. The list is what auto-closes them when the PR
@@ -1386,8 +1391,10 @@ the <code>vX.Y.Z</code> milestone (the workflow leans on this for the
 <p>You should not have to notice this yourself: the <strong>Coverage
    presence</strong> check (<code>.github/workflows/coverage-presence.yml</code>, #504)
    watches the head and fails with the run id and the exact recovery
-   command when the run was evicted. If it is red, do what it says. The
-   manual form, for a head it did not cover:</p>
+   command when the run was evicted. It is a required context on <code>main</code>
+   as of #735, so a red one blocks the release PR rather than sitting
+   in the list being ignored. If it is red, do what it says. The manual
+   form, for a head it did not cover:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>gh<span class="w"> </span>run<span class="w"> </span>list<span class="w"> </span>--workflow<span class="w"> </span>coverage.yml<span class="w"> </span>--limit<span class="w"> </span><span class="m">5</span><span class="w">   </span><span class="c1"># look for &quot;cancelled&quot;</span>
 <a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>gh<span class="w"> </span>run<span class="w"> </span>rerun<span class="w"> </span>&lt;id&gt;<span class="w">                               </span><span class="c1"># once the group is idle</span>
 </code></pre></div>
