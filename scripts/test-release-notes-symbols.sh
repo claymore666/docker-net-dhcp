@@ -355,7 +355,60 @@ else
     # this fixture legitimately reports line=9, so showing one number
     # would point a reader at the wrong symbol -- the same fault the
     # case is about.
-    no "no line=5 among $(printf '%s' "$OUT" | grep -o 'line=[0-9]*' | tr '\n' ' '): $OUT"
+    no "two-component receiver: no line=5 among $(printf '%s' "$OUT" | grep -o 'line=[0-9]*' | tr '\n' ' '): $OUT"
+fi
+: > "$WORK/waivers.txt"
+
+# --- the shape the widened class must PRESERVE ------------------------
+# The fix above widened the receiver class from [A-Za-z0-9_] to
+# [A-Za-z0-9_.]. That is only correct if the SINGLE-component receiver
+# still resolves -- the common shape in these notes, and the one with no
+# case until now. Breaking it is the quiet failure: sym_lines finds
+# nothing, so the fallback line number is reported AND in_current_section
+# answers "no", which is the same bypass the two-dot case exists for, in
+# its more frequent form.
+cat > "$WORK/onedot.md" <<'MD'
+# Release notes
+
+## v9.9.0
+
+The current section names `plugin.notInvented` and nothing else.
+MD
+: > "$WORK/waivers.txt"
+run "$WORK/onedot.md"
+if [ "$RC" != 1 ]; then
+    no "an unwaived one-dot fiction was accepted (exit $RC): $OUT"
+elif printf '%s' "$OUT" | grep 'line=5' >/dev/null; then
+    ok "a single-component receiver still resolves to its own line"
+else
+    no "single-component receiver: no line=5 among $(printf '%s' "$OUT" | grep -o 'line=[0-9]*' | tr '\n' ' '): $OUT"
+fi
+: > "$WORK/waivers.txt"
+
+# --- the third shape the comment at :221-223 names ---------------------
+# That comment enumerates what sym_lines accepts: a bare name, a trailing
+# (), and a receiver prefix. An enumeration sitting three lines above the
+# regex is a checklist nobody runs -- until this PR there was a fixture
+# for the bare name only, and the two shapes with no case were the two
+# that could be dropped with the whole suite green.
+#
+# One fixture per named shape, and each has to die to its own mutant:
+# deleting `(\(\))?` from the re must redden exactly this case.
+cat > "$WORK/parens.md" <<'MD'
+# Release notes
+
+## v9.9.0
+
+The current section names `notInvented()` and nothing else.
+MD
+: > "$WORK/waivers.txt"
+run "$WORK/parens.md"
+if [ "$RC" != 1 ]; then
+    no "an unwaived fiction written with () was accepted (exit $RC): $OUT"
+elif printf '%s' "$OUT" | grep 'line=5' >/dev/null; then
+    ok "a trailing () still resolves to its own line"
+else
+    no "trailing (): no line=5 among $(printf '%s' "$OUT" | grep -o 'line=[0-9]*' | tr '\n' ' '): $OUT"
 fi
 : > "$WORK/waivers.txt"
 
