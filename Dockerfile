@@ -59,11 +59,17 @@ FROM alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6ee
 # the same audit: pkg/dhcp names them absolutely too (mountBin,
 # mkdirBin), so a busybox relocation would break the per-client mount
 # namespace — silently, because all four calls carry 2>/dev/null.
+#
+# Three separate `test -x`, not `test -x a b c`. The one-line form is
+# not a shorthand for the three: busybox sh answers it
+# `sh: /bin/mount: unknown operand`, rc=2, whatever the files are.
+# Measured on this exact digest, all three arguments present and
+# executable still exits 2 — it checks nothing and fails the build.
 RUN mkdir -p /run/docker/plugins /var/lib/net-dhcp && \
     apk add --no-cache \
         dhcpcd=10.3.2-r0 \
         iproute2=7.0.0-r0 && \
-    test -x /sbin/dhcpcd /bin/mount /bin/mkdir
+    test -x /sbin/dhcpcd && test -x /bin/mount && test -x /bin/mkdir
 
 COPY --from=builder /usr/local/src/docker-net-dhcp/bin/net-dhcp /usr/sbin/
 COPY --from=builder /usr/local/src/docker-net-dhcp/bin/dhcp-handler /usr/lib/net-dhcp/dhcp-handler
