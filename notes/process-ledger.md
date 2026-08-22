@@ -625,6 +625,122 @@ better than a transcribed list; strictly weaker than a derivation that
 reads source. This repo has already labelled the wrong issue by
 following a `(#675)` in a subject into a pull-request body.
 
+## I23 — the family with "no driven suite of any kind" had 56 of them
+
+A Rule-owed was assigned on the premise that the `check-*.sh` family has
+**no driven suite of any kind**, and that all seven of its historical
+incidents were found by someone tripping over a gate in production use
+rather than by a test.
+
+```
+scripts/check-*.sh              : 56
+scripts/test-*.sh               : 74
+gates WITHOUT a self-test       : 0
+driven by                       : scripts/local-lane.sh:121
+                                  "gate self-tests|-|bash scripts/run-gate-selftests.sh"
+```
+
+They drive failures, not clean paths only. `test-check-version-pins.sh`
+runs seven cases through `run_check <name> <want_exit>`, three expecting
+non-zero, and asserts the gate **names** the offending version rather
+than merely reddening — which is the standard the Rule-owed was about to
+introduce, already built, in the family thought to have nothing.
+
+**The corrected finding is sharper than the claim it replaces.** The
+seven incidents happened *in the family that has suites*. The suites
+were not driving the thing that broke: `check-version-pins` matching
+only well-formed pins is not a missing test, it is **a test that shared
+the gate's blind spot, by construction, because the same hand wrote
+both.** So the owed observer is not "every gate needs a suite" — it is
+*a suite must be driven against inputs the instrument was not written to
+expect*. And the genuinely unobserved layer is the one **above** the
+gates: `verdict.sh` until that evening, the mutation harnesses, the
+waiters, the ad-hoc scripts.
+
+**Two attempts to size the gap, both wrong, both refuted by one sample.**
+
+| attempt | said | refuted by |
+|---|---|---|
+| regex for a literal asserted exit code | 49 of 56 never drive a failure | `test-check-version-pins.sh` drives three, through a helper comparing `"$got_exit" -eq "$want_exit"` — a variable |
+| same, plus version-pins as a control that **must** classify as driving | 19 of 56 | `test-check-lane-hygiene.sh`, sampled *from the nineteen*: "a lane with no teardown should exit 1", "an empty workflow directory is rc2, not a pass" |
+
+Neither number is reportable and neither was reported. What survives is
+bounded: **at least 37 drive a failing verdict, the true figure is
+higher, and it could not be measured with a regex** — a pattern over
+shell that must recognise arbitrary helper indirection was never going
+to work, and one read of one file said so in thirty seconds.
+
+**The control set is what caught the first. Sampling the negative bucket
+is what caught the second, and it is the cheaper control.** A control
+proves the instrument can see a positive; only sampling what it calls
+empty proves it is not lying about the absence — **and absence is the
+answer this class always gives.**
+
+*(premise from master-release, measured and corrected by client3;
+master-release verified the correction independently and re-scoped the
+Rule-owed rather than dropping it.)*
+
+---
+
+## I24 — a `+` in a struct diff is not a new field
+
+#769's diff shows three added lines carrying a json tag:
+
+```
++	DHCPServerPolicyTimeouts int32 `json:"dhcp_server_policy_timeouts"`
++	DHCPTimeouts             int32 `json:"dhcp_timeouts"`
++	LeaseReleaseFailures     int32 `json:"lease_release_failures"`
+```
+
+**One is a new field.** gofmt realigns the whole block when the longest
+name changes, so two untouched fields are rewritten and appear as
+additions. The set difference says one: `dhcp_timeouts` is line 11 of
+`origin/dev`'s tags and `lease_release_failures` line 26. 63 tags on
+dev, 64 at the PR head.
+
+Reading the diff would have put **three** rows in the release notes, two
+of them for counters that shipped in an earlier release — and both would
+have looked right, because the field names are real and the counters
+exist. This is I16's shape in a new carrier: **a plausible answer about
+the wrong object.** The diff answers "what did this commit rewrite"; the
+question was "what does this commit add".
+
+---
+
+## I25 — a pre-flight that silently tested the unmodified thing
+
+Two appliers were built for the release-notes edit, each refusing until
+its precondition held. Both refusals were driven and both name their
+violation. **Neither edit half had ever executed** — each sat behind a
+refusal and would first run at the moment it must not be wrong. That is
+I15's shape inverted: not a check that has only ever passed, but an edit
+that has only ever been skipped.
+
+So both were driven against copies, with the pull request's head served
+in place of `origin/dev`. **The harness failed twice while reporting
+success.**
+
+1. A substitute `sh()` was injected into the exec globals. The subject
+   defines its own `sh()`; the exec overwrote it.
+2. A substitute `subprocess` module was injected. The subject's own
+   `import subprocess` overwrote that too.
+
+Both runs printed **63 tags — the real number, for the wrong tree.** The
+only reason it was caught is that 63 was already known from
+`origin/dev` and the run was supposed to show 64.
+
+**Anything handed IN through the globals can be shadowed by the
+subject's own definitions.** The fix was to patch the shared module
+object, which the subject's `import` then resolves *to* — plus an
+assertion that the interception fired at all, because twice it had not
+and said nothing.
+
+> **A pre-flight that silently exercises the unmodified thing is worse
+> than no pre-flight, because it reports success.**
+
+Same evening, same author, one turn after writing I23's rule about
+sampling the bucket an instrument calls empty.
+
 ---
 
 # Rules
@@ -653,6 +769,9 @@ Each names its incident and the condition under which it dies.
 | R18 | A summary count **reconciles against a second tool before it prints**, or it refuses. | I19 | Never — this is a shape, and it costs one assertion. |
 | R20 | A check **derives its own subject**. Writing the set it guards into itself makes "the set is wrong" invisible — and excluding a member by name is the same defect wearing a smaller costume. | I17, I22 | Never; four instances in one day, all by authors thinking about this class at the time. |
 | R19 | Where this file records that something happened, **prefer a SHA to a status word.** A SHA is checkable forever; a status word is a present-tense claim nothing updates. | I3, and the owed table below | Never. |
+| R21 | **Sample the bucket your instrument calls empty.** A control set proves it can see a positive; only sampling the negatives proves it is not lying about the absence. | I23 | Never — it costs one file read, and absence is the answer this class always gives. |
+| R22 | A harness that substitutes a dependency **asserts the substitution fired**, and substitutes at a level the subject cannot shadow. | I25 | Never — one assertion, and it caught nothing twice because it was absent. |
+| R23 | Ask a diff what changed; ask the **set** what exists. A `+` line is evidence of a rewrite, not of an addition. | I24, I16 | A formatter stops realigning unrelated lines, which is not a thing formatters do. |
 
 ## Owed — R14, R16 and R17, and why they are hard
 
