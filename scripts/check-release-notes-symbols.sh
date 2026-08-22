@@ -223,7 +223,22 @@ fi
 # accepts: a bare name, a trailing (), and a receiver prefix.
 sym_lines() {
     awk -v s="$1" '
-        BEGIN { re = "`([A-Za-z_][A-Za-z0-9_]*\\.)?" s "(\\(\\))?`" }
+        # `[A-Za-z0-9_.]` AND NOT `[A-Za-z0-9_]`, AND THE DOT IS THE
+        # WHOLE FINDING. The candidate extraction strips the receiver
+        # with a greedy `s/^.*\.//`, which eats ANY chain; this located
+        # a symbol behind exactly ONE prefix. So the same fact -- where
+        # do the notes name this symbol -- was derived twice, two ways,
+        # with two answers, in a gate whose subject is claims that do
+        # not survive re-derivation.
+        #
+        # The candidate existed and could not be located, so
+        # in_current_section said "no" for a symbol that IS in the
+        # current section and the waiver applied: a fiction in the
+        # section being written, silenced, by one extra dot. The
+        # ordinary failure path had the same cause with a quieter
+        # symptom -- no match meant the fallback line number, so a
+        # reader was pointed at line 1 of a 3000-line file.
+        BEGIN { re = "`([A-Za-z_][A-Za-z0-9_.]*\\.)?" s "(\\(\\))?`" }
         $0 ~ re { print NR }
     ' "$NOTES"
 }

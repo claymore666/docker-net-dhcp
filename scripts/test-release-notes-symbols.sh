@@ -301,5 +301,63 @@ else
 fi
 : > "$WORK/waivers.txt"
 
+# --- rule 3, defeated by one extra dot -------------------------------
+# THE SAME FACT DERIVED TWICE, TWO WAYS, TWO ANSWERS -- in a gate whose
+# whole subject is claims that do not survive re-derivation.
+#
+#   candidate extraction   sed 's/^.*\.//'                 ANY chain
+#   sym_lines              "`([A-Za-z_][A-Za-z0-9_]*\.)?"  exactly ONE
+#
+# So a candidate could exist that sym_lines could not locate.
+# in_current_section then answered "no" for a symbol that IS in the
+# current section, and the waiver applied: a fiction in the section
+# being written, silenced, by one extra dot.
+#
+# Not reachable on the release notes as they stand -- all 111 current
+# candidates are locatable and the seven multi-dot spans produce no
+# candidates at all. It is kept as a case because latent is not fixed,
+# and `m.plugin.spawnOrphanRelease` is the shape these notes reach for
+# constantly.
+cat > "$WORK/twodot.md" <<'MD'
+# Release notes
+
+## v9.9.0
+
+The current section names `plugin.Plugin.notInvented` and nothing else.
+
+## v9.8.0
+
+Back then it was `alsoInvented`.
+MD
+printf '# HISTORICAL - deliberately, to drive the bypass\nnotInvented\nalsoInvented\n' \
+    > "$WORK/waivers.txt"
+run "$WORK/twodot.md"
+if [ "$RC" != 1 ]; then
+    no "a two-dot receiver let a waiver reach the CURRENT section (exit $RC): $OUT"
+elif ! printf '%s' "$OUT" | grep 'current release section' >/dev/null; then
+    no "the two-dot case failed for some other reason: $OUT"
+else
+    ok "rule 3: a multi-component receiver does not bypass the current section"
+fi
+
+# The same cause with the quieter symptom. sym_lines finding nothing
+# meant the fallback line number, so the reader was pointed at line 1 of
+# a 3000-line file -- a red that names the wrong place, which is the
+# same currency as a red that names the wrong remedy.
+: > "$WORK/waivers.txt"
+run "$WORK/twodot.md"
+if [ "$RC" != 1 ]; then
+    no "an unwaived two-dot fiction was accepted (exit $RC): $OUT"
+elif printf '%s' "$OUT" | grep 'line=5' >/dev/null; then
+    ok "a multi-component receiver is reported at its own line, not line 1"
+else
+    # Every line= in the output, not the first: the other candidate in
+    # this fixture legitimately reports line=9, so showing one number
+    # would point a reader at the wrong symbol -- the same fault the
+    # case is about.
+    no "no line=5 among $(printf '%s' "$OUT" | grep -o 'line=[0-9]*' | tr '\n' ' '): $OUT"
+fi
+: > "$WORK/waivers.txt"
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
