@@ -299,6 +299,17 @@ jobs:
       - name: Proc-path discipline
         run: bash scripts/check-proc-path-discipline.sh
 
+      # Go's os package sets O_CLOEXEC; the unix and syscall packages
+      # pass through whatever flags they are given. This plugin forks
+      # unshare, sh and a root dhcpcd constantly, and os/exec does not
+      # sweep foreign descriptors — so a raw open without the flag hands
+      # the next child a handle on a container's mount namespace or on
+      # the procfs entry #688 went to some length to pin. There is
+      # nothing for a Go test to observe: every one of those descriptors
+      # is closed before its function returns (#729).
+      - name: O_CLOEXEC on raw opens
+        run: bash scripts/check-openat-cloexec.sh
+
       # registerDHCPManager returns the manager it displaced, and
       # dropping that return value leaks a running dhcpcd nothing can
       # stop, bidding for the same lease on the same interface. The
