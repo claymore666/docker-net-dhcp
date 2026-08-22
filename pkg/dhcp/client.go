@@ -98,11 +98,47 @@ const (
 // — an inventory is only as wide as the mechanism it searched for. See
 // dhcpcdBin, now also absolute.
 //
+// That correction was itself incomplete, and this sentence is the
+// second half of it. `$0` is one word of a shell command line that
+// also runs mount and mkdir, and a shell resolves every command word
+// through PATH — not only the one that reaches execve. The sweep that
+// produced dhcpcdBin looked at the argument being exec'd, so the four
+// commands forty lines below were invisible to it for the third time
+// by the same mechanism. They are named absolutely now; see mountBin
+// and mkdirBin, and TestMountPrep_NamesEveryBinaryAbsolutely, which
+// asserts the shape rather than the spellings so a fourth instance
+// cannot arrive quietly.
+//
 // The path is Alpine's, matching the base image. It is asserted in the
 // argv test alongside /bin/sh, dhcpcd and the handler, so moving the
 // binary fails a test instead of silently changing which executable
 // runs.
 const unsharePath = "/usr/bin/unshare"
+
+// mountBin and mkdirBin are the ABSOLUTE paths to the two other
+// binaries this package runs. They sit in mountPrep's `sh -c` body,
+// where the shell resolves them through PATH exactly as it resolves
+// $0 — the same exposure that made dhcpcdBin and unsharePath absolute.
+//
+// Measured on the pinned base image
+// (alpine:3.24.1@sha256:28bd5fe8…): both are /bin/*, and both are
+// symlinks to /bin/busybox. They are named for the applet rather than
+// for busybox deliberately — the shell dispatches busybox on argv[0],
+// and if Alpine ever ships real coreutils here these constants stay
+// correct while a busyboxBin would not.
+//
+// No impact today, and the reason is worth stating so this is not read
+// as an outage: PATH is not operator-settable. config.json declares six
+// env vars and PATH is not among them, cmd.Env is never assigned, and
+// busybox ash falls back to a compiled-in /sbin:/usr/sbin:/bin:/usr/bin
+// when PATH is unset — so the bare names resolved. What they could not
+// survive is a PATH carrying a decoy, and the 2>/dev/null on all four
+// means a decoy that ran instead would report success and leave the
+// mounts unmade. See mountPrep on what that costs.
+const (
+	mountBin = "/bin/mount"
+	mkdirBin = "/bin/mkdir"
+)
 
 // workDirPrefix names every dhcpcd work directory this plugin creates.
 //
@@ -132,12 +168,15 @@ const workDirPrefix = "net-dhcp-dhcpcd-"
 // still surfaces via dhcpcd's own stderr, captured into the exit error.
 func mountPrep() string {
 	return fmt.Sprintf(
-		"mount -t tmpfs tmpfs %s 2>/dev/null; "+
-			"mkdir -p %s 2>/dev/null; "+
-			"mount -t tmpfs tmpfs %s 2>/dev/null; "+
-			"mount -o remount,bind,rw %s 2>/dev/null; "+
+		"%s -t tmpfs tmpfs %s 2>/dev/null; "+
+			"%s -p %s 2>/dev/null; "+
+			"%s -t tmpfs tmpfs %s 2>/dev/null; "+
+			"%s -o remount,bind,rw %s 2>/dev/null; "+
 			"exec \"$0\" \"$@\"",
-		dhcpcdStateDir, dhcpcdRunDir, dhcpcdRunDir, procSysPath)
+		mountBin, dhcpcdStateDir,
+		mkdirBin, dhcpcdRunDir,
+		mountBin, dhcpcdRunDir,
+		mountBin, procSysPath)
 }
 
 // tailWriter retains the last up-to-max bytes written to it. dhcpcd's
