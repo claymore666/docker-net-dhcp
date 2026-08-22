@@ -9,10 +9,33 @@ on:
     branches:
       - main
       - dev
+    # `edited` IS LOAD-BEARING HERE (#742). The default set is
+    # opened/synchronize/reopened, so nothing re-ran when a PR BODY
+    # changed — and three gates in this workflow read the body:
+    # check-test-weakening.sh waives a finding on a `Test-weakening: #N`
+    # trailer there, and check-no-ai-attribution.sh and
+    # check-issue-ref.sh read it too. Pass the gate with the trailer,
+    # then edit it out: no run fires, the green check stands, and the
+    # merged PR carries no waiver. A waiver that can be withdrawn after
+    # it is honoured is not a waiver.
+    types: [opened, synchronize, reopened, edited]
   # Weekly run so govulncheck surfaces CVEs that publish between
   # commits — new vulnerabilities don't wait for our next push (#127).
   schedule:
     - cron: '23 6 * * 1'
+
+# The only CI-heavy workflow that never had one (#742): three fixups in
+# five minutes left fifteen hosted runners live, ten of them testing
+# commits nobody would ever look at again.
+concurrency:
+  # Same split as coverage.yml, and for the same reason (#617). Branch
+  # pushes key on the COMMIT, so a merge burst into dev cannot evict a
+  # queued run and leave a commit nothing ever tested — an evicted run
+  # produces NO check run at all, which reads as absent rather than red.
+  # PR events key per-ref and DO cancel, because a superseded PR head is
+  # not a commit anyone needs a verdict on.
+  group: test-${{ github.event_name == 'push' && github.sha || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -411,6 +434,26 @@ jobs:
       # declaration fails too.
       - name: Dispatch targets are reachable
         run: bash scripts/check-dispatch-reachable.sh
+
+      # #390 put the three privileged lanes in one concurrency group;
+      # #617 changed the key so branch pushes bucket on the commit;
+      # 76d0b7f then added a third lane with the pre-#617 spelling two
+      # days later. Nothing could have noticed — a concurrency group is
+      # evaluated by GitHub, never by us, and two workflows that
+      # disagree about their key just quietly stop excluding each other.
+      # Also asserts that every declared lane has a group at all, which
+      # test.yaml itself did not until #742.
+      - name: Privileged lanes share one concurrency key
+        run: bash scripts/check-concurrency-parity.sh
+
+      # Three per-workflow invariants whose failure mode is ABSENCE, not
+      # error: a failure suite skipped by a red main suite, a standing
+      # runner left with an enabled plugin, and a PR body that can be
+      # edited after a body-reading gate has passed on it (#742). None
+      # of them can go red on its own, so they are asserted against the
+      # workflow text at the only point they are visible — the edit.
+      - name: Lane hygiene
+        run: bash scripts/check-lane-hygiene.sh
 
       # The local lane must not test less than this job does (#636).
       # scripts/local-lane.sh is what `make check` runs before a push;

@@ -50,7 +50,17 @@ echo "=== ensuring plugin is enabled (recovery test may have left it disabled) =
 # If the recovery test panicked between disable and enable, the plugin is
 # stuck off and every subsequent run will fail at VerifyPluginEnabled.
 # PluginEnable is idempotent — already-enabled returns an error we ignore.
-plugin_ref="ghcr.io/claymore666/docker-net-dhcp:golang"
+#
+# THIS ARM WAS A NO-OP ON EVERY CI LANE (#742). The tag was hardcoded to
+# ":golang" while every lane installs and tests ":integration", so the
+# one recovery this script performs was performed on a plugin the run
+# was not using. It reported the same output either way — there is
+# nothing to see when `plugin inspect` simply misses. The harness reads
+# INTEGRATION_PLUGIN_REF with exactly this default
+# (test/integration/harness/plugin.go:28-33); honour the same seam so
+# the cleanup and the suite can never disagree about which plugin they
+# mean.
+plugin_ref="${INTEGRATION_PLUGIN_REF:-ghcr.io/claymore666/docker-net-dhcp:golang}"
 if docker plugin inspect "$plugin_ref" >/dev/null 2>&1; then
     docker plugin enable "$plugin_ref" 2>&1 | sed 's/^/  /' || true
 fi

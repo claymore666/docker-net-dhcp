@@ -3,9 +3,16 @@
 # SPDX-License-Identifier: GPL-3.0-only
 
 # Check the apk version pins in Dockerfile against the current Alpine
-# package index. Prints a diff and exits non-zero when a pin is behind
-# upstream — wire it into a weekly CI cron so an upgrade signal lands
-# on the maintainer's desk without anyone having to remember to look.
+# package index. Prints a diff and, WITH --strict, exits non-zero when a
+# pin is behind upstream.
+#
+# --strict is not optional for the cron caller, and this header used to
+# imply otherwise (#742). It said an upgrade signal "lands on the
+# maintainer's desk without anyone having to remember to look", while
+# apk-pin-check.yml invoked the script with no flags — so drift exited 0,
+# GitHub sent nothing (it notifies on failed scheduled runs, not
+# successful ones), and the report sat in a log. The plain form is for a
+# human at a terminal, who is by definition already looking.
 #
 # Pins live in the form `pkg=ver-rN` inside the `apk add --no-cache`
 # block of Dockerfile. We extract the alpine base from the runtime

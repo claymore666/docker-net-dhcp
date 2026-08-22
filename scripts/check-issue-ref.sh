@@ -103,8 +103,16 @@ if [ -n "$refs_from_subjects" ]; then
     note="a commit subject"
 fi
 
+# --parse-title, NOT --parse (#742). `--parse` is commit_refs(), the
+# merge-aware variant; the reconciler reads PR titles with refs(). A
+# title of the form "Merge pull request #500 from x" therefore satisfied
+# this gate and gave the reconciler nothing — a green check for a PR
+# whose reference no downstream consumer can see, which is precisely the
+# false green this gate exists to prevent. Deliberately still not a regex
+# of our own: the point is to ask the reconciler the question the
+# reconciler will answer.
 if [ -z "$found" ] && [ -n "$TITLE_FILE" ] && [ -f "$TITLE_FILE" ]; then
-    refs_from_title="$(bash "$SYNC" --parse < "$TITLE_FILE")"
+    refs_from_title="$(bash "$SYNC" --parse-title < "$TITLE_FILE")"
     if [ -n "$refs_from_title" ]; then
         found="$refs_from_title"
         note="the PR title"

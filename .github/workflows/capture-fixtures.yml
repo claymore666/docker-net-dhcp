@@ -52,11 +52,31 @@ on:
 
 # Shares integration.yml's and coverage.yml's group (#390): this job is
 # privileged, installs a plugin, and drives the integration suite, so it
-# must not run alongside that ref's own suite. Per-ref for the same
-# reason they are — a capture on one branch has no reason to queue
-# behind a suite on another.
+# must not run alongside that ref's own suite.
+#
+# THIS KEY IS WRITTEN THE LONG WAY ON PURPOSE (#742). 76d0b7f copied the
+# pre-#617 form two days after 7e06f06 changed it in the other two, and
+# the two spellings then read as a deliberate difference to anyone
+# comparing them.
+#
+# They are not a difference. This workflow has exactly one trigger,
+# workflow_dispatch, so `github.event_name == 'push'` is always false
+# and the expression always yields `github.ref` — the same value the
+# short form gave. integration.yml and coverage.yml both carry
+# workflow_dispatch too, and produce `refs/heads/<branch>` on it, so the
+# dispatch-against-dispatch exclusion the header describes did hold
+# throughout. Nothing was broken and nothing is fixed here; the point of
+# matching them byte-for-byte is that scripts/check-concurrency-parity.sh
+# can assert it, and a future reader diffing the three files finds one
+# expression instead of two.
+#
+# WHAT IS STILL NOT EXCLUDED, so nobody reads the header as more than it
+# is: a dispatched capture and a PUSH-triggered integration run key on
+# different values by #617's design — branch pushes deliberately key on
+# the commit — and no single concurrency group can cover both. That gap
+# is inherent to per-commit keying, not to the spelling below.
 concurrency:
-  group: selfhosted-privileged-${{ github.ref }}
+  group: selfhosted-privileged-${{ github.event_name == 'push' && github.sha || github.ref }}
   cancel-in-progress: false
 
 permissions:
@@ -122,7 +142,12 @@ jobs:
           fi
           echo "engine: $(docker version --format '{{.Server.Version}}')"
 
+      # Same as coverage.yml: this lane's plugin is COVER_PLUGIN_REF, and
+      # cleanup-orphans can only re-enable the tag it is told about
+      # (#742). It is torn down at :235-236 under the same name.
       - name: Cleanup orphans from previous runs
+        env:
+          INTEGRATION_PLUGIN_REF: ${{ env.COVER_PLUGIN_REF }}
         run: bash test/integration/cleanup-orphans.sh
 
       # CAPTURE_COMMIT is passed explicitly even though the Makefile
