@@ -75,10 +75,29 @@ grep -qE "^func $ALLOWED_FUNC\\(" "$ALLOWED_FILE" || {
     exit 2
 }
 
-# Every /proc path built from something that is not a literal. Test
-# files are included on purpose: a test that reaches a live /proc path
-# by PID is doing the unsafe thing to prove something, and should say so
-# with an explicit allow comment.
+# WHAT THIS MATCHES, AND WHAT IT DOES NOT. This finds a /proc path built
+# by interpolation or concatenation ADJACENT to the literal "/proc/" --
+# fmt.Sprintf("/proc/%d/...") and "/proc/" + x. That is the form every
+# instance in this repo's history has taken, and it is the form the fix
+# above was written against.
+#
+# It does NOT catch a path assembled away from that literal. Measured,
+# both of these construct the identical unvalidated path and both pass:
+#
+#     "/proc" + "/" + strconv.Itoa(pid) + "/ns/net"   -- no trailing slash
+#     p := "/proc/"; p += strconv.Itoa(pid)           -- not adjacent
+#
+# Widening the regex is whack-a-mole: every spelling nobody thought of
+# is another pass. The durable answer is an AST rule, which can ask what
+# a string EXPRESSION evaluates toward rather than how it is spelled --
+# the shape TestHostnameTrustIsWired uses to refuse a laundered value.
+# Recorded here rather than fixed because saying what a check covers is
+# the check's own claim, and an inaccurate one costs more than a narrow
+# one: a reader who trusts this header stops looking.
+#
+# Test files are included on purpose: a test that reaches a live /proc
+# path by PID is doing the unsafe thing to prove something, and should
+# say so with an explicit allow comment.
 hits=$(grep -rnE '"/proc/(%[a-z]|" *\+)' --include='*.go' pkg cmd 2>/dev/null || true)
 
 fail=0
