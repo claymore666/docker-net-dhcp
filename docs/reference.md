@@ -483,8 +483,17 @@ both addresses as hints. The TTL covers `docker restart` (sub-second) and
 `systemctl restart docker` (15–30s while the daemon re-attaches
 everything).
 
-- **MAC stability always works** — `docker inspect` and the LAN see the
-  same MAC across restarts.
+- **MAC stability holds whenever a tombstone was written** — `docker
+  inspect` and the LAN then see the same MAC across the restart. A
+  tombstone is written at `DeleteEndpoint` from what the plugin recorded
+  when it built the endpoint, so the condition is that the plugin still
+  holds that record. It does across `docker restart`. It did **not**
+  across a plugin restart before v1.8.0: endpoints rebuilt by recovery
+  were re-attached without re-recording, so the next `DeleteEndpoint`
+  laid down nothing and the container came back on a fresh MAC (#721).
+  Fixed, and stated as a condition rather than an absolute because the
+  absolute is what made that bug invisible to anyone reading this page
+  to decide whether they needed a reservation.
 - **IP stability depends on the server** honouring option 50, exactly as
   for an explicit request above. Where it doesn't, configure a
   reservation against the now-stable MAC and every restart gets that
