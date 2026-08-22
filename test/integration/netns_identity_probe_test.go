@@ -340,10 +340,43 @@ func containerPID(t *testing.T, ctx context.Context, cli *docker.Client, id stri
 }
 
 // findPluginPID locates the running plugin by its rootfs: a managed
-// plugin's task has /var/lib/docker/plugins/<id>/rootfs as its root,
-// and the id comes from PluginInspect rather than from a name match,
-// so this cannot land on some other process that merely looks like the
-// plugin.
+// plugin's process has /var/lib/docker/plugins/<id>/rootfs as its
+// root, so an EXACT match on /proc/<pid>/root identifies it with no
+// guessing about which of several processes is meant.
+//
+// # Why the selection stays exact and the FAILURE does the work
+//
+// The first version of this failed with "no process has <path> as its
+// root", which is the same defect this whole probe exists to name: a
+// full-path string equality that finds nothing, and a `continue` that
+// folded every readlink error into that same nothing. Three different
+// causes rendered as one message and none of them was distinguishable:
+//
+//   - the readlink was not permitted (an error, reported as absence);
+//   - the path renders differently than it is spelled, e.g. with a
+//     " (deleted)" suffix or relative to another mount namespace;
+//   - the plugin's PID is not in the /proc this process can see at
+//     all, which is a namespace boundary and would invalidate where
+//     the probe is located rather than how it searches.
+//
+// The fix is NOT to loosen the match. Falling back to a substring, or
+// to "any process under /var/lib/docker/plugins", is the same mistake
+// as the cgroup substring in pkg/plugin — and here it would choose
+// which process the setns reasoning is derived from, so a wrong pick
+// is worse than no pick. The match stays exact; the failure becomes
+// discriminating, so ONE run says which of the three happened:
+//
+//   - os.Stat(want) is the two-way split. It succeeds and nothing
+//     matched -> the path is right and the PROCESS is invisible. It
+//     fails -> the path itself is wrong.
+//   - the scanned/errored counts with the first error verbatim
+//     separate a permission failure from a genuine absence.
+//   - every root containing the plugin ID is printed. If the right
+//     process is there under a different spelling, this hands over its
+//     exact form, which is what a corrected exact match needs.
+//
+// Printing the ID-bearing roots is DIAGNOSIS, not selection: nothing
+// here returns a PID on the strength of a substring.
 func findPluginPID(t *testing.T, ctx context.Context, cli *docker.Client) int {
 	t.Helper()
 	p, _, err := cli.PluginInspectWithRaw(ctx, harness.PluginRef)
@@ -356,20 +389,85 @@ func findPluginPID(t *testing.T, ctx context.Context, cli *docker.Client) int {
 	if err != nil {
 		t.Fatalf("reading /proc: %v", err)
 	}
+
+	var (
+		scanned   int
+		linkErrs  int
+		firstErr  error
+		idMatches []string
+	)
 	for _, e := range entries {
 		pid := 0
 		if _, err := fmt.Sscanf(e.Name(), "%d", &pid); err != nil || pid == 0 {
 			continue
 		}
+		scanned++
 		root, err := os.Readlink(fmt.Sprintf("/proc/%d/root", pid))
 		if err != nil {
+			// Still not a reason to stop, but no longer silent: an
+			// error and an absence are different answers and the
+			// caller has to be able to tell them apart.
+			linkErrs++
+			if firstErr == nil {
+				firstErr = err
+			}
 			continue
 		}
 		if root == want {
 			return pid
 		}
+		if strings.Contains(root, p.ID) {
+			idMatches = append(idMatches, fmt.Sprintf("pid=%d root=%q", pid, root))
+		}
 	}
-	t.Fatalf("no process has %s as its root — the plugin was not found, so the measurement did not run", want)
+
+	_, statErr := os.Stat(want)
+
+	// The verdict is COMPUTED, not fixed prose. Rendering the same
+	// paragraph for every shape is how a failure ends up naming the
+	// wrong remedy: when every readlink was refused the search was
+	// BLIND, and telling that reader to go look for a namespace
+	// boundary sends them at the wrong thing.
+	var verdict string
+	switch {
+	case statErr != nil:
+		verdict = fmt.Sprintf("THE PATH IS WRONG — os.Stat(want): %v. The plugin is not "+
+			"unpacked where this test looks on this engine, so no spelling of the "+
+			"search would have found it.", statErr)
+	case scanned > 0 && linkErrs == scanned:
+		verdict = fmt.Sprintf("THE SEARCH WAS BLIND — all %d readlinks failed (first: %v), "+
+			"so this run has NO evidence about where the plugin is. Fix the read "+
+			"before drawing any conclusion from the absence.", linkErrs, firstErr)
+	case len(idMatches) > 0:
+		verdict = "THE MATCH IS SPELLED WRONG — the plugin's own ID appears in the roots " +
+			"listed below, under a form the exact comparison above does not equal. " +
+			"Correct the expected string to one of them; do not loosen the match."
+	default:
+		verdict = "THE PROCESS IS INVISIBLE — the path exists, the scan could read roots, " +
+			"and the plugin's ID appears in none of them. The plugin's PID is not in " +
+			"the /proc this test reads, which is a namespace boundary and invalidates " +
+			"WHERE the probe runs, not how it searches."
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "the plugin was not found, so the measurement did not run\n")
+	fmt.Fprintf(&b, "  verdict: %s\n", verdict)
+	fmt.Fprintf(&b, "  looked for /proc/<pid>/root == %q\n", want)
+	fmt.Fprintf(&b, "  os.Stat(want): %v\n", statErr)
+	fmt.Fprintf(&b, "  scanned %d numeric /proc entries, %d readlinks errored", scanned, linkErrs)
+	if firstErr != nil {
+		fmt.Fprintf(&b, ", first: %v", firstErr)
+	}
+	b.WriteString("\n")
+	if len(idMatches) == 0 {
+		fmt.Fprintf(&b, "  no /proc/<pid>/root anywhere contains the plugin ID %s\n", p.ID)
+	} else {
+		fmt.Fprintf(&b, "  %d root(s) contain the plugin ID:\n", len(idMatches))
+		for _, m := range idMatches {
+			fmt.Fprintf(&b, "    %s\n", m)
+		}
+	}
+	t.Fatal(b.String())
 	return 0
 }
 
