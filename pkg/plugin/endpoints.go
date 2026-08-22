@@ -306,6 +306,23 @@ type HealthResponse struct {
 	// still visible. It landed in recovery_failed until #648, where it
 	// was fatal.
 	RecoveryNetworkGone int32 `json:"recovery_network_gone"`
+	// RecoveryFingerprintsSkipped counts endpoints recovery adopted but
+	// could not describe: the ContainerInspect that would have supplied
+	// the hostname did not answer, or answered with no hostname (#721).
+	// Not Healthy-affecting: the endpoint has a renewal client, so no
+	// running container is without one — what it has lost is the
+	// tombstone that would have carried its MAC and address across its
+	// next `docker restart`.
+	//
+	// It exists because #721's fix would otherwise have inherited the
+	// invisibility of the bug it closes. A skipped fingerprint means no
+	// tombstone, and the only outward sign of that was
+	// tombstones_consumed staying flat — indistinguishable from a quiet
+	// host. A hostname REFUSED by safeHostname is not counted here; it
+	// moves unsafe_hostnames_rejected instead, so "the daemon would not
+	// answer me" stays distinguishable from "a container sent a hostname
+	// nobody should send".
+	RecoveryFingerprintsSkipped int32 `json:"recovery_fingerprints_skipped"`
 	// RecoveryAlreadyManaged counts endpoints a recovery walk found
 	// already registered to another manager and therefore left alone —
 	// a Join reached them first. Not Healthy-affecting: the endpoint has
@@ -618,6 +635,7 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		RecoveryDeferred:             p.recoveryDeferred.Load(),
 		RecoveryAbortedContainerGone: p.recoveryAbortedContainerGone.Load(),
 		RecoveryNetworkGone:          p.recoveryNetworkGone.Load(),
+		RecoveryFingerprintsSkipped:  p.recoveryFingerprintsSkipped.Load(),
 		RecoveryAlreadyManaged:       p.recoveryAlreadyManaged.Load(),
 		JoinAbortedContainerGone:     p.joinAbortedContainerGone.Load(),
 		JoinAbortedNoContainer:       p.joinAbortedNoContainer.Load(),

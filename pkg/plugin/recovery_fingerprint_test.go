@@ -151,29 +151,43 @@ func TestRecoverOneEndpoint_NoHostnameNoWildcardTombstone(t *testing.T) {
 		mac   = "02:42:ac:11:00:08"
 	)
 
+	// wantSkipped and wantRejected are asserted as a PAIR because the two
+	// counters are deliberately disjoint: recovery_fingerprints_skipped
+	// is "the daemon would not tell me", unsafe_hostnames_rejected is "a
+	// container sent a hostname nobody should send". Collapsing them
+	// would leave an operator unable to tell a degraded daemon from a
+	// hostile container, which is the whole reason there are two.
 	cases := []struct {
-		name   string
-		docker dockerClient
-		reason string
+		name         string
+		docker       dockerClient
+		wantSkipped  int32
+		wantRejected int32
+		reason       string
 	}{
 		{
 			name: "a refused hostname",
 			docker: &lockedDocker{containers: map[string]dContainer.InspectResponse{
 				ctrID: withHostname("attacker-host\x01"),
 			}},
-			reason: "safeHostname refuses it, and a refusal must not become the matcher's wildcard",
+			wantSkipped:  0,
+			wantRejected: 1,
+			reason:       "safeHostname refuses it, and a refusal must not become the matcher's wildcard",
 		},
 		{
-			name:   "an inspect the daemon never answered",
-			docker: &lockedDocker{inspectErr: errors.New("connection refused")},
-			reason: "an unknown hostname is not a hostname that matches everything",
+			name:         "an inspect the daemon never answered",
+			docker:       &lockedDocker{inspectErr: errors.New("connection refused")},
+			wantSkipped:  1,
+			wantRejected: 0,
+			reason:       "an unknown hostname is not a hostname that matches everything",
 		},
 		{
 			name: "a container with no hostname",
 			docker: &lockedDocker{containers: map[string]dContainer.InspectResponse{
 				ctrID: withHostname(""),
 			}},
-			reason: "an empty hostname is the wildcard; it can never be recorded as one",
+			wantSkipped:  1,
+			wantRejected: 0,
+			reason:       "an empty hostname is the wildcard; it can never be recorded as one",
 		},
 	}
 
@@ -200,6 +214,18 @@ func TestRecoverOneEndpoint_NoHostnameNoWildcardTombstone(t *testing.T) {
 			// theft this guards against. A wildcard tombstone answers it.
 			if gotMAC, gotIPv4, _, ok := p.consumeTombstone(netID, "some-other-container", true); ok {
 				t.Errorf("another container inherited mac=%q ipv4=%q from a hostname-less recovery — %s", gotMAC, gotIPv4, tc.reason)
+			}
+
+			// The skip must be VISIBLE. Without this the fix inherits
+			// the invisibility of the bug it closes: no fingerprint
+			// means no tombstone means an endpoint that silently loses
+			// its address on its next restart, with tombstones_consumed
+			// staying flat — which is what a quiet host looks like too.
+			if got := p.recoveryFingerprintsSkipped.Load(); got != tc.wantSkipped {
+				t.Errorf("recovery_fingerprints_skipped = %d, want %d", got, tc.wantSkipped)
+			}
+			if got := p.unsafeHostnamesRejected.Load(); got != tc.wantRejected {
+				t.Errorf("unsafe_hostnames_rejected = %d, want %d", got, tc.wantRejected)
 			}
 		})
 	}

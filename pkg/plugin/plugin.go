@@ -107,18 +107,6 @@ var attachDaemonBusyGrace = 60 * time.Second
 
 const initialDHCPHostnameLookupTimeout = 2 * time.Second
 
-// recoveryHostnameLookupTimeout bounds the one ContainerInspect recovery
-// makes per endpoint to learn the hostname its fingerprint needs (#721).
-//
-// Tighter than recoveryPerNetworkTimeout on purpose. By the time we get
-// here the daemon has already answered NetworkList and NetworkInspect,
-// so a slow answer means it is degrading — and the recovery budget is
-// better spent on the DHCP exchanges the endpoints actually need. An
-// endpoint that loses its hostname loses address stability across one
-// restart; a budget that runs out loses the renewal client of every
-// endpoint on the host.
-const recoveryHostnameLookupTimeout = 500 * time.Millisecond
-
 // recoveryBudget caps the wall-time the plugin spends rebuilding its
 // in-memory state for already-attached endpoints on startup. Each
 // endpoint's recovery does its own DHCP DISCOVER through dhcpcd with
@@ -592,6 +580,34 @@ type Plugin struct {
 	// networks under a restarting daemon, which is worth knowing even
 	// though no single occurrence is a fault.
 	recoveryNetworkGone atomic.Int32
+
+	// recoveryFingerprintsSkipped counts endpoints that recovery
+	// adopted but could not describe: the ContainerInspect that would
+	// have given the hostname did not answer, or answered with no
+	// hostname at all (#721).
+	//
+	// It exists because the fix for #721 would otherwise have inherited
+	// the exact invisibility of the bug it closes. Recovery not
+	// recording a fingerprint means DeleteEndpoint lays no tombstone,
+	// which means that endpoint loses its address on its next
+	// `docker restart` — and the only outward sign was
+	// tombstonesConsumed staying flat, which is indistinguishable from
+	// a quiet host. An operator could not tell "recovery worked" from
+	// "recovery silently skipped half my endpoints".
+	//
+	// Deliberately NOT healthy-affecting. Losing address stability for
+	// one endpoint is a real regression for that container, but it is
+	// not a running container without a renewal client — the line
+	// recoveryFailed draws, and the one that decides what flips
+	// healthy.
+	//
+	// A hostname REFUSED by safeHostname is deliberately not counted
+	// here: it already moves unsafeHostnamesRejected, and keeping the
+	// two disjoint is what lets an operator tell "the daemon would not
+	// answer me" from "a container sent a hostname nobody should send".
+	// Summing them is then a choice the reader makes, rather than one
+	// this counter makes for them.
+	recoveryFingerprintsSkipped atomic.Int32
 
 	// joinStartFailures counts persistent-DHCP-client Start failures
 	// at Join time (#317). Each bump is a running container that got
@@ -1488,15 +1504,37 @@ func (p *Plugin) containerGone(ctx context.Context, containerID string) bool {
 // direction that cannot hurt a container that did nothing wrong.
 func (p *Plugin) recoveredHostname(ctx context.Context, containerID string) (string, bool) {
 	if containerID == "" {
+		p.recoveryFingerprintsSkipped.Add(1)
 		return "", false
 	}
-	ctx, cancel := context.WithTimeout(ctx, recoveryHostnameLookupTimeout)
+	// The SAME budget the CreateEndpoint path gives the same lookup, and
+	// deliberately not a tighter one. The first draft of this used
+	// 500ms, on the reasoning that the daemon had already answered
+	// NetworkList and NetworkInspect so a slow ContainerInspect meant it
+	// was degrading. #406 is the measured counterexample: dockerd
+	// answered other calls normally while blocking on ContainerInspect
+	// for a container it was inside ContainerStart for, and did not
+	// answer until it was done. Those two earlier calls say nothing
+	// about whether THIS container's inspect is blocked — and a
+	// container mid-ContainerStart is the expected state of most of what
+	// recovery walks, since recovery runs while the daemon is restarting
+	// every container on the host. A tighter budget would therefore
+	// expire in precisely the scenario #721 exists to fix, and no
+	// fixture would ever show it: they all answer instantly.
+	ctx, cancel := context.WithTimeout(ctx, initialDHCPHostnameLookupTimeout)
 	defer cancel()
 
 	ctr, err := p.docker.ContainerInspect(ctx, containerID)
 	if err != nil || ctr.Config == nil || ctr.Config.Hostname == "" {
+		// Counted, not logged: this is the arm that makes an endpoint
+		// quietly lose its address on its next restart, and a log line
+		// is not something an operator can alert on.
+		p.recoveryFingerprintsSkipped.Add(1)
 		return "", false
 	}
+	// A refusal is counted by safeHostname itself
+	// (unsafeHostnamesRejected); see the field comment for why it is not
+	// also counted here.
 	return p.safeHostname(ctr.Config.Hostname)
 }
 
