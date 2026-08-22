@@ -175,8 +175,20 @@ func TestAcquisitionAttempts_UnrestrictedPathIsUntouched(t *testing.T) {
 
 // TestPackTiers_ATinyBudgetStillRunsOnce guards the degenerate end. If
 // the total budget is ever configured below one floor, the ladder must
-// collapse to a single attempt rather than to zero — an acquisition
-// that makes no attempt at all fails without ever asking anybody.
+// collapse to a single attempt rather than shredding the budget across
+// the whole list.
+//
+// SHREDDING is what the unfixed tree actually did, and saying so
+// matters: int(total/minAttemptBudget) is 0 below one floor, and
+// packTiers returns its input unchanged for n < 1, so the ladder fell
+// through to one attempt PER SERVER -- 20 servers on half a floor got
+// 75ms each, worse than the 500ms #731 was filed against. It did not
+// produce zero attempts, and a reader told it did would go looking for
+// a crash instead of for silent starvation.
+//
+// The count assertion below excludes zero as well, because a count is
+// the only thing that can, but zero is the direction this code has
+// never taken.
 //
 // ONE, and the count is the assertion. An earlier version of this test
 // said "collapse to a single attempt" in its name and its comment and
@@ -225,17 +237,25 @@ func TestAcquisitionAttempts_NoLadderIsStarvedBelowTheFloor(t *testing.T) {
 		servers = append(servers, fmt.Sprintf("10.0.0.%d", i))
 	}
 
+	// Every total here is written AS A MULTIPLE OF THE FLOOR, and every
+	// row name states its relationship to the floor rather than a
+	// duration. The first draft transcribed 3s/1.5s/900ms, which made
+	// the rows a fourth copy of minAttemptBudget: moving the constant
+	// 3s -> 5s reddened four test functions, so "the number is the
+	// adjustable part" was already false, and a row named "below the
+	// floor" holding a literal 1.5s would have become a false statement
+	// about what it tests without anything going red to say so.
 	cases := []struct {
 		name         string
 		servers      int
 		total        time.Duration
 		wantAttempts int
 	}{
-		{"20 servers, 10s -- above the floor, packed to what it can fund", 20, 10 * time.Second, 3},
-		{"20 servers, 3s -- exactly one floor", 20, 3 * time.Second, 1},
-		{"20 servers, 1.5s -- below the floor", 20, 1500 * time.Millisecond, 1},
-		{"20 servers, 900ms -- far below", 20, 900 * time.Millisecond, 1},
-		{"6 servers, 1.5s -- below the floor with a short list", 6, 1500 * time.Millisecond, 1},
+		{"20 servers, three floors and change -- packed to what the budget funds", 20, 3*minAttemptBudget + minAttemptBudget/3, 3},
+		{"20 servers, exactly one floor", 20, minAttemptBudget, 1},
+		{"20 servers, half a floor -- below it", 20, minAttemptBudget / 2, 1},
+		{"20 servers, a third of a floor -- far below", 20, minAttemptBudget / 3, 1},
+		{"6 servers, half a floor -- below the floor with a short list", 6, minAttemptBudget / 2, 1},
 	}
 
 	for _, tc := range cases {
@@ -325,5 +345,106 @@ func TestAcquireWithPolicy_FallbacksCountStepsNotAcquisitions(t *testing.T) {
 				t.Errorf("dhcp_server_policy_exhausted: got %d, want %d — %s", got, tc.wantExhausted, tc.reason)
 			}
 		})
+	}
+}
+
+// TestAcquisitionAttempts_TheGuaranteeHoldsAtEveryFloor drives the
+// property the constant's comment claims, at floors other than the one
+// that ships.
+//
+// The comment used to say "the number is the adjustable part". A run
+// contradicted it: moving minAttemptBudget 3s -> 5s or 3s -> 7s reddens
+// TestAcquisitionAttempts, TestAcquisitionAttempts_OrderingIsKeptWhereItFits
+// and TestAcquireWithPolicy_FallbacksCountStepsNotAcquisitions, and
+// 3s -> 2s reddens the ordering one -- three test functions transcribing
+// the value, pinning it in BOTH directions. The comment now says so.
+//
+// But a corrected comment is still a comment, and this is the same
+// species the table above exists for: a claim about behaviour with
+// nothing driving it. Prose decays silently; a check fails loudly. So
+// the ladder takes the floor as an argument and the guarantee is
+// asserted across a spread of them. A future change that holds only
+// because the floor happens to be 3s goes red here, at the floor where
+// it does not hold, rather than shipping.
+func TestAcquisitionAttempts_TheGuaranteeHoldsAtEveryFloor(t *testing.T) {
+	servers := make([]string, 0, 20)
+	for i := 1; i <= 20; i++ {
+		servers = append(servers, fmt.Sprintf("10.0.0.%d", i))
+	}
+
+	// Deliberately including a floor far below the shipped one and one
+	// far above: the arithmetic that broke was integer division, which
+	// misbehaves at the ends and not in the middle.
+	floors := []time.Duration{
+		250 * time.Millisecond,
+		2 * time.Second,
+		minAttemptBudget,
+		5 * time.Second,
+		7 * time.Second,
+	}
+	// Every total is a multiple of the floor under test, never a
+	// duration -- the rule this file exists to enforce applies to the
+	// test that enforces it.
+	multiples := []struct {
+		name string
+		of   func(time.Duration) time.Duration
+	}{
+		{"a third of a floor", func(f time.Duration) time.Duration { return f / 3 }},
+		{"half a floor", func(f time.Duration) time.Duration { return f / 2 }},
+		{"exactly one floor", func(f time.Duration) time.Duration { return f }},
+		{"three floors and change", func(f time.Duration) time.Duration { return 3*f + f/3 }},
+		{"ten floors", func(f time.Duration) time.Duration { return 10 * f }},
+	}
+
+	for _, nServers := range []int{3, 6, 20} {
+		pol := preferPolicy(t, servers[:nServers]...)
+		for _, floor := range floors {
+			for _, m := range multiples {
+				total := m.of(floor)
+				name := fmt.Sprintf("%d servers/floor %v/%s", nServers, floor, m.name)
+				t.Run(name, func(t *testing.T) {
+					attempts := acquisitionAttemptsWithFloor(pol, false, total, floor)
+
+					if len(attempts) == 0 {
+						t.Fatalf("no attempts at all: a ladder that asks nobody cannot be answered")
+					}
+
+					var spent time.Duration
+					seen := 0
+					for i, a := range attempts {
+						spent += a.Budget
+						seen += len(a.Allow)
+						// THE GUARANTEE: never less than one floor,
+						// as long as the budget can fund one attempt.
+						// Below the floor there is exactly one attempt
+						// and it holds everything there was.
+						want := floor
+						if total < floor {
+							want = total
+						}
+						if a.Budget < want {
+							t.Errorf("attempt %d got %v, want at least %v (floor %v, total %v): "+
+								"the ladder starved an attempt it could have funded",
+								i, a.Budget, want, floor, total)
+						}
+					}
+					if total < floor && len(attempts) != 1 {
+						t.Errorf("a sub-floor budget produced %d attempts, want exactly 1: "+
+							"a budget too small for one attempt can still be spent once, "+
+							"but it cannot be shredded into slices that certainly fail",
+							len(attempts))
+					}
+					// The ladder DIVIDES total; it never extends it.
+					if spent > total {
+						t.Errorf("attempts spend %v of a %v budget: the ladder may not make "+
+							"`docker run` slower than it is today (#403, #417)", spent, total)
+					}
+					if seen != nServers {
+						t.Errorf("attempts name %d of %d servers; packing merges the tail, "+
+							"it never drops it", seen, nServers)
+					}
+				})
+			}
+		}
 	}
 }
