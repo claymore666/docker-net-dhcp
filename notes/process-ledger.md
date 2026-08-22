@@ -285,6 +285,18 @@ Same family: `gh api --jq` writes a 4xx error **body to stdout**, so a
 failed call is not empty and walks straight past `[ -z "$SHA" ]`. Guard
 on **shape** — 40 hex — not on emptiness. *(client2)*
 
+Seen again the same evening on #769, after `dev` moved underneath it:
+`mergeable=UNKNOWN` while GitHub recomputed. **Not a blocker, and not a
+verdict** — it resolves on polling. The tell is that the instrument has
+one variable for "the answer is no" and "I have not worked it out yet".
+
+**And the same shape in our own tooling, which is the version that
+should sting:** a check whose only observed behaviour is passing has one
+possible verdict. Exercising a script's **refusal** path before its
+success path ever runs is the cheap fix — one run against a tree where
+it must decline. Done for both the post-#766 and post-#769 edit scripts;
+each correctly refused and left the tree untouched.
+
 ## I12 — the rule was right and the application was one short
 
 Within one commit: R14 (enumerate a claim's carriers) was written down,
@@ -534,6 +546,24 @@ derivation reproduces it, but **nothing derives the ten-issue claim** —
 three sentences carry it and only a human re-running the milestone query
 sees a change. Careful wording does not touch it either. It belongs on
 the merge order, not in the text. *(client3, framing by oversight)*
+
+## I21 — GREEN by the strong test, on a head carrying a proven defect
+
+Run against #769 while it was on HOLD: **all 8 required contexts present
+and success, exit 0.** The head carries a defect oversight proved —
+below a short `lease_timeout` the server-policy ladder still starves
+every attempt — and the test that would catch it **names the correct
+behaviour in its title and asserts neither half of it.**
+
+CI has nothing to say about this and never will. There is no stricter
+verdict script that reaches it, because the verdict script's subject is
+whether the checks passed and the checks are the thing that is wrong.
+
+> **Green is a fact about the checks. It was never a merge decision.**
+
+This is the single strongest justification for requiring an explicit
+CLEAR alongside green, and it arrived as one command's output rather
+than as an argument. *(master-release)*
 
 ---
 
