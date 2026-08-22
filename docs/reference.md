@@ -497,7 +497,13 @@ everything).
 - **IP stability depends on the server** honouring option 50, exactly as
   for an explicit request above. Where it doesn't, configure a
   reservation against the now-stable MAC and every restart gets that
-  address.
+  address — **in `bridge` and `macvlan` only**. `ipvlan` has no stable
+  per-container MAC to key a reservation on: its L2 slaves all inherit
+  the parent's, so a reservation would either match nothing or match the
+  parent and hand one address to every container on the network. The
+  plugin writes no tombstone for `ipvlan` at all, for the same reason.
+  See [DHCP identity](#dhcp-identity) for what `ipvlan` uses instead and
+  why it does not survive a restart (#219).
 
 Two things it deliberately does not do. Concurrent restarts of several
 containers on one network inside the 60-second window fall back to fresh
