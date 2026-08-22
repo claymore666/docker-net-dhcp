@@ -455,6 +455,15 @@ jobs:
       - name: Lane hygiene
         run: bash scripts/check-lane-hygiene.sh
 
+      # Two allowlists accept the same advisories under two naming
+      # schemes, and both headers state they stay in sync. They did not:
+      # two GHSAs stayed accepted by dependency-review — which runs at
+      # fail-on-severity: high — for weeks after the govulncheck side
+      # deliberately removed them (#741). The pruning happened, with a
+      # written reason, in one of the two files.
+      - name: Advisory allowlists agree
+        run: bash scripts/check-allowlist-parity.sh
+
       # The local lane must not test less than this job does (#636).
       # scripts/local-lane.sh is what `make check` runs before a push;
       # the moment it lists fewer gates than the steps above, it exits 0
