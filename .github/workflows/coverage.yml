@@ -277,16 +277,15 @@ jobs:
           fi
           cat /tmp/covdata-percent.txt
 
+          # The resolution lives in a script, not here, because this
+          # workflow triggers only on pull requests into main: inline,
+          # its first execution would be the release PR, with a defect
+          # failing a required check while the release is in flight.
+          # scripts/test-coverage-baseline-at.sh runs on every PR.
           baseline=.github/coverage-baseline.txt
           if [ -n "${BASE_REF:-}" ]; then
-            base=$(git merge-base "$BASE_REF" HEAD)
-            # No `|| true`: a merge base that will not resolve, or a
-            # baseline missing at it, must stop the run. Falling back to
-            # the branch's own copy here would restore the defect this
-            # step exists to close, and would do it silently.
-            git show "$base:.github/coverage-baseline.txt" > /tmp/coverage-baseline-base.txt
+            bash scripts/coverage-baseline-at.sh "$BASE_REF" /tmp/coverage-baseline-base.txt
             baseline=/tmp/coverage-baseline-base.txt
-            echo "Ratcheting against the baseline at merge base $base."
           else
             echo "No pull_request context — ratcheting against the working copy's baseline."
           fi
