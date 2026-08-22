@@ -38,6 +38,11 @@ func fakeProc(t *testing.T, procs map[int][2]string) {
 		if err := os.WriteFile(filepath.Join(dir, "comm"), []byte(entry[1]+"\n"), 0o644); err != nil {
 			t.Fatalf("write comm: %v", err)
 		}
+		// Orphaned by default: reparented to init. Tests that care about
+		// a LIVE parent say so with setParent, so the ones that do not
+		// keep asserting about orphans, which is what they were written
+		// for.
+		writeStatus(t, dir, 1)
 	}
 	// Non-pid entries: /proc is full of them and the scanner must not
 	// trip over one.
@@ -50,6 +55,38 @@ func fakeProc(t *testing.T, procs map[int][2]string) {
 	old := procRoot
 	procRoot = root
 	t.Cleanup(func() { procRoot = old })
+}
+
+// writeStatus writes the one field of /proc/<pid>/status this code
+// reads, in the kernel's own layout. The surrounding lines are included
+// because parentPID scans for a prefix and a file with exactly one line
+// would not exercise that.
+func writeStatus(t *testing.T, dir string, ppid int) {
+	t.Helper()
+
+	body := "Name:\tdhcpcd\nUmask:\t0022\nState:\tS (sleeping)\n" +
+		"Tgid:\t1\nNgid:\t0\nPid:\t1\nPPid:\t" + strconv.Itoa(ppid) +
+		"\nTracerPid:\t0\n"
+	if err := os.WriteFile(filepath.Join(dir, "status"), []byte(body), 0o644); err != nil {
+		t.Fatalf("write status: %v", err)
+	}
+}
+
+// setParent re-points a fake process at a parent pid, after fakeProc has
+// defaulted it to init.
+func setParent(t *testing.T, pid, ppid int) {
+	t.Helper()
+	writeStatus(t, filepath.Join(procRoot, strconv.Itoa(pid)), ppid)
+}
+
+// pinSelfComm fixes what this process calls itself, so the "another live
+// instance" tests do not depend on what the test binary happens to be
+// named.
+func pinSelfComm(t *testing.T, comm string) {
+	t.Helper()
+	old := selfComm
+	selfComm = comm
+	t.Cleanup(func() { selfComm = old })
 }
 
 // recordKills swaps killProcess for a recorder and returns the slice it
@@ -316,6 +353,171 @@ func TestSweepOrphans_MarkerIsReallyInTheArgv(t *testing.T) {
 // `kill -- -<pgid>` — reaches every live dhcpcd too. The persistent
 // client omits dhcpcd's -p, so each one would RELEASE the lease of a
 // container that is still running.
+// TestSweepOrphans_SparesALiveClientOfAnotherInstance is the test that
+// makes the function's name true.
+//
+// Two instances of this plugin side by side is a supported
+// configuration — `docker plugin install --alias`, or one from each
+// registry while an operator compares versions. Their clients are
+// INDISTINGUISHABLE by argv and comm: the work directory comes from
+// os.MkdirTemp in each plugin's own private /tmp, so the marker is the
+// same string, and both are dhcpcd. Without a parent check the second
+// instance to start SIGKILLs the first instance's live clients, and the
+// first instance never learns — it is not waiting on a signal it did
+// not send, its containers keep running, and their leases stop renewing
+// at T2 with nothing counted anywhere.
+//
+// That is the same outcome the sweep exists to prevent, produced by the
+// sweep, which is why this is not merely a nice-to-have negative.
+func TestSweepOrphans_SparesALiveClientOfAnotherInstance(t *testing.T) {
+	pinSelfComm(t, "net-dhcp")
+
+	ourDir := filepath.Join(os.TempDir(), workDirPrefix+"abc123")
+	fakeProc(t, map[int][2]string{
+		// The other instance's plugin process, alive.
+		900: {"/net-dhcp", "net-dhcp"},
+		// Its client. Identical in every respect to one of ours.
+		901: {clientArgv(ourDir), dhcpcdBin},
+		// A genuine orphan: same marker, same comm, no plugin parent.
+		902: {clientArgv(ourDir), dhcpcdBin},
+		// init, so 902's parent is a real entry rather than a missing one.
+		1: {"/sbin/init", "systemd"},
+	})
+	setParent(t, 901, 900)
+
+	pids, _ := recordKills(t, nil)
+
+	n, err := SweepOrphans()
+	if err != nil {
+		t.Fatalf("SweepOrphans: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("killed %d, want 1", n)
+	}
+	if len(*pids) != 1 || (*pids)[0] != 902 {
+		t.Errorf("killed %v, want [902] — 901 belongs to a plugin process "+
+			"that is still running, and killing it stops a live container's "+
+			"lease from renewing with nothing to show for it", *pids)
+	}
+}
+
+// TestSweepOrphans_SparesOurOwnLiveClient covers the same rule for this
+// process rather than a sibling. NewPlugin sweeps before recovery starts
+// any client, so this cannot arise today; it exists so that a second
+// call site added later cannot make the sweep eat its own clients
+// without a test going red.
+func TestSweepOrphans_SparesOurOwnLiveClient(t *testing.T) {
+	pinSelfComm(t, "net-dhcp")
+
+	ourDir := filepath.Join(os.TempDir(), workDirPrefix+"abc123")
+	fakeProc(t, map[int][2]string{
+		801: {clientArgv(ourDir), dhcpcdBin},
+		1:   {"/sbin/init", "systemd"},
+	})
+	setParent(t, 801, os.Getpid())
+
+	pids, _ := recordKills(t, nil)
+
+	n, err := SweepOrphans()
+	if err != nil {
+		t.Fatalf("SweepOrphans: %v", err)
+	}
+	if n != 0 || len(*pids) != 0 {
+		t.Errorf("killed %d %v, want none — this client's parent is us", n, *pids)
+	}
+}
+
+// TestSweepOrphans_ReparentedToASubreaperIsStillAnOrphan pins the reason
+// the check is not `ppid == 1`.
+//
+// An orphan reparents to the nearest subreaper, and under a container
+// runtime that is routinely the shim rather than init. A `ppid == 1`
+// test would report such a process as live, skip it, and leave exactly
+// the duplicate client this sweep exists to remove — on the hosts this
+// plugin actually runs on.
+func TestSweepOrphans_ReparentedToASubreaperIsStillAnOrphan(t *testing.T) {
+	pinSelfComm(t, "net-dhcp")
+
+	ourDir := filepath.Join(os.TempDir(), workDirPrefix+"abc123")
+	fakeProc(t, map[int][2]string{
+		700: {"/usr/bin/containerd-shim-runc-v2", "containerd-shim"},
+		701: {clientArgv(ourDir), dhcpcdBin},
+	})
+	setParent(t, 701, 700)
+
+	pids, _ := recordKills(t, nil)
+
+	n, err := SweepOrphans()
+	if err != nil {
+		t.Fatalf("SweepOrphans: %v", err)
+	}
+	if n != 1 || len(*pids) != 1 || (*pids)[0] != 701 {
+		t.Errorf("killed %d %v, want [701] — a subreaper is not a plugin, "+
+			"so this client has no one managing it", n, *pids)
+	}
+}
+
+// TestSweepOrphans_UnreadableParentIsNotAMatch keeps the unknown case on
+// the safe side. A missing or unparseable status file means we cannot
+// tell whether anything still manages the process, and the question this
+// answers is whether to send SIGKILL.
+func TestSweepOrphans_UnreadableParentIsNotAMatch(t *testing.T) {
+	pinSelfComm(t, "net-dhcp")
+
+	ourDir := filepath.Join(os.TempDir(), workDirPrefix+"abc123")
+	fakeProc(t, map[int][2]string{
+		601: {clientArgv(ourDir), dhcpcdBin},
+		602: {clientArgv(ourDir), dhcpcdBin},
+	})
+	// 601: no status file at all.
+	if err := os.Remove(filepath.Join(procRoot, "601", "status")); err != nil {
+		t.Fatalf("remove status: %v", err)
+	}
+	// 602: a status file with no PPid line — present, unreadable for
+	// this purpose, which is a different failure from absent.
+	if err := os.WriteFile(filepath.Join(procRoot, "602", "status"),
+		[]byte("Name:\tdhcpcd\nState:\tS (sleeping)\n"), 0o644); err != nil {
+		t.Fatalf("write status: %v", err)
+	}
+
+	pids, _ := recordKills(t, nil)
+
+	n, err := SweepOrphans()
+	if err != nil {
+		t.Fatalf("SweepOrphans: %v", err)
+	}
+	if n != 0 || len(*pids) != 0 {
+		t.Errorf("killed %d %v, want none — an unknown parent must not "+
+			"authorise a kill", n, *pids)
+	}
+}
+
+// TestSweepOrphans_WithoutOurOwnCommRefuses covers the dependency the
+// parent check introduces. If /proc/self/comm cannot be read there is no
+// way to recognise a sibling instance, and a sweep that cannot tell a
+// live client from an orphan must refuse rather than guess — the same
+// rule as a missing /proc root. Reporting zero would read as "there was
+// nothing to do".
+func TestSweepOrphans_WithoutOurOwnCommRefuses(t *testing.T) {
+	pinSelfComm(t, "")
+
+	ourDir := filepath.Join(os.TempDir(), workDirPrefix+"abc123")
+	fakeProc(t, map[int][2]string{
+		501: {clientArgv(ourDir), dhcpcdBin},
+	})
+
+	pids, _ := recordKills(t, nil)
+
+	n, err := SweepOrphans()
+	if err == nil {
+		t.Fatal("SweepOrphans returned nil error with no comm of its own; " +
+			"an unusable sweep must not report a confident zero")
+	}
+	if n != 0 || len(*pids) != 0 {
+		t.Errorf("killed %d %v, want none", n, *pids)
+	}
+}
+
 func TestNewClient_ChildGetsItsOwnProcessGroup(t *testing.T) {
 	c, err := NewDHCPClient("eth0", &DHCPClientOptions{})
 	if err != nil {

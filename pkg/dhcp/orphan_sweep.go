@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 
 	log "github.com/sirupsen/logrus"
@@ -23,6 +24,36 @@ var procRoot = "/proc"
 // killProcess is syscall.Kill, overridable in tests. A sweep that
 // actually signals is not something a unit test can run.
 var killProcess = syscall.Kill
+
+// selfComm is this process's own comm, and it is what tells a LIVE
+// client apart from an orphaned one.
+//
+// The parent of a live persistent client IS the plugin process that
+// spawned it, directly: renderArgs always passes dhcpcd -B so it never
+// backgrounds itself, and `unshare -m /bin/sh -c '... exec "$0" "$@"'`
+// execs rather than forks at every step, so the chain collapses to one
+// process (see NewDHCPClient). An ORPHAN, by definition, has lost that
+// parent and been reparented.
+//
+// Comparing the parent's comm against our OWN comm rather than a
+// hardcoded binary name is deliberate: a second instance of this plugin
+// installed alongside the first — `docker plugin install --alias`, or
+// one from each registry while an operator compares versions — runs the
+// same binary under the same name, so this recognises its live clients
+// without needing to know it exists. It also inherits the kernel's
+// 15-byte comm truncation on both sides instead of reproducing it.
+//
+// Read from the real /proc, never procRoot: this is us, not a scanned
+// process, and a test that redirects the scan must not redirect it.
+var selfComm = readSelfComm()
+
+func readSelfComm() string {
+	b, err := os.ReadFile("/proc/self/comm")
+	if err != nil {
+		return ""
+	}
+	return string(bytes.TrimSpace(b))
+}
 
 // SweepOrphans finds dhcpcd processes left behind by a previous plugin
 // process and kills them, returning how many it killed.
@@ -54,18 +85,44 @@ var killProcess = syscall.Kill
 // lease to expire on its own, a wrong one takes an address away from
 // something using it.
 //
-// WHAT IT MATCHES. Every client's argv carries the absolute path of its
-// own work directory, which is created with workDirPrefix — dhcpcd's
-// `-f <workdir>/dhcpcd.conf`. That prefix is the marker; nothing else
-// on the host writes it. The process's own comm must ALSO be dhcpcd, so
-// a process that merely mentions the path (a shell, a grep, an
-// unshare that has not exec'd yet) is not a candidate.
+// WHAT IT MATCHES, IN THREE PARTS. Every client's argv carries the
+// absolute path of its own work directory, which is created with
+// workDirPrefix — dhcpcd's `-f <workdir>/dhcpcd.conf`. That prefix is
+// the marker; nothing else on the host writes it. The process's own
+// comm must ALSO be dhcpcd, so a process that merely mentions the path
+// (a shell, a grep, an unshare that has not exec'd yet) is not a
+// candidate. And its parent must NOT be a live plugin process, which is
+// what makes the word "orphaned" in this function's name true rather
+// than assumed — see selfComm.
 //
-// PID reuse is real and this is the host PID namespace, so the match is
-// re-read immediately before the kill rather than trusted from the
-// scan. A pid recycled between the two reads fails the second check and
-// is skipped.
+// Without that third test the predicate is "is a dhcpcd of ours", and
+// every live client of every RUNNING plugin process satisfies it
+// identically: same marker in argv, same comm. A second instance
+// starting up would then SIGKILL the first instance's live clients, and
+// the first instance would never learn — it is not waiting on a signal
+// it did not send, its containers keep running, and their leases simply
+// stop renewing at T2 with no counter moving anywhere. That is the same
+// user-visible outcome this function exists to prevent, caused by it.
+// Two instances is a supported configuration (`--alias`), and the work
+// directory comes from os.MkdirTemp in the plugin's own private /tmp,
+// so the paths are identical STRINGS across instances rather than
+// merely similar.
+//
+// This runs as root against the host PID namespace and sends SIGKILL,
+// so every read that fails is a "no". PID reuse is real, so the whole
+// match is re-read immediately before the kill rather than trusted from
+// the scan: a pid recycled between the two reads fails the second check
+// and is skipped.
 func SweepOrphans() (int, error) {
+	if selfComm == "" {
+		// Without our own comm there is no way to tell a live client of
+		// another instance from an orphan, and this is not a thing to
+		// attempt on a guess: the failure mode is killing a running
+		// plugin's clients. Refuse, and let the caller say so — an
+		// unusable sweep must not report a confident zero.
+		return 0, fmt.Errorf("cannot read /proc/self/comm, so a live dhcpcd cannot be told from an orphaned one")
+	}
+
 	pids, err := candidatePIDs()
 	if err != nil {
 		return 0, err
@@ -73,12 +130,15 @@ func SweepOrphans() (int, error) {
 
 	killed := 0
 	for _, pid := range pids {
-		// Re-verify. Between the scan and here the pid may have exited
-		// and been recycled onto something else entirely, and the thing
-		// we are about to signal is chosen by a number we read earlier.
+		// Deliberate re-validation, not the primary filter — candidatePIDs
+		// has already applied the same predicate. Between that scan and
+		// here the pid may have exited and been recycled onto something
+		// else entirely, and the thing we are about to signal is chosen
+		// by a number we read earlier. This narrows the window to one
+		// call.
 		if !isOrphanedClient(pid) {
 			log.WithField("pid", pid).
-				Debug("Skipping sweep candidate: no longer a dhcpcd of ours")
+				Debug("Skipping sweep candidate: it is no longer an orphaned dhcpcd of ours")
 			continue
 		}
 		if err := killProcess(pid, syscall.SIGKILL); err != nil {
@@ -100,8 +160,9 @@ func SweepOrphans() (int, error) {
 	return killed, nil
 }
 
-// candidatePIDs returns the pids under procRoot whose argv carries the
-// work-directory marker and whose comm is dhcpcd.
+// candidatePIDs returns the pids under procRoot that isOrphanedClient
+// accepts: our work-directory marker in argv, comm of dhcpcd, and no
+// live plugin process as a parent.
 func candidatePIDs() ([]int, error) {
 	entries, err := os.ReadDir(procRoot)
 	if err != nil {
@@ -125,10 +186,12 @@ func candidatePIDs() ([]int, error) {
 	return out, nil
 }
 
-// isOrphanedClient reports whether pid is a dhcpcd this plugin family
-// spawned. Both halves must hold: the marker says the process was
-// started by some instance of this plugin, and comm says the process is
-// dhcpcd itself rather than something that merely names the path.
+// isOrphanedClient reports whether pid is a dhcpcd that some instance of
+// this plugin spawned AND whose plugin process is gone. All three parts
+// must hold: the marker says it was started by some instance of this
+// plugin, comm says it is dhcpcd itself rather than something that
+// merely names the path, and the parent says nobody is still managing
+// it.
 //
 // A read that fails is a "no". The process may have exited mid-scan, or
 // be one this plugin has no business signalling; neither is an error to
@@ -146,9 +209,68 @@ func isOrphanedClient(pid int) bool {
 		return false
 	}
 
-	comm, err := os.ReadFile(filepath.Join(procRoot, strconv.Itoa(pid), "comm"))
-	if err != nil {
+	if commOf(pid) != dhcpcdBin {
 		return false
 	}
-	return string(bytes.TrimSpace(comm)) == dhcpcdBin
+
+	ppid, ok := parentPID(pid)
+	if !ok {
+		// We cannot tell whether anything is still managing it, and the
+		// question this answers is whether to SIGKILL. Unknown is "no".
+		return false
+	}
+	if ppid == os.Getpid() {
+		// Our own, and alive. Reachable only if a caller sweeps after
+		// starting clients; NewPlugin sweeps before recovery starts any,
+		// so this guards a future second call site rather than a case
+		// that arises today.
+		return false
+	}
+	// A parent running the same binary as us is another live instance of
+	// this plugin, and its clients are not ours to kill. Anything else —
+	// init, a subreaper, a shim — means the plugin that spawned this
+	// client is gone.
+	//
+	// Deliberately not `ppid == 1`: an orphan reparents to the nearest
+	// subreaper, which under a container runtime is often the shim
+	// rather than init, so testing for 1 would MISS real orphans and
+	// leave the duplicate-client bug in place on exactly the hosts this
+	// plugin runs on.
+	return commOf(ppid) != selfComm
+}
+
+// commOf returns a process's comm, or "" if it cannot be read.
+func commOf(pid int) string {
+	comm, err := os.ReadFile(filepath.Join(procRoot, strconv.Itoa(pid), "comm"))
+	if err != nil {
+		return ""
+	}
+	return string(bytes.TrimSpace(comm))
+}
+
+// parentPID reads a process's parent pid, reporting whether it could.
+//
+// From /proc/<pid>/status rather than /proc/<pid>/stat on purpose.
+// stat's second field is the comm, in parentheses, and a comm may
+// contain spaces and ')' — so splitting stat on whitespace to reach
+// field 4 is a parsing trap that surfaces only on a process somebody
+// named awkwardly. Here that would mean either killing the wrong thing
+// or missing an orphan, decided by another process's name.
+func parentPID(pid int) (int, bool) {
+	b, err := os.ReadFile(filepath.Join(procRoot, strconv.Itoa(pid), "status"))
+	if err != nil {
+		return 0, false
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		rest, found := strings.CutPrefix(line, "PPid:")
+		if !found {
+			continue
+		}
+		ppid, err := strconv.Atoi(strings.TrimSpace(rest))
+		if err != nil {
+			return 0, false
+		}
+		return ppid, true
+	}
+	return 0, false
 }
