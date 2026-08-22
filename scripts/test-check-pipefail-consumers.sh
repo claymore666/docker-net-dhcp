@@ -90,6 +90,58 @@ run_case "a substitution inside a condition is clean" 0 \
     "scripts/x.sh:::set -uo pipefail
 if [ -n \"\$(producer | ${H} -1)\" ]; then echo hi; fi"
 
+# --- rule three: a $(... | head) whose status is CONSUMED --------------
+# The exemption for `$(... | head)` was correct and it had a condition:
+# nothing reads the substitution status. These are the forms that read
+# it. Each was found in the wild or is one operator away from one.
+
+run_case "a || after the substitution is reported" 1 \
+    "scripts/x.sh:::set -uo pipefail
+row=\$(producer | ${H} -1) || echo boom"
+
+run_case "an && after the substitution is reported" 1 \
+    "scripts/x.sh:::set -uo pipefail
+row=\$(producer | ${H} -1) && echo ok"
+
+# THE SHAPE IT WAS ACTUALLY FOUND IN. The operator is on the next line,
+# so a line-at-a-time reader cannot see it -- and would report the same
+# clean tree, for the wrong reason.
+run_case "a || on the CONTINUED line is reported" 1 \
+    "scripts/x.sh:::set -uo pipefail
+row=\$(producer | ${H} -1) \\
+    || echo boom"
+
+run_case "an assignment in an if condition is reported" 1 \
+    "scripts/x.sh:::set -uo pipefail
+if row=\$(producer | ${H} -1); then echo hi; fi"
+
+# The exemption, said out loud. `|| true` reads the status in order to
+# throw it away, which is exactly what the old blanket exemption assumed
+# everyone was doing.
+run_case "|| true inside the substitution is clean" 0 \
+    "scripts/x.sh:::set -uo pipefail
+row=\$(producer | ${H} -1 || true)"
+
+run_case "|| true after the substitution is clean" 0 \
+    "scripts/x.sh:::set -uo pipefail
+row=\$(producer | ${H} -1) || true"
+
+# THE EXCLUSION MUST NOT LEAK ALONG THE LINE. A line-level "does this
+# line contain || true" test would exempt BOTH substitutions here, and
+# an exemption that leaks always leaks in the direction that makes the
+# gate silent. An exclusion tested only in its passing direction is a
+# hole with a green light on it.
+run_case "a || true elsewhere on the line does not exempt the real one" 1 \
+    "scripts/x.sh:::set -uo pipefail
+a=\$(producer | ${H} -1) || true; b=\$(producer | ${H} -1) || echo boom"
+
+# The exemption that stays. Nothing reads this status, no script here
+# sets -e, and the captured value is right.
+run_case "a plain assignment is still clean" 0 \
+    "scripts/x.sh:::set -uo pipefail
+row=\$(producer | ${H} -1)
+echo \"\$row\""
+
 # Inspecting nothing is not a pass.
 run_case "a repo with no shell scripts exits 2" 2 \
     "README.md:::nothing here"
