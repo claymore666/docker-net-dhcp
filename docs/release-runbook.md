@@ -762,6 +762,74 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
    previous version's README/docs, and the next release PR has to
    re-bump them. Forgotten once after v0.9.0 — that's why
    `release.yml`'s header comment carries the same checklist.
+
+   **Do this before merging anything else into `dev`.** Forgetting is
+   the mild failure. The one that has actually happened is
+   *foreclosure*: the `--ff-only` is possible only while `dev` has no
+   commits of its own since the release, so the window opens when the
+   release PR lands and closes on the next merge into `dev` —
+   permanently, and by doing something otherwise correct.
+
+   ```sh
+   # is a back-merge OWED?  prints a count
+   git rev-list --count origin/dev..origin/main
+   # does `dev` carry commits of its own?  (--is-ancestor prints nothing)
+   git merge-base --is-ancestor origin/dev origin/main \
+       && echo "dev is contained in main" \
+       || echo "dev has commits of its own"
+   ```
+
+   **Two different questions, and neither answers the other.** The count
+   is commits on `main` that `dev` lacks — it says a back-merge is
+   *owed*. The predicate asks whether `dev` has commits of its own, which
+   is what `--ff-only` needs. Both outcomes of both, because a documented
+   command with only one outcome written down leaves the reader to supply
+   the other by negation:
+
+   | count | `dev` contained in `main`? | state | do |
+   |---|---|---|---|
+   | non-zero | yes | **owed and available** — the normal post-tag state | run the `--ff-only` above, now |
+   | non-zero | no | owed, and **foreclosed** | back-merge PR |
+   | zero | yes | `main` and `dev` identical | nothing |
+   | zero | no | `dev` ahead mid-cycle — the ordinary state | nothing |
+
+   A non-zero count is not bad news: at the v1.6.0 tag it was **4**, and
+   the fast-forward worked. It is the warning the CI advisory prints, in
+   those words — *"While that is true, `git merge --ff-only main` still
+   works."*
+
+   Once foreclosed the recovery is a back-merge PR, `main` → `dev`,
+   **merged with a merge commit — a squash does not put `main`'s commits
+   on `dev`**, which is the entire point of this step.
+
+   **The failure is silent, which is why this needs a command and not a
+   reminder.** The divergence carries no content: every release merge
+   has a `dev` commit as its second parent — because step 5 merged the
+   release branch into `dev` before the tag — so `git diff main dev` is
+   clean and the whole suite passes while the graph is wrong. Nothing
+   reads as broken, so nothing prompts the check.
+
+   Worked instance: v1.6.0 published at 23:11:30Z on 2026-08-16; three
+   Dependabot PRs went into `dev` at 23:26, **fifteen minutes later**,
+   before anyone looked at `main`. That foreclosed it; recovered by #597
+   at 23:38. Fifteen minutes is not a window anyone watches by hand.
+
+   **CI warns, but it cannot block.**
+   `.github/workflows/release-backmerge.yml` runs
+   `scripts/check-release-backmerge.sh` in two modes:
+
+   - **Advisory, on every PR into `dev`** — warns on any divergence and
+     **ignores the grace window**, because the fresh divergence is the
+     only case this mode exists for. It warns and never blocks, on
+     purpose — reasoning in the workflow header. An annotation can be
+     scrolled past, which is why the command stays in this step.
+   - **Enforcing, on the nightly schedule** — the backstop for the
+     *permanent* omission, and the only mode `BACKMERGE_GRACE_HOURS`
+     (default 24) applies to, so a release in flight is not a false red.
+
+   One caveat on the recovery: the back-merge diff is not always empty.
+   #597 was, but `6af0749` carried three real files. Hitting a conflict
+   there does not mean you have done something wrong.
 12. **Prune merged branches.** The repo has *Automatically delete head
    branches* enabled, so merged PR head branches are removed on merge.
    Two things that setting doesn't cover, so clean them now:
