@@ -68,6 +68,39 @@ const (
 	captureMaxFiles = 2000
 )
 
+// captureDirMode and captureFileMode keep captured request bodies to
+// root, for stateFileMode's reason and with more force. What lands here
+// is the raw libnetwork request: container IDs, endpoint IDs, the
+// sandbox key, MACs and addresses -- the most identifying data the
+// plugin ever holds, and more of it per record than leases.jsonl
+// carries. The directory is a HOST bind mount (config-cover.json mounts
+// /var/lib/dh-capture at /capture), so at 0755/0644 every one of those
+// bodies was readable by any user on the host.
+//
+// Both are applied with an explicit chmod as well as at creation, and
+// that is not belt-and-braces: neither MkdirAll nor O_CREATE changes the
+// mode of something that ALREADY EXISTS, and in the normal flow both
+// already exist.
+//
+//   - The directory is not one the plugin creates. `make
+//     capture-fixtures` mkdirs CAPTURE_HOST_DIR before enabling the
+//     plugin, and it has to -- a bind source that does not yet exist
+//     fails `docker plugin enable` outright (#588). So the plugin is
+//     always handed a directory made by someone else's umask.
+//   - The filenames are not unique across processes. nextName's
+//     sequence restarts at 0001 in every plugin process, so a second
+//     capture into the same directory rewrites the first capture's
+//     names.
+//
+// Measured rather than assumed: MkdirAll(0700) over an existing 0755
+// directory leaves it 0755, and WriteFile(0600) over an existing 0644
+// file leaves it 0644. A constant alone would have changed nothing in
+// either case that actually occurs.
+const (
+	captureDirMode  = 0o700
+	captureFileMode = 0o600
+)
+
 // captureState is the bookkeeping shared by every captured request.
 type captureState struct {
 	dir string
@@ -106,7 +139,11 @@ func captureHandler(next http.Handler, dir string, paths []string) http.Handler 
 	// request: a capture that was asked for and never happened is the
 	// failure this whole mechanism exists to prevent, so it must not be
 	// discoverable only by finding an empty directory afterwards.
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	// A directory whose mode could not be established counts as unusable
+	// and declines to capture: "no fixtures" is this mechanism's
+	// documented degradation, and it is the right one to take when the
+	// alternative is writing request bodies somewhere world-readable.
+	if err := ensureCaptureDir(dir); err != nil {
 		log.WithError(err).WithField("dir", dir).
 			Error("Request capture was requested but its directory is unusable; capturing nothing")
 		return next
@@ -167,9 +204,48 @@ func (s *captureState) capture(r *http.Request) {
 		return
 	}
 
-	if err := os.WriteFile(filepath.Join(s.dir, name), body, 0o644); err != nil {
+	s.writeBody(filepath.Join(s.dir, name), body)
+}
+
+// writeBody writes one captured body at captureFileMode.
+//
+// The unlink is what makes the mode apply. os.WriteFile's mode argument
+// is O_CREATE's, so over a file that already exists it is ignored and
+// the old mode stands -- and these names DO recur: nextName's sequence
+// restarts at 0001 in every plugin process, so a second capture into
+// the same directory lands on the first capture's filenames. Removing
+// first means the file is always created, and a file that is always
+// created always carries the mode it was created with.
+//
+// It also unlinks a symlink left at this name rather than writing
+// through it, since Remove removes the link and not its target. Worth
+// having, and not the reason for the call.
+//
+// A failed Remove is not reported: anything about it that matters to
+// the capture arrives as the WriteFile error immediately below, and
+// ErrNotExist -- every capture but a rerun into the same directory --
+// is not a failure at all.
+func (s *captureState) writeBody(path string, body []byte) {
+	_ = os.Remove(path)
+	if err := os.WriteFile(path, body, captureFileMode); err != nil {
 		s.warn("could not write captured request", err)
 	}
+}
+
+// ensureCaptureDir creates the capture directory and restricts it to its
+// owner, returning the first thing that went wrong.
+//
+// The chmod is not redundant with MkdirAll's mode: MkdirAll leaves an
+// existing directory exactly as it found it, and in the flow this ships
+// for the directory ALWAYS already exists. `make capture-fixtures`
+// mkdirs CAPTURE_HOST_DIR before enabling the plugin, because a bind
+// source that does not yet exist fails `docker plugin enable` (#588) --
+// so the plugin is handed a directory made by someone else's umask.
+func ensureCaptureDir(dir string) error {
+	if err := os.MkdirAll(dir, captureDirMode); err != nil {
+		return err
+	}
+	return os.Chmod(dir, captureDirMode)
 }
 
 // nextName allocates the next filename, or reports false once the file

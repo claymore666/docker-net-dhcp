@@ -388,3 +388,157 @@ func TestCaptureHandler_ConcurrentRequestsDoNotCollide(t *testing.T) {
 		seen[e.Name()] = true
 	}
 }
+
+// #785. What lands in the capture directory is the raw libnetwork
+// request -- container IDs, endpoint IDs, the sandbox key, MACs and
+// addresses -- and the directory is a HOST bind mount, so 0755/0644 put
+// all of it in reach of any user on the host.
+//
+// These assert a PROPERTY of the artifacts on disk -- no group or other
+// bits -- rather than equality with captureDirMode / captureFileMode.
+// Comparing against the constants would be a mirror: widen a constant to
+// 0755 and the assertion widens with it and still passes. The property
+// cannot be satisfied by editing the source it is checking, and it is
+// the thing that was actually wrong, so it also survives a future
+// deliberate 0640 without needing a third copy of the number kept in
+// step.
+//
+// The two "already exists" cases are the ones that matter, and both are
+// the NORMAL flow rather than an edge:
+//
+//   - `make capture-fixtures` mkdirs CAPTURE_HOST_DIR before enabling
+//     the plugin, because a bind source that does not exist fails
+//     `docker plugin enable` (#588). The plugin never creates this
+//     directory in the flow it ships for.
+//   - nextName's sequence restarts at 0001 in every plugin process, so
+//     a second capture into the same directory rewrites the first
+//     capture's filenames.
+//
+// A change of the two constants alone leaves both untouched, which is
+// why these two tests exist beside the fresh-artifact ones.
+
+func TestCaptureHandler_TightensAnExistingDirectory(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "capture")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("seeding: %v", err)
+	}
+	// Explicit, because the MkdirAll above is subject to the test
+	// process's umask and the premise is that it starts loose.
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatalf("seeding: %v", err)
+	}
+
+	var got []string
+	captureHandler(bodyEcho(t, &got), dir, allRoutePaths())
+
+	fi, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if perm := fi.Mode().Perm(); perm&0o077 != 0 {
+		t.Errorf("capture dir mode = %04o, want no group or other bits (%04o) — an existing "+
+			"directory was left as the operator's umask made it, and MkdirAll does not "+
+			"tighten one", perm, captureDirMode)
+	}
+}
+
+func TestCaptureHandler_FreshDirectoryIsOwnerOnly(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "capture")
+
+	var got []string
+	captureHandler(bodyEcho(t, &got), dir, allRoutePaths())
+
+	fi, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if perm := fi.Mode().Perm(); perm&0o077 != 0 {
+		t.Errorf("capture dir mode = %04o, want no group or other bits (%04o)", perm, captureDirMode)
+	}
+}
+
+func TestCaptureHandler_TightensAnExistingFile(t *testing.T) {
+	dir := t.TempDir()
+	name := filepath.Join(dir, "0001-NetworkDriver.CreateEndpoint.json")
+	if err := os.WriteFile(name, []byte(`{"stale":true}`), 0o644); err != nil {
+		t.Fatalf("seeding: %v", err)
+	}
+	if err := os.Chmod(name, 0o644); err != nil {
+		t.Fatalf("seeding: %v", err)
+	}
+
+	var got []string
+	h := captureHandler(bodyEcho(t, &got), dir, allRoutePaths())
+
+	const body = `{"NetworkID":"net1","EndpointID":"ep1"}`
+	post(h, "/NetworkDriver.CreateEndpoint", body)
+
+	fi, err := os.Stat(name)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if perm := fi.Mode().Perm(); perm&0o077 != 0 {
+		t.Errorf("captured file mode = %04o, want no group or other bits (%04o) — O_CREATE's "+
+			"mode applies only to a file that did not exist, and these names recur across "+
+			"plugin processes", perm, captureFileMode)
+	}
+
+	// The premise of the case: it really did rewrite the file, so the
+	// mode above is the mode of a file holding a fresh request body and
+	// not of one the handler declined to touch.
+	b, err := os.ReadFile(name)
+	if err != nil {
+		t.Fatalf("reading captured file: %v", err)
+	}
+	if string(b) != body {
+		t.Fatalf("captured %q, want %q — the case did not exercise a rewrite", b, body)
+	}
+}
+
+func TestCaptureHandler_FreshFileIsOwnerOnly(t *testing.T) {
+	dir := t.TempDir()
+	var got []string
+	h := captureHandler(bodyEcho(t, &got), dir, allRoutePaths())
+
+	post(h, "/NetworkDriver.Join", `{"EndpointID":"ep1"}`)
+
+	name := filepath.Join(dir, "0001-NetworkDriver.Join.json")
+	fi, err := os.Stat(name)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if perm := fi.Mode().Perm(); perm&0o077 != 0 {
+		t.Errorf("captured file mode = %04o, want no group or other bits (%04o)", perm, captureFileMode)
+	}
+}
+
+// A capture failure is never a request failure — the doctrine at the top
+// of capture.go — and the unlink-then-create path has to keep it. A
+// directory sitting at the name defeats both halves: Remove fails
+// because it is not empty, and the create fails because it is not a
+// file.
+func TestCaptureHandler_UnwritableNameIsNotARequestFailure(t *testing.T) {
+	dir := t.TempDir()
+	blocked := filepath.Join(dir, "0001-NetworkDriver.Join.json")
+	if err := os.MkdirAll(filepath.Join(blocked, "occupied"), 0o700); err != nil {
+		t.Fatalf("seeding: %v", err)
+	}
+
+	var got []string
+	h := captureHandler(bodyEcho(t, &got), dir, allRoutePaths())
+
+	const body = `{"EndpointID":"ep1"}`
+	rec := post(h, "/NetworkDriver.Join", body)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 — a capture that cannot be written must not fail the request", rec.Code)
+	}
+	if len(got) != 1 || got[0] != body {
+		t.Fatalf("downstream body = %q, want %q", got, body)
+	}
+	// The premise: the name really was unwritable, so the case exercised
+	// the failure rather than quietly succeeding somewhere else.
+	if fi, err := os.Stat(blocked); err != nil || !fi.IsDir() {
+		t.Fatalf("stat %s = (%v, %v), want it still a directory — the case did not exercise a write failure", blocked, fi, err)
+	}
+}
