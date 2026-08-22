@@ -771,13 +771,36 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
    permanently, and by doing something otherwise correct.
 
    ```sh
-   git rev-list --count origin/dev..origin/main   # non-zero → back-merge first
+   # is a back-merge OWED?  prints a count
+   git rev-list --count origin/dev..origin/main
+   # does `dev` carry commits of its own?  (--is-ancestor prints nothing)
+   git merge-base --is-ancestor origin/dev origin/main \
+       && echo "dev is contained in main" \
+       || echo "dev has commits of its own"
    ```
 
-   Run that before merging anything post-tag. Non-zero means the
-   fast-forward is already gone, and the recovery is a back-merge PR,
-   `main` → `dev`, **merged with a merge commit — a squash does not put
-   `main`'s commits on `dev`**, which is the entire point of this step.
+   **Two different questions, and neither answers the other.** The count
+   is commits on `main` that `dev` lacks — it says a back-merge is
+   *owed*. The predicate asks whether `dev` has commits of its own, which
+   is what `--ff-only` needs. Both outcomes of both, because a documented
+   command with only one outcome written down leaves the reader to supply
+   the other by negation:
+
+   | count | `dev` contained in `main`? | state | do |
+   |---|---|---|---|
+   | non-zero | yes | **owed and available** — the normal post-tag state | run the `--ff-only` above, now |
+   | non-zero | no | owed, and **foreclosed** | back-merge PR |
+   | zero | yes | `main` and `dev` identical | nothing |
+   | zero | no | `dev` ahead mid-cycle — the ordinary state | nothing |
+
+   A non-zero count is not bad news: at the v1.6.0 tag it was **4**, and
+   the fast-forward worked. It is the warning the CI advisory prints, in
+   those words — *"While that is true, `git merge --ff-only main` still
+   works."*
+
+   Once foreclosed the recovery is a back-merge PR, `main` → `dev`,
+   **merged with a merge commit — a squash does not put `main`'s commits
+   on `dev`**, which is the entire point of this step.
 
    **The failure is silent, which is why this needs a command and not a
    reminder.** The divergence carries no content: every release merge
