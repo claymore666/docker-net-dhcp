@@ -1298,6 +1298,31 @@ option the older one never did. None of that was visible before.
   meant to catch that all start from what the workflows invoke, so it
   was invisible to every one of them. The fourth rule closes that
   direction. (#724, #736)
+- The label taxonomy was consolidated once and has rotted twice since,
+  both times found by a person reading the tracker rather than by
+  anything going red. Nothing could catch it, because no file said which
+  labels may exist: `.github/issue-labeler.yml` and `ALLOWED_LABELS` are
+  *inputs* to the labeller, so a label missing from them is invisible to
+  the automation rather than forbidden, and the two lists could agree
+  with each other while both disagreed with the tracker. That is the
+  state that shipped. `.github/labels.yml` is now the declaration --
+  every label, its role, its description -- and `check-label-taxonomy.sh`
+  reads it in two modes. The half that is a property of the tree, that
+  the declaration is well formed and the labeller's two lists are subsets
+  of it, runs on every pull request and has been green since it merged.
+  The half that asks whether the tracker still matches needs the API, so
+  it runs daily -- and **it has not run once.** A workflow that only
+  schedules or dispatches does not exist to GitHub until it reaches the
+  default branch, so its first execution is the day after this release
+  merges. Its rules are driven through fixtures by a self-test, so what
+  is unobserved is the wiring rather than the logic. Writing that half
+  also turned up a defect in the neighbouring gate: it read the
+  allow-list with a regex in which `\s` matches a newline, so `\s+`
+  stepped over the blank line ending the block and swallowed the rest of
+  the file -- 108 entries where 8 were meant. It hid because that gate
+  only ever asked whether every rule label was *in* the allow-list, a
+  subset test that a polluted superset can only make pass more easily.
+  (#715, #716)
 
 ### What is not fixed here
 
