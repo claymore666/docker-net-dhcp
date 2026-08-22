@@ -8,6 +8,7 @@ import (
 	"errors"
 	"net"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/vishvananda/netlink"
@@ -250,5 +251,245 @@ func TestProbeAddressConflict_ReclaimsBeforeItBorrows(t *testing.T) {
 	}
 	if got := p.conflictProbeStaleAddrs.Load(); got != 1 {
 		t.Errorf("conflictProbeStaleAddrs: got %d, want 1", got)
+	}
+}
+
+// TestProbeAddressConflict_ABorrowedSourceIsNeverReclaimedWhileLive is
+// the one case the rest of this file could not reach: not whether
+// reclaim skips a held address -- five cases above already ask that --
+// but whether the address is HELD at every instant it is visible.
+//
+// The in-use set only protects the address while the hold covers the
+// window in which reclaim can see it, and that window is the address
+// being on the link. Two orderings put it outside:
+//
+//   - AddrAdd, then hold. The kernel has the address for the length of
+//     a netlink round trip while nothing holds it.
+//   - release, then AddrDel. The hold is gone while the address is
+//     still on the link.
+//
+// In either one a concurrent probe's reclaim finds all four conditions
+// satisfied -- our label, inside 169.254/16, a /32, not in use -- and
+// deletes a LIVE source, counting it as a leftover that was never
+// stale. The victim then keeps probing from an address no longer on the
+// link, and by #524 an ARP probe whose sender is not routable is
+// answered by nobody: the probe reports "no conflict" without having
+// asked, and the plugin hands out an address someone else is using. A
+// false negative in the duplicate-address check is a worse outcome than
+// the leak reclaim exists to fix.
+//
+// The interleaving is injected rather than raced. The reclaim is driven
+// synchronously from inside the netlink call that opens each window, so
+// the test pins the exact instant it means instead of hoping two
+// goroutines land on it; a racing version of this test would be red
+// sometimes and green in CI. What a second probe would do at that
+// instant is precisely what reclaimStaleProbeAddrs does, so calling it
+// there IS the concurrent probe.
+//
+// Only reclaim's deletions are recorded. The probe's own cleanup
+// deletes the same address on its way out, and counting that would make
+// the assertion true for the wrong reason.
+func TestProbeAddressConflict_ABorrowedSourceIsNeverReclaimedWhileLive(t *testing.T) {
+	cases := []struct {
+		name   string
+		window string
+	}{
+		{
+			name:   "while the kernel holds it and the borrow has not returned",
+			window: "add",
+		},
+		{
+			name:   "while the cleanup is removing it and it is still on the link",
+			window: "del",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			const parent = "parent0"
+			link := &fakeLink{typ: "device", attrs: netlink.LinkAttrs{Name: parent, Index: 0}}
+			stubLinkByName(t, func(string) (netlink.Link, error) { return link, nil })
+
+			p := &Plugin{}
+
+			// onLink models the kernel: what a concurrent probe's
+			// AddrList would return at this instant. Empty to begin
+			// with, so pickProbeSource finds nothing on-subnet and
+			// borrows a link-local source.
+			var mu sync.Mutex
+			var onLink []netlink.Addr
+			var borrowed string
+			var reclaiming bool
+			var reclaimDeleted []string
+
+			restoreList, restoreAdd, restoreDel := nlAddrList, nlAddrAdd, nlAddrDel
+			t.Cleanup(func() { nlAddrList, nlAddrAdd, nlAddrDel = restoreList, restoreAdd, restoreDel })
+
+			nlAddrList = func(netlink.Link, int) ([]netlink.Addr, error) {
+				mu.Lock()
+				defer mu.Unlock()
+				return append([]netlink.Addr(nil), onLink...), nil
+			}
+			nlAddrDel = func(l netlink.Link, a *netlink.Addr) error {
+				mu.Lock()
+				cidr := a.IPNet.String()
+				if reclaiming {
+					reclaimDeleted = append(reclaimDeleted, cidr)
+				}
+				kept := onLink[:0]
+				for _, existing := range onLink {
+					if existing.IPNet.String() != cidr {
+						kept = append(kept, existing)
+					}
+				}
+				onLink = append([]netlink.Addr(nil), kept...)
+				wantWindow := tc.window == "del" && !reclaiming
+				mu.Unlock()
+
+				// The del window: the address is still on the link as
+				// far as any other probe can tell, and the buggy
+				// ordering has already released the hold.
+				if wantWindow {
+					mu.Lock()
+					onLink = append(onLink, *a)
+					reclaiming = true
+					mu.Unlock()
+					p.reclaimStaleProbeAddrs(l)
+					mu.Lock()
+					reclaiming = false
+					for i, existing := range onLink {
+						if existing.IPNet.String() == cidr {
+							onLink = append(onLink[:i], onLink[i+1:]...)
+							break
+						}
+					}
+					mu.Unlock()
+				}
+				return nil
+			}
+			nlAddrAdd = func(l netlink.Link, a *netlink.Addr) error {
+				mu.Lock()
+				borrowed = a.IPNet.String()
+				onLink = append(onLink, *a)
+				reclaiming = tc.window == "add"
+				run := reclaiming
+				mu.Unlock()
+
+				// The add window: the kernel holds the address and the
+				// borrow has not returned to its caller yet.
+				if run {
+					p.reclaimStaleProbeAddrs(l)
+					mu.Lock()
+					reclaiming = false
+					mu.Unlock()
+				}
+				return nil
+			}
+
+			// The probe runs on past the borrow into addProbeRoute,
+			// which needs a real link, so it fails there -- which is
+			// what makes the deferred cleanup, and with it the del
+			// window, run. The error is expected; what matters is that
+			// the borrow happened and the cleanup ran.
+			_, err := p.probeAddressConflict(
+				context.Background(), parent,
+				net.IPv4(192, 168, 0, 50),
+				&net.IPNet{IP: net.IPv4(192, 168, 0, 0), Mask: net.CIDRMask(24, 32)},
+				net.HardwareAddr{0x02, 0x42, 0xac, 0x11, 0x00, 0x02},
+			)
+			if err == nil {
+				t.Fatal("want the probe to stop at the route it cannot add; it got further than this test can account for")
+			}
+
+			mu.Lock()
+			defer mu.Unlock()
+			if borrowed == "" {
+				t.Fatal("the probe never borrowed a source, so no window was opened and this test proves nothing")
+			}
+			if len(reclaimDeleted) != 0 {
+				t.Errorf("a concurrent reclaim deleted the LIVE borrowed source %v in the %s window.\n"+
+					"  The address is visible to another probe while nothing holds it, so all four reclaim\n"+
+					"  conditions pass and it is removed mid-probe -- #575 reintroduced by the cleanup written\n"+
+					"  for #575. The victim then probes from a source that is not on the link, whose ARP nobody\n"+
+					"  answers (#524), and reports no conflict without having asked.\n"+
+					"  Hold before the address can be seen and release after it cannot: hold, then AddrAdd;\n"+
+					"  AddrDel, then release.",
+					reclaimDeleted, tc.window)
+			}
+			if got := p.conflictProbeStaleAddrs.Load(); got != 0 {
+				t.Errorf("conflictProbeStaleAddrs: got %d, want 0 -- a live source was counted as a leftover", got)
+			}
+			if len(onLink) != 0 {
+				t.Errorf("the parent still carries %v after the probe returned; the borrow leaked", onLink)
+			}
+		})
+	}
+}
+
+// TestProbeAddressConflict_AFailedBorrowLeavesNoHold covers the error
+// path the ordering fix creates, which nothing else reaches: hold now
+// happens BEFORE AddrAdd, so an AddrAdd that fails leaves a hold with
+// no probe behind it.
+//
+// Dropping the release there is invisible in every other test and in
+// production for the life of one process: the address is unreclaimable
+// forever, because reclaim skips anything held and nothing will ever
+// release it. That is the leak #723 exists to fix, moved out of the
+// kernel and into a map -- worse than the original, since `ip addr del`
+// cannot reach it.
+//
+// The assertion is not "the map is empty" but "a later reclaim can
+// still take the address", which is the property operators have.
+func TestProbeAddressConflict_AFailedBorrowLeavesNoHold(t *testing.T) {
+	const parent = "parent0"
+	link := &fakeLink{typ: "device", attrs: netlink.LinkAttrs{Name: parent}}
+	stubLinkByName(t, func(string) (netlink.Link, error) { return link, nil })
+
+	p := &Plugin{}
+
+	var attempted string
+	var onLink []netlink.Addr
+	var deleted []string
+
+	restoreList, restoreAdd, restoreDel := nlAddrList, nlAddrAdd, nlAddrDel
+	t.Cleanup(func() { nlAddrList, nlAddrAdd, nlAddrDel = restoreList, restoreAdd, restoreDel })
+
+	nlAddrList = func(netlink.Link, int) ([]netlink.Addr, error) {
+		return append([]netlink.Addr(nil), onLink...), nil
+	}
+	nlAddrDel = func(_ netlink.Link, a *netlink.Addr) error {
+		deleted = append(deleted, a.IPNet.String())
+		return nil
+	}
+	nlAddrAdd = func(_ netlink.Link, a *netlink.Addr) error {
+		attempted = a.IPNet.String()
+		// The kernel took it and then failed -- the worst case for a
+		// dropped release, because the address really is on the link.
+		onLink = append(onLink, *a)
+		return errors.New("refused by the test, after the address landed")
+	}
+
+	if _, err := p.probeAddressConflict(
+		context.Background(), parent,
+		net.IPv4(192, 168, 0, 50),
+		&net.IPNet{IP: net.IPv4(192, 168, 0, 0), Mask: net.CIDRMask(24, 32)},
+		net.HardwareAddr{0x02, 0x42, 0xac, 0x11, 0x00, 0x02},
+	); err == nil {
+		t.Fatal("want the refused borrow to fail the probe")
+	}
+	if attempted == "" {
+		t.Fatal("the probe never attempted a borrow, so this test proves nothing")
+	}
+
+	// A later probe on the same parent, in the same process.
+	p.reclaimStaleProbeAddrs(link)
+
+	if len(deleted) != 1 || deleted[0] != attempted {
+		t.Errorf("a later reclaim deleted %v, want [%s].\n"+
+			"  The failed borrow left its hold in place, so the address it put on the parent can never be\n"+
+			"  reclaimed by this process -- and being in a map rather than on the link, `ip addr del` does\n"+
+			"  not reach it either.\n"+
+			"  Release the hold on the AddrAdd error path.",
+			deleted, attempted)
 	}
 }

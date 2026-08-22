@@ -114,12 +114,36 @@ func (p *Plugin) probeAddressConflict(ctx context.Context, parent string, ip net
 		return nil, fmt.Errorf("probe source address: %w", err)
 	}
 	if src.borrowed {
+		// HOLD BEFORE IT CAN BE SEEN, RELEASE AFTER IT CANNOT.
+		//
+		// The in-use set is what stops a concurrent probe's reclaim
+		// deleting a LIVE borrowed source, and reclaim's window is the
+		// address being on the link. So the hold has to cover that
+		// window at both ends, not sit inside it. Holding after AddrAdd
+		// leaves the address visible-and-unheld for the length of a
+		// netlink round trip, and releasing before AddrDel leaves it
+		// visible-and-unheld again -- and in either window all four
+		// reclaim conditions hold, so a concurrent probe deletes it and
+		// counts it as a leftover that was never stale.
+		//
+		// That is #575 reintroduced by the cleanup written for #575,
+		// and the victim does not merely lose an address: it keeps
+		// probing from a source no longer on the link, whose ARP
+		// nobody answers (#524), so the probe returns "no conflict"
+		// without having asked and the plugin hands out an address
+		// already in use. A silent false negative in the duplicate
+		// check is worse than the leak this reclaim exists to fix.
+		p.holdProbeAddr(src.addr.IPNet.String())
 		if err := nlAddrAdd(parentLink, src.addr); err != nil {
+			// Not optional. A failed borrow that keeps the hold leaks a
+			// permanent in-use entry, and the address -- if it did land
+			// -- becomes unreclaimable for the life of the process:
+			// the same leak, moved out of the kernel and into a map.
+			p.releaseProbeAddr(src.addr.IPNet.String())
 			return nil, fmt.Errorf("add probe source to %s: %w", parent, err)
 		}
-		p.holdProbeAddr(src.addr.IPNet.String())
 		defer func() {
-			p.releaseProbeAddr(src.addr.IPNet.String())
+			defer p.releaseProbeAddr(src.addr.IPNet.String())
 			if err := nlAddrDel(parentLink, src.addr); err != nil {
 				log.WithError(err).WithFields(log.Fields{
 					"parent": parent, "addr": src.addr.IPNet.String(),
@@ -441,6 +465,13 @@ func probeAddrLabel(parent string) string {
 // currently using is skipped. A crash takes the live set with it, which
 // is why everything with the label is stale after a restart and nothing
 // is stale during one.
+//
+// "Stale" is therefore a property of THIS PROCESS, not of the label:
+// the live set is per process, so two plugin processes sharing a parent
+// would each read the other's live sources as leftovers. Docker stops
+// the old plugin before starting the new one, so that does not arise
+// and there is no machinery here for it -- the sentence above just must
+// not be read as a claim about the label scheme.
 func (p *Plugin) reclaimStaleProbeAddrs(parentLink netlink.Link) {
 	parent := parentLink.Attrs().Name
 	label := probeAddrLabel(parent)
