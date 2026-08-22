@@ -1018,15 +1018,40 @@ counter's name, its help text and how it renders. It establishes
 nothing about whether anything ever increments it**, and it would have
 stayed green with both increment sites deleted.
 
-Both now have real observers: the two call sites were extracted to one
-`notePIDMismatch`, and `TestNotePIDMismatch_CountsTheEffect` in
-`pkg/plugin/dhcp_values_test.go` asserts each counter across six
-subtests. Four mutants of the counting die there, to **three** distinct
-subsets — and the collision is the interesting half rather than a
-rounding error: every subtest asserts *both* counters, so a mutant that
-bumps neither and a mutant that bumps the wrong one kill the identical
-four subtests. The suite catches both; it cannot tell you which one it
-caught. (Measured at `406a28d`, the commit that introduced the test.)
+Both now have real observers, and deliberately separate ones. The DNS
+refusal was extracted into `noteDNSPropagationPIDMismatch`, called from
+one place in `pkg/plugin/dhcp_manager.go`; the netns refusal is counted
+inline in `openSandboxNetNS`, which owns it. An earlier version had one
+method covering both, and that double-counted once #731's opener
+landed — which is why the split is the point rather than an accident of
+layout.
+
+`TestNoteDNSPropagationPIDMismatch_CountsTheEffect` in
+`pkg/plugin/dhcp_values_test.go` asserts both counters across five table
+cases, `netns_pid_mismatches` in the negative only. Its positive
+observer is `TestOpenSandboxNetNS_CountsAPIDMismatch` in
+`pkg/plugin/pid_mismatch_counters_test.go`, which drives the real
+refusal with a live PID that is emphatically not the container — the
+test process itself — and asserts the counter rather than the error.
+
+Four mutants of the DNS counting die to **three** distinct subsets.
+Dropping the increment and bumping the *wrong* counter kill the same
+three cases; `Store(1)` for `Add(1)` kills only "each mismatch counts,
+not just the first"; `==` for `errors.Is` kills only "a wrapped sentinel
+still counts".
+
+That collision is the interesting half, and it is narrower than it
+looks: two mutants turn the same tests red, but they do **not** say the
+same thing. Every case also asserts that this method leaves
+`netns_pid_mismatches` alone, so the wrong-counter mutant trips a second
+assertion — `netns_pid_mismatches = 1, want 0` — that the dropped
+increment never trips. The suite catches both *and* tells them apart,
+and the thing doing the telling is one extra line per case asserting the
+counter the code under test must not touch.
+
+    # re-derived against this tree
+    git grep -n 'noteDNSPropagationPIDMismatch' -- 'pkg/**/*.go'
+    go test ./pkg/plugin/ -run TestNoteDNSPropagationPIDMismatch_CountsTheEffect -v
 
 The general form is the one worth keeping, because it applies to every
 counter here: **an artifact that proves a counter renders is not an
@@ -1273,6 +1298,31 @@ option the older one never did. None of that was visible before.
   meant to catch that all start from what the workflows invoke, so it
   was invisible to every one of them. The fourth rule closes that
   direction. (#724, #736)
+- The label taxonomy was consolidated once and has rotted twice since,
+  both times found by a person reading the tracker rather than by
+  anything going red. Nothing could catch it, because no file said which
+  labels may exist: `.github/issue-labeler.yml` and `ALLOWED_LABELS` are
+  *inputs* to the labeller, so a label missing from them is invisible to
+  the automation rather than forbidden, and the two lists could agree
+  with each other while both disagreed with the tracker. That is the
+  state that shipped. `.github/labels.yml` is now the declaration --
+  every label, its role, its description -- and `check-label-taxonomy.sh`
+  reads it in two modes. The half that is a property of the tree, that
+  the declaration is well formed and the labeller's two lists are subsets
+  of it, runs on every pull request and has been green since it merged.
+  The half that asks whether the tracker still matches needs the API, so
+  it runs daily -- and **it has not run once.** A workflow that only
+  schedules or dispatches does not exist to GitHub until it reaches the
+  default branch, so its first execution is the day after this release
+  merges. Its rules are driven through fixtures by a self-test, so what
+  is unobserved is the wiring rather than the logic. Writing that half
+  also turned up a defect in the neighbouring gate: it read the
+  allow-list with a regex in which `\s` matches a newline, so `\s+`
+  stepped over the blank line ending the block and swallowed the rest of
+  the file -- 108 entries where 8 were meant. It hid because that gate
+  only ever asked whether every rule label was *in* the allow-list, a
+  subset test that a polluted superset can only make pass more easily.
+  (#715, #716)
 
 ### What is not fixed here
 
@@ -1291,9 +1341,14 @@ option the older one never did. None of that was visible before.
      at the tag. The query above excludes them.
 
      CAVEAT, and it is the trap: that command also returns the tracking
-     issues (#457, #699, #726, #732). Four issue numbers that look like
-     deferrals and are not. Drop them by hand; they close with the
-     milestone.
+     issues, which look like deferrals and are not. Drop them by hand;
+     they close with the milestone. Identify them by their role — an
+     umbrella issue that exists to hold a review's findings, usually
+     titled `Tracking:` — and not from a list written here. This caveat
+     used to name four numbers; two of them have since gained `in-dev`
+     and the query no longer returns them, so the list was over-warning
+     within days of being written. A count transcribed into prose goes
+     stale on its own; the role does not.
 
      Anything left after that is a real deferral, and the text below is
      then wrong and must be rewritten as a list. When this was written
