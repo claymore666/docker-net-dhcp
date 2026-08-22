@@ -122,6 +122,7 @@ OUT_OF_LANE=(
   "scripts/check-test-weakening.sh|same pull-request range and body, and its findings are waived by an issue reference in that body"
   "scripts/govulncheck-gate.sh|needs network access and a pinned govulncheck install; a local run would report a different vulnerability database than CI"
   "scripts/check-issue-ref.sh|needs the pull-request title and body plus a base..head range; none of the three exists locally, and the reference may legitimately live only in the body"
+  "scripts/check-coverage-floor.sh|compares the baseline at the merge base against this branch's, so it needs the base the PR is opened against; a local guess at that ref would judge the wrong pair of blobs"
 )
 
 lane_scripts() {

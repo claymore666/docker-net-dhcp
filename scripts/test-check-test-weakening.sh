@@ -68,7 +68,23 @@ run_case "a new t.Skip is waived by the Test-weakening trailer" "$BASE" 'package
 import "testing"
 func TestThing(t *testing.T) {
 	t.Skip("needs engine 28")
-}' "Skipped pending the engine requirement.\n\nTest-weakening: #125" 0
+}' "Skipped pending the engine requirement.
+
+Test-weakening: #125" 0
+
+# The waiver must be a trailer, at column 0. Unanchored, any commit or
+# PR body that quotes the trailer while explaining it switches the gate
+# off — which is how the sibling coverage-floor gate (#735) was caught
+# waiving itself on the very commit that introduced it.
+run_case "an indented mention of the trailer does not waive" "$BASE" 'package x
+import "testing"
+func TestThing(t *testing.T) {
+	t.Skip("flaky here")
+}' "The escape hatch is written:
+
+    Test-weakening: #125
+
+and this paragraph is only describing it." 1
 
 run_case "a bare issue mention does NOT waive it" "$BASE" 'package x
 import "testing"

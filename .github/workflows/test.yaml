@@ -562,6 +562,23 @@ jobs:
           printf '%s' "$PR_BODY" > "$RUNNER_TEMP/pr-body.md"
           bash scripts/check-test-weakening.sh \
             "$BASE_SHA..$HEAD_SHA" "$RUNNER_TEMP/pr-body.md"
+      # A coverage floor may not go down silently (#735). This belongs
+      # here rather than in coverage.yml for a scheduling reason: that
+      # workflow runs only on PRs into main, so a floor lowered on the
+      # way into dev reached the release PR having been measured by
+      # nothing, and the release then ratcheted against the lowered
+      # number. Comparing two git blobs needs no counters and no
+      # self-hosted runner, so the half that was dangerous can run on
+      # every PR while the expensive half stays a release gate.
+      - name: Check the diff for a lowered coverage floor
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          printf '%s' "$PR_BODY" > "$RUNNER_TEMP/pr-body-floor.md"
+          bash scripts/check-coverage-floor.sh \
+            "$BASE_SHA..$HEAD_SHA" "$RUNNER_TEMP/pr-body-floor.md"
 
   # Reachable-vulnerability scan. Known-and-reviewed findings without a
   # published fix live in .github/vuln-allowlist.txt; anything else
