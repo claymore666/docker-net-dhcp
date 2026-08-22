@@ -207,24 +207,24 @@ func leaseDeadline(data dhcp.Info) (time.Duration, bool) {
 // verbatim, and it is the conventional encoding for "permanent".
 const maxOption51Seconds = 0xFFFFFFFF
 
-// pidMismatchKind names which of the two PID-revalidation refusals is
-// being counted. It exists so notePIDMismatch can own the predicate
-// once instead of once per call site — the predicate, not the counter,
-// is the part that was duplicated and the part a future site would get
-// subtly wrong.
-type pidMismatchKind int
-
-const (
-	dnsPropagationMismatch pidMismatchKind = iota
-	netnsMismatch
-)
-
-// notePIDMismatch counts a refusal to act on a PID that turned out not
-// to belong to the container it was resolved for (#317).
+// noteDNSPropagationPIDMismatch counts a DNS propagation refused because
+// the PID it resolved turned out not to belong to the container it was
+// resolved for (#317).
 //
-// The pairing lives here rather than at the two call sites for the
-// reason observeLease does, and this pair is the evidence that the
-// reason is not theoretical. Both sites read:
+// # THIS METHOD USED TO COVER BOTH REFUSALS, AND MUST NOT AGAIN
+//
+// It was written against a tree where the netns refusal was counted at
+// its call site in Start, and it took a `kind` so one predicate served
+// both. #731 then moved the netns count INSIDE openSandboxNetNS, at the
+// chokepoint a caller cannot bypass — the better placement, and for the
+// same reason given below. Neither change conflicted textually and both
+// were green on their own head; rebased together they counted one
+// refusal TWICE, and TestCountingWrappers_AreTheOnlyCallers is what
+// said so. If a second kind is ever wanted here, check first whether
+// the operation it guards already has an opener that can own it.
+//
+// The pairing lives here rather than at the call site for the reason
+// observeLease does. The site read:
 //
 //	if errors.Is(err, errPIDNotContainer) && m.plugin != nil {
 //		m.plugin.<counter>.Add(1)
@@ -247,16 +247,11 @@ const (
 // The nil check is on plugin, not on the error: unit tests that do not
 // stand up a Plugin leave it nil (see dhcpManager.plugin), and the
 // refusal is still a refusal when there is no counter to bump.
-func (m *dhcpManager) notePIDMismatch(err error, kind pidMismatchKind) {
+func (m *dhcpManager) noteDNSPropagationPIDMismatch(err error) {
 	if !errors.Is(err, errPIDNotContainer) || m.plugin == nil {
 		return
 	}
-	switch kind {
-	case dnsPropagationMismatch:
-		m.plugin.dnsPropagationPIDMismatches.Add(1)
-	case netnsMismatch:
-		m.plugin.netnsPIDMismatches.Add(1)
-	}
+	m.plugin.dnsPropagationPIDMismatches.Add(1)
 }
 
 // observeLease folds one client event into the tracker and counts the
@@ -832,7 +827,7 @@ func (m *dhcpManager) propagateDNS(v6 bool, info dhcp.Info) {
 	}
 
 	if err := writeContainerResolvConf(pid, ctrID, info.DNSServers, info.SearchList, info.Domain); err != nil {
-		m.notePIDMismatch(err, dnsPropagationMismatch)
+		m.noteDNSPropagationPIDMismatch(err)
 		log.
 			WithError(err).
 			WithFields(m.logFields(v6)).
@@ -1565,7 +1560,6 @@ func (m *dhcpManager) Start(ctx context.Context) (err error) {
 	// openContainerNetNS.
 	m.nsHandle, err = m.openSandboxNetNS(ctx, ctr.State.Pid, ctrID, pollTime)
 	if err != nil {
-		m.notePIDMismatch(err, netnsMismatch)
 		return fmt.Errorf("failed to get sandbox network namespace: %w", err)
 	}
 
