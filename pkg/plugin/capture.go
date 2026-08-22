@@ -242,12 +242,20 @@ func (s *captureState) writeBody(path string, body []byte) {
 // already at that name -- but only ever by creating, never by opening
 // what is there.
 //
-// O_NOFOLLOW is not observable from the suite, and is here for the
-// window between the Remove and the retry rather than for anything a
-// test can reach: after ensureCaptureDir the only writers are root and
-// the directory's owner, who is the operator running
-// `make capture-fixtures`. It costs nothing and it means the flag says
-// what the function claims.
+// O_NOFOLLOW is REDUNDANT with O_EXCL, not a guard against a window
+// O_EXCL leaves open. That is a correction: this comment used to say it
+// covered the gap between the unlink and the retry, and re-deriving the
+// claim shows there is no such gap, because the retry uses this same
+// flags constant and O_CREAT|O_EXCL fails EEXIST on a symlink by
+// definition. Measured:
+//
+//	O_CREAT|O_EXCL, no NOFOLLOW, over a symlink -> EEXIST, target untouched
+//	O_CREAT alone, over a symlink               -> writes THROUGH it
+//
+// So O_NOFOLLOW is unreachable at both call sites, and that -- not a
+// weak suite -- is why no test observes it. It is kept so the flags
+// state the requirement outright rather than leaving a reader to infer
+// it from O_EXCL, and it costs nothing.
 func createCaptureFile(path string) (*os.File, error) {
 	const flags = os.O_WRONLY | os.O_CREATE | os.O_EXCL | unix.O_NOFOLLOW
 
