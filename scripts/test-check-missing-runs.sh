@@ -185,5 +185,84 @@ PATH="$dir/bin:$PATH" GATE_REPO=o/r GATE_BRANCHES='' bash "$CHECK" 20 >/dev/null
 [ "$?" = 0 ] && ok "GATE_BRANCHES empty skips the branch phase" || no "empty GATE_BRANCHES still reconciled branches"
 rm -rf "$dir"
 
+# --- the multi-commit push (#740) ------------------------------------
+#
+# GitHub creates one push-triggered run per push EVENT, at the tip only.
+# The gate used to demand a run keyed on every commit, so every rebase
+# and every stacked push made it unsatisfiable: 25 red runs out of 60,
+# in streaks that ended by ageing out rather than by anything being
+# fixed. These cases pin both directions of the replacement rule.
+#
+# The stub answers per-sha, because the whole point is that different
+# commits in one window have different run states.
+make_chain_gh() { # make_chain_gh <dir> <commits-tsv> <sha:states pairs...>
+    local dir="$1" commits="$2"; shift 2
+    local cases=""
+    local pair
+    for pair in "$@"; do
+        cases="${cases}  *\"head_sha=${pair%%:*}\"*) printf '%s\\n' '${pair#*:}' ;;
+"
+    done
+    mkdir -p "$dir/bin"
+    cat > "$dir/bin/gh" <<EOF
+#!/usr/bin/env bash
+args="\$*"
+case "\$args" in
+  *"pulls?state=open"*) echo '[]' ;;
+  *"commits?sha="*)
+     cat <<'J'
+$commits
+J
+     ;;
+${cases}  *"/runs?head_sha"*) : ;;
+  *"repo view"*) echo "o/r" ;;
+  *) echo "" ;;
+esac
+EOF
+    chmod +x "$dir/bin/gh"
+}
+
+run_chain() {
+    local dir; dir=$(mktemp -d)
+    make_chain_gh "$dir" "$@"
+    PATH="$dir/bin:$PATH" GATE_REPO=o/r GATE_BRANCHES=dev \
+        bash "$CHECK" 20 >"$dir/o" 2>&1
+    local rc=$?; cat "$dir/o"; rm -rf "$dir"; return $rc
+}
+
+# tip <- mid <- base, all old enough to flag. Only the tip has a run,
+# which is exactly what one `git push` of three commits produces.
+CHAIN="$(printf 'ccc333\t%s\tbbb222\nbbb222\t%s\taaa111\naaa111\t%s\t\n' \
+    "$OLD" "$OLD" "$OLD")"
+
+out=$(run_chain "$CHAIN" "ccc333:completed:success"); rc=$?
+[ "$rc" = 0 ] && ok "a 3-commit push with a run only on the tip is clean" || \
+  no "the non-tip commits of a single push were flagged (exit $rc): $out"
+
+# The negative control, and the reason this cannot simply be "only ever
+# check the tip": a tip whose own run was cancelled before any job
+# started is the #515 incident this gate was built for, and it must
+# still fail — with its two ancestors unflagged, since nothing tested
+# reaches them either but the tip is where the actionable report is.
+out=$(run_chain "$CHAIN" "ccc333:completed:cancelled"); rc=$?
+[ "$rc" = 1 ] && ok "a tip whose only run was cancelled still fails" || \
+  no "a cancelled tip went clean (exit $rc) — that is the incident this gate exists for: $out"
+
+# Coverage must reach past the window's youngest commit: a tip too new
+# to flag still covers what it contains, otherwise every merge would
+# flag its own parents for the length of the grace window.
+FRESH_CHAIN="$(printf 'ccc333\t%s\tbbb222\nbbb222\t%s\taaa111\naaa111\t%s\t\n' \
+    "$NEW" "$OLD" "$OLD")"
+out=$(run_chain "$FRESH_CHAIN" "ccc333:completed:success"); rc=$?
+[ "$rc" = 0 ] && ok "a tip inside the grace window still covers its ancestors" || \
+  no "ancestors of a fresh tested tip were flagged (exit $rc): $out"
+
+# A merge commit has two parents and a tested merge covers both sides.
+MERGE_CHAIN="$(printf 'mmm999\t%s\tccc333,ddd444\nccc333\t%s\t\nddd444\t%s\t\n' \
+    "$OLD" "$OLD" "$OLD")"
+out=$(run_chain "$MERGE_CHAIN" "mmm999:completed:success"); rc=$?
+[ "$rc" = 0 ] && ok "a tested merge covers both of its parents" || \
+  no "one side of a tested merge was flagged (exit $rc): $out"
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
