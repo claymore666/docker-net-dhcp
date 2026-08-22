@@ -31,6 +31,13 @@
 # is the presence half of the claim; running the suite is the other
 # half, and both are in the lane.
 #
+# It also accepts only the settings it names. A fixture isolated by
+# `GIT_CONFIG_GLOBAL=/dev/null` is strictly safer — that also defeats
+# tag.forceSignAnnotated, aliases and templates, none of which setting
+# the named key undoes — and this gate still reports it as missing the
+# key. That is deliberate for now: one recognised form keeps the rule
+# legible, and a fixture is free to do both.
+#
 # Usage: check-selftest-fixtures.sh
 # Env:   FIXTURE_ROOT  repository to inspect (default: the repo this
 #                      script lives in) — the seam the self-test drives.
@@ -96,12 +103,27 @@ fi
 # one of these fixtures spells it `commit.gpgSign`, which is correct and
 # which a case-sensitive gate reports as missing. A gate that flags a
 # working script is waived, and a waived gate is not a gate.
-has() { grep -qi -- "$1" "$ROOT/$2"; }
+has() { grep -qiE -- "$1" "$ROOT/$2"; }
+
+# MATCH THE VALUE, NOT JUST THE KEY. This used to be a substring search
+# for `commit.gpgsign`, which `git config commit.gpgsign true` satisfies
+# — while the label it pushes onto `missing` says `false`, so the intent
+# was never in doubt and the pattern simply did not carry it.
+#
+# That is not a cosmetic gap. A fixture with signing ON does not FAIL
+# the suite, it HANGS it: the key wants a hardware touch that never
+# comes on a runner, which is the exact outcome this gate exists to
+# prevent. The gate inspected the right file and read the wrong half of
+# the line.
+#
+# `[[:space:]=]+` covers both spellings in the tree — `config k false`
+# and `-c k=false` — and the optional quote covers `config k "false"`.
+NO_SIGN='[[:space:]=]+["'\''"]?false'
 
 findings=0
 for f in "${FIXTURES[@]}"; do
     missing=()
-    has 'commit\.gpgsign' "$f" || missing+=("commit.gpgsign false")
+    has "commit\.gpgsign${NO_SIGN}" "$f" || missing+=("commit.gpgsign false")
     has 'user\.email'     "$f" || missing+=("user.email")
     has 'user\.name'      "$f" || missing+=("user.name")
 
@@ -111,7 +133,7 @@ for f in "${FIXTURES[@]}"; do
     # a rule about what a fixture actually does.
     if grep -vE '^[[:space:]]*#' "$ROOT/$f" 2>/dev/null \
          | grep -E 'git[A-Za-z0-9_]*.*[[:space:]]tag[[:space:]].*[[:space:]]-[ams]' >/dev/null; then
-        has 'tag\.gpgsign' "$f" || missing+=("tag.gpgsign false")
+        has "tag\.gpgsign${NO_SIGN}" "$f" || missing+=("tag.gpgsign false")
     fi
     if [ "${#missing[@]}" -ne 0 ]; then
         findings=$((findings + 1))
