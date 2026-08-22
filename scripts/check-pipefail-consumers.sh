@@ -48,18 +48,24 @@
 #   exemption with a timestamp. So it is not written here as a claim.
 #   It is an arm below, with fixtures, and it fails the build.
 #
-#   The consumers, and this list is the SPEC — a manifest with a missing
-#   member is how the first version got here:
+#   THE SPEC IS THE PROPERTY, NOT THE LIST: anything that reads the
+#   substitution's status BEFORE THE NEXT COMMAND RUNS. The list below
+#   is examples. It has been one member short twice — three consumers,
+#   then four when `$?` was added — and each fix appended a member and
+#   left the form of the claim intact. A list will keep being one short;
+#   the property will not.
 #
-#     1. `set -e`                                — arm four.
-#     2. `x=$(... | head -1) || handler`         — reads it explicitly.
-#     3. `if x=$(... | head -1); then`, and `&&` — the same.
-#     4. `$?`                                    — reads it afterwards.
+#     `set -e`                                — arm four.
+#     `x=$(... | head -1) || handler`         — reads it explicitly.
+#     `if x=$(... | head -1); then`, and `&&` — the same.
+#     `$?`                                    — reads it afterwards, and
+#                                               a comment or a blank
+#                                               line does not reset it.
 #
-#   Number four has no instance in the tree today. Neither did the
-#   two-dot receiver in check-release-notes-symbols.sh, which is exactly
-#   why it is here: the enumeration is the spec, and the cheapest time
-#   to close a member is while writing the arm next to it.
+#   `$?` has no instance in the tree today. Neither did the two-dot
+#   receiver in check-release-notes-symbols.sh, which is exactly why it
+#   is here: the cheapest time to close a member is while writing the
+#   arm next to it.
 #
 #   So the rule is not "a producer that can SIGPIPE". It is `$(... |
 #   head)` WHOSE EXIT STATUS IS CONSUMED BY ANYTHING — by an operator,
@@ -70,13 +76,23 @@
 #   WHAT ARM FOUR DELIBERATELY DOES NOT SEE, both documented rather than
 #   parsed, because an undocumented limit is the next stale exemption:
 #
-#     - a pipeline inside a nested shell string, `sh -c "a | head -1"`:
-#       it runs in another shell, so this script's `-e` does not reach
-#       it, and whether THAT shell sets pipefail is not visible here.
-#       Detected by an odd number of `"` before the pipe.
+#     - a pipeline inside a nested shell string, `sh -c "a | head -1"`
+#       or `sh -c 'a | head -1'`: it runs in another shell, so this
+#       script's `-e` does not reach it, and whether THAT shell sets
+#       pipefail is not visible here. Detected by an odd count of
+#       EITHER quote character before the pipe — counting only one made
+#       the arm flag the other spelling of the same safe construct.
 #     - a nested substitution, `$( ... $(...) | head)`. The occurrence
 #       scanner stops at the first `)`, so the outer form is not
 #       matched at all.
+#     - the PRICE of counting both quote characters: an apostrophe
+#       inside a double-quoted string, `x=$(grep "it's" f | head -1)`,
+#       leaves an odd `'` count and reads as a nested shell. A false
+#       negative, narrow and in the quiet direction. It is written down
+#       rather than parsed because the parse is a shell lexer, and this
+#       gate is not going to become one — the previous sentence in this
+#       header that was a claim instead of an arm is the reason the
+#       whole file exists.
 #
 #   `|| true` is excluded. It reads the status in order to throw it
 #   away, which is the exemption stated out loud, and the tree's single
@@ -170,33 +186,59 @@ for f in "${FILES[@]}"; do
               }
               # Is the pipe that feeds head at the substitution as
               # written, or inside a string being handed to ANOTHER
-              # shell? An odd number of double quotes before it means
-              # the latter, and this script\47s -e does not reach there.
+              # shell? An odd count of either quote character before it
+              # means the latter, and this script\47s -e does not reach
+              # there.
+              #
+              # BOTH characters, because `sh -c "a | head"` and
+              # `sh -c \47a | head\47` are the same construct and the
+              # same measured non-risk. Counting only one of them made
+              # the arm exempt the double-quoted nesting and FLAG the
+              # single-quoted one -- a false positive, so it failed in
+              # the safe direction, but the red named a remedy for a
+              # pipeline that was never at risk. Comment lines never
+              # reach here, so an unbalanced apostrophe in prose cannot
+              # reach this count.
               #
               # match() writes RSTART and RLENGTH, which the caller\47s
               # occurrence loop is still using, so they are saved and
               # put back. Forgetting that turns the loop into an
               # infinite one, silently.
-              function toplevel(t,   before, n, saveS, saveL, r) {
+              function toplevel(t,   before, saveS, saveL, r) {
                   saveS = RSTART; saveL = RLENGTH; r = 1
                   if (match(t, /[|][ \t]*head/) > 0) {
                       before = substr(t, 1, RSTART - 1)
-                      n = gsub(/"/, "\"", before)
-                      if (n % 2) r = 0
+                      if (gsub(/"/, "\"", before) % 2) r = 0
+                      if (gsub(/\47/, "\47", before) % 2) r = 0
                   }
                   RSTART = saveS; RLENGTH = saveL
                   return r
               }
-              /^[ \t]*#/ { pend = 0; qpend = 0; next }
+              # A COMMENT IS NOT A COMMAND, AND NEITHER IS A BLANK LINE.
+              # Neither resets `$?`, so the `$?` arm has to see past
+              # them: the pending substitution survives, and the next
+              # line that actually runs is the one that decides.
+              #
+              # `pend` is the opposite -- a backslash continuation
+              # cannot span a comment or a blank -- so it is dropped
+              # here rather than carried.
+              #
+              # This is the same defect as the continued-line case one
+              # commit earlier: a reader counting LINES where the shell
+              # counts COMMANDS, and the two differ over exactly these
+              # two kinds of line.
+              /^[ \t]*#/ { pend = 0; next }
+              /^[ \t]*$/ { pend = 0; next }
               {
                 if (pend && NR == pend + 1 && $0 ~ /^[ \t]*(\|\||&&)/ \
                     && $0 !~ /^[ \t]*\|\|[ \t]*true([ \t;)]|$)/) {
                     printf "%d:%s\n", pend, pendline
                 }
-                # Consumer four on the FOLLOWING line. `rc=$?` two lines
-                # down reads a different status; only the next one can
-                # still be reading this substitution.
-                if (qpend && NR == qpend + 1 && $0 ~ /[$][?]/) {
+                # Consumer four, on the next line that RUNS. No NR
+                # arithmetic: the comment and blank rules above already
+                # skipped everything that is not a command, and qpend
+                # is cleared below, so only that one line is examined.
+                if (qpend && $0 ~ /[$][?]/) {
                     printf "%d:%s\n", qpend, qpendline
                 }
                 pend = 0; qpend = 0

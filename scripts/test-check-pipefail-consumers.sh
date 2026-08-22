@@ -256,6 +256,54 @@ x=\$(producer | ${H} -1)
 echo \"\$x\"
 rc=\$?"
 
+# A COMMENT IS NOT A COMMAND, AND NEITHER IS A BLANK LINE. The first
+# version of the arm keyed on LINE adjacency, which stands in for the
+# command adjacency the shell actually uses -- and the two differ over
+# exactly these two kinds of line. `$?` is still 141 across both.
+run_case "a \$? after a comment line is reported" 1 \
+    "scripts/x.sh:::set -uo pipefail
+x=\$(producer | ${H} -1)
+# a comment is not a command
+if [ \"\$?\" -ne 0 ]; then echo bad; fi"
+
+run_case "a \$? after a blank line is reported" 1 \
+    "scripts/x.sh:::set -uo pipefail
+x=\$(producer | ${H} -1)
+
+rc=\$?
+echo \"\$rc\""
+
+# ...and the bound survives the widening: with a real command in
+# between, the comment after it is still not a command, but the status
+# being read is the echo's.
+run_case "a comment does not carry \$? past an intervening command" 0 \
+    "scripts/x.sh:::set -uo pipefail
+x=\$(producer | ${H} -1)
+echo \"\$x\"
+# a comment is not a command
+rc=\$?"
+
+# =====================================================================
+# THE NESTED-SHELL GUARD IS SYMMETRIC ON QUOTE STYLE. It counted only
+# double quotes, so the same construct in the other spelling was
+# FLAGGED -- a false positive, so it failed in the safe direction, but
+# a red naming a remedy for a pipeline that was never at risk is a red
+# nobody can act on, and the documented escape (`|| true`) would have
+# discarded nothing.
+run_case "a nested shell string in SINGLE quotes is not arm four's" 0 \
+    "scripts/x.sh:::set -e
+brip=\$(docker exec \"\$c\" sh -c 'ip -4 addr | ${H} -1')
+echo \"\$brip\""
+
+# The preservation control for that widening: balanced single quotes
+# before the pipe are NOT a nested shell, and the arm must still fire.
+# Without this, counting apostrophes could exempt the whole arm and
+# every case above would still pass.
+run_case "balanced single quotes before the pipe stay arm four's" 1 \
+    "scripts/x.sh:::set -e
+brip=\$(grep 'foo' /etc/x | ${H} -1)
+echo \"\$brip\""
+
 dir=$(mktemp -d)
 if PIPE_ROOT="$dir" bash "$GATE" >/dev/null 2>&1; then
     no "a non-git directory should not report clean"
