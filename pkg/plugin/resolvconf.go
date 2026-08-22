@@ -26,15 +26,46 @@ var errPIDNotContainer = errors.New("pid no longer belongs to the expected conta
 // cgroupNamesContainer reports whether the contents of a
 // /proc/<pid>/cgroup file place that task inside container ctrID.
 //
-// A substring match on the container ID, and that is deliberate: the ID
-// is 64 hex characters, so it cannot collide with anything else in the
-// path, while the path around it varies by cgroup driver (`/docker/<id>`
-// for cgroupfs, `docker-<id>.scope` for systemd), by cgroup version
-// (v1 writes one line per controller) and by namespace (a private
-// cgroup namespace prefixes the path). Parsing that shape would be
-// brittle in the direction that matters -- a parse that failed to
-// recognise a valid layout would refuse a legitimate container and
-// silently disable DNS propagation.
+// IT IS A FILTER, NOT AN AUTHORIZATION. A true answer means "this is
+// not obviously a different container", never "this is that container."
+// Every caller that acts on the strength of it must carry its own proof
+// of identity; openContainerProc is what does.
+//
+// # The reasoning this replaces, and why it was wrong
+//
+// This comment used to say the substring match was deliberate because
+// "the ID is 64 hex characters, so it cannot collide with anything else
+// in the path". That is true of ACCIDENTAL collision and false of
+// deliberate collision, and the difference is the whole question. The
+// argument silently assumed /proc/<pid>/cgroup contains only names the
+// system chose. It does not: cgroup path components are named by
+// whoever owns the subtree, and an ordinary login shell owns one.
+//
+//	systemd-run --user --scope --unit="docker-<64 hex>.scope" sleep 60
+//
+// No root, no Docker socket, no group membership. That places any
+// chosen container ID in an unprivileged user's cgroup path, and this
+// function then returns true for that task. The ID's length buys
+// nothing against someone who is copying it rather than guessing it.
+//
+// The match is also over the whole FILE rather than a field of a line,
+// so the ID counts wherever it lands -- including a cgroup v1 controller
+// list, which is not a path at all.
+//
+// # Why it is still a substring match here
+//
+// Narrowing this to compare whole "/"-separated segments of the path
+// field is scheduled with the netns-identity work (#785), NOT because
+// it is expensive but because ON ITS OWN IT BUYS NOTHING: the same
+// one-line systemd-run above names an exact leaf segment just as easily
+// as a substring. Narrowing alone moves the guard from trivially
+// defeated to defeated by one command, which is tidiness dressed as a
+// fix. It is worth doing beside a real identity check and misleading
+// without one, so it ships with that or not at all.
+//
+// TestCgroupNamesContainer_DelegatedSubtreeIsAcceptedByDesign asserts
+// the hole as a TRUE against this code, so it goes red the day someone
+// believes a narrowing closed it.
 //
 // An empty ctrID is never a match. It is what a future caller that
 // forgot to thread the ID through would pass, and "check nothing" is
