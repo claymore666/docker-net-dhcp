@@ -138,8 +138,14 @@ follows from two properties of the `dhcpcd` directives underneath.
 
 ## How a lease is checked against the segment
 
-Since v1.6.0 the plugin asks, after each IPv4 lease, whether some *other*
-device already holds the address it was just given (#524). The counters
+Since v1.6.0 the plugin asks, when an endpoint is created and gets an
+IPv4 address, whether some *other* device already holds it (#524). The
+probe fires from `CreateEndpoint` — both the bridge path and the
+parent-attached one — and from nowhere else: `checkAddressConflict` has
+exactly those two call sites, and nothing on the renew/rebind path calls
+it. So the check covers the address a new endpoint is about to be handed,
+not every address it ever holds. An address that changes mid-life is not
+re-probed. The counters
 and the operator-facing rules are in the
 [driver reference](reference.md#pluginhealth); this is the mechanism, and
 every part of it is a constraint rather than a preference.
@@ -151,11 +157,17 @@ every part of it is a constraint rather than a preference.
   "nobody holds it" with a squatter sitting on the address. An ordinary
   datagram to the discard port makes the kernel do the ARP instead; its
   delivery is irrelevant, the packet exists to resolve L2.
-- **That also keeps the plugin inside its declared privileges.** A real
-  RFC 5227 ARP probe needs `AF_PACKET` and therefore `CAP_NET_RAW`, which
-  `config.json` does not grant — adding it would force every operator to
-  re-approve the plugin's privileges on upgrade. Ordinary traffic gets
-  the same answer with `CAP_NET_ADMIN` alone. (`dhcpcd` itself runs with
+- **It also stays inside what `config.json` asks for.** A real RFC 5227
+  ARP probe needs `AF_PACKET` and therefore `CAP_NET_RAW`, which
+  `config.json` does not request; ordinary traffic gets the same answer
+  from what it does. Note the premise this reasoning was originally
+  written on is **wrong**: Docker composes a plugin's capabilities
+  additively over the OCI defaults, so the process holds `CAP_NET_RAW`
+  already (`CapEff` on a running plugin decodes to seventeen
+  capabilities, not three). A `AF_PACKET` probe would therefore need no
+  new grant and no re-approval — see [#725]. The datagram probe stands
+  on its own merits above; it does not stand on a capability we do not
+  have. (`dhcpcd` itself runs with
   `-A`, which turns *its* conflict detection off; this is what replaces
   it.)
 - **The probe runs from the parent link, and compares MACs.** Our own
@@ -240,11 +252,33 @@ working. `parent_link_wait_timeouts` counts ones that gave up and
 proceeded anyway; they may still succeed, but the budget has stopped
 covering a reclaim's duration.
 
-The rule is enforced by the compiler, not by review: attaching a child
-link requires a guard value only the gate can produce, so a path that
-skipped it does not compile. An accounting file covers the one way
-around — a direct `netlink.LinkAdd`, which bridge mode needs, having no
-parent to contend for.
+The rule is enforced by **two** mechanisms, and it is worth being exact
+about where each one stops, because the guard type exists precisely to
+replace a prose guarantee about a property nothing checked.
+
+The compiler holds one half: `addChildLink` takes a guard value, so a
+path that never asks for one does not compile. It does **not** hold the
+other half. "Only `lockParent` makes a guard" is not something Go can
+express — the struct's zero value is valid, so `addChildLink(&parentGuard{},
+link)` compiles and holds nothing, and `lockParent` returns exactly that
+literal on its own no-parent path, so the shape is already in the file as
+a pattern to copy. The realistic route to it is not malice: a new
+parent-attached call site, a compiler demanding a guard, and the zero
+value sitting right there.
+
+That half is enforced by `scripts/check-parent-gate-accounting.sh`, which
+fails the build on a `parentGuard` constructed anywhere but `lockParent`.
+A second accounting file, `.github/linkadd-accounting.txt`, covers the way
+around the type entirely — a direct `netlink.LinkAdd`, which bridge mode
+needs, having no parent to contend for.
+
+Nor does the guard say *which* parent it is for, so one taken on one NIC
+and handed to a link on another compiles. That is a deliberate
+non-goal — closing it means a runtime comparison, trading a compile error
+for a log line, on a mistake no current call site can make. The comment
+at the top of `pkg/plugin/parent_gate.go` is the authority on all of
+this; if this section and that comment ever disagree, the comment is
+right.
 
 ## How state outlives a process
 
@@ -634,3 +668,4 @@ and the fixtures are what showed it.
 
 - [Driver reference](reference.md) — every option, counter, and behaviour
 - [Bridge mode](bridge-mode.md) and [macvlan / ipvlan](parent-attached-modes.md) setup
+[#725]: https://github.com/claymore666/docker-net-dhcp/issues/725

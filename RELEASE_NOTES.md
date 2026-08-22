@@ -370,6 +370,75 @@ only new installs. The plugin's `-logfile` stays world-readable at
 `O_NOFOLLOW`, so a symlink swapped in before a `SIGHUP` re-open cannot
 decide where root appends. (#708)
 
+### What the plugin persists survives a power cut, and says what wrote it
+
+The files under `/var/lib/net-dhcp` are how a network's configuration
+outlives a plugin upgrade. They were written atomically — write a
+temporary file, then rename it over the old one — which is enough to
+survive the plugin being killed, because a rename either happened or
+did not. It is **not** enough to survive the host losing power: the
+rename can reach the filesystem's metadata while the bytes it points at
+are still only in the page cache, and the file comes back empty. A
+network whose options file comes back empty is a network the plugin
+can no longer describe.
+
+Those writes are now flushed to the disk before the rename, and the
+containing directory is flushed after it, so the file is durable and
+so is the name that points at it. The lease ledger gets the same
+treatment.
+
+`tombstones.json` deliberately does **not**, and the reason is written
+into the code next to the decision: a tombstone lives for 60 seconds
+and exists to stop a container's own restart from being handed a
+different address. A host that lost power is not going to complete
+that restart within the window, so paying an `fsync` per endpoint
+teardown would buy nothing.
+
+**The per-network options file now carries a schema version.** Older
+builds wrote a bare object; a future one that changes the shape had no
+way to say so, and the plugin would have read the new file with the old
+rules and quietly believed the wrong thing about a network. The version
+is a single added field, so a file written today is still readable by
+the build that shipped before it.
+
+A file written by a **newer** plugin than the one reading it is refused
+rather than guessed at — and, this being the part that matters, **left
+exactly as it was found**. Falling back to asking the Docker daemon
+costs one API call; overwriting a file this build admits it cannot
+understand costs whatever the newer build put there. The same rule now
+covers any unreadable options file, not just a version mismatch: the
+plugin only writes the file back when there was nothing there to begin
+with.
+
+**A corrupt `tombstones.json` is kept instead of being thrown away.**
+It was parsed, and on a parse error the whole set was silently dropped
+and rewritten from empty — so the evidence of whatever had gone wrong
+in `STATE_DIR` was destroyed by the next endpoint teardown. It is now
+renamed aside to `tombstones.json.corrupt-<timestamp>` and the plugin
+carries on from an empty set. Nothing ever deletes that file; it is the
+only record of what was lost, and it is small.
+
+That is counted as `tombstone_quarantines`, and it is the **fifth**
+counter that flips `healthy` to `false` — see below.
+
+**One more file from #708 was still world-readable.** Tightening the
+lease ledger tightened the *active* file. Rotating it is a rename, and
+a rename does not change a file's permissions, so `leases.jsonl.1` kept
+whatever an older build had given it — indefinitely, because nothing
+ever opens the rotated generation again. The population that affects is
+exactly the one #708's note promised the most to: a host with a rotated
+ledger is a host that has been running a while. It is tightened on
+startup now.
+
+Finally, all of the above is conditional on `STATE_DIR` pointing at the
+directory the plugin's manifest bind-mounts from the host. If it has
+been repointed, these files live inside the plugin's own filesystem,
+which `docker plugin rm` and every upgrade destroy — so a network's
+configuration does not survive an upgrade and the schema version
+guards nothing. That is a legitimate thing to do for a test rig and a
+silent disaster otherwise, so the plugin now says so once at startup
+instead of leaving it to be discovered at the next upgrade. (#724)
+
 ### Choosing which DHCP server a network leases from
 
 On a segment with more than one DHCP server the plugin took whichever
@@ -429,7 +498,9 @@ Prometheus cannot scrape a UNIX socket, so there is also an optional TCP
 listener:
 
 ```
+docker plugin disable <plugin>
 docker plugin set <plugin> METRICS_ADDR=127.0.0.1:9099
+docker plugin enable <plugin>
 ```
 
 **It is off by default, and should stay off unless you scrape it.** The
