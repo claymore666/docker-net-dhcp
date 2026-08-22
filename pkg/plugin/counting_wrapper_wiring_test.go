@@ -50,9 +50,26 @@ func TestCountingWrappers_AreTheOnlyCallers(t *testing.T) {
 				"signal that a server's lease time was overridden, which /metrics publishes and " +
 				"nothing else records",
 		},
-		// The row above cost one line, which was the point of the
-		// table: the next instance of this shape adds a row rather
-		// than another near-identical test.
+		{
+			callee:  "netnsPIDMismatches",
+			wrapper: "openSandboxNetNS",
+			why: "the counter is the refusal itself -- a PID that no longer belongs to the container is " +
+				"not opened and IS counted, in one place, so a second increment site would mean a " +
+				"second refusal path and operators reading netns_pid_mismatches could no longer tell " +
+				"which one fired",
+		},
+		// The three rows above cost one line each, which was the point
+		// of the table: the next instance of this shape adds a row
+		// rather than another near-identical test.
+		//
+		// The last row names a FIELD, not a function, and that is
+		// deliberate. Its increment is `...netnsPIDMismatches.Add(1)`,
+		// and a row keyed on `Add` would be useless: `Add` has 56
+		// production call sites in this package, one of them a
+		// sync.WaitGroup. Keying on the counter asks the question that
+		// actually matters -- what may touch this counter -- and it is
+		// the only form in which a counter incremented INLINE (rather
+		// than by a helper of its own) can be held at all.
 	}
 
 	for _, tc := range tests {
@@ -106,14 +123,37 @@ func assertSoleCaller(t *testing.T, callee, wrapper, why string) {
 				if !ok {
 					return true
 				}
-				// Both the bare call and a qualified/method form.
+				// A subject is matched as the thing being CALLED --
+				// bare or qualified -- or as the RECEIVER whose method
+				// is being called.
+				//
+				// The second form is what lets a row name a counter
+				// FIELD rather than a function: `netnsPIDMismatches`
+				// matches `m.plugin.netnsPIDMismatches.Add(1)`. Naming
+				// the method instead would be useless, because `Add`
+				// has 56 production call sites in this package and one
+				// of them is a sync.WaitGroup.
+				//
+				// Both forms answer the same question -- what must only
+				// be reached through the wrapper -- so they share a
+				// column rather than needing a second one. A name that
+				// happened to be both would match both, which is
+				// stricter, not looser.
+				//
+				// The receiver form counts only MUTATING methods. A
+				// counter is read wherever it is published --
+				// healthSnapshot loads every one of them -- and a rule
+				// that called those call sites violations would be
+				// unsatisfiable, so the first person to hit it would
+				// delete the row. The invariant is about who may WRITE
+				// the counter.
 				switch f := call.Fun.(type) {
 				case *ast.Ident:
 					if f.Name == callee {
 						callers = append(callers, fn.Name.Name+" ("+fset.Position(call.Pos()).String()+")")
 					}
 				case *ast.SelectorExpr:
-					if f.Sel.Name == callee {
+					if f.Sel.Name == callee || (trailingName(f.X) == callee && mutates(f.Sel.Name)) {
 						callers = append(callers, fn.Name.Name+" ("+fset.Position(call.Pos()).String()+")")
 					}
 				}
@@ -150,4 +190,32 @@ func assertSoleCaller(t *testing.T, callee, wrapper, why string) {
 	if len(callers) > 1 {
 		t.Errorf("%s has %d production call sites, want 1: %v", callee, len(callers), callers)
 	}
+}
+
+// trailingName returns the last identifier of a receiver expression --
+// "netnsPIDMismatches" for m.plugin.netnsPIDMismatches, "wg" for wg --
+// or "" for anything else. It is how a row names the counter a wrapper
+// guards instead of the method that increments it.
+func trailingName(e ast.Expr) string {
+	switch x := e.(type) {
+	case *ast.Ident:
+		return x.Name
+	case *ast.SelectorExpr:
+		return x.Sel.Name
+	}
+	return ""
+}
+
+// mutates reports whether an atomic method WRITES its receiver. The set
+// is closed on purpose: a method outside it is treated as a read, so a
+// new mutator added to sync/atomic would make a row go quiet rather than
+// red. That is caught by the presence half of the assertion only if the
+// row's sole write used the new method -- so if this list ever needs a
+// name, add it here rather than working around the row.
+func mutates(method string) bool {
+	switch method {
+	case "Add", "Store", "Swap", "CompareAndSwap":
+		return true
+	}
+	return false
 }
