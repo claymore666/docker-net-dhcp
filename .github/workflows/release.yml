@@ -399,6 +399,10 @@ jobs:
           echo "Signed ${GHCR_NAME}@${GHCR_DIGEST}"
           if [ "${HAS_HUB_CREDS}" = "true" ]; then
             HUB_DIGEST=$(docker buildx imagetools inspect "${HUB_NAME}:${TAG}" --format '{{.Manifest.Digest}}')
+            # Exported for the attestation-parity check below, which
+            # needs BOTH digests: one side alone cannot tell an absent
+            # attestation from an unreachable endpoint.
+            echo "hub_digest=${HUB_DIGEST}" >> "$GITHUB_OUTPUT"
             cosign sign --yes "${HUB_NAME}@${HUB_DIGEST}"
             echo "Signed ${HUB_NAME}@${HUB_DIGEST}"
           fi
@@ -465,20 +469,49 @@ jobs:
       # is stored as an OCI referrer, and Docker Hub's referrers support
       # is weaker than GHCR's. Plausible is not measured.
       #
-      # WHAT WOULD SETTLE IT: add the same step for HUB_NAME, gated on
-      # HAS_HUB_CREDS, and run one rc. Either it pushes -- and the
-      # asymmetry was accidental and should go -- or it fails on the
-      # referrer push, and that failure is the reason, recorded here
-      # where the next reader is standing. Until one of those has
-      # happened, users pulling from Hub have a cosign signature and no
-      # provenance attestation, and that is a real difference between
-      # the two registries rather than a cosmetic one.
+      # WHAT IS NOW MEASURED, on the shipped v1.7.1: the two registries
+      # carry DIFFERENT digests, GHCR's has one attestation and Docker
+      # Hub's attestations endpoint returns 404. So the consequence is
+      # not "Hub users cannot discover the attestation through registry
+      # referrers" -- it is that no provenance attestation for the Hub
+      # bytes exists anywhere, neither as a referrer nor in GitHub's own
+      # store, for everyone who installs from Docker Hub. cosign signs
+      # the Hub digest, so authenticity holds; provenance does not.
+      #
+      # The FIX is v1.9.0 work: the asymmetry is already out in the wild
+      # on v1.7.1 and earlier, so it is not this release's to change.
+      # What lands here is the OBSERVER --
+      # scripts/check-attestation-parity.sh, run below -- which pins the
+      # state so it cannot drift in either direction unnoticed, and which
+      # flips into the proof that the v1.9.0 fix worked instead of being
+      # deleted by it.
       - name: Attest image provenance (GHCR)
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ${{ env.GHCR_NAME }}
           subject-digest: ${{ steps.signimg.outputs.ghcr_digest }}
           push-to-registry: true
+
+
+      # Pin the asymmetry described above, and prove the pin was measured.
+      #
+      # The GHCR row is the positive control, not decoration: "Docker Hub
+      # has no attestation" and "I could not ask" are the same observation
+      # from outside -- a bad token, a rate limit and a genuine absence all
+      # return 404 -- so a check asserting only the Hub row passes hardest
+      # exactly when it is most broken. Every branch is driven offline by
+      # scripts/test-check-attestation-parity.sh, including the ones a
+      # release can never reach.
+      #
+      # An rc reaches this step, so the first execution is a dry run.
+      - name: Check attestation parity across registries
+        if: steps.hub-push.outputs.pushed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          GHCR_DIGEST: ${{ steps.signimg.outputs.ghcr_digest }}
+          HUB_DIGEST: ${{ steps.signimg.outputs.hub_digest }}
+        run: bash scripts/check-attestation-parity.sh
 
       - name: Upload signed artifacts for the release job
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -636,6 +669,9 @@ jobs:
           echo "Signed ${GHCR_NAME}@${GHCR_DIGEST}"
           if [ "${HAS_HUB_CREDS}" = "true" ]; then
             HUB_DIGEST=$(docker buildx imagetools inspect "${HUB_NAME}:${ARM_TAG}" --format '{{.Manifest.Digest}}')
+            # Exported for the attestation-parity check below. Same
+            # reason as the amd64 job: two digests, or no verdict.
+            echo "hub_digest=${HUB_DIGEST}" >> "$GITHUB_OUTPUT"
             cosign sign --yes "${HUB_NAME}@${HUB_DIGEST}"
             echo "Signed ${HUB_NAME}@${HUB_DIGEST}"
           fi
@@ -674,16 +710,39 @@ jobs:
             sbom-arm64.spdx.json
             sbom-arm64.cdx.json
 
-      # Same GHCR-only asymmetry as the amd64 job, same absent reason --
-      # see the note there. Recorded in both places on purpose: a
-      # comment on one of two identical steps is a comment somebody
-      # deletes as a duplicate.
+      # Same GHCR-only asymmetry as the amd64 job, and it is measured
+      # rather than assumed -- see the note there for what was found on
+      # v1.7.1 and why the fix is v1.9.0. Recorded in both places on
+      # purpose: a comment on one of two identical steps is a comment
+      # somebody deletes as a duplicate.
       - name: Attest image provenance (GHCR)
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ${{ env.GHCR_NAME }}
           subject-digest: ${{ steps.signimg.outputs.ghcr_digest }}
           push-to-registry: true
+
+
+      # Pin the asymmetry described above, and prove the pin was measured.
+      #
+      # The GHCR row is the positive control, not decoration: "Docker Hub
+      # has no attestation" and "I could not ask" are the same observation
+      # from outside -- a bad token, a rate limit and a genuine absence all
+      # return 404 -- so a check asserting only the Hub row passes hardest
+      # exactly when it is most broken. Every branch is driven offline by
+      # scripts/test-check-attestation-parity.sh, including the ones a
+      # release can never reach.
+      #
+      # Same reasoning as the amd64 job; the arm64 tag is a separate
+      # push with its own two digests, so it needs its own verdict.
+      - name: Check attestation parity across registries
+        if: steps.hub-push-arm.outputs.pushed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          GHCR_DIGEST: ${{ steps.signimg.outputs.ghcr_digest }}
+          HUB_DIGEST: ${{ steps.signimg.outputs.hub_digest }}
+        run: bash scripts/check-attestation-parity.sh
 
       - name: Upload signed artifacts for the release job
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
