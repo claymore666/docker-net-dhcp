@@ -64,13 +64,15 @@ re-accepting it.
 The release that got reviewed by people rather than only by tools —
 three times, by three different pairs of eyes, and each pass found things
 the one before it had read past. The first was a security review of the
-trust boundaries (#457, indexed by #699): seventeen findings, all
-seventeen fixed here. The second was an architecture review of `dev`
-after those fixes landed (#726), which found ten lifecycle faults —
-seven fixed here, three carried to v1.9.0, and six of the seven present
-in v1.7.1 and every release before it. The third read
-the CI machinery itself (#732) and found gates reporting success over
-input they had never looked at. Alongside all of that: a network can now
+trust boundaries (#457, indexed by #699): **sixteen** findings — five in
+the first round and eleven in the second — all sixteen fixed here. The
+second was an architecture review of `dev` after those fixes landed,
+which found **ten** lifecycle faults: #720–#724, filed individually, and
+#727–#731, tracked together as #726. All ten are fixed in this release,
+and six of them are verified present in v1.7.1 — they predate this cycle
+entirely. The third read the CI
+machinery itself (#732) and found gates reporting success over input
+they had never looked at. Alongside all of that: a network can now
 say which DHCP server it will lease from, the health counters are
 scrapeable by Prometheus, and the plugin's own state survives a power
 cut.
@@ -446,18 +448,25 @@ only new installs. The plugin's `-logfile` stays world-readable at
 `O_NOFOLLOW`, so a symlink swapped in before a `SIGHUP` re-open cannot
 decide where root appends. (#708)
 
-### The second review, and ten faults older than this cycle
+### The second review, and ten faults most of which predate this cycle
 
 The security fixes above were merged and then `dev` was read again, this
 time for architecture rather than for trust boundaries. That pass found
-ten lifecycle faults. Seven are fixed here and three are carried to
-v1.9.0 (named at the end of this section), and the thing worth saying
-about the seven up front is that **six of them are verified present on
-`main` as well** — the seventh was introduced by one of the security
-fixes above and exists in `dev` only. They are, in the main, not this
-cycle's mistakes. They are what a second reader found in code that had
-already been reviewed once, by someone looking for a different kind of
-thing.
+ten lifecycle faults, and they reached the tracker as two batches:
+#720–#724 filed one by one, and #727–#731 grouped under #726. **All ten
+are fixed in this release** — the count belongs to the review, not to
+either issue, which is worth stating because #726 names only its own
+five.
+
+The seven described below are merged. Of those, **six are verified
+present on `main` as well**: #720, #721, #722, #724, #727 and #728. The
+seventh, #729, was introduced by one of the security fixes above and
+exists in `dev` only. So they are, in the main, not this cycle's
+mistakes — they are what a second reader found in code that had already
+been reviewed once, by someone looking for a different kind of thing.
+
+The remaining three — #723, #730 and #731 — are in flight rather than
+deferred, and were still unmerged when this was written.
 
 The pass also recorded two structural notes that are not blockers and
 are not fixed here: `plugin.go` grew again this cycle and its three
@@ -906,10 +915,15 @@ nothing about whether anything ever increments it**, and it would have
 stayed green with both increment sites deleted.
 
 Both now have real observers: the two call sites were extracted to one
-`notePIDMismatch`, and `pkg/plugin/dhcp_values_test.go:777` and `:780`
-assert each counter across six subtests, with four mutants dying to four
-different subsets of them. (At the time of writing that work is on an
-unmerged branch, not on `dev`.)
+`notePIDMismatch`, and `TestNotePIDMismatch_CountsTheEffect` in
+`pkg/plugin/dhcp_values_test.go` asserts each counter across six
+subtests. Four mutants of the counting die there, to **three** distinct
+subsets — and the collision is the interesting half rather than a
+rounding error: every subtest asserts *both* counters, so a mutant that
+bumps neither and a mutant that bumps the wrong one kill the identical
+four subtests. The suite catches both; it cannot tell you which one it
+caught. (At the time of writing that work is on an unmerged branch, at
+`406a28d`, not on `dev`.)
 
 The general form is the one worth keeping, because it applies to every
 counter here: **an artifact that proves a counter renders is not an
@@ -1147,8 +1161,10 @@ option the older one never did. None of that was visible before.
 
 ### What is not fixed here
 
-<!-- RE-DERIVE THIS LIST AT TAG TIME. It was true when written and the
-     person running the tag will not be the person who wrote it:
+<!-- RE-CHECK AT TAG TIME. This section now claims that NOTHING was
+     carried, which is a stronger claim than a list and fails the same
+     way. The person running the tag will not be the person who wrote
+     it, so verify rather than inherit:
 
        gh api 'repos/claymore666/docker-net-dhcp/issues?milestone=22&state=open&per_page=100' \
          --jq '.[] | select(.pull_request == null)
@@ -1162,25 +1178,34 @@ option the older one never did. None of that was visible before.
      CAVEAT, and it is the trap: that command also returns the tracking
      issues (#457, #699, #726, #732). Four issue numbers that look like
      deferrals and are not. Drop them by hand; they close with the
-     milestone. -->
+     milestone.
 
-Three findings from the reviews above are carried to v1.9.0 rather than
-rushed into this one, and they are named because a review that ships
-only its easy half is not a review.
+     Anything left after that is a real deferral, and the sentence below
+     is then wrong and must be rewritten as a list. When this was
+     written #723, #730 and #731 were the ones in flight; if any of them
+     did not land, they belong here by name. -->
 
-- **The conflict probe's borrowed link-local is never reclaimed after an
-  interrupted probe** (#723).
-- **The `/metrics` `family="ipv4"` series can fabricate a counter
-  reset** (#730) — a scrape artefact, so the surface most likely to be
-  believed by an alerting rule.
-- **The server-policy ladder divides a fixed budget with no per-tier
-  floor** (#731).
+**Every finding from all three reviews is fixed in this release.** No
+defect was carried, and a fault this cycle introduced was fixed this
+cycle rather than triaged forward.
 
-Two structural items are deferred with them and are worth naming
-separately, because neither is a defect anyone can point at: the five
-independent decisions about whether a lease may be handed back (#720
-above), and the growing set of invariants held by a shell gate rather
-than by a type. Both are recorded in #726.
+What is deferred is two structural observations, and they are worth
+naming separately precisely because neither is a defect anyone can point
+at:
+
+- **The release invariant is decided at five sites, in prose.** Whether
+  it is safe to hand a lease back to the DHCP server is settled
+  independently at five places (#720 above). Four were right. Collapsing
+  them to one predicate touches a file that was being edited
+  concurrently, so it is v1.9.0's.
+- **A growing set of invariants is held by a shell gate rather than by a
+  type.** `scripts/` grew faster than production Go this cycle, and
+  several of the new gates exist to reconcile facts that are duplicated
+  rather than to check something a type could not express. That is a
+  reasonable answer to a release deadline and it is a deferral, not a
+  resolution.
+
+Both are recorded in #726.
 
 ### With thanks to
 
