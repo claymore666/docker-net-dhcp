@@ -122,19 +122,75 @@ done < <(printf '%s' "$prs" | jq -r '.[] | [.number, .head, .branch, .updated, .
 
 branch_checked=0
 
+# Coverage bookkeeping for the reachability walk below (#740). A plain
+# newline-delimited string rather than an associative array: this script
+# targets the same shell everywhere the gate lane runs, and the set is
+# at most BRANCH_COMMITS entries per branch.
+nl=$'\n'
+covered=""
+
+is_covered() {
+    case "$covered" in
+        *"${nl}${1}${nl}"*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# Merge commits have two parents and both are ancestors of a tested
+# child, so both are covered. Splitting on commas is why the listing
+# asks for the parent shas joined that way.
+cover_parents() {
+    local p
+    for p in ${1//,/ }; do
+        [ -n "$p" ] || continue
+        is_covered "$p" || covered="${covered}${p}${nl}"
+    done
+}
+
 # Branch heads (#515). A run that exists is not the question here — a
 # cancelled, zero-job run exists too, and that is exactly what a burst
 # of merges leaves behind.
+#
+# THE QUESTION IS REACHABILITY, NOT PER-COMMIT RUNS (#740). This walk
+# used to demand a run keyed on every one of the last N commits. GitHub
+# Actions creates one push-triggered run per push EVENT, at the tip
+# commit only, so every non-tip commit of any multi-commit push — a
+# rebase, a stacked branch, a fast-forward — was unsatisfiable by
+# construction. The gate was red on 25 of its last 60 runs, in streaks
+# of 8 to 11 hours that ended only when the commits aged out of the
+# window: recovery by forgetting, not by fixing.
+#
+# That is not a harmless false alarm. This is the one detector built to
+# catch CI lying about whether something ran, and it had been screaming
+# into an empty room for two days. A detector nobody can act on is
+# worse than no detector, because it teaches the reader to skip the one
+# signal that was meant to be unskippable.
+#
+# What the maintainer actually needs to know is whether a commit was
+# ever inside a tree that got tested. A commit reachable from a tested
+# descendant was: the suite checked out that descendant, and it
+# contains this commit. So coverage propagates from a tested commit to
+# its ancestors, and only commits that no tested descendant reaches are
+# genuinely untested — which still includes the case the gate exists
+# for, a branch tip whose own run was cancelled before any job started.
+#
+# Parents come from the same listing, so this costs no extra API call,
+# and a commit already covered is never queried at all.
 for br in $BRANCHES; do
     commits=$(gh api "repos/${REPO}/commits?sha=${br}&per_page=${BRANCH_COMMITS}" \
-                --jq '.[] | [.sha, .commit.committer.date] | @tsv' 2>/dev/null) || {
+                --jq '.[] | [.sha, .commit.committer.date, ([.parents[].sha] | join(","))] | @tsv' 2>/dev/null) || {
         echo "  branch ${br}: could not list commits — UNKNOWN, not clean" >&2
         missing=$((missing + 1))
         continue
     }
     [ -z "$commits" ] && continue
 
-    while IFS=$'\t' read -r sha cdate; do
+    # Newest first, which is the order the API returns and the order
+    # coverage has to travel: a parent is always older than its child,
+    # so a single pass carries every tested commit down to its
+    # ancestors.
+    covered="${nl}"
+    while IFS=$'\t' read -r sha cdate parents; do
         [ -z "$sha" ] && continue
 
         cdate_s=$(date -u -d "$cdate" +%s 2>/dev/null) || {
@@ -143,9 +199,13 @@ for br in $BRANCHES; do
             continue
         }
         age_min=$(( (now - cdate_s) / 60 ))
-        [ "$age_min" -lt "$GRACE_MIN" ] && continue
 
-        branch_checked=$((branch_checked + 1))
+        if is_covered "$sha"; then
+            # A tested descendant already reached this commit: the tree
+            # that ran contained it. No query, nothing to report.
+            cover_parents "$parents"
+            continue
+        fi
 
         # status+conclusion per run, so "cancelled before any job
         # started" can be told apart from "ran and had an opinion".
@@ -167,15 +227,27 @@ for br in $BRANCHES; do
 $states
 EOF
 
-        if [ -z "$executed" ]; then
-            if [ -z "$states" ]; then
-                why="no ${WORKFLOW} run at all"
-            else
-                why="only cancelled/skipped ${WORKFLOW} run(s): $(printf '%s' "$states" | tr '\n' ' ')"
-            fi
-            echo "  ${br} ${sha:0:8} committed ${age_min}m ago has ${why}"
-            missing=$((missing + 1))
+        if [ -n "$executed" ]; then
+            branch_checked=$((branch_checked + 1))
+            covered="${covered}${sha}${nl}"
+            cover_parents "$parents"
+            continue
         fi
+
+        # Untested, and no tested descendant reaches it. The grace
+        # window is applied here rather than at the top of the loop
+        # because a commit too young to flag can still be the tested
+        # descendant that covers everything beneath it.
+        [ "$age_min" -lt "$GRACE_MIN" ] && continue
+
+        branch_checked=$((branch_checked + 1))
+        if [ -z "$states" ]; then
+            why="no ${WORKFLOW} run at all"
+        else
+            why="only cancelled/skipped ${WORKFLOW} run(s): $(printf '%s' "$states" | tr '\n' ' ')"
+        fi
+        echo "  ${br} ${sha:0:8} committed ${age_min}m ago has ${why}, and no tested descendant"
+        missing=$((missing + 1))
     done <<EOF
 $commits
 EOF
