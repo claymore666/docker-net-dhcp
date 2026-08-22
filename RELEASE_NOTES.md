@@ -519,45 +519,66 @@ three agree only once the tag is dereferenced, and an invitation
 that fails under the command a reader will actually type is worse
 than no invitation.
 
-Resolving the tag is only half of driving it. For five of the six the
-defect *is* the absence of a mechanism, so the fix's distinctive token
-being absent at `v1.7.1^{commit}` is the proof:
+Resolving the tag is only half of driving it. For four of the six —
+#722, #724, #727 and #728 — the defect *is* the absence of a mechanism,
+so the fix's distinctive token being absent at `v1.7.1^{commit}` is the
+whole proof. For #720 and #721 the token is **present** at the tag and
+the defect is what surrounds it: a call made unconditionally that needed
+a guard, and a function that is never called at all.
 
 | # | grep at `v1.7.1^{commit}` | what it shows |
 |---|---|---|
-| #720 | `spawnOrphanRelease` in `pkg/plugin/dhcp_manager.go` | called **unconditionally** at `:1335` on the Start-failed path; the fix guards it on `leaving` |
+| #720 | `spawnOrphanRelease` in `pkg/plugin/dhcp_manager.go` | two sites; the Start-failed path at `:1335` calls it **unconditionally** and the fix guards it on `leaving`. The sibling at `:1415` is a different path and is left alone |
 | #721 | `rememberEndpoint` inside `recoverOneEndpoint` (`plugin.go:1261`) | the function exists and calls it **zero** times |
 | #722 | `Setpgid`, `SweepOrphans` | neither exists; `client.go:303` is a bare `exec.Command` |
 | #724 | `.Sync()`, `schemaVersion` in `pkg/plugin/state.go` | neither; the file writes with `os.Rename` at `:161` and `:224` |
 | #727 | `checkStoredOptions` | absent, while `CreateNetwork` at `:285` does validate — so validation was create-time only |
 | #728 | `net.ParseIP(event.Data.Gateway)` | absent; `event_builder.go:250`/`:252` assign the gateway unvalidated |
 
-**#721 is the one that shows why the others are not enough.** `git grep
-fingerprint` at the tag returns twenty hits in `plugin.go` and reads as
-*present, therefore not the defect* — which ends the investigation in
-the wrong direction. The defect is a missing **call at one site**, so
-the grep has to run inside `recoverOneEndpoint`'s body. A name-level
-grep answers a name-level question, and most of these defects are not
-name-level.
+**#721 is the one that shows why a name-level grep is not enough — but
+the misleading token is `fingerprint`, not `rememberEndpoint`.**
+`git grep -ci fingerprint` at the tag returns twenty matching lines in
+`plugin.go` (six without `-i`) and reads as *present, therefore not the
+defect*, which ends the investigation in the wrong direction. The
+function name is the easy case and settles outright: `rememberEndpoint`
+appears exactly twice at the tag, a doc comment at `:886` and the
+definition at `:890`, and is **called nowhere**. The lesson survives in
+the direction that matters — the defect is a missing call, and a grep
+for the *concept* reports the concept present.
 
-Three of the ten are this cycle's rather than older: #729, introduced
-by one of the security fixes above, and #730 and #731, which are defects
-in code that ships here for the first time — see below. The remaining
-seven — the six verified above, plus #723 — are what a second reader
-found in code that had already been reviewed once, by someone looking
-for a different kind of thing.
+By age, three of the ten are this cycle's: #729, introduced by one of
+the security fixes above, and #730 and #731, which are defects in code
+that ships here for the first time. The older seven are #720, #721,
+#722, #723, #724, #727 and #728 — what a second reader found in code
+that had already been reviewed once, by someone looking for a different
+kind of thing.
 
-The remaining three — #723, #730 and #731 — complete the ten, and ship
-in this release with the seven enumerated above. Their ages differ, and the
-difference is drivable rather than asserted: `pkg/plugin/conflict_probe.go`
-exists at `v1.7.1^{commit}`, so **#723 predates the cycle**. Neither of
-the other two surfaces does — `git grep -c metrics v1.7.1^{commit} --
-pkg/plugin/` and the same query for the server-policy tokens both return
-nothing, while `LeasesObtained` returns hits at the tag and the policy
-tokens return five files on `dev`, so the absences are real rather than
-a mistyped path. **#730 lives in `/metrics` and #731 in the server-policy
-ladder, and both of those ship for the first time here** — a defect
-cannot be older than the code it lives in.
+**That split is not the one the table above makes**, and the two are
+easy to confuse because they are the same ten issues cut two ways. The
+table settles six — #720, #721, #722, #724, #727 and #728 — with a grep
+at the tag. #723, #730 and #731 are the ones it does not reach, so
+#723 is in the older group but not in the table, and #729 is in this
+cycle's group but not among #723, #730 and #731. A bare "the other
+seven" or "the remaining three" would therefore point at a different
+set depending on which split the reader had in mind, which is why every
+group in this section is named by its members.
+
+The ages of #723, #730 and #731 are drivable rather than asserted.
+`pkg/plugin/conflict_probe.go` exists at `v1.7.1^{commit}`, so **#723
+predates the cycle**. Neither of the other two surfaces does:
+
+    git grep -c   'metrics'        'v1.7.1^{commit}' -- pkg/plugin/   # nothing
+    git grep -c   'LeasesObtained' 'v1.7.1^{commit}' -- pkg/plugin/   # endpoints.go:4   CONTROL
+    git grep -cEi 'server_polic|serverpolic|dhcp_server|preferred_server|deny_server' \
+                  'v1.7.1^{commit}' -- pkg/                           # nothing
+    git grep -cEi 'server_polic|serverpolic|dhcp_server|preferred_server|deny_server' \
+                  origin/dev -- pkg/                                  # 5 files          CONTROL
+
+Every absence is paired with a control, because an empty result from a
+mistyped pathspec looks exactly like an absence. **#730 lives in
+`/metrics` and #731 in the server-policy ladder, and both of those ship
+for the first time here** — a defect cannot be older than the code it
+lives in.
 
 The pass also recorded two structural notes that are not blockers and
 are not fixed here: `plugin.go` grew again this cycle and its three
@@ -1303,14 +1324,23 @@ option the older one never did. None of that was visible before.
     planner recomputes desired state from scratch, a reference that
     contributes nothing becomes an instruction to strip `in-dev` from
     issues that are in dev. The other demanded a check-run GitHub never
-    creates, and had been red for 25 of the 60 runs preceding `c139419`
-    — 42%, in streaks. Naming the window matters: the same query over a
-    later 60 runs returns a different number and both are right. Since
-    the fix the last eight scheduled runs on `main` are green, the
-    oldest at `2026-08-22T17:30:27Z`, and every failure in the window
-    predates it — verified by execution rather than by merge, which is
-    the only thing that distinguishes a detector that was repaired from
-    one that was merged. (#739, #740)
+    creates, and had been red for 34 of the 60 runs between
+    `2026-08-20T14:48Z` and `2026-08-22T13:39Z` — 57%, in streaks. The
+    endpoints are given rather than an anchor and a count because "the
+    last 60" names a different set an hour later: three separate 60-run
+    windows in this workflow's history each contain exactly 25 failures,
+    so an anchored count does not identify a window.
+
+    The repair has **unit** evidence and no execution evidence, and the
+    two are worth separating because the stronger one is the easy thing
+    to claim. `scripts/test-check-missing-runs.sh` ran in the fixing
+    PR's own lane. The repaired detector has never executed in the
+    scheduled role this paragraph is about: `missing-runs.yml` checks
+    out with no `ref:`, so a `schedule` run gets the default branch, and
+    every run it has ever had — all of them on `main`, by that cause —
+    executed `main`'s copy, which does not carry the fix. Green runs on `main` after the merge are evidence
+    that the *old* detector stopped failing, which is not a fact about
+    this change at all. (#739, #740)
   - **The new gate on the dependency-advisory path.** `allow-ghsas` in
     `.github/dependency-review-config.yml` carried advisories that
     `.github/vuln-allowlist.txt` had already rejected, so
