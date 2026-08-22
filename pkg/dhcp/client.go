@@ -140,6 +140,25 @@ const (
 	mkdirBin = "/bin/mkdir"
 )
 
+// shBin is the ABSOLUTE path to the shell unshare execs.
+//
+// It was a bare "/bin/sh" literal in the argv until now, which made it
+// the one binary in this package that no constant named. That mattered
+// for a reason that has nothing to do with PATH — the literal was
+// already absolute, so nothing was resolved through PATH and there was
+// no bug in the running code. It mattered because the parity check
+// against the Dockerfile derives what the image must provide from the
+// package's constants, and a value with no constant is a value that
+// derivation cannot see. /bin/sh was therefore executed on every lease
+// and guaranteed by nothing, silently, for the same reason mount and
+// mkdir were: the sweep looked at names, and this had none.
+//
+// Alpine's /bin/sh is a symlink to /bin/busybox, and it is named for
+// the shell rather than for busybox for the same reason mountBin is —
+// if the base image ever ships a real shell here, this constant stays
+// correct.
+const shBin = "/bin/sh"
+
 // workDirPrefix names every dhcpcd work directory this plugin creates.
 //
 // It is not decoration. dhcpcd's `-f <workdir>/dhcpcd.conf` puts the
@@ -417,9 +436,15 @@ func NewDHCPClient(iface string, opts *DHCPClientOptions) (*DHCPClient, error) {
 	// Wait target it directly. `sh -c '... exec "$0" "$@"'` passes the
 	// dhcpcd argv as $0/$@, avoiding any quoting of paths.
 	dargs := renderArgs(params)
-	wrapped := append([]string{unsharePath, "-m", "/bin/sh", "-c", mountPrep()}, dargs...)
+	wrapped := append([]string{unsharePath, "-m", shBin, "-c", mountPrep()}, dargs...)
 
-	cmd := exec.Command(wrapped[0], wrapped[1:]...)
+	// unsharePath, not wrapped[0]. They are the same string — wrapped is
+	// built one line up with unsharePath at index 0 — but an index
+	// expression names no binary, so nothing reading this file, and no
+	// check reading its AST, can say which program this starts. Naming it
+	// here costs nothing and is what lets the Dockerfile parity check
+	// resolve the exec rather than report that it cannot.
+	cmd := exec.Command(unsharePath, wrapped[1:]...)
 	// Give the child its own process group.
 	//
 	// Two reasons, both about signals reaching the wrong process. A

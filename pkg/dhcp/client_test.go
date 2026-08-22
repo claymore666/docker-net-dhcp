@@ -575,21 +575,65 @@ func TestFinish_WithoutStartIsSafe(t *testing.T) {
 // The literal pins in TestMountPrep_RemountsProcSysRW say the string
 // has not drifted; they cannot say it is right, and before this change
 // they pinned the bare forms — which is how a test written to stop
-// drift ends up holding the wrong value still. This one goes red for a
-// command word this file has never seen.
+// drift ends up holding the wrong value still.
+//
+// # WHAT THIS TEST UNIQUELY CONTRIBUTES, AND WHAT IT DOES NOT
+//
+// Not much, and the honest statement is short. Mutate either of the two
+// commands mountPrep names today back to a bare `mount` or `mkdir` and
+// TestMountPrep_RemountsProcSysRW goes red as well, because its literal
+// pins hold those exact spellings. Both tests catch both mutants.
+//
+// The one thing only this test catches is a command word the file has
+// NEVER SEEN: a fifth command, added later, spelled bare. The pins
+// cannot go red for a string they were never given, and that is the
+// entire margin. It is worth a test because that is exactly how #707
+// arrived — three times, each time as a word nobody had looked at yet.
+//
+// # THE SPLIT IS THE POINT
+//
+// FieldsFunc over `;`, `&` and `|`, not Split on `;`.
+//
+// Every one of those characters ENDS a command in sh, so the word after
+// one is a fresh command word that the shell will resolve through PATH.
+// Splitting on `;` alone reads `a && b` as a single statement and looks
+// only at `a` — so a command appended with `&&`, `||`, `|` or `&` is
+// invisible to it, and invisible in the specific way that reads as
+// PASSING.
+//
+// That is the same defect as the one this test exists to catch, one
+// level up. The audit looked at `$0` because `$0` was the word it was
+// looking at; a Split(";") version of this test looks at the first word
+// of each `;` because that is the word it is looking at. mountPrep uses
+// only `;` today, so this change moves nothing — it removes the way the
+// fourth instance would arrive.
 //
 // `exec` is skipped because it is a shell builtin: there is no PATH
 // lookup to pin, and its argument is $0, which is dhcpcdBin.
 func TestMountPrep_NamesEveryBinaryAbsolutely(t *testing.T) {
-	for _, stmt := range strings.Split(mountPrep(), ";") {
+	prep := mountPrep()
+	words := 0
+	for _, stmt := range strings.FieldsFunc(prep, func(r rune) bool {
+		return r == ';' || r == '&' || r == '|'
+	}) {
 		fields := strings.Fields(stmt)
 		if len(fields) == 0 || fields[0] == "exec" {
 			continue
 		}
+		words++
 		if !strings.HasPrefix(fields[0], "/") {
 			t.Errorf("mountPrep runs %q, resolved through PATH by the shell; "+
 				"name it absolutely as dhcpcdBin and unsharePath are\n---\n%s",
-				fields[0], mountPrep())
+				fields[0], prep)
 		}
+	}
+	// The loop body is a rule about command words that exist, so it is
+	// satisfied completely by there being none — which is what a
+	// mountPrep rewritten into a form this splitter cannot read would
+	// look like, and it would look green.
+	if words < 4 {
+		t.Errorf("found %d command words in mountPrep, want at least 4; either it stopped "+
+			"preparing a mount it used to prepare, or it is now written in a form this "+
+			"test cannot read and is checking less than it reports\n---\n%s", words, prep)
 	}
 }
