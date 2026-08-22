@@ -415,6 +415,62 @@ func familyPairs() []familyPair {
 	}
 }
 
+// assertFamilyPairsCoverProduction reconciles the pairs this test walks
+// against the family-split metrics production actually renders.
+//
+// The first form of this guard compared len(pairs) against the literal
+// 6. Both halves of that comparison live in this file and are edited
+// together, so it could only catch someone editing familyPairs() and
+// forgetting the number — it was blind to the case it was written for,
+// a SEVENTH family-split metric appearing in metricDefs(). Measured:
+// adding one there leaves this test green and reds only
+// TestMetrics_GoldenExposition, whose message says to regenerate the
+// golden. A signal that names the wrong remedy gets discharged, and
+// the new counter ships outside the load-once invariant.
+//
+// Compare the NAMES in both directions and print the difference, the
+// way a golden conflict is resolved. A count — even a derived one —
+// would pass two disjoint sets of six.
+func assertFamilyPairsCoverProduction(t *testing.T, pairs []familyPair) {
+	t.Helper()
+
+	rendered := map[string]bool{}
+	for _, d := range metricDefs() {
+		if d.v4field == "" && d.v6field == "" {
+			continue
+		}
+		name := metricPrefix + d.name
+		if d.counter {
+			name += "_total"
+		}
+		rendered[name] = true
+	}
+	// Absent is not zero: with no family-split metric recognised at
+	// all, both directions below pass over nothing and report a clean
+	// reconciliation of two empty sets.
+	if len(rendered) == 0 {
+		t.Fatalf("metricDefs() reported no family-split metrics at all — the two " +
+			"directions below would agree vacuously")
+	}
+
+	walked := map[string]bool{}
+	for _, fp := range pairs {
+		walked[fp.metric] = true
+	}
+	for name := range rendered {
+		if !walked[name] {
+			t.Errorf("%s is family-split in metricDefs() but absent from familyPairs(), so "+
+				"nothing here holds it to the load-once invariant (#730)", name)
+		}
+	}
+	for name := range walked {
+		if !rendered[name] {
+			t.Errorf("%s is in familyPairs() but production no longer renders it "+
+				"family-split — this test is walking a metric that does not exist", name)
+		}
+	}
+}
+
 // TestMetrics_FamilySeriesSurviveConcurrentBumps is the regression test
 // for #730, written against the condition that produced the defect: a
 // manager goroutine bumping a family counter while a scrape is inside
@@ -448,10 +504,7 @@ func familyPairs() []familyPair {
 //     whole accumulated count as a rate spike.
 func TestMetrics_FamilySeriesSurviveConcurrentBumps(t *testing.T) {
 	pairs := familyPairs()
-	if len(pairs) != 6 {
-		t.Fatalf("familyPairs() returned %d pairs, want 6 — a counter gained a family "+
-			"label without gaining coverage here", len(pairs))
-	}
+	assertFamilyPairsCoverProduction(t, pairs)
 
 	p := &Plugin{}
 	stop := make(chan struct{})
