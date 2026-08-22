@@ -398,8 +398,12 @@ Container-level knobs that interact with the plugin:
 
 ## Plugin settings
 
-Set with `docker plugin set <plugin> NAME=value`; take effect after
-`docker plugin disable && docker plugin enable`.
+Change one with `docker plugin disable`, then
+`docker plugin set <plugin> NAME=value`, then `docker plugin enable`.
+**The order is not a style choice:** the daemon refuses
+`docker plugin set` on an enabled plugin with `cannot set on an active
+plugin, disable plugin before setting`, so setting first fails on that
+line and never reaches the restart.
 
 The three duration settings (`AWAIT_TIMEOUT`, `OUTAGE_TICK`,
 `OUTAGE_GRACE`) take Go duration strings such as `45s` or `2m`. A value
@@ -725,7 +729,7 @@ diagnosing a specific container from them alone is not.
 | `tombstone_quarantines` | yes | (v1.8.0+) Times the tombstone file was found **unparseable** and moved aside as `tombstones.json.corrupt-<timestamp>` in [`STATE_DIR`](#plugin-settings) (#724). Strictly worse than `tombstone_write_failures`: that costs one container its MAC and address, this costs every one of them, because the whole live tombstone set went with the file — any container restarting for the next 60 seconds comes back with a new identity. Kept separate from the write counter on purpose, since the two call for different action. **The quarantined file is never reaped.** Read it before deleting it: it is the only record of what was lost, and its contents say whether this was a truncated write, a filesystem fault, or something else writing to that path. |
 | `tombstones_consumed` | no | (v1.5.0+) Recreated containers that got their previous MAC/IP back by replaying a fresh tombstone. Not a fault — this is the address-stability mechanism working. It is the counterpart to `recovered_ok`: after a restart an address is preserved either by recovery re-adopting a still-attached endpoint (`recovered_ok`) or by a tombstone being replayed (this). Reported so the two can be told apart, which is what makes "the address survived, but via neither path" observable rather than silent (#386). |
 | `lease_changed` | no | Renewals that returned a different IP than last recorded (v4+v6 aggregate). Docker's `inspect` view does **not** update on lease change (libnetwork has no in-place endpoint-IP swap), so this is the stale-inspect-window signal — alert on it for long-running containers. |
-| `address_conflicts` | **yes** | (v1.6.0+) Leases whose address was already held by another device on the segment (#524). After each v4 lease the plugin resolves the address on the parent link and compares the answering MAC with the endpoint's; a reply from a different MAC is a conflict. This is the only signal for the condition — the container starts, Docker reports an address, and every other counter stays at zero, because from the DHCP server's point of view the lease was issued normally. The usual cause is a **statically configured** host inside the DHCP pool range: it never asks the server for anything, so the server cannot know the address is taken. Fix it at the server (reserve or exclude the address), not at the plugin. **What it does not cover:** another container on the *same host* sharing the same parent NIC. macvlan isolates a parent from its own children, and that isolation is what lets the check tell a squatter apart from your own endpoint — which holds the address too. A vantage point that could see a sibling would also hear your own container answer, and no reply would be informative. Excluded by construction, not pending work (#528). **What it requires:** the parent interface must carry an address on the leased subnet — which is the normal case, since a macvlan/ipvlan parent is usually the host NIC and a bridge parent always has one. A host answers an ARP request only if it can route a reply back to the sender, so with no on-subnet address to send from, the probe cannot get an answer out of a device that has no default route, and reports `conflict_probe_failures` rather than a clean result. |
+| `address_conflicts` | **yes** | (v1.6.0+) Leases whose address was already held by another device on the segment (#524). When an endpoint is created and receives a v4 address, the plugin resolves that address on the parent link and compares the answering MAC with the endpoint's; a reply from a different MAC is a conflict. **It probes the address it is about to hand to a new endpoint, and only that.** A renewal that comes back with a *different* address — a NAK mid-life, a server re-homing the lease — is **not** re-probed, so a collision that starts after the endpoint is up will not appear here. Watch `lease_changed` for that case. This is the only signal for the condition — the container starts, Docker reports an address, and every other counter stays at zero, because from the DHCP server's point of view the lease was issued normally. The usual cause is a **statically configured** host inside the DHCP pool range: it never asks the server for anything, so the server cannot know the address is taken. Fix it at the server (reserve or exclude the address), not at the plugin. **What it does not cover:** another container on the *same host* sharing the same parent NIC. macvlan isolates a parent from its own children, and that isolation is what lets the check tell a squatter apart from your own endpoint — which holds the address too. A vantage point that could see a sibling would also hear your own container answer, and no reply would be informative. Excluded by construction, not pending work (#528). **What it requires:** the parent interface must carry an address on the leased subnet — which is the normal case, since a macvlan/ipvlan parent is usually the host NIC and a bridge parent always has one. A host answers an ARP request only if it can route a reply back to the sender, so with no on-subnet address to send from, the probe cannot get an answer out of a device that has no default route, and reports `conflict_probe_failures` rather than a clean result. |
 | `address_conflict_probes` | no | (v1.6.0+) Conflict probes that reached a verdict, clean or not. Read this **before** believing `address_conflicts` is 0: with no probes, the two readings are identical, and "the detector never ran" is what #524 looked like for months. A healthy segment is `address_conflict_probes` climbing with `address_conflicts` at 0. |
 | `sandbox_netns_visible` | no | (v1.6.0+) How many sandbox netns entries the plugin can currently see, or `-1` if it cannot read the directory at all. Sampled per request, not accumulated. **Read it against `active_endpoints`, never alone.** `-1` means the bind mount is missing, so the `sandboxGone` check can only ever answer "no usable evidence" — safe but useless. A `0` *with endpoints attached* is the dangerous one: the directory is readable but mounted from the wrong place, and `sandboxGone` would conclude every container had vanished. A `0` with nothing attached is neither — there is genuinely nothing to see (#567). |
 | `conflict_probe_failures` | no | (v1.6.0+) Conflict probes that could not reach a verdict — the parent link was unroutable to the address, the lease/MAC could not be parsed, or **the parent has no address on the leased subnet**, which leaves the probe unable to get an answer out of a device with no default route. The last case is the common one, and its fix is on your side: give the parent an address on the segment and conflict detection starts working. Until then the plugin reports "undetermined" here rather than counting a clean probe, because a detector that cannot see must not report all-clear. This is an unanswered question, not a known-bad address, so it does not affect `healthy`. Watch it anyway: a detector that has stopped running looks exactly like a clean segment, which is how #524 went unnoticed in the first place. |
@@ -775,8 +779,10 @@ Prometheus cannot scrape a UNIX socket, so for an actual scrape target
 set `METRICS_ADDR`:
 
 ```bash
-docker plugin set ghcr.io/claymore666/docker-net-dhcp:v1.8.0 METRICS_ADDR=127.0.0.1:9099
-docker plugin disable ... && docker plugin enable ...
+PLUGIN=ghcr.io/claymore666/docker-net-dhcp:v1.8.0
+docker plugin disable "$PLUGIN"
+docker plugin set "$PLUGIN" METRICS_ADDR=127.0.0.1:9099
+docker plugin enable "$PLUGIN"
 ```
 
 > **This opens a port in the host's network namespace.** The plugin runs
@@ -873,8 +879,15 @@ per event.
 sudo cat /var/lib/docker/plugins/*/rootfs/var/log/net-dhcp.log
 ```
 
-Raise verbosity with `docker plugin set <plugin> LOG_LEVEL=trace`
-(plus a disable/enable cycle).
+Raise verbosity with a disable, a set, and an enable — in that order,
+because `docker plugin set` is refused while the plugin is running:
+
+```bash
+PLUGIN=ghcr.io/claymore666/docker-net-dhcp:v1.8.0
+docker plugin disable "$PLUGIN"
+docker plugin set "$PLUGIN" LOG_LEVEL=trace
+docker plugin enable "$PLUGIN"
+```
 
 **That file does not survive an upgrade.** It lives in the plugin
 rootfs, which Docker destroys and recreates on `docker plugin rm` /

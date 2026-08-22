@@ -26,11 +26,26 @@
 #      appearing in both
 #   3. no declaration is stale — exempting a script the workflow no
 #      longer runs hides that the exemption stopped meaning anything
+#   4. no ORPHAN gate: every scripts/check-*.sh is invoked by some
+#      workflow, or declared out of lane
+#
+# (4) closes this gate's own blind direction, and it was found the way
+# these things are always found — by writing a gate and forgetting to
+# wire it up. Rules 1-3 all start from what test.yaml runs, so a script
+# that NO workflow runs is invisible to every one of them: it exists,
+# it passes when run by hand, it is in neither list, and nothing
+# reports anything. `scripts/check-plugin-set-order.sh` shipped in that
+# state, and the only reason it was noticed is that someone grepped for
+# it. A guard fails in one direction; name the opposite failure and
+# check whether anything covers it.
 #
 # SCOPE, and why it is drawn here
 #
-# Every `scripts/*.sh` invoked from a non-comment `run:` line in
-# test.yaml, EXCEPT `test-*.sh`. The self-tests are DISCOVERED by
+# For rules 1-3: every `scripts/*.sh` invoked from a non-comment `run:`
+# line in test.yaml, EXCEPT `test-*.sh`. For rule 4: every
+# `scripts/check-*.sh` on disk, judged against EVERY workflow rather
+# than test.yaml alone — a gate that runs only in release.yml or on a
+# schedule is wired up, just not here. The self-tests are DISCOVERED by
 # run-gate-selftests.sh rather than listed, so they are #542's domain and
 # already cannot drift; listing them here would mean maintaining the same
 # set twice.
@@ -46,7 +61,7 @@
 # because a gate described as keeping the lane honest invites the belief
 # that the lane is therefore identical.
 #
-# Usage: check-local-lane.sh [<workflow>] [<lane script>]
+# Usage: check-local-lane.sh [<workflow>] [<lane script>] [<scripts dir>]
 # Exit: 0 in sync, 1 drift, 2 cannot check.
 set -uo pipefail
 
@@ -54,6 +69,7 @@ cd "$(dirname "$0")/.." || exit 2
 
 WF="${1:-.github/workflows/test.yaml}"
 LANE_SH="${2:-scripts/local-lane.sh}"
+SCRIPTS_DIR="${3:-scripts}"
 
 for f in "$WF" "$LANE_SH"; do
     [ -f "$f" ] || { echo "check-local-lane: $f does not exist" >&2; exit 2; }
@@ -128,9 +144,47 @@ fi
 extra=$(comm -23 <(printf '%s\n' "$lane") <(printf '%s\n' "$invoked"))
 [ -n "$extra" ] && { echo "NOTE  in the lane but not run by ${WF} (allowed — the lane may check more):"; printf '  %s\n' $extra; }
 
+# --- 4. no orphan gates -----------------------------------------------
+# Judged against every workflow, not just $WF: a gate that runs only in
+# release.yml or on a schedule is wired up. An orphan is a gate NO
+# workflow runs, which is the one state rules 1-3 cannot see, because
+# all three start from what a workflow invokes.
+# BASENAMES, not paths, so this rule survives being pointed at fixture
+# directories by its own self-test — and so a gate invoked as
+# `./scripts/check-x.sh` or `bash "$HERE/check-x.sh"` is still seen as
+# invoked. What is being asked is "does anything run this file", and
+# the prefix a caller happens to write is not part of that question.
+WF_DIR="$(dirname "$WF")"
+[ -d "$WF_DIR" ] || { echo "check-local-lane: ${WF_DIR} is not a directory — cannot judge orphans." >&2; exit 2; }
+
+all_wf_invoked=$(cat "$WF_DIR"/*.y*ml 2>/dev/null \
+    | grep -vE '^[[:space:]]*#' \
+    | grep -oE '[A-Za-z0-9_.-]+\.sh' \
+    | sort -u)
+on_disk=$(find "$SCRIPTS_DIR" -maxdepth 1 -name 'check-*.sh' -printf '%f\n' 2>/dev/null | sort -u)
+if [ -z "$on_disk" ]; then
+    echo "check-local-lane: no ${SCRIPTS_DIR}/check-*.sh found — cannot judge orphans." >&2
+    exit 2
+fi
+exempt_base=$(printf '%s\n' "$exempt" | sed 's|.*/||' | grep -v '^$' | sort -u)
+orphans=$(comm -23 <(printf '%s\n' "$on_disk") \
+                   <(printf '%s\n' "$all_wf_invoked" "$exempt_base" | sort -u))
+if [ -n "$orphans" ]; then
+    note "gate script(s) no workflow runs:"
+    printf '  %s\n' $orphans >&2
+    echo >&2
+    echo "  A gate nothing invokes passes when run by hand and protects nothing." >&2
+    echo "  Add it to a workflow, or to OUT_OF_LANE in ${LANE_SH} with the reason" >&2
+    echo "  it cannot run in CI. Rules 1-3 above start from what a workflow runs," >&2
+    echo "  so they cannot see this state at all." >&2
+    echo >&2
+    echo "  Being exercised by its own self-test does not count: that is coverage" >&2
+    echo "  by accident, and it disappears the moment the self-test is rewritten." >&2
+fi
+
 if [ "$fail" -ne 0 ]; then
     exit 1
 fi
 
-echo "PASS  local lane covers $(printf '%s\n' "$invoked" | grep -c .) script(s) from ${WF}: $(printf '%s\n' "$lane" | grep -c .) run, $(printf '%s\n' "$exempt" | grep -c .) declared out of lane"
+echo "PASS  local lane covers $(printf '%s\n' "$invoked" | grep -c .) script(s) from ${WF}: $(printf '%s\n' "$lane" | grep -c .) run, $(printf '%s\n' "$exempt" | grep -c .) declared out of lane; $(printf '%s\n' "$on_disk" | grep -c .) check-*.sh on disk, none orphaned"
 exit 0

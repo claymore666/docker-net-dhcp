@@ -80,6 +80,8 @@ LANE=(
   "starter-task links|-|bash scripts/check-good-first-issues.sh --static"
   "docs drift|-|bash scripts/check-docs-drift.sh"
   "health contract|-|bash scripts/check-health-contract.sh"
+  "plugin-set order|-|bash scripts/check-plugin-set-order.sh"
+  "fuzz budget|-|bash scripts/check-fuzz-budget.sh"
   "upstream-blocker claims|-|bash scripts/check-upstream-blocker-claims.sh"
   "version pins|-|bash scripts/check-version-pins.sh"
   "go pins|-|bash scripts/check-go-pins.sh"

@@ -34,7 +34,9 @@ explicit goal — see "Becoming a maintainer" below.
   list; today it covers unit tests, `staticcheck`, the integration
   suite, `govulncheck`, `actionlint`, CodeQL, and `attribution`.
   Release pull requests into `main` additionally carry the per-package
-  coverage ratchet.
+  coverage ratchet and the check that asserts the ratchet actually
+  ran — two contexts, not one, because a ratchet that silently fails to
+  execute reports the same as a ratchet that passed.
 - The maintainer reviews and merges. Substantial or user-visible
   changes are discussed in the relevant issue first.
 - Releases are deliberate, maintainer-initiated steps; merging a PR is

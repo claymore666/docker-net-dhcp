@@ -129,12 +129,15 @@ is recorded so a contributor can read it before writing the PR.
   fixed, fix it where addresses are decided — a reservation on the DHCP
   server. A per-container static-IP option would be a second, silently
   conflicting IPAM.
-- **It will not ask for more privileges to buy a feature.** Concretely:
-  proper RFC 5227 conflict detection needs `CAP_NET_RAW`, and adding a
-  capability forces **every** operator to re-approve the plugin's
-  privileges on upgrade. The conflict probe was built inside the
-  existing capability set instead, and that trade is the default answer,
-  not a one-off.
+- **It will not ask for more privileges to buy a feature.** Adding a
+  capability to `config.json` forces **every** operator to re-approve
+  the plugin's privileges on upgrade, and that trade is the default
+  answer, not a one-off. The example this rule used to be illustrated
+  with does not actually hold: proper RFC 5227 conflict detection needs
+  `CAP_NET_RAW`, and the plugin **already has it** — Docker composes
+  capabilities additively over the OCI defaults, so the effective set is
+  seventeen, not the three `config.json` requests. Nothing would have to
+  be re-approved. See [#725]; the rule stands, the example was wrong.
 - **It will not detect a conflicting container on the same host.** The
   conflict probe's vantage point is the parent link, and the isolation
   that keeps our own endpoint from answering also hides a sibling. That

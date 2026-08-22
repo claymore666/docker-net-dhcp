@@ -108,7 +108,12 @@ jobs:
       # was least able to. -timeout bounds the one thing a count does
       # not: a pathologically slow runner, which is a real signal.
       #
-      # scripts/check-fuzz-budget.sh keeps this shape from regressing.
+      # scripts/check-fuzz-budget.sh keeps this shape from regressing,
+      # and is run as a step below rather than only named here. It was
+      # named ONLY here until #724: a comment is not an invocation, and
+      # the one thing keeping it honest was that its own self-test ends
+      # by running it against the real tree — coverage by accident,
+      # which disappears the moment that case is rewritten.
       - name: Fuzz (short)
         run: |
           for target in FuzzBuildEvent FuzzEventUnmarshal; do
@@ -172,6 +177,21 @@ jobs:
       # release stale without anyone noticing.
       - name: Docs-drift check
         run: bash scripts/check-docs-drift.sh
+
+      # `docker plugin set` is REFUSED while the plugin is enabled, so a
+      # snippet with the steps in the wrong order does not fail subtly —
+      # it fails on its first line, and hands the reader an error that
+      # does not name the instruction that misled them. Every copy in
+      # this repository had the order backwards, in four places across
+      # two files, while the repository stated the rule correctly in its
+      # own words and obeyed it in the Makefile.
+      # The fuzz budget above must stay in EXECUTIONS, not wall clock —
+      # see the long note on #324 beside the step itself.
+      - name: Fuzz budget shape
+        run: bash scripts/check-fuzz-budget.sh
+
+      - name: Plugin-set snippet order
+        run: bash scripts/check-plugin-set-order.sh
 
       # Presence is not agreement (#638). check-docs-drift proves every
       # counter is documented; this proves the places that say WHICH
