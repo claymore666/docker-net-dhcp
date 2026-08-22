@@ -91,6 +91,13 @@ itself, and saying so is cheaper than pretending otherwise.
 A rule adopted without input from an active session is labelled
 **provisional**, so the next reader knows which ones nobody argued with.
 
+*Attribution, recorded as two things because they are two:* the
+objection that produced this — that adoption-by-silence lets rules bind
+without anyone having tested them — is **client1's**. The
+provisional-labelling remedy is **the lead's**. client1 volunteered that
+correction against their own credit, which is worth more than the label
+it corrects.
+
 ### How this taxonomy was decided, since the file exists to retain that
 
 Proposed as *"adopted only with the mechanism **named**"*. Objected to on
@@ -339,8 +346,14 @@ Each names its incident and the condition under which it dies.
 | R13 | Derive names from the declaration, not from a naming rule, and **refuse below a floor**. Report what you inspected. | I4 | The floor rule ships as a declaration gate (v1.9.0 ledger item 16). |
 | R14 | Every claim enumerates its carriers where a re-check will see them: **both, or neither**. **Rule, owed — owner: client3.** | I8, I3, I12 | The carrier-enumeration gate exists. |
 | R15 | You may push a head that is with a reviewer; you **must** tell them in the same minute, and the restarted pass is on you. | replaces the killed 6b, below | R11 stops being the detector. |
+| R16 | Run the mechanical sweep against **your own** work first, not last. **Rule, owed — owner: client3.** | I12 | The carrier-enumeration gate exists — this is the same gate pointed at a different moment, so R14 and R16 may collapse into one piece of work. |
 
-## Owed — R14, and why it is hard
+## Owed — R14 and R16, and why they are hard
+
+R14 and R16 are both binding and neither has an observer. **They are
+probably one piece of work**: R14 asks whether a claim's carriers were
+all touched, R16 asks that the check run before review rather than after
+it. The same gate, pointed at a different moment.
 
 R14 is binding and has no observer. It was volunteered for demotion by
 its own owner and kept binding instead, on the grounds that honesty
