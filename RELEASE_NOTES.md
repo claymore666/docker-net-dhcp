@@ -542,12 +542,13 @@ name-level.
 
 Three of the ten are this cycle's rather than older: #729, introduced
 by one of the security fixes above, and #730 and #731, which are defects
-in code that ships here for the first time — see below. The other seven
-are what a second reader found in code that had already been reviewed
-once, by someone looking for a different kind of thing.
+in code that ships here for the first time — see below. The remaining
+seven — the six verified above, plus #723 — are what a second reader
+found in code that had already been reviewed once, by someone looking
+for a different kind of thing.
 
 The remaining three — #723, #730 and #731 — complete the ten, and ship
-in this release with the other seven. Their ages differ, and the
+in this release with the seven enumerated above. Their ages differ, and the
 difference is drivable rather than asserted: `pkg/plugin/conflict_probe.go`
 exists at `v1.7.1^{commit}`, so **#723 predates the cycle**. Neither of
 the other two surfaces does — `git grep -c metrics v1.7.1^{commit} --
