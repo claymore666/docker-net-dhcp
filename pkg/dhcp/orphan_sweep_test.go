@@ -821,3 +821,30 @@ func TestNewClient_ChildGetsItsOwnProcessGroup(t *testing.T) {
 			"netns-restore-failure path", c.cmd.SysProcAttr.Pdeathsig)
 	}
 }
+
+// TestProcEntryGone_UnstattableIsDangerousAndUnknown pins the one thing the
+// comment in the default branch can only ask for: an unstattable entry must
+// report gone=true, so a caller written `gone, _ :=` kills and its control
+// pair goes red. Flipping that value to false is silently safe without this.
+func TestProcEntryGone_UnstattableIsDangerousAndUnknown(t *testing.T) {
+	dir := t.TempDir()
+	loop := filepath.Join(dir, "1")
+	if err := os.Symlink(loop, loop); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	// The fixture must actually be unstattable -- neither present nor ENOENT.
+	if _, err := os.Stat(loop); err == nil || errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("ELOOP fixture did not apply: stat err = %v", err)
+	}
+	restore := procRoot
+	procRoot = dir
+	defer func() { procRoot = restore }()
+
+	gone, known := procEntryGone(1)
+	if known {
+		t.Errorf("known = true, want false for an unstattable entry")
+	}
+	if !gone {
+		t.Errorf("gone = false, want true: a caller that drops `known` must kill, not skip")
+	}
+}
