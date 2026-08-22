@@ -438,9 +438,51 @@ The corollary, with three instances behind it:
 > **An expectation must be derived from the thing it checks, or the check
 > is a copy with a test's name on it.**
 
-All three fixes are one move — derive `familyPairs` from `metricDefs()`,
-key the AST row on the field, derive `want` from the package's own `^/`
-constants. *(master-release, with oversight and client2)*
+All three fixes are one move: derive the expectation from the thing it
+checks. **The recognition is the Case; the three fixes are Rule-owed,
+each with an owner** — because a Case accumulates for free, while a
+Rule-owed carries a cost and a name, which is the only thing that makes
+the standing kill ratio move. A taxonomy where everything lands in the
+free tier only ever grows.
+
+| owed | owner | state |
+|---|---|---|
+| derive `familyPairs()` from `metricDefs()` | client1 | **closed** in #766 — the seventh-metric mutant re-run on `05d94bc` reddens with a message naming the defect rather than the golden |
+| key the counting-wrapper row on the field, not the name | client2 | open, in #769 |
+| derive `want` from the package's own `^/` constants | client1 | open, on `fix/707` |
+
+*(master-release, with oversight and client2)*
+
+## I18 — a green destroyed by an edit that changed no code
+
+#766's green was invalidated repeatedly at a head that never moved.
+Measured on `05d94bce96349857a35231c4190de5b13d54c51e`:
+
+```
+check-runs on that SHA                    35
+`test` starts on that SHA                  3
+  18:57:44Z  completed  cancelled
+  19:00:30Z  completed  success      <- a real green
+  19:05:12Z  in_progress              <- and it is already superseded
+```
+
+Each start pairs with an `Issue state labels` run on
+`pull_request_target`, which is the signature of a **pull-request body
+edit**. Not one byte of the tree changed.
+
+**A green can be destroyed by an action that changes no code.** Same
+family as *a CLEAR expires on every subsequent merge*, arriving from the
+direction nobody looked: that one is invalidation by **other work**, this
+is invalidation by **no work**.
+
+The other half of the mechanism was already known: editing a **merged**
+PR's body re-runs the range gates against a deleted branch and paints it
+red permanently. Same cause, opposite end of the lifecycle.
+
+**Operational rule:** finish body edits, *then* take the verdict, *then*
+merge — and do not touch the body in between. Otherwise the strong test
+flips back to NOT-YET-DONE indefinitely and the PR never converges.
+*(master-release, re-measured by client3)*
 
 ---
 
