@@ -1205,7 +1205,7 @@ paragraph being read first.</p>
 <p>A tag with a pre-release suffix (<code>v1.0.0-rc1</code>) runs the release
 workflow in <strong>pre-release mode</strong>: the full chain executes — build,
 push of <code>:v1.0.0-rc1</code> to both registries, Hub description sync,
-verify-install — but <strong><code>:latest</code> is not moved</strong> and no bare
+the four install proofs — but <strong><code>:latest</code> is not moved</strong> and no bare
 release tag is touched. Zero impact on anything a user pulls by
 default.</p>
 <p>Since #736 an rc does not <em>skip</em> promotion, it is <strong>redirected</strong>:
@@ -1235,8 +1235,9 @@ to run.</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>git<span class="w"> </span>checkout<span class="w"> </span>main<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>pull<span class="w"> </span>--ff-only<span class="w">      </span><span class="c1"># the release commit</span>
 <a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>git<span class="w"> </span>tag<span class="w"> </span>-s<span class="w"> </span>v1.0.0-rc1<span class="w"> </span>-m<span class="w"> </span><span class="s2">&quot;v1.0.0-rc1&quot;</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>push<span class="w"> </span>origin<span class="w"> </span>v1.0.0-rc1
 </code></pre></div>
-<p>Watch the run; every step including <strong>verify-install</strong> and, since
-v1.7.0, <strong>release-arm64</strong> / <strong>verify-install-arm64</strong> must be green —
+<p>Watch the run; every step including <strong>verify-install</strong>, since
+v1.7.0 <strong>release-arm64</strong> / <strong>verify-install-arm64</strong>, and since #776
+<strong>verify-install-hub</strong> / <strong>verify-install-hub-arm64</strong> must be green —
 and since #736 <strong>promote-latest</strong>, which an rc now reaches. Its last
 step, <em>Assert a pre-release did not move :latest</em>, is the one that
 proves the dry-run stayed a dry-run.</p>
@@ -1591,10 +1592,22 @@ the <code>vX.Y.Z</code> milestone (the workflow leans on this for the
      just-published plugin from GHCR on a clean hosted runner and
      assert it enables. A red verify-install means users can't install
      what we just shipped.</li>
+<li><strong>verify-install-hub</strong> / <strong>verify-install-hub-arm64</strong> — the same
+     proof for Docker Hub, which is the other place a user installs
+     from (#776). Each is its <strong>own job on its own runner</strong> and that is
+     deliberate: the value of these jobs is a daemon that has never
+     created a network sandbox, which is how v1.6.0-rc2 caught a bind
+     source the daemon creates lazily (#588). A second install appended
+     to <code>verify-install</code> would run after that property was already
+     spent, and <code>docker plugin rm</code> does not give it back. When a run
+     published no Hub image the steps are skipped and the job records
+     <code>⚠️ Docker Hub install not verified</code> in the summary, so a
+     GHCR-only run cannot be mistaken for a both-registries one.</li>
 <li>
 <p><strong>promote-latest</strong> — since #736 this is where every floating tag
      moves, for both arches and both registries, and it runs only after
-     all four of the above are green. Steps: <em>Refuse to promote a
+     all six of the above are green. <code>scripts/check-latest-promotion.sh</code>
+     asserts that dependency, naming all four install proofs. Steps: <em>Refuse to promote a
      floating tag backwards</em> → Install crane → the two logins →
      <em>Record what :latest resolves to before promotion</em> → <em>Promote the
      GHCR floating tags</em> → <em>Promote the Docker Hub floating tags</em> →
@@ -1610,14 +1623,14 @@ the <code>vX.Y.Z</code> milestone (the workflow leans on this for the
  runs only on an rc, and it is the one that proves the rc contract
  from outside.
    - <strong>github-release</strong> — does <strong>not</strong> wait for <code>promote-latest</code>; it
- needs the same four jobs. Promotion and the Releases page are
+ needs the same six jobs. Promotion and the Releases page are
  siblings, so a refused promotion does not suppress the release.</p>
 </li>
 </ul>
 <p>Every green checklist below includes the arm64 jobs.
 10. <strong>Confirm the GitHub Release</strong> — the <code>github-release</code> job now cuts
-   it automatically once <code>verify-install</code> is green (so a plugin that
-   doesn't install never gets an advertised Releases page). It attaches
+   it automatically once the install proofs are green (so a plugin
+   that doesn't install never gets an advertised Releases page). It attaches
    the cosign-signed artifacts and builds the body as: a generated lead
    line naming the project and version (it becomes the page's
    <code>og:description</code>, so it is what link previews show — #469), the
