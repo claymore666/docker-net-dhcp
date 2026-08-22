@@ -83,15 +83,25 @@ const (
 //
 // Absolute rather than "unshare", which exec.Command resolves through
 // LookPath against the inherited PATH — measured: cmd.Path came out as
-// /usr/bin/unshare, chosen by an environment variable. /bin/sh, the
-// dhcpcd handler and the generated config are all already absolute, and
-// this was the one binary in the tree whose identity depended on the
-// environment. No impact today (PATH is image-set inside a root-owned
-// rootfs) and the fix costs nothing (#707).
+// /usr/bin/unshare, chosen by an environment variable. No impact today
+// (PATH is image-set inside a root-owned rootfs) and the fix costs
+// nothing (#707).
+//
+// This comment used to end "this was the one binary in the tree whose
+// identity depended on the environment". IT WAS NOT, and the sentence
+// is worth keeping as a correction rather than deleting. dhcpcd itself
+// was the other one, sitting one argv position away in this very
+// wrapper: it arrives as `$0` of `sh -c '… exec "$0" "$@"'`, and a
+// shell's PATH lookup is the same exposure as Go's LookPath. The audit
+// that produced this constant looked for exec.Command call sites, so
+// the argument that reached execve through a shell was invisible to it
+// — an inventory is only as wide as the mechanism it searched for. See
+// dhcpcdBin, now also absolute.
 //
 // The path is Alpine's, matching the base image. It is asserted in the
-// argv test alongside /bin/sh and the handler, so moving the binary
-// fails a test instead of silently changing which executable runs.
+// argv test alongside /bin/sh, dhcpcd and the handler, so moving the
+// binary fails a test instead of silently changing which executable
+// runs.
 const unsharePath = "/usr/bin/unshare"
 
 // mountPrep is the shell run inside the `unshare -m` mount namespace

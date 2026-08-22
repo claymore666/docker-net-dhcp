@@ -128,12 +128,30 @@ func TestNewDHCPClient_V4CommandAndConfig(t *testing.T) {
 	if c.cmd.Path != unsharePath {
 		t.Errorf("cmd.Path = %q, want %q -- a bare name here is resolved through $PATH", c.cmd.Path, unsharePath)
 	}
-	for _, want := range []string{"/bin/sh", DefaultHandler} {
+	for _, want := range []string{"/bin/sh", dhcpcdBin, DefaultHandler} {
 		if !hasArg(c.cmd.Args, want) {
 			t.Errorf("command missing pinned absolute path %q; args: %v", want, c.cmd.Args)
 		}
 	}
-	for _, want := range []string{"dhcpcd", "--noconfigure", "-4", "eth0", DefaultHandler} {
+	// dhcpcd reaches execve as $0 of `sh -c '... exec "$0" "$@"'`, and a
+	// shell resolves a bare name through PATH exactly as LookPath does,
+	// so the absolute form is the assertion (#707).
+	//
+	// The negative below is the load-bearing half. hasArg compares whole
+	// arguments, so it is the reason this case went red when the constant
+	// changed — but the bare name IS a substring of the absolute one, and
+	// the day someone relaxes this to a strings.Contains over the joined
+	// argv, both spellings satisfy it and the case reports green over the
+	// exact regression it exists to stop. Keep it exact, and keep the
+	// negative.
+	if !strings.HasPrefix(dhcpcdBin, "/") {
+		t.Errorf("dhcpcdBin %q is not absolute; PATH decides which binary runs", dhcpcdBin)
+	}
+	if hasArg(c.cmd.Args, "dhcpcd") {
+		t.Errorf("argv carries the bare name \"dhcpcd\"; it must be %q, or the shell resolves it through $PATH; args: %v",
+			dhcpcdBin, c.cmd.Args)
+	}
+	for _, want := range []string{"--noconfigure", "-4", "eth0", DefaultHandler} {
 		if !hasArg(c.cmd.Args, want) {
 			t.Errorf("command missing %q; args: %v", want, c.cmd.Args)
 		}
