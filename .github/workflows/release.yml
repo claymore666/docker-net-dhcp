@@ -59,6 +59,7 @@ jobs:
 
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
+      ref: ${{ steps.tag.outputs.ref }}
       prerelease: ${{ steps.tag.outputs.prerelease }}
       latest_tag: ${{ steps.tag.outputs.latest_tag }}
       latest_arm_tag: ${{ steps.tag.outputs.latest_arm_tag }}
@@ -78,6 +79,15 @@ jobs:
       HAS_HUB_CREDS: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
 
     steps:
+      # OUR copy of the resolver, checked out before the tag the input
+      # names. The workflow's own ref is the trusted one; validating a
+      # dispatch input with code from the tree that input chose would be
+      # no validation at all (#593, #738).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: scripts/resolve-dispatch-ref.sh
+          sparse-checkout-cone-mode: false
+
       # The dispatch input reaches the shell as DATA, through env, and is
       # never expanded into the script text (#737). `${{ }}` is
       # substituted before bash parses the line, so a value carrying a
@@ -97,45 +107,60 @@ jobs:
         run: |
           set -euo pipefail
           TAG="${INPUT_TAG:-$GITHUB_REF_NAME}"
-          # Anchored, and the pre-release suffix is spelled out. The old
-          # pattern had no `$`, so `v1.2.3junk` and `v1.2.3.4` passed —
-          # and then failed the bare-version test below, silently
-          # becoming a "pre-release": `:latest` untouched, a DRAFT
-          # GitHub Release, and a run that looks like it succeeded. A
-          # typo'd release tag is a release nobody can see, so it must
-          # stop here instead.
-          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc[0-9]+)?$ ]]; then
-            echo "::error::tag '$TAG' is not vX.Y.Z or vX.Y.Z-rcN; refusing." >&2
-            exit 1
-          fi
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          # One shape rule, in one place. resolve-dispatch-ref.sh emits
+          # `refs/tags/vX.Y.Z[-rcN]` or refuses, so the checkouts below
+          # take a fully qualified ref and an arbitrary SHA is not
+          # rejected here, it is unexpressible (#738).
+          #
+          # The old pattern was unanchored — no `$` — so `v1.2.3junk`
+          # and `v1.2.3.4` passed it, then failed the bare-version test
+          # below and were silently classified as pre-releases:
+          # `:latest` untouched, a DRAFT GitHub Release, and a run that
+          # looks like it succeeded. A typo'd release tag became a
+          # release nobody could see. It now stops here.
+          REF="$(bash scripts/resolve-dispatch-ref.sh "$TAG")"
+          # The resolver also accepts `dev`, which the docs site
+          # publishes and a release must never build from.
+          case "$REF" in
+            refs/tags/*) ;;
+            *) echo "::error::'$TAG' resolved to '$REF'; a release must be a tag." >&2
+               exit 1 ;;
+          esac
           # Pre-release guard: a suffixed tag (vX.Y.Z-rc1 etc.) runs the
           # full publishing chain — build, dual-registry push of the rc
           # tag, description sync, verify-install — but must NOT move
           # `:latest` or overwrite any bare release tag. This makes rc
           # tags a zero-impact end-to-end dry-run of this workflow
           # before the real vX.Y.Z tag (see docs/release-runbook.md).
+          #
+          # An rc does not SKIP the promotion — it aims it somewhere
+          # harmless. Skipping made the promote path the one part of
+          # this workflow an rc could not exercise, so the ordering
+          # fixed in #736 would have first executed on a real tag.
+          # Pointing it at `latest-rc` runs the identical steps, in the
+          # identical job, against tags no install command names.
           if [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "prerelease=false" >> "$GITHUB_OUTPUT"
-            echo "latest_tag=latest" >> "$GITHUB_OUTPUT"
-            echo "latest_arm_tag=latest-arm64" >> "$GITHUB_OUTPUT"
+            PRERELEASE=false
+            LATEST=latest
+            LATEST_ARM=latest-arm64
             echo "Releasing tag: $TAG"
           else
-            echo "prerelease=true" >> "$GITHUB_OUTPUT"
-            # An rc does not skip the promotion — it aims it somewhere
-            # harmless. Skipping made the promote path the one part of
-            # this workflow an rc could not exercise, so the ordering
-            # fixed in #736 would first execute on a real tag. Pointing
-            # it at `latest-rc` runs the identical steps, in the identical
-            # job, against tags no install command names.
-            echo "latest_tag=latest-rc" >> "$GITHUB_OUTPUT"
-            echo "latest_arm_tag=latest-rc-arm64" >> "$GITHUB_OUTPUT"
+            PRERELEASE=true
+            LATEST=latest-rc
+            LATEST_ARM=latest-rc-arm64
             echo "Pre-release tag: $TAG — promoting :latest-rc, :latest is not moved"
           fi
+          {
+            echo "tag=$TAG"
+            echo "ref=$REF"
+            echo "prerelease=$PRERELEASE"
+            echo "latest_tag=$LATEST"
+            echo "latest_arm_tag=$LATEST_ARM"
+          } >> "$GITHUB_OUTPUT"
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ steps.tag.outputs.tag }}
+          ref: ${{ steps.tag.outputs.ref }}
           # Full history so RELEASE_NOTES.md credits / "since vX" greps
           # behave the same as on a developer checkout.
           fetch-depth: 0
@@ -468,7 +493,7 @@ jobs:
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.release.outputs.tag }}
+          ref: ${{ needs.release.outputs.ref }}
           fetch-depth: 0
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -741,7 +766,7 @@ jobs:
       # the released tree rather than by a literal in this file.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.release.outputs.tag }}
+          ref: ${{ needs.release.outputs.ref }}
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -916,7 +941,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.release.outputs.tag }}
+          ref: ${{ needs.release.outputs.ref }}
           fetch-depth: 0
 
       - name: Download signed artifacts
