@@ -458,10 +458,11 @@ are fixed in this release** — the count belongs to the review, not to
 either issue, which is worth stating because #726 names only its own
 five.
 
-The seven described below are merged. Of those, **six are verified
-present on `main` as well**: #720, #721, #722, #724, #727 and #728. The
-seventh, #729, was introduced by one of the security fixes above and
-exists in `dev` only. So they are, in the main, not this cycle's
+**Six of the ten are verified present on `main` as well**: #720, #721,
+#722, #724, #727 and #728. `origin/main`, `v1.7.1` and `018a651` are the
+same commit, so that is a claim any reader can drive rather than take.
+The one described below that is *not* older than this cycle is #729,
+which was introduced by one of the security fixes above. So they are, in the main, not this cycle's
 mistakes — they are what a second reader found in code that had already
 been reviewed once, by someone looking for a different kind of thing.
 
@@ -942,8 +943,7 @@ subsets — and the collision is the interesting half rather than a
 rounding error: every subtest asserts *both* counters, so a mutant that
 bumps neither and a mutant that bumps the wrong one kill the identical
 four subtests. The suite catches both; it cannot tell you which one it
-caught. (At the time of writing that work is on an unmerged branch, at
-`406a28d`, not on `dev`.)
+caught. (Measured at `406a28d`, the commit that introduced the test.)
 
 The general form is the one worth keeping, because it applies to every
 counter here: **an artifact that proves a counter renders is not an
@@ -1205,10 +1205,15 @@ option the older one never did. None of that was visible before.
      #723, #730 and #731 were the ones in flight; if any of them did not
      land, they belong here by name.
 
-     TWO sentences carry the claim, not one: "Every finding ... is fixed
-     in this release" and "Two is the entire list". Fixing one and
-     leaving the other is the exact defect this release documents three
-     times over. Both, or neither. -->
+     THREE sentences carry this claim, not one. Fixing some and leaving
+     the others is the exact defect this release documents three times
+     over -- all three, or none:
+
+       1. "Everything found is fixed in this release; nothing was
+          deferred" (the security-review section; scoped to #457/#699).
+       2. "Every finding from all three reviews is fixed in this
+          release" (below; the widest of the three).
+       3. "Two is the entire list" (below). -->
 
 **Every finding from all three reviews is fixed in this release.** No
 defect was carried, and a fault this cycle introduced was fixed this
