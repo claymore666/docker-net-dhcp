@@ -352,7 +352,24 @@ func procEntryGone(pid int) (gone bool, known bool) {
 	case errors.Is(err, fs.ErrNotExist):
 		return true, true
 	default:
-		return false, false
+		// `gone` IS SET TO THE DANGEROUS VALUE ON PURPOSE. Do not
+		// "correct" it to false.
+		//
+		// `known` is false here, and the only caller writes
+		// `known && gone`, so this value is never read and the shipped
+		// behaviour is identical either way. What it changes is what
+		// happens to a caller who ignores the second result: with
+		// `false` here, `gone, _ :=` is silently SAFE and would pass
+		// every test in this package, so the comment at the call site
+		// claiming a caller "has to name the direction to compile"
+		// would be aspirational. With `true`, that caller kills on an
+		// unstattable parent and the control pair goes red.
+		//
+		// Returning false would also be one more in-band value
+		// carrying a direction of its own -- the safe one, this time,
+		// which is exactly the reasoning that made `!procEntryExists`
+		// look fine an hour ago.
+		return true, false
 	}
 }
 
