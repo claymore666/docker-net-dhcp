@@ -88,7 +88,21 @@ func TestOpenSandboxNetNS_CountsNothingWhenThePIDMatches(t *testing.T) {
 	m := &dhcpManager{plugin: p}
 	pid := os.Getpid()
 
-	ns, err := m.openSandboxNetNS(context.Background(), pid, selfCgroup(t, pid), time.Millisecond)
+	// BOUNDED, and the bound is the point. openSandboxNetNS polls until
+	// the context is done, and errPIDNotContainer is PERMANENT for a
+	// fixed (pid, ctrID) pair -- so with context.Background() a refusal
+	// is not a failure, it is an infinite spin at the poll interval, and
+	// this test HANGS until go test's 10m timeout instead of reporting.
+	//
+	// That is not hypothetical: it is how this test behaved the first
+	// time the guard was correctly narrowed, and a hang is far more
+	// expensive to diagnose than a red. Nothing is weakened by the
+	// deadline -- the success path returns on the first attempt and
+	// never reaches it.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	ns, err := m.openSandboxNetNS(ctx, pid, selfCgroupLeaf(t, pid), time.Millisecond)
 	if err != nil {
 		t.Fatalf("refused a PID whose cgroup names it: %v", err)
 	}
@@ -167,7 +181,7 @@ func TestPropagateDNS_CountsAPIDMismatch(t *testing.T) {
 // bad PID lands on the counted side by design.
 func TestPropagateDNS_DoesNotCountAnOrdinaryFailure(t *testing.T) {
 	pid := os.Getpid()
-	m, p := dnsPropagationManager(selfCgroup(t, pid))
+	m, p := dnsPropagationManager(selfCgroupLeaf(t, pid))
 
 	// Non-empty at propagateDNS's guard, empty by the time
 	// writeContainerResolvConf checks: resolvSafe drops it.
