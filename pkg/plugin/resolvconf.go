@@ -77,12 +77,27 @@ func openContainerProc(pid int, ctrID string) (*os.File, error) {
 		return nil, fmt.Errorf("open /proc/%d: %w", pid, err)
 	}
 
-	fd, err := unix.Openat(int(d.Fd()), "cgroup", unix.O_RDONLY, 0)
+	// O_CLOEXEC, like the sibling openat in openContainerNetNS. Go's
+	// os/exec does not sweep foreign descriptors, so an fd opened
+	// without it is inherited by whatever unshare / sh / dhcpcd another
+	// goroutine spawns in the same window.
+	fd, err := unix.Openat(int(d.Fd()), "cgroup", unix.O_RDONLY|unix.O_CLOEXEC, 0)
 	if err != nil {
 		d.Close()
 		return nil, fmt.Errorf("%w: reading the cgroup of pid %d: %v", errPIDNotContainer, pid, err)
 	}
-	cgroup, err := io.ReadAll(os.NewFile(uintptr(fd), "cgroup"))
+	// Wrapped and closed on every path out (#729). The d.Close() calls
+	// in the arms below close the DIRECTORY fd; this one is a second,
+	// independent descriptor, and it used to be dropped on the floor on
+	// success, on read error and on cgroup mismatch alike. os.NewFile
+	// attaches a finalizer, so the leak is bounded by whenever the GC
+	// next runs — in a process that also holds netlink sockets, FIFOs
+	// and the plugin's listening sockets, and reaches here once per
+	// bound/renew event with propagate_dns and once per attach.
+	cgroupFile := os.NewFile(uintptr(fd), "cgroup")
+	defer cgroupFile.Close()
+
+	cgroup, err := io.ReadAll(cgroupFile)
 	if err != nil {
 		d.Close()
 		return nil, fmt.Errorf("%w: reading the cgroup of pid %d: %v", errPIDNotContainer, pid, err)
@@ -183,7 +198,7 @@ func writeContainerResolvConf(pid int, ctrID string, dns []string, searchList []
 
 	// Through procDir, not by path: see openContainerProc. Reopening
 	// /proc/<pid>/ns/mnt as a string would let a recycled PID back in.
-	targetFd, err := unix.Openat(int(procDir.Fd()), "ns/mnt", unix.O_RDONLY, 0)
+	targetFd, err := unix.Openat(int(procDir.Fd()), "ns/mnt", unix.O_RDONLY|unix.O_CLOEXEC, 0)
 	if err != nil {
 		runtime.UnlockOSThread()
 		return fmt.Errorf("open container mnt ns (pid %d): %w", pid, err)
