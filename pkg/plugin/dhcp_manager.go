@@ -207,6 +207,59 @@ func leaseDeadline(data dhcp.Info) (time.Duration, bool) {
 // verbatim, and it is the conventional encoding for "permanent".
 const maxOption51Seconds = 0xFFFFFFFF
 
+// pidMismatchKind names which of the two PID-revalidation refusals is
+// being counted. It exists so notePIDMismatch can own the predicate
+// once instead of once per call site — the predicate, not the counter,
+// is the part that was duplicated and the part a future site would get
+// subtly wrong.
+type pidMismatchKind int
+
+const (
+	dnsPropagationMismatch pidMismatchKind = iota
+	netnsMismatch
+)
+
+// notePIDMismatch counts a refusal to act on a PID that turned out not
+// to belong to the container it was resolved for (#317).
+//
+// The pairing lives here rather than at the two call sites for the
+// reason observeLease does, and this pair is the evidence that the
+// reason is not theoretical. Both sites read:
+//
+//	if errors.Is(err, errPIDNotContainer) && m.plugin != nil {
+//		m.plugin.<counter>.Add(1)
+//	}
+//
+// three lines each, inside methods that need a live container and a
+// real netns to reach — so nothing could drive them, and deleting BOTH
+// Add(1) lines left `go test ./...` completely green. Meanwhile
+// container_netns_test.go:37 and :95 assert that the error still
+// carries errPIDNotContainer, with comments saying in writing that
+// they do it "so the counter can fire" and "or the mismatch is never
+// counted". The sentinel's survival was pinned deliberately, naming
+// the counter as the reason; the counter itself was pinned by nothing.
+//
+// That is the precondition asserted in place of the effect: whether
+// the plugin DECIDED a mismatch is not what an operator reads, and a
+// test whose message names an effect it does not assert is how a
+// counter ends up with no reader while looking guarded.
+//
+// The nil check is on plugin, not on the error: unit tests that do not
+// stand up a Plugin leave it nil (see dhcpManager.plugin), and the
+// refusal is still a refusal when there is no counter to bump.
+func (m *dhcpManager) notePIDMismatch(err error, kind pidMismatchKind) {
+	if !errors.Is(err, errPIDNotContainer) || m.plugin == nil {
+		return
+	}
+	switch kind {
+	case dnsPropagationMismatch:
+		m.plugin.dnsPropagationPIDMismatches.Add(1)
+	case netnsMismatch:
+		m.plugin.netnsPIDMismatches.Add(1)
+	}
+}
+
+// observeLease folds one client event into the tracker and counts the
 // observeLease folds one client event into the tracker and counts the
 // clamp if there was one.
 //
@@ -780,9 +833,7 @@ func (m *dhcpManager) propagateDNS(v6 bool, info dhcp.Info) {
 	}
 
 	if err := writeContainerResolvConf(pid, ctrID, info.DNSServers, info.SearchList, info.Domain); err != nil {
-		if errors.Is(err, errPIDNotContainer) && m.plugin != nil {
-			m.plugin.dnsPropagationPIDMismatches.Add(1)
-		}
+		m.notePIDMismatch(err, dnsPropagationMismatch)
 		log.
 			WithError(err).
 			WithFields(m.logFields(v6)).
@@ -1515,6 +1566,7 @@ func (m *dhcpManager) Start(ctx context.Context) (err error) {
 	// openContainerNetNS.
 	m.nsHandle, err = m.openSandboxNetNS(ctx, ctr.State.Pid, ctrID, pollTime)
 	if err != nil {
+		m.notePIDMismatch(err, netnsMismatch)
 		return fmt.Errorf("failed to get sandbox network namespace: %w", err)
 	}
 
