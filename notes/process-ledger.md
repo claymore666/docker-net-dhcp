@@ -393,9 +393,25 @@ read as mutually confirming.
 > **Agreement between two measurements of different objects is worth less
 > than disagreement between two measurements of the same one.**
 
-What caught it was not arithmetic: *"six new fields produce six new
-series"* did not sound right for a change whose entire purpose is that
-the series already existed. *(client3)*
+The `41 →` end was verified independently rather than taken:
+`git cat-file -e v1.7.1:pkg/plugin/testdata/metrics_exposition.golden`
+**fails**. The object the claim points at does not exist at that ref.
+
+**This is a new class, and it survives every control built that day.** It
+has a real measurement behind it. It names its instrument. It passes *a
+count needs a file:line*; it passes *driven, not read*. It fails only on
+**which object the instrument was pointed at**, and the two numbers
+matching is what made that invisible.
+
+**How it was caught is a Case and not a technique**, and is labelled one
+so nobody mistakes it for a procedure: it was not arithmetic. *"Six new
+fields produce six new series"* did not sound right for a change whose
+entire purpose is that the series already existed. Domain sense noticing
+that a number was too tidy. Nothing checks that.
+
+The nearest thing to a mechanism is the discipline it implies, and that
+part **is** checkable in prose review — see R17. *(client3, verified
+independently by master-release)*
 
 ## I17 — three hand-written mirror guards, one evening, three authors
 
@@ -450,13 +466,18 @@ Each names its incident and the condition under which it dies.
 | R14 | Every claim enumerates its carriers where a re-check will see them: **both, or neither**. **Rule, owed — owner: client3.** | I8, I3, I12 | The carrier-enumeration gate exists. |
 | R15 | You may push a head that is with a reviewer; you **must** tell them in the same minute, and the restarted pass is on you. | replaces the killed 6b, below | R11 stops being the detector. |
 | R16 | Run the mechanical sweep against **your own** work first, not last. **Rule, owed — owner: client3.** | I12 | The carrier-enumeration gate exists — this is the same gate pointed at a different moment, so R14 and R16 may collapse into one piece of work. |
+| R17 | **Name the object, never the bare number.** "63 fields", not "63" — and never a noun borrowed from the neighbouring sentence. **Rule, owed — owner: client3.** | I16 | A gate can check that a numeral in changed prose is followed by the noun it counts; this may fall out of R14's gate for free. |
 
-## Owed — R14 and R16, and why they are hard
+## Owed — R14, R16 and R17, and why they are hard
 
-R14 and R16 are both binding and neither has an observer. **They are
+R14, R16 and R17 are all binding and none has an observer. **They are
 probably one piece of work**: R14 asks whether a claim's carriers were
 all touched, R16 asks that the check run before review rather than after
-it. The same gate, pointed at a different moment.
+it, R17 asks that a numeral in changed prose be followed by the noun it
+counts. The same gate at three moments — and R17 is the only one of the
+three a machine could plausibly do well, because "is this numeral
+followed by a noun" is a syntactic question and "is this a claim" is
+not.
 
 R14 is binding and has no observer. It was volunteered for demotion by
 its own owner and kept binding instead, on the grounds that honesty
