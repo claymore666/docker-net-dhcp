@@ -132,8 +132,8 @@ under an operator who upgrades:
   now needs `sudo`.
 
 On top of those: two new network options, a Prometheus `/metrics`
-endpoint, fifteen new health counters, an fsynced and versioned state
-file, and the lifecycle fixes below, alongside two refactors under
+endpoint, the new health counters listed below, an fsynced and versioned
+state file, and the lifecycle fixes below, alongside two refactors under
 `pkg/plugin`. The reference digests differ from
 v1.7.1 accordingly. The refactors are intended to be
 behaviour-identical — both are covered by the existing suite plus new
@@ -465,8 +465,8 @@ exists in `dev` only. So they are, in the main, not this cycle's
 mistakes — they are what a second reader found in code that had already
 been reviewed once, by someone looking for a different kind of thing.
 
-The remaining three — #723, #730 and #731 — are in flight rather than
-deferred, and were still unmerged when this was written.
+The remaining three — #723, #730 and #731 — complete the ten, and ship
+in this release with the other seven.
 
 The pass also recorded two structural notes that are not blockers and
 are not fixed here: `plugin.go` grew again this cycle and its three
@@ -874,13 +874,31 @@ IDs are unbounded and turn over with container lifecycle, so labelling
 by them would be a cardinality problem in exactly the deployments where
 these metrics matter most. (#651)
 
-### Fifteen new health counters
+### The new health counters
 
-Fourteen of the fifteen do not affect `healthy`. The one that does is
-`tombstone_quarantines` (#724) — a corrupt tombstone file now flips the
-flag instead of being written over in silence. `docs/reference.md`
-carries the full description of each, including what a rise means and
-what to do about it.
+Exactly one of them affects `healthy`, and it is marked in the table.
+`docs/reference.md` carries the full description of each, including what
+a rise means and what to do about it.
+
+<!-- THE TABLE IS THE COUNT. There is deliberately no number in this
+     section, and there must not be one: every earlier draft said
+     "fifteen" and went false within a minute of a merge it had nothing
+     to do with, because this file asserts facts that are functions of
+     what has landed and it merges last. A list cannot disagree with
+     itself.
+
+     To check the table at tag time, derive rather than read:
+
+       for r in v1.7.1 origin/dev; do
+         git show $r:pkg/plugin/endpoints.go \
+           | sed -n '/type HealthResponse struct {/,/^}/p' \
+           | grep -oE 'json:"[a-z0-9_]+' | cut -d'"' -f2 | sort > /tmp/$$.$r
+       done
+
+     Diff the two and every name added must have a row here. At the time
+     of writing that diff was 16 (41 -> 57 tags) and the table had 16
+     rows. #766 adds six `*_v4` fields when it lands; they need six rows,
+     and their absence is what this comment exists to catch. -->
 
 | counter | what it says |
 | ------- | ------------ |
@@ -898,6 +916,8 @@ what to do about it.
 | `recovery_already_managed` | Endpoints a recovery walk found already registered to another manager (#480). |
 | `recovery_fingerprints_skipped` | Endpoints recovery adopted but could not describe, so they keep their renewal client and lose their tombstone (#721). |
 | `network_options_rejected` | Endpoint operations that met stored network options they would not act on as written (#727). |
+| `tombstone_quarantines` | **The one counter that affects `healthy`.** A corrupt tombstone file now flips the flag instead of being written over in silence (#724). |
+| `conflict_probe_stale_addrs` | Leftover conflict-probe source addresses reclaimed from the parent NIC — the borrowed `169.254.x.y/32` a probe sources from when the parent has no address of its own, which nothing used to clean up because its octets are random by design (#723). |
 
 ### Two of those counters had no observer at all
 
@@ -1180,18 +1200,24 @@ option the older one never did. None of that was visible before.
      deferrals and are not. Drop them by hand; they close with the
      milestone.
 
-     Anything left after that is a real deferral, and the sentence below
-     is then wrong and must be rewritten as a list. When this was
-     written #723, #730 and #731 were the ones in flight; if any of them
-     did not land, they belong here by name. -->
+     Anything left after that is a real deferral, and the text below is
+     then wrong and must be rewritten as a list. When this was written
+     #723, #730 and #731 were the ones in flight; if any of them did not
+     land, they belong here by name.
+
+     TWO sentences carry the claim, not one: "Every finding ... is fixed
+     in this release" and "Two is the entire list". Fixing one and
+     leaving the other is the exact defect this release documents three
+     times over. Both, or neither. -->
 
 **Every finding from all three reviews is fixed in this release.** No
 defect was carried, and a fault this cycle introduced was fixed this
 cycle rather than triaged forward.
 
-What is deferred is two structural observations, and they are worth
-naming separately precisely because neither is a defect anyone can point
-at:
+What is deferred is two structural observations. Two is the entire
+list — this section is short because the reviews closed, not because it
+was trimmed to fit. Both are worth naming separately precisely because
+neither is a defect anyone can point at:
 
 - **The release invariant is decided at five sites, in prose.** Whether
   it is safe to hand a lease back to the DHCP server is settled
