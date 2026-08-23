@@ -110,6 +110,7 @@ LANE=(
   "dispatch-ref guard|-|bash scripts/check-dispatch-ref-guard.sh"
   "latest promotion order|-|bash scripts/check-latest-promotion.sh"
   "sparse-checkout paths|-|bash scripts/check-sparse-checkout-paths.sh"
+  "per-arch build parallelism|-|bash scripts/check-build-job-independence.sh"
   "run-body expansions|-|bash scripts/check-run-expansions.sh"
   "capture lane|-|bash scripts/check-capture-lane.sh"
   "dispatch reachable|-|bash scripts/check-dispatch-reachable.sh"

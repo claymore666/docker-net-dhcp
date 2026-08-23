@@ -10,12 +10,26 @@
 # written for actually shipped, on dev @ 9245f09, in both of those
 # files. Rather than transcribe the pre-fix text — which would drift on
 # the first unrelated edit and go on passing while testing nothing — the
-# suite takes the real files as they stand today and deletes the single
-# `path: .resolver` line that fixes them. That is exactly the pre-fix
-# shape, derived rather than copied, and it stays exact for as long as
-# the files exist. A guard case fails loudly if the deletion changes
-# nothing, so the day someone restructures those checkouts this suite
-# says so instead of quietly proving nothing.
+# suite takes the real files as they stand today and mutates them back
+# into the pre-fix shape. That shape is derived rather than copied, and
+# it stays exact for as long as the files exist. Every mutation carries
+# a guard that fails loudly when it stops applying, so the day someone
+# restructures those checkouts this suite says so instead of quietly
+# proving nothing.
+#
+# pages.yml needs one mutation: delete `path: .resolver`. release.yml
+# has needed two since #796 split its resolver checkout into a job of
+# its own, where a deleted `path:` collides with nothing. The day that
+# happened, the one-line guard did NOT fire — the line it watches was
+# still present and still deleted — so nothing announced that the
+# reconstruction had stopped reconstructing. What failed was the
+# assertion itself: the gate returned 0 where the case wanted 1, because
+# the mutated file no longer contained a collision to find. That is the
+# case working, but it is luck about which half broke; had the shape
+# survived under a different job name the grep would have caught it
+# instead, and had both held it would have passed over nothing. A guard
+# belongs on each mutation, asserting that mutation applied, which is
+# what they now do.
 #
 # THE OTHER CASES THAT CARRY THEIR WEIGHT:
 #
@@ -353,7 +367,27 @@ check "a missing workflow directory is exit 2" 2 "$TMP/nope" "not a directory"
 # Delete the one line that fixes each file and the pre-fix shape is
 # back, exactly, without anything being transcribed. If the deletion
 # stops changing the file the case fails rather than passing quietly.
-for pair in "real-pages:pages.yml:deploy" "real-release:release.yml:release"; do
+#
+# pages.yml still needs exactly that one deletion. release.yml needs TWO
+# mutations since #796, and the reason is worth stating because it is
+# the shape this suite exists to notice.
+#
+# THE COLLISION NEEDS TWO CHECKOUTS IN ONE JOB. Deleting `path:` only
+# reproduces the bug where a second checkout shares the job. #796 moved
+# release.yml's resolver checkout into its own `resolve` job, where it
+# is now the ONLY checkout — so the deletion alone leaves a lone
+# non-colliding step and the gate correctly stays green. That is a real
+# improvement in release.yml and a real hole in this case: the premise
+# it was built on stopped holding, and the `cmp -s` guard could not see
+# it, because the line it watches is still there and still gets deleted.
+# The guard sat on the other case.
+#
+# So the release.yml mutant restores BOTH halves of the pre-#796 shape:
+# a second, default-path checkout in the same job, and no `path:` on the
+# sparse one. Both are derived from the file as it stands; nothing is
+# transcribed, and each mutation carries a guard that fails loudly if it
+# stops applying.
+for pair in "real-pages:pages.yml:deploy" "real-release:release.yml:resolve"; do
     IFS=: read -r dir wf job <<<"$pair"
     src="$ROOT/.github/workflows/$wf"
     dst="$TMP/$dir/$wf"
@@ -367,7 +401,30 @@ for pair in "real-pages:pages.yml:deploy" "real-release:release.yml:release"; do
                   "otherwise pass having reconstructed nothing (#736)"
         continue
     fi
-    check "the real $wf with its 'path: .resolver' removed is the shipped bug" \
+    if [ "$wf" = "release.yml" ]; then
+        # Put a second checkout back into the resolver's job, at the
+        # default path, immediately after the sparse step it must
+        # collide with. Anchored on the sparse step's own last line so
+        # it lands in that job and no other.
+        awk '
+          !done && /^ *sparse-checkout-cone-mode: false$/ {
+              print
+              print ""
+              print "      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1"
+              print "        with:"
+              print "          fetch-depth: 0"
+              done = 1
+              next
+          }
+          { print }
+        ' "$dst" > "$dst.inj" && mv "$dst.inj" "$dst"
+        if [ "$(grep -c 'actions/checkout@' "$dst")" -le "$(grep -c 'actions/checkout@' "$src")" ]; then
+            fail_case "release.yml: the second checkout was not injected —" \
+                      "the anchor moved and this case reconstructs nothing (#796)"
+            continue
+        fi
+    fi
+    check "the real $wf reconstructed into the pre-fix shape is the shipped bug" \
           1 "$TMP/$dir" "job $job"
 done
 

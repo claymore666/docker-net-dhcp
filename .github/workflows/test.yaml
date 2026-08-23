@@ -507,6 +507,22 @@ jobs:
       - name: Sparse-checkout path isolation
         run: bash scripts/check-sparse-checkout-paths.sh
 
+      # No image-publishing job may wait on another one (#796). The two
+      # per-arch builds share no artifact, digest or manifest — only the
+      # tag that triggered the run — so `release-arm64` depends on the
+      # job that resolves the tag, not on `release`.
+      #
+      # This is here for the same reason as the step above: NOTHING ELSE
+      # CAN SEE IT. Re-chaining them breaks no check. Every job still
+      # runs, everything still goes green, the release still ships; it
+      # just serialises again, and `release-arm64` goes back to being
+      # SKIPPED whenever amd64 fails, which is what made the first rc of
+      # a new version able to print only the amd64 digest block. The
+      # only other observer is the next release, weeks later, found by
+      # whoever is holding the rc.
+      - name: Per-arch builds run in parallel
+        run: bash scripts/check-build-job-independence.sh
+
       # No dispatch input, event free-text field, or secret may be
       # expanded into a `run:` body (#737). `${{ }}` is substituted
       # before bash parses the line, so validating the value on the next

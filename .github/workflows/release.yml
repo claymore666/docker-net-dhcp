@@ -48,14 +48,22 @@ permissions:
   contents: read
 
 jobs:
-  release:
+  # Tag resolution is arch-independent and derives from the tag that
+  # triggered the run, so it is its own job and both build jobs depend
+  # on it rather than on each other (#796). Nothing else moved: the
+  # steps below are the ones that used to open the `release` job, and
+  # they are unchanged.
+  #
+  # The resolver checkout travels WITH the step that runs it. `Resolve
+  # release tag` executes `.resolver/scripts/resolve-dispatch-ref.sh`,
+  # which exists only because of the sparse checkout above it; moving
+  # the resolve step alone would leave a job that dies on a missing
+  # file.
+  resolve:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 10
     permissions:
       contents: read
-      packages: write       # GHCR push + image-signature/attestation upload
-      id-token: write       # keyless cosign signing + provenance (OIDC)
-      attestations: write   # actions/attest-build-provenance attestations
 
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
@@ -63,28 +71,6 @@ jobs:
       prerelease: ${{ steps.tag.outputs.prerelease }}
       latest_tag: ${{ steps.tag.outputs.latest_tag }}
       latest_arm_tag: ${{ steps.tag.outputs.latest_arm_tag }}
-      # Whether the Hub push STEP RAN, recorded by the step itself.
-      # verify-install needs to know whether there is a Hub image to
-      # install, and re-evaluating the secrets expression there would
-      # answer a different question -- "are credentials present now",
-      # not "was anything published". A skipped step contributes no
-      # output, so this is empty rather than 'true' precisely when
-      # nothing was pushed.
-      hub_pushed: ${{ steps.hub-push.outputs.pushed }}
-
-    env:
-      # GHCR is always pushed. Hub repo only pushed when secrets are set.
-      # Hub uses the shorter `net-dhcp` name (matching upstream's
-      # convention there); GHCR keeps `docker-net-dhcp` to align with
-      # the existing tag history.
-      GHCR_NAME: ghcr.io/claymore666/docker-net-dhcp
-      HUB_NAME: claymore666/net-dhcp
-      # Materialize the Docker Hub secrets-presence check at job level
-      # so steps can gate on env (allowed) rather than on the secrets
-      # context directly (rejected at parse time inside step-level
-      # `if:` expressions). Resolves to the literal string "true" or
-      # "false" — compare with `== 'true'` downstream.
-      HAS_HUB_CREDS: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
 
     steps:
       # OUR copy of the resolver, checked out before the tag the input
@@ -103,9 +89,15 @@ jobs:
           # git the whole time.
           #
           # A separate path makes the two trees separate things, which
-          # is what the comment above already says they are. The main
-          # checkout cleans `.resolver` away on its way in; by then the
-          # resolver has already done its work.
+          # is what the comment above already says they are.
+          #
+          # This used to add "the main checkout cleans `.resolver` away
+          # on its way in". Since #796 there is no main checkout in this
+          # job -- `resolve` checks out the resolver and nothing else --
+          # so nothing cleans it and nothing needs to: the job ends here
+          # and the workspace goes with it. The separate path is still
+          # load-bearing for the reason above, which never depended on
+          # the cleanup.
           path: .resolver
           sparse-checkout: scripts/resolve-dispatch-ref.sh
           sparse-checkout-cone-mode: false
@@ -113,15 +105,27 @@ jobs:
       # The dispatch input reaches the shell as DATA, through env, and is
       # never expanded into the script text (#737). `${{ }}` is
       # substituted before bash parses the line, so a value carrying a
-      # quote and a semicolon becomes commands — and this job is the
-      # worst place in the tree for that: it holds packages: write,
-      # id-token: write (keyless Sigstore — code running here can sign an
-      # arbitrary artifact as this repository's OIDC identity),
-      # attestations: write, and both registry tokens. Validating the
-      # value on the next line does not help when the shell has already
-      # parsed it. The same treatment the tree already applies in
+      # quote and a semicolon becomes commands, and validating the value
+      # on the next line does not help once the shell has parsed it.
+      # The same treatment the tree already applies in
       # coverage-presence.yml, pages.yml, release-backmerge.yml and
       # throughout test.yaml.
+      #
+      # THE STATED REASON MOVED, THE RULE DID NOT. Until #796 this ran
+      # inside `release`, and the comment here named that job's
+      # permissions as what made injection catastrophic: packages:
+      # write, id-token: write (keyless Sigstore — code running there
+      # can sign an arbitrary artifact as this repository's OIDC
+      # identity), attestations: write, and both registry tokens.
+      # `resolve` holds `contents: read` and nothing else, so that
+      # sentence is no longer true of the job this step lives in.
+      #
+      # It is still the rule, for a reason that does not depend on
+      # permissions: this step DECIDES `ref`, and `release` and
+      # `release-arm64` check that ref out and build from it while
+      # holding every one of those write scopes. Injection here chooses
+      # what those jobs execute. The blast radius did not shrink; it
+      # moved one job downstream, which is harder to see, not safer.
       - name: Resolve release tag
         id: tag
         env:
@@ -180,9 +184,54 @@ jobs:
             echo "latest_arm_tag=$LATEST_ARM"
           } >> "$GITHUB_OUTPUT"
 
+  release:
+    needs: resolve
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write       # GHCR push + image-signature/attestation upload
+      id-token: write       # keyless cosign signing + provenance (OIDC)
+      attestations: write   # actions/attest-build-provenance attestations
+
+    outputs:
+      # PASS-THROUGHS from the `resolve` job (#796). They stay on this
+      # job so that every downstream `needs.release.outputs.*` reference
+      # keeps resolving unchanged -- the tag data now originates one job
+      # earlier, and nothing downstream had to learn that.
+      tag: ${{ needs.resolve.outputs.tag }}
+      ref: ${{ needs.resolve.outputs.ref }}
+      prerelease: ${{ needs.resolve.outputs.prerelease }}
+      latest_tag: ${{ needs.resolve.outputs.latest_tag }}
+      latest_arm_tag: ${{ needs.resolve.outputs.latest_arm_tag }}
+      # Whether the Hub push STEP RAN, recorded by the step itself.
+      # verify-install needs to know whether there is a Hub image to
+      # install, and re-evaluating the secrets expression there would
+      # answer a different question -- "are credentials present now",
+      # not "was anything published". A skipped step contributes no
+      # output, so this is empty rather than 'true' precisely when
+      # nothing was pushed.
+      hub_pushed: ${{ steps.hub-push.outputs.pushed }}
+
+    env:
+      # GHCR is always pushed. Hub repo only pushed when secrets are set.
+      # Hub uses the shorter `net-dhcp` name (matching upstream's
+      # convention there); GHCR keeps `docker-net-dhcp` to align with
+      # the existing tag history.
+      GHCR_NAME: ghcr.io/claymore666/docker-net-dhcp
+      HUB_NAME: claymore666/net-dhcp
+      # Materialize the Docker Hub secrets-presence check at job level
+      # so steps can gate on env (allowed) rather than on the secrets
+      # context directly (rejected at parse time inside step-level
+      # `if:` expressions). Resolves to the literal string "true" or
+      # "false" — compare with `== 'true'` downstream.
+      HAS_HUB_CREDS: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
+
+    steps:
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ steps.tag.outputs.ref }}
+          ref: ${{ needs.resolve.outputs.ref }}
           # Full history so RELEASE_NOTES.md credits / "since vX" greps
           # behave the same as on a developer checkout.
           fetch-depth: 0
@@ -238,7 +287,7 @@ jobs:
       # second signature.
       - name: Push to GHCR
         env:
-          TAG: ${{ steps.tag.outputs.tag }}
+          TAG: ${{ needs.resolve.outputs.tag }}
         run: make PLUGIN_NAME="${GHCR_NAME}" PLUGIN_TAG="${TAG}" push
 
       # The reference digests in docs/verifying-releases.md must describe
@@ -264,7 +313,7 @@ jobs:
       # rather than remembered.
       - name: Check the documented reference digests against this build
         env:
-          TAG: ${{ steps.tag.outputs.tag }}
+          TAG: ${{ needs.resolve.outputs.tag }}
         run: |
           bash scripts/check-reference-digests.sh \
             "${TAG}" \
@@ -278,7 +327,7 @@ jobs:
         id: hub-push
         if: env.HAS_HUB_CREDS == 'true'
         env:
-          TAG: ${{ steps.tag.outputs.tag }}
+          TAG: ${{ needs.resolve.outputs.tag }}
         run: |
           make PLUGIN_NAME="${HUB_NAME}" PLUGIN_TAG="${TAG}" push
           # Written AFTER the push, so it records a push that happened
@@ -390,7 +439,7 @@ jobs:
       - name: Sign published images (cosign keyless)
         id: signimg
         env:
-          TAG: ${{ steps.tag.outputs.tag }}
+          TAG: ${{ needs.resolve.outputs.tag }}
         run: |
           set -euo pipefail
           GHCR_DIGEST=$(docker buildx imagetools inspect "${GHCR_NAME}:${TAG}" --format '{{.Manifest.Digest}}')
@@ -423,7 +472,7 @@ jobs:
 
       - name: Package and sign release artifact
         env:
-          TAG: ${{ steps.tag.outputs.tag }}
+          TAG: ${{ needs.resolve.outputs.tag }}
         run: |
           set -euo pipefail
           ART="net-dhcp-plugin-${TAG}-linux-amd64.tar.gz"
@@ -532,8 +581,8 @@ jobs:
       - name: Workflow summary
         if: always()
         env:
-          TAG: ${{ steps.tag.outputs.tag }}
-          LATEST: ${{ steps.tag.outputs.latest_tag }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+          LATEST: ${{ needs.resolve.outputs.latest_tag }}
         run: |
           {
             echo "## Published ${TAG}"
@@ -567,13 +616,53 @@ jobs:
   # toolchain — emulation is also pointless here, since the plugin
   # cannot even run under qemu-user (#507 discussion, dhcpcd/netlink).
   #
-  # needs: release — deliberate ordering, not parallelism lost. The
-  # amd64 job owns everything arch-independent (release notes, Hub
-  # description, cosign-docs gate, checksum manifest naming), and a
-  # broken amd64 release should stop the train before any arm64 tag is
-  # published pointing at a half-released version.
+  # needs: resolve, NOT needs: release — the two builds run in parallel
+  # (#796). No data crosses the edge that used to exist: this job took
+  # exactly `tag` and `ref` from `release`, both of which are derived
+  # from the tag that triggered the run and now come from `resolve`.
+  #
+  # THE CONTRACT THAT IS PRESERVED. `promote-latest` and
+  # `github-release` still name BOTH build jobs in their `needs:`, so no
+  # floating tag moves and no release is published unless both
+  # architectures succeeded. That is the half of the old ordering that
+  # protects users, and it is untouched.
+  #
+  # WHAT IS DELIBERATELY GIVEN UP, STATED HONESTLY. The old edge did do
+  # something: when `release` failed, `release-arm64` was skipped, so no
+  # `:vX.Y.Z-arm64` was ever pushed alongside a broken amd64 release.
+  # That is now given up — if amd64 fails, arm64 will already have
+  # pushed its tag.
+  #
+  # It is accepted for ONE class of amd64 failure, and it is worth
+  # naming which, because the two classes are not alike:
+  #
+  #   FAILS AFTER PUBLISHING — the digest gate. `Check the documented
+  #   reference digests against this build` runs AFTER `Push to GHCR`,
+  #   deliberately: that is the earliest point the binaries exist. So
+  #   a failed gate already leaves a published `:vX.Y.Z` behind, and
+  #   this is every first rc of a new version. Here the old edge
+  #   bought consistency between two
+  #   leftovers, not the absence of one, and giving it up costs
+  #   nothing that was not already spent.
+  #
+  #   FAILS BEFORE PUBLISHING — a broken build, a bad ref, an expired
+  #   token, or the `Both registries, or say why not` step. Checkout,
+  #   setup-go and both logins all precede the push, and `make push`
+  #   chains create -> push so the build itself is inside that step
+  #   before any bytes move. Under the old graph this class published
+  #   NOTHING, on either architecture. Here the old edge really did buy
+  #   the absence of a leftover, and that is what is being given up:
+  #   a pushed `:vX.Y.Z-arm64` beside an amd64 release that produced no
+  #   image at all.
+  #
+  # The trade is deliberate. Nothing floating points at that tag --
+  # both floating tags move only in `promote-latest`, which names every
+  # build and verify job -- and re-running the tag recovers it. The
+  # price of keeping it was a whole rc round per release, because a
+  # skipped `release-arm64` never runs its own digest gate, so the
+  # first rc of a new version could only ever print the amd64 block.
   release-arm64:
-    needs: release
+    needs: resolve
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 20
     outputs:
@@ -591,8 +680,8 @@ jobs:
       GHCR_NAME: ghcr.io/claymore666/docker-net-dhcp
       HUB_NAME: claymore666/net-dhcp
       HAS_HUB_CREDS: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
-      TAG: ${{ needs.release.outputs.tag }}
-      ARM_TAG: ${{ needs.release.outputs.tag }}-arm64
+      TAG: ${{ needs.resolve.outputs.tag }}
+      ARM_TAG: ${{ needs.resolve.outputs.tag }}-arm64
 
     steps:
       # The Dockerfile derives nothing from TARGETARCH here — the build
@@ -605,7 +694,7 @@ jobs:
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.release.outputs.ref }}
+          ref: ${{ needs.resolve.outputs.ref }}
           fetch-depth: 0
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
