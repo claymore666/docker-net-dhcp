@@ -135,8 +135,27 @@ When you **do** want Hub published:
 Symptom if scope is wrong: image push works, but the **Sync Docker
 Hub description from README** step ends with
 `401 Unauthorized` calling `PATCH /v2/repositories/...`. Regenerate
-the token with the broader scope and re-run the workflow with
-`gh workflow run release.yml -f tag=vX.Y.Z`.
+the token with the broader scope, then re-run the sync **from an rc
+tag**, not from the release tag:
+
+```sh
+gh workflow run release.yml -f tag=vX.Y.Z-rcN --ref main
+```
+
+The description is not version-specific — the step pushes `README.md`
+to the same Hub repository whichever tag ran it — so the rc dry-run
+fixes it while touching no bare release tag and no `:latest`. Use the
+rc that preceded this release; re-dispatching an rc of an
+already-released version is permitted and moves only `latest-rc`.
+
+Dispatching the **release** tag would work too and is what this line
+used to say. Don't: it rebuilds the plugin, and the rebuild carries a
+new digest — see [Dispatching an existing
+tag](#dispatching-an-existing-tag).
+
+One reason to check this deliberately rather than wait for it to
+fail the run: the sync step is `continue-on-error`, so a `401` shows
+as a failed step inside a **green** job.
 
 ### Workflow file must parse
 
@@ -150,21 +169,93 @@ context isn't allowed in step-level `if`).
 First line of defence: the `actionlint` job in the Test workflow
 lints every workflow file on every PR (and
 `scripts/test-actionlint.sh` asserts the linter still catches this
-exact bug class). Second line: the **rc-tag dry-run** (next
-section) exercises the whole publishing chain before every real
-tag. Avoid dispatching `release.yml` with a bare existing release
-tag — that *rebuilds and re-points* the tag and `:latest`
-(different toolchain ⇒ different digest), mutating artifacts users
-may have pinned.
+exact bug class). Second line: the [**rc-tag
+dry-run**](#pre-release-dry-run-rc-tags) exercises the whole
+publishing chain before every real tag.
+
+### Dispatching an existing tag
+
+Dispatching `release.yml` with a bare existing release tag
+*rebuilds and re-points* that tag (a different toolchain gives a
+different digest), which mutates artifacts users may have pinned.
+Where it used to be genuinely dangerous is `:latest`: `crane tag
+<repo>:$TAG latest` does not know what `:latest` already points at,
+so dispatching an older tag moved `:latest` **backwards** on both
+registries, and there is no rollback — `docker plugin create`
+re-tars the rootfs non-reproducibly, so undoing it means publishing
+yet another digest and orphaning the previous signature.
+
+**Use an rc tag instead.** [The rc dry-run](#pre-release-dry-run-rc-tags)
+runs the identical chain and touches no bare release tag and no
+`:latest`, which is what every recovery step in this file now points
+at. Two of them used to hand you the release-tag dispatch — the one
+action this section is about — to someone whose release was already
+broken.
+
+The irreversible half is also now refused rather than written down
+(#736). `promote-latest` runs `scripts/assert-newest-release-tag.sh`
+before it touches either registry, and it **refuses, never skips** —
+a skip during an incident is not noticed, and an incident is exactly
+when this fires. What follows is what you need to know if you are
+looking at a refusal, or deciding whether to dispatch anyway:
+
+- **Re-running the tag currently being released is allowed** by the
+  guard. It still rebuilds, so it still drifts the digest; the guard
+  is about `:latest` moving backwards, not about the rebuild.
+- **Dispatching an older release is refused,** with a non-zero exit
+  and nothing published. This is the case that used to succeed
+  quietly and move `:latest` back with it.
+- **A genuine backport is refused too** — publishing v1.7.2 after
+  v1.8.0 exists. Deliberate: moving `:latest` to a backport is then
+  an explicit manual `crane tag`, not an accident.
+- **rc tags are compared only against the other rcs of their own
+  version**, because `git tag --sort=-v:refname` sorts
+  `v1.8.0-rc1` above `v1.8.0` unless `versionsort.suffix` is set,
+  and a single "newest tag overall" rule would have refused the real
+  v1.8.0 release.
+- **Re-dispatching an rc of an already-released version is not
+  refused.** It moves `latest-rc`, which no documented install
+  command names. Left uncovered deliberately, and recorded in the
+  script's header so the next reader does not take it for an
+  oversight.
+
+The rebuild itself is still a rebuild, so this remains something to
+do on purpose and not by reflex. The difference is that the
+irreversible half now fails loudly instead of relying on this
+paragraph being read first.
 
 ### Pre-release dry-run (rc tags)
 
 A tag with a pre-release suffix (`v1.0.0-rc1`) runs the release
 workflow in **pre-release mode**: the full chain executes — build,
 push of `:v1.0.0-rc1` to both registries, Hub description sync,
-verify-install — but **`:latest` is not moved** and no bare
+the four install proofs — but **`:latest` is not moved** and no bare
 release tag is touched. Zero impact on anything a user pulls by
 default.
+
+Since #736 an rc does not *skip* promotion, it is **redirected**:
+`promote-latest` runs on an rc too, with the same steps and the same
+digest assertion, aimed at `latest-rc` and `latest-rc-arm64` instead
+of `latest` and `latest-arm64`. That matters twice.
+
+- **The dry-run now covers the promotion step.** Under the old
+  `if: prerelease != 'true'` skip, promotion was the one part of
+  this workflow an rc could not reach, so a change to the promote
+  ordering would first execute on a real tag — with no rollback
+  behind it.
+- **`:latest` is still untouched, and that is now asserted from the
+  registry** rather than inferred from the skip: the run reads
+  `:latest` before it starts and re-reads it at the end. If the
+  redirect were ever mistyped, the rc would fail rather than ship
+  itself to everyone pulling `:latest`.
+
+`latest-rc` and `latest-rc-arm64` are public tags on both
+registries, so treat them as published surface: they are moved by
+every rc and they point at a build that has not been accepted. **No
+install instruction in any document may name them** — install
+instructions pin `vX.Y.Z` or `latest`. If you are ever adding a tag
+to a `docker plugin install` line in these docs, that is the check
+to run.
 
 Use it before every real release tag (step 9 below):
 
@@ -173,8 +264,12 @@ git checkout main && git pull --ff-only      # the release commit
 git tag -s v1.0.0-rc1 -m "v1.0.0-rc1" && git push origin v1.0.0-rc1
 ```
 
-Watch the run; every step including **verify-install** and, since
-v1.7.0, **release-arm64** / **verify-install-arm64** must be green.
+Watch the run; every step including **verify-install**, since
+v1.7.0 **release-arm64** / **verify-install-arm64**, and since #776
+**verify-install-hub** / **verify-install-hub-arm64** must be green —
+and since #736 **promote-latest**, which an rc now reaches. Its last
+step, *Assert a pre-release did not move :latest*, is the one that
+proves the dry-run stayed a dry-run.
 
 **The rc tag also starts the arm64 integration lane** (#531) — pushing
 it triggers `integration-arm64` on its own. Nothing to dispatch, and
@@ -184,10 +279,12 @@ from the tag. The lane still runs only against release candidates
 targets — label `dhcp-ci-arm64` — is provided for that window and not
 for day-to-day PRs.
 
-An arm64 runner has to be online for the rc, which today means minting
-a JIT config and launching it (the amd64 pool has an orchestrator; the
-arm64 side does not yet — that is the open half of #531). Do it around
-the time you push the tag; the lane waits 25 minutes.
+An arm64 runner has to be online for the rc. Since v1.8.0 (#632) that
+needs no action: the board carries a standing runner that registers
+itself at boot and reconnects on its own, so pushing the tag is the
+whole procedure. Nothing to mint, nothing to launch. If the lane
+reports no runner anyway, the board is down rather than unstarted —
+that is a host problem, not a release step.
 
 Two jobs to read, and they say different things:
 
@@ -196,8 +293,23 @@ Two jobs to read, and they say different things:
   runner carried `dhcp-ci-arm64` within the wait, so this candidate has
   **no arm64 verdict at all**. It exists because a job with no runner
   sits queued for hours and queued renders as "in progress", which is
-  indistinguishable from a lane still working. Treat it as "bring a
-  runner up and re-dispatch", never as a flake to wave through.
+  indistinguishable from a lane still working. Treat it as "bring the
+  board up and re-dispatch", never as a flake to wave through.
+
+Inside `arm64-suite`, one step is worth knowing about before it
+surprises you: **Verify the host's NFS-outage watchdog** (v1.8.0+,
+#677). It asks the board whether it actually *booted* a working
+watchdog, which the source-side check cannot know — that root is a
+netbooted image and can predate a fix the tree already carries. If it
+fails the suite fails, and it means the board is running unwatched: an
+NFS outage will wedge it until someone visits it physically. Fix the
+image; do not wave it through.
+
+It can also come back **only partly verified**, which surfaces as a
+workflow annotation and does *not* fail the step. That means the kernel
+ring buffer has aged past this boot, so the watchdog's *holder* could
+not be confirmed. The arming verdict comes from sysfs and is never the
+part that is lost, so an annotation here does not block the tag.
 
 To re-run the lane against a tag that already exists:
 
@@ -312,12 +424,49 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
      stale version references deletes it in good faith. **Keep it.**
    - **Counted claims.** "Four flip `healthy` to `false`" is right until
      a fifth is added, and the sentence still parses. Check any stated
-     count against the code. That particular claim is now enforced by
-     `scripts/check-health-contract.sh` (#638) — it had drifted for two
-     releases *under this instruction*, which is the argument for a
-     gate over a rule: the sentence is checked on every PR now, not
-     when someone remembers to. The instruction still stands for every
-     other counted claim, none of which has one.
+     count against the code.
+
+     **This bullet's own example went stale while it was being used as
+     the example.** It said the claim was "now enforced by
+     `scripts/check-health-contract.sh` (#638)", and v1.8.0 added a
+     fifth counter: the gate held every counter *list* it read, and the
+     doc still shipped rows saying "four" over a list of five — because
+     the gate read the count word in one sentence and the file states
+     it in five (#724). The claim was not enforced. A narrower claim
+     was, and the bullet had rounded it up.
+
+     So the instruction is not "change four to five". It is that
+     **"a gate covers this" is itself a counted claim, and decays the
+     same way.** A gate covers the statements it was taught, and adding
+     a statement is exactly the edit nobody thinks to teach it about.
+
+     Read what the gate says it read rather than trusting that it read
+     everything. `check-health-contract.sh` ends in a receipt —
+
+     ```sh
+     scripts/check-health-contract.sh
+     # PASS  healthy contract agrees in N doc counter-list(s), N doc
+     #       count-word(s) and N code term(s): <the counters>
+     ```
+
+     The numbers are deliberately not reproduced here — a count quoted
+     into this file is the very thing this bullet is about. Run it and
+     read them: they are what it parsed on that run, not a total it
+     asserts. If the file states it six times and the receipt says
+     five, the gate is green and the doc is wrong.
+
+     Most gates in `scripts/` that discover what to check print the
+     same kind of receipt — a count, or a line per item inspected. A
+     few print a bare `PASS`, and for those the coverage is not
+     visible at all without reading the script. Either way: when a
+     gate's coverage is load-bearing for a claim in these docs, quote
+     what it read, not the fact that it exists.
+
+     The rule survives the correction: the drift ran for two releases
+     *under this instruction* before #638, which is still the argument
+     for a gate over a rule. It just does not end there — the gate is
+     the floor, and the count of what it reads is the part that has to
+     be re-checked, once per release, by running it.
 
    **Verify each finding against the artifact, not from reasoning.**
    Run the command, `config` the snippet, `ls` the path on the test
@@ -396,11 +545,17 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
    `govulncheck`, `attribution`, and CodeQL's `Analyze (go)` +
    `Analyze (actions)` — eight in total. Merge when green.
 
-   `main` requires those eight **plus `coverage`**, which is why the
-   ratchet first bites at the release PR in the next step and not
-   before. Branch protection is the authority here; if this list and
-   the settings disagree, the settings win and this list is the thing
-   to fix.
+   `main` requires those eight **plus `coverage` and
+   `coverage-present`**, which is why the ratchet first bites at the
+   release PR in the next step and not before. Branch protection is the
+   authority here; if this list and the settings disagree, the settings
+   win and this list is the thing to fix.
+
+   `coverage-present` became required in #735. It is the detector that
+   tells an *absent* coverage run apart from a pending one, and it was
+   advisory: it could go red without blocking the merge it exists to
+   protect, which is the failure it was built for happening to the
+   guard itself.
 6. **Open the release PR `dev` → `main`** with title
    `Release vX.Y.Z` and a `Closes #N` line for **every issue** in
    the milestone. The list is what auto-closes them when the PR
@@ -443,8 +598,10 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
    You should not have to notice this yourself: the **Coverage
    presence** check (`.github/workflows/coverage-presence.yml`, #504)
    watches the head and fails with the run id and the exact recovery
-   command when the run was evicted. If it is red, do what it says. The
-   manual form, for a head it did not cover:
+   command when the run was evicted. It is a required context on `main`
+   as of #735, so a red one blocks the release PR rather than sitting
+   in the list being ignored. If it is red, do what it says. The manual
+   form, for a head it did not cover:
 
    ```sh
    gh run list --workflow coverage.yml --limit 5   # look for "cancelled"
@@ -486,25 +643,69 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
    `git tag -v vX.Y.Z` (or the green "Verified" on the tag page).
    The workflow fires on `tags: v*`. Watch it at
    <https://github.com/claymore666/docker-net-dhcp/actions/workflows/release.yml>.
-   Expected steps: Resolve tag → checkout → setup-go →
-   GHCR login → Hub login (or skip) → Push to GHCR → Push to
-   Hub (or skip) → Sync Hub description → Install cosign →
-   **Sign published images (cosign)** → **Generate SBOM (syft)** →
-   **Package and sign release artifact** → **Attest provenance
-   (artifacts + image)** → Workflow summary →
-   **verify-install** (separate job: installs the just-published
-   plugin from GHCR on a clean hosted runner and asserts it
-   enables — a red verify-install means users can't install what
-   we just shipped) → **github-release**.
+   Expected steps, in the order the `release` job runs them and under
+   the names the run shows: Resolve release tag → checkout → setup-go →
+   Log in to GHCR → Log in to Docker Hub (or *Warn if Docker Hub
+   credentials missing*) → Push to GHCR → **Check the documented
+   reference digests against this build** (the gate step 10b is about —
+   on the first rc of a new version it is *expected* to fail and print
+   the block to paste into the doc) → Push to Docker Hub (or skip) →
+   Sync Docker Hub description from README (or skip) → Install cosign →
+   **Record and gate the cosign version** → **Sign published images
+   (cosign keyless)** → Install syft → **Generate SBOM (SPDX +
+   CycloneDX)** → **Package and sign release artifact** → **Attest
+   release-artifact provenance** → **Attest image provenance (GHCR)** →
+   **Upload signed artifacts for the release job** → Workflow summary.
+
    Since v1.7.0 the run carries a parallel arm64 chain (#507):
    **release-arm64** (native `ubuntu-24.04-arm` build, pushes
-   `vX.Y.Z-arm64` / `latest-arm64` — per-arch tags, because a Docker
-   plugin cannot install from a manifest list) and
-   **verify-install-arm64**. Both gate `github-release` exactly like
-   their amd64 twins, and every green checklist below includes them.
+   `vX.Y.Z-arm64` — per-arch tags, because a Docker plugin cannot
+   install from a manifest list) and **verify-install-arm64**.
+
+   Then, as separate jobs:
+
+   - **verify-install** / **verify-install-arm64** — install the
+     just-published plugin from GHCR on a clean hosted runner and
+     assert it enables. A red verify-install means users can't install
+     what we just shipped.
+   - **verify-install-hub** / **verify-install-hub-arm64** — the same
+     proof for Docker Hub, which is the other place a user installs
+     from (#776). Each is its **own job on its own runner** and that is
+     deliberate: the value of these jobs is a daemon that has never
+     created a network sandbox, which is how v1.6.0-rc2 caught a bind
+     source the daemon creates lazily (#588). A second install appended
+     to `verify-install` would run after that property was already
+     spent, and `docker plugin rm` does not give it back. When a run
+     published no Hub image the steps are skipped and the job records
+     `⚠️ Docker Hub install not verified` in the summary, so a
+     GHCR-only run cannot be mistaken for a both-registries one.
+   - **promote-latest** — since #736 this is where every floating tag
+     moves, for both arches and both registries, and it runs only after
+     all six of the above are green. `scripts/check-latest-promotion.sh`
+     asserts that dependency, naming all four install proofs. Steps: *Refuse to promote a
+     floating tag backwards* → Install crane → the two logins →
+     *Record what :latest resolves to before promotion* → *Promote the
+     GHCR floating tags* → *Promote the Docker Hub floating tags* →
+     *Verify the floating tags resolve to the signed digests* →
+     *Assert a pre-release did not move :latest*.
+
+     Two of those are guards that read the registry rather than this
+     workflow, and they check different things. *Verify the floating
+     tags resolve to the signed digests* compares the floating tag
+     against the version tag by digest — that is the #267 guard, that
+     retagging preserved the digest the signature covers. *Assert a
+     pre-release did not move :latest* re-reads `:latest` and compares
+     it to what the *Record* step saw before anything was touched; it
+     runs only on an rc, and it is the one that proves the rc contract
+     from outside.
+   - **github-release** — does **not** wait for `promote-latest`; it
+     needs the same six jobs. Promotion and the Releases page are
+     siblings, so a refused promotion does not suppress the release.
+
+   Every green checklist below includes the arm64 jobs.
 10. **Confirm the GitHub Release** — the `github-release` job now cuts
-   it automatically once `verify-install` is green (so a plugin that
-   doesn't install never gets an advertised Releases page). It attaches
+   it automatically once the install proofs are green (so a plugin
+   that doesn't install never gets an advertised Releases page). It attaches
    the cosign-signed artifacts and builds the body as: a generated lead
    line naming the project and version (it becomes the page's
    `og:description`, so it is what link previews show — #469), the
@@ -574,6 +775,74 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
    previous version's README/docs, and the next release PR has to
    re-bump them. Forgotten once after v0.9.0 — that's why
    `release.yml`'s header comment carries the same checklist.
+
+   **Do this before merging anything else into `dev`.** Forgetting is
+   the mild failure. The one that has actually happened is
+   *foreclosure*: the `--ff-only` is possible only while `dev` has no
+   commits of its own since the release, so the window opens when the
+   release PR lands and closes on the next merge into `dev` —
+   permanently, and by doing something otherwise correct.
+
+   ```sh
+   # is a back-merge OWED?  prints a count
+   git rev-list --count origin/dev..origin/main
+   # does `dev` carry commits of its own?  (--is-ancestor prints nothing)
+   git merge-base --is-ancestor origin/dev origin/main \
+       && echo "dev is contained in main" \
+       || echo "dev has commits of its own"
+   ```
+
+   **Two different questions, and neither answers the other.** The count
+   is commits on `main` that `dev` lacks — it says a back-merge is
+   *owed*. The predicate asks whether `dev` has commits of its own, which
+   is what `--ff-only` needs. Both outcomes of both, because a documented
+   command with only one outcome written down leaves the reader to supply
+   the other by negation:
+
+   | count | `dev` contained in `main`? | state | do |
+   |---|---|---|---|
+   | non-zero | yes | **owed and available** — the normal post-tag state | run the `--ff-only` above, now |
+   | non-zero | no | owed, and **foreclosed** | back-merge PR |
+   | zero | yes | `main` and `dev` identical | nothing |
+   | zero | no | `dev` ahead mid-cycle — the ordinary state | nothing |
+
+   A non-zero count is not bad news: at the v1.6.0 tag it was **4**, and
+   the fast-forward worked. It is the warning the CI advisory prints, in
+   those words — *"While that is true, `git merge --ff-only main` still
+   works."*
+
+   Once foreclosed the recovery is a back-merge PR, `main` → `dev`,
+   **merged with a merge commit — a squash does not put `main`'s commits
+   on `dev`**, which is the entire point of this step.
+
+   **The failure is silent, which is why this needs a command and not a
+   reminder.** The divergence carries no content: every release merge
+   has a `dev` commit as its second parent — because step 5 merged the
+   release branch into `dev` before the tag — so `git diff main dev` is
+   clean and the whole suite passes while the graph is wrong. Nothing
+   reads as broken, so nothing prompts the check.
+
+   Worked instance: v1.6.0 published at 23:11:30Z on 2026-08-16; three
+   Dependabot PRs went into `dev` at 23:26, **fifteen minutes later**,
+   before anyone looked at `main`. That foreclosed it; recovered by #597
+   at 23:38. Fifteen minutes is not a window anyone watches by hand.
+
+   **CI warns, but it cannot block.**
+   `.github/workflows/release-backmerge.yml` runs
+   `scripts/check-release-backmerge.sh` in two modes:
+
+   - **Advisory, on every PR into `dev`** — warns on any divergence and
+     **ignores the grace window**, because the fresh divergence is the
+     only case this mode exists for. It warns and never blocks, on
+     purpose — reasoning in the workflow header. An annotation can be
+     scrolled past, which is why the command stays in this step.
+   - **Enforcing, on the nightly schedule** — the backstop for the
+     *permanent* omission, and the only mode `BACKMERGE_GRACE_HOURS`
+     (default 24) applies to, so a release in flight is not a false red.
+
+   One caveat on the recovery: the back-merge diff is not always empty.
+   #597 was, but `6af0749` carried three real files. Hitting a conflict
+   there does not mean you have done something wrong.
 12. **Prune merged branches.** The repo has *Automatically delete head
    branches* enabled, so merged PR head branches are removed on merge.
    Two things that setting doesn't cover, so clean them now:
@@ -608,12 +877,21 @@ After the workflow succeeds:
   release PR's `Closes` list). Verify with
   `gh issue list --milestone vX.Y.Z --state open` — should be
   empty.
+- **Anything listed in `.github/dispatch-pending.txt` is now
+  dispatchable — exercise it once and remove the entry.** A
+  `workflow_dispatch` workflow is only exposed from the default branch,
+  so one that merged to `dev` during this cycle has never run, and this
+  release is the first moment it can. Dispatch it, confirm it does what
+  its documentation claims, then drop the entry —
+  `scripts/check-dispatch-reachable.sh` fails on a declaration that has
+  stopped being true, so a forgotten one surfaces on the next PR rather
+  than a year later.
 
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |
 | ------- | ------------ | --- |
-| Workflow shows zero-job "failed" runs on every push, tag push doesn't trigger anything | release.yml parse error (often `secrets` context in step-level `if`) | Fix the YAML, dispatch via `gh workflow run release.yml -f tag=<existing> --ref main` to verify, then retry |
+| Workflow shows zero-job "failed" runs on every push, tag push doesn't trigger anything | release.yml parse error (often `secrets` context in step-level `if`) | Fix the YAML, then verify with an **rc** tag — `gh workflow run release.yml -f tag=vX.Y.Z-rcN --ref main` — which exercises the whole chain without touching a bare release tag or `:latest`. Then retry the real tag. Do not verify by dispatching the release tag: [Dispatching an existing tag](#dispatching-an-existing-tag) |
 | `Push to GHCR` step ends `403 Forbidden` | GHCR package not linked to repo with Write | One-time fix in package settings (see prerequisites) |
 | `Push to Docker Hub` step ends `unauthorized: incorrect username or password` | Token revoked / expired / wrong scope | Regenerate at hub.docker.com, update `DOCKERHUB_TOKEN` repo secret |
 | `Sync Docker Hub description from README` step ends `401` | Token scope is image-push only, not admin | Regenerate token with broader scope (see prerequisites) |

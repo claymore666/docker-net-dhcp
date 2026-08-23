@@ -39,7 +39,7 @@ substitute yours; `ip -brief link` lists them):
 # On arm64 use the -arm64 tag — a network stores this exact reference
 # as its driver, so it must name the plugin you installed.
 docker network create \
-    --driver=ghcr.io/claymore666/docker-net-dhcp:v1.7.1 \
+    --driver=ghcr.io/claymore666/docker-net-dhcp:v1.8.0 \
     --ipam-driver=null \
     -o mode=macvlan \
     -o parent=eth0 \
@@ -196,6 +196,6 @@ documented once, in the [driver reference](reference.md):
 - [DHCPv6](reference.md#dhcpv6-ipv6true)
 - [Recovery after a plugin restart](reference.md#recovery-after-a-plugin-restart)
 - [`/Plugin.Health` and the counters](reference.md#pluginhealth)
-- [Plugin settings](reference.md#plugin-settings) — `LOG_LEVEL`, `AWAIT_TIMEOUT`, `STATE_DIR`, `OUTAGE_TICK`, `OUTAGE_GRACE`
+- [Plugin settings](reference.md#plugin-settings) — `LOG_LEVEL`, `AWAIT_TIMEOUT`, `STATE_DIR`, `OUTAGE_TICK`, `OUTAGE_GRACE`, `METRICS_ADDR`
 
 For how it works under the hood, see [How it works](internals.md).

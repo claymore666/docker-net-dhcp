@@ -8,10 +8,12 @@
 # to follow from that tag on its own — integration-arm64 fires on
 # `v*-rc*` rather than waiting for someone to remember `gh workflow run`.
 #
-# But its suite runs on a self-hosted JIT runner that only exists during
-# the rc window. With no runner carrying `dhcp-ci-arm64`, the job does
-# not fail: it sits QUEUED, and GitHub holds it there for hours before
-# giving up. Queued renders as "in progress", so a lane nobody ever ran
+# But its suite runs on a single self-hosted host. That host registers
+# itself at boot and reconnects unattended (`register` mode, #632), so
+# nobody has to launch anything for the rc — but it is still one machine
+# that can be powered off, or whose boot server can be down. With no
+# runner carrying `dhcp-ci-arm64`, the job does not fail: it sits
+# QUEUED, and GitHub holds it there for hours before giving up. Queued renders as "in progress", so a lane nobody ever ran
 # looks exactly like a lane still working, and the rc reads as clean
 # because nothing went red. That is the shape of #504 and #418 a third
 # time: absence wearing the costume of patience.
@@ -28,8 +30,9 @@
 # Usage: check-arm64-lane.sh <run-id> [wait-minutes]
 #   <run-id>:       the workflow run whose arm64 job must start.
 #   [wait-minutes]: how long a runner may take to pick the job up
-#                   (default 25 — minting and launching a JIT runner on
-#                   the Pi is a couple of minutes when someone is on it).
+#                   (default 25 — a standing runner takes it in seconds;
+#                   the margin is for a host still netbooting, which is
+#                   a couple of minutes from cold).
 #
 # Env: GATE_REPO=owner/repo (default: inferred)
 #      GATE_POLL_SECONDS=30
@@ -72,13 +75,29 @@ deadline=$(( $(date -u +%s) + WAIT_MIN * 60 ))
 last_error=""
 
 while :; do
-    status=$(gh api "repos/${REPO}/actions/runs/${RUN_ID}/jobs?per_page=100" \
-               --jq ".jobs[] | select(.name == \"${JOB}\") | .status" 2>/dev/null </dev/null | head -1)
-    if [ $? -ne 0 ]; then
+    # gh's OWN status, not the pipeline's (#742). This was
+    # `status=$(gh api ... | head -1)` followed by `if [ $? -ne 0 ]`,
+    # which was reported as dead code on the reasoning that `$?` after a
+    # pipeline is the last command's — head's, always 0.
+    #
+    # IT WAS NOT DEAD. `set -o pipefail` two lines up at :47 makes `$?`
+    # the rightmost NON-ZERO status, so a failing gh did reach this
+    # branch, and the "an unreadable API exits 2" case in
+    # test-check-arm64-lane.sh is green against both spellings. Written
+    # down because the misreading is an easy one to have twice.
+    #
+    # Kept anyway, as a refactor and not a fix: the correctness of the
+    # error path should not depend on a shell option set two lines away
+    # and reachable by anyone editing this file. `if ! status=$(...)`
+    # tests gh directly, and the trim moves to where it cannot affect
+    # the status at all.
+    if ! status=$(gh api "repos/${REPO}/actions/runs/${RUN_ID}/jobs?per_page=100" \
+                    --jq ".jobs[] | select(.name == \"${JOB}\") | .status" 2>/dev/null </dev/null); then
         # Retry inside the wait, but never let this be the reason the
         # gate returns clean — see the deadline branch below.
         last_error="could not list jobs for run ${RUN_ID}"
     else
+        status=$(printf '%s' "$status" | head -1)
         last_error=""
         case "$status" in
             in_progress|completed)

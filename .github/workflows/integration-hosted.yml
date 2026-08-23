@@ -237,7 +237,16 @@ jobs:
       - name: Run integration tests
         run: sudo env "PATH=$PATH" "INTEGRATION_PLUGIN_REF=$INTEGRATION_PLUGIN_REF" make integration-test
 
+      # if: always() IS THE WHOLE POINT OF RUNNING THIS LANE (#742). Without
+      # it a red main suite skips the failure-injection suite entirely, so
+      # the one place a bare host, systemd, enforcing AppArmor and a distro
+      # Kea are exercised reports on half of itself precisely when
+      # something is already wrong. That is the pre-#375 semantics
+      # integration.yml:109-114 documents as the bug `fail-fast: false`
+      # fixed there; it was never applied here. Observed live in run
+      # 32166474894.
       - name: Run failure-injection tests
+        if: always()
         run: sudo env "PATH=$PATH" "INTEGRATION_PLUGIN_REF=$INTEGRATION_PLUGIN_REF" make integration-test-failure
 
       # Belt-and-braces on an ephemeral VM, kept for parity with

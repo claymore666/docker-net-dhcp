@@ -35,8 +35,8 @@ type HealthResponse struct {
 	PendingHints    int     `json:"pending_hints"`
 	RecoveredOK     int32   `json:"recovered_ok"`
 	RecoveryFailed  int32   `json:"recovery_failed"`
-	// RecoveryFailed has two benign twins, at the two points recovery
-	// can stop early for a reason that is not a plugin fault. Neither is
+	// RecoveryFailed has four benign twins, at the four points recovery
+	// can stop early for a reason that is not a plugin fault. None is
 	// healthy-affecting.
 	//
 	// RecoveryDeferred is the entry gate: the daemon was not serving yet
@@ -47,7 +47,27 @@ type HealthResponse struct {
 	// container had already exited by the time recovery reached it
 	// (#376).
 	RecoveryAbortedContainerGone int32 `json:"recovery_aborted_container_gone"`
-	JoinStartFailures            int32 `json:"join_start_failures"`
+	// RecoveryNetworkGone is the per-network case: the network was
+	// removed between the listing that found it and the read of its
+	// detail, so the whole network is skipped (#648). The list recovery
+	// walks is a snapshot, and a suite that creates and removes networks
+	// continuously hits this. Until #648 it landed in RecoveryFailed and
+	// failed a run in which every test passed.
+	RecoveryNetworkGone int32 `json:"recovery_network_gone"`
+	// RecoveryFingerprintsSkipped is the endpoint-level sibling: recovery
+	// adopted the endpoint but could not learn its hostname, so it
+	// recorded no fingerprint and DeleteEndpoint will lay no tombstone
+	// for it (#721). Not fatal — the endpoint has a renewal client, it
+	// has lost only address stability across its next restart — but a
+	// suite where this climbs is one whose restart-stability assertions
+	// are being decided by something other than the code under test.
+	RecoveryFingerprintsSkipped int32 `json:"recovery_fingerprints_skipped"`
+	// RecoveryAlreadyManaged is the per-endpoint case on the other side:
+	// a Join reached the endpoint first, so recovery yielded and left
+	// that client in place (#480). Expected whenever a deferred recovery
+	// overlaps containers coming back.
+	RecoveryAlreadyManaged int32 `json:"recovery_already_managed"`
+	JoinStartFailures      int32 `json:"join_start_failures"`
 	// JoinAbortedContainerGone is the benign twin of JoinStartFailures:
 	// the container exited before the persistent client was up. Not
 	// healthy-affecting (#373).
@@ -66,6 +86,10 @@ type HealthResponse struct {
 	RestartLinkUpTimeouts   int32 `json:"restart_link_up_timeouts"`
 	JoinAbortedEndpointLeft int32 `json:"join_aborted_endpoint_left"`
 	TombstoneWriteFailures  int32 `json:"tombstone_write_failures"`
+	// TombstoneQuarantines is healthy-affecting (#724): the tombstone
+	// file was unparseable and was moved aside, taking every live
+	// tombstone on the host with it.
+	TombstoneQuarantines int32 `json:"tombstone_quarantines"`
 	// TombstonesConsumed is RecoveredOK's counterpart: the address was
 	// preserved by replaying a tombstone rather than by recovery
 	// re-adopting a live endpoint. Together they let a restart test say
@@ -112,6 +136,16 @@ type HealthResponse struct {
 	// Neither is healthy-affecting.
 	ParentLinkWaits        int32 `json:"parent_link_waits"`
 	ParentLinkWaitTimeouts int32 `json:"parent_link_wait_timeouts"`
+	// DHCPServerTierFallbacks / DHCPServerPolicyExhausted cover the
+	// dhcp_servers preference list (#111) and dhcp_deny_servers (#669).
+	// Fallbacks means a preferred server was silent and the next one in
+	// the list answered — the feature working, and the only signal that
+	// a ranked server has gone away. Exhausted means every server the
+	// network was allowed to use stayed silent, which is what separates
+	// "the servers you named are down" from "DHCP is broken". Neither
+	// is healthy-affecting: both describe the segment, not the plugin.
+	DHCPServerTierFallbacks   int32 `json:"dhcp_server_tier_fallbacks"`
+	DHCPServerPolicyExhausted int32 `json:"dhcp_server_policy_exhausted"`
 
 	// published is the key set of the payload this value was decoded
 	// from. It exists because an absent JSON field decodes to zero,
@@ -184,10 +218,16 @@ var floorCounters = []floorCounter{
 		why:   "the plugin could not persist its tombstone state to disk; an endpoint will not keep its address across a restart",
 	},
 	{
+		name:  "tombstone_quarantines",
+		read:  func(h *HealthResponse) int32 { return h.TombstoneQuarantines },
+		fatal: true,
+		why:   "the tombstone file was unparseable and was quarantined as tombstones.json.corrupt-<ts>; every live tombstone on the host went with it, so any container that restarts inside the TTL window comes back with a different MAC and a different address. Strictly worse than tombstone_write_failures, which costs one container the same thing (#724). The quarantined file is still on disk under STATE_DIR and nothing reaps it — read it before deleting it, it is the only evidence of what was lost",
+	},
+	{
 		name:  "recovery_failed",
 		read:  func(h *HealthResponse) int32 { return h.RecoveryFailed },
 		fatal: true,
-		why:   "recovery could not rebuild a RUNNING container's renewal client, so its lease will not renew until it is restarted. Fatal since #421: both benign paths that used to land here are counted separately — recovery_deferred for a daemon that was not serving yet (#383) and recovery_aborted_container_gone for a container that had already exited (#376) — and the probation runs this counter was left non-fatal for came back clean",
+		why:   "recovery could not rebuild a RUNNING container's renewal client, so its lease will not renew until it is restarted. Fatal since #421: the benign paths that used to land here are counted separately — recovery_deferred for a daemon that was not serving yet (#383), recovery_aborted_container_gone for a container that had already exited (#376), and recovery_network_gone for a network removed out from under the walk (#648) — and the probation runs this counter was left non-fatal for came back clean",
 	},
 	{
 		name:  "address_conflicts",
@@ -260,9 +300,10 @@ const healthyWhy = "the plugin reports itself unhealthy while every counter this
 // from the branch under test, so this is not a dev-box-only guard.
 //
 // Note this is deliberately NOT `!h.Healthy`, though it is now one
-// step away from it. All three counters behind that flag mean exactly
-// one thing since #376 split the benign container-exit out of
-// recovery_failed; what is left is wanting a few runs of evidence
+// step away from it. Every counter behind that flag means exactly
+// one thing since #376 split the benign container-exit, and #648 the
+// removed network, out of recovery_failed; what is left is wanting a
+// few runs of evidence
 // before promoting recovery_failed to fatal, because the cost of
 // getting that wrong is a red suite nobody can explain. When it is
 // promoted, this table collapses into a single check of h.Healthy.
@@ -299,7 +340,7 @@ func CheckHealthFloor(h *HealthResponse) []FloorFinding {
 	// Every counter in floorCounters is now fatal, so in principle this
 	// is redundant — and that is exactly why it is worth having. The
 	// table is this suite's *mirror* of pkg/plugin's Healthy
-	// expression, and a mirror drifts: add a fourth healthy-affecting
+	// expression, and a mirror drifts: add another healthy-affecting
 	// counter to the plugin and the floor keeps reporting clean until
 	// somebody remembers this file. Asking the plugin directly closes
 	// that gap without waiting for the mirror to catch up.
@@ -373,8 +414,8 @@ const floorEvidenceMaxFaultLines = 200
 // Two sections, both bounded:
 //
 //   - every error- and warning-level line, wherever it falls in the run.
-//     This is not a heuristic: each of the three counters the floor can
-//     report is incremented next to a log.Error or log.Warn at every one
+//     This is not a heuristic: each counter the floor can report is
+//     incremented next to a log.Error or log.Warn at every one
 //     of its increment sites, so the line that explains a finding is
 //     always in this section. Warnings are included as well as errors
 //     because the counter's own line is sometimes a Warn (the tombstone

@@ -68,7 +68,23 @@ run_case "a new t.Skip is waived by the Test-weakening trailer" "$BASE" 'package
 import "testing"
 func TestThing(t *testing.T) {
 	t.Skip("needs engine 28")
-}' "Skipped pending the engine requirement.\n\nTest-weakening: #125" 0
+}' "Skipped pending the engine requirement.
+
+Test-weakening: #125" 0
+
+# The waiver must be a trailer, at column 0. Unanchored, any commit or
+# PR body that quotes the trailer while explaining it switches the gate
+# off — which is how the sibling coverage-floor gate (#735) was caught
+# waiving itself on the very commit that introduced it.
+run_case "an indented mention of the trailer does not waive" "$BASE" 'package x
+import "testing"
+func TestThing(t *testing.T) {
+	t.Skip("flaky here")
+}' "The escape hatch is written:
+
+    Test-weakening: #125
+
+and this paragraph is only describing it." 1
 
 run_case "a bare issue mention does NOT waive it" "$BASE" 'package x
 import "testing"
@@ -486,6 +502,93 @@ func TestThing(t *testing.T) {
 		t.Errorf("three")
 	}
 }' 1
+
+# --- 6. uncommitted work is outside the range (#569) ------------------
+#
+# The gate judges a commit range. Run by hand before committing it saw
+# no test file in the range and said so with an exit 0 — a clean pass
+# over work it never opened. These cases pin the OUTPUT rather than the
+# exit code, because the exit code was never the defect: 0 is still the
+# right answer. What was wrong was claiming a verdict.
+#
+# Both directions, as everywhere else here: dirty must refuse, and clean
+# must still give the plain line. A one-directional check here would let
+# the refusal fire always, which is the same uselessness wearing the
+# opposite mask.
+run_dirty() {
+    local name="$1" setup="$2" want_present="$3" want_absent="$4" want_rc="$5"
+    local dir out rc
+    dir=$(mktemp -d)
+    out=$(
+        cd "$dir" || exit 2
+        git init -q .
+        git config user.email t@t; git config user.name t
+        git config commit.gpgsign false
+        mkdir -p test/integration/harness
+        printf 'package x\n' > doc.go
+        git add -A; git commit -qm base
+        # The range is real and non-empty; it simply carries no test file.
+        printf 'package x\n// touched\n' > doc.go
+        git add -A; git commit -qm "a commit that touches no test file"
+        eval "$setup"
+        bash "$GATE" HEAD~1..HEAD 2>&1
+    )
+    rc=$?
+    rm -rf "$dir"
+    local bad=""
+    [ "$rc" = "$want_rc" ] || bad="exit $rc, want $want_rc"
+    if [ -n "$want_present" ] && ! printf '%s\n' "$out" | grep -F "$want_present" >/dev/null; then
+        bad="${bad:+$bad; }missing '$want_present'"
+    fi
+    if [ -n "$want_absent" ] && printf '%s\n' "$out" | grep -F "$want_absent" >/dev/null; then
+        bad="${bad:+$bad; }must not print '$want_absent'"
+    fi
+    if [ -z "$bad" ]; then ok "$name"; else no "$name ($bad)"; fi
+}
+
+CLEAN_LINE="test-weakening gate: no test files changed"
+
+run_dirty "an unstaged test file is not reported as a clean pass" \
+    "printf 'package x\n' > a_test.go" \
+    "NOT INSPECTED" "$CLEAN_LINE" 0
+
+run_dirty "a STAGED test file is not reported as a clean pass" \
+    "printf 'package x\n' > a_test.go; git add a_test.go" \
+    "NOT INSPECTED" "$CLEAN_LINE" 0
+
+# A file being written for the first time is untracked, and untracked is
+# exactly the blind spot that #564 fixed in a different gate. Tracked-only
+# discovery would report clean here.
+run_dirty "an UNTRACKED test file is not reported as a clean pass" \
+    "printf 'package x\n' > brand_new_test.go" \
+    "brand_new_test.go" "$CLEAN_LINE" 0
+
+# The harness counts as test-bearing everywhere else in this gate; it
+# has to count here too, or the refusal has a hole the verdict does not.
+run_dirty "an uncommitted harness file counts as test work" \
+    "printf 'package harness\n' > test/integration/harness/x.go" \
+    "test/integration/harness/x.go" "$CLEAN_LINE" 0
+
+# The other direction. Nothing uncommitted, so the plain line is right
+# and the refusal must NOT fire.
+run_dirty "a clean tree still gets the plain no-test-files line" \
+    "true" \
+    "$CLEAN_LINE" "NOT INSPECTED" 0
+
+# And uncommitted work that is not test work is none of this gate's
+# business. A refusal here would fire on every ordinary edit.
+run_dirty "an uncommitted NON-test file does not trigger the refusal" \
+    "printf 'package x\n// more\n' > doc.go" \
+    "$CLEAN_LINE" "NOT INSPECTED" 0
+
+# The empty range was the stark case, not the only one. "clean (1 test
+# file(s) inspected)" while two more sit uncommitted makes the same
+# claim, so the notice rides along with a real verdict too.
+run_dirty "a real verdict still names the work it did not inspect" \
+    "printf 'package x\nimport \"testing\"\nfunc TestA(t *testing.T){ if 1!=1 { t.Errorf(\"a\") } }\n' > a_test.go
+     git add -A; git commit -qm 'add a test'
+     printf 'package x\n' > later_test.go" \
+    "NOT INSPECTED" "" 0
 
 # --- usage -----------------------------------------------------------
 if bash "$GATE" >/dev/null 2>&1; then

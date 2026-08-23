@@ -24,7 +24,7 @@ import (
 
 // TestRenew_LeaseChangedCounter pins the v0.9.0 / T1-4 counter
 // behaviour: when dhcpcd returns a different IP than the manager's
-// recorded lastIP, p.leaseChanged.Add(1) fires.
+// recorded lastIP, p.leaseChangedV4.Add(1) fires.
 //
 // We don't need a live netlink/netns fixture — the counter bump
 // happens in the early part of renew, before any kernel-touching
@@ -50,8 +50,8 @@ func TestRenew_LeaseChangedCounter(t *testing.T) {
 			t.Fatalf("renew: %v", err)
 		}
 
-		if got := p.leaseChanged.Load(); got != 1 {
-			t.Errorf("leaseChanged = %d, want 1", got)
+		if got := p.leaseChangedV4.Load(); got != 1 {
+			t.Errorf("leaseChangedV4 = %d, want 1", got)
 		}
 	})
 
@@ -64,8 +64,8 @@ func TestRenew_LeaseChangedCounter(t *testing.T) {
 			t.Fatalf("renew: %v", err)
 		}
 
-		if got := p.leaseChanged.Load(); got != 0 {
-			t.Errorf("leaseChanged = %d, want 0 (same IP shouldn't count as a change)", got)
+		if got := p.leaseChangedV4.Load(); got != 0 {
+			t.Errorf("leaseChangedV4 = %d, want 0 (same IP shouldn't count as a change)", got)
 		}
 	})
 
@@ -83,12 +83,16 @@ func TestRenew_LeaseChangedCounter(t *testing.T) {
 			t.Fatalf("renew: %v", err)
 		}
 
-		if got := p.leaseChanged.Load(); got != 0 {
-			t.Errorf("leaseChanged = %d, want 0 (first bind shouldn't count as a change)", got)
+		if got := p.leaseChangedV4.Load(); got != 0 {
+			t.Errorf("leaseChangedV4 = %d, want 0 (first bind shouldn't count as a change)", got)
 		}
 	})
 
-	t.Run("v6 changed IP bumps aggregate and v6 sibling", func(t *testing.T) {
+	t.Run("v6 changed IP bumps the v6 half only", func(t *testing.T) {
+		// Since #730 each family owns a counter and a v6 event bumps
+		// exactly one of them. The v4 half staying at 0 is the whole
+		// point: it used to move on every event, which is what made
+		// the v4 number something that had to be subtracted back out.
 		p := &Plugin{}
 		m := &dhcpManager{plugin: p}
 		m.setLastIP(true, addr1)
@@ -97,8 +101,8 @@ func TestRenew_LeaseChangedCounter(t *testing.T) {
 			t.Fatalf("renew: %v", err)
 		}
 
-		if got := p.leaseChanged.Load(); got != 1 {
-			t.Errorf("leaseChanged aggregate = %d, want 1", got)
+		if got := p.leaseChangedV4.Load(); got != 0 {
+			t.Errorf("leaseChangedV4 = %d, want 0 — a v6 event must not move the v4 half", got)
 		}
 		if got := p.leaseChangedV6.Load(); got != 1 {
 			t.Errorf("leaseChangedV6 = %d, want 1", got)
@@ -114,8 +118,8 @@ func TestRenew_LeaseChangedCounter(t *testing.T) {
 			t.Fatalf("renew: %v", err)
 		}
 
-		if got := p.leaseChanged.Load(); got != 1 {
-			t.Errorf("leaseChanged aggregate = %d, want 1", got)
+		if got := p.leaseChangedV4.Load(); got != 1 {
+			t.Errorf("leaseChangedV4 aggregate = %d, want 1", got)
 		}
 		if got := p.leaseChangedV6.Load(); got != 0 {
 			t.Errorf("leaseChangedV6 = %d, want 0 (v4 change must not touch the v6 sibling)", got)
@@ -148,17 +152,22 @@ func TestHandleEvent_Counters(t *testing.T) {
 	}
 
 	cases := []struct {
-		event     string
-		aggregate func(p *Plugin) int32
-		v6        func(p *Plugin) int32
+		event string
+		v4    func(p *Plugin) int32
+		v6    func(p *Plugin) int32
 	}{
-		{"bound", func(p *Plugin) int32 { return p.leasesObtained.Load() }, func(p *Plugin) int32 { return p.leasesObtainedV6.Load() }},
-		{"renew", func(p *Plugin) int32 { return p.leasesRenewed.Load() }, func(p *Plugin) int32 { return p.leasesRenewedV6.Load() }},
-		{"leasefail", func(p *Plugin) int32 { return p.dhcpTimeouts.Load() }, func(p *Plugin) int32 { return p.dhcpTimeoutsV6.Load() }},
-		{"nak", func(p *Plugin) int32 { return p.naksReceived.Load() }, func(p *Plugin) int32 { return p.naksReceivedV6.Load() }},
+		{"bound", func(p *Plugin) int32 { return p.leasesObtainedV4.Load() }, func(p *Plugin) int32 { return p.leasesObtainedV6.Load() }},
+		{"renew", func(p *Plugin) int32 { return p.leasesRenewedV4.Load() }, func(p *Plugin) int32 { return p.leasesRenewedV6.Load() }},
+		{"leasefail", func(p *Plugin) int32 { return p.dhcpTimeoutsV4.Load() }, func(p *Plugin) int32 { return p.dhcpTimeoutsV6.Load() }},
+		{"nak", func(p *Plugin) int32 { return p.naksReceivedV4.Load() }, func(p *Plugin) int32 { return p.naksReceivedV6.Load() }},
 	}
-	// Each event under both families: the aggregate always moves; the v6
-	// sibling moves only for v6 events and stays put for v4 ones (#212).
+	// Each event under both families bumps EXACTLY ONE half (#212,
+	// #730). Asserting both halves — one moved, the other did not — is
+	// what makes this a contract rather than a count: before #730 the
+	// un-suffixed counter moved on every event, so a v6 event bumped
+	// two counters and the v4 number had to be recovered by
+	// subtracting them at render time. That subtraction is the defect
+	// #730 removed, and it is unreachable only while this holds.
 	for _, c := range cases {
 		for _, v6 := range []bool{false, true} {
 			family := "v4"
@@ -172,15 +181,15 @@ func TestHandleEvent_Counters(t *testing.T) {
 
 				m.handleEvent(dhcp.Event{Type: c.event, Data: dhcp.Info{IP: addr.String()}}, v6)
 
-				if got := c.aggregate(p); got != 1 {
-					t.Errorf("%s aggregate = %d, want 1", c.event, got)
-				}
-				wantV6 := int32(0)
+				wantV4, wantV6 := int32(1), int32(0)
 				if v6 {
-					wantV6 = 1
+					wantV4, wantV6 = 0, 1
+				}
+				if got := c.v4(p); got != wantV4 {
+					t.Errorf("%s v4 half = %d, want %d", c.event, got, wantV4)
 				}
 				if got := c.v6(p); got != wantV6 {
-					t.Errorf("%s v6 sibling = %d, want %d", c.event, got, wantV6)
+					t.Errorf("%s v6 half = %d, want %d", c.event, got, wantV6)
 				}
 			})
 		}
@@ -192,8 +201,13 @@ func TestHandleEvent_Counters(t *testing.T) {
 		for _, evt := range []string{"deconfig", "something-new"} {
 			m.handleEvent(dhcp.Event{Type: evt}, false)
 		}
-		total := p.leasesObtained.Load() + p.leasesRenewed.Load() +
-			p.dhcpTimeouts.Load() + p.naksReceived.Load()
+		// Both halves, not just the v4 one: these events are dispatched
+		// with v6=false, so a bump mis-routed to the v6 half would
+		// leave a v4-only sum at zero and pass.
+		total := p.leasesObtainedV4.Load() + p.leasesRenewedV4.Load() +
+			p.dhcpTimeoutsV4.Load() + p.naksReceivedV4.Load() +
+			p.leasesObtainedV6.Load() + p.leasesRenewedV6.Load() +
+			p.dhcpTimeoutsV6.Load() + p.naksReceivedV6.Load()
 		if total != 0 {
 			t.Errorf("counters moved on non-counting events: %d", total)
 		}
@@ -355,8 +369,13 @@ func TestStop_AuditsBothFamiliesIndependently(t *testing.T) {
 				t.Fatalf("Stop() = %v, want an error wrapping %v", err, tc.wantErr)
 			}
 
-			if got := p.leaseReleaseFailures.Load(); got != tc.wantFailures {
-				t.Errorf("leaseReleaseFailures = %d, want %d", got, tc.wantFailures)
+			// wantFailures is the total across both families, which
+			// since #730 is the sum of the two halves rather than a
+			// counter of its own. Asserting the sum keeps this case
+			// about Stop's auditing; which half moved is pinned by
+			// TestStop_BoundV6ReleaseFailureIsCountedPerFamily.
+			if got := p.leaseReleaseFailuresV4.Load() + p.leaseReleaseFailuresV6.Load(); got != tc.wantFailures {
+				t.Errorf("lease release failures (v4+v6) = %d, want %d", got, tc.wantFailures)
 			}
 
 			entries := readLedgerLines(t, p.ledger.path)
@@ -401,11 +420,141 @@ func TestStop_FailedStartIsANoOp(t *testing.T) {
 	if err := m.Stop(); err != nil {
 		t.Fatalf("Stop() on a failed-Start manager = %v, want nil", err)
 	}
-	if got := p.leaseReleaseFailures.Load(); got != 0 {
-		t.Errorf("leaseReleaseFailures = %d, want 0", got)
+	if got := p.leaseReleaseFailuresV4.Load(); got != 0 {
+		t.Errorf("leaseReleaseFailuresV4 = %d, want 0", got)
 	}
 	if _, err := os.Stat(p.ledger.path); !os.IsNotExist(err) {
 		t.Errorf("ledger written for a manager that never held a lease (stat err: %v)", err)
+	}
+}
+
+// failedStartManager builds the manager TestStop_FailedStartIsANoOp
+// could not: Start errored, and the CreateEndpoint one-shot's address is
+// still recorded on it.
+//
+// That combination is the whole subject of #720. The older test seeds no
+// lastIP, so releaseOrphanedLease finds nothing to act on and the call
+// is a no-op for the wrong reason - it would have stayed green through
+// the entire defect.
+//
+// As in TestStop_NeverBoundClientReclaimsInsteadOfClaimingRelease, the
+// network has neither parent nor bridge, so a reclaim that does run has
+// no path to the wire and lands on orphanedLeaseReleaseFailures. That is
+// what makes "the reclaim ran at all" observable without a kernel.
+func failedStartManager(t *testing.T, p *Plugin) *dhcpManager {
+	t.Helper()
+
+	m := newDHCPManager(nil, JoinRequest{NetworkID: "net1", EndpointID: "ep1"},
+		DHCPNetworkOptions{AuditLog: true}).withPlugin(p)
+
+	v4, err := netlink.ParseAddr("192.168.99.50/24")
+	if err != nil {
+		t.Fatalf("ParseAddr v4: %v", err)
+	}
+	m.setLastIP(false, v4)
+
+	m.startErr = errors.New("start boom")
+	close(m.startedCh)
+	return m
+}
+
+// TestStop_FailedStartReclaimsOnlyWhenLeaving pins #720 in both
+// directions.
+//
+// stop() has two paths that hand the one-shot's lease back, and until
+// this test only the second consulted `leaving`. StopForLeave's own
+// comment states why that word is load-bearing: on plugin Close, on
+// DeleteNetwork and on the manager displacement in Join the container is
+// still running and still using its address, so a DHCPRELEASE sent there
+// tells the server an address is free while a live container holds it -
+// the duplicate assignment #524 added detection for, manufactured by us.
+//
+// A failed Start is not evidence the container is gone. Recovery
+// rebuilds a manager for a live container and seeds lastIP from Docker's
+// record; that manager's Start can fail on, say, the netns open
+// joinStartFailures counts. The container then restarts, Join displaces
+// the stale manager, and displaced.Stop() reaches this branch with the
+// address the NEW endpoint was just ACKed.
+//
+// Both rows are asserted deliberately. Guarding a reclaim fails in one
+// direction and dropping it fails in the other, and #370 - 17 of 32
+// containers in one integration run leaking an address - is the other
+// direction. A test that only proved the release was suppressed would be
+// green for a patch that deleted the reclaim outright.
+func TestStop_FailedStartReclaimsOnlyWhenLeaving(t *testing.T) {
+	cases := []struct {
+		name         string
+		leaving      bool
+		wantReclaims int32
+		why          string
+	}{
+		{
+			name:         "close_of_a_live_endpoint_holds_the_lease",
+			leaving:      false,
+			wantReclaims: 0,
+			why: "the endpoint is not leaving, so the container may still " +
+				"hold this address; releasing it invites the server to " +
+				"hand the same address to somebody else",
+		},
+		{
+			name:         "leave_still_hands_the_lease_back",
+			leaving:      true,
+			wantReclaims: 1,
+			why: "the endpoint is going away and nobody ever took the " +
+				"one-shot's lease over, so it must be reclaimed (#370)",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var ledgerFailures atomic.Int32
+			p := &Plugin{}
+			p.ledger = testLedger(t, &ledgerFailures)
+
+			m := failedStartManager(t, p)
+
+			var err error
+			if tc.leaving {
+				err = m.StopForLeave()
+			} else {
+				err = m.Stop()
+			}
+			if err != nil {
+				t.Fatalf("stop(leaving=%v) on a failed-Start manager = %v, want nil",
+					tc.leaving, err)
+			}
+			// spawnOrphanRelease increments the WaitGroup before it
+			// starts the goroutine, so this is a real barrier in both
+			// rows rather than a race the zero row always wins.
+			p.orphanReleases.Wait()
+
+			got := p.orphanedLeaseReleaseFailures.Load() + p.orphanedLeasesReleased.Load()
+			if got != tc.wantReclaims {
+				t.Errorf("reclaim attempts = %d, want %d - %s", got, tc.wantReclaims, tc.why)
+			}
+
+			// The ledger is the operator-visible half. A reclaim that
+			// ran writes release or release_failed for the address; one
+			// that was correctly withheld writes nothing at all, and on
+			// this manager nothing else writes either, so the file is
+			// still absent.
+			if !tc.leaving {
+				if _, err := os.Stat(p.ledger.path); !os.IsNotExist(err) {
+					for _, e := range readLedgerLines(t, p.ledger.path) {
+						t.Errorf("ledger recorded %q for %s on a Stop that is "+
+							"not a Leave - %s", e.Kind, e.IP, tc.why)
+					}
+				}
+				return
+			}
+			var kinds []string
+			for _, e := range readLedgerLines(t, p.ledger.path) {
+				kinds = append(kinds, e.Kind)
+			}
+			if len(kinds) != 1 || kinds[0] != "release_failed" {
+				t.Errorf("ledger kinds = %v, want [release_failed] - %s", kinds, tc.why)
+			}
+		})
 	}
 }
 
@@ -449,8 +598,8 @@ func TestStop_NeverBoundClientReclaimsInsteadOfClaimingRelease(t *testing.T) {
 		t.Errorf("orphaned_lease_release_failures = %d, want 1 — the lease the "+
 			"one-shot acquired was never handed to the reclaim", got)
 	}
-	if got := p.leaseReleaseFailures.Load(); got != 0 {
-		t.Errorf("leaseReleaseFailures = %d, want 0 — nothing we were running "+
+	if got := p.leaseReleaseFailuresV4.Load(); got != 0 {
+		t.Errorf("leaseReleaseFailuresV4 = %d, want 0 — nothing we were running "+
 			"failed to release; no client ever held this lease", got)
 	}
 
@@ -613,8 +762,8 @@ func TestStop_NeverBoundClientKilledBySignalIsStillNeverBound(t *testing.T) {
 					"signal before it bound, which does not change what is owed",
 					got, tc.wantReclaim)
 			}
-			if got := p.leaseReleaseFailures.Load(); got != 0 {
-				t.Errorf("leaseReleaseFailures = %d, want 0 — no client we were "+
+			if got := p.leaseReleaseFailuresV4.Load(); got != 0 {
+				t.Errorf("leaseReleaseFailuresV4 = %d, want 0 — no client we were "+
 					"running failed to hand a lease back; none ever held one", got)
 			}
 
@@ -1146,7 +1295,7 @@ func TestStop_NeverBoundV6ClientIsNotAuditedAsReleased(t *testing.T) {
 			if got := p.orphanedLeaseReleaseFailures.Load(); got != tc.wantReclaim {
 				t.Errorf("reclaim ran %d time(s), want %d", got, tc.wantReclaim)
 			}
-			if got := p.leaseReleaseFailures.Load() + p.leaseReleaseFailuresV6.Load(); got != 0 {
+			if got := p.leaseReleaseFailuresV4.Load() + p.leaseReleaseFailuresV6.Load(); got != 0 {
 				t.Errorf("lease_release_failures(+v6) = %d, want 0 — no client we were "+
 					"running failed to hand a lease back", got)
 			}
@@ -1196,8 +1345,15 @@ func TestStop_BoundV6ReleaseFailureIsCountedPerFamily(t *testing.T) {
 			}
 			p.orphanReleases.Wait()
 
-			if got := p.leaseReleaseFailures.Load(); got != tc.wantAgg {
-				t.Errorf("lease_release_failures = %d, want %d", got, tc.wantAgg)
+			// wantAgg is the total across both families. Since #730 it
+			// is their sum, so assert the sum AND the v4 half: the two
+			// together say which counter moved, not merely how many
+			// bumps happened.
+			if got := p.leaseReleaseFailuresV4.Load() + p.leaseReleaseFailuresV6.Load(); got != tc.wantAgg {
+				t.Errorf("lease_release_failures (v4+v6) = %d, want %d", got, tc.wantAgg)
+			}
+			if got, wantV4 := p.leaseReleaseFailuresV4.Load(), tc.wantAgg-tc.want; got != wantV4 {
+				t.Errorf("lease_release_failures_v4 = %d, want %d", got, wantV4)
 			}
 			if got := p.leaseReleaseFailuresV6.Load(); got != tc.want {
 				t.Errorf("lease_release_failures_v6 = %d, want %d", got, tc.want)

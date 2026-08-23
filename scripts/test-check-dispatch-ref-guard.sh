@@ -2,23 +2,45 @@
 # Copyright the docker-net-dhcp contributors.
 # SPDX-License-Identifier: GPL-3.0-only
 
-# Tests for check-dispatch-ref-guard.sh (#593), on fixture workflow
-# directories plus one assertion against the real .github/workflows.
+# Tests for check-dispatch-ref-guard.sh (#593, #738), on fixture
+# workflow directories plus one assertion against the real
+# .github/workflows.
 #
-# The cases that carry the weight:
+# THE CASE THIS SUITE WAS REWRITTEN FOR is `othername`: a dispatch input
+# called something other than `ref` reaching a checkout. The previous
+# checker matched the literal string `inputs.ref`, so release.yml and
+# pages.yml — both taking `inputs.tag` into a checkout, one of them into
+# a job holding contents: write that then executes the checked-out tree
+# — reported as "nothing to guard" and exited 0. Run against the real
+# pre-fix workflows the rewritten checker reports both, plus the two
+# jobs that inherit the tag transitively; the fixtures keep that
+# provable without depending on git history.
 #
-#   - A CONSUMER WITH NO `needs:` AT ALL. This is the shape of the very
-#     first job in integration.yml, and an early version of the checker
-#     silently passed it: the scanner emitted an empty needs field, tab
-#     is an IFS whitespace character, bash `read` collapsed the run of
-#     tabs, and every later field shifted left — so the job read as
-#     "does not consume inputs.ref". The check reported two findings
-#     where there were three and looked like it was working.
+# THE OTHER CASES THAT CARRY THEIR WEIGHT:
+#
+#   - A CONSUMER WITH NO `needs:` AT ALL. An early version of the
+#     original checker silently passed this: the scanner emitted an
+#     empty needs field, tab is an IFS whitespace character, bash `read`
+#     collapsed the run of tabs, and every later field shifted left — so
+#     the job read as "does not consume the input". It reported two
+#     findings where there were three and looked like it was working.
 #   - TRANSITIVE reach, because that is how the protection actually
 #     works: a failed guard skips everything downstream of it, however
 #     many hops away.
-#   - THE REAL WORKFLOWS. A checker that only ever sees its own
-#     fixtures proves nothing about this repository.
+#   - EACH HOP the taint can take — a step output, a job output, and an
+#     `env:` variable. A workflow-level `env:` is the laundering path
+#     that lets a checkout consume an input without naming it.
+#   - THE RESOLVER as the second accepted proof, for the job whose
+#     checkout IS the thing being protected and which therefore has no
+#     earlier point to gate.
+#   - EXIT 2 WHEN NOTHING WAS DISCOVERED. #738's actual failure was a
+#     green report over an empty examination, so that is now an error
+#     rather than a pass.
+#   - THE REAL WORKFLOWS. A checker that only ever sees its own fixtures
+#     proves nothing about this repository.
+#
+# MUTANT COVERAGE: cases expecting exit 0, 1 and 2 are all present, so
+# neither an always-exit-0 nor an always-exit-1 checker survives.
 set -u
 
 CHECK="$(cd "$(dirname "$0")" && pwd)/check-dispatch-ref-guard.sh"
@@ -48,7 +70,31 @@ check() {
 }
 
 mkdir -p "$TMP/unguarded" "$TMP/direct" "$TMP/transitive" "$TMP/guardonly" \
-         "$TMP/commented" "$TMP/none" "$TMP/shapes" "$TMP/cycle" "$TMP/empty"
+         "$TMP/commented" "$TMP/nodispatch" "$TMP/shapes" "$TMP/cycle" \
+         "$TMP/empty" "$TMP/othername" "$TMP/stephop" "$TMP/jobhop" \
+         "$TMP/envhop" "$TMP/resolver" "$TMP/nosink"
+
+# --- THE #738 BUG: an input that is not called `ref` -------------------
+cat > "$TMP/othername/w.yml" <<'YAML'
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release"
+        required: true
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag }}
+      - run: mkdocs build
+YAML
+check "#738: an input not called 'ref' is still a consumer" 1 "$TMP/othername" \
+      "the input is passed straight to checkout"
 
 # --- a consumer with no needs: at all ---------------------------------
 cat > "$TMP/unguarded/w.yml" <<'YAML'
@@ -58,120 +104,118 @@ on:
       ref:
         type: string
 jobs:
-  gate:
+  suite:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.ref }}
 YAML
-check "a consumer with no needs: is reported" 1 "$TMP/unguarded" "job gate"
+check "a consumer with no needs: at all" 1 "$TMP/unguarded" "job suite"
 
-# --- direct dependency on the guard -----------------------------------
+# --- direct reach ------------------------------------------------------
 cat > "$TMP/direct/w.yml" <<'YAML'
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        type: string
 jobs:
   dispatch-ref:
     runs-on: ubuntu-latest
     steps:
-      - run: bash scripts/check-dispatch-ref.sh "${{ inputs.ref }}"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - env:
+          INPUT_REF: ${{ inputs.ref }}
+        run: bash scripts/check-dispatch-ref.sh "$INPUT_REF"
   suite:
     needs: dispatch-ref
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.ref }}
 YAML
-check "a consumer needing the guard directly passes" 0 "$TMP/direct" "are behind"
+check "direct needs: on the guard" 0 "$TMP/direct" "are constrained by"
 
-# --- transitive dependency --------------------------------------------
-cat > "$TMP/transitive/w.yml" <<'YAML'
-jobs:
-  dispatch-ref:
-    runs-on: ubuntu-latest
-    steps:
-      - run: bash scripts/check-dispatch-ref.sh "${{ inputs.ref }}"
-  gate:
-    needs: dispatch-ref
-    runs-on: ubuntu-latest
-    steps:
-      - run: echo hello
-  suite:
-    needs: [gate]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ inputs.ref }}
-YAML
-check "a consumer two hops from the guard passes" 0 "$TMP/transitive" "are behind"
+# --- transitive reach --------------------------------------------------
+sed 's/^  suite:/  middle:\n    needs: dispatch-ref\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hop\n  suite:/; s/^    needs: dispatch-ref$/    needs: middle/2' \
+    "$TMP/direct/w.yml" > "$TMP/transitive/w.yml"
+check "transitive reach through an intermediate job" 0 "$TMP/transitive" \
+      "are constrained by"
 
-# --- the guard job itself is not a finding ----------------------------
+# --- the guard job is itself allowed to name the input -----------------
 cat > "$TMP/guardonly/w.yml" <<'YAML'
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        type: string
 jobs:
   dispatch-ref:
     runs-on: ubuntu-latest
     steps:
-      - run: bash scripts/check-dispatch-ref.sh "${{ inputs.ref }}"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+      - env:
+          INPUT_REF: ${{ inputs.ref }}
+        run: bash scripts/check-dispatch-ref.sh "$INPUT_REF"
 YAML
-check "the guard job does not report itself" 0 "$TMP/guardonly" "are behind"
+check "the guard job counts as guarded" 0 "$TMP/guardonly" "are constrained by"
 
-# --- a comment mentioning inputs.ref is not a consumer ----------------
-cat > "$TMP/commented/w.yml" <<'YAML'
+# --- the hops the taint can take ---------------------------------------
+cat > "$TMP/stephop/w.yml" <<'YAML'
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        required: true
 jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - id: ref
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: echo "ref=${INPUT_TAG}" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.ref.outputs.ref }}
+YAML
+check "hop through a step output" 1 "$TMP/stephop" "through step 'ref'"
+
+cat > "$TMP/jobhop/w.yml" <<'YAML'
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        required: true
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.t.outputs.tag }}
+    steps:
+      - id: t
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: echo "tag=${INPUT_TAG}" >> "$GITHUB_OUTPUT"
   build:
+    needs: resolve
     runs-on: ubuntu-latest
     steps:
-      # Deliberately does NOT pass inputs.ref to checkout — see #593.
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.resolve.outputs.tag }}
 YAML
-check "a comment naming inputs.ref is not a consumer" 0 "$TMP/commented" "nothing to guard"
+check "hop through a job output" 1 "$TMP/jobhop" "through job 'resolve'"
 
-# --- no consumers at all ----------------------------------------------
-cat > "$TMP/none/w.yml" <<'YAML'
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-YAML
-check "a workflow with no dispatch ref passes" 0 "$TMP/none" "nothing to guard"
-
-# --- all three needs: shapes parse ------------------------------------
-cat > "$TMP/shapes/w.yml" <<'YAML'
-jobs:
-  dispatch-ref:
-    runs-on: ubuntu-latest
-    steps:
-      - run: bash scripts/check-dispatch-ref.sh "${{ inputs.ref }}"
-  a:
-    needs: dispatch-ref
-    runs-on: ubuntu-latest
-    steps:
-      - run: echo ${{ inputs.ref }}
-  b:
-    needs: [dispatch-ref, a]
-    runs-on: ubuntu-latest
-    steps:
-      - run: echo ${{ inputs.ref }}
-  c:
-    needs:
-      - dispatch-ref
-      - b
-    runs-on: ubuntu-latest
-    steps:
-      - run: echo ${{ inputs.ref }}
-YAML
-check "scalar, inline-array and block needs: all parse" 0 "$TMP/shapes" "4 job(s)"
-
-# --- laundering through a workflow-level env: --------------------------
-# The blind spot this check was reviewed into having. No job names
-# inputs.ref, so a job-body-only scan reported "nothing to guard" and
-# exited 0 while an unguarded self-hosted job checked the untrusted ref
-# out. Green having examined nothing is the failure mode the whole
-# check exists to prevent, so it is pinned here in both directions.
-mkdir -p "$TMP/laundered" "$TMP/laundered-ok"
-cat > "$TMP/laundered/w.yml" <<'YAML'
+# A workflow-level `env:` carries the input into a job that never names
+# it. Scanning job bodies alone reports "nothing to guard" on this file.
+cat > "$TMP/envhop/w.yml" <<'YAML'
 on:
   workflow_dispatch:
     inputs:
@@ -181,83 +225,165 @@ env:
   TARGET_REF: ${{ inputs.ref }}
 jobs:
   suite:
-    runs-on: [self-hosted, dhcp-ci]
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ env.TARGET_REF }}
 YAML
-check "a workflow-level env: laundering the ref is reported" 1 "$TMP/laundered" \
-    "workflow-level"
+check "hop through a workflow-level env" 1 "$TMP/envhop" "through env 'TARGET_REF'"
 
-# ...and the same shape, correctly guarded, must still pass — otherwise
-# the fix would be a check nobody can satisfy.
-cat > "$TMP/laundered-ok/w.yml" <<'YAML'
-env:
-  TARGET_REF: ${{ inputs.ref }}
+# --- the resolver is the second accepted proof -------------------------
+cat > "$TMP/resolver/w.yml" <<'YAML'
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        required: true
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: scripts/resolve-dispatch-ref.sh
+          sparse-checkout-cone-mode: false
+      - id: ref
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          echo "ref=$(bash scripts/resolve-dispatch-ref.sh "${INPUT_TAG}")" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.ref.outputs.ref }}
+YAML
+check "the resolver constrains without a gate job" 0 "$TMP/resolver" \
+      "are constrained by"
+
+# --- needs: shapes -----------------------------------------------------
+cat > "$TMP/shapes/w.yml" <<'YAML'
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        type: string
 jobs:
   dispatch-ref:
     runs-on: ubuntu-latest
     steps:
-      - run: bash scripts/check-dispatch-ref.sh "${{ inputs.ref }}"
-  suite:
-    needs: dispatch-ref
+      - run: bash scripts/check-dispatch-ref.sh "$INPUT_REF"
+  a:
+    needs: [dispatch-ref, other]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ env.TARGET_REF }}
+          ref: ${{ inputs.ref }}
+  other:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo hi
+  b:
+    needs:
+      - dispatch-ref
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
 YAML
-check "a guarded workflow-level env: passes" 0 "$TMP/laundered-ok" "are behind"
+check "inline-list and block-list needs: both parse" 0 "$TMP/shapes" \
+      "are constrained by"
 
-# A comment before `jobs:` naming inputs.ref must not taint the file —
-# integration.yml's SECURITY block does exactly that.
-mkdir -p "$TMP/toplevel-comment"
-cat > "$TMP/toplevel-comment/w.yml" <<'YAML'
-# The `ref` input is validated before use — never pass inputs.ref to a
-# credentialed job without the guard (#593).
+# --- a cycle in needs: must not hang -----------------------------------
+# GitHub rejects this, but the parser has to survive reading it.
+cat > "$TMP/cycle/w.yml" <<'YAML'
 on:
   workflow_dispatch:
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-YAML
-check "a top-level comment naming inputs.ref does not taint the file" 0 \
-    "$TMP/toplevel-comment" "nothing to guard"
-
-# --- a cycle must terminate, not hang ---------------------------------
-# GitHub rejects this, but a checker that hangs on malformed input is
-# worse than one that reports it.
-cat > "$TMP/cycle/w.yml" <<'YAML'
+    inputs:
+      ref:
+        type: string
 jobs:
   a:
     needs: b
     runs-on: ubuntu-latest
     steps:
-      - run: echo ${{ inputs.ref }}
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
   b:
     needs: a
     runs-on: ubuntu-latest
     steps:
       - run: echo hi
 YAML
-check "a needs: cycle terminates and is reported" 1 "$TMP/cycle" "job a"
+check "a cycle in needs: terminates" 1 "$TMP/cycle" "job a"
 
-# --- blindness guards --------------------------------------------------
-check "a directory with no workflows exits 2" 2 "$TMP/empty" "No workflows found"
-check "a missing directory exits 2" 2 "$TMP/nope" "Workflow directory missing"
+# --- comments never carry behaviour ------------------------------------
+# These workflows explain this rule in prose that names both scripts and
+# quotes the unsafe shape.
+cat > "$TMP/commented/w.yml" <<'YAML'
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        type: string
+jobs:
+  suite:
+    runs-on: ubuntu-latest
+    steps:
+      # A checkout here must never take `ref: ${{ inputs.ref }}` without
+      # depending on the job that runs scripts/check-dispatch-ref.sh.
+      - run: echo hi
+YAML
+check "comments are not consumers" 0 "$TMP/commented" \
+      "none of them reaches an actions/checkout ref"
 
-# --- the real workflows ------------------------------------------------
-# The assertion that this is actually adopted rather than merely
-# implemented. If a future job takes inputs.ref without the guard, this
-# is the line that goes red.
-check "this repository's own workflows are guarded" 0 "$ROOT/.github/workflows" ""
+# --- a dispatch input that never reaches a checkout --------------------
+cat > "$TMP/nosink/w.yml" <<'YAML'
+on:
+  workflow_dispatch:
+    inputs:
+      grace-minutes:
+        type: string
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - env:
+          GRACE: ${{ inputs.grace-minutes }}
+        run: bash scripts/check-missing-runs.sh "$GRACE"
+YAML
+check "an input that never reaches a checkout is not a finding" 0 "$TMP/nosink" \
+      "none of them reaches an actions/checkout ref"
+
+# --- refusing to pass having examined nothing --------------------------
+check "missing directory exits 2" 2 "$TMP/does-not-exist" "is not a directory"
+check "no workflows exits 2" 2 "$TMP/empty" "matched no"
+
+cat > "$TMP/nodispatch/w.yml" <<'YAML'
+on:
+  push:
+    branches: [dev]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: go test ./...
+YAML
+check "no dispatch input anywhere exits 2" 2 "$TMP/nodispatch" \
+      "found no workflow_dispatch input in any of them"
+
+# --- the real workflows -------------------------------------------------
+check "the real .github/workflows" 0 "$ROOT/.github/workflows" "are constrained by"
 
 echo
 if [ "$failures" -ne 0 ]; then
-    echo "$failures of $n check(s) FAILED"
+    echo "$failures of $n case(s) FAILED"
     exit 1
 fi
-echo "all $n check(s) passed"
+echo "all $n case(s) passed"

@@ -64,6 +64,36 @@ echo "$base" > "$TMP/b.json"
 got=$(bash "$CHECK" "$TMP/a.json" "$TMP/b.json" >/dev/null 2>&1 && echo pass || echo fail)
 check "STATE_DIR drifting away from its mount fails" fail "$got"
 
+# A setting present in the shipped manifest and missing from the cover
+# one -> fail. This is the direction that matters: the coverage lane
+# would exercise a plugin without a setting that ships (#317's shape).
+echo "$base" | jq '.env += [{name:"METRICS_ADDR",value:"",settable:["value"]}]' > "$TMP/a.json"
+echo "$base" > "$TMP/b.json"
+got=$(bash "$CHECK" "$TMP/a.json" "$TMP/b.json" >/dev/null 2>&1 && echo pass || echo fail)
+check "a shipped setting missing from the cover manifest fails" fail "$got"
+
+# The same setting on both sides with a DIFFERENT default -> fail. This
+# is worse than an absence: the coverage run looks right and exercises
+# behaviour the shipped plugin does not have.
+echo "$base" | jq '.env += [{name:"OUTAGE_TICK",value:"30s",settable:["value"]}]' > "$TMP/a.json"
+echo "$base" | jq '.env += [{name:"OUTAGE_TICK",value:"5s",settable:["value"]}]' > "$TMP/b.json"
+got=$(bash "$CHECK" "$TMP/a.json" "$TMP/b.json" >/dev/null 2>&1 && echo pass || echo fail)
+check "a shipped setting whose default drifts fails" fail "$got"
+
+# Settability drift -> fail. A setting the operator can change on the
+# shipped plugin but not on the cover one is a different artifact.
+echo "$base" | jq '.env += [{name:"LOG_LEVEL",value:"info",settable:["value"]}]' > "$TMP/a.json"
+echo "$base" | jq '.env += [{name:"LOG_LEVEL",value:"info",settable:[]}]' > "$TMP/b.json"
+got=$(bash "$CHECK" "$TMP/a.json" "$TMP/b.json" >/dev/null 2>&1 && echo pass || echo fail)
+check "a shipped setting whose settability drifts fails" fail "$got"
+
+# GROWTH CASE: a NEW setting added to both manifests must pass, or the
+# gate just encodes today's six and blocks the next legitimate one.
+echo "$base" | jq '.env += [{name:"FUTURE_KNOB",value:"7s",settable:["value"]}]' > "$TMP/a.json"
+echo "$base" | jq '.env += [{name:"FUTURE_KNOB",value:"7s",settable:["value"]},{name:"GOCOVERDIR",value:"/x",settable:["value"]}]' > "$TMP/b.json"
+got=$(bash "$CHECK" "$TMP/a.json" "$TMP/b.json" >/dev/null 2>&1 && echo pass || echo fail)
+check "a new setting added to both manifests passes" pass "$got"
+
 # No STATE_DIR at all -> fail, not skip. Absence of the setting must not
 # read as "this manifest is exempt".
 echo "$base" | jq 'del(.env)' > "$TMP/a.json"

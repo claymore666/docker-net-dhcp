@@ -9,10 +9,33 @@ on:
     branches:
       - main
       - dev
+    # `edited` IS LOAD-BEARING HERE (#742). The default set is
+    # opened/synchronize/reopened, so nothing re-ran when a PR BODY
+    # changed — and three gates in this workflow read the body:
+    # check-test-weakening.sh waives a finding on a `Test-weakening: #N`
+    # trailer there, and check-no-ai-attribution.sh and
+    # check-issue-ref.sh read it too. Pass the gate with the trailer,
+    # then edit it out: no run fires, the green check stands, and the
+    # merged PR carries no waiver. A waiver that can be withdrawn after
+    # it is honoured is not a waiver.
+    types: [opened, synchronize, reopened, edited]
   # Weekly run so govulncheck surfaces CVEs that publish between
   # commits — new vulnerabilities don't wait for our next push (#127).
   schedule:
     - cron: '23 6 * * 1'
+
+# The only CI-heavy workflow that never had one (#742): three fixups in
+# five minutes left fifteen hosted runners live, ten of them testing
+# commits nobody would ever look at again.
+concurrency:
+  # Same split as coverage.yml, and for the same reason (#617). Branch
+  # pushes key on the COMMIT, so a merge burst into dev cannot evict a
+  # queued run and leave a commit nothing ever tested — an evicted run
+  # produces NO check run at all, which reads as absent rather than red.
+  # PR events key per-ref and DO cancel, because a superseded PR head is
+  # not a commit anyone needs a verdict on.
+  group: test-${{ github.event_name == 'push' && github.sha || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -85,7 +108,12 @@ jobs:
       # was least able to. -timeout bounds the one thing a count does
       # not: a pathologically slow runner, which is a real signal.
       #
-      # scripts/check-fuzz-budget.sh keeps this shape from regressing.
+      # scripts/check-fuzz-budget.sh keeps this shape from regressing,
+      # and is run as a step below rather than only named here. It was
+      # named ONLY here until #724: a comment is not an invocation, and
+      # the one thing keeping it honest was that its own self-test ends
+      # by running it against the real tree — coverage by accident,
+      # which disappears the moment that case is rewritten.
       - name: Fuzz (short)
         run: |
           for target in FuzzBuildEvent FuzzEventUnmarshal; do
@@ -150,13 +178,72 @@ jobs:
       - name: Docs-drift check
         run: bash scripts/check-docs-drift.sh
 
+      # RELEASE_NOTES.md merges last and describes code that is still
+      # moving, so it is the one document whose claims can go stale
+      # between being written and being true (#732). Three of the file's
+      # own tag-time re-check comments already re-derive a COUNT or a
+      # SET; none re-derives a symbol NAME, and that is where the
+      # fiction accumulated -- a paragraph named a function and a test
+      # that existed nowhere but in the paragraph.
+      #
+      # Every backticked identifier in the file must resolve in the Go
+      # tree, with COMMENTS AND STRING LITERALS STRIPPED. That is the
+      # substance and not a detail: a plain grep resolves a symbol
+      # against prose ABOUT the symbol, which is how a renamed field
+      # would have been waived on the strength of somebody having
+      # mentioned it in a comment.
+      #
+      # Waivers live in .github/release-notes-symbol-waivers.txt, each
+      # with a reason and a commit. Frozen release sections describing
+      # symbols that were real when written are HISTORICAL -- rewriting
+      # them to satisfy a check would be falsifying history. A CURRENT
+      # release section gets no such category: if a symbol there does
+      # not resolve, the prose is wrong and the fix is to correct it.
+      - name: Release-notes symbol check
+        run: bash scripts/check-release-notes-symbols.sh
+
+      # `docker plugin set` is REFUSED while the plugin is enabled, so a
+      # snippet with the steps in the wrong order does not fail subtly —
+      # it fails on its first line, and hands the reader an error that
+      # does not name the instruction that misled them. Every copy in
+      # this repository had the order backwards, in four places across
+      # two files, while the repository stated the rule correctly in its
+      # own words and obeyed it in the Makefile.
+      # The fuzz budget above must stay in EXECUTIONS, not wall clock —
+      # see the long note on #324 beside the step itself.
+      - name: Fuzz budget shape
+        run: bash scripts/check-fuzz-budget.sh
+
+      - name: Plugin-set snippet order
+        run: bash scripts/check-plugin-set-order.sh
+
       # Presence is not agreement (#638). check-docs-drift proves every
-      # counter is documented; this proves the three places that say
-      # WHICH ones flip `healthy` still say the same thing, and that the
-      # code computes that many. The `healthy` row listed three for two
-      # releases while the column beside it and the code both said four.
+      # counter is documented; this proves the places that say WHICH
+      # ones flip `healthy` still say the same thing. The `healthy` row
+      # listed three for two releases while the column beside it and the
+      # code both said four; the Troubleshooting row named two of four
+      # for longer still.
+      #
+      # It reads six surfaces now, not four (#724): the doc's counter
+      # lists AND the sentences restating how many there are, the
+      # Healthy expression, the /metrics help strings that end
+      # "Healthy-affecting." -- operator-facing text served on the wire,
+      # which the exposition golden cannot judge because it is
+      # regenerated from it -- and floorCounters, the list an
+      # integration run fails over. Its PASS line tallies what it read;
+      # that number is the coverage, not the fact that this step is
+      # green.
       - name: Health-contract check
         run: bash scripts/check-health-contract.sh
+
+      # An issue the roadmap lists as blocked upstream must not be
+      # described as waiting on a Docker engine version (#673). The
+      # correction landed under docs/ and the same sentence stayed in
+      # ci/runner-image/, where a docs-scoped review never looked — and
+      # it tells whoever rebuilds that image that an engine bump will
+      # turn the skipped tests on.
+      - name: Upstream-blocker claim check
+        run: bash scripts/check-upstream-blocker-claims.sh
 
       # Every published-image pin in README/docs must agree on one
       # version — catches a partial release bump (#251). Bump them with
@@ -186,6 +273,14 @@ jobs:
       - name: Issue label map check
         run: bash scripts/check-issue-label-map.sh
 
+      # The label taxonomy declared in .github/labels.yml (#715). This is
+      # the half that is a property of the TREE: the declaration is well
+      # formed, and the labeller's rule map and ALLOWED_LABELS are both
+      # subsets of it. Whether the tracker still matches needs the API and
+      # runs on a schedule instead — see .github/workflows/label-taxonomy.yml.
+      - name: Label taxonomy check
+        run: bash scripts/check-label-taxonomy.sh --static
+
       # Every FROM in the tree must name its base by digest (#633).
       # Three of four Dockerfiles already did, including the sibling that
       # pins the same base as the one that did not — so the convention
@@ -193,6 +288,42 @@ jobs:
       # noticed. Dependabot cannot bump a digest that was never written.
       - name: Dockerfile digest-pin check
         run: bash scripts/check-dockerfile-pins.sh
+
+      # Under pipefail a `grep -q` kills its producer with SIGPIPE the
+      # moment it matches, so the pipeline reports failure on success —
+      # timing-dependent, therefore invisible locally and on a re-run.
+      # check-python-deps shipped that way and reported that nothing
+      # installs a file two workflow lines install. Same class as #297.
+      - name: Pipefail-consumer check
+        run: bash scripts/check-pipefail-consumers.sh
+
+      # A v2 plugin's bind sources must exist before `docker plugin
+      # enable`; a missing one kills container init rather than degrading
+      # the mount (#440, #588). The Makefile derives them from the
+      # manifest, but five workflows each reimplement the install with a
+      # hardcoded list — so #662 adding a source to config-cover.json
+      # broke the coverage lane and nothing local saw it (#666).
+      - name: Plugin bind-source check
+        run: bash scripts/check-plugin-bind-sources.sh
+
+      # A gate self-test that builds a git fixture must pin that repo's
+      # own identity and signing config. Inheriting the developer's
+      # means `git commit` blocks on a hardware-key touch that never
+      # comes: `make check` hangs with no output rather than failing.
+      # Hosted CI has no signing config, so this was green here and
+      # stuck in a working checkout.
+      - name: Git-fixture hygiene check
+        run: bash scripts/check-selftest-fixtures.sh
+
+      # A declared Python dependency has to be reachable from something
+      # (#535). scripts/requirements.txt named two distributions for a
+      # manifest-list helper whose callers were removed with #507:
+      # nothing installed the file, nothing imported the module, and
+      # both read as live build tooling for months. A reader chasing
+      # #507 concluded the deps were undeclared — they were declared,
+      # and nothing pointed at them.
+      - name: Python dependency-reachability check
+        run: bash scripts/check-python-deps.sh
 
       # Every tracked source file must carry the copyright line and
       # SPDX-License-Identifier (#454). A file added without them breaks
@@ -202,6 +333,56 @@ jobs:
       # Fix locally with: bash scripts/check-license-headers.sh --fix
       - name: License-header check
         run: bash scripts/check-license-headers.sh
+
+      # Plugin.mu and the tombstone lock must never be held together:
+      # taking them in opposite orders on two paths deadlocks the plugin,
+      # and a deadlocked network driver takes every `docker run` on the
+      # host with it. That rule lived in a comment on the mutex
+      # declaration — not on the call sites where the mistake is made —
+      # for most of this project's life (#643).
+      - name: Lock discipline
+        run: bash scripts/check-lock-discipline.sh
+
+      # The plugin runs in the HOST PID namespace, so a container PID
+      # from Docker names an arbitrary task by the time it is used.
+      # #688 closed that for resolv.conf with openContainerProc, whose
+      # own comment says re-deriving the path as a string afterwards
+      # reopens the window — and the sandbox netns open did exactly
+      # that, in the same release, three files away, reaching netlink
+      # and a root dhcpcd instead of one file.
+      - name: Proc-path discipline
+        run: bash scripts/check-proc-path-discipline.sh
+
+      # Go's os package sets O_CLOEXEC; the unix and syscall packages
+      # pass through whatever flags they are given. This plugin forks
+      # unshare, sh and a root dhcpcd constantly, and os/exec does not
+      # sweep foreign descriptors — so a raw open without the flag hands
+      # the next child a handle on a container's mount namespace or on
+      # the procfs entry #688 went to some length to pin. There is
+      # nothing for a Go test to observe: every one of those descriptors
+      # is closed before its function returns (#729).
+      - name: O_CLOEXEC on raw opens
+        run: bash scripts/check-openat-cloexec.sh
+
+      # registerDHCPManager returns the manager it displaced, and
+      # dropping that return value leaks a running dhcpcd nothing can
+      # stop, bidding for the same lease on the same interface. The
+      # rule was on the declaration; the recovery path broke it at a
+      # call site three hundred lines away, and an unused return value
+      # is legal Go — the compiler, vet and staticcheck all pass it
+      # (#480).
+      - name: Manager registration
+        run: bash scripts/check-manager-registration.sh
+
+      # The arm64 host's NFS-outage watchdog is wired across four files
+      # and both ways of getting it wrong are silent: systemd keeping
+      # /dev/watchdog (nothing pets, host unprotected) and systemd
+      # releasing it with nothing enabled to take over (a healthy host
+      # resets a minute after boot). Nothing in CI builds the netboot
+      # image, so without this the breakage surfaces at the next
+      # reprovision of that host instead of here (#632).
+      - name: Pi watchdog wiring
+        run: bash scripts/check-pi-watchdog-wiring.sh
 
       # A parent NIC registers one rx_handler, so it is a macvlan port
       # or an ipvlan port and never both. Every child link attached to a
@@ -249,6 +430,16 @@ jobs:
       - name: Build-context check
         run: bash scripts/check-build-context.sh
 
+      # The deterministic twin of the build-context check above (#644).
+      # That one asserts the property, but can only observe it on a tree
+      # that happens to carry root-owned residue — on a fresh CI checkout
+      # it passes whatever .dockerignore says. This one compares the two
+      # ignore files directly and needs no residue, which is why
+      # /plugin-cover/ and /logs/ sat missing from .dockerignore while
+      # the property check was green.
+      - name: dockerignore/gitignore parity
+        run: bash scripts/check-dockerignore-parity.sh
+
       # Every job that builds an image on the shared self-hosted pool
       # must authenticate to Docker Hub before it pulls (#562). Pulled
       # anonymously, base images are billed to a per-address quota the
@@ -286,6 +477,135 @@ jobs:
       # reads workflow text, so it costs no pool slot.
       - name: Dispatch-ref guard coverage
         run: bash scripts/check-dispatch-ref-guard.sh
+
+      # `:latest` must be moved only after the version tag is signed,
+      # attested and proven installable — and a pre-release must run
+      # that code rather than skip it (#736). Both halves are text
+      # properties of release.yml and neither fails loudly on its own:
+      # appending a step after the retag simply publishes a tip nothing
+      # verified, and a skipped promote path just means the rc rehearsed
+      # everything except the part with no rollback behind it.
+      #
+      # Hosted, no pool slot: it reads workflow text.
+      - name: Floating-tag promotion order
+        run: bash scripts/check-latest-promotion.sh
+
+      # A checkout that sets `sparse-checkout:` must not share its
+      # workspace path with another checkout in the same job (#736).
+      # actions/checkout does not clear a sparse configuration it finds
+      # already there, so the second one inherits the first one's cone
+      # and populates a handful of files however full a tree it looks
+      # like it is asking for.
+      #
+      # This is here rather than anywhere else because NOTHING ELSE CAN
+      # SEE IT. It shipped in two files: pages.yml, where a push to dev
+      # surfaced it within the hour, and release.yml, which runs on a
+      # tag push or a dispatch and on nothing else — so its first
+      # execution would have been tag day, in the job holding the
+      # signing identity and both registry tokens. No pull-request run
+      # of any kind exercises either path.
+      - name: Sparse-checkout path isolation
+        run: bash scripts/check-sparse-checkout-paths.sh
+
+      # No image-publishing job may wait on another one (#796). The two
+      # per-arch builds share no artifact, digest or manifest — only the
+      # tag that triggered the run — so `release-arm64` depends on the
+      # job that resolves the tag, not on `release`.
+      #
+      # This is here for the same reason as the step above: NOTHING ELSE
+      # CAN SEE IT. Re-chaining them breaks no check. Every job still
+      # runs, everything still goes green, the release still ships; it
+      # just serialises again, and `release-arm64` goes back to being
+      # SKIPPED whenever amd64 fails, which is what made the first rc of
+      # a new version able to print only the amd64 digest block. The
+      # only other observer is the next release, weeks later, found by
+      # whoever is holding the rc.
+      - name: Per-arch builds run in parallel
+        run: bash scripts/check-build-job-independence.sh
+
+      # No dispatch input, event free-text field, or secret may be
+      # expanded into a `run:` body (#737). `${{ }}` is substituted
+      # before bash parses the line, so validating the value on the next
+      # line validates something the shell has already executed. The
+      # tree already did this correctly in four workflows and still had
+      # it wrong in release.yml — the one job holding `id-token: write`,
+      # where running code can sign an arbitrary artifact as this
+      # repository's OIDC identity. Known, written down, unenforced, and
+      # therefore drifted in the place it mattered most.
+      #
+      # Hosted, no pool slot: it reads workflow text.
+      - name: Run-body expansion check
+        run: bash scripts/check-run-expansions.sh
+
+      # The fixture capture has to run where the suite runs (#644). The
+      # drift gate next to it cannot enforce that: move the capture to a
+      # hosted runner and the recorded engine and the checked engine move
+      # together, agreeing with each other while describing a daemon the
+      # integration lane never talks to. That is the same class of hole
+      # as #487 — a guard that fails in one direction only — so the other
+      # direction gets its own check. Workflow text, no pool slot.
+      - name: Fixture capture runs on the lane
+        run: bash scripts/check-capture-lane.sh
+
+      # A workflow_dispatch workflow is only exposed from the DEFAULT
+      # branch. This project develops on `dev` and releases to `main`,
+      # so a new dispatch-only workflow is undispatchable for a whole
+      # release cycle after it merges — `gh workflow run` answers 404,
+      # which reads like a typo rather than "not yet". capture-fixtures
+      # shipped in that state with docs naming it the primary route
+      # (#665). Pending workflows are declared in
+      # .github/dispatch-pending.txt with what clears them; a stale
+      # declaration fails too.
+      - name: Dispatch targets are reachable
+        run: bash scripts/check-dispatch-reachable.sh
+
+      # #390 put the three privileged lanes in one concurrency group;
+      # #617 changed the key so branch pushes bucket on the commit;
+      # 76d0b7f then added a third lane with the pre-#617 spelling two
+      # days later. Nothing could have noticed — a concurrency group is
+      # evaluated by GitHub, never by us, and two workflows that
+      # disagree about their key just quietly stop excluding each other.
+      # Also asserts that every declared lane has a group at all, which
+      # test.yaml itself did not until #742.
+      - name: Privileged lanes share one concurrency key
+        run: bash scripts/check-concurrency-parity.sh
+
+      # Three per-workflow invariants whose failure mode is ABSENCE, not
+      # error: a failure suite skipped by a red main suite, a standing
+      # runner left with an enabled plugin, and a PR body that can be
+      # edited after a body-reading gate has passed on it (#742). None
+      # of them can go red on its own, so they are asserted against the
+      # workflow text at the only point they are visible — the edit.
+      - name: Lane hygiene
+        run: bash scripts/check-lane-hygiene.sh
+
+      # Two allowlists accept the same advisories under two naming
+      # schemes, and both headers state they stay in sync. They did not:
+      # two GHSAs stayed accepted by dependency-review — which runs at
+      # fail-on-severity: high — for weeks after the govulncheck side
+      # deliberately removed them (#741). The pruning happened, with a
+      # written reason, in one of the two files.
+      - name: Advisory allowlists agree
+        run: bash scripts/check-allowlist-parity.sh
+
+      # The metrics golden must move only for the series that changed
+      # (#651). It inserts a field into the middle of HealthResponse,
+      # regenerates, and requires an empty diff -- so it edits the tree
+      # and restores it on exit. Anything after this step sees the tree
+      # it would have seen anyway.
+      - name: Golden fixture is keyed by field name
+        run: bash scripts/check-golden-fixture-name-keyed.sh
+
+      # The local lane must not test less than this job does (#636).
+      # scripts/local-lane.sh is what `make check` runs before a push;
+      # the moment it lists fewer gates than the steps above, it exits 0
+      # having skipped one and the developer reads that as green. Same
+      # shape as #542, one level up — so the lane ships with a gate
+      # reconciling it against this file rather than on trust. A gate
+      # that cannot run on a workstation is declared out of lane with a
+      # reason; it is never simply absent.
+      - name: Local-lane coverage
+        run: bash scripts/check-local-lane.sh
 
   staticcheck:
     runs-on: ubuntu-latest
@@ -353,8 +673,18 @@ jobs:
       #
       # Suppressions carry a reason inline. A repo-wide exclude list
       # would recreate exactly the blind spot this closes.
-      - name: Shellcheck the gate scripts
-        run: shellcheck -S warning scripts/*.sh
+      #
+      # ci/runner-image/*.sh is in scope for the same reason and was
+      # found by the same argument (#632): it is the shell that decides
+      # whether every self-hosted job's environment comes up at all —
+      # nested daemon, cgroup posture, proxy wiring, and now the arm64
+      # runner's own registration — and nothing linted it either.
+      # test/arm64-netboot/*.sh joins for the third application of the
+      # same argument (#632): patch-target.sh is what installs the arm64
+      # host's watchdog and its systemd hand-off, so a defect there is a
+      # host that boots unprotected — and nothing was linting it either.
+      - name: Shellcheck the gate, runner-image and netboot scripts
+        run: shellcheck -S warning scripts/*.sh ci/runner-image/*.sh test/arm64-netboot/*.sh
 
   # This fork is published as the maintainer's own work, so no commit
   # or PR may credit an AI assistant. The rule predates the repo's CI
@@ -372,6 +702,24 @@ jobs:
         with:
           # The gate walks base..head; a shallow clone cannot resolve it.
           fetch-depth: 0
+      # An issue must be reachable from this PR after it merges (#718).
+      # Same event and the same range as the gate above, for the same
+      # reason: it needs the PR's title and body, which a push does not
+      # supply. Eleven implemented issues read as unstarted because
+      # nothing here noticed a PR that left no readable reference.
+      - name: Check the PR references an issue
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          printf '%s' "$PR_TITLE" > "$RUNNER_TEMP/pr-title.txt"
+          printf '%s' "$PR_BODY" > "$RUNNER_TEMP/pr-body-ref.md"
+          bash scripts/check-issue-ref.sh \
+            "$BASE_SHA..$HEAD_SHA" \
+            "$RUNNER_TEMP/pr-title.txt" "$RUNNER_TEMP/pr-body-ref.md"
+
       - name: Check commits and PR body for AI attribution
         env:
           # Through env, never inlined into run: — a PR description is
@@ -398,6 +746,23 @@ jobs:
           printf '%s' "$PR_BODY" > "$RUNNER_TEMP/pr-body.md"
           bash scripts/check-test-weakening.sh \
             "$BASE_SHA..$HEAD_SHA" "$RUNNER_TEMP/pr-body.md"
+      # A coverage floor may not go down silently (#735). This belongs
+      # here rather than in coverage.yml for a scheduling reason: that
+      # workflow runs only on PRs into main, so a floor lowered on the
+      # way into dev reached the release PR having been measured by
+      # nothing, and the release then ratcheted against the lowered
+      # number. Comparing two git blobs needs no counters and no
+      # self-hosted runner, so the half that was dangerous can run on
+      # every PR while the expensive half stays a release gate.
+      - name: Check the diff for a lowered coverage floor
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          printf '%s' "$PR_BODY" > "$RUNNER_TEMP/pr-body-floor.md"
+          bash scripts/check-coverage-floor.sh \
+            "$BASE_SHA..$HEAD_SHA" "$RUNNER_TEMP/pr-body-floor.md"
 
   # Reachable-vulnerability scan. Known-and-reviewed findings without a
   # published fix live in .github/vuln-allowlist.txt; anything else

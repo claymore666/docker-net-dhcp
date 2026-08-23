@@ -10,6 +10,10 @@
 #
 # Modes:
 #   (default)   needs RUNNER_JIT_CONFIG; runs exactly one job and exits
+#   register    standing runner (#632): configures itself once from
+#               RUNNER_REGISTRATION_TOKEN, keeps its credentials on a
+#               volume at RUNNER_STATE_DIR, and reconnects on every
+#               boot with no token. Job after job, never exits.
 #   selftest    infra check without contacting GitHub: daemon up with
 #               a real storage driver, seeds loaded, one supervised
 #               daemon restart survives
@@ -102,6 +106,32 @@ EOF
     log "proxy: build + daemon honor httpsProxy=$https_p (NO_PROXY=$no_p)"
 }
 setup_proxy
+
+# --- plugin bind source ------------------------------------------------
+# The plugin's state directory is a BIND SOURCE in its manifest, and the
+# nested /var/lib/docker is a persistent volume while this container's
+# root filesystem is not. So a recreated container starts a daemon that
+# restores an already-enabled docker-net-dhcp with its bind source gone:
+#
+#   failed to enable plugin: ... runc create failed: unable to start
+#   container process: failed to fulfil mount request:
+#   open /var/lib/net-dhcp: no such file or directory
+#
+# libnetwork registers the remote driver anyway and calls getCapabilities
+# on the nil client, so dockerd does not degrade — it SIGSEGVs, and the
+# supervisor above relaunches it into the same panic forever. The runner
+# still reports online, so the failure surfaces as jobs that die on a
+# dead daemon.
+#
+# The workflows create this directory before installing the plugin, but
+# that is job time: the daemon has already restored and crashed. It has
+# to exist before dockerd's first start, which is here.
+ensure_plugin_bind_source() {
+    local dir="${PLUGIN_BIND_SOURCE:-/var/lib/net-dhcp}"
+    mkdir -p "$dir"
+    log "plugin bind source ready: $dir"
+}
+ensure_plugin_bind_source
 
 # --- supervised dockerd ------------------------------------------------
 # Plain relaunch loop. dockerd must NOT be the container's main
@@ -240,6 +270,20 @@ KEACONF
     docker image inspect golang:1.26-alpine >/dev/null || { log "FAIL: seed lost across restart"; exit 1; }
     log "selftest OK: driver=overlay2, seeds present, supervised restart ${old_pid} -> ${new_pid}"
     exit 0
+fi
+
+# --- standing runner (#632) --------------------------------------------
+# Used by the arm64 host, which has no orchestrator to mint a JIT config
+# per job. Registers once, then reconnects from persisted credentials on
+# every boot; see register.sh for what is checked and why.
+if [[ "${1:-}" == "register" ]]; then
+    # shellcheck source=ci/runner-image/register.sh
+    . /register.sh
+    runner_prepare || exit 1
+    export RUNNER_ALLOW_RUNASROOT=1
+    cd "$RUNNER_HOME"
+    log "starting Actions runner (standing; job after job until stopped)"
+    exec ./run.sh
 fi
 
 # --- run exactly one job -----------------------------------------------

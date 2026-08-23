@@ -61,8 +61,33 @@ cosign verify-blob \
   --certificate-identity-regexp '^https://github.com/claymore666/docker-net-dhcp/.github/workflows/release.yml@' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   checksums.txt
-sha256sum -c checksums.txt
+sha256sum --ignore-missing -c checksums.txt
 ```
+
+`checksums.txt` covers **three** files — the plugin tarball and both
+SBOMs — because one signature over one manifest is what attests all of
+them at once. `--ignore-missing` is therefore not a weakening: without
+it, a reader who downloaded only the tarball gets
+
+```
+net-dhcp-plugin-vX.Y.Z-linux-amd64.tar.gz: OK
+sha256sum: sbom.spdx.json: No such file or directory
+sbom.spdx.json: FAILED open or read
+sha256sum: sbom.cdx.json: No such file or directory
+sbom.cdx.json: FAILED open or read
+sha256sum: WARNING: 2 listed files could not be read
+```
+
+and has every reason to conclude the release was tampered with. With
+it, every file you actually downloaded is verified and the rest are
+skipped. It does not soften the check that matters: a file that IS
+present and does not match still fails — `FAILED`, exit status 1.
+Download all three and drop the flag if you want the manifest checked
+exhaustively.
+
+The arm64 release ships its own `checksums-arm64.txt` and bundle, over
+the arm64 tarball and its two SBOMs. Verify that one the same way; the
+two manifests do not cover each other's files.
 
 The identity regexp is the point of the exercise: it pins the signature
 to this repository's `release.yml`, so a valid Sigstore signature made by

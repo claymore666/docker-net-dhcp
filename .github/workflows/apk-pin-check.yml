@@ -7,8 +7,22 @@ name: APK pin drift
 # must stay on 10.x (11 removes the per-interface model #152 relies on).
 #
 # Runs on a Sunday-morning UTC schedule, plus on-demand via the
-# Actions tab. Doesn't fail the workflow on drift — the report in
-# the run log is the actionable artefact.
+# Actions tab.
+#
+# --strict IS WHAT MAKES THIS A SIGNAL AT ALL (#742). Without it the
+# script prints its report and exits 0, and GitHub sends no notification
+# for a SUCCESSFUL scheduled run — so the drift report landed in a run
+# log nobody had any reason to open. Seventeen of seventeen runs green,
+# each 12-20s, while the script's own header claimed the signal "lands
+# on the maintainer's desk without anyone having to remember to look".
+# It required exactly that: remembering to look.
+#
+# A red weekly run stays red until the pin is bumped, which is the
+# intended behaviour and not noise: the pin being watched is dhcpcd, the
+# component that performs the whole DHCP exchange against an untrusted
+# LAN and is named in scope by SECURITY.md. This workflow gates nothing
+# and is not a required context, so a standing red here blocks no PR —
+# it only ensures the drift is visible without a ritual.
 
 on:
   schedule:
@@ -25,4 +39,4 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Check apk pins
-        run: bash scripts/check-apk-pins.sh
+        run: bash scripts/check-apk-pins.sh --strict

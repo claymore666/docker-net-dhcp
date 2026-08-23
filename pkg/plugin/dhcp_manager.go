@@ -5,6 +5,7 @@ package plugin
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"strings"
@@ -124,10 +125,15 @@ func (m *dhcpManager) outageCadence() (tick, grace time.Duration) {
 // dhcp_timeouts stayed at zero through a total outage.
 //
 // The second trigger needs nothing from dhcpcd but the lease it already
-// reported at bind time. It cannot false-positive on a healthy client:
-// a client that is being served gets a fresh lease (as a REBIND at T2,
-// see leaseDeadline) well before the previous one runs out, and that
-// restarts the deadline.
+// reported at bind time. It does not false-positive on a healthy
+// client: a client that is being served gets a fresh lease (as a REBIND
+// at T2, see leaseDeadline) before the previous one runs out, and that
+// restarts the deadline. That holds only because the deadline is never
+// cut below the client's own rebind — see maxRenewableLease for what
+// went wrong when it was, and for the one case where a substituted
+// deadline can fire on a server that is in fact answering: a
+// "permanent" lease, from which the client never contacts the server
+// again, so there is nothing to distinguish an outage from silence.
 type outageTracker struct {
 	acquiring      bool
 	acquiringSince time.Time
@@ -157,15 +163,130 @@ func newOutageTracker(now time.Time) outageTracker {
 // one instant that needs no assumption about which retry succeeded.
 // Zero when the server supplied no lifetime, in which case no deadline
 // is enforced at all.
-func leaseDeadline(data dhcp.Info) time.Duration {
-	if data.LeaseSeconds > 0 {
-		return time.Duration(data.LeaseSeconds) * time.Second
+//
+// A lifetime the client will never renew from is replaced by
+// maxLeaseDeadline, and that is reported. The substitution is on the
+// DEADLINE only: data.LeaseSeconds still reaches the log and the ledger
+// unchanged, because the anomaly is the thing worth seeing and
+// rewriting it would hide it. See maxRenewableLease for which lifetimes
+// qualify, and why applying it to every long lease is worse than not
+// having it.
+func leaseDeadline(data dhcp.Info) (time.Duration, bool) {
+	// This guard is for the READER, not for behaviour, and narrowing it
+	// to `< 0` is an EQUIVALENT change rather than a bug: 0 would fall
+	// through, fail `0 > maxOption51Seconds`, and reach
+	// clampLeaseDeadline(0), which returns (0, false) — the same pair
+	// this line returns. There is no input that distinguishes the two,
+	// so no test can pin it and any test written to try would be
+	// asserting nothing. Kept because "no lifetime" and "a lifetime we
+	// clamped to zero" are different statements about the server, and
+	// saying which one this is here costs nothing.
+	if data.LeaseSeconds <= 0 {
+		return 0, false
 	}
-	return 0
+	if data.LeaseSeconds > maxOption51Seconds {
+		// Option 51 is four octets, so no DHCP server can have sent
+		// this. LeaseSeconds is an int decoded from the hook's JSON, and
+		// time.Duration counts NANOSECONDS: multiplying a large enough
+		// value by time.Second wraps, and a NEGATIVE duration reaches
+		// `due` as lapseAfter <= 0, which means "no deadline is
+		// enforced". A garbage lifetime would then switch the watchdog
+		// off silently — the same outcome as the 0xFFFFFFFF lease this
+		// clamp exists for, reached by arithmetic instead of by a value
+		// on the wire, and with nothing counted.
+		//
+		// Treated as permanent, so the failure direction is an armed
+		// watchdog and a counter rather than a disarmed one.
+		return maxLeaseDeadline, true
+	}
+	return clampLeaseDeadline(time.Duration(data.LeaseSeconds) * time.Second)
 }
 
-// observe folds one client event into the tracker.
-func (o *outageTracker) observe(eventType string, data dhcp.Info, now time.Time) {
+// maxOption51Seconds is the widest value DHCP's IP Address Lease Time
+// option can carry: four octets, so 0xFFFFFFFF. dhcpcd exports it
+// verbatim, and it is the conventional encoding for "permanent".
+const maxOption51Seconds = 0xFFFFFFFF
+
+// noteDNSPropagationPIDMismatch counts a DNS propagation refused because
+// the PID it resolved turned out not to belong to the container it was
+// resolved for (#317).
+//
+// # THIS METHOD USED TO COVER BOTH REFUSALS, AND MUST NOT AGAIN
+//
+// It was written against a tree where the netns refusal was counted at
+// its call site in Start, and it took a `kind` so one predicate served
+// both. #731 then moved the netns count INSIDE openSandboxNetNS, at the
+// chokepoint a caller cannot bypass — the better placement, and for the
+// same reason given below. Neither change conflicted textually and both
+// were green on their own head; rebased together they counted one
+// refusal TWICE, and TestCountingWrappers_AreTheOnlyCallers is what
+// said so. If a second kind is ever wanted here, check first whether
+// the operation it guards already has an opener that can own it.
+//
+// The pairing lives here rather than at the call site for the reason
+// observeLease does. The site read:
+//
+//	if errors.Is(err, errPIDNotContainer) && m.plugin != nil {
+//		m.plugin.<counter>.Add(1)
+//	}
+//
+// three lines each, inside methods that need a live container and a
+// real netns to reach — so nothing could drive them, and deleting BOTH
+// Add(1) lines left `go test ./...` completely green. Meanwhile
+// container_netns_test.go:37 and :95 assert that the error still
+// carries errPIDNotContainer, with comments saying in writing that
+// they do it "so the counter can fire" and "or the mismatch is never
+// counted". The sentinel's survival was pinned deliberately, naming
+// the counter as the reason; the counter itself was pinned by nothing.
+//
+// That is the precondition asserted in place of the effect: whether
+// the plugin DECIDED a mismatch is not what an operator reads, and a
+// test whose message names an effect it does not assert is how a
+// counter ends up with no reader while looking guarded.
+//
+// The nil check is on plugin, not on the error: unit tests that do not
+// stand up a Plugin leave it nil (see dhcpManager.plugin), and the
+// refusal is still a refusal when there is no counter to bump.
+func (m *dhcpManager) noteDNSPropagationPIDMismatch(err error) {
+	if !errors.Is(err, errPIDNotContainer) || m.plugin == nil {
+		return
+	}
+	m.plugin.dnsPropagationPIDMismatches.Add(1)
+}
+
+// observeLease folds one client event into the tracker and counts the
+// clamp if there was one.
+//
+// The pairing lives here rather than at the event-loop call site for the
+// same reason the netns mismatch counter moved inside its opener: a
+// caller cannot fold an event into the tracker without going through
+// this method, so a future path cannot observe a clamp and forget to
+// count it. The event loop needs a live dhcpcd to reach, so three lines
+// there are three lines nothing can assert — which is exactly how
+// lease_time_clamped came to be documented, exposed on /metrics, and
+// read by no test at all.
+//
+// The nil check is on plugin, not on the clamp: unit tests that do not
+// drive lease events pass a nil plugin (see dhcpManager.plugin), and a
+// clamp is still worth logging when there is no counter to bump.
+func (m *dhcpManager) observeLease(o *outageTracker, event dhcp.Event, now time.Time, v6 bool) {
+	if !o.observe(event.Type, event.Data, now) {
+		return
+	}
+	if m.plugin != nil {
+		m.plugin.leaseTimeClamped.Add(1)
+	}
+	log.
+		WithFields(m.logFields(v6)).
+		WithField("lease_seconds", event.Data.LeaseSeconds).
+		WithField("deadline", maxLeaseDeadline).
+		Warn("DHCP lease lifetime too long to use as an outage deadline; clamped for the watchdog only")
+}
+
+// observe folds one client event into the tracker, reporting whether the
+// lease lifetime it carried had to be clamped to stay usable as a
+// deadline (see leaseDeadline).
+func (o *outageTracker) observe(eventType string, data dhcp.Info, now time.Time) (clamped bool) {
 	prev := o.acquiring
 	o.acquiring = nextAcquiring(prev, eventType)
 	if o.acquiring && !prev {
@@ -178,8 +299,9 @@ func (o *outageTracker) observe(eventType string, data dhcp.Info, now time.Time)
 	// the acquiring state alone and is a refusal, not service.
 	if eventType == "bound" || eventType == "renew" {
 		o.lastAffirmed = now
-		o.lapseAfter = leaseDeadline(data)
+		o.lapseAfter, clamped = leaseDeadline(data)
 	}
+	return clamped
 }
 
 // due reports whether this tick counts a DHCP timeout, and whether it is
@@ -305,7 +427,6 @@ type dhcpManager struct {
 	// bridge mode.
 	MacAddress net.HardwareAddr
 
-	nsPath    string
 	hostname  string
 	nsHandle  netns.NsHandle
 	netHandle *netlink.Handle
@@ -511,14 +632,21 @@ func bareIP(cidr string) string {
 }
 
 // findContainerPID resolves the host PID of the container that owns
-// this manager's endpoint. Returns an error if the endpoint is not
-// found in the network's container list (rare race during teardown)
-// or if the container has no PID (not running). Mirrors
+// this manager's endpoint, together with the container ID it came
+// from. Returns an error if the endpoint is not found in the
+// network's container list (rare race during teardown) or if the
+// container has no PID (not running). Mirrors
 // Plugin.lookupEndpointMAC's lookup shape.
-func (m *dhcpManager) findContainerPID(ctx context.Context) (int, error) {
+//
+// The container ID is returned, not discarded, because the PID alone
+// is not enough to act on: by the time anything opens /proc/<pid> the
+// container may have exited and the kernel may have handed that PID
+// to an unrelated host process. Callers pair the two and let
+// openContainerProc decide (#688).
+func (m *dhcpManager) findContainerPID(ctx context.Context) (int, string, error) {
 	dockerNet, err := m.docker.NetworkInspect(ctx, m.joinReq.NetworkID, dNetwork.InspectOptions{})
 	if err != nil {
-		return 0, fmt.Errorf("NetworkInspect: %w", err)
+		return 0, "", fmt.Errorf("NetworkInspect: %w", err)
 	}
 	for ctrID, info := range dockerNet.Containers {
 		if info.EndpointID != m.joinReq.EndpointID {
@@ -526,234 +654,314 @@ func (m *dhcpManager) findContainerPID(ctx context.Context) (int, error) {
 		}
 		ins, err := m.docker.ContainerInspect(ctx, ctrID)
 		if err != nil {
-			return 0, fmt.Errorf("ContainerInspect(%s): %w", shortID(ctrID), err)
+			return 0, "", fmt.Errorf("ContainerInspect(%s): %w", shortID(ctrID), err)
 		}
 		if ins.State == nil || ins.State.Pid == 0 {
-			return 0, fmt.Errorf("container %s has no PID (state=%+v)", shortID(ctrID), ins.State)
+			return 0, "", fmt.Errorf("container %s has no PID (state=%+v)", shortID(ctrID), ins.State)
 		}
-		return ins.State.Pid, nil
+		return ins.State.Pid, ctrID, nil
 	}
-	return 0, fmt.Errorf("endpoint %s not found in network %s container list", shortID(m.joinReq.EndpointID), shortID(m.joinReq.NetworkID))
+	return 0, "", fmt.Errorf("endpoint %s not found in network %s container list", shortID(m.joinReq.EndpointID), shortID(m.joinReq.NetworkID))
 }
 
+// renew applies one accepted lease to the container's netns. Each
+// phase below is a separate method so it can be exercised on its own;
+// the order they run in is load-bearing and is documented at each
+// call site rather than inside the phases.
 func (m *dhcpManager) renew(v6 bool, info dhcp.Info) error {
-	v4, v6Last := m.lastIPs()
-	lastIP := v4
-	if v6 {
-		lastIP = v6Last
-	}
-
 	ip, err := netlink.ParseAddr(info.IP)
 	if err != nil {
 		return fmt.Errorf("failed to parse IP address: %w", err)
 	}
 
-	if lastIP != nil && !ip.Equal(*lastIP) {
-		// libnetwork has no in-place endpoint-IP swap RPC, so Docker's
-		// NetworkSettings.IPAddress still reports the previous address
-		// — `docker inspect` lies until the container is recreated.
-		// Bump the counter so operators can alert on the truthfulness
-		// gap; design discussion for a deeper fix is deferred (issue #104).
-		if m.plugin != nil {
-			bumpFamily(&m.plugin.leaseChanged, &m.plugin.leaseChangedV6, v6)
-		}
-		log.
-			WithFields(m.logFields(v6)).
-			WithField("old_ip", lastIP).
-			WithField("new_ip", ip).
-			Warn("dhcp renew with changed IP — Docker's view is now stale")
-
-		// Apply the re-acquired lease to the link. Found by
-		// TestFailure_LeaseRefusedOnRenewal (#128): without this the
-		// kernel keeps the ORIGINAL address forever — the container
-		// answers on an address the server may already have handed to
-		// someone else, and after a server-side renumbering the
-		// default-route replacement below failed with "network is
-		// unreachable" (no address in the new subnet), aborting the
-		// bind and black-holing the endpoint. Address first, routes
-		// after — same ordering the kernel itself requires.
-		//
-		// Applies to both families now (#152): dhcpcd pins the same
-		// DUID-LL/IAID for the one-shot and persistent clients, so the
-		// persistent v6 client renews the SAME address Docker was told
-		// — a "changed IP" is therefore a genuine renumber to re-apply,
-		// not the old IA-split steady state. (Previously the v6 arm was
-		// disabled because busybox's per-process random IAID made every
-		// ipv6=true container look like it changed address seconds after
-		// start.)
-		//
-		// netHandle/ctrLink are always live on the production path
-		// (renew runs from the event loop, post-Start); the guard
-		// keeps pre-Start unit tests of the counter semantics valid.
-		if m.netHandle != nil && m.ctrLink != nil {
-			if err := m.netHandle.AddrReplace(m.ctrLink, ip); err != nil {
-				return fmt.Errorf("failed to apply re-acquired address %v: %w", ip, err)
-			}
-			if err := m.netHandle.AddrDel(m.ctrLink, lastIP); err != nil {
-				// Non-fatal: a lingering stale address is strictly
-				// better than failing the bind on cleanup.
-				log.
-					WithError(err).
-					WithFields(m.logFields(v6)).
-					WithField("stale_ip", lastIP).
-					Warn("Failed to remove stale address after lease change")
-			}
-		}
+	// Address first, routes after — the ordering the kernel itself
+	// requires (see applyAddressChange).
+	if err := m.applyAddressChange(v6, ip); err != nil {
+		return err
 	}
 
-	// Surface DHCP options the plugin captures but doesn't auto-apply
-	// (NTP servers, TFTP server, boot-file name, search list when not
-	// propagating DNS). Operators can grep plugin logs for these
-	// without flipping LOG_LEVEL=trace. Only emits when at least one
-	// is non-empty so plain LANs don't get a noisy line per renewal.
-	if len(info.NTPServers) > 0 || info.TFTPServer != "" || info.BootFile != "" || len(info.SearchList) > 0 ||
-		info.WPAD != "" || info.PosixTimezone != "" || info.TZDBTimezone != "" || info.TimeOffset != "" {
-		fields := m.logFields(v6)
-		if len(info.NTPServers) > 0 {
-			fields["ntp"] = info.NTPServers
-		}
-		if info.TFTPServer != "" {
-			fields["tftp"] = info.TFTPServer
-		}
-		if info.BootFile != "" {
-			fields["bootfile"] = info.BootFile
-		}
-		if len(info.SearchList) > 0 {
-			fields["search"] = info.SearchList
-		}
-		// Observe-only informational extras (#262): WPAD URL (opt 252),
-		// RFC 4833 timezone (opt 100/101), legacy time offset (opt 2).
-		if info.WPAD != "" {
-			fields["wpad"] = info.WPAD
-		}
-		if info.PosixTimezone != "" {
-			fields["posix_tz"] = info.PosixTimezone
-		}
-		if info.TZDBTimezone != "" {
-			fields["tzdb_tz"] = info.TZDBTimezone
-		}
-		if info.TimeOffset != "" {
-			fields["time_offset"] = info.TimeOffset
-		}
-		log.WithFields(fields).Info("DHCP options received")
-	}
+	m.logObservedOptions(v6, info)
 
 	// Track the freshly-bound address so Leave can hand it to the
 	// tombstone (and thus the next CreateEndpoint's `request`-directive
 	// hint). Without this the manager keeps reporting whatever the very
 	// first CreateEndpoint DISCOVER produced, even if dhcpcd has
-	// moved to a different lease since.
+	// moved to a different lease since. After applyAddressChange, which
+	// needs the previous value.
 	m.setLastIP(v6, ip)
 
-	// Apply DHCP option 6 / 23 (DNS server list) when opt-in and the
-	// server actually supplied servers. Empty list is a no-op rather
-	// than a clobber — see resolvconf.go for the rationale. v6 path
-	// uses DHCPv6 option 23, populated by the dhcpcd handler into the
-	// same DNSServers slice.
-	if m.opts.PropagateDNS && len(info.DNSServers) > 0 {
-		ctx, cancel := context.WithTimeout(context.Background(), dnsPropagateTimeout)
-		pid, err := m.findContainerPID(ctx)
-		cancel()
-		if err != nil {
-			log.
-				WithError(err).
-				WithFields(m.logFields(v6)).
-				Warn("Skipping DNS propagation — could not resolve container PID")
-		} else if err := writeContainerResolvConf(pid, info.DNSServers, info.SearchList, info.Domain); err != nil {
-			log.
-				WithError(err).
-				WithFields(m.logFields(v6)).
-				WithField("dns", info.DNSServers).
-				Error("Failed to write container resolv.conf")
-		} else {
-			log.
-				WithFields(m.logFields(v6)).
-				WithField("dns", info.DNSServers).
-				Debug("Propagated DHCP DNS servers to container resolv.conf")
-		}
+	m.propagateDNS(v6, info)
+	m.propagateMTU(v6, info)
+
+	return m.reconcileDefaultRoute(v6, info)
+}
+
+// applyAddressChange re-applies the lease to the link when the server
+// handed back a different address than the one currently recorded. A
+// no-op on the steady-state renewal path, which is the common case.
+func (m *dhcpManager) applyAddressChange(v6 bool, ip *netlink.Addr) error {
+	v4, v6Last := m.lastIPs()
+	lastIP := v4
+	if v6 {
+		lastIP = v6Last
+	}
+	if lastIP == nil || ip.Equal(*lastIP) {
+		return nil
 	}
 
-	// Apply DHCP option 26 (Interface MTU) when both opt-in and
-	// non-zero. Skipping zero is mandatory: dhcp-handler emits 0
-	// when the server didn't supply the option, and forcing MTU 0
-	// on a kernel link is undefined / disallowed.
-	if m.opts.PropagateMTU && info.MTU > 0 {
-		current := m.ctrLink.Attrs().MTU
-		if current != info.MTU {
-			if err := m.netHandle.LinkSetMTU(m.ctrLink, info.MTU); err != nil {
-				// Don't fail the renewal — IP/gateway are usable; MTU
-				// is a perf-correctness knob. Log loudly so operators
-				// notice; a surprise small MTU under a never-applied
-				// large MTU is exactly the kind of latent
-				// black-hole bug worth surfacing.
-				log.
-					WithError(err).
-					WithFields(m.logFields(v6)).
-					WithField("mtu", info.MTU).
-					Error("Failed to apply DHCP-supplied MTU; container link MTU unchanged")
-			} else {
-				log.
-					WithFields(m.logFields(v6)).
-					WithField("old_mtu", current).
-					WithField("new_mtu", info.MTU).
-					Info("Applied DHCP-supplied MTU")
-			}
-		}
+	// libnetwork has no in-place endpoint-IP swap RPC, so Docker's
+	// NetworkSettings.IPAddress still reports the previous address
+	// — `docker inspect` lies until the container is recreated.
+	// Bump the counter so operators can alert on the truthfulness
+	// gap; design discussion for a deeper fix is deferred (issue #104).
+	if m.plugin != nil {
+		bumpFamily(&m.plugin.leaseChangedV4, &m.plugin.leaseChangedV6, v6)
+	}
+	log.
+		WithFields(m.logFields(v6)).
+		WithField("old_ip", lastIP).
+		WithField("new_ip", ip).
+		Warn("dhcp renew with changed IP — Docker's view is now stale")
+
+	// Apply the re-acquired lease to the link. Found by
+	// TestFailure_LeaseRefusedOnRenewal (#128): without this the
+	// kernel keeps the ORIGINAL address forever — the container
+	// answers on an address the server may already have handed to
+	// someone else, and after a server-side renumbering the
+	// default-route replacement in reconcileDefaultRoute failed with
+	// "network is unreachable" (no address in the new subnet),
+	// aborting the bind and black-holing the endpoint. Address first,
+	// routes after — same ordering the kernel itself requires.
+	//
+	// Applies to both families now (#152): dhcpcd pins the same
+	// DUID-LL/IAID for the one-shot and persistent clients, so the
+	// persistent v6 client renews the SAME address Docker was told
+	// — a "changed IP" is therefore a genuine renumber to re-apply,
+	// not the old IA-split steady state. (Previously the v6 arm was
+	// disabled because busybox's per-process random IAID made every
+	// ipv6=true container look like it changed address seconds after
+	// start.)
+	//
+	// netHandle/ctrLink are always live on the production path
+	// (renew runs from the event loop, post-Start); the guard
+	// keeps pre-Start unit tests of the counter semantics valid.
+	if m.netHandle == nil || m.ctrLink == nil {
+		return nil
+	}
+	if err := m.netHandle.AddrReplace(m.ctrLink, ip); err != nil {
+		return fmt.Errorf("failed to apply re-acquired address %v: %w", ip, err)
+	}
+	if err := m.netHandle.AddrDel(m.ctrLink, lastIP); err != nil {
+		// Non-fatal: a lingering stale address is strictly
+		// better than failing the bind on cleanup.
+		log.
+			WithError(err).
+			WithFields(m.logFields(v6)).
+			WithField("stale_ip", lastIP).
+			Warn("Failed to remove stale address after lease change")
+	}
+	return nil
+}
+
+// logObservedOptions surfaces DHCP options the plugin captures but
+// doesn't auto-apply (NTP servers, TFTP server, boot-file name, search
+// list when not propagating DNS). Operators can grep plugin logs for
+// these without flipping LOG_LEVEL=trace. Only emits when at least one
+// is non-empty so plain LANs don't get a noisy line per renewal.
+func (m *dhcpManager) logObservedOptions(v6 bool, info dhcp.Info) {
+	if len(info.NTPServers) == 0 && info.TFTPServer == "" && info.BootFile == "" && len(info.SearchList) == 0 &&
+		info.WPAD == "" && info.PosixTimezone == "" && info.TZDBTimezone == "" && info.TimeOffset == "" {
+		return
 	}
 
-	// Skip gateway-from-DHCP renewal handling when the operator pinned a
-	// gateway override on the network — leave their override in place.
-	if !v6 && info.Gateway != "" && m.opts.Gateway == "" {
-		newGateway := net.ParseIP(info.Gateway)
+	fields := m.logFields(v6)
+	if len(info.NTPServers) > 0 {
+		fields["ntp"] = info.NTPServers
+	}
+	if info.TFTPServer != "" {
+		fields["tftp"] = info.TFTPServer
+	}
+	if info.BootFile != "" {
+		fields["bootfile"] = info.BootFile
+	}
+	if len(info.SearchList) > 0 {
+		fields["search"] = info.SearchList
+	}
+	// Observe-only informational extras (#262): WPAD URL (opt 252),
+	// RFC 4833 timezone (opt 100/101), legacy time offset (opt 2).
+	if info.WPAD != "" {
+		fields["wpad"] = info.WPAD
+	}
+	if info.PosixTimezone != "" {
+		fields["posix_tz"] = info.PosixTimezone
+	}
+	if info.TZDBTimezone != "" {
+		fields["tzdb_tz"] = info.TZDBTimezone
+	}
+	if info.TimeOffset != "" {
+		fields["time_offset"] = info.TimeOffset
+	}
+	log.WithFields(fields).Info("DHCP options received")
+}
 
-		routes, err := m.netHandle.RouteListFiltered(unix.AF_INET, &netlink.Route{
+// propagateDNS applies DHCP option 6 / 23 (DNS server list) when opt-in
+// and the server actually supplied servers. Empty list is a no-op rather
+// than a clobber — see resolvconf.go for the rationale. v6 path
+// uses DHCPv6 option 23, populated by the dhcpcd handler into the
+// same DNSServers slice. Never fails the renewal: name resolution is
+// recoverable, the lease is not.
+func (m *dhcpManager) propagateDNS(v6 bool, info dhcp.Info) {
+	if !m.opts.PropagateDNS || len(info.DNSServers) == 0 {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), dnsPropagateTimeout)
+	pid, ctrID, err := m.findContainerPID(ctx)
+	cancel()
+	if err != nil {
+		log.
+			WithError(err).
+			WithFields(m.logFields(v6)).
+			Warn("Skipping DNS propagation — could not resolve container PID")
+		return
+	}
+
+	if err := writeContainerResolvConf(pid, ctrID, info.DNSServers, info.SearchList, info.Domain); err != nil {
+		m.noteDNSPropagationPIDMismatch(err)
+		log.
+			WithError(err).
+			WithFields(m.logFields(v6)).
+			WithField("dns", info.DNSServers).
+			Error("Failed to write container resolv.conf")
+		return
+	}
+
+	log.
+		WithFields(m.logFields(v6)).
+		WithField("dns", info.DNSServers).
+		Debug("Propagated DHCP DNS servers to container resolv.conf")
+}
+
+// propagateMTU applies DHCP option 26 (Interface MTU) when both opt-in
+// and non-zero. Skipping zero is mandatory: dhcp-handler emits 0
+// when the server didn't supply the option, and forcing MTU 0
+// on a kernel link is undefined / disallowed.
+func (m *dhcpManager) propagateMTU(v6 bool, info dhcp.Info) {
+	if !m.opts.PropagateMTU || info.MTU <= 0 {
+		return
+	}
+
+	// Neither dhcpcd nor the kernel holds the bottom of this range: a
+	// server-supplied 68 was exported verbatim and accepted by the
+	// kernel, which destroys throughput and black-holes path MTU
+	// discovery for the container, re-applied on every renewal. Refuse
+	// and keep the MTU the link has (#702).
+	if !mtuAcceptable(info.MTU) {
+		if m.plugin != nil {
+			m.plugin.mtuRefused.Add(1)
+		}
+		log.
+			WithFields(m.logFields(v6)).
+			WithField("mtu", info.MTU).
+			WithField("min", minPropagatedMTU).
+			WithField("max", maxPropagatedMTU).
+			Warn("Refusing DHCP-supplied MTU outside the acceptable range; container link MTU unchanged")
+		return
+	}
+
+	current := m.ctrLink.Attrs().MTU
+	if current == info.MTU {
+		return
+	}
+
+	if err := m.netHandle.LinkSetMTU(m.ctrLink, info.MTU); err != nil {
+		// Don't fail the renewal — IP/gateway are usable; MTU
+		// is a perf-correctness knob. Log loudly so operators
+		// notice; a surprise small MTU under a never-applied
+		// large MTU is exactly the kind of latent
+		// black-hole bug worth surfacing.
+		log.
+			WithError(err).
+			WithFields(m.logFields(v6)).
+			WithField("mtu", info.MTU).
+			Error("Failed to apply DHCP-supplied MTU; container link MTU unchanged")
+		return
+	}
+
+	log.
+		WithFields(m.logFields(v6)).
+		WithField("old_mtu", current).
+		WithField("new_mtu", info.MTU).
+		Info("Applied DHCP-supplied MTU")
+}
+
+// reconcileDefaultRoute points the container's default route at the
+// gateway the server just supplied. Skipped when the operator pinned a
+// gateway override on the network — leave their override in place — and
+// on the v6 path, where the router advertises itself.
+func (m *dhcpManager) reconcileDefaultRoute(v6 bool, info dhcp.Info) error {
+	if v6 || info.Gateway == "" || m.opts.Gateway != "" {
+		return nil
+	}
+
+	newGateway := net.ParseIP(info.Gateway)
+	if newGateway == nil {
+		// Belt and braces with the refusal in BuildEvent (#728). The
+		// two are not redundant: that one runs in the dhcpcd hook, a
+		// different process, and this function is also reached by any
+		// future caller that builds an Info without going through the
+		// hook at all -- the recovery and replay paths already do.
+		//
+		// Nil is the dangerous value precisely because netlink accepts
+		// it. `Gw: nil` is not "no change", it is `default dev ethX
+		// scope link` -- an on-link default route. Returning here is
+		// the same thing the guard above does for an empty Gateway:
+		// leave the container's existing route as it is.
+		log.WithFields(m.logFields(v6)).
+			WithField("gateway", info.Gateway).
+			Warn("DHCP gateway is not an IP address; leaving the existing default route alone")
+		return nil
+	}
+
+	routes, err := m.netHandle.RouteListFiltered(unix.AF_INET, &netlink.Route{
+		LinkIndex: m.ctrLink.Attrs().Index,
+		Dst:       nil,
+	}, netlink.RT_FILTER_OIF|netlink.RT_FILTER_DST)
+	if err != nil {
+		return fmt.Errorf("failed to list routes: %w", err)
+	}
+
+	if len(routes) == 0 {
+		log.
+			WithFields(m.logFields(v6)).
+			WithField("gateway", newGateway).
+			Info("dhcp renew adding default route")
+
+		if err := m.netHandle.RouteAdd(&netlink.Route{
 			LinkIndex: m.ctrLink.Attrs().Index,
-			Dst:       nil,
-		}, netlink.RT_FILTER_OIF|netlink.RT_FILTER_DST)
-		if err != nil {
-			return fmt.Errorf("failed to list routes: %w", err)
+			Gw:        newGateway,
+		}); err != nil {
+			return fmt.Errorf("failed to add default route: %w", err)
 		}
+		return nil
+	}
 
-		if len(routes) == 0 {
-			log.
-				WithFields(m.logFields(v6)).
-				WithField("gateway", newGateway).
-				Info("dhcp renew adding default route")
+	if !newGateway.Equal(routes[0].Gw) {
+		log.
+			WithFields(m.logFields(v6)).
+			WithField("old_gateway", routes[0].Gw).
+			WithField("new_gateway", newGateway).
+			Info("dhcp renew replacing default route")
 
-			if err := m.netHandle.RouteAdd(&netlink.Route{
-				LinkIndex: m.ctrLink.Attrs().Index,
-				Gw:        newGateway,
-			}); err != nil {
-				return fmt.Errorf("failed to add default route: %w", err)
-			}
-		} else if !newGateway.Equal(routes[0].Gw) {
-			log.
-				WithFields(m.logFields(v6)).
-				WithField("old_gateway", routes[0].Gw).
-				WithField("new_gateway", newGateway).
-				Info("dhcp renew replacing default route")
-
-			routes[0].Gw = newGateway
-			if err := m.netHandle.RouteReplace(&routes[0]); err != nil {
-				return fmt.Errorf("failed to replace default route: %w", err)
-			}
+		routes[0].Gw = newGateway
+		if err := m.netHandle.RouteReplace(&routes[0]); err != nil {
+			return fmt.Errorf("failed to replace default route: %w", err)
 		}
 	}
 
 	return nil
 }
 
-// handleEvent dispatches one dhcpcd lifecycle event from the
-// persistent client: health counters, audit-ledger entries, and the
-// kernel-facing renew work. Extracted from the consumer goroutine so
-// the counter semantics are unit-testable — wire-level NAKs in
-// particular can't be provoked deterministically (dnsmasq silently
-// ignores refused renewals in several shapes instead of NAKing), so
-// the naks_received contract is pinned here rather than in an
-// integration test (#128).
-// bumpFamily increments the aggregate counter (always) and its IPv6
-// sibling (only for v6 events), so /Plugin.Health exposes a per-family
-// breakdown while the aggregate stays a true v4+v6 total (#212).
 // markBound records that the persistent client of one family holds
 // its binding. See boundV4 / boundV6 for what that proof is for.
 func (m *dhcpManager) markBound(v6 bool) {
@@ -775,14 +983,97 @@ func (m *dhcpManager) neverBound(v6 bool) bool {
 	return !m.boundV4.Load()
 }
 
-func bumpFamily(total, v6Counter *atomic.Int32, v6 bool) {
-	total.Add(1)
+// bumpFamily increments EXACTLY ONE of a counter pair: the v4 half or
+// the v6 half, never both and never a third aggregate (#212, #730).
+//
+// It used to bump an aggregate on every event and the _v6 sibling on v6
+// ones, which made the v6 counter a subset of the aggregate rather than
+// its peer, and left the v4 count to be recovered by subtracting them
+// at render time. Two independently-updated atomics combined by
+// subtraction can be read in an order that yields a value LOWER than
+// the previous read — and a counter that goes down is a reset to
+// Prometheus, which then attributes the whole accumulated value as an
+// increase. One dropped unit became a rate spike of the entire count.
+//
+// Storing both halves and adding them where a total is wanted has the
+// property subtraction does not: the sum of two monotonic counters is
+// monotonic under EVERY interleaving, because neither operand can
+// decrease. See healthSnapshot for the addition and #730 for the
+// arithmetic.
+func bumpFamily(v4Counter, v6Counter *atomic.Int32, v6 bool) {
 	if v6 {
 		v6Counter.Add(1)
+		return
 	}
+	v4Counter.Add(1)
 }
 
+// clientServerLists returns the allow/deny lists the persistent client
+// for this family is started under.
+//
+// Both dhcp_servers directives are v4-only, and this is the single
+// place that is decided (#111). Split out of setupClient so the rule
+// can be asserted directly: dhcp_server_policy_timeouts is deliberately
+// not family-split, and the reason it can be is that a v6 client is
+// never restricted. That premise lived in a comment beside a two-line
+// `if`, which is exactly the shape of thing this project has now twice
+// found to be wrong in prose while right in code, and once the other
+// way round.
+func clientServerLists(pol serverPolicy, v6 bool) (allow, deny []string) {
+	if v6 {
+		return nil, nil
+	}
+	return pol.allowList(), pol.denyList()
+}
+
+// countOutageTick records one watchdog outage tick.
+//
+// Split out of the goroutine in setupClient so the accounting can be
+// exercised without a live dhcpcd. The whole meaning of
+// dhcp_server_policy_timeouts is a relationship to dhcp_timeouts --
+// strict subset -- and a relationship between two counters is not a
+// thing a comment can hold: it has to be written by one function that a
+// test can call twice.
+func (m *dhcpManager) countOutageTick(v6, policyRestricted bool) {
+	bumpFamily(&m.plugin.dhcpTimeoutsV4, &m.plugin.dhcpTimeoutsV6, v6)
+	if !policyRestricted {
+		return
+	}
+	// The renewal half of #731. dhcp_server_policy_exhausted covers the
+	// acquisition half only: acquireWithPolicy walks a ladder and can
+	// run off the end of it, while this client holds one whitelist and
+	// simply gets no answers. Without this, an allow-list that has gone
+	// stale -- the named server renumbered, retired or firewalled -- is
+	// indistinguishable from the DHCP server being down.
+	//
+	// NOT healthy-affecting, and the subset relationship is why: this
+	// tick was already counted above, and counting one outage twice
+	// would weight a policy-restricted endpoint worse than an
+	// unrestricted one failing in exactly the same way.
+	m.plugin.dhcpServerPolicyTimeouts.Add(1)
+}
+
+// handleEvent dispatches one dhcpcd lifecycle event from the
+// persistent client: health counters, audit-ledger entries, and the
+// kernel-facing renew work. Extracted from the consumer goroutine so
+// the counter semantics are unit-testable — wire-level NAKs in
+// particular can't be provoked deterministically (dnsmasq silently
+// ignores refused renewals in several shapes instead of NAKing), so
+// the naks_received contract is pinned here rather than in an
+// integration test (#128).
 func (m *dhcpManager) handleEvent(event dhcp.Event, v6 bool) {
+	// The hook process already dropped these; all that is left here is
+	// to make the drop visible. Counted for every event type, including
+	// the data-less ones, because the count describes the exchange and
+	// not the lease (#703).
+	if event.UnsafeValuesDropped > 0 && m.plugin != nil {
+		m.plugin.unsafeOptionValuesDropped.Add(int32(event.UnsafeValuesDropped))
+		log.
+			WithFields(m.logFields(v6)).
+			WithField("dropped", event.UnsafeValuesDropped).
+			Warn("DHCP option values dropped before use: they carried control characters")
+	}
+
 	switch event.Type {
 	// "deconfig" is intentionally not handled. Deleting the
 	// container's IP from the kernel would also wipe the
@@ -802,7 +1093,7 @@ func (m *dhcpManager) handleEvent(event dhcp.Event, v6 bool) {
 		// on dhcpcd's own release. See boundV4 / boundV6.
 		m.markBound(v6)
 		if m.plugin != nil {
-			bumpFamily(&m.plugin.leasesObtained, &m.plugin.leasesObtainedV6, v6)
+			bumpFamily(&m.plugin.leasesObtainedV4, &m.plugin.leasesObtainedV6, v6)
 		}
 		m.audit("bound", bareIP(event.Data.IP))
 		if err := m.renew(v6, event.Data); err != nil {
@@ -822,7 +1113,7 @@ func (m *dhcpManager) handleEvent(event dhcp.Event, v6 bool) {
 		// without a preceding bound.
 		m.markBound(v6)
 		if m.plugin != nil {
-			bumpFamily(&m.plugin.leasesRenewed, &m.plugin.leasesRenewedV6, v6)
+			bumpFamily(&m.plugin.leasesRenewedV4, &m.plugin.leasesRenewedV6, v6)
 		}
 		m.audit("renew", bareIP(event.Data.IP))
 		if err := m.renew(v6, event.Data); err != nil {
@@ -835,12 +1126,12 @@ func (m *dhcpManager) handleEvent(event dhcp.Event, v6 bool) {
 		}
 	case "leasefail":
 		if m.plugin != nil {
-			bumpFamily(&m.plugin.dhcpTimeouts, &m.plugin.dhcpTimeoutsV6, v6)
+			bumpFamily(&m.plugin.dhcpTimeoutsV4, &m.plugin.dhcpTimeoutsV6, v6)
 		}
 		log.WithFields(m.logFields(v6)).Warn("dhcp failed to get a lease")
 	case "nak":
 		if m.plugin != nil {
-			bumpFamily(&m.plugin.naksReceived, &m.plugin.naksReceivedV6, v6)
+			bumpFamily(&m.plugin.naksReceivedV4, &m.plugin.naksReceivedV6, v6)
 		}
 		log.WithFields(m.logFields(v6)).Warn("dhcp client received NAK")
 	}
@@ -880,11 +1171,38 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 			preferredV6 = v6Addr.IP.String()
 		}
 	}
+	// The persistent client gets the WHOLE allowed set, not the single
+	// tier that won acquisition: it must still be able to rebind after
+	// the preferred server goes away, and a whitelist pinned to that one
+	// server would strand the endpoint with no lease rather than fail
+	// over. Preference is an acquisition-time concept (#111) — the lease
+	// then stays put on its own, because renewal is unicast to whoever
+	// granted it. v6 gets neither list; both directives are v4-only.
+	//
+	// The options were validated at CreateNetwork, so an error here means
+	// the persisted state is corrupt. Refuse rather than silently start
+	// an unrestricted client, which would ignore a deny-list.
+	pol, err := resolveServerPolicy(m.opts)
+	if err != nil {
+		return nil, fmt.Errorf("invalid persisted DHCP server policy: %w", err)
+	}
+	allowServers, denyServers := clientServerLists(pol, v6)
+
+	// Whether THIS client is restricted to an operator-named server
+	// list. Captured here rather than re-resolved in the watchdog
+	// goroutine below, which outlives these locals: a second
+	// resolveServerPolicy could disagree with what the client was
+	// actually started with, and then the counter would describe a
+	// policy that is not in force.
+	policyRestricted := len(allowServers) > 0
+
 	client, err := dhcp.NewDHCPClient(m.ctrLink.Attrs().Name, &dhcp.DHCPClientOptions{
-		Hostname:  m.hostname,
-		FQDN:      m.opts.fqdnMode(),
-		V6:        v6,
-		Namespace: m.nsPath,
+		Hostname:     m.hostname,
+		AllowServers: allowServers,
+		DenyServers:  denyServers,
+		FQDN:         m.opts.fqdnMode(),
+		V6:           v6,
+		NetNS:        &m.nsHandle,
 		// Same MAC the CreateEndpoint one-shot used (this is the same
 		// link, moved into the netns), so dhcpcd derives the identical
 		// DUID-LL/IAID and the persistent client renews the very lease
@@ -937,7 +1255,7 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 			case <-ticker.C:
 				if count, silentLapse := tracker.due(time.Now(), outageGrace); count {
 					if m.plugin != nil {
-						bumpFamily(&m.plugin.dhcpTimeouts, &m.plugin.dhcpTimeoutsV6, v6)
+						m.countOutageTick(v6, policyRestricted)
 					}
 					msg := "DHCP server still unreachable; lease not (re)acquired"
 					if silentLapse {
@@ -985,7 +1303,7 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 					errChan <- nil
 					return
 				}
-				tracker.observe(event.Type, event.Data, time.Now())
+				m.observeLease(&tracker, event, time.Now(), v6)
 				m.handleEvent(event, v6)
 
 			case <-m.stopChan:
@@ -1160,6 +1478,27 @@ func (p *joinPhases) total() time.Duration {
 	return time.Since(p.start)
 }
 
+// openSandboxNetNS opens the container's network namespace and counts a
+// PID-reuse refusal as netns_pid_mismatches.
+//
+// The count lives HERE, wrapped around the open, rather than at the call
+// site in Start, and that placement is the point: a caller cannot get
+// the namespace without going through this, so the counter cannot be
+// lost by a future path that opens the namespace and forgets to look
+// for the sentinel. It also makes the branch reachable from a unit test
+// -- Start needs Docker, netlink and a live namespace, and until this
+// existed nothing executed the increment at all. docs/reference.md says
+// this counter is the ONLY thing that distinguishes a PID-reuse refusal
+// from a slow container start, so an operator reads its zero as "did
+// not happen" (#731 review).
+func (m *dhcpManager) openSandboxNetNS(ctx context.Context, pid int, ctrID string, interval time.Duration) (netns.NsHandle, error) {
+	ns, err := awaitContainerNetNS(ctx, pid, ctrID, interval)
+	if errors.Is(err, errPIDNotContainer) && m.plugin != nil {
+		m.plugin.netnsPIDMismatches.Add(1)
+	}
+	return ns, err
+}
+
 func (m *dhcpManager) Start(ctx context.Context) (err error) {
 	phases := newJoinPhases()
 	defer func() {
@@ -1209,11 +1548,17 @@ func (m *dhcpManager) Start(ctx context.Context) (err error) {
 
 	phases.mark("inspect_container")
 
-	// Using the "sandbox key" directly causes issues on some platforms
-	m.nsPath = fmt.Sprintf("/proc/%v/ns/net", ctr.State.Pid)
-	m.hostname = ctr.Config.Hostname
+	// Config-only: m.hostname reaches the generated dhcpcd.conf and
+	// nothing that makes an identity decision, so a refusal is just an
+	// omitted directive here.
+	m.hostname = m.plugin.safeHostname(ctr.Config.Hostname).name
 
-	m.nsHandle, err = util.AwaitNetNS(ctx, m.nsPath, pollTime)
+	// Using the "sandbox key" directly causes issues on some platforms,
+	// so the namespace is reached through the container's PID -- but
+	// never through a /proc path rebuilt as a string, and never as a
+	// path handed onward to be resolved a second time. See
+	// openContainerNetNS.
+	m.nsHandle, err = m.openSandboxNetNS(ctx, ctr.State.Pid, ctrID, pollTime)
 	if err != nil {
 		return fmt.Errorf("failed to get sandbox network namespace: %w", err)
 	}
@@ -1332,12 +1677,38 @@ func (m *dhcpManager) stop(leaving bool) error {
 		// up" and return. That was true of the manager's own state and
 		// false of the lease, which is how 17 of 32 containers in one
 		// integration run leaked an address.
-		m.plugin.spawnOrphanRelease(m)
+		//
+		// Only when the endpoint is leaving, though - the same condition
+		// the sibling reclaim below consults, for the reason
+		// StopForLeave's comment gives. stop(false) arrives here from
+		// plugin Close, from DeleteNetwork and from the displacement in
+		// Join, and in all three the container behind this manager is
+		// still running and still using its address. A failed Start does
+		// not change that: recovery rebuilds a manager for a *live*
+		// container and seeds lastIP from Docker's record, and that
+		// manager's Start can fail for reasons the container knows
+		// nothing about. Reclaiming there tells the server an address is
+		// free while a live container holds it - the duplicate assignment
+		// #524 added detection for, manufactured by the plugin (#720).
+		//
+		// The other way costs a lease held until it expires. That is the
+		// safe direction of the two, and it is the one the sibling
+		// already takes.
+		if leaving {
+			m.plugin.spawnOrphanRelease(m)
+		} else if v4, v6 := m.lastIPs(); v4 != nil || v6 != nil {
+			log.WithFields(m.logFields(false)).
+				WithField("ip", auditIP(v4)).
+				WithField("ipv6", auditIP(v6)).
+				Info("Start failed with the one-shot's lease outstanding; " +
+					"holding it until it expires because the endpoint is not " +
+					"leaving and its container may still be using the address")
+		}
 		return nil
 	}
 
 	// Guard against zero handles: Stop can be called against a manager
-	// whose Start failed before AwaitNetNS / NewHandleAt set these
+	// whose Start failed before awaitContainerNetNS / NewHandleAt set these
 	// (see C-2 fix), in which case the deferred Close on the zero
 	// value emits a noisy EBADF.
 	defer func() {
@@ -1472,7 +1843,7 @@ func (m *dhcpManager) settleFamily(v6 bool, last *netlink.Addr, exitErr error, l
 		// have seen. Both families are audited independently: a failed
 		// v4 release does not hide the v6 outcome from the ledger.
 		if m.plugin != nil {
-			bumpFamily(&m.plugin.leaseReleaseFailures, &m.plugin.leaseReleaseFailuresV6, v6)
+			bumpFamily(&m.plugin.leaseReleaseFailuresV4, &m.plugin.leaseReleaseFailuresV6, v6)
 		}
 		m.audit("release_failed", auditIP(last))
 	default:

@@ -44,6 +44,37 @@ func validateIPAMData(ipv4 []*IPAMData) error {
 	return nil
 }
 
+// kernelIfaceName returns the name the KERNEL will act on for a given
+// Go string, which is not always the Go string.
+//
+// netlink puts the name in IFLA_IFNAME and the kernel reads it as a C
+// string, so it stops at the first NUL. Measured on this project's own
+// hardware for #705: netlink.LinkByName("docker0\x00evil") resolved
+// docker0 at index 7, while "docker0evil" was not found at all. A NUL in
+// a driver option also transports through dockerd untouched — the same
+// measurement — so a stored name can carry one.
+//
+// This exists because a guard that compares two Go strings while the
+// kernel compares truncated prefixes is not comparing the same thing.
+// #705 closed that for the name being CREATED, by validating it. It did
+// not close it for the names being COMPARED AGAINST: those come out of
+// Docker's record for other networks, and no write path of ours ever
+// touched them. "br0" != "br0\x00evil" is false to Go and true to the
+// kernel, so ErrBridgeUsed was skipped and two DHCP networks shared one
+// bridge.
+//
+// Truncation is the whole rule, deliberately, and not a call to
+// ValidIfaceName: NUL is the only way two different Go strings can name
+// one interface. Over-length names and names containing "/" are refused
+// by the kernel outright rather than aliased onto something else, so
+// they cannot collide with a name we would accept.
+func kernelIfaceName(name string) string {
+	if i := strings.IndexByte(name, 0); i >= 0 {
+		return name[:i]
+	}
+	return name
+}
+
 // validateModeOptions performs the pure-Go subset of CreateNetwork's
 // validation: mode value, and which other options are required or
 // forbidden for that mode. It does NOT touch netlink or the docker
@@ -52,7 +83,36 @@ func validateIPAMData(ipv4 []*IPAMData) error {
 //
 // Returning an error wrapped with fmt.Errorf preserves errors.Is so
 // the HTTP layer can map sentinels to 400 status codes.
+// Interface names in the options are validated here, in the PURE phase,
+// before any kernel-facing call.
+//
+// opts.Bridge and opts.Parent come straight out of decodeOpts with no
+// name validation of their own, and netlink hands a name to the kernel
+// zero-terminated: the kernel reads it as a C string and stops at the
+// first NUL. So "br0\x00evil" resolves br0, while the reuse guard below
+// compares the full Go string (otherOpts.Bridge == opts.Bridge) and
+// misses -- two DHCP networks then share one bridge, which is exactly
+// what ErrBridgeUsed exists to prevent.
+//
+// BOTH HALVES MEASURED, and the first is why this is reachable rather
+// than latent: the daemon forwards a NUL in a driver option value
+// verbatim (a create carrying one reached fork/exec of iptables, which
+// rejected it only because execve refuses NUL in argv), and
+// netlink.LinkByName("docker0\x00evil") resolved docker0 index 7 while
+// "docker0evil" was not found. #705.
+//
+// ValidIfaceName is the repo's existing rule for exactly this, applied
+// to the client interface since v1.0; it also rejects over-length names,
+// ".." and "/", all of which reached the kernel before.
 func validateModeOptions(opts DHCPNetworkOptions) error {
+	// Mode-independent: both server lists apply to every mode, and a
+	// malformed or self-contradicting one must fail the create rather
+	// than be discovered as "the container got an address from the
+	// wrong server" later.
+	if _, err := resolveServerPolicy(opts); err != nil {
+		return err
+	}
+
 	switch opts.effectiveMode() {
 	case ModeMacvlan, ModeIPvlan:
 		if opts.Parent == "" {
@@ -61,12 +121,18 @@ func validateModeOptions(opts DHCPNetworkOptions) error {
 		if opts.Bridge != "" {
 			return fmt.Errorf("%w: bridge cannot be set in mode=%v", util.ErrModeMismatch, opts.effectiveMode())
 		}
+		if !dhcp.ValidIfaceName(opts.Parent) {
+			return fmt.Errorf("%w: invalid parent %q: not a kernel-legal interface name", util.ErrIPAM, opts.Parent)
+		}
 	case ModeBridge:
 		if opts.Bridge == "" {
 			return util.ErrBridgeRequired
 		}
 		if opts.Parent != "" {
 			return fmt.Errorf("%w: parent cannot be set in mode=bridge", util.ErrModeMismatch)
+		}
+		if !dhcp.ValidIfaceName(opts.Bridge) {
+			return fmt.Errorf("%w: invalid bridge %q: not a kernel-legal interface name", util.ErrIPAM, opts.Bridge)
 		}
 		// validate_dhcp on bridge mode is a v0.9.0 carve-out: the
 		// probe semantics differ (parent is an existing bridge, not
@@ -313,8 +379,15 @@ func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 			// it puts its own child on the parent for up to
 			// preflightProbeBudget and so is a holder as well as a
 			// waiter.
+			// Already validated by validateModeOptions above, so this
+			// cannot fail here; resolved again rather than threaded so
+			// the probe reads the same source of truth as acquisition.
+			probePolicy, err := resolveServerPolicy(opts)
+			if err != nil {
+				return err
+			}
 			ctx, cancel := context.WithTimeout(context.Background(), preflightProbeBudget+5*time.Second)
-			err := p.runDHCPProbe(ctx, opts.Parent, mode)
+			err = p.runDHCPProbe(ctx, opts.Parent, mode, probePolicy)
 			cancel()
 			if err != nil {
 				return err
@@ -336,7 +409,13 @@ func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 
 	// Bridge mode: pure validation already passed; do the kernel-facing
 	// and docker-API-facing checks.
-	link, err := netlink.LinkByName(opts.Bridge)
+	// Through the seam (netlink_seam.go) rather than the package
+	// function: the bridge-reuse guard below is pure Go operating on
+	// values Docker hands us, and reaching it in a unit test otherwise
+	// costs CAP_NET_ADMIN and a real bridge. It was reachable only from
+	// the integration suite, which is why the NUL bypass below had no
+	// test at all.
+	link, err := nlLinkByName(opts.Bridge)
 	if err != nil {
 		return fmt.Errorf("failed to lookup interface %v: %w", opts.Bridge, err)
 	}
@@ -345,11 +424,11 @@ func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 	}
 
 	if !opts.IgnoreConflicts {
-		v4Addrs, err := netlink.AddrList(link, unix.AF_INET)
+		v4Addrs, err := nlAddrList(link, unix.AF_INET)
 		if err != nil {
 			return fmt.Errorf("failed to retrieve IPv4 addresses for %v: %w", opts.Bridge, err)
 		}
-		v6Addrs, err := netlink.AddrList(link, unix.AF_INET6)
+		v6Addrs, err := nlAddrList(link, unix.AF_INET6)
 		if err != nil {
 			return fmt.Errorf("failed to retrieve IPv6 addresses for %v: %w", opts.Bridge, err)
 		}
@@ -369,7 +448,7 @@ func (p *Plugin) CreateNetwork(r CreateNetworkRequest) error {
 						WithField("network", n.Name).
 						WithError(err).
 						Warn("Failed to parse other DHCP network's options")
-				} else if otherOpts.Bridge == opts.Bridge {
+				} else if kernelIfaceName(otherOpts.Bridge) == kernelIfaceName(opts.Bridge) {
 					return util.ErrBridgeUsed
 				}
 			}
@@ -570,19 +649,183 @@ func parseDriverOptIP(options map[string]interface{}) (string, error) {
 	return v4.String(), nil
 }
 
-// netOptions returns the decoded options for a network, preferring the
-// on-disk cache populated by CreateNetwork. The fallback to docker
-// NetworkInspect is what makes existing networks (created before this
-// fork added persistence) keep working after upgrade — but every fresh
-// network has its options served from disk, which is what avoids the
-// daemon-restart deadlock when dockerd is calling our endpoint
-// handlers while not yet ready to serve API calls.
+// netOptions returns the decoded options for a network, CHECKED. It is
+// the funnel every caller that acts on a stored record goes through,
+// and the check is here rather than at the callers because validation
+// is a write-path habit while every sink is on the read path: the file
+// was written by an older build, or by hand, or by a build whose
+// CreateNetwork guard did not yet exist. An upgrade is the
+// reproduction; no attacker is required (#727).
 func (p *Plugin) netOptions(ctx context.Context, id string) (DHCPNetworkOptions, error) {
-	if opts, err := loadOptions(id); err == nil {
-		return opts, nil
-	} else if !os.IsNotExist(err) {
-		log.WithError(err).WithField("network", id).
-			Warn("Failed to load persisted options; falling back to docker API")
+	opts, err := p.netOptionsRaw(ctx, id)
+	if err != nil {
+		return DHCPNetworkOptions{}, err
+	}
+	if err := p.checkStoredOptions(id, opts); err != nil {
+		return DHCPNetworkOptions{}, err
+	}
+	return opts, nil
+}
+
+// netMode returns ONLY the mode of a stored network, for the one caller
+// that needs nothing else.
+//
+// DeleteEndpoint must run even for a network whose stored options are
+// refused, or the veth pair, the ledger entry and the lease outlive the
+// container that owned them — a refusal that leaks is worse than the
+// name it refused. It also touches no stored name: bridge teardown
+// derives its link from vethPairNames(r.EndpointID), and
+// deleteParentAttachedEndpoint takes the request alone. The mode is the
+// whole of what it reads.
+//
+// So this returns the mode and nothing else. That is the point of the
+// signature: it is not "netOptions with the check turned off" — it
+// cannot hand a caller a name to misuse, because it does not return
+// one. An opt-out helper would have been the same code with a worse
+// shape, and this repo has already paid for one of those (#402/#408).
+func (p *Plugin) netMode(ctx context.Context, id string) (mode string, known bool, err error) {
+	opts, err := p.netOptionsRaw(ctx, id)
+	if err != nil {
+		return "", false, err
+	}
+	m := opts.effectiveMode()
+	return m, knownMode(m), nil
+}
+
+// knownMode reports whether a mode string is one the plugin implements.
+//
+// effectiveMode normalises only the EMPTY value, to bridge. Anything
+// else it returns verbatim, so an unrecognised mode is not rejected and
+// is not defaulted -- it simply fails every `== ModeMacvlan` test it
+// meets and lands in whichever branch is written last. In DeleteEndpoint
+// that branch is the bridge teardown, which looks up a veth that a
+// macvlan endpoint never had, finds nothing, treats "nothing" as
+// already-cleaned-up and returns success. The child link and its lease
+// survive a teardown that reported it deleted.
+//
+// CreateNetwork rejects unknown modes, so this only matters for a record
+// CreateNetwork did not write -- the same provenance as the unvalidated
+// names above, and the same answer: check it where it is read.
+func knownMode(mode string) bool {
+	switch mode {
+	case ModeBridge, ModeMacvlan, ModeIPvlan:
+		return true
+	default:
+		return false
+	}
+}
+
+// checkStoredOptions refuses a stored record the plugin will not act
+// on as written -- an unknown mode, or an interface name that is not
+// kernel-legal -- on the READ path, before any caller can use one.
+//
+// # WHY THE READ PATH AND NOT JUST CreateNetwork
+//
+// #705 validated opts.Bridge and opts.Parent in validateModeOptions, on
+// the CREATE path, and that is where a name first arrives. It is not
+// where a name is first USED. Every endpoint handler re-reads the
+// options through netOptions and hands the name it finds straight to
+// netlink: CreateEndpoint's LinkByName, Join's dstPrefix and route
+// copy, EndpointOperInfo's report back to Docker, the parent-attached
+// paths, orphan release, and daemon-restart recovery. None of them
+// re-validates, because CreateNetwork was assumed to have.
+//
+// That assumption is false for a network CreateNetwork never validated,
+// and those exist and are not exotic:
+//
+//   - Any network created before #705 shipped. Its unvalidated name was
+//     persisted then and is replayed on every endpoint call now, so an
+//     upgrade is the reproduction — no attacker required.
+//   - The NetworkInspect fallback, which serves networks that pre-date
+//     option persistence entirely. It runs decodeOpts and backfills the
+//     result to disk without ever calling validateModeOptions.
+//   - The state directory itself, which is a plain file tree.
+//
+// A validator on the write path defends the writes it saw. This one
+// defends the reads, which is where the kernel is.
+//
+// Both names are checked in every mode, deliberately. The mode comes
+// out of the same record as the names; if it is the field that is
+// wrong, a mode-gated check reads the trusted field to decide whether
+// to distrust the others. Refusing an unused name costs nothing —
+// CreateNetwork forbids the pairing anyway — and the cost of the
+// opposite mistake is a name reaching netlink.
+func (p *Plugin) checkStoredOptions(id string, opts DHCPNetworkOptions) error {
+	if m := opts.effectiveMode(); !knownMode(m) {
+		p.networkOptionsRejected.Add(1)
+		log.WithFields(log.Fields{
+			"network": shortID(id),
+			"mode":    fmt.Sprintf("%q", m),
+		}).Error("Refusing stored network options: unknown mode")
+		return fmt.Errorf("stored mode %q is not one this plugin implements: %w", m, util.ErrInvalidMode)
+	}
+
+	for _, f := range []struct{ field, name string }{
+		{"bridge", opts.Bridge},
+		{"parent", opts.Parent},
+	} {
+		if f.name == "" || dhcp.ValidIfaceName(f.name) {
+			continue
+		}
+		p.networkOptionsRejected.Add(1)
+		log.WithFields(log.Fields{
+			"network": shortID(id),
+			"field":   f.field,
+			// %q so a control character or a NUL is visible in the
+			// log rather than mangling the line that reports it.
+			"value": fmt.Sprintf("%q", f.name),
+		}).Error("Refusing stored network options: interface name is not kernel-legal")
+		// ErrIPAM because ErrToStatus maps it to 400, matching the
+		// identical refusal validateModeOptions raises at create
+		// time. Wrapped LAST, not first, so the operator reads the
+		// true sentence before the sentinel's generic one -- the
+		// sibling message leads with "only the null IPAM driver is
+		// supported", which names the wrong problem.
+		return fmt.Errorf("stored %s %q is not a kernel-legal interface name: %w",
+			f.field, f.name, util.ErrIPAM)
+	}
+	return nil
+}
+
+// netOptionsRaw is the decode half of netOptions, WITHOUT the name
+// check. It prefers the on-disk cache populated by CreateNetwork; the
+// fallback to docker NetworkInspect is what makes networks created
+// before this fork added persistence keep working after upgrade, while
+// every fresh network is served from disk, which is what avoids the
+// daemon-restart deadlock when dockerd is calling our endpoint handlers
+// while not yet ready to serve API calls.
+//
+// Its only legitimate callers are netOptions and netMode, and
+// TestNetOptionsRaw_HasNoOtherCallers keeps it that way: a third caller
+// would be a sink reading a stored name with the guard bypassed, which
+// is the entire defect this file just fixed.
+func (p *Plugin) netOptionsRaw(ctx context.Context, id string) (DHCPNetworkOptions, error) {
+	cached, loadErr := loadOptions(id)
+	if loadErr == nil {
+		return cached, nil
+	}
+
+	// THE BACKFILL BELOW MAY ONLY RUN WHEN THERE WAS NOTHING TO READ.
+	//
+	// Everything that is not os.IsNotExist means the file exists and we
+	// declined or failed to read it -- a schema from a newer build
+	// (errStateSchemaTooNew), a corrupt file, or a transient EIO/EMFILE.
+	// Falling back to the docker API for THIS CALL is right in all of
+	// those cases; the API is authoritative for everything in the
+	// struct. Writing afterwards is not. Backfilling on a schema refusal
+	// would replace the v2 file with a v1 one, so a downgrade would
+	// destroy the newer file instead of declining to read it -- the
+	// exact failure stateSchemaVersion exists to prevent. Backfilling on
+	// a transient read error would overwrite a good file because the
+	// disk had a bad moment.
+	//
+	// This is the same split tombstoneStore.add draws: a refusal and an
+	// absence must not reach a writer as the same thing. Read-only
+	// fallback for every failure, a write for absence alone (#724).
+	absent := os.IsNotExist(loadErr)
+	if !absent {
+		log.WithError(loadErr).WithField("network", id).
+			Warn("Failed to load persisted options; falling back to the docker API for this call and leaving the file on disk untouched")
 	}
 
 	dummy := DHCPNetworkOptions{}
@@ -598,10 +841,13 @@ func (p *Plugin) netOptions(ctx context.Context, id string) (DHCPNetworkOptions,
 	}
 
 	// Backfill: persist options for networks that pre-date the
-	// persistence feature so the next call hits the disk path.
-	if err := saveOptions(id, opts); err != nil {
-		log.WithError(err).WithField("network", id).
-			Debug("Failed to backfill persisted options")
+	// persistence feature so the next call hits the disk path. Guarded
+	// on absence for the reason above -- there is no file to lose.
+	if absent {
+		if err := saveOptions(id, opts); err != nil {
+			log.WithError(err).WithField("network", id).
+				Debug("Failed to backfill persisted options")
+		}
 	}
 	return opts, nil
 }
@@ -695,7 +941,7 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 			log.WithFields(log.Fields{
 				"network":      shortID(r.NetworkID),
 				"endpoint":     shortID(r.EndpointID),
-				"hostname":     hostname,
+				"hostname":     hostname.name,
 				"mac_address":  mac,
 				"requested_ip": requestedIP,
 				"prior_ipv6":   ipv6,
@@ -784,12 +1030,19 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 				v6str = "v6"
 			}
 
-			timeoutCtx, cancel := context.WithTimeout(ctx, timeout)
-			defer cancel()
+			// Server preference ladder (#111) / deny-list (#669). With
+			// neither option set this is a single unrestricted attempt
+			// with the whole budget — the historical behaviour.
+			pol, err := resolveServerPolicy(opts)
+			if err != nil {
+				return err
+			}
 
-			clientOpts := &dhcp.DHCPClientOptions{
-				V6:          v6,
-				Hostname:    hostname,
+			base := dhcp.DHCPClientOptions{
+				// .name, not the whole value: this is the DHCP
+				// exchange, which is config and not an identity
+				// decision. A refused hostname is simply absent here.
+				Hostname:    hostname.name,
 				FQDN:        opts.fqdnMode(),
 				ClientID:    clientID,
 				VendorClass: opts.VendorClass,
@@ -803,11 +1056,12 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 			// for v4, `ia_na / ADDR` for v6 (#213). Empty values omit
 			// the directive, so an unhinted endpoint behaves as before.
 			if v6 {
-				clientOpts.PreferredV6 = requestedV6
+				base.PreferredV6 = requestedV6
 			} else {
-				clientOpts.RequestedIP = requestedIP
+				base.RequestedIP = requestedIP
 			}
-			info, err := dhcp.GetIP(timeoutCtx, ctrName, clientOpts)
+
+			info, err := p.acquireWithPolicy(ctx, ctrName, pol, v6, timeout, r.EndpointID, base)
 			if err != nil {
 				return fmt.Errorf("failed to get initial IP%v address via DHCP%v: %w", v6str, v6str, err)
 			}
@@ -828,9 +1082,14 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 					if opts.Gateway != "" {
 						hint.Gateway = opts.Gateway
 					}
-					// DHCP option-121 classless static routes (RFC 3442);
-					// the parser already folded any default route into
-					// info.Gateway, so these are non-default routes only.
+					// DHCP option-121 classless static routes (RFC 3442).
+					// The parser folded a LITERAL 0.0.0.0/0 entry into
+					// info.Gateway, so none of these is a default route
+					// by itself. That is all it guarantees: a set of
+					// non-default prefixes can still cover the whole
+					// address space between them and win on
+					// longest-prefix match. See routesSupersedeDefault,
+					// which is what says so out loud at Join.
 					hint.Routes = dhcpStaticRoutes(info.Routes)
 				}
 			})
@@ -874,7 +1133,7 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 	if mac == "" {
 		mac = res.Interface.MacAddress
 	}
-	p.rememberEndpoint(r.EndpointID, endpointFingerprint{MAC: mac, IPv4: v4IP, IPv6: v6IP, Hostname: hostname, Ifname: p.hintIfname(r.EndpointID)})
+	p.rememberEndpoint(r.EndpointID, endpointFingerprint{MAC: mac, IPv4: v4IP, IPv6: v6IP, Ifname: p.hintIfname(r.EndpointID)}, hostname)
 
 	// Same post-lease conflict probe as the parent-attached path (#524),
 	// against the bridge. Bridge mode is the case that makes the MAC
@@ -944,20 +1203,65 @@ func (p *Plugin) EndpointOperInfo(ctx context.Context, r InfoRequest) (InfoRespo
 // peer). In macvlan mode the link has typically already been moved into
 // the container netns and reaped with it, so cleanup is best-effort.
 func (p *Plugin) DeleteEndpoint(ctx context.Context, r DeleteEndpointRequest) error {
-	opts, err := p.netOptions(ctx, r.NetworkID)
+	// netMode, not netOptions: teardown must not be blocked by a
+	// stored name it never reads. See netMode's comment.
+	mode, modeKnown, err := p.netMode(ctx, r.NetworkID)
 	if err != nil {
 		return fmt.Errorf("failed to get network options: %w", err)
+	}
+
+	// An unrecognised mode does NOT strand the link, and the reason is
+	// worth writing down because the obvious fear is wrong.
+	//
+	// The two teardown branches resolve the SAME name: subLinkName and
+	// vethPairNames' host half are both "dh-" + the first 12 bytes of
+	// the endpoint ID, by construction and by intent -- subLinkName's
+	// own comment says it mirrors the bridge-mode veth prefix. So the
+	// bridge branch running against a macvlan endpoint looks up the
+	// child link, finds it, and deletes it. Wrong branch, right link.
+	// TestTeardownBranchesResolveTheSameLinkName pins that, because it
+	// is the whole reason this function can tolerate a mode it cannot
+	// read, and nothing else checks that the two names still agree.
+	//
+	// What an unreadable mode DOES cost is the tombstone below, which
+	// is gated on the mode and on nothing else.
+	if !modeKnown {
+		p.networkOptionsRejected.Add(1)
+		log.WithFields(log.Fields{
+			"network":  shortID(r.NetworkID),
+			"endpoint": shortID(r.EndpointID),
+			"mode":     fmt.Sprintf("%q", mode),
+		}).Error("Stored network options carry an unknown mode; running every teardown path rather than guessing one")
 	}
 
 	// Lay down a tombstone for the next CreateEndpoint on this
 	// network to inherit. ipvlan children share the parent MAC, so
 	// the tombstone is meaningless there (we'd just be re-handing the
 	// parent MAC back, which the kernel inherits anyway) — skip it.
-	if fp, ok := p.takeEndpoint(r.EndpointID); ok && opts.effectiveMode() != ModeIPvlan {
+	//
+	// An unknown mode skips it for the opposite reason: it MIGHT be
+	// ipvlan, and a tombstone laid for an ipvlan endpoint hands the
+	// parent MAC to whichever container consumes it next and occupies
+	// the slot the "exactly one match" rule counts. Losing MAC
+	// stability once, on a network whose record is already broken, is
+	// the cheaper mistake.
+	//
+	// A REFUSED hostname skips it as well, and for a reason that is
+	// the opposite of an absent one. Both reach here as Hostname ==
+	// "", and "" is the matcher's wildcard: a tombstone carrying it
+	// matches every container on the network, so the hostname we
+	// declined to trust for a narrow match would have become a match
+	// against everything -- handing this container's MAC and IP to
+	// whichever unrelated container next started on the network. A
+	// refusal must not look like an absence (#693, #726). The cost is
+	// that this one container does not keep its MAC across a restart,
+	// which is the correct price for a hostname the plugin would not
+	// put in a DHCP packet.
+	if fp, ok := p.takeEndpoint(r.EndpointID); ok && modeKnown && mode != ModeIPvlan && !fp.HostnameRefused {
 		p.addTombstone(r.NetworkID, fp.Hostname, fp.MAC, fp.IPv4, fp.IPv6)
 	}
 
-	if m := opts.effectiveMode(); m == ModeMacvlan || m == ModeIPvlan {
+	if mode == ModeMacvlan || mode == ModeIPvlan {
 		if err := p.deleteParentAttachedEndpoint(r); err != nil {
 			return err
 		}
@@ -969,7 +1273,10 @@ func (p *Plugin) DeleteEndpoint(ctx context.Context, r DeleteEndpointRequest) er
 	}
 
 	hostName, _ := vethPairNames(r.EndpointID)
-	link, err := netlink.LinkByName(hostName)
+	// Through the seam, like the parent-attached teardown beside it,
+	// so a unit test can prove which paths a delete actually ran
+	// rather than infer it from a return value that is nil either way.
+	link, err := nlLinkByName(hostName)
 	if err != nil {
 		// A veth pair dies whole when the container-side end's netns is
 		// destroyed (OOM-kill, `docker rm -f`, host reboot race), so a
@@ -989,7 +1296,7 @@ func (p *Plugin) DeleteEndpoint(ctx context.Context, r DeleteEndpointRequest) er
 		return fmt.Errorf("failed to lookup host veth interface %v: %w", hostName, err)
 	}
 
-	if err := netlink.LinkDel(link); err != nil {
+	if err := nlLinkDel(link); err != nil {
 		return fmt.Errorf("failed to delete veth pair: %w", err)
 	}
 
@@ -1015,6 +1322,60 @@ func dhcpStaticRoutes(routes []dhcp.Route) []*StaticRoute {
 			sr.NextHop = r.Gateway
 		}
 		out = append(out, sr)
+	}
+	return out
+}
+
+// appendDHCPStaticRoutes hands Docker the DHCP option-121 classless
+// static routes (RFC 3442) captured from the initial v4 exchange in
+// CreateEndpoint. These ride the hint alongside the gateway;
+// `skip_routes=true` opts out, matching the host-link copy in addRoutes
+// (the opt-121 default route, folded into res.Gateway, is unaffected --
+// skip_routes governs static routes, not the default gateway).
+//
+// Split out of Join so the evidence it produces is testable without a
+// container: the routes below can take every destination away from the
+// gateway in the same response without changing a byte of it (#700).
+func (p *Plugin) appendDHCPStaticRoutes(opts DHCPNetworkOptions, r JoinRequest, hint joinHint, res *JoinResponse) {
+	if opts.SkipRoutes || len(hint.Routes) == 0 {
+		return
+	}
+
+	res.StaticRoutes = append(res.StaticRoutes, hint.Routes...)
+	p.dhcpRoutesApplied.Add(int32(len(hint.Routes)))
+
+	// Log the destinations and next hops, not a count. A count cannot
+	// answer "where did this container's traffic go" after the fact,
+	// and that is the only question these routes raise.
+	fields := log.Fields{
+		"network":  shortID(r.NetworkID),
+		"endpoint": shortID(r.EndpointID),
+		"sandbox":  r.SandboxKey,
+		"routes":   describeStaticRoutes(hint.Routes),
+		"gateway":  res.Gateway,
+	}
+	if routesSupersedeDefault(hint.Routes) {
+		p.dhcpDefaultRouteSuperseded.Add(1)
+		log.WithFields(fields).Warn("[Join] DHCP classless static routes (option 121) cover the whole address space; they supersede the gateway above on longest-prefix match")
+		return
+	}
+	log.WithFields(fields).Info("[Join] Adding DHCP classless static routes (option 121)")
+}
+
+// describeStaticRoutes renders routes for a log field as
+// "dest via nexthop" / "dest onlink", so the log carries the routing
+// decision itself rather than how many of them there were.
+func describeStaticRoutes(routes []*StaticRoute) []string {
+	out := make([]string, 0, len(routes))
+	for _, r := range routes {
+		if r == nil {
+			continue
+		}
+		if r.NextHop != "" {
+			out = append(out, r.Destination+" via "+r.NextHop)
+			continue
+		}
+		out = append(out, r.Destination+" onlink")
 	}
 	return out
 }
@@ -1136,6 +1497,17 @@ func parseIfnameOption(options map[string]interface{}) (string, error) {
 	}
 	if s == "." || s == ".." || strings.ContainsAny(s, "/ \t\n\r") {
 		return "", fmt.Errorf("invalid interface_name %q: must not contain '/', whitespace, or be '.'/'..': %w", s, util.ErrIPAM)
+	}
+	// The kernel is NOT the guard here. Measured: it accepts "-cfoo",
+	// "-c", "-" and ".x" as link names and refuses only embedded
+	// whitespace -- and this name becomes DstName, the container link is
+	// renamed to it, and the name is read back and placed LAST in the
+	// dhcpcd argv, where getopt permutation re-reads a flag-shaped
+	// trailing positional as an option. Apply the same rule the client
+	// side has always applied, so the request fails at CreateEndpoint
+	// rather than surviving to the argv (#706).
+	if !dhcp.ValidIfaceName(s) {
+		return "", fmt.Errorf("invalid interface_name %q: must start with a letter or digit and contain only letters, digits, '.', '-' and '_': %w", s, util.ErrIPAM)
 	}
 	return s, nil
 }
@@ -1288,21 +1660,7 @@ func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) 
 		}
 	}
 
-	// Append DHCP option-121 classless static routes (RFC 3442) captured
-	// from the initial v4 exchange in CreateEndpoint. These ride the hint
-	// alongside the gateway; `skip_routes=true` opts out, matching the
-	// host-link copy in addRoutes (the opt-121 default route, folded into
-	// res.Gateway, is unaffected — skip_routes governs static routes, not
-	// the default gateway).
-	if !opts.SkipRoutes && len(hint.Routes) > 0 {
-		res.StaticRoutes = append(res.StaticRoutes, hint.Routes...)
-		log.WithFields(log.Fields{
-			"network":  shortID(r.NetworkID),
-			"endpoint": shortID(r.EndpointID),
-			"sandbox":  r.SandboxKey,
-			"count":    len(hint.Routes),
-		}).Info("[Join] Adding DHCP classless static routes (option 121)")
-	}
+	p.appendDHCPStaticRoutes(opts, r, hint, &res)
 
 	// Register the manager BEFORE spawning the start goroutine so that a
 	// fast Leave can find it. Stop blocks until Start has completed

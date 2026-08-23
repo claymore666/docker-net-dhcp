@@ -387,7 +387,7 @@ if [ ! -f "$WF" ]; then
 else
     # Comments stripped first: a `# ref: dev` must not satisfy this.
     wf_body=$(sed 's/[[:space:]]*#.*$//' "$WF")
-    if printf '%s\n' "$wf_body" | grep -qE '^[[:space:]]+ref:[[:space:]]*dev[[:space:]]*$'; then
+    if printf '%s\n' "$wf_body" | grep -E '^[[:space:]]+ref:[[:space:]]*dev[[:space:]]*$' >/dev/null; then
         echo "PASS: the workflow pins its checkout to dev"
     else
         echo "FAIL: the workflow pins its checkout to dev"
@@ -426,6 +426,174 @@ bash "$SYNC" --nonsense >/dev/null 2>&1
     echo "FAIL: an unknown flag is a usage error"
     failures=$((failures + 1))
 }
+
+# --- the merge-commit carrier (#718) -----------------------------------
+#
+# A branch whose own commits never name their issue leaves the PR number
+# in exactly one place: the merge commit GitHub writes. That subject was
+# being discarded twice over — `--no-merges` kept it out of the input,
+# and the trailing-group rule would not have matched it anyway. Eleven
+# fully-implemented issues (#700-#710) read as untouched because of it.
+parse "the merge-commit subject yields its PR" \
+    'Merge pull request #712 from claymore666/fix/699-string-values' \
+    '#712'
+parse "a plain branch merge yields nothing" \
+    "Merge branch 'main' into dev" '-'
+parse "a merge subject with no source ref is not the GitHub form" \
+    'Merge pull request #712 from' '-'
+parse "the form must be anchored at the start" \
+    'chore: revert Merge pull request #712 from x/y' '-'
+parse "an absurd PR number is refused here too" \
+    'Merge pull request #123456789012345 from x/y' '-'
+
+# ORTHOGONALITY. Assert the OLD rule produced nothing for that subject
+# before trusting that the new one produces #712 — otherwise the case
+# above only restates current behaviour and would have passed against
+# the parser it was written to replace.
+old_got=$(python3 - <<'PYEOF'
+import re
+_GROUP = re.compile(r"\(\s*#\d{1,7}(?:\s*,\s*#\d{1,7})*\s*\)\s*$")
+subject = "Merge pull request #712 from claymore666/fix/699-string-values"
+print("hit" if _GROUP.search(subject.rstrip()) else "none")
+PYEOF
+)
+if [ "$old_got" = "none" ]; then
+    echo "PASS: ORTHOGONALITY the trailing-group rule never matched a merge subject"
+else
+    echo "FAIL: ORTHOGONALITY the old rule matched — this case proves nothing"
+    failures=$((failures + 1))
+fi
+
+# THE TRUST SEPARATION. commit_refs() knows the merge form; refs() must
+# not, because refs() is also run over PR titles, and a title is
+# attacker-controlled text intersected DIRECTLY with the open issues. A
+# PR titled "Merge pull request #<an open issue> from x" must not be
+# able to mark that issue.
+D=$(fixture merge-title \
+    'chore: nothing here' \
+    '[{"number":300,"labels":[]}]' \
+    '[{"number":901,"title":"Merge pull request #300 from evil/branch"}]')
+bash "$SYNC" --plan "$D" > "$TMP/out" 2>&1
+if grep -q '	300	' "$TMP/out"; then
+    echo "FAIL: a PR title in the merge form must not label an issue"
+    sed 's/^/    /' "$TMP/out"
+    failures=$((failures + 1))
+else
+    echo "PASS: a PR title in the merge form must not label an issue"
+fi
+
+# END TO END, the real #718 shape: the merge subject names only the PR,
+# and the issue is reachable solely through that PR's body.
+D=$(fixture merge-hop \
+    'Merge pull request #712 from claymore666/fix/699-string-values' \
+    '[{"number":703,"labels":[]},{"number":704,"labels":[]}]' \
+    '[]' \
+    '{"712":"fix(dhcp): filter the server'"'"'s string options at the boundary"}' \
+    '{"712":"Closes #703, closes #704.\n\nSome prose."}')
+plan "a merge subject reaches the issue through the PR body" 0 "$D" $'ADD\t703\tin-dev'
+plan "and the second issue in that body too" 0 "$D" $'ADD\t704\tin-dev'
+
+# The negative control: same fixture, no bodies. The hop contributes
+# nothing and neither issue is labelled — which is precisely the state
+# that shipped, so this case pins the defect as well as the fix.
+D=$(fixture merge-hop-nobody \
+    'Merge pull request #712 from claymore666/fix/699-string-values' \
+    '[{"number":703,"labels":[]},{"number":704,"labels":[]}]' \
+    '[]' \
+    '{"712":"fix(dhcp): filter the server'"'"'s string options at the boundary"}')
+bash "$SYNC" --plan "$D" > "$TMP/out" 2>&1
+if grep -qE '	in-dev' "$TMP/out"; then
+    echo "FAIL: with no body to read, nothing should earn in-dev"
+    sed 's/^/    /' "$TMP/out"
+    failures=$((failures + 1))
+else
+    echo "PASS: with no body to read, nothing earns in-dev"
+fi
+
+# --- the one hop, driven end to end against a stubbed gh (#739) ------
+#
+# --plan cannot reach this: the hop happens before a plan exists. So
+# these three cases run the whole script with a fake `gh` on PATH and a
+# throwaway repo supplying origin/main..origin/dev.
+#
+# It has to be an end-to-end case. The defect was one `|| continue`, and
+# no unit of this script owns it: the damage appears two stages later,
+# as the planner recomputing desired state from scratch and emitting
+# REMOVE for a ref it never managed to read.
+SYNC_ABS="$(cd "$(dirname "$SYNC")" && pwd)/$(basename "$SYNC")"
+
+# <want-not-in-output> is the planner's own line ("REMOVE 703 in-dev"),
+# not the bare word: the refusal message names REMOVE while explaining
+# what it is refusing to do, and matching that would pass for the wrong
+# reason.
+hop_case() { # hop_case <name> <pulls-status> <want-exit> <want-not-in-output>
+    local name="$1" status="$2" want_exit="$3" forbid="$4"
+    local dir got_exit
+    dir=$(mktemp -d)
+    mkdir -p "$dir/bin" "$dir/repo"
+
+    # The stub answers the three calls the script makes, and gives the
+    # PR lookup whatever status the case is about.
+    cat > "$dir/bin/gh" <<STUB
+#!/usr/bin/env bash
+case "\$*" in
+    *"issue list"*)  printf '%s' '[{"number":703,"labels":[{"name":"in-dev"}]}]' ;;
+    *"pr list"*)     printf '%s' '[]' ;;
+    *"pulls/712"*)
+        if [ "$status" = "200" ]; then
+            printf '%s' '{"title":"fix(dhcp): the boundary (#703)","body":""}'
+            exit 0
+        fi
+        # -i asks for the status line; the plain call just fails.
+        case "\$*" in
+            *-i*) printf 'HTTP/2.0 $status Something\n\n' ;;
+        esac
+        exit 1
+        ;;
+    *) printf '%s' '{}' ;;
+esac
+STUB
+    chmod +x "$dir/bin/gh"
+
+    (
+        cd "$dir/repo" || exit 2
+        git init -q .
+        git config user.email t@t; git config user.name t
+        git config commit.gpgsign false
+        printf 'x\n' > f; git add -A; git commit -qm "base"
+        git update-ref refs/remotes/origin/main HEAD
+        git commit -q --allow-empty -m "Merge pull request #712 from claymore666/fix/x"
+        git update-ref refs/remotes/origin/dev HEAD
+        PATH="$dir/bin:$PATH" GITHUB_REPOSITORY=owner/repo \
+            bash "$SYNC_ABS" --dry-run > "$dir/out" 2>&1
+        echo $?
+    ) > "$dir/rc" 2>/dev/null
+    got_exit=$(tail -1 "$dir/rc")
+
+    if [ "$got_exit" != "$want_exit" ]; then
+        echo "FAIL: $name (exit $got_exit, want $want_exit)"
+        sed 's/^/    /' "$dir/out" 2>/dev/null
+        failures=$((failures + 1))
+    elif [ -n "$forbid" ] && grep -q "$forbid" "$dir/out" 2>/dev/null; then
+        echo "FAIL: $name (output contained '"'"'$forbid'"'"')"
+        sed 's/^/    /' "$dir/out"
+        failures=$((failures + 1))
+    else
+        echo "PASS: $name"
+    fi
+    rm -rf "$dir"
+}
+
+# A 403 is the live shape: this lane runs 40-67 times a day and the repo
+# has hit secondary rate limiting before. It must stop, not strip.
+hop_case "a 403 on the hop stops the run instead of stripping in-dev" 403 2 "REMOVE 703"
+hop_case "a 5xx on the hop stops the run instead of stripping in-dev" 502 2 "REMOVE 703"
+
+# The negative control, and the reason this cannot just be "fail on any
+# error": a 404 is the ordinary answer for a ref that was a closed issue
+# rather than a PR. If this ever goes non-zero the gate has become a
+# daily false alarm and will be turned off.
+hop_case "a 404 on the hop is an answer, not a failure" 404 0 ""
 
 if [ "$failures" -ne 0 ]; then
     echo "$failures test(s) failed" >&2

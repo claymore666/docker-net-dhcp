@@ -5,6 +5,11 @@
 # Table-driven tests for coverage-ratchet.sh (#127). Synthesizes
 # `go tool covdata percent` outputs and asserts the ratchet's verdicts:
 # hold/improve/within-epsilon pass, regression and vanished packages fail.
+#
+# The exit-2 cases at the bottom are #734: this suite asserted every
+# verdict the ratchet renders and never that it renders one at all, so
+# a `coverage` check that compared nothing and reported success was
+# green here too.
 set -u
 
 RATCHET="$(dirname "$0")/coverage-ratchet.sh"
@@ -72,6 +77,43 @@ if bash "$RATCHET" "$TMP/hold.txt" > /dev/null 2>&1; [ $? -eq 2 ]; then
     echo "PASS: usage error exits 2"
 else
     echo "FAIL: usage error should exit 2"
+    failures=$((failures + 1))
+fi
+
+# #734: a verdict over nothing. Each of these exited 0 — silently, in
+# two of the three cases — before the refusal was added, which is a
+# green required check on main enforcing no floor at all.
+refuses() { # refuses <name> <baseline-file>
+    local name="$1" baseline="$2" got_exit
+    bash "$RATCHET" "$TMP/hold.txt" "$baseline" > "$TMP/out" 2>&1
+    got_exit=$?
+    if [ "$got_exit" -eq 2 ] && grep -q 'Nothing to inspect' "$TMP/out"; then
+        echo "PASS: $name"
+    else
+        echo "FAIL: $name (want exit 2 + a refusal, got $got_exit)"
+        sed 's/^/    /' "$TMP/out"
+        failures=$((failures + 1))
+    fi
+}
+
+refuses "missing baseline file refuses a verdict" "$TMP/does-not-exist.txt"
+
+: > "$TMP/empty-baseline.txt"
+refuses "empty baseline refuses a verdict" "$TMP/empty-baseline.txt"
+
+printf '# a floor used to live here\n\n' > "$TMP/comments-baseline.txt"
+refuses "comments-only baseline refuses a verdict" "$TMP/comments-baseline.txt"
+
+# The percent file is the other half of the same hazard: the ratchet
+# would report every baselined package "absent from coverage output"
+# and exit 1, which reads as a coverage regression rather than as a
+# harness fault. A wrong diagnosis costs the next person the afternoon.
+bash "$RATCHET" "$TMP/no-such-percent.txt" "$BASELINE" > "$TMP/out" 2>&1
+if [ $? -eq 2 ] && grep -q 'Nothing to inspect' "$TMP/out"; then
+    echo "PASS: missing percent file refuses a verdict"
+else
+    echo "FAIL: missing percent file should refuse a verdict"
+    sed 's/^/    /' "$TMP/out"
     failures=$((failures + 1))
 fi
 

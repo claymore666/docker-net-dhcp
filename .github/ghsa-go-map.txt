@@ -1,0 +1,51 @@
+# GHSA id -> Go vuln DB id, declared rather than inferred (#741).
+#
+# WHY THIS FILE EXISTS. Two allowlists in this repository accept the
+# same advisories under two different naming schemes:
+#
+#   .github/dependency-review-config.yml  allow-ghsas: GHSA-...
+#   .github/vuln-allowlist.txt            GO-YYYY-NNNN
+#
+# Both headers state that the lists stay in sync at or above
+# fail-on-severity, and neither enforced it. They drifted: two GHSAs
+# stayed accepted by the dependency-review gate for weeks after the
+# govulncheck side had deliberately removed them, so a PR reintroducing
+# either would have been waved through at HIGH severity by the same
+# project that had just reviewed them and said no.
+#
+# scripts/check-allowlist-parity.sh compares the two lists, and it can
+# only do that through a mapping. That mapping is written down here,
+# by a human, at the moment an entry is added — not derived at gate
+# time from an API. A gate that resolves the mapping itself needs the
+# network on every run, answers differently depending on when it runs,
+# and fails open the day the endpoint is down. The pairing is a fact
+# about a review someone performed; it belongs in the tree with the
+# review.
+#
+# FORMAT: one pair per line, `GHSA-id GO-id`, comments and blanks
+# ignored. An entry here is a claim that the two ids name the same
+# advisory. It is NOT a claim that either list currently accepts it —
+# the lists say that, and the gate compares them.
+#
+# ADDING AN ENTRY: when you add a GHSA to allow-ghsas, add its pair
+# here in the same commit, or the gate fails with "no declared GO id".
+# The GHSA page names the Go id under its references, and pkg.go.dev's
+# vuln page names the GHSA under aliases.
+
+# Live in both lists.
+GHSA-x744-4wpc-v9h2 GO-2026-4887
+
+# Below fail-on-severity, so dependency-review never acts on it; live in
+# vuln-allowlist.txt only. Recorded so the pairing is not re-derived by
+# hand the next time it comes up.
+GHSA-pxq6-2prw-chj9 GO-2026-4883
+
+# Removed from vuln-allowlist.txt on 2026-07-28 and 2026-08-14
+# respectively, and removed from allow-ghsas in #741. Kept here because
+# the mapping is still true and this file is the record of it — if
+# either advisory is ever re-accepted, the pairing does not have to be
+# looked up again. The gate reads the LISTS to decide what is accepted;
+# a pair here accepts nothing on its own.
+GHSA-x86f-5xw2-fm2r GO-2026-5746
+GHSA-rg2x-37c3-w2rh GO-2026-5617
+GHSA-vp62-88p7-qqf5 GO-2026-5668

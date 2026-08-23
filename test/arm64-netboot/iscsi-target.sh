@@ -41,7 +41,7 @@ for _ in $(seq 1 20); do
 done
 tgtadm --lld iscsi --op show --mode target >/dev/null 2>&1 || die "tgtd did not become ready"
 
-if ! tgtadm --lld iscsi --op show --mode target | grep -q "${TARGET_IQN}"; then
+if ! tgtadm --lld iscsi --op show --mode target | grep "${TARGET_IQN}" >/dev/null; then
     log "creating target ${TARGET_IQN}"
     tgtadm --lld iscsi --op new --mode target --tid 1 -T "${TARGET_IQN}"
     tgtadm --lld iscsi --op new --mode logicalunit --tid 1 --lun 1 -b "${LUN_FILE}"

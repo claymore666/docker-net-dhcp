@@ -281,6 +281,10 @@ type Fixture struct {
 	bridgeLeaseFile   string
 	bridgeDnsmasqLog  string
 	iptablesInstalled bool
+
+	// Second DHCP server on the bridge segment, started on demand by
+	// the server-policy tests only (see bridge_challenger.go).
+	chal *bridgeChallenger
 }
 
 // New builds the parent-attached segment — the DHCPSegment bridge, one

@@ -1,0 +1,1 @@
+{"NetworkID":"78872c720751d3f75de2a762f8481495e1e3c95913a7cae746600fc403198c32","Options":{"com.docker.network.enable_ipv4":true,"com.docker.network.enable_ipv6":false,"com.docker.network.generic":{"mode":"macvlan","parent":"dh-itest-host"}},"IPv4Data":[{"AddressSpace":"null","Pool":"0.0.0.0/0"}],"IPv6Data":[]}

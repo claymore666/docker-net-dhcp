@@ -7,17 +7,19 @@
 #
 # Differences from the amd64 lane, all deliberate:
 #
-#   - One unsharded job instead of a 4-job matrix. There is one Pi, and
-#     its runner is JIT single-job-then-exit: a matrix would run
-#     serially at best and deadlock at worst (later jobs waiting for a
-#     runner that exited after the first).
+#   - One unsharded job instead of a 4-job matrix. There is one Pi, so a
+#     matrix would run serially at best. It no longer deadlocks — the
+#     runner is standing rather than single-use (#632) — but sharding
+#     across one machine buys nothing, so this stays unsharded until
+#     there is a second arm64 host.
 #   - Not a required check. This lane runs at release-candidate time,
-#     not per PR — the arm64 runner pool is brought up for the rc window
-#     and is not held online for day-to-day development.
-#   - The runner must be launched for the rc (JIT mint + docker run on
-#     the Pi). A queued job here with no runner online means nobody
-#     launched one, not a CI outage — which is what `lane-present`
-#     exists to say out loud.
+#     not per PR — the tag is what spends the arm64 host, not a push.
+#   - The runner registers itself at boot and reconnects unattended
+#     (`register` mode, #632), so a queued job here means the host is
+#     powered off or its boot server is down — not that someone forgot
+#     to launch a container, and not a CI outage. Either way it is
+#     something a human must fix before the rc can be called green,
+#     which is what `lane-present` exists to say out loud.
 #
 # The rc tag is the human gate of a release; what an rc proves must
 # follow from that tag alone. So this fires on `v*-rc*` and nothing
@@ -115,6 +117,31 @@ jobs:
             exit 1
           fi
 
+      # The host's own recovery path, checked on the host rather than in
+      # the tree that provisions it (#677). The netbooted root is an
+      # image: a baseline older than #661 restores an nfs-watchdog that
+      # refuses to start on this 15s device, and the board then runs
+      # unwatched while every provisioning file still reads correctly.
+      # This lane is the only thing that executes on that host, so it is
+      # the only place the live state can be asserted at all.
+      #
+      # Not fatal on exit 2. The arming verdict comes from sysfs and is
+      # never lost; 2 means only that the kernel ring buffer has aged
+      # past this boot, so the daemon's identity could not be confirmed —
+      # a consequence of uptime, not a defect, and not worth reddening a
+      # release candidate. It is annotated so it cannot pass unseen.
+      - name: Verify the host's NFS-outage watchdog
+        run: |
+          set +e
+          bash scripts/check-host-watchdog.sh
+          rc=$?
+          set -e
+          if [ "$rc" -eq 2 ]; then
+            echo "::warning title=Host watchdog only partly verified::The board is armed and being petted, but the kernel ring buffer no longer reaches this boot, so nfs-watchdog could not be confirmed as the holder (#677)."
+            exit 0
+          fi
+          exit "$rc"
+
       - name: Cleanup orphans from previous runs
         run: bash test/integration/cleanup-orphans.sh
 
@@ -135,7 +162,13 @@ jobs:
         shell: bash
         run: make integration-test 2>&1 | tee /tmp/itest-arm64-main.log
 
+      # if: always() for the same reason as integration-hosted.yml (#742):
+      # a red main suite must not take the failure suite with it. On this
+      # lane it also keeps the timing summary below honest, which reads
+      # both logs and would otherwise report on a file that was never
+      # written.
       - name: Run failure suite
+        if: always()
         shell: bash
         run: make integration-test-failure 2>&1 | tee /tmp/itest-arm64-failure.log
 
@@ -144,3 +177,22 @@ jobs:
         run: |
           scripts/integration-timing.sh /tmp/itest-arm64-main.log
           scripts/integration-timing.sh /tmp/itest-arm64-failure.log
+
+      # THE ONLY STANDING RUNNER WAS THE ONLY LANE WITH NO TEARDOWN
+      # (#742). Every other lane runs on an ephemeral one-job runner,
+      # where leaving `:integration` enabled costs nothing because the
+      # machine is discarded. This board is a standing registration, so
+      # the plugin stayed enabled between release candidates and
+      # /var/lib/net-dhcp — bind-mounted precisely so it SURVIVES
+      # `plugin rm` (#440) — accumulated across every run the board has
+      # ever done.
+      #
+      # The `docker plugin rm -f` earlier in the build step is a
+      # PRE-install cleanup, not a teardown: it runs before the plugin
+      # this job installs exists. Same block as integration.yml:560-564,
+      # for the same reason and with more force behind it here.
+      - name: Tear down integration plugin
+        if: always()
+        run: |
+          docker plugin disable "${INTEGRATION_PLUGIN_REF}" 2>/dev/null || true
+          docker plugin rm -f "${INTEGRATION_PLUGIN_REF}" 2>/dev/null || true

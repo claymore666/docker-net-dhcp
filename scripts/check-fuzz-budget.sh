@@ -98,7 +98,7 @@ for entry in "${LINES[@]}"; do
     # slow runner, so the invocation must still carry a -timeout. That
     # failure is a real signal ("this runner is not fit to fuzz on"),
     # unlike the flake it replaces.
-    if ! printf '%s\n' "$line" | grep -qE -- '-timeout[= ]+[0-9]'; then
+    if ! printf '%s\n' "$line" | grep -E -- '-timeout[= ]+[0-9]' >/dev/null; then
         echo "$WORKFLOW:$lineno: fuzz invocation has no -timeout." >&2
         echo "  An execution budget has no wall-clock ceiling of its own; add one," >&2
         echo "  e.g. -timeout 5m, so a stalled runner fails loudly instead of hanging." >&2

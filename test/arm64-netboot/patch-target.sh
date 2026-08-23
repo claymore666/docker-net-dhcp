@@ -135,6 +135,97 @@ log "masking units that cannot succeed on a diskless root"
 ln -sf /dev/null "${NFSROOT_DIR}/etc/systemd/system/systemd-growfs-root.service"
 ln -sf /dev/null "${NFSROOT_DIR}/etc/systemd/system/systemd-networkd-wait-online.service"
 
+# ------------------------------------------------------------- nfs-watchdog
+# The host's root filesystem is an NFS export. When the server goes away
+# the kernel stays up and every process blocks: the board answers ping,
+# accepts TCP on 22, and never produces an ssh banner, because sshd
+# cannot re-exec its own binary off the share. Only a power cycle clears
+# it, and this machine is not next to anyone.
+#
+# The SoC watchdog alone does NOT fix that, and it is already enabled —
+# the image ships /usr/lib/systemd/system.conf.d/40-rpi-enable-watchdog.conf
+# with RuntimeWatchdogSec=1m and PID 1 holds the device with a 60s
+# timeout. It was armed through the outage that motivated this and the
+# board still needed hands. systemd is resident in memory and its event
+# loop never touches the root filesystem, so it keeps petting while
+# everything that does I/O is stuck: the board looks healthy to the
+# watchdog for as long as the outage lasts.
+#
+# So the device is handed to nfs-watchdog, which pets it only while
+# statfs on / still reaches the server. Both halves are required and each
+# fails silently on its own:
+#   - without the drop-in, systemd keeps the device, nfs-watchdog gets
+#     EBUSY, its unit fails, and the host is unprotected while looking
+#     configured
+#   - without the unit, nothing pets at all and a healthy host resets a
+#     minute after boot
+# scripts/check-pi-watchdog-wiring.sh exists because that pair is exactly
+# the kind of thing prose cannot hold.
+log "handing /dev/watchdog from systemd to nfs-watchdog"
+mkdir -p "${NFSROOT_DIR}/etc/systemd/system.conf.d"
+cat > "${NFSROOT_DIR}/etc/systemd/system.conf.d/50-nfs-watchdog.conf" <<'EOF'
+# Overrides 40-rpi-enable-watchdog.conf. Only one process may hold
+# /dev/watchdog0, and systemd's petting is unconditional: it keeps the
+# board alive through an NFS outage because PID 1 never touches the
+# filesystem. nfs-watchdog.service takes the device instead and pets it
+# only while the root filesystem answers (#632).
+[Manager]
+RuntimeWatchdogSec=0
+EOF
+
+install -D -m 0755 "${TEMPLATES}/nfs-watchdog" "${NFSROOT_DIR}/usr/local/sbin/nfs-watchdog"
+
+cat > "${NFSROOT_DIR}/etc/systemd/system/nfs-watchdog.service" <<'EOF'
+[Unit]
+Description=Reset this host when its NFS root stops answering (#632)
+Documentation=https://github.com/claymore666/docker-net-dhcp/issues/632
+# Starts before anything that could block on the share, and stays
+# running through shutdown -- a shutdown that hangs on a dead NFS server
+# is one of the cases this exists for.
+#
+# DefaultDependencies=no is here for exactly that reason, and it is the
+# whole mechanism: per systemd.special(7), Before=shutdown.target plus
+# Conflicts=shutdown.target is the documented idiom for a unit that
+# should be STOPPED before shutdown proceeds. Those two lines were once
+# written out here explicitly, directly under a comment claiming the
+# opposite, which handed the SoC timer back at the first instant of every
+# reboot: systemd stopped this unit, the daemon disarmed on SIGTERM, and a
+# shutdown that then blocked on the dead share hung forever with nothing
+# armed to end it. Do not add them back -- check-pi-watchdog-wiring.sh
+# fails if they return.
+DefaultDependencies=no
+After=sysinit.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/nfs-watchdog
+# Insurance, not load-bearing today, and said plainly because the
+# opposite is easy to assume: this unit runs as root, and CAP_IPC_LOCK
+# bypasses RLIMIT_MEMLOCK, so mlockall already succeeds without it
+# (measured on the host: default limit 8192K, mlockall fine as root, and
+# it fails immediately as an ordinary user). The line exists so the
+# guarantee does not silently depend on running as root — the day anyone
+# adds User= or trims CapabilityBoundingSet, nfs-watchdog would refuse
+# to start rather than run unpinned, which is the correct but expensive
+# way to discover this.
+LimitMEMLOCK=infinity
+# Being OOM-killed during a job would silently remove the protection.
+OOMScoreAdjust=-1000
+Restart=always
+RestartSec=10s
+# It logs to /dev/kmsg itself: journald can block a writer when its
+# buffers fill, and its storage is on the share this distrusts.
+StandardOutput=null
+StandardError=null
+
+[Install]
+WantedBy=sysinit.target
+EOF
+
+mkdir -p "${NFSROOT_DIR}/etc/systemd/system/sysinit.target.wants"
+ln -sf /etc/systemd/system/nfs-watchdog.service \
+    "${NFSROOT_DIR}/etc/systemd/system/sysinit.target.wants/nfs-watchdog.service"
+
 # ------------------------------------------------------------ initramfs-tools
 # mkinitramfs cannot resolve a device for / when the root is an NFS export, and
 # its postinst then fails. That breaks *every* later apt operation on the

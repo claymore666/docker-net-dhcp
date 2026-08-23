@@ -24,9 +24,16 @@ for exactly that reason.
 
 Bridge, macvlan and ipvlan attachment; DHCPv4 and DHCPv6; addresses that
 survive `docker restart`, plugin restart and daemon restart; a
-`/Plugin.Health` counter surface; signed, attested, reproducible
-releases. The [driver reference](reference.md) is the authority on what
-exists right now — if this page and that one disagree, that one is right.
+`/Plugin.Health` counter surface and the same counters in Prometheus
+form on `/metrics` ([#651]); per-network choice of which DHCP server to
+lease from ([#111], [#669]); signed, attested, reproducible releases.
+v1.8.0 also carries the first human review of the design and its trust
+boundaries ([#457], [#699]) — pulled into this release because it is the
+one that opens a TCP port in a process holding `CAP_NET_ADMIN`. Every
+finding was fixed inside the same cycle rather than carried forward, and
+each one ends in a test or a counter rather than a paragraph. The
+[driver reference](reference.md) is the authority on what exists right
+now — if this page and that one disagree, that one is right.
 
 ## Direction
 
@@ -72,7 +79,7 @@ defect. An opt-out helper added to make a restart test pass hid a
 user-facing `docker restart` failure for months. So the rule — **a test
 that only passes once you weaken something is a bug report** — is
 enforced by a gate rather than by a paragraph, and the remaining
-soft spots ([#480], [#486], [#403]) are on the list for the same reason
+soft spots ([#682], [#403]) are on the list for the same reason
 features are.
 
 ### 5. Supply chain and documentation
@@ -109,9 +116,11 @@ is recorded so a contributor can read it before writing the PR.
 - **It will not become a DHCP server.** No lease serving, no built-in
   pool, no failover of its own. The point of the plugin is that your
   existing server is the authority; a second one would recreate the
-  problem it solves. (Interoperating with more than one server is a
-  different question — [#111] — and is design-first backlog, not a
-  commitment.)
+  problem it solves. Interoperating with more than one server is a
+  different question, and v1.8.0 answers it: `dhcp_servers` and
+  `dhcp_deny_servers` decide which existing server a network leases
+  from ([#111]). That stays on this side of the line — the plugin picks
+  among authorities, it never becomes one.
 - **It will not reconfigure the host's networking.** Bridge mode needs a
   bridge you maintain, and the parent-attached modes will not bring a NIC
   up, add an address, or edit netplan/`systemd-networkd`. The plugin
@@ -120,12 +129,15 @@ is recorded so a contributor can read it before writing the PR.
   fixed, fix it where addresses are decided — a reservation on the DHCP
   server. A per-container static-IP option would be a second, silently
   conflicting IPAM.
-- **It will not ask for more privileges to buy a feature.** Concretely:
-  proper RFC 5227 conflict detection needs `CAP_NET_RAW`, and adding a
-  capability forces **every** operator to re-approve the plugin's
-  privileges on upgrade. The conflict probe was built inside the
-  existing capability set instead, and that trade is the default answer,
-  not a one-off.
+- **It will not ask for more privileges to buy a feature.** Adding a
+  capability to `config.json` forces **every** operator to re-approve
+  the plugin's privileges on upgrade, and that trade is the default
+  answer, not a one-off. The example this rule used to be illustrated
+  with does not actually hold: proper RFC 5227 conflict detection needs
+  `CAP_NET_RAW`, and the plugin **already has it** — Docker composes
+  capabilities additively over the OCI defaults, so the effective set is
+  seventeen, not the three `config.json` requests. Nothing would have to
+  be re-approved. See [#725]; the rule stands, the example was wrong.
 - **It will not detect a conflicting container on the same host.** The
   conflict probe's vantage point is the parent link, and the isolation
   that keeps our own endpoint from answering also hides a sibling. That
@@ -159,12 +171,15 @@ someone asks.
 [#219]: https://github.com/claymore666/docker-net-dhcp/issues/219
 [#403]: https://github.com/claymore666/docker-net-dhcp/issues/403
 [#452]: https://github.com/claymore666/docker-net-dhcp/issues/452
-[#480]: https://github.com/claymore666/docker-net-dhcp/issues/480
-[#486]: https://github.com/claymore666/docker-net-dhcp/issues/486
+[#457]: https://github.com/claymore666/docker-net-dhcp/issues/457
 [#507]: https://github.com/claymore666/docker-net-dhcp/issues/507
 [#524]: https://github.com/claymore666/docker-net-dhcp/issues/524
 [#528]: https://github.com/claymore666/docker-net-dhcp/issues/528
 [#531]: https://github.com/claymore666/docker-net-dhcp/issues/531
+[#651]: https://github.com/claymore666/docker-net-dhcp/issues/651
+[#669]: https://github.com/claymore666/docker-net-dhcp/issues/669
+[#682]: https://github.com/claymore666/docker-net-dhcp/issues/682
+[#699]: https://github.com/claymore666/docker-net-dhcp/issues/699
 [moby/moby#52865]: https://github.com/moby/moby/issues/52865
 [moby/moby#52866]: https://github.com/moby/moby/pull/52866
 [moby/moby#52870]: https://github.com/moby/moby/issues/52870

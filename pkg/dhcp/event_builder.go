@@ -171,6 +171,69 @@ func parseClasslessRoutes(raw string) (routes []Route, defaultGW string) {
 // an IP string that netlink.ParseAddr would later reject — malformed
 // input skips the event instead of blowing up mid-renewal.
 func BuildEvent(reason string, getenv Getenv) (Event, bool) {
+	event, emit := buildEvent(reason, getenv)
+	if !emit {
+		return event, false
+	}
+
+	// Filter EVERY string value the server chose, at the one point all
+	// of them pass through, before the event reaches a log field or the
+	// FIFO. dhcpcd validates only its dname-typed options; the
+	// string-typed ones (67, 100, 101, and our own `define 252 string
+	// wpad`) carry \n and \r through untouched. See sanitizeInfo for
+	// why an accidental single layer was not enough (#703).
+	//
+	// The count rides the event so the plugin -- a different process
+	// from this hook -- can put it on a health counter. A drop that
+	// leaves no trace is indistinguishable from a value that was never
+	// sent.
+	event.UnsafeValuesDropped = sanitizeInfo(&event.Data)
+
+	// Option 15 needs its own rule, and 0x20 is why: SafeDirectiveValue
+	// rejects control characters, and a SPACE is the field separator of
+	// the sink this protects. One domain becomes several -- with the
+	// attacker's first in the search order. See FirstSearchDomain (#704).
+	if kept, truncated := FirstSearchDomain(event.Data.Domain); truncated {
+		log.WithField("domain", quoteForLog(event.Data.Domain)).
+			WithField("kept", kept).
+			Warn("DHCP domain name (option 15) carried more than one domain; keeping only the first")
+		event.Data.Domain = kept
+		event.UnsafeValuesDropped++
+	}
+
+	// Option 3 (routers) is the one path into Gateway that is not
+	// ParseIP-validated on the way in. The option-121 default gateway a
+	// few lines above comes out of parseClasslessRoutes, which parses
+	// every address it returns; this one is `strings.Fields(...)[0]`,
+	// taken verbatim from the wire.
+	//
+	// Downstream, net.ParseIP's nil is not a refusal -- it is a valid
+	// netlink argument meaning "no gateway", and reconcileDefaultRoute
+	// hands it straight to RouteAdd/RouteReplace. The result is
+	// `default dev ethX scope link`: an ON-LINK default route, which
+	// makes the container ARP for every off-net destination and hands
+	// interception to anyone on the L2 segment -- the attacker this
+	// threat model already assumes (#728).
+	//
+	// Refuse it here instead, where the value enters. An empty Gateway
+	// is a state the sink already knows: it returns without touching
+	// the route, leaving whatever the container already had. Failing
+	// closed costs a default route the server garbled; failing open
+	// costs the container's traffic.
+	if event.Data.Gateway != "" && net.ParseIP(event.Data.Gateway) == nil {
+		log.WithField("gateway", quoteForLog(event.Data.Gateway)).
+			Warn("DHCP gateway (option 3) is not an IP address; leaving the existing default route alone")
+		event.Data.Gateway = ""
+		event.UnsafeValuesDropped++
+	}
+
+	return event, true
+}
+
+// buildEvent is BuildEvent without the filter, so every one of its
+// early returns is covered by the filter rather than each having to
+// remember it.
+func buildEvent(reason string, getenv Getenv) (Event, bool) {
 	eventType, v6, emit := mapReason(reason)
 	if !emit {
 		log.Debugf("Ignoring dhcpcd reason %q", reason)

@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -26,6 +27,7 @@ import (
 	log "github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
 
+	"github.com/claymore666/docker-net-dhcp/pkg/dhcp"
 	"github.com/claymore666/docker-net-dhcp/pkg/util"
 )
 
@@ -333,6 +335,25 @@ type DHCPNetworkOptions struct {
 	// in deliberately. Append failures bump ledger_write_failures on
 	// /Plugin.Health and never affect lease handling.
 	AuditLog bool `mapstructure:"audit_log"`
+
+	// DHCPServers is an ordered preference list of DHCPv4 server
+	// addresses, e.g. "1.1.1.1,2.2.2.2": the first that answers within
+	// its slice of the acquisition budget wins, and the list is
+	// exhaustive — if none answers, acquisition fails rather than
+	// falling back to whichever server happened to reply. Naming your
+	// servers is what makes the list complete (#111).
+	//
+	// Empty (the default) accepts whichever OFFER arrives first, the
+	// historical behaviour.
+	DHCPServers string `mapstructure:"dhcp_servers"`
+	// DenyServers is an unordered list of DHCPv4 server addresses this
+	// network must never take a lease from, e.g. "3.3.3.3" — a rogue
+	// appliance or a second router on the segment (#669).
+	//
+	// This is a permission, not a preference: it composes with
+	// DHCPServers rather than competing with it. See serverPolicy for
+	// why the two cannot both be handed to dhcpcd as directives.
+	DenyServers string `mapstructure:"dhcp_deny_servers"`
 }
 
 // effectiveMode returns Mode with the empty default normalized to ModeBridge.
@@ -420,6 +441,16 @@ type Options struct {
 	// takes to acquire its first lease — below that, ordinary start-up
 	// registers as an outage. OUTAGE_GRACE, default 25s.
 	OutageGrace time.Duration
+
+	// RequestCaptureDir, when non-empty, tees every libnetwork request
+	// body into that directory so an integration run can be turned into
+	// the replay fixtures under pkg/plugin/testdata/requests (#644).
+	// REQUEST_CAPTURE_DIR, default empty (disabled).
+	//
+	// Test instrumentation: it is declared in config-cover.json only,
+	// alongside GOCOVERDIR, and empty here costs the shipped plugin
+	// nothing — captureHandler returns the mux unwrapped.
+	RequestCaptureDir string
 }
 
 // Plugin is the DHCP network plugin
@@ -438,6 +469,20 @@ type Plugin struct {
 	docker dockerClient
 	server http.Server
 
+	// metricsServer is the OPTIONAL TCP listener for /metrics, nil
+	// unless METRICS_ADDR was set. It is a second server rather than a
+	// second listener on p.server for one reason, and it is a security
+	// boundary rather than a style choice: p.server routes every
+	// libnetwork RPC — CreateNetwork, Join, DeleteEndpoint — and this
+	// plugin runs with CAP_NET_ADMIN, CAP_SYS_ADMIN and CAP_SYS_PTRACE
+	// in the host network namespace. Serving p.server on a TCP port
+	// would expose all of that to anyone who can reach the port.
+	// ListenMetrics builds a mux carrying /metrics and nothing else.
+	metricsServer *http.Server
+	// metricsListener is kept so a test can learn the address the
+	// kernel actually assigned when METRICS_ADDR named port 0.
+	metricsListener net.Listener
+
 	// mu guards joinHints, persistentDHCP, and endpointFingerprints.
 	// libnetwork dispatches CreateEndpoint / Join / Leave from
 	// concurrent HTTP handlers, each of which touches one or more
@@ -454,10 +499,13 @@ type Plugin struct {
 	// own copy.
 	endpointFingerprints map[string]endpointFingerprint
 
-	// tombstoneMu serializes the tombstones.json read-modify-write
-	// path. Held only across that small operation; never combined
-	// with mu so the two locks can't deadlock against each other.
-	tombstoneMu sync.Mutex
+	// tombstones owns the tombstones.json read-modify-write path and
+	// the lock that serialises it (tombstone_store.go). Held only
+	// across that small operation; never combined with mu so the two
+	// locks cannot deadlock against each other — a rule that
+	// scripts/check-lock-discipline.sh enforces, because this comment
+	// alone did not.
+	tombstones tombstoneStore
 
 	// recoveredOK and recoveryFailed are bumped by recoverOneEndpoint's
 	// background Start goroutine and reported via /Plugin.Health, so
@@ -466,6 +514,16 @@ type Plugin struct {
 	// are now running without renewal.
 	recoveredOK    atomic.Int32
 	recoveryFailed atomic.Int32
+
+	// recoveryAlreadyManaged counts endpoints a recovery walk found
+	// someone else already managing and therefore left alone. Not a
+	// failure and not healthy-affecting: the endpoint has a renewal
+	// client, just not one this walk built. It is here because the
+	// event was previously invisible except as an inflated "recovered"
+	// in one log line, and it is the only outward sign of recovery
+	// racing a Join — the window that made a compare-and-set necessary
+	// in the first place (#480).
+	recoveryAlreadyManaged atomic.Int32
 
 	// recoveryDeferred counts the times recovery could not start because
 	// the daemon was not answering yet and had to be retried after the
@@ -499,6 +557,57 @@ type Plugin struct {
 	// integration suite knew the counter conflated the two and
 	// declined to assert on it at all.
 	recoveryAbortedContainerGone atomic.Int32
+
+	// recoveryNetworkGone counts networks skipped during post-restart
+	// recovery because they no longer existed by the time we asked for
+	// their detail (#648). recoverEndpoints lists networks and then
+	// re-inspects each one for container detail; a `docker network rm`
+	// landing between those two calls answers the second with a 404.
+	//
+	// Deliberately NOT healthy-affecting, for the same reason as
+	// recoveryAbortedContainerGone: a network that is gone has no
+	// running container left without a renewal client, so nothing is
+	// wrong. It was counted as recoveryFailed until #648 — fatal, and
+	// enough to flip healthy — which made an ordinary network removal
+	// racing a daemon restart look like the plugin's most serious
+	// fault. Found by an integration run that went red with every test
+	// passing; only the health floor saw it.
+	//
+	// This is the third benign path carved out of recoveryFailed, after
+	// recoveryDeferred (#383) and recoveryAbortedContainerGone (#376).
+	// The counter is kept rather than dropping to a log line so the
+	// rate stays visible: a host where this climbs steadily is churning
+	// networks under a restarting daemon, which is worth knowing even
+	// though no single occurrence is a fault.
+	recoveryNetworkGone atomic.Int32
+
+	// recoveryFingerprintsSkipped counts endpoints that recovery
+	// adopted but could not describe: the ContainerInspect that would
+	// have given the hostname did not answer, or answered with no
+	// hostname at all (#721).
+	//
+	// It exists because the fix for #721 would otherwise have inherited
+	// the exact invisibility of the bug it closes. Recovery not
+	// recording a fingerprint means DeleteEndpoint lays no tombstone,
+	// which means that endpoint loses its address on its next
+	// `docker restart` — and the only outward sign was
+	// tombstonesConsumed staying flat, which is indistinguishable from
+	// a quiet host. An operator could not tell "recovery worked" from
+	// "recovery silently skipped half my endpoints".
+	//
+	// Deliberately NOT healthy-affecting. Losing address stability for
+	// one endpoint is a real regression for that container, but it is
+	// not a running container without a renewal client — the line
+	// recoveryFailed draws, and the one that decides what flips
+	// healthy.
+	//
+	// A hostname REFUSED by safeHostname is deliberately not counted
+	// here: it already moves unsafeHostnamesRejected, and keeping the
+	// two disjoint is what lets an operator tell "the daemon would not
+	// answer me" from "a container sent a hostname nobody should send".
+	// Summing them is then a choice the reader makes, rather than one
+	// this counter makes for them.
+	recoveryFingerprintsSkipped atomic.Int32
 
 	// joinStartFailures counts persistent-DHCP-client Start failures
 	// at Join time (#317). Each bump is a running container that got
@@ -557,6 +666,50 @@ type Plugin struct {
 	// the work and the fix needs re-examining.
 	joinAttachSlow atomic.Int32
 
+	// dhcpServerTierFallbacks counts initial acquisitions where a
+	// preferred DHCP server did not answer inside its slice of the
+	// budget and the next entry in dhcp_servers was tried (#111).
+	//
+	// Not healthy-affecting: falling back is the feature working, not
+	// failing — the endpoint still gets an address. It is here because
+	// it is the only signal from outside that a preferred server is
+	// not answering. A steady rise means the primary is effectively
+	// down while every container still comes up fine, which is exactly
+	// the condition that otherwise goes unnoticed until the standby
+	// fails too.
+	dhcpServerTierFallbacks atomic.Int32
+
+	// dhcpServerPolicyExhausted counts initial acquisitions abandoned
+	// because no server in dhcp_servers answered (#111).
+	//
+	// Not healthy-affecting on its own: the acquisition failure it
+	// accompanies already fails the operation visibly and is counted.
+	// It is separate because the operator action differs — this one
+	// says the address was refused by policy rather than that DHCP is
+	// broken, and the two look identical in a timeout log.
+	dhcpServerPolicyExhausted atomic.Int32
+
+	// dhcpServerPolicyTimeouts counts outage ticks on endpoints whose
+	// RENEWAL client is restricted to an operator-named dhcp_servers
+	// allow-list (#731). The exhausted counter above is the acquisition
+	// half and cannot cover this one: nothing is exhausted at renewal,
+	// because the persistent client has no ladder to walk. It holds one
+	// whitelist and simply gets no answers, so the only visible symptom
+	// is a dhcp_timeouts tick indistinguishable from a real outage.
+	//
+	// A strict subset of dhcpTimeouts, deliberately: the two rising
+	// together says the allow-list is the cause, dhcpTimeouts rising
+	// alone says it is not.
+	//
+	// Not healthy-affecting: every tick it counts is already counted by
+	// dhcpTimeouts, and weighting one outage twice would make a
+	// policy-restricted endpoint look worse than an unrestricted one
+	// failing in exactly the same way.
+	//
+	// Not family-split: the allow-list is applied to v4 only (see
+	// setupClient), so a v6 sibling would be a permanent zero.
+	dhcpServerPolicyTimeouts atomic.Int32
+
 	// restartLinkUpWaited counts child links that came up only after
 	// waiting out the departing link's hold on the address — the #408
 	// window actually arising and the fix carrying the restart.
@@ -579,6 +732,122 @@ type Plugin struct {
 	// the attach window (#406).
 	joinAbortedEndpointLeft atomic.Int32
 
+	// unsafeHostnamesRejected counts container hostnames dropped before
+	// they could reach the generated dhcpcd config because they carried a
+	// control character (#692).
+	//
+	// A counter rather than only a log line, because this is the one
+	// finding from the #457 review with a deliberate actor behind it: a
+	// legitimate hostname does not contain a newline, so a non-zero value
+	// here is not noise, it is somebody trying. Dropping the directive is
+	// the safe outcome — the hostname is cosmetic and the lease proceeds —
+	// which is exactly why it would otherwise be invisible.
+	unsafeHostnamesRejected atomic.Int32
+
+	// dnsPropagationPIDMismatches counts DNS propagations refused
+	// because the PID resolved through Docker no longer belonged to the
+	// container it came from (#688).
+	//
+	// The plugin runs in the host PID namespace, so a recycled PID here
+	// means the write would have landed in an unrelated host process.
+	// Refusing is the safe outcome and leaves the container's
+	// resolv.conf as it was, so without a counter the near-miss would
+	// be invisible; a sustained rise says containers are exiting inside
+	// the propagation window.
+	dnsPropagationPIDMismatches atomic.Int32
+
+	// netnsPIDMismatches counts sandbox netns opens refused because the
+	// PID resolved through Docker no longer belonged to the container
+	// it came from -- the same hazard as the counter above, on the path
+	// with the larger blast radius.
+	//
+	// What the refusal prevents is not one file: the netlink handle
+	// built from that namespace carries every address, MTU and route
+	// the manager applies, with CAP_NET_ADMIN, and dhcpcd is spawned
+	// into it as root. Refusing fails the attach, so unlike the DNS
+	// case this one is at least visible as an error -- but the error
+	// reads like a slow container start, and only the counter says the
+	// PID belonged to something else.
+	netnsPIDMismatches atomic.Int32
+
+	// dhcpRoutesApplied counts DHCP option-121 classless static routes
+	// handed to Docker, and dhcpDefaultRouteSuperseded counts the
+	// Joins where those routes, taken together, cover 0.0.0.0/0.
+	//
+	// Applying them is correct client behaviour and is not the problem.
+	// The problem was that a server could take every destination
+	// without ever sending a default route -- `0.0.0.0/1 g
+	// 128.0.0.0/1 g` -- and nothing in the plugin's output changed:
+	// res.Gateway, `docker inspect` and the log all still named the
+	// legitimate router, and the routes themselves were logged as a
+	// count with no destinations and no next hops. Neither counter is
+	// healthy-affecting; a superseded default is legitimate in
+	// split-tunnel setups. They exist so "where did this container's
+	// traffic go" has an answer after the fact (#700).
+	dhcpRoutesApplied          atomic.Int32
+	dhcpDefaultRouteSuperseded atomic.Int32
+
+	// leaseTimeClamped counts leases whose option-51 lifetime was too
+	// long to use as the outage watchdog's deadline and was cut to
+	// maxLeaseDeadline.
+	//
+	// Not healthy-affecting -- the clamp is the safe outcome, and the
+	// reported lease time is untouched. Read it anyway: a legitimate
+	// server does not grant a container a lease measured in years, and
+	// before the clamp one such ACK followed by silence left
+	// dhcp_timeouts at zero through a total outage (#701).
+	leaseTimeClamped atomic.Int32
+
+	// mtuRefused counts DHCP option-26 MTUs outside the range
+	// propagateMTU will apply, which leave the link's MTU alone.
+	//
+	// Not healthy-affecting: refusing is the safe outcome. It is
+	// reported because the failure it prevents is silent -- a link
+	// clamped to 68 bytes has its throughput destroyed and its path MTU
+	// discovery black-holed, re-applied on every renewal, and the only
+	// previous evidence was one Info line saying the MTU had been
+	// applied (#702).
+	mtuRefused atomic.Int32
+
+	// unsafeOptionValuesDropped counts server-chosen DHCP string values
+	// refused because they carried a control character -- option 66,
+	// 67, 100, 101 and the plugin's own 252, plus the option-15 domain
+	// truncated at its first space.
+	//
+	// Not healthy-affecting: dropping is the safe outcome and the lease
+	// proceeds. Read it for the same reason as
+	// unsafe_hostnames_rejected: no legitimate server sends one, so any
+	// rise is deliberate. The count is produced in the dhcpcd hook
+	// process and rides the event across the FIFO (#703, #704).
+	unsafeOptionValuesDropped atomic.Int32
+
+	// networkOptionsRejected counts endpoint operations that met a
+	// network's STORED options and would not act on them as written --
+	// an interface name the kernel would not accept, or a mode this
+	// plugin does not implement (#727).
+	//
+	// Every handler but one refuses outright. DeleteEndpoint
+	// contributes without refusing: teardown must run for a broken
+	// record or the link and the lease outlive the container, so it
+	// counts the fault and proceeds. So a rise here does not mean
+	// nothing was torn down.
+	//
+	// Not healthy-affecting: the refusal is the safe outcome, and the
+	// operation it refused already fails visibly back to Docker. The
+	// plugin is not degraded — one network's record is, and no counter
+	// value will fix that record. Flipping unhealthy here would page an
+	// operator over a fault only they can clear, while every other
+	// network on the host keeps working.
+	//
+	// It is reported because the refusal is otherwise invisible in
+	// aggregate: a single `docker run` failure looks like the container
+	// author's problem, and it takes seeing the same network refuse
+	// repeatedly to recognise a broken record from before #705. A
+	// non-zero value means one of two things, and both want a human:
+	// options written before name validation existed, or somebody
+	// writing the state directory directly.
+	networkOptionsRejected atomic.Int32
+
 	// tombstoneWriteFailures counts saveTombstones failures (disk full,
 	// EROFS) from addTombstone. Reported on /Plugin.Health so operators
 	// can detect a degraded restart-stability window — every failure
@@ -599,7 +868,7 @@ type Plugin struct {
 	// indistinguishable from success (#386).
 	tombstonesConsumed atomic.Int32
 
-	// leaseChanged counts renewals where dhcpcd returned a different
+	// leaseChangedV4 counts renewals where dhcpcd returned a different
 	// IP than the manager last recorded. Container's
 	// NetworkSettings.IPAddress in `docker inspect` does NOT update
 	// — libnetwork has no in-place endpoint-IP swap RPC. This counter
@@ -607,7 +876,7 @@ type Plugin struct {
 	// (forced container restart on lease change, or an out-of-band
 	// docker-socket update) lands. See issue #104 for the design
 	// discussion deferred from v0.9.0.
-	leaseChanged atomic.Int32
+	leaseChangedV4 atomic.Int32
 
 	// addressConflicts counts leases whose address was found to be
 	// already held by another device on the segment (#524).
@@ -635,6 +904,36 @@ type Plugin struct {
 	// stopped mid-probe — and a detector that silently repairs itself is
 	// how the last one stopped being trustworthy.
 	conflictProbeStaleRoutes atomic.Int32
+
+	// conflictProbeStaleAddrs counts leftover BORROWED PROBE SOURCE
+	// addresses reclaimed from the parent NIC (#723).
+	//
+	// The sibling above reclaims the leftover /32 route, and it can,
+	// because that route's destination is the address being probed --
+	// so a later probe for the same address collides with the leftover
+	// and recognises it. The borrowed source has random third and
+	// fourth octets by design (#575, so two concurrent probes on one
+	// parent cannot delete each other's), and randomness is exactly
+	// what makes it unrecognisable: no future probe ever collides with
+	// it. It accumulated on the operator's NIC, one per stop-inside-
+	// the-window, forever, visible only in `ip addr`.
+	//
+	// Not healthy-affecting, for the same reason as the sibling: the
+	// probe it appears in went on to run. Counted because the repair
+	// hides the event that caused it.
+	conflictProbeStaleAddrs atomic.Int32
+
+	// probeAddrsInUse holds the borrowed probe source addresses this
+	// process currently has on a parent NIC, keyed by CIDR string.
+	// Guarded by mu; created on first use so &Plugin{} stays valid.
+	//
+	// It exists so reclaimStaleProbeAddrs can tell a leftover from a
+	// LIVE sibling: both carry the same label, and deleting a live
+	// one mid-probe is #575 -- the failure that produced these
+	// leftovers in the first place. A crash takes this map with it,
+	// which is exactly right: after a restart nothing is live, so
+	// everything labelled is stale.
+	probeAddrsInUse map[string]struct{}
 	// addressConflictProbes counts probes that ran to a verdict —
 	// conflict or clean. Not Healthy-affecting, and the reason it
 	// exists at all: without it, "the segment is clean" and "the
@@ -643,32 +942,36 @@ type Plugin struct {
 	// evidence of a clean segment if this advanced.
 	addressConflictProbes atomic.Int32
 
-	// leasesObtained / leasesRenewed / dhcpTimeouts / leaseReleaseFailures
+	// leasesObtainedV4 / leasesRenewedV4 / dhcpTimeoutsV4 / leaseReleaseFailuresV4
 	// expose DHCP-wire-level counters via /Plugin.Health (T2-4). They
 	// complement the lease_changed signal and let operators alert on
 	// regressions in the DHCP exchange itself without scraping dnsmasq
 	// logs server-side or running the plugin at trace level. Bumped
 	// from dhcpManager:
-	//   - leasesObtained: "bound" event — first successful
+	//   - leasesObtainedV4: "bound" event — first successful
 	//     DHCPACK on either initial bind or after a NAK / lease loss
-	//   - leasesRenewed: "renew" event — a renewal DHCPACK
-	//   - dhcpTimeouts: "leasefail" event — a bound lease lapsed
+	//   - leasesRenewedV4: "renew" event — a renewal DHCPACK
+	//   - dhcpTimeoutsV4: "leasefail" event — a bound lease lapsed
 	//     (dhcpcd EXPIRE) or the outage watchdog fired without an
 	//     OFFER or ACK
-	//   - leaseReleaseFailures: client.Finish returned an error in
+	//   - leaseReleaseFailuresV4: client.Finish returned an error in
 	//     Stop, meaning the SIGTERM-driven DHCPRELEASE didn't complete
 	//     cleanly (timeout, exit code, or pipe closure)
-	leasesObtained       atomic.Int32
-	leasesRenewed        atomic.Int32
-	dhcpTimeouts         atomic.Int32
-	leaseReleaseFailures atomic.Int32
+	//
+	// Each counts the v4 client only. The unsuffixed JSON field an
+	// operator alerts on (`leases_obtained`) is this atom PLUS its *V6
+	// sibling, summed in healthSnapshot rather than stored (#730).
+	leasesObtainedV4       atomic.Int32
+	leasesRenewedV4        atomic.Int32
+	dhcpTimeoutsV4         atomic.Int32
+	leaseReleaseFailuresV4 atomic.Int32
 
 	// orphanedLeasesReleased / orphanedLeaseReleaseFailures cover the
 	// lease the CreateEndpoint one-shot acquired when no persistent
 	// client ever took ownership of it — a container that exited before
 	// Join's async Start could attach (#370). See releaseOrphanedLease.
 	//
-	// Deliberately separate from leaseReleaseFailures: that counter
+	// Deliberately separate from leaseReleaseFailuresV4: that counter
 	// means "a client we were running failed to hand its lease back",
 	// which points at upstream reachability. These mean "no client was
 	// running at all", which points at container churn. Merging them
@@ -704,25 +1007,26 @@ type Plugin struct {
 	parentLinkWaits        atomic.Int32
 	parentLinkWaitTimeouts atomic.Int32
 
-	// naksReceived counts "nak" events — the server refused a
+	// naksReceivedV4 counts "nak" events — the server refused a
 	// REQUEST (pool reconfigured, address reassigned, lease revoked).
 	// Until v1.0.0 a NAK was only a warn-level log line, invisible to
 	// operators (#128). A NAK is followed by dhcpcd re-DISCOVERing, so
 	// pair this with lease_changed: naks_received climbing while
 	// lease_changed follows means containers are being re-addressed
-	// mid-life — Docker's inspect view goes stale (see leaseChanged
+	// mid-life — Docker's inspect view goes stale (see leaseChangedV4
 	// above / #104) and DNS or firewall rules keyed on the old IP need
 	// attention.
-	naksReceived atomic.Int32
+	naksReceivedV4 atomic.Int32
 
-	// Per-family (IPv6) breakdown of the wire counters above (#212).
-	// handleEvent/renew already receive a `v6 bool`; these atoms count
-	// only the v6 client's events. The fields above stay aggregates
-	// (v4+v6) so existing operator alerts keep their meaning — the v4
-	// share is the aggregate minus the matching *V6 atom. On a dual-
-	// stack host this is the only way to tell a v6-specific NAK or
-	// timeout (the signal #152 is landing against) from a v4 one on
-	// /Plugin.Health without scraping logs.
+	// The v6 half of each pair above (#212). handleEvent/renew already
+	// receive a `v6 bool`; these atoms count only the v6 client's
+	// events, and the *V4 atoms above count only the v4 client's.
+	// Neither is an aggregate: the v4+v6 total operator alerts read as
+	// `leases_obtained` is computed as the SUM of the pair in
+	// healthSnapshot (#730), which is what keeps it monotonic. On a
+	// dual-stack host the split is the only way to tell a v6-specific
+	// NAK or timeout (the signal #152 is landing against) from a v4 one
+	// on /Plugin.Health without scraping logs.
 	leaseChangedV6   atomic.Int32
 	leasesObtainedV6 atomic.Int32
 	leasesRenewedV6  atomic.Int32
@@ -820,6 +1124,48 @@ func (p *Plugin) registerDHCPManager(endpointID string, m *dhcpManager) *dhcpMan
 	return old
 }
 
+// dhcpManagerExists reports whether endpointID already has a registered
+// manager. Advisory only — the answer can be stale the instant it is
+// read, which is why the recovery path still registers through a
+// compare-and-set rather than acting on this alone.
+func (p *Plugin) dhcpManagerExists(endpointID string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	_, exists := p.persistentDHCP[endpointID]
+	return exists
+}
+
+// registerDHCPManagerIfAbsent registers m only if no manager is already
+// registered for endpointID, and reports whether it did. It is the
+// recovery path's counterpart to registerDHCPManager: recovery adopts an
+// endpoint precisely because nobody is managing it, so "register" and
+// "only if unmanaged" have to be one operation.
+//
+// They used to be two. recoverOneEndpoint read the map, released the
+// lock, built a manager, and registered it — and dropped the manager
+// that registration displaced, which is exactly what registerDHCPManager
+// says a caller must never do. A Join landing in that window had its
+// live manager evicted from the registry while its dhcpcd kept running:
+// untracked, unstoppable, and competing with recovery's fresh client on
+// the same interface. Join guards the mirror-image case (network.go)
+// because a Join is newer truth than a recovery and may displace it;
+// recovery is older truth and must yield instead, which a
+// compare-and-set expresses and a stop-what-I-displaced does not.
+//
+// The window is small — microseconds per endpoint — but the case that
+// widens it is a real one: a plugin restart whose deferred recovery
+// (#383) runs while a host full of restart-policy containers is
+// rejoining, which is what an abrupt daemon death produces (#480).
+func (p *Plugin) registerDHCPManagerIfAbsent(endpointID string, m *dhcpManager) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if _, exists := p.persistentDHCP[endpointID]; exists {
+		return false
+	}
+	p.persistentDHCP[endpointID] = m
+	return true
+}
+
 // removeDHCPManagerIfSame deletes the registry entry for endpointID only
 // if it still holds m. The failed-Start goroutines use this instead of
 // takeDHCPManager: between Start failing (which unblocks a pending
@@ -877,17 +1223,98 @@ type endpointFingerprint struct {
 	IPv4     string // bare IPv4, e.g. "192.168.0.166" (no /mask). May be empty.
 	IPv6     string // bare IPv6, e.g. "2001:db8::1" (no /prefix). May be empty.
 	Hostname string // container hostname; used to narrow tombstone match.
+	// HostnameRefused records that the hostname is empty because the
+	// plugin REFUSED the container's, not because the container had
+	// none. The two are opposite instructions to the tombstone store
+	// and were previously indistinguishable, because both arrive as
+	// Hostname == "" (#726).
+	//
+	// An empty Hostname is the tombstone matcher's WILDCARD: consume
+	// skips a tombstone only when `hostname != "" && t.Hostname != ""
+	// && t.Hostname != hostname`, so an empty stored hostname matches
+	// every container on the network. That is deliberate and correct
+	// for an honest absence -- it is the v0.5.0 contract for
+	// hostname-less containers, and dropping it would regress them --
+	// and it is exactly wrong for a refusal, where the value we would
+	// not trust for a NARROW match became a match against everything.
+	HostnameRefused bool
 	// Ifname preserves the custom interface name (#125) across the
 	// Leave -> Join cycle of a container restart, where the join hint
 	// is gone and libnetwork does not re-send endpoint options.
 	Ifname string
 }
 
+// dhcpHostname is a container hostname TOGETHER WITH whether the plugin
+// trusts it. The two travel as one value because separating them is the
+// defect (#726).
+//
+// safeHostname yields "" for two opposite situations: a hostname it
+// REFUSED, and a container that honestly has none. Downstream,
+// tombstoneStore.consume reads an empty hostname as "match any tombstone
+// on this network" -- correct for the absence, catastrophic for the
+// refusal, where the value we declined to trust for a NARROW match
+// becomes a match against EVERY container on the network.
+//
+// So the trust bit is not optional context that a caller may carry
+// alongside the name; it is part of what the name MEANS, and a name
+// without it is not interpretable. Making it a struct field of the
+// hostname rather than a second local is what stops the two from
+// drifting apart across the two hundred lines of netlink and DHCP work
+// that separate where a hostname is produced from where it is recorded.
+//
+// Not exported and deliberately not stringly-typed: a bare string is
+// assignable from anything, and the whole failure was a bare "" arriving
+// where a trusted name was expected.
+type dhcpHostname struct {
+	// name is the hostname to put in the DHCP exchange, or "" for
+	// both "refused" and "none". Read it only alongside refused.
+	name string
+	// refused is true when the plugin declined the container's
+	// hostname (a control character, #692/#693) rather than failing
+	// to find one. See tombstoneStore.consume for why the two must
+	// not be collapsed.
+	refused bool
+}
+
+// trusted reports whether name may be used to make an IDENTITY
+// decision -- narrowing a tombstone match, or being recorded in a
+// fingerprint that will become one. An honestly absent hostname is
+// trusted: it buys the v0.5.0 network-wide match, which is the correct
+// answer for a container that has no hostname.
+func (h dhcpHostname) trusted() bool { return !h.refused }
+
 // rememberEndpoint stashes the fingerprint of an endpoint we just
 // created so DeleteEndpoint can resurrect it as a tombstone later.
 // No-op when the MAC is empty (avoids polluting the map for failed
 // CreateEndpoints).
-func (p *Plugin) rememberEndpoint(endpointID string, fp endpointFingerprint) {
+//
+// # WHY THE HOSTNAME IS A PARAMETER AND NOT A FIELD OF fp
+//
+// The bug this signature exists to prevent was a caller writing
+// `Hostname: hostname` into the fingerprint literal and losing the
+// trust bit that travelled beside it (#726). Both CreateEndpoint paths
+// did exactly that: each held the bit at its consumeTombstone call and
+// dropped it two hundred lines later, writing a fingerprint whose empty
+// Hostname the tombstone store reads as "matches every container on
+// this network".
+//
+// The first fix for that was a `hostnameTrusted bool` parameter, on the
+// reasoning that a field is easy to forget and an argument is a compile
+// error. That reasoning is HALF RIGHT AND THE MISSING HALF IS THE ONE
+// THAT MATTERS: a compile error forces a caller to pass SOMETHING, not
+// to pass the RIGHT something. `true` compiles. Substituting it at both
+// call sites left the whole package green while restoring #726 in full,
+// which is how this comment came to be rewritten.
+//
+// So the name and the bit are now ONE value the caller cannot take
+// apart, and the fingerprint's Hostname is filled in HERE from it
+// rather than by the caller. Passing the wrong thing now means
+// constructing a dhcpHostname literal beside a live one, which no
+// plausible edit does and which TestHostnameTrustIsWired refuses at the
+// source anyway.
+func (p *Plugin) rememberEndpoint(endpointID string, fp endpointFingerprint, h dhcpHostname) {
+	fp.Hostname = h.name
+	fp.HostnameRefused = h.refused
 	if fp.MAC == "" {
 		return
 	}
@@ -963,22 +1390,7 @@ func (p *Plugin) addTombstone(networkID, hostname, mac, ipv4, ipv6 string) {
 	if mac == "" {
 		return
 	}
-	p.tombstoneMu.Lock()
-	defer p.tombstoneMu.Unlock()
-	ts, err := loadTombstones()
-	if err != nil {
-		log.WithError(err).Warn("Failed to load tombstones; starting fresh")
-		ts = nil
-	}
-	ts = append(pruneTombstones(ts), tombstone{
-		NetworkID:   networkID,
-		Hostname:    hostname,
-		MacAddress:  mac,
-		IPAddress:   ipv4,
-		IPv6Address: ipv6,
-		DeletedAt:   time.Now(),
-	})
-	if err := saveTombstones(ts); err != nil {
+	if err := p.tombstones.add(networkID, hostname, mac, ipv4, ipv6); err != nil {
 		p.tombstoneWriteFailures.Add(1)
 		log.WithError(err).Warn("Failed to persist tombstone; container restart may pick a new MAC/IP")
 	}
@@ -992,71 +1404,28 @@ func (p *Plugin) addTombstone(networkID, hostname, mac, ipv4, ipv6 string) {
 // to NetworkID-only matching (preserves the v0.5.0 contract for
 // hostname-less containers and races where the lookup didn't return
 // in time). The "exactly one" rule still applies after filtering.
-func (p *Plugin) consumeTombstone(networkID, hostname string) (mac, ipv4, ipv6 string, ok bool) {
-	p.tombstoneMu.Lock()
-	defer p.tombstoneMu.Unlock()
-	ts, err := loadTombstones()
-	if err != nil {
-		log.WithError(err).Warn("Failed to load tombstones; treating as empty")
+func (p *Plugin) consumeTombstone(networkID string, h dhcpHostname) (mac, ipv4, ipv6 string, ok bool) {
+	// The trust bit arrives welded to the name rather than as a check at
+	// the two call sites, for the same reason tombstonesConsumed is
+	// counted here: a third caller cannot forget what it cannot take
+	// apart.
+	//
+	// consume() reads an empty hostname as "match any tombstone on this
+	// network" — deliberate, for v0.5.0 tombstones and for the
+	// CreateEndpoint/container-registration race, both honest absences.
+	// safeHostname also yields an empty string when it REFUSES a
+	// hostname, and routing that into the same wildcard turned the
+	// sanitiser into a wildcard generator: one \x01 in --hostname and the
+	// container inherited another endpoint's MAC and asked the DHCP
+	// server for its address. An untrusted hostname therefore consumes
+	// nothing: the container still attaches, with a fresh identity, which
+	// is the right answer for a value nobody should have sent.
+	if !h.trusted() {
 		return "", "", "", false
 	}
-	preLen := len(ts)
-	ts = pruneTombstones(ts)
-	pruned := len(ts) != preLen
-	matchIdx := -1
-	matches := 0
-	for i, t := range ts {
-		if t.NetworkID != networkID {
-			continue
-		}
-		// When the caller knows the hostname, only match tombstones
-		// whose hostname agrees. Tombstones written by a v0.5.0 build
-		// (or with hostname-lookup races) have empty Hostname; treat
-		// them as "matches anything" so we don't regress those.
-		if hostname != "" && t.Hostname != "" && t.Hostname != hostname {
-			continue
-		}
-		matches++
-		matchIdx = i
-	}
-	if matches != 1 {
-		// More than one match → ambiguous. Drop *all* matches so the
-		// next consumeTombstone for this network/hostname doesn't keep
-		// hitting the same poisoned set for the rest of the TTL window.
-		// Zero matches is harmless; the prune still gets persisted iff
-		// it changed something.
-		dirty := pruned
-		if matches > 1 {
-			kept := ts[:0]
-			for _, t := range ts {
-				if t.NetworkID == networkID {
-					if hostname != "" && t.Hostname != "" && t.Hostname != hostname {
-						kept = append(kept, t)
-						continue
-					}
-					continue
-				}
-				kept = append(kept, t)
-			}
-			ts = kept
-			dirty = true
-		}
-		// Skip the rewrite when nothing changed (I-10 in the
-		// 2026-05-05 review): the common no-op consume on a quiet
-		// network used to fsync a file write per CreateEndpoint.
-		if dirty {
-			if err := saveTombstones(ts); err != nil {
-				log.WithError(err).Debug("Failed to persist pruned tombstones")
-			}
-		}
+	mac, ipv4, ipv6, ok = p.tombstones.consume(networkID, h.name)
+	if !ok {
 		return "", "", "", false
-	}
-	mac = ts[matchIdx].MacAddress
-	ipv4 = ts[matchIdx].IPAddress
-	ipv6 = ts[matchIdx].IPv6Address
-	ts = append(ts[:matchIdx], ts[matchIdx+1:]...)
-	if err := saveTombstones(ts); err != nil {
-		log.WithError(err).Warn("Failed to persist tombstones after consume")
 	}
 	// Counted here rather than at the two call sites (network.go,
 	// parent_attached.go) so a third caller cannot forget it and quietly
@@ -1119,10 +1488,20 @@ func (p *Plugin) recoverEndpoints(ctx context.Context, daemonWait time.Duration)
 	// without this, NetworkInspect / netOptions / recoverOneEndpoint
 	// failures would only show up in the log line and not on the
 	// health endpoint operators page on (W-2 in the 2026-05-05 review).
-	var recovered, failed int
+	var recovered, failed, gone, alreadyManaged int
 	recordSyncFailure := func() {
 		failed++
 		p.recoveryFailed.Add(1)
+	}
+	// A network that has been removed is not a recovery failure (#648).
+	// The list we are walking is a snapshot; anything in it can be gone
+	// by the time we ask for its detail, and a network that is gone has
+	// no container left to rebuild a renewal client for.
+	recordNetworkGone := func(id string, err error) {
+		gone++
+		p.recoveryNetworkGone.Add(1)
+		log.WithError(err).WithField("network", shortID(id)).
+			Info("recovery: network removed before it could be read; skipping")
 	}
 	waitCtx, waitCancel := context.WithTimeout(ctx, daemonWait)
 	nets, err := p.listNetworksWhenReady(waitCtx)
@@ -1143,6 +1522,10 @@ func (p *Plugin) recoverEndpoints(ctx context.Context, daemonWait time.Duration)
 		netInfo, err := p.docker.NetworkInspect(netCtx, n.ID, dNetwork.InspectOptions{})
 		if err != nil {
 			netCancel()
+			if cerrdefs.IsNotFound(err) {
+				recordNetworkGone(n.ID, err)
+				continue
+			}
 			log.WithError(err).WithField("network", shortID(n.ID)).
 				Warn("recovery: NetworkInspect failed; skipping")
 			recordSyncFailure()
@@ -1151,6 +1534,13 @@ func (p *Plugin) recoverEndpoints(ctx context.Context, daemonWait time.Duration)
 		opts, err := p.netOptions(netCtx, n.ID)
 		netCancel()
 		if err != nil {
+			// netOptions prefers the on-disk cache and only reaches the
+			// daemon when that misses, so a 404 here is the same race one
+			// call later.
+			if cerrdefs.IsNotFound(err) {
+				recordNetworkGone(n.ID, err)
+				continue
+			}
 			log.WithError(err).WithField("network", shortID(n.ID)).
 				Warn("recovery: failed to load network options; skipping")
 			recordSyncFailure()
@@ -1164,7 +1554,8 @@ func (p *Plugin) recoverEndpoints(ctx context.Context, daemonWait time.Duration)
 			if strings.HasPrefix(cid, "ep-") {
 				continue
 			}
-			if err := p.recoverOneEndpoint(ctx, cid, n.ID, info.EndpointID, info.MacAddress, info.IPv4Address, info.IPv6Address, opts); err != nil {
+			adopted, err := p.recoverOneEndpoint(ctx, cid, n.ID, info.EndpointID, info.MacAddress, info.IPv4Address, info.IPv6Address, opts)
+			if err != nil {
 				log.WithError(err).WithFields(log.Fields{
 					"network":  shortID(n.ID),
 					"endpoint": shortID(info.EndpointID),
@@ -1172,13 +1563,19 @@ func (p *Plugin) recoverEndpoints(ctx context.Context, daemonWait time.Duration)
 				recordSyncFailure()
 				continue
 			}
+			if !adopted {
+				alreadyManaged++
+				continue
+			}
 			recovered++
 		}
 	}
-	if recovered > 0 || failed > 0 {
+	if recovered > 0 || failed > 0 || gone > 0 || alreadyManaged > 0 {
 		log.WithFields(log.Fields{
-			"recovered": recovered,
-			"failed":    failed,
+			"recovered":       recovered,
+			"failed":          failed,
+			"network_gone":    gone,
+			"already_managed": alreadyManaged,
 		}).Info("Plugin recovery complete")
 	}
 	return false
@@ -1251,24 +1648,90 @@ func (p *Plugin) containerGone(ctx context.Context, containerID string) bool {
 	return ctr.State == nil || !ctr.State.Running
 }
 
+// recoveredHostname returns the container hostname to record in a
+// recovered endpoint's fingerprint, and whether it may be recorded at
+// all.
+//
+// ok=false means "record no fingerprint for this endpoint", and it
+// deliberately covers two different things:
+//
+//   - the inspect did not answer, so the hostname is simply unknown;
+//   - safeHostname REFUSED the hostname because it carries a control
+//     character (#693).
+//
+// Both end in the same place because of what an empty Hostname means
+// downstream: tombstoneStore.consume reads a tombstone with no hostname
+// as "matches any container on this network". Recording an empty one
+// here would not write a weaker tombstone, it would write a wildcard
+// one, and the next container to attach to this network would inherit a
+// MAC and an address that were never its own. Recording nothing leaves
+// this endpoint exactly the behaviour it has today, which is the only
+// direction that cannot hurt a container that did nothing wrong.
+func (p *Plugin) recoveredHostname(ctx context.Context, containerID string) (dhcpHostname, bool) {
+	if containerID == "" {
+		p.recoveryFingerprintsSkipped.Add(1)
+		return dhcpHostname{}, false
+	}
+	// The SAME budget the CreateEndpoint path gives the same lookup, and
+	// deliberately not a tighter one. The first draft of this used
+	// 500ms, on the reasoning that the daemon had already answered
+	// NetworkList and NetworkInspect so a slow ContainerInspect meant it
+	// was degrading. #406 is the measured counterexample: dockerd
+	// answered other calls normally while blocking on ContainerInspect
+	// for a container it was inside ContainerStart for, and did not
+	// answer until it was done. Those two earlier calls say nothing
+	// about whether THIS container's inspect is blocked — and a
+	// container mid-ContainerStart is the expected state of most of what
+	// recovery walks, since recovery runs while the daemon is restarting
+	// every container on the host. A tighter budget would therefore
+	// expire in precisely the scenario #721 exists to fix, and no
+	// fixture would ever show it: they all answer instantly.
+	ctx, cancel := context.WithTimeout(ctx, initialDHCPHostnameLookupTimeout)
+	defer cancel()
+
+	ctr, err := p.docker.ContainerInspect(ctx, containerID)
+	if err != nil || ctr.Config == nil || ctr.Config.Hostname == "" {
+		// Counted, not logged: this is the arm that makes an endpoint
+		// quietly lose its address on its next restart, and a log line
+		// is not something an operator can alert on.
+		p.recoveryFingerprintsSkipped.Add(1)
+		return dhcpHostname{}, false
+	}
+	// A refusal is counted by safeHostname itself
+	// (unsafeHostnamesRejected); see the field comment for why it is not
+	// also counted here.
+	h := p.safeHostname(ctr.Config.Hostname)
+	return h, h.trusted()
+}
+
 // recoverOneEndpoint synthesises a JoinRequest and dhcpManager for a
 // single existing endpoint, then spawns Start in a goroutine. Idempotent:
 // if a manager already exists for the endpoint (e.g. because libnetwork
 // raced with us and called Join concurrently), we skip.
 //
+// Returns adopted=false for that skip, so the caller can tell an endpoint
+// this recovery took responsibility for from one it merely looked at. The
+// completion log used to count both as recovered, which put "recovered=1"
+// in the log of a run whose recovered_ok stayed 0 — the counter was right
+// and the line an operator reads was not (#480).
+//
 // containerID is carried through solely so the async Start failure can
 // tell a real failure from a container that has since exited (#376).
-func (p *Plugin) recoverOneEndpoint(ctx context.Context, containerID, networkID, endpointID, macStr, ipv4Cidr, ipv6Cidr string, opts DHCPNetworkOptions) error {
-	p.mu.Lock()
-	_, exists := p.persistentDHCP[endpointID]
-	p.mu.Unlock()
-	if exists {
-		return nil
+func (p *Plugin) recoverOneEndpoint(ctx context.Context, containerID, networkID, endpointID, macStr, ipv4Cidr, ipv6Cidr string, opts DHCPNetworkOptions) (adopted bool, err error) {
+	// Cheap pre-check, and it has to come before the parse: an endpoint
+	// somebody else is already managing is fine no matter what Docker
+	// reports for its MAC, and reaching the parse would turn that into a
+	// recovery_failed — a healthy-affecting counter — for an endpoint
+	// with a working renewal client. The compare-and-set below is what
+	// actually closes the race; this only spares the work.
+	if p.dhcpManagerExists(endpointID) {
+		p.recoveryAlreadyManaged.Add(1)
+		return false, nil
 	}
 
 	mac, err := net.ParseMAC(macStr)
 	if err != nil {
-		return fmt.Errorf("parse MAC %q: %w", macStr, err)
+		return false, fmt.Errorf("parse MAC %q: %w", macStr, err)
 	}
 
 	var ipv4, ipv6 *netlink.Addr
@@ -1291,7 +1754,52 @@ func (p *Plugin) recoverOneEndpoint(ctx context.Context, containerID, networkID,
 	m.setLastIP(false, ipv4)
 	m.setLastIP(true, ipv6)
 	m.MacAddress = mac
-	p.registerDHCPManager(endpointID, m)
+	// Checked and registered in one operation, so a Join that arrives
+	// mid-recovery keeps its own manager instead of having it evicted
+	// by ours. Building the manager first costs nothing when we lose:
+	// it was never published, so nothing can reach it and it holds no
+	// dhcpcd — Start is only spawned below, after we have won.
+	if !p.registerDHCPManagerIfAbsent(endpointID, m) {
+		p.recoveryAlreadyManaged.Add(1)
+		return false, nil
+	}
+
+	// Recovery is the only path that takes ownership of a live endpoint
+	// without a CreateEndpoint, and it used to leave the fingerprint map
+	// untouched (#721). DeleteEndpoint lays a tombstone only for an
+	// endpoint it holds a fingerprint for, so every endpoint that had
+	// lived through a plugin restart lost address stability on its next
+	// `docker restart` — silently, with tombstones_consumed simply
+	// staying flat. Recorded after the compare-and-set above rather than
+	// before it: an endpoint a concurrent Join won is that Join's to
+	// describe, and overwriting its fingerprint with ours would hand its
+	// tombstone our idea of the hostname.
+	//
+	// Ifname is deliberately left empty. Docker's record does not carry
+	// the custom interface name (#125), so a recovered endpoint falls
+	// back to the default on its next Join. Losing the name is visible
+	// and the operator can restore it; inventing one is neither.
+	if hostname, ok := p.recoveredHostname(ctx, containerID); ok {
+		fpIPv4, fpIPv6 := "", ""
+		if ipv4 != nil {
+			fpIPv4 = ipv4.IP.String()
+		}
+		if ipv6 != nil {
+			fpIPv6 = ipv6.IP.String()
+		}
+		// hostname is passed whole, and no literal appears here at
+		// all: this is the one arm of recoveredHostname that reaches
+		// this block, because it returns ok only for a hostname
+		// safeHostname accepted. A refusal returns ok=false, this
+		// block does not run, and no fingerprint is written -- the
+		// same answer the CreateEndpoint paths give a refusal,
+		// arrived at from the other side (#726).
+		p.rememberEndpoint(endpointID, endpointFingerprint{
+			MAC:  mac.String(),
+			IPv4: fpIPv4,
+			IPv6: fpIPv6,
+		}, hostname)
+	}
 
 	go func() {
 		startCtx, cancel := context.WithTimeout(context.Background(), p.awaitTimeout)
@@ -1332,7 +1840,7 @@ func (p *Plugin) recoverOneEndpoint(ctx context.Context, containerID, networkID,
 		}
 		p.recoveredOK.Add(1)
 	}()
-	return nil
+	return true, nil
 }
 
 // lookupEndpointMAC reads the MAC address Docker has stored for an
@@ -1397,7 +1905,13 @@ func (p *Plugin) reacquireEndpoint(ctx context.Context, r JoinRequest, opts DHCP
 // persistent renewal client populates the hostname later regardless,
 // so the worst case is "first lease appears in the upstream DHCP
 // server's UI without a hostname for a few minutes".
-func (p *Plugin) initialDHCPHostname(ctx context.Context, networkID, endpointID string) string {
+//
+// The second return value is false when a hostname was found and REFUSED
+// (see safeHostname), as opposed to not found at all. Both produce an
+// empty hostname and they must not be treated alike: an absent hostname
+// is an honest unknown that tombstone matching deliberately treats as a
+// wildcard, while a refused one is attacker-supplied and must not buy it.
+func (p *Plugin) initialDHCPHostname(ctx context.Context, networkID, endpointID string) dhcpHostname {
 	ctx, cancel := context.WithTimeout(ctx, initialDHCPHostnameLookupTimeout)
 	defer cancel()
 
@@ -1410,7 +1924,11 @@ func (p *Plugin) initialDHCPHostname(ctx context.Context, networkID, endpointID 
 	// retry interval. Cap the inner ctx at the poll interval.
 	const dockerCallTimeout = 200 * time.Millisecond
 
-	var hostname string
+	// The zero value is the honest-unknown case: a lookup that never
+	// finds the container yields an empty hostname that nobody chose,
+	// which is NOT a refusal and must keep the v0.5.0 network-wide
+	// tombstone match. Only safeHostname below can set refused.
+	var hostname dhcpHostname
 	_ = util.AwaitCondition(ctx, func() (bool, error) {
 		inner, innerCancel := context.WithTimeout(ctx, dockerCallTimeout)
 		defer innerCancel()
@@ -1434,7 +1952,7 @@ func (p *Plugin) initialDHCPHostname(ctx context.Context, networkID, endpointID 
 			if err != nil {
 				return false, nil
 			}
-			hostname = ctr.Config.Hostname
+			hostname = p.safeHostname(ctr.Config.Hostname)
 			return true, nil
 		}
 		return false, nil
@@ -1446,6 +1964,7 @@ func (p *Plugin) initialDHCPHostname(ctx context.Context, networkID, endpointID 
 // documented defaults, so NewPlugin(Options{}) is a valid production
 // configuration.
 func NewPlugin(opts Options) (*Plugin, error) {
+	warnIfStateDirIsNotThePersistentOne()
 	if opts.AwaitTimeout <= 0 {
 		opts.AwaitTimeout = defaultAwaitTimeout
 	}
@@ -1482,26 +2001,52 @@ func NewPlugin(opts Options) (*Plugin, error) {
 	}
 	p.ledger = newLeaseLedger(filepath.Join(stateDir, ledgerFileName), &p.ledgerWriteFailures)
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/NetworkDriver.GetCapabilities", p.apiGetCapabilities)
+	// Routing table, and the RPCs deliberately left off it: routes.go.
+	mux := p.newServeMux()
 
-	mux.HandleFunc("/NetworkDriver.CreateNetwork", p.apiCreateNetwork)
-	mux.HandleFunc("/NetworkDriver.DeleteNetwork", p.apiDeleteNetwork)
-
-	mux.HandleFunc("/NetworkDriver.CreateEndpoint", p.apiCreateEndpoint)
-	mux.HandleFunc("/NetworkDriver.EndpointOperInfo", p.apiEndpointOperInfo)
-	mux.HandleFunc("/NetworkDriver.DeleteEndpoint", p.apiDeleteEndpoint)
-
-	mux.HandleFunc("/NetworkDriver.Join", p.apiJoin)
-	mux.HandleFunc("/NetworkDriver.Leave", p.apiLeave)
-
-	// Plugin observability — not part of the libnetwork RPC contract,
-	// but lives on the same socket so anything that can talk to the
-	// plugin can also poll its state.
-	mux.HandleFunc("/Plugin.Health", p.apiHealth)
-
+	// Capture sits INSIDE the access-logging handler so a captured
+	// request is one that was actually served, and outside the mux so
+	// it sees the raw body before any handler decodes it. With no
+	// capture directory set — every shipped plugin — captureHandler
+	// returns the mux itself and this line is a no-op (#644).
+	// limitBody sits OUTSIDE the logging and capture handlers so the cap
+	// applies to the body before either reads it. Timeouts and the cap
+	// are explained in http_limits.go -- in particular why WriteTimeout
+	// is zero here and not on the metrics server.
 	p.server = http.Server{
-		Handler: handlers.CustomLoggingHandler(nil, mux, util.WriteAccessLog),
+		Handler:           limitBody(handlers.CustomLoggingHandler(nil, captureHandler(mux, opts.RequestCaptureDir, capturablePaths(p.routes())), util.WriteAccessLog)),
+		ReadHeaderTimeout: socketReadHeaderTimeout,
+		ReadTimeout:       socketReadTimeout,
+		WriteTimeout:      socketWriteTimeout,
+		IdleTimeout:       socketIdleTimeout,
+	}
+
+	// Kill dhcpcd clients left behind by a PREVIOUS plugin process
+	// before recovery can start new ones (#722).
+	//
+	// Placement is the whole point. Every orphan the sweep does not
+	// reach before recoverEndpoints runs becomes a second client on the
+	// same binding, with the same DUID, IAID and client-id -- and on the
+	// eventual Leave one of the pair sends a DHCPRELEASE while the other
+	// keeps renewing.
+	//
+	// Here covers BOTH recovery entry points. recoverEndpoints is called
+	// from two places: synchronously just below, and again from
+	// recoverEndpointsDeferred once the socket is up, for the case where
+	// the daemon was not serving yet (#383). The deferred walk cannot
+	// start a client before the synchronous one has run, so a sweep that
+	// precedes the synchronous call precedes both.
+	//
+	// A failure here is a warning, not a fatal: the plugin still has to
+	// come up. It is the case where recovery is about to start a second
+	// client for an endpoint whose first one is still alive, so it must
+	// not pass silently.
+	if n, err := dhcp.SweepOrphans(); err != nil {
+		log.WithError(err).
+			Warn("Could not sweep dhcpcd clients left by a previous plugin process; recovery may start a second client per endpoint")
+	} else if n > 0 {
+		log.WithField("killed", n).
+			Warn("Killed dhcpcd clients left by a previous plugin process")
 	}
 
 	// Run endpoint recovery synchronously before NewPlugin returns
@@ -1536,6 +2081,21 @@ func (p *Plugin) Listen(bindSock string) error {
 	l, err := net.Listen("unix", bindSock)
 	if err != nil {
 		return err
+	}
+
+	// A UNIX socket is created with 0777 &^ umask, so without this the
+	// access control on our entire RPC surface would be whatever umask
+	// the plugin runtime happened to hand us -- 0755 today, 0775 under
+	// a umask of 0002, 0777 under 0. SECURITY.md argues that serving
+	// /metrics here is unchanged ground *because* the socket is
+	// root-only; that property is now enforced rather than inherited
+	// (#687). Only the daemon speaks this protocol and it connects as
+	// root, so nothing legitimate needs group or other.
+	if err := os.Chmod(bindSock, 0o600); err != nil {
+		// Refuse to serve on a socket whose mode we could not pin:
+		// an unknown mode is exactly the state this guards against.
+		l.Close()
+		return fmt.Errorf("restricting the plugin socket to the owner: %w", err)
 	}
 
 	// The socket exists now, so the daemon can reach us even while we
@@ -1598,6 +2158,51 @@ func waitBounded(wg *sync.WaitGroup, d time.Duration) bool {
 // upgrade or `docker plugin disable` would orphan every active lease at
 // the upstream DHCP server, defeating the release-on-stop contract
 // Leave normally honors.
+// ListenMetrics starts the optional TCP listener for /metrics.
+//
+// Off unless METRICS_ADDR is set, and that default is deliberate. The
+// plugin holds CAP_NET_ADMIN, CAP_SYS_ADMIN and CAP_SYS_PTRACE with
+// "network": {"type": "host"} in config.json, so any port it opens is on
+// the host's own network namespace. Opening one has to be a decision an
+// operator made, not something they inherited by upgrading (#651).
+//
+// The mux here carries /metrics ALONE. See the metricsServer field for
+// why that is load-bearing rather than tidy.
+//
+// Returns once the listener is bound, so a bad METRICS_ADDR fails at
+// startup where an operator will see it, rather than in a goroutine that
+// logs and leaves the plugin running without the endpoint they asked for.
+func (p *Plugin) ListenMetrics(addr string) error {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/metrics", p.apiMetrics)
+
+	warnOnWildcardMetricsBind(addr)
+
+	l, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("metrics listener on %q: %w", addr, err)
+	}
+
+	p.metricsListener = l
+	// A scrape is a small GET whose handler renders one snapshot, so
+	// unlike the plugin socket this server can carry a write timeout
+	// safely. See http_limits.go.
+	p.metricsServer = &http.Server{
+		Handler:           limitBody(mux),
+		ReadHeaderTimeout: metricsReadHeaderTimeout,
+		ReadTimeout:       metricsReadTimeout,
+		WriteTimeout:      metricsWriteTimeout,
+		IdleTimeout:       metricsIdleTimeout,
+	}
+	go func() {
+		if err := p.metricsServer.Serve(l); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.WithError(err).Error("Metrics listener stopped")
+		}
+	}()
+	log.WithField("addr", addr).Info("Serving /metrics over TCP")
+	return nil
+}
+
 func (p *Plugin) Close() error {
 	// Stop the deferred-recovery retry first (#383). It can be sitting
 	// in a 60s wait for a daemon that is going away with us, and a
@@ -1631,6 +2236,14 @@ func (p *Plugin) Close() error {
 	// guarantee above does NOT hold and we fall back to the old
 	// speculative behaviour. Rare, not impossible — keep it explicit
 	// instead of assuming it away.
+	// The metrics listener carries no plugin state and no in-flight
+	// work worth draining, so it is closed outright rather than given a
+	// slice of the shutdown budget. Doing it first stops a scrape
+	// arriving mid-drain and reading a registry that is being emptied.
+	if p.metricsServer != nil {
+		_ = p.metricsServer.Close()
+	}
+
 	forced := false
 	serverErr := p.server.Shutdown(shutdownCtx)
 	if serverErr != nil {
@@ -1713,4 +2326,43 @@ func (p *Plugin) Close() error {
 	}
 
 	return nil
+}
+
+// safeHostname returns h when it can be carried into the generated dhcpcd
+// config unchanged, and ("", false) when it cannot (#692).
+//
+// The hostname is the container's own and Docker does not validate it, so
+// it is the one value on this path chosen by whoever started the
+// container rather than by an operator or by us. dhcpcd.directive would
+// drop it anyway — that is the structural guarantee — but doing it here
+// means the event reaches a counter, and a counter is the only form an
+// operator can alert on.
+//
+// Dropping rather than failing the endpoint is deliberate: the hostname
+// only decorates the DHCP exchange (and the opt-in FQDN registration), so
+// refusing the container over it would turn a cosmetic problem into an
+// outage the attacker chose.
+// WHY THERE IS A SECOND RETURN VALUE
+//
+// The first version of this returned a bare "" and that was a
+// vulnerability, not a rough edge. The hostname is not only decoration:
+// it is also the key that narrows tombstone matching to the container
+// that wrote the tombstone, and in tombstoneStore.consume an EMPTY
+// hostname means "match any tombstone on this network" — a deliberate
+// carve-out for v0.5.0 tombstones and for the lookup race, both honest.
+// Collapsing "I refused this value" into that same "" handed the caller a
+// wildcard, so one control character in --hostname let a container
+// inherit another endpoint's MAC and request its address.
+//
+// A refusal therefore has to be distinguishable from an absence. The
+// caller that only writes the DHCP config can keep ignoring the
+// difference; the caller that makes an identity decision must not.
+func (p *Plugin) safeHostname(h string) dhcpHostname {
+	if dhcp.SafeDirectiveValue(h) {
+		return dhcpHostname{name: h}
+	}
+	p.unsafeHostnamesRejected.Add(1)
+	log.WithField("hostname", fmt.Sprintf("%q", h)).
+		Warn("Dropping container hostname: it carries a control character and cannot be written to the DHCP client config")
+	return dhcpHostname{refused: true}
 }

@@ -35,3 +35,16 @@ fixing the docs would help newcomers	-
 citation needed for the lease-timer claim	-
 testing on the runner is slow	-
 chore(release): v1.3.5 — version pins and release notes	-
+
+# --- negatives: a NEAR MISS is not a prefix either (#536) ---
+# The section above covers titles with no colon at all. These have the
+# colon and still must not match: either the type is one this map does
+# not know, or the word merely STARTS with a type it does know. The last
+# two are the ones worth having — whether they fall through depends on
+# the anchoring of `docs?` and `feat`, which is otherwise only implied
+# by reading the regex.
+chore: bump the year in the licence headers	-
+style: gofmt the harness	-
+revert: "feat(plugin): derive the v4 client-id from the MAC"	-
+docsite: the versioned docs dropdown shows only latest	-
+feature-flag: gate the ipvlan path	-

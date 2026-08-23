@@ -74,6 +74,32 @@ DOCKERFILE="$TMP/Dockerfile.noalpine" APK_AVAIL_FILE="$TMP/avail.txt" \
 if [ $? -eq 2 ]; then echo "PASS: missing FROM alpine: exits 2"; else
     echo "FAIL: missing FROM alpine: should exit 2"; failures=$((failures + 1)); fi
 
+# --- the CRON CALLER must pass --strict (#742) -------------------------
+# The report-only mode above is correct for a human at a terminal and
+# WRONG for the scheduled workflow, which was invoking it bare. GitHub
+# sends no notification for a successful scheduled run, so drift printed
+# its report into a log nobody had a reason to open: seventeen of
+# seventeen runs green while the pin being watched is dhcpcd, the
+# component performing the whole DHCP exchange against an untrusted LAN.
+#
+# This is asserted as text because there is nothing else to assert. The
+# failure has no runtime symptom — a report-only run and a no-drift run
+# are byte-for-byte the same green tick — so the only place it is
+# visible is the edit that removes the flag.
+WF="$(cd "$(dirname "$0")/.." && pwd)/.github/workflows/apk-pin-check.yml"
+if [ ! -r "$WF" ]; then
+    echo "FAIL: cannot read $WF — the cron caller this gate reports for is missing"
+    failures=$((failures + 1))
+elif grep -vE '^[[:space:]]*#' "$WF" \
+       | grep -E 'check-apk-pins\.sh[[:space:]]+--strict' >/dev/null; then
+    echo "PASS: the scheduled workflow invokes the script with --strict"
+else
+    echo "FAIL: apk-pin-check.yml does not pass --strict; drift would exit 0 and"
+    echo "      GitHub notifies on FAILED scheduled runs only, so nothing would"
+    echo "      reach anyone. Report-only is the terminal mode, not the cron mode."
+    failures=$((failures + 1))
+fi
+
 if [ "$failures" -ne 0 ]; then
     echo "$failures apk-pin-check test(s) failed"
     exit 1

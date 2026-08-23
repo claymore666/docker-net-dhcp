@@ -189,8 +189,20 @@ jobs:
           git fetch --no-tags origin '+refs/heads/*:refs/remotes/origin/*'
           git fetch --tags origin
 
+      # The ref reaches the shell through env, never expanded into the
+      # script text (#737). Worth naming what makes this instance
+      # different from the other four: THIS IS THE GUARD JOB. `${{ }}`
+      # is substituted before bash parses the line, so the one job whose
+      # entire purpose is to refuse an untrusted ref could be subverted
+      # through the very input it validates — and it runs FIRST, so
+      # everything gated behind it inherits the outcome. A guard that
+      # can be walked through by its own argument is a different class
+      # of finding from an ordinary injection site, and this comment
+      # exists so that is not re-discovered from scratch.
       - name: Reject a dispatch ref that is not ours
-        run: bash scripts/check-dispatch-ref.sh "${{ inputs.ref }}"
+        env:
+          INPUT_REF: ${{ inputs.ref }}
+        run: bash scripts/check-dispatch-ref.sh "${INPUT_REF}"
 
   # Decide ONCE whether this event needs the suites at all: docs-only PR
   # diffs (#311) and post-merge pushes whose tree already passed (#312)
@@ -481,6 +493,19 @@ jobs:
             exit 1
           fi
           echo "fixture deps present: dnsmasq $(dnsmasq --version 2>/dev/null | head -1 | awk '{print $3}'), kea $(kea-dhcp4 -v 2>/dev/null)"
+
+      # The replayed request fixtures (#644) are a recording of ONE
+      # engine. This is the only host that knows which engine the suite
+      # actually talks to, so it is the only place the recording can be
+      # checked against reality — everywhere else the comparison would
+      # be against an unrelated daemon.
+      #
+      # Without it the fixtures decay into an assumption that agrees
+      # with itself forever, with a green test next to it. That is worse
+      # than the hand-built structs they replaced, because it looks like
+      # evidence.
+      - name: Fixture engine drift
+        run: bash scripts/check-fixture-engine-drift.sh
 
       # Best-effort: clean any orphans from a previous run that
       # panicked mid-setup. Safe to run even on a clean state.

@@ -4,9 +4,14 @@
 
 # Table-driven tests for check-docs-drift.sh (#345). Synthesizes a Go
 # package with a HealthResponse struct and a DHCPNetworkOptions struct,
-# a plugin manifest, and a docs tree — then asserts each of the three
-# checks bites, that the waiver mechanism works, and that a fully
-# documented tree with cross-links passes.
+# a plugin manifest, and a docs tree — then asserts each of the checks
+# bites, that the waiver mechanism works, and that a fully documented
+# tree with cross-links passes.
+#
+# The cover-manifest cases (rule 2b) carry their own growth case: a
+# THIRD cover-only setting, documented, must pass. A gate that encoded
+# today's GOCOVERDIR/REQUEST_CAPTURE_DIR would satisfy every other case
+# while blocking the next instrumentation knob.
 #
 # The duplication cases mirror the two real shapes that drifted before
 # this gate existed: a settings *table* and a counter *bullet list*.
@@ -66,7 +71,7 @@ expect() { # <want-exit> <label> <must-contain-or-empty>
     if [ "$rc" -ne "$want" ]; then
         echo "FAIL: $label — exit $rc, want $want"; printf '    %s\n' "$out"; fail=1; return
     fi
-    if [ -n "$needle" ] && ! printf '%s' "$out" | grep -qF "$needle"; then
+    if [ -n "$needle" ] && ! printf '%s' "$out" | grep -F "$needle" >/dev/null; then
         echo "FAIL: $label — output missing '$needle'"; printf '    %s\n' "$out"; fail=1; return
     fi
     echo "PASS: $label"
@@ -278,6 +283,118 @@ else
     printf '%s\n' "$out" | sed 's/^/    /'
     fail=1
 fi
+
+# --- 2b. the second manifest -------------------------------------------
+# config-cover.json declares settables config.json does not, and the
+# gate used to read only config.json — so those were settings nothing
+# had ever looked at. They are exempt from the operator reference by
+# name (they do not exist on the shipped plugin) and owe the
+# contributor page a definition instead.
+
+cover_run() { # <cover-manifest> <contrib-doc>
+    MANIFEST="$TMP/config.json" COVER_MANIFEST="$1" CONTRIB_DOC="$2" \
+        bash "$CHECK" "$PKG" "$DOCS" "$DOCS/reference.md" 2>&1
+}
+cover_expect() { # <want-exit> <label> <cover-manifest> <contrib-doc> <needle>
+    local want="$1" label="$2" cm="$3" cd="$4" needle="${5:-}" out rc
+    out=$(cover_run "$cm" "$cd"); rc=$?
+    if [ "$rc" -ne "$want" ]; then
+        echo "FAIL: $label — exit $rc, want $want"; printf '%s\n' "$out" | sed 's/^/    /'; fail=1; return
+    fi
+    if [ -n "$needle" ] && ! printf '%s' "$out" | grep -F "$needle" >/dev/null; then
+        echo "FAIL: $label — output missing '$needle'"; printf '%s\n' "$out" | sed 's/^/    /'; fail=1; return
+    fi
+    echo "PASS: $label"
+}
+
+write_reference
+rm -f "$DOCS/guide.md"
+
+mkdir -p "$TMP/cover"
+cat > "$TMP/cover/config-cover.json" <<'EOF'
+{
+  "env": [
+    { "name": "LOG_LEVEL", "value": "info", "settable": ["value"] },
+    { "name": "GOCOVERDIR", "value": "/coverage", "settable": ["value"] }
+  ],
+  "mounts": [
+    { "type": "bind", "source": "/var/lib/net-dhcp", "destination": "/var/lib/net-dhcp" }
+  ]
+}
+EOF
+
+# Documented where it lives → exempt, and the exemption is printed.
+printf '# internals\nThe cover build writes counters to `GOCOVERDIR`.\n' > "$DOCS/internals.md"
+cover_expect 0 "a cover-only setting documented in the contributor page is exempt" \
+    "$TMP/cover/config-cover.json" "$DOCS/internals.md" "EXEMPT setting GOCOVERDIR"
+
+# ...and the exemption is not a blanket: it must not be silent, and it
+# must not swallow the shipped settings rule.
+cover_expect 0 "a shipped setting is still judged against the reference" \
+    "$TMP/cover/config-cover.json" "$DOCS/internals.md" "PASS  setting LOG_LEVEL documented"
+
+# Documented nowhere → the gate bites. This is the shape that matters:
+# a real operator setting landing in the cover manifest alone would
+# otherwise escape rule 2 forever.
+printf '# internals\nNothing about the cover build here.\n' > "$DOCS/internals.md"
+cover_expect 1 "a cover-only setting documented nowhere fails" \
+    "$TMP/cover/config-cover.json" "$DOCS/internals.md" "settable on the coverage plugin"
+
+# Growth must be possible: a THIRD cover-only setting, documented,
+# passes. A gate that encoded today's two would block the next one.
+cat > "$TMP/cover/config-cover3.json" <<'EOF'
+{
+  "env": [
+    { "name": "LOG_LEVEL", "value": "info", "settable": ["value"] },
+    { "name": "GOCOVERDIR", "value": "/coverage", "settable": ["value"] },
+    { "name": "REQUEST_CAPTURE_DIR", "value": "", "settable": ["value"] },
+    { "name": "REPLAY_TRACE_DIR", "value": "", "settable": ["value"] }
+  ],
+  "mounts": [
+    { "type": "bind", "source": "/var/lib/net-dhcp", "destination": "/var/lib/net-dhcp" }
+  ]
+}
+EOF
+cat > "$DOCS/internals.md" <<'EOF'
+# internals
+The cover build writes counters to `GOCOVERDIR`, request bodies to
+`REQUEST_CAPTURE_DIR`, and replay traces to `REPLAY_TRACE_DIR`.
+EOF
+cover_expect 0 "a newly added, documented cover-only setting passes" \
+    "$TMP/cover/config-cover3.json" "$DOCS/internals.md" "EXEMPT setting REPLAY_TRACE_DIR"
+
+# A cover-only setting must NOT be required in the operator reference —
+# it does not exist on the plugin a user installs. The reference above
+# never mentions GOCOVERDIR, and that is the passing case just proven;
+# this asserts the gate does not quietly demand it.
+out=$(cover_run "$TMP/cover/config-cover3.json" "$DOCS/internals.md")
+if printf '%s' "$out" | grep -F "setting GOCOVERDIR is settable on the plugin but absent" >/dev/null; then
+    echo "FAIL: a cover-only setting is being demanded in the operator reference"; fail=1
+else
+    echo "PASS: a cover-only setting is not demanded in the operator reference"
+fi
+
+# The exemption needs somewhere to live. No contributor page, but
+# cover-only settings exist → cannot check, not clean.
+cover_expect 2 "a missing contributor page cannot carry the exemption" \
+    "$TMP/cover/config-cover3.json" "$DOCS/nonexistent.md" "does not exist"
+
+# No cover manifest at all: nothing to judge, said out loud rather than
+# passed over in silence.
+rm -f "$DOCS/internals.md"
+write_reference
+cover_expect 0 "an absent cover manifest is reported, not assumed" \
+    "$TMP/cover/config-missing.json" "$DOCS/internals.md" "no cover-only settings to judge"
+
+# The default resolution is part of the contract: with nothing but
+# MANIFEST set, the cover manifest is looked for beside it. Everything
+# above passes COVER_MANIFEST explicitly, which would leave a broken
+# default undetected — and the default is what CI actually runs.
+write_reference
+cp "$TMP/cover/config-cover.json" "$TMP/config-cover.json"
+printf '# internals\nThe cover build writes counters to `GOCOVERDIR`.\n' > "$DOCS/internals.md"
+expect 0 "the cover manifest is found beside MANIFEST by default" "EXEMPT setting GOCOVERDIR"
+rm -f "$TMP/config-cover.json" "$DOCS/internals.md"
 
 if [ "$fail" -ne 0 ]; then
     echo "check-docs-drift tests FAILED"

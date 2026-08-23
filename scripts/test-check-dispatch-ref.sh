@@ -110,7 +110,7 @@ check "the raw SHA of a fork PR head is rejected" 1 "$D" "$FORK_SHA" \
 # The old guard, run against the new broken input (#593 is the second
 # time a rule was correct and a new route walked around it).
 n=$((n + 1))
-if printf '%s' "$FORK_SHA" | grep -Eq '(^|/)pull/[0-9]+/'; then
+if printf '%s' "$FORK_SHA" | grep -E '(^|/)pull/[0-9]+/' >/dev/null; then
     echo "FAIL: the fork-head SHA matches the pull-ref pattern, so the two" \
          "assertions are not independent and this fixture proves nothing"
     failures=$((failures + 1))

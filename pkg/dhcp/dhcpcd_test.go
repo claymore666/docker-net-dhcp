@@ -345,8 +345,13 @@ func TestRenderArgs_OneShotV4(t *testing.T) {
 		Handler:    "/usr/lib/net-dhcp/dhcp-handler",
 		ConfigPath: "/run/net-dhcp/eth0-v4.conf",
 	})
+	// argv[0] is the LITERAL absolute path, not dhcpcdBin. A want-list
+	// built from the constant would assert the constant equals itself
+	// and say nothing about its value — and its value is the whole
+	// point: this argument is execed by a shell, which resolves a bare
+	// name through PATH (#707).
 	want := []string{
-		"dhcpcd", "-B", "--noconfigure", "-L", "-A",
+		"/sbin/dhcpcd", "-B", "--noconfigure", "-L", "-A",
 		"-c", "/usr/lib/net-dhcp/dhcp-handler",
 		"-f", "/run/net-dhcp/eth0-v4.conf",
 		"-1", "-p", "-4", "eth0",
@@ -364,7 +369,7 @@ func TestRenderArgs_PersistentV6(t *testing.T) {
 		ConfigPath: "/c",
 	})
 	want := []string{
-		"dhcpcd", "-B", "--noconfigure", "-L", "-A",
+		"/sbin/dhcpcd", "-B", "--noconfigure", "-L", "-A",
 		"-c", "/h", "-f", "/c", "-6", "eth0",
 	}
 	if !reflect.DeepEqual(got, want) {

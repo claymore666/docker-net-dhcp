@@ -73,7 +73,7 @@ fi
 # compared. Without this check, moving or renaming the build output
 # would leave the gate green over ten unrelated toolchain files.
 for want in net-dhcp dhcp-handler; do
-    if ! printf '%s\n' "$list_a" | grep -qE "(^|/)${want}\$"; then
+    if ! printf '%s\n' "$list_a" | grep -E "(^|/)${want}\$" >/dev/null; then
         echo "FAIL  '$want' is not among the binaries found in $A." >&2
         echo "      The build output moved, or the build produced nothing." >&2
         echo "      Found:" >&2

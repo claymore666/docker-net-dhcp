@@ -76,7 +76,7 @@ fi
 
 fail=0
 for page in "${PAGES[@]}"; do
-    if tr -d '*`' < "$ROOT/$page" | grep -qiF "$WANT"; then
+    if tr -d '*`' < "$ROOT/$page" | grep -iF "$WANT" >/dev/null; then
         echo "PASS  $page"
     else
         echo "FAIL  $page prints a cosign command but never says \"$WANT\""

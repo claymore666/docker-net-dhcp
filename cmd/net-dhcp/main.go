@@ -86,7 +86,14 @@ func main() {
 	// (#385). Removing it would delete the suite's only instrument that
 	// spans a plugin restart. Both outputs, not one.
 	openLogFile := func() error {
-		f, err := os.OpenFile(*logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+		// 0644 and O_NOFOLLOW. Operators do read this file, so it stays
+		// world-READABLE -- but a root-written log at 0666 is
+		// gratuitous, and re-opening a path on SIGHUP without
+		// O_NOFOLLOW means a symlink swapped in between opens decides
+		// where root appends. The path is operator-supplied inside a
+		// root-owned rootfs, so neither is a privilege boundary; both
+		// cost nothing (#708).
+		f, err := os.OpenFile(*logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND|unix.O_NOFOLLOW, 0644)
 		if err != nil {
 			return err
 		}
@@ -168,9 +175,26 @@ func main() {
 		}).Warn("DHCP-outage watchdog cadence overridden; defaults are 30s/25s")
 	}
 
+	// Request capture (#644). Test instrumentation for regenerating the
+	// replay fixtures; declared in config-cover.json only, so reaching
+	// this on a shipped plugin means someone set it deliberately.
+	// captureHandler warns again on its own, but an operator reading
+	// startup rather than steady-state logs should see it here too.
+	opts.RequestCaptureDir = os.Getenv("REQUEST_CAPTURE_DIR")
+
 	p, err := plugin.NewPlugin(opts)
 	if err != nil {
 		fatalCleanup(err, "Failed to create plugin")
+	}
+
+	// Optional Prometheus scrape target (#651). /metrics is always on
+	// the plugin socket; this opens it on TCP as well. Off unless set,
+	// because the plugin runs privileged on the host network namespace
+	// — see (*Plugin).ListenMetrics. Bound before the socket server
+	// starts so a bad address is a startup failure an operator sees,
+	// not a silent absence they discover from a missing dashboard.
+	if err := listenMetricsFromEnv(p, os.Getenv("METRICS_ADDR")); err != nil {
+		fatalCleanup(err, "Failed to start metrics listener")
 	}
 
 	sigs := make(chan os.Signal, 1)

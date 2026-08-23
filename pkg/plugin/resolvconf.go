@@ -4,13 +4,144 @@
 package plugin
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"runtime"
 	"strings"
 
+	log "github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
+
+	"github.com/claymore666/docker-net-dhcp/pkg/dhcp"
 )
+
+// errPIDNotContainer is returned when the PID handed to
+// writeContainerResolvConf no longer belongs to the container it was
+// resolved from. Callers count it: a rise means the plugin came that
+// close to writing DHCP-supplied content into an unrelated process.
+var errPIDNotContainer = errors.New("pid no longer belongs to the expected container")
+
+// cgroupNamesContainer reports whether the contents of a
+// /proc/<pid>/cgroup file place that task inside container ctrID.
+//
+// IT IS A FILTER, NOT AN AUTHORIZATION. A true answer means "this is
+// not obviously a different container", never "this is that container."
+// Every caller that acts on the strength of it must carry its own proof
+// of identity; openContainerProc is what does.
+//
+// # The reasoning this replaces, and why it was wrong
+//
+// This comment used to say the substring match was deliberate because
+// "the ID is 64 hex characters, so it cannot collide with anything else
+// in the path". That is true of ACCIDENTAL collision and false of
+// deliberate collision, and the difference is the whole question. The
+// argument silently assumed /proc/<pid>/cgroup contains only names the
+// system chose. It does not: cgroup path components are named by
+// whoever owns the subtree, and an ordinary login shell owns one.
+//
+//	systemd-run --user --scope --unit="docker-<64 hex>.scope" sleep 60
+//
+// No root, no Docker socket, no group membership. That places any
+// chosen container ID in an unprivileged user's cgroup path, and this
+// function then returns true for that task. The ID's length buys
+// nothing against someone who is copying it rather than guessing it.
+//
+// The match is also over the whole FILE rather than a field of a line,
+// so the ID counts wherever it lands -- including a cgroup v1 controller
+// list, which is not a path at all.
+//
+// # Why it is still a substring match here
+//
+// Narrowing this to compare whole "/"-separated segments of the path
+// field is scheduled with the netns-identity work (#785), NOT because
+// it is expensive but because ON ITS OWN IT BUYS NOTHING: the same
+// one-line systemd-run above names an exact leaf segment just as easily
+// as a substring. Narrowing alone moves the guard from trivially
+// defeated to defeated by one command, which is tidiness dressed as a
+// fix. It is worth doing beside a real identity check and misleading
+// without one, so it ships with that or not at all.
+//
+// TestCgroupNamesContainer_DelegatedSubtreeIsAcceptedByDesign asserts
+// the hole as a TRUE against this code, so it goes red the day someone
+// believes a narrowing closed it.
+//
+// An empty ctrID is never a match. It is what a future caller that
+// forgot to thread the ID through would pass, and "check nothing" is
+// not an acceptable reading of it.
+func cgroupNamesContainer(cgroup, ctrID string) bool {
+	if ctrID == "" {
+		return false
+	}
+	return strings.Contains(cgroup, ctrID)
+}
+
+// openContainerProc opens /proc/<pid> and confirms the task behind it
+// still belongs to ctrID before anything is done with it (#688).
+//
+// Both halves matter, and neither is sufficient alone:
+//
+//   - The cgroup check answers "is this still that container?". The
+//     PID is resolved through Docker (NetworkInspect -> ContainerInspect)
+//     and nothing between that call and the setns re-checks it. The
+//     plugin runs with pidhost: true, so if the container exits in
+//     that window and the kernel recycles the PID, the victim is an
+//     arbitrary *host* process -- possibly one in the host's root
+//     mount namespace. A liveness check would not help: the whole
+//     failure mode is that something else is alive at that PID.
+//   - The returned directory fd pins the answer. procfs invalidates a
+//     /proc/<pid> dentry when the task exits, so every openat below
+//     this fd either reaches the same task or fails with ESRCH -- a
+//     PID recycled after the check cannot be reached through it.
+//     Re-deriving the path as a string afterwards would reopen the
+//     window the check just closed.
+//
+// The container ID appears in the cgroup path under both cgroup
+// drivers (`/docker/<id>` for cgroupfs, `docker-<id>.scope` for
+// systemd) and survives a private cgroup namespace, which only
+// prefixes the path. A substring match on the 64-hex ID is therefore
+// both sufficient and unambiguous.
+func openContainerProc(pid int, ctrID string) (*os.File, error) {
+	d, err := os.Open(fmt.Sprintf("/proc/%d", pid))
+	if err != nil {
+		return nil, fmt.Errorf("open /proc/%d: %w", pid, err)
+	}
+
+	// O_CLOEXEC, like the sibling openat in openContainerNetNS. Go's
+	// os/exec does not sweep foreign descriptors, so an fd opened
+	// without it is inherited by whatever unshare / sh / dhcpcd another
+	// goroutine spawns in the same window.
+	fd, err := unix.Openat(int(d.Fd()), "cgroup", unix.O_RDONLY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		d.Close()
+		return nil, fmt.Errorf("%w: reading the cgroup of pid %d: %v", errPIDNotContainer, pid, err)
+	}
+	// Wrapped and closed on every path out (#729). The d.Close() calls
+	// in the arms below close the DIRECTORY fd; this one is a second,
+	// independent descriptor, and it used to be dropped on the floor on
+	// success, on read error and on cgroup mismatch alike. os.NewFile
+	// attaches a finalizer, so the leak is bounded by whenever the GC
+	// next runs — in a process that also holds netlink sockets, FIFOs
+	// and the plugin's listening sockets, and reaches here once per
+	// bound/renew event with propagate_dns and once per attach.
+	cgroupFile := os.NewFile(uintptr(fd), "cgroup")
+	defer cgroupFile.Close()
+
+	cgroup, err := io.ReadAll(cgroupFile)
+	if err != nil {
+		d.Close()
+		return nil, fmt.Errorf("%w: reading the cgroup of pid %d: %v", errPIDNotContainer, pid, err)
+	}
+
+	if !cgroupNamesContainer(string(cgroup), ctrID) {
+		d.Close()
+		return nil, fmt.Errorf("%w: pid %d is in cgroup %q, which does not name container %s",
+			errPIDNotContainer, pid, strings.TrimSpace(string(cgroup)), shortID(ctrID))
+	}
+
+	return d, nil
+}
 
 // writeContainerResolvConf enters the mount namespace of the process
 // identified by pid and rewrites /etc/resolv.conf with the
@@ -48,12 +179,39 @@ import (
 //     single-entry option 15 (`domain`, dhcpcd env `new_domain_name`) when option 119
 //     isn't supplied. RFC 3397 specifies option 119 supersedes option
 //     15 when both are present.
-func writeContainerResolvConf(pid int, dns []string, searchList []string, searchDomain string) error {
+func writeContainerResolvConf(pid int, ctrID string, dns []string, searchList []string, searchDomain string) error {
+	// Drop anything that would restructure the file before the emptiness
+	// guard below, so "every nameserver the server sent was unusable"
+	// lands on that guard rather than producing a resolv.conf with no
+	// nameserver line at all (#689).
+	dns = resolvSafe(dns)
+	searchList = resolvSafe(searchList)
+	if !dhcp.SafeDirectiveValue(searchDomain) {
+		log.WithField("domain", fmt.Sprintf("%q", searchDomain)).
+			Warn("Dropping DHCP domain name: it carries a control character")
+		searchDomain = ""
+	}
+	if trimmed, truncated := dhcp.FirstSearchDomain(searchDomain); truncated {
+		log.WithField("domain", fmt.Sprintf("%q", searchDomain)).
+			WithField("kept", trimmed).
+			Warn("DHCP domain name carried more than one domain; keeping only the first")
+		searchDomain = trimmed
+	}
+
 	if len(dns) == 0 {
 		// Defensive: caller should have filtered. Writing empty
 		// resolv.conf would silently nuke name resolution.
 		return fmt.Errorf("refusing to write empty resolv.conf")
 	}
+
+	// Before locking a thread or touching a namespace: confirm the PID
+	// still belongs to the container it was resolved from, and keep the
+	// directory fd that proves it (#688).
+	procDir, err := openContainerProc(pid, ctrID)
+	if err != nil {
+		return err
+	}
+	defer procDir.Close()
 
 	runtime.LockOSThread()
 
@@ -69,11 +227,14 @@ func writeContainerResolvConf(pid int, dns []string, searchList []string, search
 	}
 	defer origMnt.Close()
 
-	targetMnt, err := os.Open(fmt.Sprintf("/proc/%d/ns/mnt", pid))
+	// Through procDir, not by path: see openContainerProc. Reopening
+	// /proc/<pid>/ns/mnt as a string would let a recycled PID back in.
+	targetFd, err := unix.Openat(int(procDir.Fd()), "ns/mnt", unix.O_RDONLY|unix.O_CLOEXEC, 0)
 	if err != nil {
 		runtime.UnlockOSThread()
 		return fmt.Errorf("open container mnt ns (pid %d): %w", pid, err)
 	}
+	targetMnt := os.NewFile(uintptr(targetFd), "ns/mnt")
 	defer targetMnt.Close()
 
 	// Detach this thread's filesystem state (CWD, root, umask) from
@@ -114,6 +275,18 @@ func writeContainerResolvConf(pid int, dns []string, searchList []string, search
 // When both are absent no `search` line is emitted — resolv.conf is
 // then equivalent to a no-search-domain configuration.
 func buildResolvConf(dns []string, searchList []string, searchDomain string) []byte {
+	// Backstop. writeContainerResolvConf already filtered; doing it here
+	// too means the renderer itself cannot emit a line it was not asked
+	// for, whoever calls it. Same reasoning as dhcp.directive on the
+	// config-file side — the format has no escaping, so "drop" is the
+	// only available answer.
+	dns = resolvSafe(dns)
+	searchList = resolvSafe(searchList)
+	if !dhcp.SafeDirectiveValue(searchDomain) {
+		searchDomain = ""
+	}
+	searchDomain, _ = dhcp.FirstSearchDomain(searchDomain)
+
 	var b strings.Builder
 	b.WriteString("# generated by docker-net-dhcp from DHCP options\n")
 	switch {
@@ -126,4 +299,27 @@ func buildResolvConf(dns []string, searchList []string, searchDomain string) []b
 		fmt.Fprintf(&b, "nameserver %s\n", ns)
 	}
 	return []byte(b.String())
+}
+
+// resolvSafe drops entries that cannot be written to /etc/resolv.conf as
+// a single field.
+//
+// resolv.conf is line-oriented with no quoting, so a value carrying a
+// newline does not corrupt its own line — it appends a line the DHCP
+// server chose, and `nameserver <attacker>` is a legal one. The DNS server
+// list and the search list already reach us through strings.Fields, which
+// makes whitespace structurally impossible; option 15 (the single domain)
+// does not, and that asymmetry is what #689 records. Filtering all three
+// keeps the property from depending on which upstream helper was used.
+func resolvSafe(vals []string) []string {
+	out := vals[:0:0]
+	for _, v := range vals {
+		if v == "" || !dhcp.SafeDirectiveValue(v) {
+			log.WithField("value", fmt.Sprintf("%q", v)).
+				Warn("Dropping DHCP-supplied resolv.conf value: it carries a control character")
+			continue
+		}
+		out = append(out, v)
+	}
+	return out
 }

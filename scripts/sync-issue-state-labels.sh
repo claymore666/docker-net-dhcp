@@ -82,8 +82,15 @@
 # Usage:
 #   sync-issue-state-labels.sh              apply the plan
 #   sync-issue-state-labels.sh --dry-run    print the plan, change nothing
+#   sync-issue-state-labels.sh --parse-title read PR titles on stdin, print
+#                                           the refs the RECONCILER would
+#                                           see — refs(), not the
+#                                           merge-aware commit_refs()
 #   sync-issue-state-labels.sh --parse      read subjects on stdin, print
 #                                           the refs — offline, no gh
+#   sync-issue-state-labels.sh --parse-body read PR prose on stdin, print
+#                                           the closing-keyword refs —
+#                                           offline, no gh
 #   sync-issue-state-labels.sh --plan DIR   print the plan for a directory
 #                                           of subjects.txt / issues.json /
 #                                           prs.json, plus an optional
@@ -107,6 +114,8 @@ case "${1:-}" in
     "") ;;
     --dry-run) MODE="dry-run" ;;
     --parse) MODE="parse" ;;
+    --parse-title) MODE="parse-title" ;;
+    --parse-body) MODE="parse-body" ;;
     --plan|--unresolved)
         MODE="${1#--}"
         PLAN_DIR="${2:-}"
@@ -120,7 +129,7 @@ case "${1:-}" in
         exit 0
         ;;
     *)
-        echo "usage: $0 [--dry-run|--parse|--plan DIR|--unresolved DIR]" >&2
+        echo "usage: $0 [--dry-run|--parse|--parse-title|--parse-body|--plan DIR|--unresolved DIR]" >&2
         exit 2
         ;;
 esac
@@ -139,6 +148,10 @@ import re
 # else. The digit cap keeps a pathological subject from producing a
 # number no issue could ever have.
 _GROUP = re.compile(r"\(\s*#\d{1,7}(?:\s*,\s*#\d{1,7})*\s*\)\s*$")
+# GitHub's default subject for the "Create a merge commit" button. It is
+# the ONLY thing such a commit says, and it names the PR, never the
+# issue — so it is a pure input to the one hop below (#718).
+_MERGE_SUBJECT = re.compile(r"^Merge pull request #(\d{1,7}) from \S")
 _NUM = re.compile(r"#(\d{1,7})")
 _HTML_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
 _CLOSES = re.compile(
@@ -165,6 +178,24 @@ def refs(subject):
             if n and n not in out:
                 out.append(n)
     return out
+
+
+def commit_refs(subject):
+    """Refs from a COMMIT subject: the trailing-group rule, plus the
+    merge-commit form.
+
+    Kept separate from refs() rather than folded into it because the two
+    have different trust properties. refs() is also run over PR titles,
+    which are attacker-controlled and intersected DIRECTLY with the open
+    issues; teaching it the merge form would let a PR titled "Merge pull
+    request #500 from x" mark issue #500. A commit subject on `dev` has
+    already passed review, and the number it yields is only ever a
+    candidate for the hop.
+    """
+    m = _MERGE_SUBJECT.match(subject.strip())
+    if m:
+        return [int(m.group(1))]
+    return refs(subject)
 
 
 def body_refs(body):
@@ -194,6 +225,39 @@ def pr_refs(pr):
 PY
 )
 
+if [ "$MODE" = "parse-title" ]; then
+    # THE TITLE HALF, BOUND TO refs() AND NOT commit_refs() (#742).
+    # scripts/check-issue-ref.sh used to run --parse over the PR title,
+    # which is commit_refs() — the merge-aware variant. commit_refs()'s
+    # docstring above says in as many words why the two must not be the
+    # same function over a title: a title is attacker-controlled, and the
+    # merge form would let "Merge pull request #500 from x" name issue
+    # #500.
+    #
+    # The consequence was the mirror of that and just as bad. The
+    # reconciler reads titles with refs() (:307), so a merge-form title
+    # satisfied the GATE while leaving the reconciler nothing to read —
+    # the exact false green the gate exists to prevent. Measured:
+    #   printf 'Merge pull request #500 from evil/branch' | ... --parse
+    #     -> #500          (gate: PASS)
+    #   refs('Merge pull request #500 from evil/branch')
+    #     -> []            (reconciler: nothing)
+    #
+    # The gate is right not to carry its own regex — that is how two
+    # copies drift. It needed the other half exposed, which is this.
+    PARSER="$PARSER" python3 -c '
+import os
+import sys
+
+exec(os.environ["PARSER"])  # noqa: S102 - defines refs()
+
+for line in sys.stdin:
+    for n in refs(line.rstrip("\n")):
+        print(f"#{n}")
+'
+    exit $?
+fi
+
 if [ "$MODE" = "parse" ]; then
     # python3 -c, not a heredoc: `python3 - <<PY` makes the heredoc the
     # process's stdin, so the subjects being piped in would never be read
@@ -205,8 +269,25 @@ import sys
 exec(os.environ["PARSER"])  # noqa: S102 - defines refs()
 
 for line in sys.stdin:
-    for n in refs(line.rstrip("\n")):
+    for n in commit_refs(line.rstrip("\n")):
         print(f"#{n}")
+'
+    exit $?
+fi
+
+# The body half of the same parser, exposed for scripts/check-issue-ref.sh
+# (#718). A gate that re-implemented body_refs would be a second copy free
+# to drift from the one that actually decides the labels, which is the
+# failure this whole file exists to prevent one level down.
+if [ "$MODE" = "parse-body" ]; then
+    PARSER="$PARSER" python3 -c '
+import os
+import sys
+
+exec(os.environ["PARSER"])  # noqa: S102 - defines body_refs()
+
+for n in body_refs(sys.stdin.read()):
+    print(f"#{n}")
 '
     exit $?
 fi
@@ -227,7 +308,7 @@ open_numbers = {i["number"] for i in issues}
 current = {i["number"]: {lbl["name"] for lbl in i["labels"]} for i in issues}
 
 with open(f"{tmp}/subjects.txt", encoding="utf-8") as fh:
-    subject_refs = {n for line in fh for n in refs(line.rstrip("\n"))}
+    subject_refs = {n for line in fh for n in commit_refs(line.rstrip("\n"))}
 
 # A ref that is not an open issue is either a PR or an issue already
 # closed. Both are things we must not label, and the first is the thing
@@ -343,7 +424,14 @@ if ! git rev-parse --verify --quiet "origin/$BASE_BRANCH" >/dev/null ||
     echo "FAIL  need both origin/$BASE_BRANCH and origin/$DEV_BRANCH — fetch them first" >&2
     exit 2
 fi
-git log "origin/$BASE_BRANCH..origin/$DEV_BRANCH" --format='%s' --no-merges > "$TMP/subjects.txt"
+# Merges INCLUDED (#718). `--no-merges` was here, and it meant a branch
+# whose own commits never named their issue was invisible: the merge
+# commit is the only place the PR number survives, and it was being
+# thrown away before the parser ever saw it. Eleven fully-implemented
+# issues read as untouched for exactly this reason. Ordinary merge
+# subjects ("Merge branch 'main' into dev") parse to nothing and cost
+# only a line.
+git log "origin/$BASE_BRANCH..origin/$DEV_BRANCH" --format='%s' > "$TMP/subjects.txt"
 
 gh issue list --repo "$REPO" --state open --limit 1000 \
     --json number,labels > "$TMP/issues.json" || exit 1
@@ -374,9 +462,36 @@ while read -r number; do
     # Written as JSON rather than two delimited values because a body is
     # multi-line arbitrary text — any hand-rolled framing here would be a
     # parser bug waiting to happen.
-    gh api "repos/$REPO/pulls/$number" \
-        --jq '{title: .title, body: (.body // "")}' > "$TMP/pr.$number" 2>/dev/null || continue
-    [ -s "$TMP/pr.$number" ] || continue
+    if ! gh api "repos/$REPO/pulls/$number" \
+            --jq '{title: .title, body: (.body // "")}' > "$TMP/pr.$number" 2>/dev/null ||
+       [ ! -s "$TMP/pr.$number" ]; then
+        # A 404 IS AN ANSWER; EVERY OTHER FAILURE IS NOT (#739).
+        #
+        # `|| continue` treated them alike, and the two are opposites
+        # here. A 404 means the ref was a closed issue rather than a PR,
+        # so it legitimately contributes nothing. A 403 secondary rate
+        # limit, a 5xx or a dropped connection means we did not find
+        # out — and because the planner recomputes desired state from
+        # scratch, a ref that contributes nothing becomes REMOVE in-dev
+        # on issues that are in dev. This lane runs 40-67 times a day
+        # and this repo has hit GitHub's secondary rate limiting before
+        # (see missing-runs.yml), so it is not a theoretical branch.
+        #
+        # Two places in this same file already reason about exactly this
+        # hazard and refuse; this was the third and it failed open.
+        #
+        # -i for the classification rather than for the whole call: the
+        # status line is only needed when something went wrong, and the
+        # happy path keeps its single --jq request.
+        status=$(gh api "repos/$REPO/pulls/$number" -i 2>/dev/null | awk 'NR == 1 { print $2 }')
+        if [ "$status" = "404" ]; then
+            continue
+        fi
+        echo "FAIL  could not read repos/$REPO/pulls/$number (HTTP ${status:-unknown})." >&2
+        echo "      A ref that cannot be read is not a ref that resolves to nothing." >&2
+        echo "      Continuing would plan REMOVE in-dev for issues that ARE in dev." >&2
+        exit 2
+    fi
     resolved=$((resolved + 1))
 done < "$TMP/unresolved"
 

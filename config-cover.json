@@ -45,6 +45,14 @@
             ]
         },
         {
+            "description": "Directory where raw libnetwork request bodies are captured for the replay fixtures (#644); empty disables capture (cover build only)",
+            "name": "REQUEST_CAPTURE_DIR",
+            "value": "",
+            "settable": [
+                "value"
+            ]
+        },
+        {
             "description": "How often the DHCP-outage watchdog re-checks; also the resolution of dhcp_timeouts",
             "name": "OUTAGE_TICK",
             "value": "30s",
@@ -56,6 +64,14 @@
             "description": "Settling time before the watchdog reports an outage; must exceed normal lease-acquisition time",
             "name": "OUTAGE_GRACE",
             "value": "25s",
+            "settable": [
+                "value"
+            ]
+        },
+        {
+            "description": "Optional TCP address for the Prometheus /metrics endpoint (e.g. 127.0.0.1:9099); empty means no TCP listener",
+            "name": "METRICS_ADDR",
+            "value": "",
             "settable": [
                 "value"
             ]
@@ -78,6 +94,15 @@
         {
             "source": "/var/lib/dh-cover",
             "destination": "/coverage",
+            "type": "bind",
+            "options": [
+                "bind",
+                "rw"
+            ]
+        },
+        {
+            "source": "/var/lib/dh-capture",
+            "destination": "/capture",
             "type": "bind",
             "options": [
                 "bind",

@@ -9,6 +9,9 @@
 #
 #   1. every /Plugin.Health field is documented in the reference
 #   2. every settable plugin env var is documented in the reference
+#   2b. every settable env var that exists ONLY on the coverage-
+#      instrumented manifest is exempt from the reference BY NAME, and
+#      documented in the contributor page instead
 #   3. no option, counter, or setting is documented in a *second*
 #      docs page
 #
@@ -22,8 +25,37 @@
 # Keys come from the code and the plugin manifest, never a hardcoded
 # list here — a list would be one more thing to forget to update.
 #
+# TWO MANIFESTS, ONE OF THEM EXEMPT — DELIBERATELY AND OUT LOUD.
+#
+# The plugin ships from config.json; the coverage lane installs
+# config-cover.json, which declares two extra settables (GOCOVERDIR,
+# REQUEST_CAPTURE_DIR) that the binary really does read. Reading only
+# config.json meant those two were settings no gate had ever looked at,
+# under a reference that opens by claiming CI enforces every setting is
+# documented.
+#
+# They are NOT added to the reference. `docker plugin set GOCOVERDIR=…`
+# is impossible on the plugin a user installs — the setting does not
+# exist on that artifact — so documenting it in the operator manual
+# would document a knob that is not there, which is a worse defect than
+# the one being fixed. That is a decision the tree already made on
+# purpose (pkg/plugin/capture.go, docs/internals.md): test
+# instrumentation stays out of the shipped manifest.
+#
+# The exemption is not free, and it is not a comment. A cover-only
+# setting must be documented in the CONTRIBUTOR page, and the gate says
+# EXEMPT with the reason on every run, so "we decided not to document
+# it" cannot silently become "nobody documented it". The failure this
+# closes is a real operator setting landing in config-cover.json alone
+# — the #317 shape one level up — and thereby escaping rule 2 forever.
+#
 # Usage: check-docs-drift.sh [<go-package-dir>] [<docs-dir>] [<reference-doc>]
 #   defaults: pkg/plugin docs docs/reference.md (run from the repo root)
+# Env: MANIFEST        shipped plugin manifest (default config.json)
+#      COVER_MANIFEST  coverage-instrumented manifest
+#                      (default: config-cover.json beside MANIFEST)
+#      CONTRIB_DOC     the page cover-only settings must be documented
+#                      in (default: <docs-dir>/internals.md)
 #
 # Exit: 0 clean, 1 drift found, 2 cannot check (bad usage/inputs).
 set -u
@@ -90,6 +122,43 @@ else
     exit 2
 fi
 
+# ---- 2b. cover-only settings ------------------------------------------
+# See the header. Anything the cover manifest declares that the shipped
+# one does not is exempt from the reference by name, and owes the
+# contributor page a definition instead.
+COVER_MANIFEST="${COVER_MANIFEST:-$(dirname "$MANIFEST")/config-cover.json}"
+CONTRIB_DOC="${CONTRIB_DOC:-$DOCS_DIR/internals.md}"
+
+if [ -f "$COVER_MANIFEST" ]; then
+    cover_envs=$(python3 -c '
+import json, sys
+m = json.load(open(sys.argv[1]))
+for e in m.get("env", []):
+    if e.get("name"):
+        print(e["name"])
+' "$COVER_MANIFEST")
+    for e in $cover_envs; do
+        # Also on the shipped plugin: rule 2 already judged it.
+        # Matched as whole LINES ($envs is newline-separated), and
+        # matched without a pipe: `... | grep -q` reports failure on
+        # success under pipefail, because the match kills the producer
+        # with SIGPIPE (#297, and scripts/check-pipefail-consumers.sh).
+        case $'\n'"$envs"$'\n' in *$'\n'"$e"$'\n'*) continue ;; esac
+        if [ ! -f "$CONTRIB_DOC" ]; then
+            echo "FAIL  $COVER_MANIFEST declares cover-only setting $e but the contributor page $CONTRIB_DOC does not exist — nothing can carry the exemption" >&2
+            exit 2
+        fi
+        if grep -qF "\`$e\`" "$CONTRIB_DOC"; then
+            echo "EXEMPT setting $e — declared in $(basename "$COVER_MANIFEST") only (test instrumentation, not settable on the shipped plugin); documented in $(basename "$CONTRIB_DOC")"
+        else
+            echo "FAIL  setting $e is settable on the coverage plugin, is not in $MANIFEST, and is documented in neither $DOC nor $CONTRIB_DOC — document it where it lives or add it to the shipped manifest"
+            fail=1
+        fi
+    done
+else
+    echo "note  no cover manifest at $COVER_MANIFEST — no cover-only settings to judge"
+fi
+
 # ---- 3. no second home --------------------------------------------------
 # A name is "documented" on a page when it *leads a definition* — the
 # first cell of a markdown table row, or a bullet that opens with it.
@@ -101,6 +170,11 @@ fi
 # Driver options join the counters and settings here. check-option-docs.sh
 # proves each option is documented *somewhere*; this proves it isn't
 # documented twice.
+#
+# Cover-only settings are deliberately absent from this set: their one
+# home is the contributor page, and rule 2b is what holds them to it.
+# Listing them here would make the very page that documents them the
+# duplicate.
 options=$(awk '
     /type DHCPNetworkOptions struct \{/ { in_struct = 1; next }
     in_struct && /^\}/                  { in_struct = 0 }

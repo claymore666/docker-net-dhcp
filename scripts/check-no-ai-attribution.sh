@@ -69,7 +69,7 @@ scan_text() {
     for entry in "${text_patterns[@]}"; do
         label="${entry%%|*}"
         pat="${entry#*|}"
-        printf '%s\n' "$text" | grep -qiE "$pat" || continue
+        printf '%s\n' "$text" | grep -iE "$pat" >/dev/null || continue
         case " ${seen[*]-} " in *" $label "*) continue ;; esac
         seen+=("$label")
         echo "FAIL  $what: contains attribution — $label"
@@ -84,7 +84,7 @@ for sha in $(git rev-list "$RANGE"); do
     while IFS= read -r ident; do
         role="${ident%%$'\t'*}"
         who="${ident#*$'\t'}"
-        if printf '%s\n' "$who" | grep -qiE "($VENDORS)"; then
+        if printf '%s\n' "$who" | grep -iE "($VENDORS)" >/dev/null; then
             echo "FAIL  commit $short: $role identity is '$who' — commits must not be authored by an AI assistant"
             fail=1
         fi

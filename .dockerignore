@@ -1,6 +1,19 @@
 /bin/
 /plugin/
+# The cover twin of /plugin/, and root-owned for the same reason:
+# `sudo make create-cover` writes it (the coverage lane, and
+# `make capture-fixtures` — #644). Missing here while present in
+# .gitignore, it broke every unprivileged `docker build` from the
+# repo root on any tree that had built the instrumented plugin.
+/plugin-cover/
 /multiarch/
+# Integration-suite output (#378). The suite targets are root-only, so
+# logs/ is created root-owned — the same context-walk hazard as the
+# plugin build directories above.
+/logs/
+# mkdocs-material build output (#133). Never part of the image, and
+# large enough that shipping it is pure context bloat.
+/site/
 .git/
 # Nothing in the image needs .claude/, and it is where per-instance git
 # worktrees live. A worktree that ever ran `sudo make create` leaves a
@@ -15,3 +28,28 @@ scripts/
 LICENSE.md
 test_env.sh
 code-review-report.md
+# Credential-shaped paths, mirroring the block .gitignore carries for the
+# same reason. Nothing in the image is built from them — the Dockerfile
+# copies go.*, cmd/ and pkg/ and nothing else — but `docker build` uploads
+# the WHOLE context to the daemon before any COPY is considered, so a
+# local secrets/ or .env is transferred even though no instruction names
+# it. That is how a developer's SSH private key in ./secrets/ rode along
+# on every build from the repo root.
+#
+# The `**/` prefix is deliberate rather than decorative: a bare `secrets`
+# excludes the context root only, while .gitignore's `secrets/` applies at
+# any depth. Written this way the two files mean the same thing.
+# scripts/check-dockerignore-parity.sh holds them in step.
+**/secrets
+**/credentials
+**/.env
+**/.env.*
+**/.netrc
+**/*.key
+**/*.pem
+**/*.p12
+**/*.pfx
+# Editor and interpreter droppings. Ignored by git, never part of a build,
+# and __pycache__ is written by scripts/badge-sync.py wherever it runs.
+**/.vscode
+**/__pycache__

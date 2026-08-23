@@ -11,13 +11,80 @@ parent-attached link wiring, `dhcp.{Start,Finish,Wait,GetIP}`.
 ## Running locally
 
 ```sh
-sudo make integration-test
+sudo make integration-local
 ```
 
-The Makefile target wraps `go test -tags integration
-./test/integration/...`. Plain `go test ./...` skips this directory
-entirely thanks to the `//go:build integration` tag on every file
-here, so the unit-test cadence stays fast.
+`integration-local` is the entry point. It chains `integration-cleanup
+create enable integration-test integration-test-failure`, so the plugin
+under test is one built from the tree you are sitting in, and no earlier
+run's leftovers are what you measure.
+
+`sudo make integration-test` runs the main suite on its own, and
+deliberately does **not** rebuild or reinstall anything — so by itself
+it drives whatever plugin happens to be installed. That is not a
+hypothetical: while validating #374 a stale installed build made two
+tests fail for reasons unrelated to the branch *and* made the health
+floor report `clean` for counters that build could not publish at all.
+Use the two suite targets directly only when you have just built and
+installed the plugin yourself. CI can call them directly because each
+workflow job does its own build-and-install step first, and the suites
+run between that and teardown. The targets deliberately carry no
+rebuild dependency: one would reinstall the plugin mid-run and reset
+the health floor's observation window with it. Note the primary lane
+(`integration.yml`) does not run both suites in one job at all — its
+matrix is `main-1/2/3` plus `failure`, each with its own build step;
+the single-job shape is `integration-arm64.yml`, `integration-hosted.yml`
+and `coverage.yml`.
+
+The suite targets wrap `go test`, split by name. `integration-test`
+runs `go test -v -tags integration -count=1 -timeout 20m -skip
+"TestFailure_" ./test/integration/...`; `integration-test-failure` runs
+the same command with `-run "TestFailure_"` instead, because the
+failure-injection suite is mostly deliberate waiting and does not
+belong in the main feedback loop. Measured on dev (run 30753274506,
+recorded in `.github/workflows/integration.yml`): failure 231s against
+main-1 367s / main-2 361s. Both tee their output to a
+timestamped file under `$(ITEST_LOG_DIR)` (#378). Plain `go test ./...` skips
+this directory entirely thanks to the `//go:build integration` tag on
+every file here, so the unit-test cadence stays fast.
+
+## Environment knobs
+
+Two different things get called "settings" around this suite, and
+mixing them up is how a run ends up testing something other than what
+you meant.
+
+**Read by the test process** — set these in the environment of
+`make integration-test`:
+
+| variable | default | what it does |
+| --- | --- | --- |
+| `INTEGRATION_PLUGIN_REF` | `ghcr.io/claymore666/docker-net-dhcp:golang` | Which installed plugin the suite drives (`harness.PluginRef`). |
+| `PLUGIN_BUILD_DIR` | search `plugin/`, then `plugin-cover/` | Where `harness.BuiltPluginDir` looks for the rootfs the lane built. Leave unset in the lanes — the search already knows both. |
+| `ITEST_LOG_DIR` | `logs` | Where the Makefile tees the run's output (#378). |
+| `SHARD` / `OF` | — | Required by `make integration-test-shard`; 1-based shard and total. |
+
+**`INTEGRATION_PLUGIN_REF` is the one to get right.** The harness
+deliberately does not install or enable anything — that is a global
+daemon mutation — so with the variable unset the suite drives whatever
+is currently installed under `:golang`. That may be an older build than
+the tree you are sitting in. The suite passes and tells you nothing
+about your change, with no warning that it did so. When verifying a
+code change locally, build and install it under its own tag and point
+the variable at that tag.
+
+**Applied to the plugin, not exported to the test run** — these are
+`docker plugin set` values, and setting them in your shell before
+`make integration-test` does nothing:
+
+| setting | what it does |
+| --- | --- |
+| `LOG_LEVEL` | Plugin log verbosity. The lanes set `trace`; `make create` does too. |
+| `STATE_DIR` | The plugin's state directory, bind-mounted from the host. |
+| `GOCOVERDIR` | Where the `-cover` build writes counter files. Only meaningful for the instrumented plugin — see [Coverage harvesting](#coverage-harvesting). |
+
+`docker plugin set` requires the plugin to be disabled, so changing one
+means `docker plugin disable`, `set`, `enable`.
 
 ## Prerequisites
 
@@ -77,8 +144,14 @@ machine that sits on a real network.
 ## What's covered
 
 See [#56](https://github.com/claymore666/docker-net-dhcp/issues/56)
-for the original umbrella scope. 22 test files, run serially (see
-below). Grouped by what they prove:
+for the original umbrella scope. Every suite file in
+`test/integration/*_test.go` is listed below. The harness package's own
+guards (`test/integration/harness/*_test.go`) run in the same targets
+but test the harness rather than the plugin, and are not part of this
+list. The list itself is the claim: a file count used to stand here,
+went stale without anything noticing, and anyone who wants the number
+can count the entries. Tests run serially (see below). Grouped by what
+they prove:
 
 **Golden paths (per mode)**
 - `lifecycle_macvlan_test.go`, `lifecycle_bridge_test.go`,
@@ -102,6 +175,28 @@ below). Grouped by what they prove:
   class-tagged gateway override (exact-match route parsing, #130).
 - `audit_log_test.go` — `audit_log=true` ledger lifecycle
   (bound→release), default-off absence (#109).
+- `orphan_release_test.go` — a container that exits before its attach
+  completes leaves nobody holding the job of releasing its address; the
+  plugin reclaims the binding on a temporary link and releases it
+  (#370), in macvlan, ipvlan, and dual-stack. The counter is not the
+  evidence: `lease_release_failures` sat at 0 throughout the original
+  failure, because it only sees releases that were attempted.
+- `join_no_container_test.go` — an attach that fails because no
+  container ever claimed the endpoint releases the address instead of
+  leaving it leased upstream until it expires (#566). The Join is
+  issued against a genuinely live sandbox, so "nobody holds this
+  endpoint" is the only branch that can answer.
+- `concurrent_renew_test.go` — two containers on one network, both with
+  the default `eth0`, each keep their own persistent client and each
+  renew. dhcpcd keys its pidfile and control sockets by interface name
+  alone, so without per-client runtime-dir isolation the second
+  container's client forwarded its argv to the first one's socket and
+  exited 0 (#330). No single-container renewal test can see that.
+- `nonroot_test.go` — the persistent client starts in a container whose
+  init process runs as a **non-root** user (#317). Every other test
+  here runs its container as root, so the netns open passed on the
+  uid-match arm and the missing `CAP_SYS_PTRACE` survived every
+  release; the proof is a renewal DHCPACK, not a counter.
 
 **Option propagation**
 - `dns_propagate_test.go`, `mtu_propagate_test.go` — opt-in writes,
@@ -112,6 +207,42 @@ below). Grouped by what they prove:
   option + invalid names rejected at attach; the engine-applied
   rename tests are capability-probe-gated (engine support pending
   upstream, #125).
+- `classless_routes_test.go` — a DHCP-pushed classless static route
+  (option 121, RFC 3442) reaches the container's routing table, and
+  stays absent for a client that did not opt into the vendor class the
+  fixture tags on (#260).
+- `fqdn_test.go` — `register_dns=true` makes the client send the FQDN
+  option (81) and the server register `<hostname>.<domain>` (#261).
+  The fixture's `--dhcp-fqdn` registers only clients that send option
+  81, so resolving the name is itself the proof that the option, and
+  not a bare hostname hint, is what landed.
+
+**Server selection**
+- `dhcp_server_policy_test.go` — `dhcp_servers` preference and
+  `dhcp_deny_servers` exclusion, including deny beating prefer for the
+  same server, fallback to the next server, and failing closed when the
+  list is exhausted (#111, #669). The only fixture in the suite that
+  deliberately runs two DHCP servers on one broadcast domain, because
+  against a single server a pass would prove nothing. Which server
+  answered is read from the leased address (the pools are disjoint) and
+  from that server's own log by MAC; the counters are a second
+  statement about the same event, never the primary evidence.
+  Bridge-mode only — a point-to-point veth fixture cannot host a second
+  server, and the selection path itself is mode-independent.
+
+**Address conflict detection**
+- `address_conflict_test.go` — an address the server leased that
+  another device on the segment already holds is **reported**, not
+  silently accepted (#524), with a clean segment, bridge mode, and a
+  bare parent (verdict: undetermined) as the negative cases. The
+  fixture server's log is deliberately not an assertion here: from its
+  point of view the lease was ordinary, and it cannot see a static host
+  that never asked it for anything.
+- `probe_stale_route_test.go` — a `/32` the conflict probe left on the
+  parent when its process went away mid-window does not blind every
+  later probe for that address; the plugin reclaims the route instead
+  of failing at `RouteAdd` with EEXIST (#572). The test leaves the
+  route itself rather than racing a daemon restart for it.
 
 **Failure injection (#128, separate step: `make integration-test-failure`)**
 - `failure_test.go` — `TestFailure_*` against per-test ephemeral
@@ -138,15 +269,75 @@ below). Grouped by what they prove:
 - `recovery_daemon_test.go` — daemon restart (supervisor-agnostic:
   systemctl on bare metal, direct dockerd supervision in
   containerized runners, #145) with a `--restart=always` container.
+- `recovery_daemon_kill_test.go` — SIGKILL of the daemon: no shutdown
+  sequence, no `Leave` on any endpoint, the one abrupt death nothing
+  else here reaches. It does **not** assert that recovery re-adopted
+  an endpoint, and that is the finding rather than a gap (#480, #679):
+  measured over six runs, containerd dies with dockerd and the
+  relaunched daemon removes each sandbox as stale, so no adoptable
+  endpoint survives. What it asserts instead is read off the DHCP
+  server — the pre-death lease is released rather than burnt until
+  expiry, and the returned container holds a lease the server actually
+  granted.
 - `preflight_probe_test.go` — `validate_dhcp=true` probe accept/
   reject + bridge-mode rejection.
+
+**Parent NIC contention**
+- `parent_gate_test.go` — the per-parent gate serialises two operations
+  that would otherwise be on the parent NIC at the same time, so an
+  unrelated container's orphan reclaim cannot fail a `docker run` with
+  `device or resource busy` (#486, #549). The contender is a second
+  reclaim, not an endpoint: a rival `CreateEndpoint` *issued* 0.000s
+  after the collision window opened still registered no wait at all,
+  because it reached the gate only after the reclaim was done with the
+  parent — a reclaim's hold is one DHCP round trip, and a
+  `CreateEndpoint` spends longer than that getting from the socket to
+  its `LinkAdd`. Both leases coming back to the
+  server is the assertion of record; `parent_link_waits` only proves
+  the plugin believes it queued, and a gate that serialised into a
+  deadlock would satisfy that counter.
+
+**Host and install contracts**
+- `sandbox_netns_test.go` — the sandbox netns directory is readable
+  from inside the *running* plugin, so `sandboxGone` has evidence to
+  work from (#567). It asserts the input, not the verdict: the unit
+  tests cover the logic thoroughly against a `t.TempDir()`, and could
+  never see that production passed a directory the plugin had no mount
+  for, leaving the branch dead for every release up to the fix.
+- `statedir_bind_test.go` — the install-time `STATE_DIR` bind-source
+  contract the docs describe (#494, #499): the daemon does not create a
+  missing bind source, a failed install leaves a *disabled* plugin
+  rather than rolling back, a retried install answers "already exists"
+  without re-attempting the mount, and mkdir + `docker plugin enable`
+  is the recovery. Builds a throwaway plugin under its own name and
+  temporary bind source — outside the namespaces `driverRegexp`
+  matches — so the suite's own install is untouched.
 
 **Error surfaces**
 - `errors_test.go`, `errors_netlink_test.go` — create-time
   validation (modes, options, IPAM) and netlink-state rejections.
-- `health_counters_test.go` — /Plugin.Health counter movement.
 - `static_routes_bridge_test.go`, `static_routes_macvlan_test.go` —
   route copying + `skip_routes` opt-out.
+
+**Observability**
+- `health_counters_test.go` — /Plugin.Health counter movement.
+- `metrics_test.go` — the plugin that was actually built and installed
+  serves `/metrics` on its socket, in the text exposition format, with
+  every `HealthResponse` field present (#651). The oracle is the
+  harness's own struct rather than a literal list, so a counter added
+  later is checked here automatically; routing, the shipped manifest
+  and the real binary are all outside what a unit test can see.
+- `healthfloor_test.go` — not a scenario but the suite's floor, run
+  from `TestMain` after the last test: it asks /Plugin.Health whether
+  anything went wrong during the run and fails the run if it did. The
+  complement to the per-test deltas, not a duplicate — a delta only
+  catches a fault inside some test's own bracket, the floor catches one
+  that no test bracketed, including during fixture setup (#374). It
+  asserts `Healthy` alongside every counter behind that flag — the
+  list is `floorCounters` in the harness, four today, and the number is
+  deliberately not restated here (#421). Where a test recycles the plugin the counters reset, so the
+  verdict reads "no fault since the last plugin restart in this run"
+  and says which of the two it is (#385).
 
 Tests run **serially** by design. None of the current cases call
 `t.Parallel()`, even though most would be safe — the recovery and
