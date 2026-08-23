@@ -549,6 +549,15 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
    - Prefer a named list over a count: "six (#720, #721, ...)" rather
      than "six of the ten", so a wrong number is visible.
 
+   **The maintainer signs off on the release notes before the tag.**
+   Not optional and not implied by approving the release PR: show the
+   rendered `## vX.Y.Z` section and wait for an explicit go. The rc
+   window (step 8) is the checkpoint — by the real `vX.Y.Z` tag the
+   notes must already be signed off, because the tag publishes them.
+   If the notes change after the tag, edit `RELEASE_NOTES.md` on `dev`
+   *and* `gh release edit vX.Y.Z --notes-file` the published body, or
+   the two silently diverge.
+
    **Credit outside contributions by name**, the way the v1.0.0 notes
    do. Find them rather than recalling them — almost every PR here is
    the maintainer's or Dependabot's, so an outside one is easy to miss
