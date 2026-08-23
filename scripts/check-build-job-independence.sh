@@ -56,12 +56,24 @@
 # uses; it fails loudly on the day someone writes a multi-line flow
 # sequence, which is the day to teach this parser about it.
 #
-# KEYED ON THE PROPERTY, NOT THE NAMES. A publishing job is one that
-# runs `make` with a `push` target — that is what makes a job a per-arch
-# build rather than what it happens to be called. A future
-# `release-riscv64` is covered the day it is added, without this file
-# being edited, and renaming `release-arm64` does not silently empty
-# the rule.
+# KEYED ON THE PROPERTY, NOT THE NAMES — BUT THE PROPERTY IS NARROW.
+# A publishing job is one that runs `make` with a target literally
+# named `push`. What it is CALLED does not enter into it, so renaming
+# `release-arm64`, or adding a `release-riscv64` that runs `make ...
+# push`, changes nothing here and needs no edit to this file.
+#
+# That is the whole of the promise, and an earlier version of this
+# paragraph made a larger one — that a future `release-riscv64` is
+# covered the day it is added, full stop. It is not. The bound stated
+# below says a make target publishing under another name is invisible,
+# and `push-riscv64` is the spelling that job would most naturally
+# use. Driven against the real release.yml with such a job appended,
+# `needs: release`, both existing publishers untouched:
+#
+#     OK: 2 publishing job(s) ... none waiting on another
+#
+# — a genuinely serialised publishing job, and rc=0. Read the bound
+# before adding an architecture; widening the subject is #798.
 #
 # AND THE SAME REFUSAL APPLIES HERE, FOR A REASON THAT WAS ARGUED WRONG
 # ONCE. This detector used to be the regex
@@ -88,7 +100,8 @@
 #
 # A measurement cannot backstop itself. So the classifier does not get
 # to answer "not a publisher" as a way of saying "I could not tell":
-# it joins line continuations, finds every `make` invocation, and when
+# it joins line continuations, finds every `make` invocation in a
+# `run:` body — the bound below says which ones that is — and when
 # it cannot decide whether one publishes — a target that is a variable
 # expansion, or no target at all, where the answer lives in the
 # Makefile's default goal — it REFUSES with exit 2 and names the line.
@@ -113,11 +126,22 @@
 #     `make push-arm64`.
 #
 # Both are decidably outside the subject, so they are answered "not a
-# publisher" rather than refused — and a file where every publisher is
-# invisible falls below two and lands on the non-vacuity refusal
-# anyway. Widening the subject is v1.9.0 work; the point of writing the
-# bound down is that the next person reads it here instead of assuming
-# a coverage this file never claimed.
+# publisher" rather than refused.
+#
+# AND THE COUNT DOES NOT BACK THIS UP EITHER. It is tempting to add
+# that a file whose publishers are all invisible falls below two and
+# lands on the non-vacuity refusal anyway. True, and useless: it is
+# the argument demolished thirty lines above, restricted to the one
+# case where it holds. The dangerous file is MIXED — two publishers
+# spelled `make ... push` and a third, serialised one spelled
+# `make push-riscv64`. The count is two, the refusal never fires, and
+# the gate reports OK about a file it has read wrong. Reproduced
+# against the real release.yml; that is #798, and it is open.
+#
+# Widening the subject is #798 (v1.9.0). The point of writing the
+# bound down is that the next person reads it here — and the promise
+# it contradicts, forty lines above, has been corrected rather than
+# left for them to reconcile.
 #
 # Usage: check-build-job-independence.sh [workflow-file]
 # Exit:  0 no publishing job depends on another
@@ -349,7 +373,10 @@ parsed="$(awk '
         # fall through: it is an ordinary line of this job
     }
 
-    # A `run:` VALUE IS THE ONLY SHELL IN A WORKFLOW. The first version
+    # A `run:` VALUE IS THE ONLY SHELL THIS FILE READS, and in this
+    # repo the only shell there is. (An action taking a script as a
+    # `with:` input would be shell too; none is used here, and it sits
+    # inside the #798 bound.) The first version
     # of the command-position rule read every line of every job, so a
     # step called `- name: Make gh-pages available to mike`
     # (pages.yml:162) was reported as a `make` token that could not be

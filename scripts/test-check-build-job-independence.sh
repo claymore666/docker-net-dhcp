@@ -722,6 +722,40 @@ YAML
 check "a sibling key after a block scalar is read as YAML, not shell" 1 \
       "$TMP/siblingkey.yml" "b reaches a"
 
+# THE BOUND IS DANGEROUS ON A MIXED FILE, AND THAT IS PINNED HERE.
+# The all-invisible file (above) refuses for non-vacuity, which makes
+# the bound look self-limiting. It is not. Two publishers the gate can
+# see plus one serialised publisher it cannot leaves the count at two,
+# so the refusal never fires and a serialised file reports OK.
+#
+# This case asserts the DEFECT, deliberately: it is #798, it is open,
+# and when #798 widens the subject this case must flip from 0 to 1.
+# A red test is the notification; a sentence in a header is not.
+cat > "$TMP/mixedbound.yml" <<'YAML'
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo tag
+  release:
+    needs: resolve
+    runs-on: ubuntu-latest
+    steps:
+      - run: make PLUGIN_TAG=amd64 push
+  release-arm64:
+    needs: resolve
+    runs-on: ubuntu-latest
+    steps:
+      - run: make PLUGIN_TAG=arm64 push
+  release-riscv64:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - run: make PLUGIN_TAG=riscv64 push-riscv64
+YAML
+check "a serialised publisher outside the subject is NOT seen (#798)" 0 \
+      "$TMP/mixedbound.yml" "none waiting on another"
+
 # --- refusal, not a verdict, on nothing to read -----------------------
 check "a missing file is exit 2" 2 "$TMP/nope.yml" "not a readable file"
 
