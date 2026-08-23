@@ -323,7 +323,7 @@ Passed as `-o key=value` on `docker network create`, or under
 | `ignore_conflicts` | bridge | `false` | upstream | Skip the bridge-already-in-use check against other Docker networks. No-op in macvlan/ipvlan. |
 | `skip_routes` | all | `false` | upstream; all modes since v0.9.0 | Don't copy non-default static routes from the parent (bridge or NIC) into containers, **and** don't apply DHCP-supplied classless static routes (option 121, see below). v0.9.0 extended parent route-copying from bridge-only to all modes (#102); set `true` to restore the old macvlan/ipvlan no-copy behaviour. The default gateway is unaffected either way. |
 | `propagate_dns` | all | `false` | v0.9.0 | Write the DHCP-supplied DNS server list (option 6 / v6 option 23) into the container's `/etc/resolv.conf` on every bind/renew. Overrides Docker's embedded resolver for this network; the `search` line uses option 119 with fallback to option 15. |
-| `propagate_mtu` | all | `false` | v0.9.0 | Apply DHCP option 26 (Interface MTU) to the container link on bind/renew. For jumbo-frame (9000) and VPN-reduced (~1450) networks. |
+| `propagate_mtu` | all | `false` | v0.9.0 | Apply DHCP option 26 (Interface MTU) to the container link on bind/renew. For jumbo-frame (9000) and VPN-reduced (~1450) networks. Since v1.8.0 an MTU outside `[576, 65535]` is refused and the link keeps the MTU it had, counted by `mtu_refused` — neither `dhcpcd` nor the kernel holds the bottom of that range, so a server-supplied 68 used to be applied verbatim. |
 | `client_id` | all | per-endpoint id | v0.9.0 | Override DHCP option 61 (Client Identifier) for every endpoint on this network; sent as RFC 2132 opaque bytes (type `0x00`). The default per-endpoint id is what makes per-container reservations work — a fixed `client_id` makes all containers look like one client to the server. Pair with `vendor_class` for class-based policy. **The derived default differs by mode** (see below). |
 | `vendor_class` | all | `docker-net-dhcp` | v0.9.0 | Override DHCP option 60 (Vendor Class Identifier), for DHCP servers running class-based policy (different gateway/option sets per class). v4 only — the DHCPv6 client sends no vendor-class option. |
 | `validate_dhcp` | macvlan, ipvlan | `false` | v0.9.0 | Pre-flight probe at `docker network create`: one-shot DHCP exchange on a temporary child of the parent, rejecting the network if no server answers within 8s. Catches isolated parents / blocked UDP 67-68 / broken VLAN tags at create time. Costs one transient lease per probe. Bridge mode rejects the option. **Since v1.6.0 the probe link is the same kind the network's endpoints will be** — a macvlan child for a macvlan network, an ipvlan L2 child for an ipvlan one (#486). It used to build a macvlan whatever the mode was, on the reasoning that reachability is mode-agnostic; reachability is, but the parent is not. One parent cannot carry both kinds, so a macvlan probe on an ipvlan network was refused outright whenever an ipvlan container was already running on that NIC — `validate_dhcp` failing for a reason that had nothing to do with DHCP, which is the opposite of what the flag is for. **What MAC you will see at the server:** on macvlan, a random locally-administered address. On ipvlan, the **parent's** address — an ipvlan child cannot have its own, by kernel design. The random address is still generated and still reaches `dhcpcd`, where it becomes the probe's DUID and IAID, so the probe's DHCP *identity* is its own either way; it is only the link-layer address in `chaddr` that is shared. Don't go looking for a random MAC in an ipvlan probe's lease log. |
@@ -340,10 +340,25 @@ plugin applies them inside the container alongside the routes copied
 from the parent. Routes are captured from the initial v4 lease and
 programmed at `Join`. A `0.0.0.0/0` entry in option 121 is treated as
 the default route and **supersedes the option-3 router** per RFC 3442
-(an explicit `gateway=` override still wins over both). `skip_routes=true`
-opts out of option-121 routes as well as parent-copied ones. v4 only —
-IPv6 routes come from Router Advertisements. (Legacy option 33 is not
-honored; modern servers send option 121.)
+(an explicit `gateway=` override still wins over both).
+
+That is the *literal* case, and it is not the only one. Routes carrying no
+default entry can still supersede it **by union**: a set that takes every
+routable unicast destination between them — `0.0.0.0/1` plus `128.0.0.0/1`,
+say, with loopback, link-local, multicast and reserved space excluded — wins
+on longest-prefix match, while the gateway reported to Docker and shown by
+`docker inspect` stays the option-3 router. Egress and the displayed gateway
+then disagree, which is the shape to look for when traffic does not go where
+`docker inspect` says it should. The routes are applied either way — that is
+correct client behaviour and legitimate split-tunnel setups rely on it — and
+the `[Join]` log names every destination and next hop whether or not the union
+is complete. What marks the complete case is a `[Join]` **warning** and the
+`dhcp_default_route_superseded` counter (see the
+[health counters](#pluginhealth) table).
+
+`skip_routes=true` opts out of option-121 routes as well as parent-copied
+ones. v4 only — IPv6 routes come from Router Advertisements. (Legacy option
+33 is not honored; modern servers send option 121.)
 
 ### Dynamic-DNS registration (`register_dns`, option 81 / 39)
 
