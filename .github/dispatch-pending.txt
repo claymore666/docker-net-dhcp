@@ -15,31 +15,4 @@
 #     reached the default branch, so remove the entry. An allowlist
 #     nobody prunes is how a temporary exception becomes permanent.
 #
-# .github/workflows/capture-fixtures.yml: re-records the request fixtures
-#   on the integration lane (#665). Merged to `dev` on 2026-08-20; the
-#   first dispatch answered 404, which is what this gate now exists to
-#   catch. Cleared by the v1.8.0 release, when `dev` reaches `main` —
-#   at which point it should be dispatched once to verify it end to end
-#   (docs/release-runbook.md, "Verifying"), and this entry removed.
-.github/workflows/capture-fixtures.yml
 
-# .github/workflows/netboot-image.yml: builds the arm64 lane's boot server
-#   image and checks what it installs into the Pi's root filesystem.
-#   Merged to `dev` after v1.8.0's release branch was cut, so it is
-#   undispatchable until the next release carries it to `main`. It needs
-#   no dispatch to do its job — it fires on pull requests and pushes that
-#   touch test/arm64-netboot/ — so nothing is blocked meanwhile. Cleared
-#   by the next release, when `dev` reaches `main`; remove this entry
-#   then.
-.github/workflows/netboot-image.yml
-
-# .github/workflows/label-taxonomy.yml: the live half of the label-taxonomy
-#   gate (#715). Declares both `schedule` and `workflow_dispatch`, and
-#   NEITHER fires off the default branch — so between merging to `dev` and
-#   the next release this workflow does not run at all. Nothing is blocked
-#   meanwhile: the half that gates pull requests is
-#   `check-label-taxonomy.sh --static` in test.yaml, and the live half can
-#   be run by hand with `bash scripts/check-label-taxonomy.sh --live`.
-#   Cleared by the next release, when `dev` reaches `main`; dispatch it once
-#   to verify it end to end, then remove this entry.
-.github/workflows/label-taxonomy.yml
