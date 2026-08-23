@@ -35,6 +35,12 @@
 #                              `make push` reading a working tree of one
 #                              shell script.
 #
+# Both entries describe dev @ 9245f09 and stay as written; they are the
+# record, not a map of the tree today. Since #796 release.yml's resolver
+# checkout lives in a `resolve` job of its own, alone, so the pair named
+# above is no longer in `release` and no longer anywhere in that file.
+# The gate is unchanged by that — it asks its question of every job.
+#
 # WHY A GATE AND NOT JUST THE FIX. Neither instance is reachable by any
 # pull request. `Docs site` at least fires on a push to dev, which is
 # how the first one was caught within the hour; release.yml fires on
