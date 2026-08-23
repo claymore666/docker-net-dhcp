@@ -2034,7 +2034,7 @@ limitations) are catalogued in
 <td>all</td>
 <td><code>false</code></td>
 <td>v0.9.0</td>
-<td>Apply DHCP option 26 (Interface MTU) to the container link on bind/renew. For jumbo-frame (9000) and VPN-reduced (~1450) networks.</td>
+<td>Apply DHCP option 26 (Interface MTU) to the container link on bind/renew. For jumbo-frame (9000) and VPN-reduced (~1450) networks. Since v1.8.0 an MTU outside <code>[576, 65535]</code> is refused and the link keeps the MTU it had, counted by <code>mtu_refused</code> — neither <code>dhcpcd</code> nor the kernel holds the bottom of that range, so a server-supplied 68 used to be applied verbatim.</td>
 </tr>
 <tr>
 <td><code>client_id</code></td>
@@ -2094,10 +2094,23 @@ plugin applies them inside the container alongside the routes copied
 from the parent. Routes are captured from the initial v4 lease and
 programmed at <code>Join</code>. A <code>0.0.0.0/0</code> entry in option 121 is treated as
 the default route and <strong>supersedes the option-3 router</strong> per RFC 3442
-(an explicit <code>gateway=</code> override still wins over both). <code>skip_routes=true</code>
-opts out of option-121 routes as well as parent-copied ones. v4 only —
-IPv6 routes come from Router Advertisements. (Legacy option 33 is not
-honored; modern servers send option 121.)</p>
+(an explicit <code>gateway=</code> override still wins over both).</p>
+<p>That is the <em>literal</em> case, and it is not the only one. Routes carrying no
+default entry can still supersede it <strong>by union</strong>: a set that takes every
+routable unicast destination between them — <code>0.0.0.0/1</code> plus <code>128.0.0.0/1</code>,
+say, with this-network, loopback, link-local, multicast and reserved space
+excluded — wins on longest-prefix match, while the gateway reported to Docker
+and shown by <code>docker inspect</code> stays the option-3 router. Egress and the
+displayed gateway then disagree, which is the shape to look for when traffic
+does not go where <code>docker inspect</code> says it should. The routes are applied
+either way — that is correct client behaviour and legitimate split-tunnel
+setups rely on it — and the <code>[Join]</code> log names every destination and next hop
+whether or not the union is complete. What marks the complete case is a
+<code>[Join]</code> <strong>warning</strong> and the <code>dhcp_default_route_superseded</code> counter (see the
+<a href="#pluginhealth">health counters</a> table).</p>
+<p><code>skip_routes=true</code> opts out of option-121 routes as well as parent-copied
+ones. v4 only — IPv6 routes come from Router Advertisements. (Legacy option
+33 is not honored; modern servers send option 121.)</p>
 <h3 id="dynamic-dns-registration-register_dns-option-81-39">Dynamic-DNS registration (<code>register_dns</code>, option 81 / 39)<a class="headerlink" href="#dynamic-dns-registration-register_dns-option-81-39" title="Permanent link">&para;</a></h3>
 <p>With <code>-o register_dns=true</code>, every endpoint on the network sends the DHCP
 <strong>FQDN option</strong> — option 81 on v4 (RFC 4702) and option 39 on v6
