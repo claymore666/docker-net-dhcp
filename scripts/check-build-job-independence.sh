@@ -362,16 +362,26 @@ parsed="$(awk '
     # the dash, because that is the column YAML itself measures the
     # scalar against.
     #
-    # MEASURED, and not what a first reading of it said: the two
-    # columns are not distinguishable by any legal document. A run
-    # block ends at the first line indented no deeper than its key,
-    # and the only thing that can sit between a `- run: |` and a later
-    # `run:` is the next sequence item, whose dash is shallower than
-    # both. Mutating this back to the dash column leaves the suite at
-    # 38/38 and release.yml clean. It is kept as the correct reading,
-    # not sold as a fix -- the release.yml failure that prompted the
-    # look was the missing `runind` sentinel below, nothing to do with
-    # this column.
+    # THE TWO COLUMNS DIFFER EXACTLY WHEN A SIBLING KEY FOLLOWS THE
+    # BLOCK. A step is a mapping, so `name:`, `env:`, `if:`, `shell:`
+    # and `working-directory:` all sit at the same column as `run:`
+    # and any of them may be written after it:
+    #
+    #     - run: |
+    #         make PLUGIN_TAG=x push
+    #       name: publish via ${MAKE} on the builder
+    #
+    # The key column ends the block at `name:`. The dash column, being
+    # shallower, keeps it inside and hands the name of the step itself to the
+    # classifier -- which refuses it, because it holds a `make` token
+    # it cannot read. Measured on exactly that document: shipped exit
+    # 1 (serialised, correct), dash column exit 2 (Cannot classify).
+    #
+    # An earlier version of this comment claimed the two were
+    # indistinguishable by any legal document. That was false, and it
+    # was the second false universal on this branch. The case that
+    # refutes it is now in the suite, so this paragraph is described
+    # by something that goes red rather than being trusted.
     /^[[:space:]]*(-[[:space:]]+)?run:([[:space:]]|$)/ {
         ind = index($0, "run:") - 1
         rest = $0

@@ -694,6 +694,34 @@ YAML
 check "a publisher inside a block scalar is still found" 1 \
       "$TMP/blockbody.yml" "waits on"
 
+# A SIBLING KEY AFTER THE BLOCK IS WHERE THE TWO COLUMNS DIFFER.
+# A step is a mapping, so `name:`, `env:`, `if:`, `shell:` and
+# `working-directory:` sit at the column of `run:` and may be written
+# after it. Ending the block at the DASH column instead keeps them
+# inside it and hands them to the classifier as shell.
+#
+# This case exists because the header once claimed the two columns
+# were indistinguishable by any legal document. They are not, and a
+# paragraph is the wrong thing to have been trusting: mutate
+# `ind = index($0, "run:") - 1` to `ind = match($0, /[^[:space:]]/) - 1`
+# and this case goes from exit 1 to exit 2, refusing on a step name.
+cat > "$TMP/siblingkey.yml" <<'YAML'
+jobs:
+  a:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          make PLUGIN_TAG=x push
+        name: publish via ${MAKE} on the builder
+  b:
+    needs: a
+    runs-on: ubuntu-latest
+    steps:
+      - run: make PLUGIN_TAG=y push
+YAML
+check "a sibling key after a block scalar is read as YAML, not shell" 1 \
+      "$TMP/siblingkey.yml" "b reaches a"
+
 # --- refusal, not a verdict, on nothing to read -----------------------
 check "a missing file is exit 2" 2 "$TMP/nope.yml" "not a readable file"
 
