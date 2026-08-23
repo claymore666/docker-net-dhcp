@@ -345,15 +345,15 @@ the default route and **supersedes the option-3 router** per RFC 3442
 That is the *literal* case, and it is not the only one. Routes carrying no
 default entry can still supersede it **by union**: a set that takes every
 routable unicast destination between them — `0.0.0.0/1` plus `128.0.0.0/1`,
-say, with loopback, link-local, multicast and reserved space excluded — wins
-on longest-prefix match, while the gateway reported to Docker and shown by
-`docker inspect` stays the option-3 router. Egress and the displayed gateway
-then disagree, which is the shape to look for when traffic does not go where
-`docker inspect` says it should. The routes are applied either way — that is
-correct client behaviour and legitimate split-tunnel setups rely on it — and
-the `[Join]` log names every destination and next hop whether or not the union
-is complete. What marks the complete case is a `[Join]` **warning** and the
-`dhcp_default_route_superseded` counter (see the
+say, with this-network, loopback, link-local, multicast and reserved space
+excluded — wins on longest-prefix match, while the gateway reported to Docker
+and shown by `docker inspect` stays the option-3 router. Egress and the
+displayed gateway then disagree, which is the shape to look for when traffic
+does not go where `docker inspect` says it should. The routes are applied
+either way — that is correct client behaviour and legitimate split-tunnel
+setups rely on it — and the `[Join]` log names every destination and next hop
+whether or not the union is complete. What marks the complete case is a
+`[Join]` **warning** and the `dhcp_default_route_superseded` counter (see the
 [health counters](#pluginhealth) table).
 
 `skip_routes=true` opts out of option-121 routes as well as parent-copied
