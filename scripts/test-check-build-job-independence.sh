@@ -70,6 +70,17 @@ fail_case() {
 # it is invalid YAML, and the first attempt at this suite wrote one,
 # whereupon the gate read the surviving `needs: resolve` and correctly
 # reported no collision.
+# The arm64 job's own `needs:` region: everything between its header
+# and its `runs-on:`, HEADER EXCLUDED. The exclusion is the whole point
+# and is asserted below -- `  release-arm64:` contains the string
+# `release`, so a region that keeps it makes the guard match
+# unconditionally and gives it exactly one possible verdict.
+needs_region() {
+    awk '/^  release-arm64:[ \t]*$/ { inarm = 1; next }
+         inarm && /^    runs-on:/    { exit }
+         inarm { print }' "$1"
+}
+
 reserialise() {   # reserialise <out-file> <replacement-block>
     awk -v repl="$2" '
       /^  release-arm64:[ \t]*$/ { inarm = 1; print; next }
@@ -96,15 +107,21 @@ else
         # pass on a fixture that changed nothing relevant; the region
         # between the arm64 job header and its `runs-on:` is the only
         # place the new dependency can be.
-        region="$(awk '/^  release-arm64:[ \t]*$/ { inarm = 1 }
-                       inarm && /^    runs-on:/    { exit }
-                       inarm { print }' "$out")"
-        if ! printf '%s\n' "$region" | grep -q 'release'; then
+        #
+        # `next` ON THE HEADER RULE IS LOAD-BEARING. Without it the
+        # header line `  release-arm64:` falls through to the printing
+        # rule and becomes the region's first line -- and it contains
+        # the string `release`, so the guard below matched
+        # unconditionally and had exactly one possible verdict. The
+        # paragraph above had the right reasoning and stopped one line
+        # short of its own target.
+        region="$(needs_region "$out")"
+        if ! printf '%s\n' "$region" | grep 'release' >/dev/null; then
             fail_case "$label: the arm64 job's needs: does not name 'release'" \
                       "— this case reconstructs nothing (#796)"
             continue
         fi
-        if printf '%s\n' "$region" | grep -q '\\n'; then
+        if printf '%s\n' "$region" | grep '\\n' >/dev/null; then
             fail_case "$label: the replacement landed as a literal backslash-n," \
                       "so the fixture is one unparsed line and not this spelling"
             continue
@@ -123,6 +140,20 @@ block-seq-quoted|    needs:\n      - resolve\n      - "release"
 block-seq-comment-inside|    needs:\n      # why we wait\n      - resolve\n      - release
 SPELLINGS
 
+    # THE GUARD'S OWN GUARD. On the real file the arm64 job depends on
+    # `resolve`, so its needs: region must NOT mention `release`. If it
+    # does, the region is carrying the job header and every spelling
+    # case above is guarded by a check with one possible verdict.
+    n=$((n + 1))
+    if needs_region "$REAL" | grep 'release' >/dev/null; then
+        echo "FAIL: the needs: region includes the job header, so the" \
+             "spelling guards can never fail"
+        needs_region "$REAL" | sed 's/^/    /'
+        failures=$((failures + 1))
+    else
+        echo "PASS: the needs: region excludes the job header (the guards can fail)"
+    fi
+
     check "the real release.yml passes" 0 "$REAL" "none waiting on another"
 
     # A form the parser does NOT handle must refuse, not fall through
@@ -130,7 +161,7 @@ SPELLINGS
     # spelling is an unknown meaning.
     reserialise "$TMP/multiline.yml" '    needs: [\n      resolve,\n      release ]'
     check "a multi-line flow sequence is refused, not silently OK" 2 \
-          "$TMP/multiline.yml" "Unparseable needs"
+          "$TMP/multiline.yml" "unparseable needs: value"
 fi
 
 # --- TRANSITIVE, not merely direct ------------------------------------
@@ -215,7 +246,7 @@ jobs:
       - run: make PLUGIN_TAG=y push
 YAML
 check "a mapping where a name or list belongs is refused" 2 "$TMP/garbage.yml" \
-      "Unparseable needs"
+      "unparseable needs: value"
 
 # --- VACUITY, both ways round -----------------------------------------
 cat > "$TMP/one.yml" <<'YAML'
@@ -291,6 +322,145 @@ jobs:
 YAML
 check "a commented-out 'needs:' is documentation, not a dependency" 0 \
       "$TMP/prose.yml" "none waiting on another"
+
+# --- THE PUBLISHER DETECTOR, which used to answer "no" when it meant
+# --- "I could not tell" ------------------------------------------------
+#
+# A missed publisher does not merely go unchecked: it LEAVES THE
+# POPULATION, vanishing from the serialisation check and from the count
+# the non-vacuity refusal is computed against, in one stroke. The
+# defence that npub < 2 backstops the detector is unsound because the
+# refusal's own domain comes from the detector -- and on a
+# two-publisher file it happens to look sound, which is why the
+# three-publisher case below is the one that matters. #796's whole
+# premise is that a third architecture is plausible.
+cat > "$TMP/threearch.yml" <<'YAML'
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo tag
+  release:
+    needs: resolve
+    runs-on: ubuntu-latest
+    steps:
+      - run: make PLUGIN_TAG=amd64 push
+  release-riscv64:
+    needs: resolve
+    runs-on: ubuntu-latest
+    steps:
+      - run: make PLUGIN_TAG=riscv push
+  release-arm64:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - run: make push PLUGIN_TAG=arm64
+YAML
+check "a third arch cannot hide a serialised one behind a spelling" 1 \
+      "$TMP/threearch.yml" "release-arm64 reaches release"
+
+# Argument order is not meaning. `make push VAR=x` and `make VAR=x push`
+# are the same command; the regex this replaced saw only the second.
+cat > "$TMP/argorder.yml" <<'YAML'
+jobs:
+  a:
+    runs-on: ubuntu-latest
+    steps:
+      - run: make push PLUGIN_NAME=x PLUGIN_TAG=y
+  b:
+    needs: a
+    runs-on: ubuntu-latest
+    steps:
+      - run: make PLUGIN_TAG=z push
+YAML
+check "'make push VAR=x' is a publishing job whatever the argument order" \
+      1 "$TMP/argorder.yml" "b reaches a"
+
+# A continuation is one command. A line-oriented reader sees neither half.
+cat > "$TMP/continuation.yml" <<'YAML'
+jobs:
+  a:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          make PLUGIN_NAME=x \
+            PLUGIN_TAG=y \
+            push
+  b:
+    needs: a
+    runs-on: ubuntu-latest
+    steps:
+      - run: make PLUGIN_TAG=z push
+YAML
+check "a 'make ... push' split over continuations is one invocation" 1 \
+      "$TMP/continuation.yml" "b reaches a"
+
+# "I could not tell" must be exit 2, never "not a publisher". A target
+# that is a variable expansion, and a make with no target at all (the
+# answer lives in the Makefile's default goal), are both undecidable.
+cat > "$TMP/varTarget.yml" <<'YAML'
+jobs:
+  a:
+    runs-on: ubuntu-latest
+    steps:
+      - run: make PLUGIN_TAG=x "${MAKE_TARGET}"
+  b:
+    runs-on: ubuntu-latest
+    steps:
+      - run: make PLUGIN_TAG=y push
+YAML
+check "a make whose target is a variable is refused, not called a non-publisher" \
+      2 "$TMP/varTarget.yml" "cannot tell whether this \`make\` publishes"
+
+cat > "$TMP/defaultgoal.yml" <<'YAML'
+jobs:
+  a:
+    runs-on: ubuntu-latest
+    steps:
+      - run: make
+  b:
+    runs-on: ubuntu-latest
+    steps:
+      - run: make PLUGIN_TAG=y push
+YAML
+check "a bare 'make' is refused: the default goal lives in the Makefile" \
+      2 "$TMP/defaultgoal.yml" "cannot tell whether this \`make\` publishes"
+
+# ...and the true negative for the same code path: a make that plainly
+# does NOT publish must stay a non-publisher, or every workflow that
+# builds without pushing starts refusing.
+cat > "$TMP/othertarget.yml" <<'YAML'
+jobs:
+  a:
+    runs-on: ubuntu-latest
+    steps:
+      - run: make plugin
+  b:
+    needs: a
+    runs-on: ubuntu-latest
+    steps:
+      - run: make PLUGIN_TAG=y push
+YAML
+check "'make plugin' is decidably not a publisher, not a refusal" 2 \
+      "$TMP/othertarget.yml" "needs at least two"
+
+# ...including when its ASSIGNMENTS carry variable expansions. Treating
+# `VAR="${X}"` as a target makes it look undecidable, and the gate would
+# refuse on every workflow that builds without pushing -- a gate that
+# cries wolf gets waived, which is the same end as no gate.
+cat > "$TMP/varassign.yml" <<'YAML'
+jobs:
+  a:
+    runs-on: ubuntu-latest
+    steps:
+      - run: make PLUGIN_NAME="${GHCR_NAME}" PLUGIN_TAG="${TAG}" plugin
+  b:
+    runs-on: ubuntu-latest
+    steps:
+      - run: make PLUGIN_TAG=y push
+YAML
+check "a non-publishing make with variable ASSIGNMENTS is still decidable" 2 \
+      "$TMP/varassign.yml" "needs at least two"
 
 # --- refusal, not a verdict, on nothing to read -----------------------
 check "a missing file is exit 2" 2 "$TMP/nope.yml" "not a readable file"

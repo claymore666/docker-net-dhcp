@@ -56,17 +56,45 @@
 # uses; it fails loudly on the day someone writes a multi-line flow
 # sequence, which is the day to teach this parser about it.
 #
-# KEYED ON THE PROPERTY, NOT THE NAMES. A publishing job is one whose
-# steps run `make ... push` — that is what makes a job a per-arch build
-# rather than what it happens to be called. A future `release-riscv64`
-# is covered the day it is added, without this file being edited, and
-# renaming `release-arm64` does not silently empty the rule.
+# KEYED ON THE PROPERTY, NOT THE NAMES. A publishing job is one that
+# runs `make` with a `push` target — that is what makes a job a per-arch
+# build rather than what it happens to be called. A future
+# `release-riscv64` is covered the day it is added, without this file
+# being edited, and renaming `release-arm64` does not silently empty
+# the rule.
 #
-# That detection is a regex over step text and can be spelled around
-# too, so it is not trusted on its own: it is backstopped by the
-# non-vacuity refusal below. If a publisher stops being recognised the
-# count falls to one or zero and the gate REFUSES rather than passing,
-# which is the direction a miss has to fail in.
+# AND THE SAME REFUSAL APPLIES HERE, FOR A REASON THAT WAS ARGUED WRONG
+# ONCE. This detector used to be the regex
+#
+#     make[[:space:]].*[[:space:]]push([[:space:]]|$)
+#
+# which is line-oriented and demands whitespace immediately before
+# `push`, so it misses `make push PLUGIN_NAME=...` and anything split
+# over a line continuation. The defence offered for that was: a missed
+# publisher drops the count below two and the non-vacuity refusal
+# fires, so a miss cannot become a clean pass.
+#
+# THAT ARGUMENT IS UNSOUND, AND NOT SUBTLY. The refusal's domain is
+# computed by the very detector it is supposed to backstop. A missed
+# job does not merely go unchecked — it LEAVES THE POPULATION, so it is
+# absent from the serialisation check and from the count in the same
+# stroke. On a two-publisher file the count happens to fall to one and
+# it looks like the argument held. Add a third architecture spelled in
+# a way the regex does match, leave the serialised one spelled in a way
+# it does not, and the count is two again, the refusal never fires, and
+# a genuinely serialised file reports:
+#
+#     OK: 2 publishing job(s) ... none waiting on another
+#
+# A measurement cannot backstop itself. So the classifier does not get
+# to answer "not a publisher" as a way of saying "I could not tell":
+# it joins line continuations, finds every `make` invocation, and when
+# it cannot decide whether one publishes — a target that is a variable
+# expansion, or no target at all, where the answer lives in the
+# Makefile's default goal — it REFUSES with exit 2 and names the line.
+# Refusing is loud and cheap. Silently dropping a job from the
+# population is the failure this whole file exists to prevent, applied
+# to itself.
 #
 # WHAT IT DOES NOT CLAIM. It reads the workflow text. It cannot know
 # whether the runners exist, whether the jobs really start together, or
@@ -78,8 +106,9 @@
 # Exit:  0 no publishing job depends on another
 #        1 one does — the serialised shape is back
 #        2 the check cannot render a verdict (unreadable file, a
-#          `needs:` form it cannot parse, or fewer than two publishing
-#          jobs, which would make the rule vacuous)
+#          `needs:` form it cannot parse, a `make` invocation it cannot
+#          classify, or fewer than two publishing jobs, which would
+#          make the rule vacuous)
 set -uo pipefail
 
 WF="${1:-.github/workflows/release.yml}"
@@ -141,6 +170,51 @@ parsed="$(awk '
         return 1
     }
 
+    # Split a line into shell command segments. Splitting inside a
+    # quoted string only manufactures segments that do not begin with
+    # `make`, which are ignored, so this does not need to be a shell
+    # parser to be safe for the one question asked of it.
+    function classify_line(s, fnr,   n, i, segs, v) {
+        gsub(/&&/, "\x01", s); gsub(/\|\|/, "\x01", s)
+        gsub(/;/,  "\x01", s); gsub(/\|/,  "\x01", s)
+        n = split(s, segs, "\x01")
+        for (i = 1; i <= n; i++) {
+            v = classify_make(segs[i])
+            if (v == "publishes") pub = 1
+            else if (v == "undecided")
+                bad("cannot tell whether this `make` publishes -> " trim(segs[i]), fnr)
+        }
+    }
+
+    # A make invocation publishes when `push` is among its TARGETS.
+    # Targets are what is left after flags and VAR=value assignments,
+    # so argument order does not matter -- `make push VAR=x` and
+    # `make VAR=x push` are the same command, and the regex this
+    # replaced recognised only the second.
+    function classify_make(seg,   toks, n, i, t, sawpush, undec, sawtarget) {
+        sub(/^[[:space:]]*/, "", seg)
+        sub(/^-[[:space:]]+/, "", seg)          # a YAML sequence dash
+        sub(/^run:[[:space:]]*/, "", seg)
+        sub(/^[[:space:]]*/, "", seg)
+        if (seg !~ /^make([[:space:]]|$)/) return "none"
+        sub(/^make[[:space:]]*/, "", seg)
+        n = split(seg, toks, /[[:space:]]+/)
+        sawpush = 0; undec = 0; sawtarget = 0
+        for (i = 1; i <= n; i++) {
+            t = toks[i]
+            if (t == "") continue
+            if (t ~ /^-/) continue                          # a flag
+            if (t ~ /^[A-Za-z_][A-Za-z0-9_]*=/) continue    # VAR=value
+            sawtarget = 1
+            if (t == "push") { sawpush = 1; continue }
+            if (t ~ /[$`]/) undec = 1     # expands to an unknown target
+        }
+        if (sawpush) return "publishes"
+        if (undec) return "undecided"
+        if (!sawtarget) return "undecided"   # the default goal lives in the Makefile
+        return "no"
+    }
+
     function flush() { if (job != "") printf "%s\t%s\t%s\n", job, pub, needs }
 
     /^jobs:[[:space:]]*$/ { injobs = 1; next }
@@ -187,21 +261,42 @@ parsed="$(awk '
         # fall through: it is an ordinary line of this job
     }
 
-    { if ($0 ~ /make[[:space:]].*[[:space:]]push([[:space:]]|$)/) pub = 1 }
+    # Everything below is shell text. Join `\`-continuations first: a
+    # `make` invocation split over two lines is one command, and a
+    # line-oriented reader sees neither half as a publisher.
+    {
+        line = $0
+        if (cont != "") { line = cont " " line; cont = "" }
+        if (line ~ /\\[[:space:]]*$/) {
+            sub(/\\[[:space:]]*$/, "", line)
+            cont = line
+            next
+        }
+        classify_line(line, FNR)
+    }
 
-    END { flush(); if (broke) exit 3 }
+    END {
+        if (cont != "") classify_line(cont, FNR)
+        flush()
+        if (broke) exit 3
+    }
 ' "$WF")"
 awkrc=$?
 
-if [ "$awkrc" -eq 3 ] || printf '%s\n' "$parsed" | grep -q '^BAD	'; then
-    echo "::error title=Unparseable needs::this gate will not guess at a" \
-         "\`needs:\` spelling it does not know, because reporting OK about" \
-         "text it did not understand is the silence it exists to end (#796)." >&2
+if [ "$awkrc" -eq 3 ] || printf '%s\n' "$parsed" | grep '^BAD	' >/dev/null; then
+    echo "::error title=Cannot classify::this gate will not guess at a" \
+         "\`needs:\` spelling or a \`make\` invocation it does not" \
+         "understand, because reporting OK about text it could not read is" \
+         "the silence it exists to end (#796)." >&2
     printf '%s\n' "$parsed" | awk -F'\t' '$1 == "BAD" { printf "  %s:%s: %s\n", wf, $2, $3 }' wf="$WF" >&2
     echo >&2
-    echo "  Accepted: 'needs: name', 'needs: [a, b]' (items may be quoted)," >&2
-    echo "  and a block sequence of '      - name' items. Teach the parser" >&2
-    echo "  the new form -- do not reword the workflow to suit the gate." >&2
+    echo "  Accepted needs:  'needs: name', 'needs: [a, b]' (items may be" >&2
+    echo "  quoted), and a block sequence of '      - name' items." >&2
+    echo "  Accepted make:   an invocation whose targets are literal words," >&2
+    echo "  so 'push' can be found among them whatever the argument order." >&2
+    echo "  Teach the parser the new form -- do not reword the workflow to" >&2
+    echo "  suit the gate, and do not let it answer 'not a publisher' when" >&2
+    echo "  what it means is 'I could not tell'." >&2
     exit 2
 fi
 
