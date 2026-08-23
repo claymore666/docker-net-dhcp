@@ -123,8 +123,10 @@ docker plugin enable <plugin>
 
 Off by default. The plugin runs with `CAP_NET_ADMIN`, `CAP_SYS_ADMIN` and
 `CAP_SYS_PTRACE` on host networking, so bind loopback or a management
-interface, never `0.0.0.0`. The listener serves `/metrics` and nothing else;
-a malformed address fails plugin startup.
+interface, never `0.0.0.0`. The listener serves `/metrics` and nothing else — any other path is a
+404, and no request can stop the plugin. A `METRICS_ADDR` that cannot be
+bound (bad syntax, port in use) fails plugin **startup**, so you find out
+at boot instead of from an empty dashboard.
 
 Six counters carry a `family` label. Each has `_v4` and `_v6` fields in
 `/Plugin.Health` and the unsuffixed counter is their sum, so the JSON total
