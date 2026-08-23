@@ -4,22 +4,36 @@
 #
 # Tests for check-build-job-independence.sh (#796).
 #
-# THE LIVE POSITIVE IS THE POINT. The shape this gate refuses is not
-# hypothetical and is not transcribed: it is what release.yml looked
-# like until #796, and the case reconstructs it by putting `needs:
-# release` back on the real file as it stands today. If that edit ever
-# stops changing the file, the case fails loudly rather than passing
+# ONE CASE PER ACCEPTED SPELLING, EACH DERIVED FROM THE REAL FILE.
+# The first version of this suite proved the gate's transitive closure,
+# its vacuity refusals and its live positive — and every single case
+# was written in flow form. So the depth it demonstrated rode on a
+# spelling it never varied, and the gate underneath it reported OK on
+#
+#     needs:
+#       - resolve
+#       - release
+#
+# which is genuinely serialised and is what a person writes the moment
+# a job gains a second dependency — the exact edit that reintroduces
+# the bug. A frozen operand hides its own mutant.
+#
+# The serialised cases below therefore re-serialise the REAL
+# release.yml, once per spelling the gate claims to accept, each guarded
+# so a substitution that stops applying fails loudly instead of passing
 # having reconstructed nothing.
 #
-# THE VACUITY CASES CARRY EQUAL WEIGHT. "No publishing job depends on
-# another" is true for free of a file with one publishing job, and of a
-# file with none. A gate that answers a question about an empty set and
-# reports success is the failure this tree has hit repeatedly, so both
-# are exit 2 and both are tested.
+# THE REFUSALS CARRY EQUAL WEIGHT. Two ways this gate can report a
+# clean pass while knowing nothing: a `needs:` form it cannot parse,
+# and a file whose publishing-job set is too small for the rule to say
+# anything. Both are exit 2, and both are tested — including the
+# multi-line flow sequence the parser deliberately does NOT handle,
+# which must refuse rather than fall through to OK.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CHECK="$ROOT/scripts/check-build-job-independence.sh"
+REAL="$ROOT/.github/workflows/release.yml"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
@@ -49,33 +63,74 @@ fail_case() {
     failures=$((failures + 1))
 }
 
-# --- THE LIVE POSITIVE, reconstructed from the real file --------------
-REAL="$ROOT/.github/workflows/release.yml"
-if [ ! -f "$REAL" ]; then
-    fail_case "release.yml is missing — the live-positive case tests nothing"
-else
-    # REPLACE the arm64 job's `needs:`, do not prepend a second one.
-    # A duplicate key is not the pre-#796 shape -- it is invalid YAML,
-    # and the first attempt at this case wrote one, whereupon the gate
-    # read the surviving `needs: resolve` and correctly reported no
-    # collision. The case failed and said so, which is the only reason
-    # this comment exists rather than a silently useless fixture.
-    awk '
+# --- THE LIVE POSITIVES: every accepted spelling of a serialised graph -
+#
+# `awk` rewrites the arm64 job's own `needs:` -- REPLACING it, never
+# prepending a second one. A duplicate key is not the pre-#796 shape,
+# it is invalid YAML, and the first attempt at this suite wrote one,
+# whereupon the gate read the surviving `needs: resolve` and correctly
+# reported no collision.
+reserialise() {   # reserialise <out-file> <replacement-block>
+    awk -v repl="$2" '
       /^  release-arm64:[ \t]*$/ { inarm = 1; print; next }
-      inarm && /^    needs:/      { print "    needs: release"; inarm = 0; next }
+      inarm && /^    needs:/     { printf "%s\n", repl; inarm = 0; next }
       { print }
-    ' "$REAL" > "$TMP/prefix.yml"
-    if cmp -s "$REAL" "$TMP/prefix.yml"; then
-        fail_case "release.yml has no 'release-arm64:' job with a needs: — the" \
-                  "pre-#796 shape could not be reconstructed and this case proves nothing"
-    elif ! grep -q '^    needs: release$' "$TMP/prefix.yml"; then
-        fail_case "the reconstruction did not put 'needs: release' back —" \
-                  "the anchor moved and this case reconstructs nothing (#796)"
-    else
-        check "the real release.yml with 'needs: release' put back is the pre-#796 shape" \
-              1 "$TMP/prefix.yml" "release-arm64 reaches release"
-    fi
+    ' "$REAL" > "$1"
+}
+
+if [ ! -f "$REAL" ]; then
+    fail_case "release.yml is missing — every live-positive case tests nothing"
+else
+    # name|the text that replaces the arm64 job's `needs:` line
+    while IFS='|' read -r label repl; do
+        [ -n "$label" ] || continue
+        out="$TMP/ser-$label.yml"
+        reserialise "$out" "$repl"
+        if cmp -s "$REAL" "$out"; then
+            fail_case "release.yml has no 'release-arm64:' job with a needs: —" \
+                      "the '$label' spelling reconstructs nothing (#796)"
+            continue
+        fi
+        # Guard the MUTATION, not the file. `grep release` over the
+        # whole workflow matches the amd64 job's own name and would
+        # pass on a fixture that changed nothing relevant; the region
+        # between the arm64 job header and its `runs-on:` is the only
+        # place the new dependency can be.
+        region="$(awk '/^  release-arm64:[ \t]*$/ { inarm = 1 }
+                       inarm && /^    runs-on:/    { exit }
+                       inarm { print }' "$out")"
+        if ! printf '%s\n' "$region" | grep -q 'release'; then
+            fail_case "$label: the arm64 job's needs: does not name 'release'" \
+                      "— this case reconstructs nothing (#796)"
+            continue
+        fi
+        if printf '%s\n' "$region" | grep -q '\\n'; then
+            fail_case "$label: the replacement landed as a literal backslash-n," \
+                      "so the fixture is one unparsed line and not this spelling"
+            continue
+        fi
+        check "serialised, spelled '$label', is caught" 1 "$out" \
+              "release-arm64 reaches release"
+    done <<'SPELLINGS'
+flow-scalar|    needs: release
+flow-seq|    needs: [resolve, release]
+flow-seq-dquoted|    needs: [resolve, "release"]
+flow-seq-squoted|    needs: ['resolve', 'release']
+flow-seq-trailing-comment|    needs: [resolve, release]  # arm64 waits
+flow-seq-trailing-comma|    needs: [resolve, release,]
+block-seq|    needs:\n      - resolve\n      - release
+block-seq-quoted|    needs:\n      - resolve\n      - "release"
+block-seq-comment-inside|    needs:\n      # why we wait\n      - resolve\n      - release
+SPELLINGS
+
     check "the real release.yml passes" 0 "$REAL" "none waiting on another"
+
+    # A form the parser does NOT handle must refuse, not fall through
+    # to OK. This is the whole point of the exit-2 path: an unknown
+    # spelling is an unknown meaning.
+    reserialise "$TMP/multiline.yml" '    needs: [\n      resolve,\n      release ]'
+    check "a multi-line flow sequence is refused, not silently OK" 2 \
+          "$TMP/multiline.yml" "Unparseable needs"
 fi
 
 # --- TRANSITIVE, not merely direct ------------------------------------
@@ -88,12 +143,13 @@ jobs:
     steps:
       - run: make PLUGIN_TAG=x push
   middle:
-    needs: a
+    needs:
+      - a
     runs-on: ubuntu-latest
     steps:
       - run: echo hi
   b:
-    needs: middle
+    needs: [middle]
     runs-on: ubuntu-latest
     steps:
       - run: make PLUGIN_TAG=y push
@@ -114,7 +170,8 @@ jobs:
     steps:
       - run: make PLUGIN_TAG=x push
   b:
-    needs: resolve
+    needs:
+      - resolve
     runs-on: ubuntu-latest
     steps:
       - run: make PLUGIN_TAG=y push
@@ -126,6 +183,39 @@ jobs:
 YAML
 check "two publishers on a common prerequisite are not a collision" \
       0 "$TMP/parallel.yml" "none waiting on another"
+
+# An empty flow sequence is a real YAML value meaning no dependencies.
+# Reading it as unparseable would refuse a verdict on a valid file.
+cat > "$TMP/emptyneeds.yml" <<'YAML'
+jobs:
+  a:
+    needs: []
+    runs-on: ubuntu-latest
+    steps:
+      - run: make PLUGIN_TAG=x push
+  b:
+    runs-on: ubuntu-latest
+    steps:
+      - run: make PLUGIN_TAG=y push
+YAML
+check "'needs: []' means no dependencies, not an unknown form" 0 \
+      "$TMP/emptyneeds.yml" "none waiting on another"
+
+# --- REFUSALS: a form whose meaning is unknown ------------------------
+cat > "$TMP/garbage.yml" <<'YAML'
+jobs:
+  a:
+    needs: {job: release}
+    runs-on: ubuntu-latest
+    steps:
+      - run: make PLUGIN_TAG=x push
+  b:
+    runs-on: ubuntu-latest
+    steps:
+      - run: make PLUGIN_TAG=y push
+YAML
+check "a mapping where a name or list belongs is refused" 2 "$TMP/garbage.yml" \
+      "Unparseable needs"
 
 # --- VACUITY, both ways round -----------------------------------------
 cat > "$TMP/one.yml" <<'YAML'
@@ -173,6 +263,34 @@ jobs:
 YAML
 check "a commented-out 'make ... push' is not a publishing job" 2 \
       "$TMP/commented.yml" "needs at least two"
+
+# --- prose that quotes `needs: release` is prose ----------------------
+# release.yml documents this very rule and names the shape it forbids.
+# A parser that read commented `needs:` lines would fire on the file's
+# own explanation of itself.
+cat > "$TMP/prose.yml" <<'YAML'
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo tag
+  a:
+    needs: resolve
+    runs-on: ubuntu-latest
+    steps:
+      - run: make PLUGIN_TAG=x push
+  b:
+    # This job must NOT carry `needs: a` -- see #796. It used to read
+    #     needs:
+    #       - a
+    # and that is the serialised shape this gate refuses.
+    needs: resolve
+    runs-on: ubuntu-latest
+    steps:
+      - run: make PLUGIN_TAG=y push
+YAML
+check "a commented-out 'needs:' is documentation, not a dependency" 0 \
+      "$TMP/prose.yml" "none waiting on another"
 
 # --- refusal, not a verdict, on nothing to read -----------------------
 check "a missing file is exit 2" 2 "$TMP/nope.yml" "not a readable file"

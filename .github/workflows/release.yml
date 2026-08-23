@@ -633,16 +633,33 @@ jobs:
   # That is now given up — if amd64 fails, arm64 will already have
   # pushed its tag.
   #
-  # It is accepted because it is the same leftover the amd64 job itself
-  # produces on every first rc of a new version: that job's digest gate
-  # deliberately sits AFTER `Push to GHCR`, the earliest point the
-  # binaries exist, so a failed gate leaves a published `:vX.Y.Z`
-  # behind. Nothing floating points at either tag, and re-running the
-  # tag recovers both. What the old ordering bought was consistency
-  # between two leftovers, not the absence of one.
+  # It is accepted for ONE class of amd64 failure, and it is worth
+  # naming which, because the two classes are not alike:
   #
-  # And it cost a whole rc round per release to buy it, because a
-  # skipped `release-arm64` never runs its own digest gate — so the
+  #   FAILS AFTER PUBLISHING — the digest gate. `Check the documented
+  #   reference digests against this build` runs AFTER `Push to GHCR`,
+  #   deliberately: that is the earliest point the binaries exist. So
+  #   a failed gate already leaves a published `:vX.Y.Z` behind, and
+  #   this is every first rc of a new version. Here the old edge
+  #   bought consistency between two
+  #   leftovers, not the absence of one, and giving it up costs
+  #   nothing that was not already spent.
+  #
+  #   FAILS BEFORE PUBLISHING — a broken build, a bad ref, an expired
+  #   token, or the `Both registries, or say why not` step. Checkout,
+  #   setup-go and both logins all precede the push, and `make push`
+  #   chains create -> push so the build itself is inside that step
+  #   before any bytes move. Under the old graph this class published
+  #   NOTHING, on either architecture. Here the old edge really did buy
+  #   the absence of a leftover, and that is what is being given up:
+  #   a pushed `:vX.Y.Z-arm64` beside an amd64 release that produced no
+  #   image at all.
+  #
+  # The trade is deliberate. Nothing floating points at that tag --
+  # both floating tags move only in `promote-latest`, which names every
+  # build and verify job -- and re-running the tag recovers it. The
+  # price of keeping it was a whole rc round per release, because a
+  # skipped `release-arm64` never runs its own digest gate, so the
   # first rc of a new version could only ever print the amd64 block.
   release-arm64:
     needs: resolve
