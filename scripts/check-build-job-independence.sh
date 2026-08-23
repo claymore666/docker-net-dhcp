@@ -102,6 +102,23 @@
 # publishing job wait, directly or transitively, on another" — which is
 # the question that was answered wrong.
 #
+# AND ITS SUBJECT IS BOUNDED, DELIBERATELY. A publishing job here is a
+# job that runs `make` with a target literally named `push`. Two things
+# are therefore INVISIBLE to this gate, and that is a stated scope, not
+# an oversight:
+#
+#   - a job that publishes without calling make at all (a bare `docker
+#     push`, `crane copy`, a registry action);
+#   - a make target that publishes under another name, e.g.
+#     `make push-arm64`.
+#
+# Both are decidably outside the subject, so they are answered "not a
+# publisher" rather than refused — and a file where every publisher is
+# invisible falls below two and lands on the non-vacuity refusal
+# anyway. Widening the subject is v1.9.0 work; the point of writing the
+# bound down is that the next person reads it here instead of assuming
+# a coverage this file never claimed.
+#
 # Usage: check-build-job-independence.sh [workflow-file]
 # Exit:  0 no publishing job depends on another
 #        1 one does — the serialised shape is back
@@ -170,10 +187,14 @@ parsed="$(awk '
         return 1
     }
 
-    # Split a line into shell command segments. Splitting inside a
-    # quoted string only manufactures segments that do not begin with
-    # `make`, which are ignored, so this does not need to be a shell
-    # parser to be safe for the one question asked of it.
+    # Split a line into shell command segments. This is deliberately
+    # not a shell parser: splitting inside a quoted string manufactures
+    # segments, and until the command position gained a verdict of its
+    # own those segments were harmlessly ignored. They are not ignored
+    # any more, so the two places a manufactured segment can now lie
+    # are handled where they arise -- `echo`/`printf` carry data rather
+    # than commands (classify_make), and only the body of a `run:` is
+    # read at all (the main rules below).
     function classify_line(s, fnr,   n, i, segs, v) {
         gsub(/&&/, "\x01", s); gsub(/\|\|/, "\x01", s)
         gsub(/;/,  "\x01", s); gsub(/\|/,  "\x01", s)
@@ -183,6 +204,8 @@ parsed="$(awk '
             if (v == "publishes") pub = 1
             else if (v == "undecided")
                 bad("cannot tell whether this `make` publishes -> " trim(segs[i]), fnr)
+            else if (v == "indirect")
+                bad("a `make` token that is not a literal `make` invocation -> " trim(segs[i]), fnr)
         }
     }
 
@@ -194,9 +217,43 @@ parsed="$(awk '
     function classify_make(seg,   toks, n, i, t, sawpush, undec, sawtarget) {
         sub(/^[[:space:]]*/, "", seg)
         sub(/^-[[:space:]]+/, "", seg)          # a YAML sequence dash
-        sub(/^run:[[:space:]]*/, "", seg)
         sub(/^[[:space:]]*/, "", seg)
-        if (seg !~ /^make([[:space:]]|$)/) return "none"
+        # `echo` and `printf` do not execute their arguments, so a
+        # `make` token inside one is prose. test.yaml:834 is exactly
+        # this -- `echo "make create created ..."` in the failure
+        # message of another gate -- and the command-position rule below called
+        # it indirect. A command substitution inside the arguments DOES
+        # execute, so that exit is closed off when one is present.
+        if (seg ~ /^(echo|printf)([[:space:]]|$)/ &&
+            index(seg, "$(") == 0 && index(seg, "`") == 0)
+            return "none"
+        # THE COMMAND POSITION GETS THE SAME RULE AS THE TARGET
+        # POSITION. Refusing on an unreadable target while answering
+        # "none" here would leave the last silent exit in the file: a
+        # segment holding a `make` token that this cannot read is
+        # undecidable by exactly the standard applied below, and
+        # "none" removes its job from the population. `${MAKE} push`
+        # and `sh -c "make push"` both took that exit.
+        #
+        # The word test is case-insensitive and bounded by non-letters,
+        # so `${MAKE}` and `$MAKE` are caught while `Makefile` and
+        # `MAKEFLAGS` are not.
+        #
+        # It DOES fire on real text elsewhere in the tree, which was
+        # worth measuring rather than asserting: run this over every
+        # workflow and `integration-hosted.yml` refuses on
+        # `sudo env "PATH=$PATH" ... make integration-test`. That is a
+        # true positive by the standard this gate sets itself -- a make
+        # reached through a wrapper, whose targets it cannot claim to
+        # have read -- and the file is outside the subject anyway,
+        # having no publishing job at all. The two refusals that were
+        # NOT true positives (a step `name:` holding the word "Make",
+        # and a `make` inside an `echo`) are closed above and below.
+        if (seg !~ /^make([[:space:]]|$)/) {
+            if (seg ~ /(^|[^A-Za-z])[Mm][Aa][Kk][Ee]([^A-Za-z]|$)/)
+                return "indirect"
+            return "none"
+        }
         sub(/^make[[:space:]]*/, "", seg)
         n = split(seg, toks, /[[:space:]]+/)
         sawpush = 0; undec = 0; sawtarget = 0
@@ -217,14 +274,45 @@ parsed="$(awk '
 
     function flush() { if (job != "") printf "%s\t%s\t%s\n", job, pub, needs }
 
+    # Shell text enters here and nowhere else. `\`-continuations are
+    # joined first: a `make` invocation split over two lines is one
+    # command, and a line-oriented reader sees neither half as a
+    # publisher.
+    function feed(line, fnr) {
+        if (line ~ /^[[:space:]]*#/ && cont == "") return   # a shell comment
+        if (cont != "") { line = cont " " line; cont = "" }
+        if (line ~ /\\[[:space:]]*$/) {
+            sub(/\\[[:space:]]*$/, "", line)
+            cont = line
+            return
+        }
+        classify_line(line, fnr)
+    }
+
+    # -1 is the sentinel for "not inside a block scalar", and an unset
+    # awk variable is 0, which compares >= 0 and would put the reader
+    # in a block from the first line of the file.
+    BEGIN { runind = -1 }
+
     /^jobs:[[:space:]]*$/ { injobs = 1; next }
     !injobs { next }
-    /^[^[:space:]#]/ { flush(); injobs = 0; next }
+    /^[^[:space:]#]/ { flush(); injobs = 0; runind = -1; next }
+
+    # INSIDE A BLOCK SCALAR, EVERYTHING DEEPER IS SHELL. Checked before
+    # the structural rules so that a body line is never mistaken for
+    # one; a line at or left of the `run:` key ends the block, and falls
+    # through to be read as YAML again.
+    runind >= 0 {
+        if ($0 ~ /^[[:space:]]*$/) next
+        if (match($0, /[^[:space:]]/) - 1 > runind) { feed($0, FNR); next }
+        runind = -1
+        # fall through
+    }
 
     /^  [A-Za-z0-9_-]+:[[:space:]]*$/ {
         flush()
         job = $1; sub(/:$/, "", job)
-        pub = 0; needs = ""; inneeds = 0
+        pub = 0; needs = ""; inneeds = 0; runind = -1
         next
     }
 
@@ -261,18 +349,37 @@ parsed="$(awk '
         # fall through: it is an ordinary line of this job
     }
 
-    # Everything below is shell text. Join `\`-continuations first: a
-    # `make` invocation split over two lines is one command, and a
-    # line-oriented reader sees neither half as a publisher.
-    {
-        line = $0
-        if (cont != "") { line = cont " " line; cont = "" }
-        if (line ~ /\\[[:space:]]*$/) {
-            sub(/\\[[:space:]]*$/, "", line)
-            cont = line
-            next
-        }
-        classify_line(line, FNR)
+    # A `run:` VALUE IS THE ONLY SHELL IN A WORKFLOW. The first version
+    # of the command-position rule read every line of every job, so a
+    # step called `- name: Make gh-pages available to mike`
+    # (pages.yml:162) was reported as a `make` token that could not be
+    # read -- a refusal, on prose, in a file with no publishing job in
+    # it. A gate that refuses over the name of a step gets discharged
+    # as noisy long before it catches the edit it exists for.
+    #
+    # Both spellings of the key are accepted, `run:` and `- run:`. A
+    # block scalar ends at the column of the `run:` KEY rather than at
+    # the dash, because that is the column YAML itself measures the
+    # scalar against.
+    #
+    # MEASURED, and not what a first reading of it said: the two
+    # columns are not distinguishable by any legal document. A run
+    # block ends at the first line indented no deeper than its key,
+    # and the only thing that can sit between a `- run: |` and a later
+    # `run:` is the next sequence item, whose dash is shallower than
+    # both. Mutating this back to the dash column leaves the suite at
+    # 38/38 and release.yml clean. It is kept as the correct reading,
+    # not sold as a fix -- the release.yml failure that prompted the
+    # look was the missing `runind` sentinel below, nothing to do with
+    # this column.
+    /^[[:space:]]*(-[[:space:]]+)?run:([[:space:]]|$)/ {
+        ind = index($0, "run:") - 1
+        rest = $0
+        sub(/^[[:space:]]*(-[[:space:]]+)?run:[[:space:]]*/, "", rest)
+        if (rest ~ /^[|>]/) { runind = ind; next }   # a block scalar
+        runind = -1
+        feed(rest, FNR)
+        next
     }
 
     END {

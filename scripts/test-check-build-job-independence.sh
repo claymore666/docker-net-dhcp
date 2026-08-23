@@ -462,6 +462,238 @@ YAML
 check "a non-publishing make with variable ASSIGNMENTS is still decidable" 2 \
       "$TMP/varassign.yml" "needs at least two"
 
+# --- THE COMMAND POSITION, the last silent exit ------------------------
+#
+# "Undecidable -> refuse" was applied to the TARGET position while the
+# COMMAND position still answered "none", which removes the job from
+# the population -- the same defect as the target position, one slot to
+# the left. Both of these hold a `make` token in a form this classifier
+# cannot read, and both used to report a clean pass on a genuinely
+# serialised three-publisher file.
+cat > "$TMP/indirect.yml" <<'YAML'
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo tag
+  a:
+    needs: resolve
+    runs-on: ubuntu-latest
+    steps:
+      - run: make PLUGIN_TAG=x push
+  c:
+    needs: resolve
+    runs-on: ubuntu-latest
+    steps:
+      - run: make PLUGIN_TAG=z push
+  b:
+    needs: a
+    runs-on: ubuntu-latest
+    steps:
+      - run: ${MAKE} PLUGIN_TAG=y push
+YAML
+check "'\${MAKE} push' is refused, not silently dropped from the population" \
+      2 "$TMP/indirect.yml" "not a literal \`make\` invocation"
+
+cat > "$TMP/shwrapped.yml" <<'YAML'
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo tag
+  a:
+    needs: resolve
+    runs-on: ubuntu-latest
+    steps:
+      - run: make PLUGIN_TAG=x push
+  c:
+    needs: resolve
+    runs-on: ubuntu-latest
+    steps:
+      - run: make PLUGIN_TAG=z push
+  b:
+    needs: a
+    runs-on: ubuntu-latest
+    steps:
+      - run: sh -c "make PLUGIN_TAG=y push"
+YAML
+check "a make wrapped in 'sh -c' is refused, not silently dropped" 2 \
+      "$TMP/shwrapped.yml" "not a literal \`make\` invocation"
+
+# ...and the word test must stay bounded, or every mention of a
+# Makefile becomes a refusal and the gate gets waived.
+cat > "$TMP/makefileword.yml" <<'YAML'
+jobs:
+  a:
+    runs-on: ubuntu-latest
+    env:
+      MAKEFLAGS: -j2
+    steps:
+      - run: cat Makefile
+      - run: make PLUGIN_TAG=x push
+  b:
+    runs-on: ubuntu-latest
+    steps:
+      - run: make PLUGIN_TAG=y push
+YAML
+check "'Makefile' and 'MAKEFLAGS' are not make invocations" 0 \
+      "$TMP/makefileword.yml" "none waiting on another"
+
+# --- THE STATED BOUND, asserted so it cannot drift into a silent gap --
+#
+# The subject is a job running `make` with a target literally named
+# `push`. A publisher that never calls make, and a make target that
+# publishes under another name, are outside it -- decidably, so they
+# are answered "not a publisher" rather than refused. These cases exist
+# so that bound is a tested property of the gate rather than a sentence
+# in its header, and so widening it in v1.9.0 changes a red test rather
+# than passing unnoticed.
+cat > "$TMP/nonmakepublisher.yml" <<'YAML'
+jobs:
+  a:
+    runs-on: ubuntu-latest
+    steps:
+      - run: docker push ghcr.io/x:amd64
+  b:
+    needs: a
+    runs-on: ubuntu-latest
+    steps:
+      - run: make PLUGIN_TAG=y push
+YAML
+check "a non-make publisher is outside the subject (stated bound)" 2 \
+      "$TMP/nonmakepublisher.yml" "needs at least two"
+
+cat > "$TMP/otherpushname.yml" <<'YAML'
+jobs:
+  a:
+    runs-on: ubuntu-latest
+    steps:
+      - run: make PLUGIN_TAG=x push-arm64
+  b:
+    needs: a
+    runs-on: ubuntu-latest
+    steps:
+      - run: make PLUGIN_TAG=y push
+YAML
+check "'make push-arm64' is outside the subject (stated bound)" 2 \
+      "$TMP/otherpushname.yml" "needs at least two"
+
+# --- ONLY A `run:` VALUE IS SHELL, AND ONLY ITS OWN BODY --------------
+#
+# The command-position refusal was added reading every line of every
+# job, which made prose into a refusal: a step named
+# `Make gh-pages available to mike` is real text in pages.yml, and a
+# gate that goes red over the name of a step is a gate that gets
+# waived before it ever catches the edit it exists for. These four
+# cases pin the boundary of what counts as a command.
+
+cat > "$TMP/prosename.yml" <<'YAML'
+jobs:
+  a:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Make gh-pages available to mike
+        if: make-believe
+        env:
+          NOTE: run make push by hand if this fails
+        run: make PLUGIN_TAG=x push
+  b:
+    runs-on: ubuntu-latest
+    steps:
+      - run: make PLUGIN_TAG=y push
+YAML
+check "a step name, an if: and an env: value are not commands" 0 \
+      "$TMP/prosename.yml" "none waiting on another"
+
+# `echo` and `printf` do not execute their arguments. test.yaml:834 is
+# this exact shape -- a gate quoting `make create` in its own failure
+# message -- and it was reported as an unreadable make token.
+cat > "$TMP/echodata.yml" <<'YAML'
+jobs:
+  a:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "make create created the bind source (#517)."
+      - run: printf '%s\n' "run make push to publish"
+      - run: make PLUGIN_TAG=x push
+  b:
+    runs-on: ubuntu-latest
+    steps:
+      - run: make PLUGIN_TAG=y push
+YAML
+check "a make quoted inside echo/printf is data, not a command" 0 \
+      "$TMP/echodata.yml" "none waiting on another"
+
+# ...but a command substitution inside those arguments DOES execute,
+# so the data rule must not become a way to hide a make.
+cat > "$TMP/echosubst.yml" <<'YAML'
+jobs:
+  a:
+    runs-on: ubuntu-latest
+    steps:
+      - run: make PLUGIN_TAG=x push
+  c:
+    runs-on: ubuntu-latest
+    steps:
+      - run: make PLUGIN_TAG=z push
+  b:
+    needs: a
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "$(make PLUGIN_TAG=y push)"
+YAML
+check "a make inside a command substitution in echo is still refused" 2 \
+      "$TMP/echosubst.yml" "not a literal \`make\` invocation"
+
+# A BLOCK SCALAR MUST END, AND THE STEPS AFTER IT MUST STILL BE READ.
+# Restricting the scan to `run:` bodies introduces a second way to go
+# quiet: a block that never closes swallows the rest of the job, and
+# every publisher after it arrives at the classifier still carrying a
+# `run: ` prefix. That is what the real release.yml did while the
+# `runind` sentinel was unset -- an unset awk variable is 0, so the
+# reader believed it was inside a block from line one.
+cat > "$TMP/blockthenstep.yml" <<'YAML'
+jobs:
+  a:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo one
+          echo two
+        env:
+          NOTE: x
+      - run: make PLUGIN_TAG=x push
+  b:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo three
+      - run: make PLUGIN_TAG=y push
+YAML
+check "a '- run: |' block does not swallow the steps after it" 0 \
+      "$TMP/blockthenstep.yml" "none waiting on another"
+
+# ...and the body of that block is still read: a publisher hidden
+# inside one must be found, or restricting the scan would have bought
+# quiet by going blind.
+cat > "$TMP/blockbody.yml" <<'YAML'
+jobs:
+  a:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo preparing
+          make PLUGIN_TAG=x push
+  b:
+    needs: a
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          make PLUGIN_TAG=y push
+YAML
+check "a publisher inside a block scalar is still found" 1 \
+      "$TMP/blockbody.yml" "waits on"
+
 # --- refusal, not a verdict, on nothing to read -----------------------
 check "a missing file is exit 2" 2 "$TMP/nope.yml" "not a readable file"
 
