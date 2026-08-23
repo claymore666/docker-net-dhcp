@@ -86,11 +86,24 @@ sudo mkdir -p /var/lib/net-dhcp
 | Option-51 lease lifetime longer than a year | 24h substituted **for the outage watchdog only**, counted as `lease_time_clamped`. Ordinary long leases are left as granted |
 | Option-3 gateway that does not parse | dropped instead of applied (v1.7.1 installed `default dev ethX scope link`) |
 | DHCP client left behind by a killed plugin | found and killed at startup, before recovery starts its replacement |
-| State files and `leases.jsonl` under `/var/lib/net-dhcp` | no longer world-readable — reading them as a non-root user now needs `sudo` |
+| State files and `leases.jsonl` under `/var/lib/net-dhcp` | created `0600`; reading them as a non-root user now needs `sudo`. **A file that already exists keeps its old mode until the plugin next writes it** — see below |
 
 Reference digests differ from v1.7.1. Two `pkg/plugin` refactors are intended
 to be behaviour-identical and are covered by the existing suite plus new unit
 tests.
+
+**Upgrading from v1.7.1 or older: tighten the existing state files by hand.**
+`0600` is applied when the plugin *writes* a file, so an upgrade does not
+retroactively tighten what it finds. `tombstones.json` in particular is only
+rewritten when a tombstone is laid or consumed, which on a stable host can be
+a long time — it was observed still at `0644` after a production upgrade to
+v1.8.0. Once, per host:
+
+```bash
+sudo chmod 0600 /var/lib/net-dhcp/*.json /var/lib/net-dhcp/leases.jsonl
+```
+
+Making the plugin do this itself at startup is #804.
 
 ### New
 

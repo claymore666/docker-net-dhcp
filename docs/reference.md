@@ -719,6 +719,27 @@ networks fall back to the Docker API on first read, which back-fills the
 file — so by the second endpoint operation everything is served from
 disk again.
 
+#### File permissions after an upgrade
+
+Since v1.8.0 the plugin writes everything under `STATE_DIR` with mode
+`0600` (#708) — the directory is a read-write bind mount from the host, so
+at `0644` the container MACs, leased IPs, hostnames and the lease audit
+trail were readable by any user on the host. Nothing there is a credential
+and the writer is root either way, so this is not a privilege boundary.
+
+The mode is applied **when the plugin writes a file**, which means an
+upgrade does not retroactively tighten what it finds. `tombstones.json` is
+rewritten only when a tombstone is laid or consumed, so on a host with
+stable containers it can keep its old `0644` indefinitely. If you upgraded
+from v1.7.1 or older, tighten them once by hand:
+
+```bash
+sudo chmod 0600 /var/lib/net-dhcp/*.json /var/lib/net-dhcp/leases.jsonl
+```
+
+Having the plugin sweep `STATE_DIR` at startup is tracked in
+[#804](https://github.com/claymore666/docker-net-dhcp/issues/804).
+
 ---
 
 ## Observability
