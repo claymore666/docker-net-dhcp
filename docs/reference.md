@@ -622,8 +622,12 @@ container's mount namespace on every renewal.
 
 ### DHCPv6 (`ipv6=true`)
 
-Runs a second persistent client (`dhcpcd -6`) alongside the v4 one —
-**stateful DHCPv6**, not SLAAC. Note that Docker's own `--ipv6` flag does
+Runs a second persistent client (`dhcpcd -6`) alongside the v4 one.
+What it leases is **stateful DHCPv6**, never SLAAC — a SLAAC address is
+formed by the container's own kernel and this plugin neither requests
+nor manages it. Since v1.9.0 that is a statement about what the plugin
+leases and no longer about which networks it will start a container on;
+see the last bullet below. Note that Docker's own `--ipv6` flag does
 not work with the null IPAM driver and is not what you want:
 
 ```bash
@@ -652,6 +656,26 @@ docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.8.0 \
   outlive its server-side lease on networks with short v6 lease times.
 - `propagate_dns` covers v6 as well, via option 23. The two families are
   last-writer-wins on `resolv.conf`.
+- **A network that offers no DHCPv6 address no longer refuses the
+  container** (v1.9.0+, #868). Before this, `ipv6=true` on a segment
+  whose router advertisements are stateless (the RA "other config" flag
+  only) or plain SLAAC failed every endpoint: there is no DHCPv6 address
+  on such a segment by definition, the acquisition always timed out, and
+  the timeout was fatal — so nothing could start on the default
+  configuration of a great many home routers. The endpoint is now
+  created without a v6 lease and the container's own kernel forms a
+  SLAAC address from the advertised prefix. The plugin does not manage
+  that address and `docker inspect` does not report it.
+
+  What the segment *advertised* decides this, not how long the plugin
+  waited. An RA carrying the managed-address flag says DHCPv6 addresses
+  are available here, so a server that then answers nothing is still a
+  fatal error and the container still fails to start — a real DHCPv6
+  outage must not quietly become a container with no IPv6. The two
+  tolerated cases are visible as `dhcpv6_not_offered` and
+  `dhcpv6_no_router_advert` on `/Plugin.Health`; the second also logs a
+  warning, because a segment nothing advertises on is not a
+  configuration anyone chose.
 - Prefix delegation (DHCPv6-PD) is out of scope (#214).
 
 ### Recovery after a plugin restart
@@ -825,6 +849,8 @@ diagnosing a specific container from them alone is not.
 | `mount_prep_failures` | no | (v1.9.0+) Individual commands in a DHCP client's private mount-namespace preparation that failed. Counts **commands, not clients** — one client that fails three of its four preparation steps adds 3. The commands are chained so that a failure does not stop the ones after it and `dhcpcd` starts regardless, which is a deliberate degrade and usually harmless; the reason to watch it is the one case that is not. The preparation gives each client its own `dhcpcd` run directory, and two containers whose interface has the same name (the default `eth0` on both) otherwise collide on `dhcpcd`'s control socket — the second client becomes a no-op that never renews and never releases, while everything else looks normal. Before this counter the only trace was a shell error on the plugin's stderr, indistinguishable from `dhcpcd`'s routine output. |
 | `ledger_write_failures` | no | Failed `audit_log` ledger appends — degrades forensics, not networking. Operators using `audit_log` alert on this. |
 | `dhcpv6_config_only` | no | (v1.9.0+) DHCPv6 **information replies** received: a network advertising the RA "other configuration available" flag answered an information request with options and no address (#815). Not `healthy`-affecting — this is the normal exchange on a stateless IPv6 network, not a fault. Before v1.9.0 these were dropped unread, so such a network was indistinguishable from one that answered nothing at all. It counts replies **received**, not configuration applied: whether anything reaches the container depends on `propagate_dns` and on what the server actually sent, so a value climbing while the container's resolver never changes is the signal that the network advertises configuration it does not supply. No `_v4` half exists — the plugin never runs `dhcpcd`'s v4 DHCPINFORM mode, and a zero-forever v4 series would imply a measurement nobody takes. |
+| `dhcpv6_not_offered` | no | (v1.9.0+) Endpoints that came up on an IPv6 network whose router advertisement offered **no DHCPv6 address** — the RA carried neither the managed flag nor, in the SLAAC case, any DHCPv6 offer at all (#868). Not `healthy`-affecting and not a fault: the network is working exactly as configured, and the container's IPv6 address, if it has one, comes from SLAAC rather than from this plugin. Before v1.9.0 the endpoint was refused outright and no container could start on such a network. Read it together with `dhcpv6_config_only`: that one says a stateless network answered an information request; this one says the endpoint proceeded without a v6 lease. Kept apart from `dhcpv6_no_router_advert` below because the two are different situations that would otherwise be indistinguishable — this one is a deliberate operator configuration. |
+| `dhcpv6_no_router_advert` | no | (v1.9.0+) Endpoints that came up on an IPv6 network where **no router advertisement arrived at all** inside the acquisition budget (#868). The endpoint starts and the container runs with no IPv6 address from this plugin. Not `healthy`-affecting — the plugin did its part and the segment did not answer — but unlike `dhcpv6_not_offered` this is not a configuration anyone chose: it usually means the segment has no router, its advertisements are filtered, or the interval between them is longer than the acquisition budget. The accompanying log line is a warning and carries the underlying acquisition error; the counter is the part a dashboard can alert on. A network that is genuinely v6-less will hold this at one per endpoint start, so alert on the rate rather than on any non-zero value. |
 | `lease_changed_v6`, `leases_obtained_v6`, `leases_renewed_v6`, `dhcp_timeouts_v6`, `naks_received_v6` | no | (v1.2.0+) The IPv6-only share of the matching counter above (#212). Each counts only the v6 client's events. On a dual-stack host this isolates the v6-specific NAK/timeout signal the combined number hides. `client_stop_failures_v6` (v1.7.0+, #608) joins the split with the same rule; `ledger_write_failures` has no per-family split. |
 | `lease_changed_v4`, `leases_obtained_v4`, `leases_renewed_v4`, `dhcp_timeouts_v4`, `naks_received_v4`, `client_stop_failures_v4` | no | (v1.8.0+, #730) The IPv4-only share, on the same rule. Both halves are now stored and the unsuffixed counter is their **sum** — it is not a counter in its own right and nothing increments it. Before v1.8.0 the v4 share was not stored: it was recovered as `aggregate − *_v6` at render time, which could read one lower than the previous scrape and make Prometheus treat the whole counter as reset. Use `*_v4` rather than doing that subtraction yourself. |
 

@@ -455,3 +455,35 @@ func TestRenderArgs_FamilyExclusive(t *testing.T) {
 		t.Errorf("v6 args family flags wrong: %v", v6)
 	}
 }
+
+// TestRenderConfig_RouterAdvertOptInIsOneShotOnly pins the scope of
+// #868's opt-in, in both directions.
+//
+// The opt-in is the whole reason ROUTERADVERT can be an event without
+// disturbing #815's boundary: the persistent renewal client never asks
+// for advertisements, so its stream does not carry the repeated RAs
+// every IPv6 segment produces. A version that set the directive
+// unconditionally still fixes #868 and still passes every other test
+// here — and quietly puts a permanent stream of unread events on every
+// long-lived client on the host.
+//
+// The negative half is the load-bearing one. `Once: false` is the
+// persistent client, and its absence from the config is the claim.
+func TestRenderConfig_RouterAdvertOptInIsOneShotOnly(t *testing.T) {
+	const want = "env " + EmitRAEnv + "=1"
+
+	oneShot := renderConfig(dhcpcdParams{Once: true})
+	if !strings.Contains(oneShot, want) {
+		t.Errorf("the one-shot acquisition config does not ask for router advertisements "+
+			"(%q missing); without them the acquisition cannot tell a segment that "+
+			"offers no DHCPv6 from a server that did not answer:\n%s", want, oneShot)
+	}
+
+	persistent := renderConfig(dhcpcdParams{Once: false})
+	if strings.Contains(persistent, want) {
+		t.Errorf("the PERSISTENT client's config asks for router advertisements (%q). "+
+			"They arrive repeatedly for the life of the container and nothing reads "+
+			"them there — this is exactly the widening #815 decided against:\n%s",
+			want, persistent)
+	}
+}

@@ -119,6 +119,16 @@ const (
 	// separates "the plugin handled the DHCPv6 reply" from "a DHCPv6
 	// server was running nearby".
 	V6NoRA
+	// V6ManagedSilent is managed DHCPv6 whose server answers nothing:
+	// RAs carry the M flag, so the segment says an address is
+	// available over DHCPv6, and every SOLICIT is dropped.
+	//
+	// This is the mode that keeps #868's fix honest. Tolerating a
+	// missing DHCPv6 address is correct exactly when the segment never
+	// offered one; here it did. A fix that read "v6 acquisition failed,
+	// carry on" rather than "the advertisement said no DHCPv6, carry
+	// on" passes every other mode in this file and fails only this one.
+	V6ManagedSilent
 )
 
 func (m V6Mode) String() string {
@@ -131,6 +141,8 @@ func (m V6Mode) String() string {
 		return "slaac"
 	case V6NoRA:
 		return "nora"
+	case V6ManagedSilent:
+		return "managed-silent"
 	}
 	return fmt.Sprintf("V6Mode(%d)", int(m))
 }
@@ -163,6 +175,31 @@ func (m V6Mode) rangeArgs() []string {
 		return []string{
 			"--dhcp-range=" + V6PoolStartV6 + "," + V6PoolEndV6 + "," + LeaseTime,
 		}
+	case V6ManagedSilent:
+		// Identical to V6Managed plus one directive. `dhcpv6` is a tag
+		// dnsmasq sets on its own for every DHCPv6 request, so the
+		// ignore reaches the v6 half and only the v6 half -- the v4
+		// pool every mode carries keeps serving, which matters because
+		// the plugin leases v4 on every network and a broken v4 half
+		// would fail the endpoint for the wrong reason.
+		//
+		// Measured 2026-08-27, dnsmasq 2.92rel2 / dhcpcd 10.3.2, one
+		// netns per arm:
+		//
+		//   --dhcp-ignore=tag:dhcpv6  -> DHCPSOLICIT ... ignored, no
+		//                                IA_NA, v4 DHCPACK still sent,
+		//                                client hook still sees three
+		//                                ROUTERADVERTs with nd1_flags=MO
+		//
+		// The obvious spelling does NOT work and was tried first:
+		// tagging the v6 range with `set:` and ignoring that tag leaves
+		// dnsmasq serving the address anyway, with the tag visibly in
+		// the request's tag set. Do not "simplify" this back to it.
+		return []string{
+			"--dhcp-range=" + V6PoolStartV6 + "," + V6PoolEndV6 + "," + LeaseTime,
+			"--enable-ra",
+			"--dhcp-ignore=tag:dhcpv6",
+		}
 	}
 	return nil
 }
@@ -193,8 +230,10 @@ func (m V6Mode) rangeArgs() []string {
 // readiness poll fails loudly rather than the segment coming up
 // silently in the other mode. Measured: ra-stateless and ra-only pass
 // --test, ra-bogus does not.
-func (m V6Mode) wantPool() bool { return m == V6Managed || m == V6NoRA }
-func (m V6Mode) wantRA() bool   { return m != V6NoRA }
+func (m V6Mode) wantPool() bool {
+	return m == V6Managed || m == V6NoRA || m == V6ManagedSilent
+}
+func (m V6Mode) wantRA() bool { return m != V6NoRA }
 
 // V6Fixture is a per-test dual-stack segment in one V6Mode. Create it
 // with NewV6Fixture; it registers its own teardown.
@@ -437,6 +476,35 @@ func (f *V6Fixture) CountLogLines(substrings ...string) int {
 		}
 	}
 	return n
+}
+
+// AwaitIgnoredSolicit blocks until the server has logged a DHCPv6
+// request it refused to answer, and fails the test if none arrives.
+//
+// It exists because V6ManagedSilent has the same startup signature as
+// V6Managed -- same pool line, same RA -- so assertMode cannot tell
+// them apart, and the thing that separates them only becomes visible
+// once a client actually solicits. Without this a mistyped ignore
+// directive would produce a segment that quietly serves addresses
+// while the test believed the server was silent, which turns the
+// strongest assertion in the #868 set into a tautology.
+//
+// "ignored" is dnsmasq's own word for the outcome and, like
+// DHCPSOLICIT, it is a protocol/state token it prints verbatim rather
+// than one of the translated prose strings -- see wantPool's note on
+// why the locale rules the choice of substring here.
+func (f *V6Fixture) AwaitIgnoredSolicit(budget time.Duration) {
+	f.t.Helper()
+	deadline := time.Now().Add(budget)
+	for time.Now().Before(deadline) {
+		if f.CountLogLines("DHCPSOLICIT", "ignored") > 0 {
+			return
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	f.t.Fatalf("v6 fixture mode=%s: no DHCPv6 solicit was refused within %v — "+
+		"either no client asked, or the server answered and this segment is not "+
+		"silent at all; log:\n%s", f.mode, budget, f.readLog())
 }
 
 func (f *V6Fixture) readLog() string {

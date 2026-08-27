@@ -127,4 +127,14 @@ type Event struct {
 	// leaves no trace is indistinguishable from an attack that was
 	// never attempted.
 	UnsafeValuesDropped int `json:",omitempty"`
+	// RouterFlags is the raw nd1_flags string from a ROUTERADVERT hook
+	// event -- the flag letters dhcpcd recognised in the advertisement
+	// ("MO", "O", or empty). Only ever set on a "routeradvert" event,
+	// which only the one-shot acquisition client receives (#868).
+	//
+	// The string is dhcpcd's spelling, not a protocol name, and it is
+	// carried verbatim rather than pre-interpreted so a later consumer
+	// that cares about the O flag (stateless configuration, #815) does
+	// not need the hook to change.
+	RouterFlags string `json:",omitempty"`
 }

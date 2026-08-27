@@ -745,6 +745,17 @@ type HealthResponse struct {
 	// a network was indistinguishable from one that answered nothing.
 	// It has no v4 half; see the atom for why.
 	DHCPv6ConfigOnly int32 `json:"dhcpv6_config_only"`
+	// DHCPv6NotOffered counts endpoints created without a DHCPv6
+	// address because the segment advertised no managed DHCPv6 --
+	// stateless or SLAAC (#868). NOT healthy-affecting: on those
+	// networks it is the correct outcome, and the address comes from
+	// SLAAC on the container's own link.
+	DHCPv6NotOffered int32 `json:"dhcpv6_not_offered"`
+	// DHCPv6NoRouterAdvert counts endpoints created without a DHCPv6
+	// address because no router advertisement arrived at all (#868).
+	// Kept apart from DHCPv6NotOffered because "no DHCPv6 here" and
+	// "nothing said anything" call for different operator action.
+	DHCPv6NoRouterAdvert int32 `json:"dhcpv6_no_router_advert"`
 }
 
 func (p *Plugin) apiHealth(w http.ResponseWriter, r *http.Request) {
@@ -890,5 +901,7 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		NAKsReceivedV6:               naksReceivedV6,
 		ClientStopFailuresV6:         clientStopFailuresV6,
 		DHCPv6ConfigOnly:             p.dhcpv6ConfigOnly.Load(),
+		DHCPv6NotOffered:             p.dhcpv6NotOffered.Load(),
+		DHCPv6NoRouterAdvert:         p.dhcpv6NoRouterAdvert.Load(),
 	}
 }

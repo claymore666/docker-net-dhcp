@@ -160,6 +160,19 @@ type HealthResponse struct {
 	// stays at zero on its own.
 	DHCPv6ConfigOnly int32 `json:"dhcpv6_config_only"`
 
+	// DHCPv6NotOffered / DHCPv6NoRouterAdvert cover the two ways an
+	// IPv6 endpoint can come up without a DHCPv6 lease (#868): the
+	// router advertised no managed address, or no router advertised at
+	// all. Neither is healthy-affecting and neither belongs in the
+	// floor table — on a v4-only or managed-v6 segment both stay at
+	// zero on their own, and on a stateless segment the first one
+	// rising is the feature working. They are separate fields for the
+	// same reason they are separate counters: a test that asserted
+	// only their sum could not tell a stateless network from a
+	// segment with no router on it.
+	DHCPv6NotOffered     int32 `json:"dhcpv6_not_offered"`
+	DHCPv6NoRouterAdvert int32 `json:"dhcpv6_no_router_advert"`
+
 	// published is the key set of the payload this value was decoded
 	// from. It exists because an absent JSON field decodes to zero,
 	// which is indistinguishable from a counter that is genuinely at

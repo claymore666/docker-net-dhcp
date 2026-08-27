@@ -168,7 +168,10 @@ func (p *Plugin) runDHCPProbe(ctx context.Context, parent, mode string, pol serv
 	probeCtx, cancel := context.WithTimeout(ctx, preflightProbeBudget)
 	defer cancel()
 
-	info, err := dhcp.GetIP(probeCtx, probeName, &dhcp.DHCPClientOptions{
+	// The router-advertisement observation is #868's discriminator for a
+	// container endpoint; the preflight probe asks a different question
+	// ("is anyone listening?") and has no use for it.
+	info, _, err := dhcp.GetIP(probeCtx, probeName, &dhcp.DHCPClientOptions{
 		// MAC is the probe link's (random) address; dhcpcd derives its
 		// DUID-LL from it. Identity-neutral otherwise:
 		// Hostname intentionally empty — the probe shouldn't

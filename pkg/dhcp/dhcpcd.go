@@ -61,6 +61,18 @@ const dhcpcdBin = "/sbin/dhcpcd"
 // foreground), so the parent opens a FIFO and passes its path here.
 const EventFIFOEnv = "NETDHCP_EVENT_FIFO"
 
+// EmitRAEnv tells the hook to emit ROUTERADVERT as an event (#868).
+// renderConfig sets it for the ONE-SHOT acquisition client only.
+//
+// It is a per-client parameter, not a hidden mode: the same `env`
+// directive already carries EventFIFOEnv and GOCOVERDIR, and
+// dhcpcdParams.Once already distinguishes the two clients in
+// renderArgs. The persistent client never sees it, so #815's boundary
+// -- ROUTERADVERT stays off the long-lived stream, where it arrives
+// repeatedly and nothing consumes it -- holds exactly where it was
+// written to hold.
+const EmitRAEnv = "NETDHCP_EMIT_RA"
+
 // duidLL renders a DUID-LL (RFC 8415 §11.4) for mac in the colon-hex
 // "value" form dhcpcd's `duid` directive accepts (dhcpcd.conf(5): "If
 // not ll, lt or uuid then value will be converted from 00:11:22:33
@@ -268,6 +280,13 @@ func renderConfig(p dhcpcdParams) string {
 	// process environment).
 	if p.EventFIFO != "" {
 		directive(&b, "env", EventFIFOEnv+"="+p.EventFIFO)
+	}
+
+	// Ask the hook for router advertisements, one-shot client only.
+	// This is the acquisition's only way to tell "this segment offers no
+	// DHCPv6 address" from "the DHCPv6 server did not answer" (#868).
+	if p.Once {
+		directive(&b, "env", EmitRAEnv+"=1")
 	}
 
 	// Forward GOCOVERDIR to the hook in the coverage-instrumented build

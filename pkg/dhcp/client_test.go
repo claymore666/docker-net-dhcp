@@ -385,7 +385,22 @@ func TestStart_BoundEventSurvivesFastExit(t *testing.T) {
 }
 
 // stubAttemptGetIP swaps attemptGetIPFunc for the test's duration.
+//
+// It takes the pre-#868 shape -- (Info, error) -- and reports no router
+// advertisement, so the cases written before the observation existed
+// keep driving exactly what they drove. stubAttemptGetIPRA is the one
+// to use when the advertisement is the subject.
 func stubAttemptGetIP(t *testing.T, fn func(context.Context, string, *DHCPClientOptions) (Info, error)) {
+	t.Helper()
+	stubAttemptGetIPRA(t, func(ctx context.Context, iface string, opts *DHCPClientOptions) (Info, RAObservation, error) {
+		info, err := fn(ctx, iface, opts)
+		return info, RAObservation{}, err
+	})
+}
+
+// stubAttemptGetIPRA is stubAttemptGetIP for cases that drive the
+// router-advertisement observation (#868).
+func stubAttemptGetIPRA(t *testing.T, fn func(context.Context, string, *DHCPClientOptions) (Info, RAObservation, error)) {
 	t.Helper()
 	prev := attemptGetIPFunc
 	attemptGetIPFunc = fn
@@ -409,7 +424,7 @@ func TestGetIP_RetriesTransientAndSucceeds(t *testing.T) {
 	defer cancel()
 
 	opts := &DHCPClientOptions{MAC: mustMAC(t, "de:ad:be:ef:00:01")}
-	info, err := GetIP(ctx, "eth0", opts)
+	info, _, err := GetIP(ctx, "eth0", opts)
 	if err != nil {
 		t.Fatalf("GetIP: %v", err)
 	}
@@ -436,7 +451,7 @@ func TestGetIP_PermanentErrorFailsFast(t *testing.T) {
 	defer cancel()
 
 	start := time.Now()
-	_, err := GetIP(ctx, "eth0", &DHCPClientOptions{MAC: mustMAC(t, "de:ad:be:ef:00:01")})
+	_, _, err := GetIP(ctx, "eth0", &DHCPClientOptions{MAC: mustMAC(t, "de:ad:be:ef:00:01")})
 	if !errors.Is(err, permanent) {
 		t.Fatalf("error: got %v, want the permanent error unwrapped", err)
 	}
@@ -486,7 +501,7 @@ func TestGetIP_DeadlinePreservesErrorChain(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 
-	_, err := GetIP(ctx, "eth0", &DHCPClientOptions{MAC: mustMAC(t, "de:ad:be:ef:00:01")})
+	_, _, err := GetIP(ctx, "eth0", &DHCPClientOptions{MAC: mustMAC(t, "de:ad:be:ef:00:01")})
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -514,7 +529,7 @@ func TestGetIP_ContextCancelledStopsRetries(t *testing.T) {
 		return Info{}, util.ErrNoLease
 	})
 
-	_, err := GetIP(ctx, "eth0", &DHCPClientOptions{MAC: mustMAC(t, "de:ad:be:ef:00:01")})
+	_, _, err := GetIP(ctx, "eth0", &DHCPClientOptions{MAC: mustMAC(t, "de:ad:be:ef:00:01")})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("error: got %v, want context.Canceled", err)
 	}
@@ -780,4 +795,255 @@ func TestMountPrep_DoesNotSwallowDiagnostics(t *testing.T) {
 				"the plugin log and the exit-error tail\n---\n%s", swallow, prep)
 		}
 	}
+}
+
+// TestGetIP_UnmanagedAdvertisementStopsRetrying pins the early exit
+// #868 added to the retry loop.
+//
+// On a stateless or SLAAC segment there is no DHCPv6 address to get,
+// ever. Retrying until the deadline reaches the same answer and spends
+// the container's whole start budget doing it — Docker's client is
+// waiting on CreateEndpoint the entire time — so an advertisement
+// without the managed flag ends the loop on the spot.
+//
+// The assertion is the ATTEMPT COUNT, not the returned error: the error
+// is the same ErrNoLease either way, so a test asserting only on it
+// would pass just as well against a loop that spent the full budget.
+func TestGetIP_UnmanagedAdvertisementStopsRetrying(t *testing.T) {
+	attempts := 0
+	stubAttemptGetIPRA(t, func(ctx context.Context, iface string, opts *DHCPClientOptions) (Info, RAObservation, error) {
+		attempts++
+		return Info{}, RAObservation{Seen: true}, util.ErrNoLease
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, ra, err := GetIP(ctx, "eth0", &DHCPClientOptions{V6: true})
+	if !errors.Is(err, util.ErrNoLease) {
+		t.Errorf("err = %v, want ErrNoLease", err)
+	}
+	if attempts != 1 {
+		t.Errorf("attempts = %d, want 1 — an advertisement without the managed flag is "+
+			"a conclusive answer, and retrying it burns the container-start budget to "+
+			"re-learn it", attempts)
+	}
+	if !ra.Seen || ra.Managed {
+		t.Errorf("returned observation = %+v, want Seen without Managed — the caller "+
+			"classifies the absence from this, so losing it turns a stateless segment "+
+			"into an unexplained failure", ra)
+	}
+}
+
+// TestGetIP_ManagedAdvertisementKeepsRetrying is the other direction of
+// the same branch: a segment that DID advertise DHCPv6 addresses gets
+// every attempt the budget allows, because a server that is slow or
+// briefly unreachable is exactly what the retry loop exists for (#325).
+//
+// Without this case, an early exit keyed on `ra.Seen` alone — dropping
+// the managed check — passes the test above and quietly turns every
+// transient DHCPv6 outage into an immediate endpoint failure.
+func TestGetIP_ManagedAdvertisementKeepsRetrying(t *testing.T) {
+	attempts := 0
+	stubAttemptGetIPRA(t, func(ctx context.Context, iface string, opts *DHCPClientOptions) (Info, RAObservation, error) {
+		attempts++
+		return Info{}, RAObservation{Seen: true, Managed: true}, util.ErrNoLease
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	defer cancel()
+
+	_, ra, _ := GetIP(ctx, "eth0", &DHCPClientOptions{V6: true})
+	if attempts < 2 {
+		t.Errorf("attempts = %d, want more than 1 — the segment advertised managed "+
+			"DHCPv6, so silence is a failure worth retrying, not an answer", attempts)
+	}
+	if !ra.Managed {
+		t.Errorf("returned observation = %+v, want Managed — this is the observation "+
+			"that keeps a real DHCPv6 outage fatal", ra)
+	}
+}
+
+// TestGetIP_ObservationSurvivesAnAttemptThatMissedIt pins the merge
+// across attempts.
+//
+// Advertisements are periodic and an attempt can simply fall between
+// two of them. What the segment advertised on the first try is still
+// true on the third, so the observation accumulates rather than being
+// overwritten — and the verdict the caller reaches is about the
+// SEGMENT, not about the last attempt that happened to run.
+//
+// The managed flag is the one that matters here: an attempt that missed
+// the advertisement, overwriting rather than merging, would report an
+// unadvertised segment and make a real DHCPv6 outage tolerated.
+func TestGetIP_ObservationSurvivesAnAttemptThatMissedIt(t *testing.T) {
+	attempts := 0
+	stubAttemptGetIPRA(t, func(ctx context.Context, iface string, opts *DHCPClientOptions) (Info, RAObservation, error) {
+		attempts++
+		if attempts == 1 {
+			return Info{}, RAObservation{Seen: true, Managed: true}, util.ErrNoLease
+		}
+		return Info{}, RAObservation{}, util.ErrNoLease
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	defer cancel()
+
+	_, ra, _ := GetIP(ctx, "eth0", &DHCPClientOptions{V6: true})
+	if attempts < 2 {
+		t.Fatalf("attempts = %d; this case needs at least two to say anything about "+
+			"merging", attempts)
+	}
+	if !ra.Seen || !ra.Managed {
+		t.Errorf("returned observation = %+v after a first attempt that saw a managed "+
+			"advertisement and later ones that saw none; want both fields set", ra)
+	}
+}
+
+// TestRAObservation_MergeIsSymmetricAndAccumulating covers Merge on its
+// own, including the receiver-carries-it direction the loop above never
+// exercises (the loop always merges INTO the accumulator).
+func TestRAObservation_MergeIsSymmetricAndAccumulating(t *testing.T) {
+	seen := RAObservation{Seen: true}
+	managed := RAObservation{Seen: true, Managed: true}
+	var zero RAObservation
+
+	for _, tc := range []struct {
+		name string
+		got  RAObservation
+		want RAObservation
+	}{
+		{"zero into managed", managed.Merge(zero), managed},
+		{"managed into zero", zero.Merge(managed), managed},
+		{"seen into managed", managed.Merge(seen), managed},
+		{"managed into seen", seen.Merge(managed), managed},
+		{"zero into zero", zero.Merge(zero), zero},
+	} {
+		if tc.got != tc.want {
+			t.Errorf("%s: got %+v, want %+v", tc.name, tc.got, tc.want)
+		}
+	}
+}
+
+// TestObserveRA covers the one place a router advertisement's wire
+// spelling becomes a verdict (#868).
+//
+// The flag strings are measured, not invented: dhcpcd 10.3.2 against
+// dnsmasq 2.92 exports nd1_flags=MO on a managed segment, O on a
+// stateless one and the empty string on plain SLAAC.
+//
+// The lowercase row is not a hypothetical. The check is a substring
+// match, so it is exactly as strong as the case of one letter; pinning
+// it says the matcher is deliberate rather than incidental, and a
+// future switch to a case-insensitive match has to change this test
+// on purpose.
+func TestObserveRA(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		flags string
+		want  RAObservation
+	}{
+		{"managed", "MO", RAObservation{Seen: true, Managed: true}},
+		{"managed only", "M", RAObservation{Seen: true, Managed: true}},
+		{"stateless", "O", RAObservation{Seen: true}},
+		{"slaac", "", RAObservation{Seen: true}},
+		{"unknown letters", "XY", RAObservation{Seen: true}},
+		{"lowercase is not the flag", "mo", RAObservation{Seen: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := observeRA(RAObservation{}, tc.flags); got != tc.want {
+				t.Errorf("observeRA(zero, %q) = %+v, want %+v", tc.flags, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestObserveRA_DoesNotClearWhatAnEarlierAdvertisementSaid pins the
+// accumulation inside one attempt, which the table above cannot see
+// because it always starts from the zero value.
+//
+// A client receives several advertisements per acquisition — three in
+// fifteen seconds, measured — and they need not be identical while a
+// segment is being reconfigured. An implementation that ASSIGNED
+// Managed instead of only setting it would let the last advertisement
+// win, so one unflagged RA arriving after a managed one would make a
+// real DHCPv6 outage tolerated.
+func TestObserveRA_DoesNotClearWhatAnEarlierAdvertisementSaid(t *testing.T) {
+	got := observeRA(observeRA(RAObservation{}, "MO"), "O")
+	if !got.Managed {
+		t.Errorf("got %+v after a managed advertisement followed by an unflagged one; "+
+			"the managed observation must survive — it is what keeps a silent DHCPv6 "+
+			"server fatal", got)
+	}
+}
+
+// TestCollectAcquisition covers the fold from one acquisition's event
+// stream to the pair the caller acts on: the lease, and what the
+// segment advertised.
+//
+// It is the only unit-level reader of Event.RouterFlags on the
+// acquisition path — the retry-loop tests above all stub attemptGetIP
+// out, so without this the wire field could be ignored entirely and
+// nothing in this package would notice.
+func TestCollectAcquisition(t *testing.T) {
+	send := func(events ...Event) <-chan Event {
+		ch := make(chan Event, len(events))
+		for _, e := range events {
+			ch <- e
+		}
+		close(ch)
+		return ch
+	}
+
+	t.Run("a managed advertisement and no lease", func(t *testing.T) {
+		last, ra := collectAcquisition(send(
+			Event{Type: "routeradvert", RouterFlags: "MO"},
+			Event{Type: "routeradvert", RouterFlags: "MO"},
+		))
+		if last != nil {
+			t.Errorf("lease = %+v, want none", *last)
+		}
+		if (ra != RAObservation{Seen: true, Managed: true}) {
+			t.Errorf("observation = %+v, want a managed advertisement seen", ra)
+		}
+	})
+
+	t.Run("an unflagged advertisement is still an advertisement", func(t *testing.T) {
+		_, ra := collectAcquisition(send(Event{Type: "routeradvert"}))
+		if !ra.Seen || ra.Managed {
+			t.Errorf("observation = %+v, want Seen without Managed — a SLAAC segment "+
+				"advertised, and reading that as silence sends an operator looking for "+
+				"a router that is there", ra)
+		}
+	})
+
+	t.Run("the last lease wins and the advertisement rides along", func(t *testing.T) {
+		last, ra := collectAcquisition(send(
+			Event{Type: "routeradvert", RouterFlags: "MO"},
+			Event{Type: "bound", Data: Info{IP: "2001:db8::1/64"}},
+			Event{Type: "renew", Data: Info{IP: "2001:db8::2/64"}},
+		))
+		if last == nil {
+			t.Fatal("lease = none, want the renew's address")
+		}
+		if last.IP != "2001:db8::2/64" {
+			t.Errorf("lease IP = %q, want the LAST event's address", last.IP)
+		}
+		if !ra.Managed {
+			t.Errorf("observation = %+v; a successful acquisition still reports what "+
+				"the segment advertised", ra)
+		}
+	})
+
+	t.Run("unrelated events change nothing", func(t *testing.T) {
+		last, ra := collectAcquisition(send(
+			Event{Type: "config"},
+			Event{Type: "leasefail"},
+			Event{Type: "nak"},
+		))
+		if last != nil || ra.Seen || ra.Managed {
+			t.Errorf("lease=%v observation=%+v, want neither — none of these events "+
+				"says anything about an address or an advertisement", last, ra)
+		}
+	})
 }

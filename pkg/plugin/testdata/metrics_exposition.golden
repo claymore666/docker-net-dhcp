@@ -56,6 +56,14 @@ net_dhcp_client_stop_failures_total{family="ipv6"} 7163045
 # TYPE net_dhcp_dhcpv6_config_only_total counter
 net_dhcp_dhcpv6_config_only_total 5338778
 
+# HELP net_dhcp_dhcpv6_not_offered_total Endpoints started on an IPv6 network whose router advertisement offered no DHCPv6 address (stateless or SLAAC). Not a fault: the network is working as configured and the address, if any, comes from SLAAC. Kept apart from dhcpv6_no_router_advert because that one means no router answered at all.
+# TYPE net_dhcp_dhcpv6_not_offered_total counter
+net_dhcp_dhcpv6_not_offered_total 8785870
+
+# HELP net_dhcp_dhcpv6_no_router_advert_total Endpoints started on an IPv6 network where no router advertisement arrived inside the acquisition budget. The endpoint keeps running with no IPv6 address. Usually a missing or misconfigured router rather than a plugin fault, but unlike dhcpv6_not_offered it is not a configuration the operator chose.
+# TYPE net_dhcp_dhcpv6_no_router_advert_total counter
+net_dhcp_dhcpv6_no_router_advert_total 2266478
+
 # HELP net_dhcp_dhcp_routes_applied_total DHCP option-121 classless static routes handed to Docker. Counts routes, not Joins.
 # TYPE net_dhcp_dhcp_routes_applied_total counter
 net_dhcp_dhcp_routes_applied_total 1196133

@@ -81,7 +81,7 @@ type Getenv func(string) string
 // contract pinned in case a `release` directive ever comes back.
 // LeaseSeconds' deadline remains as the backstop for a lapse dhcpcd does
 // not report at all.
-func mapReason(reason string) (eventType string, v6 bool, emit bool) {
+func mapReason(reason string, emitRA bool) (eventType string, v6 bool, emit bool) {
 	switch reason {
 	case "BOUND", "REBOOT":
 		return "bound", false, true
@@ -109,6 +109,28 @@ func mapReason(reason string) (eventType string, v6 bool, emit bool) {
 	// would be a branch no input can reach.
 	case "INFORM6":
 		return "config", true, true
+	// A router advertisement, carrying the M/O flags that say what the
+	// segment offers (#868). Emitted ONLY when emitRA is set, which
+	// renderConfig arranges for the ONE-SHOT acquisition client and for
+	// nothing else.
+	//
+	// The narrow scope is the point, not caution. #815 pinned
+	// ROUTERADVERT as dropped because it arrives repeatedly on every v6
+	// network, so putting it on the persistent client's stream would add
+	// traffic no consumer reads, forever. That reasoning is still true
+	// there and this case does not touch it. The one-shot client is a
+	// different consumer with a different question: at CreateEndpoint
+	// time, does this segment offer a DHCPv6 address at all? Without an
+	// answer the plugin cannot tell "no DHCPv6 here, and there never was"
+	// from "the DHCPv6 server did not answer", and #868 is what happens
+	// when it guesses -- no container starts at all on a stateless or
+	// SLAAC network.
+	//
+	// Measured, dhcpcd 10.3.2 / dnsmasq 2.92, one mode per netns:
+	// managed advertises nd1_flags=MO, stateless O, SLAAC empty, and a
+	// segment with no router fires no ROUTERADVERT at all.
+	case "ROUTERADVERT":
+		return "routeradvert", true, emitRA
 	default:
 		return "", false, false
 	}
@@ -275,7 +297,7 @@ func BuildEvent(reason string, getenv Getenv) (Event, bool) {
 // early returns is covered by the filter rather than each having to
 // remember it.
 func buildEvent(reason string, getenv Getenv) (Event, bool) {
-	eventType, v6, emit := mapReason(reason)
+	eventType, v6, emit := mapReason(reason, getenv(EmitRAEnv) != "")
 	if !emit {
 		log.Debugf("Ignoring dhcpcd reason %q", reason)
 		return Event{}, false
@@ -286,6 +308,19 @@ func buildEvent(reason string, getenv Getenv) (Event, bool) {
 	// Lease-loss events (nak / leasefail) carry no data — emit Type only
 	// so the consumer goroutine can match on them for its counters.
 	if eventType == "nak" || eventType == "leasefail" {
+		return event, true
+	}
+
+	// A router advertisement carries no lease -- the flags ARE the
+	// event. dhcpcd exports them as nd1_flags, a string of the flag
+	// letters it recognised ("MO", "O", or empty).
+	//
+	// Empty is a meaningful value, not a missing one: an RA with neither
+	// flag is exactly SLAAC. The event's Type already says an
+	// advertisement was seen, so an absent RouterFlags on a routeradvert
+	// event means "no flags were set" and nothing else.
+	if eventType == "routeradvert" {
+		event.RouterFlags = getenv("nd1_flags")
 		return event, true
 	}
 
