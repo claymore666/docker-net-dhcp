@@ -35,10 +35,23 @@ name: Milestone scope
 # when it cannot see, so "the API was down" stays distinguishable from
 # "the milestone is wrong" in the run log.
 #
-# NOTE ON WHICH COPY RUNS. Scheduled workflows only ever fire from the
-# default branch, so this file's behaviour is whatever is on `main` —
-# not what is on `dev`. Changes here take effect at the next release,
-# not at merge.
+# TWO QUESTIONS, TWO DIFFERENT ANSWERS (#839).
+#
+# WHICH COPY OF THIS FILE RUNS: `main`'s. A cron only ever fires from the
+# default branch, so the `on:` block, the permissions and the step list
+# below are whatever shipped in the last release. An edit to this file
+# takes effect at the next release, not at merge.
+#
+# WHICH TREE IT JUDGES AGAINST: `dev`'s — the checkout below pins it.
+# The subject is the TRACKER, which advances when work merges to `dev`,
+# so the rule that judges it should be the one `dev` states. There is no
+# separate declaration file here — the forbidden pairing is stated in
+# scripts/check-milestone-scope.sh — and that is exactly why the pin
+# matters: without it a correction to that rule is inert until the next
+# release, while the tracker it describes has already moved.
+#
+# So an edit to scripts/check-milestone-scope.sh takes effect the moment
+# it reaches `dev`. An edit to this file does not.
 on:
   schedule:
     # Daily. Milestones change at human pace, and the thing this
@@ -56,6 +69,11 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Pinned (#839). Without a ref the schedule runs `main`'s copy
+          # of the rule against a tracker that already reflects `dev`.
+          # Same fix as issue-state-labels.yml (#490).
+          ref: dev
 
       - name: No backlog issue carries a milestone
         env:

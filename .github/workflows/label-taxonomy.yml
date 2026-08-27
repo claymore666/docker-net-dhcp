@@ -45,10 +45,24 @@ name: Label taxonomy
 # tell its two fixes apart using `in-dev`. One defect should go red in one
 # place.
 #
-# NOTE ON WHICH COPY RUNS. Scheduled workflows only ever fire from the
-# default branch, so this file's behaviour is whatever is on `main` — not
-# what is on `dev`. Changes here take effect at the next release, not at
-# merge.
+# TWO QUESTIONS, TWO DIFFERENT ANSWERS (#839).
+#
+# WHICH COPY OF THIS FILE RUNS: `main`'s. A cron only ever fires from the
+# default branch, so the `on:` block, the permissions and the step list
+# below are whatever shipped in the last release. An edit to this file
+# takes effect at the next release, not at merge.
+#
+# WHICH TREE IT JUDGES AGAINST: `dev`'s — the checkout below pins it.
+# The subject is the TRACKER, and the tracker advances when work merges
+# to `dev`: a label deleted by a PR sitting in `dev` is already gone from
+# the tracker while `main`'s .github/labels.yml still declares it. Judged
+# against `main`, that reads as "declared but missing" every day for the
+# whole release window, and the run tells the reader to re-create labels
+# somebody deliberately removed. That is a red naming the wrong remedy,
+# standing for weeks; #402/#408 is what carrying one costs.
+#
+# So an edit to .github/labels.yml or to scripts/check-label-taxonomy.sh
+# takes effect the moment it reaches `dev`. An edit to this file does not.
 on:
   schedule:
     # Daily, offset from Milestone scope (23 6) and Starter tasks (41 7) so
@@ -67,6 +81,13 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Pinned (#839) — the same hazard and the same fix as
+          # issue-state-labels.yml (#490). Without a ref the schedule
+          # judges the tracker against `main`'s .github/labels.yml. This
+          # file is the sibling that wrote the hazard down instead of
+          # fixing it; prose decays, the pin does not.
+          ref: dev
 
       - name: The tracker matches the declared taxonomy
         env:
