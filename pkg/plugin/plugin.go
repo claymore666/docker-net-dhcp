@@ -324,8 +324,8 @@ type DHCPNetworkOptions struct {
 	// hostname already sent as the option-12 hint (#261).
 	RegisterDNS bool `mapstructure:"register_dns"`
 	// AuditLog, when true, appends every lease-lifecycle event on
-	// this network (bound / renew / release, plus release_failed when
-	// the DHCPRELEASE didn't complete) to STATE_DIR/leases.jsonl —
+	// this network (bound / renew / stopped, plus stop_failed when the
+	// client's shutdown didn't complete) to STATE_DIR/leases.jsonl —
 	// an append-only JSONL audit trail answering "which IP did this
 	// container hold last Tuesday?" without dnsmasq-log archaeology
 	// (#109). Rotated at 16 MB or 30 days, whichever first; one
@@ -2006,9 +2006,13 @@ func NewPlugin(opts Options) (*Plugin, error) {
 	//
 	// Placement is the whole point. Every orphan the sweep does not
 	// reach before recoverEndpoints runs becomes a second client on the
-	// same binding, with the same DUID, IAID and client-id -- and on the
-	// eventual Leave one of the pair sends a DHCPRELEASE while the other
-	// keeps renewing.
+	// same binding, with the same DUID, IAID and client-id -- two
+	// clients renewing one lease, each unaware of the other, and the
+	// server's idea of who holds it decided by whichever REQUEST landed
+	// last. (Before #800 the harm was sharper still: on the eventual
+	// Leave one of the pair released the lease while the other kept
+	// renewing it. Nothing releases now, but a duplicate binding is a
+	// defect on its own.)
 	//
 	// Here covers BOTH recovery entry points. recoverEndpoints is called
 	// from two places: synchronously just below, and again from
@@ -2132,12 +2136,17 @@ func waitBounded(wg *sync.WaitGroup, d time.Duration) bool {
 // Join can register a manager while (or after) we stop the existing
 // ones — with the old ordering a Join dispatched during the stop
 // fan-out installed a manager into the fresh registry that nobody ever
-// stopped, orphaning its lease (no DHCPRELEASE) and its dhcpcd.
-// Persistent DHCP clients are then stopped before process exit so they
-// get a chance to send DHCPRELEASE for their leases — otherwise plugin
-// upgrade or `docker plugin disable` would orphan every active lease at
-// the upstream DHCP server, defeating the release-on-stop contract
-// Leave normally honors.
+// stopped, leaking its dhcpcd.
+// Persistent DHCP clients are then stopped before process exit, so that
+// a plugin upgrade or `docker plugin disable` does not leave dhcpcd
+// processes renewing leases for endpoints this plugin no longer manages.
+//
+// Since #800 this is NOT about releasing anything: no path sends a
+// DHCPRELEASE, and a stopped client's address stays leased until it
+// expires, which is the intended behaviour. What must not survive the
+// shutdown is the CLIENT — a stray renewer keeps an address alive that
+// nothing is using, and collides with the client a restarted plugin
+// builds for the same endpoint.
 // ListenMetrics starts the optional TCP listener for /metrics.
 //
 // Off unless METRICS_ADDR is set, and that default is deliberate. The
@@ -2283,9 +2292,11 @@ func (p *Plugin) Close() error {
 	}
 
 	// Drain displaced-manager stops spawned by Join (#338). Each is an
-	// in-flight DHCPRELEASE for a client this plugin displaced; without
-	// this, process exit cuts it short and orphans the lease at the
-	// server — the same failure the fan-out above exists to prevent.
+	// in-flight shutdown of a client this plugin displaced; without this,
+	// process exit cuts it short and leaves it renewing — the same
+	// failure the fan-out above exists to prevent. It is a client leak,
+	// not a lease leak: since #800 nothing releases, so the address is
+	// held either way and the incoming client renews it.
 	if !waitBounded(&p.displacedStops, remaining()) {
 		log.Warn("Timeout waiting for displaced DHCP manager stops; continuing shutdown")
 	}

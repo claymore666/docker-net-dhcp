@@ -302,16 +302,16 @@ func releasingManager(t *testing.T, p *Plugin, opts DHCPNetworkOptions, errV4, e
 
 // TestStop_AuditsBothFamiliesIndependently pins the dual-drain contract
 // (#325/#330). Stop must read BOTH consumer channels before returning —
-// the old code returned early on a v4 release failure, which left the
+// the old code returned early on a v4 stop failure, which left the
 // v6 consumer live and mid-renew on m.netHandle while the deferred
 // closeNetHandle nilled the socket out from under it, and additionally
 // hid the v6 outcome from the audit ledger.
 //
 // The v4-fails-v6-succeeds row is the regression the old code failed:
-// it recorded release_failed for v4 and nothing at all for v6.
+// it recorded a failure for v4 and nothing at all for v6.
 func TestStop_AuditsBothFamiliesIndependently(t *testing.T) {
-	errV4 := errors.New("v4 release boom")
-	errV6 := errors.New("v6 release boom")
+	errV4 := errors.New("v4 stop boom")
+	errV6 := errors.New("v6 stop boom")
 
 	cases := []struct {
 		name         string

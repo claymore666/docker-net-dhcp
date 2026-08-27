@@ -200,8 +200,10 @@ func TestAuditLog_RecordsLifecycle(t *testing.T) {
 		t.Errorf("bound entry ts %q is not RFC3339: %v", bound.TS, err)
 	}
 
-	// Stop drives Leave -> dhcpManager.Stop -> DHCPRELEASE -> the
-	// release ledger entry.
+	// Stop drives Leave -> dhcpManager.Stop -> the "stopped" ledger
+	// entry. The kind was "release" until #800; it is "stopped" now
+	// because nothing releases, and a ledger line saying otherwise
+	// would be a claim about what the DHCP server saw.
 	if err := cli.ContainerStop(ctx, id, container.StopOptions{}); err != nil {
 		t.Fatalf("ContainerStop: %v", err)
 	}
@@ -216,7 +218,7 @@ func TestAuditLog_RecordsLifecycle(t *testing.T) {
 		time.Sleep(200 * time.Millisecond)
 	}
 	if len(kinds) == 0 || kinds[len(kinds)-1] != "stopped" {
-		t.Fatalf("ledger kinds for MAC %s = %v, want trailing \"release\"", mac, kinds)
+		t.Fatalf("ledger kinds for MAC %s = %v, want trailing \"stopped\"", mac, kinds)
 	}
 	if kinds[0] != "bound" {
 		t.Errorf("first ledger kind for MAC %s = %q, want \"bound\"", mac, kinds[0])

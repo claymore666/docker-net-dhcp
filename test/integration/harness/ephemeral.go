@@ -853,8 +853,8 @@ func (ef *EphemeralFixture) logSize() int {
 	return int(st.Size())
 }
 
-// Stop SIGKILLs the DHCP server — the unclean "router died" shape, no
-// DHCPRELEASE-side effects, lease DB left as-is on disk.
+// Stop SIGKILLs the DHCP server — the unclean "router died" shape,
+// no shutdown-side effects, lease DB left as-is on disk.
 func (ef *EphemeralFixture) Stop() {
 	ef.t.Helper()
 	if ef.cmd == nil || ef.cmd.Process == nil {

@@ -95,8 +95,10 @@ func TestHealthCounters_ObtainedAndReleased(t *testing.T) {
 		afterStart.LeasesObtained, afterStart.LeasesObtained-before.LeasesObtained)
 
 	// Drive the explicit teardown: ContainerStop -> Leave ->
-	// dhcpManager.Stop -> SIGTERM -> DHCPRELEASE. A clean release
-	// must NOT bump client_stop_failures.
+	// dhcpManager.Stop -> SIGTERM -> the client exits. A clean shutdown
+	// must NOT bump client_stop_failures. No release is involved — since
+	// #800 the address stays leased — which is why the counter is named
+	// for the client and not for the lease.
 	if err := cli.ContainerStop(ctx, id, container.StopOptions{}); err != nil {
 		t.Fatalf("ContainerStop: %v", err)
 	}

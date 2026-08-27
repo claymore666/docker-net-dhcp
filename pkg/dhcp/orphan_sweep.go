@@ -67,21 +67,29 @@ func readSelfComm() string {
 // leaves every persistent client running and renewing inside the
 // container's still-live netns. The plugin then restarts,
 // recoverEndpoints starts a SECOND client per endpoint with the same
-// DUID, IAID and client-id, and two clients manage one binding. On the
-// eventual Leave one sends a DHCPRELEASE while the other keeps
-// renewing, and the server may reallocate an address that is still in
-// use (#722).
+// DUID, IAID and client-id, and two clients manage one binding —
+// renewing over each other for an address a container is still using
+// (#722).
 //
 // WHY SIGKILL, AND NOT SIGTERM. This is the part that is easy to get
 // backwards. When the plugin restarts, the containers are still
-// RUNNING and still using their addresses. The persistent client omits
-// dhcpcd's -p, so it releases its lease when it is asked to stop
-// politely — which means a SIGTERM sweep would send a DHCPRELEASE for
-// every address a live container currently holds, and invite the
-// server to hand those addresses to somebody else. That is #524's
-// duplicate assignment, manufactured by the cleanup. SIGKILL leaves the
-// binding untouched at the server, so the address stays allocated to
-// this host until the replacement client claims it back.
+// RUNNING and still using their addresses. A SIGTERM sweep invites each
+// client to run its exit path and hand those addresses back, which is
+// #524's duplicate assignment, manufactured by the cleanup. SIGKILL
+// leaves the binding untouched at the server, so the address stays
+// allocated to this host until the replacement client claims it back.
+//
+// #800 did NOT weaken this, and the reason is worth stating because the
+// obvious reading is the wrong one. Since #800 renderConfig emits no
+// `release` directive, so a client THIS build started would not release
+// on SIGTERM anyway — from which it is tempting to conclude the signal
+// no longer matters. It does. This sweep exists precisely to kill
+// clients this build did NOT start: they were spawned by a plugin
+// process that has since died, and on an upgrade from v1.8.x or older
+// that process wrote a dhcpcd.conf that DOES carry `release`. The sweep
+// cannot read the intent of a config it did not write, so it must not
+// assume one. SIGKILL is correct against every generation of client;
+// SIGTERM is correct only against clients of the running build.
 //
 // This is the same asymmetry #720 turns on: a missed reclaim leaves a
 // lease to expire on its own, a wrong one takes an address away from

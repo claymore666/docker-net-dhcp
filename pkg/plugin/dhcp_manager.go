@@ -37,11 +37,16 @@ const pollTime = 100 * time.Millisecond
 // the worst case; this just bounds wall time on the cleanup path.
 const dhcpClientReapTimeout = 5 * time.Second
 
-// dhcpClientFinishTimeout caps how long Stop waits for SIGTERM ->
-// DHCPRELEASE -> exit on the persistent dhcpcd child. Long enough
-// for a DHCPRELEASE round-trip on a healthy LAN; short enough that
-// plugin shutdown / Leave isn't held hostage by an unresponsive
-// upstream DHCP server.
+// dhcpClientFinishTimeout caps how long Stop waits for SIGTERM -> exit
+// on the persistent dhcpcd child.
+//
+// Before #800 this budget covered a DHCPRELEASE round trip. It no longer
+// does — the client has nothing to send and only has to unwind and
+// exit — but the value is unchanged deliberately: dhcpcd's own teardown
+// (dropping the address, closing the lease file, reaping its own
+// children) is what it now bounds, and shortening it would start
+// counting slow-but-clean exits as client_stop_failures. Short enough
+// either way that plugin shutdown / Leave is not held hostage.
 const dhcpClientFinishTimeout = 5 * time.Second
 
 // dnsPropagateTimeout caps the docker-API round-trip cost of
@@ -1626,10 +1631,15 @@ func (m *dhcpManager) Start(ctx context.Context) (err error) {
 // is going away.
 //
 // This is the shutdown every caller but Leave wants: plugin Close stops
-// every live manager so their dhcpcds get to send a DHCPRELEASE before
-// the process exits, and the containers behind them keep running. Same
-// for a manager displaced by a newer one for the same endpoint, and for
-// managers cleaned up when a network is removed.
+// every live manager so their dhcpcds exit cleanly rather than being
+// orphaned by process exit, and the containers behind them keep running.
+// Same for a manager displaced by a newer one for the same endpoint, and
+// for managers cleaned up when a network is removed.
+//
+// Stopping is all it is. Since #800 neither this nor the leaving variant
+// releases the lease, which is why the two produce identical ledger
+// entries and identical counters — asserted as an equality in
+// TestStop_LeavingAndNotLeavingAreTheSame.
 func (m *dhcpManager) Stop() error {
 	return m.stop(false)
 }
@@ -1827,16 +1837,20 @@ func (m *dhcpManager) settleFamily(v6 bool, last *netlink.Addr, exitErr error, l
 		neverBoundLog.Debug("Persistent client stopped before it held the lease; not reclaiming, the endpoint is not leaving")
 	case exitErr != nil:
 		// Held a binding and did not shut down cleanly, so
-		// SIGTERM -> RELEASE -> exit did not complete and the upstream
-		// server may now be holding a phantom lease against this
-		// identity until its own expiry. Bump so operators can alert on
-		// a pattern of releases failing — typically points at upstream
-		// reachability problems mid-teardown; split by family like its
-		// neighbours so a dual-stack host can tell which client failed
-		// (#608). The ledger records release_failed rather than release
-		// so the audit trail never claims a release the server may not
-		// have seen. Both families are audited independently: a failed
-		// v4 release does not hide the v6 outcome from the ledger.
+		// SIGTERM -> exit did not complete: the client was killed, timed
+		// out, or exited non-zero. Bump so operators can alert on a
+		// pattern of clients dying hard — typically points at a wedged
+		// client or an over-tight dhcpClientFinishTimeout; split by
+		// family like its neighbours so a dual-stack host can tell which
+		// client failed (#608).
+		//
+		// This says NOTHING about the lease. Since #800 no path releases
+		// one, so the address is held to expiry whether the client exits
+		// cleanly or is killed — which is why the counter and the ledger
+		// kind are both named for the client (client_stop_failures,
+		// "stop_failed") and not for a release. Both families are
+		// audited independently: a failed v4 stop does not hide the v6
+		// outcome from the ledger.
 		if m.plugin != nil {
 			bumpFamily(&m.plugin.clientStopFailuresV4, &m.plugin.clientStopFailuresV6, v6)
 		}

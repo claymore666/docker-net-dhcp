@@ -148,9 +148,10 @@ func TestLifecycleMacvlan_IPv6_GoldenPath(t *testing.T) {
 
 	harness.CreateNetwork(t, ctx, netName, "macvlan", map[string]string{"ipv6": "true"})
 
-	// Lifecycle inlined so ContainerStop (and with it the v4+v6
-	// DHCPRELEASE pair) happens inside the test body, before the
-	// final health assertion.
+	// Lifecycle inlined so ContainerStop (and with it the v4+v6 client
+	// shutdown pair) happens inside the test body, before the final
+	// health assertion. Neither client releases — #800 — so what is
+	// being sequenced is the stop, not a release.
 	create, err := cli.ContainerCreate(ctx,
 		&container.Config{Image: harness.TestImage, Cmd: []string{"sleep", "infinity"}, Hostname: ctrName},
 		harness.HostConfig(),

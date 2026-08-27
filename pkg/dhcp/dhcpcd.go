@@ -478,11 +478,23 @@ func renderArgs(p dhcpcdParams) []string {
 	}
 	if p.Once {
 		// One-shot acquisition (CreateEndpoint): exit after the first
-		// lease, and -p (persistent) so the binding is NOT released on
+		// lease, and -p (persistent) so the binding is NOT torn down on
 		// that exit — the persistent client claims the same address
-		// moments later. The persistent client omits -p so it releases
-		// the lease when the plugin stops it (the old busybox -R
-		// behaviour).
+		// moments later.
+		//
+		// The persistent client omits -p, and since #800 that no longer
+		// means anything about releasing. -p governs whether dhcpcd
+		// DE-CONFIGURES on exit; sending a DHCPRELEASE is governed by
+		// the `release` directive, which renderConfig no longer emits
+		// for either client. This comment previously said the omission
+		// was what released the lease, and that was the -R-era reading
+		// carried forward.
+		//
+		// Nothing depends on the distinction here anyway: --noconfigure
+		// above means dhcpcd never configured the link, so it has
+		// nothing to de-configure. What guarantees no release is the
+		// absent directive, and TestRenderConfig_NothingEverReleases is
+		// the guard on it — not this flag.
 		args = append(args, "-1", "-p")
 	}
 	if p.V6 {
