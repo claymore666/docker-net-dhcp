@@ -68,8 +68,10 @@
 # TWO MORE CODE SURFACES RESTATE THE SAME SET, and neither was read.
 #
 #   pkg/plugin/metrics.go -- every healthy-affecting counter's help
-#   string ends "Healthy-affecting.", and that sentence is served to
-#   operators on /metrics. The exposition golden is REGENERATED from
+#   string ASSERTS the property in prose, and that sentence is served to
+#   operators on /metrics. The assertion is read by meaning and not by
+#   spelling (#826): case and trailing punctuation do not matter, and a
+#   NEGATED mention counts as a denial rather than an assertion. The exposition golden is REGENERATED from
 #   these strings, so it agrees with whatever they say and proves
 #   nothing about whether they are true; check-docs-drift.sh reconciles
 #   the SET OF FIELD NAMES, not the sentence. #709 already shipped a
@@ -293,11 +295,41 @@ fi
 # line in metricDefs, so this reads that line. If the shape ever
 # changes the set comes back empty, which is exit 2 -- a gate reading a
 # file it no longer understands must not print PASS over it.
-metrics_set=$(grep -F 'Healthy-affecting.' "$METRICS" \
+#
+# KEYED ON THE PROPERTY, NOT THE SPELLING (#826). This used to be
+# `grep -F 'Healthy-affecting.'`, which was wrong in BOTH directions and
+# was correct only by an accident of phrasing:
+#
+#   - `Healthy-affecting.` is a substring of `not Healthy-affecting.`, so
+#     a help string DENYING the property was collected as ASSERTING it,
+#     and the remedy printed below then told the reader to mark a
+#     non-affecting counter yes in the operator-facing doc.
+#   - a genuine assertion phrased any other way -- lowercase, a colon
+#     instead of the period, no trailing punctuation -- was invisible,
+#     and the remedy told the reader to DELETE a true statement about a
+#     counter that really does affect health. That is the worse arm.
+#
+# No counter phrased it negatively until #800, and the one non-affecting
+# counter that mentions the phrase at all says `Not healthy-affecting:`
+# -- lowercase AND a colon, so it dodged the old pattern twice over. The
+# gate was right by coincidence, and the coincidence expired the first
+# time somebody wrote the natural sentence.
+#
+# So: lowercase the line, delete every NEGATED occurrence, and ask
+# whether an occurrence survives. A line that both denies and asserts
+# (`Not healthy-affecting: unlike the healthy-affecting ones`) is read as
+# asserting, deliberately -- collecting it puts the name in front of a
+# human via the diff below, where dropping it would be silent.
+metrics_set=$(awk '
+    /name:[[:space:]]*"/ {
+        probe = tolower($0)
+        gsub(/(not|non|never)[[:space:]-]+healthy-affecting/, " ", probe)
+        if (probe ~ /healthy-affecting/) print
+    }' "$METRICS" \
     | grep -oE 'name:[[:space:]]*"[a-z0-9_]+"' \
     | sed -E 's/.*"([a-z0-9_]+)".*/\1/' | sort -u)
 if [ -z "$metrics_set" ]; then
-    echo "check-health-contract: no metric help string in $METRICS ends 'Healthy-affecting.'" >&2
+    echo "check-health-contract: no metric help string in $METRICS asserts 'healthy-affecting'" >&2
     echo "  Either the sentence was dropped from every counter, or metricDefs no" >&2
     echo "  longer puts name and help on one line and this check has gone blind." >&2
     echo "  Teach it the new shape rather than letting it pass unread." >&2
@@ -306,7 +338,7 @@ fi
 if [ "$column_set" != "$metrics_set" ]; then
     note "the /metrics help strings and the healthy-affecting column disagree:"
     diff <(printf '%s\n' "$column_set") <(printf '%s\n' "$metrics_set") \
-        | sed 's/^</  marked yes in the doc, but its help string does not say "Healthy-affecting.": /; s/^>/  its help string says "Healthy-affecting.", but the doc does not mark it: /' >&2
+        | sed 's/^</  marked yes in the doc, but its help string does not assert healthy-affecting: /; s/^>/  its help string asserts healthy-affecting, but the doc does not mark it: /' >&2
 fi
 n_metrics=$(printf '%s\n' "$metrics_set" | grep -c .)
 

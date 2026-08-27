@@ -66,6 +66,31 @@ mkdoc() {
     } > "$f"
 }
 
+# mkmetrics_phrased <file> <plain-list> <extra "name=help" pairs...>
+#   Same shape as mkmetrics, but the caller controls the exact PHRASING of
+#   the extra entries. mkmetrics only ever emits "Healthy-affecting." and
+#   "not a fault.", so no fixture it builds can distinguish a gate keyed on
+#   the property from one keyed on that literal spelling -- the natural
+#   fixture selects the passing path, which is why #826 shipped.
+mkmetrics_phrased() {
+    local f="$1" list="$2"; shift 2
+    local n pair
+    {
+        printf 'package plugin\n\nvar metricDefs = []metricDef{\n'
+        for n in $list; do
+            printf '\t{name: "%s", counter: true, help: "a fault. Healthy-affecting.", field: "%s"},\n' "$n" "$n"
+        done
+        for n in leases_renewed pending_hints; do
+            printf '\t{name: "%s", counter: true, help: "not a fault.", field: "%s"},\n' "$n" "$n"
+        done
+        for pair in "$@"; do
+            printf '\t{name: "%s", counter: true, help: "%s", field: "%s"},\n' \
+                "${pair%%=*}" "${pair#*=}" "${pair%%=*}"
+        done
+        printf '}\n'
+    } > "$f"
+}
+
 # mkmetrics <file> <counter-list> [<extra-tagged>]
 #   metricDefs as pkg/plugin/metrics.go writes it: name and help on one
 #   line, and the help of a healthy-affecting counter ending
@@ -223,6 +248,51 @@ mkmetrics "$DIR/m2.metrics.go" "$FOUR" "leases_renewed"
 out=$(bash "$CHECK" "$DIR/ok.md" "$DIR/ok.go" "$DIR/m2.metrics.go" "$F4" 2>&1); rc=$?
 [ $rc -eq 1 ] && ok "a help string claiming \"Healthy-affecting.\" on a counter the doc does not mark fails" \
                || no "the reverse drift is not judged (rc=$rc: $out)"
+
+# --- #826: the assertion is read by MEANING, not by spelling ------------
+# Both arms below fail against the pre-fix gate, which matched the fixed
+# string "Healthy-affecting." and so was wrong in both directions at once.
+
+# ARM 1 -- a DENIAL must not be collected as an assertion.
+# "Healthy-affecting." is a substring of "Not Healthy-affecting.", so the
+# old matcher collected a counter whose help string explicitly denies the
+# property. The remedy it then printed was "mark this yes in the doc",
+# i.e. document a non-affecting counter as healthy-affecting.
+# leases_renewed is NOT in the doc's yes column, so a gate that collects
+# it reports drift that does not exist.
+mkmetrics_phrased "$DIR/m826a.metrics.go" "$FOUR" \
+    "leases_renewed=expected, not a fault. Not Healthy-affecting."
+out=$(bash "$CHECK" "$DIR/ok.md" "$DIR/ok.go" "$DIR/m826a.metrics.go" "$F4" 2>&1); rc=$?
+[ $rc -eq 0 ] && ok "a help string DENYING the property is not collected as asserting it (#826)" \
+               || no "a negated help string was read as an assertion (rc=$rc: $out)"
+
+# ARM 2 -- a genuine assertion phrased differently must be SEEN.
+# The worse arm: the old matcher missed lowercase, a colon, or a missing
+# period, and the remedy it printed was "remove the yes from the doc" --
+# deleting a true statement about a counter that really does affect
+# health. Here the counter is NOT in the doc column, so the gate must
+# fail AND name it; a gate that cannot see the sentence reports clean.
+mkmetrics_phrased "$DIR/m826b.metrics.go" "$FOUR" \
+    "leases_renewed=a fault. healthy-affecting: an operator should look"
+out=$(bash "$CHECK" "$DIR/ok.md" "$DIR/ok.go" "$DIR/m826b.metrics.go" "$F4" 2>&1); rc=$?
+[ $rc -eq 1 ] && ok "an assertion phrased lowercase with a colon is still seen (#826)" \
+               || no "an off-spelling assertion was invisible (rc=$rc: $out)"
+case "$out" in *leases_renewed*) ok "the failure names the counter whose assertion was off-spelling" ;;
+  *) no "the failure does not name leases_renewed: $out" ;; esac
+
+# ARM 3 -- every negator in the pattern is load-bearing.
+# The matcher accepts `not`, `non` and `never`. Arms 1 and 2 exercise only
+# `not`, so narrowing the pattern to `(not)` alone leaves the suite green:
+# an untested alternative is capability nobody is measuring, and it reads
+# as coverage. One counter per negator, each denying the property, none of
+# them in the doc's yes column -- so the gate must stay clean, and does not
+# if any one of the three stops being recognised.
+mkmetrics_phrased "$DIR/m826c.metrics.go" "$FOUR" \
+    "leases_renewed=expected. non-healthy-affecting, no operator action" \
+    "pending_hints=expected. never Healthy-affecting."
+out=$(bash "$CHECK" "$DIR/ok.md" "$DIR/ok.go" "$DIR/m826c.metrics.go" "$F4" 2>&1); rc=$?
+[ $rc -eq 0 ] && ok "\"non-\" and \"never\" are recognised as denials, not just \"not\" (#826)" \
+               || no "a negator other than \"not\" was read as an assertion (rc=$rc: $out)"
 
 # A metrics file this gate cannot read is exit 2, never a pass. If
 # metricDefs stops putting name and help on one line, the set comes
