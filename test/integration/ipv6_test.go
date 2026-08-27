@@ -122,7 +122,7 @@ func leaseDUIDForV6(t *testing.T, leaseFile, addr string) string {
 // gets a v4 lease from the v4 pool AND a v6 lease from the ULA pool;
 // docker inspect's GlobalIPv6Address agrees with the address actually
 // on the link; teardown releases both families cleanly
-// (lease_release_failures stays flat — this exercises the v6 half of
+// (client_stop_failures stays flat — this exercises the v6 half of
 // dhcpManager.Stop).
 func TestLifecycleMacvlan_IPv6_GoldenPath(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -144,7 +144,7 @@ func TestLifecycleMacvlan_IPv6_GoldenPath(t *testing.T) {
 	}
 	defer cli.Close()
 
-	w := harness.BeginCounterWindow(t, ctx, cli, "lease_release_failures")
+	w := harness.BeginCounterWindow(t, ctx, cli, "client_stop_failures")
 
 	harness.CreateNetwork(t, ctx, netName, "macvlan", map[string]string{"ipv6": "true"})
 
@@ -216,9 +216,9 @@ func TestLifecycleMacvlan_IPv6_GoldenPath(t *testing.T) {
 		t.Fatalf("ContainerStop: %v", err)
 	}
 	before, after := w.End()
-	if after.LeaseReleaseFailures != before.LeaseReleaseFailures {
-		t.Errorf("lease_release_failures moved %d -> %d over a dual-stack lifecycle; the v6 Stop path is failing",
-			before.LeaseReleaseFailures, after.LeaseReleaseFailures)
+	if after.ClientStopFailures != before.ClientStopFailures {
+		t.Errorf("client_stop_failures moved %d -> %d over a dual-stack lifecycle; the v6 Stop path is failing",
+			before.ClientStopFailures, after.ClientStopFailures)
 	}
 }
 

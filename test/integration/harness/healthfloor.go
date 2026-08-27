@@ -113,14 +113,18 @@ type HealthResponse struct {
 	// request, not accumulated. A pointer so an older plugin that does
 	// not publish it is distinguishable from one reporting -1 — absent
 	// data is not a value.
-	SandboxNetnsVisible  *int32 `json:"sandbox_netns_visible"`
-	LeaseChanged         int32  `json:"lease_changed"`
-	LeasesObtained       int32  `json:"leases_obtained"`
-	LeasesRenewed        int32  `json:"leases_renewed"`
-	DHCPTimeouts         int32  `json:"dhcp_timeouts"`
-	LeaseReleaseFailures int32  `json:"lease_release_failures"`
-	NAKsReceived         int32  `json:"naks_received"`
-	LedgerWriteFailures  int32  `json:"ledger_write_failures"`
+	SandboxNetnsVisible *int32 `json:"sandbox_netns_visible"`
+	LeaseChanged        int32  `json:"lease_changed"`
+	LeasesObtained      int32  `json:"leases_obtained"`
+	LeasesRenewed       int32  `json:"leases_renewed"`
+	DHCPTimeouts        int32  `json:"dhcp_timeouts"`
+	// ClientStopFailures was lease_release_failures until #800. A
+	// renewal client that did not shut down cleanly when signalled — it
+	// says nothing about the lease, which is held to expiry either way
+	// because nothing this plugin runs sends a DHCPRELEASE.
+	ClientStopFailures  int32 `json:"client_stop_failures"`
+	NAKsReceived        int32 `json:"naks_received"`
+	LedgerWriteFailures int32 `json:"ledger_write_failures"`
 	// DirectivesRefused / MountPrepFailures are the two places the DHCP
 	// client package declines to do what it was asked and carries on
 	// anyway (#780): a dhcpcd directive dropped for a control character
@@ -130,13 +134,6 @@ type HealthResponse struct {
 	// client. MountPrepFailures counts COMMANDS, not clients.
 	DirectivesRefused int32 `json:"directives_refused"`
 	MountPrepFailures int32 `json:"mount_prep_failures"`
-	// OrphanedLeasesReleased / OrphanedLeaseReleaseFailures cover the
-	// lease acquired during endpoint setup when no persistent client
-	// ever took ownership of it — a container that exited before the
-	// attach completed (#370). Neither is healthy-affecting: a
-	// short-lived container is an ordinary lifecycle.
-	OrphanedLeasesReleased       int32 `json:"orphaned_leases_released"`
-	OrphanedLeaseReleaseFailures int32 `json:"orphaned_lease_release_failures"`
 	// ParentLinkWaits / ParentLinkWaitTimeouts cover contention on a
 	// shared parent NIC, where a macvlan and an ipvlan child cannot
 	// coexist (#486/#549). Waits means an operation queued and got

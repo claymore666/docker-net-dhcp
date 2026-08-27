@@ -106,14 +106,14 @@ const preflightProbeBudget = 8 * time.Second
 // way round and the gate opens while the probe's child is still
 // attached, which is the EBUSY the gate exists to prevent.
 //
-// DO NOT read this as a precedent for the reclaim path. The gate for
-// the reclaim's temporary link is taken several frames up in
-// synthesiseRelease and has to stay there; moving it down to sit around
-// that LinkAdd would shorten the hold and restore the original bug (see
-// the orphan_release.go entry in .github/linkadd-accounting.txt). The
-// move was safe HERE only because this function already spans the whole
-// hold — DORA and teardown both — so taking the gate at its top changes
-// where the lock is written and not how long it is held (#577).
+// This is now the only path that holds a parent across a DHCP round
+// trip: the orphaned-lease reclaim, which used to be the other one and
+// the more demanding of the two, was removed in v1.9.0 (#800). Its gate
+// was taken several frames up, deliberately, so the hold spanned its
+// whole lifetime. Taking it at the top of THIS function is the same
+// rule and not a shortcut — the function already spans the entire hold,
+// DORA and teardown both, so the position of the lock changes and its
+// duration does not (#577).
 func (p *Plugin) runDHCPProbe(ctx context.Context, parent, mode string, pol serverPolicy) error {
 	// First statement, before the parent is even looked up: the hold
 	// must cover everything the caller used to wrap, or this is a

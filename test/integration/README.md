@@ -471,12 +471,14 @@ invocation. Tests select a path by mode:
 new test.** A parent NIC is a macvlan port or an ipvlan port, never
 both — the two kinds contend for its single receive handler, and the
 second to ask is refused with `Device or resource busy`. Plugin
-teardown is asynchronous relative to test boundaries: an orphan-lease
-reclaim keeps its temporary `dh-rel-*` child on the parent for a full
-DHCP round trip after the test that caused it has already returned.
-With one shared parent, a macvlan test's tail could therefore still
-own the parent when the next ipvlan test's head asked for it, and the
-suite went red on the wrong test — an EBUSY from deep inside a netlink
+teardown is asynchronous relative to test boundaries: the `validate_dhcp`
+preflight probe keeps its temporary `dh-probe-*` child on the parent for
+a full DHCP round trip, and until v1.9.0 the orphaned-lease reclaim kept
+a `dh-rel-*` child there for the same span after the test that caused it
+had already returned (that mechanism is gone — see #800 — but the
+asynchrony is not). With one shared parent, a macvlan test's tail could
+therefore still own the parent when the next ipvlan test's head asked
+for it, and the suite went red on the wrong test — an EBUSY from deep inside a netlink
 call that reads as a plugin fault (#556). Dedicated parents remove the
 contention; `harness.CreateNetwork` additionally asserts that the
 parent it is about to use carries no child of the other kind, so a

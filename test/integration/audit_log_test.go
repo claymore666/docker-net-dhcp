@@ -210,12 +210,12 @@ func TestAuditLog_RecordsLifecycle(t *testing.T) {
 	deadline = time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
 		kinds = ledgerKindsForMAC(readLedger(t, ctx, cli), mac)
-		if len(kinds) > 0 && kinds[len(kinds)-1] == "release" {
+		if len(kinds) > 0 && kinds[len(kinds)-1] == "stopped" {
 			break
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
-	if len(kinds) == 0 || kinds[len(kinds)-1] != "release" {
+	if len(kinds) == 0 || kinds[len(kinds)-1] != "stopped" {
 		t.Fatalf("ledger kinds for MAC %s = %v, want trailing \"release\"", mac, kinds)
 	}
 	if kinds[0] != "bound" {

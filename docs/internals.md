@@ -203,35 +203,51 @@ a 2-second cap that only an unclaimed address ever pays.
 
 ## How a lease gets handed back
 
-Normally the container's own `dhcpcd` does it: a graceful stop emits a
-`RELEASE` and the server frees the address at once instead of waiting
-for the lease to expire.
+It does not. Nothing this plugin runs ever sends a `DHCPRELEASE`, and
+that is deliberate as of v1.9.0 (#800).
 
-That needs a binding to release. Two cases leave one held with nobody
-responsible for it — the persistent client **never started** (the
-container was already gone), or it **started but never bound** (it was
-signalled before its first `ACK`, so `dhcpcd` had nothing to release and
-exited cleanly). The address was won regardless, by the one-shot at
-`CreateEndpoint`.
+A lease is a lease. When a container stops, its address stays leased
+until the lease expires, and if the container comes back before then it
+asks for the same address and gets it — the ordinary DHCP path, and
+exactly what happens when a physical host on the segment reboots or
+loses power. A container is a host on this segment and costs the server
+what one costs.
 
-The plugin then **reclaims**: a temporary child of the network's kind,
-re-acquire the same address under the endpoint's identity, release it
-properly. Per family — a dual-stack endpoint hands back exactly the
-addresses whose client never bound, IPv4 via the client-id, IPv6 via
-the same DUID and IAID the endpoint used (v1.7.0+, #608; before that
-the IPv6 half was leaked and the ledger wrote it up as released).
-Counted by `orphaned_leases_released` and
-`orphaned_lease_release_failures`, and written to the audit ledger.
+Neither client releases. The `CreateEndpoint` one-shot exits with
+`-1 -p` to keep its address for the persistent client that takes over
+moments later; the persistent client is signalled at `Leave` and keeps
+it for the container that may be about to restart.
 
-**The scoping is load-bearing.** It fires when an endpoint *leaves*, not
-on every manager shutdown — `Close` stops every manager on an upgrade or
-`docker plugin disable`, with containers still running. A never-bound
-manager is legitimate there (a DHCP server that is not answering, while
-the container still holds the one-shot's address), and releasing would
-tell the server an address is free while it is in use: the duplicate
-assignment this release added detection for, manufactured by us.
+**Why this changed.** Up to v1.8.x the plugin released aggressively —
+`dhcpcd` emitted a `RELEASE` on a graceful stop, and a background
+*reclaim* handed back the one-shot's address whenever no persistent
+client had taken ownership of it (a container that exited before the
+attach completed). Both were trying to return an address promptly rather
+than let it sit until expiry. Both raced the tombstone.
 
-A missed reclaim leaves a lease to expire. A wrong one causes an outage.
+A `docker restart` is a `Leave` immediately followed by a `Join` for the
+same MAC, and the tombstone exists to promise that `Join` the same
+address. At the moment the release ran, "this endpoint is gone" and
+"this endpoint is coming straight back" were indistinguishable — so the
+plugin was observed telling the server an address was free in the same
+second the container came back to claim it. The reclaim was measured
+firing four times on ordinary restarts of live containers.
+
+What was gained was a faster return of an address nobody wanted. What
+was risked was an address handed to someone else while a container was
+still using it — the duplicate assignment #524 added detection for,
+manufactured by the plugin itself. Waiting for expiry has no such
+failure mode, so the whole mechanism went: the `release` directive, the
+reclaim, and the `orphaned_leases_released` and
+`orphaned_lease_release_failures` counters that measured it.
+
+The surviving teardown counter was renamed to match: what was
+`lease_release_failures` is now `client_stop_failures`, because a client
+that exits badly is all it can still mean.
+
+The cost is that a short-lived container's address is unavailable for
+one lease time. Size the server's pool and lease time for the churn,
+the same way you would for any other population of hosts.
 
 ## How operations on one parent NIC are serialised
 
@@ -240,17 +256,23 @@ ipvlan port and never both — whichever kind asks second gets `EBUSY`.
 That is a kernel rule; one mode per parent stays the operator-facing
 constraint.
 
-What the plugin can stop is inflicting it on itself. Three of its paths
-attach a child to a parent: creating an endpoint, the `validate_dhcp`
-probe, and the reclaim above — which holds its link for a full DHCP
-round trip, from a goroutine ordered against no Docker request. Since
-v1.6.0 all three take a per-parent gate first, so they queue instead of
-refusing each other (#486, #549).
+What the plugin can stop is inflicting it on itself. Two of its paths
+attach a child to a parent: creating an endpoint, and the
+`validate_dhcp` probe — which holds its link for a full DHCP round
+trip. Since v1.6.0 both take a per-parent gate first, so they queue
+instead of refusing each other (#486, #549).
+
+There used to be a third, the orphaned-lease reclaim, and it was the
+demanding one: it ran from a goroutine ordered against no Docker request
+at all. It is gone (#800, see above), which shortens the worst case the
+gate has to cover but does not remove the need for it — the probe still
+holds a parent across a DHCP round trip while an endpoint may ask for
+the other mode.
 
 `parent_link_waits` counts operations that queued — the mechanism
 working. `parent_link_wait_timeouts` counts ones that gave up and
 proceeded anyway; they may still succeed, but the budget has stopped
-covering a reclaim's duration.
+covering the holder's duration.
 
 The rule is enforced by **two** mechanisms, and it is worth being exact
 about where each one stops, because the guard type exists precisely to

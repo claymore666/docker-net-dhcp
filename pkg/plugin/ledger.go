@@ -29,7 +29,7 @@ const (
 )
 
 // ledgerEntry is one lease-lifecycle event. Kind is one of "bound",
-// "renew", "release", or "release_failed" — the last one is written
+// "renew", "stopped", or "stop_failed" — the last one is written
 // when the SIGTERM-driven DHCPRELEASE didn't complete cleanly, so the
 // ledger never claims a release that may not have reached the server.
 type ledgerEntry struct {
