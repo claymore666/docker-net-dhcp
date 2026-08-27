@@ -2812,6 +2812,16 @@ diagnosing a specific container from them alone is not.</p>
 <td>(v1.8.0+) Option-26 MTUs outside <code>[576, 65535]</code>, refused with the container link left at the MTU it had. Only moves with <code>propagate_mtu=true</code>. Neither <code>dhcpcd</code> nor the kernel holds the bottom of that range — a server-supplied 68 is exported verbatim and accepted — and the result is destroyed throughput plus black-holed path MTU discovery, re-applied on every renewal, which looks like a slow network rather than a misconfiguration.</td>
 </tr>
 <tr>
+<td><code>directives_refused</code></td>
+<td>no</td>
+<td>(v1.9.0+) <code>dhcpcd.conf</code> directives dropped before being written because their value carried a control character. <code>dhcpcd.conf</code> has no quoting, so a value containing a newline would not be escaped — it would become a second directive — and dropping it is the correct handling. The counter exists because the drop is otherwise <strong>silent to the operator</strong>: a <code>hostname</code>, <code>vendor_class</code> or <code>client_id</code> you set is simply not applied, the lease is obtained without it, and the plugin reports <code>healthy</code>. Distinct from <code>unsafe_hostnames_rejected</code>, which counts the <em>container</em> hostname rejected earlier, and from <code>unsafe_option_values_dropped</code>, which counts values the <em>server</em> sent. This one counts what <strong>you</strong> configured. Any non-zero value is worth reading: a legitimate value never contains a control character.</td>
+</tr>
+<tr>
+<td><code>mount_prep_failures</code></td>
+<td>no</td>
+<td>(v1.9.0+) Individual commands in a DHCP client's private mount-namespace preparation that failed. Counts <strong>commands, not clients</strong> — one client that fails three of its four preparation steps adds 3. The commands are chained so that a failure does not stop the ones after it and <code>dhcpcd</code> starts regardless, which is a deliberate degrade and usually harmless; the reason to watch it is the one case that is not. The preparation gives each client its own <code>dhcpcd</code> run directory, and two containers whose interface has the same name (the default <code>eth0</code> on both) otherwise collide on <code>dhcpcd</code>'s control socket — the second client becomes a no-op that never renews and never releases, while everything else looks normal. Before this counter the only trace was a shell error on the plugin's stderr, indistinguishable from <code>dhcpcd</code>'s routine output.</td>
+</tr>
+<tr>
 <td><code>ledger_write_failures</code></td>
 <td>no</td>
 <td>Failed <code>audit_log</code> ledger appends — degrades forensics, not networking. Operators using <code>audit_log</code> alert on this.</td>
