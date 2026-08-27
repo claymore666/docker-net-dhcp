@@ -35,13 +35,22 @@ commit_on() {  # commit_on <subject>
     git -C "$REPO" commit -qm "$1"
 }
 
-# run NAME WANT_EXIT WANT_GREP RANGE TITLE BODY
+# run NAME WANT_EXIT WANT_GREP RANGE TITLE BODY [AUTHOR]
+#
+# AUTHOR is optional and defaults to absent, so every case written before
+# the bot exemption keeps calling the gate with three arguments — which is
+# also the control that an absent author exempts nobody.
 run() {
     local name="$1" want_exit="$2" want_grep="$3" range="$4" title="$5" body="$6"
+    local author="${7-}"
     local targ="" barg=""
     if [ "$title" != "-" ]; then printf '%s' "$title" > "$TMP/title.txt"; targ="$TMP/title.txt"; fi
     if [ "$body" != "-" ]; then printf '%s' "$body" > "$TMP/body.md"; barg="$TMP/body.md"; fi
-    ( cd "$REPO" && bash "$CHECK" "$range" "$targ" "$barg" ) > "$TMP/out" 2>&1
+    if [ "$#" -ge 7 ]; then
+        ( cd "$REPO" && bash "$CHECK" "$range" "$targ" "$barg" "$author" ) > "$TMP/out" 2>&1
+    else
+        ( cd "$REPO" && bash "$CHECK" "$range" "$targ" "$barg" ) > "$TMP/out" 2>&1
+    fi
     local got=$?
     local ok=1
     [ "$got" -eq "$want_exit" ] || ok=0
@@ -198,6 +207,94 @@ if [ -z "$shared" ]; then
 else
     echo "FAIL: the shared parser accepted a mid-subject group — fixture is stale"
     failures=$((failures + 1))
+fi
+
+# --- the bot exemption -------------------------------------------------
+#
+# Dependabot cannot reference an issue and cannot write a waiver, so the
+# gate was unsatisfiable for it. Every case here is driven from both
+# sides, because a widening that accepts everything would pass the one
+# case it was written for while quietly retiring the gate.
+git -C "$REPO" reset -q --hard "$BASE"
+commit_on 'build(deps): bump github.com/sirupsen/logrus from 1.10.0 to 1.10.1'
+
+BOT='dependabot[bot]'
+
+run "the bot with no reference anywhere passes" 0 "exempt" \
+    "$BASE..HEAD" 'build(deps): bump the actions group with 3 updates' \
+    'Bumps the actions group with 3 updates.' "$BOT"
+
+# THE PRESERVATION CONTROL. The whole risk of this change is that it
+# widens into a gate nobody can fail. Identical inputs, human author, and
+# the gate must still go red — otherwise the exemption is not an exemption,
+# it is a switch that turned the check off.
+run "a HUMAN with the same empty PR is still red" 1 "references an issue" \
+    "$BASE..HEAD" 'build(deps): bump the actions group with 3 updates' \
+    'Bumps the actions group with 3 updates.' 'claymore666'
+
+# ...and the same inputs with no author argument at all, which is how
+# every caller before this change invoked the gate. An absent author must
+# exempt nobody, so a workflow that stops passing it fails loudly rather
+# than waiving everything.
+run "an ABSENT author exempts nobody" 1 "references an issue" \
+    "$BASE..HEAD" 'build(deps): bump the actions group with 3 updates' \
+    'Bumps the actions group with 3 updates.'
+
+run "an empty author string exempts nobody" 1 "references an issue" \
+    "$BASE..HEAD" 'build(deps): bump the actions group with 3 updates' \
+    'Bumps the actions group with 3 updates.' ''
+
+# THE NAME IS NOT A PATTERN. Each of these is a login somebody could
+# actually hold, and every one of them would be exempt under a substring,
+# prefix or suffix test. Equality is what makes the exemption a name
+# rather than a shape.
+for impostor in 'dependabot' 'Dependabot[bot]' 'DEPENDABOT[BOT]' \
+                'mydependabot[bot]' 'dependabot[bot]x' 'x-dependabot[bot]' \
+                'dependabot[bot] ' ' dependabot[bot]' 'dependabot-preview[bot]'; do
+    run "a lookalike login '$impostor' is NOT exempt" 1 "references an issue" \
+        "$BASE..HEAD" 'build(deps): bump something' 'No reference here.' "$impostor"
+done
+
+# The exemption is checked last, so a bump that does carry a reference is
+# still reported on the reference. Otherwise the message would lie about
+# which carrier worked, and a bot PR that referenced a real issue would
+# look indistinguishable from one that referenced nothing.
+git -C "$REPO" reset -q --hard "$BASE"
+commit_on 'build(deps): bump the actions group (#807)'
+run "a bot PR that DOES reference is reported on the reference" 0 "a commit subject" \
+    "$BASE..HEAD" 'build(deps): bump the actions group with 3 updates' \
+    'Bumps the actions group.' "$BOT"
+
+# --- the wiring, one level up ------------------------------------------
+#
+# Everything above proves the SCRIPT exempts the bot. None of it proves
+# the WORKFLOW passes the author, and a gate whose premise is supplied by
+# its caller fails silently at the caller (#790 is the same shape: a
+# presence check that stopped one level short of the wrapper). If the
+# argument is dropped, every case above still passes and dependency bumps
+# go red again in CI with nothing here to say why.
+WF="$HERE/../.github/workflows/test.yaml"
+if [ ! -f "$WF" ]; then
+    echo "FAIL: cannot find .github/workflows/test.yaml — the wiring case tests nothing"
+    failures=$((failures + 1))
+else
+    inv=$(command grep -A6 'bash scripts/check-issue-ref.sh' "$WF")
+    if [ -z "$inv" ]; then
+        echo "FAIL: test.yaml no longer invokes check-issue-ref.sh — wiring case is vacuous"
+        failures=$((failures + 1))
+    elif printf '%s' "$inv" | command grep -q 'PR_AUTHOR'; then
+        echo "PASS: test.yaml passes the PR author to the gate"
+    else
+        echo "FAIL: test.yaml invokes check-issue-ref.sh without the author argument —"
+        echo "      the bot exemption is dead in CI and every dependency bump goes red"
+        failures=$((failures + 1))
+    fi
+    if command grep -q 'PR_AUTHOR: ${{ github.event.pull_request.user.login }}' "$WF"; then
+        echo "PASS: PR_AUTHOR is sourced from the event payload, not computed"
+    else
+        echo "FAIL: PR_AUTHOR is not sourced from github.event.pull_request.user.login"
+        failures=$((failures + 1))
+    fi
 fi
 
 echo
