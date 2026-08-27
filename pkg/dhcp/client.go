@@ -998,12 +998,35 @@ func attemptGetIP(ctx context.Context, iface string, opts *DHCPClientOptions) (I
 		collectAcquisition(events, acq)
 	}()
 
-	if err := client.Finish(ctx); err != nil {
-		_, ra := settleAcquisition(collected, acq, raDrainGrace)
-		return dummy, ra, err
-	}
+	return finishAcquisition(client.Finish(ctx), collected, acq, raDrainGrace)
+}
 
-	last, ra := settleAcquisition(collected, acq, raDrainGrace)
+// finishAcquisition forms one attempt's verdict: what the collector has
+// observed, plus what Finish reported.
+//
+// Split out of attemptGetIP for the reason observeRA, collectAcquisition
+// and settleAcquisition were split out before it -- inside attemptGetIP
+// it is reachable only through a live dhcpcd, so no unit test in this
+// package could execute it, and a mutation that returned the ZERO
+// observation on the error path survived the whole suite. That mutation
+// IS the #873 defect: the error path is the one a managed segment with
+// a silent server takes.
+//
+// The observation is returned on BOTH paths, and that is the whole
+// point. dhcpcd exiting non-zero on a stateless segment is not evidence
+// that no advertisement arrived -- the advertisement is what makes that
+// exit interpretable, and returning the zero value there reports "no
+// router on this segment" for a segment whose router had just spoken.
+// classifyV6Absence maps the zero observation to v6NoRouter, which is
+// TOLERATED, so getting this wrong fails OPEN on the guard whose entire
+// purpose is to stay closed.
+func finishAcquisition(finishErr error, collected <-chan struct{}, a *acquisition, grace time.Duration) (Info, RAObservation, error) {
+	dummy := Info{}
+
+	last, ra := settleAcquisition(collected, a, grace)
+	if finishErr != nil {
+		return dummy, ra, finishErr
+	}
 	if last == nil {
 		return dummy, ra, util.ErrNoLease
 	}

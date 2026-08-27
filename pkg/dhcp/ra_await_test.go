@@ -5,8 +5,11 @@ package dhcp
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
+
+	"github.com/claymore666/docker-net-dhcp/pkg/util"
 )
 
 // An observation that has already been made must not be discarded
@@ -183,6 +186,85 @@ func TestSettleAcquisition_KeepsAnObservationTakenUnderAnExpiredDeadline(t *test
 		if elapsed > 30*time.Second {
 			t.Errorf("settleAcquisition took %v against a stream that never ends; it "+
 				"must be bounded by the grace, not by the collector", elapsed)
+		}
+	})
+}
+
+// TestFinishAcquisition_CarriesTheObservationOnBothPaths covers the
+// verdict-forming step that no unit test could reach until it was split
+// out of attemptGetIP.
+//
+// It is here because a mutation found the gap rather than a reading of
+// the code did: replacing the error path's settle with the zero
+// observation left the whole package green. That mutation is the #873
+// defect itself, and the error path is the one a managed segment with a
+// silent server takes — dhcpcd -1 -p -6 never gets a reply, the
+// acquisition budget runs out, and Finish returns ctx.Err().
+func TestFinishAcquisition_CarriesTheObservationOnBothPaths(t *testing.T) {
+	// managed builds an accumulator that has already observed a managed
+	// advertisement, through the real collector, with the stream closed
+	// so the collector has demonstrably finished.
+	managed := func(t *testing.T, extra ...Event) (*acquisition, chan struct{}) {
+		t.Helper()
+		events := make(chan Event, 1+len(extra))
+		events <- Event{Type: "routeradvert", RouterFlags: "MO"}
+		for _, e := range extra {
+			events <- e
+		}
+		close(events)
+		acq := &acquisition{}
+		collected := make(chan struct{})
+		go func() {
+			defer close(collected)
+			collectAcquisition(events, acq)
+		}()
+		<-collected
+		return acq, collected
+	}
+
+	t.Run("Finish failed", func(t *testing.T) {
+		acq, collected := managed(t)
+		boom := errors.New("context deadline exceeded")
+
+		_, ra, err := finishAcquisition(boom, collected, acq, raDrainGrace)
+		if !errors.Is(err, boom) {
+			t.Errorf("err = %v, want the error Finish reported", err)
+		}
+		if !ra.Seen || !ra.Managed {
+			t.Errorf("observation = %+v, want Seen and Managed. Finish failing is not "+
+				"evidence the segment stayed silent — it is the expected outcome on a "+
+				"managed segment whose DHCPv6 server answered nothing, and reporting "+
+				"the zero observation there makes classifyV6Absence read v6NoRouter "+
+				"and start the container with no IPv6 address (#873)", ra)
+		}
+	})
+
+	t.Run("Finish succeeded but no lease arrived", func(t *testing.T) {
+		acq, collected := managed(t)
+
+		_, ra, err := finishAcquisition(nil, collected, acq, raDrainGrace)
+		if !errors.Is(err, util.ErrNoLease) {
+			t.Errorf("err = %v, want ErrNoLease", err)
+		}
+		if !ra.Seen || !ra.Managed {
+			t.Errorf("observation = %+v, want Seen and Managed — the advertisement is "+
+				"what makes a missing lease interpretable, so it must survive the "+
+				"ErrNoLease path too", ra)
+		}
+	})
+
+	t.Run("a lease arrived", func(t *testing.T) {
+		acq, collected := managed(t, Event{Type: "bound", Data: Info{IP: "2001:db8::1/64"}})
+
+		info, ra, err := finishAcquisition(nil, collected, acq, raDrainGrace)
+		if err != nil {
+			t.Fatalf("err = %v, want none", err)
+		}
+		if info.IP != "2001:db8::1/64" {
+			t.Errorf("lease = %+v, want the bound address", info)
+		}
+		if !ra.Seen || !ra.Managed {
+			t.Errorf("observation = %+v, want Seen and Managed on the success path too", ra)
 		}
 	})
 }
