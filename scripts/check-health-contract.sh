@@ -68,8 +68,10 @@
 # TWO MORE CODE SURFACES RESTATE THE SAME SET, and neither was read.
 #
 #   pkg/plugin/metrics.go -- every healthy-affecting counter's help
-#   string ends "Healthy-affecting.", and that sentence is served to
-#   operators on /metrics. The exposition golden is REGENERATED from
+#   string ASSERTS the property in prose, and that sentence is served to
+#   operators on /metrics. The assertion is read by meaning and not by
+#   spelling (#826): case and trailing punctuation do not matter, and a
+#   NEGATED mention counts as a denial rather than an assertion. The exposition golden is REGENERATED from
 #   these strings, so it agrees with whatever they say and proves
 #   nothing about whether they are true; check-docs-drift.sh reconciles
 #   the SET OF FIELD NAMES, not the sentence. #709 already shipped a
@@ -293,20 +295,60 @@ fi
 # line in metricDefs, so this reads that line. If the shape ever
 # changes the set comes back empty, which is exit 2 -- a gate reading a
 # file it no longer understands must not print PASS over it.
-metrics_set=$(grep -F 'Healthy-affecting.' "$METRICS" \
+#
+# KEYED ON THE PROPERTY, NOT THE SPELLING (#826). This used to be
+# `grep -F 'Healthy-affecting.'`, which was wrong in BOTH directions and
+# was correct only by an accident of phrasing:
+#
+#   - `Healthy-affecting.` is a substring of `not Healthy-affecting.`, so
+#     a help string DENYING the property was collected as ASSERTING it.
+#   - a genuine assertion phrased any other way -- lowercase, a colon
+#     instead of the period, no trailing punctuation -- was invisible.
+#
+# #826 replaced it with a negation stripper: lowercase the line, delete
+# every negated occurrence, ask whether one survives. That read the
+# sentence better and was wrong one axis over, because the negator had
+# to sit flush against the term:
+#
+#     Not healthy-affecting: informational.       correctly denied
+#     Not a healthy-affecting counter.            read as ASSERTING
+#     No longer healthy-affecting.                read as ASSERTING
+#     Never a healthy-affecting counter.          read as ASSERTING
+#
+# THE PROPERTY IS NO LONGER PROSE. Two heuristics over English were wrong
+# in the same place a month apart, each fix parsing the sentence better
+# and leaving the next phrasing open. `metricDef` now declares
+# `healthy: true`, and this reads the declaration.
+#
+# The operator-facing sentence stays in `help`, where it belongs, and it
+# is pinned to the declaration by TestMetricHelpMatchesHealthyField in
+# pkg/plugin -- which also constrains the negative form to one spelling,
+# so the ambiguity that produced both defects cannot be written again.
+# That check is in Go rather than here because it compares two fields of
+# one struct, which is a job for the language that has the struct.
+metrics_set=$(awk '
+    /name:[[:space:]]*"/ && /healthy:[[:space:]]*true/ { print }
+' "$METRICS" \
     | grep -oE 'name:[[:space:]]*"[a-z0-9_]+"' \
     | sed -E 's/.*"([a-z0-9_]+)".*/\1/' | sort -u)
 if [ -z "$metrics_set" ]; then
-    echo "check-health-contract: no metric help string in $METRICS ends 'Healthy-affecting.'" >&2
-    echo "  Either the sentence was dropped from every counter, or metricDefs no" >&2
-    echo "  longer puts name and help on one line and this check has gone blind." >&2
-    echo "  Teach it the new shape rather than letting it pass unread." >&2
+    echo "check-health-contract: no metricDef in $METRICS declares healthy: true" >&2
+    echo "  Either the field was dropped from every counter, or metricDefs no" >&2
+    echo "  longer puts name and healthy on one line and this check has gone" >&2
+    echo "  blind. Teach it the new shape rather than letting it pass unread." >&2
     exit 2
 fi
 if [ "$column_set" != "$metrics_set" ]; then
-    note "the /metrics help strings and the healthy-affecting column disagree:"
+    # THESE TWO LINES NAME A DISAGREEMENT AND STOP THERE, DELIBERATELY.
+    # They used to read "the doc does not mark it", which presupposes the
+    # code is right and instructs the reader to edit the doc. When the
+    # classifier was wrong -- and it was, twice -- that instruction wrote
+    # a false entry into an operator-facing table, after which the gate
+    # went green over it. A gate that cannot tell which side is wrong
+    # must not phrase its output as though it could.
+    note "the /metrics healthy declarations and the healthy-affecting column disagree:"
     diff <(printf '%s\n' "$column_set") <(printf '%s\n' "$metrics_set") \
-        | sed 's/^</  marked yes in the doc, but its help string does not say "Healthy-affecting.": /; s/^>/  its help string says "Healthy-affecting.", but the doc does not mark it: /' >&2
+        | sed 's|^<|  marked yes in the doc, not declared healthy: true in the code -- one of the two is wrong: |; s|^>|  declared healthy: true in the code, not marked yes in the doc -- one of the two is wrong: |' >&2
 fi
 n_metrics=$(printf '%s\n' "$metrics_set" | grep -c .)
 
@@ -358,5 +400,5 @@ if [ "$fail" -ne 0 ]; then
     exit 1
 fi
 
-echo "PASS  healthy contract agrees in ${n_lists} doc counter-list(s), ${n_words} doc count-word(s), ${n_code} code term(s), ${n_metrics} /metrics help string(s) and ${n_floor} integration floor entr(ies): $(printf '%s' "$column_set" | tr '\n' ' ')"
+echo "PASS  healthy contract agrees in ${n_lists} doc counter-list(s), ${n_words} doc count-word(s), ${n_code} code term(s), ${n_metrics} /metrics healthy declaration(s) and ${n_floor} integration floor entr(ies): $(printf '%s' "$column_set" | tr '\n' ' ')"
 exit 0
