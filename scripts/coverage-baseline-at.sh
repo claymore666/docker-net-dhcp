@@ -4,11 +4,31 @@
 
 # Resolve the coverage baseline as it stands at the merge base (#735).
 #
-# Usage: coverage-baseline-at.sh <base-ref> <output-file>
+# Usage: coverage-baseline-at.sh <base-ref> <output-file> [report-file]
 #   <base-ref>:    the PR's base commit, e.g. github.event.pull_request.base.sha
 #   <output-file>: where to write the baseline blob
+#   [report-file]: where to write the machine-readable report
+#                  (default: <output-file>.report)
 #
 # Exit: 0 written, 2 cannot resolve.
+#
+# THE REPORT IS HALF OF A CROSS-CHECK (#791). coverage-ratchet.sh guards
+# non-vacuity by asking whether it compared ZERO packages, and its loop
+# iterates over the baseline it was handed -- so `compared` is by
+# construction the number of data lines in that file and the guard can
+# only ever catch the empty case. A baseline that arrives holding two of
+# its five packages compares two, prints two PASS lines and exits 0, and
+# the release reads that as a clean ratchet.
+#
+# The count cannot come from the ratchet, because the ratchet has no
+# second opinion about what a complete baseline is. It comes from here:
+# this script resolved the blob, so it is the one place that knows what
+# it handed over. It writes the count, the blob's identity and the
+# package NAMES; the ratchet asserts it compared exactly those.
+#
+# NAMES AND NOT ONLY A COUNT, because "2 of 5" sends someone to read a
+# 258-line file of which 253 lines are commentary, and
+# "pkg/dhcp, cmd/net-dhcp" sends them to two lines.
 #
 # WHY THIS IS A SCRIPT AND NOT THREE LINES OF YAML. It runs in exactly
 # one place — coverage.yml, which triggers only on pull requests into
@@ -24,13 +44,14 @@
 # floor being measured against the number it had just lowered.
 set -u
 
-if [ "$#" -ne 2 ]; then
-    echo "usage: $0 <base-ref> <output-file>" >&2
+if [ "$#" -lt 2 ] || [ "$#" -gt 3 ]; then
+    echo "usage: $0 <base-ref> <output-file> [report-file]" >&2
     exit 2
 fi
 
 BASE_REF="$1"
 OUT="$2"
+REPORT="${3:-$2.report}"
 BASELINE_PATH=".github/coverage-baseline.txt"
 
 if ! git rev-parse --verify --quiet "$BASE_REF" >/dev/null; then
@@ -50,4 +71,45 @@ if ! git show "$MERGE_BASE:$BASELINE_PATH" > "$OUT" 2>/dev/null; then
     exit 2
 fi
 
+# The blob's identity, so the report names an object rather than a path.
+# `git rev-parse` on the tree entry, not a hash of $OUT: the point is to
+# record WHICH object was read, and a hash of the copy would still agree
+# with itself after the copy was truncated.
+BLOB=$(git rev-parse --verify --quiet "$MERGE_BASE:$BASELINE_PATH" 2>/dev/null) || BLOB="unknown"
+
+# Data lines, by the SAME rule the ratchet parses with -- a leading `#`
+# or a blank line is commentary. Two different rules here would make the
+# cross-check fail on files that are perfectly fine.
+PKGS=$(awk '
+    { sub(/^[[:space:]]+/, "") }
+    /^#/ { next }
+    NF == 0 { next }
+    { print $1 }
+' "$OUT")
+COUNT=$(printf '%s\n' "$PKGS" | grep -c .)
+
+# NON-VACUITY AT THE SOURCE. A baseline blob that resolves to no data
+# lines is the extreme of the truncation this report exists to catch, and
+# handing it to the ratchet would produce the ratchet's own "Nothing to
+# inspect" refusal one step later, naming the temp file instead of the
+# merge base that actually produced it.
+if [ "$COUNT" -eq 0 ]; then
+    echo "::error title=Cannot resolve the coverage baseline::$BASELINE_PATH at merge base $MERGE_BASE (blob $BLOB)" \
+         "holds no <package> <percent> data lines. The ratchet would compare nothing and report a clean pass." >&2
+    rm -f "$OUT"
+    exit 2
+fi
+
+{
+    echo "merge_base $MERGE_BASE"
+    echo "blob $BLOB"
+    echo "count $COUNT"
+    printf '%s\n' "$PKGS" | grep . | sed 's/^/package /'
+} > "$REPORT" || {
+    echo "::error title=Cannot resolve the coverage baseline::could not write the report to $REPORT." >&2
+    rm -f "$OUT"
+    exit 2
+}
+
 echo "Coverage floors read from $BASELINE_PATH at merge base $MERGE_BASE."
+echo "Resolved $COUNT package floor(s) from blob $BLOB; report written to $REPORT."

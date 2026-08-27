@@ -117,6 +117,100 @@ else
     failures=$((failures + 1))
 fi
 
+# --- the completeness cross-check (#791) --------------------------------
+# THE DEFECT: `compared` counts data lines of the baseline the ratchet was
+# HANDED, and the loop iterates over that same file, so the non-vacuity
+# guard can only ever fire on zero. A baseline arriving with two of its
+# five packages compares two, prints two PASS lines and exits 0.
+#
+# Every case below hands the ratchet a COMPLETE percent file and varies
+# only the baseline and the report, so nothing here can pass or fail for
+# a coverage reason.
+percent "$TMP/full.txt" 85.0 55.0
+
+xcheck() { # xcheck <name> <want-exit> <baseline> <report|-> [grep-for]
+    local name="$1" want="$2" bl="$3" rep="$4" needle="${5:-}"
+    local got
+    if [ "$rep" = "-" ]; then
+        RATCHET_REPORT='' bash "$RATCHET" "$TMP/full.txt" "$bl" > "$TMP/out" 2>&1
+    else
+        RATCHET_REPORT="$rep" bash "$RATCHET" "$TMP/full.txt" "$bl" > "$TMP/out" 2>&1
+    fi
+    got=$?
+    if [ "$got" -ne "$want" ]; then
+        echo "FAIL: $name (want exit $want, got $got)"
+        sed 's/^/    /' "$TMP/out"; failures=$((failures + 1)); return
+    fi
+    if [ -n "$needle" ] && ! grep -F "$needle" "$TMP/out" > /dev/null; then
+        echo "FAIL: $name (output does not mention '$needle')"
+        sed 's/^/    /' "$TMP/out"; failures=$((failures + 1)); return
+    fi
+    echo "PASS: $name"
+}
+
+# The resolver's report for the COMPLETE baseline: two packages.
+cat > "$TMP/report-full" <<'EOF'
+merge_base 1111111111111111111111111111111111111111
+blob 2222222222222222222222222222222222222222
+count 2
+package example.com/mod/pkg/a
+package example.com/mod/pkg/b
+EOF
+xcheck "a baseline matching its report is cross-checked" 0 "$BASELINE" "$TMP/report-full" "Cross-checked"
+
+# THE CASE THIS EXISTS FOR. The baseline lost a line; the report still
+# says two. Pre-#791 this compared one package, printed PASS, exited 0.
+cat > "$TMP/truncated.txt" <<'EOF'
+# comment lines and blanks are ignored
+
+example.com/mod/pkg/a 80.0
+EOF
+xcheck "a truncated baseline is refused, not passed" 2 "$TMP/truncated.txt" "$TMP/report-full" "The baseline is incomplete"
+grep -F 'example.com/mod/pkg/b' "$TMP/out" > /dev/null \
+    && echo "PASS: the refusal NAMES the package that was not compared" \
+    || { echo "FAIL: the refusal does not name the missing package"; sed 's/^/    /' "$TMP/out"; failures=$((failures + 1)); }
+
+# A SUBSTITUTION KEEPS THE COUNT. Two packages in, two compared, and one
+# of them is not the one the resolver handed over — a count-only check
+# reads that as complete, which is why the comparison is by name.
+cat > "$TMP/swapped.txt" <<'EOF'
+example.com/mod/pkg/a 80.0
+example.com/mod/pkg/z 50.0
+EOF
+xcheck "a substituted package is caught though the count matches" 2 "$TMP/swapped.txt" "$TMP/report-full" "COMPARED BUT NOT RESOLVED"
+
+# The absence of a cross-check must be announced. A silent exemption here
+# rebuilds the hole: a release log reading "PASS ... PASS" with no further
+# comment is exactly what the incomplete baseline produced.
+xcheck "no report says NOT CROSS-CHECKED and still renders its verdict" 0 "$BASELINE" "-" "NOT CROSS-CHECKED"
+
+# A report that cannot be read is not a licence to skip the check.
+#
+# THE PACKAGE LINES ARE CORRECT HERE ON PURPOSE. The first version of
+# this case carried no package lines either, so the name comparison found
+# two packages compared and none resolved and refused on THAT — and a
+# mutant that deleted the unreadable-count refusal entirely still exited
+# 2, still printed the message, and passed. The verdict was being carried
+# by a different mechanism than the one under test.
+#
+# With the names agreeing, the count guard is the only thing left that
+# can produce a refusal.
+{ printf 'merge_base abc\nblob def\n'
+  printf 'package example.com/mod/pkg/a\npackage example.com/mod/pkg/b\n'; } > "$TMP/report-nocount"
+xcheck "a report with no count line refuses" 2 "$BASELINE" "$TMP/report-nocount" "Unreadable resolver report"
+
+# The default is the sidecar beside the baseline, so the release path is
+# cross-checked without a second wiring step someone could forget.
+cp "$BASELINE" "$TMP/sidecar-baseline.txt"
+cp "$TMP/report-full" "$TMP/sidecar-baseline.txt.report"
+bash "$RATCHET" "$TMP/full.txt" "$TMP/sidecar-baseline.txt" > "$TMP/out" 2>&1
+if [ $? -eq 0 ] && grep -F 'Cross-checked' "$TMP/out" > /dev/null; then
+    echo "PASS: the report is found beside the baseline with no wiring"
+else
+    echo "FAIL: the default sidecar report was not picked up"
+    sed 's/^/    /' "$TMP/out"; failures=$((failures + 1))
+fi
+
 if [ "$failures" -ne 0 ]; then
     echo "$failures ratchet test(s) failed"
     exit 1
