@@ -374,7 +374,7 @@ func TestStop_AuditsBothFamiliesIndependently(t *testing.T) {
 			// since #730 is the sum of the two halves rather than a
 			// counter of its own. Asserting the sum keeps this case
 			// about Stop's auditing; which half moved is pinned by
-			// TestStop_BoundV6ReleaseFailureIsCountedPerFamily.
+			// TestStop_BoundV6StopFailureIsCountedPerFamily.
 			if got := p.clientStopFailuresV4.Load() + p.clientStopFailuresV6.Load(); got != tc.wantFailures {
 				t.Errorf("lease release failures (v4+v6) = %d, want %d", got, tc.wantFailures)
 			}

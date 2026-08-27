@@ -1839,8 +1839,12 @@ func (m *dhcpManager) settleFamily(v6 bool, last *netlink.Addr, exitErr error, l
 		// have been told the lease was handed back when it was not.
 		// What is settled here is that nothing is audited as released,
 		// which is the honest record: no RELEASE was sent, on any path.
-		// TestStop_TheNeverBoundLogClaimsNoReclaimOrRelease keeps it
-		// honest, because prose cannot.
+		// TestStop_NoStopPathClaimsAReclaimOrRelease keeps it honest,
+		// because prose cannot — and this comment is the proof of that:
+		// it named the test's pre-rename spelling long after the rename,
+		// so a sentence asserting that prose decays had itself decayed.
+		// Nothing observes a Go comment's test references, so this is
+		// the one class of decay the suite cannot catch itself.
 		neverBoundLog.Info("Persistent client stopped before it ever held the lease; " +
 			"the one-shot's lease is left to expire on the server")
 	case neverBound:

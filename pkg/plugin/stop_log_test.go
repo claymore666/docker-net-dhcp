@@ -54,6 +54,24 @@ import (
 // name no anchor: requiring one there would fail them for the wrong
 // reason, and the claim scan is still not vacuous against these
 // mutants, because a mutant ADDS a line rather than removing one.
+//
+// That argument covers the mutant this test exists for. It does NOT
+// cover the anchorless rows silently ceasing to exercise their path:
+// delete the audit from settleFamily's bound-clean or hard-exit arm and
+// this test still passes, because a row with no anchor cannot tell "the
+// path ran and claimed nothing" from "the path did not run". Both
+// mutants were driven, and each is killed by siblings that assert what
+// those paths DO rather than what they must not say:
+//
+//   - bound-clean silenced -> TestStop_AuditsBothFamiliesIndependently,
+//     TestStop_AuditsAStopWithoutClaimingARelease,
+//     TestStop_NeverBoundV6ClientIsNotAuditedAsReleased.
+//   - hard-exit silenced   -> TestStop_AuditsBothFamiliesIndependently,
+//     TestStop_AuditsAStopWithoutClaimingARelease,
+//     TestStop_BoundV6StopFailureIsCountedPerFamily.
+//
+// So the coverage is real but it lives next door, and deleting those
+// siblings would leave these two rows vacuous with nothing to say so.
 func TestStop_NoStopPathClaimsAReclaimOrRelease(t *testing.T) {
 	for _, tc := range []struct {
 		name string
