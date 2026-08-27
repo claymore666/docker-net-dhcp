@@ -93,6 +93,7 @@ LANE=(
   "python deps|-|bash scripts/check-python-deps.sh"
   "fixture hygiene|-|bash scripts/check-selftest-fixtures.sh"
   "pipefail consumers|-|bash scripts/check-pipefail-consumers.sh"
+  "lint tag coverage|-|bash scripts/check-lint-tag-coverage.sh"
   "plugin bind sources|-|bash scripts/check-plugin-bind-sources.sh"
   "license headers|-|bash scripts/check-license-headers.sh"
   "lock discipline|-|bash scripts/check-lock-discipline.sh"
