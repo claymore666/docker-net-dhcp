@@ -227,6 +227,47 @@ for c in "${CASES[@]}"; do
     fi
 done
 
+# --- ORTHOGONALITY for the cmd/ half of the domain ---------------------
+# The comment above fx_violation_only_in_cmd explains why that fixture
+# exists. It did not CHECK it. Its two siblings --
+# test-check-dispatch-reachable.sh and test-check-plugin-bind-sources.sh --
+# both reproduce the narrowed domain and assert it ACCEPTS the planted
+# fixture; this suite had the paragraph and not the assertion, in a PR
+# whose whole subject is a domain halving in silence.
+#
+# Why the acceptance assertion is the load-bearing half: "the cmd-only
+# case goes red on the real gate" is satisfied by any red at all. It is
+# equally consistent with the `cmd` half of the find doing the work and
+# with the fixture being broken in some unrelated way. Only running the
+# NARROWED gate over the same fixture separates them -- if it also goes
+# red, the case below proves nothing about which half of `find pkg cmd`
+# earned the verdict.
+#
+# The narrowing is applied to the real gate by sed, not to a copy of its
+# find line pasted here: a copy drifts from the original silently and
+# then tests itself.
+narrowed="$TMP/narrowed-openat.sh"
+sed -e "s|^FILES=\$(find pkg cmd |FILES=\$(find pkg |" "$GATE" > "$narrowed"
+if ! grep -q 'find pkg -type f' "$narrowed"; then
+    no "the narrowing sed did not match — the orthogonality check below would" \
+       "pass vacuously against an unmodified gate"
+elif [ "$(verdict "$narrowed" fx_violation_only_in_cmd)" = "0" ]; then
+    ok "a pkg-only domain ACCEPTS the cmd-only violation (orthogonality confirmed)"
+else
+    no "the pkg-only domain did not accept the cmd-only violation, so the" \
+       "'violation under cmd/ only' case above is red for some other reason"
+fi
+# And the control in the other direction: the same narrowing must leave a
+# pkg-planted violation red. Without it, a sed that broke the gate outright
+# would satisfy the acceptance assertion above by finding nothing at all.
+if [ "$(verdict "$narrowed" fx_flag_removed)" = "1" ]; then
+    ok "the narrowed gate still reports a pkg/ violation (it was narrowed, not broken)"
+else
+    no "the narrowed gate no longer reports a pkg/ violation — the sed disabled" \
+       "the gate rather than narrowing its domain, and the check above is vacuous"
+fi
+rm -f "$narrowed"
+
 # The two lines the issue named, by file and line, in the tree as it was
 # before the fix. "It would have caught it" is a claim; this is the
 # claim executed.
