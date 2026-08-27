@@ -4,11 +4,39 @@
 # `schedule` IS SUBJECT TO THE SAME RESTRICTION AND THIS FILE USED TO BE
 # SILENT ABOUT IT (#846). The restriction is a property of the DEFAULT
 # BRANCH, not of one trigger: a workflow that is not on `main` does not
-# run on a cron either. Two entries here independently claimed the
-# opposite on the same day -- "the schedule works from any branch" --
-# and both passed this gate, because the gate reads an entry for
-# presence, never for truth. If you are writing a reason below, do not
-# reason about which trigger survives: measure it.
+# run on a cron either.
+#
+# What the record actually shows, walked commit by commit on 2026-08-27
+# rather than recalled. Two entries asserted that the cron survives off
+# the default branch, in different words, eleven minutes apart:
+#
+#   0917847, 12:51:56, for fork-execution-policy.yml --
+#     "It runs on a daily schedule from the moment it merges, so the
+#      schedule half works immediately"
+#   5257600, 13:02:37, for run-retention.yml --
+#     "The workflow's real trigger is the daily schedule, which works
+#      from any branch"
+#
+# Three corrections to how that was first written up here, because a
+# paragraph telling the next author to measure rather than reason is the
+# worst possible place for an unmeasured claim:
+#
+#   - It said both entries were written independently BY TWO AUTHORS.
+#     Nothing in the record says that. Both commits carry the same single
+#     identity as author and committer.
+#   - It set off "the schedule works from any branch" in quotation marks
+#     as what they said. That exact string is in neither. The two real
+#     sentences are quoted above.
+#   - It said "two entries HERE". Only one of them was ever on the merged
+#     line of development: 5257600's. The other lives on the #830
+#     settings-guard branch, where it was corrected before merge. This
+#     file, on `dev`, has carried exactly one such entry, ever. A claim
+#     true of the union of the branches in flight is not a claim about
+#     this file.
+#
+# So: if you are writing a reason below, do not reason about which
+# trigger survives. Measure it -- and the `Triggers:` line the gate now
+# requires is derived from your workflow rather than from your sentence.
 #
 # GitHub only exposes a dispatchable workflow from the DEFAULT branch.
 # This project develops on `dev` and releases to `main`, and `main` is
@@ -16,8 +44,17 @@
 # release cycle after it merges. That is normal; being undispatchable
 # and DOCUMENTED AS A ROUTE is not.
 #
-# Rules:
+# Rules, and as of #849 the gate enforces all of them rather than
+# reading an entry for presence:
 #   - An entry requires a reason and what clears it. No bare paths.
+#     A bare path used to pass byte-identically to a full entry.
+#   - An entry requires `Triggers:`, listing every default-branch-only
+#     trigger the workflow actually declares. The gate DERIVES that list
+#     from the workflow file and requires an exact match, in both
+#     directions -- an entry that omits `schedule` fails, and so does one
+#     that claims `schedule` for a workflow that has none. It is keyed on
+#     the file's triggers, never on the wording of the reason, because
+#     both of the false entries in #846 were fluent English.
 #   - The documentation for the workflow must say it is not available
 #     yet, for as long as the entry is here.
 #   - The gate fails when an entry stops being needed — the workflow
@@ -39,5 +76,6 @@
              from any branch". It does not. See #846 — two authors wrote
              that same false sentence on the same day, which is a fact about
              this file's framing, not about the authors.
+    Triggers: workflow_dispatch schedule
     Clears:  when this reaches `main` with the v1.9.0 release. Remove this
              entry then — the gate fails while a stale entry remains.

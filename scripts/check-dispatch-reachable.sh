@@ -84,13 +84,130 @@ if ! git rev-parse --verify --quiet "$BASE_REF" >/dev/null; then
     exit 0
 fi
 
+# THE LEDGER'S OWN RULES WERE ENFORCED BY NOTHING (#849). Its header says
+# "An entry requires a reason and what clears it. No bare paths." Strip the
+# Reason and Clears blocks off the one real entry, leave the bare path, and
+# this gate returned a BYTE-IDENTICAL pass -- measured at 03bd18d before
+# this change. It read an entry for PRESENCE and never for content, which
+# is the same defect as the allowlist it is modelled on accepting a bare
+# CVE id.
+#
+# The old extraction was `awk '{print $1}'` over every non-comment line, so
+# the first word of every prose continuation became a "declared path": 14
+# junk tokens (`Reason:`, `An`, `just`, `100` …) beside the one real entry.
+# They matched nothing only because `grep -Fx` compares them against real
+# paths and no sentence begins with one. Harmless by coincidence, and a
+# prose line that happened to start with a workflow path would have
+# silently declared it. A path is now a line at COLUMN ZERO; a field is an
+# indented `Name: value`; anything else indented continues the field above.
+declare -A DECL_REASON DECL_CLEARS DECL_TRIGGERS
 declared=""
 if [ -r "$ALLOWLIST" ]; then
-    declared=$(grep -vE '^[[:space:]]*(#|$)' "$ALLOWLIST" | awk '{print $1}' | sort -u)
+    parsed=$(awk '
+      function flush() {
+        if (path != "") printf "%s\t%s\t%s\t%s\n", path, r, c, tg
+        r=""; c=""; tg=""
+      }
+      /^[[:space:]]*(#|$)/ { next }
+      /^[^[:space:]]/ { flush(); path=$1; field=""; next }
+      {
+        line=$0
+        if (match(line, /^[[:space:]]+[A-Za-z][A-Za-z-]*:/)) {
+          field=substr(line, RSTART, RLENGTH); sub(/:$/,"",field)
+          gsub(/^[[:space:]]+/,"",field)
+          val=substr(line, RSTART+RLENGTH); gsub(/^[[:space:]]+/,"",val)
+        } else {
+          val=line; gsub(/^[[:space:]]+/,"",val)
+        }
+        f=tolower(field)
+        if (f=="reason")   r = r " " val
+        if (f=="clears")   c = c " " val
+        if (f=="triggers") tg = tg " " val
+      }
+      END { flush() }
+    ' "$ALLOWLIST")
+
+    # NON-VACUITY ON THE PARSER ITSELF. A ledger with content but zero
+    # parsed entries means the format moved, not that nothing is declared,
+    # and "nothing is declared" is the answer that lets everything through.
+    content=$(grep -cvE '^[[:space:]]*(#|$)' "$ALLOWLIST")
+    if [ "${content:-0}" -gt 0 ] && [ -z "$parsed" ]; then
+        echo "::error title=Ledger unparsed::${ALLOWLIST} has ${content} non-comment line(s)" \
+             "and this gate parsed no entry out of it. Every workflow would read as" \
+             "undeclared, which is not a verdict about the tree." >&2
+        exit 2
+    fi
+
+    while IFS=$'\t' read -r p_path p_r p_c p_tg; do
+        [ -n "$p_path" ] || continue
+        declared="$declared$p_path"$'\n'
+        DECL_REASON[$p_path]="$(printf '%s' "$p_r"  | tr -s ' ' | sed 's/^ //;s/ $//')"
+        DECL_CLEARS[$p_path]="$(printf '%s' "$p_c"  | tr -s ' ' | sed 's/^ //;s/ $//')"
+        DECL_TRIGGERS[$p_path]="$(printf '%s' "$p_tg" | tr -s ' ' | sed 's/^ //;s/ $//')"
+    done <<< "$parsed"
+    declared=$(printf '%s' "$declared" | sort -u)
 fi
+
+# The set of triggers GitHub serves ONLY from the default branch. The
+# ledger's framing bug (#846) was reasoning about which trigger survives
+# instead of measuring: two entries eleven minutes apart said the cron
+# keeps working off the default branch, in different words. It does not,
+# and neither does workflow_dispatch, so an entry has to account for
+# BOTH -- derived from the file, never from the sentence. A gate keyed
+# on the wording would have passed both, because both were fluent and
+# neither used the same phrasing.
+dead_triggers() {
+    local f="$1" out=""
+    grep -E '(^|[[:space:]]|[[,{])workflow_dispatch([[:space:]]*:|[[:space:]]*[],}]|$)' \
+        "$f" >/dev/null && out="$out workflow_dispatch"
+    grep -E '(^|[[:space:]]|[[,{])schedule([[:space:]]*:|[[:space:]]*[],}]|$)' \
+        "$f" >/dev/null && out="$out schedule"
+    printf '%s' "$out" | tr ' ' '\n' | grep -v '^$' | sort | tr '\n' ' ' | sed 's/ $//'
+}
 
 fail=0
 note() { echo "FAIL  $*" >&2; fail=1; }
+
+# EVERY DECLARED ENTRY MUST CARRY ITS OWN RULES, and the trigger list is
+# derived from the workflow rather than read as prose. Keying on the
+# SPELLING of the reason would reproduce exactly the silence #846 was
+# about: both false entries said "the schedule works from any branch" in
+# perfectly well-formed English. The subject is property-keyed -- what the
+# file actually declares -- and only the predicate, the field name, is a
+# spelling this gate can demand.
+while IFS= read -r rel; do
+    [ -n "$rel" ] || continue
+
+    if [ ! -e "$rel" ]; then
+        note "'$rel' is declared in ${ALLOWLIST} but no such file exists."
+        echo "  An entry for a file that is gone declares nothing. Remove it." >&2
+        continue
+    fi
+
+    [ -n "${DECL_REASON[$rel]:-}" ] || {
+        note "'$rel' has no 'Reason:' in ${ALLOWLIST}."
+        echo "  The ledger's own header says an entry requires a reason and what" >&2
+        echo "  clears it, and no bare paths. Until #849 nothing checked that:" >&2
+        echo "  a bare path passed byte-identically to a full entry." >&2
+    }
+    [ -n "${DECL_CLEARS[$rel]:-}" ] || {
+        note "'$rel' has no 'Clears:' in ${ALLOWLIST}."
+        echo "  An accepted condition with no written expiry is how a temporary" >&2
+        echo "  exception becomes permanent." >&2
+    }
+
+    want=$(dead_triggers "$rel")
+    got=$(printf '%s' "${DECL_TRIGGERS[$rel]:-}" | tr ' ' '\n' | grep -v '^$' | sort -u | tr '\n' ' ' | sed 's/ $//')
+    if [ "$got" != "$want" ]; then
+        note "'$rel' declares triggers [$want] but its entry says [${got:-none}]."
+        echo "  Every trigger in the first list is served ONLY from the default" >&2
+        echo "  branch, so every one of them is dead while this entry stands." >&2
+        echo "  Write 'Triggers: $want' in the entry. This is read from the" >&2
+        echo "  workflow file, not from the reason: the two false entries in" >&2
+        echo "  #846 were fluent English in two different phrasings, so a gate" >&2
+        echo "  keyed on wording would have passed both." >&2
+    fi
+done <<< "$declared"
 
 pending=""
 inspected=0
