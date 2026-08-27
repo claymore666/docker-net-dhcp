@@ -93,6 +93,8 @@ fail() { echo "FAIL  $*" >&2; }
 
 state=$(cat "$SYSFS/state" 2>/dev/null)
 timeout=$(cat "$SYSFS/timeout" 2>/dev/null)
+# fallback-safe: `cat` on an unreadable path prints nothing to stdout, so
+# the fallback replaces rather than appends.
 identity=$(cat "$SYSFS/identity" 2>/dev/null || echo "unknown")
 
 [ -n "$state" ] || skip "$SYSFS/state is unreadable"

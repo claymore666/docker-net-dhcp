@@ -297,6 +297,17 @@ jobs:
       - name: Pipefail-consumer check
         run: bash scripts/check-pipefail-consumers.sh
 
+      # `x=$(grep -c . f 2>/dev/null || echo 0)` looks careful and holds
+      # TWO lines whenever the left side printed and still failed. The
+      # `[ ]` that reads it then ERRORS, and whether that reads as PASS or
+      # FAIL depends only on the polarity of the conditional — so one
+      # instance fails open, its twin fails closed, and "the others were
+      # fine" is not evidence. Three sessions found it independently on
+      # one day; the first had already fixed it in a commit nobody could
+      # see. Same class as the pipefail check above.
+      - name: Fallback-append check
+        run: bash scripts/check-fallback-appends.sh
+
       # A v2 plugin's bind sources must exist before `docker plugin
       # enable`; a missing one kills container init rather than degrading
       # the mount (#440, #588). The Makefile derives them from the

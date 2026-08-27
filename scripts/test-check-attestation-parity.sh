@@ -150,6 +150,7 @@ if [ "$rc" -eq 2 ]; then echo "PASS: an empty REPO refuses (exit 2)"; else
 cat > "$TMP/q-count.sh" <<EOF
 #!/usr/bin/env bash
 f="$TMP/calls-\$(printf '%s' "\$1" | tail -c 8)"
+# fallback-safe: one operand, and a `cat` that fails printed nothing.
 c=\$(cat "\$f" 2>/dev/null || echo 0); c=\$((c + 1)); echo "\$c" > "\$f"
 case "\$1" in
     "$GHCR") if [ "\$c" -eq 1 ]; then printf 'notfound'; else printf 'count:1'; fi ;;

@@ -35,5 +35,6 @@
   scheduled runs fired on `main`. So this gate observes nothing whatsoever
   until the release ships -- it is NOT a case of losing a manual convenience
   while the cron carries the function.
-  Cleared by: the v1.9.0 release reaching main. Remove this entry then —
+  Triggers: schedule workflow_dispatch
+  Clears: the v1.9.0 release reaching main. Remove this entry then —
   the gate fails while an entry it no longer needs is still here.

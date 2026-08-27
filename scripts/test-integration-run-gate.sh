@@ -22,22 +22,37 @@ check() {
 }
 
 # --- classify mode (pure path classifier, #311) ---
+#
+# Each row below is `$(... | GATE classify && echo docs-only || echo not)`,
+# which is the appending shape: if `classify` ever wrote to stdout, that
+# output would be CONCATENATED with the echo and `check` would compare
+# against a two-line string. It does not -- driven on both rc paths, it
+# prints nothing and signals only through its exit status. That is a
+# property of the gate, not of these lines, so the markers below are a
+# claim about `integration-run-gate.sh classify` that someone can falsify
+# the day it starts printing. See scripts/check-fallback-appends.sh.
 
+# fallback-safe: classify prints nothing on stdout (see above).
 got=$(printf 'README.md\ndocs/reference.md\n' | bash "$GATE" classify && echo docs-only || echo not)
 check "md-only diff classifies docs-only" docs-only "$got"
 
+# fallback-safe: classify prints nothing on stdout (see above).
 got=$(printf 'README.md\npkg/plugin/state.go\n' | bash "$GATE" classify && echo docs-only || echo not)
 check "mixed md+go diff is NOT docs-only" not "$got"
 
+# fallback-safe: classify prints nothing on stdout (see above).
 got=$(printf 'scripts/coverage-ratchet.sh\n' | bash "$GATE" classify && echo docs-only || echo not)
 check "script-only diff is NOT docs-only" not "$got"
 
+# fallback-safe: classify prints nothing on stdout (see above).
 got=$(printf '.github/workflows/integration.yml\n' | bash "$GATE" classify && echo docs-only || echo not)
 check "workflow-only diff is NOT docs-only" not "$got"
 
+# fallback-safe: classify prints nothing on stdout (see above).
 got=$(printf '' | bash "$GATE" classify && echo docs-only || echo not)
 check "empty diff is NOT docs-only" not "$got"
 
+# fallback-safe: classify prints nothing on stdout (see above).
 got=$(printf 'README.mdx\n' | bash "$GATE" classify && echo docs-only || echo not)
 check ".mdx does not sneak past the .md match" not "$got"
 

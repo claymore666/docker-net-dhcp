@@ -34,6 +34,8 @@ cat > "$STUB/gh" <<'STUBEOF'
 printf '%s\n' "$*" >> "$GH_CALLS"
 field=""
 for a in "$@"; do case "$a" in .*) field="${a#.}" ;; esac; done
+# fallback-safe: `cat` on a missing path writes nothing to stdout, so the
+# fallback REPLACES the value rather than appending a second line to it.
 mode="$(cat "$GH_MODE" 2>/dev/null || echo ok)"
 case "$mode" in
     # A 403 from a token without Administration: read -- the shape a

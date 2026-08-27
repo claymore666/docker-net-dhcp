@@ -104,7 +104,10 @@ grep -qx -- '--unattended' "$args" && grep -qx -- '--replace' "$args" \
 grep -qx -- '--ephemeral' "$args" \
     && { echo "FAIL: --ephemeral passed — the runner would deregister after one job, which is the state #632 removes"; fails=1; } \
     || echo "PASS: not --ephemeral (a standing runner, not a single-use one)"
-got=$(grep -c . "$TMP/first/state/.credentials_rsaparams" 2>/dev/null || echo 0)
+# `grep -c` prints 0 AND exits 1 on an empty file, so `|| echo 0` used to
+# append a SECOND zero here and the compare below saw "0\n0". See
+# scripts/check-fallback-appends.sh.
+got=$(grep -c . "$TMP/first/state/.credentials_rsaparams" 2>/dev/null); got=${got:-0}
 check "identity persisted to the state dir" 1 "$got"
 got=$(grep -c TOKENSECRET "$TMP/first/log" || true)
 check "the registration token is never logged" 0 "$got"
