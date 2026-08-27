@@ -26,6 +26,15 @@ name: Fork execution policy
 # read, and secrets are withheld from fork pull requests. In the Test lane it
 # would refuse on every fork PR and be discharged as noise inside a month.
 #
+# WHEN THIS STARTS OBSERVING ANYTHING. Not at merge. GitHub runs `schedule`
+# only from the DEFAULT branch, and this project develops on `dev` and releases
+# to `main`. Until v1.9.0 carries this file to `main` the workflow is not in the
+# workflows API at all -- neither the cron nor a manual dispatch is reachable,
+# and nothing errors, because nothing is scheduled to fail. The window described
+# below opens at the RELEASE, not at the merge. Declared in
+# .github/dispatch-pending.txt, which is what makes that expiry something a gate
+# checks rather than something a reader has to remember.
+#
 # WHAT A SCHEDULE COSTS HERE, STATED RATHER THAN GLOSSED. Label taxonomy can
 # argue that a wrong label sits for days before it misleads anybody. This one
 # cannot: if the approval policy is relaxed, the exposure starts with the next
