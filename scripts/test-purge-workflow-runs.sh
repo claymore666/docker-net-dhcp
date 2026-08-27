@@ -57,6 +57,7 @@ case "$path" in
     */actions/workflows)        src="$FIXDIR/workflows.json" ;;
     */actions/workflows/*/runs) src="$FIXDIR/wfruns.json" ;;
     */actions/runs)             src="$FIXDIR/runs.json" ;;
+    */pulls*)                   src="$FIXDIR/pulls.json" ;;
     *)                          echo "stub: unexpected path $path" >&2; exit 1 ;;
 esac
 [ -f "$src" ] || { echo "stub: missing fixture $src" >&2; exit 1; }
@@ -83,6 +84,11 @@ JSON
     cat > "$d/wfruns.json" <<JSON
 {"workflow_runs":[{"id":9001},{"id":9002}]}
 JSON
+    # No open pull requests unless a case says otherwise. This is the
+    # LEGITIMATE empty: a repository may genuinely have none, and it must
+    # not be confused with the two illegitimate ones (a failed query, a
+    # renamed field) that the cases below drive separately.
+    echo '[]' > "$d/pulls.json"
 }
 
 runs_json() { python3 - "$@" <<'PY'
@@ -193,6 +199,85 @@ drive "$D" env RETENTION_DAYS=30 KEEP_GROUPS=0 DRY_RUN=0
 [ "$DELS" = 0 ] \
   && ok "a 30-day window keeps 20 groups spread over 20 days" \
   || no "a 30-day window still deleted $DELS run(s)"
+
+# --- 8. KEEP RULE 4: an open PR head survives, however old --------------
+# THE REGRESSION THIS RULE EXISTS FOR. On 2026-08-27 this purge deleted the
+# runs of PR #221's head -- a draft parked since June, so far outside both
+# the window and the group floor -- and check-missing-runs.sh (#740) then
+# reported that head as never tested, on a schedule, on main. Nothing
+# recovers the answer afterwards: the one surviving check-run on that head
+# belongs to `github-advanced-security`, so even the Checks API answers
+# zero once it is filtered to Actions.
+#
+# So: the OLDEST group, with a 0-day window and a floor of one, which
+# without this rule loses all three of its runs.
+PRSHA=$(python3 -c 'print("%040x" % (0xabc000 + 19))')
+D="$TMP/openpr"; mkfix "$D"; runs_json "$NOW" 20 30 > "$D/runs.json"
+cat > "$D/pulls.json" <<JSON
+[{"number":221,"head":{"sha":"$PRSHA","ref":"feature/218-stable-mac"}}]
+JSON
+drive "$D" env RETENTION_DAYS=0 KEEP_GROUPS=1 DRY_RUN=0
+# 60 group runs; 3 kept by the floor, 3 kept by this rule => 54 deleted.
+[ "$DELS" = 54 ] \
+  && ok "an open PR head survives a 0-day window and a floor of one (54 deleted, not 57)" \
+  || no "open PR head not protected: deleted $DELS (expected 54) -- KEEP RULE 4 DID NOT HOLD"
+kept_pr=$(python3 - "$D" "$PRSHA" <<'PYCASE8'
+import json,sys,os
+d,sha=sys.argv[1],sys.argv[2]
+deleted={l.strip().rsplit("/",1)[1] for l in open(os.path.join(d,"deleted.log")) if l.strip()}
+runs=json.load(open(os.path.join(d,"runs.json")))["workflow_runs"]
+print(sum(1 for r in runs if r["head_sha"]==sha and str(r["id"]) not in deleted))
+PYCASE8
+)
+[ "$kept_pr" = "3" ] \
+  && ok "all 3 of that head's runs survive, not a shredded subset" \
+  || no "only $kept_pr of the open PR head's 3 runs survived"
+grep -q "pulls" "$D/calls.log" \
+  && ok "witness: the open-PR query was actually made" \
+  || no "witness: no pulls call -- case 8 proves nothing"
+
+# --- 9. the rule can be turned off, and that isolates it ----------------
+# The seam exists so this suite can prove the rule is what saved those
+# three runs, rather than some other clause happening to spare them.
+D="$TMP/off"; mkfix "$D"; runs_json "$NOW" 20 30 > "$D/runs.json"
+cat > "$D/pulls.json" <<JSON
+[{"number":221,"head":{"sha":"$PRSHA","ref":"feature/218-stable-mac"}}]
+JSON
+drive "$D" env RETENTION_DAYS=0 KEEP_GROUPS=1 DRY_RUN=0 KEEP_OPEN_PR_HEADS=0
+[ "$DELS" = 57 ] \
+  && ok "with the rule off the same fixture deletes 57 -- the 3 were saved BY the rule" \
+  || no "rule disabled deleted $DELS (expected 57): the control does not isolate the rule"
+
+# --- 10. a failed open-PR query refuses rather than deleting ------------
+# The dangerous direction. An unanswerable query yields an empty keep set,
+# which silently disarms the rule and deletes exactly what it protects --
+# while printing "0 head(s) protected" as though that were good news.
+D="$TMP/prfail"; mkfix "$D"; runs_json "$NOW" 20 30 > "$D/runs.json"
+rm -f "$D/pulls.json"          # the stub fails on a missing fixture
+drive "$D" env RETENTION_DAYS=0 KEEP_GROUPS=1 DRY_RUN=0
+[ "$RC" = 2 ] && [ "$DELS" = 0 ] && grep -q "Cannot list open pull requests" <<<"$OUT" \
+  && ok "a failed open-PR query exits 2 and deletes nothing" \
+  || no "failed open-PR query: rc=$RC, deleted=$DELS (want rc 2, 0 deleted)"
+
+# --- 11. PRs listed but no head SHA is a shape change, not an empty set --
+# The subtler half of the same failure: the query works, the field moved.
+# Counting SHAs alone cannot tell that from "no open PRs", so the row count
+# is what separates them.
+D="$TMP/prshape"; mkfix "$D"; runs_json "$NOW" 20 30 > "$D/runs.json"
+echo '[{"number":221,"head":{"ref":"feature/218-stable-mac"}}]' > "$D/pulls.json"
+drive "$D" env RETENTION_DAYS=0 KEEP_GROUPS=1 DRY_RUN=0
+[ "$RC" = 2 ] && [ "$DELS" = 0 ] && grep -q "shape changed" <<<"$OUT" \
+  && ok "open PRs that yield no head SHA refuse, naming the shape change" \
+  || no "shape change: rc=$RC, deleted=$DELS (want rc 2, 0 deleted)"
+
+# --- 12. genuinely no open PRs is NOT a refusal -------------------------
+# The legitimate empty has to keep working, or the two refusals above turn
+# into a purge that can never run on a quiet repository.
+D="$TMP/prnone"; mkfix "$D"; runs_json "$NOW" 20 30 > "$D/runs.json"
+drive "$D" env RETENTION_DAYS=0 KEEP_GROUPS=1 DRY_RUN=0
+[ "$RC" = 0 ] && [ "$DELS" = 57 ] && grep -q "0 head(s) protected" <<<"$OUT" \
+  && ok "a repository with no open PRs purges normally (57 deleted, no refusal)" \
+  || no "empty open-PR list: rc=$RC, deleted=$DELS (want rc 0, 57 deleted)"
 
 echo
 echo "passed=$pass failed=$fail"

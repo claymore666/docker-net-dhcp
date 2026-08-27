@@ -9,7 +9,7 @@
 # one-off purge buys about ten days, so the cleanup has to be scheduled or
 # it is not a fix. This is that scheduled job's body.
 #
-# THE THREE KEEP RULES, and why each one is not negotiable:
+# THE FOUR KEEP RULES, and why each one is not negotiable:
 #
 #   1. RETENTION_DAYS   everything newer than the window.
 #
@@ -25,6 +25,28 @@
 #      forever. These are the only record of what produced an image someone
 #      may have pinned. Deleting them is not a tidy-up, it is destroying the
 #      audit trail for software already in someone else's hands.
+#
+#   4. OPEN PR HEADS    every run whose head SHA is the head of an OPEN pull
+#      request. Added after this script broke check-missing-runs.sh on its
+#      first real outing (#740's detector, #837's purge).
+#
+#      That detector answers "was this head ever tested" by counting run
+#      records, because a head that no runner ever saw is indistinguishable
+#      from one still queueing and `gh pr checks` will report the PREVIOUS
+#      commit's checks against it. Deleting an open PR head's runs destroys
+#      the only evidence it was tested, and the detector then reports the
+#      head as never run -- with a remedy attached ("push an empty commit")
+#      that spends a privileged CI cycle repairing a bookkeeping artifact.
+#
+#      Measured 2026-08-27: PR #221's head had runs at 03:31 and none at
+#      14:35, and the scheduled detector went red on a draft that had been
+#      parked since June. Nothing recovers the answer afterwards -- the one
+#      check-run that survived on that head belongs to `github-advanced-
+#      security`, not `github-actions`, so filtering the Checks API for
+#      Actions returns zero as well. The evidence is simply gone.
+#
+#      The rule is cheap and self-limiting: open PRs are a handful, and a
+#      head stops being protected the moment its PR closes or merges.
 #
 # PROVENANCE IS KEYED ON WORKFLOW PATH, NEVER ON DISPLAY NAME. This is not
 # a style choice, it is a bug that was already made and caught: a name-keyed
@@ -48,6 +70,9 @@
 #   RETENTION_DAYS    keep everything newer than this (default 7)
 #   KEEP_GROUPS       keep this many most-recent CI groups (default 10)
 #   PROVENANCE_PATHS  space-separated workflow paths never deleted
+#   KEEP_OPEN_PR_HEADS 0 = do not protect open PR heads (default 1). The
+#                     seam the self-test drives; there is no reason to
+#                     turn it off in production.
 #   DRY_RUN           1 = report only, do not delete (default 1)
 #   NOW_EPOCH         override "now" -- the seam the self-test drives
 # Exit:  0 ok, 1 one or more deletions failed, 2 refused to run
@@ -58,6 +83,7 @@ RETENTION_DAYS="${RETENTION_DAYS:-7}"
 KEEP_GROUPS="${KEEP_GROUPS:-10}"
 DRY_RUN="${DRY_RUN:-1}"
 PROVENANCE_PATHS="${PROVENANCE_PATHS:-.github/workflows/release.yml .github/workflows/runner-image.yml .github/workflows/netboot-image.yml}"
+KEEP_OPEN_PR_HEADS="${KEEP_OPEN_PR_HEADS:-1}"
 
 # The seam is HERE, at the transport, and deliberately not one level up.
 # A seam above the filtering would leave the filtering untested while the
@@ -84,7 +110,8 @@ echo "Group floor: last ${KEEP_GROUPS} CI groups"
 
 RUNS=$(mktemp) || exit 2
 PROV=$(mktemp) || exit 2
-trap 'rm -f "$RUNS" "$PROV"' EXIT
+OPENPR=$(mktemp) || exit 2
+trap 'rm -f "$RUNS" "$PROV" "$OPENPR"' EXIT
 
 # --- the provenance run ids, resolved from PATHS not names ---------------
 for p in $PROVENANCE_PATHS; do
@@ -101,6 +128,43 @@ for p in $PROVENANCE_PATHS; do
 done
 sort -u -o "$PROV" "$PROV"
 echo "Provenance:  $(wc -l < "$PROV") run(s) protected across $(wc -w <<<"$PROVENANCE_PATHS") workflow path(s)"
+
+# --- the open pull requests' head SHAs (keep rule 4) ----------------------
+#
+# THREE OUTCOMES, NOT TWO, and the middle one is the whole point. "no open
+# pull requests" is a legitimate state of a repository; "I could not ask"
+# and "the field I read has been renamed" are not, and all three produce an
+# empty list. An empty list here silently disarms the rule and the next run
+# deletes exactly the evidence this exists to protect -- with no error, and
+# a summary line reporting 0 protected that reads like good news.
+#
+# So the transport failure refuses, and a non-empty PR list that yields no
+# SHAs refuses separately, naming the shape change. Only a genuinely empty
+# repository passes through with nothing protected.
+if [ "$KEEP_OPEN_PR_HEADS" != "0" ]; then
+    PRRAW=$(mktemp) || exit 2
+    trap 'rm -f "$RUNS" "$PROV" "$OPENPR" "$PRRAW"' EXIT
+    if ! api "repos/$REPO/pulls?state=open&per_page=100" --paginate \
+            --jq '.[] | [.number, .head.sha] | @tsv' > "$PRRAW" 2>/dev/null; then
+        echo "::error title=Cannot list open pull requests::the open-PR query failed for $REPO," \
+             "so the heads that must never be purged cannot be determined." \
+             "Refusing rather than deleting an open PR's only evidence that it was ever tested (#740)." >&2
+        exit 2
+    fi
+    pr_rows=$(grep -c . "$PRRAW")
+    awk -F'\t' 'NF >= 2 && $2 != "" { print $2 }' "$PRRAW" | sort -u > "$OPENPR"
+    pr_shas=$(grep -c . "$OPENPR")
+    if [ "$pr_rows" -gt 0 ] && [ "$pr_shas" -eq 0 ]; then
+        echo "::error title=Open-PR head shape changed::$pr_rows open pull request(s) were listed" \
+             "and not one yielded a head SHA. The .head.sha field this rule reads has moved or been" \
+             "renamed, and the rule is now protecting nothing while reporting success." >&2
+        exit 2
+    fi
+    echo "Open PRs:    $pr_shas head(s) protected across $pr_rows open pull request(s)"
+else
+    : > "$OPENPR"
+    echo "Open PRs:    rule DISABLED by KEEP_OPEN_PR_HEADS=0"
+fi
 
 # --- every run ------------------------------------------------------------
 api "repos/$REPO/actions/runs" --paginate \
@@ -127,17 +191,23 @@ mapfile -t KEEPSHA < <(
 printf '%s\n' "${KEEPSHA[@]}" | grep -v '^$' | sort -u > "$RUNS.shas"
 
 DEL=$(mktemp) || exit 2
-trap 'rm -f "$RUNS" "$PROV" "$RUNS.shas" "$DEL"' EXIT
+trap 'rm -f "$RUNS" "$PROV" "$OPENPR" "${PRRAW:-}" "$RUNS.shas" "$DEL"' EXIT
 
+# ARGV ORDER IS LOAD-BEARING: the three keep sets are read as records and
+# the run listing last. An empty keep file contributes no records, which is
+# why `prsha` may legitimately stay empty -- and why the emptiness has to be
+# adjudicated above, where the three causes are still distinguishable.
 awk -F'\t' -v cut="$cutoff" '
     FILENAME==ARGV[1] { prov[$1]=1; next }
     FILENAME==ARGV[2] { ksha[$1]=1; next }
+    FILENAME==ARGV[3] { prsha[$1]=1; next }
     $5 != "completed" { next }          # never touch a run still in flight
     $3 >= cut         { next }
     ($2 in ksha)      { next }
+    ($2 in prsha)     { next }          # keep rule 4: head of an open PR
     ($1 in prov)      { next }
     { print $1 }
-' "$PROV" "$RUNS.shas" "$RUNS" > "$DEL"
+' "$PROV" "$RUNS.shas" "$OPENPR" "$RUNS" > "$DEL"
 
 echo "To delete:   $(wc -l < "$DEL")"
 
@@ -168,6 +238,7 @@ if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
         echo "- Window: **${RETENTION_DAYS} days** (cutoff \`${cutoff}\`)"
         echo "- Group floor: last **${KEEP_GROUPS}** CI groups"
         echo "- Provenance protected: **$(wc -l < "$PROV")** run(s)"
+        echo "- Open PR heads protected: **$(grep -c . "$OPENPR")**"
         echo "- Deleted: **${ok}**, failed: **${fail}**"
     } >> "$GITHUB_STEP_SUMMARY"
 fi

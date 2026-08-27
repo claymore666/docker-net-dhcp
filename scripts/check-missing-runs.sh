@@ -38,6 +38,26 @@
 # points in `dev` history that no runner ever tested, and `git bisect`
 # across that range lands on commits with no verdict.
 #
+# WHAT THIS GATE DEPENDS ON, discovered the hard way. It answers "was
+# this head ever tested" by counting run RECORDS, so anything that
+# deletes run records can manufacture a failure here. #837's retention
+# purge did exactly that on 2026-08-27: it deleted the runs of an open
+# draft PR head parked since June, and this gate went red on a schedule,
+# on main, reporting a head as never tested and naming the wrong remedy.
+#
+# The fix belongs in the purge, not here -- it now carries a fourth keep
+# rule that never deletes an open PR head's runs -- because there is no
+# way to recover the answer afterwards. The Checks API does not do it:
+# on that head the one surviving check-run belonged to
+# `github-advanced-security` rather than `github-actions`, so filtering
+# to Actions still answers zero.
+#
+# Deliberately NOT done here: an age exemption. Skipping heads older than
+# the purge window would make today's red go away and would blind this
+# gate to exactly the population it exists for -- a long-lived PR whose
+# pushes silently produced nothing. A head with no surviving evidence IS
+# unverified, and saying so is the gate working.
+#
 # Usage: check-missing-runs.sh [grace-minutes]
 #   [grace-minutes]: how long a head may have no run before it counts as
 #                    missing (default 20). Covers ordinary queueing and
@@ -263,12 +283,36 @@ cat >&2 <<EOF
 
 ${missing} head(s) above have no run that executed.
 
-On a PR head this is usually dropped event delivery — observed
-2026-08-01, when three consecutive pushes produced zero runs while a
-manual dispatch worked fine. The danger is that a head with no run is
-indistinguishable from one still waiting, and \`gh pr checks\` reports
-the PREVIOUS commit's checks against it without saying so. A PR can
-read as passing for code no runner ever saw.
+On a PR head there are now TWO causes, and they need different hands.
+
+FIRST, dropped event delivery — observed 2026-08-01, when three
+consecutive pushes produced zero runs while a manual dispatch worked
+fine. The danger is that a head with no run is indistinguishable from
+one still waiting, and \`gh pr checks\` reports the PREVIOUS commit's
+checks against it without saying so. A PR can read as passing for code
+no runner ever saw.
+
+SECOND, and this is not hypothetical: THE RUNS WERE DELETED. #837's
+retention purge keeps a 7-day window, the last N CI groups and the
+provenance paths, and on 2026-08-27 it deleted the runs of a draft PR
+head parked since June. This gate then reported that head as never
+tested — truthfully, in the sense that no evidence survives, but with
+the dropped-delivery remedy attached, which would spend a privileged CI
+cycle repairing a bookkeeping artifact.
+
+Tell them apart before acting. If the head is younger than the purge
+window it cannot be the second cause. If it is older, check that the
+purge still carries KEEP RULE 4 — never delete a run whose head SHA is
+an open PR head (scripts/purge-workflow-runs.sh). With that rule intact
+the second cause is IMPOSSIBLE for an open PR, so seeing it here again
+means the rule has stopped working, and that is the thing to fix rather
+than the head.
+
+Note what does NOT recover the answer: the Checks API. On the 2026-08-27
+head the one surviving check-run belonged to \`github-advanced-security\`,
+not \`github-actions\`, so filtering to Actions still answers zero. Once
+the runs are gone the head is genuinely unverified and the only honest
+move is to run something on it.
 
 On a branch head it was a merge burst (#515, #617) until the group was
 keyed per commit for pushes: GitHub keeps at most one running plus one

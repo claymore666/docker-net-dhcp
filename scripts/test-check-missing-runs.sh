@@ -101,6 +101,36 @@ out=$(run_it "$ONE_PR" "$OLD" "0"); rc=$?
 if [ "$rc" = 1 ]; then ok "a head with zero runs fails"; else no "zero runs did not fail (exit $rc)"; fi
 case "$out" in *"#7"*) ok "the failure names the PR" ;; *) no "PR not named: $out" ;; esac
 
+# THE REMEDY IS PART OF THE VERDICT, so it is asserted like one. This
+# gate's message named exactly one cause -- dropped event delivery --
+# and told the reader to push an empty commit. After #837 added a
+# retention purge that deletes run records, a zero here can also mean
+# "the runs were deleted", and on 2026-08-27 it did: a draft PR head
+# parked since June went red on a schedule, on main, with a remedy
+# attached that would have spent a privileged CI cycle repairing a
+# bookkeeping artifact.
+#
+# A message is prose and prose decays silently, so the two causes and
+# the rule that makes the second one impossible are checked here. If
+# someone trims this message back to one cause, this goes red.
+# Keyed on the MECHANISM, not on the word "deleted": that word appears
+# three more times in this message describing the keep rule, so a check
+# for it is satisfied by prose that never mentions the second cause at
+# all. Driving the mutant is what exposed that -- rewording the cause
+# left the assertion green.
+case "$out" in
+  *"retention purge"*) ok "the failure names the retention purge as the second cause" ;;
+  *) no "the failure names only dropped delivery; the purge cause is missing: $out" ;;
+esac
+case "$out" in
+  *"KEEP RULE 4"*) ok "the failure names the keep rule that makes the second cause impossible" ;;
+  *) no "the failure does not point at the purge's keep rule: $out" ;;
+esac
+case "$out" in
+  *"github-advanced-security"*) ok "the failure warns that the Checks API does not recover the answer" ;;
+  *) no "the failure does not say check-runs cannot answer this: $out" ;;
+esac
+
 # --- inside the grace -------------------------------------------------
 # A push a moment ago has legitimately not been picked up yet. Flagging
 # it would make the detector cry wolf on every push and get muted.
