@@ -557,13 +557,21 @@ check "a job NAMED schedule is not a trigger" pass "$(verdict3)"
 # whole file to the `on:` mapping still counted comment text within the
 # mapping, so a trailing `# not on a schedule: manual only` derived
 # [schedule workflow_dispatch] and the only way to green was, again, to
-# write a false claim into the ledger. Both YAML comment spellings are
-# driven: a whole-line one and a trailing one.
+# write a false claim into the ledger.
+#
+# BOTH STRIPS ARE LOAD-BEARING AND THE FIXTURE HAS TO PROVE IT. The
+# first version of this fixture used an INDENTED whole-line comment,
+# which the trailing-comment rule already removes -- deleting the
+# whole-line strip left the case green. The comment below is at COLUMN
+# ZERO, which no amount of trailing-comment stripping touches, and
+# `jobs:` has not closed the block yet because a `#` line is not a
+# column-zero key. Scored one strip at a time: each deletion now goes
+# red on its own.
 cat > "$REPO3/.github/workflows/inblock.yml" <<'EOF'
 name: inblock
 on:
-  # deliberately no schedule: a daily run would cost pool time
   workflow_dispatch:  # not on a schedule: manual only
+# a stray column-zero note, no schedule: manual only
 jobs:
   a:
     runs-on: ubuntu-latest
