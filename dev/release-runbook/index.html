@@ -1465,6 +1465,38 @@ the <code>vX.Y.Z</code> milestone (the workflow leans on this for the
    commit messages. Include any <strong>operator-visible compatibility
    notes</strong> (e.g. v0.8.0 narrowed the <code>IsDHCPPlugin</code> regex — that
    needed a callout).</p>
+<p><strong>House style — this is the default, not a per-release choice.</strong>
+   A release note is reference material an operator scans, not a
+   narrative. v1.8.0 shipped at 90KB of prose and was rewritten to 7KB;
+   write the short version first.</p>
+<ul>
+<li>Fixed structure, in this order: a two-to-three sentence lead,
+     then <code>### Upgrade notes</code>, <code>### New</code>, <code>### Fixed</code>,
+     <code>### Deferred to vX.Y.Z</code>, <code>### With thanks to</code>. Omit a section
+     that has no content; do not add others.</li>
+<li>Put operator-visible behaviour changes in a <strong>table</strong> under
+     Upgrade notes — one row per change, "what changed" and "what it
+     does to you". That table is the part most readers need.</li>
+<li>Group <code>### Fixed</code> by origin (a review, a theme), one line per
+     defect, each ending in its issue number. State the defect and its
+     effect; do not narrate how it was found or how the fix was chosen.</li>
+<li>No process commentary, no anecdotes, no meta-commentary about the
+     notes themselves, no HTML comments carrying instructions to the
+     next writer — those belong in the issue or this runbook.</li>
+<li>Avoid universal claims ("every defect is fixed", "nothing was
+     carried"). They quantify over things a reader cannot check and go
+     false on somebody else's commit. List what is deferred instead.</li>
+<li>Prefer a named list over a count: "six (#720, #721, ...)" rather
+     than "six of the ten", so a wrong number is visible.</li>
+</ul>
+<p><strong>The maintainer signs off on the release notes before the tag.</strong>
+   Not optional and not implied by approving the release PR: show the
+   rendered <code>## vX.Y.Z</code> section and wait for an explicit go. The rc
+   window (step 8) is the checkpoint — by the real <code>vX.Y.Z</code> tag the
+   notes must already be signed off, because the tag publishes them.
+   If the notes change after the tag, edit <code>RELEASE_NOTES.md</code> on <code>dev</code>
+   <em>and</em> <code>gh release edit vX.Y.Z --notes-file</code> the published body, or
+   the two silently diverge.</p>
 <p><strong>Credit outside contributions by name</strong>, the way the v1.0.0 notes
    do. Find them rather than recalling them — almost every PR here is
    the maintainer's or Dependabot's, so an outside one is easy to miss
