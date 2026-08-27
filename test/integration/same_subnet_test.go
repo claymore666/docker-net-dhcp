@@ -33,10 +33,10 @@ import (
 // and without the endpoint interface-name option — four cells, one
 // identical error — so there is no engine on which this is expected to
 // pass, and a skip here would only hide a change we want to hear about.
-// sameSubnetLeaseBudget bounds the wait for the lease-and-release pair
-// to land in the server log. The release is handed back from the
-// plugin's orphan path once the container goes away, so it trails the
-// ContainerStart error rather than preceding it.
+// sameSubnetLeaseBudget bounds the wait for the ACKs to land in the
+// server log. It is a budget for a POSITIVE event, so it exits early
+// the moment one arrives -- unlike the release check below, which is
+// an absence and must spend its wait in full.
 const sameSubnetLeaseBudget = 30 * time.Second
 
 func TestMultiNetwork_SameSubnetRefused(t *testing.T) {
@@ -111,34 +111,71 @@ func TestMultiNetwork_SameSubnetRefused(t *testing.T) {
 	}
 	t.Logf("✓ refused as documented: %v", err)
 
-	// The docs row does not stop at "it fails" — it tells the reader the
-	// DHCP server will show a short-lived allocation, because the plugin
-	// leases in CreateEndpoint, before libnetwork gets to the refusal.
-	// That half of the row is a claim about the wire, and the plugin's
-	// own counters cannot settle it: they prove the plugin believes it
-	// leased and released, not that the server issued and reclaimed.
-	// Only the server's log does. Without this the row could go wrong in
-	// the direction that matters -- an operator told to expect a
-	// transient allocation, chasing one that never appears -- and
-	// nothing here would notice.
+	// The docs row does not stop at "it fails" -- it tells the reader what
+	// the DHCP server will show, because the plugin leases in
+	// CreateEndpoint, before libnetwork gets to the refusal. That half of
+	// the row is a claim about the wire, and the plugin's own counters
+	// cannot settle it: they prove what the plugin believes it did, not
+	// what the server issued. Only the server's log does.
+	//
+	// THE ROW USED TO SAY "SHORT-LIVED ALLOCATION" AND THIS TEST USED TO
+	// ASSERT IT, and both were wrong in the direction that costs an
+	// operator something. Nothing this plugin runs sends a DHCPRELEASE, on
+	// any path -- that is #800, and TestLeaseRetention_NothingEverReleases
+	// pins it at this same server log. So the leases taken here are HELD
+	// until the server expires them, and a reader told to expect a
+	// transient allocation will not go and reclaim two addresses per
+	// refused start.
+	//
+	// The contradiction was invisible for a measurable reason worth
+	// recording: this branch was 15 commits behind dev, #800 landed in
+	// that gap, and the branch's own tree still emitted the dhcpcd
+	// `release` directive dev had removed. A run against the branch
+	// worktree therefore saw a release and a run against the merge product
+	// did not. Both readings were honest; only the merge product ships.
+	// The dev merge that precedes this change is what makes the tree this
+	// test is written in the same tree it will run in.
+	//
+	// Two halves, two shapes:
+	//
+	//   ACKs      a positive event -- poll, exit early when it lands.
+	//   RELEASEs  an absence -- spend the settle window in full, because
+	//             an absence declared early is a pass the tree has not
+	//             earned. That is #800's own reasoning and its constant.
 	deadline := time.Now().Add(sameSubnetLeaseBudget)
+	var acks int
 	for {
-		acks := fixture.CountLogLines("DHCPACK") - acksBefore
-		releases := fixture.CountLogLines("DHCPRELEASE") - releasesBefore
-		if acks >= 1 && releases >= 1 {
-			t.Logf("✓ server saw the short-lived allocation: %d DHCPACK, %d DHCPRELEASE", acks, releases)
+		acks = fixture.CountLogLines("DHCPACK") - acksBefore
+		if acks >= 1 {
 			break
 		}
 		if !time.Now().Before(deadline) {
-			t.Fatalf("dnsmasq saw %d DHCPACK and %d DHCPRELEASE for the refused container "+
-				"within %v, want at least one of each. The troubleshooting row in "+
-				"docs/reference.md (#847) tells operators the server will show a "+
-				"short-lived allocation on the way to this failure; on this run it did "+
-				"not, so either the lease is now leaked (no release) or the plugin no "+
-				"longer leases before the refusal. Fix whichever it is, or correct that "+
-				"sentence in the row -- do not relax this assertion",
-				acks, releases, sameSubnetLeaseBudget)
+			t.Fatalf("dnsmasq saw no DHCPACK for the refused container within %v. The "+
+				"troubleshooting row in docs/reference.md (#847) tells operators the "+
+				"server issues a lease on the way to this failure, because the plugin "+
+				"leases in CreateEndpoint before libnetwork refuses. On this run it did "+
+				"not, so the plugin no longer leases before the refusal -- fix that, or "+
+				"correct the row; do not relax this assertion", sameSubnetLeaseBudget)
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
+	t.Logf("\u2713 server issued %d lease(s) on the way to the refusal", acks)
+
+	// Now the absence. Sized by #800's own budget rather than a second
+	// number of our own: the two tests assert the same property at the
+	// same log, so they should not be able to drift apart, and referring
+	// to the constant makes deleting that test a compile error here
+	// rather than a silent loss of the contract.
+	time.Sleep(leaseRetentionSettle)
+	if releases := fixture.CountLogLines("DHCPRELEASE") - releasesBefore; releases != 0 {
+		t.Errorf("dnsmasq logged %d DHCPRELEASE line(s) for the refused container, want 0.\n"+
+			"A lease is a lease (#800): nothing this plugin runs releases, on any path, "+
+			"and TestLeaseRetention_NothingEverReleases asserts the same thing at this "+
+			"same log. A release appearing HERE means the refused-endpoint path grew one "+
+			"that the other test's paths do not cover -- which is exactly the regression "+
+			"#800 exists to catch, arriving through a door it does not watch. Do not "+
+			"relax this into >= 0; fix the release, or retire #800 deliberately and "+
+			"change both tests and the docs row together", releases)
+	}
+	t.Logf("\u2713 and released none of them: the addresses stay leased until they expire")
 }
