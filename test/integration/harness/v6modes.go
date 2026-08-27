@@ -267,11 +267,29 @@ func NewV6Fixture(t *testing.T, mode V6Mode) *V6Fixture {
 		t.Fatalf("disable DAD on %s: %v", V6BridgeName, err)
 	}
 
+	// ...and add each address with IFA_F_NODAD, which is a stronger
+	// statement than the sysctl and answers a different question.
+	//
+	// accept_dad=0 does not stop the address being CREATED tentative;
+	// it stops the probe, and the kernel then clears the flag from
+	// addrconf's work queue some time after the link comes up. That
+	// window is real: measured 2026-08-27 in run 33096065817, three of
+	// the four modes read the address settled and the fourth read it
+	// still tentative 60ms after LinkSetUp, on the same code path with
+	// the same sysctl written. Nothing about the fourth mode differs
+	// here -- the mode only reaches dnsmasq's argv, further down -- so
+	// what the guard caught was its own premise, not a mode.
+	//
+	// NODAD is set at creation, so the flag is never raised at all and
+	// there is no window to lose. The sysctl stays because it governs
+	// the address this loop does NOT add: the kernel's own link-local,
+	// which is what a router advertisement is sent FROM.
 	for _, cidr := range []string{V6BridgeAddr, V6BridgeAddrV6} {
 		addr, err := netlink.ParseAddr(cidr)
 		if err != nil {
 			t.Fatalf("ParseAddr(%q): %v", cidr, err)
 		}
+		addr.Flags |= unix.IFA_F_NODAD
 		if err := netlink.AddrAdd(link, addr); err != nil {
 			t.Fatalf("AddrAdd %s on %s: %v", cidr, V6BridgeName, err)
 		}
@@ -279,7 +297,7 @@ func NewV6Fixture(t *testing.T, mode V6Mode) *V6Fixture {
 	if err := netlink.LinkSetUp(link); err != nil {
 		t.Fatalf("LinkSetUp %s: %v", V6BridgeName, err)
 	}
-	assertNoTentativeAddr(t)
+	awaitNoTentativeAddr(t)
 
 	if err := installBridgeForward(V6BridgeName); err != nil {
 		t.Fatalf("install FORWARD rules for %s: %v", V6BridgeName, err)
@@ -457,29 +475,82 @@ func (f *V6Fixture) teardown() {
 	f.linkUp = false
 }
 
-// assertNoTentativeAddr checks the sysctl above actually took, rather
-// than trusting that writing it was enough. A kernel that ignored it
-// leaves an address in the tentative state, and the only symptom
-// downstream is a router advertisement that arrives late -- which
-// presents as the wrong mode. Naming the cause here costs one netlink
-// call and saves that diagnosis.
-func assertNoTentativeAddr(t *testing.T) {
+// tentativeBudget bounds awaitNoTentativeAddr below.
+//
+// IT IS DELIBERATELY SHORTER THAN THE FASTEST POSSIBLE REAL DAD, and
+// that is the whole design. Duplicate address detection sends its
+// probe after a random delay of up to a second and waits a further
+// RetransTimer -- a second by default -- so a segment on which DAD is
+// genuinely running cannot clear inside 250ms and this still fails.
+// What it absorbs is the other thing: with DAD off the kernel does not
+// skip the tentative flag, it clears it from addrconf's work queue
+// shortly after the link comes up, and that is sub-millisecond.
+//
+// Measured 2026-08-27, 200 bring-ups per arm, one variable each, all
+// tentative readings on the kernel's own link-local:
+//
+//	accept_dad=0, no NODAD, no wait  -> 15/200 tentative
+//	accept_dad=0, NODAD,    no wait  -> 11/200 tentative
+//	accept_dad=0, NODAD,    wait     ->  0/200, longest wait 2ms
+//	accept_dad=1, NODAD,    wait     -> 200/200 failed at the budget
+//
+// The last line is the control, and it is why this is a discriminator
+// rather than a timeout: turn DAD back on and the guard still goes
+// red on every single run. The third line is why the budget costs
+// nothing in the healthy case.
+//
+// The second line is why the wait is here at all, and it is worth
+// reading twice: NODAD alone is NOT enough. At 40 runs per arm it
+// looked like it was -- 0/40, against 6/40 without it -- and that
+// reading would have shipped a wait-free fixture that flaked twice a
+// week. Four hundred more bring-ups put both arms at the same rate.
+// NODAD closes the two addresses this fixture ADDS; nothing it can
+// set reaches the link-local the kernel generates.
+const tentativeBudget = 250 * time.Millisecond
+
+// awaitNoTentativeAddr checks the two settings above actually took,
+// rather than trusting that writing them was enough. An address left
+// tentative cannot be a send source, and the only symptom downstream
+// is a router advertisement that arrives late -- which presents as the
+// wrong mode. Naming the cause here costs one netlink call and saves
+// that diagnosis.
+//
+// It reads EVERY v6 address on the link, not just the two added above.
+// The kernel's own link-local is the one this fixture cannot set
+// NODAD on -- it does not add it -- and it is also the address a
+// router advertisement is sent FROM, so it is the one that matters
+// most and the only one left racing the work queue.
+func awaitNoTentativeAddr(t *testing.T) {
 	t.Helper()
 	link, err := netlink.LinkByName(V6BridgeName)
 	if err != nil {
 		t.Fatalf("LinkByName %s: %v", V6BridgeName, err)
 	}
-	addrs, err := netlink.AddrList(link, netlink.FAMILY_V6)
-	if err != nil {
-		t.Fatalf("AddrList %s: %v", V6BridgeName, err)
-	}
-	for _, a := range addrs {
-		if a.Flags&unix.IFA_F_TENTATIVE != 0 {
-			t.Fatalf("%s still tentative on %s after accept_dad=0 — router "+
-				"advertisements will be delayed and the mode check will "+
-				"misreport; DAD was not actually disabled",
-				a.IPNet, V6BridgeName)
+	deadline := time.Now().Add(tentativeBudget)
+	for {
+		addrs, err := netlink.AddrList(link, netlink.FAMILY_V6)
+		if err != nil {
+			t.Fatalf("AddrList %s: %v", V6BridgeName, err)
 		}
+		var stuck []string
+		for _, a := range addrs {
+			if a.Flags&unix.IFA_F_TENTATIVE != 0 {
+				stuck = append(stuck, a.IPNet.String())
+			}
+		}
+		if len(stuck) == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s still tentative on %s after %s, with accept_dad=0 "+
+				"and IFA_F_NODAD set — router advertisements will be "+
+				"delayed and the mode check will misreport. This budget is "+
+				"too short for a real DAD probe to clear, so DAD is on: a "+
+				"configured address here means NODAD was not honoured, the "+
+				"link-local means the sysctl did not take",
+				strings.Join(stuck, ", "), V6BridgeName, tentativeBudget)
+		}
+		time.Sleep(2 * time.Millisecond)
 	}
 }
 
