@@ -177,14 +177,15 @@ const ifnameOption = "com.docker.network.endpoint.ifname"
 //
 // DstName, when non-empty, asks libnetwork for that exact name inside
 // the container instead of DstPrefix+index. The remote-driver API has
-// carried the field for years, but as of moby master the remote proxy
-// drops it (drivers/remote/driver.go calls
-// `iface.SetNames(SrcName, DstPrefix, "")`), so engines do not yet
-// apply it for plugin drivers — built-in drivers got per-driver
-// interface_name support in engine 28, remote drivers were left out.
-// We return it anyway: it is the documented response shape, costs
-// nothing on engines that ignore it, and activates the moment the
-// upstream pass-through lands (#125).
+// carried the field for years, but the remote proxy dropped it
+// (drivers/remote/driver.go called `iface.SetNames(SrcName, DstPrefix,
+// "")`) until moby/moby#52866, merged 2026-08-26 and milestoned for
+// engine 29.8.0. Built-in drivers got per-driver interface_name in
+// engine 28; remote drivers were left out until that fix. No released
+// engine carries it yet, so on 29.7.x and older the field is still
+// ignored. We return it either way: it is the documented response
+// shape, costs nothing on engines that ignore it, and activates by
+// itself on the first engine that honours it (#125).
 type InterfaceName struct {
 	SrcName   string
 	DstPrefix string

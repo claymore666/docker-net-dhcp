@@ -205,8 +205,9 @@ they prove:
   TFTP, bootfile, search list).
 - `interface_name_test.go` — plugin honors the ifname endpoint
   option + invalid names rejected at attach; the engine-applied
-  rename tests are capability-probe-gated (engine support pending
-  upstream, #125).
+  rename tests are capability-probe-gated (they need an engine that
+  carries moby/moby#52866 — merged upstream, first shipping in engine
+  29.8.0, #125).
 - `classless_routes_test.go` — a DHCP-pushed classless static route
   (option 121, RFC 3442) reaches the container's routing table, and
   stays absent for a client that did not opt into the vendor class the

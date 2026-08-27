@@ -7,10 +7,13 @@
 // source, daemon/libnetwork/drivers/remote/driver.go): the engine
 // forwards the endpoint option com.docker.network.endpoint.ifname to
 // remote plugins in CreateEndpoint and Join, and the remote-driver
-// API's InterfaceName response carries DstName — but the proxy calls
+// API's InterfaceName response carries DstName — but the proxy called
 // `iface.SetNames(SrcName, DstPrefix, "")`, DISCARDING the plugin's
 // DstName. Built-in drivers got per-driver interface_name in engine
-// 28; remote drivers were left out. So:
+// 28; remote drivers were left out. moby/moby#52866 fixed the proxy
+// (merged 2026-08-26, milestoned for engine 29.8.0); no released
+// engine carries it yet, so the discard is still what a run on 29.7.x
+// or older sees. So:
 //   - the plugin's side (validate + return DstName) is fully
 //     assertable today, via its own logs and the Join error path;
 //   - whether the ENGINE applies the name is probed at runtime —
@@ -128,7 +131,7 @@ func TestInterfaceName_PluginHonorsOption(t *testing.T) {
 	if engineAppliesIfname(t, ctx, id, "lan0") {
 		t.Log("engine APPLIES remote-driver DstName — upstream pass-through is live on this runner")
 	} else {
-		t.Log("engine ignores remote-driver DstName (expected: moby drivers/remote/driver.go drops it); interface remains ethN")
+		t.Log("engine ignores remote-driver DstName (expected below engine 29.8.0, which carries moby/moby#52866); interface remains ethN")
 	}
 }
 
