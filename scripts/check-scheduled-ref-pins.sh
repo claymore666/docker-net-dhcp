@@ -71,6 +71,27 @@
 # omission. A universal satisfied by a domain that excludes the case is
 # the failure this milestone keeps finding.
 #
+# THE ONE ROUTE OUT, NAMED RATHER THAN LEFT TO BE REDISCOVERED. The
+# domain is "every workflow that declares a `schedule:`", and a REUSABLE
+# workflow declares none. So a scheduled caller whose job is
+# `uses: ./.github/workflows/<callee>.yml` puts the checkout in the
+# callee, and the callee is never examined: the caller passes as `tree`
+# on its own terms, because having no checkout at all is legitimate for
+# a tree workflow, while the callee checks out `main` holding
+# `issues: write` — the opening hazard, through the one door the domain
+# does not follow. Measured 2026-08-27: that shape exits 0 clean.
+#
+# It is the `tree` spelling only. The same delegation declared `tracker`
+# is caught, by the rule that a tracker workflow must check something
+# out. Both directions are pinned as cases in the self-test, so this
+# paragraph cannot quietly stop being true.
+#
+# It is stated and not coded because there are zero instances today —
+# no `workflow_call` and no `uses: ./.github/workflows` anywhere in the
+# directory — so following the `uses:` edge would be a domain built for
+# no member. The first reusable workflow this repository adds is where
+# that decision belongs, and this is the note it should arrive at.
+#
 # IT FAILS IN BOTH DIRECTIONS. Requiring the pin catches the defect
 # #839 reports; forbidding it on tree workflows catches the
 # over-correction the issue explicitly names ("pinning everything would

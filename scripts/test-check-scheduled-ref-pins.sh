@@ -354,6 +354,54 @@ c_pushonly_ignored() {
 }
 run_case "workflows without a schedule are outside the domain" 0 differs c_pushonly_ignored
 
+# The one route OUT of the domain, pinned so the next author does not
+# have to rediscover it. A reusable workflow declares no `schedule:`, so
+# a scheduled caller that delegates with `uses:` puts the checkout in a
+# file the domain never examines. These two cases assert the gate's
+# CURRENT behaviour in both directions, which is the honest state and
+# not a defect being hidden: the header names this escape, and a header
+# sentence decays where a case does not. If the domain is ever taught to
+# follow the `uses:` edge, the first case goes red and points at the
+# paragraph that explains the decision.
+emit_delegating_pair() {
+    local d="$1" marker="$2" perms="$3"
+    {
+        printf 'name: caller.yml\n# scheduled-subject: %s\n' "$marker"
+        printf "on:\n  schedule:\n    - cron: '0 0 * * *'\n"
+        printf 'permissions:\n  contents: read\n'
+        [ "$perms" = issues ] && printf '  issues: read\n'
+        printf 'jobs:\n  j:\n    uses: ./.github/workflows/callee.yml\n'
+    } > "$d/caller.yml"
+    {
+        printf 'name: callee.yml\non:\n  workflow_call:\n'
+        printf 'permissions:\n  contents: read\n  issues: write\n'
+        printf 'jobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n'
+        printf '      - uses: actions/checkout@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n'
+        printf '      - name: work\n        run: echo hi\n'
+    } > "$d/callee.yml"
+}
+
+# `tree` is the open direction: zero checkouts is legitimate for a tree
+# workflow, so the caller passes on its own terms while the callee holds
+# an unexamined checkout of `main` and `issues: write`.
+c_uses_tree() {
+    emit_wf "$1/tracker.yml" tracker sched issues dev
+    emit_delegating_pair "$1" tree noissues
+}
+run_case "a scheduled tree caller delegating with uses: passes; the callee is outside the domain" \
+    0 differs c_uses_tree
+
+# The same delegation declared `tracker` is CLOSED, by the rule that a
+# tracker workflow must check something out. This is the boundary of the
+# escape, and without it the header's claim that it is tree-only would be
+# prose nobody had driven.
+c_uses_tracker() {
+    emit_wf "$1/tree.yml" tree sched noissues none
+    emit_delegating_pair "$1" tracker issues
+}
+run_case "the same delegation declared tracker is caught by the no-checkout rule" \
+    1 differs c_uses_tracker
+
 # --- claim 5: the SHAPE of the file does not decide the verdict ---------
 # The axis emit_wf held constant for 21 cases. Both of the gate's key
 # detectors parsed a block mapping, both were blind to the flow spelling
