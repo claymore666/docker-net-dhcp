@@ -81,6 +81,13 @@ func ackedIn(logText, ip, mac string) bool {
 	return false
 }
 
+// policyACKBudget bounds the wait for a server to flush the ACK it has
+// already sent. Generous relative to what it covers — the gap measured
+// here is well under a second — because the cost of it being too short
+// is a red on a healthy product, and the cost of it being long is paid
+// only on a run that was going to fail anyway.
+const policyACKBudget = 15 * time.Second
+
 // bridgeServerIP is the primary bridge dnsmasq's address, which is what
 // a test passes to name it in a policy.
 func bridgeServerIP() string { return strings.SplitN(harness.BridgeAddr, "/", 2)[0] }
@@ -113,10 +120,44 @@ func assertLeasedBy(t *testing.T, want, ip, mac string) {
 			ip, got, want)
 	}
 
-	primaryLog := fixture.BridgeLog()
-	chalLog := fixture.BridgeChallengerLog()
-	ackedByPrimary := ackedIn(primaryLog, ip, mac)
-	ackedByChallenger := ackedIn(chalLog, ip, mac)
+	// WAIT for the expected ACK before reading either log.
+	//
+	// Both servers log from their own processes, asynchronously to
+	// anything this test can observe: the address is visible in
+	// `docker inspect` as soon as CreateEndpoint's one-shot client is
+	// done, which is before the server has necessarily flushed the ACK
+	// it just sent. A single read raced that and failed on an address
+	// the pool check had already shown was correct — "no DHCPACK …
+	// though the address says it leased it", intermittently, on a
+	// different test each run.
+	//
+	// This is not a retry papering over a flaky product. It is the
+	// instrument the rest of this suite already uses for the same
+	// reason (see waitBridgeLogLines in recovery_daemon_kill_test.go);
+	// the single read was the defect. The assertion is unchanged: if
+	// the ACK never arrives, the wait expires and the same error fires.
+	//
+	// ORDER MATTERS, and it is the presence that is waited on. The
+	// second half of each case below is an ABSENCE — the losing server
+	// must NOT have ACKed — and an absence read too early is true of a
+	// log that simply has not been written yet. Waiting for the winner
+	// first means the losing server has had at least as long to write
+	// its own line, so the absence is read from a log that is known to
+	// be current.
+	wantPrimary := want == primary
+	deadline := time.Now().Add(policyACKBudget)
+	var ackedByPrimary, ackedByChallenger bool
+	for {
+		ackedByPrimary = ackedIn(fixture.BridgeLog(), ip, mac)
+		ackedByChallenger = ackedIn(fixture.BridgeChallengerLog(), ip, mac)
+		if (wantPrimary && ackedByPrimary) || (!wantPrimary && ackedByChallenger) {
+			break
+		}
+		if time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 
 	// The server's own log is the outside evidence; the pool reading
 	// above is a shortcut that has to agree with it.

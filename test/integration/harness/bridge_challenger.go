@@ -154,7 +154,7 @@ func (f *Fixture) startBridgeChallenger() error {
 		{"netns", "exec", BridgeChallengerNetns, "ip", "link", "set", bridgeChallengerPeer, "up"},
 		{"netns", "exec", BridgeChallengerNetns, "ip", "addr", "add", BridgeChallengerAddr, "dev", bridgeChallengerPeer},
 	} {
-		if out, err := exec.Command("ip", args...).CombinedOutput(); err != nil {
+		if out, err := withCLocale(exec.Command("ip", args...)).CombinedOutput(); err != nil {
 			return fmt.Errorf("ip %s: %w (%s)", strings.Join(args, " "), err, out)
 		}
 	}
@@ -173,7 +173,7 @@ func (f *Fixture) startBridgeChallenger() error {
 	}
 	defer logF.Close()
 
-	f.chal.cmd = exec.Command("ip", "netns", "exec", BridgeChallengerNetns,
+	f.chal.cmd = withCLocale(exec.Command("ip", "netns", "exec", BridgeChallengerNetns,
 		"/usr/sbin/dnsmasq",
 		"--no-daemon",
 		"--conf-file=/dev/null",
@@ -187,7 +187,7 @@ func (f *Fixture) startBridgeChallenger() error {
 		"--dhcp-broadcast",
 		"--log-dhcp",
 		"--log-facility=-",
-	)
+	))
 	f.chal.cmd.Stdout = logF
 	f.chal.cmd.Stderr = logF
 	f.chal.cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -269,7 +269,7 @@ func cleanupBridgeChallenger() {
 	if link, err := netlink.LinkByName(bridgeChallengerVeth); err == nil {
 		_ = netlink.LinkDel(link)
 	}
-	_ = exec.Command("ip", "netns", "del", BridgeChallengerNetns).Run()
+	_ = withCLocale(exec.Command("ip", "netns", "del", BridgeChallengerNetns)).Run()
 }
 
 // DumpBridgeChallengerLog prints the challenger's dnsmasq log.

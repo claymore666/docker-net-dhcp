@@ -80,7 +80,7 @@ container holds which lease — see the lease ledger below.
 carries everything, and it is the more interesting file of the two.
 
 With `audit_log=true` on a network, every lease-lifecycle event —
-`bound`, `renew`, `release`, `release_failed` — is appended as one JSON
+`bound`, `renew`, `stopped`, `stop_failed` — is appended as one JSON
 object holding **network, endpoint, container, hostname, IP and MAC**:
 a complete container ↔ IP ↔ MAC correlation, at rest.
 

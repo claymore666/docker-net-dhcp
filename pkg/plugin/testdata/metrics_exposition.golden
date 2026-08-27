@@ -47,10 +47,10 @@ net_dhcp_dhcp_timeouts_total{family="ipv6"} 4983918
 net_dhcp_naks_received_total{family="ipv4"} 7664967
 net_dhcp_naks_received_total{family="ipv6"} 5220205
 
-# HELP net_dhcp_lease_release_failures_total Leases whose release did not complete cleanly at shutdown, leaving the address held until it expires.
-# TYPE net_dhcp_lease_release_failures_total counter
-net_dhcp_lease_release_failures_total{family="ipv4"} 3733747
-net_dhcp_lease_release_failures_total{family="ipv6"} 1288985
+# HELP net_dhcp_client_stop_failures_total Renewal clients that did not shut down cleanly when the plugin signalled them. Not a lease release: nothing this plugin runs sends a DHCPRELEASE.
+# TYPE net_dhcp_client_stop_failures_total counter
+net_dhcp_client_stop_failures_total{family="ipv4"} 9607807
+net_dhcp_client_stop_failures_total{family="ipv6"} 7163045
 
 # HELP net_dhcp_dhcp_routes_applied_total DHCP option-121 classless static routes handed to Docker. Counts routes, not Joins.
 # TYPE net_dhcp_dhcp_routes_applied_total counter
@@ -159,14 +159,6 @@ net_dhcp_conflict_probe_stale_routes_total 6653534
 # HELP net_dhcp_conflict_probe_stale_addrs_total Leftover borrowed probe SOURCE addresses reclaimed from the parent NIC. The sibling conflict_probe_stale_routes covers the leftover route, which is recognisable because its destination is the probed address; the source address has random octets by design (#575) so nothing ever collided with it and it accumulated on the operator's NIC, one per stop-inside-the-probe-window. Not healthy-affecting: the probe went on to run (#723).
 # TYPE net_dhcp_conflict_probe_stale_addrs_total counter
 net_dhcp_conflict_probe_stale_addrs_total 4864028
-
-# HELP net_dhcp_orphaned_leases_released_total Addresses reclaimed for a container that exited before its renewal client could attach. One per address.
-# TYPE net_dhcp_orphaned_leases_released_total counter
-net_dhcp_orphaned_leases_released_total 7470866
-
-# HELP net_dhcp_orphaned_lease_release_failures_total Orphaned-lease reclaims that failed, leaving the address held until it expires.
-# TYPE net_dhcp_orphaned_lease_release_failures_total counter
-net_dhcp_orphaned_lease_release_failures_total 5219398
 
 # HELP net_dhcp_parent_link_waits_total Endpoint creations that waited for their parent interface to appear.
 # TYPE net_dhcp_parent_link_waits_total counter

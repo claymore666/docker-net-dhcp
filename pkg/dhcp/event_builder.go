@@ -47,11 +47,39 @@ type Getenv func(string) string
 // EXPIRE. Verified against dhcpcd 10.3.2: two identical clients, one
 // with `--noconfigure` and one without, both bound to a 2m lease with
 // the server then killed; at the expiry instant the first fired RELEASE
-// and the second EXPIRE. Mapping RELEASE to a lease loss would be wrong
-// anyway, because a graceful stop (Leave / plugin shutdown → SIGTERM →
-// `release` directive) fires the SAME reason, so every clean teardown
-// would count as a DHCP failure. The consumer therefore detects a
-// silent lapse from the lease deadline instead — see LeaseSeconds.
+// and the second EXPIRE.
+//
+// Up to v1.8.x there was a second reason, and it was the decisive one:
+// a graceful stop (Leave / plugin shutdown → SIGTERM → `release`
+// directive) fired the SAME reason, so mapping RELEASE would have
+// counted every clean teardown as a DHCP failure.
+//
+// #800 REMOVED THE `release` DIRECTIVE, AND THAT CHANGES BOTH HALVES.
+// The paragraph above was true, and it was true because of a co-factor
+// it does not name: `release`, not `--noconfigure` alone. Measured on
+// the shipped pair (alpine 3.24.1 + dhcpcd 10.3.2-r0) with this
+// function's own argv from renderArgs, a 2m lease and the server then
+// killed, all four cells run (#855):
+//
+//	--noconfigure + release     -> lapse fires RELEASE   <- the v1.8.x client
+//	--noconfigure, no release   -> lapse fires EXPIRE    <- this build
+//	no --noconfigure + release  -> lapse fires EXPIRE
+//	no --noconfigure, no release-> lapse fires EXPIRE
+//
+// The original experiment compared --noconfigure against not, with both
+// clients carrying `release`, so it could not see that the directive was
+// doing the work. Confirmed with the plugin in the loop, by the failure
+// suite's own logs across the two trees: on dev the outage shows
+// "+0 leasefail / +1 watchdog", on this branch "+1 leasefail / +0
+// watchdog". dhcpcd now speaks, and EXPIRE below already maps to a lease
+// loss.
+//
+// RELEASE stays unmapped anyway, and the reason is now trivial rather
+// than load-bearing: no client this build starts can produce it. Mapping
+// it would be dead code; TestBuildEvent_ReleaseIsNotALeaseLoss keeps the
+// contract pinned in case a `release` directive ever comes back.
+// LeaseSeconds' deadline remains as the backstop for a lapse dhcpcd does
+// not report at all.
 func mapReason(reason string) (eventType string, v6 bool, emit bool) {
 	switch reason {
 	case "BOUND", "REBOOT":

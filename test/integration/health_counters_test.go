@@ -19,7 +19,7 @@ import (
 // TestHealthCounters_ObtainedAndReleased pins the v0.9.0 / T2-4
 // wiring: a clean container lifecycle (create → bound → release →
 // remove) advances /Plugin.Health.leases_obtained by at least one
-// and leaves lease_release_failures unchanged.
+// and leaves client_stop_failures unchanged.
 //
 // Inlining ContainerCreate/Start/Stop/Remove instead of using
 // harness.RunContainer because Run defers cleanup via t.Cleanup,
@@ -46,10 +46,10 @@ func TestHealthCounters_ObtainedAndReleased(t *testing.T) {
 	}
 	defer cli.Close()
 
-	w := harness.BeginCounterWindow(t, ctx, cli, "leases_obtained", "lease_release_failures")
+	w := harness.BeginCounterWindow(t, ctx, cli, "leases_obtained", "client_stop_failures")
 	before := w.Before()
-	t.Logf("before: leases_obtained=%d leases_renewed=%d dhcp_timeouts=%d lease_release_failures=%d",
-		before.LeasesObtained, before.LeasesRenewed, before.DHCPTimeouts, before.LeaseReleaseFailures)
+	t.Logf("before: leases_obtained=%d leases_renewed=%d dhcp_timeouts=%d client_stop_failures=%d",
+		before.LeasesObtained, before.LeasesRenewed, before.DHCPTimeouts, before.ClientStopFailures)
 
 	harness.CreateNetwork(t, ctx, netName, "macvlan", nil)
 
@@ -95,8 +95,10 @@ func TestHealthCounters_ObtainedAndReleased(t *testing.T) {
 		afterStart.LeasesObtained, afterStart.LeasesObtained-before.LeasesObtained)
 
 	// Drive the explicit teardown: ContainerStop -> Leave ->
-	// dhcpManager.Stop -> SIGTERM -> DHCPRELEASE. A clean release
-	// must NOT bump lease_release_failures.
+	// dhcpManager.Stop -> SIGTERM -> the client exits. A clean shutdown
+	// must NOT bump client_stop_failures. No release is involved — since
+	// #800 the address stays leased — which is why the counter is named
+	// for the client and not for the lease.
 	if err := cli.ContainerStop(ctx, id, container.StopOptions{}); err != nil {
 		t.Fatalf("ContainerStop: %v", err)
 	}
@@ -105,10 +107,10 @@ func TestHealthCounters_ObtainedAndReleased(t *testing.T) {
 	}
 
 	_, after := w.End()
-	t.Logf("after teardown: lease_release_failures=%d", after.LeaseReleaseFailures)
+	t.Logf("after teardown: client_stop_failures=%d", after.ClientStopFailures)
 
-	if after.LeaseReleaseFailures != before.LeaseReleaseFailures {
-		t.Errorf("lease_release_failures advanced on a clean teardown: before=%d after=%d",
-			before.LeaseReleaseFailures, after.LeaseReleaseFailures)
+	if after.ClientStopFailures != before.ClientStopFailures {
+		t.Errorf("client_stop_failures advanced on a clean teardown: before=%d after=%d",
+			before.ClientStopFailures, after.ClientStopFailures)
 	}
 }

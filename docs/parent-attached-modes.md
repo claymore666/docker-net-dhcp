@@ -81,8 +81,10 @@ docker inspect app | jq '.[0].NetworkSettings.Networks'
    lease for the lifetime of the endpoint. It runs observe-only
    (`--noconfigure`); the plugin applies lease changes via netlink.
 6. On `docker stop`, libnetwork calls `Leave` → the persistent `dhcpcd`
-   gets `SIGTERM` → it sends `DHCPRELEASE` so the upstream server's
-   lease table doesn't accumulate stale entries.
+   gets `SIGTERM` and exits. It does **not** release the lease: the
+   address stays leased until it expires, or until the container comes
+   back and re-claims it, exactly as it would for a physical host that
+   rebooted (v1.9.0+, #800).
 7. The macvlan link is reaped automatically when the container netns is
    destroyed.
 

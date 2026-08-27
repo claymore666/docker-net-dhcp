@@ -58,27 +58,14 @@ pkg/plugin/parent_gate.go 1
     is what makes the requirement a compile error rather than a review
     comment.
     Every parent-attached site in the plugin — the endpoint's own child
-    in parent_attached.go, the reclaim's temporary link in
-    orphan_release.go, the validate_dhcp preflight probe in
+    in parent_attached.go, the validate_dhcp preflight probe in
     dhcp_probe.go — reaches the kernel through here.
-
-pkg/plugin/orphan_release.go 1
-    The bridge-mode branch of releaseLink: a veth pair for handing back
-    an orphaned lease on a bridge network. NOT parent-attached — a
-    bridge network has no parent NIC, nothing registers an rx_handler,
-    and there is no parent to contend for. Correctly ungated.
-    The macvlan/ipvlan branch of the same function is the one that IS
-    parent-attached, and it goes through addChildLink.
-    A note for whoever reads the reclaim next, because it is the thing
-    most likely to be "tidied": the gate for that branch is taken in
-    synthesiseRelease, several frames up, and it has to stay there. The
-    hold must span the entire reclaim — the DHCP round trip AND the
-    deferred LinkDel — because the parent stays occupied until the child
-    link is gone, not merely until the DHCPRELEASE is sent. Moving it
-    down to sit lexically around the LinkAdd looks like an improvement
-    and restores the exact bug the gate was added for: an ipvlan reclaim
-    link left on the parent while a macvlan endpoint is created, which
-    is EBUSY on an operation the user did not cause.
+    A third site used to sit here: the orphaned-lease reclaim's
+    temporary link in orphan_release.go. That whole mechanism was
+    removed in v1.9.0 (#800) because it raced the tombstone that
+    promises a restarting container its address back. Its entry in this
+    file went with it. The gate itself did NOT become unnecessary — the
+    probe still holds a parent across a DHCP round trip.
 
 pkg/plugin/network.go 1
     The bridge-mode veth pair created at CreateEndpoint. Same reasoning

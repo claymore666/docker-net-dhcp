@@ -82,11 +82,11 @@ func TestCheckHealthFloor(t *testing.T) {
 			// These move on perfectly good runs — the failure suite
 			// exists to make dhcp_timeouts and naks_received rise.
 			in: &HealthResponse{
-				DHCPTimeouts:         5,
-				NAKsReceived:         2,
-				LeaseReleaseFailures: 1,
-				LedgerWriteFailures:  4,
-				LeaseChanged:         3,
+				DHCPTimeouts:        5,
+				NAKsReceived:        2,
+				ClientStopFailures:  1,
+				LedgerWriteFailures: 4,
+				LeaseChanged:        3,
 			},
 			want: want{counters: map[string]int32{}, fatal: false},
 		},

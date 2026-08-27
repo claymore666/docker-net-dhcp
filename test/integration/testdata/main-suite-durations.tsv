@@ -6,9 +6,11 @@
 # incomplete. scripts/test-integration-shard.sh asserts completeness
 # independently of this file.
 #
-# Two entries post-date that run and are local measurements:
+# These entries post-date that run and are local measurements. The list
+# is kept rather than a count of it, so adding one does not require
+# noticing a number two lines up:
 #
-#   TestRecovery_DaemonKilled_LeaseIsReleasedAndReacquired (22.36s, median
+#   TestRecovery_DaemonKilled_LeaseIsHeldUntilItExpires (22.36s, median
 #   of six). It is here rather than left to the mean because the mean is
 #   6.66s, and a 22s test costed at 6.66 puts its shard a quarter over.
 #
@@ -16,8 +18,14 @@
 #   plugin). It does no waiting — it scrapes one endpoint — so its cost is
 #   nearly all fixture setup, which its shard already pays.
 #
-# Refreshing from a green run replaces both with CI numbers and this note
-# can go.
+#   TestLeaseRetention_NothingEverReleases (25.58s),
+#   TestJoinNoContainer_AddressIsHeldUntilItExpires (20.02s) and
+#   TestParentGate_EndpointQueuesBehindAProbe (16.29s) — the three tests
+#   #800 added or rewrote, none of which existed in the run above. All
+#   are well over the 6.66s mean and would unbalance a shard costed at it.
+#
+# Refreshing from a green run replaces all of these with CI numbers and
+# this note can go.
 #
 # To refresh, from a green run:
 #   gh run view <id> --log | grep -oE -- '--- PASS: [A-Za-z_0-9]+ \([0-9.]+s\)' \
@@ -91,13 +99,11 @@ TestMetrics_SocketServesTheFullSurface	0.55
 TestMTUPropagate_DefaultIsUnchanged	7.45
 TestMTUPropagate_OptInSetsLinkMTU	10.56
 TestNonRootContainer_PersistentClientStarts	25.33
-TestOrphanedLease_ReleasedInIpvlanMode	10.26
-TestOrphanedLease_ReleasedWhenContainerExitsEarly	9.53
 TestPreflightProbe_FailsWhenServerUnreachable	8.12
 TestPreflightProbe_PassesOnReachableServer	2.14
 TestPreflightProbe_RejectedInBridgeMode	0.01
 TestRecovery_DaemonRestart_PreservesContainer	23.73
-TestRecovery_DaemonKilled_LeaseIsReleasedAndReacquired	22.36
+TestRecovery_DaemonKilled_LeaseIsHeldUntilItExpires	22.36
 TestRecovery_PluginDisableEnable_PreservesEndpoint	12.92
 TestStaticIP_DriverOpt	4.69
 TestStaticReservation_IsInsideThePool	0.00
@@ -112,3 +118,6 @@ TestUnmarshalKeepsDecodingValues	0.00
 TestVendorClass_DefaultUsesUntaggedGateway	5.93
 TestVendorClass_NonMatchingValueUsesDefaultGateway	7.49
 TestVendorClass_OverrideRoutesViaTaggedGateway	7.47
+TestLeaseRetention_NothingEverReleases	25.58
+TestJoinNoContainer_AddressIsHeldUntilItExpires	20.02
+TestParentGate_EndpointQueuesBehindAProbe	16.29

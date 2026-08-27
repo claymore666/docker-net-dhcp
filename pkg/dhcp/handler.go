@@ -78,10 +78,19 @@ type Info struct {
 	// long lease" apart from "client that stopped getting service"
 	// WITHOUT depending on a lease-loss hook (#353). dhcpcd does not
 	// reliably deliver one: under `--noconfigure`, which this plugin
-	// always runs, a lapsed lease fires the hook as RELEASE rather than
-	// EXPIRE — and RELEASE is indistinguishable from the one a graceful
-	// stop produces, so it can never be counted as a failure. The lease
-	// deadline carries no such ambiguity.
+	// always ran, a lapsed lease fired the hook as RELEASE rather than
+	// EXPIRE, and up to v1.8.x a graceful stop produced the same reason,
+	// so it could not be counted as a failure.
+	//
+	// #800 changed that. The RELEASE-on-lapse behaviour needed the
+	// `release` directive as well as `--noconfigure`, and #800 removed
+	// the directive: this build's clients fire EXPIRE on a lapse, which
+	// mapReason already counts. Measured four ways and confirmed by the
+	// failure suite across both trees — see pkg/dhcp.mapReason and #855.
+	//
+	// LeaseSeconds is kept regardless. It is the backstop for a lapse
+	// dhcpcd does not report at all, and it is what #353 was actually
+	// about; it does not depend on which hook fires.
 	//
 	// The renewal time (T1, option 58) is deliberately NOT carried here
 	// even though dhcpcd exports it, because under `--noconfigure` it is

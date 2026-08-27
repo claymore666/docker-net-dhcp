@@ -628,7 +628,16 @@ type HealthResponse struct {
 	// unrestricted one failing identically.
 	DHCPServerPolicyTimeouts int32 `json:"dhcp_server_policy_timeouts"`
 	DHCPTimeouts             int32 `json:"dhcp_timeouts"`
-	LeaseReleaseFailures     int32 `json:"lease_release_failures"`
+	// ClientStopFailures counts renewal clients that did not shut down
+	// cleanly when the plugin signalled them at teardown. Not
+	// Healthy-affecting: the endpoint is going away either way.
+	//
+	// It does NOT mean a lease was not handed back. Nothing this plugin
+	// runs sends a DHCPRELEASE — a stopped container's lease expires on
+	// the server's clock, like any other host's (#800). This counter
+	// was called lease_release_failures until v1.9.0, when that stopped
+	// being true.
+	ClientStopFailures int32 `json:"client_stop_failures"`
 	// NAKsReceived counts server NAKs on renewal/rebind. Not
 	// Healthy-affecting on its own — dhcpcd recovers by
 	// re-DISCOVERing — but each NAK-triggered re-bind widens the
@@ -642,25 +651,11 @@ type HealthResponse struct {
 	// containers are restarting into a plugin that had recovered them,
 	// so pair it with recovered_ok when diagnosing a restart loop.
 	DisplacedStops int32 `json:"displaced_stops"`
-	// OrphanedLeasesReleased / OrphanedLeaseReleaseFailures cover the
-	// lease acquired by the CreateEndpoint one-shot when no persistent
-	// client ever took ownership of it, because the container exited
-	// before Join's async Start could attach (#370). The plugin
-	// synthesises a release rather than leaving the address held until
-	// its own expiry.
-	//
-	// Neither is Healthy-affecting. A short-lived container is an
-	// ordinary lifecycle, and a failed synthesised release costs one
-	// lease until it expires — alert on the failure rate, not on a
-	// latched unhealthy. Read the two together: releases climbing with
-	// failures flat is the mechanism working.
-	OrphanedLeasesReleased       int32 `json:"orphaned_leases_released"`
-	OrphanedLeaseReleaseFailures int32 `json:"orphaned_lease_release_failures"`
 	// ParentLinkWaits / ParentLinkWaitTimeouts cover contention on a
 	// shared parent NIC. A parent is a macvlan port or an ipvlan port,
-	// never both, so an orphan-lease reclaim holding one asynchronously
-	// can collide with an endpoint asking for the other (#486/#549).
-	// The plugin queues them per parent instead.
+	// never both, so the validate_dhcp probe holding one across a DHCP
+	// round trip can collide with an endpoint asking for the other
+	// (#486/#549). The plugin queues them per parent instead.
 	//
 	// Waits counts the operations that had to queue; timeouts counts
 	// those that gave up after parentGateBudget and went to the kernel
@@ -730,18 +725,19 @@ type HealthResponse struct {
 	LeasesRenewedV4  int32 `json:"leases_renewed_v4"`
 	DHCPTimeoutsV4   int32 `json:"dhcp_timeouts_v4"`
 	NAKsReceivedV4   int32 `json:"naks_received_v4"`
-	// LeaseReleaseFailuresV4 is the v4 half of LeaseReleaseFailures.
-	LeaseReleaseFailuresV4 int32 `json:"lease_release_failures_v4"`
+	// ClientStopFailuresV4 is the v4 half of ClientStopFailures.
+	ClientStopFailuresV4 int32 `json:"client_stop_failures_v4"`
 
 	LeaseChangedV6   int32 `json:"lease_changed_v6"`
 	LeasesObtainedV6 int32 `json:"leases_obtained_v6"`
 	LeasesRenewedV6  int32 `json:"leases_renewed_v6"`
 	DHCPTimeoutsV6   int32 `json:"dhcp_timeouts_v6"`
 	NAKsReceivedV6   int32 `json:"naks_received_v6"`
-	// LeaseReleaseFailuresV6 is the v6 share of LeaseReleaseFailures
-	// (#608): the persistent DHCPv6 client held a binding and its
-	// SIGTERM-driven RELEASE did not complete cleanly.
-	LeaseReleaseFailuresV6 int32 `json:"lease_release_failures_v6"`
+	// ClientStopFailuresV6 is the v6 share of ClientStopFailures
+	// (#608): the persistent DHCPv6 client held a binding and did not
+	// shut down cleanly when the plugin signalled it. No release is
+	// involved — since #800 nothing this plugin runs sends one.
+	ClientStopFailuresV6 int32 `json:"client_stop_failures_v6"`
 }
 
 func (p *Plugin) apiHealth(w http.ResponseWriter, r *http.Request) {
@@ -799,8 +795,8 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 	dhcpTimeoutsV6 := p.dhcpTimeoutsV6.Load()
 	naksReceivedV4 := p.naksReceivedV4.Load()
 	naksReceivedV6 := p.naksReceivedV6.Load()
-	leaseReleaseFailuresV4 := p.leaseReleaseFailuresV4.Load()
-	leaseReleaseFailuresV6 := p.leaseReleaseFailuresV6.Load()
+	clientStopFailuresV4 := p.clientStopFailuresV4.Load()
+	clientStopFailuresV6 := p.clientStopFailuresV6.Load()
 
 	return HealthResponse{
 		// Healthy is false on any condition that means an operator
@@ -866,11 +862,9 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		DHCPServerPolicyExhausted:    p.dhcpServerPolicyExhausted.Load(),
 		DHCPServerPolicyTimeouts:     p.dhcpServerPolicyTimeouts.Load(),
 		DHCPTimeouts:                 dhcpTimeoutsV4 + dhcpTimeoutsV6,
-		LeaseReleaseFailures:         leaseReleaseFailuresV4 + leaseReleaseFailuresV6,
+		ClientStopFailures:           clientStopFailuresV4 + clientStopFailuresV6,
 		NAKsReceived:                 naksReceivedV4 + naksReceivedV6,
 		DisplacedStops:               p.displacedStopsTotal.Load(),
-		OrphanedLeasesReleased:       p.orphanedLeasesReleased.Load(),
-		OrphanedLeaseReleaseFailures: p.orphanedLeaseReleaseFailures.Load(),
 		ParentLinkWaits:              p.parentLinkWaits.Load(),
 		ParentLinkWaitTimeouts:       p.parentLinkWaitTimeouts.Load(),
 		LedgerWriteFailures:          p.ledgerWriteFailures.Load(),
@@ -881,12 +875,12 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		LeasesRenewedV4:              leasesRenewedV4,
 		DHCPTimeoutsV4:               dhcpTimeoutsV4,
 		NAKsReceivedV4:               naksReceivedV4,
-		LeaseReleaseFailuresV4:       leaseReleaseFailuresV4,
+		ClientStopFailuresV4:         clientStopFailuresV4,
 		LeaseChangedV6:               leaseChangedV6,
 		LeasesObtainedV6:             leasesObtainedV6,
 		LeasesRenewedV6:              leasesRenewedV6,
 		DHCPTimeoutsV6:               dhcpTimeoutsV6,
 		NAKsReceivedV6:               naksReceivedV6,
-		LeaseReleaseFailuresV6:       leaseReleaseFailuresV6,
+		ClientStopFailuresV6:         clientStopFailuresV6,
 	}
 }

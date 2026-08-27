@@ -16,12 +16,16 @@ import (
 // one to finish with the same parent NIC before giving up and trying
 // anyway.
 //
-// Deliberately far below orphanReleaseBudget (20s), which is the
-// longest a reclaim can hold a parent. Waiting out the worst case would
-// put a 20-second stall on the container-start path, and Docker's own
-// CreateEndpoint timeout would fire first — so the gate is built to
-// absorb the common case (a reclaim's DORA, ~2-3s observed) and to
+// Deliberately below the longest an operation can hold a parent, which
+// is now the validate_dhcp probe's DHCP round trip. Waiting out the
+// worst case would stall the container-start path long enough for
+// Docker's own CreateEndpoint timeout to fire first — so the gate is
+// built to absorb the common case (a DORA, ~2-3s observed) and to
 // degrade rather than block when it cannot.
+//
+// The budget used to be sized against the orphaned-lease reclaim's 20s
+// ceiling, which was the demanding holder until that mechanism was
+// removed in v1.9.0 (#800).
 const parentGateBudget = 4 * time.Second
 
 // parentGate serialises the operations that add a child link to a
@@ -32,10 +36,15 @@ const parentGateBudget = 4 * time.Second
 // claim the same single rx_handler on the parent netdev. The second
 // kind to ask gets EBUSY. Children of the SAME kind coexist happily, so
 // this only bites where two networks of different modes share a parent
-// — and the plugin creates children of its own accord, asynchronously,
-// in the orphaned-lease reclaim (#370). That reclaim's temporary link
-// outlives the endpoint it belongs to, so it can be holding the parent
-// in one mode at the moment an unrelated endpoint asks for the other.
+// — where the plugin's own validate_dhcp probe can be holding one in
+// one mode at the moment an endpoint asks for the other.
+//
+// The original offender (#370) was worse and is gone: the orphaned-lease
+// reclaim created children asynchronously, from a goroutine ordered
+// against no Docker request, and its temporary link outlived the
+// endpoint it belonged to. That mechanism was removed in v1.9.0 (#800).
+// The remaining collision is narrower but real, and the gate is what
+// keeps it from surfacing as an EBUSY on an unrelated container start.
 //
 // Per parent rather than one global lock, and that distinction is the
 // whole design. A global lock would serialise every endpoint creation
@@ -48,13 +57,13 @@ const parentGateBudget = 4 * time.Second
 //     across IO, and nothing else may be acquired while it is held.
 //   - the per-parent token (the channel) IS held across blocking IO —
 //     that is its job. It must therefore never be taken while holding
-//     Plugin.mu, or a slow reclaim would block every registry read on
-//     the plugin. Every current caller takes it with no plugin lock
-//     held; keep it that way.
+//     Plugin.mu, or a slow probe would block every registry read on the
+//     plugin. Every current caller takes it with no plugin lock held;
+//     keep it that way.
 //
 // The gate is advisory. Failing to get it is not an error: the caller
 // proceeds and the kernel remains the authority, exactly as it was
-// before this existed. That keeps a wedged or slow reclaim from turning
+// before this existed. That keeps a wedged or slow holder from turning
 // into a hung container start — the worst case degrades to the EBUSY
 // the caller would have got anyway, with a counter to say so.
 type parentGate struct {

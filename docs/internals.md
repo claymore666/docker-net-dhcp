@@ -47,11 +47,21 @@ lifecycle, the event plumbing, and everything below are identical.
   resulting address/routes via netlink itself.
 - **A lapsed lease is not one of those events.** The plugin runs
   `dhcpcd --noconfigure`, and in that mode a lease running out is
-  reported as `RELEASE` — the same thing a graceful stop emits. The two
-  are indistinguishable, so treating either as a failure would count
-  every normal container teardown as one, and the handler drops both.
-  This is why the plugin cannot learn about a dead DHCP server by
-  waiting to be told.
+  reported as `RELEASE` — but only while the `release` directive was
+  also set, which it was up to v1.8.x. A graceful stop emitted the same
+  reason, so treating either as a failure would have counted every
+  normal container teardown as one, and the handler dropped both.
+
+  **v1.9.0 removes that directive, and a lapse now fires `EXPIRE`**,
+  which the plugin counts as a lease loss. Measured across all four
+  combinations of `--noconfigure` and `release` on the shipped dhcpcd,
+  and visible in the failure suite across the two trees: the same outage
+  that produced "+0 leasefail / +1 watchdog" before produces "+1
+  leasefail / +0 watchdog" after
+  ([#855](https://github.com/claymore666/docker-net-dhcp/issues/855)).
+  So the plugin CAN now learn about a dead DHCP server by being told,
+  sooner than the lease deadline would have told it. The deadline-based
+  watchdog stays as the backstop for a lapse dhcpcd does not report.
 - **Outages are therefore derived, not reported.** Each bind and renew
   records the lease lifetime the server granted, and a watchdog compares
   it against the time since that endpoint was last served: once
@@ -76,7 +86,7 @@ lifecycle, the event plumbing, and everything below are identical.
   corrupts lease bookkeeping; the runtime collision is worse and silent —
   the second client finds the first one's control socket, forwards its
   arguments to that process and exits 0, so it never runs a client of its
-  own and its lease is never renewed or released (#332). The plugin
+  own and its lease is never renewed (#332). The plugin
   shadows both directories with a private `tmpfs` in each client's own
   mount namespace, which keeps them fully independent.
 
@@ -203,35 +213,51 @@ a 2-second cap that only an unclaimed address ever pays.
 
 ## How a lease gets handed back
 
-Normally the container's own `dhcpcd` does it: a graceful stop emits a
-`RELEASE` and the server frees the address at once instead of waiting
-for the lease to expire.
+It does not. Nothing this plugin runs ever sends a `DHCPRELEASE`, and
+that is deliberate as of v1.9.0 (#800).
 
-That needs a binding to release. Two cases leave one held with nobody
-responsible for it — the persistent client **never started** (the
-container was already gone), or it **started but never bound** (it was
-signalled before its first `ACK`, so `dhcpcd` had nothing to release and
-exited cleanly). The address was won regardless, by the one-shot at
-`CreateEndpoint`.
+A lease is a lease. When a container stops, its address stays leased
+until the lease expires, and if the container comes back before then it
+asks for the same address and gets it — the ordinary DHCP path, and
+exactly what happens when a physical host on the segment reboots or
+loses power. A container is a host on this segment and costs the server
+what one costs.
 
-The plugin then **reclaims**: a temporary child of the network's kind,
-re-acquire the same address under the endpoint's identity, release it
-properly. Per family — a dual-stack endpoint hands back exactly the
-addresses whose client never bound, IPv4 via the client-id, IPv6 via
-the same DUID and IAID the endpoint used (v1.7.0+, #608; before that
-the IPv6 half was leaked and the ledger wrote it up as released).
-Counted by `orphaned_leases_released` and
-`orphaned_lease_release_failures`, and written to the audit ledger.
+Neither client releases. The `CreateEndpoint` one-shot exits with
+`-1 -p` to keep its address for the persistent client that takes over
+moments later; the persistent client is signalled at `Leave` and keeps
+it for the container that may be about to restart.
 
-**The scoping is load-bearing.** It fires when an endpoint *leaves*, not
-on every manager shutdown — `Close` stops every manager on an upgrade or
-`docker plugin disable`, with containers still running. A never-bound
-manager is legitimate there (a DHCP server that is not answering, while
-the container still holds the one-shot's address), and releasing would
-tell the server an address is free while it is in use: the duplicate
-assignment this release added detection for, manufactured by us.
+**Why this changed.** Up to v1.8.x the plugin released aggressively —
+`dhcpcd` emitted a `RELEASE` on a graceful stop, and a background
+*reclaim* handed back the one-shot's address whenever no persistent
+client had taken ownership of it (a container that exited before the
+attach completed). Both were trying to return an address promptly rather
+than let it sit until expiry. Both raced the tombstone.
 
-A missed reclaim leaves a lease to expire. A wrong one causes an outage.
+A `docker restart` is a `Leave` immediately followed by a `Join` for the
+same MAC, and the tombstone exists to promise that `Join` the same
+address. At the moment the release ran, "this endpoint is gone" and
+"this endpoint is coming straight back" were indistinguishable — so the
+plugin was observed telling the server an address was free in the same
+second the container came back to claim it. The reclaim was measured
+firing four times on ordinary restarts of live containers.
+
+What was gained was a faster return of an address nobody wanted. What
+was risked was an address handed to someone else while a container was
+still using it — the duplicate assignment #524 added detection for,
+manufactured by the plugin itself. Waiting for expiry has no such
+failure mode, so the whole mechanism went: the `release` directive, the
+reclaim, and the `orphaned_leases_released` and
+`orphaned_lease_release_failures` counters that measured it.
+
+The surviving teardown counter was renamed to match: what was
+`lease_release_failures` is now `client_stop_failures`, because a client
+that exits badly is all it can still mean.
+
+The cost is that a short-lived container's address is unavailable for
+one lease time. Size the server's pool and lease time for the churn,
+the same way you would for any other population of hosts.
 
 ## How operations on one parent NIC are serialised
 
@@ -240,17 +266,23 @@ ipvlan port and never both — whichever kind asks second gets `EBUSY`.
 That is a kernel rule; one mode per parent stays the operator-facing
 constraint.
 
-What the plugin can stop is inflicting it on itself. Three of its paths
-attach a child to a parent: creating an endpoint, the `validate_dhcp`
-probe, and the reclaim above — which holds its link for a full DHCP
-round trip, from a goroutine ordered against no Docker request. Since
-v1.6.0 all three take a per-parent gate first, so they queue instead of
-refusing each other (#486, #549).
+What the plugin can stop is inflicting it on itself. Two of its paths
+attach a child to a parent: creating an endpoint, and the
+`validate_dhcp` probe — which holds its link for a full DHCP round
+trip. Since v1.6.0 both take a per-parent gate first, so they queue
+instead of refusing each other (#486, #549).
+
+There used to be a third, the orphaned-lease reclaim, and it was the
+demanding one: it ran from a goroutine ordered against no Docker request
+at all. It is gone (#800, see above), which shortens the worst case the
+gate has to cover but does not remove the need for it — the probe still
+holds a parent across a DHCP round trip while an endpoint may ask for
+the other mode.
 
 `parent_link_waits` counts operations that queued — the mechanism
 working. `parent_link_wait_timeouts` counts ones that gave up and
 proceeded anyway; they may still succeed, but the budget has stopped
-covering a reclaim's duration.
+covering the holder's duration.
 
 The rule is enforced by **two** mechanisms, and it is worth being exact
 about where each one stops, because the guard type exists precisely to

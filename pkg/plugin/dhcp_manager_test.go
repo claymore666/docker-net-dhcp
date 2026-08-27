@@ -252,7 +252,7 @@ func TestNextAcquiring(t *testing.T) {
 	}
 }
 
-// releasingManager builds a dhcpManager that Stop() can run against
+// stoppingManager builds a dhcpManager that Stop() can run against
 // without a live netns/netlink fixture: Start is marked complete with
 // no error, and the two consumer goroutines are simulated by
 // pre-filling their exit channels.
@@ -263,7 +263,7 @@ func TestNextAcquiring(t *testing.T) {
 // Real managers can't hit that (Start sets the handle, and a Start that
 // failed earlier short-circuits Stop via startErr), but a test that
 // hand-builds the struct has to say so.
-func releasingManager(t *testing.T, p *Plugin, opts DHCPNetworkOptions, errV4, errV6 error) *dhcpManager {
+func stoppingManager(t *testing.T, p *Plugin, opts DHCPNetworkOptions, errV4, errV6 error) *dhcpManager {
 	t.Helper()
 
 	m := newDHCPManager(nil, JoinRequest{NetworkID: "net1", EndpointID: "ep1"}, opts).withPlugin(p)
@@ -276,10 +276,11 @@ func releasingManager(t *testing.T, p *Plugin, opts DHCPNetworkOptions, errV4, e
 	}
 	m.setLastIP(false, v4)
 	// Every case in this file models a client that reached a bind and is
-	// now being shut down, which is what makes "release" the honest
+	// now being shut down, which is what makes "stopped" the honest
 	// ledger entry. Without this the manager is in the never-bound state
 	// instead, where Stop must NOT claim a release — see
-	// TestStop_NeverBoundClientReclaimsInsteadOfClaimingRelease.
+	// TestStop_LeavingAndNotLeavingAreTheSame, whose
+	// client_started_but_never_bound row drives exactly that state.
 	m.boundV4.Store(true)
 
 	m.errChan = make(chan error, 1)
@@ -302,16 +303,16 @@ func releasingManager(t *testing.T, p *Plugin, opts DHCPNetworkOptions, errV4, e
 
 // TestStop_AuditsBothFamiliesIndependently pins the dual-drain contract
 // (#325/#330). Stop must read BOTH consumer channels before returning —
-// the old code returned early on a v4 release failure, which left the
+// the old code returned early on a v4 stop failure, which left the
 // v6 consumer live and mid-renew on m.netHandle while the deferred
 // closeNetHandle nilled the socket out from under it, and additionally
 // hid the v6 outcome from the audit ledger.
 //
 // The v4-fails-v6-succeeds row is the regression the old code failed:
-// it recorded release_failed for v4 and nothing at all for v6.
+// it recorded a failure for v4 and nothing at all for v6.
 func TestStop_AuditsBothFamiliesIndependently(t *testing.T) {
-	errV4 := errors.New("v4 release boom")
-	errV6 := errors.New("v6 release boom")
+	errV4 := errors.New("v4 stop boom")
+	errV6 := errors.New("v6 stop boom")
 
 	cases := []struct {
 		name         string
@@ -323,31 +324,31 @@ func TestStop_AuditsBothFamiliesIndependently(t *testing.T) {
 	}{
 		{
 			name: "v4 only, clean release", ipv6: false,
-			wantKinds: []string{"release"},
+			wantKinds: []string{"stopped"},
 		},
 		{
 			name: "v4 only, failed release", ipv6: false,
 			errV4:     errV4,
-			wantKinds: []string{"release_failed"}, wantFailures: 1, wantErr: errV4,
+			wantKinds: []string{"stop_failed"}, wantFailures: 1, wantErr: errV4,
 		},
 		{
 			name: "dual stack, both clean", ipv6: true,
-			wantKinds: []string{"release", "release"},
+			wantKinds: []string{"stopped", "stopped"},
 		},
 		{
 			name: "dual stack, v4 fails — v6 outcome still audited", ipv6: true,
 			errV4:     errV4,
-			wantKinds: []string{"release_failed", "release"}, wantFailures: 1, wantErr: errV4,
+			wantKinds: []string{"stop_failed", "stopped"}, wantFailures: 1, wantErr: errV4,
 		},
 		{
 			name: "dual stack, v6 fails", ipv6: true,
 			errV6:     errV6,
-			wantKinds: []string{"release", "release_failed"}, wantFailures: 1, wantErr: errV6,
+			wantKinds: []string{"stopped", "stop_failed"}, wantFailures: 1, wantErr: errV6,
 		},
 		{
 			name: "dual stack, both fail — v4 error takes precedence", ipv6: true,
 			errV4: errV4, errV6: errV6,
-			wantKinds: []string{"release_failed", "release_failed"}, wantFailures: 2, wantErr: errV4,
+			wantKinds: []string{"stop_failed", "stop_failed"}, wantFailures: 2, wantErr: errV4,
 		},
 	}
 
@@ -358,7 +359,7 @@ func TestStop_AuditsBothFamiliesIndependently(t *testing.T) {
 			p.ledger = testLedger(t, &ledgerFailures)
 
 			opts := DHCPNetworkOptions{AuditLog: true, IPv6: tc.ipv6}
-			m := releasingManager(t, p, opts, tc.errV4, tc.errV6)
+			m := stoppingManager(t, p, opts, tc.errV4, tc.errV6)
 
 			err := m.Stop()
 
@@ -373,8 +374,8 @@ func TestStop_AuditsBothFamiliesIndependently(t *testing.T) {
 			// since #730 is the sum of the two halves rather than a
 			// counter of its own. Asserting the sum keeps this case
 			// about Stop's auditing; which half moved is pinned by
-			// TestStop_BoundV6ReleaseFailureIsCountedPerFamily.
-			if got := p.leaseReleaseFailuresV4.Load() + p.leaseReleaseFailuresV6.Load(); got != tc.wantFailures {
+			// TestStop_BoundV6StopFailureIsCountedPerFamily.
+			if got := p.clientStopFailuresV4.Load() + p.clientStopFailuresV6.Load(); got != tc.wantFailures {
 				t.Errorf("lease release failures (v4+v6) = %d, want %d", got, tc.wantFailures)
 			}
 
@@ -420,8 +421,8 @@ func TestStop_FailedStartIsANoOp(t *testing.T) {
 	if err := m.Stop(); err != nil {
 		t.Fatalf("Stop() on a failed-Start manager = %v, want nil", err)
 	}
-	if got := p.leaseReleaseFailuresV4.Load(); got != 0 {
-		t.Errorf("leaseReleaseFailuresV4 = %d, want 0", got)
+	if got := p.clientStopFailuresV4.Load(); got != 0 {
+		t.Errorf("clientStopFailuresV4 = %d, want 0", got)
 	}
 	if _, err := os.Stat(p.ledger.path); !os.IsNotExist(err) {
 		t.Errorf("ledger written for a manager that never held a lease (stat err: %v)", err)
@@ -432,15 +433,9 @@ func TestStop_FailedStartIsANoOp(t *testing.T) {
 // could not: Start errored, and the CreateEndpoint one-shot's address is
 // still recorded on it.
 //
-// That combination is the whole subject of #720. The older test seeds no
-// lastIP, so releaseOrphanedLease finds nothing to act on and the call
-// is a no-op for the wrong reason - it would have stayed green through
-// the entire defect.
-//
-// As in TestStop_NeverBoundClientReclaimsInsteadOfClaimingRelease, the
-// network has neither parent nor bridge, so a reclaim that does run has
-// no path to the wire and lands on orphanedLeaseReleaseFailures. That is
-// what makes "the reclaim ran at all" observable without a kernel.
+// That combination is what #720 was about, and what #800 settled. The
+// older test seeds no lastIP, so a stop path that acted on the lease
+// would find nothing to act on and look correct for the wrong reason.
 func failedStartManager(t *testing.T, p *Plugin) *dhcpManager {
 	t.Helper()
 
@@ -458,280 +453,151 @@ func failedStartManager(t *testing.T, p *Plugin) *dhcpManager {
 	return m
 }
 
-// TestStop_FailedStartReclaimsOnlyWhenLeaving pins #720 in both
-// directions.
+// ledgerKinds reads the audit ledger, tolerating a file that was never
+// created — which is itself a result, and the one several tests below
+// expect.
+func ledgerKinds(t *testing.T, l *leaseLedger) []string {
+	t.Helper()
+	if _, err := os.Stat(l.path); os.IsNotExist(err) {
+		return nil
+	}
+	var kinds []string
+	for _, e := range readLedgerLines(t, l.path) {
+		kinds = append(kinds, e.Kind)
+	}
+	return kinds
+}
+
+// TestStop_LeavingAndNotLeavingAreTheSame is #800's rule stated as the
+// thing a test can see.
 //
-// stop() has two paths that hand the one-shot's lease back, and until
-// this test only the second consulted `leaving`. StopForLeave's own
-// comment states why that word is load-bearing: on plugin Close, on
-// DeleteNetwork and on the manager displacement in Join the container is
-// still running and still using its address, so a DHCPRELEASE sent there
-// tells the server an address is free while a live container holds it -
-// the duplicate assignment #524 added detection for, manufactured by us.
+// The plugin no longer distinguishes "this endpoint is going away" from
+// "this manager is being shut down" when it comes to the lease, because
+// at the moment of the decision those two are indistinguishable in the
+// one case that matters: `docker restart` is a Leave immediately
+// followed by a Join for the SAME MAC, and the tombstone exists to
+// promise that Join the same address. Anything the leaving path did to
+// the lease raced that promise.
 //
-// A failed Start is not evidence the container is gone. Recovery
-// rebuilds a manager for a live container and seeds lastIP from Docker's
-// record; that manager's Start can fail on, say, the netns open
-// joinStartFailures counts. The container then restarts, Join displaces
-// the stale manager, and displaced.Stop() reaches this branch with the
-// address the NEW endpoint was just ACKed.
+// So both entry points must now produce IDENTICAL observable results,
+// and this asserts equality rather than two hard-coded expectations. A
+// change that reintroduces asymmetry fails here whichever side it
+// favours — including a re-added reclaim, which is what the old
+// behaviour was and therefore the strongest mutant this test faces.
 //
-// Both rows are asserted deliberately. Guarding a reclaim fails in one
-// direction and dropping it fails in the other, and #370 - 17 of 32
-// containers in one integration run leaking an address - is the other
-// direction. A test that only proved the release was suppressed would be
-// green for a patch that deleted the reclaim outright.
-func TestStop_FailedStartReclaimsOnlyWhenLeaving(t *testing.T) {
-	cases := []struct {
-		name         string
-		leaving      bool
-		wantReclaims int32
-		why          string
+// Every row seeds an address, because a stop path that acts on a lease
+// finds nothing to act on when there is none and passes for the wrong
+// reason.
+func TestStop_LeavingAndNotLeavingAreTheSame(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		mk   func(t *testing.T, p *Plugin) *dhcpManager
 	}{
 		{
-			name:         "close_of_a_live_endpoint_holds_the_lease",
-			leaving:      false,
-			wantReclaims: 0,
-			why: "the endpoint is not leaving, so the container may still " +
-				"hold this address; releasing it invites the server to " +
-				"hand the same address to somebody else",
+			name: "start_failed_with_the_oneshot_lease_outstanding",
+			mk:   failedStartManager,
 		},
 		{
-			name:         "leave_still_hands_the_lease_back",
-			leaving:      true,
-			wantReclaims: 1,
-			why: "the endpoint is going away and nobody ever took the " +
-				"one-shot's lease over, so it must be reclaimed (#370)",
+			name: "client_started_but_never_bound",
+			mk: func(t *testing.T, p *Plugin) *dhcpManager {
+				m := stoppingManager(t, p, DHCPNetworkOptions{AuditLog: true}, nil, nil)
+				m.boundV4.Store(false)
+				return m
+			},
 		},
-	}
-
-	for _, tc := range cases {
+		{
+			name: "client_bound_and_exited_cleanly",
+			mk: func(t *testing.T, p *Plugin) *dhcpManager {
+				return stoppingManager(t, p, DHCPNetworkOptions{AuditLog: true}, nil, nil)
+			},
+		},
+		{
+			name: "client_never_bound_and_died_on_the_signal",
+			mk: func(t *testing.T, p *Plugin) *dhcpManager {
+				m := stoppingManager(t, p, DHCPNetworkOptions{AuditLog: true},
+					errors.New("signal: terminated"), nil)
+				m.boundV4.Store(false)
+				return m
+			},
+		},
+	} {
 		t.Run(tc.name, func(t *testing.T) {
-			var ledgerFailures atomic.Int32
-			p := &Plugin{}
-			p.ledger = testLedger(t, &ledgerFailures)
+			run := func(leaving bool) (kinds []string, stopFailures int32) {
+				var ledgerFailures atomic.Int32
+				p := &Plugin{}
+				p.ledger = testLedger(t, &ledgerFailures)
+				m := tc.mk(t, p)
 
-			m := failedStartManager(t, p)
-
-			var err error
-			if tc.leaving {
-				err = m.StopForLeave()
-			} else {
-				err = m.Stop()
-			}
-			if err != nil {
-				t.Fatalf("stop(leaving=%v) on a failed-Start manager = %v, want nil",
-					tc.leaving, err)
-			}
-			// spawnOrphanRelease increments the WaitGroup before it
-			// starts the goroutine, so this is a real barrier in both
-			// rows rather than a race the zero row always wins.
-			p.orphanReleases.Wait()
-
-			got := p.orphanedLeaseReleaseFailures.Load() + p.orphanedLeasesReleased.Load()
-			if got != tc.wantReclaims {
-				t.Errorf("reclaim attempts = %d, want %d - %s", got, tc.wantReclaims, tc.why)
-			}
-
-			// The ledger is the operator-visible half. A reclaim that
-			// ran writes release or release_failed for the address; one
-			// that was correctly withheld writes nothing at all, and on
-			// this manager nothing else writes either, so the file is
-			// still absent.
-			if !tc.leaving {
-				if _, err := os.Stat(p.ledger.path); !os.IsNotExist(err) {
-					for _, e := range readLedgerLines(t, p.ledger.path) {
-						t.Errorf("ledger recorded %q for %s on a Stop that is "+
-							"not a Leave - %s", e.Kind, e.IP, tc.why)
-					}
+				var err error
+				if leaving {
+					err = m.StopForLeave()
+				} else {
+					err = m.Stop()
 				}
-				return
+				if err != nil {
+					t.Fatalf("stop(leaving=%v) = %v, want nil", leaving, err)
+				}
+				return ledgerKinds(t, p.ledger), p.clientStopFailuresV4.Load()
 			}
-			var kinds []string
-			for _, e := range readLedgerLines(t, p.ledger.path) {
-				kinds = append(kinds, e.Kind)
+
+			leaveKinds, leaveFailures := run(true)
+			stopKinds, stopFailures := run(false)
+
+			if !slices.Equal(leaveKinds, stopKinds) {
+				t.Errorf("ledger kinds differ by entry point: StopForLeave wrote %v, "+
+					"Stop wrote %v. The lease is treated the same either way (#800) — "+
+					"a Leave is not evidence the container is gone, it is what "+
+					"`docker restart` does on its way back", leaveKinds, stopKinds)
 			}
-			if len(kinds) != 1 || kinds[0] != "release_failed" {
-				t.Errorf("ledger kinds = %v, want [release_failed] - %s", kinds, tc.why)
+			if leaveFailures != stopFailures {
+				t.Errorf("client_stop_failures differ by entry point: StopForLeave %d, "+
+					"Stop %d", leaveFailures, stopFailures)
 			}
 		})
 	}
 }
 
-// TestStop_NeverBoundClientReclaimsInsteadOfClaimingRelease pins the
-// third state Stop used to fall between (#549).
+// The equality above is satisfied by a plugin that does nothing at all
+// on either path, so this pins what the shared outcome actually IS.
 //
-// CreateEndpoint's one-shot acquires the address and deliberately keeps
-// it, because handing over is the persistent client's job. Stop knew two
-// endings: Start failed (reclaim) and Start succeeded (let dhcpcd's
-// `release` directive do it). A client that starts and is SIGTERMed
-// before it ever binds is neither — dhcpcd releases only a lease it
-// holds, so it sends nothing, and startErr is nil so the reclaim never
-// ran. The address stayed held upstream with nobody responsible, while
-// the ledger recorded a release the server never saw.
-//
-// Both halves are asserted, because the second is the one that kept the
-// first invisible.
-//
-// Mode-independent by construction: this is a Join/Leave ordering race,
-// not an ipvlan property. It was found through an ipvlan test only
-// because that test deliberately races container exit against Join.
-func TestStop_NeverBoundClientReclaimsInsteadOfClaimingRelease(t *testing.T) {
-	var ledgerFailures atomic.Int32
-	p := &Plugin{}
-	p.ledger = testLedger(t, &ledgerFailures)
-
-	// A network with neither parent nor bridge: the reclaim has no path
-	// to the wire, so it lands on orphanedLeaseReleaseFailures. That is
-	// what makes "the reclaim ran at all" observable in a unit test,
-	// which is the fact under test here — whether it can reach a real
-	// DHCP server is the integration test's job.
-	m := releasingManager(t, p, DHCPNetworkOptions{AuditLog: true}, nil, nil)
-	m.boundV4.Store(false)
-
-	if err := m.StopForLeave(); err != nil {
-		t.Fatalf("StopForLeave() = %v, want nil", err)
-	}
-	p.orphanReleases.Wait()
-
-	if got := p.orphanedLeaseReleaseFailures.Load(); got != 1 {
-		t.Errorf("orphaned_lease_release_failures = %d, want 1 — the lease the "+
-			"one-shot acquired was never handed to the reclaim", got)
-	}
-	if got := p.leaseReleaseFailuresV4.Load(); got != 0 {
-		t.Errorf("leaseReleaseFailuresV4 = %d, want 0 — nothing we were running "+
-			"failed to release; no client ever held this lease", got)
-	}
-
-	for _, e := range readLedgerLines(t, p.ledger.path) {
-		if e.Kind == "release" {
-			t.Fatalf("ledger recorded %q for %s, but the client never held a "+
-				"binding and no DHCPRELEASE was sent", e.Kind, e.IP)
-		}
-	}
-}
-
-// A bound client is the unchanged path, asserted alongside the above so
-// the reclaim cannot start firing on every ordinary teardown — that
-// would send a second DHCPRELEASE for an address the server has already
-// freed and may have reallocated.
-func TestStop_BoundClientDoesNotReclaim(t *testing.T) {
-	var ledgerFailures atomic.Int32
-	p := &Plugin{}
-	p.ledger = testLedger(t, &ledgerFailures)
-
-	m := releasingManager(t, p, DHCPNetworkOptions{AuditLog: true}, nil, nil)
-
-	if err := m.Stop(); err != nil {
-		t.Fatalf("Stop() = %v, want nil", err)
-	}
-	p.orphanReleases.Wait()
-
-	if got := p.orphanedLeasesReleased.Load() + p.orphanedLeaseReleaseFailures.Load(); got != 0 {
-		t.Errorf("reclaim ran %d time(s) for a client that held its lease; "+
-			"dhcpcd already released it", got)
-	}
-}
-
-// TestStop_NeverBoundIsNotReclaimedUnlessLeaving is the guard on the
-// reclaim's blast radius, and it matters more than the reclaim itself.
-//
-// Plain Stop() is what plugin Close calls, once per live manager, so
-// their dhcpcds can release before the process exits — on a plugin
-// upgrade or `docker plugin disable`, with every container still
-// running. A manager can be never-bound there for an ordinary reason:
-// its persistent client came up against a DHCP server that is not
-// answering. The address is still configured inside that container and
-// still in use.
-//
-// Reclaiming it would tell the server an address is free while a live
-// container holds it, and the server would be entitled to hand it to
-// somebody else — the duplicate-assignment failure this release added
-// conflict detection for (#524), manufactured by the plugin. A missed
-// reclaim only leaves the leak that existed before; a wrong one creates
-// an outage.
-//
-// The same applies to a displaced manager and to managers stopped on
-// network removal, which is why the reclaim is opt-in at the call site
-// rather than a flag that defaults to on.
-func TestStop_NeverBoundIsNotReclaimedUnlessLeaving(t *testing.T) {
-	var ledgerFailures atomic.Int32
-	p := &Plugin{}
-	p.ledger = testLedger(t, &ledgerFailures)
-
-	m := releasingManager(t, p, DHCPNetworkOptions{AuditLog: true}, nil, nil)
-	m.boundV4.Store(false)
-
-	if err := m.Stop(); err != nil {
-		t.Fatalf("Stop() = %v, want nil", err)
-	}
-	p.orphanReleases.Wait()
-
-	if got := p.orphanedLeasesReleased.Load() + p.orphanedLeaseReleaseFailures.Load(); got != 0 {
-		t.Errorf("reclaim ran %d time(s) on a plain Stop; the container may still "+
-			"be running and using this address", got)
-	}
-
-	// Still must not claim a release that did not happen. Nothing was
-	// audited at all here, so the ledger was never even created — the
-	// same shape TestStop_FailedStartIsANoOp asserts, and the honest
-	// record: no DHCPRELEASE was sent, so none is written down.
-	if _, err := os.Stat(p.ledger.path); !os.IsNotExist(err) {
-		for _, e := range readLedgerLines(t, p.ledger.path) {
-			if e.Kind == "release" {
-				t.Errorf("ledger recorded %q for %s on a client that never bound", e.Kind, e.IP)
-			}
-		}
-	}
-}
-
-// TestStop_NeverBoundClientKilledBySignalIsStillNeverBound covers the
-// case #558 left behind, which shipped as a lease leak (#607).
-//
-// The #549 tests above all model a client that exits cleanly, and the
-// code they pinned read the exit error FIRST — so it only ever reached
-// the never-bound branch when errV4 was nil. dhcpcd exits 0 on SIGTERM
-// once it has installed its handler; signalled before that it dies ON
-// the signal and Finish reaps an exit status instead. A Leave that
-// arrives immediately after Join produces exactly that, and the lease
-// was then classified as a failed release and never reclaimed.
-//
-// The exit status is not evidence of anything here: we sent that
-// SIGTERM. What decides the outcome is that the client never held a
-// binding, so it cannot have failed to release one.
-//
-// Both `leaving` values are asserted, because the fix must not widen
-// the reclaim's blast radius while it is widening its reach — see
-// TestStop_NeverBoundIsNotReclaimedUnlessLeaving for why a wrong
-// reclaim is worse than a missed one.
-func TestStop_NeverBoundClientKilledBySignalIsStillNeverBound(t *testing.T) {
-	// Stands in for the *exec.ExitError that Finish reaps when dhcpcd
-	// dies on the signal. The production path distinguishes nothing
-	// beyond non-nil, so the concrete type is not what is under test —
-	// the string is the one operators see in the plugin log.
-	errSignalled := errors.New("signal: terminated")
-
+// Without it, deleting every audit call would turn
+// TestStop_LeavingAndNotLeavingAreTheSame green — the failure mode the
+// #780 counters exist to name, one level up: two identical results are
+// not evidence of correct behaviour unless at least one of them is
+// known to be non-empty.
+func TestStop_AuditsAStopWithoutClaimingARelease(t *testing.T) {
 	for _, tc := range []struct {
-		name        string
-		leaving     bool
-		wantReclaim int32
-		// The ledger cannot tell these two writers apart on its own: an
-		// unfixed stop() writes release_failed here, and so does a
-		// reclaim that could not reach the wire. wantReclaim is what
-		// separates them, and it is the assertion that goes red on the
-		// bug. The kinds are asserted alongside it so a fix that
-		// reclaims AND still audits from stop() is caught too.
+		name      string
+		bound     bool
+		exitErr   error
+		wantErr   bool
 		wantKinds []string
+		why       string
 	}{
 		{
-			name:    "leaving reclaims the lease nobody took",
-			leaving: true, wantReclaim: 1,
-			wantKinds: []string{"release_failed"}, // the reclaim's own, honest: not handed back
+			name: "bound_and_clean", bound: true, exitErr: nil,
+			wantKinds: []string{"stopped"},
+			why: "the client held a binding and shut down when asked; " +
+				"`stopped` says that and claims nothing about the server",
 		},
 		{
-			name:    "not leaving leaves a live container's address alone",
-			leaving: false, wantReclaim: 0,
+			name: "bound_and_dirty", bound: true, exitErr: errors.New("boom"),
+			wantErr:   true,
+			wantKinds: []string{"stop_failed"},
+			why:       "the client held a binding and did not shut down cleanly",
+		},
+		{
+			name: "never_bound", bound: false, exitErr: nil,
 			wantKinds: nil,
+			why: "no binding ever existed, so there is nothing to write down; " +
+				"an entry here would be the ledger inventing a lease event",
+		},
+		{
+			name: "never_bound_killed_by_signal", bound: false,
+			exitErr:   errors.New("signal: terminated"),
+			wantKinds: nil,
+			why: "we sent that SIGTERM and the client had no binding; the exit " +
+				"status is not evidence of anything (#607)",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -739,46 +605,29 @@ func TestStop_NeverBoundClientKilledBySignalIsStillNeverBound(t *testing.T) {
 			p := &Plugin{}
 			p.ledger = testLedger(t, &ledgerFailures)
 
-			// As in the #549 test: no parent and no bridge, so the
-			// reclaim cannot reach the wire and lands on
-			// orphanedLeaseReleaseFailures. That it ran at all is the
-			// fact under test.
-			m := releasingManager(t, p, DHCPNetworkOptions{AuditLog: true}, errSignalled, nil)
-			m.boundV4.Store(false)
+			m := stoppingManager(t, p, DHCPNetworkOptions{AuditLog: true}, tc.exitErr, nil)
+			m.boundV4.Store(tc.bound)
 
-			err := m.stop(tc.leaving)
-			// Errorf, not Fatalf: the reclaim assertion below is the
-			// one that fails on the leak itself, and a run that stopped
-			// here would hide it behind the cosmetic half.
-			if err != nil {
-				t.Errorf("stop(%v) = %v, want nil — we sent the SIGTERM and the "+
-					"lease was handled, so nothing failed; returning this is what "+
-					"made Leave answer 500 for a correct teardown", tc.leaving, err)
-			}
-			p.orphanReleases.Wait()
-
-			if got := p.orphanedLeaseReleaseFailures.Load(); got != tc.wantReclaim {
-				t.Errorf("reclaim ran %d time(s), want %d — the client died on the "+
-					"signal before it bound, which does not change what is owed",
-					got, tc.wantReclaim)
-			}
-			if got := p.leaseReleaseFailuresV4.Load(); got != 0 {
-				t.Errorf("leaseReleaseFailuresV4 = %d, want 0 — no client we were "+
-					"running failed to hand a lease back; none ever held one", got)
+			err := m.StopForLeave()
+			switch {
+			case tc.wantErr && err == nil:
+				t.Errorf("StopForLeave() = nil, want an error — a client that held a "+
+					"binding and did not exit cleanly is a real failure: %s", tc.why)
+			case !tc.wantErr && err != nil:
+				t.Errorf("StopForLeave() = %v, want nil — %s", err, tc.why)
 			}
 
-			var kinds []string
-			if _, err := os.Stat(p.ledger.path); !os.IsNotExist(err) {
-				for _, e := range readLedgerLines(t, p.ledger.path) {
-					kinds = append(kinds, e.Kind)
-					if e.Kind == "release" {
-						t.Errorf("ledger recorded %q for %s, but the client never held "+
-							"a binding, so no DHCPRELEASE was ever sent", e.Kind, e.IP)
-					}
-				}
-			}
+			kinds := ledgerKinds(t, p.ledger)
 			if !slices.Equal(kinds, tc.wantKinds) {
-				t.Errorf("ledger kinds = %v, want %v", kinds, tc.wantKinds)
+				t.Errorf("ledger kinds = %v, want %v — %s", kinds, tc.wantKinds, tc.why)
+			}
+			// Whatever else it writes, it must never claim the server
+			// saw a DHCPRELEASE. Nothing this plugin runs sends one.
+			for _, k := range kinds {
+				if strings.Contains(k, "release") {
+					t.Errorf("ledger kind %q names a release; no client this plugin "+
+						"runs releases a lease (#800)", k)
+				}
 			}
 		})
 	}
@@ -1180,15 +1029,19 @@ func TestJoin_AttachBudgetIncludesTheGrace(t *testing.T) {
 	}
 }
 
-// TestManagerClientID_IsStableAcrossCallSites pins the property the
-// whole helper exists for: the renewal client (setupClient) and the
-// synthesised release of an orphaned lease (synthesiseRelease) must
-// present the SAME option-61 id, or the server treats them as
-// different clients and the lease is neither renewed nor freed. Both
-// now route through m.clientID(), so the id must not depend on whether
-// a container link is still around — which it is not, by the time an
-// orphan release runs.
-func TestManagerClientID_IsStableAcrossCallSites(t *testing.T) {
+// TestManagerClientID_DoesNotDependOnALiveLink pins the property the
+// whole helper exists for: the id must be the same whether or not the
+// container's link is still around.
+//
+// It used to be phrased as "the same across call sites", because the
+// removed orphaned-lease reclaim was a second caller that ran after the
+// link was gone. There is one caller now, and the property is if
+// anything more load-bearing than it was (#800): the plugin no longer
+// releases, so a restarting container gets its address back only by
+// presenting the same option-61 identity the one-shot used and being
+// recognised. An id that quietly changed when the link went away would
+// mean a different address on every restart.
+func TestManagerClientID_DoesNotDependOnALiveLink(t *testing.T) {
 	withLink := managerWithMACs("", hintMAC, linkMAC)
 	afterContainerGone := managerWithMACs("", hintMAC, nil)
 
@@ -1237,91 +1090,85 @@ func TestManagerClientID_ModeAndOverride(t *testing.T) {
 	})
 }
 
-// TestStop_NeverBoundV6ClientIsNotAuditedAsReleased is the v6 mirror of
-// TestStop_NeverBoundClientReclaimsInsteadOfClaimingRelease and of the
-// signalled variant above (#608). Until #608 the v6 client was judged on
-// its exit error alone: signalled before it bound it exits cleanly, and
-// the ledger recorded "release" for the IA_NA address the one-shot had
-// taken — the ledger asserting the server saw a DHCPv6 RELEASE for an
-// address no client ever held a binding to release — while the address
-// itself was left leased upstream, because the reclaim was v4-only.
+// TestStop_NeverBoundV6ClientIsNotAuditedAsReleased is the v6 half of
+// the honesty rule (#608).
 //
-// The v4 client is bound in every row, so the reclaim that runs is
-// owed for v6 alone; TestReleaseOrphanedLease_ReclaimsEveryNeverBoundFamily
-// pins that it hands back only that family.
+// Until #608 the v6 client was judged on its exit error alone: signalled
+// before it bound it exits cleanly, so the ledger recorded a release for
+// the IA_NA address the one-shot had taken — the ledger asserting the
+// server saw a DHCPv6 RELEASE for an address no client ever held a
+// binding to release.
+//
+// The v4 client is bound in every row, so exactly one honest v4 entry is
+// expected and the v6 half must add nothing. Both entry points are
+// asserted and expect the SAME result: since #800 the lease is treated
+// identically whether or not the endpoint is leaving, and a row here
+// that differed would mean that rule had been quietly reintroduced on
+// the v6 side.
 func TestStop_NeverBoundV6ClientIsNotAuditedAsReleased(t *testing.T) {
 	errSignalled := errors.New("signal: terminated")
 
 	for _, tc := range []struct {
-		name        string
-		errV6       error
-		leaving     bool
-		wantReclaim int32
-		wantKinds   []string
+		name    string
+		errV6   error
+		leaving bool
 	}{
-		{
-			name:    "clean exit, leaving: v6 reclaimed, never audited as released",
-			leaving: true, wantReclaim: 1,
-			wantKinds: []string{"release", "release_failed"}, // v4's own; then the reclaim's honest v6 entry
-		},
-		{
-			name:  "killed on the signal, leaving: same",
-			errV6: errSignalled, leaving: true, wantReclaim: 1,
-			wantKinds: []string{"release", "release_failed"},
-		},
-		{
-			name:    "not leaving: a live container's v6 address is left alone",
-			leaving: false, wantReclaim: 0,
-			wantKinds: []string{"release"}, // v4 only
-		},
+		{name: "clean exit, leaving", leaving: true},
+		{name: "clean exit, not leaving", leaving: false},
+		{name: "killed on the signal, leaving", errV6: errSignalled, leaving: true},
+		{name: "killed on the signal, not leaving", errV6: errSignalled, leaving: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var ledgerFailures atomic.Int32
 			p := &Plugin{}
 			p.ledger = testLedger(t, &ledgerFailures)
 
-			// No parent and no bridge: the reclaim cannot reach the wire
-			// and lands on orphanedLeaseReleaseFailures, which is what
-			// makes "it ran, for v6" observable here.
-			m := releasingManager(t, p, DHCPNetworkOptions{AuditLog: true, IPv6: true}, nil, tc.errV6)
+			m := stoppingManager(t, p, DHCPNetworkOptions{AuditLog: true, IPv6: true}, nil, tc.errV6)
 			m.boundV6.Store(false)
 
 			if err := m.stop(tc.leaving); err != nil {
 				t.Errorf("stop(%v) = %v, want nil — a v6 client that never bound "+
 					"cannot have failed to release, whatever its exit status", tc.leaving, err)
 			}
-			p.orphanReleases.Wait()
 
-			if got := p.orphanedLeaseReleaseFailures.Load(); got != tc.wantReclaim {
-				t.Errorf("reclaim ran %d time(s), want %d", got, tc.wantReclaim)
-			}
-			if got := p.leaseReleaseFailuresV4.Load() + p.leaseReleaseFailuresV6.Load(); got != 0 {
-				t.Errorf("lease_release_failures(+v6) = %d, want 0 — no client we were "+
-					"running failed to hand a lease back", got)
+			if got := p.clientStopFailuresV4.Load() + p.clientStopFailuresV6.Load(); got != 0 {
+				t.Errorf("client_stop_failures(+v6) = %d, want 0 — no client we were "+
+					"running failed to shut down", got)
 			}
 
 			var kinds []string
 			for _, e := range readLedgerLines(t, p.ledger.path) {
 				kinds = append(kinds, e.Kind)
-				if e.Kind == "release" && e.IP == "fd00::50" {
-					t.Errorf("ledger recorded %q for %s, but the v6 client never held a "+
-						"binding and no DHCPv6 RELEASE was sent", e.Kind, e.IP)
+				if e.IP == "fd00::50" {
+					t.Errorf("ledger recorded %q for %s, but the v6 client never held "+
+						"a binding; there is no v6 lease event to write down", e.Kind, e.IP)
 				}
 			}
-			if strings.Join(kinds, ",") != strings.Join(tc.wantKinds, ",") {
-				t.Errorf("ledger kinds = %v, want %v", kinds, tc.wantKinds)
+			// The v4 client DID bind and DID shut down cleanly, so
+			// exactly one honest entry is expected. Asserting it here
+			// is what stops this test passing on a plugin that audits
+			// nothing at all.
+			if !slices.Equal(kinds, []string{"stopped"}) {
+				t.Errorf("ledger kinds = %v, want [stopped] — the bound v4 client's "+
+					"own entry, and nothing from v6", kinds)
 			}
 		})
 	}
 }
 
-// TestStop_BoundV6ReleaseFailureIsCountedPerFamily guards the other
+// TestStop_BoundV6StopFailureIsCountedPerFamily guards the other
 // direction of #608: a v6 client that DID hold its binding and failed to
-// shut down is still a real release failure — audited as such, returned
-// as an error, and now counted on the v6 split so a dual-stack operator
-// can tell which family failed. The v4 row pins that the split does not
-// move on a v4 failure.
-func TestStop_BoundV6ReleaseFailureIsCountedPerFamily(t *testing.T) {
+// shut down is still a real failure — audited as such, returned as an
+// error, and counted on the v6 split so a dual-stack operator can tell
+// which family failed. The v4 row pins that the split does not move on a
+// v4 failure.
+//
+// What it no longer means is that a lease was not handed back. Nothing
+// is handed back on any path since #800; this counts a client that did
+// not exit cleanly when signalled, which is why it is
+// client_stop_failures and not the lease_release_failures it was called
+// when the plugin still released.
+func TestStop_BoundV6StopFailureIsCountedPerFamily(t *testing.T) {
 	boom := errors.New("release boom")
 	for _, tc := range []struct {
 		name          string
@@ -1336,30 +1183,26 @@ func TestStop_BoundV6ReleaseFailureIsCountedPerFamily(t *testing.T) {
 			var ledgerFailures atomic.Int32
 			p := &Plugin{}
 			p.ledger = testLedger(t, &ledgerFailures)
-			m := releasingManager(t, p, DHCPNetworkOptions{AuditLog: true, IPv6: true}, tc.errV4, tc.errV6)
+			m := stoppingManager(t, p, DHCPNetworkOptions{AuditLog: true, IPv6: true}, tc.errV4, tc.errV6)
 
 			if err := m.StopForLeave(); !errors.Is(err, boom) {
 				t.Errorf("StopForLeave() = %v, want an error wrapping %v — a bound client "+
-					"that fails to release is a real failure, not swallowed by the "+
+					"that fails to shut down is a real failure, not swallowed by the "+
 					"never-bound handling", err, boom)
 			}
-			p.orphanReleases.Wait()
 
 			// wantAgg is the total across both families. Since #730 it
 			// is their sum, so assert the sum AND the v4 half: the two
 			// together say which counter moved, not merely how many
 			// bumps happened.
-			if got := p.leaseReleaseFailuresV4.Load() + p.leaseReleaseFailuresV6.Load(); got != tc.wantAgg {
-				t.Errorf("lease_release_failures (v4+v6) = %d, want %d", got, tc.wantAgg)
+			if got := p.clientStopFailuresV4.Load() + p.clientStopFailuresV6.Load(); got != tc.wantAgg {
+				t.Errorf("client_stop_failures (v4+v6) = %d, want %d", got, tc.wantAgg)
 			}
-			if got, wantV4 := p.leaseReleaseFailuresV4.Load(), tc.wantAgg-tc.want; got != wantV4 {
-				t.Errorf("lease_release_failures_v4 = %d, want %d", got, wantV4)
+			if got, wantV4 := p.clientStopFailuresV4.Load(), tc.wantAgg-tc.want; got != wantV4 {
+				t.Errorf("client_stop_failures_v4 = %d, want %d", got, wantV4)
 			}
-			if got := p.leaseReleaseFailuresV6.Load(); got != tc.want {
-				t.Errorf("lease_release_failures_v6 = %d, want %d", got, tc.want)
-			}
-			if got := p.orphanedLeasesReleased.Load() + p.orphanedLeaseReleaseFailures.Load(); got != 0 {
-				t.Errorf("reclaim ran %d time(s) for clients that held their leases", got)
+			if got := p.clientStopFailuresV6.Load(); got != tc.want {
+				t.Errorf("client_stop_failures_v6 = %d, want %d", got, tc.want)
 			}
 		})
 	}
