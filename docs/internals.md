@@ -76,7 +76,7 @@ lifecycle, the event plumbing, and everything below are identical.
   corrupts lease bookkeeping; the runtime collision is worse and silent —
   the second client finds the first one's control socket, forwards its
   arguments to that process and exits 0, so it never runs a client of its
-  own and its lease is never renewed or released (#332). The plugin
+  own and its lease is never renewed (#332). The plugin
   shadows both directories with a private `tmpfs` in each client's own
   mount namespace, which keeps them fully independent.
 

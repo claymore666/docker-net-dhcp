@@ -277,26 +277,31 @@ they prove:
   measured over six runs, containerd dies with dockerd and the
   relaunched daemon removes each sandbox as stale, so no adoptable
   endpoint survives. What it asserts instead is read off the DHCP
-  server — the pre-death lease is released rather than burnt until
-  expiry, and the returned container holds a lease the server actually
-  granted.
+  server: the returned container holds a lease the server actually
+  granted, and the pre-death lease was **not** released — since #800
+  the address is held until it expires, the same as for a machine
+  powered off abruptly. The ACK is checked first and is the positive
+  control; the absence after it would otherwise read as a pass against
+  a log that had gone missing or stale.
 - `preflight_probe_test.go` — `validate_dhcp=true` probe accept/
   reject + bridge-mode rejection.
 
 **Parent NIC contention**
 - `parent_gate_test.go` — the per-parent gate serialises two operations
-  that would otherwise be on the parent NIC at the same time, so an
-  unrelated container's orphan reclaim cannot fail a `docker run` with
-  `device or resource busy` (#486, #549). The contender is a second
-  reclaim, not an endpoint: a rival `CreateEndpoint` *issued* 0.000s
-  after the collision window opened still registered no wait at all,
-  because it reached the gate only after the reclaim was done with the
-  parent — a reclaim's hold is one DHCP round trip, and a
-  `CreateEndpoint` spends longer than that getting from the socket to
-  its `LinkAdd`. Both leases coming back to the
-  server is the assertion of record; `parent_link_waits` only proves
-  the plugin believes it queued, and a gate that serialised into a
-  deadlock would satisfy that counter.
+  that would otherwise be on the parent NIC at the same time, so one
+  cannot fail the other with `device or resource busy` (#486, #549).
+  The holder is a `validate_dhcp` preflight probe, which keeps a
+  `dh-probe-*` link on the parent across a DHCP round trip; the
+  contender is a `CreateEndpoint` issued straight at the plugin socket
+  once the probe's link is visible. Until #800 the holder was an orphan
+  reclaim (`dh-rel-*`), which no longer exists — the probe is the
+  remaining operation that holds a parent long enough to collide.
+  The probe's hold budget is 8s against the gate's 4s wait, so the
+  direction is fixed by constants rather than by timing: the contender
+  either waits or times out, and `parent_link_waits + parent_link_wait_timeouts`
+  is asserted non-zero. What this does **not** prove is written in the
+  test header — a gate that serialised into a deadlock would satisfy
+  that sum, so the endpoint's own success is asserted too.
 
 **Host and install contracts**
 - `sandbox_netns_test.go` — the sandbox netns directory is readable

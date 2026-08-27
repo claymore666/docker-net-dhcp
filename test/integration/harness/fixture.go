@@ -585,12 +585,35 @@ func (f *Fixture) DnsmasqLog() string { return f.dnsmasqLog }
 // window: the shared fixture accumulates every test's traffic, so an
 // absolute count says nothing about the endpoint under test.
 func (f *Fixture) CountLogLines(substrings ...string) int {
-	data, err := os.ReadFile(f.dnsmasqLog)
+	return countMatchingLines(f.dnsmasqLog, substrings...)
+}
+
+// countMatchingLines is the one implementation behind both
+// CountLogLines and CountBridgeLogLines.
+//
+// It is shared rather than duplicated because both are load-bearing for
+// #800's absence assertions, and a matcher whose two copies can drift is
+// a matcher only half of which is under test: the control in
+// releasematcher_test.go would go on passing against the copy it drives
+// while the other silently stopped recognising a release.
+//
+// A blank line matches every substring vacuously, so blank lines are
+// skipped. That is only reachable through a call with no substrings,
+// which no caller makes — but a matcher used to prove an absence should
+// not have a way to over-count either.
+func countMatchingLines(path string, substrings ...string) int {
+	if path == "" {
+		return 0
+	}
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return 0
 	}
 	count := 0
 	for _, line := range strings.Split(string(data), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
 		l := strings.ToLower(line)
 		all := true
 		for _, s := range substrings {

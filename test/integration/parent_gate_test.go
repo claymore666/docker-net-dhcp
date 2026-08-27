@@ -193,13 +193,38 @@ func TestParentGate_EndpointQueuesBehindAProbe(t *testing.T) {
 	t.Logf("parent_link_waits +%d, parent_link_wait_timeouts +%d", waits, timeouts)
 
 	// Either counter proves the gate did its job: the contender found
-	// the parent held and queued. Which of the two it lands on depends
-	// on whether the holder finished inside parentGateBudget, and that
-	// is a property of the probe's duration, not of the gate.
+	// the parent held and queued instead of going straight to the
+	// kernel.
 	//
-	// Asserted as a sum rather than as one specific counter for exactly
-	// that reason. Splitting them would make this test fail when the
-	// probe's budget changes, which is a different subject.
+	// Which of the two it lands on is decided by two constants, not by
+	// timing. An isolated probe runs for its full 8s budget and
+	// parentGateBudget is 4s, so the contender queues, exhausts the
+	// budget and proceeds — measured here as parent_link_wait_timeouts
+	// +1, with the probe's link visible 51ms after the window opened.
+	// A margin of two orders of magnitude, and the direction that
+	// matters is fixed: 8s > 4s.
+	//
+	// # What this does NOT prove
+	//
+	// The version of this test that contended two reclaims also asserted
+	// parent_link_wait_timeouts stayed FLAT — that the budget was wide
+	// enough to cover a normal holder's duration. That assertion has no
+	// subject here and is deliberately not faked: this construction
+	// produces a timeout by design, because the only way to make a probe
+	// hold a parent for a usefully long time is to point it at a parent
+	// with no DHCP server, which is also the slowest a probe can be.
+	//
+	// The wait-without-timeout path is covered where it can be driven
+	// exactly — TestParentGate_SerialisesOneParent and
+	// TestParentGate_BudgetExpiryCountsAndProceeds in pkg/plugin, which
+	// hold the gate for a duration they choose. What is left for this
+	// test is the half a unit test cannot reach: that a real endpoint
+	// arriving at a real parent, through the real plugin, is serialised
+	// against whatever is already holding it.
+	//
+	// Asserted as a sum for that reason. Pinning one counter would make
+	// this fail when preflightProbeBudget or parentGateBudget moves,
+	// which is a different subject from whether the gate engaged.
 	if waits+timeouts < 1 {
 		t.Errorf("neither parent_link_waits nor parent_link_wait_timeouts advanced while " +
 			"an endpoint was created on a parent a probe was holding. The endpoint went " +

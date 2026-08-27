@@ -233,28 +233,7 @@ func (f *Fixture) DumpBridgeLogs(write func(string)) {
 // traffic, so only a delta across a window says anything about the
 // endpoint under test.
 func (f *Fixture) CountBridgeLogLines(substrings ...string) int {
-	if f.bridgeDnsmasqLog == "" {
-		return 0
-	}
-	data, err := os.ReadFile(f.bridgeDnsmasqLog)
-	if err != nil {
-		return 0
-	}
-	count := 0
-	for _, line := range strings.Split(string(data), "\n") {
-		l := strings.ToLower(line)
-		all := true
-		for _, s := range substrings {
-			if !strings.Contains(l, strings.ToLower(s)) {
-				all = false
-				break
-			}
-		}
-		if all && strings.TrimSpace(line) != "" {
-			count++
-		}
-	}
-	return count
+	return countMatchingLines(f.bridgeDnsmasqLog, substrings...)
 }
 
 // IsInBridgePool reports whether ip falls in the bridge fixture's

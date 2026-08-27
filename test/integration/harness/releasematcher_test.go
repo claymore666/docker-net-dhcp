@@ -86,3 +86,51 @@ func TestCountLogLines_SeesADHCPRELEASE(t *testing.T) {
 			"ambiguity, not endorsing it)", got)
 	}
 }
+
+// The bridge fixture's matcher is the one the daemon-kill test reads,
+// and it asserts an absence too — so it needs the same control.
+//
+// Both counters run through one implementation (countMatchingLines) as
+// of #800. This test does not take that on trust: it drives the bridge
+// method itself, so factoring them apart again, or giving the bridge
+// side its own copy that drifts, fails here rather than silently
+// weakening TestRecovery_DaemonKilled_LeaseIsHeldUntilItExpires.
+func TestCountBridgeLogLines_SeesADHCPRELEASE(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bridge-dnsmasq.log")
+	if err := os.WriteFile(path, []byte(dnsmasqReleaseLog), 0o644); err != nil {
+		t.Fatalf("write log: %v", err)
+	}
+	f := &Fixture{bridgeDnsmasqLog: path}
+
+	const (
+		releasedMAC = "1e:c1:60:88:5a:ef"
+		otherMAC    = "12:2a:92:35:a0:cb"
+	)
+
+	if got := f.CountBridgeLogLines("DHCPRELEASE"); got != 1 {
+		t.Errorf("CountBridgeLogLines(DHCPRELEASE) = %d, want 1 — the bridge matcher does "+
+			"not see a release in a log that contains one", got)
+	}
+
+	// Keyed on the MAC here rather than the IP: that is what the
+	// daemon-kill test keys on, because the address is not preserved
+	// across an abrupt daemon death.
+	if got := f.CountBridgeLogLines("DHCPRELEASE", releasedMAC); got != 1 {
+		t.Errorf("CountBridgeLogLines(DHCPRELEASE, %s) = %d, want 1", releasedMAC, got)
+	}
+	if got := f.CountBridgeLogLines("DHCPRELEASE", otherMAC); got != 0 {
+		t.Errorf("CountBridgeLogLines(DHCPRELEASE, %s) = %d, want 0 — the MAC filter is not "+
+			"being applied, so a neighbouring endpoint's release would be blamed on this one",
+			otherMAC, got)
+	}
+	if got := f.CountBridgeLogLines("DHCPACK", otherMAC); got != 1 {
+		t.Errorf("CountBridgeLogLines(DHCPACK, %s) = %d, want 1", otherMAC, got)
+	}
+
+	// An empty path is the unconfigured bridge fixture. Same ambiguity
+	// as the unreadable log above, recorded for the same reason.
+	if got := (&Fixture{}).CountBridgeLogLines("DHCPRELEASE"); got != 0 {
+		t.Errorf("CountBridgeLogLines on an unconfigured fixture = %d, want 0", got)
+	}
+}
