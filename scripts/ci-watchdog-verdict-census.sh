@@ -103,23 +103,56 @@ done
 runs=$(printf '%s' "$runs" | tr ' ' '\n' | grep -E '^[0-9]+$' | sort -u)
 [ -n "$runs" ] || refuse "no runs of $POOL_WORKFLOWS in the window, so there is nothing to count."
 
-short=0; starve=0; unknown=0; jobs_seen=0
+short=0; starve=0; unknown=0; jobs_seen=0; unread=0
 declare -a SHORT_AT=()
+declare -a UNREAD_AT=()
 
+# A DROPPED READ IS AN UNDERCOUNT, AND THIS COUNT ONLY FAILS UPWARD.
+# Each of the three reads below used to end in a bare `|| continue`:
+# the walk moved on and the totals printed as if the skipped thing had
+# been examined and found clean. That is the wrong direction for this
+# script specifically -- it goes red when POOL SHORT recurs, so every
+# lost verdict makes a recurrence LESS likely to be reported, which is
+# the failure it exists to prevent.
+#
+# So each failed read is counted and located, and a non-zero total is a
+# refusal below rather than a footnote beside a number.
+#
+# THE COUNTER MOVE IS SUBSUMED BY THE REFUSAL, and saying so is the
+# point. Measured against the suite: removing the refusal alone kills 4
+# cases; moving `jobs_seen` back above the annotations read alone kills
+# NONE, because the refusal fires first on any window that would have
+# exposed it. Both were applied anyway -- the refusal is the observable
+# fix, the counter position is what keeps the variable's name and the
+# non-vacuity guard's claim true if a future change ever narrows the
+# refusal. A reader should not mistake it for an independently tested
+# guarantee: it is not, and no arm below can make it one while the
+# refusal is this broad.
 while IFS= read -r run; do
     [ -n "$run" ] || continue
-    meta=$(api "repos/$REPO/actions/runs/$run" '"\(.run_attempt) \(.created_at) \(.head_branch)"') || continue
+    if ! meta=$(api "repos/$REPO/actions/runs/$run" '"\(.run_attempt) \(.created_at) \(.head_branch)"'); then
+        unread=$((unread + 1)); UNREAD_AT+=("run $run: metadata"); continue
+    fi
     attempts="${meta%% *}"; rest="${meta#* }"; created="${rest%% *}"; branch="${rest#* }"
     case "$attempts" in ''|*[!0-9]*) attempts=1 ;; esac
     for a in $(seq 1 "$attempts"); do
         # EVERY attempt. A re-run does not delete the earlier one's
         # verdict; it only stops the run's current conclusion from
         # reflecting it.
-        ids=$(api "repos/$REPO/actions/runs/$run/attempts/$a/jobs" \
-                  '.jobs[]? | select(.name=="watchdog") | .id') || continue
+        if ! ids=$(api "repos/$REPO/actions/runs/$run/attempts/$a/jobs" \
+                       '.jobs[]? | select(.name=="watchdog") | .id'); then
+            unread=$((unread + 1)); UNREAD_AT+=("run $run attempt $a: job list"); continue
+        fi
         for jid in $ids; do
+            # COUNTED WHERE THE READ SUCCEEDS, NOT WHERE THE JOB IS
+            # FOUND. This increment sat above the annotations read, so
+            # a job whose annotations could not be fetched still
+            # satisfied the non-vacuity guard -- the guard counted jobs
+            # FOUND while claiming to have counted jobs READ.
+            if ! titles=$(api "repos/$REPO/check-runs/$jid/annotations" '.[]?.title'); then
+                unread=$((unread + 1)); UNREAD_AT+=("run $run attempt $a job $jid: annotations"); continue
+            fi
             jobs_seen=$((jobs_seen + 1))
-            titles=$(api "repos/$REPO/check-runs/$jid/annotations" '.[]?.title') || continue
             case "$titles" in
                 *"CI POOL SHORT"*)  short=$((short + 1));  SHORT_AT+=("$created  run $run attempt $a  $branch") ;;
                 *"CI STARVATION"*)  starve=$((starve + 1)) ;;
@@ -128,6 +161,15 @@ while IFS= read -r run; do
         done
     done
 done <<< "$runs"
+
+# BEFORE THE NON-VACUITY GUARD, because it is the more specific cause.
+# A window where every read failed has jobs_seen 0 AND unread > 0, and
+# "no watchdog job exists" would be a wrong diagnosis of a transport
+# problem.
+if [ "$unread" -gt 0 ]; then
+    printf '  %s\n' "${UNREAD_AT[@]}" >&2
+    refuse "$unread read(s) failed (listed above), so this window was only partly examined. The counts below it can only be too LOW, and this script goes red on a recurrence -- so a partial count is a silent vote for 'no recurrence' from an environment that could not see one."
+fi
 
 # NON-VACUITY. "No POOL SHORT verdicts" is true of a window holding no
 # watchdog jobs, and that is the strongest possible pass produced by
@@ -154,7 +196,7 @@ case "$incidents" in ''|*[!0-9]*)
     refuse "a POOL SHORT timestamp did not parse, so verdicts could not be grouped into incidents. Counting them raw would report a recurrence that may be one event." ;;
 esac
 
-echo "watchdog verdicts across $jobs_seen job(s): POOL SHORT $short (in $incidents incident(s)), STARVATION $starve, POOL UNKNOWN $unknown"
+echo "watchdog verdicts across $jobs_seen watchdog job(s) whose annotations were read: POOL SHORT $short (in $incidents incident(s)), STARVATION $starve, POOL UNKNOWN $unknown"
 [ "$short" -eq 0 ] || printf '  %s\n' "${SHORT_AT[@]}"
 
 if [ "$incidents" -gt "$THRESHOLD" ]; then

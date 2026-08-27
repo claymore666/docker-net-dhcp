@@ -180,6 +180,49 @@ else
     echo "FAIL: a non-numeric threshold — want exit 2 naming it, got $got"; fail=$((fail + 1))
 fi
 
+# --- A PARTLY-READ WINDOW IS NOT A CLEAN ONE ---------------------------
+# The census only fails UPWARD: it goes red when POOL SHORT recurs, so a
+# verdict lost to a failed read makes a recurrence less likely to be
+# reported. Each of the three reads is driven, because they fail
+# independently and only one of them was ever the suspect.
+#
+# THE FIRST CASE IS ALSO THE MUTATE-BACK. `jobs_seen` used to be
+# incremented above the annotations read. With it there, this fixture
+# gives jobs_seen 1, the non-vacuity guard is satisfied by a job whose
+# annotations were never read, and the script prints "POOL SHORT 0" and
+# exits 0 -- a clean bill of health over an unread job.
+fx "$TMP/unread-ann"
+wf_runs integration.yml 100
+run_meta 100 1 "2026-08-01T10:00:00Z" main
+attempt_jobs 100 1 900
+# no annotations fixture for job 900: that read fails
+run "an unreadable annotations read refuses rather than counting it clean" 2 \
+    "read(s) failed" "job 900: annotations" "only partly examined"
+
+fx "$TMP/unread-meta"
+wf_runs integration.yml 100
+# no run_meta fixture: the metadata read fails
+run "an unreadable run metadata refuses" 2 "read(s) failed" "run 100: metadata"
+
+fx "$TMP/unread-jobs"
+wf_runs integration.yml 100
+run_meta 100 1 "2026-08-01T10:00:00Z" main
+# no attempt_jobs fixture: the job-list read fails
+run "an unreadable attempt job list refuses" 2 "read(s) failed" "attempt 1: job list"
+
+# THE UNDERCOUNT MADE VISIBLE. One run's verdict IS read; a second run's
+# annotations are not. Without the refusal this window reports
+# "POOL SHORT 1" -- a real number, one short, with nothing saying so.
+fx "$TMP/unread-partial"
+wf_runs integration.yml 100 200
+run_meta 100 1 "2026-08-27T12:36:59Z" a
+run_meta 200 1 "2026-08-29T09:00:00Z" b
+attempt_jobs 100 1 900; annotations 900 "$SHORT"
+attempt_jobs 200 1 901
+# no annotations fixture for 901
+run "a window read only in part refuses even when it holds real verdicts" 2 \
+    "read(s) failed" "job 901: annotations"
+
 # --- a timestamp that will not parse is a refusal, not a raw count ------
 fx "$TMP/badtime"
 wf_runs integration.yml 100
