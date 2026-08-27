@@ -58,9 +58,34 @@
 #
 # ECHOES ARE NOT COMMANDS. The release job prints
 # `docker plugin install ${GHCR_NAME}:${TAG}` into the step summary as
-# user-facing instructions. Keying on `--grant-all-permissions` is what
-# separates the command from the advertisement -- the same distinction
-# check-plugin-bind-sources.sh draws between prose and an install.
+# user-facing instructions, and counting one of those as a verifier
+# would let a release that installs nothing report full parity.
+#
+# THIS COMMENT USED TO CREDIT THE WRONG MECHANISM, AND THAT IS THE
+# DEFECT #858 SHIPPED WITH. It said `--grant-all-permissions` separated
+# the command from the advertisement. The predicate had no notion of an
+# echo at all, so an advertisement CARRYING the flag counted:
+#
+#     echo "docker plugin install --grant-all-permissions $REF"
+#
+# With all four verify jobs converted to that, the gate emitted its
+# strongest pass -- "4 published cell(s), each install-verified and
+# promoted" -- over a workflow that installed nothing.
+#
+# The discriminator is POSITION, not vocabulary: an install counts only
+# when the token sits OUTSIDE any shell quoting on its line. That is
+# what makes an echo an echo, and it is not something a phrasing can
+# defeat.
+#
+# `--grant-all-permissions` is still required, for its own reason
+# rather than as an echo test: an install without it stops at the
+# permission prompt, so a verify step lacking it is not a working
+# verifier whether or not it is quoted. Both conditions, independently.
+#
+# The comment also cited check-plugin-bind-sources.sh as drawing this
+# distinction. It draws a different one -- it skips lines whose first
+# non-space character is `#`. That precedent is real and is implemented
+# below, but it is comment-stripping, not echo-exclusion.
 #
 # Exit: 0 every published cell is verified and promoted
 #       1 a cell is published without a verifier or without a promotion
@@ -93,10 +118,45 @@ ENVKV = re.compile(r"^\s+([A-Za-z_][A-Za-z0-9_]*):\s*(\S.*?)\s*$")
 PUBLISH = re.compile(r'PLUGIN_NAME="\$\{(\w+)\}".*PLUGIN_TAG="\$\{(\w+)\}"')
 VERIFY  = re.compile(r'REF="\$\{(\w+)\}:\$\{(\w+)\}"')
 PROMOTE = re.compile(r'crane tag\s+"\$\{(\w+)\}:\$\{(\w+)\}"')
-# The step summary prints `docker plugin install ...` as instructions for
-# the reader. `--grant-all-permissions` is what tells the command from
-# the advertisement.
 INSTALL = re.compile(r"docker plugin install\b.*--grant-all-permissions")
+
+
+def unquoted_offsets(text):
+    """Offsets of `text` that lie outside shell quoting.
+
+    The step summary prints `docker plugin install ...` as instructions
+    for the reader, and an echoed command is quoted while a real one is
+    not. Keying on the flag could not tell them apart -- an
+    advertisement is free to carry any flag it likes, because it is
+    text. Position cannot be phrased around.
+
+    Single quotes suppress everything including backslashes; double
+    quotes honour backslash escapes. Both are what a POSIX shell does,
+    and `run:` blocks are shell.
+    """
+    out, q, i = set(), None, 0
+    while i < len(text):
+        c = text[i]
+        if q is None:
+            if c in "'\"":
+                q = c
+            else:
+                out.add(i)
+        elif c == q:
+            q = None
+        elif q == '"' and c == "\\":
+            i += 1
+        i += 1
+    return out
+
+
+def is_install(text):
+    """True when `text` runs an install rather than printing one."""
+    free = unquoted_offsets(text)
+    for m in INSTALL.finditer(text):
+        if m.start() in free:
+            return True
+    return False
 
 jobs, cur, in_jobs = [], None, False
 for line in open(sys.argv[1], encoding="utf-8"):
@@ -119,7 +179,7 @@ for line in open(sys.argv[1], encoding="utf-8"):
     for role, rx in (("publish", PUBLISH), ("verify", VERIFY), ("promote", PROMOTE)):
         for n, t in rx.findall(stripped):
             cur["hits"].append((role, n, t))
-    if INSTALL.search(stripped):
+    if is_install(stripped):
         cur["install"] = True
 
 unresolved = []
@@ -164,20 +224,25 @@ promoted=$(cell  "$records" promote)
 [ -n "$promoted" ]  || refuse "derived ZERO promoted cells from $WORKFLOW, while $(printf '%s\n' "$published" | wc -l) cell(s) are published. Either ':latest' stopped moving or the 'crane tag' pattern no longer matches."
 
 rc=0
-report() { # verb set
-    local verb="$1" have="$2" missing
+# `verb` reads as a predicate ("install-verifies it"); `noun` names the
+# same thing in a title slot. One string in both places produced
+# "A published cell is not install-verifies" and "nothing promotes to
+# :latest it" -- the title is what the Actions UI shows, so it is the
+# half most people read.
+report() { # verb noun set
+    local verb="$1" noun="$2" have="$3" missing
     missing=$(comm -23 <(printf '%s\n' "$published") <(printf '%s\n' "$have"))
     [ -n "$missing" ] || return 0
     rc=1
     while IFS= read -r c; do
         [ -n "$c" ] || continue
-        echo "::error title=A published cell is not ${verb}::${c} is published by $WORKFLOW but nothing ${verb} it." >&2
-        echo "FAIL: $c is published, but nothing ${verb} it" >&2
+        echo "::error title=A published cell has no ${noun}::${c} is published by $WORKFLOW but nothing ${verb}." >&2
+        echo "FAIL: $c is published, but nothing ${verb}" >&2
     done <<< "$missing"
 }
 
-report "install-verifies" "$verified"
-report "promotes to :latest" "$promoted"
+report "install-verifies it"      "install verifier"      "$verified"
+report "promotes it to :latest"  "promotion to :latest"  "$promoted"
 
 if [ "$rc" -eq 0 ]; then
     echo "OK: $(printf '%s\n' "$published" | wc -l) published cell(s), each install-verified and promoted:"

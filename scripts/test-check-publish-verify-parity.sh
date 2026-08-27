@@ -82,10 +82,41 @@ run "a newly published registry with no verifier fails" 1 add_third_registry "QU
 # The release job PRINTS `docker plugin install ...` into the step
 # summary as instructions. If that counted, a workflow that verified
 # nothing would look fully verified.
+#
+# THE CASE BELOW DID NOT MEASURE THAT, AND #858 SHIPPED BECAUSE OF IT.
+# Its mutator echoes the command AND deletes `--grant-all-permissions`,
+# so the refusal it asserts is produced by the missing flag, not by the
+# echo. Driven: the same mutation with NO echo at all -- a real command
+# with the flag removed -- gives the identical rc and the identical
+# message. The word `echo` contributed nothing to the verdict.
+#
+# It is kept, because a verify step that loses the flag really must
+# refuse, and relabelled to say which property it holds.
 echo_only_verify() {
     sed -i 's|docker plugin install --grant-all-permissions "$REF"|echo "docker plugin install $REF"|g' "$1"
 }
-run "an echoed install does not count as verification" 2 echo_only_verify "no longer matches"
+run "an install stripped of --grant-all-permissions is a refusal" 2 echo_only_verify "no longer matches"
+
+# The mutation the case above described but never ran: the command is
+# echoed with the flag INTACT. Before #858 this returned rc=0 and the
+# gate's strongest sentence -- "4 published cell(s), each install-
+# verified and promoted" -- over a release that installed nothing.
+#
+# A gate keyed on the flag cannot distinguish this from a real install,
+# because an advertisement is text and text may carry any flag. The
+# discriminator is POSITION: the token sits inside shell quoting.
+echoed_with_flag() {
+    sed -i 's|docker plugin install --grant-all-permissions "$REF"|echo "docker plugin install --grant-all-permissions $REF"|g' "$1"
+}
+run "an echoed install carrying the flag is not verification" 2 echoed_with_flag "no longer matches"
+
+# The other quoting form, because the position test is the whole fix and
+# a single-quote-only or double-quote-only implementation would pass the
+# case above while leaving half the hole open.
+echoed_single_quoted() {
+    sed -i "s|docker plugin install --grant-all-permissions \"\$REF\"|echo 'docker plugin install --grant-all-permissions ref'|g" "$1"
+}
+run "a single-quoted echoed install is not verification" 2 echoed_single_quoted "no longer matches"
 
 # --- the instrument's own failure mode (regression control) ------------
 # `promote-latest` retags BOTH architectures from ONE amd64 runner. A
