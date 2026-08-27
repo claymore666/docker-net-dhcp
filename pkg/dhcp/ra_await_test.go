@@ -6,6 +6,9 @@ package dhcp
 import (
 	"context"
 	"errors"
+	"os"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -267,4 +270,164 @@ func TestFinishAcquisition_CarriesTheObservationOnBothPaths(t *testing.T) {
 			t.Errorf("observation = %+v, want Seen and Managed on the success path too", ra)
 		}
 	})
+}
+
+// funcBody returns the lines strictly inside the named top-level
+// function's braces.
+//
+// It fails rather than returns on both edges a source-reading gate can
+// fall through: a signature found more than once (this gate cannot
+// arbitrate between copies) and a signature found not at all (a
+// universal over an empty body is not a check).
+func funcBody(t *testing.T, srcFile, signature string) string {
+	t.Helper()
+	src, err := os.ReadFile(srcFile)
+	if err != nil {
+		t.Fatalf("read %v: %v", srcFile, err)
+	}
+	lines := strings.Split(string(src), "\n")
+
+	var starts []int
+	for i, l := range lines {
+		if strings.HasPrefix(l, signature) {
+			starts = append(starts, i+1)
+		}
+	}
+	if len(starts) != 1 {
+		t.Fatalf("%v: %d functions start with %q (lines %v), want exactly one — this "+
+			"gate reads the source, so it can neither arbitrate between copies nor "+
+			"pass by finding nothing", srcFile, len(starts), signature, starts)
+	}
+	for i := starts[0]; i < len(lines); i++ {
+		if lines[i] == "}" {
+			return strings.Join(lines[starts[0]:i], "\n")
+		}
+	}
+	t.Fatalf("%v: no closing brace at column 0 after %q", srcFile, signature)
+	return ""
+}
+
+// stripLineComments removes // comments so a gate reading source judges
+// the CODE and not the prose beside it. Sound here because the function
+// under test contains no string literal carrying a "//".
+func stripLineComments(body string) string {
+	var out []string
+	for _, l := range strings.Split(body, "\n") {
+		if i := strings.Index(l, "//"); i >= 0 {
+			l = l[:i]
+		}
+		out = append(out, l)
+	}
+	return strings.Join(out, "\n")
+}
+
+// TestAttemptGetIP_TheDeadlineOnlyBoundsFinish is the deterministic
+// observer over attemptGetIP's COMPOSITION — the dozen lines this whole
+// fix turns on, and the only part of it that nothing was watching.
+//
+// MEASURED, on this tree: restoring the pre-fix shape into the real
+// attemptGetIP — a publish-on-close channel read back through a select
+// whose other arm is ctx.Done() — leaves the entire unit lane GREEN.
+// Every test of the retry loop stubs the function out through
+// attemptGetIPFunc, and TestSettleAcquisition_* above REPRODUCES the
+// collector wiring by hand rather than executing it. Splitting
+// finishAcquisition out gave the verdict step an observer and left the
+// composition around it with none.
+//
+// The integration test is not a substitute, because it is not a guard:
+// TestDHCPv6_Managed_ServerSilent_IsStillFatal PASSED with the defect
+// present, FAILED with the defect present, and passes with it fixed
+// (measured across three CI runs of this branch). A coin-flip detector
+// is what a race looks like from the outside; it cannot hold a
+// regression out.
+//
+// Source-reading rather than behavioural for the same reason
+// TestStart_EnablesIPv6BeforeWaitingForTheLinkLocal
+// (pkg/plugin/v6_link_test.go) reads source: executing this function
+// needs a live dhcpcd, so the alternative to a gate here is no observer
+// at all.
+//
+// KEYED ON THE PROPERTY, NOT ON A SPELLING. The property is "the
+// acquisition context bounds Finish and nothing else": its only
+// permitted appearance in this body is as Finish's argument, and what
+// Finish returns is handed straight to the verdict step so there is no
+// gap between them for a second reading of the deadline. A gate that
+// merely banned the literal `ctx.Done()` would be satisfied by handing
+// the same context to the accumulator instead — `&acquisition{ctx: ctx}`
+// honoured in settleAcquisition — which is a genuine defect and which
+// passes TestSettleAcquisition_TakesNoContext, that one keying on the
+// parameter list alone.
+func TestAttemptGetIP_TheDeadlineOnlyBoundsFinish(t *testing.T) {
+	const (
+		srcFile   = "client.go"
+		signature = "func attemptGetIP("
+		// The composition itself: Finish's error is the verdict step's
+		// first argument, so nothing sits between the two.
+		delegation = "finishAcquisition(client.Finish(ctx)"
+		// The historical spelling of the defect, named separately from
+		// the count below so a reader who is looking for it finds it.
+		defect = "ctx.Done()"
+	)
+
+	code := stripLineComments(funcBody(t, srcFile, signature))
+
+	if !strings.Contains(code, delegation) {
+		t.Errorf("%v: attemptGetIP does not contain %q.\n"+
+			"The attempt's verdict must be formed by handing Finish's error straight to "+
+			"finishAcquisition. Anything between them is a place where the observation "+
+			"can be read a second time, under a deadline that has already expired — "+
+			"which is the #868 defect: a managed segment whose DHCPv6 server went "+
+			"silent classified as v6NoRouter and TOLERATED.\nbody:\n%s", srcFile, delegation, code)
+	}
+
+	if strings.Contains(code, defect) {
+		t.Errorf("%v: attemptGetIP contains %q. The acquisition context is ALWAYS "+
+			"already expired here — the managed path reaches this function only by "+
+			"running the budget out — so a select arm on it is ready while the "+
+			"observation arm is not, and the caller takes the zero observation for a "+
+			"segment that advertised the managed flag.\nbody:\n%s", srcFile, defect, code)
+	}
+
+	// One appearance, and the check above says which one it is. This is
+	// the half that keys on the property rather than on the spelling:
+	// a context reaching the accumulator, the settle, or the verdict
+	// step by any route at all is a second appearance and fails here.
+	if n := strings.Count(code, "ctx"); n != 1 {
+		t.Errorf("%v: attemptGetIP mentions ctx %d times, want exactly 1 (as "+
+			"client.Finish's argument). The acquisition deadline bounds how long we "+
+			"WAIT and must never reach what we are allowed to have SEEN — passing it "+
+			"to the accumulator or the settle restores #868's fail-open exactly, and "+
+			"does it in a shape no signature test can see.\nbody:\n%s", srcFile, n, code)
+	}
+}
+
+// TestAcquisition_CarriesNoContext is the type-level half of the gate
+// above, and it exists because the source gate and this one fail in
+// different directions.
+//
+// A context can re-enter this path without ever being spelled inside
+// attemptGetIP: stored on the accumulator by a constructor, or defaulted
+// onto the struct. The absence has to be a property of the TYPE, not
+// only of one function's text — the same argument
+// TestSettleAcquisition_TakesNoContext makes about the signature, one
+// level down.
+func TestAcquisition_CarriesNoContext(t *testing.T) {
+	ctxType := reflect.TypeOf((*context.Context)(nil)).Elem()
+	at := reflect.TypeOf((*acquisition)(nil)).Elem()
+
+	if at.NumField() == 0 {
+		t.Fatalf("acquisition has no fields; this gate would be a universal over an " +
+			"empty set and would pass over any accumulator at all")
+	}
+	for i := 0; i < at.NumField(); i++ {
+		f := at.Field(i)
+		if f.Type == ctxType || f.Type.Implements(ctxType) {
+			t.Fatalf("acquisition.%s is a %v. The accumulator must not be able to see "+
+				"the acquisition deadline: it is reached only on paths where that "+
+				"deadline has already expired, so anything that consults it there "+
+				"returns the zero observation and a managed segment with a silent "+
+				"DHCPv6 server becomes a running container with no IPv6 (#868).",
+				f.Name, f.Type)
+		}
+	}
 }
