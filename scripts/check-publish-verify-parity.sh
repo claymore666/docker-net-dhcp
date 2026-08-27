@@ -73,9 +73,32 @@
 # promoted" -- over a workflow that installed nothing.
 #
 # The discriminator is POSITION, not vocabulary: an install counts only
-# when the token sits OUTSIDE any shell quoting on its line. That is
-# what makes an echo an echo, and it is not something a phrasing can
-# defeat.
+# when the token sits OUTSIDE any shell quoting ON ITS OWN LINE. That
+# is what separates the single-line echo above from a real command, and
+# it is what a re-wording of the echoed text cannot get around.
+#
+# THE CLAIM STOPS AT THE LINE, and the boundary is stated here because
+# the earlier version of this paragraph did not state one -- it said
+# "not something a phrasing can defeat", which is wider than the code
+# and would have been read as covering the shapes below. Each was
+# driven against the predicate; each is counted as a real install:
+#
+#   a heredoc body line          docker plugin install --grant... $REF
+#   a multi-line echo's 2nd line  ...--grant-all-permissions $REF"
+#   a trailing comment           true  # docker plugin install --gr...
+#
+# The scan reads one line at a time with quoting state reset at each
+# newline, and it strips a comment only when `#` is the first non-space
+# character. All three are therefore out of reach by construction, not
+# by oversight.
+#
+# The live one is the heredoc: release.yml already writes step
+# summaries and already uses heredocs, so ordinary housekeeping could
+# turn the advertisement into a heredoc body and silently re-create the
+# exact false pass this gate exists to catch. Widening the analyser to
+# track heredocs and continuations is a shell parser, which is a larger
+# thing than this gate should become -- so the gap is named rather than
+# closed, and a future author inherits a bounded claim.
 #
 # `--grant-all-permissions` is still required, for its own reason
 # rather than as an echo test: an install without it stops at the
@@ -128,7 +151,12 @@ def unquoted_offsets(text):
     for the reader, and an echoed command is quoted while a real one is
     not. Keying on the flag could not tell them apart -- an
     advertisement is free to carry any flag it likes, because it is
-    text. Position cannot be phrased around.
+    text. Re-wording the echoed text cannot move the quote.
+
+    THE SCOPE IS ONE LINE. Quoting state is not carried across a
+    newline, so a heredoc body, the continuation line of a multi-line
+    quoted string, and a trailing `#` comment all read as unquoted.
+    See the header for why those are named rather than handled.
 
     Single quotes suppress everything including backslashes; double
     quotes honour backslash escapes. Both are what a POSIX shell does,
