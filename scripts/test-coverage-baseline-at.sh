@@ -169,6 +169,32 @@ fi
 [ -f "$dir/elsewhere.report" ] \
     && ok "an explicit report path is honoured" \
     || no "the third argument was ignored"
+
+# THE THIRD CLEANUP ARM (#789, #791). This PR added a fifth failure arm --
+#
+#     } > "$REPORT" || {
+#         echo "::error ...::could not write the report to $REPORT." >&2
+#         rm -f "$OUT"
+#         exit 2
+#
+# -- and observed neither half of it. Isolated single-line mutants of the
+# three `rm -f "$OUT"` calls against the suite as this PR first wrote it:
+# the two older arms died, THIS ONE SURVIVED at 15 passed, 0 failed. A PR
+# whose subject is an unobserved cleanup arm shipped another one.
+#
+# It is reachable with a report path in a directory that does not exist:
+# the redirect fails before the block runs, `$OUT` is already written and
+# holds the resolved baseline, and `rm -f` is again the only thing between
+# a refusal and a baseline left on disk for coverage.yml to hand on. Note
+# this arm leaves a POPULATED file, not an empty one -- the ratchet's
+# non-vacuity guard would not catch it either.
+(cd "$dir" && bash "$GATE" dev "$dir/out3.txt" "$dir/no-such-dir/x.report" >/dev/null 2>&1); rc=$?
+[ "$rc" -eq 2 ] \
+    && ok "an unwritable report path refuses" \
+    || no "an unwritable report path did not refuse (exit $rc)"
+[ ! -e "$dir/out3.txt" ] \
+    && ok "and removes the baseline it had already resolved" \
+    || no "a report-write failure left $(wc -c < "$dir/out3.txt") byte(s) at out3.txt — the cleanup beside the report redirect is gone"
 rm -rf "$dir"
 
 # --- non-vacuity AT THE SOURCE ------------------------------------------

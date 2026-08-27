@@ -55,6 +55,13 @@
 # the one line a reader of a release log would otherwise take as a clean
 # verdict -- because an unannounced absence of a cross-check is exactly
 # the shape this gate keeps being caught by.
+#
+# AND NEITHER IS A LINE THAT LOST ITS FLOOR (#791). The cross-check above
+# compares NAMES and COUNTS; a data line whose percentage is gone is
+# present on both sides, so all three of resolver, cross-check and ratchet
+# attest "5 of 5" while one package has no floor at all -- awk reads the
+# empty field as 0 and every percentage beats it. The floor is therefore
+# validated where it is read, and an unreadable one refuses the run.
 set -u
 
 if [ "$#" -ne 2 ]; then
@@ -83,6 +90,7 @@ done
 
 compared=0
 compared_pkgs=""
+floor_bad=0
 
 while read -r pkg want; do
     [ -z "$pkg" ] && continue
@@ -90,6 +98,48 @@ while read -r pkg want; do
     compared=$((compared + 1))
     compared_pkgs="${compared_pkgs}${pkg}
 "
+
+    # A FLOOR THAT LOST ITS NUMBER IS NOT A FLOOR (#791). `read -r pkg want`
+    # leaves `want` EMPTY when a line carries only a package name, and awk
+    # evaluates an empty string as numeric 0 -- so `got > want` is true for
+    # every percentage and the package prints
+    #
+    #     PASS  .../pkg/plugin: 0.1% beats baseline % -- raise the floor
+    #
+    # while nothing is enforced. Two of the four causes named in the header
+    # (a truncated blob, a partial fetch) damage a line rather than delete
+    # it, and the completeness cross-check below cannot see this at all: the
+    # resolver counts a floor-less line too, so resolver, cross-check and
+    # ratchet ALL AGREE on "compared 5 of 5" with one of the five gone. An
+    # attestation over a missing floor is worse than no attestation.
+    #
+    # This is the third zero-shape defect in this repo's gates. An unset or
+    # unparseable numeric field is 0, never a sentinel -- and 0 on the
+    # RIGHT-HAND side of the comparison is the fail-OPEN direction, which is
+    # why this one had to be validated and the left-hand `got` did not: a
+    # garbage `got` reads as 0% and fails the package closed.
+    #
+    # A case glob, not a subprocess, for the reason given at the count check
+    # below. Accepts an integer or one-decimal-point floor; rejects empty,
+    # a bare `.`, two dots, and anything carrying a non-digit.
+    case "$want" in
+        ''|.|*[!0-9.]*|*.*.*) want_bad=1 ;;
+        *)                    want_bad=0 ;;
+    esac
+
+    # RECORD AND CONTINUE, refuse after the loop. A merge that damaged one
+    # data line has usually damaged more than one, and a gate that names
+    # the first and stops makes the next person fix them one round trip at
+    # a time. Every damaged line is named in one run; the verdict is still
+    # a refusal, and it still outranks a regression found further down.
+    if [ "$want_bad" -eq 1 ]; then
+        echo "::error title=Unreadable baseline floor::$BASELINE_FILE gives $pkg no readable floor" \
+             "(got '${want:0:40}'). An empty or unparseable floor is numeric 0 to awk, so every" \
+             "percentage beats it and the package reports PASS while no floor is enforced." \
+             "The completeness cross-check cannot see this: it counts the line, which is present." >&2
+        floor_bad=1
+        continue
+    fi
 
     got=$(awk -v p="$pkg" '$1 == p && $2 == "coverage:" { gsub(/%/, "", $3); print $3; exit }' "$PERCENT_FILE")
     if [ -z "$got" ]; then
@@ -116,6 +166,17 @@ while read -r pkg want; do
             ;;
     esac
 done < "$BASELINE_FILE"
+
+# A line that lost its floor is not a verdict either. Refused HERE and not
+# at the point of detection so that one run names every damaged line, and
+# ahead of every other post-loop check because "this file does not say what
+# the floors are" outranks anything derived from those floors.
+if [ "$floor_bad" -ne 0 ]; then
+    echo "::error title=Unreadable baseline floor::$BASELINE_FILE holds data line(s) with no" \
+         "readable floor, named above. The ratchet cannot render a verdict over a floor it" \
+         "cannot read, and reading one as 0 would pass every package silently." >&2
+    exit 2
+fi
 
 # A baseline that parsed to no comparisons is not a pass. It is the
 # gate having read a file and learned nothing from it — see the header.
