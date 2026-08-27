@@ -216,9 +216,12 @@ fi
 # claim again, just from a comment that had to be inside the block
 # instead of anywhere in the file. Both spellings are stripped: a
 # whole-line `#` comment, and a trailing one, which YAML introduces
-# with a `#` preceded by whitespace. Zero of the workflows in this tree
-# diverge today, so this was latent; latent is how the wider version of
-# it shipped.
+# with a `#` preceded by whitespace.
+#
+# Measured over every workflow in this tree at the time of writing: 25
+# inspected, 0 derive differently with the strip than without it. So
+# this was latent -- and latent is exactly how the whole-file version
+# of it shipped.
 dead_triggers() {
     local f="$1"
     awk '

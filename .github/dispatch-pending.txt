@@ -79,8 +79,9 @@
 #   - [unenforced: docs-say-unavailable]
 #     The documentation for the workflow must say it is not available
 #     yet, for as long as the entry is here. NO CODE CHECKS THIS. The
-#     gate never opens a document; its only mention of documentation is
-#     the advisory sentence it prints when a workflow is undeclared. A
+#     gate never opens a document; the only documentation it ever
+#     mentions is the advisory block it prints for an UNDECLARED
+#     workflow, which says nothing about a declared one. A
 #     tree with a complete, truthful entry here and a doc page naming
 #     the 404-ing workflow as its primary route passes today, which is
 #     exactly the #665 failure this ledger exists for. It is the same

@@ -416,13 +416,24 @@ check "a ledger that parses to no entries is rc2, not a verdict" 2 "$(verdict3 |
 #
 # manual3.yml goes first: it is left over from the cases above and an
 # UNDECLARED dispatchable workflow fails the gate on its own. Measured
-# by deleting this `rm -f` and diffing the suite output: exactly TWO of
-# the cases below go red, both `pass`-expecting ones in the `on:`
-# derivation block. Every rc1-expecting case in between stays GREEN --
-# and green for a reason that is not its own mutation, which is the
-# more dangerous half and the one that leaves no trace. The `rm -f` is
-# load-bearing in both directions.
+# by deleting this `rm -f` and diffing the suite output: EVERY
+# `pass`-expecting case below goes red, and every `rc1`-expecting case
+# below stays GREEN -- green for a reason that is not its own mutation,
+# which is the more dangerous half and the one that leaves no trace.
+# The `rm -f` is load-bearing in both directions.
+#
+# STATED AS A PROPERTY, NOT A COUNT, ON PURPOSE. This comment first
+# said "exactly two cases go red", which was true when it was written
+# and false an hour later, when this same review added a third
+# pass-expecting case to the derivation block below. A count of a
+# population that later grows is a claim that decays silently -- the
+# defect this whole PR is about, committed in the sentence describing
+# it. The assertion below is the part that cannot go stale.
 rm -f "$REPO3/.github/workflows/manual3.yml"
+[ -e "$REPO3/.github/workflows/manual3.yml" ] \
+    && { echo "FAIL: the leftover fixture is still present, so every case below"
+         echo "      measures the gate's verdict on IT, not on the mutation"; fails=1; } \
+    || echo "PASS: the leftover fixture from the cases above is gone"
 push_only pushonly > "$REPO3/.github/workflows/pushonly.yml"
 
 led <<'EOF'
