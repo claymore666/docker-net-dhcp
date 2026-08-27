@@ -121,6 +121,15 @@ type HealthResponse struct {
 	LeaseReleaseFailures int32  `json:"lease_release_failures"`
 	NAKsReceived         int32  `json:"naks_received"`
 	LedgerWriteFailures  int32  `json:"ledger_write_failures"`
+	// DirectivesRefused / MountPrepFailures are the two places the DHCP
+	// client package declines to do what it was asked and carries on
+	// anyway (#780): a dhcpcd directive dropped for a control character
+	// in its value, and a per-client mount-namespace preparation command
+	// that failed. Neither is healthy-affecting — both describe an input
+	// that did not take effect, not a container without a renewal
+	// client. MountPrepFailures counts COMMANDS, not clients.
+	DirectivesRefused int32 `json:"directives_refused"`
+	MountPrepFailures int32 `json:"mount_prep_failures"`
 	// OrphanedLeasesReleased / OrphanedLeaseReleaseFailures cover the
 	// lease acquired during endpoint setup when no persistent client
 	// ever took ownership of it — a container that exited before the

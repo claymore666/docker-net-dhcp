@@ -5,6 +5,7 @@ package dhcp
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -137,9 +138,17 @@ const unsharePath = "/usr/bin/unshare"
 // reported success and left the mounts unmade with nothing said; the
 // stderr is no longer swallowed, which does not stop a decoy but does
 // mean it has to be silent as well as present. See mountPrep.
+//
+// echoBin joined them with #780. It is the one that looks unnecessary —
+// echo is a builtin in busybox ash, so today's shell resolves nothing
+// through PATH for it. Named absolutely anyway, for the reason this
+// comment already gives twice: the guarantee would rest on which shell
+// /bin/sh happens to be, the constant costs nothing, and a value with no
+// constant is a value the Dockerfile parity derivation cannot see.
 const (
 	mountBin = "/bin/mount"
 	mkdirBin = "/bin/mkdir"
+	echoBin  = "/bin/echo"
 )
 
 // shBin is the ABSOLUTE path to the shell unshare execs.
@@ -235,16 +244,81 @@ const workDirPrefix = "net-dhcp-dhcpcd-"
 // NOT A CLAIM THAT A COLLISION HAS HAPPENED. It has not been observed.
 // The finding is that it could not have been observed.
 func mountPrep() string {
-	return fmt.Sprintf(
-		"%s -t tmpfs tmpfs %s; "+
-			"%s -p %s; "+
-			"%s -t tmpfs tmpfs %s; "+
-			"%s -o remount,bind,rw %s; "+
-			"exec \"$0\" \"$@\"",
-		mountBin, dhcpcdStateDir,
-		mkdirBin, dhcpcdRunDir,
-		mountBin, dhcpcdRunDir,
-		mountBin, procSysPath)
+	return mountPrepStep(fmt.Sprintf("%s -t tmpfs tmpfs %s", mountBin, dhcpcdStateDir), "state-tmpfs") +
+		mountPrepStep(fmt.Sprintf("%s -p %s", mkdirBin, dhcpcdRunDir), "run-mkdir") +
+		mountPrepStep(fmt.Sprintf("%s -t tmpfs tmpfs %s", mountBin, dhcpcdRunDir), "run-tmpfs") +
+		mountPrepStep(fmt.Sprintf("%s -o remount,bind,rw %s", mountBin, procSysPath), "procsys-remount") +
+		"exec \"$0\" \"$@\""
+}
+
+// mountPrepFailMarker prefixes the line mountPrep writes to stderr when
+// one of its commands fails.
+//
+// A marker rather than reading the commands' own stderr, because that
+// stderr shares a stream with all of dhcpcd's routine output and cannot
+// be raised to a warning without raising the rest with it — which is the
+// reason the failure was invisible in the first place (#780).
+//
+// Deliberately not a word that appears in dhcpcd's vocabulary, so a
+// count can never be manufactured by the client logging about something
+// else.
+const mountPrepFailMarker = "net-dhcp-mountprep-failed:"
+
+// mountPrepStep appends `|| echo <marker> <step> >&2; ` to one command.
+//
+// `||` and not `&&`, and the chain stays `;`-separated: a failed step
+// must NOT stop the ones after it or abort the exec. That is the
+// pre-existing behaviour and it is the right one — the client degrades
+// to sharing the host's view rather than refusing to start, and #780
+// asks for the failure to become visible, not for it to become fatal.
+// Changing that is a separate decision with a different blast radius.
+//
+// Every step is built through here so a fifth command cannot be added
+// without a marker; TestMountPrep_EveryCommandReportsItsFailure asserts
+// that by counting markers against commands rather than by naming the
+// four that exist today.
+func mountPrepStep(cmd, step string) string {
+	return fmt.Sprintf("%s || %s '%s %s' >&2; ", cmd, echoBin, mountPrepFailMarker, step)
+}
+
+// mountPrepWatcher counts mountPrep failure markers on a byte stream.
+//
+// It sits in the client's stderr MultiWriter beside the debug-log pipe
+// and the bounded tail buffer, so it sees exactly what the shell wrote,
+// before dhcpcd itself has said anything.
+//
+// Line-buffered because a Writer receives arbitrary chunks: a marker can
+// arrive split across two Writes, and matching per-chunk would both miss
+// those and double-count a chunk boundary inside one line.
+//
+// WHICH WAY THE BUFFER BOUND FAILS. A stream that never sends a newline
+// would otherwise grow without limit, so the retained partial line is
+// capped and trimmed from the FRONT. Trimming can only destroy a partial
+// marker, never assemble one, so the bound loses counts rather than
+// inventing them — the safe direction for a counter whose whole purpose
+// is to be believed when it is non-zero. Markers are written by `echo`
+// and so always carry their newline; reaching the cap means something
+// other than mountPrep is producing the bytes.
+type mountPrepWatcher struct {
+	buf []byte
+}
+
+func (w *mountPrepWatcher) Write(p []byte) (int, error) {
+	w.buf = append(w.buf, p...)
+	for {
+		i := bytes.IndexByte(w.buf, '\n')
+		if i < 0 {
+			break
+		}
+		if bytes.Contains(w.buf[:i], []byte(mountPrepFailMarker)) {
+			mountPrepFailures.Add(1)
+		}
+		w.buf = w.buf[i+1:]
+	}
+	if len(w.buf) > stderrTailMax {
+		w.buf = w.buf[len(w.buf)-stderrTailMax:]
+	}
+	return len(p), nil
 }
 
 // tailWriter retains the last up-to-max bytes written to it. dhcpcd's
@@ -393,7 +467,11 @@ type DHCPClient struct {
 	fifoRead *os.File    // read end of the event FIFO (scanner side)
 	fifoKeep *os.File    // write keep-alive (O_RDWR) end of the event FIFO
 	stderr   *tailWriter // last bytes of dhcpcd stderr, for the exit error
-	logPipes []io.Closer // logrus WriterLevel pipe writers; closed by the reaper
+	// mountWatch counts mountPrep failure markers on the same stderr
+	// stream. By value: it is written only by exec's stderr copy
+	// goroutine, exactly like stderr above.
+	mountWatch mountPrepWatcher
+	logPipes   []io.Closer // logrus WriterLevel pipe writers; closed by the reaper
 
 	waitErr  error
 	waitDone chan struct{} // closed when cmd.Wait() returns
@@ -539,7 +617,12 @@ func NewDHCPClient(iface string, opts *DHCPClientOptions) (*DHCPClient, error) {
 	outPipe := log.StandardLogger().WriterLevel(log.DebugLevel)
 	errPipe := log.StandardLogger().WriterLevel(log.DebugLevel)
 	c.cmd.Stdout = outPipe
-	c.cmd.Stderr = io.MultiWriter(errPipe, c.stderr)
+	// The third writer counts mountPrep's failure markers (#780). It has
+	// to be here rather than wrapped around c.stderr, because that
+	// buffer is BOUNDED to its last few KiB — a namespace-prep failure
+	// followed by chatty dhcpcd output would be trimmed out of it before
+	// anything read it.
+	c.cmd.Stderr = io.MultiWriter(errPipe, c.stderr, &c.mountWatch)
 	c.logPipes = []io.Closer{outPipe, errPipe}
 
 	log.WithField("cmd", c.cmd.Args).Trace("new dhcpcd client")

@@ -200,13 +200,33 @@ type dhcpcdParams struct {
 // string fields, feeds each an embedded directive, and fails if one
 // reaches the output. A future field added to the renderer without using
 // this helper fails that test rather than reopening the hole quietly.
-func directive(b *strings.Builder, keyword, value string) {
+//
+// A drop is COUNTED as well as logged (#780). The operator set an
+// option and it never reaches the DHCP server; a warning in a log
+// nobody reads on a healthy plugin is not a way for them to find that
+// out. See directivesRefused for why the counter is package-level.
+func directive(b *configBuilder, keyword, value string) {
 	if !SafeDirectiveValue(value) {
+		directivesRefused.Add(1)
 		log.WithFields(log.Fields{"directive": keyword, "value": fmt.Sprintf("%q", value)}).
 			Warn("Refusing to write dhcpcd directive with a control character in its value")
 		return
 	}
 	fmt.Fprintf(b, "%s %s\n", keyword, value)
+}
+
+// configBuilder is the config text under construction.
+//
+// It embeds strings.Builder rather than wrapping it so *configBuilder
+// still satisfies io.Writer through the promoted Write method: every
+// fmt.Fprintf(&b, ...) in renderConfig — the constant lines that carry
+// no operator input and so need no refusal check — compiles unchanged,
+// and only the values that go through directive() are subject to it.
+//
+// A distinct type rather than a bare strings.Builder so that a directive
+// cannot be written to some other builder that has no refusal handling.
+type configBuilder struct {
+	strings.Builder
 }
 
 // renderConfig produces the dhcpcd.conf text for p. Only directives
@@ -232,7 +252,7 @@ func directive(b *strings.Builder, keyword, value string) {
 func renderConfig(p dhcpcdParams) string {
 	iaid := iaidFromMAC(p.MAC)
 
-	var b strings.Builder
+	var b configBuilder
 	// %q, not %s: this is the one line that interpolates a value without
 	// going through directive(), and a comment is just as capable of
 	// carrying a newline into the file as a directive is. ValidIfaceName

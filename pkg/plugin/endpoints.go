@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/claymore666/docker-net-dhcp/pkg/dhcp"
 	"github.com/claymore666/docker-net-dhcp/pkg/util"
 )
 
@@ -676,6 +677,39 @@ type HealthResponse struct {
 	// alert on this directly.
 	LedgerWriteFailures int32 `json:"ledger_write_failures"`
 
+	// DirectivesRefused / MountPrepFailures are the two places pkg/dhcp
+	// declines to do what it was asked and carries on anyway (#780).
+	// They are pulled from that package at snapshot time rather than
+	// pushed into a sink, because one of them fires during config
+	// rendering, which no caller watches.
+	//
+	// DirectivesRefused counts dhcpcd directives dropped for carrying a
+	// control character in their value. dhcpcd.conf has no quoting, so a
+	// value with a newline in it would become a second directive; the
+	// drop is correct. What was missing is that an operator who set
+	// hostname, vendor class or client ID then had it silently not
+	// applied, and read a healthy plugin.
+	//
+	// MountPrepFailures counts individual commands in the per-client
+	// mount-namespace preparation that failed. The chain is `;`-joined
+	// deliberately, so dhcpcd starts regardless — but two containers
+	// whose interface is the default eth0 then collide on dhcpcd's
+	// control socket, and the second client silently never renews or
+	// releases. It counts COMMANDS, so one client failing three of four
+	// steps adds 3.
+	//
+	// Neither latches the healthy flag. Both describe an input that did
+	// not take effect, not a container left without a renewal client,
+	// and either can be non-zero on a plugin that is otherwise doing its
+	// job. Alert on them moving, not on their absolute value.
+	//
+	// Both are process-global in pkg/dhcp and therefore do NOT reset
+	// with a plugin restart of anything smaller than the process — which
+	// is the same lifetime as every other counter here, since the
+	// instance_id label changes with the process.
+	DirectivesRefused int32 `json:"directives_refused"`
+	MountPrepFailures int32 `json:"mount_prep_failures"`
+
 	// Per-family breakdown of the wire counters (#212, #730). Both
 	// halves are STORED; the un-suffixed field above is their sum,
 	// computed in healthSnapshot from the same two values rendered
@@ -749,6 +783,9 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 	tsFails := p.tombstoneWriteFailures.Load()
 	conflicts := p.addressConflicts.Load()
 	tsQuarantines := p.tombstones.quarantines.Load()
+
+	// Pulled from pkg/dhcp rather than held here: see DirectivesRefused.
+	directivesRefused, mountPrepFailures := dhcp.RefusalCounts()
 
 	// One load per half, used for both the half and the sum.
 	leaseChangedV4 := p.leaseChangedV4.Load()
@@ -836,6 +873,8 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		ParentLinkWaits:              p.parentLinkWaits.Load(),
 		ParentLinkWaitTimeouts:       p.parentLinkWaitTimeouts.Load(),
 		LedgerWriteFailures:          p.ledgerWriteFailures.Load(),
+		DirectivesRefused:            directivesRefused,
+		MountPrepFailures:            mountPrepFailures,
 		LeaseChangedV4:               leaseChangedV4,
 		LeasesObtainedV4:             leasesObtainedV4,
 		LeasesRenewedV4:              leasesRenewedV4,
