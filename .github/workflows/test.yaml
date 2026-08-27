@@ -455,6 +455,15 @@ jobs:
       - name: Registry-login check
         run: bash scripts/check-registry-login.sh
 
+      # Docker Hub dual-publish began 2026-05-05; Hub install-verification
+      # landed 2026-08-22 (#777). In between, 20 tags shipped a Hub
+      # artifact nothing proved installable, because the verify set was
+      # four hand-written jobs while the publish set decides what users
+      # can pull. This derives one from the other, so a new registry
+      # cannot be published without a verifier appearing (#833).
+      - name: Publish/verify parity
+        run: bash scripts/check-publish-verify-parity.sh
+
       # Every page that prints a cosign command must state which cosign
       # major it needs (#522). Verifying a signature is the one moment a
       # user is deciding whether to trust the artifact, and cosign v2's
