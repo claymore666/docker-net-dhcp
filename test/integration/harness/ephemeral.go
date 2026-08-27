@@ -753,7 +753,12 @@ func (ef *EphemeralFixture) startKea() {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	ef.t.Fatalf("ephemeral kea did not become ready; config:\n%s\nlog:\n%s", ef.renderedConfig, ef.readLog())
+	// An empty log with no readiness marker is the signature of a Kea
+	// that never got as far as opening its config -- on a bare
+	// Debian/Ubuntu host, usually because AppArmor denied it. Say so
+	// here rather than leaving the cause in dmesg (#869).
+	ef.t.Fatalf("ephemeral kea did not become ready; config:\n%s\nlog:\n%s\n%s",
+		ef.renderedConfig, ef.readLog(), appArmorKeaHint(ef.tmpDir))
 }
 
 func (ef *EphemeralFixture) startDnsmasq() {

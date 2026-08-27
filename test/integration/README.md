@@ -100,6 +100,12 @@ means `docker plugin disable`, `set`, `enable`.
 
 ### AppArmor (Debian/Ubuntu hosts only)
 
+If a Kea-backed test fails with `ephemeral kea did not become ready`
+and an **empty** server log, this section is the answer. Since #869 the
+fixture detects the loaded profile and says so in that failure, along
+with the commands below — but the error string is repeated here so a
+search for it lands on the explanation.
+
 Debian's `kea-dhcp4-server` package ships an **enforcing** AppArmor
 profile that pins Kea to its own packaged paths — right down to the
 exact PID filename, which Kea derives from the config filename. The
