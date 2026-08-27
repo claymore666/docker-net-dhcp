@@ -26,9 +26,14 @@ import (
 // but there is no reason for it to be world-readable, and an operator who
 // reads leases.jsonl as a non-root user now needs sudo (#708).
 //
-// Existing files are re-chmod'd on the next write: the state writes go
-// through a temp file and a rename, and the ledger chmods on append, so
-// an upgrade tightens what it finds rather than leaving old files open.
+// Existing files are re-chmod'd on the next WRITE: the state writes go
+// through a temp file and a rename, and the ledger chmods on append.
+// That is not the same as "an upgrade tightens what it finds", which
+// this comment used to claim. Nothing in the upgrade path writes
+// tombstones.json -- it is rewritten only when a tombstone is laid or
+// consumed -- so on a host with stable containers it keeps its old mode
+// indefinitely. Observed 0644 after a production upgrade to v1.8.0.
+// Sweeping stateDir at startup is #804.
 const stateFileMode = 0o600
 
 // stateSchemaVersion is the version stamped on the per-network options
