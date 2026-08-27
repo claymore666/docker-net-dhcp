@@ -208,6 +208,88 @@ printf 'jobs:\n  label:\n    runs-on: ubuntu-latest\n' > "$WF_NO_BLOCK"
 run "a missing ALLOWED_LABELS block is red" 1 "no ALLOWED_LABELS block" -- \
     bash "$CHECK" --static "$GOOD_LABELS" "$GOOD_MAP" "$WF_NO_BLOCK"
 
+# ------------------------------- static: the parser's own refusals (#715)
+#
+# #715 asks that EVERY rule the gate claims goes red on a fixture that
+# violates it. Six did not, and all six are in the READER rather than in
+# the rules — the half nobody drives, because a malformed declaration
+# feels like a thing that cannot happen. It is exactly the thing that
+# can: this file is hand-edited, and a reader that quietly keeps the last
+# of two values would let a label declare two roles and still report the
+# taxonomy clean.
+#
+# EACH FIXTURE IS THE GOOD DECLARATION PLUS ONE DEFECT. Writing them from
+# scratch is what the first draft did, and every one of them was then red
+# for an incidental reason — a two-label declaration does not cover the
+# labels GOOD_MAP and GOOD_WF name, so the case passed on a failure it
+# was not testing. Derived this way the verdict itself moves when the
+# rule is removed, and the case cannot pass for the wrong reason.
+mkbad() { # <out> <sed-expr>   — the good declaration with one thing wrong
+    sed "$2" "$GOOD_LABELS" > "$1"
+}
+
+# A repeated key is not a merge. Python's dict keeps the last silently,
+# so `role: type` twice reads as a well-formed label and nothing says a
+# second value was ever written.
+DUP_ROLE="$TMP/dup-role.yml"
+mkbad "$DUP_ROLE" '0,/^  role: type$/s//  role: type\n  role: type/'
+run "a label declaring two roles is red" 1 "duplicate 'role'" -- \
+    bash "$CHECK" --static "$DUP_ROLE" "$GOOD_MAP" "$GOOD_WF"
+
+DUP_DESC="$TMP/dup-desc.yml"
+mkbad "$DUP_DESC" "0,/^  description: Something/s//  description: Something isn't working\n  description: Something/"
+run "a label declaring two descriptions is red" 1 "duplicate 'description'" -- \
+    bash "$CHECK" --static "$DUP_DESC" "$GOOD_MAP" "$GOOD_WF"
+
+# A field above the first entry belongs to nothing. Attaching it to the
+# next label would be a guess about what the author meant, and a reader
+# that guesses is a reader that is quietly wrong.
+ORPHAN="$TMP/orphan-field.yml"
+{ printf '  role: type\n\n'; cat "$GOOD_LABELS"; } > "$ORPHAN"
+run "a field before the first entry is red" 1 "field before any" -- \
+    bash "$CHECK" --static "$ORPHAN" "$GOOD_MAP" "$GOOD_WF"
+
+# THE ONE THAT MATTERS MOST OF THE SIX. A line this reader does not
+# understand has to be an error and never a skip: silently ignoring it is
+# how a declaration comes to say less than its author wrote, and the file
+# exists precisely to be the artifact a reviewer reads.
+UNPARSEABLE="$TMP/unparseable.yml"
+mkbad "$UNPARSEABLE" '0,/^  role: type$/s//  role: type\n  colour: ff0000/'
+run "a line the reader does not understand is red, not skipped" 1 "cannot parse" -- \
+    bash "$CHECK" --static "$UNPARSEABLE" "$GOOD_MAP" "$GOOD_WF"
+
+# Added as a fourth entry rather than by blanking an existing name, so the
+# labels GOOD_MAP and GOOD_WF reference all still exist and the empty name
+# is the only thing wrong.
+EMPTY_NAME="$TMP/empty-name.yml"
+{ cat "$GOOD_LABELS"; printf "\n- name: ''\n  role: area\n  description: an entry with no name at all\n"; } > "$EMPTY_NAME"
+run "a label with an empty name is red" 1 "empty name" -- \
+    bash "$CHECK" --static "$EMPTY_NAME" "$GOOD_MAP" "$GOOD_WF"
+
+# The role rule has TWO call sites — the labeller's rule map and the
+# workflow's ALLOWED_LABELS — and only the map's was ever driven. One fix
+# does not reach the copies: they are separate arms reading separate
+# files, so a case on one says nothing about the other.
+WF_STATUS="$TMP/wf-status.yml"
+cat > "$WF_STATUS" <<'EOF'
+env:
+  ALLOWED_LABELS: |
+    bug
+    ci
+    backlog
+
+jobs:
+  label:
+    runs-on: ubuntu-latest
+EOF
+run "ALLOWED_LABELS may not name a status label either" 1 "whose role is" -- \
+    bash "$CHECK" --static "$GOOD_LABELS" "$GOOD_MAP" "$WF_STATUS"
+
+# Absent inputs are refusals, not verdicts, and the workflow is the one of
+# the three whose absence nothing drove.
+run "a missing workflow cannot check" 2 "missing" -- \
+    bash "$CHECK" --static "$GOOD_LABELS" "$GOOD_MAP" "$TMP/not-a-workflow.yml"
+
 # ------------------------------------------------------- ORTHOGONALITY
 # The gate this one replaced read the block with
 #   ALLOWED_LABELS:\s*\|\s*\n((?:\s+\S.*\n)+)
