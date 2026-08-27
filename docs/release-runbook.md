@@ -614,6 +614,26 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
    floor during the cycle, raise the baseline as part of the release
    branch.
 
+   **Read that run with `scripts/coverage-read.sh <run-id>`, not by eye**
+   (#794). It prints every package's measured number beside *both* floor
+   sets — `dev`'s and `main`'s — because `main`'s floors can be lower, so
+   a package red against `dev` may still clear the release PR, and a
+   package comfortable on `dev` may not. It also refuses rather than
+   reporting a clean read: an incomplete comparison, an empty baseline, a
+   raw block it cannot scope to the ratchet step. Eyeballing the log is
+   how the v1.8.0 read started, and building the instrument instead found
+   three defects an eyeball would have shipped.
+
+   ```sh
+   bash scripts/coverage-read.sh 32623575563
+   ```
+
+   The exit code carries the verdict: 0 a complete reading, 1 the
+   ratchet's account and the raw `covdata` numbers disagree, 2 it cannot
+   judge. What it does *not* do is decide the release — a package under
+   `main`'s floor is information for the raise-or-explain decision the
+   baseline file records, not an error the script can settle.
+
    Coverage shares a concurrency group with the release PR's own
    integration run, so it normally starts once integration finishes —
    roughly twelve minutes in. A `coverage` check still showing nothing
