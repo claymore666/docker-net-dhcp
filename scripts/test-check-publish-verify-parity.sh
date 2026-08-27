@@ -107,7 +107,11 @@ run "the promote runner's arch is not the cell's arch" 0 promote_on_arm "4 publi
 # Without this, the case above passes for any gate that ignores runners
 # entirely -- including one that ignores architecture altogether.
 f="$TMP/orth.yml"; cp "$SRC" "$f"; promote_on_arm "$f"
-if grep -A20 '^  promote-latest:' "$f" | grep -q 'runs-on: ubuntu-24.04-arm'; then
+# `grep -F ... >/dev/null` and not `grep -q`: a piped -q exits at the
+# first match and SIGPIPEs the producer, so under pipefail the pipeline
+# reports failure on success. Redirecting reads to EOF, so the status is
+# the real one.
+if grep -A20 '^  promote-latest:' "$f" | grep -F 'runs-on: ubuntu-24.04-arm' >/dev/null; then
     echo "ok: the fixture really did move promote-latest onto an arm runner"
     pass=$((pass + 1))
 else
