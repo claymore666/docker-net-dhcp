@@ -157,6 +157,106 @@ else
     fail=$((fail + 1))
 fi
 
+echo "--- the exclusion's boundary, asserted rather than described"
+
+# PRESERVATION CONTROL FOR THE EXCLUSION. The gate drops exactly two
+# paths -- itself and this file -- and the one way that could go wrong
+# quietly is spelling it as a pattern: BOTH defects the gate was built
+# from live in `test-*.sh` files, so `test-*.sh` would excuse the gate's
+# entire reason for existing while looking like tidier code. This asserts
+# membership directly through the --list-domain seam, so the boundary is
+# a check and not a paragraph.
+n=$((n + 1))
+dom=$(cd "$HERE/.." && bash "$GATE" --list-domain 2>&1); rc=$?
+missing=""
+for must in scripts/test-check-attestation-parity.sh scripts/test-runner-register.sh; do
+    grep -qxF "$must" <<< "$dom" || missing="$missing $must"
+done
+present=""
+for must_not in scripts/check-counting-fallback.sh scripts/test-check-counting-fallback.sh; do
+    grep -qxF "$must_not" <<< "$dom" && present="$present $must_not"
+done
+if [ "$rc" -eq 0 ] && [ -z "$missing" ] && [ -z "$present" ]; then
+    echo "PASS: the excluded pair is out and both defect files are still in"
+else
+    echo "FAIL: the exclusion's boundary moved -- rc=$rc"
+    [ -n "$missing" ] && echo "       dropped from the domain, must NOT be:$missing"
+    [ -n "$present" ] && echo "       still in the domain, must NOT be:$present"
+    fail=$((fail + 1))
+fi
+
+echo "--- the excluded pair is observed, not trusted"
+
+# THE OBSERVER OVER THE EXCLUSION. An exclusion is a blind spot, and this
+# project has already paid for one. So the two excluded files are scanned
+# DELIBERATELY, through the same SCAN_ROOT seam, and every finding is
+# matched against a declared set.
+#
+# A SET, NOT A COUNT. A count only holds at the threshold: add a live
+# hazard as real code and delete a fixture in the same commit and the
+# total is unchanged while the gate's own script now carries the defect
+# it exists to catch. These are exactly the two files whose fixtures
+# churn, because they are what you edit to extend the gate. A member
+# nobody declared goes red whatever else moved.
+#
+# KEYED ON PATH PLUS A DIGEST OF THE MATCHED TEXT. Path-plus-line would
+# break every time this prose is reflowed. The text itself cannot be
+# written here literally -- quoting the seven fixtures in this file would
+# create seven more of them, and the set would chase its own tail -- so
+# it is pinned by digest with the fixture named beside it in words. To
+# re-derive after a deliberate fixture change, run the gate over the pair
+# and read the sha256 of each reported line.
+n=$((n + 1))
+pair="$TMP/selfpair"
+mkdir -p "$pair"
+cp "$GATE" "$HERE/$(basename "$0")" "$pair/"
+got=$(SCAN_ROOT="$pair" bash "$GATE" 2>&1 \
+      | sed -n 's|^::error file=\([^,]*\),.*::[^`]*`\(.*\)` -- the primary.*|\1\t\2|p' \
+      | while IFS= read -r rec; do
+            printf '%s  %s\n' "$(basename "${rec%%$'\t'*}")" \
+                "$(printf '%s' "${rec#*$'\t'}" | sha256sum | cut -c1-12)"
+        done | sort)
+want=$(sort <<'WANT'
+test-check-counting-fallback.sh  26d09ee9d08b
+test-check-counting-fallback.sh  98e7b9a4e161
+test-check-counting-fallback.sh  a3e9afed947d
+test-check-counting-fallback.sh  13e20ff8cf3e
+test-check-counting-fallback.sh  7e1f40b36b53
+test-check-counting-fallback.sh  ca31b9a6b5db
+test-check-counting-fallback.sh  ea26377731e1
+WANT
+)
+# 26d09ee  the attestation-parity defect, verbatim
+# 98e7b9a  the runner-register defect, verbatim
+# a3e9afe  the backtick spelling
+# 13e20ff  --count spelled long
+# 7e1f40b  bundled flags (-rc)
+# ca31b9a  printf as the fallback
+# ea26377  the comment quoting the bad form
+#
+# check-counting-fallback.sh contributes NOTHING to this set and that is
+# asserted by its absence: every line in it that carries the shape is a
+# comment, and comment-only lines are skipped. A finding attributed to
+# the gate script is a live hazard in the gate itself.
+undeclared=$(comm -23 <(printf '%s\n' "$got") <(printf '%s\n' "$want"))
+absent=$(comm -13 <(printf '%s\n' "$got") <(printf '%s\n' "$want"))
+if [ -z "$undeclared" ] && [ -z "$absent" ]; then
+    echo "PASS: the excluded pair holds exactly the declared fixtures"
+else
+    echo "FAIL: the excluded pair no longer matches its declared set"
+    [ -n "$undeclared" ] && {
+        echo "       UNDECLARED -- a hazard nobody registered, in a file the"
+        echo "       gate does not scan. Treat as live until shown to be a fixture:"
+        printf '%s\n' "$undeclared" | sed 's/^/         /'
+    }
+    [ -n "$absent" ] && {
+        echo "       DECLARED BUT GONE -- a fixture left; re-derive the digest"
+        echo "       if that was deliberate:"
+        printf '%s\n' "$absent" | sed 's/^/         /'
+    }
+    fail=$((fail + 1))
+fi
+
 echo
 if [ "$fail" -gt 0 ]; then
     echo "$fail of $n case(s) FAILED"

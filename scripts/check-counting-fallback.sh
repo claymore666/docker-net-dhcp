@@ -86,13 +86,59 @@
 # shell shebang. Not a list. A list is what let the defect sit in a
 # directory nobody thought to name.
 #
+# THE EXCLUSION: EXACTLY TWO PATHS, NAMED IN FULL.
+#
+#     scripts/check-counting-fallback.sh        (this file)
+#     scripts/test-check-counting-fallback.sh   (its self-test)
+#
+# Both carry the hazard shape as DATA -- the self-test hands the two
+# motivating defects to the gate verbatim, plus four spelling variants
+# and a comment case, and this file quotes the bad form to explain it.
+# Measured 2026-08-28 at 5e35574: 7 findings, all of them fixtures, none
+# of them code.
+#
+# BY EXACT PATH, NOT BY PATTERN. A pattern would quietly excuse the next
+# file whose name happens to match -- and here that is not theoretical:
+# BOTH defects this gate was built from live in `test-*.sh` files
+# (scripts/test-check-attestation-parity.sh and
+# scripts/test-runner-register.sh). An exclusion spelled `test-*.sh`
+# would drop the gate's entire reason for existing and still look
+# tidy. Same call, same rationale, as scripts/check-upstream-blocker-claims.sh.
+#
+# AN EXCLUSION IS A BLIND SPOT, SO IT IS OBSERVED, NOT TRUSTED. The
+# self-test scans these two files deliberately through SCAN_ROOT and
+# compares the findings against a DECLARED SET, keyed on path plus the
+# matched text. Not a count: a count is defeated by a compensating
+# change -- a live hazard added as real code while a fixture leaves in
+# the same commit keeps the total identical, and these are precisely the
+# two files whose fixtures churn by design. A set member nobody declared
+# goes red whatever else moved. Path-plus-text rather than path-plus-line
+# because the fixture text is copied verbatim from the defects and does
+# not move when this prose is reflowed, which it will be.
+#
+# `--list-domain` prints the domain and exits, so the boundary is
+# checkable at a glance instead of inferred from this comment.
+#
+# THE DOMAIN IS TRACKED FILES, SO VERIFY AFTER `git add`. A gate keyed on
+# `git ls-files` cannot see the file the commit is about to add to its
+# own domain: run it against an untracked new self-test and it reports
+# clean over a population missing exactly the file under test. That is
+# how this gate passed locally and went red on its first push. Stage the
+# change before believing a green. (CI compounds it: `pull_request`
+# checks out the MERGE REF, so its domain is larger than the branch
+# head's -- 179 files against 173 here on the same day.)
+#
 # NOT REACHABLE, AND IT MATTERS: `.claude/` is gitignored, so its 14
 # shell instruments -- ci-slot.sh, review-verdict.sh and the rest -- are
 # invisible to any gate keyed on tracked files. They are real tooling
 # with real defects (one was fixed on 2026-08-27) and nothing in the
 # gate corpus can see them. Stated rather than silently excluded.
 #
-# Usage: bash scripts/check-counting-fallback.sh
+# Usage: bash scripts/check-counting-fallback.sh [--list-domain]
+#        --list-domain  print the files that would be scanned, one per
+#                       line, and exit 0. The seam the self-test uses to
+#                       assert what is IN the domain, not only what the
+#                       scan of it returned.
 # Env:   SCAN_ROOT   scan this directory's *.sh instead of the tracked
 #                    tree -- the seam the self-test drives.
 # Exit:  0 clean, 1 one or more findings, 2 cannot measure / empty domain.
@@ -100,6 +146,13 @@
 set -uo pipefail
 
 cd "$(dirname "$0")/.." || exit 2
+
+LIST_ONLY=0
+case "${1:-}" in
+    --list-domain) LIST_ONLY=1 ;;
+    "") ;;
+    *) echo "usage: $0 [--list-domain]" >&2; exit 2 ;;
+esac
 
 # The hazard, as one extended regex.
 #
@@ -148,6 +201,25 @@ FILES=$(domain) || {
     exit 2
 }
 
+# The two paths above, removed by exact string match and nothing else.
+# Not applied under SCAN_ROOT: that seam exists so the self-test can aim
+# the gate AT these files, and excluding them there would make the
+# observer unable to observe.
+SELF="scripts/$(basename "$0")"
+SELF_TEST="scripts/test-$(basename "$0")"
+if [ -z "${SCAN_ROOT:-}" ]; then
+    kept=""
+    while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        case "$f" in "$SELF"|"$SELF_TEST") continue ;; esac
+        kept="$kept$f
+"
+    done <<EOF
+$FILES
+EOF
+    FILES="$kept"
+fi
+
 # THE NON-VACUITY GUARD. A scan of zero files reports success having
 # examined nothing, which is the exact failure this gate exists to
 # refuse -- one level up. It must go red, not green.
@@ -158,6 +230,11 @@ if [ "$count" -eq 0 ]; then
          "'nothing is wrong'. Refusing. If this is a deliberate scope change," \
          "the guard is what has to be changed, deliberately." >&2
     exit 2
+fi
+
+if [ "$LIST_ONLY" -eq 1 ]; then
+    printf '%s\n' "$FILES" | sed '/^$/d'
+    exit 0
 fi
 
 hits=0
