@@ -75,6 +75,14 @@ case "$RANGE" in
     *)     DIFF_RANGE="$RANGE" ;;
 esac
 
+# The end of the range is the tree the added lines belong to. A bare rev
+# compares against the working tree, so there is no post-image commit and
+# the file on disk is the right thing to read.
+case "$DIFF_RANGE" in
+    *...*) POST="${DIFF_RANGE##*...}" ;;
+    *)     POST="" ;;
+esac
+
 if ! git diff --name-only "$DIFF_RANGE" -- >/dev/null 2>&1; then
     echo "FAIL  cannot diff '$DIFF_RANGE' (no common ancestor?)" >&2
     exit 2
@@ -83,7 +91,132 @@ fi
 # Only test-bearing files. Weakening production code is a different
 # problem with different reviewers; this gate is about destroying a
 # finding a test just produced.
-TEST_PATHS=('*_test.go' 'test/integration/harness/*.go')
+#
+# THE CI'S OWN TESTS ARE TESTS (#828). `scripts/test-*.sh` was outside
+# this list until then, so the rule CLAUDE.md calls binding was enforced
+# mechanically over the tool and not over the tooling — and the CI's test
+# corpus is the larger, less-validated one. Measured: a gate self-test
+# with an assertion deleted and `return 0  # temporarily skipped` added
+# exited 0 with "no test files changed", byte-identical to the output for
+# an unrelated edit. Nothing distinguished them.
+#
+# Widening the list ALONE would have been worse than the gap. Against
+# that same gutted commit it turns
+#
+#     rc=0  "test-weakening gate: no test files changed"
+#
+# into
+#
+#     rc=0  "test-weakening gate: clean (1 test file(s) inspected)"
+#
+# — an honest silence becoming a claim of inspection over a gutted file,
+# which is the exact class this script's header is written about. So the
+# domain and the shell signals land together, never separately.
+TEST_PATHS=('*_test.go' 'test/integration/harness/*.go' 'scripts/test-*.sh')
+
+# --- code, not data (#828) -------------------------------------------
+#
+# THE GATE FIRED ON ITS OWN SELF-TEST the moment the domain widened, and
+# it was right to on the text: `scripts/test-check-test-weakening.sh`
+# contains `return 0  # temporarily skipped` eight times, as FIXTURE
+# TEXT handed to the gate under test.
+#
+# That is not a quirk of one file. A gate that matches on CONTENT will
+# always find its own triggers quoted inside its own self-test, so
+# admitting `scripts/test-*.sh` to any content-matching signal
+# guarantees a false positive on the commit that writes the tests — the
+# file most likely to be edited next. The same shape as the Go signals
+# leaking onto shell fixtures, one layer down.
+#
+# The property that separates them is not spelling, it is whether the
+# shell would EXECUTE the line. So the added lines are classified
+# against the post-image: inside a here-document or inside a quoted
+# string that opened on an earlier line is data, everything else is
+# code, and only code is judged.
+#
+# The classifier is deliberately small and it says when it is out of its
+# depth. If it does not end a file OUTSIDE every construct it opened, it
+# has lost track and the file is judged whole, exactly as it would be
+# without it — wrong in the direction of reporting, never of silence.
+# Measured over all 160 shell scripts in scripts/, including all 81 in
+# the domain: 0 files end unbalanced. Both counts are of the tree at the
+# time of writing; the domain is what `scripts/test-*.sh` matches, so it
+# moves whenever a self-test is added.
+post_image() { # <file>
+    if [ -n "${POST:-}" ] && git show "$POST:$1" >/dev/null 2>&1; then
+        git show "$POST:$1" 2>/dev/null
+    else
+        cat "$1" 2>/dev/null
+    fi
+}
+
+# The lines this change ADDED that the shell will run, rendered as diff
+# `+` lines so the signals below read them the same way they read Go.
+added_code_lines() { # <file>
+    local f="$1" nums
+    nums=$(git diff -U0 "$DIFF_RANGE" -- "$f" 2>/dev/null | awk '
+        /^@@/ { h = $3; sub(/^\+/, "", h); split(h, p, ",")
+                s = p[1] + 0; n = (p[2] == "" ? 1 : p[2] + 0)
+                for (k = 0; k < n; k++) print s + k }')
+    [ -n "$nums" ] || return 0
+    post_image "$f" | awk -v nums="$nums" '
+        # \047 is a single quote, written as an escape so this program
+        # survives living inside a shell single-quoted string.
+        BEGIN { split(nums, a, "\n"); for (i in a) want[a[i] + 0] = 1 }
+        {
+            state = "CODE"
+            if (hd != "") {
+                state = "DATA"
+                s = $0; sub(/^[ \t]+/, "", s)
+                if (s == hd) hd = ""
+            } else if (inq) {
+                state = "DATA"
+                p = index($0, "\047")
+                if (p > 0) { inq = 0; scan(substr($0, p + 1)) }
+            } else {
+                scan($0)
+            }
+            if (want[NR] && state == "CODE") print "+" $0
+            lines[NR] = $0
+        }
+        function scan(line,   i, c, dq, q, rest, depth) {
+            dq = 0; depth = 0
+            for (i = 1; i <= length(line); i++) {
+                c = substr(line, i, 1)
+                if (c == "\\") { i++; continue }
+                # A command substitution restores normal quoting inside
+                # double quotes, so `"$(awk \047...` opens a quote a flat
+                # toggle never sees. Two gates in scripts/ are written
+                # that way, and both went unbalanced without this.
+                if (c == "$" && substr(line, i + 1, 1) == "(") {
+                    saved[++depth] = dq; dq = 0; i++; continue
+                }
+                if (c == ")" && depth > 0) { dq = saved[depth--]; continue }
+                if (c == "\"") { dq = !dq; continue }
+                if (dq) continue
+                if (c == "#" && (i == 1 || substr(line, i-1, 1) ~ /[ \t;&|(]/)) return
+                if (c == "\047") {
+                    q = index(substr(line, i + 1), "\047")
+                    if (q == 0) { inq = 1; return }
+                    i = i + q
+                    continue
+                }
+                if (c == "<" && substr(line, i+1, 1) == "<" && substr(line, i+2, 1) != "<") {
+                    rest = substr(line, i + 2); sub(/^-/, "", rest)
+                    if (match(rest, /^[ \t]*[\047"]?[A-Za-z_][A-Za-z0-9_]*/)) {
+                        hd = substr(rest, RSTART, RLENGTH)
+                        gsub(/^[ \t]*/, "", hd); gsub(/[\047"]/, "", hd)
+                    }
+                    return
+                }
+            }
+        }
+        END {
+            # Lost track: say nothing was data rather than pretend.
+            if (hd != "" || inq)
+                for (n = 1; n <= NR; n++) if (want[n]) print "+" lines[n]
+        }'
+}
 
 mapfile -t FILES < <(git diff --name-only --diff-filter=d "$DIFF_RANGE" -- \
     "${TEST_PATHS[@]}" 2>/dev/null || true)
@@ -244,11 +377,32 @@ for f in "${FILES[@]}"; do
     added=$(printf '%s\n' "$diff" | grep -E '^\+' | grep -v '^+++' || true)
     removed=$(printf '%s\n' "$diff" | grep -E '^-' | grep -v '^---' || true)
 
-    # 1. A skip is the highest-confidence signal there is. A test that
-    #    is skipped is a test that found nothing.
-    if printf '%s\n' "$added" | grep -E '\bt\.Skipf?\(' >/dev/null; then
-        report "$f" "adds t.Skip" \
-            "A skipped test cannot fail, so it cannot report. If the condition is genuinely unsupported here, say which issue tracks it."
+    # EVERY GO SIGNAL IS GUARDED ON A GO FILE (#828).
+    #
+    # Until the domain widened, `*.go` was the only thing in it and the
+    # guard was implicit. It is not any more, and the shell self-tests
+    # are full of Go source: they build fixture files to hand to the
+    # gate, so `t.Skip(`, `func ...OptOut(` and `t.Errorf(` all appear in
+    # them as DATA. Measured over the last 400 non-merge commits, an
+    # unguarded widening moves three verdicts from clean to FAILED —
+    # 57a2232, f9cbf7c and 4530045 — and every one of them is this file's
+    # own self-test being accused of adding a t.Skip it merely quotes.
+    # 57a2232 is accused a SECOND time over that same file, of adding an
+    # opt-out helper it also only quotes. Both signals need the guard: a
+    # reader who guards t.Skip alone re-breaks that commit through the
+    # other one.
+    #
+    # A gate that fires on the commit that writes its own tests is a
+    # cry-wolf on the file most likely to be edited next, and a gate
+    # waived by reflex is not a gate. The widening only holds if each
+    # signal is judged in the language it was priced against.
+    if [[ "$f" == *.go ]]; then
+        # 1. A skip is the highest-confidence signal there is. A test
+        #    that is skipped is a test that found nothing.
+        if printf '%s\n' "$added" | grep -E '\bt\.Skipf?\(' >/dev/null; then
+            report "$f" "adds t.Skip" \
+                "A skipped test cannot fail, so it cannot report. If the condition is genuinely unsupported here, say which issue tracks it."
+        fi
     fi
 
     # 2. A BARE sleep in a test — one that is not the interval of a
@@ -275,6 +429,84 @@ for f in "${FILES[@]}"; do
         fi
     fi
 
+    # --- the same two moves, in shell (#828) -------------------------
+    #
+    # THE GO SIGNALS DO NOT TRANSFER, and the assertion count is the one
+    # that matters. Go calls t.Errorf inline, so counting call sites
+    # works. The shell self-tests call a NAMED helper and the corpus has
+    # no shared name for it: `check` 558 times, `run_case` 126, `run`
+    # 122. There is no analogue without deriving a dominant helper per
+    # file, and the obvious substitute — counting removed FAIL-bearing
+    # lines — was priced at zero false positives AND zero true positives.
+    # A signal set with no false alarms that also catches nothing is a
+    # check with one possible verdict, which is not a check.
+    #
+    # THAT PRICING COVERED 60 COMMITS, against a population of 116
+    # non-merge commits reachable from dev at the time of writing. Both
+    # halves of that sentence need their ref: the same history yields
+    # 120 counting this branch's own commits, 120 again counting merges
+    # from dev, and 124 counting both — so "120" alone does not even
+    # identify which derivation produced it. The 60 is #828's, taken on
+    # an older tree; it is quoted because it is what was actually
+    # measured, and the boundary is stated because a pricing that
+    # covered roughly half a population does not license a claim about
+    # the whole of it. The
+    # first draft of this comment said "all 60 commits that have EVER
+    # touched scripts/test-*.sh" — a completeness claim, and one that
+    # was already false when it was written.
+    #
+    # So two signals, both priced on that same history, and both unable
+    # to perturb anything that existed: they live inside the `*.sh`
+    # branch below, which is the ONLY caller of added_code_lines, so no
+    # .go file can reach either of them. That is preservation by
+    # construction, not by sampling — and it is why the earlier draft's
+    # "silent across 60 Go commits" was both unsourceable and
+    # unnecessary. (That 60 was the shell PRICING above — not a
+    # population, and not a Go one; one number was doing duty for two
+    # different sets, which is why this paragraph says "covered" and
+    # "population" of different things and never reuses the word.)
+    if [[ "$f" == *.sh ]]; then
+        # Judged on what the shell would run, not on what the file
+        # quotes. See added_code_lines() above.
+        sh_added=$(added_code_lines "$f")
+        ctx=$(git diff -U8 "$DIFF_RANGE" -- "$f" 2>/dev/null | grep -E '^\+' | grep -v '^+++' || true)
+
+        # 6. A case switched off, and SAYING SO.
+        #
+        # A bare added early `return`/`exit 0` alone fires on 4 of the 60
+        # — every one of them inside a generated stub heredoc, which is
+        # a fixture and not a weakening. Requiring the line, or the added
+        # line above it, to also carry a skip/temporary/disabled comment
+        # takes that to 0 while still killing the mutant. That is not a
+        # loophole: switching a case off is a thing people announce, and
+        # the alternative signal anyone reaches for first — a
+        # commented-out assertion call — fires on 19 of 60 (32%) and
+        # would be a cry-wolf inside a month.
+        if printf '%s\n' "$sh_added" | awk '
+            {
+                prev = mark
+                mark = (tolower($0) ~ /#.*(skip|temporar|disabl|for now|fixme)/)
+                if ($0 ~ /^\+[ \t]*(return|exit)([ \t]+0)?[ \t]*(#.*)?$/ && (mark || prev)) found = 1
+            }
+            END { exit found ? 0 : 1 }
+        '; then
+            report "$f" "disables a case" \
+                "An early return or exit that its own comment calls temporary, skipped or disabled is a test being switched off. A switched-off case cannot report. Say which issue tracks it."
+        fi
+
+        # 7. A bare sleep, judged with the same context rule as the Go
+        #    one: the interval of a bounded poll is the recommended fix,
+        #    not the smell. Fires on 0 of the 60 — correctly silent, and
+        #    kept because the move is available in shell and this is the
+        #    only place that would see it.
+        if printf '%s\n' "$sh_added" | grep -E '^\+[[:space:]]*sleep[[:space:]]+[0-9]' >/dev/null; then
+            if ! printf '%s\n' "$ctx" | grep -Ei 'deadline|timeout|until |while |retry|attempt|elapsed|budget' >/dev/null; then
+                report "$f" "adds a bare sleep" \
+                    "A sleep that is not the interval of a bounded poll waits a race out instead of removing it: it passes on a fast machine and fails on a loaded one. Poll against a deadline, or say which issue tracks the race."
+            fi
+        fi
+    fi
+
     # 4. A budget that GREW. The first version of this fired on any
     #    change to such a constant, because reading the numbers needs
     #    duration parsing in shell. #449 then moved every budget in
@@ -286,57 +518,60 @@ for f in "${FILES[@]}"; do
     #    So the values are parsed and paired by name. Silence is bought
     #    only by a proven decrease: anything unparseable, or a unit
     #    swap that makes the two incomparable, still reports.
-    unset budget_old budget_new
-    declare -A budget_old budget_new
-    while read -r bname bval; do
-        [ -n "$bname" ] && budget_old["$bname"]="$bval"
-    done < <(budget_values "$removed")
-    while read -r bname bval; do
-        [ -n "$bname" ] && budget_new["$bname"]="$bval"
-    done < <(budget_values "$added")
+    if [[ "$f" == *.go ]]; then   # Go signals, Go files (#828)
+        unset budget_old budget_new
+        declare -A budget_old budget_new
+        while read -r bname bval; do
+            [ -n "$bname" ] && budget_old["$bname"]="$bval"
+        done < <(budget_values "$removed")
+        while read -r bname bval; do
+            [ -n "$bname" ] && budget_new["$bname"]="$bval"
+        done < <(budget_values "$added")
 
-    for bname in "${!budget_new[@]}"; do
-        old="${budget_old[$bname]-}"
-        # No counterpart is a new constant, not a retune. A renamed one
-        # reads the same way; the assertion-count signal is what covers
-        # wholesale removal.
-        [ -n "$old" ] || continue
-        new="${budget_new[$bname]}"
+        for bname in "${!budget_new[@]}"; do
+            old="${budget_old[$bname]-}"
+            # No counterpart is a new constant, not a retune. A renamed one
+            # reads the same way; the assertion-count signal is what covers
+            # wholesale removal.
+            [ -n "$old" ] || continue
+            new="${budget_new[$bname]}"
 
-        # Two unreadable expressions are not evidence of equality, so
-        # the equal-values shortcut comes after the unknown check.
-        if [ "${old%%:*}" != "unknown" ] && [ "${new%%:*}" != "unknown" ]; then
-            [ "$old" = "$new" ] && continue
-            if [ "${old%%:*}" = "${new%%:*}" ] && [ "${new#*:}" -lt "${old#*:}" ]; then
-                continue  # tightened — the test now fails sooner, not later
+            # Two unreadable expressions are not evidence of equality, so
+            # the equal-values shortcut comes after the unknown check.
+            if [ "${old%%:*}" != "unknown" ] && [ "${new%%:*}" != "unknown" ]; then
+                [ "$old" = "$new" ] && continue
+                if [ "${old%%:*}" = "${new%%:*}" ] && [ "${new#*:}" -lt "${old#*:}" ]; then
+                    continue  # tightened — the test now fails sooner, not later
+                fi
             fi
-        fi
-        if [ "${old%%:*}" = "unknown" ] || [ "${new%%:*}" = "unknown" ]; then
-            report "$f" "changes $bname" \
-                "$(budget_human "$old") -> $(budget_human "$new"): this gate cannot read one of those, so it cannot tell whether the budget grew. Raising one turns a reproducible failure into an intermittent one."
-        else
-            report "$f" "raises $bname" \
-                "$(budget_human "$old") -> $(budget_human "$new"). Raising a budget turns a reproducible failure into an intermittent one. If the old value was genuinely wrong, the issue is where that argument lives."
-        fi
-    done
+            if [ "${old%%:*}" = "unknown" ] || [ "${new%%:*}" = "unknown" ]; then
+                report "$f" "changes $bname" \
+                    "$(budget_human "$old") -> $(budget_human "$new"): this gate cannot read one of those, so it cannot tell whether the budget grew. Raising one turns a reproducible failure into an intermittent one."
+            else
+                report "$f" "raises $bname" \
+                    "$(budget_human "$old") -> $(budget_human "$new"). Raising a budget turns a reproducible failure into an intermittent one. If the old value was genuinely wrong, the issue is where that argument lives."
+            fi
+        done
 
-    # Error/Errorf only, NOT Fatal. In this suite t.Fatalf is
-    # overwhelmingly error propagation — `if err != nil { t.Fatalf(...) }`
-    # — while t.Errorf is where a value is actually asserted. Measured
-    # on 5b6f94c, which centralised 27 t.Fatalf error checks into a
-    # helper and removed exactly zero t.Errorf: counting Fatal made a
-    # pure consolidation look like 15 deleted checks. On a2b3ac2, the
-    # commit this gate exists for, no assertion was removed either — it
-    # is caught by the opt-out signal, which is the one that matters
-    # there.
-    n=$(printf '%s\n' "$added" | grep -cE '\bt\.Errorf?\(' || true)
-    total_added_asserts=$((total_added_asserts + n))
-    n=$(printf '%s\n' "$removed" | grep -cE '\bt\.Errorf?\(' || true)
-    total_removed_asserts=$((total_removed_asserts + n))
+        # Error/Errorf only, NOT Fatal. In this suite t.Fatalf is
+        # overwhelmingly error propagation — `if err != nil { t.Fatalf(...) }`
+        # — while t.Errorf is where a value is actually asserted. Measured
+        # on 5b6f94c, which centralised 27 t.Fatalf error checks into a
+        # helper and removed exactly zero t.Errorf: counting Fatal made a
+        # pure consolidation look like 15 deleted checks. On a2b3ac2, the
+        # commit this gate exists for, no assertion was removed either — it
+        # is caught by the opt-out signal, which is the one that matters
+        # there.
+        n=$(printf '%s\n' "$added" | grep -cE '\bt\.Errorf?\(' || true)
+        total_added_asserts=$((total_added_asserts + n))
+        n=$(printf '%s\n' "$removed" | grep -cE '\bt\.Errorf?\(' || true)
+        total_removed_asserts=$((total_removed_asserts + n))
+    fi
 
     # 5. The exact shape that caused this: a harness helper whose
     #    purpose is to switch a check off.
-    if printf '%s\n' "$added" | grep -E '\bfunc\s+[A-Za-z]*(NoInit|NoWait|NoCheck|SkipCheck|OptOut|Unchecked|Disable[A-Z])[A-Za-z]*\s*\(' >/dev/null; then
+    if [[ "$f" == *.go ]] \
+       && printf '%s\n' "$added" | grep -E '\bfunc\s+[A-Za-z]*(NoInit|NoWait|NoCheck|SkipCheck|OptOut|Unchecked|Disable[A-Z])[A-Za-z]*\s*\(' >/dev/null; then
         report "$f" "adds an opt-out helper" \
             "A helper that exists to bypass a check is the shape that hid #402 and #408. An assertion that the bypassed condition holds is almost always what was wanted instead."
     fi

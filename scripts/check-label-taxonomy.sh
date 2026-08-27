@@ -65,17 +65,22 @@
 #   defaults: .github/labels.yml
 #             .github/issue-labeler.yml
 #             .github/workflows/issue-labeler.yml   (run from the repo root)
-# Env:   REPO        owner/name for --live (default: the checkout's origin)
-#        LABELS_TSV  --live test seam: read `name\tdescription` from this
-#        ISSUES_TSV  --live test seam: read `number\tlabel,label` from this
+# Env:   REPO        owner/name for --live (default: ask `gh`)
+#        LT_GH       the `gh` to run for --live (default: gh)
 #
-# THE TWO SEAMS EXIST SO THE LIVE RULES ARE TESTED, and they substitute the
-# data source only — every rule below still runs against whatever they
-# supply, so a self-test cannot pass by skipping a check. Without them the
-# live half would be unexercised, which for a gate means unproven: the rules
-# that matter most here fire on tracker states this repository is not
-# currently in, and a rule nothing has ever driven red is a rule nobody has
-# checked. Same shape as run-gate-selftests.sh's SELFTEST_DIR.
+# THE SEAM IS THE COMMAND, NOT ITS RESULT (#840). It was the other way round
+# until then: LABELS_TSV and ISSUES_TSV supplied the already-rendered result,
+# so they sat ABOVE the three queries that fetch it and none of those three
+# had ever executed under test — ten self-test cases drove the live rules
+# through a data source that impersonated `gh` rather than through `gh`.
+#
+# Substituting the command instead is what check-good-first-issues.sh
+# (GFI_GH) and check-milestone-scope.sh (MS_GH) already do, and it is why the
+# queries below ask for --json ONLY. A --jq would put the rendering back
+# inside `gh`, where no seam can reach it, and would leave the fixture and
+# the query as two independent encodings of one format with nothing tying
+# them together: extend the query and the gate reads a field no fixture
+# supplies, while the suite stays green.
 #
 # Exit: 0 clean, 1 a rule is broken, 2 cannot check (bad usage/inputs/API).
 
@@ -306,42 +311,71 @@ PY
 fi
 
 # ------------------------------------------------------------------ live
-if [ -z "${LABELS_TSV:-}" ] || [ -z "${ISSUES_TSV:-}" ]; then
-    if ! command -v gh >/dev/null 2>&1; then
-        echo "FAIL  gh is required for --live" >&2
-        exit 2
-    fi
-fi
+GH="${LT_GH:-gh}"
 
-REPO="${REPO:-$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null)}"
-if [ -z "$REPO" ]; then
+command -v "$GH" >/dev/null 2>&1 || {
+    echo "FAIL  $GH is required for --live" >&2
+    exit 2
+}
+
+GH_ERR="$(mktemp)"
+trap 'rm -f "$GH_ERR"' EXIT
+
+# ASK, THEN JUDGE THE OUTCOMES SEPARATELY (#840).
+#
+# All three queries were `2>/dev/null` with only the emptiness of stdout
+# examined, so a revoked token, a rate limit, an org rename, a network
+# failure and a genuinely empty tracker collapsed into one line: "the
+# tracker returned no labels — cannot check". Failing closed is right and
+# deliberate — absent data is not a zero — but the diagnostic was destroyed,
+# and whoever reads a red scheduled run has nothing to act on.
+#
+# Three outcomes, told apart: the query failed; it succeeded and said
+# nothing at all; it succeeded and returned a body. Only the third is
+# judged, and the first two now say which one happened.
+ask() { # <what> <gh argv...>  -> body on stdout, rc 2 if it cannot be trusted
+    local what="$1"; shift
+    local out rc
+    : > "$GH_ERR"
+    out="$("$GH" "$@" 2>"$GH_ERR")"
+    rc=$?
+    if [ "$rc" -ne 0 ]; then
+        echo "FAIL  the $what query failed (exit $rc): $GH $*" >&2
+        if [ -s "$GH_ERR" ]; then
+            sed 's/^/      /' "$GH_ERR" >&2
+        else
+            # A non-zero exit with both streams empty carries no reason at
+            # all. Say so, rather than printing a bare number and letting it
+            # read like a diagnostic.
+            echo "      it printed nothing on stderr" >&2
+        fi
+        return 2
+    fi
+    if [ -z "$out" ]; then
+        echo "FAIL  the $what query succeeded but returned nothing — cannot check" >&2
+        return 2
+    fi
+    printf '%s' "$out"
+}
+
+if [ -z "${REPO:-}" ]; then
+    REPO_JSON="$(ask "repository" repo view --json nameWithOwner)" || exit 2
+    REPO="$(printf '%s' "$REPO_JSON" | python3 -c \
+        'import json,sys;print(json.load(sys.stdin).get("nameWithOwner","") or "")' \
+        2>/dev/null)"
+fi
+if [ -z "${REPO:-}" ]; then
     echo "FAIL  cannot determine the repository; set REPO=owner/name" >&2
     exit 2
 fi
 
-if [ -n "${LABELS_TSV:-}" ]; then
-    LIVE_LABELS="$(cat "$LABELS_TSV" 2>/dev/null)"
-else
-    LIVE_LABELS="$(gh label list --repo "$REPO" --limit 200 \
-        --json name,description --jq '.[] | "\(.name)\t\(.description // "")"' 2>/dev/null)"
-fi
-if [ -z "$LIVE_LABELS" ]; then
-    echo "FAIL  the tracker returned no labels — cannot check" >&2
-    exit 2
-fi
-
-if [ -n "${ISSUES_TSV:-}" ]; then
-    LIVE_ISSUES="$(cat "$ISSUES_TSV" 2>/dev/null)"
-else
-    LIVE_ISSUES="$(gh issue list --repo "$REPO" --state open --limit 200 \
-        --json number,labels --jq '.[] | "\(.number)\t\([.labels[].name] | join(","))"' 2>/dev/null)"
-fi
-if [ -z "$LIVE_ISSUES" ]; then
-    echo "FAIL  the tracker returned no open issues — cannot check" >&2
-    exit 2
-fi
+LIVE_LABELS="$(ask "label list" label list --repo "$REPO" --limit 200 \
+    --json name,description)" || exit 2
+LIVE_ISSUES="$(ask "open issue list" issue list --repo "$REPO" --state open \
+    --limit 200 --json number,labels)" || exit 2
 
 LABELS="$LABELS" LIVE_LABELS="$LIVE_LABELS" LIVE_ISSUES="$LIVE_ISSUES" REPO="$REPO" python3 - <<'PY'
+import json
 import os
 import re
 import sys
@@ -380,12 +414,44 @@ if not declared:
     print(f"FAIL  {labels_path}: no labels declared", file=sys.stderr)
     sys.exit(1)
 
-live = {}
-for line in os.environ["LIVE_LABELS"].splitlines():
-    if not line.strip():
-        continue
-    name, _, desc = line.partition("\t")
-    live[name] = desc
+def load(raw, what):
+    """The body of a --json query, or exit 2 saying why it cannot be read.
+
+    A 4xx from the API is the mode that matters here: `gh` can exit 0 with
+    the error document on stdout and stderr empty, and a body that is merely
+    "not what was expected" is what makes a gate report drift and send
+    someone to change a thing it never read. It has to be an error, not a
+    verdict (#840).
+    """
+    try:
+        value = json.loads(raw)
+    except ValueError as e:
+        print(f"FAIL  the {what} query did not return JSON: {e}", file=sys.stderr)
+        print(f"      it began: {raw[:200]!r}", file=sys.stderr)
+        sys.exit(2)
+    if not isinstance(value, list):
+        print(
+            f"FAIL  the {what} query returned a JSON {type(value).__name__}, "
+            f"not the expected list",
+            file=sys.stderr,
+        )
+        print(f"      it began: {raw[:200]!r}", file=sys.stderr)
+        sys.exit(2)
+    if not value:
+        # Absent data is not a zero, and neither is a repository with no
+        # labels at all: both mean this gate cannot answer.
+        print(f"FAIL  the {what} query returned an empty list — cannot check",
+              file=sys.stderr)
+        sys.exit(2)
+    return value
+
+
+# `description` is null, not absent, for a label created without one — which
+# is exactly the state #715 was written about — so `or ""` and not a default.
+live = {
+    e.get("name", ""): (e.get("description") or "")
+    for e in load(os.environ["LIVE_LABELS"], "label list")
+}
 
 # Both directions. An undeclared label on the tracker is how `tests` got in;
 # a declared label the tracker does not have means the declaration is
@@ -415,11 +481,9 @@ types = {n for n, e in declared.items() if e.get("role") == "type"}
 dependabot = {n for n, e in declared.items() if e.get("role") == "dependabot"}
 
 checked = 0
-for line in os.environ["LIVE_ISSUES"].splitlines():
-    if not line.strip():
-        continue
-    num, _, raw = line.partition("\t")
-    on = {p for p in raw.split(",") if p}
+for issue in load(os.environ["LIVE_ISSUES"], "open issue list"):
+    num = issue.get("number")
+    on = {lab.get("name", "") for lab in issue.get("labels") or []}
     checked += 1
 
     have = sorted(on & types)
