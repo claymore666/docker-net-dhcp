@@ -44,20 +44,52 @@
 # release cycle after it merges. That is normal; being undispatchable
 # and DOCUMENTED AS A ROUTE is not.
 #
-# Rules, and as of #849 the gate enforces all of them rather than
-# reading an entry for presence:
-#   - An entry requires a reason and what clears it. No bare paths.
+# Rules. EACH ONE CARRIES ITS OWN ENFORCEMENT CLASS, and the class is
+# checked rather than asserted. The first version of this header said
+# "the gate enforces all of them"; one of the four rules below was
+# enforced by nothing at all, in the very PR whose subject was claims
+# in this file that are wider than the code behind them.
+#
+#   [enforced: id]   a case in scripts/test-check-dispatch-reachable.sh
+#                    drives a violation of that rule and requires the
+#                    gate to FAIL.
+#   [unenforced: id] a case drives the violation and observes the gate
+#                    PASS. It is an obligation on the author, and the
+#                    case exists to pin the boundary: if someone makes
+#                    the gate enforce it, that case goes red and this
+#                    tag has to be changed with it.
+#
+# The suite reads these tags back out of this file and demands one
+# driven case per tag, of the matching polarity. So the classes cannot
+# drift from what the gate does, a new rule cannot be added without
+# declaring which class it is in, and moving a rule into [enforced:]
+# without writing the code goes red.
+#
+#   - [enforced: reason-and-clears]
+#     An entry requires a reason and what clears it. No bare paths.
 #     A bare path used to pass byte-identically to a full entry.
-#   - An entry requires `Triggers:`, listing every default-branch-only
+#   - [enforced: derived-triggers]
+#     An entry requires `Triggers:`, listing every default-branch-only
 #     trigger the workflow actually declares. The gate DERIVES that list
 #     from the workflow file and requires an exact match, in both
 #     directions -- an entry that omits `schedule` fails, and so does one
 #     that claims `schedule` for a workflow that has none. It is keyed on
 #     the file's triggers, never on the wording of the reason, because
 #     both of the false entries in #846 were fluent English.
-#   - The documentation for the workflow must say it is not available
-#     yet, for as long as the entry is here.
-#   - The gate fails when an entry stops being needed — the workflow
+#   - [unenforced: docs-say-unavailable]
+#     The documentation for the workflow must say it is not available
+#     yet, for as long as the entry is here. NO CODE CHECKS THIS. The
+#     gate never opens a document; its only mention of documentation is
+#     the advisory sentence it prints when a workflow is undeclared. A
+#     tree with a complete, truthful entry here and a doc page naming
+#     the 404-ing workflow as its primary route passes today, which is
+#     exactly the #665 failure this ledger exists for. It is the same
+#     boundary check-dispatch-reachable.sh already states for the
+#     reason field: a mechanical check cannot tell a true sentence from
+#     a fluent invented one, and it cannot tell a documented route from
+#     a filename that merely appears in a document.
+#   - [enforced: stale-entry-pruned]
+#     The gate fails when an entry stops being needed — the workflow
 #     reached the default branch, so remove the entry. An allowlist
 #     nobody prunes is how a temporary exception becomes permanent.
 #

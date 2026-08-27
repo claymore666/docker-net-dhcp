@@ -28,6 +28,39 @@ check() {
     fi
 }
 
+# THE LEDGER'S ENFORCEMENT CLASSES ARE DRIVEN, NOT READ (#849). The
+# ledger header said "the gate enforces all of them"; one of its four
+# rules -- that the workflow's documentation must say it is unavailable
+# -- was enforced by nothing, in the PR whose subject was claims in that
+# file wider than the code behind them. Narrowing the sentence would
+# have been another sentence.
+#
+# So each rule now carries `[enforced: id]` or `[unenforced: id]`, and
+# the cases below are the demonstrations. `demo` records an id ONLY when
+# the case it wraps actually produced the verdict its class claims, so a
+# demonstration that silently stopped running cannot satisfy the
+# correspondence check at the end of this file. The two sets are then
+# compared with the tags parsed out of the real ledger, in both
+# directions: an untagged rule, a rule whose id has no demonstration, or
+# a demonstration for an id no rule declares is a failure.
+#
+# Keyed on which SET a rule is in and on the gate's observed verdict --
+# never on the wording of the rule, which is free to be rewritten. A
+# guard keyed on the spelling of that header sentence would reproduce
+# exactly the silence it exists to prevent.
+DEMO_ENFORCED=""
+DEMO_UNENFORCED=""
+demo() {
+    local class="$1" id="$2" desc="$3" want="$4" got="$5"
+    check "$desc" "$want" "$got"
+    [ "$got" = "$want" ] || return 0
+    case "$class" in
+        enforced)   DEMO_ENFORCED="$DEMO_ENFORCED $id" ;;
+        unenforced) DEMO_UNENFORCED="$DEMO_UNENFORCED $id" ;;
+        *) echo "FAIL: demo called with unknown class '$class'"; fails=1 ;;
+    esac
+}
+
 REPO="$TMP/repo"
 mkdir -p "$REPO/.github/workflows"
 git -C "$REPO" init -q -b main
@@ -107,7 +140,8 @@ git -C "$REPO" add -A && git -C "$REPO" commit -qm add-newone
 git -C "$REPO" checkout -q main
 git -C "$REPO" merge -q work
 git -C "$REPO" checkout -q work
-check "a declaration for a workflow now on the default branch fails" rc1 "$(verdict)"
+demo enforced stale-entry-pruned \
+    "a declaration for a workflow now on the default branch fails" rc1 "$(verdict)"
 
 grep -F 'stopped meaning anything' "$TMP/out" >/dev/null \
     && echo "PASS: the stale message says to remove it" \
@@ -261,14 +295,16 @@ led <<'EOF'
     Clears:  when it reaches main.
     Triggers: workflow_dispatch schedule
 EOF
-check "an entry with no Reason fails" rc1 "$(verdict3)"
+demo enforced reason-and-clears \
+    "an entry with no Reason fails" rc1 "$(verdict3)"
 
 led <<'EOF'
 .github/workflows/cron.yml
     Reason:  new this cycle.
     Triggers: workflow_dispatch schedule
 EOF
-check "an entry with no Clears fails" rc1 "$(verdict3)"
+demo enforced reason-and-clears \
+    "an entry with no Clears fails" rc1 "$(verdict3)"
 
 # THE #846 CLAIM, in structured form. The false sentence was "the schedule
 # works from any branch". Keyed on the file's triggers, the entry that
@@ -280,7 +316,8 @@ led <<'EOF'
     Clears:  when it reaches main.
     Triggers: workflow_dispatch
 EOF
-check "omitting a trigger the workflow declares fails, however fluent the reason" rc1 "$(verdict3)"
+demo enforced derived-triggers \
+    "omitting a trigger the workflow declares fails, however fluent the reason" rc1 "$(verdict3)"
 # The gate sorts the set, so the remediation string is the sorted form.
 # Asserting the exact sentence rather than "schedule appears somewhere"
 # keeps the message a paste-able fix rather than a hint.
@@ -378,9 +415,13 @@ check "a ledger that parses to no entries is rc2, not a verdict" 2 "$(verdict3 |
 # ONE VARIABLE MOVED: the same entry with a Reason added.
 #
 # manual3.yml goes first: it is left over from the cases above and an
-# UNDECLARED dispatchable workflow fails the gate on its own, which
-# would make every case below red for a reason that is not the
-# mutation. (It did, on the first run of this block.)
+# UNDECLARED dispatchable workflow fails the gate on its own. Measured
+# by deleting this `rm -f` and diffing the suite output: exactly TWO of
+# the cases below go red, both `pass`-expecting ones in the `on:`
+# derivation block. Every rc1-expecting case in between stays GREEN --
+# and green for a reason that is not its own mutation, which is the
+# more dangerous half and the one that leaves no trace. The `rm -f` is
+# load-bearing in both directions.
 rm -f "$REPO3/.github/workflows/manual3.yml"
 push_only pushonly > "$REPO3/.github/workflows/pushonly.yml"
 
@@ -511,10 +552,137 @@ led <<'EOF'
 EOF
 check "a job NAMED schedule is not a trigger" pass "$(verdict3)"
 
+# ...and a comment INSIDE the `on:` block is not a trigger either. This
+# is the previous defect one scope smaller: narrowing the scan from the
+# whole file to the `on:` mapping still counted comment text within the
+# mapping, so a trailing `# not on a schedule: manual only` derived
+# [schedule workflow_dispatch] and the only way to green was, again, to
+# write a false claim into the ledger. Both YAML comment spellings are
+# driven: a whole-line one and a trailing one.
+cat > "$REPO3/.github/workflows/inblock.yml" <<'EOF'
+name: inblock
+on:
+  # deliberately no schedule: a daily run would cost pool time
+  workflow_dispatch:  # not on a schedule: manual only
+jobs:
+  a:
+    runs-on: ubuntu-latest
+    steps: [{run: "true"}]
+EOF
+led <<'EOF'
+.github/workflows/cron.yml
+    Reason:  new this cycle.
+    Clears:  when it reaches main.
+    Triggers: workflow_dispatch schedule
+.github/workflows/commented.yml
+    Reason:  new this cycle.
+    Clears:  when it reaches main.
+    Triggers: workflow_dispatch
+.github/workflows/jobkey.yml
+    Reason:  new this cycle.
+    Clears:  when it reaches main.
+    Triggers: workflow_dispatch
+.github/workflows/inblock.yml
+    Reason:  new this cycle.
+    Clears:  when it reaches main.
+    Triggers: workflow_dispatch
+EOF
+# ORTHOGONALITY, the same bargain as the *.yml-only scan above: a case
+# that merely passes proves nothing unless the un-stripped derivation is
+# shown to REJECT this fixture. Without it, deleting the strip would
+# leave this case green and the finding unmeasured.
+unstripped="$TMP/unstripped.sh"
+sed -e '/sub(\/\^\[\[:space:\]\]\*#/d' -e '/sub(\/\[\[:space:\]\]+#/d' "$CHECK" > "$unstripped"
+if ( cd "$REPO3" && BASE_REF=main bash "$unstripped" >/dev/null 2>&1 ); then
+    echo "FAIL: the un-stripped derivation accepted the in-block comment, so the"
+    echo "      case below would be green whether or not comments are stripped"
+    fails=1
+else
+    echo "PASS: the un-stripped derivation rejects the in-block comment (orthogonality confirmed)"
+fi
+check "a comment inside the on: block is not a trigger" pass "$(verdict3)"
+rm -f "$unstripped" "$REPO3/.github/workflows/inblock.yml"
+
 rm -f "$REPO3/.github/workflows/commented.yml" "$REPO3/.github/workflows/jobkey.yml"
 
 rm -f "$REPO3/.github/workflows/cron.yml" "$REPO3/.github/workflows/manual3.yml" \
       "$REPO3/.github/dispatch-pending.txt"
+
+# --- THE BOUNDARY, DRIVEN (#849) ----------------------------------------
+#
+# The ledger's third rule is that the workflow's documentation must say
+# it is not available yet. NOTHING CHECKS THAT, and the header used to
+# read as though the gate did. This case is the boundary itself: a tree
+# with a complete, truthful ledger entry AND a doc page presenting the
+# 404-ing workflow as its primary route -- the #665 failure verbatim --
+# and the gate PASSES it.
+#
+# A case asserting the un-enforced answer is deliberate, not a weakened
+# assertion. It pins a stated limit: the day someone teaches the gate to
+# read documentation, this goes red and the `[unenforced:]` tag in the
+# ledger has to move with it. That is the whole point -- the tag and the
+# behaviour cannot drift apart in silence.
+REPO4="$TMP/repo4"
+mkdir -p "$REPO4/.github/workflows" "$REPO4/docs"
+git -C "$REPO4" init -q -b main
+git -C "$REPO4" config user.email t@example.com
+git -C "$REPO4" config user.name t
+git -C "$REPO4" config commit.gpgsign false
+dispatchable base4 > "$REPO4/.github/workflows/base4.yml"
+git -C "$REPO4" add -A && git -C "$REPO4" commit -qm base
+git -C "$REPO4" checkout -q -b work
+
+dispatchable newwf > "$REPO4/.github/workflows/newwf.yml"
+printf 'Run `gh workflow run newwf.yml`. This is the PRIMARY route and works right now.\n' \
+    > "$REPO4/docs/internals.md"
+entry .github/workflows/newwf.yml > "$REPO4/.github/dispatch-pending.txt"
+
+demo unenforced docs-say-unavailable \
+    "documentation calling a pending workflow the primary route is NOT caught" \
+    pass \
+    "$( ( cd "$REPO4" && BASE_REF=main bash "$CHECK" >/dev/null 2>&1 ) && echo pass || echo "rc$?" )"
+
+# --- the ledger's classes must match what was just demonstrated ---------
+#
+# Read the tags out of the REAL ledger and compare them, in both
+# directions, with the ids recorded by the driven cases above. This is
+# what makes the header's enforcement claim a checked statement instead
+# of a sentence: an untagged rule, a rule claiming a class no case
+# demonstrates, or a demonstration for a rule that no longer exists all
+# go red.
+LEDGER="$(cd "$(dirname "$CHECK")/.." && pwd)/.github/dispatch-pending.txt"
+rules_block=$(awk '/^#[[:space:]]*Rules[.,[:space:]]/ { b = 1 }
+                   b && /^[^#]/                       { exit }
+                   b' "$LEDGER")
+bullets=$(printf '%s\n' "$rules_block" | grep -E '^#[[:space:]]+-[[:space:]]')
+
+# NON-VACUITY. Every assertion below is universally quantified over the
+# bullets, so an empty bullet set satisfies all of them while checking
+# nothing -- the way a universal gate is satisfied by emptying its
+# domain. A moved header or a renamed marker must be loud here.
+if [ -z "$rules_block" ] || [ -z "$bullets" ]; then
+    echo "FAIL: no rules block or no rule bullets found in $LEDGER —"
+    echo "      the class correspondence below would pass having read nothing"
+    fails=1
+else
+    n_bullets=$(printf '%s\n' "$bullets" | grep -c .)
+    untagged=$(printf '%s\n' "$bullets" | grep -vE '\[(enforced|unenforced): [a-z0-9-]+\]')
+    if [ -z "$untagged" ]; then
+        echo "PASS: all $n_bullets ledger rules declare an enforcement class"
+    else
+        echo "FAIL: a ledger rule declares no enforcement class:"
+        printf '      %s\n' "$untagged"
+        fails=1
+    fi
+
+    tags() { printf '%s\n' "$bullets" | sed -n "s/.*\[$1: \([a-z0-9-]*\)\].*/\1/p" | sort -u | tr '\n' ' ' | sed 's/ $//'; }
+    norm() { printf '%s' "$1" | tr ' ' '\n' | grep -v '^$' | sort -u | tr '\n' ' ' | sed 's/ $//'; }
+
+    check "the ledger's [enforced:] rules are exactly the ones demonstrated to fail" \
+        "$(tags enforced)" "$(norm "$DEMO_ENFORCED")"
+    check "the ledger's [unenforced:] rules are exactly the ones demonstrated to pass" \
+        "$(tags unenforced)" "$(norm "$DEMO_UNENFORCED")"
+fi
 
 # --- the real repository ------------------------------------------------
 # The shipped state must satisfy its own gate.

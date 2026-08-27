@@ -195,14 +195,41 @@ fi
 # only be satisfied by a lie is worse than no gate: it teaches the
 # reader that the ledger is decorative.
 #
-# Any other column-zero key ends the block, so `jobs:` closes it. Same
-# shape as check-fork-execution-policy.sh, and for the same reason.
+# Any other column-zero key ends the block, so `jobs:` closes it.
+#
+# This paragraph cited "the same shape as check-fork-execution-policy.sh".
+# That file is not on this branch, not on `dev` and not on `main`; it
+# exists only on the unmerged #830 branch. The citation is dropped rather
+# than qualified, because a reader following it finds nothing. It is the
+# same defect the ledger this gate reads retracts about itself: a claim
+# true of the union of the branches in flight is not a claim about the
+# merged tree.
+#
+# COMMENTS INSIDE THE BLOCK ARE STRIPPED TOO, and that is one scope
+# smaller than the bug above rather than a different bug. Narrowing the
+# scan from the file to the `on:` mapping left
+#
+#     on:
+#       workflow_dispatch:  # not on a schedule: manual only
+#
+# deriving [schedule workflow_dispatch] — the gate demanding a false
+# claim again, just from a comment that had to be inside the block
+# instead of anywhere in the file. Both spellings are stripped: a
+# whole-line `#` comment, and a trailing one, which YAML introduces
+# with a `#` preceded by whitespace. Zero of the workflows in this tree
+# diverge today, so this was latent; latent is how the wider version of
+# it shipped.
 dead_triggers() {
     local f="$1"
     awk '
-      /^[A-Za-z_"'"'"'-]+:/ { in_on = ($0 ~ /^(on|"on"|'"'"'on'"'"'):/) }
-      in_on && /(^|[[:space:],[{])workflow_dispatch([[:space:]]*:|[[:space:]]*[],}]|$)/ { d = 1 }
-      in_on && /(^|[[:space:],[{])schedule([[:space:]]*:|[[:space:]]*[],}]|$)/          { c = 1 }
+      {
+        line = $0
+        sub(/^[[:space:]]*#.*$/, "", line)
+        sub(/[[:space:]]+#.*$/,  "", line)
+      }
+      line ~ /^[A-Za-z_"'"'"'-]+:/ { in_on = (line ~ /^(on|"on"|'"'"'on'"'"'):/) }
+      in_on && line ~ /(^|[[:space:],[{])workflow_dispatch([[:space:]]*:|[[:space:]]*[],}]|$)/ { d = 1 }
+      in_on && line ~ /(^|[[:space:],[{])schedule([[:space:]]*:|[[:space:]]*[],}]|$)/          { c = 1 }
       END { if (c) printf "schedule "; if (d) printf "workflow_dispatch" }
     ' "$f" | sed 's/ $//'
 }
