@@ -738,6 +738,13 @@ type HealthResponse struct {
 	// shut down cleanly when the plugin signalled it. No release is
 	// involved — since #800 nothing this plugin runs sends one.
 	ClientStopFailuresV6 int32 `json:"client_stop_failures_v6"`
+	// DHCPv6ConfigOnly counts DHCPv6 information replies -- address-less
+	// configuration from a network advertising the RA "other config"
+	// flag (#815). NOT healthy-affecting: it is a normal exchange on a
+	// stateless network. Before #815 these were dropped unread, so such
+	// a network was indistinguishable from one that answered nothing.
+	// It has no v4 half; see the atom for why.
+	DHCPv6ConfigOnly int32 `json:"dhcpv6_config_only"`
 }
 
 func (p *Plugin) apiHealth(w http.ResponseWriter, r *http.Request) {
@@ -882,5 +889,6 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		DHCPTimeoutsV6:               dhcpTimeoutsV6,
 		NAKsReceivedV6:               naksReceivedV6,
 		ClientStopFailuresV6:         clientStopFailuresV6,
+		DHCPv6ConfigOnly:             p.dhcpv6ConfigOnly.Load(),
 	}
 }

@@ -207,7 +207,11 @@ func TestHandleEvent_Counters(t *testing.T) {
 		total := p.leasesObtainedV4.Load() + p.leasesRenewedV4.Load() +
 			p.dhcpTimeoutsV4.Load() + p.naksReceivedV4.Load() +
 			p.leasesObtainedV6.Load() + p.leasesRenewedV6.Load() +
-			p.dhcpTimeoutsV6.Load() + p.naksReceivedV6.Load()
+			p.dhcpTimeoutsV6.Load() + p.naksReceivedV6.Load() +
+			// #815's counter joins the sum for the same reason the v6
+			// halves did: a case matching too broadly would bump it here
+			// and a total that omitted it would call that clean.
+			p.dhcpv6ConfigOnly.Load()
 		if total != 0 {
 			t.Errorf("counters moved on non-counting events: %d", total)
 		}

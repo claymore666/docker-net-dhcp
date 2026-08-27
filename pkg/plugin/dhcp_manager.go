@@ -1137,6 +1137,32 @@ func (m *dhcpManager) handleEvent(event dhcp.Event, v6 bool) {
 				WithField("new_ip", event.Data.IP).
 				Error("Failed to execute IP renewal")
 		}
+	case "config":
+		// A DHCPv6 information reply: options, no address (#815). It
+		// must NOT touch the address state machine -- no markBound, no
+		// setLastIP, no renew. renew() begins with
+		// netlink.ParseAddr(info.IP), and Info.IP is empty here by
+		// definition, so routing this through the lease path would fail
+		// on every stateless network rather than configure one.
+		//
+		// It also must not restart the outage deadline. nextAcquiring
+		// leaves the acquiring state unchanged for any event that is not
+		// bound/renew/leasefail, which is the behaviour this case wants
+		// and relies on: an information reply is proof the server is
+		// reachable, but it is NOT proof we hold a lease, and treating
+		// it as one would silence the timeout counter on a network that
+		// answers information requests and refuses addresses.
+		if m.plugin != nil {
+			m.plugin.dhcpv6ConfigOnly.Add(1)
+		}
+		m.audit("config", "")
+		m.logObservedOptions(v6, event.Data)
+		m.propagateDNS(v6, event.Data)
+		log.
+			WithFields(m.logFields(v6)).
+			WithField("dns", event.Data.DNSServers).
+			WithField("search", event.Data.SearchList).
+			Info("DHCPv6 configuration received without an address")
 	case "leasefail":
 		if m.plugin != nil {
 			bumpFamily(&m.plugin.dhcpTimeoutsV4, &m.plugin.dhcpTimeoutsV6, v6)
