@@ -4,6 +4,8 @@
 package harness
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -94,4 +96,98 @@ func TestKeaConfinementHint(t *testing.T) {
 			t.Errorf("weaker tier must not assert causation, got:\n%s", got)
 		}
 	})
+}
+
+// TestAppArmorKeaHint drives the composition itself: two filesystem
+// reads picked apart into the mode/installed pair that selects a tier.
+// keaConfinementHint is tested above on that pair directly, but nothing
+// exercised the step that PRODUCES it, so a read wired to the wrong
+// path or a stat whose error was inverted would have gone unnoticed --
+// and would have shown up as the hint being silent on precisely the
+// hosts it exists for.
+func TestAppArmorKeaHint(t *testing.T) {
+	const runDir = "/tmp/dh-itest-fixturedir"
+
+	writeTemp := func(t *testing.T, name, content string) string {
+		t.Helper()
+		p := filepath.Join(t.TempDir(), name)
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+		return p
+	}
+
+	// A missing path, guaranteed unreadable and un-stattable.
+	absent := filepath.Join(t.TempDir(), "definitely-not-here")
+
+	tests := []struct {
+		name         string
+		profiles     string // "" means point at an absent path
+		profileFile  bool
+		wantContains string
+		wantEmpty    bool
+	}{
+		{
+			name:        "enforce is stated as the cause",
+			profiles:    sampleProfiles,
+			profileFile: true,
+			// Assert on a string ONLY the enforce tier produces. runDir
+			// appears in the hedged tier too, so asserting on it let
+			// this case pass while the fixture was actually selecting
+			// the wrong tier -- which is exactly what happened on the
+			// first draft of this test.
+			wantContains: "is loaded in enforce mode, and that is why Kea",
+		},
+		{
+			name:        "complain is not a cause, so no hint",
+			profiles:    "kea-dhcp4 (complain)\n",
+			profileFile: true,
+			wantEmpty:   true,
+		},
+		{
+			// The tier that exists because /sys/kernel/security is
+			// root-only: unreadable profiles, profile package present.
+			name:         "unreadable profiles but installed profile is hedged",
+			profiles:     "",
+			profileFile:  true,
+			wantContains: "If it is loaded in enforce mode",
+		},
+		{
+			name:      "no profile installed and none loaded says nothing",
+			profiles:  "",
+			wantEmpty: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			origProfiles, origKea := apparmorProfilesPath, keaProfilePath
+			t.Cleanup(func() { apparmorProfilesPath, keaProfilePath = origProfiles, origKea })
+
+			if tc.profiles == "" {
+				apparmorProfilesPath = absent
+			} else {
+				apparmorProfilesPath = writeTemp(t, "profiles", tc.profiles)
+			}
+			if tc.profileFile {
+				keaProfilePath = writeTemp(t, "usr.sbin.kea-dhcp4", "# profile\n")
+			} else {
+				keaProfilePath = absent
+			}
+
+			got := appArmorKeaHint(runDir)
+			if tc.wantEmpty {
+				if got != "" {
+					t.Fatalf("want no hint, got:\n%s", got)
+				}
+				return
+			}
+			if got == "" {
+				t.Fatalf("want a hint containing %q, got none", tc.wantContains)
+			}
+			if !strings.Contains(got, tc.wantContains) {
+				t.Fatalf("hint missing %q:\n%s", tc.wantContains, got)
+			}
+		})
+	}
 }

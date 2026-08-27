@@ -39,7 +39,12 @@ import (
 // into a matching profile on exec. That is measured, and recorded in
 // the README section above. Install kea on a runner host and CI starts
 // failing the same way.
-const (
+// Vars rather than consts solely so the test can point them at fixture
+// files. appArmorKeaHint is the only part of this file that touches the
+// filesystem, and leaving it undrivable left the tier selection it
+// performs -- the thing this file exists to get right -- as the one
+// piece with no test. Nothing outside the test writes these.
+var (
 	// apparmorProfilesPath is the kernel's list of LOADED profiles and
 	// their modes. Root-only, which the integration suite is.
 	apparmorProfilesPath = "/sys/kernel/security/apparmor/profiles"
