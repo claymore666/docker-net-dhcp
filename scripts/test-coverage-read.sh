@@ -108,6 +108,48 @@ O=$(run "$D/log.none");    X=$(runx "$D/log.none");    echo "--- none ---"; echo
 chk "none: vacuous"           "$O" "*** VACUOUS"
 eq  "none: exit 2"            "$X" "2"
 
+# --- EQUAL COUNTS, DIFFERENT MEMBERSHIPS -------------------------------
+# The completeness line is a universal about WHICH packages got a verdict.
+# It used to be decided by HOW MANY. Those are different questions, and a
+# substitution -- one baselined package dropping out while an unbaselined
+# one gains a verdict -- keeps the count identical and changes the answer.
+#
+# Driven at 9f8d640 before the fix: five baselined, five verdicts, one of
+# them for an unbaselined `pkg/ghost`, `cmd/dhcp-handler` with none. The
+# script printed "every one of the 5 baselined package(s) got a verdict"
+# and exited 0. In a release-runbook instrument whose job is refusing a
+# reading it cannot stand behind.
+#
+# THE COUNTS MUST STAY EQUAL IN THIS FIXTURE. If the substitution also
+# changed the total, a cardinality check would catch it and the case
+# would pass against the unfixed script -- proving nothing about names.
+substituted() {
+  cat <<V
+PASS  $P/pkg/util: 95.7% holds baseline 95.0%
+FAIL  $P/pkg/plugin: 86.1% is below baseline 86.8% (epsilon 0.5)
+PASS  $P/pkg/dhcp: 90.4% beats baseline 89.9% — raise the floor
+PASS  $P/cmd/net-dhcp: 78.3% holds baseline 77.8%
+PASS  $P/pkg/ghost: 99.0% holds baseline 1.0%
+V
+}
+{ echo "$ratchetcmd"; substituted; } | freshgroup "Coverage ratchet" > "$D/log.subst"
+O=$(run "$D/log.subst"); X=$(runx "$D/log.subst"); echo "--- substituted ---"; echo "$O"
+eq  "subst: counts really are equal" \
+    "$(echo "$O" | grep -cE 'baseline data lines .*: 5|reported a verdict on: *5')" "2"
+chk "subst: the missing one is named"   "$O" "$P/cmd/dhcp-handler"
+chk "subst: incomplete, not complete"   "$O" "*** INCOMPLETE: 4 of 5"
+chk "subst: the unbaselined one is named" "$O" "*** UNBASELINED"
+chk "subst: names ghost"                "$O" "pkg/ghost"
+no  "subst: does NOT claim completeness" "$O" "every one of the 5 baselined package(s) got a verdict."
+eq  "subst: exit 2"                     "$X" "2"
+
+# PRESERVATION. The same widening must not turn a healthy log red, or the
+# case above measures "this script is strict" rather than "this script
+# compares names". log.full has five baselined verdicts and no stranger.
+O=$(run "$D/log.full")
+chk "preserved: full still reports completeness" "$O" "every one of the 5 baselined package(s) got a verdict."
+no  "preserved: full raises no UNBASELINED"      "$O" "*** UNBASELINED"
+
 
 # --- cross-check fixtures: raw covdata vs the ratchet's account ---
 { { echo "$ratchetcmd"; rawblock 86.1; verdicts; } | freshgroup "Coverage ratchet"; } > "$D/log.agree"

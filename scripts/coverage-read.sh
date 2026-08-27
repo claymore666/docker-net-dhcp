@@ -186,17 +186,62 @@ echo
 echo "NON-VACUITY"
 echo "  baseline data lines (derived from the tree the run used): $WANT"
 echo "  packages the ratchet reported a verdict on:               $GOTN"
+# COMPARED BY NAME, NOT BY COUNT. "every baselined package got a verdict"
+# is a claim about MEMBERSHIP, and the counts answer a different question.
+# Two sets of equal size need not be the same set: one package dropping
+# out while an unbaselined one gains a verdict leaves GOTN == WANT, and a
+# cardinality test then prints "every one of them" over a set that is
+# missing a member. Driven at 9f8d640 with a five-line baseline and five
+# verdicts, one of them for an unbaselined `pkg/ghost`: this script said
+# every one of the five baselined packages got a verdict and exited 0,
+# while `cmd/dhcp-handler` had got none. In a release-runbook instrument
+# whose entire job is refusing a reading it cannot stand behind.
+#
+# The sibling gets this right and says why -- coverage-ratchet.sh:154-160,
+# "a substitution keeps the count and changes the verdict, which a count
+# check reads as complete". The same paragraph, applied here.
+#
+# Deriving the expected count from the tree rather than typing it, which
+# is what the header above is about, is necessary and not sufficient: a
+# correctly derived count still cannot answer a membership question.
+awk '{print $1}' "$TMP/dev.data" | sort -u > "$TMP/want.keys"
+awk '{print $2}' "$TMP/read"     | sort -u > "$TMP/got.keys"
+comm -23 "$TMP/want.keys" "$TMP/got.keys" > "$TMP/missing.keys"
+comm -13 "$TMP/want.keys" "$TMP/got.keys" > "$TMP/extra.keys"
+nmissing=$(wc -l < "$TMP/missing.keys" | tr -d ' ')
+nextra=$(wc -l < "$TMP/extra.keys" | tr -d ' ')
+
 if [ "$GOTN" -eq 0 ]; then
     echo "  *** VACUOUS: the ratchet compared nothing. A ratchet that compares nothing reports a clean pass."
     rc=2
-elif [ "$GOTN" -lt "$WANT" ]; then
-    echo "  *** INCOMPLETE: $GOTN of $WANT. Missing:"
-    grep -vE '^[ \t]*(#|$)' "$BASE_DEV" | awk -F'[ \t]+' 'NF==2 {print $1}' | while read -r full; do
-        k=$(echo "$full" | key)
-        grep -q " $k " "$TMP/read" || echo "      $full"
-    done
-    rc=2
 else
-    echo "  every one of the $WANT baselined package(s) got a verdict."
+    if [ "$nmissing" -gt 0 ]; then
+        echo "  *** INCOMPLETE: $((WANT - nmissing)) of $WANT. Missing:"
+        # Resolved back to the FULL baseline path, not the last-two-segment
+        # key: the key is what the log lets us match on, but the reader has
+        # to go find the package, and two repositories can share a key.
+        grep -vE '^[ \t]*(#|$)' "$BASE_DEV" | awk -F'[ \t]+' 'NF==2 {print $1}' | while read -r full; do
+            k=$(echo "$full" | key)
+            grep -qxF "$k" "$TMP/missing.keys" && echo "      $full"
+        done
+        rc=2
+    fi
+    # The arm the count shape could not express at all. A verdict for a
+    # package no baseline floors is not a harmless extra: it is what makes
+    # the counts agree while the memberships differ, and until now it was
+    # visible only as a "none n/a" cell in the table above.
+    if [ "$nextra" -gt 0 ]; then
+        echo "  *** UNBASELINED: $nextra package(s) got a verdict but are in no baseline:"
+        sed 's/^/      /' "$TMP/extra.keys"
+        echo "      A verdict here is compared against no floor, and it pads the count"
+        echo "      that any cardinality check would read as completeness."
+        rc=2
+    fi
+    if [ "$nmissing" -eq 0 ] && [ "$nextra" -gt 0 ]; then
+        echo "  (every baselined package did get a verdict; the defect above is on the other side.)"
+    fi
+    if [ "$nmissing" -eq 0 ] && [ "$nextra" -eq 0 ]; then
+        echo "  every one of the $WANT baselined package(s) got a verdict. Matched by name."
+    fi
 fi
 exit "$rc"
