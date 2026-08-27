@@ -104,7 +104,14 @@ grep -qx -- '--unattended' "$args" && grep -qx -- '--replace' "$args" \
 grep -qx -- '--ephemeral' "$args" \
     && { echo "FAIL: --ephemeral passed — the runner would deregister after one job, which is the state #632 removes"; fails=1; } \
     || echo "PASS: not --ephemeral (a standing runner, not a single-use one)"
-got=$(grep -c . "$TMP/first/state/.credentials_rsaparams" 2>/dev/null || echo 0)
+# `grep -c . f` prints `0` AND exits 1 on a file that exists and is
+# empty, so `... || echo 0` fires BOTH halves and $got becomes the
+# two-line string "0\n0". A persisted identity that is present but
+# EMPTY is a real failure mode here, and it is the only input that
+# reaches this -- so the one case that most needs a legible verdict was
+# the one that reported `got '0` on one line and `0'` on the next.
+# Assign, then override on grep's own status: one integer on every path.
+got=$(grep -c . "$TMP/first/state/.credentials_rsaparams" 2>/dev/null) || got=0
 check "identity persisted to the state dir" 1 "$got"
 got=$(grep -c TOKENSECRET "$TMP/first/log" || true)
 check "the registration token is never logged" 0 "$got"

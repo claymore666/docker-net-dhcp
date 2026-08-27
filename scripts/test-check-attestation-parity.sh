@@ -254,6 +254,25 @@ esac
 STUBEOF
 chmod +x "$STUB/gh"
 
+# How many lines the witness log holds, as ONE integer on every path.
+#
+# `grep -c . f` prints `0` AND exits 1 when it matches nothing, so the
+# obvious `$(grep -c . f || echo 0)` fires BOTH halves and yields the
+# two-line string "0\n0". That is not an integer, so the `-eq` in
+# gh_check errored ("integer expression expected") instead of comparing,
+# and the zero-call diagnostic below it never printed.
+#
+# The cost is the shape this whole file is about: the only input that
+# triggers it is an EMPTY log -- the stub-never-invoked case the counter
+# exists to detect -- so the breakage was invisible in all 24 passing
+# cases and present in the one that matters. Driven by the two cases at
+# the bottom of this file, not left to a reading of this note.
+gh_call_count() {
+    local c
+    c=$(grep -c . "$1" 2>/dev/null) || c=0
+    printf '%s' "$c"
+}
+
 # gh_check NAME WANT_EXIT WANT_CALLS GHCR_MODE HUB_MODE
 gh_check() {
     local name="$1" want="$2" wantcalls="$3"
@@ -263,7 +282,7 @@ gh_check() {
     PATH="$STUB:$PATH" REPO="owner/name" GHCR_DIGEST="$GHCR" HUB_DIGEST="$HUB" \
         CONTROL_ATTEMPTS=2 CONTROL_SLEEP=0 bash "$CHECK" > "$TMP/out" 2>&1
     local got=$? calls
-    calls=$(grep -c . "$GH_CALLS" 2>/dev/null || echo 0)
+    calls=$(gh_call_count "$GH_CALLS")
     if [ "$got" -eq "$want" ] && [ "$calls" -eq "$wantcalls" ]; then
         echo "PASS: [gh] $name (exit $got, $calls gh call(s))"
     else
@@ -328,6 +347,31 @@ want_in "Bad credentials"
 # Neither stream speaks. The diagnostic must still name something.
 gh_check "gh fails silently: rc is reported"       2 2 silent http404
 want_in "printed nothing on either stream"
+
+# THE COUNTER IS ITSELF WITNESSED, and the empty log is the case that
+# has to hold. Compared as a STRING on purpose: `-eq` is what the old
+# form broke, so an integer comparison here would fail to see the
+# defect it is placed to catch -- "0\n0" and "0" are the same number to
+# `-eq` only after it has already errored on them.
+count_check() {
+    n=$((n + 1))
+    if [ "$3" = "$2" ]; then
+        echo "PASS: $1"
+    else
+        echo "FAIL: $1 -- want '$2', got '$3'"
+        failures=$((failures + 1))
+    fi
+}
+
+: > "$TMP/count-probe"
+count_check "an empty gh log counts as a single clean 0" \
+    0 "$(gh_call_count "$TMP/count-probe")"
+printf 'one\ntwo\n' > "$TMP/count-probe"
+count_check "a populated gh log counts its lines" \
+    2 "$(gh_call_count "$TMP/count-probe")"
+rm -f "$TMP/count-probe"
+count_check "a gh log that does not exist counts as a single clean 0" \
+    0 "$(gh_call_count "$TMP/count-probe")"
 
 echo
 if [ "$failures" -ne 0 ]; then
