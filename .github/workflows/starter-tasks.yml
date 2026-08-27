@@ -28,10 +28,26 @@ name: Starter tasks
 # rather than 1 when it cannot see, so "the API was down" is distinguishable
 # from "the promise is broken" in the run log.
 #
-# NOTE ON WHICH COPY RUNS. Scheduled workflows only ever fire from the
-# default branch, so this file's behaviour is whatever is on `main` — not
-# what is on `dev`. Changes here take effect at the next release, not at
-# merge.
+# TWO QUESTIONS, TWO DIFFERENT ANSWERS (#839).
+#
+# WHICH COPY OF THIS FILE RUNS: `main`'s. A cron only ever fires from the
+# default branch, so the `on:` block, the permissions and the step list
+# below are whatever shipped in the last release. An edit to this file
+# takes effect at the next release, not at merge.
+#
+# WHICH TREE IT JUDGES AGAINST: `dev`'s — the checkout below pins it.
+# The subject is the TRACKER, which advances when work merges to `dev`.
+# The claims being checked live in README.md and .bestpractices.json, so
+# when a PR in `dev` re-points the starter-task filter at a different
+# label, `main`'s two files still name the old one: judged against `main`
+# the run reports a broken promise that `dev` has already fixed, every
+# day until the release ships. The tree-only half of the same claim —
+# that the README and the badge agree with each other — runs per PR as
+# `--static`, where `main` is not involved at all.
+#
+# So an edit to README.md, .bestpractices.json or
+# scripts/check-good-first-issues.sh takes effect the moment it reaches
+# `dev`. An edit to this file does not.
 on:
   schedule:
     # Daily. The claim changes at human pace — an issue gets picked up, not
@@ -54,6 +70,12 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Pinned (#839). Without a ref the schedule judges the tracker
+          # against `main`'s README.md and .bestpractices.json, which lag
+          # `dev` for the whole release window. Same fix as
+          # issue-state-labels.yml (#490).
+          ref: dev
 
       - name: The starter-task claims still hold
         env:
