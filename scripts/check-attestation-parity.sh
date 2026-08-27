@@ -102,6 +102,11 @@ ask() {
     err="$(mktemp)"
     out="$(gh api "repos/$REPO/attestations/$digest" --jq '.attestations | length' 2>"$err")"
     rc=$?
+    # `rc -eq 0` is redundant against measured `gh` behaviour: every error
+    # path observed here prints a JSON object, which the shape test alone
+    # already rejects. It stays because it is the only guard left standing
+    # if `gh` ever starts applying `--jq` to error bodies and so returns a
+    # bare number from a failed call.
     if [ "$rc" -eq 0 ] && [[ "$out" =~ ^[0-9]+$ ]]; then
         printf 'count:%s' "$out"
     elif grep -q 'HTTP 404' "$err"; then

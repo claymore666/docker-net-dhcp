@@ -274,6 +274,11 @@ gh_check() {
     fi
 }
 
+# WHAT THESE CONTROLS DO NOT PROVE. Every case here drives the control
+# side with exactly one attestation, so they show the gate sees one
+# attestation in a store containing one -- never that it carries N
+# through as N. A checker that hard-coded the count to 1 would pass all
+# of them.
 gh_check "the documented state, through gh"        0 2 count:1 http404
 want_in "control OK"
 want_in "no provenance attestation"
