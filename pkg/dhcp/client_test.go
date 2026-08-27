@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -610,31 +611,98 @@ func TestFinish_WithoutStartIsSafe(t *testing.T) {
 //
 // `exec` is skipped because it is a shell builtin: there is no PATH
 // lookup to pin, and its argument is $0, which is dhcpcdBin.
-func TestMountPrep_NamesEveryBinaryAbsolutely(t *testing.T) {
-	prep := mountPrep()
-	words := 0
-	for _, stmt := range strings.FieldsFunc(prep, func(r rune) bool {
+// fdDupRedirect matches an fd-duplication redirection: `>&2`, `2>&1`,
+// `1>&2`. Stripped before the split below.
+//
+// WHY, and it is not cosmetic. The splitter breaks on `&` — deliberately,
+// so a command appended with `&&` or `||` stays visible. `>&2` contains
+// one, so the shell operator gets torn in half and the `2` after it
+// becomes the first word of a statement that does not exist. #780 added
+// `|| /bin/echo '...' >&2` to mountPrep and this test reported four
+// PHANTOM command words named "2".
+//
+// A gate that cries wolf gets discharged, and the discharge here would
+// have been to drop the `&` from the splitter — which is exactly the
+// blindness the comment above spends two paragraphs arguing against.
+// Removing the redirection instead keeps `||` visible and removes only a
+// token that cannot be a command word: an fd duplication has no filename
+// and no argument, so nothing is hidden behind it.
+//
+// WHAT THIS STILL CANNOT READ, stated rather than assumed: a redirection
+// TO A FILE (`> /tmp/x`) would leave `/tmp/x` as a phantom word. It
+// would be reported, not hidden — a false positive, which is the safe
+// direction for this gate — and mountPrep uses no such form.
+var fdDupRedirect = regexp.MustCompile(`[0-9]*>&[0-9]+`)
+
+// mountPrepCommandWords returns the words the shell would resolve as
+// commands in a `sh -c` body.
+//
+// Extracted so the test below can run it against BOTH the real
+// mountPrep() and a deliberately broken string. A scanner that is only
+// ever pointed at correct input proves that the input is correct, not
+// that the scanner works — and the phantom-word bug above is what a
+// scanner nobody had aimed at a mutant looks like.
+func mountPrepCommandWords(prep string) []string {
+	var words []string
+	for _, stmt := range strings.FieldsFunc(fdDupRedirect.ReplaceAllString(prep, ""), func(r rune) bool {
 		return r == ';' || r == '&' || r == '|'
 	}) {
 		fields := strings.Fields(stmt)
 		if len(fields) == 0 || fields[0] == "exec" {
 			continue
 		}
-		words++
-		if !strings.HasPrefix(fields[0], "/") {
+		words = append(words, fields[0])
+	}
+	return words
+}
+
+func TestMountPrep_NamesEveryBinaryAbsolutely(t *testing.T) {
+	prep := mountPrep()
+	words := mountPrepCommandWords(prep)
+	for _, w := range words {
+		if !strings.HasPrefix(w, "/") {
 			t.Errorf("mountPrep runs %q, resolved through PATH by the shell; "+
 				"name it absolutely as dhcpcdBin and unsharePath are\n---\n%s",
-				fields[0], prep)
+				w, prep)
 		}
 	}
 	// The loop body is a rule about command words that exist, so it is
 	// satisfied completely by there being none — which is what a
 	// mountPrep rewritten into a form this splitter cannot read would
 	// look like, and it would look green.
-	if words < 4 {
-		t.Errorf("found %d command words in mountPrep, want at least 4; either it stopped "+
-			"preparing a mount it used to prepare, or it is now written in a form this "+
-			"test cannot read and is checking less than it reports\n---\n%s", words, prep)
+	//
+	// Eight now, not four: #780 appends a reporting command to each
+	// prepared mount, and a floor that did not move with them would have
+	// gone on being satisfied by the four it already knew about.
+	if len(words) < 8 {
+		t.Errorf("found %d command words in mountPrep, want at least 8; either it stopped "+
+			"preparing a mount it used to prepare, or it stopped reporting one that failed, "+
+			"or it is now written in a form this test cannot read and is checking less than "+
+			"it reports\n---\n%s", len(words), prep)
+	}
+}
+
+// The scanner, aimed at input it must reject.
+//
+// Without this, stripping the redirection above is a change that makes a
+// red test green with nothing establishing that it can still go red. The
+// two cases are the two ways the strip could be wrong: too greedy (it
+// eats a real command) and not greedy enough (the phantom survives).
+func TestMountPrepCommandWords_SeesBareCommandsAndNotRedirections(t *testing.T) {
+	// A bare command appended with `||` and followed by a redirection —
+	// the exact shape #780 introduced — must still be reported.
+	got := mountPrepCommandWords("/bin/mount -t tmpfs tmpfs /x || echo 'boom' >&2; exec \"$0\"")
+	want := []string{"/bin/mount", "echo"}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("command words = %q, want %q: the redirection strip must not hide the "+
+			"command in front of it", got, want)
+	}
+
+	// And the redirection itself must contribute nothing.
+	for _, w := range got {
+		if w == "2" {
+			t.Error("the fd number of a redirection is being read as a command word")
+		}
 	}
 }
 
