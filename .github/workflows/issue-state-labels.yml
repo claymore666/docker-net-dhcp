@@ -35,6 +35,9 @@ name: Issue state labels
 #     of two state labels. No other label is touched, no content is
 #     written, and the token cannot do more (issues: write only).
 
+# Classified for scripts/check-scheduled-ref-pins.sh (#839); the note
+# above is the long form of why the checkout is pinned.
+# scheduled-subject: tracker
 on:
   push:
     branches: [dev]

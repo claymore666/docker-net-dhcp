@@ -24,6 +24,11 @@ name: APK pin drift
 # and is not a required context, so a standing red here blocks no PR —
 # it only ensures the drift is visible without a ritual.
 
+# What this judges, for scripts/check-scheduled-ref-pins.sh (#839): the
+# TREE. A cron fires only from the default branch, and for a scanner that
+# is the right copy — pinning it to `dev` would report on something no
+# release contains.
+# scheduled-subject: tree
 on:
   schedule:
     - cron: '7 6 * * 0'

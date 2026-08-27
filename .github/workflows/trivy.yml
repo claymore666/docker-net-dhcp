@@ -24,6 +24,11 @@ name: Trivy rootfs scan
 # Actions are SHA-pinned (tag in the trailing comment); Dependabot's
 # github-actions group maintains them.
 
+# What this judges, for scripts/check-scheduled-ref-pins.sh (#839): the
+# TREE. A cron fires only from the default branch, and for a scanner that
+# is the right copy — pinning it to `dev` would report on something no
+# release contains.
+# scheduled-subject: tree
 on:
   schedule:
     - cron: '23 6 * * 1'

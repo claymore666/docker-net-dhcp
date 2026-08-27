@@ -41,6 +41,9 @@ name: Starter tasks
 # So an edit to README.md, .bestpractices.json or
 # scripts/check-good-first-issues.sh takes effect the moment it reaches
 # `dev`. An edit to this file does not.
+# Classified for scripts/check-scheduled-ref-pins.sh (#839); the note
+# above is the long form of why the checkout is pinned.
+# scheduled-subject: tracker
 on:
   schedule:
     # Daily. The claim changes at human pace — an issue gets picked up, not

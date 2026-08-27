@@ -31,6 +31,11 @@ name: Integration (hosted cross-check)
 # and schedule trigger this — never push/pull_request, so a fork PR
 # can't start it and there is no untrusted-PR-as-root exposure (the
 # scheduled run executes the default branch's own code).
+# What this judges, for scripts/check-scheduled-ref-pins.sh (#839): the
+# TREE. A cron fires only from the default branch, and for a scanner that
+# is the right copy — pinning it to `dev` would report on something no
+# release contains.
+# scheduled-subject: tree
 on:
   # Weekly cron + on-demand. The cron is live and running: it first
   # fired once this file reached the default branch, as scheduled

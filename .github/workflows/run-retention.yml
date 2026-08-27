@@ -22,6 +22,11 @@
 # explicitly; every manual dispatch has to ask for it.
 name: Run retention
 
+# What this judges, for scripts/check-scheduled-ref-pins.sh (#839): the
+# TREE. A cron fires only from the default branch, and for a scanner that
+# is the right copy — pinning it to `dev` would report on something no
+# release contains.
+# scheduled-subject: tree
 on:
   schedule:
     # 04:17 UTC daily. Off the hour on purpose: GitHub's scheduler queues
