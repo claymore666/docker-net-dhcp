@@ -756,9 +756,17 @@ func (ef *EphemeralFixture) startKea() {
 	// An empty log with no readiness marker is the signature of a Kea
 	// that never got as far as opening its config -- on a bare
 	// Debian/Ubuntu host, usually because AppArmor denied it. Say so
-	// here rather than leaving the cause in dmesg (#869).
+	// here rather than leaving the cause in the kernel log (#869).
+	//
+	// The log is read ONCE and handed to both. The hint blames AppArmor
+	// for an empty log only when the log the reader is about to see is
+	// actually empty, and it cannot know that from a second read:
+	// readLog returns the whole file, which is appended to across every
+	// Stop/StartAgain cycle, and returns a non-empty "(could not read
+	// ...)" string when the read itself fails.
+	keaLog := ef.readLog()
 	ef.t.Fatalf("ephemeral kea did not become ready; config:\n%s\nlog:\n%s\n%s",
-		ef.renderedConfig, ef.readLog(), appArmorKeaHint(ef.tmpDir))
+		ef.renderedConfig, keaLog, appArmorKeaHint(ef.tmpDir, keaLog == ""))
 }
 
 func (ef *EphemeralFixture) startDnsmasq() {

@@ -102,9 +102,19 @@ means `docker plugin disable`, `set`, `enable`.
 
 If a Kea-backed test fails with `ephemeral kea did not become ready`
 and an **empty** server log, this section is the answer. Since #869 the
-fixture detects the loaded profile and says so in that failure, along
-with the commands below — but the error string is repeated here so a
-search for it lands on the explanation.
+fixture says so in that failure itself, along with the commands below —
+but the error string is repeated here so a search for it lands on the
+explanation.
+
+What the fixture reports depends on what it could measure, and it
+distinguishes the cases rather than blurring them. A loaded enforcing
+profile *plus* a kernel denial record naming the fixture's own temp
+directory is stated as the cause, with the record quoted. A loaded
+enforcing profile with no such record is reported as the likely cause
+only: the profile ends in `#include <local/usr.sbin.kea-dhcp4>`, so a
+site override under `/etc/apparmor.d/local/` can leave it enforcing
+while permitting exactly these paths. A profile that is installed but
+measurably **not** loaded is not reported at all.
 
 Debian's `kea-dhcp4-server` package ships an **enforcing** AppArmor
 profile that pins Kea to its own packaged paths — right down to the
