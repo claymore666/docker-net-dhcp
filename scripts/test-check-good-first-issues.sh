@@ -237,7 +237,14 @@ check "live/Unmet: a starter task exists again, so Unmet is now false" 1 \
 check "live/Unmet: and the remedy names all three artifacts" 1 \
     "$(run --live "$TMP/readme.silent" "$TMP/badge.unmet")" "restore the README's link"
 
-# ---- --live, the two ways this could go quietly green while blind ----
+# ---- --live, the ways this could go quietly green while blind --------
+# This header said TWO and drove two. There was a third, the gate had a
+# guard written for it, and the guard was dead: `rc=$?` after
+# `mapfile < <(python3 ...)` reads mapfile's status, so an unparseable
+# response arrived as zero issues. A section header naming a count is a
+# completeness claim, and it was satisfied by not counting the case that
+# got away. It names no count now, and every arm below is driven under
+# BOTH badge states, because the Unmet arm is the one that fails open.
 STUB_OUT='[{"number":534}]'; STUB_RC=1
 check "live: an API error cannot see (2, not 0)" 2 \
     "$(run --live "$TMP/readme.ok" "$TMP/badge.live")" 'Cannot see'
@@ -252,6 +259,34 @@ check "live/Met: an EMPTY response is 'cannot see', never 'zero issues'" 2 \
     "$(run --live "$TMP/readme.ok" "$TMP/badge.live")" 'empty response'
 check "live/Unmet: an EMPTY response is 'cannot see', never a confirmation" 2 \
     "$(run --live "$TMP/readme.silent" "$TMP/badge.unmet")" 'empty response'
+
+# A NON-EMPTY response that does not parse. Distinct from the empty
+# string above: that one is caught before the parser runs, this one gets
+# there. Under Unmet the old code exited 0 saying the claim was still
+# true, having read nothing — a false green in the exact arm that is the
+# argument for this being a gate and not a snapshot. Under Met it exited
+# 1 and accused the repo of having no starter tasks left, on the same
+# non-evidence.
+STUB_OUT='not json at all'; STUB_RC=0
+check "live/Unmet: unparseable is 'cannot see', never a confirmation" 2 \
+    "$(run --live "$TMP/readme.silent" "$TMP/badge.unmet")" 'unparseable issue list'
+check "live/Met: unparseable is 'cannot see', never 'no tasks left'" 2 \
+    "$(run --live "$TMP/readme.ok" "$TMP/badge.live")" 'unparseable issue list'
+
+# Well-formed JSON of the wrong SHAPE reaches the parser and dies inside
+# it, which is a different failure from a syntax error and must not be
+# the one case nobody drove.
+STUB_OUT='{"number":7}'; STUB_RC=0
+check "live/Unmet: JSON of the wrong shape is 'cannot see'" 2 \
+    "$(run --live "$TMP/readme.silent" "$TMP/badge.unmet")" 'unparseable issue list'
+
+# THE CONTROL for all four above. A legitimately empty list is the same
+# zero-element array an unparseable response used to produce, so without
+# this the fix could have been "exit 2 on everything" and still gone
+# green. Unmet + no open issues is the honest state: the gate must PASS.
+STUB_OUT='[]'; STUB_RC=0
+check "live/Unmet: a genuinely empty list still passes" 0 \
+    "$(run --live "$TMP/readme.silent" "$TMP/badge.unmet")" ''
 
 STUB_OUT='[]'; STUB_RC=0
 check "live: a missing gh cannot see" 2 \

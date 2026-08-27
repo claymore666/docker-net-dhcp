@@ -335,9 +335,30 @@ open_json=$("$GH" issue list --label "$LABEL" --state open --limit 100 --json nu
     exit 2
 }
 
-mapfile -t open_nums < <(printf '%s' "$open_json" | python3 -c 'import json,sys;[print(i["number"]) for i in json.load(sys.stdin)]' 2>/dev/null)
-rc=$?
-[ "$rc" -eq 0 ] || { echo "::error title=Cannot see::unparseable issue list" >&2; exit 2; }
+# The parse runs in its OWN command substitution so that its exit status
+# is the one tested. A first version wrote
+#
+#   mapfile -t open_nums < <(python3 -c '...')
+#   rc=$?
+#
+# where $? is MAPFILE's status, not the parser's -- mapfile succeeds at
+# reading zero lines from a process that died. Measured: garbage in gives
+# rc=0 with 0 elements, and so does a legitimately empty "[]". The guard
+# below could never fire, and the two states were indistinguishable, so
+# an unreadable response was counted as "no open issues" -- which passes
+# the Unmet arm silently. That is the failure the empty-STRING check four
+# lines above exists to prevent, lost four lines later (#851).
+open_list=$(printf '%s' "$open_json" | python3 -c 'import json,sys;[print(i["number"]) for i in json.load(sys.stdin)]' 2>&1) || {
+    echo "::error title=Cannot see::unparseable issue list for \"$LABEL\": ${open_list##*$'\n'}" >&2
+    exit 2
+}
+# An empty parse result is zero issues and must stay a zero-element
+# array: printf '%s\n' "" would feed mapfile one blank line and count it
+# as an issue, turning "no starter tasks" into one.
+open_nums=()
+if [ -n "$open_list" ]; then
+    mapfile -t open_nums < <(printf '%s\n' "$open_list")
+fi
 
 if [ "$badge_status" = "Unmet" ]; then
     # THE REVERSE DECAY, and the reason #851's fix is reversible rather
