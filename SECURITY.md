@@ -36,6 +36,16 @@ CapEff: 00000000a82c35fb
 $ capsh --decode=00000000a82c35fb
 ```
 
+Measured 2026-08-27 on a running plugin process: `CapPrm`, `CapEff` and
+`CapBnd` are all `00000000a82c35fb` — seventeen capabilities — while
+`CapInh` is `0000000000281000`, which decodes to exactly the three
+requested capabilities and nothing else. That is the composition rule
+made visible rather than asserted: the three you approve at install
+arrive as the *inheritable* set, and the remaining fourteen —
+`CAP_NET_RAW`, `CAP_MKNOD`, `CAP_DAC_OVERRIDE`, `CAP_SETUID` and the
+rest of the OCI defaults — are added by the runtime underneath them.
+Nothing in `config.json` can subtract from that fourteen.
+
 **What each of the three requested capabilities buys is measured, not
 asserted.** Until #690 nothing had ever run the plugin *without* one of
 them, so "required" was a claim about code rather than an observation of
