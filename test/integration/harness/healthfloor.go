@@ -67,7 +67,15 @@ type HealthResponse struct {
 	// that client in place (#480). Expected whenever a deferred recovery
 	// overlaps containers coming back.
 	RecoveryAlreadyManaged int32 `json:"recovery_already_managed"`
-	JoinStartFailures      int32 `json:"join_start_failures"`
+	// DisplacedStops is the SAME #480 property from the other side: a
+	// Join that found a recovery-built manager for its endpoint still in
+	// the registry, and stopped it. Not healthy-affecting, and not
+	// evidence on its own — its metrics help says it "counts the intent
+	// to stop; it is not evidence the client went away", which is why
+	// TestDisplaced_ReleasesItsLease reads it only after the DHCP
+	// server's log has already answered (#682).
+	DisplacedStops    int32 `json:"displaced_stops"`
+	JoinStartFailures int32 `json:"join_start_failures"`
 	// JoinAbortedContainerGone is the benign twin of JoinStartFailures:
 	// the container exited before the persistent client was up. Not
 	// healthy-affecting (#373).
