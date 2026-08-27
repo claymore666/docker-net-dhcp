@@ -348,7 +348,7 @@ func (f *V6Fixture) start() {
 		"--log-facility=-",
 	)
 
-	f.cmd = exec.Command("/usr/sbin/dnsmasq", args...)
+	f.cmd = withCLocale(exec.Command("/usr/sbin/dnsmasq", args...))
 	f.cmd.Stdout = logF
 	f.cmd.Stderr = logF
 	f.cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
