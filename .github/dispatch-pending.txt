@@ -111,8 +111,14 @@
              single identity as author and committer, and only one of them
              was ever on the merged line. That is a fact about this file's
              framing, not about anyone's authorship — and this sentence
-             itself said "two authors" until #849, fifty lines below the
-             header that retracts it.
+             itself said "two authors" until #849, in the same file as
+             the header paragraph that retracts it, and below it.
+             That sentence said "fifty lines below" until the #849
+             review grew the header and made the number wrong. A
+             distance in lines is a measurement of a file that keeps
+             being edited, so it is not restated here with a bigger
+             number; the fact worth stating is that the claim and its
+             retraction stood in the same file at the same time.
     Triggers: workflow_dispatch schedule
     Clears:  when this reaches `main` with the v1.9.0 release. Remove this
              entry then — the gate fails while a stale entry remains.

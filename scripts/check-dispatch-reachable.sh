@@ -256,8 +256,8 @@ note() { echo "FAIL  $*" >&2; fail=1; }
 # TRUE. That is not a gap to be closed by a cleverer pattern; it is the
 # boundary of what a mechanical check can say about prose. The entry
 # this file guards is itself the standing example: its reason carried a
-# retracted claim about authorship for as long as the retraction sat
-# fifty lines above it, with the derived line beside it correct
+# retracted claim about authorship for as long as the retraction sat in
+# the header above it, with the derived line beside it correct
 # throughout.
 while IFS= read -r rel; do
     [ -n "$rel" ] || continue
