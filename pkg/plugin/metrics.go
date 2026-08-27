@@ -120,6 +120,8 @@ func metricDefs() []metricDef {
 		// Orphaned leases (#370).
 		{name: "orphaned_leases_released", counter: true, help: "Addresses reclaimed for a container that exited before its renewal client could attach. One per address.", field: "orphaned_leases_released"},
 		{name: "orphaned_lease_release_failures", counter: true, help: "Orphaned-lease reclaims that failed, leaving the address held until it expires.", field: "orphaned_lease_release_failures"},
+		{name: "orphan_releases_suppressed", counter: true, help: "Orphaned-lease reclaims skipped because a tombstone already reserved the address for a restart, so the lease is kept rather than handed back. Tracks the container-restart rate on this host.", field: "orphan_releases_suppressed"},
+		{name: "tombstones_suppressed", counter: true, help: "Tombstones not written because the orphaned-lease reclaim had already handed the lease back, so that container restarts onto a new MAC and address instead of its own. Restart stability was lost for that container.", field: "tombstones_suppressed"},
 
 		// Parent link waits.
 		{name: "parent_link_waits", counter: true, help: "Endpoint creations that waited for their parent interface to appear.", field: "parent_link_waits"},

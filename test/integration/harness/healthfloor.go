@@ -137,6 +137,15 @@ type HealthResponse struct {
 	// short-lived container is an ordinary lifecycle.
 	OrphanedLeasesReleased       int32 `json:"orphaned_leases_released"`
 	OrphanedLeaseReleaseFailures int32 `json:"orphaned_lease_release_failures"`
+	// OrphanReleasesSuppressed / TombstonesSuppressed are the two
+	// outcomes of the arbitration that stops a departing endpoint's
+	// address from being reserved for the restart and handed back to
+	// the server at the same time (#800). Suppressed reclaims mean the
+	// lease was kept; suppressed tombstones mean it was returned and
+	// that container restarts onto a new MAC and address. Neither is
+	// healthy-affecting.
+	OrphanReleasesSuppressed int32 `json:"orphan_releases_suppressed"`
+	TombstonesSuppressed     int32 `json:"tombstones_suppressed"`
 	// ParentLinkWaits / ParentLinkWaitTimeouts cover contention on a
 	// shared parent NIC, where a macvlan and an ipvlan child cannot
 	// coexist (#486/#549). Waits means an operation queued and got
