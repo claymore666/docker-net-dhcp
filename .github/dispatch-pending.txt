@@ -25,3 +25,12 @@
              convenience, not the function.
     Clears:  when this reaches `main` with the v1.9.0 release. Remove this
              entry then — the gate fails while a stale entry remains.
+
+.github/workflows/fork-execution-policy.yml
+  Reason: added on dev for v1.9.0 (#830). It runs on a daily schedule
+  from the moment it merges, so the schedule half works immediately; only
+  the manual `gh workflow run fork-execution-policy.yml` route is
+  unavailable, because `main` is the default branch and this workflow is
+  not on it yet.
+  Cleared by: the v1.9.0 release reaching main. Remove this entry then —
+  the gate fails while an entry it no longer needs is still here.

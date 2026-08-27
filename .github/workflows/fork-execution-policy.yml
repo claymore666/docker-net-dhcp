@@ -1,0 +1,66 @@
+name: Fork execution policy
+
+# Are the three settings that stand between a fork PR and root on the
+# self-hosted pool still what they were? (#830)
+#
+# Five workflows trigger on `pull_request` AND place jobs on self-hosted
+# runners: Coverage presence, Coverage, Integration, Release back-merge and
+# Test. None carries a fork guard — there is no
+# `github.event.pull_request.head.repo.full_name == github.repository`
+# anywhere in the tree — and the integration lane runs as root. So the
+# approval policy is not one layer of several; on the day it is relaxed it is
+# the only thing that was stopping fork-authored code from running there.
+#
+# #593 was this class — an untrusted ref reaching credentialed, root,
+# self-hosted jobs — and the answer then was a gate.
+#
+# THIS IS PROPHYLACTIC AND SAYS SO. No incident sits behind it. The gate
+# corpus ran at 1 precautionary gate in 60 before this and the action-pin
+# gate. That is recorded in the script's own header too, where whoever later
+# weighs deleting it will actually be looking.
+#
+# WHY THIS IS NOT IN test.yaml, twice over. First, for the reason Label
+# taxonomy gives: the claim can become false with nobody touching the tree,
+# so gating a pull request on it charges that cost to whoever pushed next.
+# Second, and specific to this one: it needs a token with Administration:
+# read, and secrets are withheld from fork pull requests. In the Test lane it
+# would refuse on every fork PR and be discharged as noise inside a month.
+#
+# WHAT A SCHEDULE COSTS HERE, STATED RATHER THAN GLOSSED. Label taxonomy can
+# argue that a wrong label sits for days before it misleads anybody. This one
+# cannot: if the approval policy is relaxed, the exposure starts with the next
+# fork pull request, not with the next scheduled run. A daily cron therefore
+# leaves a window, and the honest description of this gate is "notices within
+# a day", not "prevents". Closing the window needs a fork guard in the five
+# workflows, which is a change to those workflows and not to this one.
+#
+# THE TOKEN IS THE ONE SCORECARD ALREADY USES. A read-only, single-repo
+# fine-grained PAT with Administration: read. The default GITHUB_TOKEN cannot
+# read these endpoints — scorecard.yml records the same fact for
+# branch-protection. Reusing it adds no new credential; it does mean this lane
+# goes amber when that PAT expires, which is a refusal (exit 2) naming the
+# token, not a silent pass.
+
+on:
+  schedule:
+    # Daily, offset from Label taxonomy (7 8), Milestone scope (23 6) and
+    # Starter tasks (41 7) so the API-reading jobs do not land together.
+    - cron: '19 9 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fork-execution-policy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: The fork-execution settings are as documented
+        env:
+          # Administration: read. GITHUB_TOKEN cannot read these endpoints.
+          GH_TOKEN: ${{ secrets.SCORECARD_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: bash scripts/check-fork-execution-policy.sh
