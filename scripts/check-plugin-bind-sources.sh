@@ -50,8 +50,18 @@ fi
 rc=0
 checked=0
 
-for wf in "$WORKFLOW_DIR"/*.yml; do
-    [ -e "$wf" ] || continue
+# BOTH EXTENSIONS, because GitHub Actions honours both and this directory
+# already contains one of each. A `*.yml`-only scan does not fail — it
+# reports a clean pass over a corpus it silently made smaller, which is
+# the shape #832 was filed for. `check-lane-hygiene.sh` and
+# `check-dispatch-reachable.sh` read the directory this way; this one was
+# the odd gate out. The self-test plants an install in a `.yaml` file, so
+# narrowing this glob again goes red instead of quiet.
+shopt -s nullglob
+WF_FILES=("$WORKFLOW_DIR"/*.yml "$WORKFLOW_DIR"/*.yaml)
+shopt -u nullglob
+
+for wf in "${WF_FILES[@]}"; do
     # Walk the file, remembering where the current step began, so the window
     # we search for mkdir lines is exactly the step doing the create.
     step_start=1

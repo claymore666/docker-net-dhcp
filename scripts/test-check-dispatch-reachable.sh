@@ -51,6 +51,34 @@ verdict() {
 # --- the baseline ------------------------------------------------------
 check "a workflow present on the default branch passes" pass "$(verdict)"
 
+# --- the directory scan is part of the check (#832) --------------------
+# The gate reads `*.yml` AND `*.yaml`, but every fixture in this file is
+# a `.yml`, so narrowing the scan to one extension passed the whole
+# suite. GitHub Actions honours both and `.github/workflows/` holds a
+# `.yaml` today, so half the corpus could fall out of the domain in
+# silence. Run it here, while the tree is otherwise clean, so the verdict
+# can only come from the planted file — and restore the baseline after.
+#
+# ORTHOGONALITY: the narrowed scan is reproduced and asserted to ACCEPT
+# this fixture. Without that, a case that merely fails proves nothing
+# about which half of the glob did the work.
+dispatchable planted > "$REPO/.github/workflows/planted.yaml"
+narrowed="$TMP/narrowed.sh"
+sed -e 's|^WF_FILES=(.*)$|WF_FILES=("$WF_DIR"/*.yml)|' "$CHECK" > "$narrowed"
+if ( cd "$REPO" && BASE_REF=main bash "$narrowed" >/dev/null 2>&1 ); then
+    echo "PASS: a *.yml-only scan accepts the planted .yaml (orthogonality confirmed)"
+else
+    echo "FAIL: the *.yml-only scan did not accept the planted .yaml, so the case"
+    echo "      below would go red for some other reason"
+    fails=1
+fi
+check "a dispatchable .yaml workflow is inspected too" rc1 "$(verdict)"
+grep -F 'planted.yaml' "$TMP/out" >/dev/null \
+    && echo "PASS: and the .yaml file is the one reported" \
+    || { echo "FAIL: the .yaml workflow was not named in the output"; fails=1; }
+rm -f "$REPO/.github/workflows/planted.yaml" "$narrowed"
+check "removing it restores the baseline" pass "$(verdict)"
+
 # --- the defect --------------------------------------------------------
 dispatchable newone > "$REPO/.github/workflows/newone.yml"
 check "a dispatchable workflow absent from the default branch fails" rc1 "$(verdict)"

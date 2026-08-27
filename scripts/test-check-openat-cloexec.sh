@@ -151,6 +151,38 @@ func openForTest(dir int) (int, error) {
 EOF
 }
 
+# THE OTHER HALF OF THE FIND (#832). Every fixture above plants its
+# defect under pkg/, and fx_pristine copies both trees clean -- so
+# dropping `cmd` from the gate's `find` left all of them green. The
+# domain could halve and this suite would not notice.
+#
+# pkg/ is deliberately CLEAN here. A cmd-only tree would also go red on a
+# narrowed gate, but by way of the "no Go files" refusal (exit 2), which
+# is a different mechanism from the one under test. With a clean pkg/ the
+# narrowed gate finds files, reads them, and reports exit 0 -- the silent
+# pass that is the actual failure mode.
+fx_violation_only_in_cmd() {
+    mkdir -p "$1/pkg/x" "$1/cmd/y"
+    cat > "$1/pkg/x/a.go" <<'EOF'
+package x
+
+import "golang.org/x/sys/unix"
+
+func open(dir int) (int, error) {
+	return unix.Openat(dir, "cgroup", unix.O_RDONLY|unix.O_CLOEXEC, 0)
+}
+EOF
+    cat > "$1/cmd/y/main.go" <<'EOF'
+package main
+
+import "golang.org/x/sys/unix"
+
+func open(dir int) (int, error) {
+	return unix.Openat(dir, "cgroup", unix.O_RDONLY, 0)
+}
+EOF
+}
+
 fx_no_go_files() { mkdir -p "$1/pkg" "$1/cmd"; }
 
 fx_no_source_dirs() { mkdir -p "$1/docs"; }
@@ -169,6 +201,7 @@ CASES=(
     "a test file is out of scope|fx_test_file_only|0"
     "a tree with no Go files is refused|fx_no_go_files|2"
     "a tree with no pkg/ or cmd/ is refused|fx_no_source_dirs|2"
+    "a violation under cmd/ only is still found|fx_violation_only_in_cmd|1"
 )
 
 # verdict <gate> <builder> -> exit code

@@ -21,7 +21,13 @@ mkws() {
     mkdir -p "$ws/scripts" "$ws/.github/workflows"
     cp "$REPO/$GATE" "$ws/scripts/"
     cp "$REPO/Makefile" "$REPO/config.json" "$REPO/config-cover.json" "$ws/"
-    cp "$REPO"/.github/workflows/*.yml "$ws/.github/workflows/"
+    # BOTH extensions, or this suite reproduces the very narrowing it is
+    # here to catch: a workspace built from `*.yml` alone cannot tell a
+    # `*.yml`-only gate from a correct one.
+    shopt -s nullglob
+    local wfs=("$REPO"/.github/workflows/*.yml "$REPO"/.github/workflows/*.yaml)
+    shopt -u nullglob
+    cp "${wfs[@]}" "$ws/.github/workflows/"
     printf '%s' "$ws"
 }
 
@@ -88,7 +94,7 @@ check "a renamed manifest breaks the mapping loudly" 1 "$ws" "plugin-cover"
 
 # 7. No silent clean over a repo with nothing to inspect.
 ws=$(mkws)
-rm -f "$ws"/.github/workflows/*.yml
+rm -f "$ws"/.github/workflows/*.yml "$ws"/.github/workflows/*.yaml
 : > "$ws/.github/workflows/empty.yml"
 check "no plugin installs at all is a failure, not a pass" 1 "$ws" "never inspected"
 
@@ -136,6 +142,44 @@ else
 fi
 
 check "a dotted bind source is not matched by a lookalike mkdir" 1 "$ws" "/var/lib/net-dhcp.d"
+
+# 10. THE DIRECTORY SCAN IS PART OF THE CHECK (#832). Every case above
+#     plants its defect in a `.yml` file, so a gate that read only `.yml`
+#     passed all of them — the domain could shrink to half the directory
+#     and nothing here would go red. GitHub Actions honours both
+#     extensions and `.github/workflows/` holds one `.yaml` today, so the
+#     narrowing is not hypothetical.
+#
+#     ORTHOGONALITY, same as case 9: the narrowed gate is reproduced and
+#     asserted to ACCEPT this fixture, so the case proves the widening
+#     rather than restating it.
+ws=$(mkws)
+cat > "$ws/.github/workflows/planted.yaml" <<'YML'
+name: planted
+on: workflow_dispatch
+jobs:
+  j:
+    runs-on: ubuntu-latest
+    steps:
+      - name: install the plugin from a dir the Makefile never populates
+        run: docker plugin create dnd:planted ./plugin-nowhere
+YML
+
+# The mutant: the scan narrowed back to a single extension.
+narrowed="$ws/scripts/narrowed.sh"
+sed -e 's|^WF_FILES=(.*)$|WF_FILES=("$WORKFLOW_DIR"/*.yml)|' \
+    "$ws/$GATE" > "$narrowed"
+if (cd "$ws" && bash scripts/narrowed.sh >/dev/null 2>&1); then
+    echo "ok: a *.yml-only scan accepts the planted .yaml install (orthogonality confirmed)"
+    pass=$((pass + 1))
+else
+    echo "FAIL: the *.yml-only scan did NOT accept the fixture — the case below"
+    echo "      would pass for some other reason and proves nothing about the glob."
+    fail=$((fail + 1))
+fi
+rm -f "$narrowed"
+
+check "an install in a .yaml workflow is inspected too" 1 "$ws" "plugin-nowhere"
 
 echo
 echo "passed: $pass  failed: $fail"
