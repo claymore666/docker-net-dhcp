@@ -18,8 +18,8 @@ import (
 // An observation that has already been made must not be discarded
 // because the deadline that produced it has expired.
 //
-// This drives the composition attemptGetIP actually performs
-// (client.go:994-999 then :1002/:1006): the real collector goroutine
+// This drives the composition attemptGetIP actually performs -- its
+// collector goroutine, then finishAcquisition: the real collector
 // folding real events into the real accumulator, read back through the
 // real settle. The observation under test is therefore BUILT by the
 // production code rather than asserted into existence, which is what
@@ -36,7 +36,7 @@ import (
 //
 // On the managed path the acquisition context is ALWAYS already expired
 // when this runs. GetIP's early exit fires only for
-// `ra.Seen && !ra.Managed` (client.go:1092), so a managed segment
+// `ra.Seen && !ra.Managed`, so a managed segment
 // deliberately retries until the acquisition budget is gone; the
 // attempt that ends the loop ends it by deadline. Both arms below
 // therefore run with an expired context in hand, exactly as production
@@ -51,8 +51,11 @@ func TestSettleAcquisition_KeepsAnObservationTakenUnderAnExpiredDeadline(t *test
 	// carrying the managed-address flag.
 	const advertisement = "MO"
 
-	// start reproduces attemptGetIP's collector goroutine exactly
-	// (client.go:994-999).
+	// start reproduces attemptGetIP's collector goroutine exactly.
+	//
+	// Reproducing rather than executing is the whole reason
+	// TestAttemptGetIP_TheDeadlineOnlyBoundsFinish exists: a defect in
+	// the real composition is invisible from here.
 	start := func(events <-chan Event) (*acquisition, chan struct{}) {
 		acq := &acquisition{}
 		collected := make(chan struct{})
@@ -107,8 +110,7 @@ func TestSettleAcquisition_KeepsAnObservationTakenUnderAnExpiredDeadline(t *test
 		//
 		// Here the fold happens only once the collector is scheduled,
 		// which is the state Finish leaves us in: the reaper has closed
-		// waitDone (client.go:733) and the scanner has not yet reached
-		// EOF (:698).
+		// waitDone and the scanner has not yet reached EOF.
 		//
 		// This is a one-directional detector and deliberately so.
 		// Correct code ALWAYS passes: collected closes only after
@@ -138,10 +140,10 @@ func TestSettleAcquisition_KeepsAnObservationTakenUnderAnExpiredDeadline(t *test
 	t.Run("the stream has not closed and the collector is still running", func(t *testing.T) {
 		// The production shape, and the one the old code could not
 		// answer at all. Finish returning does NOT mean the collector
-		// has finished: await returns on waitDone (client.go:791), and
-		// the reaper closes waitDone (:733) right after closing the
-		// FIFO keep-alive writer (:731), while the scanner closes the
-		// events channel (:698) only once it reaches EOF. This arm
+		// has finished: await returns on waitDone, and the reaper
+		// closes waitDone right after closing the FIFO keep-alive
+		// writer, while the scanner closes the events channel only
+		// once it reaches EOF. This arm
 		// pins that window open and never lets it shut.
 		//
 		// The handshake is deterministic, not timed. events is
@@ -183,7 +185,7 @@ func TestSettleAcquisition_KeepsAnObservationTakenUnderAnExpiredDeadline(t *test
 
 		// BOUNDED. A bare receive here would hang forever on a FIFO
 		// held open by a hook process that outlived its reaped parent
-		// (client.go:539-544 — the hooks open it by path, so our
+		// (dhcpcd's hook processes open the FIFO by path, so our
 		// close-on-exec write end is not the only one). Hanging
 		// CreateEndpoint is worse than the bug this fixes.
 		if elapsed > 30*time.Second {
