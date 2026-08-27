@@ -40,6 +40,24 @@ import (
 // That is the population a wiring gate is aimed at, and the limit above
 // is the honest boundary rather than a to-do.
 //
+// CALLED IS NOT REACHED, and this is the boundary most likely to be
+// over-read given how much else this file states. Every row asks
+// whether anything BYPASSES the wrapper. None asks whether the wrapper
+// is on a live path. So a counter can stop firing entirely with all
+// rows green: leave the wrapper as the callee's only caller, but let
+// the wrapper itself be reached only from code nothing calls, and the
+// table sees one caller and passes while the counter fires never.
+// Driven, not reasoned: removing a row's real call site and adding a
+// dead production function in its place leaves the whole table green.
+// A self-call is excluded, so the one-hop version of this is closed;
+// a two-hop dead chain walks straight through.
+//
+// Closing it properly means a transitive walk from the exported surface
+// -- reachability, not call counting -- which is a different gate and a
+// larger one. It is deliberately not built here. What this file
+// protects is the bypass, and dead code is caught by the coverage
+// ratchet and by review rather than by this table.
+//
 // The property is about Go source, so this is a Go test using go/ast
 // rather than a shell gate: no lane entry, no OUT_OF_LANE declaration
 // and no meta-test of its own, because it IS its own meta-test. Add a
