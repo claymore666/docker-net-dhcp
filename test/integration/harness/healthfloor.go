@@ -170,8 +170,9 @@ type HealthResponse struct {
 	// same reason they are separate counters: a test that asserted
 	// only their sum could not tell a stateless network from a
 	// segment with no router on it.
-	DHCPv6NotOffered     int32 `json:"dhcpv6_not_offered"`
-	DHCPv6NoRouterAdvert int32 `json:"dhcpv6_no_router_advert"`
+	DHCPv6NotOffered       int32 `json:"dhcpv6_not_offered"`
+	DHCPv6NoRouterAdvert   int32 `json:"dhcpv6_no_router_advert"`
+	IPv6LinkEnableFailures int32 `json:"ipv6_link_enable_failures"`
 
 	// published is the key set of the payload this value was decoded
 	// from. It exists because an absent JSON field decodes to zero,

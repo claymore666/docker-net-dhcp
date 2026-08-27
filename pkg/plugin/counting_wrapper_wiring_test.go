@@ -101,6 +101,14 @@ func TestCountingWrappers_AreTheOnlyCallers(t *testing.T) {
 				"second bumper of the outer counter on a policy-restricted path would leave the subset " +
 				"intact while silently under-reporting the inner one",
 		},
+		{
+			callee:  "enableIPv6OnContainerLink",
+			wrapper: "ensureIPv6Enabled",
+			why: "ipv6_link_enable_failures is counted around the enable, so a second caller would clear " +
+				"disable_ipv6 without counting the failure to -- and that counter is the only thing " +
+				"separating \"this segment is quiet\" from \"nothing IPv6 could ever have arrived on this " +
+				"link\", which otherwise present identically as DHCPv6 timeouts (#868)",
+		},
 		// The four rows above cost one line each, which was the point
 		// of the table: the next instance of this shape adds a row
 		// rather than another near-identical test.

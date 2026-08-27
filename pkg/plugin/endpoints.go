@@ -756,6 +756,10 @@ type HealthResponse struct {
 	// Kept apart from DHCPv6NotOffered because "no DHCPv6 here" and
 	// "nothing said anything" call for different operator action.
 	DHCPv6NoRouterAdvert int32 `json:"dhcpv6_no_router_advert"`
+	// IPv6LinkEnableFailures counts container links IPv6 could not be
+	// enabled on before a DHCPv6 client was started. Distinguishes a
+	// quiet segment from one the plugin could never have heard.
+	IPv6LinkEnableFailures int32 `json:"ipv6_link_enable_failures"`
 }
 
 func (p *Plugin) apiHealth(w http.ResponseWriter, r *http.Request) {
@@ -903,5 +907,6 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		DHCPv6ConfigOnly:             p.dhcpv6ConfigOnly.Load(),
 		DHCPv6NotOffered:             p.dhcpv6NotOffered.Load(),
 		DHCPv6NoRouterAdvert:         p.dhcpv6NoRouterAdvert.Load(),
+		IPv6LinkEnableFailures:       p.ipv6LinkEnableFailures.Load(),
 	}
 }

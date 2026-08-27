@@ -64,6 +64,10 @@ net_dhcp_dhcpv6_not_offered_total 8785870
 # TYPE net_dhcp_dhcpv6_no_router_advert_total counter
 net_dhcp_dhcpv6_no_router_advert_total 2266478
 
+# HELP net_dhcp_ipv6_link_enable_failures_total Container links the plugin could not administratively enable IPv6 on before starting a DHCPv6 client. The engine disables IPv6 on a sandbox interface whose endpoint has no IPv6 address, so on such a link nothing IPv6 can arrive at all; without this counter that is indistinguishable from a segment that is merely quiet.
+# TYPE net_dhcp_ipv6_link_enable_failures_total counter
+net_dhcp_ipv6_link_enable_failures_total 1992100
+
 # HELP net_dhcp_dhcp_routes_applied_total DHCP option-121 classless static routes handed to Docker. Counts routes, not Joins.
 # TYPE net_dhcp_dhcp_routes_applied_total counter
 net_dhcp_dhcp_routes_applied_total 1196133

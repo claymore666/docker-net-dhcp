@@ -196,7 +196,7 @@ func TestDHCPv6_Stateless_ConfigurationReachesTheContainer(t *testing.T) {
 	f := harness.NewV6Fixture(t, harness.V6Stateless)
 	dumpOnFailure(t, f)
 
-	w := harness.BeginCounterWindow(t, ctx, cli, "dhcpv6_config_only")
+	w := harness.BeginCounterWindow(t, ctx, cli, "dhcpv6_config_only", "ipv6_link_enable_failures")
 	id, err := startOnV6Segment(t, ctx, cli, f, "dh-itest-v6slcfg")
 	if err != nil {
 		t.Fatalf("the container did not start on a stateless segment: %v", err)
@@ -212,7 +212,19 @@ func TestDHCPv6_Stateless_ConfigurationReachesTheContainer(t *testing.T) {
 		t.Errorf("dhcpv6_config_only did not move within 30s on a stateless segment — " +
 			"the DHCPv6 information reply was not received (#815)")
 	}
-	w.End()
+	_, after := w.End()
+
+	// The engine disables IPv6 outright on a sandbox interface whose
+	// endpoint has no IPv6 address, which is exactly this endpoint —
+	// so the plugin has to clear that before its DHCPv6 client starts
+	// (#868, v6_link.go). If it could not, nothing above could have
+	// happened, and this says which of the two it was: a segment that
+	// went quiet, or a link nothing could ever arrive on.
+	if after.IPv6LinkEnableFailures > 0 {
+		t.Errorf("ipv6_link_enable_failures moved to %d — IPv6 could not be enabled on the "+
+			"container link, so no DHCPv6 exchange on it was possible",
+			after.IPv6LinkEnableFailures)
+	}
 
 	// propagate_dns is on for this network, so the reply's DNS server
 	// and search domain must reach the container's resolver.
