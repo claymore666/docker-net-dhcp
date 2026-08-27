@@ -25,3 +25,20 @@
              convenience, not the function.
     Clears:  when this reaches `main` with the v1.9.0 release. Remove this
              entry then — the gate fails while a stale entry remains.
+
+.github/workflows/capability-matrix.yml
+    Reason:  new in the v1.9.0 cycle. The workflow has ONE trigger,
+             workflow_dispatch, so unlike run-retention.yml above it is
+             not merely inconvenient to reach — until this file is on
+             `main` there is no way to run it at all. That is accepted
+             for one cycle: nothing depends on it, and the question it
+             answers (what each capability in config.json buys) is no
+             worse answered than it was before — SECURITY.md says
+             plainly that the three are unverified until the first
+             recorded run, rather than describing a route that does not
+             work yet.
+    Clears:  when this reaches `main` with the v1.9.0 release. Remove
+             this entry then — the gate fails while a stale entry
+             remains. The first act after that is a `record: true`
+             dispatch, because the expectation table is deliberately
+             not shipped pre-filled.

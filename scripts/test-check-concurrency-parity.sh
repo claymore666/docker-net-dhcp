@@ -20,6 +20,38 @@ no() { printf 'FAIL  %s\n' "$1" >&2; fail=$((fail + 1)); }
 NEW='selfhosted-privileged-${{ github.event_name == '"'"'push'"'"' && github.sha || github.ref }}'
 OLD='selfhosted-privileged-${{ github.ref }}'
 
+# THE LANE LIST IS READ FROM THE GATE, NEVER RETYPED. Every case below
+# builds a fixture directory, and the gate exits 2 when a lane it
+# declares is absent from that directory. So a self-test carrying its
+# own copy of the list does not merely go stale when a lane is added --
+# it turns EVERY case into "exit 2, a lane is missing", which is not the
+# property any of them was written to measure. That is what a fourth
+# privileged lane (#690) did to nine of these twelve cases.
+#
+# The parse is spelling-keyed, which is the one thing that can go wrong
+# here: reformat the array literal in the gate and this reads nothing.
+# So it refuses rather than continuing with an empty list -- an empty
+# list would make `fill` a no-op and quietly restore the exact failure
+# above.
+mapfile -t LANE_FILES < <(sed -n 's/^LANES=(\(.*\))[[:space:]]*$/\1/p' "$GATE" | tr ' ' '\n' | grep .)
+if [ "${#LANE_FILES[@]}" -lt 2 ]; then
+    echo "FAIL  cannot read the LANES=(...) list out of $GATE; every case below would" >&2
+    echo "      measure a missing lane rather than the property it names." >&2
+    exit 2
+fi
+
+# Write a compliant lane for every declared lane the case did not name.
+# A case says what it is VARYING; everything else is background, and
+# background that is absent is a different test.
+fill() {
+    local d="$1" lane
+    for lane in "${LANE_FILES[@]}"; do
+        [ -e "$d/$lane" ] && continue
+        printf 'name: %s\non:\n  workflow_dispatch:\nconcurrency:\n  group: %s\n  cancel-in-progress: false\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps: [{run: "true"}]\n' \
+            "$lane" "$NEW" > "$d/$lane"
+    done
+}
+
 # $1 name, $2 want-rc, then `file:::group-line-or-empty` triples.
 # test.yaml is written for every case unless a triple overrides it: it
 # is in MUST_HAVE_GROUP but not in LANES, so a case that omits it is
@@ -41,6 +73,7 @@ run_case() {
         } > "$dir/$f"
         shift
     done
+    fill "$dir"
     out=$(bash "$GATE" "$dir" 2>&1)
     rc=$?
     rm -rf "$dir"
@@ -99,6 +132,7 @@ priv3() {
     printf 'name: x\non:\n  workflow_dispatch:\nconcurrency:\n  group: %s\n' "$NEW" > "$d/integration.yml"
     printf 'name: x\non:\n  workflow_dispatch:\nconcurrency:\n  group: %s\n' "$NEW" > "$d/coverage.yml"
     printf 'name: x\non:\n  workflow_dispatch:\nconcurrency:\n  group: %s\n' "$NEW" > "$d/capture-fixtures.yml"
+    fill "$d"
 }
 
 dir=$(mktemp -d)
@@ -151,6 +185,7 @@ printf 'name: test\non:\n  pull_request:\nconcurrency:\n  group: test-${{ github
     printf '# this lane shares  group: %s  with the others\n' "$NEW"
     printf 'concurrency:\n  group: %s\n' "$OLD"
 } > "$dir/capture-fixtures.yml"
+fill "$dir"
 bash "$GATE" "$dir" >/dev/null 2>&1
 rc=$?
 rm -rf "$dir"

@@ -36,6 +36,25 @@ CapEff: 00000000a82c35fb
 $ capsh --decode=00000000a82c35fb
 ```
 
+**What each of the three requested capabilities buys is measured, not
+asserted.** Until #690 nothing had ever run the plugin *without* one of
+them, so "required" was a claim about code rather than an observation of
+it — on the line a reader of this file is asked to trust most. The
+`Capability matrix` workflow installs the plugin once per capability set
+(the full set, then each capability removed in turn), runs a small
+scenario set against each, and compares every cell against a recorded
+table in `.github/capability-matrix.txt`. A change that starts needing a
+fourth capability, or stops needing one, fails there.
+
+That table is deliberately **not** shipped pre-filled — a prediction
+confirmed by its own first run is indistinguishable afterwards from a
+measurement — so it is absent until a `record` dispatch produces it and a
+human reviews the diff. The workflow is also not dispatchable yet:
+GitHub exposes `workflow_dispatch` only from the default branch, so it
+becomes runnable when it ships with the release (declared in
+`.github/dispatch-pending.txt`). Until then, treat the three requested
+capabilities as unverified in the same way they always were.
+
 Assume the effective set when reasoning about a report, not the three
 in `config.json`. Reports are especially welcome for:
 

@@ -50,7 +50,7 @@ WF_DIR="${1:-.github/workflows}"
 # it here too — that is the point of naming them rather than discovering
 # them, since a discovery rule would silently drop a lane that lost its
 # `concurrency:` block entirely.
-LANES=(integration.yml coverage.yml capture-fixtures.yml)
+LANES=(integration.yml coverage.yml capture-fixtures.yml capability-matrix.yml)
 GROUP_PREFIX='selfhosted-privileged-'
 
 # Lanes that must have SOME concurrency group, whether or not they share

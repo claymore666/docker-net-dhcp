@@ -1,0 +1,191 @@
+name: Capability matrix
+
+# Measure what each capability in config.json actually buys (#690).
+#
+# WHY THIS EXISTS. config.json asks every operator to grant the plugin
+# CAP_NET_ADMIN, CAP_SYS_ADMIN and CAP_SYS_PTRACE. Two of those the repo
+# could explain; the third it asserted. Nothing anywhere ran the plugin
+# WITHOUT a capability to see what broke, so "required" was a claim about
+# code nobody had tested, on the most security-relevant line in the
+# manifest a user is asked to trust.
+#
+# This installs the plugin once per capability set -- the full set, then
+# each capability removed in turn -- runs a small scenario set against
+# each, and compares every cell against a recorded expectation. A change
+# that quietly starts needing a fourth capability, or stops needing one,
+# fails here rather than being found by an operator whose containers stop
+# getting addresses.
+#
+# ONE JOB, NOT A MATRIX OF FOUR. integration.yml already puts four
+# privileged jobs on a pool of eight, and records (#430, measured
+# 2026-08-02) that two concurrent runs is the ceiling. Four more
+# privileged jobs would make a single capability run saturate the pool on
+# its own. The variants share one rootfs build and differ only in
+# config.json, so running them in sequence costs one slot.
+#
+# WHY IT IS DISPATCH-ONLY. It is not a per-PR gate. It answers a question
+# that changes when the plugin's syscall surface changes, which is rarely
+# and deliberately: after touching netlink, netns handling or the udhcpc
+# wrapper, and before a release that alters config.json. Running it on
+# every push would spend a privileged slot per PR to re-derive an answer
+# that had not moved.
+#
+# RECORD MODE UPLOADS, IT DOES NOT COMMIT. `record: true` writes the
+# measured table and offers it as an artifact and in the step summary; a
+# human commits it. A job that committed its own expectation file would
+# ratify whatever it measured that day -- the guard would agree with the
+# regression instead of failing on it. Reviewing the recorded table as a
+# diff is the check, and it is the reason the table is not shipped
+# pre-filled: a prediction written by hand and confirmed by the first run
+# is indistinguishable, afterwards, from a measurement.
+#
+# WHY THERE IS NO `ref` INPUT. A dispatch context carries repository
+# secrets, and #593 is the record of what happens when such a context
+# takes an arbitrary ref and hands it to actions/checkout. `gh workflow
+# run --ref` already selects a branch or tag and a pull-request ref is
+# not dispatchable, so the hazard is absent by construction rather than
+# guarded. Do not add one without the dispatch-ref guard job;
+# scripts/check-dispatch-ref-guard.sh fails the build if you do.
+#
+# NOT DISPATCHABLE YET. GitHub only exposes workflow_dispatch from the
+# DEFAULT branch, which here is `main`, so this cannot be run by hand
+# until it ships with the release. The entry in
+# .github/dispatch-pending.txt records that, and
+# scripts/check-dispatch-reachable.sh fails once the entry goes stale.
+on:
+  workflow_dispatch:
+    inputs:
+      record:
+        description: "Record the measured table instead of comparing against it"
+        type: boolean
+        default: false
+
+# Shares integration.yml's, coverage.yml's and capture-fixtures.yml's
+# group (#390/#742): this job is privileged, installs plugins and drives
+# the integration suite, so it must not run alongside that ref's own
+# suite. Written the long way to match them byte for byte --
+# scripts/check-concurrency-parity.sh asserts exactly that, because two
+# lanes that disagree about their key simply do not exclude each other
+# and there is no symptom until two jobs run that were meant to take
+# turns.
+concurrency:
+  group: selfhosted-privileged-${{ github.event_name == 'push' && github.sha || github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  matrix:
+    runs-on: [self-hosted, dhcp-ci]
+    # One rootfs build, then one plugin create/enable and five scenarios
+    # per variant. Four variants today, and the variant list is derived
+    # from config.json, so a fourth capability makes it five.
+    timeout-minutes: 60
+
+    env:
+      # Same shape as integration.yml and capture-fixtures.yml: a
+      # step-level `if:` cannot read `secrets` directly, so materialize
+      # it at job level and compare against the literal string.
+      HAS_HUB_CREDS: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
+
+    steps:
+      # No `ref:` — see the header.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # The rootfs build pulls golang:*-alpine and alpine:* from Docker
+      # Hub. Anonymously those are billed to a per-address quota shared
+      # by the whole pool, which run 31939915811 exhausted (#562).
+      - name: Log in to Docker Hub
+        if: env.HAS_HUB_CREDS == 'true'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Note anonymous pulls
+        if: env.HAS_HUB_CREDS != 'true'
+        run: echo "::notice::No Docker Hub credentials in this context; base images pull anonymously."
+
+      # Fail in five seconds naming the fix, rather than deep inside a
+      # variant as a fixture readiness timeout with the real cause buried
+      # in a captured server log (#449). The scenarios drive the same
+      # dnsmasq fixtures the integration suite does.
+      - name: Verify matrix dependencies
+        run: |
+          missing=""
+          for tool in dnsmasq ip iptables python3; do
+            command -v "$tool" >/dev/null || missing="$missing $tool"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::dhcp-ci runner image is missing:$missing"
+            echo "This job derives the variant list with python3 and drives the"
+            echo "integration fixtures (see ci/runner-image/Dockerfile)."
+            exit 1
+          fi
+          echo "engine: $(docker version --format '{{.Server.Version}}')"
+
+      # The variant tags are this job's own, and a previous run killed
+      # part-way through leaves them installed. cleanup-orphans can only
+      # re-enable the tag it is told about (#742), so each is removed by
+      # name here and again in the teardown below.
+      - name: Cleanup orphans from previous runs
+        run: |
+          bash test/integration/cleanup-orphans.sh || true
+          # `|| true` INSIDE the substitution, not after the loop. The
+          # default shell is `bash -eo pipefail`, and a grep that matches
+          # nothing exits 1 -- so on the normal path, where no variant is
+          # left over, an unguarded pipeline would fail the step for
+          # having found nothing wrong.
+          for p in $(docker plugin ls --format '{{.Name}}' | grep '^dnd-capmatrix' || true); do
+            echo "removing leftover $p"
+            docker plugin disable -f "$p" 2>/dev/null || true
+            docker plugin rm -f "$p" 2>/dev/null || true
+          done
+
+      # Once. Every variant is the same rootfs with a rewritten
+      # config.json, which is the whole reason this is one job.
+      - name: Build the plugin rootfs
+        run: make plugin
+
+      - name: Measure the matrix
+        id: measure
+        env:
+          CAPMATRIX_RUNNER: scripts/capability-matrix-runner.sh
+          CAPMATRIX_RECORD: ${{ inputs.record && '1' || '' }}
+        run: bash scripts/capability-matrix.sh | tee "$RUNNER_TEMP/matrix.txt"
+
+      # `always()`: a diverged cell exits 1, and the table is exactly
+      # what the person reading that failure needs.
+      - name: Summarize
+        if: always()
+        run: |
+          {
+            echo "### Capability matrix"
+            echo
+            echo "Engine \`$(docker version --format '{{.Server.Version}}')\`, run ${GITHUB_RUN_ID}."
+            echo
+            echo '```'
+            cat "$RUNNER_TEMP/matrix.txt" 2>/dev/null || echo "(the job produced no table)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # The recorded table leaves as an artifact and is committed by a
+      # human — see the header. Uploading it on `always()` would offer a
+      # half-written table after a refusal, so this is gated on the
+      # measurement having succeeded.
+      - name: Upload the recorded table
+        if: inputs.record && success()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: capability-matrix
+          path: .github/capability-matrix.txt
+          if-no-files-found: error
+
+      - name: Tear down the variant plugins
+        if: always()
+        run: |
+          for p in $(docker plugin ls --format '{{.Name}}' | grep '^dnd-capmatrix' || true); do
+            docker plugin disable -f "$p" 2>/dev/null || true
+            docker plugin rm -f "$p" 2>/dev/null || true
+          done
