@@ -22,6 +22,21 @@
 # the pristine case passes for the same reasons the real board does.
 set -uo pipefail
 
+# THE SUBJECT READS `STRICT`, SO THIS FILE HAS TO OWN IT. The gate turns
+# "cannot check" (2) into a failure (1) when STRICT=1 is in its
+# environment, and the two cases below that assert on the 2 do not set
+# it -- so they inherited whatever the caller had. `scripts/local-lane.sh`
+# documents `STRICT=1` as its own supported mode ("a skipped step is a
+# failure"), a different meaning under the same name, and passes it to
+# every step: `STRICT=1 bash scripts/local-lane.sh` -- the invocation the
+# lane's own header tells automation to use -- made three cases here fail
+# for a reason that has nothing to do with the gate.
+#
+# Cleared rather than saved and restored: a self-test's verdict must not
+# depend on the environment it was launched from, and the two cases that
+# WANT strict mode set it per-invocation already.
+unset STRICT
+
 HERE="$(cd "$(dirname "$0")" && pwd)"
 CHECK="$HERE/check-host-watchdog.sh"
 
