@@ -156,6 +156,13 @@ type HealthResponse struct {
 	DHCPServerTierFallbacks   int32 `json:"dhcp_server_tier_fallbacks"`
 	DHCPServerPolicyExhausted int32 `json:"dhcp_server_policy_exhausted"`
 
+	// DHCPv6ConfigOnly counts DHCPv6 replies that carried configuration
+	// and no address — the stateless case (#815). Not healthy-affecting
+	// and deliberately not in the floor table: on a stateless segment
+	// this rising is the feature working, and on every other segment it
+	// stays at zero on its own.
+	DHCPv6ConfigOnly int32 `json:"dhcpv6_config_only"`
+
 	// published is the key set of the payload this value was decoded
 	// from. It exists because an absent JSON field decodes to zero,
 	// which is indistinguishable from a counter that is genuinely at

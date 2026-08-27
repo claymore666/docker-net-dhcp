@@ -52,6 +52,10 @@ net_dhcp_naks_received_total{family="ipv6"} 5220205
 net_dhcp_lease_release_failures_total{family="ipv4"} 3733747
 net_dhcp_lease_release_failures_total{family="ipv6"} 1288985
 
+# HELP net_dhcp_dhcpv6_config_only_total DHCPv6 information replies received: address-less configuration from a network advertising the RA other-config flag. Counts replies received, not configuration applied.
+# TYPE net_dhcp_dhcpv6_config_only_total counter
+net_dhcp_dhcpv6_config_only_total 5338778
+
 # HELP net_dhcp_dhcp_routes_applied_total DHCP option-121 classless static routes handed to Docker. Counts routes, not Joins.
 # TYPE net_dhcp_dhcp_routes_applied_total counter
 net_dhcp_dhcp_routes_applied_total 1196133

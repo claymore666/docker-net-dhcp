@@ -80,6 +80,11 @@ func metricDefs() []metricDef {
 		{name: "naks_received", counter: true, help: "DHCPNAKs received from the server.", field: "naks_received", v4field: "naks_received_v4", v6field: "naks_received_v6"},
 		{name: "lease_release_failures", counter: true, help: "Leases whose release did not complete cleanly at shutdown, leaving the address held until it expires.", field: "lease_release_failures", v4field: "lease_release_failures_v4", v6field: "lease_release_failures_v6"},
 
+		// No family label: there is no v4 counterpart to measure, so a
+		// v4field here would expose a series that is zero by
+		// construction rather than by observation (#815).
+		{name: "dhcpv6_config_only", counter: true, help: "DHCPv6 information replies received: address-less configuration from a network advertising the RA other-config flag. Counts replies received, not configuration applied.", field: "dhcpv6_config_only"},
+
 		// Server-supplied values the plugin bounds or must evidence (#699).
 		{name: "dhcp_routes_applied", counter: true, help: "DHCP option-121 classless static routes handed to Docker. Counts routes, not Joins.", field: "dhcp_routes_applied"},
 		{name: "dhcp_default_route_superseded", counter: true, help: "Joins whose option-121 routes cover 0.0.0.0/0 by union rather than by a literal default entry, so container egress follows those next hops even though the reported gateway still names the option-3 router. Legitimate in split-tunnel setups; the point is that it is now visible.", field: "dhcp_default_route_superseded"},

@@ -742,6 +742,13 @@ type HealthResponse struct {
 	// (#608): the persistent DHCPv6 client held a binding and its
 	// SIGTERM-driven RELEASE did not complete cleanly.
 	LeaseReleaseFailuresV6 int32 `json:"lease_release_failures_v6"`
+	// DHCPv6ConfigOnly counts DHCPv6 information replies -- address-less
+	// configuration from a network advertising the RA "other config"
+	// flag (#815). NOT healthy-affecting: it is a normal exchange on a
+	// stateless network. Before #815 these were dropped unread, so such
+	// a network was indistinguishable from one that answered nothing.
+	// It has no v4 half; see the atom for why.
+	DHCPv6ConfigOnly int32 `json:"dhcpv6_config_only"`
 }
 
 func (p *Plugin) apiHealth(w http.ResponseWriter, r *http.Request) {
@@ -888,5 +895,6 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		DHCPTimeoutsV6:               dhcpTimeoutsV6,
 		NAKsReceivedV6:               naksReceivedV6,
 		LeaseReleaseFailuresV6:       leaseReleaseFailuresV6,
+		DHCPv6ConfigOnly:             p.dhcpv6ConfigOnly.Load(),
 	}
 }

@@ -157,10 +157,17 @@ func TestBuildEvent_BoundV6_CanonicalisesIPAndCapturesDNS6(t *testing.T) {
 	if !reflect.DeepEqual(got.Data.DNSServers, []string{"2001:db8::53", "2001:db8::54"}) {
 		t.Errorf("v6 DNSServers wrong: %+v", got.Data.DNSServers)
 	}
-	// v6 path must not populate any of the v4-only fields.
+	// v6 path must not populate any of the v4-only fields. SearchList
+	// left this list in #815: option 24 is a real DHCPv6 option and the
+	// v6 branch now reads it, so its absence here is evidence that THIS
+	// fixture sent none — not that the family cannot carry one. See
+	// TestBuildEvent_BoundV6CapturesTheSearchList for the other half.
 	if got.Data.Gateway != "" || got.Data.Domain != "" || len(got.Data.NTPServers) > 0 ||
-		got.Data.TFTPServer != "" || got.Data.BootFile != "" || len(got.Data.SearchList) > 0 || got.Data.MTU != 0 {
+		got.Data.TFTPServer != "" || got.Data.BootFile != "" || got.Data.MTU != 0 {
 		t.Errorf("v6 path leaked v4-only fields: %+v", got.Data)
+	}
+	if len(got.Data.SearchList) > 0 {
+		t.Errorf("SearchList set from an environment that carried none: %+v", got.Data.SearchList)
 	}
 }
 
@@ -279,11 +286,20 @@ func TestBuildEvent_LeaseLossEvents_EmitTypeOnly(t *testing.T) {
 
 // TestBuildEvent_UnactionedReasonsSkipped: dhcpcd fires the hook for
 // many transitions we don't act on; all must be suppressed.
+//
+// INFORM6 was in this list until #815 and that was the defect, not the
+// contract: the list was written from "what does the plugin currently
+// act on" rather than from "what should it act on", so the one reason a
+// stateless network ever fires was pinned as correctly ignored. It is
+// now covered by TestBuildEvent_Inform6ProducesConfigWithoutAddress.
+//
+// INFORM (v4) stays. dhcpcd only fires it under -I, which renderArgs
+// never passes, so it is a reason no plugin input can produce.
 func TestBuildEvent_UnactionedReasonsSkipped(t *testing.T) {
 	for _, reason := range []string{
 		"PREINIT", "CARRIER", "NOCARRIER", "ROUTERADVERT", "STOP", "STOP6",
 		"STOPPED", "DEPARTED", "FAIL", "TEST", "IPV4LL", "STATIC", "3RDPARTY",
-		"DELEGATED6", "RECONFIGURE", "INFORM", "INFORM6", "",
+		"DELEGATED6", "RECONFIGURE", "INFORM", "",
 		"definitely-not-a-real-reason",
 	} {
 		t.Run(reason, func(t *testing.T) {
@@ -542,5 +558,141 @@ func TestBuildEvent_ReleaseIsNotALeaseLoss(t *testing.T) {
 				t.Errorf("emit=true on %q — a release is ambiguous and must not count as a lease loss", reason)
 			}
 		})
+	}
+}
+
+// --- #815: address-less DHCPv6 configuration ----------------------------
+//
+// The environments below are not invented. They are the variables dhcpcd
+// 10.3.2 actually exported to a hook script on a dnsmasq `ra-stateless`
+// network, driven with the config renderConfig itself produces — the
+// probe was derived from the subject rather than written to resemble it,
+// after a hand-written config omitted the plugin's `option ...` request
+// list and made the DNS servers look absent from the protocol when they
+// were absent from the probe.
+
+// The headline: an information reply carries options and no address, and
+// before #815 it was dropped twice over — mapReason had no INFORM6 case,
+// and the v6 branch skips any event without an IA_NA address.
+func TestBuildEvent_Inform6ProducesConfigWithoutAddress(t *testing.T) {
+	got, emit := BuildEvent("INFORM6", fakeEnv(map[string]string{
+		"new_dhcp6_name_servers":      "fd00:6470:6863::53 fd00:6470:6863::54",
+		"new_dhcp6_domain_search":     "probe.example two.example",
+		"new_dhcp6_info_refresh_time": "600",
+		"new_dhcp6_server_id":         "00010001322319893a2b31dc0868",
+	}))
+	if !emit {
+		t.Fatalf("emit=false on INFORM6 — a stateless network's configuration was discarded")
+	}
+	if got.Type != "config" {
+		t.Errorf("INFORM6 Type = %q, want config", got.Type)
+	}
+	if got.Data.IP != "" {
+		t.Errorf("a config event must carry no address; got IP=%q", got.Data.IP)
+	}
+	if !reflect.DeepEqual(got.Data.DNSServers, []string{"fd00:6470:6863::53", "fd00:6470:6863::54"}) {
+		t.Errorf("DNSServers = %+v", got.Data.DNSServers)
+	}
+	if !reflect.DeepEqual(got.Data.SearchList, []string{"probe.example", "two.example"}) {
+		t.Errorf("SearchList = %+v", got.Data.SearchList)
+	}
+	// Nothing from the lease path may appear: a config event that
+	// acquired a gateway or a lease clock would be fed to machinery that
+	// has no address to go with it.
+	if got.Data.Gateway != "" || got.Data.LeaseSeconds != 0 || got.Data.MTU != 0 || len(got.Data.Routes) > 0 {
+		t.Errorf("config event leaked lease fields: %+v", got.Data)
+	}
+}
+
+// The ordering, driven directly. The config branch must run BEFORE the
+// IA_NA guard, not after it — mapping INFORM6 onto "bound" would have
+// been dropped one step later by that guard. This fixture carries an
+// address the config branch must ignore: if the branches were swapped,
+// or the config case fell through to the v6 lease code, IP would be set.
+func TestBuildEvent_Inform6IgnoresAnyAddressAndNeverReachesTheLeasePath(t *testing.T) {
+	got, emit := BuildEvent("INFORM6", fakeEnv(map[string]string{
+		"new_dhcp6_ia_na1_ia_addr1":        "2001:db8::1",
+		"new_dhcp6_ia_na1_ia_addr1_vltime": "120",
+		"new_dhcp6_name_servers":           "2001:db8::53",
+	}))
+	if !emit || got.Type != "config" {
+		t.Fatalf("INFORM6 should still be a config event; got type=%q emit=%v", got.Type, emit)
+	}
+	if got.Data.IP != "" || got.Data.LeaseSeconds != 0 {
+		t.Errorf("config event took the lease path: IP=%q LeaseSeconds=%d", got.Data.IP, got.Data.LeaseSeconds)
+	}
+}
+
+// A server that advertises "other configuration available" and then
+// supplies none still produces an event. The counter is then the only
+// evidence the exchange happened at all, and that misconfiguration is
+// precisely what an operator needs to be able to see. A guard that
+// emitted only when DNS was present would make it invisible again.
+func TestBuildEvent_Inform6WithNoOptionsStillEmits(t *testing.T) {
+	got, emit := BuildEvent("INFORM6", fakeEnv(map[string]string{
+		"new_dhcp6_server_id": "00010001322319893a2b31dc0868",
+	}))
+	if !emit {
+		t.Fatalf("emit=false on an option-less information reply — the exchange left no trace")
+	}
+	if got.Type != "config" || len(got.Data.DNSServers) != 0 || len(got.Data.SearchList) != 0 {
+		t.Errorf("unexpected config event: %+v", got)
+	}
+}
+
+// The second defect, found while measuring the first and fixed with it:
+// the v6 LEASE branch read the DNS servers and not the search list, so a
+// DHCPv6 network got a resolv.conf with nameservers and never a `search`
+// line — on every lease, not only on an information reply. This test
+// fails against the tree before #815.
+func TestBuildEvent_BoundV6CapturesTheSearchList(t *testing.T) {
+	got, emit := BuildEvent("BOUND6", fakeEnv(map[string]string{
+		"new_dhcp6_ia_na1_ia_addr1": "2001:db8::1",
+		"new_dhcp6_name_servers":    "2001:db8::53",
+		"new_dhcp6_domain_search":   "corp.example lab.example",
+	}))
+	if !emit {
+		t.Fatalf("emit=false on BOUND6")
+	}
+	if !reflect.DeepEqual(got.Data.SearchList, []string{"corp.example", "lab.example"}) {
+		t.Errorf("v6 lease dropped option 24 (domain search): %+v", got.Data.SearchList)
+	}
+	// DHCPv6 has no option-15 equivalent, so Domain stays empty and the
+	// resolv.conf writer falls back from SearchList to Domain, not back.
+	if got.Data.Domain != "" {
+		t.Errorf("v6 must not set Domain: %q", got.Data.Domain)
+	}
+}
+
+// v6 NTP is deliberately unread; see the comment at the site. Measured:
+// with two NTP addresses configured on the server, exactly one reached
+// the hook environment as new_dhcp6_ntp_server_addr, and not the first.
+// Reporting one member of a longer list through a field documented as
+// the server list is a false claim in an operator-facing log. This test
+// pins the decision so it cannot be undone by accident; the measurement
+// and the options for resolving it are #859.
+func TestBuildEvent_BoundV6DoesNotReportPartialNTP(t *testing.T) {
+	got, _ := BuildEvent("BOUND6", fakeEnv(map[string]string{
+		"new_dhcp6_ia_na1_ia_addr1": "2001:db8::1",
+		"new_dhcp6_ntp_server_addr": "2001:db8::124",
+		"new_ntp_servers":           "10.0.0.1",
+	}))
+	if len(got.Data.NTPServers) != 0 {
+		t.Errorf("v6 NTPServers should stay empty until the partial-list "+
+			"semantics are decided; got %+v", got.Data.NTPServers)
+	}
+}
+
+// dhcpcd fires the hook far more often than we act on it. ROUTERADVERT
+// in particular arrives repeatedly on every v6 network, including the
+// stateless one, and must stay outside the event stream — otherwise
+// #815's new case would have widened the domain rather than the map.
+func TestBuildEvent_Inform6DidNotWidenTheReasonSet(t *testing.T) {
+	for _, reason := range []string{"ROUTERADVERT", "INFORM", "PREINIT", "CARRIER", "STOP6", "STOPPED", "DELEGATED6"} {
+		if _, emit := BuildEvent(reason, fakeEnv(map[string]string{
+			"new_dhcp6_name_servers": "2001:db8::53",
+		})); emit {
+			t.Errorf("reason %q became an event; only INFORM6 was added", reason)
+		}
 	}
 }

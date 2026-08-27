@@ -1037,6 +1037,21 @@ type Plugin struct {
 	// tell which family's client had failed to hand its lease back.
 	leaseReleaseFailuresV6 atomic.Int32
 
+	// dhcpv6ConfigOnly counts DHCPv6 information replies: the server
+	// advertised "other configuration available" and answered with
+	// options and no address (#815). Deliberately NOT part of the
+	// v4/v6 pairs above -- there is no v4 counterpart, because the
+	// plugin never runs dhcpcd's v4 DHCPINFORM mode, and inventing a
+	// zero-forever v4 half would imply a measurement nobody takes.
+	//
+	// It counts replies RECEIVED, not configuration applied, and the
+	// distinction is deliberate: whether anything is applied depends on
+	// PropagateDNS and on what the server actually sent, so a counter
+	// named "applied" would be false on a network that advertises
+	// configuration and supplies none -- which is exactly the
+	// misconfiguration this counter makes visible.
+	dhcpv6ConfigOnly atomic.Int32
+
 	// displacedStops tracks the goroutines Join spawns to Stop a
 	// manager it displaced (#338). Join must not block on the dhcpcd
 	// release cycle, but Close must not exit while one is mid-release

@@ -34,6 +34,7 @@ type Getenv func(string) string
 //   - NAK                 -> "nak"    (server refused; treat as loss)
 //   - EXPIRE / TIMEOUT    -> "leasefail" (v4 lease lapsed / no lease)
 //   - EXPIRE6 / TIMEOUT6  -> "leasefail" (v6 lease lapsed / no lease)
+//   - INFORM6             -> "config" (v6 address-less configuration)
 //
 // REBIND(6) maps to "renew" rather than "bound" because the consumer's
 // renew path already re-applies a possibly-changed address; a rebind is
@@ -68,6 +69,18 @@ func mapReason(reason string) (eventType string, v6 bool, emit bool) {
 		return "leasefail", false, true
 	case "EXPIRE6", "TIMEOUT6":
 		return "leasefail", true, true
+	// A DHCPv6 information reply: the server advertised "other
+	// configuration available" (the RA O flag) and answered an
+	// information request with options and NO address (#815). Before
+	// this case the reason fell to the default and was dropped, so a
+	// network that hands out configuration but not addresses looked
+	// exactly like one that answered nothing at all.
+	//
+	// v6 only, deliberately. dhcpcd has a v4 DHCPINFORM mode, but the
+	// plugin never runs it -- it does not pass -I -- so a v4 case here
+	// would be a branch no input can reach.
+	case "INFORM6":
+		return "config", true, true
 	default:
 		return "", false, false
 	}
@@ -248,6 +261,47 @@ func buildEvent(reason string, getenv Getenv) (Event, bool) {
 		return event, true
 	}
 
+	// Address-less configuration (#815). This is assembled BEFORE the
+	// IA_NA guard below, and that ordering is the whole fix: an
+	// information reply has no address by definition, so mapping
+	// INFORM6 onto "bound" would have been dropped one step later by
+	// the very guard that protects the address path. The event carries
+	// options and nothing else -- Data.IP stays empty, and the consumer
+	// must never hand it to the address state machine.
+	//
+	// Measured against dhcpcd 10.3.2 with the plugin's own rendered
+	// config, on a dnsmasq `ra-stateless` network. The reply exported:
+	//
+	//     new_dhcp6_name_servers=<a> <b>
+	//     new_dhcp6_domain_search=<a> <b>
+	//     new_dhcp6_info_refresh_time=600
+	//
+	// and no new_dhcp6_ia_na* variable of any kind. Both lists arrive
+	// space-separated, so strings.Fields is the right reader -- the same
+	// shape as their v4 counterparts.
+	//
+	// The option request list matters here and is easy to lose: dhcpcd
+	// exports only what it ASKED for, and `-f <config>` bypasses the
+	// distro dhcpcd.conf. The plugin's renderConfig requests
+	// domain_name_servers and domain_search explicitly (dhcpcd maps
+	// those names to options 23 and 24 on v6); without that line the
+	// same information reply arrives carrying nothing but the server ID.
+	if eventType == "config" {
+		if dns := getenv("new_dhcp6_name_servers"); dns != "" {
+			event.Data.DNSServers = strings.Fields(dns)
+		}
+		if search := getenv("new_dhcp6_domain_search"); search != "" {
+			event.Data.SearchList = strings.Fields(search)
+		}
+		// Emitted even when the server sent no options at all. The
+		// counter is then the only evidence that the exchange happened,
+		// and a server advertising "other configuration available" while
+		// supplying none is a misconfiguration an operator should be
+		// able to see. The consumer already treats an empty DNS list as
+		// "change nothing".
+		return event, true
+	}
+
 	if v6 {
 		// DHCPv6 IA_NA address. dhcpcd indexes addresses as
 		// new_dhcp6_ia_na<N>_ia_addr<M>; we pin a single IAID and
@@ -273,6 +327,29 @@ func buildEvent(reason string, getenv Getenv) (Event, bool) {
 		if dns := getenv("new_dhcp6_name_servers"); dns != "" {
 			event.Data.DNSServers = strings.Fields(dns)
 		}
+		// DHCPv6 option 24 (domain search list). Found while measuring
+		// #815 and fixed here rather than filed: this branch read the
+		// DNS servers and not the search list, so on a DHCPv6-only
+		// network propagateDNS wrote a resolv.conf with nameservers and
+		// never a `search` line -- for every lease, not just an
+		// information reply. The v4 branch reads new_domain_search; the
+		// v6 name is new_dhcp6_domain_search, and nothing mapped it.
+		//
+		// Info.Domain stays empty on v6 on purpose: DHCPv6 has no
+		// option-15 equivalent, only the search list, and the resolv.conf
+		// writer already falls back from SearchList to Domain rather
+		// than the other way round.
+		if search := getenv("new_dhcp6_domain_search"); search != "" {
+			event.Data.SearchList = strings.Fields(search)
+		}
+		// NTP is deliberately NOT read here. dhcpcd exports the DHCPv6
+		// NTP option (56) as new_dhcp6_ntp_server_addr, and with two
+		// addresses configured on the server exactly ONE reached the
+		// hook environment -- and not the first. Info.NTPServers is
+		// documented as the server list and is surfaced to operators as
+		// one; filling it with an arbitrary single member of a longer
+		// list would be a false claim in an operator-facing log. The
+		// measurement and the four ways out are #859.
 		// IA_NA valid lifetime — the v6 lease clock the outage detector
 		// uses (#353). DHCPv6 exposes no separate T1 through dhcpcd's
 		// variables, so RenewSeconds stays 0 and the consumer falls back
