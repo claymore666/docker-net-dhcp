@@ -25,6 +25,11 @@ name: Reproducible build
 # actually depends on, weekly so an upstream base-image change is caught
 # without waiting for someone to touch the Dockerfile, and on demand.
 
+# What this judges, for scripts/check-scheduled-ref-pins.sh (#839): the
+# TREE. A cron fires only from the default branch, and for a scanner that
+# is the right copy — pinning it to `dev` would report on something no
+# release contains.
+# scheduled-subject: tree
 on:
   pull_request:
     branches: [main, dev]

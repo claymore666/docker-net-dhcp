@@ -26,6 +26,11 @@ name: Missing runs
 #
 # Hosted runner, read-only token, no privileges — it must not compete
 # for the self-hosted pool it is reporting on.
+# What this judges, for scripts/check-scheduled-ref-pins.sh (#839): the
+# TREE. A cron fires only from the default branch, and for a scanner that
+# is the right copy — pinning it to `dev` would report on something no
+# release contains.
+# scheduled-subject: tree
 on:
   schedule:
     # Every 30 minutes. The grace below is 20, so a genuinely dropped

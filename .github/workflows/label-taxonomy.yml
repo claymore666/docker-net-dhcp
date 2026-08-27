@@ -63,6 +63,9 @@ name: Label taxonomy
 #
 # So an edit to .github/labels.yml or to scripts/check-label-taxonomy.sh
 # takes effect the moment it reaches `dev`. An edit to this file does not.
+# Classified for scripts/check-scheduled-ref-pins.sh (#839); the note
+# above is the long form of why the checkout is pinned.
+# scheduled-subject: tracker
 on:
   schedule:
     # Daily, offset from Milestone scope (23 6) and Starter tasks (41 7) so

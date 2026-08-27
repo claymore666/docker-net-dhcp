@@ -1,5 +1,10 @@
 name: Test
 
+# What this judges, for scripts/check-scheduled-ref-pins.sh (#839): the
+# TREE. A cron fires only from the default branch, and for a scanner that
+# is the right copy — pinning it to `dev` would report on something no
+# release contains.
+# scheduled-subject: tree
 on:
   push:
     branches:
@@ -684,6 +689,20 @@ jobs:
       # so whoever weighs deleting it can see there was no incident (#831).
       - name: Actions are pinned to commit SHAs
         run: bash scripts/check-action-pins.sh
+
+      # The other half of the same default-branch restriction. A cron
+      # fires only from `main`, so a scheduled workflow checks out
+      # `main` unless it says otherwise. That is right for a scanner
+      # and wrong for the three gates that judge TRACKER state, which
+      # advances at merge to `dev`: they spent three releases comparing
+      # the tracker against a declaration a release behind it, and two
+      # of them carried a comment describing the hazard instead of
+      # fixing it. #490 fixed one sibling of four and nothing
+      # reconciled the rest, so the rule is now a marker every
+      # scheduled workflow must carry — an unclassified one fails
+      # rather than quietly leaving the domain (#839).
+      - name: Scheduled workflows declare what they judge
+        run: bash scripts/check-scheduled-ref-pins.sh
 
       # #390 put the three privileged lanes in one concurrency group;
       # #617 changed the key so branch pushes bucket on the commit;

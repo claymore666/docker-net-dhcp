@@ -10,6 +10,11 @@ name: Scorecard
 # scores tag-pinning down, and the publishing workflow that signs our
 # results should lead by example. Repo-wide SHA-pinning is tracked in
 # the hardening follow-up issue; Dependabot maintains these pins.
+# What this judges, for scripts/check-scheduled-ref-pins.sh (#839): the
+# TREE. A cron fires only from the default branch, and for a scanner that
+# is the right copy — pinning it to `dev` would report on something no
+# release contains.
+# scheduled-subject: tree
 on:
   # Like Dependabot and cron triggers, only active once this file is
   # on the default branch.
