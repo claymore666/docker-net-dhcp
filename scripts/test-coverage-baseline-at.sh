@@ -76,7 +76,15 @@ dir=$(mktemp -d)
 build_repo "$dir"
 got=$(cd "$dir" && bash "$GATE" no-such-ref "$dir/out.txt" >/dev/null 2>&1; echo $?)
 if [ "$got" = "2" ]; then ok "an unresolvable base ref refuses"; else no "an unresolvable base ref refuses (exit $got)"; fi
-if [ ! -s "$dir/out.txt" ]; then ok "and leaves no half-written baseline"; else no "and leaves no half-written baseline"; fi
+# -e, NOT -s. `-s` is false for a file that EXISTS AND IS EMPTY, which is
+# precisely what a failing `> "$OUT"` leaves behind -- so the one shape
+# this is here to catch was the one shape it could not see.
+#
+# This case reaches an EARLIER guard than the redirect, so `$OUT` was
+# never created and this passes for a reason unrelated to any cleanup.
+# It is kept as the control, and labelled so nobody reads it as the
+# observer; the arm itself is driven below.
+if [ ! -e "$dir/out.txt" ]; then ok "an unresolvable ref never creates the output at all"; else no "an unresolvable ref left $(wc -c < "$dir/out.txt") byte(s) at out.txt"; fi
 rm -rf "$dir"
 
 # A merge base that carries no baseline at all: the file was added later.
@@ -95,6 +103,27 @@ dir=$(mktemp -d)
 ) >/dev/null 2>&1
 got=$(cd "$dir" && bash "$GATE" dev "$dir/out.txt" >/dev/null 2>&1; echo $?)
 if [ "$got" = "2" ]; then ok "a merge base without a baseline refuses"; else no "a merge base without a baseline refuses (exit $got)"; fi
+# THE ARM THAT NOTHING OBSERVED (#789). This is the only case that
+# reaches
+#
+#     if ! git show "$MERGE_BASE:$BASELINE_PATH" > "$OUT" 2>/dev/null; then
+#         ... ; rm -f "$OUT" ; exit 2
+#
+# and it asserted the exit status alone. `> "$OUT"` CREATES THE FILE
+# BEFORE the command can fail, so on this arm `rm -f` is the only thing
+# standing between a refusal and an empty baseline left on disk. Delete
+# it and the whole suite stayed green -- the production path was right
+# and unobserved.
+#
+# An empty baseline left behind is not cosmetic: coverage.yml hands that
+# path straight to coverage-ratchet.sh, whose own non-vacuity guard is
+# the next thing that has to catch it (#791). Two guards deep is not
+# where this should be caught.
+if [ ! -e "$dir/out.txt" ]; then
+    ok "and removes the output the failing redirect had already created"
+else
+    no "a refusal left $(wc -c < "$dir/out.txt") byte(s) at out.txt — the cleanup beside the failing redirect is gone"
+fi
 rm -rf "$dir"
 
 if bash "$GATE" >/dev/null 2>&1; [ $? -eq 2 ]; then
