@@ -151,14 +151,20 @@ else
         exit 2
     fi
 
+    # `paste -sd', '` was used here and it does NOT join with ", ":
+    # -d takes a LIST of delimiters and cycles them, so four items come
+    # out "a,b c,d". Driven rather than read. The names in an error
+    # message are what a reader greps the baseline for, and a stray
+    # space inside a comma-separated list makes two of them look like
+    # one token.
     # Compared BY NAME, not by count alone. Two files can hold the same
     # number of packages and not the same packages -- a substitution
     # keeps the count and changes the verdict, which a count check reads
     # as complete.
     sed -n 's/^package //p' "$REPORT" | sort -u > "$BASELINE_FILE.want.$$"
     printf '%s\n' "$compared_pkgs" | grep . | sort -u > "$BASELINE_FILE.got.$$"
-    missing=$(comm -23 "$BASELINE_FILE.want.$$" "$BASELINE_FILE.got.$$" | paste -sd', ' -)
-    extra=$(comm -13 "$BASELINE_FILE.want.$$" "$BASELINE_FILE.got.$$" | paste -sd', ' -)
+    missing=$(comm -23 "$BASELINE_FILE.want.$$" "$BASELINE_FILE.got.$$" | paste -sd, - | sed 's/,/, /g')
+    extra=$(comm -13 "$BASELINE_FILE.want.$$" "$BASELINE_FILE.got.$$" | paste -sd, - | sed 's/,/, /g')
     rm -f "$BASELINE_FILE.want.$$" "$BASELINE_FILE.got.$$"
 
     if [ "$compared" -ne "$want" ] || [ -n "$missing" ] || [ -n "$extra" ]; then
@@ -170,6 +176,38 @@ else
     fi
     echo
     echo "Cross-checked: compared ${compared} of ${want} resolved package floor(s)$(sed -n 's/^blob /, blob /p' "$REPORT" | head -1)."
+
+    # A SECOND OPINION THAT DOES NOT COME FROM THE BLOB.
+    #
+    # Everything above compares two parses of one object: the resolver
+    # read the baseline blob, this script read the same bytes, and they
+    # agree. A blob that was ALREADY short when it was resolved is
+    # therefore agreed to by both sides -- which is exactly the failure
+    # the resolver's header names (a rebase, a truncated blob, a partial
+    # fetch, a merge that dropped lines) and exactly the one neither side
+    # can see.
+    #
+    # $PERCENT_FILE is not derived from the blob. It names every package
+    # the run actually measured and comes out of `go tool covdata`. So
+    # "the run measured N packages and the baseline floors M of them" is
+    # a question the cross-check above cannot ask.
+    #
+    # IT WARNS, IT DOES NOT REFUSE, and the reason is that the signal is
+    # ambiguous by construction: a package measured but not floored is
+    # what a truncated baseline looks like AND what a legitimately new
+    # package looks like, and nothing here can tell those apart. A gate
+    # that fails on both would fire on every new package until someone
+    # updated the baseline, and a gate that cries wolf gets discharged.
+    # Naming them costs a line and lets a human decide in one glance.
+    measured=$(awk '$2 == "coverage:" { print $1 }' "$PERCENT_FILE" | sort -u)
+    unfloored=$(comm -13 <(sed -n 's/^package //p' "$REPORT" | sort -u) \
+                         <(printf '%s\n' "$measured" | grep .) | paste -sd, - | sed 's/,/, /g')
+    if [ -n "$unfloored" ]; then
+        echo "::warning title=Measured but not floored::the run measured package(s) the baseline" \
+             "does not floor: ${unfloored}. If those are new packages, add floors. If they are" \
+             "not new, the baseline blob was already short when it was resolved -- which the" \
+             "cross-check above cannot see, because both of its sides parse that same blob."
+    fi
 fi
 
 if [ "$fail" -ne 0 ]; then

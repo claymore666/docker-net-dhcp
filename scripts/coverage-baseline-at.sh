@@ -26,6 +26,36 @@
 # it handed over. It writes the count, the blob's identity and the
 # package NAMES; the ratchet asserts it compared exactly those.
 #
+# WHAT THIS CROSS-CHECK DOES NOT COVER, stated because the paragraph
+# above reads wider than the mechanism is. The count and names below are
+# parsed out of $OUT -- the same bytes this script just extracted with
+# `git show` and is about to hand to the ratchet -- by, deliberately, the
+# same rule the ratchet parses with. So both sides of the cross-check are
+# two parses of ONE object. A blob that was already damaged when it was
+# resolved is agreed to by both sides.
+#
+# Concretely, and driven at fbc1ed2 with the two scripts unmodified: a
+# merge base holding a two-package baseline where the run measured five
+# produces `count 2`, two PASS lines, exit 0 -- and now a "Cross-checked:
+# compared 2 of 2" line attesting to it. The guard's contribution in that
+# scenario is a sentence that makes the clean verdict look verified.
+#
+# So the four causes named in coverage-ratchet.sh -- a rebase, a
+# truncated blob, a partial fetch, a merge that dropped lines -- all
+# damage the blob AT SOURCE and none of them is caught here. What IS
+# caught is damage BETWEEN the resolver and the ratchet: the wrong file
+# handed over, a file truncated after it was written, a by-name
+# substitution, the report missing or unreadable. That is real and it is
+# what the NOT CROSS-CHECKED line protects.
+#
+# The completeness question needs a source outside the blob. The percent
+# file is one -- it names every package the run actually measured and is
+# produced by `go tool covdata`, not by `git show`. The ratchet holds it
+# already, and it now warns (see coverage-ratchet.sh) rather than
+# refusing, because a package measured but not floored is also what a
+# legitimately new package looks like. Turning that into a refusal needs
+# a rule for telling those apart and is deliberately not attempted here.
+#
 # NAMES AND NOT ONLY A COUNT, because "2 of 5" sends someone to read a
 # 258-line file of which 253 lines are commentary, and
 # "pkg/dhcp, cmd/net-dhcp" sends them to two lines.
