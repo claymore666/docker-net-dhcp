@@ -271,6 +271,19 @@ and since #736 **promote-latest**, which an rc now reaches. Its last
 step, *Assert a pre-release did not move :latest*, is the one that
 proves the dry-run stayed a dry-run.
 
+**What an rc does *not* prove about the attestation gate.** *Check
+attestation parity across registries* is release-path: it runs in both
+the amd64 and arm64 publish jobs, and an rc reaches it, so its ordinary
+verdict is exercised before every real tag. Its refusal branches are
+not. Those fire only when `gh` itself misbehaves during a release — a
+4xx body printed on stdout with `rc 0`, a transport failure, a call
+that prints nothing on either stream — and no rc can produce them.
+Nobody should manufacture them on the release path either. The
+substitute evidence is `scripts/test-check-attestation-parity.sh`,
+which drives every branch offline against a stubbed `gh`. If you touch
+that gate, that suite is what has to be green, because a green rc will
+not tell you the error paths still work.
+
 **The rc tag also starts the arm64 integration lane** (#531) — pushing
 it triggers `integration-arm64` on its own. Nothing to dispatch, and
 nothing to remember: the tag is the gate, so what the rc proves follows
