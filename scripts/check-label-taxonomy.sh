@@ -29,8 +29,8 @@
 #
 #   --live    properties of the TRACKER: its label set matches the
 #             declaration in both directions, descriptions included, and no
-#             open issue breaks the type or severity rule. Can become false
-#             with nobody touching the tree — somebody adds a label in the
+#             open issue breaks the type rule or wears a Dependabot label.
+#             Can become false with nobody touching the tree — somebody adds a label in the
 #             web UI — so gating a pull request on it would charge that cost
 #             to whoever pushed next, and would fail on an API blip. It runs
 #             on a schedule instead, the same trade (and the same accepted
@@ -118,7 +118,7 @@ import os
 import re
 import sys
 
-ROLES = {"type", "area", "severity", "status", "dependabot"}
+ROLES = {"type", "area", "status", "dependabot"}
 failures = []
 
 
@@ -203,9 +203,15 @@ types = [n for n, e in declared.items() if e.get("role") == "type"]
 if not types:
     failures.append(f"{labels_path}: no label has role 'type'")
 
+# The same guard for the other universal. The live half reports any issue
+# wearing a `dependabot`-role label; a declaration with none would make that
+# rule pass on every issue in the tracker, silently.
+if not [n for n, e in declared.items() if e.get("role") == "dependabot"]:
+    failures.append(f"{labels_path}: no label has role 'dependabot'")
+
 # The labeller may only ever apply a type or an area. Letting it reach a
-# severity, a status or a Dependabot label would have it fabricate workflow
-# state from an issue title.
+# status or a Dependabot label would have it fabricate workflow state from an
+# issue title.
 APPLICABLE = {"type", "area"}
 
 
@@ -406,7 +412,7 @@ for name in sorted(set(declared) & set(live)):
         )
 
 types = {n for n, e in declared.items() if e.get("role") == "type"}
-severities = {n for n, e in declared.items() if e.get("role") == "severity"}
+dependabot = {n for n, e in declared.items() if e.get("role") == "dependabot"}
 
 checked = 0
 for line in os.environ["LIVE_ISSUES"].splitlines():
@@ -422,11 +428,19 @@ for line in os.environ["LIVE_ISSUES"].splitlines():
     elif len(have) > 1:
         failures.append(f"#{num} carries {len(have)} type labels: {', '.join(have)}")
 
-    sev = sorted(on & severities)
-    if sev and "code-review" not in on:
+    # `gh issue list` returns issues only, so anything here is an issue and a
+    # Dependabot label on it was applied by hand — which the declaration has
+    # forbidden in prose since #715 and nothing has ever checked. 21 issues
+    # had picked one up, 4 of them open; open is the population this rule
+    # judges, so 4 is what it would have caught. `github_actions` had been
+    # borrowed as a "CI work" marker and `go` as a "Go code" one, and `ci` is
+    # what both are for.
+    borrowed = sorted(on & dependabot)
+    if borrowed:
         failures.append(
-            f"#{num} carries the severity label {', '.join(sev)} without "
-            f"'code-review'"
+            f"#{num} carries the Dependabot label {', '.join(borrowed)} — "
+            f"those are applied by Dependabot to its own pull requests and "
+            f"never belong on an issue"
         )
 
 if failures:
