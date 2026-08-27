@@ -17,10 +17,19 @@ import (
 	docker "github.com/docker/docker/client"
 )
 
+// sameSubnetLeaseBudget bounds the wait for the ACKs to land in the
+// server log. It is a budget for a POSITIVE event, so it exits early
+// the moment the floor is met -- unlike the release check below, which
+// is an absence and must spend its wait in full.
+const sameSubnetLeaseBudget = 30 * time.Second
+
 // TestMultiNetwork_SameSubnetRefused pins a limitation the docs now
 // state (#847): one container on two plugin networks that lease from
-// the SAME subnet cannot start. libnetwork refuses to program a second
-// sandbox address in a subnet the container already routes.
+// OVERLAPPING subnets cannot start. libnetwork refuses to program a
+// second sandbox address in a subnet the container already routes, and
+// its check is containment in either direction, not equality -- this
+// test drives the identical-subnet case, which is the one an operator
+// reaches by accident.
 //
 // This is not our refusal and not a defect here, which is exactly why
 // it needs a check rather than a paragraph. The troubleshooting row in
@@ -33,12 +42,14 @@ import (
 // and without the endpoint interface-name option — four cells, one
 // identical error — so there is no engine on which this is expected to
 // pass, and a skip here would only hide a change we want to hear about.
-// sameSubnetLeaseBudget bounds the wait for the ACKs to land in the
-// server log. It is a budget for a POSITIVE event, so it exits early
-// the moment one arrives -- unlike the release check below, which is
-// an absence and must spend its wait in full.
-const sameSubnetLeaseBudget = 30 * time.Second
-
+//
+// It also drives macvlan, which is the mode in which the docs row's
+// configuration has no guard in front of it. Bridge mode -- the
+// default -- refuses two networks on one bridge much earlier, at
+// CreateNetwork with util.ErrBridgeUsed, so the same-parent phrasing
+// of this failure is macvlan/ipvlan's alone unless the operator set
+// ignore_conflicts. That boundary is in the row; the test sits on the
+// side of it that can actually reach the symptom.
 func TestMultiNetwork_SameSubnetRefused(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
@@ -60,12 +71,41 @@ func TestMultiNetwork_SameSubnetRefused(t *testing.T) {
 	// 192.168.99.0/24. That sameness is the whole point of the test.
 	netA := "dh-itest-samesubnet-a"
 	netB := "dh-itest-samesubnet-b"
-	harness.CreateNetwork(t, ctx, netA, "macvlan", nil)
-	harness.CreateNetwork(t, ctx, netB, "macvlan", nil)
+	// attachments is the population the docs row's "a real lease per
+	// network" claim is quantified over, kept as a list so the ACK floor
+	// below is derived from it rather than typed as a literal.
+	attachments := []string{netA, netB}
+	for _, n := range attachments {
+		harness.CreateNetwork(t, ctx, n, "macvlan", nil)
+	}
 
 	// Snapshot the server BEFORE anything is created. The shared fixture
 	// accumulates every test's traffic, so only a delta says anything
 	// about this container.
+	//
+	// The delta is scoped to time, not to this container: neither count
+	// below is keyed on its MAC or its address, because this container
+	// never starts and so never has an inspectable one — the endpoints
+	// are rolled back with the failed start. The two counts therefore
+	// have OPPOSITE polarities under a foreign line, and only one of
+	// them is dangerous:
+	//
+	//	DHCPRELEASE  wants an ABSENCE, so a foreign line can only fail
+	//	             a healthy tree — noisy, never silently wrong.
+	//	DHCPACK      wants a PRESENCE, so a foreign line SATISFIES it.
+	//	             That is a false pass: the test would report "the
+	//	             server issued leases for this container" on another
+	//	             container's evidence.
+	//
+	// Latent today, and these are the conditions that make it live:
+	// nothing in this suite calls t.Parallel, every test cleans up its
+	// own containers, and the fixture lease time (2m) outlasts the 30s
+	// window below only for a container that is still running. Add
+	// suite parallelism, or a fixture container that lives across
+	// tests and renews, and the ACK check starts being satisfiable by
+	// traffic that is not ours — at which point it needs the MAC, which
+	// means pinning the endpoint MACs at create time so there is one to
+	// key on before the start fails.
 	acksBefore := fixture.CountLogLines("DHCPACK")
 	releasesBefore := fixture.CountLogLines("DHCPRELEASE")
 
@@ -133,8 +173,9 @@ func TestMultiNetwork_SameSubnetRefused(t *testing.T) {
 	// `release` directive dev had removed. A run against the branch
 	// worktree therefore saw a release and a run against the merge product
 	// did not. Both readings were honest; only the merge product ships.
-	// The dev merge that precedes this change is what makes the tree this
-	// test is written in the same tree it will run in.
+	// This branch is kept rebased on dev for that reason: it is what
+	// makes the tree this test is written in the same tree it will run
+	// in.
 	//
 	// Two halves, two shapes:
 	//
@@ -142,24 +183,51 @@ func TestMultiNetwork_SameSubnetRefused(t *testing.T) {
 	//   RELEASEs  an absence -- spend the settle window in full, because
 	//             an absence declared early is a pass the tree has not
 	//             earned. That is #800's own reasoning and its constant.
+	//
+	// The floor is len(attachments), not 1, and the difference is the
+	// whole of the row's claim. "A real lease PER NETWORK" and "a lease
+	// on the way to the refusal" are different statements, and only the
+	// first supports the operational warning the row then gives (a
+	// retried start burns one address per network per attempt). A floor
+	// of 1 cannot tell them apart: two networks and one ACK would pass
+	// while the row had become wrong.
+	//
+	// len(attachments) is what the behaviour REQUIRES, not a number
+	// observed on a run. The plugin acquires in CreateEndpoint; docker
+	// calls CreateEndpoint once per attached network; and the refusal
+	// happens later, in libnetwork's sandbox setup for the SECOND
+	// network -- the first joins an empty netns and cannot conflict with
+	// anything. So every attachment's CreateEndpoint has already run and
+	// already leased by the time the start fails, and each of those is a
+	// distinct macvlan child with its own MAC, hence a distinct client
+	// and a distinct ACK at the server. A retried DISCOVER can only add
+	// ACKs, never remove one, which is why this is a floor and not an
+	// equality.
+	wantACKs := len(attachments)
 	deadline := time.Now().Add(sameSubnetLeaseBudget)
 	var acks int
 	for {
 		acks = fixture.CountLogLines("DHCPACK") - acksBefore
-		if acks >= 1 {
+		if acks >= wantACKs {
 			break
 		}
 		if !time.Now().Before(deadline) {
-			t.Fatalf("dnsmasq saw no DHCPACK for the refused container within %v. The "+
-				"troubleshooting row in docs/reference.md (#847) tells operators the "+
-				"server issues a lease on the way to this failure, because the plugin "+
-				"leases in CreateEndpoint before libnetwork refuses. On this run it did "+
-				"not, so the plugin no longer leases before the refusal -- fix that, or "+
-				"correct the row; do not relax this assertion", sameSubnetLeaseBudget)
+			t.Fatalf("dnsmasq logged %d DHCPACK(s) for the refused container within %v, want at "+
+				"least %d -- one per attached network. The troubleshooting row in "+
+				"docs/reference.md (#847) tells operators the server issues a lease PER "+
+				"NETWORK on the way to this failure, because the plugin leases in "+
+				"CreateEndpoint and docker calls it once per attachment before libnetwork "+
+				"refuses the second address. It also tells them a retried start burns one "+
+				"address per network per attempt, which is only true if that is so. On this "+
+				"run it was not -- fix the plugin, or correct the row and this floor "+
+				"together; do not relax this assertion to a bare >= 1, which cannot tell "+
+				"the row's claim from its negation",
+				acks, sameSubnetLeaseBudget, wantACKs)
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
-	t.Logf("\u2713 server issued %d lease(s) on the way to the refusal", acks)
+	t.Logf("\u2713 server issued %d lease(s) on the way to the refusal, for %d attached network(s)",
+		acks, len(attachments))
 
 	// Now the absence. Sized by #800's own budget rather than a second
 	// number of our own: the two tests assert the same property at the
