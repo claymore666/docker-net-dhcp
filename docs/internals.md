@@ -47,11 +47,13 @@ lifecycle, the event plumbing, and everything below are identical.
   resulting address/routes via netlink itself.
 - **A lapsed lease is not one of those events.** The plugin runs
   `dhcpcd --noconfigure`, and in that mode a lease running out is
-  reported as `RELEASE` — the same thing a graceful stop emits. The two
-  are indistinguishable, so treating either as a failure would count
-  every normal container teardown as one, and the handler drops both.
-  This is why the plugin cannot learn about a dead DHCP server by
-  waiting to be told.
+  reported as `RELEASE`. Up to v1.8.x a graceful stop emitted the very
+  same reason, so treating it as a failure would have counted every
+  normal container teardown as one, and the handler dropped it. v1.9.0
+  removed the `release` directive and with it that second source — but
+  what a stopped client reports instead has not been measured, so the
+  handler still drops `RELEASE`. Either way the plugin cannot learn
+  about a dead DHCP server by waiting to be told.
 - **Outages are therefore derived, not reported.** Each bind and renew
   records the lease lifetime the server granted, and a watchdog compares
   it against the time since that endpoint was last served: once

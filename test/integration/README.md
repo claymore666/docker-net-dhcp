@@ -174,18 +174,18 @@ they prove:
 - `vendor_class_test.go` — option 60 round-trip via dnsmasq
   class-tagged gateway override (exact-match route parsing, #130).
 - `audit_log_test.go` — `audit_log=true` ledger lifecycle
-  (bound→release), default-off absence (#109).
-- `orphan_release_test.go` — a container that exits before its attach
-  completes leaves nobody holding the job of releasing its address; the
-  plugin reclaims the binding on a temporary link and releases it
-  (#370), in macvlan, ipvlan, and dual-stack. The counter is not the
-  evidence: `lease_release_failures` sat at 0 throughout the original
-  failure, because it only sees releases that were attempted.
+  (bound→stopped), default-off absence (#109).
 - `join_no_container_test.go` — an attach that fails because no
-  container ever claimed the endpoint releases the address instead of
-  leaving it leased upstream until it expires (#566). The Join is
+  container ever claimed the endpoint leaves the address leased
+  upstream until it expires, and sends no DHCPRELEASE (#800; the file
+  covered the opposite behaviour for #566 before that). The Join is
   issued against a genuinely live sandbox, so "nobody holds this
-  endpoint" is the only branch that can answer.
+  endpoint" is the only branch that can answer. It also asserts no
+  `dh-rel-*` link is on the host — the removed reclaim's fingerprint,
+  which is what a reintroduced one would leave.
+
+  `orphan_release_test.go` covered the reclaim itself and went with it
+  in #800.
 - `concurrent_renew_test.go` — two containers on one network, both with
   the default `eth0`, each keep their own persistent client and each
   renew. dhcpcd keys its pidfile and control sockets by interface name

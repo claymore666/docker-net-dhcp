@@ -47,11 +47,18 @@ type Getenv func(string) string
 // EXPIRE. Verified against dhcpcd 10.3.2: two identical clients, one
 // with `--noconfigure` and one without, both bound to a 2m lease with
 // the server then killed; at the expiry instant the first fired RELEASE
-// and the second EXPIRE. Mapping RELEASE to a lease loss would be wrong
-// anyway, because a graceful stop (Leave / plugin shutdown → SIGTERM →
-// `release` directive) fires the SAME reason, so every clean teardown
-// would count as a DHCP failure. The consumer therefore detects a
-// silent lapse from the lease deadline instead — see LeaseSeconds.
+// and the second EXPIRE.
+//
+// Up to v1.8.x there was a second reason, and it was the decisive one:
+// a graceful stop (Leave / plugin shutdown → SIGTERM → `release`
+// directive) fired the SAME reason, so mapping RELEASE would have
+// counted every clean teardown as a DHCP failure. #800 removed the
+// `release` directive, and that second source of RELEASE is gone with
+// it — but what a SIGTERM'd client reports INSTEAD has not been
+// measured. RELEASE therefore stays unmapped: changing it would rest on
+// an unverified dhcpcd behaviour, and the deadline-based detection it
+// would replace is measured and works. The consumer detects a silent
+// lapse from the lease deadline — see LeaseSeconds.
 func mapReason(reason string) (eventType string, v6 bool, emit bool) {
 	switch reason {
 	case "BOUND", "REBOOT":

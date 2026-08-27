@@ -252,7 +252,7 @@ func TestNextAcquiring(t *testing.T) {
 	}
 }
 
-// releasingManager builds a dhcpManager that Stop() can run against
+// stoppingManager builds a dhcpManager that Stop() can run against
 // without a live netns/netlink fixture: Start is marked complete with
 // no error, and the two consumer goroutines are simulated by
 // pre-filling their exit channels.
@@ -263,7 +263,7 @@ func TestNextAcquiring(t *testing.T) {
 // Real managers can't hit that (Start sets the handle, and a Start that
 // failed earlier short-circuits Stop via startErr), but a test that
 // hand-builds the struct has to say so.
-func releasingManager(t *testing.T, p *Plugin, opts DHCPNetworkOptions, errV4, errV6 error) *dhcpManager {
+func stoppingManager(t *testing.T, p *Plugin, opts DHCPNetworkOptions, errV4, errV6 error) *dhcpManager {
 	t.Helper()
 
 	m := newDHCPManager(nil, JoinRequest{NetworkID: "net1", EndpointID: "ep1"}, opts).withPlugin(p)
@@ -279,7 +279,8 @@ func releasingManager(t *testing.T, p *Plugin, opts DHCPNetworkOptions, errV4, e
 	// now being shut down, which is what makes "stopped" the honest
 	// ledger entry. Without this the manager is in the never-bound state
 	// instead, where Stop must NOT claim a release — see
-	// TestStop_NeverBoundClientReclaimsInsteadOfClaimingRelease.
+	// TestStop_LeavingAndNotLeavingAreTheSame, whose
+	// client_started_but_never_bound row drives exactly that state.
 	m.boundV4.Store(true)
 
 	m.errChan = make(chan error, 1)
@@ -358,7 +359,7 @@ func TestStop_AuditsBothFamiliesIndependently(t *testing.T) {
 			p.ledger = testLedger(t, &ledgerFailures)
 
 			opts := DHCPNetworkOptions{AuditLog: true, IPv6: tc.ipv6}
-			m := releasingManager(t, p, opts, tc.errV4, tc.errV6)
+			m := stoppingManager(t, p, opts, tc.errV4, tc.errV6)
 
 			err := m.Stop()
 
@@ -499,7 +500,7 @@ func TestStop_LeavingAndNotLeavingAreTheSame(t *testing.T) {
 		{
 			name: "client_started_but_never_bound",
 			mk: func(t *testing.T, p *Plugin) *dhcpManager {
-				m := releasingManager(t, p, DHCPNetworkOptions{AuditLog: true}, nil, nil)
+				m := stoppingManager(t, p, DHCPNetworkOptions{AuditLog: true}, nil, nil)
 				m.boundV4.Store(false)
 				return m
 			},
@@ -507,13 +508,13 @@ func TestStop_LeavingAndNotLeavingAreTheSame(t *testing.T) {
 		{
 			name: "client_bound_and_exited_cleanly",
 			mk: func(t *testing.T, p *Plugin) *dhcpManager {
-				return releasingManager(t, p, DHCPNetworkOptions{AuditLog: true}, nil, nil)
+				return stoppingManager(t, p, DHCPNetworkOptions{AuditLog: true}, nil, nil)
 			},
 		},
 		{
 			name: "client_never_bound_and_died_on_the_signal",
 			mk: func(t *testing.T, p *Plugin) *dhcpManager {
-				m := releasingManager(t, p, DHCPNetworkOptions{AuditLog: true},
+				m := stoppingManager(t, p, DHCPNetworkOptions{AuditLog: true},
 					errors.New("signal: terminated"), nil)
 				m.boundV4.Store(false)
 				return m
@@ -604,7 +605,7 @@ func TestStop_AuditsAStopWithoutClaimingARelease(t *testing.T) {
 			p := &Plugin{}
 			p.ledger = testLedger(t, &ledgerFailures)
 
-			m := releasingManager(t, p, DHCPNetworkOptions{AuditLog: true}, tc.exitErr, nil)
+			m := stoppingManager(t, p, DHCPNetworkOptions{AuditLog: true}, tc.exitErr, nil)
 			m.boundV4.Store(tc.bound)
 
 			err := m.StopForLeave()
@@ -1122,7 +1123,7 @@ func TestStop_NeverBoundV6ClientIsNotAuditedAsReleased(t *testing.T) {
 			p := &Plugin{}
 			p.ledger = testLedger(t, &ledgerFailures)
 
-			m := releasingManager(t, p, DHCPNetworkOptions{AuditLog: true, IPv6: true}, nil, tc.errV6)
+			m := stoppingManager(t, p, DHCPNetworkOptions{AuditLog: true, IPv6: true}, nil, tc.errV6)
 			m.boundV6.Store(false)
 
 			if err := m.stop(tc.leaving); err != nil {
@@ -1182,7 +1183,7 @@ func TestStop_BoundV6StopFailureIsCountedPerFamily(t *testing.T) {
 			var ledgerFailures atomic.Int32
 			p := &Plugin{}
 			p.ledger = testLedger(t, &ledgerFailures)
-			m := releasingManager(t, p, DHCPNetworkOptions{AuditLog: true, IPv6: true}, tc.errV4, tc.errV6)
+			m := stoppingManager(t, p, DHCPNetworkOptions{AuditLog: true, IPv6: true}, tc.errV4, tc.errV6)
 
 			if err := m.StopForLeave(); !errors.Is(err, boom) {
 				t.Errorf("StopForLeave() = %v, want an error wrapping %v — a bound client "+

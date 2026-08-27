@@ -89,12 +89,12 @@ func ledgerKindsForMAC(lines []ledgerLine, mac string) []string {
 
 // TestAuditLog_RecordsLifecycle is #109's stated test plan made
 // concrete: with audit_log=true, a full container lifecycle leaves a
-// bound and a release entry in STATE_DIR/leases.jsonl carrying the
+// bound and a stopped entry in STATE_DIR/leases.jsonl carrying the
 // container's exact MAC and pool IP, every line valid JSON, and
 // ledger_write_failures stays flat.
 //
 // Container lifecycle is inlined (not harness.RunContainer) for the
-// same reason as the health-counters test: the release entry is
+// same reason as the health-counters test: the stopped entry is
 // written during teardown, which must happen inside the test body.
 func TestAuditLog_RecordsLifecycle(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)

@@ -33,9 +33,9 @@
 //   - a dead server produces NO event at T1/T2, and — the part this
 //     file originally got wrong, see #353 — no usable event at expiry
 //     either. Under `--noconfigure` dhcpcd reports a lapsed lease as
-//     RELEASE, which is indistinguishable from the one a graceful stop
-//     emits and so can never be counted as a loss. From the kill
-//     onward dhcpcd may say nothing at all.
+//     RELEASE, which this plugin drops rather than counts — see
+//     pkg/dhcp.mapReason, including what #800 changed about that
+//     reasoning. From the kill onward dhcpcd may say nothing at all.
 //
 //   - dhcp_timeouts therefore moves on the plugin's OWN reckoning: the
 //     outage watchdog knows the granted lease lifetime

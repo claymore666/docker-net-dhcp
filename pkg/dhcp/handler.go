@@ -79,9 +79,11 @@ type Info struct {
 	// WITHOUT depending on a lease-loss hook (#353). dhcpcd does not
 	// reliably deliver one: under `--noconfigure`, which this plugin
 	// always runs, a lapsed lease fires the hook as RELEASE rather than
-	// EXPIRE — and RELEASE is indistinguishable from the one a graceful
-	// stop produces, so it can never be counted as a failure. The lease
-	// deadline carries no such ambiguity.
+	// EXPIRE — and up to v1.8.x a graceful stop produced the same reason,
+	// so it could not be counted as a failure. #800 removed the `release`
+	// directive; what a stopped client reports now has not been measured,
+	// so RELEASE is still not counted (see pkg/dhcp.mapReason). The lease
+	// deadline needs no such measurement.
 	//
 	// The renewal time (T1, option 58) is deliberately NOT carried here
 	// even though dhcpcd exports it, because under `--noconfigure` it is

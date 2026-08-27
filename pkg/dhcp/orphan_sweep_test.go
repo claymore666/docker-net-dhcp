@@ -371,9 +371,11 @@ func TestSweepOrphans_MarkerIsReallyInTheArgv(t *testing.T) {
 //
 // Without Setpgid the child shares the plugin's process group, so a
 // signal aimed at the group — a supervisor's shutdown, a terminal, a
-// `kill -- -<pgid>` — reaches every live dhcpcd too. The persistent
-// client omits dhcpcd's -p, so each one would RELEASE the lease of a
-// container that is still running.
+// `kill -- -<pgid>` — reaches every live dhcpcd too, killing the
+// renewal client of a container that is still running: its lease stops
+// being renewed and lapses at the server's deadline. (This said
+// "would RELEASE the lease" until #800; -p governs de-configuration,
+// not release, and nothing this plugin runs sends a DHCPRELEASE.)
 // TestSweepOrphans_SparesALiveClientOfAnotherInstance is the test that
 // makes the function's name true.
 //

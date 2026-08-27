@@ -43,11 +43,14 @@ const (
 	// A parent NIC is a macvlan port or an ipvlan port, never both: the
 	// two kinds contend for its single rx_handler and the second to ask
 	// is refused with EBUSY. Plugin teardown is asynchronous relative
-	// to test boundaries — an orphan-release reclaim can hold its
-	// temporary child on the parent for seconds after the test that
-	// caused it has returned — so with one shared parent a macvlan
-	// test's tail could still own it when an ipvlan test's head asked,
-	// and the suite went red on whichever test happened to be next.
+	// to test boundaries — the orphan-release reclaim that first
+	// produced this held its temporary child on the parent for seconds
+	// after the test that caused it had returned — so with one shared
+	// parent a macvlan test's tail could still own it when an ipvlan
+	// test's head asked, and the suite went red on whichever test
+	// happened to be next. That reclaim went in #800; the conflict
+	// probe attaches to a parent the same way, so the asymmetry the two
+	// parents remove is not specific to the mechanism that revealed it.
 	// Both directions are in the CI record. Two parents remove the
 	// contention rather than racing it; CreateNetwork asserts the
 	// invariant so a violation is named rather than surfacing as a

@@ -76,6 +76,7 @@ sudo mkdir -p /var/lib/net-dhcp
 | change | effect |
 | --- | --- |
 | A container's address on stop, restart, or removal | **held until the lease expires.** The plugin no longer sends a DHCPRELEASE on any path, and no longer scans for and releases orphaned leases (#800) |
+| Log line for a client signalled before it ever bound | said `Persistent client stopped before it ever held the lease; reclaiming it`; now ends `the one-shot's lease is left to expire on the server`. Log alerts matching the old wording stop matching |
 
 **The plugin now behaves like an ordinary machine on the segment.** A host
 does not hand its address back when it reboots — it comes back, asks for the

@@ -734,8 +734,9 @@ type HealthResponse struct {
 	DHCPTimeoutsV6   int32 `json:"dhcp_timeouts_v6"`
 	NAKsReceivedV6   int32 `json:"naks_received_v6"`
 	// ClientStopFailuresV6 is the v6 share of ClientStopFailures
-	// (#608): the persistent DHCPv6 client held a binding and its
-	// SIGTERM-driven RELEASE did not complete cleanly.
+	// (#608): the persistent DHCPv6 client held a binding and did not
+	// shut down cleanly when the plugin signalled it. No release is
+	// involved — since #800 nothing this plugin runs sends one.
 	ClientStopFailuresV6 int32 `json:"client_stop_failures_v6"`
 }
 
