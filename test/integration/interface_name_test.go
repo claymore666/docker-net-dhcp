@@ -206,7 +206,7 @@ func TestInterfaceName_MultiNetworkDeterministic(t *testing.T) {
 	harness.CreateNetwork(t, ctx, probeNet, "macvlan", nil)
 	probeID, _ := runContainerWithIfname(t, ctx, cli, probeNet, "dh-itest-ifprobe-ctr", "probe0")
 	if !engineAppliesIfname(t, ctx, probeID, "probe0") {
-		t.Skip("engine does not apply remote-driver DstName (this engine predates moby/moby#52866, merged for engine 29.8.0); test activates on the first engine carrying the pass-through")
+		t.Skip("engine does not apply remote-driver DstName yet (moby drivers/remote/driver.go drops it); test activates once the upstream pass-through ships")
 	}
 
 	netA := "dh-itest-ifnetA"
