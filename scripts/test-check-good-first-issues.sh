@@ -273,11 +273,25 @@ check "live/Unmet: unparseable is 'cannot see', never a confirmation" 2 \
 check "live/Met: unparseable is 'cannot see', never 'no tasks left'" 2 \
     "$(run --live "$TMP/readme.ok" "$TMP/badge.live")" 'unparseable issue list'
 
-# Well-formed JSON of the wrong SHAPE reaches the parser and dies inside
-# it, which is a different failure from a syntax error and must not be
-# the one case nobody drove.
+# Well-formed JSON of the wrong SHAPE. TWO fixtures, because the shape
+# splits on emptiness and only one half raises: '{"number":7}' iterates
+# to a key and dies inside the parser, while '{}' iterates to NOTHING and
+# exits 0 having printed nothing — indistinguishable from "[]" unless the
+# shape is checked before the loop. The first version of this case drove
+# only the non-empty one, which is a fixture that cannot exercise the
+# empty instance of the very class it was written for.
 STUB_OUT='{"number":7}'; STUB_RC=0
 check "live/Unmet: JSON of the wrong shape is 'cannot see'" 2 \
+    "$(run --live "$TMP/readme.silent" "$TMP/badge.unmet")" 'unparseable issue list'
+
+STUB_OUT='{}'; STUB_RC=0
+check "live/Unmet: an EMPTY object is a wrong shape, not zero issues" 2 \
+    "$(run --live "$TMP/readme.silent" "$TMP/badge.unmet")" 'expected a JSON array'
+check "live/Met: an EMPTY object is a wrong shape, not 'no tasks left'" 2 \
+    "$(run --live "$TMP/readme.ok" "$TMP/badge.live")" 'expected a JSON array'
+
+STUB_OUT='null'; STUB_RC=0
+check "live/Unmet: a bare null is a wrong shape too" 2 \
     "$(run --live "$TMP/readme.silent" "$TMP/badge.unmet")" 'unparseable issue list'
 
 # THE CONTROL for all four above. A legitimately empty list is the same

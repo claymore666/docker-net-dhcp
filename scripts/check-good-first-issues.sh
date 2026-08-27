@@ -348,7 +348,22 @@ open_json=$("$GH" issue list --label "$LABEL" --state open --limit 100 --json nu
 # an unreadable response was counted as "no open issues" -- which passes
 # the Unmet arm silently. That is the failure the empty-STRING check four
 # lines above exists to prevent, lost four lines later (#851).
-open_list=$(printf '%s' "$open_json" | python3 -c 'import json,sys;[print(i["number"]) for i in json.load(sys.stdin)]' 2>&1) || {
+# The shape is checked BEFORE iterating, because a wrong shape that is
+# EMPTY does not raise. "{}" iterates to nothing, so the parser exits 0
+# having printed nothing, and that is indistinguishable from "[]" -- the
+# same false green this whole block exists to close, through a narrower
+# door. The first fixture written for the wrong-shape case was
+# '{"number":7}', which dies inside the parser and therefore could not
+# see it: a non-empty fixture cannot exercise the empty instance of its
+# own class (#851).
+open_list=$(printf '%s' "$open_json" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+if not isinstance(d, list):
+    sys.exit("expected a JSON array, got " + type(d).__name__)
+for i in d:
+    print(i["number"])
+' 2>&1) || {
     echo "::error title=Cannot see::unparseable issue list for \"$LABEL\": ${open_list##*$'\n'}" >&2
     exit 2
 }
