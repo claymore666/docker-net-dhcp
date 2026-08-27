@@ -1,6 +1,15 @@
 # Workflows that declare workflow_dispatch but are not yet on the
 # default branch (#644), enforced by scripts/check-dispatch-reachable.sh.
 #
+# `schedule` IS SUBJECT TO THE SAME RESTRICTION AND THIS FILE USED TO BE
+# SILENT ABOUT IT (#846). The restriction is a property of the DEFAULT
+# BRANCH, not of one trigger: a workflow that is not on `main` does not
+# run on a cron either. Two entries here independently claimed the
+# opposite on the same day -- "the schedule works from any branch" --
+# and both passed this gate, because the gate reads an entry for
+# presence, never for truth. If you are writing a reason below, do not
+# reason about which trigger survives: measure it.
+#
 # GitHub only exposes a dispatchable workflow from the DEFAULT branch.
 # This project develops on `dev` and releases to `main`, and `main` is
 # the default, so a new dispatch-only workflow is undispatchable for one
@@ -18,10 +27,17 @@
 
 
 .github/workflows/run-retention.yml
-    Reason:  new in the v1.9.0 cycle. The workflow's real trigger is the
-             daily schedule, which works from any branch; workflow_dispatch
-             exists only to run the purge by hand with a different window,
-             or as a dry run. Being undispatchable therefore costs a manual
-             convenience, not the function.
+    Reason:  new in the v1.9.0 cycle. BOTH of its triggers are dead, not
+             just the manual one: `schedule` is default-branch-only exactly
+             as workflow_dispatch is, so the daily purge does not run either.
+             Measured 2026-08-27 with the file merged to dev: `gh workflow
+             list --all` does not return run-retention.yml at all (0 of 27),
+             and of the 100 most recent schedule-triggered runs in this repo,
+             100 fired on `main` — no other branch appears at all. The
+             workflow is entirely inert until the release ships it.
+             An earlier version of this entry claimed the schedule "works
+             from any branch". It does not. See #846 — two authors wrote
+             that same false sentence on the same day, which is a fact about
+             this file's framing, not about the authors.
     Clears:  when this reaches `main` with the v1.9.0 release. Remove this
              entry then — the gate fails while a stale entry remains.
