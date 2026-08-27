@@ -61,9 +61,9 @@ cat > "$GOOD_LABELS" <<'EOF'
   role: area
   description: 'Area: trust boundaries'
 
-- name: critical
-  role: severity
-  description: 'Critical: data loss'
+- name: go
+  role: dependabot
+  description: Pull requests that update go code
 
 - name: code-review
   role: status
@@ -163,6 +163,14 @@ printf -- '- name: security\n  role: area\n  description: x\n' > "$NO_TYPE"
 run "a declaration with no type label is red" 1 "no label has role 'type'" -- \
     bash "$CHECK" --static "$NO_TYPE" "$GOOD_MAP" "$GOOD_WF"
 
+# The same guard on the other universal. "No issue wears a Dependabot label"
+# is satisfied by declaring none, and the live half would then report clean
+# over a tracker full of them.
+NO_DEPBOT="$TMP/no-dependabot.yml"
+printf -- '- name: bug\n  role: type\n  description: x\n' > "$NO_DEPBOT"
+run "a declaration with no Dependabot label is red" 1 "no label has role 'dependabot'" -- \
+    bash "$CHECK" --static "$NO_DEPBOT" "$GOOD_MAP" "$GOOD_WF"
+
 EMPTY="$TMP/empty.yml"
 printf '# nothing but a comment\n' > "$EMPTY"
 run "an empty declaration is red, not clean" 1 "no labels declared" -- \
@@ -231,14 +239,14 @@ LIVE_OK_LABELS="$TMP/live-labels.tsv"
 printf 'bug\tSomething isn'"'"'t working\n'          > "$LIVE_OK_LABELS"
 printf 'ci\tCI, gates, runners, release plumbing\n' >> "$LIVE_OK_LABELS"
 printf 'security\tArea: trust boundaries\n'         >> "$LIVE_OK_LABELS"
-printf 'critical\tCritical: data loss\n'            >> "$LIVE_OK_LABELS"
+printf 'go\tPull requests that update go code\n'     >> "$LIVE_OK_LABELS"
 printf 'code-review\tFound during a code review pass\n' >> "$LIVE_OK_LABELS"
 printf 'backlog\tTracked, not scheduled for a release\n' >> "$LIVE_OK_LABELS"
 
 LIVE_OK_ISSUES="$TMP/live-issues.tsv"
 printf '1\tbug,security\n'            > "$LIVE_OK_ISSUES"
 printf '2\tci\n'                     >> "$LIVE_OK_ISSUES"
-printf '3\tbug,code-review,critical\n' >> "$LIVE_OK_ISSUES"
+printf '3\tbug,code-review\n'        >> "$LIVE_OK_ISSUES"
 
 live() {
     local name="$1" want_exit="$2" want_grep="$3" labels="$4" issues="$5"
@@ -273,9 +281,13 @@ NONE="$TMP/live-no-type.tsv"; printf '9\tsecurity\n' > "$NONE"
 live "REGRESSION live: no type label is red" 1 "carries no type label" \
     "$LIVE_OK_LABELS" "$NONE"
 
-SEV="$TMP/live-sev.tsv"; printf '9\tbug,critical\n' > "$SEV"
-live "live: severity without code-review is red" 1 "without 'code-review'" \
-    "$LIVE_OK_LABELS" "$SEV"
+# REGRESSION: 21 issues wore a Dependabot label applied by hand, 4 of them
+# open — `github_actions` borrowed as a "CI work" marker, `go` as a "Go code"
+# one.
+# .github/labels.yml had forbidden it in prose since #715 and nothing checked.
+DEPBOT="$TMP/live-dependabot.tsv"; printf '9\tbug,go\n' > "$DEPBOT"
+live "REGRESSION live: a hand-applied Dependabot label is red" 1 "never belong on an issue" \
+    "$LIVE_OK_LABELS" "$DEPBOT"
 
 # `backlog` with a milestone belongs to check-milestone-scope.sh. This gate
 # must stay silent on it, or one defect goes red in two places and the rule
