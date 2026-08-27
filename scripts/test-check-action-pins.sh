@@ -53,6 +53,16 @@ fresh() { rm -rf "$TMP/wf"; mkdir -p "$TMP/wf"; }
 # BOTH EXTENSIONS. This tree holds 23 .yml and one .yaml, and a gate that
 # matched only .yml would pass over that file forever. The count in the
 # success line is what proves the .yaml was opened.
+#
+# AND BOTH SPELLINGS. `uses:` appears with a leading dash when it is the
+# first key of a step, and WITHOUT one when the step leads with `- name:`
+# -- measured on this tree, 53 dashed and 43 dashless, so the dashless
+# form is 45% of the corpus. Every fixture here used to be dashed, which
+# left the count assertion nothing to lose: making the dash mandatory
+# dropped 43 references, the suite stayed 16/16 green, and the real tree
+# still exited 0 with a confident success line whose only difference was
+# a smaller number that nothing compared to anything. The dashless entry
+# below is what turns that edit red.
 fresh
 cat > "$TMP/wf/a.yml" <<EOF
 jobs:
@@ -60,6 +70,8 @@ jobs:
     steps:
       - uses: actions/checkout@$SHA
       - uses: actions/setup-go@$SHA
+      - name: the dashless spelling, which is 45% of the real corpus
+        uses: actions/upload-artifact@$SHA
 EOF
 cat > "$TMP/wf/b.yaml" <<EOF
 jobs:
@@ -67,7 +79,19 @@ jobs:
     steps:
       - uses: docker/login-action@$SHA
 EOF
-run "all pinned, across .yml and .yaml" 0 "all 3 'uses:'" "2 workflow file(s)"
+run "all pinned, across .yml and .yaml, dashed and dashless" 0 "all 4 'uses:'" "2 workflow file(s)"
+
+# And the dashless form must be JUDGED, not merely counted. A gate that
+# found the line but skipped the ref check would still say "all 4".
+fresh
+cat > "$TMP/wf/a.yml" <<'EOF'
+jobs:
+  x:
+    steps:
+      - name: unpinned, and the only uses: in the tree is dashless
+        uses: actions/checkout@v7
+EOF
+run "an unpinned dashless ref is caught" 1 "a.yml:5" "not a commit SHA"
 
 # THE EXTENSION IS DRIVEN, NOT ASSUMED. The violation lives ONLY in the
 # .yaml file. If the discovery expression drops that extension this case

@@ -5,24 +5,32 @@
 # Every `uses:` in every workflow must name a 40-hex commit SHA (#831).
 #
 # WHAT THIS IS. Pinning is at 100% today and was measured to be enforced
-# by nothing: `actions/checkout@v7` was planted in a workflow and all 60
-# gates were run, and the red set came back BYTE-IDENTICAL to the
-# clean-tree baseline -- zero new reds. `allowed_actions` is `all` at the
-# API level too. The property is real and is held entirely by whoever is
-# reviewing that day.
+# by nothing: `actions/checkout@v7` was planted in a workflow and the
+# whole gate corpus was run, and the red set came back BYTE-IDENTICAL to
+# the clean-tree baseline -- zero new reds. `allowed_actions` is `all` at
+# the API level too. The property is real and is held entirely by whoever
+# is reviewing that day.
 #
 # THE CONTROL IS WHY THE ZERO IS BELIEVABLE, and it belongs in the record
-# rather than in someone's memory: FIFTEEN of the 60 gates are red when
-# invoked bare, because they need CI context. Without running the
-# clean-tree baseline first, the mutant run reads as "15 gates caught it"
-# -- a false confirmation of exactly the thing being tested for.
+# rather than in someone's memory: a substantial minority of the gates
+# are red when invoked bare, because they need CI context. Without the
+# clean-tree baseline first, the mutant run reads as "N gates caught it"
+# -- a false confirmation of exactly the thing being tested for. The
+# DIFFERENTIAL is the result; the count of bare reds never was, and it is
+# deliberately not quoted: it differs between `main` and `dev`, and
+# `check-apk-pins` returns 125 on a network timeout, so the number moves
+# with the network. This file is what gets read in a year.
 #
-# STATED PLAINLY: THIS IS PROPHYLACTIC. No incident sits behind it. The
-# corpus ran at 1 precautionary gate in 60 before this one. That cost is
-# named here rather than buried, because the finding of the CI review is
-# that gates get added faster than the reason for them gets recorded --
-# so a gate whose reason is "no incident yet" has to say so in its own
-# header, where the person deciding whether to delete it will look.
+# STATED PLAINLY: THIS IS PROPHYLACTIC. No incident sits behind it.
+# Precautionary gates are a small minority of the corpus -- `check-apk-
+# pins.sh` is the other one -- and that is named here rather than buried,
+# because the finding of the CI review is that gates get added faster
+# than the reason for them gets recorded, so a gate whose reason is "no
+# incident yet" has to say so in its own header, where the person
+# deciding whether to delete it will look. No fraction is quoted for the
+# same reason as above: the corpus was 60 gates when this was written and
+# 62 two days later, and a denominator nobody can check is a denominator
+# nobody maintains.
 #
 # A tag is not a pin. `@v7` and `@main` are mutable: whoever controls the
 # action repository can repoint them at any commit, and the next run of
@@ -77,6 +85,17 @@ for f in "${FILES[@]}"; do
             # A local action or reusable workflow is this repository's own
             # tree at this repository's own commit. There is no third
             # party and nothing to pin to.
+            #
+            # THE BOUNDARY, because the sentence above is true of the
+            # REFERENCE and not of the ACTION. A local composite action's
+            # own `action.yml` can itself `uses:` a third party at a tag,
+            # and discovery never opens it -- this gate reads
+            # $WORKFLOW_DIR, not `.github/actions`. The exemption is
+            # vacuous today, `.github/actions` holding no composite
+            # action at all, and it becomes a hole the day one exists.
+            # Whoever adds the first one widens discovery here; the
+            # justification is recorded with its limit so that is a
+            # decision rather than a discovery.
             ./*|.\\*) continue ;;
             docker://*)
                 case "$ref" in
