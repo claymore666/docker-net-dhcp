@@ -59,6 +59,56 @@ assessment above is retained here as the audit trail. If it becomes
 reachable again the gate fails loudly rather than silently
 re-accepting it.
 
+## v1.9.0
+
+*In development.*
+
+### Upgrade notes
+
+Required on every host before `docker plugin install`, unchanged since v1.5.0:
+
+```bash
+sudo mkdir -p /var/lib/net-dhcp
+```
+
+**Behaviour changes.** These take effect on upgrade:
+
+| change | effect |
+| --- | --- |
+| A container's address on stop, restart, or removal | **held until the lease expires.** The plugin no longer sends a DHCPRELEASE on any path, and no longer scans for and releases orphaned leases (#800) |
+| Log line for a client signalled before it ever bound | said `Persistent client stopped before it ever held the lease; reclaiming it`; now ends `the one-shot's lease is left to expire on the server`. Log alerts matching the old wording stop matching |
+| How a DHCP outage is first noticed | **the DHCP client now reports it.** Dropping the `release` directive also changed what `dhcpcd` fires when a lease lapses — `EXPIRE` instead of `RELEASE`, which the plugin counts. `dhcp_timeouts` therefore rises at the lease deadline instead of one watchdog grace later, and the plugin log carries a lease-failure record where it previously carried only a watchdog line. `dhcp_timeouts` itself is untouched — same name, same labels, before and after; the counter renames in the table below are a separate change. The deadline watchdog stays as the backstop (#800; whether it still earns its place is the open measurement in #855) |
+
+**The plugin now behaves like an ordinary machine on the segment.** A host
+does not hand its address back when it reboots — it comes back, asks for the
+same address, and gets it, because the lease has not expired. DHCPRELEASE is
+optional in the protocol and most clients never send it. Releasing was
+actively harmful here: a `docker stop` released an address that the
+`docker start` seconds later was about to ask for again, and the server was
+then free to have given it away.
+
+There is no setting for this. A lease is a lease; it expires on the server's
+schedule, and that schedule is the operator's to set on the DHCP server.
+
+**Breaking for metrics scrapers and health checks.** Changes across the
+`/metrics` surface, `/Plugin.Health`, and the audit ledger:
+
+| surface | before | after |
+| --- | --- | --- |
+| `/metrics` counter | `net_dhcp_lease_release_failures_total` (carrying `family="ipv4"` / `family="ipv6"`) | `net_dhcp_client_stop_failures_total`, same labels — same event, honest name: a renewal client that did not shut down cleanly. It never meant a lease went unreleased, and now cannot |
+| `/metrics` counter | `net_dhcp_orphaned_leases_released_total`, `net_dhcp_orphaned_lease_release_failures_total` | **removed.** Nothing releases, so neither has a subject |
+| `/Plugin.Health` keys | `lease_release_failures`, `lease_release_failures_v4`, `lease_release_failures_v6` | `client_stop_failures`, `client_stop_failures_v4`, `client_stop_failures_v6` |
+| `/Plugin.Health` keys | `orphaned_leases_released`, `orphaned_lease_release_failures` | **removed** |
+| `leases.jsonl` kinds | `release`, `release_failed` | `stopped`, `stop_failed` |
+
+Update dashboards and alerts before upgrading. The health rows matter most and
+are the easiest to miss: a JSON consumer reading a key that has vanished gets a
+zero, not an error, so a `jq`-over-the-socket check of the kind in
+`docs/reference.md` keeps reporting healthy after the thing it watched stopped
+existing. The ledger rename matters for the same reason as the counter one: a
+line saying `release` was a claim about what the DHCP server saw, and it was
+false.
+
 ## v1.8.0
 
 A hardening release. Two external reviews of the code (#457/#699 security,

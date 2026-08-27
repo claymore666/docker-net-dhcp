@@ -544,11 +544,18 @@ func TestBuildEvent_UnusableLeaseTimeIsZeroNotFatal(t *testing.T) {
 }
 
 func TestBuildEvent_ReleaseIsNotALeaseLoss(t *testing.T) {
-	// Load-bearing, and the reason #353 needed a deadline instead of a
-	// hook: under --noconfigure dhcpcd reports a LAPSED lease as RELEASE,
-	// but a graceful stop fires the very same reason. Counting it would
-	// turn every clean teardown into a DHCP failure, so RELEASE must stay
-	// unmapped and the lapse must be caught from the lease deadline.
+	// This was load-bearing until #800 and is now a guard against
+	// regression rather than a live constraint.
+	//
+	// Up to v1.8.x a lapse and a graceful stop BOTH fired RELEASE, so
+	// counting it would have turned every clean teardown into a DHCP
+	// failure. Both of those needed the `release` directive, which #800
+	// removed — measured four ways in #855 — so no client this build
+	// starts can produce RELEASE at all, and a lapse now fires EXPIRE.
+	//
+	// The contract is pinned anyway: if a `release` directive ever comes
+	// back, RELEASE becomes ambiguous again the same day, and this test
+	// is what makes that a red build rather than a silent miscount.
 	for _, reason := range []string{"RELEASE", "RELEASE6"} {
 		t.Run(reason, func(t *testing.T) {
 			if _, emit := BuildEvent(reason, fakeEnv(map[string]string{

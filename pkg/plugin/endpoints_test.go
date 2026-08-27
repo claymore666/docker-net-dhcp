@@ -135,8 +135,8 @@ func TestApiHealth_PerFamilyCounters(t *testing.T) {
 	p.dhcpTimeoutsV6.Add(1)
 	p.leaseChangedV4.Add(4)
 	p.leaseChangedV6.Add(6)
-	p.leaseReleaseFailuresV4.Add(2)
-	p.leaseReleaseFailuresV6.Add(1)
+	p.clientStopFailuresV4.Add(2)
+	p.clientStopFailuresV6.Add(1)
 
 	req := httptest.NewRequest(http.MethodGet, "/Plugin.Health", nil)
 	rec := httptest.NewRecorder()
@@ -155,7 +155,7 @@ func TestApiHealth_PerFamilyCounters(t *testing.T) {
 		{"naks_received", got.NAKsReceived, got.NAKsReceivedV4, got.NAKsReceivedV6, 7, 5, 2},
 		{"dhcp_timeouts", got.DHCPTimeouts, got.DHCPTimeoutsV4, got.DHCPTimeoutsV6, 4, 3, 1},
 		{"lease_changed", got.LeaseChanged, got.LeaseChangedV4, got.LeaseChangedV6, 10, 4, 6},
-		{"lease_release_failures", got.LeaseReleaseFailures, got.LeaseReleaseFailuresV4, got.LeaseReleaseFailuresV6, 3, 2, 1},
+		{"client_stop_failures", got.ClientStopFailures, got.ClientStopFailuresV4, got.ClientStopFailuresV6, 3, 2, 1},
 	} {
 		if c.v4 != c.wantA || c.v6 != c.wantB {
 			t.Errorf("%s: v4=%d v6=%d, want %d and %d", c.name, c.v4, c.v6, c.wantA, c.wantB)
@@ -170,9 +170,9 @@ func TestApiHealth_PerFamilyCounters(t *testing.T) {
 	// carried rather than reconstructed by a consumer.
 	for _, key := range []string{
 		"naks_received_v4", "dhcp_timeouts_v4", "leases_obtained_v4",
-		"leases_renewed_v4", "lease_changed_v4", "lease_release_failures_v4",
+		"leases_renewed_v4", "lease_changed_v4", "client_stop_failures_v4",
 		"naks_received_v6", "dhcp_timeouts_v6", "leases_obtained_v6",
-		"leases_renewed_v6", "lease_changed_v6", "lease_release_failures_v6",
+		"leases_renewed_v6", "lease_changed_v6", "client_stop_failures_v6",
 	} {
 		if !strings.Contains(rec.Body.String(), key) {
 			t.Errorf("Health JSON missing %q field", key)

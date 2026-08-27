@@ -10,96 +10,68 @@ import (
 	"testing"
 	"time"
 
+	"github.com/docker/docker/api/types/network"
 	docker "github.com/docker/docker/client"
+	"github.com/vishvananda/netlink"
 
 	"github.com/claymore666/docker-net-dhcp/test/integration/harness"
 )
 
-// TestParentGate_SecondReclaimQueuesBehindTheFirst proves the per-parent
-// gate serialises two operations that would otherwise be on the parent
-// NIC at the same time.
+// TestParentGate_EndpointQueuesBehindAProbe proves the per-parent gate
+// serialises two operations that would otherwise be attaching a child to
+// the same parent NIC at the same time.
 //
-// The constraint is the kernel's: a parent registers one rx_handler, so
-// it is a macvlan port or an ipvlan port and never both. The
-// orphaned-lease reclaim attaches a temporary child of the network's own
-// kind and holds it for a full DHCP round trip — seconds — from a
-// goroutine ordered against no Docker request. Without the gate, an
-// operation of the other kind arriving meanwhile is refused with "device
-// or resource busy", which reaches a user as a `docker run` that failed
-// because of an unrelated container (#486, #549).
+// The constraint it exists for is the kernel's: a parent registers one
+// rx_handler, so it is a macvlan port or an ipvlan port and never both,
+// and the second kind to ask gets EBUSY. Without the gate that reaches a
+// user as a `docker run` refused because of something else entirely
+// (#486, #549).
 //
-// # Two reclaims, not a reclaim and an endpoint
+// # Why the holder is a probe and not a reclaim
 //
-// The obvious construction is the one this test used to have: orphan an
-// ipvlan lease, wait for the reclaim's link to appear, then create a
-// macvlan endpoint on the same parent and assert it was not refused.
-// That is the user-visible collision exactly, and it does not work. It
-// is not flaky, it is structurally unable to make the window:
+// This test used to contend two orphaned-lease reclaims, because a
+// reclaim held the parent for a full DHCP round trip from a goroutine
+// ordered against no Docker request. That mechanism was removed in
+// v1.9.0 (#800): it raced the tombstone that promises a restarting
+// container the same address. The gate did not go with it — the
+// validate_dhcp preflight probe still holds a parent across a DHCP round
+// trip while an unrelated endpoint may ask for the other mode.
 //
-//	parent_gate_test.go:150: reclaim link dh-rel-53d707 observed; collision window is open
-//	parent_gate_test.go:197: PHASE collision_setup 0.000s (window open -> rival issued), rival blocked 7.192s
-//	parent_gate_test.go:219: parent_link_waits did not advance (before=3, after=3)
+// So the holder here is that probe, pointed at a parent with no DHCP
+// server on it. The probe then runs to its full 8-second budget instead
+// of finishing in the ~2 seconds a reachable server takes, which is what
+// turns the window from something to be raced into something to be
+// walked into.
 //
-// The rival was issued 0.000s after the window opened and still
-// registered no wait at all. That is the whole diagnosis: it reached the
-// gate after the reclaim had already finished with the parent. A
-// reclaim's hold is one DHCP round trip, about two seconds; a
-// CreateEndpoint spends longer than that getting from the socket to its
-// LinkAdd. The earlier log line measured "window open -> rival ISSUED",
-// which is 0.000s by construction and says nothing about when the rival
-// arrived — the wrong end of the margin, and it read as reassuring for
-// several runs.
+// # Why the contender is a raw driver call
 //
-// So the contender here is a second RECLAIM. Its path from the Join
-// socket call to lockParent is name generation and a MAC plan —
-// arithmetic, no IO, no Docker API — so it reaches the gate in
-// milliseconds against a hold measured in seconds. That is a margin of
-// roughly two orders of magnitude, which is what makes this a
-// construction rather than a race.
+// The old test recorded, in its own log output, why an endpoint issued
+// through Docker cannot be the contender:
 //
-// # Cross-mode is covered by composition, not by this test alone
+//	PHASE collision_setup 0.000s (window open -> rival issued), rival blocked 7.192s
+//	parent_link_waits did not advance (before=3, after=3)
 //
-// No single test here drives a cross-mode collision end to end, and
-// that is a deliberate division of labour rather than a hole. Read this
-// before "strengthening" it:
+// The rival was issued the instant the window opened and still reached
+// the gate after the holder had finished with the parent, because a
+// `docker run` spends seconds getting from the client to the driver's
+// CreateEndpoint. Measuring "window open -> rival ISSUED" is 0.000s by
+// construction and says nothing about arrival — the wrong end of the
+// margin, and it read as reassuring for several runs.
 //
-//   - Every parent-attached netlink.LinkAdd in the plugin goes through
-//     addChildLink, which cannot be called without a *parentGuard. That
-//     is the compiler, at every site, including CreateEndpoint's.
-//     scripts/check-parent-gate-accounting.sh covers the two ways round
-//     it — a direct netlink.LinkAdd, and a forged zero-value guard.
-//   - The gate keys on the PARENT, not on the mode. A macvlan caller
-//     and an ipvlan caller queue on the same token by construction.
-//   - This test proves that token actually serialises two contenders at
-//     runtime, which is the part no amount of type-checking can show.
-//
-// A compiler proof plus a runtime proof of the mechanism is stronger
-// evidence than an integration test that has to be raced into
-// existence — and, as measured above, cannot be. Both reclaims here are
-// the same kind, so the kernel would accept both even with no gate; the
-// claim being made is about the gate, and it is the right claim.
-//
-// DO NOT try to recover a literal cross-mode collision by making the
-// reclaim hold the parent longer or reach it sooner. Two operations of
-// different kinds can only overlap on one parent if one is a
-// CreateEndpoint — a parent cannot hold live children of both kinds, so
-// the two endpoints cannot coexist — and a CreateEndpoint cannot reach
-// the gate inside a reclaim's hold. Every remaining route runs through
-// changing the product to suit a test.
-//
-// # The wire is the assertion of record
-//
-// parent_link_waits proves the plugin believes it queued. Both leases
-// coming back to the server proves the two reclaims actually completed
-// while sharing the parent — a gate that serialised them into a
-// deadlock would satisfy the counter and fail here.
-func TestParentGate_SecondReclaimQueuesBehindTheFirst(t *testing.T) {
+// The contender here is therefore a CreateEndpoint issued straight at
+// the plugin socket, bypassing Docker entirely. Its path to lockParent
+// is a socket write and an option lookup, so it arrives in milliseconds
+// against a hold measured in seconds: three orders of magnitude, which
+// is what makes this a construction rather than a race.
+func TestParentGate_EndpointQueuesBehindAProbe(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
+	// Both names stay under the 15-character kernel limit.
 	const (
-		netName   = "dh-itest-pgate"
-		holderCtr = "dh-itest-pgate-holder"
+		parentName = "dh-itest-pgate"
+		netName    = "dh-itest-pgnet"
+		probeNet   = "dh-itest-pgprobe"
 	)
 
 	t.Cleanup(func() {
@@ -109,7 +81,28 @@ func TestParentGate_SecondReclaimQueuesBehindTheFirst(t *testing.T) {
 		}
 	})
 
-	netID := harness.CreateNetwork(t, ctx, netName, "ipvlan", nil)
+	// A dummy parent, dedicated to this test. Dummies carry no L2
+	// traffic anywhere, so the probe's DHCPDISCOVER vanishes and the
+	// probe runs to its full budget — the long hold this test needs.
+	//
+	// Dedicated rather than shared: the holder occupies this NIC for
+	// eight seconds and the contender is deliberately made to queue on
+	// it, which is precisely what must not happen to a neighbouring
+	// test's parent.
+	la := netlink.NewLinkAttrs()
+	la.Name = parentName
+	dummy := &netlink.Dummy{LinkAttrs: la}
+	if err := netlink.LinkAdd(dummy); err != nil {
+		t.Fatalf("LinkAdd dummy parent: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := netlink.LinkDel(dummy); err != nil {
+			t.Logf("WARN: LinkDel dummy parent: %v", err)
+		}
+	})
+	if err := netlink.LinkSetUp(dummy); err != nil {
+		t.Fatalf("LinkSetUp dummy parent: %v", err)
+	}
 
 	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
 	if err != nil {
@@ -117,176 +110,181 @@ func TestParentGate_SecondReclaimQueuesBehindTheFirst(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = cli.Close() })
 
-	// A real, running container purely to supply a real netns. Both
-	// endpoints below are joined against ITS sandbox key: the netns
-	// genuinely exists, so the only thing that can fail their attach is
-	// that no container claims them — which is what makes each one an
-	// orphan deterministically rather than by out-running dhcpcd.
-	holderID, _, _ := harness.RunContainer(t, ctx, netName, holderCtr)
-	sandboxKey := harness.LiveSandboxKey(t, ctx, cli, holderID)
+	// The contender's network, created BEFORE the window opens and
+	// without validate_dhcp, so creating it neither probes nor waits.
+	res, err := cli.NetworkCreate(ctx, netName, network.CreateOptions{
+		Driver: harness.DriverName,
+		IPAM:   &network.IPAM{Driver: "null"},
+		Options: map[string]string{
+			"mode":   "macvlan",
+			"parent": parentName,
+		},
+	})
+	if err != nil {
+		t.Fatalf("NetworkCreate(%s): %v", netName, err)
+	}
+	netID := res.ID
+	t.Cleanup(func() { _ = cli.NetworkRemove(context.Background(), netID) })
 
 	drv := harness.NewDriverClient(t, ctx, cli)
 
-	// Both endpoints are created BEFORE the window opens. A
-	// CreateEndpoint issued inside the window would be the construction
-	// this test replaced — it cannot reach the gate in time, and it
-	// would also be the slow half of the race rather than the fast one.
-	// Same network, so both children are the same kind and coexist.
-	epA := harness.NewEndpointID(t)
-	addrsA, err := drv.CreateEndpoint(ctx, netID, epA)
-	if err != nil {
-		t.Fatalf("CreateEndpoint(A): %v", err)
-	}
-	t.Cleanup(func() { drv.CleanupEndpoint(netID, epA) })
-	ipA := addressOnly(addrsA.Address)
-
-	epB := harness.NewEndpointID(t)
-	addrsB, err := drv.CreateEndpoint(ctx, netID, epB)
-	if err != nil {
-		t.Fatalf("CreateEndpoint(B): %v", err)
-	}
-	t.Cleanup(func() { drv.CleanupEndpoint(netID, epB) })
-	ipB := addressOnly(addrsB.Address)
-
-	if ipA == "" || ipB == "" || ipA == ipB {
-		t.Fatalf("the two endpoints did not take two distinct addresses (A=%q B=%q); "+
-			"there is no pair of reclaims to serialise", addrsA.Address, addrsB.Address)
-	}
-	t.Logf("endpoint A leased %s, endpoint B leased %s", ipA, ipB)
-
-	// Both must actually hold a lease, or the reclaims below have
-	// nothing to hand back and the test would pass over an empty window.
-	for _, ip := range []string{ipA, ipB} {
-		if got := fixture.CountLogLines("DHCPACK", ip); got < 1 {
-			t.Fatalf("dnsmasq logged no DHCPACK for %s; that endpoint never took a lease, "+
-				"so its reclaim has nothing to do and would not hold the parent", ip)
-		}
-	}
-	releasesBeforeA := fixture.CountLogLines("DHCPRELEASE", ipA)
-	releasesBeforeB := fixture.CountLogLines("DHCPRELEASE", ipB)
-
 	w := harness.BeginCounterWindow(t, ctx, cli,
-		"parent_link_waits", "parent_link_wait_timeouts", "orphaned_leases_released")
+		"parent_link_waits", "parent_link_wait_timeouts")
 	before := w.Before()
 
-	// Orphan A. Nothing claims this endpoint, so the attach's container
-	// lookup fails, the plugin hands the address back from a goroutine,
-	// and that goroutine attaches its own temporary child to the shared
-	// parent to do it (#566).
-	if err := drv.Join(ctx, netID, epA, sandboxKey); err != nil {
-		t.Fatalf("Join(A): %v", err)
-	}
-	// A's own child link goes now, so the only thing of A's on the
-	// parent is the reclaim's temporary one.
-	if err := drv.DeleteEndpoint(ctx, netID, epA); err != nil {
-		t.Fatalf("DeleteEndpoint(A): %v", err)
-	}
+	// Open the window: a validate_dhcp network create on the same
+	// parent. It takes the gate at the top of runDHCPProbe and holds it
+	// until its child link is gone, then fails — the failure is
+	// expected and is not what is under test.
+	probeDone := make(chan struct{})
+	probeStart := time.Now()
+	go func() {
+		defer close(probeDone)
+		r, err := cli.NetworkCreate(context.Background(), probeNet, network.CreateOptions{
+			Driver: harness.DriverName,
+			IPAM:   &network.IPAM{Driver: "null"},
+			Options: map[string]string{
+				"mode":          "macvlan",
+				"parent":        parentName,
+				"validate_dhcp": "true",
+			},
+		})
+		if err == nil {
+			// Should not happen on an isolated dummy, but if it does the
+			// network must not outlive this test.
+			_ = cli.NetworkRemove(context.Background(), r.ID)
+		}
+	}()
 
-	// The window is open once A's reclaim is provably on the parent —
-	// known to be open, near its start, rather than likely to be.
-	relLink := awaitReleaseLinkPresent(t, 30*time.Second)
-	windowOpen := time.Now()
-	t.Logf("reclaim link %s observed; A holds the parent", relLink)
-
-	// Orphan B into that window. Everything B's reclaim does before it
-	// reaches lockParent is computation, which is the point.
-	if err := drv.Join(ctx, netID, epB, sandboxKey); err != nil {
-		t.Fatalf("Join(B): %v", err)
+	// Wait for the probe to actually be holding the parent, rather than
+	// assuming it is. Its child link is the evidence, and it is created
+	// after the gate is taken — so seeing it means the gate is held.
+	if !awaitProbeLink(t, 30*time.Second) {
+		<-probeDone
+		t.Fatalf("no probe link appeared on %s within 30s; the collision window never "+
+			"opened, so nothing below would be measuring the gate", parentName)
 	}
-	arrived := time.Since(windowOpen)
-	if err := drv.DeleteEndpoint(ctx, netID, epB); err != nil {
-		t.Fatalf("DeleteEndpoint(B): %v", err)
-	}
+	t.Logf("probe link present after %v; the parent is held", time.Since(probeStart))
 
-	// LOGGED, NOT ASSERTED, on purpose. A threshold here would turn a
-	// slow runner into a red build that says nothing about the plugin.
-	// What makes the test sound is the two orders of magnitude between
-	// this and a reclaim's multi-second hold; if this line ever starts
-	// reading in seconds, the construction has stopped working and the
-	// assertion below is the thing that will say so.
-	t.Logf("PHASE collision_setup %.3fs (window open -> B's join returned)", arrived.Seconds())
+	// The contender, straight at the plugin socket.
+	epID := harness.NewEndpointID(t)
+	contendStart := time.Now()
+	_, epErr := drv.CreateEndpoint(ctx, netID, epID)
+	contended := time.Since(contendStart)
+	t.Cleanup(func() { drv.CleanupEndpoint(netID, epID) })
+	// The endpoint fails: there is no DHCP server on a dummy parent. The
+	// gate runs long before that, which is the whole point — this test
+	// is about where it waited, not whether it got a lease.
+	t.Logf("contending CreateEndpoint returned after %v (err=%v)", contended, epErr)
 
-	// The two conditions below happen at different times and must be
-	// awaited separately. parent_link_waits ticks the moment B gets in,
-	// which is as soon as A releases; B's own release is a whole DHCP
-	// round trip after that. Reading one snapshot for both is what the
-	// first version of this test did, and it reported the plugin failing
-	// to count a release that had not happened yet.
-	serialised, _ := w.Await(30*time.Second, func(now, before *harness.HealthResponse) bool {
-		return now.ParentLinkWaits > before.ParentLinkWaits
+	<-probeDone
+
+	after, _ := w.Await(30*time.Second, func(now, before *harness.HealthResponse) bool {
+		return now.ParentLinkWaits+now.ParentLinkWaitTimeouts >
+			before.ParentLinkWaits+before.ParentLinkWaitTimeouts
 	})
-
-	if serialised == nil || serialised.ParentLinkWaits <= before.ParentLinkWaits {
-		got := int32(-1)
-		if serialised != nil {
-			got = serialised.ParentLinkWaits
-		}
-		t.Fatalf("parent_link_waits did not advance (before=%d, after=%d) — B's reclaim did not "+
-			"queue behind A's, even though A's link %s was on the parent %.3fs before B was "+
-			"orphaned.\n"+
-			"B's path from the join socket call to lockParent is name generation and a MAC plan, "+
-			"no IO at all, against a hold that is a whole DHCP round trip — so this is not a "+
-			"missed window and relaxing the assertion or widening the budget would only hide it. "+
-			"Check that lockParent is still taken in synthesiseRelease, and that it is still taken "+
-			"BEFORE upReleaseLink rather than somewhere inside it.",
-			before.ParentLinkWaits, got, relLink, arrived.Seconds())
+	w.End()
+	if after == nil {
+		t.Fatalf("no health snapshot after the contention; nothing below can be judged")
 	}
 
-	// Ground truth. The counter says the plugin queued; only the server
-	// says both addresses actually came back while the two reclaims
-	// shared the parent.
-	deadline := time.Now().Add(orphanReleaseBudget)
-	for {
-		gotA := fixture.CountLogLines("DHCPRELEASE", ipA) - releasesBeforeA
-		gotB := fixture.CountLogLines("DHCPRELEASE", ipB) - releasesBeforeB
-		if gotA >= 1 && gotB >= 1 {
-			break
-		}
-		if !time.Now().Before(deadline) {
-			t.Fatalf("dnsmasq saw DHCPRELEASE for %s=%d and %s=%d within %v, want both — "+
-				"the gate serialised the two reclaims and at least one of them then failed to "+
-				"hand its lease back, which is a leaked address rather than a queueing problem",
-				ipA, gotA, ipB, gotB, orphanReleaseBudget)
-		}
-		time.Sleep(250 * time.Millisecond)
-	}
+	waits := after.ParentLinkWaits - before.ParentLinkWaits
+	timeouts := after.ParentLinkWaitTimeouts - before.ParentLinkWaitTimeouts
+	t.Logf("parent_link_waits +%d, parent_link_wait_timeouts +%d", waits, timeouts)
 
-	// Now the plugin's own count, awaited rather than sampled.
+	// Either counter proves the gate did its job: the contender found
+	// the parent held and queued instead of going straight to the
+	// kernel.
 	//
-	// This assertion is unchanged in strength and it is worth saying why,
-	// because moving a read looks exactly like relaxing one. The first
-	// version took a single snapshot at the moment parent_link_waits
-	// ticked — which is when B ACQUIRED the parent, seconds before B had
-	// released anything — and then asserted two releases against it. It
-	// reported "the plugin did not count them" for a release that had not
-	// happened yet. The claim being made here is the same claim; only the
-	// read is now ordered after the event it describes.
+	// Which of the two it lands on is decided by two constants, not by
+	// timing. An isolated probe runs for its full 8s budget and
+	// parentGateBudget is 4s, so the contender queues, exhausts the
+	// budget and proceeds — measured here as parent_link_wait_timeouts
+	// +1, with the probe's link visible 51ms after the window opened.
+	// A margin of two orders of magnitude, and the direction that
+	// matters is fixed: 8s > 4s.
 	//
-	// The counter was checked before this was changed: the increment is
-	// per-manager (orphanReleaseOnce lives on the manager, not the
-	// plugin) and unconditional on success, so two reclaims give two
-	// increments. Had that not held, the fix would have been in the
-	// plugin and this test would have stayed as it was.
-	w.Await(orphanReleaseBudget, func(now, before *harness.HealthResponse) bool {
-		return now.OrphanedLeasesReleased-before.OrphanedLeasesReleased >= 2
-	})
-	_, after := w.End()
-
-	if got := after.OrphanedLeasesReleased - before.OrphanedLeasesReleased; got < 2 {
-		t.Errorf("orphaned_leases_released advanced by %d, want at least 2 — the server logged both "+
-			"releases, so the plugin did the work and did not count it. That makes this path "+
-			"invisible in production, where the counter is the only window onto it.", got)
+	// # What this does NOT prove
+	//
+	// The version of this test that contended two reclaims also asserted
+	// parent_link_wait_timeouts stayed FLAT — that the budget was wide
+	// enough to cover a normal holder's duration. That assertion has no
+	// subject here and is deliberately not faked: this construction
+	// produces a timeout by design, because the only way to make a probe
+	// hold a parent for a usefully long time is to point it at a parent
+	// with no DHCP server, which is also the slowest a probe can be.
+	//
+	// The wait-without-timeout path is covered where it can be driven
+	// exactly — TestParentGate_SerialisesOneParent and
+	// TestParentGate_BudgetExpiryCountsAndProceeds in pkg/plugin, which
+	// hold the gate for a duration they choose. What is left for this
+	// test is the half a unit test cannot reach: that a real endpoint
+	// arriving at a real parent, through the real plugin, is serialised
+	// against whatever is already holding it.
+	//
+	// Asserted as a sum for that reason. Pinning one counter would make
+	// this fail when preflightProbeBudget or parentGateBudget moves,
+	// which is a different subject from whether the gate engaged.
+	if waits+timeouts < 1 {
+		t.Errorf("neither parent_link_waits nor parent_link_wait_timeouts advanced while " +
+			"an endpoint was created on a parent a probe was holding. The endpoint went " +
+			"straight to the kernel: nothing serialised it, and a cross-mode caller in " +
+			"its place would have been refused with EBUSY on an operation the user did " +
+			"not cause (#486/#549)")
 	}
 
-	if after.ParentLinkWaitTimeouts > before.ParentLinkWaitTimeouts {
-		t.Errorf("parent_link_wait_timeouts advanced (before=%d, after=%d) — B gave up waiting and "+
-			"proceeded anyway. It may still have succeeded, because same-kind children coexist, but "+
-			"the gate's budget is no longer covering a reclaim's normal duration and a cross-mode "+
-			"caller in B's place would have been refused.",
-			before.ParentLinkWaitTimeouts, after.ParentLinkWaitTimeouts)
+	// Leave the parent as we found it, so the dummy can be deleted and
+	// no child of ours outlives the test.
+	if !awaitProbeLinksGone(t, 30*time.Second) {
+		t.Errorf("probe link(s) still on %s after the probe returned; the deferred "+
+			"LinkDel did not run, and a child left on a parent blocks the other mode",
+			parentName)
 	}
+}
 
-	// Leave the parent as we found it: an ipvlan child of ours must be
-	// gone before the next test asks this NIC for a macvlan one.
-	awaitReleaseLinksGone(t)
+// awaitProbeLink waits for the preflight probe's temporary child to
+// appear, which is the observable that says the gate is now held: the
+// gate is taken at the top of runDHCPProbe and the link is created
+// inside it.
+//
+// Reports rather than fails, so the caller can drain the probe goroutine
+// before ending the test.
+func awaitProbeLink(t *testing.T, budget time.Duration) bool {
+	t.Helper()
+	deadline := time.Now().Add(budget)
+	for time.Now().Before(deadline) {
+		if len(probeLinks(t)) > 0 {
+			return true
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return false
+}
+
+// awaitProbeLinksGone is its counterpart for teardown.
+func awaitProbeLinksGone(t *testing.T, budget time.Duration) bool {
+	t.Helper()
+	deadline := time.Now().Add(budget)
+	for time.Now().Before(deadline) {
+		if len(probeLinks(t)) == 0 {
+			return true
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return false
+}
+
+func probeLinks(t *testing.T) []string {
+	t.Helper()
+	links, err := netlink.LinkList()
+	if err != nil {
+		t.Fatalf("LinkList: %v", err)
+	}
+	var found []string
+	for _, l := range links {
+		if name := l.Attrs().Name; len(name) >= 9 && name[:9] == "dh-probe-" {
+			found = append(found, name)
+		}
+	}
+	return found
 }

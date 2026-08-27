@@ -230,9 +230,8 @@ type configBuilder struct {
 }
 
 // renderConfig produces the dhcpcd.conf text for p. Only directives
-// confirmed against dhcpcd.conf(5) are emitted: duid, nohook, release,
-// option, hostname, vendorclassid, clientid, interface, iaid, request,
-// ia_na.
+// confirmed against dhcpcd.conf(5) are emitted: duid, nohook, option,
+// hostname, vendorclassid, clientid, interface, iaid, request, ia_na.
 //
 // dhcpcd runs observe-only (--noconfigure) so it never touches the
 // link; the nohook lines are belt-and-braces in case --noconfigure is
@@ -241,14 +240,13 @@ type configBuilder struct {
 // address rides the `request` directive (the dhcpcd equivalent of the
 // old busybox `-r`).
 //
-// The persistent client emits `release` so a graceful stop (Leave /
-// daemon shutdown sends SIGTERM) sends a DHCPRELEASE, freeing the lease
-// — the busybox `-R` behaviour the docker-restart / daemon-restart
-// IP-stability tests depend on. Without it, the server keeps the old
-// lease (keyed on the now-stale endpoint-derived client-id) and hands
-// the post-restart endpoint a different address. The one-shot client
-// must NOT release: it exits with `-1 -p` precisely to KEEP the lease
-// so the persistent client can re-claim the same address moments later.
+// NEITHER client releases its lease. The one-shot exits with `-1 -p`
+// to KEEP the address so the persistent client can re-claim it moments
+// later; the persistent client keeps it so a restarting container can.
+// A lease is a lease — it expires on its own if nobody comes back for
+// it, exactly as it does for any other host on the segment (#800). See
+// the block in renderConfig for why the `release` directive that used
+// to be here was both unnecessary and harmful.
 func renderConfig(p dhcpcdParams) string {
 	iaid := iaidFromMAC(p.MAC)
 
@@ -328,11 +326,38 @@ func renderConfig(p dhcpcdParams) string {
 		"wpad",
 	}, ", "))
 
-	// Persistent client only: release the lease on graceful stop (busybox
-	// `-R`). The one-shot acquisition deliberately keeps its lease (-1 -p).
-	if !p.Once {
-		fmt.Fprintf(&b, "release\n")
-	}
+	// NOTHING releases. Not the one-shot, not the persistent client.
+	//
+	// A machine on the LAN does not hand its address back when it
+	// reboots: it comes back, asks for the same address, and the server
+	// gives it, because the lease has not expired. DHCPRELEASE is
+	// optional and most clients never send it. A container is a host on
+	// this segment and now behaves like one (#800).
+	//
+	// The persistent client used to emit `release` here, and the comment
+	// above this block justified it: without it "the server keeps the old
+	// lease (keyed on the now-stale endpoint-derived client-id) and hands
+	// the post-restart endpoint a different address". That premise is no
+	// longer true and had not been for some time. resolveClientID derives
+	// the client-id from the MAC for bridge and macvlan, and the tombstone
+	// restores that MAC across a restart, so the identity the server sees
+	// is the SAME client asking again — the ordinary DHCP path. Measured:
+	// with this directive gone, TestTombstoneRestart_PreservesMACAndIP and
+	// TestTombstoneRestart_PreservesIPv6 both keep MAC and address, v4 and
+	// v6, on a live daemon.
+	//
+	// ipvlan is the one mode with no stable identity to inherit — it
+	// shares the parent MAC, so its client-id is endpoint-derived and
+	// changes on every restart. It is also the one mode DeleteEndpoint
+	// deliberately writes no tombstone for. Those two facts are the same
+	// fact, and neither is affected by this: an ipvlan restart was always
+	// a new client to the server, releasing or not.
+	//
+	// What releasing cost is what #800 is about. The release raced the
+	// tombstone that promised the SAME address to the restart, so the
+	// plugin told the server an address was free while the container was
+	// coming back to claim it. Observed on a live daemon releasing an
+	// address a running container held.
 
 	// Server preference / denial (#111, #669). These match the packet's
 	// IP SOURCE address, not the Server Identifier it advertises
@@ -453,11 +478,23 @@ func renderArgs(p dhcpcdParams) []string {
 	}
 	if p.Once {
 		// One-shot acquisition (CreateEndpoint): exit after the first
-		// lease, and -p (persistent) so the binding is NOT released on
+		// lease, and -p (persistent) so the binding is NOT torn down on
 		// that exit — the persistent client claims the same address
-		// moments later. The persistent client omits -p so it releases
-		// the lease when the plugin stops it (the old busybox -R
-		// behaviour).
+		// moments later.
+		//
+		// The persistent client omits -p, and since #800 that no longer
+		// means anything about releasing. -p governs whether dhcpcd
+		// DE-CONFIGURES on exit; sending a DHCPRELEASE is governed by
+		// the `release` directive, which renderConfig no longer emits
+		// for either client. This comment previously said the omission
+		// was what released the lease, and that was the -R-era reading
+		// carried forward.
+		//
+		// Nothing depends on the distinction here anyway: --noconfigure
+		// above means dhcpcd never configured the link, so it has
+		// nothing to de-configure. What guarantees no release is the
+		// absent directive, and TestRenderConfig_NothingEverReleases is
+		// the guard on it — not this flag.
 		args = append(args, "-1", "-p")
 	}
 	if p.V6 {

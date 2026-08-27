@@ -46,7 +46,7 @@ func TestLedger_AppendsEventsInOrder(t *testing.T) {
 	tick := 0
 	l.now = func() time.Time { tick++; return base.Add(time.Duration(tick) * time.Minute) }
 
-	for _, kind := range []string{"bound", "renew", "release"} {
+	for _, kind := range []string{"bound", "renew", "stopped"} {
 		l.Append(ledgerEntry{
 			Kind:      kind,
 			Network:   "net1",
@@ -62,7 +62,7 @@ func TestLedger_AppendsEventsInOrder(t *testing.T) {
 	if len(entries) != 3 {
 		t.Fatalf("want 3 entries, got %d", len(entries))
 	}
-	wantKinds := []string{"bound", "renew", "release"}
+	wantKinds := []string{"bound", "renew", "stopped"}
 	var prev time.Time
 	for i, e := range entries {
 		if e.Kind != wantKinds[i] {
@@ -174,7 +174,7 @@ func TestLedger_WriteFailureIsNonFatal(t *testing.T) {
 	l := newLeaseLedger(filepath.Join(blocker, ledgerFileName), &failures)
 
 	l.Append(ledgerEntry{Kind: "bound", Network: "net1", Endpoint: "ep1"})
-	l.Append(ledgerEntry{Kind: "release", Network: "net1", Endpoint: "ep1"})
+	l.Append(ledgerEntry{Kind: "stopped", Network: "net1", Endpoint: "ep1"})
 
 	if got := failures.Load(); got != 2 {
 		t.Errorf("failures = %d, want 2 (one per append)", got)

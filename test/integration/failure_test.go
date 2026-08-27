@@ -32,10 +32,11 @@
 //
 //   - a dead server produces NO event at T1/T2, and — the part this
 //     file originally got wrong, see #353 — no usable event at expiry
-//     either. Under `--noconfigure` dhcpcd reports a lapsed lease as
-//     RELEASE, which is indistinguishable from the one a graceful stop
-//     emits and so can never be counted as a loss. From the kill
-//     onward dhcpcd may say nothing at all.
+//     either — up to v1.8.x. `--noconfigure` PLUS the `release`
+//     directive made dhcpcd report a lapse as RELEASE, which the plugin
+//     drops; #800 removed the directive and a lapse now fires EXPIRE,
+//     counted as a leasefail (#855). From the kill onward dhcpcd may
+//     still say nothing at all, which is what the watchdog is for.
 //
 //   - dhcp_timeouts therefore moves on the plugin's OWN reckoning: the
 //     outage watchdog knows the granted lease lifetime
@@ -190,9 +191,20 @@ func awaitBoundPersistentClient(t *testing.T, w *harness.CounterWindow) {
 // while acquiring) and an outage-watchdog tick. Returned separately
 // because which of the two fires is the diagnostic — a leasefail means
 // dhcpcd spoke, a watchdog line means the plugin synthesised the
-// signal from the lease deadline. For a client that was BOUND before
-// the server died, expect the watchdog: dhcpcd's lapse report is a
-// RELEASE and is deliberately dropped (#353).
+// signal from the lease deadline.
+//
+// Which of the two fires CHANGED in #800, and the change is visible
+// here. This block used to say "For a client that was BOUND before the
+// server died, expect the watchdog", because a lapse under
+// `--noconfigure` + `release` fires RELEASE and is dropped. Removing the
+// directive makes a lapse fire EXPIRE, so dhcpcd now speaks: the same
+// outage that logged "+0 leasefail / +1 watchdog" on dev logs "+1
+// leasefail / +0 watchdog" on this branch, and the first rise arrives at
+// the lease deadline rather than one grace later.
+//
+// Both are still legitimate outcomes and the tests assert their sum, not
+// which one fired — a watchdog-only outage stays correct, and is what a
+// lapse dhcpcd does not report looks like. See #855.
 func outageLines(t *testing.T, ctx context.Context, endpoint string) (leasefail, watchdog int) {
 	t.Helper()
 	return harness.CountPluginLogLines(t, ctx, endpoint, logLeaseFail),

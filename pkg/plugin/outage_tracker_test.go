@@ -14,7 +14,8 @@ import (
 // through a complete DHCP outage, because the watchdog only counted
 // while the client was in the "acquiring" state and nothing ever put it
 // there. dhcpcd under --noconfigure reports a lapsed lease as RELEASE,
-// which is indistinguishable from a graceful stop and so is dropped.
+// which is dropped rather than counted — see pkg/dhcp.mapReason for
+// why, and for what #800 changed about that reasoning.
 //
 // These tests drive the state machine on a synthetic clock, so the
 // 2-minute and 24-hour lease cases cost the same nothing to check.

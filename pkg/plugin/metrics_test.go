@@ -485,12 +485,12 @@ func familyPairs() []familyPair {
 			func(h HealthResponse) (int32, int32, int32) {
 				return h.NAKsReceived, h.NAKsReceivedV4, h.NAKsReceivedV6
 			}},
-		{"net_dhcp_lease_release_failures_total",
+		{"net_dhcp_client_stop_failures_total",
 			func(p *Plugin) (*atomic.Int32, *atomic.Int32) {
-				return &p.leaseReleaseFailuresV4, &p.leaseReleaseFailuresV6
+				return &p.clientStopFailuresV4, &p.clientStopFailuresV6
 			},
 			func(h HealthResponse) (int32, int32, int32) {
-				return h.LeaseReleaseFailures, h.LeaseReleaseFailuresV4, h.LeaseReleaseFailuresV6
+				return h.ClientStopFailures, h.ClientStopFailuresV4, h.ClientStopFailuresV6
 			}},
 	}
 }

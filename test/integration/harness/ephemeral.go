@@ -444,7 +444,7 @@ func (ef *EphemeralFixture) isolated() bool { return ef.backend == backendKea }
 // namespace is in play.
 func (ef *EphemeralFixture) run(name string, args ...string) {
 	ef.t.Helper()
-	if out, err := exec.Command(name, args...).CombinedOutput(); err != nil {
+	if out, err := withCLocale(exec.Command(name, args...)).CombinedOutput(); err != nil {
 		ef.t.Fatalf("%s %s: %v\n%s", name, strings.Join(args, " "), err, out)
 	}
 }
@@ -486,12 +486,12 @@ func (ef *EphemeralFixture) Squat(addr string) string {
 	ef.t.Cleanup(func() {
 		// Best-effort: the namespace is torn down with the fixture
 		// anyway, so a failure here cannot leak past the test.
-		_ = exec.Command("ip", "netns", "exec", ephemeralNetns,
-			"ip", "addr", "del", addr+"/24", "dev", ephemeralDhcpVeth).Run()
+		_ = withCLocale(exec.Command("ip", "netns", "exec", ephemeralNetns,
+			"ip", "addr", "del", addr+"/24", "dev", ephemeralDhcpVeth)).Run()
 	})
 
-	out, err := exec.Command("ip", "netns", "exec", ephemeralNetns,
-		"cat", "/sys/class/net/"+ephemeralDhcpVeth+"/address").Output()
+	out, err := withCLocale(exec.Command("ip", "netns", "exec", ephemeralNetns,
+		"cat", "/sys/class/net/"+ephemeralDhcpVeth+"/address")).Output()
 	if err != nil {
 		ef.t.Fatalf("read squatter MAC: %v", err)
 	}
@@ -502,9 +502,9 @@ func (ef *EphemeralFixture) Squat(addr string) string {
 // namespace, or a plain one when the fixture is not isolated.
 func (ef *EphemeralFixture) netnsCommand(name string, args ...string) *exec.Cmd {
 	if !ef.isolated() {
-		return exec.Command(name, args...)
+		return withCLocale(exec.Command(name, args...))
 	}
-	return exec.Command("ip", append([]string{"netns", "exec", ephemeralNetns, name}, args...)...)
+	return withCLocale(exec.Command("ip", append([]string{"netns", "exec", ephemeralNetns, name}, args...)...))
 }
 
 // PingFromServer pings ip from the DHCP server's side of the veth
@@ -590,7 +590,7 @@ func (ef *EphemeralFixture) resolveKeaLoggerKey(keaPath string) string {
 		if err := os.WriteFile(probe, []byte(ef.keaConfig(keaLoggerOutputModern)), 0o644); err != nil {
 			return
 		}
-		out, err := exec.Command(keaPath, "-t", probe).CombinedOutput()
+		out, err := withCLocale(exec.Command(keaPath, "-t", probe)).CombinedOutput()
 		if err != nil && strings.Contains(string(out), keaLoggerOutputModern) {
 			keaLoggerKey = keaLoggerOutputLegacy
 			ef.t.Logf("kea rejects %q, falling back to %q (pre-2.5.4 server)",
@@ -800,7 +800,7 @@ func (ef *EphemeralFixture) startDnsmasq() {
 		)
 	}
 	args = append(args, portArg)
-	ef.cmd = exec.Command("/usr/sbin/dnsmasq", args...)
+	ef.cmd = withCLocale(exec.Command("/usr/sbin/dnsmasq", args...))
 	ef.cmd.Stdout = logF
 	ef.cmd.Stderr = logF
 	ef.cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -853,8 +853,8 @@ func (ef *EphemeralFixture) logSize() int {
 	return int(st.Size())
 }
 
-// Stop SIGKILLs the DHCP server — the unclean "router died" shape, no
-// DHCPRELEASE-side effects, lease DB left as-is on disk.
+// Stop SIGKILLs the DHCP server — the unclean "router died" shape,
+// no shutdown-side effects, lease DB left as-is on disk.
 func (ef *EphemeralFixture) Stop() {
 	ef.t.Helper()
 	if ef.cmd == nil || ef.cmd.Process == nil {
@@ -1324,7 +1324,7 @@ func (ef *EphemeralFixture) teardown() {
 // deleting either end removes the pair — so the two steps overlap by
 // design and both are best-effort.
 func cleanupEphemeralLinks() {
-	_ = exec.Command("ip", "netns", "del", ephemeralNetns).Run()
+	_ = withCLocale(exec.Command("ip", "netns", "del", ephemeralNetns)).Run()
 	for _, name := range []string{EphemeralHostVeth, ephemeralDhcpVeth} {
 		if link, err := netlink.LinkByName(name); err == nil {
 			_ = netlink.LinkDel(link)

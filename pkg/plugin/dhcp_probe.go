@@ -70,7 +70,10 @@ const preflightProbeBudget = 8 * time.Second
 //     kernel permits nothing else, but the random probe MAC is still
 //     what dhcpcd derives its DUID and IAID from, so the probe's
 //     identity stays its own — the link's address and the DHCP identity
-//     are separate things, exactly as they are on the release path. The
+//     are separate things, the same way they are for a container's own
+//     endpoint. (This used to say "exactly as they are on the release
+//     path", an analogy to a path #800 deleted; a reader can check the
+//     endpoint and cannot check a path that is gone.) The
 //     one thing the parent's address does reach is chaddr, which is why
 //     Broadcast is already requested below (#243): an ipvlan-L2 segment
 //     cannot demux a unicast OFFER to a shared MAC.
@@ -78,7 +81,9 @@ const preflightProbeBudget = 8 * time.Second
 //  3. Bring it up and run dhcp.GetIP one-shot with the probe budget.
 //     dhcpcd has no DISCOVER-only flag; we accept the full DORA and
 //     let the upstream server briefly hold a lease that times out
-//     naturally (no `release` directive sent). The cost is one
+//     naturally. Since #800 that is true of every client this plugin
+//     starts, not something the probe does differently — the probe's
+//     lease is short-lived only because the probe is. The cost is one
 //     transient pool entry
 //     per `docker network create -o validate_dhcp=true`.
 //
@@ -106,14 +111,14 @@ const preflightProbeBudget = 8 * time.Second
 // way round and the gate opens while the probe's child is still
 // attached, which is the EBUSY the gate exists to prevent.
 //
-// DO NOT read this as a precedent for the reclaim path. The gate for
-// the reclaim's temporary link is taken several frames up in
-// synthesiseRelease and has to stay there; moving it down to sit around
-// that LinkAdd would shorten the hold and restore the original bug (see
-// the orphan_release.go entry in .github/linkadd-accounting.txt). The
-// move was safe HERE only because this function already spans the whole
-// hold — DORA and teardown both — so taking the gate at its top changes
-// where the lock is written and not how long it is held (#577).
+// This is now the only path that holds a parent across a DHCP round
+// trip: the orphaned-lease reclaim, which used to be the other one and
+// the more demanding of the two, was removed in v1.9.0 (#800). Its gate
+// was taken several frames up, deliberately, so the hold spanned its
+// whole lifetime. Taking it at the top of THIS function is the same
+// rule and not a shortcut — the function already spans the entire hold,
+// DORA and teardown both, so the position of the lock changes and its
+// duration does not (#577).
 func (p *Plugin) runDHCPProbe(ctx context.Context, parent, mode string, pol serverPolicy) error {
 	// First statement, before the parent is even looked up: the hold
 	// must cover everything the caller used to wrap, or this is a

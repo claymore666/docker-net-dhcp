@@ -17,7 +17,7 @@ import (
 	docker "github.com/docker/docker/client"
 )
 
-// TestRecovery_DaemonKilled_LeaseIsReleasedAndReacquired covers the
+// TestRecovery_DaemonKilled_LeaseIsHeldUntilItExpires covers the
 // daemon death nothing else in the suite reaches: SIGKILL, no shutdown
 // sequence, no Leave on any endpoint. Every other way this suite takes
 // the daemon or the plugin down is graceful.
@@ -43,15 +43,34 @@ import (
 // second after the daemon is killed, the plugin gets a clean SIGTERM
 // from the daemon that replaces it, and runs its whole shutdown.
 //
-// That is what this test asserts instead, and it is worth more than the
-// counter would have been: the shutdown really happens, at the DHCP
-// server. Both halves are read off the server's log rather than off the
-// plugin's opinion of itself.
+// THE ASSERTION INVERTED IN #800, and this is the point of the test.
 //
-//  1. the pre-death lease is RELEASED — an abrupt daemon death must not
-//     burn a pool address until it expires on its own.
-//  2. the returned container holds a lease the server actually granted,
-//     not merely an address in `docker inspect`.
+// Until v1.9.0 that shutdown released the pre-death lease, and this
+// test asserted the release arrived, on the reasoning that "an abrupt
+// daemon death must not burn a pool address until it expires on its
+// own". That reasoning is now rejected at the product level: a machine
+// that is powered off abruptly does not hand its address back either,
+// and the address staying leased until it expires is what a lease IS.
+// The plugin sends no DHCPRELEASE on any path, so what is asserted here
+// is the absence of one.
+//
+// The old assertion's premise was not wrong about the cost — the
+// address really is held for the remainder of the lease, and the
+// container really does come back on a different one. It was wrong
+// about the remedy. The address is only stranded because Docker
+// rebuilds the endpoint with a new MAC; give the endpoint a stable MAC
+// (#218) and the returned container asks for the address it already
+// holds and is given it, which is exactly how a rebooted machine keeps
+// its address. Releasing papered over that with a protocol message the
+// LAN does not require.
+//
+// Because the subject is now an absence, ORDER MATTERS: the DHCPACK for
+// the returned container is asserted FIRST and is the positive control.
+// It proves, in this same run and from this same file, that the log is
+// readable, current, and being matched — the three things a bare "zero
+// releases" cannot distinguish itself from. The matcher's ability to
+// recognise a DHCPRELEASE at all is driven separately, against a canned
+// log, in harness.TestCountBridgeLogLines_SeesADHCPRELEASE.
 //
 // Address stability is deliberately not asserted in either direction.
 // It is not preserved today — new endpoint, new MAC, new address, 6 of
@@ -62,7 +81,7 @@ import (
 // **Do not parallelize**, and note this is heavier than the graceful
 // restart test: SIGKILL takes every container on the host down outright
 // and only a restart policy brings one back.
-func TestRecovery_DaemonKilled_LeaseIsReleasedAndReacquired(t *testing.T) {
+func TestRecovery_DaemonKilled_LeaseIsHeldUntilItExpires(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
 	defer cancel()
 
@@ -135,10 +154,13 @@ func TestRecovery_DaemonKilled_LeaseIsReleasedAndReacquired(t *testing.T) {
 
 	// Wait for the PERSISTENT client, not just the address. The IP
 	// appears when CreateEndpoint's one-shot DHCP completes, before Join
-	// has started the client that owns the lease — and it is that client
-	// which releases it on shutdown. Killing the daemon inside that
-	// window would leave nothing to release and make assertion (1)
-	// measure the harness rather than the plugin.
+	// has started the client that owns the lease. Killing the daemon
+	// inside that window would mean no renewal client was ever running,
+	// so "nothing released" would be true of a shape the assertion below
+	// is not about — it would measure the harness rather than the
+	// plugin. This is the same reason the wait was here before #800
+	// inverted the assertion; an absence needs its subject to have
+	// existed even more than a presence does.
 	waitLeaseObtained(t, bindW, 30*time.Second)
 	bindW.End()
 	t.Logf("before the kill: ip=%s mac=%s", ipBefore, macBefore)
@@ -146,7 +168,9 @@ func TestRecovery_DaemonKilled_LeaseIsReleasedAndReacquired(t *testing.T) {
 	// Counted as a delta: the fixture's log accumulates every test's
 	// traffic, so an absolute count of releases says nothing about this
 	// endpoint. Keyed on the MAC as well as the verb, so a neighbouring
-	// test's release cannot satisfy it.
+	// test's release cannot be attributed here — which now matters in
+	// the opposite direction, since a stray match would FAIL this test
+	// rather than satisfy it.
 	releasesBefore := fixture.CountBridgeLogLines("DHCPRELEASE", macBefore)
 
 	harness.KillDockerDaemon(t, ctx)
@@ -162,16 +186,6 @@ func TestRecovery_DaemonKilled_LeaseIsReleasedAndReacquired(t *testing.T) {
 
 	if err := waitContainerRunning(ctx, cli2, id, 90*time.Second); err != nil {
 		t.Fatalf("container did not come back after the daemon was killed: %v", err)
-	}
-
-	// (1) The lease the killed daemon's endpoint held must be handed
-	// back. The plugin's own view cannot answer this — a counter would
-	// only say it believed it released one — so it is read off the
-	// server that would otherwise still be holding the address.
-	if !waitBridgeLogLines(t, releasesBefore+1, 60*time.Second, "DHCPRELEASE", macBefore) {
-		t.Errorf("no DHCPRELEASE for %s (the pre-kill endpoint) within 60s of the daemon being killed: "+
-			"the server still holds %s and will until the lease expires. An abrupt daemon death "+
-			"must not burn a pool address (#480)", macBefore, ipBefore)
 	}
 
 	healthAfter := harness.WaitPluginHealth(t, ctx, cli2, 60*time.Second)
@@ -193,13 +207,38 @@ func TestRecovery_DaemonKilled_LeaseIsReleasedAndReacquired(t *testing.T) {
 	t.Logf("after the kill:  ip=%s mac=%s (address preserved=%v, MAC preserved=%v — "+
 		"neither is asserted, see the header)", ipAfter, macAfter, ipAfter == ipBefore, macAfter == macBefore)
 
-	// (2) The address in `docker inspect` is the plugin's word for it.
-	// This is the server's: it ACKed that address to that MAC. Without
-	// it, a container that came back holding a stale address nothing
-	// leased would read exactly like success.
+	// (1) POSITIVE CONTROL, and the assertion that the container really
+	// came back on the wire. The address in `docker inspect` is the
+	// plugin's word for it; this is the server's — it ACKed that address
+	// to that MAC. Without it, a container that came back holding a
+	// stale address nothing leased would read exactly like success.
+	//
+	// It runs before (2) on purpose. (2) is an absence, and an absence
+	// read from a log that is missing, stale, or no longer matched reads
+	// as a pass. This line fails in all three of those cases.
 	if !waitBridgeLogLines(t, 1, 30*time.Second, "DHCPACK", macAfter, ipAfter) {
-		t.Errorf("no DHCPACK from the server for %s -> %s: the container came back with an "+
-			"address the DHCP server never granted it", macAfter, ipAfter)
+		t.Fatalf("no DHCPACK from the server for %s -> %s: the container came back with an "+
+			"address the DHCP server never granted it. Nothing below this line can be "+
+			"trusted — the release check that follows would read 0 whether or not the "+
+			"plugin released", macAfter, ipAfter)
+	}
+
+	// (2) The lease the killed daemon's endpoint held must NOT have been
+	// handed back (#800). The plugin's own view cannot answer this — a
+	// counter would only say what it believed — so it is read off the
+	// server that is still holding the address.
+	//
+	// No extra wait is needed and none is added: the release used to
+	// arrive about a second after the kill, driven by the SIGTERM the
+	// replacement daemon sends the plugin, and by this point the window
+	// has been open for the whole daemon-restart-and-rebind cycle —
+	// tens of seconds. A sleep here would be the weakening this repo
+	// treats as a bug report, not a fix.
+	if got := fixture.CountBridgeLogLines("DHCPRELEASE", macBefore) - releasesBefore; got != 0 {
+		t.Errorf("%d DHCPRELEASE(s) for %s after the daemon was killed, want 0: since #800 "+
+			"nothing this plugin runs releases a lease on any path. The address %s must stay "+
+			"leased until it expires, the same as a machine that was powered off abruptly",
+			got, macBefore, ipBefore)
 	}
 }
 

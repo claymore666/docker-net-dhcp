@@ -17,22 +17,33 @@ import (
 	"github.com/claymore666/docker-net-dhcp/test/integration/harness"
 )
 
-// TestJoinNoContainer_AddressIsReleased covers #566.
+// TestJoinNoContainer_AddressIsHeldUntilItExpires covers #566 as #800
+// settled it.
 //
 // CreateEndpoint leases an address with a one-shot client and
 // deliberately keeps the binding, so the address is held when the
 // persistent client takes over at attach. If the attach then fails
 // because no container ever claimed the endpoint, there is no
-// persistent client to release it and no container using it — the
-// address used to sit leased upstream until it expired on its own,
-// while the plugin logged "lease will not be renewed" and flipped
-// unhealthy on join_start_failures.
+// persistent client and no container using the address.
 //
-// That combination is the worst shape a failure can have here: a
-// counter moves, so it looks observed, but the counter names the wrong
-// thing and the address never comes back. It is the same family as
-// #370, #549 and #561 — the plugin's bookkeeping and the DHCP server's
-// state disagreeing, with only the server being right.
+// #566 made the plugin hand that address back. #800 stopped it, along
+// with every other release: the address is held until the lease
+// expires, which is what happens to any host on the segment that goes
+// away without releasing. What #566 leaves behind is the part that was
+// always right — attributing the failure to the correct counter.
+//
+// # The counter, not the address, is what this test still guards
+//
+// The original defect had two halves. The address leaked, and — worse
+// for an operator — it leaked while `join_start_failures` advanced.
+// That counter is Healthy-affecting and means "a RUNNING container has
+// no renewal client", so an endpoint nobody ever claimed both kept its
+// address and paged somebody about a container that does not exist.
+//
+// The address half is now the accepted cost of the lease rule, and this
+// test asserts the cost is exactly that and no more: no release, and no
+// release machinery either. The counter half is unchanged and still
+// asserted in both directions.
 //
 // # How this reaches the state, and why the sandbox must be REAL
 //
@@ -61,13 +72,11 @@ import (
 //
 // # The assertion is the server's log
 //
-// orphaned_leases_released only proves the plugin believes it released
-// something. Only a DHCPRELEASE reaching dnsmasq proves the address is
-// actually back in the pool, and it is keyed on this endpoint's own
-// address so no neighbouring release can satisfy it by accident. The
-// counters are checked too, but after the wire, and never instead of
-// it.
-func TestJoinNoContainer_AddressIsReleased(t *testing.T) {
+// A counter would say what the plugin believes it did. Only dnsmasq's
+// log says what the server saw, and it is keyed on this endpoint's own
+// address so no neighbouring endpoint's traffic can satisfy or fail it
+// by accident.
+func TestJoinNoContainer_AddressIsHeldUntilItExpires(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
@@ -101,7 +110,7 @@ func TestJoinNoContainer_AddressIsReleased(t *testing.T) {
 	drv := harness.NewDriverClient(t, ctx, cli)
 
 	w := harness.BeginCounterWindow(t, ctx, cli,
-		"orphaned_leases_released", "join_aborted_no_container", "join_start_failures")
+		"join_aborted_no_container", "join_start_failures")
 	before := w.Before()
 
 	endpointID := harness.NewEndpointID(t)
@@ -131,99 +140,88 @@ func TestJoinNoContainer_AddressIsReleased(t *testing.T) {
 		t.Fatalf("Join: %v", err)
 	}
 
-	after, _ := w.Await(orphanReleaseBudget, func(now, before *harness.HealthResponse) bool {
-		return now.OrphanedLeasesReleased > before.OrphanedLeasesReleased
+	// Wait on the counter that names this outcome, then let the tree
+	// settle. There is no positive event to wait for after that — the
+	// subject is an absence — so the settle time is spent in full.
+	after, _ := w.Await(joinNoContainerBudget, func(now, before *harness.HealthResponse) bool {
+		return now.JoinAbortedNoContainer > before.JoinAbortedNoContainer
 	})
 	w.End()
 
-	// Ground truth first. This is the assertion the issue is about; the
-	// counters below only explain it.
-	deadline := time.Now().Add(orphanReleaseBudget)
-	for fixture.CountLogLines("DHCPRELEASE", ip)-releasesBefore < 1 {
-		if !time.Now().Before(deadline) {
-			t.Fatalf("dnsmasq never logged a DHCPRELEASE for %s within %v — the address is "+
-				"still held upstream with nobody responsible for it. No container ever "+
-				"claimed this endpoint, so nothing is using the address and nothing will "+
-				"ever release it; it stays leased until expiry (#566)",
-				ip, orphanReleaseBudget)
-		}
-		time.Sleep(250 * time.Millisecond)
-	}
-
-	if after == nil || after.OrphanedLeasesReleased <= before.OrphanedLeasesReleased {
-		got := int32(-1)
-		if after != nil {
-			got = after.OrphanedLeasesReleased
-		}
-		t.Fatalf("orphaned_leases_released did not advance within %v (before=%d, after=%d) — "+
-			"the server saw the release but the plugin did not count it",
-			orphanReleaseBudget, before.OrphanedLeasesReleased, got)
+	if after == nil {
+		t.Fatalf("no health snapshot after the attach; nothing below can be judged")
 	}
 
 	if got := after.JoinAbortedNoContainer - before.JoinAbortedNoContainer; got != 1 {
-		t.Errorf("join_aborted_no_container advanced by %d, want 1 — the release happened "+
-			"but is not attributed to this cause, so an operator cannot tell this apart "+
-			"from an ordinary orphaned lease", got)
+		t.Errorf("join_aborted_no_container advanced by %d, want 1 — the attach ended for "+
+			"this reason but is not attributed to it, so an operator cannot tell an "+
+			"endpoint nobody claimed from an endpoint whose start failed", got)
 	}
 
-	// The counter that used to move instead, and the reason the leak was
-	// invisible: join_start_failures is healthy-affecting and means "a
-	// RUNNING container has no renewal client". Nothing is running here,
-	// so charging this to it both leaked the address and paged an
-	// operator about a container that does not exist.
+	// The counter that used to move instead, and the reason the defect
+	// was invisible: join_start_failures is Healthy-affecting and means
+	// "a RUNNING container has no renewal client". Nothing is running
+	// here, so charging this to it pages an operator about a container
+	// that does not exist.
 	if got := after.JoinStartFailures - before.JoinStartFailures; got != 0 {
 		t.Errorf("join_start_failures advanced by %d, want 0 — an attach with no container "+
 			"behind it is not a plugin fault, and counting it as one flips healthy for "+
 			"something nobody can act on", got)
 	}
 
-	if got := after.OrphanedLeaseReleaseFailures - before.OrphanedLeaseReleaseFailures; got != 0 {
-		t.Errorf("orphaned_lease_release_failures advanced by %d, want 0 — "+
-			"the reclaim was attempted but could not complete", got)
+	// Ground truth. The address stays leased: no client ever held it to
+	// release, and the plugin no longer synthesises one to do it (#800).
+	time.Sleep(leaseRetentionSettle)
+	if got := fixture.CountLogLines("DHCPRELEASE", ip) - releasesBefore; got != 0 {
+		t.Errorf("dnsmasq logged %d DHCPRELEASE line(s) for %s, want 0. Nothing this "+
+			"plugin runs releases a lease — the address is held until it expires, the "+
+			"same as for any host that leaves the segment without releasing (#800)",
+			got, ip)
 	}
 
-	awaitReleaseLinksGone(t)
+	awaitNoReleaseLinks(t)
 }
 
-// awaitReleaseLinksGone waits for the reclaim's temporary link to be
-// removed from the shared parent.
+// joinNoContainerBudget bounds the wait for the attach to give up and
+// record its outcome. The attach itself retries the container lookup for
+// its whole budget before concluding nobody holds the endpoint, so this
+// has to cover that plus the health scrape.
+const joinNoContainerBudget = 45 * time.Second
+
+// awaitNoReleaseLinks asserts the parent is clean, and is the structural
+// half of the release assertion above.
 //
-// Two reasons, and the second is why it is not optional. The plugin
-// must not leak the links it creates: the reclaim deletes `dh-rel-*` in
-// a deferred call after the release, so a link still present long
-// afterwards is a real defect and nothing else asserts it. And this
-// test hands the parent straight to the next one — a parent carrying a
-// macvlan child cannot accept an ipvlan one, which is #486's mechanism
-// and #556's residue, so returning early would hand a neighbour an
-// EBUSY that looks like its own failure.
+// The removed reclaim did its work by attaching a temporary `dh-rel-*`
+// child to the shared parent and holding it for a full DHCP round trip.
+// No such link may exist any more — not transiently, not left behind.
 //
-// Tests share one parent until #556 changes that; until then, leaving
-// it as we found it is this test's job.
-func awaitReleaseLinksGone(t *testing.T) {
+// Two things are being caught. A reintroduced reclaim, which would show
+// up here as a link even if its release never reached the server. And a
+// leaked link on the shared parent, which is #486's mechanism: a parent
+// carrying a macvlan child cannot accept an ipvlan one, so a link left
+// behind hands the next test an EBUSY that looks like its own failure.
+//
+// Tests share one parent until #556 changes that; until then, leaving it
+// as we found it is this test's job.
+func awaitNoReleaseLinks(t *testing.T) {
 	t.Helper()
 
-	const budget = 15 * time.Second
-	deadline := time.Now().Add(budget)
-	for {
-		links, err := netlink.LinkList()
-		if err != nil {
-			t.Fatalf("LinkList: %v", err)
+	links, err := netlink.LinkList()
+	if err != nil {
+		t.Fatalf("LinkList: %v", err)
+	}
+	var found []string
+	for _, l := range links {
+		if strings.HasPrefix(l.Attrs().Name, "dh-rel-") {
+			found = append(found, l.Attrs().Name)
 		}
-		var left []string
-		for _, l := range links {
-			if strings.HasPrefix(l.Attrs().Name, "dh-rel-") {
-				left = append(left, l.Attrs().Name)
-			}
-		}
-		if len(left) == 0 {
-			return
-		}
-		if !time.Now().Before(deadline) {
-			t.Fatalf("orphan-release link(s) %v still on the host after %v; the reclaim "+
-				"did not remove them, and a macvlan child left on the shared parent "+
-				"blocks the next ipvlan test (#486/#556)", left, budget)
-		}
-		time.Sleep(250 * time.Millisecond)
+	}
+	if len(found) > 0 {
+		t.Errorf("release link(s) %v are on the host. The orphaned-lease reclaim that "+
+			"created them was removed in v1.9.0 (#800); if something is creating them "+
+			"again it is releasing addresses a container may be about to re-claim. "+
+			"A macvlan child left on the shared parent also blocks the next ipvlan "+
+			"test (#486/#556)", found)
 	}
 }
 

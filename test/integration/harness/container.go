@@ -50,9 +50,12 @@ const (
 //
 // Init is deliberately not `docker stop -t 0` or a bare force-remove.
 // With init the container still exits 143 (SIGTERM), not 137
-// (SIGKILL), so the graceful Leave -> DHCPRELEASE path that
+// (SIGKILL), so the graceful Leave -> dhcpManager.Stop path that
 // health_counters and audit_log assert on is preserved rather than
 // bypassed. Faster and more faithful, not faster instead of faithful.
+// (That path stopped ending in a DHCPRELEASE in #800; what it still
+// drives, and what those tests still read, is the client shutdown and
+// the ledger entry it writes.)
 //
 // Everything is freshly allocated per call — including the *bool —
 // because callers needing extra fields (a restart policy, say) mutate

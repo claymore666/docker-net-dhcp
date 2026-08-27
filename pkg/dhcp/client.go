@@ -577,9 +577,13 @@ func NewDHCPClient(iface string, opts *DHCPClientOptions) (*DHCPClient, error) {
 	// Two reasons, both about signals reaching the wrong process. A
 	// signal sent to the plugin's process group — which is what a
 	// terminal, a supervisor, or a `kill -- -<pgid>` sends — otherwise
-	// reaches every live dhcpcd as well, and the persistent client
-	// omits dhcpcd's -p, so it would RELEASE the lease of a container
-	// that is still running. And in the other direction, a group of its
+	// reaches every live dhcpcd as well, killing the renewal client of a
+	// container that is still running: its lease then stops being
+	// renewed and lapses at the server's deadline, with the container
+	// none the wiser. (Up to v1.8.x this comment said the client would
+	// RELEASE that lease. It would not — dhcpcd's -p governs whether the
+	// interface is de-configured, and the release came from a `release`
+	// directive that #800 removed.) And in the other direction, a group of its
 	// own is what makes the client killable as a unit later, including
 	// the short-lived hook processes dhcpcd spawns.
 	//

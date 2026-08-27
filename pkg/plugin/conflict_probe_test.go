@@ -241,8 +241,20 @@ func stubAddrList(t *testing.T, addrs []netlink.Addr, err error) {
 	t.Cleanup(func() { nlAddrList = prev })
 }
 
+// mustAddr builds a netlink.Addr from a CIDR string, failing the test
+// rather than the caller. Lived in orphan_release_test.go until that
+// file went with the reclaim it covered (#800).
+func mustAddr(t *testing.T, cidr string) *netlink.Addr {
+	t.Helper()
+	a, err := netlink.ParseAddr(cidr)
+	if err != nil {
+		t.Fatalf("ParseAddr(%q): %v", cidr, err)
+	}
+	return a
+}
+
 // addrOn is mustAddr as a value, which is the shape netlink.AddrList
-// returns. mustAddr itself lives in orphan_release_test.go.
+// returns.
 func addrOn(t *testing.T, cidr string) netlink.Addr {
 	t.Helper()
 	return *mustAddr(t, cidr)

@@ -216,10 +216,13 @@ func TestClose_PhasesShareOneBudget(t *testing.T) {
 
 func TestClose_DrainsDisplacedManagerStops(t *testing.T) {
 	// #338 item 3. Join stops a displaced manager in a goroutine so it
-	// doesn't block on the dhcpcd release cycle. Close has to account
-	// for those: cutting one short at process exit means no
-	// DHCPRELEASE, and the server holds a phantom lease against that
-	// MAC until it expires on its own.
+	// doesn't block on the dhcpcd shutdown. Close has to account for
+	// those: cutting one short at process exit leaves a dhcpcd renewing
+	// for an endpoint this plugin no longer manages, racing the client
+	// the incoming Join just built for the same binding.
+	//
+	// The lease itself is not at stake — since #800 nothing releases and
+	// the address is held either way. What is at stake is the client.
 	p := newTestPlugin(t)
 	p.docker = &fakeDocker{}
 

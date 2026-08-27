@@ -189,13 +189,18 @@ func TestSweepOrphans_KillsOnlyOurDhcpcds(t *testing.T) {
 // file that is easy to get backwards, and that no other test would
 // notice.
 //
-// When the plugin restarts, the containers are still RUNNING. The
-// persistent client omits dhcpcd's -p, so it releases its lease when
-// asked to stop politely — a SIGTERM sweep would send a DHCPRELEASE for
-// every address a live container currently holds, and invite the server
-// to hand those addresses to somebody else. That is #524's duplicate
-// assignment, manufactured by the cleanup itself, and it is the same
-// asymmetry #720 turns on.
+// When the plugin restarts, the containers are still RUNNING. A SIGTERM
+// sweep invites each client to run its exit path and hand back an
+// address a live container is using, which is #524's duplicate
+// assignment, manufactured by the cleanup itself, and the same asymmetry
+// #720 turns on.
+//
+// #800 removed the `release` directive, so a client THIS build started
+// would not release on SIGTERM. That does not make the signal a free
+// choice: the clients this sweep finds were started by a plugin process
+// that already died, and on an upgrade from v1.8.x or older that process
+// wrote a config carrying `release`. See the WHY SIGKILL block in
+// orphan_sweep.go.
 //
 // A signal is a one-character edit away from being wrong here and the
 // wrong one still passes every other test in this file.
@@ -366,9 +371,11 @@ func TestSweepOrphans_MarkerIsReallyInTheArgv(t *testing.T) {
 //
 // Without Setpgid the child shares the plugin's process group, so a
 // signal aimed at the group — a supervisor's shutdown, a terminal, a
-// `kill -- -<pgid>` — reaches every live dhcpcd too. The persistent
-// client omits dhcpcd's -p, so each one would RELEASE the lease of a
-// container that is still running.
+// `kill -- -<pgid>` — reaches every live dhcpcd too, killing the
+// renewal client of a container that is still running: its lease stops
+// being renewed and lapses at the server's deadline. (This said
+// "would RELEASE the lease" until #800; -p governs de-configuration,
+// not release, and nothing this plugin runs sends a DHCPRELEASE.)
 // TestSweepOrphans_SparesALiveClientOfAnotherInstance is the test that
 // makes the function's name true.
 //

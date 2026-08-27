@@ -78,7 +78,7 @@ func metricDefs() []metricDef {
 		{name: "lease_changed", counter: true, help: "Renewals that came back with a different address than the client held.", field: "lease_changed", v4field: "lease_changed_v4", v6field: "lease_changed_v6"},
 		{name: "dhcp_timeouts", counter: true, help: "Acquisitions or renewals that expired without an answer.", field: "dhcp_timeouts", v4field: "dhcp_timeouts_v4", v6field: "dhcp_timeouts_v6"},
 		{name: "naks_received", counter: true, help: "DHCPNAKs received from the server.", field: "naks_received", v4field: "naks_received_v4", v6field: "naks_received_v6"},
-		{name: "lease_release_failures", counter: true, help: "Leases whose release did not complete cleanly at shutdown, leaving the address held until it expires.", field: "lease_release_failures", v4field: "lease_release_failures_v4", v6field: "lease_release_failures_v6"},
+		{name: "client_stop_failures", counter: true, help: "Renewal clients that did not shut down cleanly when the plugin signalled them. Not a lease release: nothing this plugin runs sends a DHCPRELEASE.", field: "client_stop_failures", v4field: "client_stop_failures_v4", v6field: "client_stop_failures_v6"},
 
 		// No family label: there is no v4 counterpart to measure, so a
 		// v4field here would expose a series that is zero by
@@ -123,8 +123,6 @@ func metricDefs() []metricDef {
 		{name: "conflict_probe_stale_addrs", counter: true, help: "Leftover borrowed probe SOURCE addresses reclaimed from the parent NIC. The sibling conflict_probe_stale_routes covers the leftover route, which is recognisable because its destination is the probed address; the source address has random octets by design (#575) so nothing ever collided with it and it accumulated on the operator's NIC, one per stop-inside-the-probe-window. Not healthy-affecting: the probe went on to run (#723).", field: "conflict_probe_stale_addrs"},
 
 		// Orphaned leases (#370).
-		{name: "orphaned_leases_released", counter: true, help: "Addresses reclaimed for a container that exited before its renewal client could attach. One per address.", field: "orphaned_leases_released"},
-		{name: "orphaned_lease_release_failures", counter: true, help: "Orphaned-lease reclaims that failed, leaving the address held until it expires.", field: "orphaned_lease_release_failures"},
 
 		// Parent link waits.
 		{name: "parent_link_waits", counter: true, help: "Endpoint creations that waited for their parent interface to appear.", field: "parent_link_waits"},

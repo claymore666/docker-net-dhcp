@@ -140,14 +140,21 @@ func TestRecovery_DaemonRestart_PreservesContainer(t *testing.T) {
 
 	// The IP above appears as soon as CreateEndpoint's one-shot DHCP
 	// completes — *before* Join has started the persistent client. If
-	// the daemon goes down inside that window, no client exists to
-	// RELEASE the lease on shutdown; the DHCP server then keeps the
-	// old lease (keyed on the old endpoint's client-id) and hands the
-	// post-restart endpoint a *different* IP, failing the IP-stability
+	// the daemon goes down inside that window the post-restart endpoint
+	// can come back with a *different* IP, failing the IP-stability
 	// assertion below for reasons that have nothing to do with restart
 	// recovery. Fast hosts never see this window; slower runner-class
 	// hardware does. Wait for the persistent client's first "bound"
 	// event (leases_obtained) before pulling the daemon down.
+	//
+	// The mechanism written here until #800 was that no client existed
+	// to RELEASE the lease on shutdown. That is now false outright:
+	// nothing this plugin runs sends a DHCPRELEASE, on any path. What
+	// survives is the window itself — an endpoint whose Join has not
+	// finished is not the steady state this test is about — so the wait
+	// stays. Whether it is still LOAD-BEARING has not been re-measured
+	// since the release paths went; deleting it needs that measurement,
+	// not this comment.
 	waitLeaseObtained(t, bindW, 30*time.Second)
 	// Done with this window while the plugin it measured is still the
 	// one running; the daemon restart below ends that process.
