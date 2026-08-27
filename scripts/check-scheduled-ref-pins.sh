@@ -130,11 +130,37 @@ facts_of() {
         function indent(s,   n) { match(s, /^ */); return RLENGTH }
         function isblank(s) { return s ~ /^[[:space:]]*$/ }
         function iscomment(s) { return s ~ /^[[:space:]]*#/ }
+        # A trailing comment cannot declare a trigger or a permission,
+        # and both flow-mapping rules below read whole lines. Without
+        # this, `on:  # the nightly schedule:` would enter the domain
+        # and `permissions: {contents: read}  # not issues:` would read
+        # as tracker access -- a gate satisfying itself from prose,
+        # which is the shape check-python-deps.sh shipped (#743). In
+        # YAML a `#` opens a comment only after whitespace, so that is
+        # what is cut.
+        function decomment(s) { sub(/[[:space:]]#.*$/, "", s); return s }
 
         BEGIN { sched = 0; issues = 0; co = 0; dev = 0; other = 0 }
 
         # --- the on: block -------------------------------------------
-        /^"?on"?:/ { in_on = 1; next }
+        # A flow mapping puts the trigger on the `on:` line itself:
+        #     on: {schedule: [{cron: 0 3 * * *}]}   (quotes elided --
+        #                       this comment lives inside a single-quoted
+        #                       awk program and cannot contain them)
+        # The block-style rule consumes that line with `next`, so the
+        # trigger would never be seen and the workflow would leave this
+        # the domain of this gate WITHOUT A WORD — a universal satisfied by a
+        # domain that excludes the case, which is the failure named
+        # eighty lines above. Test the line before consuming it.
+        #
+        # YAML offers a flow spelling for every block one, and the tree
+        # is not the format: nothing stops a future workflow being
+        # written this way, and the gate would have counted a corpus of
+        # two while the third sat outside it holding `issues: write`.
+        /^"?on"?:/ {
+            if (decomment($0) ~ /schedule[[:space:]]*:/) sched = 1
+            in_on = 1; next
+        }
         in_on {
             if (!isblank($0) && !iscomment($0) && indent($0) == 0) { in_on = 0 }
             else if ($0 ~ /^[[:space:]]+schedule:/) { sched = 1 }
@@ -147,6 +173,19 @@ facts_of() {
         in_perm {
             if (!isblank($0) && !iscomment($0) && indent($0) <= perm_indent) { in_perm = 0 }
             else if ($0 ~ /^[[:space:]]+issues:/) { issues = 1 }
+        }
+
+        # The same flow spelling, and here it fails in the DANGEROUS
+        # direction. `permissions: {issues: write}` opens no block, so
+        # the rule above reads `issues = 0` for a workflow that holds
+        # full tracker access. The cross-check is the stated reason the
+        # marker is believed at all -- two independent statements that
+        # have to agree -- and with the permission silently absent the
+        # marker is believed ALONE. A workflow with real tracker access
+        # could then declare `tree`, skip the pin, and pass -- the exact
+        # defect #839 reports, through the gate built to stop it.
+        /^[[:space:]]*permissions:[[:space:]]*\{/ {
+            if (decomment($0) ~ /issues[[:space:]]*:/) issues = 1
         }
 
         # --- step blocks ---------------------------------------------
@@ -227,8 +266,15 @@ for f in "${files[@]}"; do
     # The marker. Every line of it, so a second one is an error rather
     # than being silently shadowed by the first — two markers mean two
     # readers disagreed and one of them is going to be believed.
+    # Leading whitespace is allowed: beside the checkout it governs is
+    # where a marker naturally wants to go, and anchoring at `^#` made
+    # a correctly classified, correctly pinned workflow read as
+    # unclassified -- a red telling the author to add the line they had
+    # just added. It failed closed, so nothing unsafe shipped; the cost
+    # was the wrong remedy, and that is a limitation worth removing
+    # rather than documenting.
     mapfile -t markers < <(sed -n \
-        's/^#[[:space:]]*scheduled-subject:[[:space:]]*\([^[:space:]]*\)[[:space:]]*$/\1/p' "$f")
+        's/^[[:space:]]*#[[:space:]]*scheduled-subject:[[:space:]]*\([^[:space:]]*\)[[:space:]]*$/\1/p' "$f")
 
     if [ "${#markers[@]}" -eq 0 ]; then
         echo "::error file=$f,title=Unclassified scheduled workflow::$base runs on a" \

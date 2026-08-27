@@ -19,6 +19,25 @@
 # directory eats it, and later cases then run against an already-broken
 # subject).
 #
+# GENERATION HAS A SECOND FAILURE MODE, and it is the one this file
+# shipped with. A generator's UN-VARIED PARAMETERS are the gate's blind
+# spot, and a green case count says nothing about them. The first form
+# of this file ran 21 cases over four axes -- marker, trigger,
+# permission, ref -- and every one of them came out of an emit_wf that
+# hardcoded `on:` and `permissions:` in BLOCK style. Two of the gate's
+# detectors parsed those keys, both failed on the flow spelling, and no
+# case could reach either: 21 passing cases and a clean real corpus were
+# entirely consistent with the headline universal being false, because
+# the universal's domain was decided by the same un-varied parameter.
+#
+# The remedy is not more cases. It is to enumerate the generator's
+# constants and ask, for each, whether the subject can legitimately
+# differ there. YAML offers a flow spelling for every block one, so the
+# SHAPE of the file is such a constant -- hence WF_SHAPE below. Be most
+# suspicious of a gate that parses a format tested only against the one
+# way the current tree happens to write that format: the tree is not the
+# format.
+#
 # Generation has its own failure mode in exchange: a "mutant" whose
 # generator arguments happen to produce the control's bytes would pass
 # for the wrong reason and read as a surviving mutant. So every case
@@ -42,23 +61,55 @@ no() { printf 'FAIL  %s\n' "$1" >&2; fail=$((fail + 1)); }
 #   PERMS    issues | noissues
 #   REF...   one token per actions/checkout step: none | dev | main |
 #            refs/heads/dev. No tokens means no checkout step at all.
+#
+# WF_SHAPE is the fifth axis, and it is set through `shaped` rather than
+# a positional because REF... is variadic. It varies how the file is
+# WRITTEN, not what it says:
+#
+#   block        (default) block mappings throughout, marker at column 0
+#   flow-on      `on: {schedule: [{cron: ...}]}` on one line
+#   flow-perms   `permissions: {contents: read, issues: read}` on one line
+#   indent       the marker indented, beside the step it governs
+#
+# Every value must produce a file with the SAME MEANING as `block`.
+# That is what makes these cases evidence: if the gate's verdict moves
+# when only the spelling moves, the gate is reading the spelling.
 emit_wf() {
     local file="$1" marker="$2" trigger="$3" perms="$4"; shift 4
+    local shape="${WF_SHAPE:-block}" mark_pfx=''
+    [ "$shape" = indent ] && mark_pfx='      '
     {
         printf 'name: %s\n' "$(basename "$file")"
         case "$marker" in
             none) ;;
-            both) printf '# scheduled-subject: tracker\n# scheduled-subject: tree\n' ;;
-            *)    printf '# scheduled-subject: %s\n' "$marker" ;;
+            both) printf '%s# scheduled-subject: tracker\n%s# scheduled-subject: tree\n' \
+                         "$mark_pfx" "$mark_pfx" ;;
+            *)    printf '%s# scheduled-subject: %s\n' "$mark_pfx" "$marker" ;;
         esac
-        printf 'on:\n'
-        if [ "$trigger" = sched ]; then
-            printf "  schedule:\n    - cron: '0 0 * * *'\n"
+        if [ "$shape" = flow-on ]; then
+            if [ "$trigger" = sched ]; then
+                printf "on: {schedule: [{cron: '0 0 * * *'}]}\n"
+            else
+                printf 'on: {push: {branches: [dev]}}\n'
+            fi
         else
-            printf '  push:\n    branches: [dev]\n'
+            printf 'on:\n'
+            if [ "$trigger" = sched ]; then
+                printf "  schedule:\n    - cron: '0 0 * * *'\n"
+            else
+                printf '  push:\n    branches: [dev]\n'
+            fi
         fi
-        printf 'permissions:\n  contents: read\n'
-        [ "$perms" = issues ] && printf '  issues: read\n'
+        if [ "$shape" = flow-perms ]; then
+            if [ "$perms" = issues ]; then
+                printf 'permissions: {contents: read, issues: read}\n'
+            else
+                printf 'permissions: {contents: read}\n'
+            fi
+        else
+            printf 'permissions:\n  contents: read\n'
+            [ "$perms" = issues ] && printf '  issues: read\n'
+        fi
         printf 'jobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n'
         local r
         for r in "$@"; do
@@ -69,6 +120,16 @@ emit_wf() {
         done
         printf '      - name: work\n        run: echo hi\n'
     } > "$file"
+}
+
+# shaped SHAPE emit_wf-args...
+# `local` here is what keeps WF_SHAPE from leaking into the next call:
+# a bare `WF_SHAPE=x emit_wf ...` prefix assignment persists after a
+# shell FUNCTION returns, which would silently reshape every later
+# fixture in the same case.
+shaped() {
+    local WF_SHAPE="$1"; shift
+    emit_wf "$@"
 }
 
 # A valid corpus: one of each class, plus a non-scheduled workflow that
@@ -292,6 +353,117 @@ c_pushonly_ignored() {
     emit_wf "$1/pushonly2.yml" banana nosched issues dev
 }
 run_case "workflows without a schedule are outside the domain" 0 differs c_pushonly_ignored
+
+# --- claim 5: the SHAPE of the file does not decide the verdict ---------
+# The axis emit_wf held constant for 21 cases. Both of the gate's key
+# detectors parsed a block mapping, both were blind to the flow spelling
+# of the same key, and no fixture could reach either. Each defect below
+# is paired with a PRESERVATION CONTROL: a widening that only ever says
+# "1" would satisfy these cases by refusing every flow-style file, which
+# is a different gate, not a fixed one.
+
+# The domain. A flow-style `on:` was never counted as scheduled, so an
+# unclassified workflow holding issues: and an unpinned checkout printed
+# as "scheduled workflows: 2" and exited 0 -- outside the population the
+# gate counted, which is the failure its own header names.
+c_flow_on_unclassified() {
+    emit_wf "$1/tracker.yml" tracker sched issues dev
+    emit_wf "$1/tree.yml"    tree    sched noissues none
+    shaped flow-on "$1/newcomer.yml" none sched issues none
+}
+run_case "a flow-style on: does not put a workflow outside the domain" 1 differs \
+    c_flow_on_unclassified
+
+c_flow_on_clean() {
+    emit_wf "$1/tracker.yml" tracker sched issues dev
+    shaped flow-on "$1/tree.yml" tree sched noissues none
+    emit_wf "$1/pushonly.yml" none nosched issues dev
+}
+run_case "a flow-style on: on a correct workflow is still clean" 0 differs c_flow_on_clean
+
+# The cross-check, and this is the dangerous direction. An inline
+# permissions mapping made `issues` read as absent, so the marker became
+# the only witness -- and the marker is exactly what the cross-check
+# exists not to trust. A `tree` declaration on a workflow holding real
+# tracker access is #839's defect passing through the gate built to stop
+# it.
+c_flow_perms_contradiction() {
+    emit_wf "$1/tracker.yml" tracker sched issues dev
+    shaped flow-perms "$1/tree.yml" tree sched issues none
+    emit_wf "$1/pushonly.yml" none nosched issues dev
+}
+run_case "an inline permissions mapping is still cross-checked" 1 differs \
+    c_flow_perms_contradiction
+
+c_flow_perms_clean() {
+    shaped flow-perms "$1/tracker.yml" tracker sched issues dev
+    emit_wf "$1/tree.yml" tree sched noissues none
+    emit_wf "$1/pushonly.yml" none nosched issues dev
+}
+run_case "an inline permissions mapping satisfies the tracker cross-check" 0 differs \
+    c_flow_perms_clean
+
+# The marker anchored at column 0, so a correctly classified, correctly
+# pinned workflow whose marker sat beside the step it governs was
+# rejected as unclassified -- a red naming the wrong remedy, telling the
+# author to add the line they had just added.
+c_indented_marker() {
+    emit_wf "$1/tracker.yml" tracker sched issues dev
+    shaped indent "$1/tree.yml" tree sched noissues none
+    emit_wf "$1/pushonly.yml" none nosched issues dev
+}
+run_case "a marker indented beside its step is read" 0 differs c_indented_marker
+
+# --- prose cannot answer for the file ----------------------------------
+# Both flow rules read a whole line, so both could be satisfied by a
+# trailing comment. That is the shape check-python-deps.sh shipped
+# (#743): a gate reading its own description instead of the thing it
+# describes. Hand-written, because the point is bytes emit_wf will not
+# produce.
+raw_case() {
+    local name="$1" want="$2" body="$3"
+    local dir rc out
+    dir=$(mktemp -d)
+    printf '%s' "$body" > "$dir/a.yml"
+    emit_wf "$dir/tracker.yml" tracker sched issues dev
+    emit_wf "$dir/tree.yml"    tree    sched noissues none
+    out=$(bash "$GATE" "$dir" 2>&1); rc=$?
+    rm -rf "$dir"
+    if [ "$rc" = "$want" ]; then ok "$name"
+    else no "$name (exit $rc, want $want)"; printf '      %s\n' "$out" >&2; fi
+}
+
+raw_case "a comment on the on: line does not declare a schedule" 0 \
+'name: a
+on:  # nightly, on the same schedule: as the others
+  push:
+    branches: [dev]
+permissions:
+  contents: read
+jobs:
+  j:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+        with:
+          ref: dev
+'
+
+raw_case "a comment mentioning issues: does not satisfy the cross-check" 1 \
+'name: a
+# scheduled-subject: tracker
+on:
+  schedule:
+    - cron: 0 0 * * *
+permissions: {contents: read}  # issues: read is not requested here
+jobs:
+  j:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+        with:
+          ref: dev
+'
 
 rm -rf "$CONTROL_DIR"
 
