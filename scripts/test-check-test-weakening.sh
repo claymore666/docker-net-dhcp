@@ -53,7 +53,10 @@ run_file_case() { # NAME FILE BASE NEW BODY WANT_RC [WANT_GREP]
         printf '%s\n' "$out" | sed 's/^/      /' >&2
         return
     fi
-    if [ -n "$want_grep" ] && ! printf '%s\n' "$out" | grep -q -- "$want_grep"; then
+    # `grep -q` in a pipeline exits at the first match and SIGPIPEs the
+    # producer, so under `set -o pipefail` a SUCCESSFUL match can report
+    # failure. Read to EOF and discard instead (scripts/check-pipefail-consumers.sh).
+    if [ -n "$want_grep" ] && ! printf '%s\n' "$out" | grep -- "$want_grep" >/dev/null; then
         no "$name (exit $rc as wanted, but the output never said '$want_grep')"
         printf '%s\n' "$out" | sed 's/^/      /' >&2
         return
