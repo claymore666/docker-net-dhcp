@@ -39,11 +39,23 @@ rc()    { run >/dev/null 2>&1; echo $?; }
 
 # says <desc> <substring> -- assert the report CONTAINS the substring.
 #
-# Deliberately not `run | grep -q`. Under `set -o pipefail` that reads
-# 141, not grep's verdict: `grep -q` exits on the first match and the
-# producer dies of SIGPIPE, so a passing assertion reports failure. It
-# cost five false FAILs when this file was first run, on a repository
-# that ships scripts/check-pipefail-consumers.sh for that exact shape.
+# Deliberately not `run | grep -q`. Under `set -o pipefail` a pipeline
+# reports the PRODUCER's failure, and this producer is a gate whose
+# whole job is to exit 1 on a finding and 2 on a refusal. So every
+# assertion that reads a message out of a run that was SUPPOSED to fail
+# reports failure no matter what grep found.
+#
+# That cost five false FAILs when this file was first run, and it hid
+# behind the one such assertion that passed: the only one reading a
+# CLEAN run. A message check over a failing subject cannot be a
+# pipeline, and the tell is that the subject is a gate.
+#
+# SIGPIPE is a second, independent way the same shape misreports --
+# `grep -q` exits on the first match and the producer dies of it -- and
+# it is why scripts/check-pipefail-consumers.sh flags `| grep -q` at
+# all. It was NOT what happened here; the producer's own exit status
+# was enough. Measured: with pipefail the pipeline is 1, without it 0,
+# and grep against the captured output is 0.
 says() {
     local out; out="$(run)"
     case "$out" in
