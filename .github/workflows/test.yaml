@@ -122,6 +122,47 @@ jobs:
             echo "::endgroup::"
           done
 
+  # THE GATES ARE NOT THE UNIT SUITE, AND THE CHECK NAME NOW SAYS SO.
+  #
+  # These ~45 steps used to run inside the `test` job. `test` is a
+  # REQUIRED status check on dev and main, so the single name branch
+  # protection knew covered release-promotion ordering, cosign docs and
+  # Raspberry Pi watchdog wiring — none of which is a test of this Go
+  # program. Six of that job's steps were the unit suite; the rest were
+  # these. A reader seeing `test` go red learned nothing about which of
+  # some fifty subjects failed, and a reader seeing it green was told
+  # "the tests pass" about a job that was mostly not tests.
+  #
+  # Splitting costs one extra checkout and one extra setup-go (~9s,
+  # cached) and buys back more than it costs: the two halves now run in
+  # PARALLEL, so the wall clock is the slower half rather than the sum.
+  #
+  # setup-go is NOT vestigial here — it was checked rather than assumed.
+  # scripts/check-golden-fixture-name-keyed.sh runs `go test` to
+  # regenerate the metrics golden (its line 90), so this job needs a
+  # toolchain. It is the only gate that does, which is why this comment
+  # names it: a future reader deleting the step should know what breaks.
+  #
+  # `gates` MUST be a required status check on dev and main. Splitting a
+  # required job without requiring BOTH halves is exactly the
+  # absent-check-reads-as-green failure this corpus exists to catch: the
+  # steps below would still RUN on every PR, and nothing would stop a
+  # merge over their red.
+  gates:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Same pin as the `test` job above, and it has to be — the reason
+      # is written there once rather than twice, because a rationale
+      # copied into two jobs is a rationale that will be corrected in
+      # one of them.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.27.0'
+          cache: true
+
       # The CI gate scripts are code too — their table-driven tests run
       # here so a broken ratchet/vuln gate fails like any unit test.
       #
