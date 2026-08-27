@@ -265,8 +265,8 @@ chmod +x "$STUB/gh"
 # The cost is the shape this whole file is about: the only input that
 # triggers it is an EMPTY log -- the stub-never-invoked case the counter
 # exists to detect -- so the breakage was invisible in all 24 passing
-# cases and present in the one that matters. Driven by the two cases at
-# the bottom of this file, not left to a reading of this note.
+# cases and present in the one that matters. Driven by the three cases
+# at the bottom of this file, not left to a reading of this note.
 gh_call_count() {
     local c
     c=$(grep -c . "$1" 2>/dev/null) || c=0

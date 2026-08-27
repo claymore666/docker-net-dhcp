@@ -108,8 +108,11 @@ grep -qx -- '--ephemeral' "$args" \
 # empty, so `... || echo 0` fires BOTH halves and $got becomes the
 # two-line string "0\n0". A persisted identity that is present but
 # EMPTY is a real failure mode here, and it is the only input that
-# reaches this -- so the one case that most needs a legible verdict was
-# the one that reported `got '0` on one line and `0'` on the next.
+# triggers the double zero: an ABSENT file prints nothing and exits 2,
+# so on that path the fallback is the only writer and the value was
+# always clean. The one case that most needs a legible verdict is
+# therefore the one that reported `got '0` on one line and `0'` on the
+# next.
 # Assign, then override on grep's own status: one integer on every path.
 got=$(grep -c . "$TMP/first/state/.credentials_rsaparams" 2>/dev/null) || got=0
 check "identity persisted to the state dir" 1 "$got"
