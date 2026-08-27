@@ -73,9 +73,13 @@
              100 fired on `main` — no other branch appears at all. The
              workflow is entirely inert until the release ships it.
              An earlier version of this entry claimed the schedule "works
-             from any branch". It does not. See #846 — two authors wrote
-             that same false sentence on the same day, which is a fact about
-             this file's framing, not about the authors.
+             from any branch". It does not. See #846: two entries said so
+             in different words on the same day, both carrying the same
+             single identity as author and committer, and only one of them
+             was ever on the merged line. That is a fact about this file's
+             framing, not about anyone's authorship — and this sentence
+             itself said "two authors" until #849, fifty lines below the
+             header that retracts it.
     Triggers: workflow_dispatch schedule
     Clears:  when this reaches `main` with the v1.9.0 release. Remove this
              entry then — the gate fails while a stale entry remains.

@@ -364,6 +364,155 @@ led <<'EOF'
 EOF
 check "a ledger that parses to no entries is rc2, not a verdict" 2 "$(verdict3 | sed 's/^rc//;s/^pass$/0/')"
 
+# --- #849 review: an ABSENT field with a PRESENT one after it ----------
+#
+# The suite had no case where one field is missing and a later one is
+# there, which is exactly why this shipped. The parser emitted
+# tab-separated fields and the reader split on tab, which is IFS
+# whitespace: a run of separators collapsed, every later value shifted
+# left, and an empty Reason made Clears read the TRIGGERS text while
+# Triggers read empty. Empty is the CORRECT derived answer for a
+# push-only workflow, so the mismatch rule agreed and the entry passed.
+#
+# Two rules disabled together by the absence of one of them. Driven with
+# ONE VARIABLE MOVED: the same entry with a Reason added.
+#
+# manual3.yml goes first: it is left over from the cases above and an
+# UNDECLARED dispatchable workflow fails the gate on its own, which
+# would make every case below red for a reason that is not the
+# mutation. (It did, on the first run of this block.)
+rm -f "$REPO3/.github/workflows/manual3.yml"
+push_only pushonly > "$REPO3/.github/workflows/pushonly.yml"
+
+led <<'EOF'
+.github/workflows/cron.yml
+    Reason:  new this cycle.
+    Clears:  when it reaches main.
+    Triggers: workflow_dispatch schedule
+.github/workflows/pushonly.yml
+    Clears:  never.
+    Triggers: schedule
+EOF
+check "an entry with NO Reason and a false Triggers fails" rc1 "$(verdict3)"
+grep -F "no 'Reason:'" "$TMP/out3" >/dev/null \
+    && echo "PASS: and the missing Reason is named" \
+    || { echo "FAIL: the missing Reason is not named"; fails=1; }
+grep -F "but its entry says [schedule]" "$TMP/out3" >/dev/null \
+    && echo "PASS: and the false Triggers is named in the same run" \
+    || { echo "FAIL: the false Triggers is not named"; fails=1; }
+
+# the one-variable control: adding the Reason must NOT be what makes the
+# false Triggers visible. Before the fix it was.
+led <<'EOF'
+.github/workflows/cron.yml
+    Reason:  new this cycle.
+    Clears:  when it reaches main.
+    Triggers: workflow_dispatch schedule
+.github/workflows/pushonly.yml
+    Reason:  because.
+    Clears:  never.
+    Triggers: schedule
+EOF
+check "adding a Reason changes nothing about the Triggers verdict" rc1 "$(verdict3)"
+
+# ...and the remedy for a workflow with no default-branch-only trigger
+# must not tell the reader to write an empty line.
+grep -F "declares NO default-branch-only trigger" "$TMP/out3" >/dev/null \
+    && echo "PASS: and the remedy says the claim is unsupported, not 'write an empty list'" \
+    || { echo "FAIL: the empty-derivation remedy is nonsense"; fails=1; }
+
+# A MISSING Clears MUST NAME Clears, and must not manufacture a trigger
+# mismatch whose remedy line is already in the file.
+led <<'EOF'
+.github/workflows/cron.yml
+    Reason:  new this cycle.
+    Triggers: workflow_dispatch schedule
+EOF
+rm -f "$REPO3/.github/workflows/pushonly.yml"
+check "an entry missing only Clears fails" rc1 "$(verdict3)"
+grep -F "no 'Clears:'" "$TMP/out3" >/dev/null \
+    && echo "PASS: and it names the rule actually broken" \
+    || { echo "FAIL: the missing Clears is not named"; fails=1; }
+grep -F 'declares triggers' "$TMP/out3" >/dev/null \
+    && { echo "FAIL: a missing Clears still manufactures a trigger mismatch"; fails=1; } \
+    || echo "PASS: and it does not manufacture a trigger mismatch"
+
+# --- #849 review: the trigger set comes from `on:`, not from the file ---
+#
+# dead_triggers grepped the whole file, so a header comment saying the
+# workflow deliberately has NO schedule derived one. The only way to
+# green was to write a false claim about the workflow into the ledger --
+# the failure #846 was about, manufactured by the gate built to prevent
+# it.
+cat > "$REPO3/.github/workflows/commented.yml" <<'EOF'
+# This workflow deliberately has no schedule: a daily run would cost
+# pool time for nothing, and a schedule here would fire on main only.
+name: commented
+on:
+  workflow_dispatch:
+jobs:
+  a:
+    runs-on: ubuntu-latest
+    steps: [{run: "true"}]
+EOF
+led <<'EOF'
+.github/workflows/cron.yml
+    Reason:  new this cycle.
+    Clears:  when it reaches main.
+    Triggers: workflow_dispatch schedule
+.github/workflows/commented.yml
+    Reason:  new this cycle.
+    Clears:  when it reaches main.
+    Triggers: workflow_dispatch
+EOF
+check "a truthful entry passes beside a comment that mentions schedule" pass "$(verdict3)"
+
+# The opposite direction, or the case above would also pass with the
+# derivation deleted: a REAL schedule inside `on:` must still be derived.
+led <<'EOF'
+.github/workflows/cron.yml
+    Reason:  new this cycle.
+    Clears:  when it reaches main.
+    Triggers: workflow_dispatch
+.github/workflows/commented.yml
+    Reason:  new this cycle.
+    Clears:  when it reaches main.
+    Triggers: workflow_dispatch
+EOF
+check "a real schedule in on: is still derived" rc1 "$(verdict3)"
+grep -F "Write 'Triggers: schedule workflow_dispatch'" "$TMP/out3" >/dev/null \
+    && echo "PASS: and cron.yml is the one named" \
+    || { echo "FAIL: the real schedule was not derived"; fails=1; }
+
+# And a `schedule:` key BELOW the on: block -- inside jobs -- is not a
+# trigger either. `jobs:` is a column-zero key, so it closes on:.
+cat > "$REPO3/.github/workflows/jobkey.yml" <<'EOF'
+name: jobkey
+on:
+  workflow_dispatch:
+jobs:
+  schedule:
+    runs-on: ubuntu-latest
+    steps: [{run: "true"}]
+EOF
+led <<'EOF'
+.github/workflows/cron.yml
+    Reason:  new this cycle.
+    Clears:  when it reaches main.
+    Triggers: workflow_dispatch schedule
+.github/workflows/commented.yml
+    Reason:  new this cycle.
+    Clears:  when it reaches main.
+    Triggers: workflow_dispatch
+.github/workflows/jobkey.yml
+    Reason:  new this cycle.
+    Clears:  when it reaches main.
+    Triggers: workflow_dispatch
+EOF
+check "a job NAMED schedule is not a trigger" pass "$(verdict3)"
+
+rm -f "$REPO3/.github/workflows/commented.yml" "$REPO3/.github/workflows/jobkey.yml"
+
 rm -f "$REPO3/.github/workflows/cron.yml" "$REPO3/.github/workflows/manual3.yml" \
       "$REPO3/.github/dispatch-pending.txt"
 
