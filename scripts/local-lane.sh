@@ -77,7 +77,7 @@ LANE=(
   "shellcheck (scripts+runner+netboot)|shellcheck|shellcheck -S warning scripts/*.sh ci/runner-image/*.sh test/arm64-netboot/*.sh"
   "actionlint|actionlint|actionlint"
   "option-docs drift|-|bash scripts/check-option-docs.sh"
-  "starter-task links|-|bash scripts/check-good-first-issues.sh --static"
+  "starter-task claims|-|bash scripts/check-good-first-issues.sh --static"
   "docs drift|-|bash scripts/check-docs-drift.sh"
   "health contract|-|bash scripts/check-health-contract.sh"
   "plugin-set order|-|bash scripts/check-plugin-set-order.sh"
