@@ -274,11 +274,23 @@ gh_check() {
     fi
 }
 
-# WHAT THESE CONTROLS DO NOT PROVE. Every case here drives the control
-# side with exactly one attestation, so they show the gate sees one
-# attestation in a store containing one -- never that it carries N
-# through as N. A checker that hard-coded the count to 1 would pass all
-# of them.
+# WHAT THE COUNT IS AND IS NOT USED FOR. This comment used to claim that
+# every case drives the control side with exactly one attestation and
+# that a checker hard-coding the count to 1 would pass all of them.
+# Both halves were wrong, and driving it is what showed that.
+#
+# Driven: replacing the parsed count with a literal 1 fails this suite --
+# but on exactly ONE case, "GHCR resolves to zero", because 0 became 1
+# and flipped the control verdict. Every other verdict was unchanged.
+#
+# The reason is that the gate never uses N as a quantity. It asks
+# `ghcr_count -eq 0` and `hub_count -gt 0`: both sides are reduced to
+# zero / non-zero, and N survives only in the human-readable message. So
+# there is no "carries N through as N" behaviour to test -- and the one
+# place N does reach a reader had nothing checking it, which the case
+# below fixes. That case is the mutant's second killer: with the count
+# hard-coded, the control line reads "has 1 attestation(s)" for a store
+# holding three.
 gh_check "the documented state, through gh"        0 2 count:1 http404
 want_in "control OK"
 want_in "no provenance attestation"
@@ -298,6 +310,11 @@ want_in "LOST its provenance"
 gh_check "a transport failure on the control"      2 2 netfail http404
 want_in "control side went dark"
 want_in "no such host"
+
+# The only place the count reaches a human. Three, not one, so a literal
+# stands out from the fixture's usual value.
+gh_check "the control line reports the count it was given"  0 2 count:3 http404
+want_in "has 3 attestation(s)"
 
 # THE CASE THE CHECKER'S HEADER IS ABOUT, and the one that had never run.
 # `gh` exits 0 and prints a JSON error object on stdout. The shape test
