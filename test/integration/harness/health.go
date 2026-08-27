@@ -42,15 +42,13 @@ const pluginExecRoot = "/run/docker/plugins"
 // on the same host must have its own, and a transcribed constant is
 // silently wrong there instead of loudly.
 //
-// An Info call that fails falls back to the daemon default, which is
-// what every caller assumed before and keeps the error surfacing at
-// the read of the file rather than here.
+// The Info call needs a daemon and so stays here; the choice it feeds
+// is chooseDataRoot in dataroot.go, which is untagged so that both of
+// its branches — the answer and the fallback — are covered by the
+// ordinary test lane rather than by nothing.
 func dockerDataRoot(ctx context.Context, cli *docker.Client) string {
 	info, err := cli.Info(ctx)
-	if err != nil || info.DockerRootDir == "" {
-		return "/var/lib/docker"
-	}
-	return info.DockerRootDir
+	return chooseDataRoot(info.DockerRootDir, err)
 }
 
 // PluginSocketPath returns the absolute path to PluginRef's UNIX
