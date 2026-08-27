@@ -65,19 +65,25 @@
 # without writing the code goes red.
 #
 # THE DOMAIN OF THAT CHECK, AND ITS ONE ESCAPE, STATED HERE RATHER THAN
-# DISCOVERED LATER. The suite sees a rule as a LIST ITEM in this block:
-# a line whose first character after the `#` and its indent is `-`, `*`
-# or `+`. A rule written any of those three ways cannot be added
-# without declaring its class -- all three checks cover it, and a case
-# drives each marker separately.
+# DISCOVERED LATER. The suite sees a rule as an INDENTED LIST ITEM in
+# this block, and nothing else: `#`, whitespace, one of `-` `*` `+`,
+# then whitespace. A rule written that way cannot be added without
+# declaring its class -- all three checks cover it, and a case drives
+# each of the three markers separately.
 #
-# A rule written with NO list marker is invisible to all three, and
-# that one is not closable by a better pattern: an unmarked line is
-# indistinguishable from a CONTINUATION of the rule above it, and every
-# rule here has continuations. So it is pinned by a case that asserts
-# the miss, exactly as [unenforced: docs-say-unavailable] is pinned
-# below. If anyone ever makes an unmarked rule detectable, that case
-# goes red and this paragraph has to change with it.
+# Written any other way, a rule is invisible to all three. The domain
+# cannot simply be "every line in the block", because CONTINUATION
+# LINES are part of this format -- every rule below has them -- and a
+# rule written with no marker is indistinguishable from a continuation
+# of the rule above it. That specific escape is the one that cannot be
+# closed by a better pattern; a merely malformed marker could be, and
+# if one ever turns up the pattern is the place to fix it, not this
+# paragraph.
+#
+# So the escape is pinned by a case that asserts the miss, exactly as
+# [unenforced: docs-say-unavailable] is pinned below. If anyone ever
+# makes an unmarked rule detectable, that case goes red and this
+# paragraph has to change with it.
 #
 # This replaces an unqualified "a new rule cannot be added without
 # declaring which class it is in". That was false for `*`, for `+`, and
