@@ -5,24 +5,50 @@
 # The three settings that stand between a fork PR and root on the
 # self-hosted pool (#830).
 #
-# WHAT IS ACTUALLY AT STAKE. Five workflows trigger on `pull_request`
-# AND place jobs on self-hosted runners: coverage-presence, coverage,
-# integration, release-backmerge and test. None of them carries a fork
-# guard -- no `if: github.event.pull_request.head.repo.full_name ==
-# github.repository` anywhere in the tree. The integration lane runs as
-# root. So the approval policy below is not defence in depth; on the day
-# it is relaxed it is the ONLY thing that was stopping fork-authored
-# code from executing there, and nothing in the repository goes red.
+# WHAT IS ACTUALLY AT STAKE. TWO workflows trigger on `pull_request`
+# AND place jobs on self-hosted runners: `coverage.yml` and
+# `integration.yml`. Neither carries a fork guard -- no `if:
+# github.event.pull_request.head.repo.full_name == github.repository`
+# anywhere in the tree. The integration lane runs as root. So the
+# approval policy below is not defence in depth; on the day it is
+# relaxed it is the ONLY thing that was stopping fork-authored code from
+# executing there, and nothing in the repository goes red.
+#
+# THE NUMBER WAS FIVE HERE UNTIL IT WAS MEASURED. This header claimed
+# coverage-presence, release-backmerge and test as well; all three run
+# every job on `ubuntu-latest`. That is not a nit in a security file. A
+# reader acting on the old sentence adds three `if:` conditions that
+# guard nothing and concludes the window is shut -- a false remedy
+# printed beside a real risk, overstating exposure two-and-a-half-fold
+# in the direction that flatters this gate. The population is now
+# DERIVED below and compared against the two named above, so the next
+# time it moves this refuses instead of misinforming.
 #
 # #593 was this class -- an untrusted ref reaching credentialed,
 # root, self-hosted jobs -- and the answer then was a gate.
 #
-# STATED PLAINLY: THIS IS PROPHYLACTIC. No incident sits behind it. The
-# corpus ran at 1 precautionary gate in 60 before this one and #831.
-# That is recorded here, in the header, because the finding of the CI
-# review is that gates get added faster than the reason for them gets
-# recorded -- so the person later deciding whether this can go needs to
-# see "no incident yet" from inside the file, not from an issue.
+# WHY NOT JUST ADD THE FORK GUARD, now that it is two `if:` lines rather
+# than five. Because the guard and the policy do different things: the
+# approval policy is a maintainer-gated YES -- an outside contributor's
+# integration run can be approved and will then execute -- while a fork
+# guard is a permanent NO. It would mean an approved fork PR can never
+# run integration, ever, with no way for the maintainer to grant it.
+# That is a real capability to give up, and it is the reason this is a
+# gate and not two lines, even though two lines would be cheaper and
+# would prevent rather than notice.
+#
+# STATED PLAINLY: THIS IS PROPHYLACTIC. No incident sits behind it.
+# Precautionary gates are a small minority of the corpus -- see
+# `check-apk-pins.sh` for the other shape -- and that is recorded here,
+# in the header, because the finding of the CI review is that gates get
+# added faster than the reason for them gets recorded, so the person
+# later deciding whether this can go needs to see "no incident yet" from
+# inside the file rather than from an issue.
+#
+# The count that used to sit in that sentence is gone on purpose. It
+# measured 60 when written, 62 a day later, and the header never named
+# the population it was counting, so no reader could check it and no
+# author could maintain it. A named example survives; a number rots.
 #
 # THE SETTINGS LIVE IN THE WEB UI, NOT IN THE TREE. That is exactly why
 # they need a gate: `git log` cannot show the change, a diff cannot show
@@ -61,6 +87,55 @@ refuse() {
     echo "::error title=Fork-execution policy cannot be judged::$*" >&2
     exit 2
 }
+
+# THE ENUMERATION NEEDS A WATCHER, OR IT IS A RULE ENFORCED BY READING.
+# The header's whole argument rests on WHICH workflows expose the pool.
+# The settings are watched; the population whose exposure is the reason
+# to watch them was not, so nothing went red the day a third
+# `pull_request` workflow gained a self-hosted job. This gate's own
+# thesis is that a rule nothing executes is not enforced -- and until
+# now this enumeration was one.
+#
+# So derive it and refuse on divergence. `check-dispatch-reachable.sh`
+# is the precedent: derive the subjects, and refuse at zero rather than
+# pass over nothing.
+#
+# THE `on:` BLOCK, NOT THE WHOLE FILE. A file-wide grep for
+# `pull_request` matches `github.event.pull_request...` in an `if:`, and
+# matches prose in a comment -- including the comment above. Both would
+# admit workflows that do not trigger on it at all. The scan below reads
+# the top-level `on:` mapping and nothing else.
+EXPOSED_DECLARED="coverage.yml integration.yml"
+WF_DIR="${WF_DIR:-.github/workflows}"
+
+derive_exposed() {
+    local f
+    shopt -s nullglob
+    for f in "$WF_DIR"/*.yml "$WF_DIR"/*.yaml; do
+        awk -v name="$(basename "$f")" '
+            # Track the top-level `on:` mapping. Any other column-0 key
+            # ends it, so `jobs:` closes the block.
+            /^[A-Za-z_"'"'"'-]+:/ { in_on = ($0 ~ /^(on|"on"|'"'"'on'"'"'):/) }
+            in_on && /(^|[[:space:],[])pull_request([:,\]]|$)/ { pr = 1 }
+            /runs-on:.*self-hosted/ { sh = 1 }
+            END { if (pr && sh) print name }
+        ' "$f"
+    done
+    shopt -u nullglob
+}
+
+exposed_now=$(derive_exposed | sort | tr '\n' ' ')
+exposed_now="${exposed_now% }"
+exposed_want=$(printf '%s\n' $EXPOSED_DECLARED | sort | tr '\n' ' ')
+exposed_want="${exposed_want% }"
+
+if [ -z "$exposed_now" ]; then
+    refuse "derived ZERO workflows that trigger on pull_request AND place a job on a self-hosted runner, while this gate's entire justification is that '$exposed_want' do. Either the pool is no longer reachable from a pull request -- in which case this gate's reason is gone and it should be reconsidered, not left passing -- or, far more likely, the scan over $WF_DIR stopped matching."
+fi
+
+if [ "$exposed_now" != "$exposed_want" ]; then
+    refuse "the set of workflows exposing the self-hosted pool to pull requests has CHANGED. This header documents '$exposed_want'; the tree now has '$exposed_now'. That enumeration is the reason this gate exists and the thing a reader acts on, so it is corrected here before any setting is judged. If the new set is right, update EXPOSED_DECLARED and the header together."
+fi
 
 # ask <endpoint> <jq> -> prints `value:<v>` | `error:<text>`
 #

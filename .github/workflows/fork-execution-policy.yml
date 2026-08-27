@@ -3,9 +3,9 @@ name: Fork execution policy
 # Are the three settings that stand between a fork PR and root on the
 # self-hosted pool still what they were? (#830)
 #
-# Five workflows trigger on `pull_request` AND place jobs on self-hosted
-# runners: Coverage presence, Coverage, Integration, Release back-merge and
-# Test. None carries a fork guard — there is no
+# TWO workflows trigger on `pull_request` AND place jobs on self-hosted
+# runners: `coverage.yml` and `integration.yml`. Neither carries a fork guard
+# — there is no
 # `github.event.pull_request.head.repo.full_name == github.repository`
 # anywhere in the tree — and the integration lane runs as root. So the
 # approval policy is not one layer of several; on the day it is relaxed it is
@@ -14,10 +14,19 @@ name: Fork execution policy
 # #593 was this class — an untrusted ref reaching credentialed, root,
 # self-hosted jobs — and the answer then was a gate.
 #
-# THIS IS PROPHYLACTIC AND SAYS SO. No incident sits behind it. The gate
-# corpus ran at 1 precautionary gate in 60 before this and the action-pin
-# gate. That is recorded in the script's own header too, where whoever later
-# weighs deleting it will actually be looking.
+# THIS SAID FIVE UNTIL IT WAS MEASURED, naming Coverage presence, Release
+# back-merge and Test as well; all three run every job on `ubuntu-latest`.
+# Whoever acted on that sentence would have added three `if:` conditions that
+# guard nothing and concluded the window was shut. The script now DERIVES this
+# population and refuses when it diverges from the two named above, so the
+# enumeration is checked by something that goes red rather than by a reader.
+#
+# THIS IS PROPHYLACTIC AND SAYS SO. No incident sits behind it. Precautionary
+# gates are a small minority of the corpus — `check-apk-pins.sh` is the other
+# shape — which is recorded in the script's own header too, where whoever
+# later weighs deleting it will actually be looking. The count that used to
+# sit here is gone on purpose: it measured 60 when written and 62 a day
+# later, and named no population anyone could check it against.
 #
 # WHY THIS IS NOT IN test.yaml, twice over. First, for the reason Label
 # taxonomy gives: the claim can become false with nobody touching the tree,
@@ -40,8 +49,15 @@ name: Fork execution policy
 # cannot: if the approval policy is relaxed, the exposure starts with the next
 # fork pull request, not with the next scheduled run. A daily cron therefore
 # leaves a window, and the honest description of this gate is "notices within
-# a day", not "prevents". Closing the window needs a fork guard in the five
+# a day", not "prevents". Closing the window needs a fork guard in those TWO
 # workflows, which is a change to those workflows and not to this one.
+#
+# AND IT IS NOT FREE, which is why two `if:` lines have not simply been added.
+# The approval policy is a maintainer-gated YES: an outside contributor's
+# integration run can be approved and will then execute. A fork guard is a
+# permanent NO — an approved fork PR could never run integration, with no way
+# for the maintainer to grant it. That capability is the price, and it is the
+# reason this gate notices rather than prevents.
 #
 # THE TOKEN IS THE ONE SCORECARD ALREADY USES. A read-only, single-repo
 # fine-grained PAT with Administration: read. The default GITHUB_TOKEN cannot

@@ -68,7 +68,22 @@ run() {
     n=$((n + 1))
     PATH="$STUB:$PATH" REPO="owner/name" bash "$CHECK" > "$TMP/out" 2>&1
     local got=$? calls
-    calls=$(grep -c . "$GH_CALLS" 2>/dev/null || echo 0)
+    # `grep -c` PRINTS 0 AND EXITS 1 on no match, so `|| echo 0` appended
+    # a SECOND zero and `calls` became two lines. `[ "0\n0" -ne 0 ]` is
+    # not false -- it is an ERROR, exit 2, and inside an `||` chain that
+    # reads exactly like the assertion holding. Every zero-call case
+    # would print PASS with its call count unchecked. Nothing expected
+    # zero calls until the population observer landed, so the defect
+    # shipped unreachable. The guard below is kept because an assertion
+    # that cannot be evaluated must not be indistinguishable from one
+    # that passed.
+    calls=$(grep -c . "$GH_CALLS" 2>/dev/null); calls=${calls:-0}
+    case "$calls" in
+        ''|*[!0-9]*)
+            echo "FAIL: $name -- the call counter read '$calls', which is not a number."
+            echo "    An assertion that cannot be evaluated is not an assertion that passed."
+            failures=$((failures + 1)); return ;;
+    esac
     if [ "$got" -ne "$want" ] || [ "$calls" -ne "$wantcalls" ]; then
         echo "FAIL: $name -- want exit $want / $wantcalls call(s), got $got / $calls"
         [ "$calls" -eq 0 ] && echo "    the stub was never invoked -- PATH did not take, so this case tested nothing"
@@ -86,6 +101,93 @@ run() {
 # --- the documented state ---------------------------------------------
 set_values
 run "all three as documented" 0 3 "all 3 settings are as documented"
+
+# --- the enumeration this gate's argument rests on ---------------------
+# The header names the workflows that expose the pool to pull requests.
+# Until the observer landed, that sentence was checked by nobody -- and
+# it was WRONG, claiming five where the tree has two. These cases drive
+# the watcher that now stands behind it.
+#
+# Every case here expects ZERO gh calls: the population is judged before
+# any setting is queried, because a header whose premise has moved
+# misinforms whatever the settings say.
+mkwf() { # DIR -- the two really-exposed workflows
+    mkdir -p "$1"
+    printf 'name: coverage\non:\n  pull_request:\njobs:\n  c:\n    runs-on: [self-hosted, dhcp-ci]\n    steps: [{run: "true"}]\n' > "$1/coverage.yml"
+    printf 'name: integration\non:\n  pull_request:\njobs:\n  i:\n    runs-on: [self-hosted, dhcp-ci]\n    steps: [{run: "true"}]\n' > "$1/integration.yml"
+}
+
+# runwf NAME WANT_EXIT WANT_CALLS DIR [SUBSTR...]
+runwf() {
+    local name="$1" want="$2" wantcalls="$3" dir="$4"; shift 4
+    : > "$GH_CALLS"
+    n=$((n + 1))
+    PATH="$STUB:$PATH" REPO="owner/name" WF_DIR="$dir" bash "$CHECK" > "$TMP/out" 2>&1
+    local got=$? calls
+    # `grep -c` PRINTS 0 AND EXITS 1 on no match, so `|| echo 0` appended
+    # a SECOND zero and `calls` became two lines. `[ "0\n0" -ne 0 ]` is
+    # not false -- it is an ERROR, exit 2, and inside an `||` chain that
+    # reads exactly like the assertion holding. Every zero-call case
+    # would print PASS with its call count unchecked. Nothing expected
+    # zero calls until the population observer landed, so the defect
+    # shipped unreachable. The guard below is kept because an assertion
+    # that cannot be evaluated must not be indistinguishable from one
+    # that passed.
+    calls=$(grep -c . "$GH_CALLS" 2>/dev/null); calls=${calls:-0}
+    case "$calls" in
+        ''|*[!0-9]*)
+            echo "FAIL: $name -- the call counter read '$calls', which is not a number."
+            echo "    An assertion that cannot be evaluated is not an assertion that passed."
+            failures=$((failures + 1)); return ;;
+    esac
+    if [ "$got" -ne "$want" ] || [ "$calls" -ne "$wantcalls" ]; then
+        echo "FAIL: $name -- want exit $want / $wantcalls call(s), got $got / $calls"
+        sed 's/^/    /' "$TMP/out"; failures=$((failures + 1)); return
+    fi
+    local missing=""
+    for s in "$@"; do grep -F -- "$s" "$TMP/out" >/dev/null || missing="$missing '$s'"; done
+    if [ -n "$missing" ]; then
+        echo "FAIL: $name -- exit and calls as wanted, output lacks:$missing"
+        sed 's/^/    /' "$TMP/out"; failures=$((failures + 1)); return
+    fi
+    echo "PASS: $name (exit $got, $calls gh call(s))"
+}
+
+set_values
+
+WFOK="$TMP/wf-ok"; mkwf "$WFOK"
+runwf "the declared population is the derived one" 0 3 "$WFOK"
+
+# The failure that was invisible: a THIRD workflow gains a self-hosted
+# job on pull_request and the header keeps claiming two.
+WF3="$TMP/wf-three"; mkwf "$WF3"
+printf 'name: newlane\non:\n  pull_request:\njobs:\n  n:\n    runs-on: [self-hosted, dhcp-ci]\n    steps: [{run: "true"}]\n' > "$WF3/newlane.yml"
+runwf "a third exposed workflow refuses before any setting is read" 2 0 "$WF3" \
+    "newlane.yml" "has CHANGED"
+
+# And the other direction: the exposure disappearing entirely. That is
+# this gate's reason evaporating, which must be said out loud rather
+# than passing quietly.
+WF0="$TMP/wf-none"; mkdir -p "$WF0"
+printf 'name: hosted\non:\n  pull_request:\njobs:\n  h:\n    runs-on: ubuntu-latest\n    steps: [{run: "true"}]\n' > "$WF0/hosted.yml"
+runwf "zero exposed workflows refuses rather than passing" 2 0 "$WF0" "ZERO workflows"
+
+# --- the two false positives that produced the wrong number ------------
+# A `pull_request` trigger with every job hosted is NOT exposure. This
+# is exactly what coverage-presence, release-backmerge and test are, and
+# counting them is how the header came to say five.
+WFH="$TMP/wf-hosted"; mkwf "$WFH"
+printf 'name: hostedonly\non:\n  pull_request:\njobs:\n  h:\n    runs-on: ubuntu-latest\n    steps: [{run: "true"}]\n' > "$WFH/hostedonly.yml"
+runwf "a pull_request workflow with only hosted jobs is not exposure" 0 3 "$WFH"
+
+# A self-hosted job in a workflow that merely MENTIONS pull_request --
+# in an `if:` expression, or in prose -- does not trigger on it. A
+# file-wide grep counts it; reading the `on:` block does not.
+WFM="$TMP/wf-mention"; mkwf "$WFM"
+printf 'name: mentions\n# guarded on github.event.pull_request.head.repo.full_name\non:\n  push:\n    branches: [main]\njobs:\n  m:\n    if: github.event.pull_request.head.repo.full_name == github.repository\n    runs-on: [self-hosted, dhcp-ci]\n    steps: [{run: "true"}]\n' > "$WFM/mentions.yml"
+runwf "mentioning pull_request in an if: is not a pull_request trigger" 0 3 "$WFM"
+
+set_values
 
 # --- each setting drifts on its own, and the message names the stakes --
 set_values "first_time_contributors"
