@@ -40,6 +40,24 @@ import (
 // That is the population a wiring gate is aimed at, and the limit above
 // is the honest boundary rather than a to-do.
 //
+// CALLED IS NOT REACHED, and this is the boundary most likely to be
+// over-read given how much else this file states. Every row asks
+// whether anything BYPASSES the wrapper. None asks whether the wrapper
+// is on a live path. So a counter can stop firing entirely with all
+// rows green: leave the wrapper as the callee's only caller, but let
+// the wrapper itself be reached only from code nothing calls, and the
+// table sees one caller and passes while the counter fires never.
+// Driven, not reasoned: removing a row's real call site and adding a
+// dead production function in its place leaves the whole table green.
+// A self-call is excluded, so the one-hop version of this is closed;
+// a two-hop dead chain walks straight through.
+//
+// Closing it properly means a transitive walk from the exported surface
+// -- reachability, not call counting -- which is a different gate and a
+// larger one. It is deliberately not built here. What this file
+// protects is the bypass, and dead code is caught by the coverage
+// ratchet and by review rather than by this table.
+//
 // The property is about Go source, so this is a Go test using go/ast
 // rather than a shell gate: no lane entry, no OUT_OF_LANE declaration
 // and no meta-test of its own, because it IS its own meta-test. Add a
@@ -136,6 +154,83 @@ func assertSoleCaller(t *testing.T, callee, wrapper, why string) {
 		t.Fatal("no production Go files parsed; this test would otherwise pass having read nothing")
 	}
 
+	callers := callSitesOf(fset, files, callee)
+
+	// AND THE PRESENCE CHECK BELOW IS ON THE CALLEE, WHICH STOPS ONE
+	// LEVEL SHORT (#790). "The callee is reached, and only through the
+	// wrapper" is satisfied in full while the WRAPPER itself is called by
+	// nothing: the callee's only call site is inside the wrapper, so it
+	// is present and exclusive, and the counter is nonetheless a
+	// permanent zero in /metrics.
+	//
+	// Measured: reverting countOutageTick's one production call site to
+	// its pre-#769 form left the package green -- 385 tests, all four
+	// rows passing -- while dhcp_server_policy_timeouts stopped being
+	// reachable. Every test of that counter still passed, because they
+	// all drive the wrapper.
+	//
+	// Self-calls do not count: a wrapper that only recurses is reached
+	// from nothing, and would satisfy a naive presence check the same way
+	// zero callers satisfies exclusivity.
+	wrapperCallers := callSitesOf(fset, files, wrapper)
+	var reached []string
+	for _, c := range wrapperCallers {
+		if !strings.HasPrefix(c, wrapper+" ") {
+			reached = append(reached, c)
+		}
+	}
+	if len(reached) == 0 {
+		t.Fatalf("nothing in production calls %s, the wrapper for %s.\n"+
+			"  The callee's own presence and exclusivity below can BOTH still hold here: %s is\n"+
+			"  called only from %s, and %s is called from nowhere -- so the counter fires never\n"+
+			"  while every test of it passes, because they all drive the wrapper.\n"+
+			"  %s.\n"+
+			"  The likeliest cause is a call site reverted to increment the counter directly, or\n"+
+			"  inlined. Restore the call to %s; do not delete this row.",
+			wrapper, callee, callee, wrapper, wrapper, why, wrapper)
+	}
+
+	// TWO-SIDED ON PURPOSE, and this is the half that is easy to lose.
+	// "No caller outside the wrapper" is satisfied by ZERO callers --
+	// which is the very mutant this test exists to kill, the call being
+	// deleted. Phrased that way it would go green over the defect it
+	// was written for, for every row at once, silently and forever. So
+	// presence is asserted before exclusivity.
+	if len(callers) == 0 {
+		t.Fatalf("nothing in production calls %s.\n"+
+			"  The likeliest cause is that %s stopped calling it, in which case the counter it wraps\n"+
+			"  now fires never and every test of that counter still passes -- they all drive the\n"+
+			"  wrapper.\n"+
+			"  %s.\n"+
+			"  If %s was merely renamed, rename it in this table too; do not delete the row, or this\n"+
+			"  test guards nothing while continuing to report green.",
+			callee, wrapper, why, callee)
+	}
+	for _, c := range callers {
+		if !strings.HasPrefix(c, wrapper+" ") {
+			t.Errorf("%s is called from %s.\n"+
+				"  It must be called only from %s, which is where the counter is incremented.\n"+
+				"  %s.\n"+
+				"  Route the call through %s.",
+				callee, c, wrapper, why, wrapper)
+		}
+	}
+	if len(callers) > 1 {
+		t.Errorf("%s has %d production call sites, want 1: %v", callee, len(callers), callers)
+	}
+}
+
+// callSitesOf returns every production call site of `name` in the parsed
+// files, as "enclosingFunc (file:line:col)".
+//
+// EXTRACTED SO BOTH SIDES ARE MATCHED THE SAME WAY (#790). The wrapper's
+// presence is now asserted as well as the callee's, and a second, simpler
+// scan for the wrapper would have been a different matcher: it would miss
+// the bind-laundering forms this one was extended to catch, so the two
+// halves of a two-sided assertion would disagree about what a call site
+// is. One matcher, asked twice.
+func callSitesOf(fset *token.FileSet, files []*ast.File, name string) []string {
+	callee := name
 	var callers []string
 	seenAt := map[string]bool{}
 	note := func(fnName string, pos token.Pos) {
@@ -240,35 +335,7 @@ func assertSoleCaller(t *testing.T, callee, wrapper, why string) {
 			})
 		}
 	}
-
-	// TWO-SIDED ON PURPOSE, and this is the half that is easy to lose.
-	// "No caller outside the wrapper" is satisfied by ZERO callers --
-	// which is the very mutant this test exists to kill, the call being
-	// deleted. Phrased that way it would go green over the defect it
-	// was written for, for every row at once, silently and forever. So
-	// presence is asserted before exclusivity.
-	if len(callers) == 0 {
-		t.Fatalf("nothing in production calls %s.\n"+
-			"  The likeliest cause is that %s stopped calling it, in which case the counter it wraps\n"+
-			"  now fires never and every test of that counter still passes -- they all drive the\n"+
-			"  wrapper.\n"+
-			"  %s.\n"+
-			"  If %s was merely renamed, rename it in this table too; do not delete the row, or this\n"+
-			"  test guards nothing while continuing to report green.",
-			callee, wrapper, why, callee)
-	}
-	for _, c := range callers {
-		if !strings.HasPrefix(c, wrapper+" ") {
-			t.Errorf("%s is called from %s.\n"+
-				"  It must be called only from %s, which is where the counter is incremented.\n"+
-				"  %s.\n"+
-				"  Route the call through %s.",
-				callee, c, wrapper, why, wrapper)
-		}
-	}
-	if len(callers) > 1 {
-		t.Errorf("%s has %d production call sites, want 1: %v", callee, len(callers), callers)
-	}
+	return callers
 }
 
 // trailingName returns the last identifier of a receiver expression --
