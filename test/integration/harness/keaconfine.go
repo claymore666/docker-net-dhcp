@@ -61,7 +61,10 @@ var (
 	// Root-only on a stock Debian (kernel.dmesg_restrict=1), which the
 	// integration suite is.
 	readKernelLog = func() (string, error) {
-		out, err := exec.Command("dmesg").Output()
+		// Pinned like every other subprocess this harness starts: an
+		// unpinned dmesg speaks the host's language, and this reads its
+		// output. See clocale.go.
+		out, err := withCLocale(exec.Command("dmesg")).Output()
 		return string(out), err
 	}
 )

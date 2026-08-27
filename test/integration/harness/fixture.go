@@ -591,35 +591,6 @@ func (f *Fixture) CountLogLines(substrings ...string) int {
 	return countMatchingLines(f.dnsmasqLog, substrings...)
 }
 
-// withCLocale pins a fixture server's messages to English before it is
-// started, and every DHCP server this harness launches goes through it.
-//
-// WHY. dnsmasq is translated. On a host with a German locale it writes
-// "DHCP, Sockets exklusiv an die Schnittstelle … gebunden" where an
-// English one writes "sockets bound exclusively to interface …", and
-// waitChallengerReady — which has no port to poll, because the socket is
-// in another namespace — matches on the English text. Five server-policy
-// tests failed on exactly that, against a server that had started
-// correctly and said so in the operator's language.
-//
-// The sharper reason is the one that does not announce itself. The
-// #800 assertions read these same logs to prove an ABSENCE: zero
-// DHCPRELEASE lines for an address. Protocol tokens happen not to be
-// translated today, but nothing guarantees that, and a token that got
-// translated would make every one of those assertions pass VACUOUSLY —
-// the matcher would find nothing because it no longer recognised
-// anything, and report the clean result the test is looking for. The
-// canned log in releasematcher_test.go is English, so the control and
-// its subject would have drifted apart by locale alone.
-//
-// LC_ALL beats LANG and LC_MESSAGES, so one variable settles it. The
-// rest of the environment is inherited: os.Environ() first, override
-// after.
-func withCLocale(cmd *exec.Cmd) *exec.Cmd {
-	cmd.Env = append(os.Environ(), "LC_ALL=C", "LANG=C")
-	return cmd
-}
-
 // countMatchingLines is the one implementation behind both
 // CountLogLines and CountBridgeLogLines.
 //
