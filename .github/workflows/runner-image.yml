@@ -12,6 +12,15 @@ on:
       - ci/runner-image/**
       - .github/workflows/runner-image.yml
   workflow_dispatch:
+    inputs:
+      promote_latest:
+        description: >-
+          Move the CI pool's :latest to this build. Leave off unless you
+          are deliberately repointing every self-hosted runner at this
+          branch's image. The :<sha7> and per-arch tags publish either
+          way, so a branch image stays testable by digest without this.
+        type: boolean
+        default: false
 
 # Top-level is read-only; the write scope GHCR push needs is granted
 # only on the build job below (least privilege — Scorecard #160).
@@ -120,6 +129,11 @@ jobs:
       contents: read
       packages: write
     steps:
+      # This job runs scripts/runner-image-tags.sh, so it needs the repo.
+      # It had no checkout before #812 because it only ever shelled out to
+      # buildx.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
       - name: Log in to GHCR
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
@@ -127,13 +141,38 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Which tags this publishes is decided by scripts/runner-image-tags.sh,
+      # not by an `if:` here — see that file's header (#812). `latest` is
+      # emitted last and only when asked for, so a dispatch from a branch
+      # cannot repoint the pool as a side effect of dispatching at all.
       - name: Create and push manifest list
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          PROMOTE_LATEST: ${{ inputs.promote_latest }}
         run: |
-          for tag in "latest" "${GITHUB_SHA::7}"; do
+          SHA7="${GITHUB_SHA::7}"
+          export SHA7
+          # Command substitution, not `mapfile < <(...)`: a process
+          # substitution's exit status is not checked, so a failing script
+          # would yield an empty tag list and this job would go green
+          # having published nothing at all.
+          tags_out="$(bash scripts/runner-image-tags.sh)"
+          if [ -z "$tags_out" ]; then
+            echo "::error title=No tags::runner-image-tags.sh produced nothing." >&2
+            exit 1
+          fi
+          mapfile -t tags <<< "$tags_out"
+          printf 'Publishing: %s\n' "${tags[*]}"
+          for tag in "${tags[@]}"; do
             docker buildx imagetools create -t "${IMAGE}:${tag}" \
-              "${IMAGE}:${GITHUB_SHA::7}-amd64" \
-              "${IMAGE}:${GITHUB_SHA::7}-arm64"
+              "${IMAGE}:${SHA7}-amd64" \
+              "${IMAGE}:${SHA7}-arm64"
           done
-
-      - name: Show what was published
-        run: docker buildx imagetools inspect "${IMAGE}:latest"
+          # Inspect what this run actually published. Inspecting :latest
+          # unconditionally would report a tag this run may not have
+          # touched, which reads as confirmation and is not one.
+          for tag in "${tags[@]}"; do
+            echo "== ${IMAGE}:${tag}"
+            docker buildx imagetools inspect "${IMAGE}:${tag}"
+          done
