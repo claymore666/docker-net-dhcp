@@ -483,8 +483,7 @@ type Plugin struct {
 	// kernel actually assigned when METRICS_ADDR named port 0.
 	metricsListener net.Listener
 
-	// mu guards joinHints, persistentDHCP, endpointFingerprints and
-	// endpointDispositions.
+	// mu guards joinHints, persistentDHCP, and endpointFingerprints.
 	// libnetwork dispatches CreateEndpoint / Join / Leave from
 	// concurrent HTTP handlers, each of which touches one or more
 	// of these maps; without the mutex the race detector reproduces
@@ -499,14 +498,6 @@ type Plugin struct {
 	// holds these) has already been taken by Leave, so we keep our
 	// own copy.
 	endpointFingerprints map[string]endpointFingerprint
-
-	// endpointDispositions arbitrates the two mutually exclusive
-	// things that can happen to a departing endpoint's address —
-	// reserved by a tombstone for the restart, or handed back by the
-	// orphan reclaim. Both used to happen at once (#800). See
-	// endpoint_disposition.go for why this is a compare-and-set and
-	// why it is pruned on age rather than removed at DeleteEndpoint.
-	endpointDispositions map[string]endpointDispositionClaim
 
 	// tombstones owns the tombstones.json read-modify-write path and
 	// the lock that serialises it (tombstone_store.go). Held only
@@ -993,29 +984,6 @@ type Plugin struct {
 	// not read as a plugin fault.
 	orphanedLeasesReleased       atomic.Int32
 	orphanedLeaseReleaseFailures atomic.Int32
-
-	// orphanReleasesSuppressed / tombstonesSuppressed are the two
-	// sides of the #800 arbitration, and they are counted separately
-	// because they mean opposite things to an operator.
-	//
-	// orphanReleasesSuppressed is the healthy one: a tombstone got
-	// there first, so the lease is being kept for the restart instead
-	// of handed back. It should track the restart rate on a host that
-	// restarts containers, and a host that never does should read
-	// zero. Nothing is lost — the address is still ours.
-	//
-	// tombstonesSuppressed is the one that costs something: the
-	// reclaim got there first and gave the lease back, so this
-	// container comes back on a NEW MAC and address rather than its
-	// own. That is a real degradation of the restart-stability
-	// feature, and the honest one — promising an address we have just
-	// handed to the server is what #800 was.
-	//
-	// Neither participates in Healthy, for the same reason the orphan
-	// counters above do not: an ordinary container lifecycle must not
-	// read as a plugin fault.
-	orphanReleasesSuppressed atomic.Int32
-	tombstonesSuppressed     atomic.Int32
 
 	// parentGate serialises child-link creation per parent NIC, so an
 	// asynchronous orphan-lease reclaim cannot hold a parent in one
@@ -2030,7 +1998,6 @@ func NewPlugin(opts Options) (*Plugin, error) {
 		joinHints:            make(map[string]joinHint),
 		persistentDHCP:       make(map[string]*dhcpManager),
 		endpointFingerprints: make(map[string]endpointFingerprint),
-		endpointDispositions: make(map[string]endpointDispositionClaim),
 	}
 	p.ledger = newLeaseLedger(filepath.Join(stateDir, ledgerFileName), &p.ledgerWriteFailures)
 

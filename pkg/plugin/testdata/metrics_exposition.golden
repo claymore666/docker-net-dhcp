@@ -168,14 +168,6 @@ net_dhcp_orphaned_leases_released_total 7470866
 # TYPE net_dhcp_orphaned_lease_release_failures_total counter
 net_dhcp_orphaned_lease_release_failures_total 5219398
 
-# HELP net_dhcp_orphan_releases_suppressed_total Orphaned-lease reclaims skipped because a tombstone already reserved the address for a restart, so the lease is kept rather than handed back. Tracks the container-restart rate on this host.
-# TYPE net_dhcp_orphan_releases_suppressed_total counter
-net_dhcp_orphan_releases_suppressed_total 7691891
-
-# HELP net_dhcp_tombstones_suppressed_total Tombstones not written because the orphaned-lease reclaim had already handed the lease back, so that container restarts onto a new MAC and address instead of its own. Restart stability was lost for that container.
-# TYPE net_dhcp_tombstones_suppressed_total counter
-net_dhcp_tombstones_suppressed_total 4484227
-
 # HELP net_dhcp_parent_link_waits_total Endpoint creations that waited for their parent interface to appear.
 # TYPE net_dhcp_parent_link_waits_total counter
 net_dhcp_parent_link_waits_total 5247821

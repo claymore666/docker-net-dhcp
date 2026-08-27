@@ -152,38 +152,10 @@ func (p *Plugin) spawnOrphanRelease(m *dhcpManager) {
 		return
 	}
 	m.orphanReleaseOnce.Do(func() {
-		endpointID := m.joinReq.EndpointID
-
-		// Stand down if a tombstone already reserved this endpoint's
-		// address for the restart that is coming (#800).
-		//
-		// The two are contradictory instructions about one lease:
-		// the tombstone says the next CreateEndpoint re-requests
-		// exactly this MAC and these addresses, this says hand them
-		// back. Running both is what produced the restart 500 — the
-		// reclaim's link wears the RECORDED MAC so the server
-		// recognises the releasing identity, the restarting child
-		// inherits the same MAC from the tombstone, and the kernel
-		// refuses the second macvlan child on the parent with
-		// EADDRINUSE. Removing the collision by widening a lock or
-		// lengthening a budget would have left the contradiction
-		// underneath it: a window in which the server is told the
-		// lease is free while the container is claiming it.
-		//
-		// Claimed BEFORE the goroutine starts, not inside it, so the
-		// decision is ordered against DeleteEndpoint by the call
-		// rather than by the scheduler.
-		if !p.claimEndpointDisposition(endpointID, dispositionReleased) {
-			p.orphanReleasesSuppressed.Add(1)
-			log.WithField("endpoint", shortID(endpointID)).
-				Debug("Not releasing the orphaned lease: a tombstone reserves it for the restart")
-			return
-		}
-
 		p.orphanReleases.Add(1)
 		go func() {
 			defer p.orphanReleases.Done()
-			p.releaseOrphanedLease(m, endpointID)
+			p.releaseOrphanedLease(m, m.joinReq.EndpointID)
 		}()
 	})
 }

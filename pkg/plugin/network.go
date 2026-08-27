@@ -1257,27 +1257,8 @@ func (p *Plugin) DeleteEndpoint(ctx context.Context, r DeleteEndpointRequest) er
 	// that this one container does not keep its MAC across a restart,
 	// which is the correct price for a hostname the plugin would not
 	// put in a DHCP packet.
-	//
-	// And it is skipped when the orphan reclaim already handed this
-	// endpoint's lease back (#800). A tombstone is a promise that the
-	// next CreateEndpoint re-requests exactly this MAC and these
-	// addresses; making that promise about a lease we have just
-	// returned to the server is a promise about an address the server
-	// is free to give to somebody else. The claim is a compare-and-set
-	// rather than a look at the reclaim, because the reclaim runs from
-	// a goroutine ordered against this path neither way — whoever gets
-	// there first decides, and the loser stands down.
-	if fp, ok := p.takeEndpoint(r.EndpointID); ok && modeKnown && mode != ModeIPvlan && !fp.HostnameRefused && fp.MAC != "" {
-		if p.claimEndpointDisposition(r.EndpointID, dispositionReserved) {
-			p.addTombstone(r.NetworkID, fp.Hostname, fp.MAC, fp.IPv4, fp.IPv6)
-		} else {
-			p.tombstonesSuppressed.Add(1)
-			log.WithFields(log.Fields{
-				"network":  shortID(r.NetworkID),
-				"endpoint": shortID(r.EndpointID),
-				"mac":      fp.MAC,
-			}).Info("Orphaned lease already handed back, so no tombstone; this container restarts onto a new MAC and address")
-		}
+	if fp, ok := p.takeEndpoint(r.EndpointID); ok && modeKnown && mode != ModeIPvlan && !fp.HostnameRefused {
+		p.addTombstone(r.NetworkID, fp.Hostname, fp.MAC, fp.IPv4, fp.IPv6)
 	}
 
 	if mode == ModeMacvlan || mode == ModeIPvlan {

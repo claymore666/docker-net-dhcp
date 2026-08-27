@@ -656,26 +656,6 @@ type HealthResponse struct {
 	// failures flat is the mechanism working.
 	OrphanedLeasesReleased       int32 `json:"orphaned_leases_released"`
 	OrphanedLeaseReleaseFailures int32 `json:"orphaned_lease_release_failures"`
-	// OrphanReleasesSuppressed / TombstonesSuppressed are the two
-	// outcomes of the arbitration that keeps a departing endpoint's
-	// address from being reserved for a restart and handed back to the
-	// server at the same time (#800).
-	//
-	// OrphanReleasesSuppressed is the healthy outcome: a tombstone got
-	// there first, so the lease is kept for the restart rather than
-	// released. Expect it to track the container-restart rate.
-	//
-	// TombstonesSuppressed is the outcome that costs something: the
-	// reclaim got there first, so this container comes back on a new
-	// MAC and address instead of its own. Nothing is broken — the
-	// lease really was handed back, and promising it anyway is the
-	// defect this arbitration removes — but restart stability was lost
-	// for that container, so a rate climbing here is worth reading.
-	//
-	// Neither is Healthy-affecting; both describe an ordinary
-	// container lifecycle rather than a plugin fault.
-	OrphanReleasesSuppressed int32 `json:"orphan_releases_suppressed"`
-	TombstonesSuppressed     int32 `json:"tombstones_suppressed"`
 	// ParentLinkWaits / ParentLinkWaitTimeouts cover contention on a
 	// shared parent NIC. A parent is a macvlan port or an ipvlan port,
 	// never both, so an orphan-lease reclaim holding one asynchronously
@@ -891,8 +871,6 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		DisplacedStops:               p.displacedStopsTotal.Load(),
 		OrphanedLeasesReleased:       p.orphanedLeasesReleased.Load(),
 		OrphanedLeaseReleaseFailures: p.orphanedLeaseReleaseFailures.Load(),
-		OrphanReleasesSuppressed:     p.orphanReleasesSuppressed.Load(),
-		TombstonesSuppressed:         p.tombstonesSuppressed.Load(),
 		ParentLinkWaits:              p.parentLinkWaits.Load(),
 		ParentLinkWaitTimeouts:       p.parentLinkWaitTimeouts.Load(),
 		LedgerWriteFailures:          p.ledgerWriteFailures.Load(),
