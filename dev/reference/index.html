@@ -2181,7 +2181,7 @@ default because DDNS registration is a deliberate network-policy choice.</p>
 </tr>
 <tr>
 <td><code>com.docker.network.endpoint.ifname</code></td>
-<td>(v1.0.0+) Request a specific interface name inside the container (Compose <code>interface_name</code>, engine 28+; or this key under <code>driver_opts</code>, any engine). The plugin validates the name (≤15 bytes, kernel charset — invalid names fail the attach with a clear error) and returns it in its Join response. <strong>Current engine limitation:</strong> moby's remote-driver layer discards the returned name (<code>drivers/remote/driver.go</code> passes an empty <code>DstName</code>), so engines do not yet apply it for <em>plugin</em> drivers — built-in drivers only. The plugin side is ready; the rename activates as soon as the upstream pass-through ships. Until then interfaces stay <code>ethN</code> in attach order.</td>
+<td>(v1.0.0+) Request a specific interface name inside the container (Compose <code>interface_name</code>, engine 28+; or this key under <code>driver_opts</code>, any engine). The plugin validates the name (≤15 bytes, kernel charset — invalid names fail the attach with a clear error) and returns it in its Join response. <strong>Engine support:</strong> moby's remote-driver layer discarded the returned name (<code>drivers/remote/driver.go</code> passed an empty <code>DstName</code>) until <a href="https://github.com/moby/moby/pull/52866">moby/moby#52866</a>, merged to moby master on 2026-08-26 and milestoned for engine <strong>29.8.0</strong>. No <em>released</em> engine carries it yet (latest 29.7.2 as of 2026-08-27), so on 29.7.x and older the name is still not applied for <em>plugin</em> drivers — built-in drivers only, and interfaces stay <code>ethN</code> in attach order. The plugin side is ready; the rename activates by itself on the first engine carrying the pass-through, with no change here.</td>
 </tr>
 </tbody>
 </table>
@@ -3000,8 +3000,9 @@ external (shareable across projects, survives <code>compose down</code>):</p>
 </code></pre></div>
 <p>Multi-network containers work (one plugin network per container is
 the <em>supported</em> shape; multiple attach, but interface naming order is
-engine-determined until moby's remote-driver <code>interface_name</code>
-pass-through ships — see the <code>com.docker.network.endpoint.ifname</code> row
+engine-determined on any engine without moby's remote-driver
+<code>interface_name</code> pass-through, which is merged upstream but not in a
+released engine yet — see the <code>com.docker.network.endpoint.ifname</code> row
 above and issue #125).</p>
 <h3 id="the-baseoverride-merge-trap">The base/override merge trap<a class="headerlink" href="#the-baseoverride-merge-trap" title="Permanent link">&para;</a></h3>
 <p>Compose merges the top-level <code>networks:</code> map <strong>key by key</strong>, not file by
