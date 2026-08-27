@@ -157,6 +157,136 @@ func (p *Plugin) registerDHCPManagerIfAbsent(endpointID string, m *dhcpManager) 
 GO
 check "one critical section passes" clean "$(run "$d")"
 
+# --- rule 4: bound, and never stopped (#682) ---------------------------
+# The shape rules 1-3 cannot see. Every one of them is satisfied: the
+# result is bound, not discarded, not blanked. The displaced client's
+# dhcpcd runs on regardless. Deleting the stop from the real Join left
+# the whole pkg/plugin unit suite green and all 53 local-lane checks
+# green, this gate included -- which is why rule 4 exists.
+d=$(mk bound-not-stopped)
+cat > "$d/network.go" <<'GO'
+package plugin
+
+func (p *Plugin) join(endpointID string, m *dhcpManager) {
+	if displaced := p.registerDHCPManager(endpointID, m); displaced != nil {
+		p.displacedStopsTotal.Add(1)
+		_ = displaced
+	}
+}
+GO
+check "binding the displaced manager and never stopping it is a violation" violation "$(run "$d")"
+
+# The counter is the thing an operator reads, and it moves in the
+# fixture above. A gate keyed on the counter would have called that
+# clean; this one is keyed on the obligation.
+d=$(mk plain-binding)
+cat > "$d/network.go" <<'GO'
+package plugin
+
+func (p *Plugin) join(endpointID string, m *dhcpManager) {
+	displaced := p.registerDHCPManager(endpointID, m)
+	if displaced != nil {
+		go m.Start()
+	}
+}
+GO
+check "the two-statement binding form is judged too" violation "$(run "$d")"
+
+# --- rule 4 must be keyed on the BINDING, not on the word "Stop" -------
+# A gate that only asked whether ".Stop(" appears in the function would
+# pass this: something is stopped, just not the manager that was
+# displaced.
+d=$(mk stops-the-wrong-one)
+cat > "$d/network.go" <<'GO'
+package plugin
+
+func (p *Plugin) join(endpointID string, m *dhcpManager) {
+	if displaced := p.registerDHCPManager(endpointID, m); displaced != nil {
+		go m.Stop()
+	}
+}
+GO
+check "stopping a different manager does not satisfy rule 4" violation "$(run "$d")"
+
+# --- the shapes that are fine -----------------------------------------
+# How the stop is scheduled is the caller's business; that it happens is
+# not. Both of these are correct and neither may be flagged.
+d=$(mk deferred-stop)
+cat > "$d/network.go" <<'GO'
+package plugin
+
+func (p *Plugin) join(endpointID string, m *dhcpManager) {
+	if displaced := p.registerDHCPManager(endpointID, m); displaced != nil {
+		defer displaced.Stop()
+	}
+}
+GO
+check "a deferred stop satisfies rule 4" clean "$(run "$d")"
+
+d=$(mk stop-later-in-func)
+cat > "$d/network.go" <<'GO'
+package plugin
+
+func (p *Plugin) join(endpointID string, m *dhcpManager) {
+	displaced := p.registerDHCPManager(endpointID, m)
+	go m.Start()
+	if displaced != nil {
+		if err := displaced.Stop(); err != nil {
+			return
+		}
+	}
+}
+GO
+check "a stop further down the same function satisfies rule 4" clean "$(run "$d")"
+
+# --- rule 4's domain cannot be emptied in silence ----------------------
+# A tree that defines the helper and calls it nowhere has either lost
+# the displacement path or renamed around this gate. Rule 4 would then
+# be a universal over an empty set, which is the shape that passes while
+# proving nothing.
+d=$(mk defined-never-called)
+cat > "$d/plugin.go" <<'GO'
+package plugin
+
+func (p *Plugin) registerDHCPManager(endpointID string, m *dhcpManager) *dhcpManager {
+	old := p.persistentDHCP[endpointID]
+	p.persistentDHCP[endpointID] = m
+	return old
+}
+
+func (p *Plugin) join(endpointID string, m *dhcpManager) {
+	if ok := p.registerDHCPManagerIfAbsent(endpointID, m); !ok {
+		return
+	}
+}
+GO
+check "a defined-but-uncalled registerDHCPManager cannot be judged" cannot-check "$(run "$d")"
+
+# A stop in a DIFFERENT function is not this binding's stop. Without the
+# per-function reset, any Stop anywhere in the file would satisfy any
+# binding anywhere in the file.
+d=$(mk stop-in-another-func)
+cat > "$d/network.go" <<'GO'
+package plugin
+
+func (p *Plugin) join(endpointID string, m *dhcpManager) {
+	if displaced := p.registerDHCPManager(endpointID, m); displaced != nil {
+		go m.Start()
+	}
+}
+
+func (p *Plugin) leave(displaced *dhcpManager) {
+	_ = displaced.Stop()
+}
+GO
+check "a stop in another function does not satisfy rule 4" violation "$(run "$d")"
+
+# The displacement scan dying must read as cannot-check on its own, not
+# be covered by the atomicity scan happening to die on the same binary.
+got=$( cd "$REPO" && AWKD=/nonexistent-awk bash "$CHECK" pkg/plugin >"$TMP/log" 2>&1; \
+       case $? in 0) echo clean ;; 1) echo violation ;; 2) echo cannot-check ;; *) echo unexpected ;; esac )
+check "a dead displacement scan reports cannot-check, not clean" cannot-check "$got"
+
 # --- a gate whose engine died has not found nothing --------------------
 # It has found out nothing. Without the exit-status check, a broken
 # regex or a missing awk renders as an empty result and a PASS — the

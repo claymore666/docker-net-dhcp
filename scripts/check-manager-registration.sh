@@ -36,6 +36,15 @@
 #      so the check and the write cannot be split back into two steps
 #   3. at least one call site was seen, so a rename cannot turn this
 #      into a gate that passes over an empty search
+#   4. a manager bound from registerDHCPManager has Stop() called on it
+#      in the same function -- the obligation itself, not the proxy (#682)
+#
+# (4) exists because (1)-(3) check that the result is not DISCARDED,
+# which is a proxy. A caller can bind the displaced manager, satisfy all
+# three, and stop nothing. Measured by deleting the stop from Join while
+# leaving displaced_stops incrementing: the whole pkg/plugin unit suite
+# passed, all 53 local-lane checks passed, this gate included. The
+# counter an operator reads kept moving and the client kept running.
 #
 # Both helpers are in scope. IfAbsent returns whether it won rather than
 # what it displaced, and a caller that ignores that proceeds as though
@@ -70,8 +79,16 @@ fi
 # Per file rather than over the concatenation, so a violation is
 # reported as file:line an editor can jump to. A line number into a
 # merged stream names nothing.
+AWK="${AWK:-awk}"
+# Separately overridable so the self-test can kill THIS scan alone. Sharing
+# one knob with the atomicity scan below would make this exit unobservable:
+# the other scan dies on the same binary and reports first.
+AWKD="${AWKD:-$AWK}"
 calls=0
 violations=""
+unstopped=""
+defs=0
+sites=0
 for f in "${files[@]}"; do
     stripped=$(sed 's,//.*,,' "$f" 2>/dev/null)
     if [ $? -ne 0 ]; then
@@ -85,6 +102,61 @@ for f in "${files[@]}"; do
         grep -nE '^[[:space:]]*(_[[:space:]]*=[[:space:]]*)?[A-Za-z_][A-Za-z0-9_]*\.registerDHCPManager(IfAbsent)?\(')
     [ -n "$hits" ] && violations="${violations}$(printf '%s\n' "$hits" | sed "s,^,${f}:,")
 "
+    # RULE 4: what the caller OWES the manager it displaced (#682).
+    #
+    # Rules 1-3 check that the result is not DISCARDED. That is a proxy
+    # for the obligation, and a proxy is not the property: a caller can
+    # bind the displaced manager, satisfy every rule above, and still
+    # never stop it. Measured on the shipped tree by deleting the stop
+    # from Join while leaving displaced_stops incrementing -- the whole
+    # pkg/plugin unit suite passed, and so did all 53 local-lane checks
+    # including this gate. Nothing in the repository saw it.
+    #
+    # So the binding is followed to its use: a variable bound from
+    # registerDHCPManager must have Stop() called on it somewhere in the
+    # same function. Whether that is direct, deferred or inside a
+    # goroutine is the caller's business; that it happens is not.
+    #
+    # Keyed on the BINDING rather than on one statement shape, so the
+    # `x := ...` form and the `if x := ...; x != nil` form are both seen.
+    # A rename of Stop reports rather than passes: the gate finds a
+    # binding with no matching call and says so.
+    unstopped_f=$(printf '%s\n' "$stripped" | $AWKD -v fname="$f" '
+        function flush(   v) {
+            for (v in bound)
+                if (!(v in stopped))
+                    printf "%s:%d\t%s\n", fname, bound[v], v
+            delete bound; delete stopped
+        }
+        /^func / { flush() }
+        {
+            if (match($0, /[A-Za-z_][A-Za-z0-9_]*[ \t]*:=[ \t]*[A-Za-z_][A-Za-z0-9_]*\.registerDHCPManager\(/)) {
+                s = substr($0, RSTART, RLENGTH)
+                match(s, /^[A-Za-z_][A-Za-z0-9_]*/)
+                bound[substr(s, RSTART, RLENGTH)] = FNR
+            }
+            if (match($0, /[A-Za-z_][A-Za-z0-9_]*\.Stop\(/)) {
+                s = substr($0, RSTART, RLENGTH)
+                match(s, /^[A-Za-z_][A-Za-z0-9_]*/)
+                stopped[substr(s, RSTART, RLENGTH)] = 1
+            }
+        }
+        END { flush() }
+    ')
+    awk_status=$?
+    if [ "$awk_status" -ne 0 ]; then
+        echo "::error title=Displacement scan did not run::${AWKD} exited ${awk_status} on ${f}; that file's displaced managers were not judged." >&2
+        echo "This gate would otherwise pass having inspected nothing." >&2
+        exit 2
+    fi
+    [ -n "$unstopped_f" ] && unstopped="${unstopped}${unstopped_f}
+"
+    # The domain of rule 4, counted so it cannot be emptied in silence.
+    # A tree that DEFINES registerDHCPManager and calls it nowhere has
+    # either lost the displacement path or renamed around this gate;
+    # either way rule 4 has become a universal over nothing.
+    defs=$((defs + $(printf '%s\n' "$stripped" | grep -cE '^func \([^)]*\) registerDHCPManager\(')))
+    sites=$((sites + $(printf '%s\n' "$stripped" | grep -cE '\.registerDHCPManager\(')))
 done
 
 # Seen at all? A rename that this gate does not follow must not read as
@@ -111,7 +183,6 @@ fi
 # undefined, some awks strip the backslash, and a pattern that then
 # fails to compile kills awk and reports the tree clean. The exit status
 # is checked below for the same reason.
-AWK="${AWK:-awk}"
 atomicity=$($AWK '
     /^func \(p \*Plugin\) registerDHCPManagerIfAbsent\(/ { infunc = 1; locks = 0; bare = 0; next }
     infunc && /^}/ {
@@ -139,6 +210,23 @@ if [ -n "$atomicity" ]; then
     exit 1
 fi
 
+if [ "$defs" -gt 0 ] && [ "$sites" -eq 0 ]; then
+    echo "::error title=No displacement site::registerDHCPManager is defined in ${DIR} but called nowhere." >&2
+    echo "Rule 4 below would be a universal over an empty set: either the displacement" >&2
+    echo "path was removed, or a call site was renamed around this gate." >&2
+    exit 2
+fi
+
+if [ -n "$unstopped" ]; then
+    echo "FAIL  a displaced manager is bound and never stopped:" >&2
+    printf '%s' "$unstopped" | sed '/^$/d;s/^/  /' >&2
+    echo "  The variable named above holds the manager this registration displaced." >&2
+    echo "  Binding it satisfies the discard rule and stops nothing: its dhcpcd keeps" >&2
+    echo "  running, untracked, bidding for the same lease as the client that just" >&2
+    echo "  replaced it. Call Stop() on it -- directly, deferred or on a goroutine." >&2
+    exit 1
+fi
+
 if [ -n "$violations" ]; then
     echo "FAIL  a manager registration discards its result:" >&2
     printf '%s' "$violations" | sed '/^$/d;s/^/  /' >&2
@@ -149,4 +237,4 @@ if [ -n "$violations" ]; then
     exit 1
 fi
 
-echo "check-manager-registration: OK (${calls} call site(s), none discarding)"
+echo "check-manager-registration: OK (${calls} call site(s), none discarding; ${sites} displacement site(s), all stopped)"
