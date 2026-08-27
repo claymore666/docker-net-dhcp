@@ -524,11 +524,13 @@ they probe whether the engine applies a remote driver's `DstName` and
 skip when it does not. The probe (`engineAppliesIfname`, used by
 `TestInterfaceName_MultiNetworkDeterministic`) runs a throwaway
 container and checks the interface the engine actually created — there
-is no version threshold to hit. Today the probe fails on every engine,
-because the upstream fix (moby/moby#52866, stopping the remote-driver
-proxy from dropping `DstName`) has not shipped; until it does, those
-tests skip in CI and locally alike. A skip is expected, not a signal
-that the run diverged.
+is no version threshold to hit. The probe fails on every *released*
+engine: the upstream fix (moby/moby#52866, stopping the remote-driver
+proxy from dropping `DstName`) merged to moby master on 2026-08-26 and
+is milestoned for engine 29.8.0, which is not out yet (latest release
+29.7.2 as of 2026-08-27). Until a box running an engine that carries it
+executes the suite, those tests skip in CI and locally alike. A skip is
+expected, not a signal that the run diverged.
 
 ## Request fixtures
 
@@ -674,11 +676,18 @@ means the request contract moved and somebody has to decide — which is
 the point, because today nothing else would say it moved at all. Model
 the field, or record why it is ignored.
 
-Two open items are waiting on exactly this signal: #218 (stable MAC,
-needs `netlabel.EndpointName` at `CreateEndpoint`) and #125 (Compose
-`interface_name`, needs plugin-returned `DstName` honoured at `Join`).
-The captures confirm both fields are absent on engine 29.7 — the day a
-capture from a newer engine carries one, the test names it. The 26.1 -> 29.7
+#218 (stable MAC) is waiting on exactly this signal: it needs
+`netlabel.EndpointName` to arrive at `CreateEndpoint`, and the captures
+confirm that field is absent on engine 29.7 — the day a capture from a
+newer engine carries it, the test names it.
+
+#125 is **not** covered by this signal, and that is worth stating
+because the shape invites the assumption. Its blocker is on the
+*response* side (the engine honouring the plugin's `DstName` at `Join`,
+moby/moby#52866); the option itself has always been forwarded in the
+request. No request capture will ever change when that fix ships, so
+the thing that detects it is the behavioural probe in the integration
+suite, not these fixtures. The 26.1 -> 29.7
 re-record is the worked example: it introduced
 `com.docker.network.enable_ipv4` on `CreateNetwork`, which is carried
 inside `Options` (a map) and so costs nothing, but it arrived unannounced

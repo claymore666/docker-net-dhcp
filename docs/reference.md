@@ -391,7 +391,7 @@ Passed per container via `docker network connect --driver-opt`, or as
 | option | description |
 | ------ | ----------- |
 | `ip` | Request a specific IPv4 address (bare IP, no CIDR — the netmask comes from DHCP). Equivalent to `docker run --ip`; setting both to different values is an error. The address is *requested* from the DHCP server (DHCPREQUEST for it); the server still has final say. |
-| `com.docker.network.endpoint.ifname` | (v1.0.0+) Request a specific interface name inside the container (Compose `interface_name`, engine 28+; or this key under `driver_opts`, any engine). The plugin validates the name (≤15 bytes, kernel charset — invalid names fail the attach with a clear error) and returns it in its Join response. **Current engine limitation:** moby's remote-driver layer discards the returned name (`drivers/remote/driver.go` passes an empty `DstName`), so engines do not yet apply it for *plugin* drivers — built-in drivers only. The plugin side is ready; the rename activates as soon as the upstream pass-through ships. Until then interfaces stay `ethN` in attach order. |
+| `com.docker.network.endpoint.ifname` | (v1.0.0+) Request a specific interface name inside the container (Compose `interface_name`, engine 28+; or this key under `driver_opts`, any engine). The plugin validates the name (≤15 bytes, kernel charset — invalid names fail the attach with a clear error) and returns it in its Join response. **Engine support:** moby's remote-driver layer discarded the returned name (`drivers/remote/driver.go` passed an empty `DstName`) until [moby/moby#52866](https://github.com/moby/moby/pull/52866), merged to moby master on 2026-08-26 and milestoned for engine **29.8.0**. No *released* engine carries it yet (latest 29.7.2 as of 2026-08-27), so on 29.7.x and older the name is still not applied for *plugin* drivers — built-in drivers only, and interfaces stay `ethN` in attach order. The plugin side is ready; the rename activates by itself on the first engine carrying the pass-through, with no change here. |
 
 A static IPv6 request (`--ip6` / Interface.AddressIPv6) is honored
 (v1.2.0+): it is sent to the DHCPv6 client as the IA_NA preferred
@@ -1041,8 +1041,9 @@ networks:
 
 Multi-network containers work (one plugin network per container is
 the *supported* shape; multiple attach, but interface naming order is
-engine-determined until moby's remote-driver `interface_name`
-pass-through ships — see the `com.docker.network.endpoint.ifname` row
+engine-determined on any engine without moby's remote-driver
+`interface_name` pass-through, which is merged upstream but not in a
+released engine yet — see the `com.docker.network.endpoint.ifname` row
 above and issue #125).
 
 ### The base/override merge trap
