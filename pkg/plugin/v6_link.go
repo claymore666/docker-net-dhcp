@@ -12,6 +12,7 @@ import (
 
 	log "github.com/sirupsen/logrus"
 	"github.com/vishvananda/netns"
+	"golang.org/x/sys/unix"
 )
 
 // The engine turns IPv6 OFF on a container interface that carries no
@@ -45,6 +46,43 @@ import (
 // endpoint did get an address the flag is already 0 and this is a read
 // and no write.
 const ipv6DisableSysctlDir = "/proc/sys/net/ipv6/conf"
+
+// procSysMount is the sysctl tree's mount point. It is mounted READ-ONLY
+// in the managed-plugin rootfs -- the same fact that made every lease
+// fail in #247, documented on pkg/dhcp's procSysPath, and the reason the
+// DHCP clients remount it inside their own mount namespace before
+// dhcpcd touches net/ipv6/conf/<if>/{autoconf,accept_ra}.
+//
+// It bit here too, and the counter added with this code is what said so:
+// the first CI run reported ipv6_link_enable_failures = 1 with "open ...
+// disable_ipv6: read-only file system". Entering the container's NETWORK
+// namespace changes which sysctls the path names; it does not change
+// whether the filesystem carrying them can be written.
+const procSysMount = "/proc/sys"
+
+// makeProcSysWritable takes a private mount namespace for the calling
+// thread and remounts the sysctl tree read-write inside it.
+//
+// Private first, and recursively: an unshared mount namespace still
+// inherits shared propagation, so without this the remount could
+// propagate back to the host's view. `unshare -m`(1) does this by
+// default and the Go call does not, which is exactly the kind of
+// difference that makes a shell recipe unsafe to transcribe.
+//
+// The caller must already hold its OS thread and must restore the
+// original mount namespace afterwards.
+func makeProcSysWritable() error {
+	if err := unix.Unshare(unix.CLONE_FS | unix.CLONE_NEWNS); err != nil {
+		return fmt.Errorf("unshare mount namespace: %w", err)
+	}
+	if err := unix.Mount("none", "/", "", unix.MS_REC|unix.MS_PRIVATE, ""); err != nil {
+		return fmt.Errorf("make mount propagation private: %w", err)
+	}
+	if err := unix.Mount("", procSysMount, "", unix.MS_REMOUNT|unix.MS_BIND, ""); err != nil {
+		return fmt.Errorf("remount %v read-write: %w", procSysMount, err)
+	}
+	return nil
+}
 
 // ipv6DisablePath is the disable_ipv6 sysctl for one interface, as seen
 // from inside the network namespace that owns it. /proc/sys/net is
@@ -104,16 +142,45 @@ func (m *dhcpManager) enableIPv6OnContainerLink() (bool, error) {
 	}
 	iface := m.ctrLink.Attrs().Name
 
+	// Two namespaces are needed and they are needed for different
+	// reasons: the NETWORK namespace decides which interface the path
+	// names, and the MOUNT namespace decides whether it can be written
+	// at all.
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
-	origNS, err := netns.Get()
+	origNet, err := netns.Get()
 	if err != nil {
 		return false, fmt.Errorf("failed to open current network namespace: %w", err)
 	}
 	defer func() {
-		if err := origNS.Close(); err != nil {
-			log.WithError(err).Debug("origNS close failed")
+		if err := origNet.Close(); err != nil {
+			log.WithError(err).Debug("origNet close failed")
+		}
+	}()
+
+	// Read the CURRENT thread's mount namespace, not /proc/self/ns/mnt:
+	// that resolves to the main thread's, and this goroutine has just
+	// locked to a different one which an earlier goroutine may already
+	// have moved. Same reasoning as propagateDNS.
+	origMnt, err := os.Open(fmt.Sprintf("/proc/self/task/%d/ns/mnt", unix.Gettid()))
+	if err != nil {
+		return false, fmt.Errorf("open self mnt ns: %w", err)
+	}
+	defer origMnt.Close()
+
+	if err := makeProcSysWritable(); err != nil {
+		return false, err
+	}
+	defer func() {
+		if err := unix.Setns(int(origMnt.Fd()), unix.CLONE_NEWNS); err != nil {
+			// The thread is now stuck in a mount namespace of our own
+			// making. Keep it locked (a second Lock so the deferred
+			// Unlock does not pair) so it dies with the goroutine
+			// rather than returning to Go's pool with a private
+			// /proc/sys view.
+			log.WithError(err).Error("Failed to restore original mount namespace; pinning thread for kill")
+			runtime.LockOSThread()
 		}
 	}()
 
@@ -121,7 +188,7 @@ func (m *dhcpManager) enableIPv6OnContainerLink() (bool, error) {
 		return false, fmt.Errorf("failed to enter network namespace: %w", err)
 	}
 	defer func() {
-		if err := netns.Set(origNS); err != nil {
+		if err := netns.Set(origNet); err != nil {
 			log.WithError(err).Error("Failed to restore original netns; pinning thread for kill")
 			runtime.LockOSThread()
 		}
