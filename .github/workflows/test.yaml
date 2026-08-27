@@ -647,6 +647,15 @@ jobs:
       - name: Golden fixture is keyed by field name
         run: bash scripts/check-golden-fixture-name-keyed.sh
 
+      # A `||` fallback that fires on the input the primary command
+      # already answered correctly (#827). `grep -c` prints the count AND
+      # exits nonzero when it is zero, so `$(grep -c . f || echo 0)` runs
+      # both halves and yields "0\n0". The only input that reaches it is
+      # the empty one -- which is always the case the count exists to
+      # detect, so it is invisible in every populated fixture.
+      - name: Counting fallback fires on the answer
+        run: bash scripts/check-counting-fallback.sh
+
       # The local lane must not test less than this job does (#636).
       # scripts/local-lane.sh is what `make check` runs before a push;
       # the moment it lists fewer gates than the steps above, it exits 0
