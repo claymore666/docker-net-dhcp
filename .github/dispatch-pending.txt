@@ -61,9 +61,31 @@
 #
 # The suite reads these tags back out of this file and demands one
 # driven case per tag, of the matching polarity. So the classes cannot
-# drift from what the gate does, a new rule cannot be added without
-# declaring which class it is in, and moving a rule into [enforced:]
+# drift from what the gate does, and moving a rule into [enforced:]
 # without writing the code goes red.
+#
+# THE DOMAIN OF THAT CHECK, AND ITS ONE ESCAPE, STATED HERE RATHER THAN
+# DISCOVERED LATER. The suite sees a rule as a LIST ITEM in this block:
+# a line whose first character after the `#` and its indent is `-`, `*`
+# or `+`. A rule written any of those three ways cannot be added
+# without declaring its class -- all three checks cover it, and a case
+# drives each marker separately.
+#
+# A rule written with NO list marker is invisible to all three, and
+# that one is not closable by a better pattern: an unmarked line is
+# indistinguishable from a CONTINUATION of the rule above it, and every
+# rule here has continuations. So it is pinned by a case that asserts
+# the miss, exactly as [unenforced: docs-say-unavailable] is pinned
+# below. If anyone ever makes an unmarked rule detectable, that case
+# goes red and this paragraph has to change with it.
+#
+# This replaces an unqualified "a new rule cannot be added without
+# declaring which class it is in". That was false for `*`, for `+`, and
+# for an unmarked line -- written into the guard built to stop this
+# file from making claims wider than its code, which is the fourth time
+# a fix here has carried the defect class of its own finding. The
+# remedy for the marker half was a wider pattern; the remedy for the
+# unmarked half is this paragraph plus a case, not a wider sentence.
 #
 #   - [enforced: reason-and-clears]
 #     An entry requires a reason and what clears it. No bare paths.

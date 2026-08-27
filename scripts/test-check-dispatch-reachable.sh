@@ -669,38 +669,127 @@ demo unenforced docs-say-unavailable \
 # of a sentence: an untagged rule, a rule claiming a class no case
 # demonstrates, or a demonstration for a rule that no longer exists all
 # go red.
+# THE DOMAIN OF THESE CHECKS IS ITSELF A KEYED PATTERN, so it is a
+# FUNCTION OF A LEDGER FILE rather than three inline greps over the real
+# one. That is not tidiness: the first version derived the domain from
+# `^#[[:space:]]+-[[:space:]]` inline, which meant nothing could drive
+# the domain with a planted rule, and a rule written `*` sat outside all
+# three checks in silence -- the suite printed "all 4 ledger rules
+# declare an enforcement class" over a ledger holding five, one of them
+# untagged. A guard against claims wider than their code, keyed on the
+# spelling of a list marker. Taking a file as an argument is what lets
+# the cases below plant a rule and observe the domain.
+ledger_rules() {
+    awk '/^#[[:space:]]*Rules[.,[:space:]]/ { b = 1 }
+         b && /^[^#]/                       { exit }
+         b' "$1" | grep -E '^#[[:space:]]+[-*+][[:space:]]'
+}
+ledger_block() {
+    awk '/^#[[:space:]]*Rules[.,[:space:]]/ { b = 1 }
+         b && /^[^#]/                       { exit }
+         b' "$1"
+}
+ledger_untagged() {
+    ledger_rules "$1" | grep -vE '\[(enforced|unenforced): [a-z0-9-]+\]'
+}
+ledger_tags() {
+    ledger_rules "$1" | sed -n "s/.*\[$2: \([a-z0-9-]*\)\].*/\1/p" \
+        | sort -u | tr '\n' ' ' | sed 's/ $//'
+}
+norm() { printf '%s' "$1" | tr ' ' '\n' | grep -v '^$' | sort -u | tr '\n' ' ' | sed 's/ $//'; }
+
 LEDGER="$(cd "$(dirname "$CHECK")/.." && pwd)/.github/dispatch-pending.txt"
-rules_block=$(awk '/^#[[:space:]]*Rules[.,[:space:]]/ { b = 1 }
-                   b && /^[^#]/                       { exit }
-                   b' "$LEDGER")
-bullets=$(printf '%s\n' "$rules_block" | grep -E '^#[[:space:]]+-[[:space:]]')
 
 # NON-VACUITY. Every assertion below is universally quantified over the
-# bullets, so an empty bullet set satisfies all of them while checking
+# rules, so an empty rule set satisfies all of them while checking
 # nothing -- the way a universal gate is satisfied by emptying its
 # domain. A moved header or a renamed marker must be loud here.
-if [ -z "$rules_block" ] || [ -z "$bullets" ]; then
-    echo "FAIL: no rules block or no rule bullets found in $LEDGER —"
+if [ -z "$(ledger_block "$LEDGER")" ] || [ -z "$(ledger_rules "$LEDGER")" ]; then
+    echo "FAIL: no rules block or no rule lines found in $LEDGER —"
     echo "      the class correspondence below would pass having read nothing"
     fails=1
 else
-    n_bullets=$(printf '%s\n' "$bullets" | grep -c .)
-    untagged=$(printf '%s\n' "$bullets" | grep -vE '\[(enforced|unenforced): [a-z0-9-]+\]')
+    n_rules=$(ledger_rules "$LEDGER" | grep -c .)
+    untagged=$(ledger_untagged "$LEDGER")
     if [ -z "$untagged" ]; then
-        echo "PASS: all $n_bullets ledger rules declare an enforcement class"
+        echo "PASS: all $n_rules ledger rules declare an enforcement class"
     else
         echo "FAIL: a ledger rule declares no enforcement class:"
         printf '      %s\n' "$untagged"
         fails=1
     fi
 
-    tags() { printf '%s\n' "$bullets" | sed -n "s/.*\[$1: \([a-z0-9-]*\)\].*/\1/p" | sort -u | tr '\n' ' ' | sed 's/ $//'; }
-    norm() { printf '%s' "$1" | tr ' ' '\n' | grep -v '^$' | sort -u | tr '\n' ' ' | sed 's/ $//'; }
-
     check "the ledger's [enforced:] rules are exactly the ones demonstrated to fail" \
-        "$(tags enforced)" "$(norm "$DEMO_ENFORCED")"
+        "$(ledger_tags "$LEDGER" enforced)" "$(norm "$DEMO_ENFORCED")"
     check "the ledger's [unenforced:] rules are exactly the ones demonstrated to pass" \
-        "$(tags unenforced)" "$(norm "$DEMO_UNENFORCED")"
+        "$(ledger_tags "$LEDGER" unenforced)" "$(norm "$DEMO_UNENFORCED")"
+fi
+
+# --- the DOMAIN of those three checks, driven (#849 review 4) -----------
+#
+# Ground 1 of the fourth hold: the ledger claimed, unqualified, that "a
+# new rule cannot be added without declaring which class it is in". It
+# could. Both halves are driven here against a planted copy of the real
+# ledger, one rule at a time.
+plant_rule() {   # <marker-or-empty> -> path to a ledger copy with an untagged rule in it
+    local marker="$1" out="$TMP/planted-ledger.txt" ins
+    if [ -n "$marker" ]; then
+        ins="#   $marker A planted rule with no enforcement class."
+    else
+        ins="#     A planted rule with no enforcement class."
+    fi
+    # INSIDE the Rules block, not merely before the file's first `- `
+    # line. The retraction block higher up this ledger is also written
+    # as `- ` bullets, so a plant keyed on "first list line in the file"
+    # lands outside the domain and every case below goes red for a
+    # reason that is not the thing under test. It did, on the first run.
+    awk -v ins="$ins" '
+        /^#[[:space:]]*Rules[.,[:space:]]/                    { inb = 1 }
+        inb && !done && /^#[[:space:]]+[-*+][[:space:]]/      { print ins; done = 1 }
+        { print }
+    ' "$LEDGER" > "$out"
+    printf '%s' "$out"
+}
+
+# REMEDY A: every list marker is in the domain. Driven per marker, so a
+# narrowing back to any single one goes red on the markers it drops.
+for m in '-' '*' '+'; do
+    planted=$(plant_rule "$m")
+    if [ -n "$(ledger_untagged "$planted")" ]; then
+        echo "PASS: an untagged rule written with '$m' is caught"
+    else
+        echo "FAIL: an untagged rule written with '$m' is invisible to the class check"
+        fails=1
+    fi
+done
+
+# THE BOUNDARY, and it is a real one rather than a miss to be patched.
+# A rule written with NO list marker is indistinguishable from a
+# CONTINUATION LINE of the rule above it -- and every rule in that block
+# has continuations, which is why the domain cannot simply be "every
+# line". This case asserts the miss on purpose, exactly as the
+# docs-say-unavailable boundary above does: if anyone ever makes an
+# unmarked rule detectable, this goes red and the paragraph in the
+# ledger that states the escape has to change with it.
+planted=$(plant_rule "")
+if [ -z "$(ledger_untagged "$planted")" ]; then
+    echo "PASS: an unmarked rule is NOT caught — the stated boundary, pinned"
+else
+    echo "FAIL: an unmarked rule is now caught; the ledger still states it as an escape"
+    fails=1
+fi
+
+# ...and the planted-rule fixture must be able to fail, or all four
+# cases above are asserting over a copy that never had a rule planted
+# in it. One control, driven the other way: the SAME planted file with
+# a class tag added is clean.
+planted=$(plant_rule '-')
+sed -i 's/A planted rule with no enforcement class./[enforced: reason-and-clears] planted./' "$planted"
+if [ -z "$(ledger_untagged "$planted")" ]; then
+    echo "PASS: and a planted rule that DOES declare a class is clean (control)"
+else
+    echo "FAIL: the planted-rule control is dirty, so the cases above prove nothing"
+    fails=1
 fi
 
 # --- the real repository ------------------------------------------------
