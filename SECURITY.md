@@ -111,6 +111,65 @@ mode itself (`0600`) instead of inheriting whatever the plugin runtime's
 umask happened to give it, and a test fails if the socket ever comes up
 readable by group or other.
 
+### The Docker socket, and the read-only proxy that is enough
+
+`config.json` bind-mounts `/var/run/docker.sock` into the plugin at
+`/run/docker.sock`, writable. That single grant — not any of the three
+capabilities above — is what makes a compromise of the plugin equivalent
+to root on the host: anything that can reach the Docker API can start a
+privileged container. Mounting the socket `ro` buys nothing; a UNIX
+socket's file mode does not restrict the verbs sent through it.
+
+It is also the grant that can be reduced today without losing anything,
+because the plugin's entire Docker API surface is read-only.
+`pkg/plugin/docker_client.go` and `pkg/util/docker.go` narrow the client
+to three methods, and `pkg/plugin/docker_api_surface_test.go` fails if a
+fourth appears or if the list below stops matching them. Nothing
+creates, starts, stops, execs or deletes.
+
+Measured on the wire, through a logging proxy in front of a real daemon:
+
+```
+HEAD /_ping                  API version negotiation
+GET  /networks               NetworkList
+GET  /networks/{id}          NetworkInspect
+GET  /containers/{id}/json   ContainerInspect
+```
+
+So a restricted read-only socket proxy allowing exactly those four
+routes is sufficient, and the plugin loses no functionality. This is a
+supported deployment option: point the `source` of the socket mount at
+the proxy's socket instead of the daemon's.
+
+**`/_ping` is not optional, and leaving it out breaks everything.**
+`plugin.go` builds its client with `WithAPIVersionNegotiation()`, which
+issues one `HEAD /_ping` before the first real call and adopts the
+daemon's API version. Blocked, the client keeps the version compiled
+into the vendored client library and every call fails — measured
+against a daemon at API 1.45:
+
+```
+GET /v1.51/networks
+  -> client version 1.51 is too new. Maximum supported API version is 1.45
+```
+
+It also re-pings on every request, because negotiation never completes.
+The plugin does not pass `WithVersionFromEnv()`, so `DOCKER_API_VERSION`
+is not an escape hatch. An allow-list built from the three `GET` routes
+alone — the obvious list, and the one this was nearly documented as —
+fails on any daemon older than the client's compiled default and works
+by luck on any daemon newer. Allow the ping.
+
+Two details for whoever writes the proxy rules. The real requests carry
+the negotiated version prefix (`GET /v1.45/networks`), so match the
+suffix or allow `/v*/`; and `/_ping` is unversioned on purpose. The
+client's `Close()` is on the narrow interface but sends no request — it
+closes the transport — so it needs no rule.
+
+**Changing `config.json` to require this is deliberately not proposed.**
+It would break every existing installation and force a re-grant on
+upgrade, for a threat most home and small-fleet operators do not have.
+
 ## Supported versions
 
 Only the latest released version is supported with security fixes.
