@@ -138,8 +138,10 @@ TEST_PATHS=('*_test.go' 'test/integration/harness/*.go' 'scripts/test-*.sh')
 # depth. If it does not end a file OUTSIDE every construct it opened, it
 # has lost track and the file is judged whole, exactly as it would be
 # without it — wrong in the direction of reporting, never of silence.
-# Measured over all 160 scripts in scripts/, including all 80 in the
-# domain: 0 files end unbalanced.
+# Measured over all 160 shell scripts in scripts/, including all 81 in
+# the domain: 0 files end unbalanced. Both counts are of the tree at the
+# time of writing; the domain is what `scripts/test-*.sh` matches, so it
+# moves whenever a self-test is added.
 post_image() { # <file>
     if [ -n "${POST:-}" ] && git show "$POST:$1" >/dev/null 2>&1; then
         git show "$POST:$1" 2>/dev/null
@@ -385,6 +387,10 @@ for f in "${FILES[@]}"; do
     # unguarded widening moves three verdicts from clean to FAILED —
     # 57a2232, f9cbf7c and 4530045 — and every one of them is this file's
     # own self-test being accused of adding a t.Skip it merely quotes.
+    # 57a2232 is accused a SECOND time over that same file, of adding an
+    # opt-out helper it also only quotes. Both signals need the guard: a
+    # reader who guards t.Skip alone re-breaks that commit through the
+    # other one.
     #
     # A gate that fires on the commit that writes its own tests is a
     # cry-wolf on the file most likely to be edited next, and a gate
@@ -431,13 +437,27 @@ for f in "${FILES[@]}"; do
     # no shared name for it: `check` 558 times, `run_case` 126, `run`
     # 122. There is no analogue without deriving a dominant helper per
     # file, and the obvious substitute — counting removed FAIL-bearing
-    # lines — was priced across all 60 commits that have ever touched
-    # scripts/test-*.sh at zero false positives AND zero true positives.
+    # lines — was priced at zero false positives AND zero true positives.
     # A signal set with no false alarms that also catches nothing is a
     # check with one possible verdict, which is not a check.
     #
-    # So two signals, both priced on that same history, and both silent
-    # across 60 Go commits so nothing existing is perturbed.
+    # THAT PRICING COVERED 60 COMMITS, and the population is 116 at the
+    # time of writing. The number is #828's, taken on an older tree; it
+    # is quoted here because it is what was actually measured, and the
+    # boundary is stated because a pricing that covered roughly half a
+    # population does not license a claim about the whole of it. The
+    # first draft of this comment said "all 60 commits that have EVER
+    # touched scripts/test-*.sh" — a completeness claim, and one that
+    # was already false when it was written.
+    #
+    # So two signals, both priced on that same history, and both unable
+    # to perturb anything that existed: they live inside the `*.sh`
+    # branch below, which is the ONLY caller of added_code_lines, so no
+    # .go file can reach either of them. That is preservation by
+    # construction, not by sampling — and it is why the earlier draft's
+    # "silent across 60 Go commits" was both unsourceable and
+    # unnecessary. (60 is the shell population above, six lines up; one
+    # number was doing duty for two different sets.)
     if [[ "$f" == *.sh ]]; then
         # Judged on what the shell would run, not on what the file
         # quotes. See added_code_lines() above.
