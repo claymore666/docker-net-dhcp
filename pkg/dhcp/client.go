@@ -19,6 +19,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -831,6 +832,12 @@ func (o RAObservation) Merge(other RAObservation) RAObservation {
 	}
 }
 
+// raDrainGrace bounds how long an acquisition waits for the collector
+// goroutine to hand over events already in the pipe, after dhcpcd has
+// been reaped. It is a handover bound, not a network one: nothing is
+// still being asked of the segment by the time it is used.
+const raDrainGrace = 500 * time.Millisecond
+
 // raManagedFlag is the letter dhcpcd puts in nd1_flags for a router
 // advertisement's "managed address configuration" bit. Measured against
 // dhcpcd 10.3.2: managed segments advertise "MO", stateless "O", SLAAC
@@ -861,9 +868,64 @@ func observeRA(o RAObservation, flags string) RAObservation {
 	return o
 }
 
-// collectAcquisition drains one acquisition's event stream and returns
-// the last lease it carried (nil if none) together with what it said
-// about the segment's router advertisements.
+// acquisition is what one dhcpcd run has reported SO FAR.
+//
+// "So far" is the whole design, and it is the fix for #873. The first
+// version accumulated locally in the collector goroutine and published
+// the result by sending on a channel once the event stream closed. The
+// stream closes when dhcpcd is reaped -- so on the one case where the
+// answer decides whether an endpoint is refused, the caller was reading
+// a channel nobody had written to yet:
+//
+//	managed segment, silent server -> dhcpcd never exits on its own ->
+//	the acquisition context expires -> Finish kills and reaps dhcpcd ->
+//	the caller reads the observation with its context ALREADY done
+//
+// At that point the ctx.Done() arm of the select is ready and the
+// observation arm usually is not, so the caller took the zero value:
+// "no router advertised here" for a segment that had advertised the
+// managed flag twice, nine seconds earlier, with both events visible in
+// the plugin's own log. That maps to the tolerated verdict, so a real
+// DHCPv6 outage on a managed network produced a running container with
+// no IPv6 address -- fail-open, on the guard whose entire purpose is to
+// stay closed. It is a race, so it also passed once, which is worse
+// than failing every time: TestDHCPv6_Managed_ServerSilent_IsStillFatal
+// went green at 46d8d61 and red at 28b5eb3 with nothing between them
+// that touches this path.
+//
+// Folding under a mutex as each event arrives removes the question. The
+// observation is monotone -- Seen and Managed are only ever set -- so a
+// snapshot taken at any moment is a true statement about what the
+// segment has said, never a stale one that later becomes wrong.
+type acquisition struct {
+	mu   sync.Mutex
+	last *Info
+	ra   RAObservation
+}
+
+// fold takes one event into the accumulator.
+func (a *acquisition) fold(event Event) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	switch event.Type {
+	case "bound", "renew":
+		v := event.Data
+		a.last = &v
+	case "routeradvert":
+		a.ra = observeRA(a.ra, event.RouterFlags)
+	}
+}
+
+// snapshot reports the last lease seen (nil if none) and the router
+// advertisements observed up to this instant. Safe to call while the
+// collector is still running, which is the point.
+func (a *acquisition) snapshot() (*Info, RAObservation) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.last, a.ra
+}
+
+// collectAcquisition drains one acquisition's event stream into a.
 //
 // Split out of the goroutine that runs it so both halves are reachable
 // without a live dhcpcd. The goroutine's body was previously the only
@@ -872,19 +934,38 @@ func observeRA(o RAObservation, flags string) RAObservation {
 // or no field, left this package fully green and failed only in the
 // integration lane, ten minutes later and one layer away from the line
 // at fault.
-func collectAcquisition(events <-chan Event) (*Info, RAObservation) {
-	var last *Info
-	var ra RAObservation
+func collectAcquisition(events <-chan Event, a *acquisition) {
 	for event := range events {
-		switch event.Type {
-		case "bound", "renew":
-			v := event.Data
-			last = &v
-		case "routeradvert":
-			ra = observeRA(ra, event.RouterFlags)
-		}
+		a.fold(event)
 	}
-	return last, ra
+}
+
+// settleAcquisition gives the collector a bounded chance to finish
+// draining, then reports what it has.
+//
+// The bound is NOT a wait for the network and must not be read as one:
+// every caller reaches here with dhcpcd already reaped (Finish kills it
+// before returning on the context path, and it has exited on its own
+// otherwise), so the only thing outstanding is the scanner handing over
+// events already sitting in the pipe.
+//
+// It takes NO context, deliberately, and that absence is the fix for
+// #873. The context is expired on exactly the path where the answer
+// decides an endpoint's fate -- a managed segment whose server went
+// silent -- so a context-bounded read there is a read that has already
+// run out of time, and it returned the zero value: "nothing was
+// advertised here" for a segment that had advertised the managed flag.
+//
+// If the grace expires the snapshot is still returned rather than a
+// zero value. What was folded before the deadline is true, and
+// discarding it can only move the verdict toward tolerating an absence
+// that was never observed.
+func settleAcquisition(collected <-chan struct{}, a *acquisition, grace time.Duration) (*Info, RAObservation) {
+	select {
+	case <-collected:
+	case <-time.After(grace):
+	}
+	return a.snapshot()
 }
 
 // attemptGetIP runs dhcpcd once (opts must already carry Once=true)
@@ -906,60 +987,27 @@ func attemptGetIP(ctx context.Context, iface string, opts *DHCPClientOptions) (I
 		return dummy, noRA, fmt.Errorf("failed to start DHCP client: %w", err)
 	}
 
-	// ch carries the final lease seen, or stays unsent if no bound/renew
-	// event arrived before the events channel closed. Buffered=1 so the
-	// goroutine never blocks on send.
-	//
-	// raCh carries the router-advertisement observation and is ALWAYS
-	// sent, including on the paths that return an error: on a segment
-	// that offers no DHCPv6 the caller gets no lease, and the
-	// observation is the only thing that makes that outcome
-	// interpretable.
-	ch := make(chan Info, 1)
-	raCh := make(chan RAObservation, 1)
+	// The collector folds events into acq as they arrive; collected is
+	// closed when the stream ends. Nothing is published by channel, so
+	// no read of the observation can depend on whether the stream has
+	// finished -- see the acquisition type for what that cost.
+	acq := &acquisition{}
+	collected := make(chan struct{})
 	go func() {
-		last, ra := collectAcquisition(events)
-		raCh <- ra
-		if last != nil {
-			ch <- *last
-		}
-		close(ch)
+		defer close(collected)
+		collectAcquisition(events, acq)
 	}()
 
-	// awaitRA takes the observation the collector goroutine sends once
-	// the event stream closes.
-	//
-	// It is read on the ERROR paths too, and that is the point. dhcpcd
-	// exiting non-zero on a stateless segment is not evidence that no
-	// advertisement arrived -- the advertisement is what makes that exit
-	// interpretable, and returning the zero value there would report
-	// "no router on this segment" for a segment whose router had just
-	// spoken three times. The event channel closes once the reaper has
-	// reaped dhcpcd, so this receives on every path the process actually
-	// ran on; ctx is the bound for the ones where it did not.
-	awaitRA := func() RAObservation {
-		select {
-		case ra := <-raCh:
-			return ra
-		case <-ctx.Done():
-			return noRA
-		}
-	}
-
 	if err := client.Finish(ctx); err != nil {
-		return dummy, awaitRA(), err
+		_, ra := settleAcquisition(collected, acq, raDrainGrace)
+		return dummy, ra, err
 	}
 
-	select {
-	case info, ok := <-ch:
-		ra := awaitRA()
-		if !ok {
-			return dummy, ra, util.ErrNoLease
-		}
-		return info, ra, nil
-	case <-ctx.Done():
-		return dummy, awaitRA(), ctx.Err()
+	last, ra := settleAcquisition(collected, acq, raDrainGrace)
+	if last == nil {
+		return dummy, ra, util.ErrNoLease
 	}
+	return *last, ra, nil
 }
 
 var attemptGetIPFunc = attemptGetIP

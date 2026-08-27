@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"runtime"
 	"strings"
@@ -986,20 +987,24 @@ func TestObserveRA_DoesNotClearWhatAnEarlierAdvertisementSaid(t *testing.T) {
 // out, so without this the wire field could be ignored entirely and
 // nothing in this package would notice.
 func TestCollectAcquisition(t *testing.T) {
-	send := func(events ...Event) <-chan Event {
+	// collect drains the events through the accumulator the production
+	// path uses, and reports the same pair the old signature returned.
+	collect := func(events ...Event) (*Info, RAObservation) {
 		ch := make(chan Event, len(events))
 		for _, e := range events {
 			ch <- e
 		}
 		close(ch)
-		return ch
+		var a acquisition
+		collectAcquisition(ch, &a)
+		return a.snapshot()
 	}
 
 	t.Run("a managed advertisement and no lease", func(t *testing.T) {
-		last, ra := collectAcquisition(send(
+		last, ra := collect(
 			Event{Type: "routeradvert", RouterFlags: "MO"},
 			Event{Type: "routeradvert", RouterFlags: "MO"},
-		))
+		)
 		if last != nil {
 			t.Errorf("lease = %+v, want none", *last)
 		}
@@ -1009,7 +1014,7 @@ func TestCollectAcquisition(t *testing.T) {
 	})
 
 	t.Run("an unflagged advertisement is still an advertisement", func(t *testing.T) {
-		_, ra := collectAcquisition(send(Event{Type: "routeradvert"}))
+		_, ra := collect(Event{Type: "routeradvert"})
 		if !ra.Seen || ra.Managed {
 			t.Errorf("observation = %+v, want Seen without Managed — a SLAAC segment "+
 				"advertised, and reading that as silence sends an operator looking for "+
@@ -1018,11 +1023,11 @@ func TestCollectAcquisition(t *testing.T) {
 	})
 
 	t.Run("the last lease wins and the advertisement rides along", func(t *testing.T) {
-		last, ra := collectAcquisition(send(
+		last, ra := collect(
 			Event{Type: "routeradvert", RouterFlags: "MO"},
 			Event{Type: "bound", Data: Info{IP: "2001:db8::1/64"}},
 			Event{Type: "renew", Data: Info{IP: "2001:db8::2/64"}},
-		))
+		)
 		if last == nil {
 			t.Fatal("lease = none, want the renew's address")
 		}
@@ -1036,14 +1041,130 @@ func TestCollectAcquisition(t *testing.T) {
 	})
 
 	t.Run("unrelated events change nothing", func(t *testing.T) {
-		last, ra := collectAcquisition(send(
+		last, ra := collect(
 			Event{Type: "config"},
 			Event{Type: "leasefail"},
 			Event{Type: "nak"},
-		))
+		)
 		if last != nil || ra.Seen || ra.Managed {
 			t.Errorf("lease=%v observation=%+v, want neither — none of these events "+
 				"says anything about an address or an advertisement", last, ra)
 		}
 	})
+}
+
+// TestAcquisition_ObservationIsReadableBeforeTheStreamCloses is the
+// unit-level statement of #873.
+//
+// The first version of this code accumulated the observation inside the
+// collector goroutine and published it by sending on a channel when the
+// event stream closed. Everything in this package stayed green, because
+// every test fed a CLOSED channel — and the production case that
+// decides whether an endpoint is refused is the one where the stream
+// has NOT closed: dhcpcd on a managed segment with a silent server
+// never exits on its own, so it is still running when the acquisition
+// budget expires and the verdict has to be formed.
+//
+// So the property is not "the fold is correct" — that was already true
+// and already tested. It is that the answer is available WITHOUT the
+// stream having ended.
+func TestAcquisition_ObservationIsReadableBeforeTheStreamCloses(t *testing.T) {
+	var a acquisition
+
+	if _, ra := a.snapshot(); ra.Seen || ra.Managed {
+		t.Fatalf("a fresh accumulator reports %+v, want nothing observed", ra)
+	}
+
+	a.fold(Event{Type: "routeradvert", RouterFlags: "MO"})
+
+	// No channel has been closed and no goroutine has finished. This is
+	// exactly the state a managed-but-silent segment is in when the
+	// acquisition times out.
+	last, ra := a.snapshot()
+	if !ra.Seen || !ra.Managed {
+		t.Errorf("observation = %+v, want a managed advertisement — reading it as "+
+			"absent is what let a container start on a managed network whose "+
+			"DHCPv6 server answered nothing (#873)", ra)
+	}
+	if last != nil {
+		t.Errorf("lease = %+v, want none — an advertisement is not a lease", *last)
+	}
+}
+
+// TestSettleAcquisition_ReportsWhatWasFoldedEvenIfTheStreamNeverEnds
+// drives the two ways the drain can go, and the second one is the
+// production case.
+//
+// A stream that never ends is not a hypothetical: it is dhcpcd still
+// soliciting when the budget runs out. Returning a zero observation
+// there reads as "no router on this segment", which is a TOLERATED
+// verdict — so the failure mode of getting this wrong is fail-open on
+// the guard whose whole purpose is to stay closed.
+func TestSettleAcquisition_ReportsWhatWasFoldedEvenIfTheStreamNeverEnds(t *testing.T) {
+	fold := func(a *acquisition) {
+		a.fold(Event{Type: "routeradvert", RouterFlags: "MO"})
+		a.fold(Event{Type: "bound", Data: Info{IP: "2001:db8::1/64"}})
+	}
+
+	t.Run("the collector finished", func(t *testing.T) {
+		var a acquisition
+		fold(&a)
+		collected := make(chan struct{})
+		close(collected)
+
+		// A grace long enough that taking it would be visible as a hang
+		// rather than as a pass: the closed channel must be what
+		// returns, not the timer.
+		start := time.Now()
+		last, ra := settleAcquisition(collected, &a, time.Minute)
+		if elapsed := time.Since(start); elapsed > 5*time.Second {
+			t.Fatalf("waited %v for an already-closed channel; the grace is being taken "+
+				"unconditionally", elapsed)
+		}
+		if !ra.Managed || last == nil {
+			t.Errorf("observation=%+v lease=%v, want both", ra, last)
+		}
+	})
+
+	t.Run("the collector never finishes", func(t *testing.T) {
+		var a acquisition
+		fold(&a)
+		never := make(chan struct{}) // deliberately never closed
+
+		last, ra := settleAcquisition(never, &a, 10*time.Millisecond)
+		if !ra.Seen || !ra.Managed {
+			t.Errorf("observation = %+v, want the managed advertisement that was already "+
+				"folded — a stream that has not ended is not evidence that nothing was "+
+				"advertised, and treating it as such tolerates a DHCPv6 outage (#873)", ra)
+		}
+		if last == nil || last.IP != "2001:db8::1/64" {
+			t.Errorf("lease = %v, want the folded lease — the same argument applies to "+
+				"the address", last)
+		}
+	})
+}
+
+// TestSettleAcquisition_TakesNoContext pins the ABSENCE that the fix
+// turns on.
+//
+// The bug was not a wrong bound, it was a bound that had already
+// expired: the observation was read through a select whose other arm
+// was ctx.Done(), on the one path that is only reached BECAUSE the
+// context expired. Re-introducing a context here would restore that
+// exactly, and it would look like a tidy-up.
+//
+// A signature is the only thing that can carry "must not be able to see
+// the deadline", so it is asserted as a signature.
+func TestSettleAcquisition_TakesNoContext(t *testing.T) {
+	fn := reflect.TypeOf(settleAcquisition)
+	ctxType := reflect.TypeOf((*context.Context)(nil)).Elem()
+	for i := 0; i < fn.NumIn(); i++ {
+		if fn.In(i).Implements(ctxType) || fn.In(i) == ctxType {
+			t.Fatalf("settleAcquisition takes a %v as argument %d. It must not: it is "+
+				"reached with the acquisition context already expired, so a "+
+				"context-bounded read there returns the zero observation and a managed "+
+				"segment with a silent server becomes a running container (#873)",
+				fn.In(i), i)
+		}
+	}
 }
