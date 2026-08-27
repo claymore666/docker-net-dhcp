@@ -720,40 +720,75 @@ func (ef *EphemeralFixture) startKea() {
 		ef.t.Fatalf("start ephemeral kea: %v", err)
 	}
 
-	// Readiness is "a DISCOVER would be answered", and DHCP4_STARTED
-	// alone does NOT mean that.
-	//
-	// Measured (#356): with any dnsmasq already holding UDP/67, Kea
-	// fails every socket bind, logs DHCPSRV_NO_SOCKETS_OPEN — and then
-	// logs DHCP4_STARTED anyway and sits there. A probe that keys on
-	// DHCP4_STARTED alone therefore returns "ready" for a server that
-	// will never answer anything, and every test built on it fails
-	// later, somewhere else, for a reason that looks like a plugin bug.
-	//
-	// So the probe requires the interface to be listening AND no
-	// socket failure in the same window. Matching from startMark, not
-	// from the top of the file, is what makes it "this instance": the
-	// log is appended to across every Stop/StartAgain cycle.
-	deadline := time.Now().Add(10 * time.Second)
+	if msg := keaReadiness(ef.logFile, startMark, ef.keaPid(),
+		time.Now().Add(10*time.Second), ef.renderedConfig, ef.readLog); msg != "" {
+		ef.t.Fatalf("%s", msg)
+	}
+}
+
+// keaPid is the pid to ask the kernel about, or 0 when there is none.
+//
+// `ip netns exec` replaces its own image with kea-dhcp4 rather than
+// forking, so this really is the server's pid — but only after that
+// exec, which is why the confinement is sampled in the poll loop rather
+// than once here.
+func (ef *EphemeralFixture) keaPid() int {
+	if ef.cmd == nil || ef.cmd.Process == nil {
+		return 0
+	}
+	return ef.cmd.Process.Pid
+}
+
+// keaReadiness polls logPath for evidence that kea is actually serving,
+// returning "" once it is or the message to fail with.
+//
+// EXTRACTED SO THE CALL SITE IS OBSERVABLE (#680). Every helper below it
+// can be correct while this loop forgets to sample the confinement, or
+// forgets to pass it on to the message — and measured, both of those
+// mutations survived a suite that tested only the helpers. This needs no
+// kea and no confined host: a log file and a proc-shaped tree decide
+// both answers.
+//
+// Readiness is "a DISCOVER would be answered", and DHCP4_STARTED alone
+// does NOT mean that. Measured (#356): with any dnsmasq already holding
+// UDP/67, kea fails every socket bind, logs DHCPSRV_NO_SOCKETS_OPEN —
+// and then logs DHCP4_STARTED anyway and sits there. A probe keyed on
+// DHCP4_STARTED alone therefore returns "ready" for a server that will
+// never answer anything, and every test built on it fails later,
+// somewhere else, for a reason that looks like a plugin bug.
+//
+// Matching from startMark, not from the top of the file, is what makes
+// it "this instance": the log is appended to across every Stop and
+// StartAgain cycle.
+func keaReadiness(logPath string, startMark, pid int, deadline time.Time, config string, readLog func() string) string {
+	// The first non-empty reading is kept because /proc/<pid> vanishes
+	// the moment kea dies, and a kea that dies immediately is exactly
+	// the case the AppArmor diagnosis exists for.
+	var aaProfile, aaMode string
 	for time.Now().Before(deadline) {
-		data, err := os.ReadFile(ef.logFile)
+		if pid > 0 {
+			aaProfile, aaMode = sampleConfinement(aaProfile, aaMode, pid)
+		}
+		data, err := os.ReadFile(logPath)
 		if err != nil || len(data) <= startMark {
 			time.Sleep(50 * time.Millisecond)
 			continue
 		}
 		window := string(data[startMark:])
 		if why := keaSocketFailure(window); why != "" {
-			ef.t.Fatalf("ephemeral kea started but opened no DHCP socket (%s).\n"+
-				"On a host this usually means another DHCP server holds UDP/67 — the fixture "+
-				"runs kea in netns %q precisely to avoid that, so check the namespace was created.\n"+
-				"config:\n%s\nlog:\n%s", why, ephemeralNetns, ef.renderedConfig, ef.readLog())
+			return keaStartFailure(fmt.Sprintf(
+				"ephemeral kea started but opened no DHCP socket (%s).\n"+
+					"On a host this usually means another DHCP server holds UDP/67 — the fixture "+
+					"runs kea in netns %q precisely to avoid that, so check the namespace was created.",
+				why, ephemeralNetns),
+				aaProfile, aaMode, config, readLog())
 		}
 		if strings.Contains(window, "DHCP4_STARTED") && strings.Contains(window, "DHCPSRV_CFGMGR_ADD_IFACE") {
-			return
+			return ""
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	ef.t.Fatalf("ephemeral kea did not become ready; config:\n%s\nlog:\n%s", ef.renderedConfig, ef.readLog())
+	return keaStartFailure("ephemeral kea did not become ready", aaProfile, aaMode, config, readLog())
 }
 
 func (ef *EphemeralFixture) startDnsmasq() {
@@ -836,6 +871,120 @@ var keaSocketFailures = []string{
 
 // keaSocketFailure returns the first socket-failure marker present in
 // a slice of Kea log output, or "" if there is none.
+// parseAppArmorCurrent turns the contents of /proc/<pid>/attr/current
+// into a profile name and its mode.
+//
+// The kernel writes "unconfined" for a process no profile applies to,
+// and "<profile> (enforce)" or "<profile> (complain)" otherwise. This
+// only parses; whether a given confinement EXPLAINS a failure is
+// apparmorDiagnosis's decision, so a complain-mode profile still comes
+// back named here.
+func parseAppArmorCurrent(s string) (profile, mode string) {
+	s = strings.TrimSpace(s)
+	if s == "" || s == "unconfined" {
+		return "", ""
+	}
+	open := strings.LastIndex(s, " (")
+	if open < 0 || !strings.HasSuffix(s, ")") {
+		// Confined, but the kernel did not give us a mode. Reporting
+		// the name without one beats reporting nothing.
+		return s, ""
+	}
+	return s[:open], s[open+2 : len(s)-1]
+}
+
+// apparmorProfileOf asks the kernel what is confining pid.
+//
+// THIS IS THE OUTSIDE EVIDENCE, and it is the reason this check is
+// worth having: when a host AppArmor profile denies kea its runtime
+// files, kea reports "Permission denied" against a path it can see, and
+// both the errno and the path point away from the cause (#680). The
+// server's own account of the failure is the one thing that cannot
+// settle it. /proc/<pid>/attr/current is the kernel's account of the
+// very process the fixture started.
+//
+// An empty result means "nothing is confining it" and also "AppArmor is
+// not built into this kernel" and also "the process is already gone".
+// That conflation is deliberate: all three mean this diagnosis has
+// nothing to add, and none of them is a finding on its own.
+// procRoot is /proc, as a variable so a test can drive the reader's PATH
+// CONSTRUCTION. That is the part most likely to be wrong and the part a
+// result-shaped seam would leave unexecuted — and on an unconfined host
+// (which CI always is) a test that only compares two empty strings
+// agrees without having proved anything.
+var procRoot = "/proc"
+
+func apparmorProfileOf(pid int) (profile, mode string) {
+	data, err := os.ReadFile(fmt.Sprintf("%s/%d/attr/current", procRoot, pid))
+	if err != nil {
+		return "", ""
+	}
+	return parseAppArmorCurrent(string(data))
+}
+
+// sampleConfinement keeps the FIRST non-empty reading.
+//
+// /proc/<pid> disappears the moment kea dies, and a kea that dies
+// immediately is exactly the case this diagnosis exists for — so a later
+// empty read must never overwrite an earlier real one, or the explanation
+// would be lost precisely when it is needed.
+func sampleConfinement(profile, mode string, pid int) (string, string) {
+	if profile != "" {
+		return profile, mode
+	}
+	return apparmorProfileOf(pid)
+}
+
+// apparmorDiagnosis explains a kea failure that is really a host
+// AppArmor denial, or returns "" when AppArmor is not the cause.
+//
+// A complain-mode profile logs and permits, so it denies nothing and is
+// not an explanation — saying otherwise would send a reader to disable a
+// profile that was never in their way.
+func apparmorDiagnosis(profile, mode string) string {
+	if profile == "" || mode == "complain" {
+		return ""
+	}
+	shown := profile
+	if mode != "" {
+		shown = fmt.Sprintf("%s (%s)", profile, mode)
+	}
+	return fmt.Sprintf(`kea-dhcp4 is confined by the host's AppArmor profile %s, which is
+almost certainly why it could not start: it needs to create runtime files
+(/run/kea/*.pid, its logger lockfile) that the profile denies.
+
+This container being privileged and this process being root do not help.
+AppArmor attaches on exec by executable PATH, so kea-dhcp4 in here
+transitions into the profile loaded on the HOST — and kea then reports a
+plain "Permission denied" against a path it can see, which points away
+from the cause (#680).
+
+The fix is a host change and deliberately does not live in this repo:
+
+    sudo aa-disable /etc/apparmor.d/usr.sbin.kea-dhcp4
+
+or add this container's /run/kea and the fixture's temp dir to that
+profile. CI does not hit this because its runner hosts have no kea
+package installed, so there is no profile to transition into.
+
+This is reported as a FAILURE and not a skip on purpose. The condition —
+"the host happens to have kea installed" — is broad enough that skipping
+on it would silently remove six tests from every local run, which is the
+shape this project keeps finding bugs behind.`, shown)
+}
+
+// keaStartFailure assembles the message for a kea that never became
+// usable, putting the AppArmor explanation ahead of the config and log
+// when there is one. Kept separate from the Fatalf calls so the
+// assembly is testable without an AppArmor host (#680).
+func keaStartFailure(headline, profile, mode, config, log string) string {
+	msg := headline
+	if d := apparmorDiagnosis(profile, mode); d != "" {
+		msg += "\n\n" + d
+	}
+	return msg + fmt.Sprintf("\n\nconfig:\n%s\nlog:\n%s", config, log)
+}
+
 func keaSocketFailure(window string) string {
 	for _, marker := range keaSocketFailures {
 		if strings.Contains(window, marker) {

@@ -8,10 +8,12 @@ package harness
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // Real kea-dhcp4 2.6.3 output at severity INFO, captured on the
@@ -556,5 +558,426 @@ func TestCountLogLines_KeaTokenChoiceIsPerLog(t *testing.T) {
 	ef24 := newLogFixture(t, backendKea, oneBindOneRenew)
 	if got := ef24.CountLogLines("DHCPACK", kea24MAC); got != 2 {
 		t.Errorf("2.4.1: = %d, want 2 — the same history must count the same on both versions", got)
+	}
+}
+
+// ---- host AppArmor confinement (#680) --------------------------------
+//
+// On a host with the distribution's kea package installed, six tests in
+// this suite fail before they test anything. The host's
+// /etc/apparmor.d/usr.sbin.kea-dhcp4 profile is loaded, AppArmor
+// attaches on exec by executable path, and kea-dhcp4 in this container
+// transitions into it — privileged or not, root or not. Kea then
+// reports "Permission denied" against a path it can see, which sends the
+// reader to look at a config that is fine.
+//
+// These cover the reading and the wording, which is all that can be
+// covered without a confined host. The reading is the part that decides
+// whether the message appears at all.
+
+func TestParseAppArmorCurrent(t *testing.T) {
+	cases := []struct {
+		name, in, profile, mode string
+	}{
+		{"unconfined", "unconfined\n", "", ""},
+		{"empty", "", "", ""},
+		{"whitespace only", "  \n", "", ""},
+		{"enforce", "kea-dhcp4 (enforce)\n", "kea-dhcp4", "enforce"},
+		{"complain", "kea-dhcp4 (complain)\n", "kea-dhcp4", "complain"},
+		{"path-shaped name", "/usr/sbin/kea-dhcp4 (enforce)\n", "/usr/sbin/kea-dhcp4", "enforce"},
+		{"name with a space", "docker-default (enforce)", "docker-default", "enforce"},
+		// Confined with no mode reported. Unusual, but "confined and I
+		// cannot tell you how" must not read as "unconfined".
+		{"no mode", "kea-dhcp4\n", "kea-dhcp4", ""},
+		{"unterminated mode", "kea-dhcp4 (enforce\n", "kea-dhcp4 (enforce", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			profile, mode := parseAppArmorCurrent(c.in)
+			if profile != c.profile || mode != c.mode {
+				t.Errorf("parseAppArmorCurrent(%q) = (%q, %q), want (%q, %q)",
+					c.in, profile, mode, c.profile, c.mode)
+			}
+		})
+	}
+}
+
+// TestApparmorProfileOf_ReadsTheFileItClaimsTo is the non-vacuous half.
+//
+// On any host CI runs on, /proc/self/attr/current says "unconfined", so
+// comparing the reader's answer with the kernel's compares "" with "" —
+// two empty strings agreeing, which they would also do if the reader
+// opened nothing at all. This drives a proc-shaped tree instead, so the
+// path the reader builds is what decides the result.
+func TestApparmorProfileOf_ReadsTheFileItClaimsTo(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "4242", "attr"), 0o755); err != nil {
+		t.Fatalf("build the fake proc tree: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "4242", "attr", "current"),
+		[]byte("kea-dhcp4 (enforce)\n"), 0o644); err != nil {
+		t.Fatalf("write the fake attr/current: %v", err)
+	}
+	saved := procRoot
+	procRoot = root
+	t.Cleanup(func() { procRoot = saved })
+
+	profile, mode := apparmorProfileOf(4242)
+	if profile != "kea-dhcp4" || mode != "enforce" {
+		t.Errorf("apparmorProfileOf(4242) = (%q, %q), want (\"kea-dhcp4\", \"enforce\"); "+
+			"the reader did not open <root>/4242/attr/current", profile, mode)
+	}
+	// The control: a pid with no entry in the same tree must come back
+	// empty, or the test above would pass for a reader that ignores its
+	// argument entirely.
+	if profile, mode := apparmorProfileOf(4243); profile != "" || mode != "" {
+		t.Errorf("apparmorProfileOf(4243) = (%q, %q) in a tree that has no 4243; "+
+			"the reader is not using the pid it was given", profile, mode)
+	}
+}
+
+// TestSampleConfinement_FirstReadingWins covers the property the poll
+// loop depends on: kea's /proc entry vanishes when it dies, so a reading
+// taken while it lived must survive the readings taken after it did not.
+// Without this, the explanation disappears in exactly the case — a kea
+// that dies at once — that it was written for.
+func TestSampleConfinement_FirstReadingWins(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "4242", "attr"), 0o755); err != nil {
+		t.Fatalf("build the fake proc tree: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "4242", "attr", "current"),
+		[]byte("kea-dhcp4 (enforce)\n"), 0o644); err != nil {
+		t.Fatalf("write the fake attr/current: %v", err)
+	}
+	saved := procRoot
+	procRoot = root
+	t.Cleanup(func() { procRoot = saved })
+
+	// Nothing held yet: take the reading.
+	if p, m := sampleConfinement("", "", 4242); p != "kea-dhcp4" || m != "enforce" {
+		t.Errorf("sampleConfinement with nothing held = (%q, %q), want the profile it can read", p, m)
+	}
+	// Something held, and the process is now gone: keep what we have.
+	if p, m := sampleConfinement("kea-dhcp4", "enforce", 4243); p != "kea-dhcp4" || m != "enforce" {
+		t.Errorf("sampleConfinement dropped an earlier reading once the pid vanished: (%q, %q)", p, m)
+	}
+	// Nothing held and nothing readable stays nothing — the ordinary
+	// unconfined case, which must not invent a confinement.
+	if p, m := sampleConfinement("", "", 4243); p != "" || m != "" {
+		t.Errorf("sampleConfinement invented a confinement for an unreadable pid: (%q, %q)", p, m)
+	}
+}
+
+// TestApparmorProfileOf_ReadsTheKernelsView pins the reader to the file
+// it is supposed to read, on whatever host this runs on. It cannot
+// assert a particular profile — CI has none and a developer box may —
+// so it asserts AGREEMENT with /proc/self/attr/current, which is the
+// property: a reader wired to the wrong path, or parsing something
+// else, disagrees here regardless of what the host is confining.
+func TestApparmorProfileOf_ReadsTheKernelsView(t *testing.T) {
+	raw, err := os.ReadFile("/proc/self/attr/current")
+	gotProfile, gotMode := apparmorProfileOf(os.Getpid())
+	if err != nil {
+		// No AppArmor in this kernel. That is not a reason to skip — it
+		// is an assertion: with nothing to read, the reader must say
+		// nothing, because every caller treats a non-empty profile as an
+		// explanation and would then blame a confinement that does not
+		// exist.
+		if gotProfile != "" || gotMode != "" {
+			t.Errorf("this kernel has no /proc/self/attr/current (%v), but apparmorProfileOf "+
+				"still reported (%q, %q)", err, gotProfile, gotMode)
+		}
+		return
+	}
+	wantProfile, wantMode := parseAppArmorCurrent(string(raw))
+	if gotProfile != wantProfile || gotMode != wantMode {
+		t.Errorf("apparmorProfileOf(self) = (%q, %q), but /proc/self/attr/current says (%q, %q)",
+			gotProfile, gotMode, wantProfile, wantMode)
+	}
+	t.Logf("this process is confined by %q (%q); %q means unconfined", gotProfile, gotMode, "")
+}
+
+// A pid that cannot exist must read as "nothing to say", not as a
+// finding. Every caller treats a non-empty profile as an explanation.
+func TestApparmorProfileOf_AbsentPidSaysNothing(t *testing.T) {
+	// -1 can never be a live pid, so /proc/-1/attr/current cannot exist.
+	if profile, mode := apparmorProfileOf(-1); profile != "" || mode != "" {
+		t.Errorf("apparmorProfileOf(-1) = (%q, %q), want empty; an unreadable pid is not a confinement",
+			profile, mode)
+	}
+}
+
+func TestApparmorDiagnosis(t *testing.T) {
+	if d := apparmorDiagnosis("", ""); d != "" {
+		t.Errorf("an unconfined process produced a diagnosis:\n%s", d)
+	}
+	// Complain mode logs and permits. Blaming it would send someone to
+	// disable a profile that was never in their way.
+	if d := apparmorDiagnosis("kea-dhcp4", "complain"); d != "" {
+		t.Errorf("a complain-mode profile produced a diagnosis:\n%s", d)
+	}
+
+	d := apparmorDiagnosis("kea-dhcp4", "enforce")
+	if d == "" {
+		t.Fatal("an enforcing profile produced no diagnosis, so the failure would say nothing about it")
+	}
+	// The things a reader needs: what is confining it, that being root
+	// and privileged does not help, and the one command that fixes it.
+	for _, want := range []string{"kea-dhcp4 (enforce)", "exec by executable PATH", "aa-disable", "#680"} {
+		if !strings.Contains(d, want) {
+			t.Errorf("the diagnosis never mentions %q:\n%s", want, d)
+		}
+	}
+	// Confined with no mode reported still explains the failure.
+	if got := apparmorDiagnosis("kea-dhcp4", ""); got == "" {
+		t.Error("a confinement with no mode produced no diagnosis; confined is confined")
+	} else if strings.Contains(got, "()") {
+		t.Errorf("the diagnosis renders an empty mode as \"()\":\n%s", got)
+	}
+}
+
+// TestKeaStartFailure_CarriesTheDiagnosis is the assembly: the reading
+// only matters if it reaches the message the reader sees.
+func TestKeaStartFailure_CarriesTheDiagnosis(t *testing.T) {
+	const config, log = "CONFIG-SENTINEL", "LOG-SENTINEL"
+
+	plain := keaStartFailure("headline", "", "", config, log)
+	for _, want := range []string{"headline", config, log} {
+		if !strings.Contains(plain, want) {
+			t.Errorf("the unconfined message dropped %q:\n%s", want, plain)
+		}
+	}
+	if strings.Contains(plain, "AppArmor") {
+		t.Errorf("an unconfined failure blamed AppArmor:\n%s", plain)
+	}
+
+	confined := keaStartFailure("headline", "kea-dhcp4", "enforce", config, log)
+	for _, want := range []string{"headline", config, log, "AppArmor", "aa-disable"} {
+		if !strings.Contains(confined, want) {
+			t.Errorf("the confined message dropped %q:\n%s", want, confined)
+		}
+	}
+	// The explanation must come BEFORE the config and log. The whole
+	// defect is that a reader who sees the config first goes looking at
+	// JSON that is fine.
+	if strings.Index(confined, "AppArmor") > strings.Index(confined, config) {
+		t.Error("the AppArmor explanation appears after the config, which is where the reader stops reading")
+	}
+}
+
+// TestEphemeral_DoesNotSkipOnConfinement holds the decision #680 made
+// explicitly, from the other side.
+//
+// The tempting fix is to skip when a profile is detected. That would
+// silently remove six tests from every run on any developer box with the
+// kea package installed — the condition is "the host has a package", not
+// "this test is inapplicable" — and a broad silent skip is the shape
+// that hid #402 and #408 behind an honest comment for months.
+//
+// Failing with an accurate message is the decision. Reach for a skip and
+// this goes red, which is the point.
+func TestEphemeral_DoesNotSkipOnConfinement(t *testing.T) {
+	src, err := os.ReadFile("ephemeral.go")
+	if err != nil {
+		t.Fatalf("read ephemeral.go: %v", err)
+	}
+	// Find the subject by its condition, not by the file being
+	// non-empty: if this fixture is ever renamed or the diagnosis moved
+	// elsewhere, this guard must go red rather than pass over a file
+	// that no longer contains what it is guarding.
+	if !strings.Contains(string(src), "func apparmorDiagnosis(") {
+		t.Fatal("ephemeral.go no longer defines apparmorDiagnosis; this guard is watching the wrong file")
+	}
+	for _, banned := range []string{"t.Skip", "Skipf", "SkipNow"} {
+		if strings.Contains(string(src), banned) {
+			t.Errorf("ephemeral.go calls %s. #680 decided this fixture fails with an accurate "+
+				"message rather than skipping: the condition is 'the host has kea installed', "+
+				"which would remove six tests from every local run without saying so.", banned)
+		}
+	}
+}
+
+// ---- the readiness loop itself (#680) --------------------------------
+//
+// The helpers above can all be correct while this loop forgets to sample
+// the confinement or forgets to pass it on. Measured: both of those
+// mutations survived a suite that tested only the helpers, which is why
+// keaReadiness is a function rather than a loop inside startKea.
+
+// keaProbeEnv points procRoot at a tree containing one confined pid and
+// returns that pid plus a log path to write into.
+func keaProbeEnv(t *testing.T, confined bool) (logPath string, pid int) {
+	t.Helper()
+	root := t.TempDir()
+	pid = 4242
+	if confined {
+		if err := os.MkdirAll(filepath.Join(root, "4242", "attr"), 0o755); err != nil {
+			t.Fatalf("build the fake proc tree: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(root, "4242", "attr", "current"),
+			[]byte("kea-dhcp4 (enforce)\n"), 0o644); err != nil {
+			t.Fatalf("write the fake attr/current: %v", err)
+		}
+	}
+	saved := procRoot
+	procRoot = root
+	t.Cleanup(func() { procRoot = saved })
+	return filepath.Join(root, "kea.log"), pid
+}
+
+func writeLog(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+const keaReadyLog = "DHCP4_STARTED version 2.6.3\nDHCPSRV_CFGMGR_ADD_IFACE adding iface eth0\n"
+
+func TestKeaReadiness_ServingIsSilent(t *testing.T) {
+	logPath, pid := keaProbeEnv(t, true)
+	writeLog(t, logPath, keaReadyLog)
+	got := keaReadiness(logPath, 0, pid, time.Now().Add(2*time.Second), "CONFIG",
+		func() string { return "LOG" })
+	if got != "" {
+		t.Errorf("a serving kea produced a failure message:\n%s", got)
+	}
+}
+
+// The startMark contract: markers written by a PREVIOUS instance must
+// not count. The log is appended to across every Stop/StartAgain.
+func TestKeaReadiness_IgnoresTheLogBeforeStartMark(t *testing.T) {
+	logPath, pid := keaProbeEnv(t, false)
+	writeLog(t, logPath, keaReadyLog+"NOTHING FROM THIS INSTANCE\n")
+	got := keaReadiness(logPath, len(keaReadyLog), pid, time.Now().Add(200*time.Millisecond),
+		"CONFIG", func() string { return "LOG" })
+	if got == "" {
+		t.Error("readiness accepted markers written before startMark, so a restarted kea " +
+			"would report ready on its predecessor's log")
+	}
+}
+
+func TestKeaReadiness_SocketFailureIsReported(t *testing.T) {
+	logPath, pid := keaProbeEnv(t, false)
+	writeLog(t, logPath, "DHCPSRV_NO_SOCKETS_OPEN no interfaces\n"+keaReadyLog)
+	got := keaReadiness(logPath, 0, pid, time.Now().Add(2*time.Second), "CONFIG",
+		func() string { return "LOG" })
+	if !strings.Contains(got, "opened no DHCP socket") {
+		t.Errorf("a kea that bound nothing was reported as ready or as something else:\n%s", got)
+	}
+	if strings.Contains(got, "AppArmor") {
+		t.Errorf("an unconfined socket failure blamed AppArmor:\n%s", got)
+	}
+}
+
+// THE CASE THE WHOLE ISSUE IS ABOUT, and the one that observes the call
+// site: kea never becomes ready, and the kernel says a host profile is
+// confining it. Without this, a loop that never samples the confinement
+// — or samples it and drops it on the way to the message — passes.
+func TestKeaReadiness_ConfinedNotReadyExplainsItself(t *testing.T) {
+	logPath, pid := keaProbeEnv(t, true)
+	writeLog(t, logPath, "some kea noise that is not readiness\n")
+	got := keaReadiness(logPath, 0, pid, time.Now().Add(300*time.Millisecond), "CONFIG",
+		func() string { return "LOG" })
+	if got == "" {
+		t.Fatal("a kea that never became ready reported success")
+	}
+	for _, want := range []string{"did not become ready", "AppArmor", "kea-dhcp4 (enforce)", "aa-disable", "CONFIG", "LOG"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the failure never mentions %q:\n%s", want, got)
+		}
+	}
+}
+
+// The control that makes the case above mean something: the same
+// failure on an unconfined host must NOT blame AppArmor. A loop that
+// blamed it unconditionally would pass the test above and be a worse
+// message than the one it replaced.
+func TestKeaReadiness_UnconfinedNotReadyBlamesNothing(t *testing.T) {
+	logPath, pid := keaProbeEnv(t, false)
+	writeLog(t, logPath, "some kea noise that is not readiness\n")
+	got := keaReadiness(logPath, 0, pid, time.Now().Add(300*time.Millisecond), "CONFIG",
+		func() string { return "LOG" })
+	if !strings.Contains(got, "did not become ready") {
+		t.Errorf("an unconfined kea that never started was reported as something else:\n%s", got)
+	}
+	if strings.Contains(got, "AppArmor") {
+		t.Errorf("an unconfined failure blamed AppArmor, which sends the reader to disable "+
+			"a profile that was never in their way:\n%s", got)
+	}
+}
+
+// A confined kea can also fail at the socket stage, and that message
+// carries the explanation too — the diagnosis belongs to the fixture's
+// failures, not to one of them.
+func TestKeaReadiness_ConfinedSocketFailureAlsoExplains(t *testing.T) {
+	logPath, pid := keaProbeEnv(t, true)
+	writeLog(t, logPath, "DHCPSRV_NO_SOCKETS_OPEN no interfaces\n")
+	got := keaReadiness(logPath, 0, pid, time.Now().Add(2*time.Second), "CONFIG",
+		func() string { return "LOG" })
+	if !strings.Contains(got, "opened no DHCP socket") || !strings.Contains(got, "aa-disable") {
+		t.Errorf("a confined socket failure lost one of its two halves:\n%s", got)
+	}
+}
+
+// A missing log file must time out and say so, not panic and not report
+// ready. This is the shape of a kea that died before writing anything.
+func TestKeaReadiness_MissingLogTimesOut(t *testing.T) {
+	logPath, pid := keaProbeEnv(t, false)
+	got := keaReadiness(logPath, 0, pid, time.Now().Add(200*time.Millisecond), "CONFIG",
+		func() string { return "LOG" })
+	if !strings.Contains(got, "did not become ready") {
+		t.Errorf("a kea that wrote no log at all was not reported as never ready:\n%s", got)
+	}
+}
+
+// DHCP4_STARTED alone is not readiness, and the socket-failure check is
+// not what proves it.
+//
+// #356's comment says a probe keyed on DHCP4_STARTED alone returns ready
+// for a server that will never answer — but every log that says so in
+// this suite also carries DHCPSRV_NO_SOCKETS_OPEN, which is caught one
+// branch earlier. So dropping the interface requirement changed no
+// verdict and the rule was unobserved. This is the input that isolates
+// it: a kea that started and configured no interface, with nothing the
+// socket-failure check recognises.
+func TestKeaReadiness_StartedWithoutAnInterfaceIsNotReady(t *testing.T) {
+	logPath, pid := keaProbeEnv(t, false)
+	writeLog(t, logPath, "DHCP4_STARTED version 2.6.3\n")
+	got := keaReadiness(logPath, 0, pid, time.Now().Add(300*time.Millisecond), "CONFIG",
+		func() string { return "LOG" })
+	if got == "" {
+		t.Error("a kea that logged DHCP4_STARTED but configured no interface was reported " +
+			"ready; every test built on that fails later, somewhere else, looking like a plugin bug (#356)")
+	}
+}
+
+// The other half of the conjunction. Driving only the DHCP4_STARTED
+// side leaves "key on the interface line alone" alive: a kea that has
+// added an interface but has not finished starting is not serving
+// either, and a probe that accepts it hands the suite a server that is
+// not yet listening.
+func TestKeaReadiness_InterfaceWithoutStartedIsNotReady(t *testing.T) {
+	logPath, pid := keaProbeEnv(t, false)
+	writeLog(t, logPath, "DHCPSRV_CFGMGR_ADD_IFACE adding iface eth0\n")
+	got := keaReadiness(logPath, 0, pid, time.Now().Add(300*time.Millisecond), "CONFIG",
+		func() string { return "LOG" })
+	if got == "" {
+		t.Error("a kea that added an interface but never logged DHCP4_STARTED was reported ready")
+	}
+}
+
+// TestKeaPid_NoProcessIsZero keeps a false attribution out of the
+// message. keaReadiness only asks the kernel when the pid is positive,
+// so a helper that answered 1 for "no process" would report the
+// confinement of the container's init as if it were kea's — a
+// confident, specific and wrong explanation, which is worse than none.
+func TestKeaPid_NoProcessIsZero(t *testing.T) {
+	if got := (&EphemeralFixture{}).keaPid(); got != 0 {
+		t.Errorf("keaPid() with no command = %d, want 0", got)
+	}
+	if got := (&EphemeralFixture{cmd: &exec.Cmd{}}).keaPid(); got != 0 {
+		t.Errorf("keaPid() with an unstarted command = %d, want 0", got)
 	}
 }
