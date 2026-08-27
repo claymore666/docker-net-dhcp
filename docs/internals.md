@@ -47,15 +47,21 @@ lifecycle, the event plumbing, and everything below are identical.
   resulting address/routes via netlink itself.
 - **A lapsed lease is not one of those events.** The plugin runs
   `dhcpcd --noconfigure`, and in that mode a lease running out is
-  reported as `RELEASE`. Up to v1.8.x a graceful stop emitted the very
-  same reason, so treating it as a failure would have counted every
-  normal container teardown as one, and the handler dropped it. v1.9.0
-  removed the `release` directive and with it that second source.
-  **The remaining half is contested** — a recorded measurement on the
-  shipped dhcpcd had a lapse fire `EXPIRE`, not `RELEASE`
-  ([#855](https://github.com/claymore666/docker-net-dhcp/issues/855)) —
-  so the handler still drops `RELEASE` pending that, and the bolded
-  claim above may not survive it.
+  reported as `RELEASE` — but only while the `release` directive was
+  also set, which it was up to v1.8.x. A graceful stop emitted the same
+  reason, so treating either as a failure would have counted every
+  normal container teardown as one, and the handler dropped both.
+
+  **v1.9.0 removes that directive, and a lapse now fires `EXPIRE`**,
+  which the plugin counts as a lease loss. Measured across all four
+  combinations of `--noconfigure` and `release` on the shipped dhcpcd,
+  and visible in the failure suite across the two trees: the same outage
+  that produced "+0 leasefail / +1 watchdog" before produces "+1
+  leasefail / +0 watchdog" after
+  ([#855](https://github.com/claymore666/docker-net-dhcp/issues/855)).
+  So the plugin CAN now learn about a dead DHCP server by being told,
+  sooner than the lease deadline would have told it. The deadline-based
+  watchdog stays as the backstop for a lapse dhcpcd does not report.
 - **Outages are therefore derived, not reported.** Each bind and renew
   records the lease lifetime the server granted, and a watchdog compares
   it against the time since that endpoint was last served: once

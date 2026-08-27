@@ -77,6 +77,7 @@ sudo mkdir -p /var/lib/net-dhcp
 | --- | --- |
 | A container's address on stop, restart, or removal | **held until the lease expires.** The plugin no longer sends a DHCPRELEASE on any path, and no longer scans for and releases orphaned leases (#800) |
 | Log line for a client signalled before it ever bound | said `Persistent client stopped before it ever held the lease; reclaiming it`; now ends `the one-shot's lease is left to expire on the server`. Log alerts matching the old wording stop matching |
+| How a DHCP outage is first noticed | **the DHCP client now reports it.** Dropping the `release` directive also changed what `dhcpcd` fires when a lease lapses — `EXPIRE` instead of `RELEASE`, which the plugin counts. `dhcp_timeouts` therefore rises at the lease deadline instead of one watchdog grace later, and the plugin log carries a lease-failure record where it previously carried only a watchdog line. No counter changed name and the deadline watchdog stays as the backstop (#855) |
 
 **The plugin now behaves like an ordinary machine on the segment.** A host
 does not hand its address back when it reboots — it comes back, asks for the
