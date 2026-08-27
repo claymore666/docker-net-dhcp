@@ -1,0 +1,67 @@
+# Delete workflow runs older than a window, keeping the last N complete CI
+# groups and every run that is build provenance for a published artifact.
+#
+# WHY A SCHEDULE AND NOT A ONE-OFF. This repository produces roughly 325
+# runs a day. A manual purge of several thousand runs is undone in about
+# ten days, so a cleanup that is not scheduled is not a fix — it is a
+# chore that comes back. The policy lives in scripts/purge-workflow-runs.sh
+# and is exercised by scripts/test-purge-workflow-runs.sh; this file is
+# only the trigger and the credentials.
+#
+# WHY THE DEFAULT IS A DRY RUN EVERYWHERE BUT THE SCHEDULE. A destructive
+# job that deletes by default is one typo in an input away from erasing
+# the history it is meant to prune. The scheduled lane passes DRY_RUN=0
+# explicitly; every manual dispatch has to ask for it.
+name: Run retention
+
+on:
+  schedule:
+    # 04:17 UTC daily. Off the hour on purpose: GitHub's scheduler queues
+    # heavily at :00 and a delayed run here is invisible until the count
+    # creeps back up.
+    - cron: '17 4 * * *'
+  workflow_dispatch:
+    inputs:
+      retention_days:
+        description: 'Keep runs newer than this many days'
+        required: false
+        default: '7'
+      keep_groups:
+        description: 'Keep this many most-recent complete CI groups regardless of age'
+        required: false
+        default: '10'
+      dry_run:
+        description: 'Report only (1) or actually delete (0)'
+        required: false
+        default: '1'
+
+permissions:
+  contents: read
+
+concurrency:
+  # Two purges racing would both list, both compute a delete set from a
+  # tree the other is mutating, and each would try to delete runs the
+  # other already removed. Serialise; never cancel a run mid-delete.
+  group: run-retention
+  cancel-in-progress: false
+
+jobs:
+  purge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      actions: write   # the only job that deletes runs; nothing else needs it
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Purge old workflow runs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          RETENTION_DAYS: ${{ github.event.inputs.retention_days || '7' }}
+          KEEP_GROUPS: ${{ github.event.inputs.keep_groups || '10' }}
+          # The schedule is the only trigger that deletes. A dispatch must
+          # ask for it, and the default above is a dry run.
+          DRY_RUN: ${{ github.event_name == 'schedule' && '0' || (github.event.inputs.dry_run || '1') }}
+        run: bash scripts/purge-workflow-runs.sh

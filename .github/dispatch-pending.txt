@@ -16,3 +16,12 @@
 #     nobody prunes is how a temporary exception becomes permanent.
 #
 
+
+.github/workflows/run-retention.yml
+    Reason:  new in the v1.9.0 cycle. The workflow's real trigger is the
+             daily schedule, which works from any branch; workflow_dispatch
+             exists only to run the purge by hand with a different window,
+             or as a dry run. Being undispatchable therefore costs a manual
+             convenience, not the function.
+    Clears:  when this reaches `main` with the v1.9.0 release. Remove this
+             entry then — the gate fails while a stale entry remains.
