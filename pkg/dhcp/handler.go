@@ -81,9 +81,11 @@ type Info struct {
 	// always runs, a lapsed lease fires the hook as RELEASE rather than
 	// EXPIRE — and up to v1.8.x a graceful stop produced the same reason,
 	// so it could not be counted as a failure. #800 removed the `release`
-	// directive; what a stopped client reports now has not been measured,
-	// so RELEASE is still not counted (see pkg/dhcp.mapReason). The lease
-	// deadline needs no such measurement.
+	// directive. The RELEASE-on-lapse half is now CONTESTED by a recorded
+	// measurement (#855) that had a lapse fire EXPIRE on the shipped
+	// dhcpcd; RELEASE is still not counted pending that (see
+	// pkg/dhcp.mapReason). The lease deadline is the one signal here that
+	// does not depend on which way #855 lands.
 	//
 	// The renewal time (T1, option 58) is deliberately NOT carried here
 	// even though dhcpcd exports it, because under `--noconfigure` it is

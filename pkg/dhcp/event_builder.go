@@ -53,12 +53,18 @@ type Getenv func(string) string
 // a graceful stop (Leave / plugin shutdown → SIGTERM → `release`
 // directive) fired the SAME reason, so mapping RELEASE would have
 // counted every clean teardown as a DHCP failure. #800 removed the
-// `release` directive, and that second source of RELEASE is gone with
-// it — but what a SIGTERM'd client reports INSTEAD has not been
-// measured. RELEASE therefore stays unmapped: changing it would rest on
-// an unverified dhcpcd behaviour, and the deadline-based detection it
-// would replace is measured and works. The consumer detects a silent
-// lapse from the lease deadline — see LeaseSeconds.
+// `release` directive, and that second source of RELEASE is gone with it.
+//
+// THE FIRST REASON IS CONTESTED (#855). A recorded measurement on the
+// shipped pair — alpine 3.24.1 + dhcpcd 10.3.2-r0, this function's own
+// argv from renderArgs — had a lapse fire EXPIRE, not RELEASE, on two
+// runs. That is one witness against the paragraph above and it has not
+// been adjudicated: the discriminator, and why the failure suite's logs
+// cannot settle it, are in #855. RELEASE stays unmapped until it is
+// settled — mapping it on a contested premise would be the same mistake
+// in the other direction, and the deadline-based detection it would
+// replace is measured and works. The consumer detects a silent lapse
+// from the lease deadline — see LeaseSeconds.
 func mapReason(reason string) (eventType string, v6 bool, emit bool) {
 	switch reason {
 	case "BOUND", "REBOOT":

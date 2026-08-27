@@ -89,18 +89,24 @@ then free to have given it away.
 There is no setting for this. A lease is a lease; it expires on the server's
 schedule, and that schedule is the operator's to set on the DHCP server.
 
-**Breaking for metrics scrapers.** Three changes to the `/metrics` surface and
-the audit ledger:
+**Breaking for metrics scrapers and health checks.** Changes across the
+`/metrics` surface, `/Plugin.Health`, and the audit ledger:
 
 | surface | before | after |
 | --- | --- | --- |
-| counter | `net_dhcp_lease_release_failures_total` (and its `_v4`/`_v6` split) | `net_dhcp_client_stop_failures_total` — same event, honest name: a renewal client that did not shut down cleanly. It never meant a lease went unreleased, and now cannot |
-| counter | `net_dhcp_orphaned_leases_released_total`, `net_dhcp_orphaned_lease_release_failures_total` | **removed.** Nothing releases, so neither has a subject |
+| `/metrics` counter | `net_dhcp_lease_release_failures_total` (carrying `family="ipv4"` / `family="ipv6"`) | `net_dhcp_client_stop_failures_total`, same labels — same event, honest name: a renewal client that did not shut down cleanly. It never meant a lease went unreleased, and now cannot |
+| `/metrics` counter | `net_dhcp_orphaned_leases_released_total`, `net_dhcp_orphaned_lease_release_failures_total` | **removed.** Nothing releases, so neither has a subject |
+| `/Plugin.Health` keys | `lease_release_failures`, `lease_release_failures_v4`, `lease_release_failures_v6` | `client_stop_failures`, `client_stop_failures_v4`, `client_stop_failures_v6` |
+| `/Plugin.Health` keys | `orphaned_leases_released`, `orphaned_lease_release_failures` | **removed** |
 | `leases.jsonl` kinds | `release`, `release_failed` | `stopped`, `stop_failed` |
 
-Update dashboards and alerts before upgrading. The ledger rename matters for
-the same reason as the counter one: a line saying `release` was a claim about
-what the DHCP server saw, and it was false.
+Update dashboards and alerts before upgrading. The health rows matter most and
+are the easiest to miss: a JSON consumer reading a key that has vanished gets a
+zero, not an error, so a `jq`-over-the-socket check of the kind in
+`docs/reference.md` keeps reporting healthy after the thing it watched stopped
+existing. The ledger rename matters for the same reason as the counter one: a
+line saying `release` was a claim about what the DHCP server saw, and it was
+false.
 
 ## v1.8.0
 

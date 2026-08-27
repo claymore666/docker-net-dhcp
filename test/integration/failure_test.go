@@ -190,9 +190,16 @@ func awaitBoundPersistentClient(t *testing.T, w *harness.CounterWindow) {
 // while acquiring) and an outage-watchdog tick. Returned separately
 // because which of the two fires is the diagnostic — a leasefail means
 // dhcpcd spoke, a watchdog line means the plugin synthesised the
-// signal from the lease deadline. For a client that was BOUND before
-// the server died, expect the watchdog: dhcpcd's lapse report is a
-// RELEASE and is deliberately dropped (#353).
+// signal from the lease deadline.
+//
+// This block used to say "For a client that was BOUND before the server
+// died, expect the watchdog", on the reasoning that dhcpcd's lapse
+// report is a RELEASE and is dropped. The runs disagree: the FIRST rise
+// is a leasefail every time and the watchdog only appears on the retry
+// tick. Which reason dhcpcd actually fired is not visible from here —
+// mapReason folds EXPIRE and TIMEOUT into the same "leasefail", so both
+// models predict what these runs show. That is #855; do not read either
+// answer out of this counter.
 func outageLines(t *testing.T, ctx context.Context, endpoint string) (leasefail, watchdog int) {
 	t.Helper()
 	return harness.CountPluginLogLines(t, ctx, endpoint, logLeaseFail),

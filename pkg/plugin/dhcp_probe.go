@@ -70,7 +70,10 @@ const preflightProbeBudget = 8 * time.Second
 //     kernel permits nothing else, but the random probe MAC is still
 //     what dhcpcd derives its DUID and IAID from, so the probe's
 //     identity stays its own — the link's address and the DHCP identity
-//     are separate things, exactly as they are on the release path. The
+//     are separate things, the same way they are for a container's own
+//     endpoint. (This used to say "exactly as they are on the release
+//     path", an analogy to a path #800 deleted; a reader can check the
+//     endpoint and cannot check a path that is gone.) The
 //     one thing the parent's address does reach is chaddr, which is why
 //     Broadcast is already requested below (#243): an ipvlan-L2 segment
 //     cannot demux a unicast OFFER to a shared MAC.
@@ -78,7 +81,9 @@ const preflightProbeBudget = 8 * time.Second
 //  3. Bring it up and run dhcp.GetIP one-shot with the probe budget.
 //     dhcpcd has no DISCOVER-only flag; we accept the full DORA and
 //     let the upstream server briefly hold a lease that times out
-//     naturally (no `release` directive sent). The cost is one
+//     naturally. Since #800 that is true of every client this plugin
+//     starts, not something the probe does differently — the probe's
+//     lease is short-lived only because the probe is. The cost is one
 //     transient pool entry
 //     per `docker network create -o validate_dhcp=true`.
 //

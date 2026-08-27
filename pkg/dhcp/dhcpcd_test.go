@@ -421,13 +421,26 @@ func TestRenderArgs_PersistentV6(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("args mismatch:\ngot:  %v\nwant: %v", got, want)
 	}
-	// Persistent client must not get the one-shot flag, and must NOT be
-	// -p (it should release its lease when the plugin stops it).
+	// Neither flag, and for two different reasons — see
+	// TestNewDHCPClient_PersistentOmitsTheOneShotFlags in client_test.go
+	// for the long form. -1 would make this client exit after its first
+	// lease and never renew. -p is inert under --noconfigure (nothing
+	// was configured, so there is nothing to de-configure) and is
+	// asserted only to keep the two clients' argv distinguishable.
+	//
+	// This block said "-p ... it should release its lease when the
+	// plugin stops it" until #800. That was false before #800 too — a
+	// release came from the `release` directive, never from this flag —
+	// and it sat 200 lines below TestRenderConfig_NothingEverReleases in
+	// this same file, stating the opposite contract about the same build.
 	if hasArg(got, "-1") {
-		t.Errorf("persistent client got -1: %v", got)
+		t.Errorf("persistent client got -1; it would exit after its first lease "+
+			"and never renew: %v", got)
 	}
 	if hasArg(got, "-p") {
-		t.Errorf("persistent client got -p; it must release on stop: %v", got)
+		t.Errorf("persistent client got -p; its argv has converged with the "+
+			"one-shot's. Nothing in this build releases a lease, with or without "+
+			"this flag: %v", got)
 	}
 }
 

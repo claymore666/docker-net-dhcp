@@ -50,10 +50,12 @@ lifecycle, the event plumbing, and everything below are identical.
   reported as `RELEASE`. Up to v1.8.x a graceful stop emitted the very
   same reason, so treating it as a failure would have counted every
   normal container teardown as one, and the handler dropped it. v1.9.0
-  removed the `release` directive and with it that second source — but
-  what a stopped client reports instead has not been measured, so the
-  handler still drops `RELEASE`. Either way the plugin cannot learn
-  about a dead DHCP server by waiting to be told.
+  removed the `release` directive and with it that second source.
+  **The remaining half is contested** — a recorded measurement on the
+  shipped dhcpcd had a lapse fire `EXPIRE`, not `RELEASE`
+  ([#855](https://github.com/claymore666/docker-net-dhcp/issues/855)) —
+  so the handler still drops `RELEASE` pending that, and the bolded
+  claim above may not survive it.
 - **Outages are therefore derived, not reported.** Each bind and renew
   records the lease lifetime the server granted, and a watchdog compares
   it against the time since that endpoint was last served: once

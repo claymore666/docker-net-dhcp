@@ -219,10 +219,35 @@ func TestNewDHCPClient_OnceAddsPersistFlags(t *testing.T) {
 	}
 }
 
-func TestNewDHCPClient_PersistentReleasesOnStop(t *testing.T) {
+// TestNewDHCPClient_PersistentOmitsTheOneShotFlags: the two clients this
+// package builds must stay distinguishable by argv.
+//
+// The two flags are not equally load-bearing, and until #800 this test
+// said they were, for a reason that was never true.
+//
+//   - -1 has teeth. A persistent client given it exits after its first
+//     lease and never renews, so the container's address lapses at the
+//     server's deadline with no client left to notice.
+//   - -p governs whether dhcpcd DE-CONFIGURES the interface on exit.
+//     Under --noconfigure, which renderArgs gives BOTH clients, dhcpcd
+//     configured nothing, so there is nothing to keep or drop and the
+//     flag is inert here. It never had anything to do with releasing:
+//     the release came from the `release` directive, which #800 removed
+//     and TestRenderConfig_NothingEverReleases now forbids.
+//
+// So -p is asserted as a shape guard — the one-shot's argv and the
+// persistent client's must not converge — and NOT because omitting it
+// releases anything. Nothing in this build releases.
+func TestNewDHCPClient_PersistentOmitsTheOneShotFlags(t *testing.T) {
 	c := newTestClient(t, "eth0", &DHCPClientOptions{Once: false, MAC: mustMAC(t, "de:ad:be:ef:00:01")})
-	if hasArg(c.cmd.Args, "-1") || hasArg(c.cmd.Args, "-p") {
-		t.Errorf("persistent client must omit -1/-p (releases on stop); args: %v", c.cmd.Args)
+	if hasArg(c.cmd.Args, "-1") {
+		t.Errorf("persistent client got -1; it would exit after its first lease and never "+
+			"renew, and the container's address would lapse with nobody watching; args: %v", c.cmd.Args)
+	}
+	if hasArg(c.cmd.Args, "-p") {
+		t.Errorf("persistent client got -p; the one-shot's argv and the persistent client's "+
+			"have converged. -p is inert under --noconfigure, so this is a shape guard, not "+
+			"a claim that omitting it releases a lease; args: %v", c.cmd.Args)
 	}
 }
 
