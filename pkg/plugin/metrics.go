@@ -37,6 +37,23 @@ type metricDef struct {
 	// help is the HELP line. It is operator-facing documentation and
 	// should say what the number means, not restate the name.
 	help string
+	// healthy marks a counter that the Healthy expression reads: a
+	// non-zero value makes the plugin report itself unhealthy.
+	//
+	// THIS IS THE DECLARATION. It used to be inferred by reading the
+	// English in help, which is how #826 happened: the classifier saw
+	// "Healthy-affecting." inside "Not healthy-affecting:" and called a
+	// denial an assertion. The fix read the sentence better, and #854
+	// found the same defect one axis over -- "Not a healthy-affecting
+	// counter" puts a word between the negator and the term and is read
+	// as asserting again. A heuristic over prose has now been wrong
+	// twice in the same place, so the property stopped being prose.
+	//
+	// scripts/check-health-contract.sh reads this field. The sentence
+	// in help stays for operators and is pinned to this field by
+	// TestMetricHelpMatchesHealthyField, which is what stops the two
+	// from drifting apart now that only one of them is authoritative.
+	healthy bool
 	// field is the HealthResponse json tag this renders.
 	field string
 	// v4field and v6field, when set, make this a family-split metric:
@@ -98,7 +115,7 @@ func metricDefs() []metricDef {
 
 		// Post-restart recovery.
 		{name: "recovered_ok", counter: true, help: "Endpoints whose renewal client was rebuilt after a plugin restart.", field: "recovered_ok"},
-		{name: "recovery_failed", counter: true, help: "Post-restart rebuilds that failed for a container that is still running; it runs without lease renewal and loses its IP at expiry. Healthy-affecting.", field: "recovery_failed"},
+		{name: "recovery_failed", counter: true, healthy: true, help: "Post-restart rebuilds that failed for a container that is still running; it runs without lease renewal and loses its IP at expiry. Healthy-affecting.", field: "recovery_failed"},
 		{name: "recovery_deferred", counter: true, help: "Recovery walks postponed because the daemon was still starting (#383). Not a fault.", field: "recovery_deferred"},
 		{name: "recovery_aborted_container_gone", counter: true, help: "Endpoints skipped during recovery because their container had already exited. Not a fault.", field: "recovery_aborted_container_gone"},
 		{name: "recovery_network_gone", counter: true, help: "Networks skipped during recovery because they were removed mid-walk. Not a fault.", field: "recovery_network_gone"},
@@ -106,7 +123,7 @@ func metricDefs() []metricDef {
 		{name: "recovery_already_managed", counter: true, help: "Endpoints a recovery walk left alone because a Join had already claimed them. Not a fault; the only outward evidence of recovery racing a Join.", field: "recovery_already_managed"},
 
 		// Join / attach.
-		{name: "join_start_failures", counter: true, help: "Joins whose DHCP client failed to start, leaving a running container without lease renewal. Healthy-affecting.", field: "join_start_failures"},
+		{name: "join_start_failures", counter: true, healthy: true, help: "Joins whose DHCP client failed to start, leaving a running container without lease renewal. Healthy-affecting.", field: "join_start_failures"},
 		{name: "join_aborted_container_gone", counter: true, help: "Joins abandoned because the container disappeared mid-attach. Not a fault.", field: "join_aborted_container_gone"},
 		{name: "join_aborted_no_container", counter: true, help: "Joins abandoned because no container was ever found for the endpoint. Not a fault.", field: "join_aborted_no_container"},
 		{name: "join_aborted_endpoint_left", counter: true, help: "Joins abandoned because a Leave arrived while the attach was in flight. Not a fault.", field: "join_aborted_endpoint_left"},
@@ -117,7 +134,7 @@ func metricDefs() []metricDef {
 
 		// Address conflict detection (#524).
 		{name: "address_conflict_probes", counter: true, help: "Conflict probes that reached a verdict. Read this before believing address_conflicts is zero: zero here means the detector never ran.", field: "address_conflict_probes"},
-		{name: "address_conflicts", counter: true, help: "Leased addresses found already in use by another host. Healthy-affecting.", field: "address_conflicts"},
+		{name: "address_conflicts", counter: true, healthy: true, help: "Leased addresses found already in use by another host. Healthy-affecting.", field: "address_conflicts"},
 		{name: "conflict_probe_failures", counter: true, help: "Conflict probes that could not reach a verdict.", field: "conflict_probe_failures"},
 		{name: "conflict_probe_stale_routes", counter: true, help: "Leftover probe routes reclaimed from a probe cut short before it cleaned up.", field: "conflict_probe_stale_routes"},
 		{name: "conflict_probe_stale_addrs", counter: true, help: "Leftover borrowed probe SOURCE addresses reclaimed from the parent NIC. The sibling conflict_probe_stale_routes covers the leftover route, which is recognisable because its destination is the probed address; the source address has random octets by design (#575) so nothing ever collided with it and it accumulated on the operator's NIC, one per stop-inside-the-probe-window. Not healthy-affecting: the probe went on to run (#723).", field: "conflict_probe_stale_addrs"},
@@ -129,8 +146,8 @@ func metricDefs() []metricDef {
 		{name: "parent_link_wait_timeouts", counter: true, help: "Endpoint creations where the parent interface never appeared inside the wait.", field: "parent_link_wait_timeouts"},
 
 		// Persistence.
-		{name: "tombstone_write_failures", counter: true, help: "Tombstone writes that failed, so the next restart of that container picks a new MAC and address. Healthy-affecting.", field: "tombstone_write_failures"},
-		{name: "tombstone_quarantines", counter: true, help: "Times the tombstone file was found unparseable and moved aside as tombstones.json.corrupt-<ts>; every live tombstone on the host was lost with it, so containers restarting in the next TTL window come back with new MACs and addresses. Healthy-affecting.", field: "tombstone_quarantines"},
+		{name: "tombstone_write_failures", counter: true, healthy: true, help: "Tombstone writes that failed, so the next restart of that container picks a new MAC and address. Healthy-affecting.", field: "tombstone_write_failures"},
+		{name: "tombstone_quarantines", counter: true, healthy: true, help: "Times the tombstone file was found unparseable and moved aside as tombstones.json.corrupt-<ts>; every live tombstone on the host was lost with it, so containers restarting in the next TTL window come back with new MACs and addresses. Healthy-affecting.", field: "tombstone_quarantines"},
 		{name: "tombstones_consumed", counter: true, help: "Tombstones read back to preserve a container's MAC and address across a restart.", field: "tombstones_consumed"},
 		{name: "unsafe_hostnames_rejected", counter: true, help: "Container hostnames dropped before reaching the DHCP client config because they carried a control character. A legitimate hostname never does, so any rise is deliberate (#692).", field: "unsafe_hostnames_rejected"},
 		{name: "unsafe_option_values_dropped", counter: true, help: "Server-chosen DHCP string values refused before use because they carried a control character, plus option-15 domains truncated at their first space. dhcpcd validates only its dname-typed options; the string-typed ones pass newlines through (#703, #704).", field: "unsafe_option_values_dropped"},
