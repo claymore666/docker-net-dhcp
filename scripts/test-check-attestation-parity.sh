@@ -16,8 +16,19 @@
 # v1.9.0 fixed it). The second is the one people forget, because it is
 # the good news.
 #
-# Every branch is reachable offline through ATTEST_QUERY. A live release
-# can only ever exercise one of them.
+# Every branch of the CALLER is reachable offline through ATTEST_QUERY,
+# and a live release can only ever exercise one of them. But ATTEST_QUERY
+# returns from `ask()` before the `gh` call, so the cases above drive the
+# caller and nothing below that `return`. The whole discrimination the
+# gate's header describes -- rc, digit-shape, `HTTP 404` on stderr -- is
+# on the far side of the seam, and it was never executed by anything
+# until the `gh`-stub section at the bottom of this file.
+#
+# THE STUB IS WITNESSED, AND THAT IS NOT CEREMONY. With no stub applied,
+# the real `gh` answers a genuine 404 for a repo that does not exist, so
+# every "cannot judge" case here goes green having made a live network
+# call and having tested nothing. The call counter is what tells a real
+# run from that one.
 set -u
 
 CHECK="$(cd "$(dirname "$0")" && pwd)/check-attestation-parity.sh"
@@ -31,6 +42,14 @@ failures=0
 n=0
 
 # fake_query NAME GHCR_ANSWER HUB_ANSWER -> path to a query command
+#
+# Every value returned here is a single path with no space or glob
+# character, so the deliberately unquoted `$ATTEST_QUERY "$digest"` in the
+# checker expands to one word in every case below. The unquoted form is a
+# documented affordance -- the header says "command", so `ATTEST_QUERY="bash
+# q.sh"` is meant to work -- that nothing in this suite exercises. Left
+# unquoted on purpose; recorded here so the next reader does not "fix" it
+# and quietly narrow the contract.
 fake_query() {
     local name="$1" g="$2" h="$3"
     local f="$TMP/q-$name.sh"
@@ -203,6 +222,90 @@ else
     echo "FAIL: re-ask asymmetry -- control asked $gcalls time(s), pinned side $hcalls time(s); want 2 and 1"
     failures=$((failures + 1))
 fi
+
+# ======================================================================
+# THE SHIPPED PATH: no ATTEST_QUERY, a stubbed `gh` on PATH
+# ======================================================================
+#
+# PREPENDED, never assigned. The checker shells out to mktemp, grep, tr,
+# cut and rm, and this suite invokes it with `bash`; replacing PATH with
+# the stub directory exits 127 before the gate runs a line. Measured.
+STUB="$TMP/bin"; mkdir -p "$STUB"
+export GH_CALLS="$TMP/gh-calls" GH_MODES="$TMP/gh-modes"; mkdir -p "$GH_MODES"
+
+cat > "$STUB/gh" <<'STUBEOF'
+#!/usr/bin/env bash
+# Log FIRST and unconditionally: the log is the witness that this stub,
+# and not a real gh, produced the verdict being asserted.
+printf '%s\n' "$*" >> "$GH_CALLS"
+d=""; for a in "$@"; do case "$a" in */attestations/sha256:*) d="${a##*/}" ;; esac; done
+case "$(cat "$GH_MODES/$d" 2>/dev/null || echo unset)" in
+    count:*)  printf '%s\n' "$(cat "$GH_MODES/$d")" | sed 's/^count://'; exit 0 ;;
+    # A real 404: the body lands on STDOUT, the diagnostic on STDERR.
+    http404)  printf '{"message":"Not Found","status":"404"}\n'
+              echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
+    # rc 0, and a JSON error object on STDOUT with STDERR EMPTY. This is
+    # the case the checker's own header singles out.
+    body200)  printf '{"message":"Bad credentials"}\n'; exit 0 ;;
+    netfail)  echo "dial tcp: lookup api.github.com: no such host" >&2; exit 1 ;;
+    silent)   exit 9 ;;
+    *)        echo "stub: no mode set for '$d'" >&2; exit 3 ;;
+esac
+STUBEOF
+chmod +x "$STUB/gh"
+
+# gh_check NAME WANT_EXIT WANT_CALLS GHCR_MODE HUB_MODE
+gh_check() {
+    local name="$1" want="$2" wantcalls="$3"
+    printf '%s' "$4" > "$GH_MODES/$GHCR"; printf '%s' "$5" > "$GH_MODES/$HUB"
+    : > "$GH_CALLS"
+    n=$((n + 1))
+    PATH="$STUB:$PATH" REPO="owner/name" GHCR_DIGEST="$GHCR" HUB_DIGEST="$HUB" \
+        CONTROL_ATTEMPTS=2 CONTROL_SLEEP=0 bash "$CHECK" > "$TMP/out" 2>&1
+    local got=$? calls
+    calls=$(grep -c . "$GH_CALLS" 2>/dev/null || echo 0)
+    if [ "$got" -eq "$want" ] && [ "$calls" -eq "$wantcalls" ]; then
+        echo "PASS: [gh] $name (exit $got, $calls gh call(s))"
+    else
+        echo "FAIL: [gh] $name -- want exit $want / $wantcalls call(s), got $got / $calls"
+        [ "$calls" -eq 0 ] && echo "    the stub was never invoked -- PATH did not take, so this case tested nothing"
+        sed 's/^/    /' "$TMP/out"
+        failures=$((failures + 1))
+    fi
+}
+
+gh_check "the documented state, through gh"        0 2 count:1 http404
+want_in "control OK"
+want_in "no provenance attestation"
+
+gh_check "the pin goes stale, through gh"          1 2 count:1 count:2
+want_in "pin is stale"
+
+# One call, not two: the control resolved on the first ask, and the run
+# exits before the pinned side is reached. A `2` here would mean the Hub
+# side was asked despite the control having already failed.
+gh_check "GHCR resolves to zero, through gh"       1 1 count:0 http404
+want_in "GHCR provenance regressed"
+
+gh_check "a real 404 on both sides cannot judge"   2 2 http404 http404
+want_in "LOST its provenance"
+
+gh_check "a transport failure on the control"      2 2 netfail http404
+want_in "control side went dark"
+want_in "no such host"
+
+# THE CASE THE CHECKER'S HEADER IS ABOUT, and the one that had never run.
+# `gh` exits 0 and prints a JSON error object on stdout. The shape test
+# must refuse to read it as a count -- and the refusal must SAY what was
+# seen. Before this test the message was built from stderr alone, which
+# is empty here, so it read "could not be reached ... : ." and pointed
+# the reader at a token for a run where the endpoint answered.
+gh_check "a 4xx body on stdout is not a count"     2 2 body200 http404
+want_in "Bad credentials"
+
+# Neither stream speaks. The diagnostic must still name something.
+gh_check "gh fails silently: rc is reported"       2 2 silent http404
+want_in "printed nothing on either stream"
 
 echo
 if [ "$failures" -ne 0 ]; then

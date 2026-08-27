@@ -94,7 +94,7 @@ is_digest "$HUB_DIGEST"  || refuse "HUB_DIGEST is not a sha256 digest (got: '${H
 # on SHAPE and never on emptiness -- an unguarded read here would take the
 # JSON error object as an answer.
 ask() {
-    local digest="$1" out err rc
+    local digest="$1" out err rc detail
     if [ -n "${ATTEST_QUERY:-}" ]; then
         $ATTEST_QUERY "$digest"
         return 0
@@ -107,7 +107,25 @@ ask() {
     elif grep -q 'HTTP 404' "$err"; then
         printf 'notfound'
     else
-        printf 'error:%s' "$(tr '\n' ' ' < "$err" | cut -c1-200)"
+        # STDERR IS EMPTY IN EXACTLY THE CASE THIS GUARD EXISTS FOR.
+        # The comment above says `gh api --jq` prints a 4xx error BODY on
+        # stdout; when it does, the SHAPE test rejects it -- correctly --
+        # and stderr holds nothing. A message built from stderr alone is
+        # then blank, and reads "could not be reached ... : ", aiming the
+        # next reader at a token or a rate limit for a run where the
+        # endpoint answered fine. That is the same mis-aim the `notfound`
+        # branch below is written to prevent, one branch over.
+        #
+        # So report whichever stream actually spoke, and the exit status
+        # when neither did.
+        detail="$(tr '\n' ' ' < "$err" | cut -c1-200)"
+        if [ -z "${detail// /}" ]; then
+            detail="$(printf '%s' "$out" | tr '\n' ' ' | cut -c1-200)"
+        fi
+        if [ -z "${detail// /}" ]; then
+            detail="gh exited $rc and printed nothing on either stream"
+        fi
+        printf 'error:%s' "$detail"
     fi
     rm -f "$err"
 }
