@@ -47,8 +47,9 @@
 # the labels, and would then pass a PR the reconciler cannot read — which is
 # precisely the class of bug this is here to stop.
 #
-# Usage: check-issue-ref.sh <commit-range> [pr-title-file] [pr-body-file]
+# Usage: check-issue-ref.sh <commit-range> [pr-title-file] [pr-body-file] [pr-author]
 #   <commit-range>: any git range, e.g. origin/dev..HEAD
+#   <pr-author>:    github.event.pull_request.user.login, for the bot exemption
 #
 # Waiver: a body line `No issue: <reason>` passes the check. Some pull
 # requests genuinely have no issue — a typo fix, a revert — and the honest
@@ -83,6 +84,30 @@
 # the message uses `#<n>` placeholders, exactly as `check-coverage-floor.sh`
 # writes `Coverage-floor: #<issue>`.
 #
+# THE WAIVER IS UNREACHABLE FOR A BOT, WHICH MADE THIS GATE UNSATISFIABLE.
+# Dependabot composes its own title, body and commit subjects and offers no
+# hook to add a line to any of them. It has no issue to reference and cannot
+# write `No issue:` to say so, so every dependency bump failed a REQUIRED
+# check with no action its author could take. That is not a strict gate, it
+# is a closed door: #805, #806 and #807 all sat red on this, and the batch
+# before them (#594-#596) merged only because it predates this gate.
+#
+# So the fourth argument is the PR author, and `dependabot[bot]` is exempt.
+#
+# THE EXEMPTION IS EXACT STRING EQUALITY, not a prefix, suffix or substring
+# match. A login is the one field here GitHub sets rather than the author,
+# and `[bot]` is reserved for Apps, so equality is sound where a substring
+# is not: `mydependabot[bot]` and `dependabot[bot]-x` are ordinary names
+# somebody could hold, and a `case`/`*dependabot*` test would hand them a
+# permanent waiver. The same shape — a name treated as an authenticator —
+# is what #785 fixed in the plugin's setns path.
+#
+# AN ABSENT AUTHOR EXEMPTS NOBODY. Called with three arguments, as every
+# caller did before this, the parameter is empty and the gate behaves
+# exactly as it did. The failure direction is the safe one: if the workflow
+# ever stops passing the author, dependency bumps go red again and somebody
+# notices, rather than every PR silently acquiring a waiver.
+#
 # Exit: 0 reachable, 1 nothing references an issue, 2 cannot check.
 
 set -u
@@ -93,9 +118,10 @@ SYNC="$HERE/sync-issue-state-labels.sh"
 RANGE="${1:-}"
 TITLE_FILE="${2:-}"
 BODY_FILE="${3:-}"
+AUTHOR="${4:-}"
 
 if [ -z "$RANGE" ]; then
-    echo "usage: $0 <commit-range> [pr-title-file] [pr-body-file]" >&2
+    echo "usage: $0 <commit-range> [pr-title-file] [pr-body-file] [pr-author]" >&2
     exit 2
 fi
 
@@ -171,6 +197,14 @@ if [ -n "$BODY_FILE" ] && [ -f "$BODY_FILE" ] &&
    command grep -qiE "$WAIVER" "$BODY_FILE"; then
     reason="$(command grep -iE "$WAIVER" "$BODY_FILE" | head -1)"
     echo "Issue reference waived — $reason"
+    exit 0
+fi
+
+# Checked after the reference and the waiver, so a bump that DOES carry a
+# reference is still reported on it. Exact equality — see the header.
+BOT_AUTHOR='dependabot[bot]'
+if [ "$AUTHOR" = "$BOT_AUTHOR" ]; then
+    echo "Issue reference exempt — authored by $BOT_AUTHOR, which cannot write a waiver."
     exit 0
 fi
 

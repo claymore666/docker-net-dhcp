@@ -711,6 +711,10 @@ jobs:
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_BODY: ${{ github.event.pull_request.body }}
+          # Through env like the rest, and never inlined: a login is not
+          # attacker-controlled the way a body is, but the shape of this
+          # step is what a reader copies.
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
@@ -718,7 +722,8 @@ jobs:
           printf '%s' "$PR_BODY" > "$RUNNER_TEMP/pr-body-ref.md"
           bash scripts/check-issue-ref.sh \
             "$BASE_SHA..$HEAD_SHA" \
-            "$RUNNER_TEMP/pr-title.txt" "$RUNNER_TEMP/pr-body-ref.md"
+            "$RUNNER_TEMP/pr-title.txt" "$RUNNER_TEMP/pr-body-ref.md" \
+            "$PR_AUTHOR"
 
       - name: Check commits and PR body for AI attribution
         env:
