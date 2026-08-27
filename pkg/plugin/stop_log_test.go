@@ -57,21 +57,37 @@ import (
 //
 // That argument covers the mutant this test exists for. It does NOT
 // cover the anchorless rows silently ceasing to exercise their path:
-// delete the audit from settleFamily's bound-clean or hard-exit arm and
-// this test still passes, because a row with no anchor cannot tell "the
-// path ran and claimed nothing" from "the path did not run". Both
-// mutants were driven, and each is killed by siblings that assert what
-// those paths DO rather than what they must not say:
+// delete what settleFamily's bound-clean or hard-exit arm emits and this
+// test still passes, because a row with no anchor cannot tell "the path
+// ran and claimed nothing" from "the path did not run".
 //
-//   - bound-clean silenced -> TestStop_AuditsBothFamiliesIndependently,
+// The coverage is real, and it lives next door. THREE mutants, not two,
+// because the hard-exit arm has two observables and they have different
+// killers — a first version of this list drove the two deletions
+// together and then attributed the UNION of their killers to a mutant
+// described as deleting only the audit:
+//
+//   - bound-clean, audit deleted (its only observable) ->
+//     TestStop_AuditsBothFamiliesIndependently,
 //     TestStop_AuditsAStopWithoutClaimingARelease,
 //     TestStop_NeverBoundV6ClientIsNotAuditedAsReleased.
-//   - hard-exit silenced   -> TestStop_AuditsBothFamiliesIndependently,
-//     TestStop_AuditsAStopWithoutClaimingARelease,
+//   - hard-exit, "stop_failed" audit deleted ->
+//     TestStop_AuditsBothFamiliesIndependently,
+//     TestStop_AuditsAStopWithoutClaimingARelease.
+//     NOT TestStop_BoundV6StopFailureIsCountedPerFamily: it reads the
+//     counters and never looks at the ledger, so it stays green.
+//   - hard-exit, clientStopFailures bump deleted ->
+//     TestStop_AuditsBothFamiliesIndependently,
 //     TestStop_BoundV6StopFailureIsCountedPerFamily.
+//     NOT TestStop_AuditsAStopWithoutClaimingARelease, for the mirror
+//     reason: it reads the ledger and not the counters.
 //
-// So the coverage is real but it lives next door, and deleting those
-// siblings would leave these two rows vacuous with nothing to say so.
+// This test passed under all three, which is the residual being
+// recorded. Deleting those siblings would leave these two rows vacuous
+// with nothing to say so. The general form, since this comment got it
+// wrong once: one arm, two observables, two mutants — a composite
+// deletion yields the union of the killers and names none of them
+// correctly.
 func TestStop_NoStopPathClaimsAReclaimOrRelease(t *testing.T) {
 	for _, tc := range []struct {
 		name string
