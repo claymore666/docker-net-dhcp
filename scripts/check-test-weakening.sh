@@ -441,11 +441,16 @@ for f in "${FILES[@]}"; do
     # A signal set with no false alarms that also catches nothing is a
     # check with one possible verdict, which is not a check.
     #
-    # THAT PRICING COVERED 60 COMMITS, and the population is 116 at the
-    # time of writing. The number is #828's, taken on an older tree; it
-    # is quoted here because it is what was actually measured, and the
-    # boundary is stated because a pricing that covered roughly half a
-    # population does not license a claim about the whole of it. The
+    # THAT PRICING COVERED 60 COMMITS, against a population of 116
+    # non-merge commits reachable from dev at the time of writing. Both
+    # halves of that sentence need their ref: the same history yields
+    # 120 counting this branch's own commits, 120 again counting merges
+    # from dev, and 124 counting both — so "120" alone does not even
+    # identify which derivation produced it. The 60 is #828's, taken on
+    # an older tree; it is quoted because it is what was actually
+    # measured, and the boundary is stated because a pricing that
+    # covered roughly half a population does not license a claim about
+    # the whole of it. The
     # first draft of this comment said "all 60 commits that have EVER
     # touched scripts/test-*.sh" — a completeness claim, and one that
     # was already false when it was written.
@@ -456,8 +461,10 @@ for f in "${FILES[@]}"; do
     # .go file can reach either of them. That is preservation by
     # construction, not by sampling — and it is why the earlier draft's
     # "silent across 60 Go commits" was both unsourceable and
-    # unnecessary. (60 is the shell population above, six lines up; one
-    # number was doing duty for two different sets.)
+    # unnecessary. (That 60 was the shell PRICING above — not a
+    # population, and not a Go one; one number was doing duty for two
+    # different sets, which is why this paragraph says "covered" and
+    # "population" of different things and never reuses the word.)
     if [[ "$f" == *.sh ]]; then
         # Judged on what the shell would run, not on what the file
         # quotes. See added_code_lines() above.
