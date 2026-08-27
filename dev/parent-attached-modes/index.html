@@ -1046,8 +1046,10 @@ sidecar, no <code>cap_add</code>:</p>
    lease for the lifetime of the endpoint. It runs observe-only
    (<code>--noconfigure</code>); the plugin applies lease changes via netlink.</li>
 <li>On <code>docker stop</code>, libnetwork calls <code>Leave</code> → the persistent <code>dhcpcd</code>
-   gets <code>SIGTERM</code> → it sends <code>DHCPRELEASE</code> so the upstream server's
-   lease table doesn't accumulate stale entries.</li>
+   gets <code>SIGTERM</code> and exits. It does <strong>not</strong> release the lease: the
+   address stays leased until it expires, or until the container comes
+   back and re-claims it, exactly as it would for a physical host that
+   rebooted (v1.9.0+, #800).</li>
 <li>The macvlan link is reaped automatically when the container netns is
    destroyed.</li>
 </ol>

@@ -2117,7 +2117,7 @@ limitations) are catalogued in
 <td>all</td>
 <td><code>false</code></td>
 <td>v1.0.0</td>
-<td>Append every lease-lifecycle event (<code>bound</code> / <code>renew</code> / <code>release</code> / <code>release_failed</code>) to <code>STATE_DIR/leases.jsonl</code> — one JSON object per line with timestamp, network, endpoint, container, hostname, IP, MAC. Rotated at 16 MB or 30 days (one rotated generation kept, ≤ ~32 MB total). Append failures bump <code>ledger_write_failures</code> on <code>/Plugin.Health</code>, never affecting lease handling. Off by default: per-event disk write, and container↔IP correlation on disk is privacy-relevant in some environments.</td>
+<td>Append every lease-lifecycle event (<code>bound</code> / <code>renew</code> / <code>stopped</code> / <code>stop_failed</code>) to <code>STATE_DIR/leases.jsonl</code> — one JSON object per line with timestamp, network, endpoint, container, hostname, IP, MAC. Rotated at 16 MB or 30 days (one rotated generation kept, ≤ ~32 MB total). Append failures bump <code>ledger_write_failures</code> on <code>/Plugin.Health</code>, never affecting lease handling. Off by default: per-event disk write, and container↔IP correlation on disk is privacy-relevant in some environments.</td>
 </tr>
 </tbody>
 </table>
@@ -2393,7 +2393,10 @@ in every mode:</p>
   container and renews the same address. This is the same identity IPv6
   has always used (its DUID/IAID is MAC-derived), and it is what makes
   IPv4 restart-stable without depending on a <code>DHCPRELEASE</code> being sent on
-  the way out — which is not always possible (<code>SIGKILL</code>, OOM, power loss).</p>
+  the way out — which is not always possible (<code>SIGKILL</code>, OOM, power loss).
+  Since v1.9.0 the plugin never sends one at all (#800), so this identity
+  is the whole mechanism: a restarting container gets its address back by
+  asking again and being recognised.</p>
 <p><code>ipvlan</code> is the exception: its L2 slaves all inherit the parent's MAC,
   so a MAC-derived id could not tell containers apart. Those keep the
   endpoint-derived id, which is unique but <strong>not</strong> stable across a
@@ -2629,7 +2632,7 @@ diagnosing a specific container from them alone is not.</p>
 <tr>
 <td><code>join_aborted_no_container</code></td>
 <td>no</td>
-<td>(v1.6.0+) Attaches abandoned because no container ever claimed the endpoint on the network, and whose leased address was released rather than left to expire. Not a fault: nothing is running without a renewal client, because nothing is running — so this never flips <code>healthy</code>. Distinct from <code>join_aborted_container_gone</code>, which needs the daemon to say "no such container" or the sandbox netns to be visibly gone; this one covers the case where the endpoint is simply unclaimed after the attach budget, which previously fell through to <code>join_start_failures</code> and leaked the address (#566).</td>
+<td>(v1.6.0+) Attaches abandoned because no container ever claimed the endpoint on the network. Since v1.9.0 the leased address is <strong>left to expire</strong> rather than released (#800); before then it was released here, which is why the counter's name says nothing about either. Not a fault: nothing is running without a renewal client, because nothing is running — so this never flips <code>healthy</code>. Distinct from <code>join_aborted_container_gone</code>, which needs the daemon to say "no such container" or the sandbox netns to be visibly gone; this one covers the case where the endpoint is simply unclaimed after the attach budget, which previously fell through to <code>join_start_failures</code> and leaked the address (#566).</td>
 </tr>
 <tr>
 <td><code>join_attach_slow</code></td>
@@ -2722,9 +2725,9 @@ diagnosing a specific container from them alone is not.</p>
 <td>DHCP-acquisition failures (v4+v6 aggregate). Bumped by an explicit <code>dhcpcd</code> lease-loss hook when there is one, and — since v1.3.5 (#353) — by a periodic outage watchdog that compares the lease lifetime the server granted against the time since the client was last served. It keeps climbing for the duration of a server outage. <strong>Detection is not immediate:</strong> a bound endpoint's outage surfaces only once its lease would have run out (plus one watchdog period), because until then the client holds a valid address and <code>dhcpcd</code> reports nothing. On a 24-hour lease that is up to ~24 hours; a client that never binds at all is counted within <code>OUTAGE_GRACE</code> (~25s by default). The watchdog period and settling time are <a href="#plugin-settings"><code>OUTAGE_TICK</code> / <code>OUTAGE_GRACE</code></a> — note that lowering them shortens the fixed part of the delay only, never the lease itself.</td>
 </tr>
 <tr>
-<td><code>lease_release_failures</code></td>
+<td><code>client_stop_failures</code></td>
 <td>no</td>
-<td>Teardown DHCPRELEASE didn't complete cleanly — the server may hold a phantom lease until natural expiry. A pattern points at upstream reachability problems mid-teardown.</td>
+<td>(renamed from <code>lease_release_failures</code> in v1.9.0, #800) A renewal client did not shut down cleanly when the plugin signalled it at teardown — a timeout, a non-zero exit, or a closed pipe. It does <strong>not</strong> mean a lease went unreleased: since v1.9.0 nothing this plugin runs sends a DHCPRELEASE on any path, so every stopped container's address is held until it expires whatever this counter reads. A pattern points at clients being killed harder than they should be.</td>
 </tr>
 <tr>
 <td><code>naks_received</code></td>
@@ -2734,12 +2737,7 @@ diagnosing a specific container from them alone is not.</p>
 <tr>
 <td><code>displaced_stops</code></td>
 <td>no</td>
-<td>(v1.3.5+) Attaches that found a manager already registered for the same endpoint and stopped it — a container restarting into a plugin that had already recovered it (#338). The displaced client is released cleanly and the new one takes over, so a few are normal after a plugin restart. Climbing steadily alongside <code>recovered_ok</code> means a container is in a restart loop.</td>
-</tr>
-<tr>
-<td><code>orphaned_leases_released</code></td>
-<td>no</td>
-<td>(v1.3.6+) Leases reclaimed for a container that exited before its renewal client could attach (#370) — one count per address, so a dual-stack endpoint that orphaned both of its addresses counts twice (v1.7.0+, #608; before that only the IPv4 address was ever reclaimed). The address is acquired during endpoint setup and deliberately held for the handover; when the handover never happens, the plugin synthesises a release instead of letting the address sit until it expires. A steady trickle is normal wherever short-lived containers run.</td>
+<td>(v1.3.5+) Attaches that found a manager already registered for the same endpoint and stopped it — a container restarting into a plugin that had already recovered it (#338). The displaced client is stopped cleanly and the new one takes over — stopped, not released: it sends no DHCPRELEASE, so the address stays leased and the incoming client renews it, so a few are normal after a plugin restart. Climbing steadily alongside <code>recovered_ok</code> means a container is in a restart loop.</td>
 </tr>
 <tr>
 <td><code>restart_link_up_waited</code></td>
@@ -2750,11 +2748,6 @@ diagnosing a specific container from them alone is not.</p>
 <td><code>restart_link_up_timeouts</code></td>
 <td>no</td>
 <td>(v1.5.0+) The same wait outlasting its budget: the restart fails and <code>docker restart</code> reports <code>address already in use</code>. A real failure, but deliberately not <code>healthy</code>-affecting — it surfaces directly to whoever ran the command, and <code>healthy</code> is for faults nothing else reports. Any non-zero value here is worth investigating; it means the departing link held the address longer than the budget allows (#422).</td>
-</tr>
-<tr>
-<td><code>orphaned_lease_release_failures</code></td>
-<td>no</td>
-<td>(v1.3.6+) A reclaim above that could not be completed — the address stays held upstream until its own expiry, exactly as it did before the reclaim existed. Read as a rate against <code>orphaned_leases_released</code>: a few failures are transient upstream trouble, a ratio near 1 means the reclaim path itself is broken (no route to the segment, server refusing the synthesised client). Not <code>healthy</code>-affecting, which is worth knowing when reading it: this counter can climb on every container without turning anything red, and did (#402).</td>
 </tr>
 <tr>
 <td><code>parent_link_waits</code></td>
@@ -2829,10 +2822,10 @@ diagnosing a specific container from them alone is not.</p>
 <tr>
 <td><code>lease_changed_v6</code>, <code>leases_obtained_v6</code>, <code>leases_renewed_v6</code>, <code>dhcp_timeouts_v6</code>, <code>naks_received_v6</code></td>
 <td>no</td>
-<td>(v1.2.0+) The IPv6-only share of the matching counter above (#212). Each counts only the v6 client's events. On a dual-stack host this isolates the v6-specific NAK/timeout signal the combined number hides. <code>lease_release_failures_v6</code> (v1.7.0+, #608) joins the split with the same rule; <code>ledger_write_failures</code> has no per-family split.</td>
+<td>(v1.2.0+) The IPv6-only share of the matching counter above (#212). Each counts only the v6 client's events. On a dual-stack host this isolates the v6-specific NAK/timeout signal the combined number hides. <code>client_stop_failures_v6</code> (v1.7.0+, #608) joins the split with the same rule; <code>ledger_write_failures</code> has no per-family split.</td>
 </tr>
 <tr>
-<td><code>lease_changed_v4</code>, <code>leases_obtained_v4</code>, <code>leases_renewed_v4</code>, <code>dhcp_timeouts_v4</code>, <code>naks_received_v4</code>, <code>lease_release_failures_v4</code></td>
+<td><code>lease_changed_v4</code>, <code>leases_obtained_v4</code>, <code>leases_renewed_v4</code>, <code>dhcp_timeouts_v4</code>, <code>naks_received_v4</code>, <code>client_stop_failures_v4</code></td>
 <td>no</td>
 <td>(v1.8.0+, #730) The IPv4-only share, on the same rule. Both halves are now stored and the unsuffixed counter is their <strong>sum</strong> — it is not a counter in its own right and nothing increments it. Before v1.8.0 the v4 share was not stored: it was recovered as <code>aggregate − *_v6</code> at render time, which could read one lower than the previous scrape and make Prometheus treat the whole counter as reset. Use <code>*_v4</code> rather than doing that subtraction yourself.</td>
 </tr>
@@ -2872,7 +2865,7 @@ upgrade.</p>
 <p>Counters are <code>net_dhcp_&lt;name&gt;_total</code>, gauges are <code>net_dhcp_&lt;name&gt;</code>.</p>
 <p>Six counters carry a <code>family</code> label — <code>leases_obtained</code>,
 <code>leases_renewed</code>, <code>lease_changed</code>, <code>dhcp_timeouts</code>, <code>naks_received</code> and
-<code>lease_release_failures</code>:</p>
+<code>client_stop_failures</code>:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a>net_dhcp_leases_obtained_total{family=&quot;ipv4&quot;} 42
 <a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a>net_dhcp_leases_obtained_total{family=&quot;ipv6&quot;} 7
 </code></pre></div>
@@ -2967,10 +2960,14 @@ own mount namespace, so following that path from the host finds a
 mount point at best and, more usually, nothing at all:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-22-1" name="__codelineno-22-1" href="#__codelineno-22-1"></a>sudo<span class="w"> </span>cat<span class="w"> </span>/var/lib/net-dhcp/leases.jsonl<span class="w"> </span><span class="p">|</span><span class="w"> </span>jq<span class="w"> </span>.
 </code></pre></div>
-<p>One JSON object per line; kinds <code>bound</code>, <code>renew</code>, <code>release</code>,
-<code>release_failed</code>. <code>release_failed</code> means the DHCPRELEASE may not have
-reached the server — the ledger never claims a release that might not
-have happened.</p>
+<p>One JSON object per line; kinds <code>bound</code>, <code>renew</code>, <code>stopped</code>,
+<code>stop_failed</code>. <code>stopped</code> means the renewal client was signalled and
+exited; <code>stop_failed</code> means it did not exit cleanly. Neither says
+anything about the lease, because since v1.9.0 the plugin never
+releases one — the address is held until it expires (#800). The kinds
+were <code>release</code> and <code>release_failed</code> before that, and were renamed
+rather than kept: the ledger must never assert something the server did
+not see.</p>
 <hr />
 <h2 id="compose-usage">Compose usage<a class="headerlink" href="#compose-usage" title="Permanent link">&para;</a></h2>
 <p>Recommended shape — network created once out-of-band, referenced as
