@@ -123,7 +123,7 @@ echo "== purge-workflow-runs =="
 # --- 1. non-vacuity: an empty run listing must refuse, not report success
 D="$TMP/empty"; mkfix "$D"; echo '{"workflow_runs":[]}' > "$D/runs.json"
 drive "$D" env DRY_RUN=0
-[ "$RC" = 2 ] && echo "$OUT" | grep -q "Nothing to inspect" \
+[ "$RC" = 2 ] && grep -q "Nothing to inspect" <<<"$OUT" \
   && ok "an empty run listing exits 2 rather than reporting a clean sweep" \
   || no "empty listing returned $RC: $OUT"
 [ "$CALLS" -gt 0 ] && ok "witness: the stub was actually invoked ($CALLS calls)" \
@@ -132,7 +132,7 @@ drive "$D" env DRY_RUN=0
 # --- 2. the default is a dry run
 D="$TMP/dry"; mkfix "$D"; runs_json "$NOW" 20 30 > "$D/runs.json"
 drive "$D"
-[ "$RC" = 0 ] && [ "$DELS" = 0 ] && echo "$OUT" | grep -q "DRY RUN" \
+[ "$RC" = 0 ] && [ "$DELS" = 0 ] && grep -q "DRY RUN" <<<"$OUT" \
   && ok "DRY_RUN defaults to on and deletes nothing" \
   || no "default run deleted $DELS run(s), rc=$RC"
 
