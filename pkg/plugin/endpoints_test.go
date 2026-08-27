@@ -114,6 +114,99 @@ func TestApiHealth_JoinStartFailureUnhealthy(t *testing.T) {
 	}
 }
 
+// TestApiHealth_RecoveryFailureUnhealthy and its quarantine sibling
+// below complete the five. Healthy is one boolean built from five
+// independent terms, and the gate beside it compares that expression by
+// TERM COUNT, not by name -- it cannot do better, because the operands
+// are function-local variables the gate never sees. So dropping
+// `failed == 0` while adding any other term keeps the count at five and
+// the gate stays green.
+//
+// Three of the five already had an arm that dies when its own term is
+// dropped. These two did not, and they are the two whose absence costs
+// most: a failed recovery means a RUNNING container has no renewal
+// client, and a quarantine means every live tombstone on the host was
+// lost, so every container restarting in the next TTL window comes back
+// with a new MAC and address. Either one could have been dropped from
+// the expression with the count intact, the gate green, and the plugin
+// reporting healthy over it.
+//
+// EACH ARM SETS ONE COUNTER AND ONLY ONE. That is what makes the five
+// score independently: this test must go red when `failed == 0` is
+// removed and stay green when any of the other four is, so a mutation
+// is attributed to the term that actually carries it rather than to the
+// union of whatever a fixture happened to set.
+func TestApiHealth_RecoveryFailureUnhealthy(t *testing.T) {
+	p := &Plugin{
+		startTime:      time.Now(),
+		joinHints:      make(map[string]joinHint),
+		persistentDHCP: make(map[string]*dhcpManager),
+	}
+	p.recoveryFailed.Add(1)
+
+	req := httptest.NewRequest(http.MethodGet, "/Plugin.Health", nil)
+	rec := httptest.NewRecorder()
+	p.apiHealth(rec, req)
+
+	var got HealthResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Healthy {
+		t.Error("a failed recovery must mark the plugin unhealthy — a running container has no renewal client")
+	}
+	if got.RecoveryFailed != 1 {
+		t.Errorf("expected 1 recovery failure reported, got %d", got.RecoveryFailed)
+	}
+	// The other four terms stay at zero, so a green here after dropping
+	// `failed == 0` cannot be rescued by some other counter.
+	if got.JoinStartFailures != 0 || got.TombstoneWriteFailures != 0 ||
+		got.AddressConflicts != 0 || got.TombstoneQuarantines != 0 {
+		t.Errorf("fixture leaked into another term: join=%d tsWrite=%d conflicts=%d quarantines=%d",
+			got.JoinStartFailures, got.TombstoneWriteFailures,
+			got.AddressConflicts, got.TombstoneQuarantines)
+	}
+}
+
+// TestApiHealth_TombstoneQuarantineUnhealthy is the fifth arm. The
+// counter lives on the tombstoneStore rather than on Plugin directly,
+// which is why it reads p.tombstones.quarantines -- a zero-valued
+// tombstoneStore is usable, so no fixture setup is needed beyond it.
+//
+// A quarantine is not a degraded write like its tombstone_write_failures
+// neighbour: the whole file was unreadable and moved aside, so EVERY
+// tombstone on the host is gone at once (#724). Healthy has to be false
+// for that, and until now nothing said so.
+func TestApiHealth_TombstoneQuarantineUnhealthy(t *testing.T) {
+	p := &Plugin{
+		startTime:      time.Now(),
+		joinHints:      make(map[string]joinHint),
+		persistentDHCP: make(map[string]*dhcpManager),
+	}
+	p.tombstones.quarantines.Add(1)
+
+	req := httptest.NewRequest(http.MethodGet, "/Plugin.Health", nil)
+	rec := httptest.NewRecorder()
+	p.apiHealth(rec, req)
+
+	var got HealthResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Healthy {
+		t.Error("a tombstone quarantine must mark the plugin unhealthy — every live tombstone on the host was lost")
+	}
+	if got.TombstoneQuarantines != 1 {
+		t.Errorf("expected 1 tombstone quarantine reported, got %d", got.TombstoneQuarantines)
+	}
+	if got.RecoveryFailed != 0 || got.JoinStartFailures != 0 ||
+		got.TombstoneWriteFailures != 0 || got.AddressConflicts != 0 {
+		t.Errorf("fixture leaked into another term: recovery=%d join=%d tsWrite=%d conflicts=%d",
+			got.RecoveryFailed, got.JoinStartFailures,
+			got.TombstoneWriteFailures, got.AddressConflicts)
+	}
+}
+
 // TestApiHealth_PerFamilyCounters pins the #212 contract on the wire as
 // #730 restated it: BOTH halves are stored and rendered, and the
 // un-suffixed counter is their sum rather than a counter of its own.
