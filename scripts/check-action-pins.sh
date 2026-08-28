@@ -73,9 +73,16 @@ refuse() {
 [ -d "$WORKFLOW_DIR" ] || refuse "no workflow directory at $WORKFLOW_DIR."
 
 # BOTH EXTENSIONS, DELIBERATELY. GitHub honours .yml and .yaml alike, and
-# this tree contains 24 of one and 1 of the other. A gate matching only
-# the common extension would pass over the odd file forever, which is the
-# defect class this whole family exists to stop.
+# this tree holds both -- overwhelmingly one of them, and at least one of
+# the other, which is the whole hazard. A gate matching only the common
+# extension would pass over the odd file forever, which is the defect
+# class this whole family exists to stop.
+#
+# NO COUNT IS WRITTEN HERE, and one used to be: "24 of one and 1 of the
+# other". MEASURED 2026-08-28: 25 and 1. The success line printed by
+# this very script said 26 files while this comment said 25, so the file
+# disagreed with its own output. Ask the tally line, which counts on
+# every run.
 mapfile -t FILES < <(find "$WORKFLOW_DIR" -maxdepth 1 -type f \
     \( -name '*.yml' -o -name '*.yaml' \) 2>/dev/null | sort)
 
@@ -195,10 +202,26 @@ for f in "${FILES[@]}"; do
     # them without enumerating them. That rests on ONE assumption,
     # written here so it can be attacked rather than left implicit: a
     # node property never contains whitespace, so a single token is
-    # always enough. FIFTEEN spellings were measured against both
-    # oracles; the twelve that either oracle called a real reference now
-    # exit 1, and the three that neither called a reference refuse
-    # rather than pass.
+    # always enough.
+    #
+    # NO TALLY OF SPELLINGS IS WRITTEN HERE, AND THE ONE THAT USED TO BE
+    # WAS FALSE. It said "the three that neither oracle called a
+    # reference refuse rather than pass". MEASURED 2026-08-28 in a
+    # workflow directory holding one ordinary pinned reference beside
+    # them: `- !uses: x`, `&a - uses: x` and `- *a` each exit 0, not 2.
+    # They refuse only when they are ALONE in the directory, and then
+    # for a different reason -- the non-vacuity guard fires because the
+    # scan found no `uses:` line at all, which is a fact about the
+    # fixture and not a judgement of the form. The table below already
+    # said OPEN for all three, so this file contradicted itself two
+    # paragraphs apart and did so in the direction that harms the
+    # reader: claiming more strictness than exists.
+    #
+    # A tally of spellings is also the shape this file refuses twice
+    # above -- a count of an open set, with no observer. The POSITIONS
+    # are what is enumerated, every row is measured, and every row has a
+    # case in scripts/test-check-action-pins.sh. Ask those, not this
+    # paragraph.
     #
     # THE ENUMERATION IS OF POSITIONS, NOT OF SPELLINGS, AND THAT IS THE
     # CORRECTION THIS PARAGRAPH CARRIES. It used to name three shapes as
@@ -231,13 +254,37 @@ for f in "${FILES[@]}"; do
     # and NEITHER ORACLE CALLS EITHER A REFERENCE, so passing them costs
     # nothing observable -- one spelling of each was measured, which is
     # a bound and not a proof. An alias (`*a`) is not a node property at
-    # all and is caught at its definition site. The value side is judged
+    # all and is caught at its DEFINITION site, which is where the
+    # literal `uses:` line has to be written; both the plain alias and
+    # the `<<:` merge key are driven as cases. The bound on that:
+    # "caught at its definition site" holds for a definition site this
+    # gate judges. The one open definition site is `&a - uses:`, before
+    # the dash -- and MEASURED 2026-08-28, a document that anchors there
+    # and aliases it is not valid YAML at all (PyYAML: "sequence entries
+    # are not allowed here"), so there is no workflow in which that
+    # combination is a reference this gate missed. The value side is judged
     # rather than skipped, which is worse than either: it false-REDS a
     # pinned ref, and for a tag ending in `@` plus 40 hex it false-GREENS
     # an unpinned one. Both are pinned as cases. The `?`-alone row is the
     # structural bound named further up -- no expression here can reach a
     # key line carrying neither indicator nor colon, whatever the property
     # group admits.
+    #
+    # THE DASH QUANTIFIER DIVERGES ACROSS THE SITES, DELIBERATELY, and
+    # it is recorded here because it is the one place left in this gate
+    # keyed on a spelling rather than on a property. The counter admits
+    # `(-[[:space:]]+)*` -- zero or MORE dashes -- while the ref
+    # extraction and the parser feed admit `(-[[:space:]]+)?`, zero or
+    # one. So a nested block sequence (`- - uses: x`) is counted and not
+    # extracted, occurrences exceed parsed, and the residue check
+    # REFUSES: fail-closed, MEASURED 2026-08-28 in both directions, and
+    # a real false red for a workflow that writes its steps that way.
+    # Unifying them would be worse than the false red -- the extraction
+    # cannot attribute a nested entry to a step, so it would claim to
+    # judge a shape it does not understand. The self-test's
+    # property-group consistency check compares only the property group
+    # and CANNOT see this divergence, so both directions are pinned as
+    # cases instead.
     #
     # AND THE ROWS ARE A LOWER BOUND ON THE POSITIONS, not a proof that
     # there are eleven. Two spellings enumerated means a third exists,

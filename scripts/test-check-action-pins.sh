@@ -723,53 +723,143 @@ run "PINNED DEFECT: a property does not rescue the ?-alone class (exit 0 is wron
 # every case above still green because no fixture distinguishes them.
 #
 # So the population is DERIVED from the script rather than counted here:
-# no number is written down, and the copies are located by the thing
-# that cannot move without this whole gate moving -- the `uses` token
-# inside a regular expression -- rather than by what the property group
-# looks like today. A refactor to a single shared variable leaves one
-# site pair and passes, which is the right answer: there is then nothing
-# to drift.
+# no number is written down. A refactor to a single shared variable
+# leaves one site pair and passes, which is the right answer: there is
+# then nothing to drift.
 #
 # THE FIRST VERSION OF THIS CHECK WAS KEYED ON `[&!]` AND WAS INERT.
-# Driving the absence is what found it, and it is worth the sentence
-# because it is the same defect as the one below it: widening ONE copy
-# to `[&!%]` made that copy invisible to the pattern, so the check
-# reported "all 2 copies identical" over a script whose four copies no
-# longer agreed. A check keyed on today's spelling reproduces its own
-# silence. Both directions are now driven below in the comment's place:
-# a differing copy FAILS, a missing group FAILS, an empty domain
-# REFUSES.
+# Driving the absence is what found it: widening ONE copy to `[&!%]`
+# made that copy invisible to the pattern, so the check reported "all 2
+# copies identical" over a script whose four copies no longer agreed.
 #
-# AND AN EMPTY DOMAIN REFUSES rather than passing. "All copies agree" is
-# vacuously true of zero copies, which is how a check keyed on a literal
-# congratulates itself after the literal is renamed.
-n=$((n + 1))
+# THE SECOND VERSION HAD THE SAME DEFECT ONE STEP TO THE SIDE, and the
+# paragraph here claimed otherwise. It said the copies were located "by
+# the thing that cannot move without this whole gate moving -- the
+# `uses` token inside a regular expression". They were not: the locator
+# was `uses:?[[:space:]]`, which carries a whitespace CLASS, and a class
+# can be respelled. MEASURED by a reviewer 2026-08-28 -- rewriting ONE
+# site to `[[:blank:]]` dropped it out of the domain, the suite stayed
+# 67/67, the real tree behaved identically, and this check printed "all
+# 3 sites agree" over four. Composing that with a widening of the other
+# three reproduces exactly the defect a3e6bbe was written to prevent,
+# with everything green. A check keyed on a spelling reproduces its own
+# silence, twice in this file now.
+#
+# SO THE DOMAIN IS DERIVED TWICE, BY KEYS THAT CANNOT FAIL TOGETHER.
+#   A locates a `uses` key site by the whitespace class the expressions
+#     use today -- `uses:?[[:space:]]`.
+#   B locates a site that ADMITS a property by the group's closing `)*`
+#     sitting immediately ahead of the `uses` token, and contains no
+#     whitespace class at all.
+# A respelt class drops a site from A and not from B; a site that stops
+# admitting a property -- the a3e6bbe defect -- drops from B and not
+# from A. Either way the two disagree and that is the failure. Neither
+# derivation is trusted; their AGREEMENT is what is asserted, and a
+# floor on B refuses an emptied domain rather than congratulating it.
+#
+# THE BOUND, because "cannot fail together" is a completeness claim and
+# this file has now been wrong twice while making one: both derivations
+# still key on the literal token `uses`. Rename that token throughout
+# and both go to zero together -- which the floor turns into a REFUSAL,
+# not a pass, and that is the only reason this bound is affordable. A
+# third derivation that does not mention `uses` would have to parse the
+# expressions, and a parser of ERE inside a self-test is a larger thing
+# than what it guards.
+# The verdict is a FUNCTION of a file, not a block of inline code, so
+# that its own absence can be driven: the cases below hand it copies of
+# check-action-pins.sh with one site removed, one class respelt and one
+# group widened, and require it to go red for each. A check nobody can
+# run against a broken input is a check nobody has tested.
+#
 # OCCURRENCES, NOT LINES. `grep -c` counts LINES, and the counter holds
 # TWO of these sites on ONE line -- so a line count reported three sites
 # where there are four and the check went red against a correct script.
 # Caught by running it, which is why the control is driven and not read.
-prop_sites="$(grep -oE 'uses:?\[\[:space:\]\]' "$CHECK" | grep -c . || true)"
-prop_admit="$(grep -oE '\([^()]*\)\*\(?uses:?\[\[:space:\]\]' "$CHECK" || true)"
-prop_admit_n="$(printf '%s' "$prop_admit" | grep -c . || true)"
-prop_groups="$(printf '%s\n' "$prop_admit" | sed -E 's/\(?uses:?\[\[:space:\]\]$//' | sort -u)"
-prop_distinct="$(printf '%s' "$prop_groups" | grep -c . || true)"
-if [ "$prop_sites" -lt 2 ]; then
-    echo "FAIL: REFUSING -- found $prop_sites regex site(s) matching a 'uses' key in check-action-pins.sh."
-    echo "    There are several by construction (the counter's two arms, the ref extraction,"
-    echo "    the parser feed). This check was emptied of its domain, not satisfied."
-    failures=$((failures + 1))
-elif [ "$prop_admit_n" -ne "$prop_sites" ]; then
-    echo "FAIL: $prop_admit_n of $prop_sites 'uses' key sites admit a node property --"
-    echo "    a widening reached some positions and not the others, which is exactly the"
-    echo "    defect the cases above exist to stop."
-    failures=$((failures + 1))
-elif [ "$prop_distinct" -ne 1 ]; then
-    echo "FAIL: the node-property group is spelled $prop_distinct different ways across $prop_sites sites:"
-    printf '%s\n' "$prop_groups" | sed 's/^/        /'
-    failures=$((failures + 1))
-else
-    echo "PASS: all $prop_sites 'uses' key sites admit the same node-property group"
-fi
+prop_verdict() {   # prop_verdict <file> -> prints "TOKEN<TAB>detail"
+    local f="$1" a b admit groups distinct
+    a="$(grep -oE 'uses:?\[\[:space:\]\]' "$f" | grep -c . || true)"
+    admit="$(grep -oE '\([^()]*\)\*\(?uses' "$f" || true)"
+    b="$(printf '%s' "$admit" | grep -c . || true)"
+    groups="$(printf '%s\n' "$admit" | sed -E 's/\(?uses$//' | sort -u)"
+    distinct="$(printf '%s' "$groups" | grep -c . || true)"
+    if [ "$b" -lt 2 ] || [ "$a" -lt 2 ]; then
+        printf 'REFUSE\t%s site(s) by the class key and %s by the group key\n' "$a" "$b"
+        return
+    fi
+    if [ "$a" -ne "$b" ]; then
+        printf 'DISAGREE\t%s site(s) by the class key, %s by the group key\n' "$a" "$b"
+        return
+    fi
+    if [ "$distinct" -ne 1 ]; then
+        printf 'DIFFER\t%s spelling(s) across %s sites:\n%s\n' \
+            "$distinct" "$b" "$(printf '%s\n' "$groups" | sed 's/^/        /')"
+        return
+    fi
+    printf 'OK\t%s sites, one group\n' "$b"
+}
+
+n=$((n + 1))
+prop_out="$(prop_verdict "$CHECK")"
+case "${prop_out%%$'\t'*}" in
+    OK)
+        echo "PASS: all 'uses' key sites admit the same node-property group (${prop_out#*$'\t'})"
+        ;;
+    REFUSE)
+        echo "FAIL: REFUSING -- the domain is too small to be judged (${prop_out#*$'\t'})."
+        echo "    There are several sites by construction (the counter's two arms, the ref"
+        echo "    extraction, the parser feed). This check was emptied of its domain, not"
+        echo "    satisfied."
+        failures=$((failures + 1))
+        ;;
+    DISAGREE)
+        echo "FAIL: the two derivations of the site population disagree (${prop_out#*$'\t'})."
+        echo "    Either a site stopped admitting a node property -- the defect a3e6bbe was"
+        echo "    written to prevent -- or one site's whitespace class was respelt and fell"
+        echo "    out of the other derivation's view. Both are findings."
+        failures=$((failures + 1))
+        ;;
+    *)
+        echo "FAIL: the node-property group is spelled more than one way -- ${prop_out#*$'\t'}"
+        failures=$((failures + 1))
+        ;;
+esac
+
+# DRIVE THE ABSENCE of the check just run. Each mutant below is applied
+# to a COPY, and each must produce a different verdict token from the
+# real file's -- otherwise the check above is decoration.
+prop_case() {   # prop_case <label> <want-token> <sed-program>
+    local label="$1" want="$2" prog="$3"
+    local m="$TMP/propmut.sh"
+    sed -E "$prog" "$CHECK" > "$m"
+    n=$((n + 1))
+    if cmp -s "$CHECK" "$m"; then
+        echo "FAIL: mutant '$label' did not apply -- its pattern matched nothing"
+        failures=$((failures + 1))
+        return
+    fi
+    local got; got="$(prop_verdict "$m")"
+    if [ "${got%%$'\t'*}" = "$want" ]; then
+        echo "PASS: $label -> $want"
+    else
+        echo "FAIL: $label -> ${got%%$'\t'*}, want $want (${got#*$'\t'})"
+        failures=$((failures + 1))
+    fi
+}
+
+# The reviewer's surviving mutant, verbatim in shape: respell ONE site's
+# whitespace class. It leaves the real tree's behaviour unchanged, which
+# is why nothing else in this suite can see it.
+prop_case "one site's whitespace class respelt" DISAGREE \
+    '0,/uses:\[\[:space:\]\]/s/uses:\[\[:space:\]\]/uses:[[:blank:]]/'
+# A site that stops admitting a property -- the a3e6bbe defect itself.
+prop_case "one site stops admitting a property" DISAGREE \
+    '0,/\(\[&!\]\[\^\[:space:\]\]\*\[\[:space:\]\]\+\)\*uses/s/\(\[&!\]\[\^\[:space:\]\]\*\[\[:space:\]\]\+\)\*uses/uses/'
+# One group widened and the others left behind.
+prop_case "one group widened, the rest left behind" DIFFER \
+    '0,/\[&!\]/s/\[&!\]/[\&!%]/'
+# The domain emptied by renaming the token both derivations key on.
+# This is the bound stated above, and it must REFUSE rather than pass.
+prop_case "the 'uses' token renamed throughout" REFUSE 's/uses/utilises/g'
 
 # AN ALIAS IS NOT AN ESCAPE, AND THAT IS MEASURED RATHER THAN ARGUED.
 # `*a` looks like the dangerous neighbour of a node property -- it
@@ -836,6 +926,45 @@ jobs:
       - uses: &a actions/checkout@$SHA
 EOF
 run "PINNED COST: a property on the VALUE side false-reds a pinned ref" 1 "a.yml:5" "not pinned to a 40-hex commit SHA"
+
+# THE DASH QUANTIFIER IS SPELLED TWO WAYS ACROSS THE FOUR SITES, AND THE
+# CHECK ABOVE CANNOT SEE IT. Asked one level up -- what else here is
+# keyed on a spelling rather than a property -- this is the answer, and
+# it is the only divergence found: the counter admits
+# `(-[[:space:]]+)*`, ZERO OR MORE dashes, while the ref extraction and
+# the parser feed admit `(-[[:space:]]+)?`, zero or ONE. prop_verdict
+# compares only the node-property group, so a suite that is green about
+# the property group says nothing at all about this.
+#
+# It is NOT unified, and the reason is the direction it fails in. A
+# nested block sequence -- `- - uses: x` -- is COUNTED by the counter
+# and NOT extracted by the other two, so occurrences exceed parsed and
+# the residue check REFUSES. Widening the extraction to `*` would make
+# the gate claim to judge a shape it cannot attribute to a step;
+# refusing is the safe direction and the one this gate is built on.
+#
+# The cost is a real false red, so it is pinned as a case in BOTH
+# directions -- a nested sequence refuses whether or not its reference
+# is pinned, which is what makes it a bound and not a judgement.
+fresh
+cat > "$TMP/wf/a.yml" <<EOF
+jobs:
+  x:
+    steps:
+      - uses: actions/setup-go@$SHA
+      - - uses: actions/checkout@v7
+EOF
+run "PINNED COST: a nested sequence refuses (unpinned)" 2 "" "were not resolved to an action reference"
+
+fresh
+cat > "$TMP/wf/a.yml" <<EOF
+jobs:
+  x:
+    steps:
+      - uses: actions/setup-go@$SHA
+      - - uses: actions/checkout@$SHA
+EOF
+run "PINNED COST: a nested sequence refuses even when PINNED" 2 "" "were not resolved to an action reference"
 
 # THE ESCAPE FROM THE "SAFE DIRECTION" CLAIM, PINNED AS A CASE RATHER
 # THAN LEFT AS A CORRECTED SENTENCE -- a rule with no observer is prose,
@@ -1115,7 +1244,7 @@ fi
 # exits 0, which is a green tick over nothing. The floor is the count
 # this file is known to run; raise it when cases are added, and a
 # deletion has to be deliberate rather than silent.
-FLOOR=67
+FLOOR=73
 if [ "$n" -lt "$FLOOR" ]; then
     echo "REFUSING: ran $n case(s), fewer than the $FLOOR this suite is known to hold."
     echo "  Either cases were lost, or the floor is stale and should be raised with them."
