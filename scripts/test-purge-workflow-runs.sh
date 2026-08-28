@@ -235,6 +235,36 @@ drive "$D" env RETENTION_DAYS=0 KEEP_GROUPS=1 DRY_RUN=1
   && ok "a provenance path matching no workflow still WARNS and continues (the legitimate empty)" \
   || no "a retired provenance path no longer continues: rc=$RC: $OUT"
 
+# A WORKFLOW THAT MENTIONS A SCRIPT IS NOT A WORKFLOW THAT RUNS IT, and the
+# difference is one plausible edit away from a false red. `grep -lF` on the
+# basename also returns a file that merely runs `test-<script>` -- the string
+# is a substring of the suite's own name -- or names it in prose. Both cases
+# below would then judge a workflow that runs this very suite as an
+# unpermitted, unobserved caller of the purge. run-retention.yml already
+# names the suite in its header today; the day test.yaml runs it directly,
+# a name-keyed domain reds on a file that deletes nothing.
+#
+# So the domain is derived from an INVOCATION: indentation and an optional
+# `run:` stripped, and the command must BEGIN with the script.
+#
+# WHAT THIS CANNOT SEE: an invocation assembled at runtime (a variable, a
+# `make` target, a composite action) is not in the domain. That direction is
+# closed by the callers below refusing when a script is named in a workflow
+# and invoked by none of them, rather than reporting an empty domain clean.
+wf_invokers() {   # wf_invokers <script-basename>
+    grep -rlF "$1" "$HERE/../.github/workflows/" 2>/dev/null | while IFS= read -r wf; do
+        [ -n "$wf" ] || continue
+        awk -v s="$1" '
+            BEGIN { gsub(/\./, "\\.", s)
+                    pat = "^(bash[[:space:]]+|sh[[:space:]]+)?(\\./)?scripts/" s "([[:space:]]|$)" }
+            { probe=$0; sub(/^[[:space:]]+/,"",probe)
+              if (substr(probe,1,1)=="#") next
+              cmd=probe; sub(/^run:[[:space:]]*/,"",cmd)
+              if (cmd ~ pat) found=1 }
+            END { exit(found?0:1) }' "$wf" && echo "$wf"
+    done
+}
+
 # --- 4c. the workflow that RUNS this script must declare what it reads --
 # DERIVED FROM THE SCRIPT, not from a constant. #874 added keep rule 4,
 # which calls repos/*/pulls, to a workflow declaring only `contents: read`
@@ -246,11 +276,14 @@ drive "$D" env RETENTION_DAYS=0 KEEP_GROUPS=1 DRY_RUN=1
 # endpoint family to exactly one permission. A future call to, say, the
 # issues API is outside it, and so is a caller of this script that is not
 # a workflow file. The bound is: if this script reads the pulls API, every
-# workflow whose run line names it declares pull-requests.
+# workflow that INVOKES it declares pull-requests.
 if grep -qF '/pulls?' "$GATE"; then
-    pulls_callers=$(grep -rlF 'purge-workflow-runs.sh' "$HERE/../.github/workflows/" 2>/dev/null || true)
-    if [ -z "$pulls_callers" ]; then
-        no "purge-workflow-runs.sh reads the pulls API and NO workflow was found invoking it -- this check has an empty domain"
+    pulls_named=$(grep -rlF 'purge-workflow-runs.sh' "$HERE/../.github/workflows/" 2>/dev/null || true)
+    pulls_callers=$(wf_invokers 'purge-workflow-runs.sh')
+    if [ -z "$pulls_named" ]; then
+        no "purge-workflow-runs.sh reads the pulls API and NO workflow names it at all -- this check has an empty domain"
+    elif [ -z "$pulls_callers" ]; then
+        no "purge-workflow-runs.sh is named in a workflow but invoked as a command by none of them -- the invocation is assembled some way this check cannot read, and it will not report that clean"
     else
         perm_bad=""
         # `while read`, not `for wf in $pulls_callers`: an unquoted expansion
@@ -298,53 +331,44 @@ fi
 #     assignment naming the script counts.
 # The bound is: no workflow invokes this purge without naming the
 # detector after it. Everything above is outside that bound.
-purge_callers=$(grep -rlF 'purge-workflow-runs.sh' "$HERE/../.github/workflows/" 2>/dev/null || true)
-if [ -z "$purge_callers" ]; then
-    no "no workflow invokes purge-workflow-runs.sh -- this check has an empty domain and cannot refuse"
+purge_named=$(grep -rlF 'purge-workflow-runs.sh' "$HERE/../.github/workflows/" 2>/dev/null || true)
+purge_callers=$(wf_invokers 'purge-workflow-runs.sh')
+if [ -z "$purge_named" ]; then
+    no "no workflow names purge-workflow-runs.sh -- this check has an empty domain and cannot refuse"
+elif [ -z "$purge_callers" ]; then
+    # Named and never invoked as a command: the invocation is assembled some
+    # way this cannot read. Refuse rather than pass, because passing here is
+    # indistinguishable from the file being correct.
+    no "purge-workflow-runs.sh is named in a workflow but invoked as a command by none of them -- this check cannot judge them and will not report them clean"
 else
-    unobserved=""; unlocatable=""
+    unobserved=""
     # `while read`, not `for wf in $purge_callers`: an unquoted expansion
     # globs, the neighbour dependency this PR documents in both scripts.
     while IFS= read -r wf; do
         [ -n "$wf" ] || continue
-        # AN INVOCATION, NOT A MENTION, and this is the second version of
-        # this check. The first tested whether a live line CONTAINED the
-        # detector's name -- and the step's own ::error message names the
-        # detector, on a live line, after the purge. It therefore reported
-        # the purge observed with the verification step deleted. Measured:
-        # mutants M1 and M2 both SURVIVED. Prose satisfying a presence
-        # check is the defect this PR is about, written into the guard
-        # against it.
-        #
-        # So the line is judged as a COMMAND: leading indentation and an
-        # optional `run:` are stripped, and what remains must BEGIN with
-        # the script, optionally via bash/sh. A string that merely
-        # contains the name begins with a quote and is not an invocation.
-        awk '{ probe=$0; sub(/^[[:space:]]+/,"",probe)
+        # ORDER only -- membership was settled by wf_invokers. FIRST live
+        # purge invocation vs LAST live detector invocation, both judged as
+        # COMMANDS. This is the second version of this check: the first
+        # tested whether a live line CONTAINED the detector's name, and the
+        # step's own ::error message names the detector, on a live line,
+        # after the purge. It therefore reported the purge observed with the
+        # verification step deleted -- mutants M1 and M2 both SURVIVED.
+        # Prose satisfying a presence check is the defect this PR is about,
+        # written into the guard against it.
+        awk 'BEGIN { pp = "^(bash[[:space:]]+|sh[[:space:]]+)?(\\./)?scripts/purge-workflow-runs\\.sh([[:space:]]|$)"
+                     dp = "^(bash[[:space:]]+|sh[[:space:]]+)?(\\./)?scripts/check-missing-runs\\.sh([[:space:]]|$)" }
+             { probe=$0; sub(/^[[:space:]]+/,"",probe)
                if (substr(probe,1,1)=="#") next
                cmd=probe; sub(/^run:[[:space:]]*/,"",cmd)
-               if (cmd ~ /^(bash[[:space:]]+|sh[[:space:]]+)?(\.\/)?scripts\/purge-workflow-runs\.sh([[:space:]]|$)/ && p==0) p=FNR
-               if (cmd ~ /^(bash[[:space:]]+|sh[[:space:]]+)?(\.\/)?scripts\/check-missing-runs\.sh([[:space:]]|$)/)         c=FNR }
-             END { if (p==0) exit 2; exit (c>p) ? 0 : 1 }' "$wf"
-        case $? in
-            0) ;;
-            2) unlocatable="$unlocatable $wf" ;;
-            *) unobserved="$unobserved $wf" ;;
-        esac
+               if (cmd ~ pp && p==0) p=FNR
+               if (cmd ~ dp)         c=FNR }
+             END { exit (p>0 && c>p) ? 0 : 1 }' "$wf" || unobserved="$unobserved $wf"
     done <<EOF
 $purge_callers
 EOF
-    if [ -n "$unlocatable" ]; then
-        # grep found the name and the structural pass found no command:
-        # the invocation is assembled some way this cannot read. Refuse
-        # rather than pass, because passing here is indistinguishable
-        # from the file being correct.
-        no "these workflows name purge-workflow-runs.sh but no line invokes it as a command:$unlocatable -- this check cannot judge them and will not report them clean"
-    else
-        [ -z "$unobserved" ] \
-          && ok "every workflow invoking purge-workflow-runs.sh runs check-missing-runs.sh after it (the purge is observed by its consumer, not by itself)" \
-          || no "these workflows delete runs with nothing outside the purge checking the result:$unobserved -- the first real execution would be unobserved, which is how #740's detector went red on #221"
-    fi
+    [ -z "$unobserved" ] \
+      && ok "every workflow invoking purge-workflow-runs.sh runs check-missing-runs.sh after it (the purge is observed by its consumer, not by itself)" \
+      || no "these workflows delete runs with nothing outside the purge checking the result:$unobserved -- the first real execution would be unobserved, which is how #740's detector went red on #221"
 fi
 
 # --- 5. a run still in flight is never deleted --------------------------
