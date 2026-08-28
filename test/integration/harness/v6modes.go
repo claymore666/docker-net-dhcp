@@ -6,6 +6,7 @@
 package harness
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -914,12 +915,33 @@ func restoreV6ProtoRADefaults(t *testing.T, before []netlink.Route) {
 		// a default route that is back but not byte-identical beats a
 		// namespace with none, and silently pretending the two are
 		// the same is what would hide it.
+		// RouteAdd, NOT RouteReplace. MEASURED, kernel 6.12.105 under
+		// `unshare -Urn`, and it is the defect this line replaces:
+		// two default routes that share destination, gateway, metric
+		// and table but sit on DIFFERENT devices have the same key, so
+		// `replace` of the second OVERWRITES the first. Run
+		// 33211872290 job 98986800539 shows exactly that -- netlink
+		// reported both reinstalled and the table held one.
+		//
+		// `add` refuses the second with EEXIST instead of destroying
+		// the first, which is the safer failure. `append` was measured
+		// too and is not the answer: it produces one MULTIPATH route
+		// with two nexthops, a different object from the two that were
+		// taken away.
+		//
+		// So a pair like this cannot be faithfully restored from
+		// userspace at all. The verification below is what turns that
+		// into a red rather than a silent partial repair.
 		route := r
-		err := netlink.RouteReplace(&route)
+		err := netlink.RouteAdd(&route)
+		if errors.Is(err, unix.EEXIST) {
+			restored = append(restored, route.String()+" (already present)")
+			continue
+		}
 		if err != nil && route.Flags != 0 {
 			bare := r
 			bare.Flags = 0
-			if err2 := netlink.RouteReplace(&bare); err2 == nil {
+			if err2 := netlink.RouteAdd(&bare); err2 == nil {
 				degraded = append(degraded,
 					fmt.Sprintf("%s (reinstalled with flags cleared; original refused "+
 						"with %v)", bare.String(), err))
