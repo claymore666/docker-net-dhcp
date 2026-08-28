@@ -149,17 +149,70 @@
 #                               pinned to dev passed clean
 #
 # The first two are the worse half, and they are why the fix is
-# normalisation rather than another branch. The VALUE enumeration has a
-# residue to fall into; the DOMAIN rule has none and cannot be given
-# one. Its domain is "declares a `schedule:`" and the complement of
-# that is every push-triggered workflow in the repository, which is not
-# an error -- so an unrecognised spelling of `on:` is not reported as
-# unclassified, it is not counted at all, and no residue can tell the
-# two apart. A domain rule cannot be made to fail closed on a spelling
-# it does not know. It can only be made not to have unknown spellings,
-# which is what normalising the key does: `key_of()` strips the
+# normalisation rather than another branch: `key_of()` strips the
 # indentation, the quotes and the space before the colon, and every
 # rule below compares the result, not the text.
+#
+# THE DOMAIN RULE HAS A RESIDUE, AND THIS PARAGRAPH USED TO ARGUE THAT
+# IT COULD NOT. The argument was: the VALUE enumeration has a residue
+# to fall into, but the domain is "declares a `schedule:`" and the
+# complement of that is every push-triggered workflow in the
+# repository, which is not an error -- so an unrecognised spelling of
+# `on:` is indistinguishable from a workflow that simply is not
+# scheduled, and no residue can tell the two apart.
+#
+# The premise is false, and it was false when it was written. `on:` is
+# MANDATORY in a GitHub Actions workflow -- actionlint says `"on"
+# section is missing in workflow [syntax-check]` -- so the state to
+# refuse is not "I did not see a `schedule:`", it is "I did not see an
+# `on` key AT ALL", and that is a state no legitimate workflow reaches.
+# Measured 2026-08-28 over every tracked workflow in this directory
+# using this program's own `key_of()`: each yields exactly one
+# top-level `on` key, so the refusal fires on none of them today.
+#
+# Three spellings escaped the normaliser and were carried straight out
+# of the domain before that residue existed. Each was measured
+# 2026-08-28 on a corpus the gate called clean, with the attacking file
+# scheduled, holding `permissions: issues: write` and carrying NO
+# marker -- correct verdict exit 1, observed exit 0:
+#
+#     a UTF-8 BOM before `on:`   actionlint CLEAN, gate exit 0
+#     the explicit key `? on`    actionlint CLEAN, gate exit 0
+#     `ON:` / `On:`              actionlint REJECTS, gate exit 0
+#
+# The first two are the expensive ones: actionlint is a REQUIRED check
+# and it passes both, so nothing else in the tree stood behind this
+# gate. The third was defended, but by a different guard and by
+# accident.
+#
+# What that cost is the lesson worth keeping, and it is not about YAML:
+# an impossibility claim written beside a green test is the one shape
+# that stops the next reader looking. Two spellings enumerated means a
+# third exists, and the answer to that is never a third branch -- it is
+# a rule keyed on a PROPERTY the attacker cannot avoid. Here the
+# property is "is this file recognisable as a workflow at all", and a
+# file that is not is REFUSED (exit 2), never ignored.
+#
+# WHAT THE RESIDUE STILL CANNOT SEE, stated as a bound rather than a
+# guarantee, because the sentence this replaces was the completeness
+# claim that had to be retracted. The residue closes "the `on` key is
+# unreadable". It does not close "the `on` key is readable and the
+# `schedule:` inside it is not": measured 2026-08-28, a workflow
+# writing `on: *sched` against a YAML anchor that holds the schedule
+# yields one `on` key and `scheduled=0`, so it passes as out-of-domain.
+# actionlint rejects that in both placements tried -- the anchor under
+# a new top-level key (`unexpected key`) and under `env:` (`expected
+# scalar node`) -- which is defence by a different, required guard and
+# not by this one; it is not a proof that no placement passes. The
+# `uses:` delegation escape below is the second, and it is not closed
+# either. Both are named, neither is claimed shut.
+#
+# It also does not refuse a file with MORE than one top-level `on` key.
+# That is a YAML duplicate key, and the direction it fails in is safe:
+# `sched` is sticky, so both blocks are read and the workflow is more
+# likely to enter the domain, not less. Measured 2026-08-28: every
+# tracked workflow yields exactly one, so refusing on two would fire on
+# nothing today and buy nothing.
 #
 # THE MARKER. One line, anywhere in the file, exactly:
 #
@@ -249,9 +302,11 @@
 #                                which no workflow fixture can produce.
 # Exit:  0 every scheduled workflow is classified and pinned to match
 #        1 at least one is unclassified, contradicted, or mispinned
-#        2 cannot check (no directory, no workflows, no schedules, or a
-#          class with no members — a discriminator that no longer
-#          discriminates is not a pass)
+#        2 cannot check (no directory, no workflows, a workflow that
+#          could not be read — including one declaring no readable
+#          top-level `on:` key — no schedules, or a class with no
+#          members: a discriminator that no longer discriminates is
+#          not a pass)
 
 set -uo pipefail
 
@@ -286,6 +341,11 @@ mapfile -t files < <(printf '%s\n' "${files[@]}" | sort)
 #   checkouts     how many actions/checkout steps the file has
 #   pinned_dev    how many of those pin ref to dev / refs/heads/dev
 #   other_ref     how many pin ref to something else (tag, sha, input)
+#   on_keys       how many top-level keys normalise to `on` -- ZERO is
+#                 the residue of the domain rule: a workflow must
+#                 declare `on:`, so a file that declares none is one
+#                 this program could not read as a workflow, not one
+#                 that is merely unscheduled
 #
 # Blocks are delimited by indentation, which is what YAML actually uses;
 # nothing here parses YAML, and it does not need to — every fact is a
@@ -345,7 +405,7 @@ facts_of() {
             return v
         }
 
-        BEGIN { sched = 0; issues = 0; co = 0; dev = 0; other = 0; unk = 0 }
+        BEGIN { sched = 0; issues = 0; co = 0; dev = 0; other = 0; unk = 0; onk = 0 }
 
         # --- the on: block -------------------------------------------
         # A flow mapping puts the trigger on the `on:` line itself:
@@ -362,7 +422,13 @@ facts_of() {
         # is not the format: nothing stops a future workflow being
         # written this way, and the gate would have counted a corpus of
         # two while the third sat outside it holding `issues: write`.
+        # `onk` is what gives the DOMAIN rule a residue, and it is
+        # counted here because this is the one place the domain is
+        # entered. See THE DOMAIN RULE HAS A RESIDUE in the header for
+        # why "no `on` key at all" is a distinguishable state and not
+        # simply "a push-triggered workflow".
         indent($0) == 0 && key_of($0) == "on" {
+            onk++
             if (decomment($0) ~ /schedule["'"'"']?[[:space:]]*:/) sched = 1
             in_on = 1; next
         }
@@ -451,7 +517,21 @@ facts_of() {
                 # 2026-08-28, a `tree` workflow writing `"ref": dev`
                 # passed clean, because the pin rule could not see a
                 # pin spelled with a quoted key.
-                if ($0 ~ /uses["'"'"']?[[:space:]]*:[[:space:]]*["'"'"']?actions\/checkout/) step_is_checkout = 1
+                #
+                # Matched case-INSENSITIVELY, because GitHub resolves
+                # `uses:` through repository names, which are
+                # case-insensitive: `Actions/Checkout@v4` runs the same
+                # action. Measured 2026-08-28 against the enumerating
+                # form, actionlint 1.7.12 clean: a `tree` workflow
+                # written that way pinned `ref: dev` and passed, which
+                # is the over-correction #839 explicitly names. The
+                # `tracker` direction failed CLOSED (no checkout seen
+                # at all -> "checks out nothing"), so only the `tree`
+                # direction leaked -- a guard failing in one direction,
+                # which is the point of testing both. The REF value is
+                # deliberately left case-sensitive: a git branch name
+                # is, so `ref: Dev` really is a different branch.
+                if (tolower($0) ~ /uses["'"'"']?[[:space:]]*:[[:space:]]*["'"'"']?actions\/checkout/) step_is_checkout = 1
                 if (key_of($0) == "ref" && val_of($0) != "") {
                     v = val_of($0)
                     gsub(/^["'"'"']|["'"'"']$/, "", v)
@@ -471,8 +551,8 @@ facts_of() {
             # are consumed by `eval`, so a value read out of a workflow
             # file must not reach it; the reporting path re-reads the
             # file for the value instead.
-            printf "scheduled=%d\nissues=%d\ncheckouts=%d\npinned_dev=%d\nother_ref=%d\nunknown_perm=%d\n",
-                   sched, issues, co, dev, other, unk
+            printf "scheduled=%d\nissues=%d\ncheckouts=%d\npinned_dev=%d\nother_ref=%d\nunknown_perm=%d\non_keys=%d\n",
+                   sched, issues, co, dev, other, unk, onk
         }
 
         function close_step() {
@@ -513,7 +593,7 @@ for f in "${files[@]}"; do
     #
     # A refusal must not look like an absence, and the refusal below is
     # what enforces that; this line is the pair to it, not a substitute.
-    scheduled=0; issues=0; checkouts=0; pinned_dev=0; other_ref=0; unknown_perm=0
+    scheduled=0; issues=0; checkouts=0; pinned_dev=0; other_ref=0; unknown_perm=0; on_keys=0
 
     # WHETHER THE FILE CAN BE READ IS DECIDED IN THE SHELL, BEFORE awk,
     # BECAUSE THE TWO awks DISAGREE ABOUT IT. Measured 2026-08-28 with
@@ -560,6 +640,39 @@ for f in "${files[@]}"; do
         continue
     fi
     eval "$facts"
+
+    # THE DOMAIN RULE'S RESIDUE. Every rule below reads a NORMALISED
+    # key, and normalisation is still an enumeration of the byte
+    # sequences `key_of()` can normalise — a UTF-8 BOM ahead of the
+    # first key, YAML's explicit `? on` / `:` spelling and `ON:` are
+    # three it cannot, measured 2026-08-28 (#839). What makes this
+    # closable is that `on:` is MANDATORY in a workflow (actionlint:
+    # `"on" section is missing in workflow`), so "this file declares no
+    # top-level `on` key at all" is a state that no legitimate workflow
+    # reaches — distinguishable from "not scheduled", and therefore
+    # refusable. That is the residue the enumeration is entitled to,
+    # exactly as the unterminated flow mapping is the residue on the
+    # value side.
+    #
+    # It is keyed on the PROPERTY -- is this recognisable as a workflow
+    # -- and not on a list of spellings, so a fourth spelling nobody has
+    # thought of arrives here as a refusal rather than as a silent pass.
+    # That is the difference between this and adding a branch per
+    # spelling, which is what let the first two forms of this gate
+    # through.
+    if [ "$on_keys" -eq 0 ]; then
+        echo "::error file=$f,title=Not readable as a workflow::$base declares no" \
+             "top-level \`on:\` key that this gate can read, and every GitHub Actions" \
+             "workflow must declare one. So this is a file whose triggers could not be" \
+             "read, not a workflow that is merely unscheduled — treating it as the" \
+             "latter would drop it out of this gate's domain in silence, which is how a" \
+             "BOM, YAML's explicit \`? on\` spelling and \`ON:\` each carried a scheduled," \
+             "unmarked workflow holding \`issues: write\` straight past this gate (#839)." \
+             "If the trigger block is spelled in a way this gate cannot normalise, teach" \
+             "\`key_of()\` that spelling rather than removing this refusal." >&2
+        cannot=1
+        continue
+    fi
 
     [ "$scheduled" -eq 1 ] || continue
     sched_n=$((sched_n + 1))

@@ -878,6 +878,156 @@ c_quoted_key_scalar() {
 run_case "a quoted permissions key carrying write-all is still read" 1 differs \
     'but requests the `issues:` permission' c_quoted_key_scalar
 
+# --- claim 9: the DOMAIN rule has a residue too -------------------------
+#
+# Claim 7 normalises the key. Normalisation is still an enumeration of
+# the byte sequences `key_of()` knows how to normalise, and this file
+# used to argue -- in the gate header and in the PR that added it --
+# that no residue was possible on the domain side, because the
+# complement of "declares a schedule:" is every push-triggered workflow
+# and that is not an error.
+#
+# That argument is false, and review measured three spellings walking
+# through it. `on:` is MANDATORY in a workflow (actionlint:
+# `"on" section is missing in workflow`), so "no `on` key at all" is a
+# state no legitimate workflow reaches -- distinguishable from "not
+# scheduled", and therefore refusable. Every case below is a REAL
+# attack: scheduled, holding `issues: write`, carrying no marker. The
+# correct verdict is that the gate refuses to read the file; the
+# pre-residue verdict was exit 0, clean.
+#
+# Two of the three are the expensive ones, and the reason is that
+# actionlint -- a REQUIRED check -- accepts them (measured 2026-08-28,
+# actionlint 1.7.12, with python3 yaml.safe_load confirming each file
+# is a scheduled workflow holding `issues: write`):
+#
+#     a UTF-8 BOM before `on:`   actionlint rc=0
+#     the explicit key `? on`    actionlint rc=0
+#     `ON:`                      actionlint rc=1
+#
+# `ON:` is kept anyway. It was defended before this residue existed,
+# but by a different guard and by accident; a gate that relies on a
+# sibling's coverage without saying so is the shape this suite exists
+# to stop.
+#
+# THE BOUND, because the sentence these cases replace was a
+# completeness claim: the residue closes "the `on` key is unreadable".
+# It does not close "the `on` key is readable and the `schedule:`
+# inside it is not" -- an anchor holding the trigger is the measured
+# instance -- nor the `uses:` delegation escape pinned above.
+BOM=$(printf '\357\273\277')
+ATTACK_TAIL='name: a
+permissions:
+  contents: read
+  issues: write
+jobs:
+  j:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      - name: work
+        run: echo hi
+'
+
+raw_case "a BOM before on: is refused, not carried out of the domain" 2 \
+    "Not readable as a workflow" \
+"${BOM}on:
+  schedule:
+    - cron: '0 0 * * *'
+$ATTACK_TAIL"
+
+# YAML's explicit-key syntax. `? on` carries no colon at all and the
+# `:` that follows it opens the value, so neither line normalises to a
+# key called `on` -- and both are ordinary YAML that actionlint accepts.
+raw_case "YAML's explicit ? on key is refused, not carried out of the domain" 2 \
+    "Not readable as a workflow" \
+"? on
+:
+  schedule:
+    - cron: '0 0 * * *'
+$ATTACK_TAIL"
+
+raw_case "an upper-case ON: key is refused, not carried out of the domain" 2 \
+    "Not readable as a workflow" \
+"ON:
+  schedule:
+    - cron: '0 0 * * *'
+$ATTACK_TAIL"
+
+# THE PRESERVATION CONTROL for the residue, and it is the whole reason
+# the residue is keyed on the `on` KEY rather than on the schedule. A
+# rule that refused everything it could not classify would refuse every
+# push-triggered workflow in the repository -- the exact objection the
+# header used to raise against having a residue at all. This workflow
+# declares a readable `on:` and no schedule: outside the domain,
+# silently and correctly.
+raw_case "a workflow with a readable on: and no schedule is not refused" 0 clean \
+'name: a
+on:
+  push:
+    branches: [dev]
+permissions:
+  contents: read
+  issues: write
+jobs:
+  j:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+        with:
+          ref: dev
+'
+
+# --- claim 10: `uses:` resolves case-insensitively ----------------------
+# GitHub resolves `uses:` through repository names and those are
+# case-insensitive, so `Actions/Checkout@v4` runs the same action as
+# `actions/checkout@v4`. The pin regex matched lower case only, and
+# actionlint accepts either, so a `tree` workflow spelled this way
+# could pin `ref: dev` and pass clean -- the over-correction #839
+# explicitly names. Both directions, because this guard failed in only
+# one of them: the `tracker` direction failed CLOSED (the checkout was
+# invisible, so "checks out nothing" fired) and that is why nobody saw
+# the `tree` leak.
+raw_case "a tree workflow pinned to dev through a capitalised uses: is reported" 1 \
+    "Tree workflow pinned to dev" \
+'name: a
+# scheduled-subject: tree
+on:
+  schedule:
+    - cron: 0 0 * * *
+permissions:
+  contents: read
+jobs:
+  j:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: Actions/Checkout@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+        with:
+          ref: dev
+'
+
+# Preservation, and it fails on the pre-fix tree in the OTHER
+# direction: with the match case-sensitive this file has no checkout at
+# all, so the tracker rule reports "checks out nothing" about a
+# workflow that checks out exactly what it should.
+raw_case "a capitalised uses: satisfies the tracker checkout rule" 0 clean \
+'name: a
+# scheduled-subject: tracker
+on:
+  schedule:
+    - cron: 0 0 * * *
+permissions:
+  contents: read
+  issues: read
+jobs:
+  j:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: Actions/Checkout@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+        with:
+          ref: dev
+'
+
 # --- claim 8: a flow mapping need not end on the line that opens it ----
 # The single-line flow rule reads the opening line and nothing else, so
 # `permissions: {` with `issues: write` beneath it opened no block for
@@ -944,7 +1094,7 @@ seam_case() {
 AWK_STUB=$(mktemp)
 cat > "$AWK_STUB" <<'STUB'
 #!/bin/sh
-printf 'scheduled=1\nissues=1\ncheckouts=1\npinned_dev=1\nother_ref=0\nunknown_perm=0\n'
+printf 'scheduled=1\nissues=1\ncheckouts=1\npinned_dev=1\nother_ref=0\nunknown_perm=0\non_keys=1\n'
 exit 2
 STUB
 chmod +x "$AWK_STUB"
@@ -957,7 +1107,7 @@ seam_case "an awk that prints a full fact line and then fails is a refusal" 2 \
 # subject from its harness is not evidence.
 cat > "$AWK_STUB" <<'STUB'
 #!/bin/sh
-printf 'scheduled=1\nissues=1\ncheckouts=1\npinned_dev=1\nother_ref=0\nunknown_perm=0\n'
+printf 'scheduled=1\nissues=1\ncheckouts=1\npinned_dev=1\nother_ref=0\nunknown_perm=0\non_keys=1\n'
 STUB
 chmod +x "$AWK_STUB"
 seam_case "the same fact line with status 0 is believed, not refused" 1 \
