@@ -170,13 +170,22 @@ refuse() {
 # rather than disappearing. The list and its price are argued where the
 # constant is.
 #
-# MEASURED on the tree at b9b31bb: there is no `workflow_run` and no
-# `issue_comment` workflow, and exactly one `pull_request_target`
-# workflow -- `issue-state-labels.yml`, which is safe today because every
-# job is on `ubuntu-latest` and it pins `ref: dev`. That "none today" is
-# pinned by a self-test case that derives against the REAL workflow
-# directory, because a fact left true by the accident of the current tree
-# is an unrun checklist.
+# WHICH OF THOSE EXIST TODAY IS DERIVED AND PRINTED, not asserted here.
+# Every run prints the outsider-reachable census -- the distinct triggers
+# and the workflows carrying them -- and a self-test case pins the set
+# against the REAL workflow directory. The two facts worth knowing while
+# reading this file, both of which that case will contradict the moment
+# they stop being true: the one `pull_request_target` workflow is
+# `issue-state-labels.yml`, safe today because every job is on
+# `ubuntu-latest` and it pins `ref: dev`; and the one `issues` workflow
+# is `issue-labeler.yml`, safe today for the same reason.
+#
+# THIS PARAGRAPH IS WHERE A CENSUS SENTENCE GOT IT WRONG. It said the
+# triggers in use were push, schedule, workflow_dispatch, pull_request
+# and pull_request_target, MEASURED at a named SHA, and `issues` was in
+# the tree at that SHA. The code was right; the sentence was not; nothing
+# checked it. A fact left true by the accident of the current tree is an
+# unrun checklist -- and so is a fact left FALSE by it.
 #
 # WHAT COUNTS AS REACHING THE POOL. Any label set that is not entirely
 # GitHub-hosted -- `ubuntu-*`, `windows-*`, `macos-*`. Not "contains
@@ -238,10 +247,20 @@ except ImportError:
 #
 # The price is stated rather than discovered: a workflow on an
 # outsider-visible-but-harmless trigger with a job off the hosted images
-# will refuse and need a human to widen this list deliberately. MEASURED
-# at b9b31bb over all 25 workflows in this tree: the triggers in use are
-# push, schedule, workflow_dispatch, pull_request and
-# pull_request_target, so nothing pays that price today.
+# will refuse and need a human to widen this list deliberately.
+#
+# WHETHER ANYTHING PAYS THAT PRICE TODAY IS NOT WRITTEN HERE, and the
+# reason is that it WAS written here and it was wrong. This comment used
+# to name the triggers in use -- push, schedule, workflow_dispatch,
+# pull_request, pull_request_target -- as MEASURED over 25 workflows.
+# The count was right and the census was not: `issue-labeler.yml`
+# triggers on `issues`, which any GitHub account can cause. The code
+# counted it correctly; only the sentence was wrong, and it made the
+# outsider-reachable surface look like two triggers when it is three.
+# A new un-derived enumeration in the file whose entire subject is that
+# enumerations rot -- which is why there is no replacement sentence.
+# The census is DERIVED and printed on every run, and the set is pinned
+# against the real tree by a self-test case.
 #
 # `pull_request_target` deserves its own sentence because it is the one
 # that defeats rather than relaxes what this gate watches: it runs with
@@ -279,14 +298,24 @@ def on_triggers(doc):
     # `on` to the boolean True, so the key of a workflow's trigger block
     # is `True` and not the string "on" unless it was quoted. Reading
     # only doc["on"] finds nothing in every real workflow in this tree.
+    #
+    # RETURNS None, NOT AN EMPTY SET, WHEN THERE IS NOTHING TO READ, and
+    # the caller refuses on it. Every valid workflow has a trigger block,
+    # so an absent one -- or one that resolves to null, or to a
+    # collection with no trigger names in it -- is a parse this gate does
+    # not understand. The `jobs:` arm below already reasoned exactly this
+    # way; returning an empty set here made the same shape SKIP the file
+    # instead, which is the permissive answer to "I could not tell" and
+    # the asymmetry was against this file's own rule.
     for key, value in doc.items():
         if key is True or (isinstance(key, str) and key.lower() == "on"):
             if isinstance(value, str):
-                return {value}
+                return {value} if value else None
             if isinstance(value, (list, dict)):
-                return {v for v in value if isinstance(v, str)}
-            return set()
-    return set()
+                names = {v for v in value if isinstance(v, str)}
+                return names or None
+            return None
+    return None
 
 
 def matrix_values(job, name):
@@ -375,9 +404,20 @@ for path in sys.argv[1:]:
     if not isinstance(doc, dict):
         print("ERROR\t%s\ttop level is not a mapping" % path)
         continue
-    triggers = sorted(on_triggers(doc) - SAFE_TRIGGERS)
+    raw = on_triggers(doc)
+    if raw is None:
+        print("ERROR\t%s\thas no readable 'on:' trigger block, so whether an "
+              "outsider can reach it cannot be read" % path)
+        continue
+    triggers = sorted(raw - SAFE_TRIGGERS)
     if not triggers:
         continue
+    # THE CENSUS IS EMITTED HERE, for every outsider-reachable workflow
+    # and not only for the ones that also reach the pool. The header used
+    # to carry that census as a written sentence and it was false at the
+    # very SHA it named -- it missed `issues`. A derived line cannot be
+    # false; a sentence can, and did, in the flattering direction.
+    print("FORKREACHABLE\t%s\t%s" % (os.path.basename(path), ",".join(triggers)))
     # A fork-reachable workflow whose jobs cannot be read is the one
     # place left where "I could not tell" could have become "nothing to
     # report". Every valid workflow has a `jobs:` mapping, so an absent
@@ -413,6 +453,40 @@ scan_errors="$(printf '%s\n' "$scan" | awk -F'\t' '$1 == "ERROR" { print "    " 
 if [ -n "$scan_errors" ]; then
     refuse "could not read every workflow in $WF_DIR, so the derived population is incomplete and an incomplete population is not a smaller one -- it is a wrong one:"$'\n'"$scan_errors"
 fi
+
+# THE OUTSIDER-REACHABLE CENSUS IS PRINTED, NOT DESCRIBED.
+#
+# This gate's argument has two halves: which triggers in this tree can be
+# caused by someone with no write access, and which of those workflows
+# also place a job off the GitHub-hosted images. The second half has
+# refused on divergence since #830. The first half sat in a header
+# comment -- "the triggers in use are push, schedule, workflow_dispatch,
+# pull_request and pull_request_target" -- and it was FALSE at the SHA it
+# named: `issue-labeler.yml` triggers on `issues`, which anyone with a
+# GitHub account can cause. The code counted it correctly the whole time.
+# Only the sentence was wrong, and it was wrong in the direction that
+# made the fork-reachable surface look smaller than it is.
+#
+# That is the same defect this change exists to remove, so it gets the
+# same remedy rather than a corrected sentence: the census is derived on
+# every run and printed where a human reading CI sees it, and the
+# self-test pins the set against the real tree. There is deliberately no
+# refusal on this half -- a new `issues` workflow on a hosted image is
+# not a security event and must not go red in CI -- but it does go red in
+# the self-test, which is where a stale record belongs.
+# The per-file lines carry the COUNT, which moves whenever any workflow
+# is added; the summary line carries the SET of distinct triggers, which
+# is the thing the header used to assert and the thing a reader reasons
+# about. The self-test pins the set and not the count, so a fourteenth
+# `pull_request` workflow costs nothing while a first `workflow_run` one
+# goes red.
+forkreachable=$(printf '%s\n' "$scan" | awk -F'\t' '$1 == "FORKREACHABLE" { print "    " $2 ": " $3 }' | sort)
+forkreachable_n=$(printf '%s\n' "$forkreachable" | grep -c .)
+forkreachable_n=${forkreachable_n:-0}
+forkreachable_set=$(printf '%s\n' "$scan" | awk -F'\t' '$1 == "FORKREACHABLE" { print $3 }' | tr ',' '\n' | grep . | sort -u | paste -sd, - | sed 's/,/, /g')
+[ -n "$forkreachable_set" ] || forkreachable_set="(none)"
+echo "$forkreachable_n workflow(s) in $WF_DIR trigger on something an outsider can cause: $forkreachable_set"
+[ "$forkreachable_n" -gt 0 ] && printf '%s\n' "$forkreachable"
 
 exposed_now=$(printf '%s\n' "$scan" | awk -F'\t' '$1 == "EXPOSED" { print $2 }' | sort -u | tr '\n' ' ')
 exposed_now="${exposed_now% }"

@@ -399,6 +399,26 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 runwf "the real workflow tree derives exactly the declared two" 0 3 \
     "$ROOT/.github/workflows" "all 3 settings are as documented"
 
+# AND THE TRIGGER CENSUS ITSELF IS PINNED, for the reason the population
+# is: the checker's header used to state it in prose and the prose was
+# FALSE at the SHA it named. It said the outsider-causable triggers in
+# this tree are `pull_request` and `pull_request_target`; there is a
+# third, `issues`, on issue-labeler.yml, which anyone with a GitHub
+# account can cause. It survived because nothing re-derived it -- an
+# enumeration beside the code is an unrun checklist, in the one file
+# whose whole subject is that enumerations rot.
+#
+# THE SET IS ASSERTED, NOT THE COUNT. The gate prints both; this pins the
+# distinct triggers, so a fourteenth `pull_request` workflow costs
+# nothing and a first `workflow_run` or `issues` one goes red here. The
+# named line beneath it is the specific miss, so a regression says which
+# fact moved rather than only that something did.
+runwf "the outsider-reachable trigger census is derived, not written down" 0 3 \
+    "$ROOT/.github/workflows" \
+    "can cause: issues, pull_request, pull_request_target" \
+    "issue-labeler.yml: issues" \
+    "issue-state-labels.yml: pull_request_target"
+
 # --- FAIL CLOSED WHERE IT CANNOT TELL ----------------------------------
 # "I could not resolve this runner" must send a human to look. Both of
 # these are permissive-by-default in any scanner that only looks for a
@@ -447,6 +467,36 @@ jobs:
     steps: [{run: "true"}]
 '
 runwf "a single-element hosted list is not the private pool" 0 3 "$WFH3"
+
+# THE BOUNDARY BETWEEN THOSE TWO GROUPS HAD NO FIXTURE ON IT. Every case
+# above is all-pool or all-hosted, and `all(HOSTED.match(l))` and
+# `any(HOSTED.match(l))` agree on both of those -- so the mutant that
+# swaps them survived all 41 cases. It is not a no-op: on the mixed set
+# below the gate refuses and the mutant passes silently, which is a
+# self-hosted job derived as hosted. The header argues this exact rule at
+# "not 'contains self-hosted'"; nothing drove it until now. Both orders,
+# because a first-element-only reading is the other easy wrong answer.
+WFMX="$TMP/wf-mixed"; wflane "$WFMX" 'name: newlane
+on:
+  pull_request:
+jobs:
+  n:
+    runs-on: [dhcp-ci, ubuntu-22.04]
+    steps: [{run: "true"}]
+'
+runwf "one pool label among hosted ones is still the pool" 2 0 "$WFMX" \
+    "newlane.yml" "has CHANGED"
+
+WFMX2="$TMP/wf-mixed-rev"; wflane "$WFMX2" 'name: newlane
+on:
+  pull_request:
+jobs:
+  n:
+    runs-on: [ubuntu-22.04, dhcp-ci]
+    steps: [{run: "true"}]
+'
+runwf "a pool label after a hosted one is still the pool" 2 0 "$WFMX2" \
+    "newlane.yml" "has CHANGED"
 
 WFH4="$TMP/wf-hosted-matrix"; wflane "$WFH4" 'name: newlane
 on:
@@ -533,6 +583,32 @@ on:
 '
 runwf "a fork-reachable workflow with no readable jobs refuses" 2 0 "$WFY" \
     "newlane.yml" "no readable 'jobs:' mapping"
+
+# AND THE MIRROR IMAGE OF IT, which was asymmetric until review caught
+# it: a workflow whose `on:` cannot be read used to be SKIPPED, while
+# the identical shape one level down -- unreadable `jobs:` -- refused.
+# Same argument, opposite verdict, and the skipping one is the permissive
+# half. Both of these place a job squarely on the pool, so a skip here
+# hides a self-hosted job from the population.
+WFZ="$TMP/wf-null-on"; wflane "$WFZ" 'name: newlane
+on:
+jobs:
+  n:
+    runs-on: [self-hosted, dhcp-ci]
+    steps: [{run: "true"}]
+'
+runwf "a workflow whose on: is null refuses rather than being skipped" 2 0 "$WFZ" \
+    "newlane.yml" "no readable 'on:' trigger block"
+
+WFZ2="$TMP/wf-empty-on"; wflane "$WFZ2" 'name: newlane
+on: []
+jobs:
+  n:
+    runs-on: [self-hosted, dhcp-ci]
+    steps: [{run: "true"}]
+'
+runwf "a workflow whose on: names no trigger refuses too" 2 0 "$WFZ2" \
+    "newlane.yml" "no readable 'on:' trigger block"
 
 # --- THE PARSER GOING MISSING IS A REFUSAL THAT NAMES IT ---------------
 # This gate has three verdicts and no fallback: the line scan it replaced
