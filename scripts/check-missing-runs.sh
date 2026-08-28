@@ -322,13 +322,29 @@ cancelled before any job started. Those commits are permanent points in
 the branch's history that nothing ever tested, and a bisect across them
 lands on a commit with no verdict.
 
-To recover a PR head: push an empty commit, or dispatch the workflow on
-the PR branch. Closing and reopening does NOT re-fire it.
+CHECK THIS FIRST, because every dispatch recipe below depends on it: a
+dispatch uses the workflow file AS IT EXISTS AT THE TARGET REF, so it
+works only if that ref's own integration.yml declares workflow_dispatch.
+It was added in #419, and a head older than that carries a workflow with
+push and pull_request triggers only — the dispatch is simply refused.
+That is exactly the population this section is for, so verify before
+spending the effort:
+
+    git show <ref>:.github/workflows/integration.yml | grep workflow_dispatch
+
+Measured 2026-08-28 on PR #221's head 41aa96b4: no workflow_dispatch at
+that ref, so the tag recipe below cannot recover it and the empty commit
+is the only remedy that works.
+
+To recover a PR head: push an empty commit. That changes the head, which
+is what clears the finding — the check asks about the CURRENT head, and
+the new one gets a run. Dispatching on the PR branch works only subject
+to the precondition above. Closing and reopening does NOT re-fire it.
 
 To recover a branch commit: dispatching with \`-f ref=<sha>\` does NOT
 clear it — GitHub records a dispatched run's head_sha as the tip of the
 ref it was dispatched on, whatever the suite checks out. Give the commit
-a ref of its own and dispatch on that:
+a ref of its own and dispatch on that, subject to the precondition above:
 
     git tag verify/<sha> <sha> && git push origin verify/<sha>
     gh workflow run integration.yml --ref verify/<sha>

@@ -131,6 +131,31 @@ case "$out" in
   *) no "the failure does not say check-runs cannot answer this: $out" ;;
 esac
 
+# THE REMEDY MUST BE EXECUTABLE FOR THE HEADS IT IS PRINTED FOR, and for
+# two months it was not. The tag-and-dispatch recipe uses the workflow
+# file at the TARGET ref, so it needs that ref's own integration.yml to
+# declare workflow_dispatch -- added in #419. Every head older than that
+# carries push and pull_request triggers only and the dispatch is simply
+# refused, which is precisely the population this remedy addresses: old
+# heads whose evidence is gone. Measured 2026-08-28 on PR #221's head
+# 41aa96b4, the head that is red right now: no workflow_dispatch at that
+# ref, so the recipe printed beneath the failure could not have worked.
+#
+# Keyed on the MECHANISM and not on the token "workflow_dispatch", which
+# now appears three times in this message -- including inside the
+# verification command -- so a check for the bare token stays green over
+# a message that never states WHY the dispatch fails. Same mistake this
+# file already made once with the word "deleted".
+case "$out" in
+  *"AS IT EXISTS AT THE TARGET REF"*) ok "the remedy states which workflow file a dispatch uses" ;;
+  *) no "the remedy does not say a dispatch reads the TARGET ref's workflow: $out" ;;
+esac
+case "$out" in
+  *"git show <ref>:.github/workflows/integration.yml"*)
+      ok "the remedy hands the reader the command that checks the precondition" ;;
+  *) no "the remedy names a precondition with no way to test it: $out" ;;
+esac
+
 # --- inside the grace -------------------------------------------------
 # A push a moment ago has legitimately not been picked up yet. Flagging
 # it would make the detector cry wolf on every push and get muted.
