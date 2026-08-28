@@ -74,6 +74,13 @@ const (
 // not a threshold anybody has to tune.
 const refreshFloor = 10
 
+// selfConfigFormBy bounds how long self-configuration may take. DAD on
+// the link-local is one RetransTimer (1s by default), and the
+// solicit/advertise exchange that follows is one round trip on a veth.
+// 60s is far past both and is a bound on something being WRONG, not a
+// tuned wait.
+const selfConfigFormBy = 60 * time.Second
+
 // parseLft turns `ip`'s lifetime field into seconds. "forever" is
 // reported as not-finite rather than as a large number, because the two
 // mean different things here: a finite lifetime is the kernel ageing an
@@ -359,15 +366,48 @@ func TestDHCPv6_SelfConfiguring_AddressAndRouteSurvive(t *testing.T) {
 				tc.mode, fN.elapsed.Round(time.Second), fN.addr, fN.route,
 				strings.TrimSpace(fN.acceptRA), strings.TrimSpace(fN.autoconf))
 
-			// ---- S1: is there an address at all, and is it usable? ----
-			a0, ok := globalFromPrefix(parseV6Addrs(f0.addr), harness.V6Prefix)
-			if !ok {
-				t.Fatalf("S1 FAILED: no global IPv6 address on the fixture's prefix %s is "+
-					"on ANY interface inside the container (no device was named, so this "+
-					"cannot be a wrong-interface artifact), on a %s segment whose router "+
-					"advertisements carry that prefix:\nip -6 addr:\n%s\nip link:\n%s",
-					harness.V6Prefix, tc.mode, f0.addr, f0.links)
+			// ---- S1: does an address FORM, in bounded time, usable? ----
+			//
+			// This asserted on samples[0], at t+0, and failed there on a
+			// segment that does configure itself correctly. That is not
+			// a product defect, it is a premise no host can satisfy:
+			// at t+0 the link-local is still `tentative`, and until DAD
+			// completes there is no source address to send a Router
+			// Solicitation from, so no advertisement has been answered
+			// and no global address can exist yet. The run that caught
+			// this shows exactly that -- link-local `tentative` and no
+			// global at t+0, both address and default route present
+			// later in the same container.
+			//
+			// The bar is not "instantly"; it is that the address APPEARS
+			// and then STAYS usable. So the formation is bounded rather
+			// than instantaneous, and the durability assertions below
+			// carry the rest. Bounding it is STRONGER than asserting at
+			// t+0, which could only ever fail: an address that never
+			// arrives still fails here, and one that arrives and later
+			// rots still fails S3/S4/S5.
+			var a0 v6Addr
+			var formed *selfConfigSample
+			for i := range samples {
+				if a, ok := globalFromPrefix(parseV6Addrs(samples[i].addr), harness.V6Prefix); ok {
+					a0, formed = a, &samples[i]
+					break
+				}
 			}
+			if formed == nil {
+				t.Fatalf("S1 FAILED: no global IPv6 address on the fixture's prefix %s ever "+
+					"appeared on ANY interface inside the container across %s, on a %s "+
+					"segment whose router advertisements carry that prefix. Last state:\n"+
+					"ip -6 addr:\n%s\nip link:\n%s",
+					harness.V6Prefix, selfConfigWindow, tc.mode, fN.addr, fN.links)
+			}
+			if formed.elapsed > selfConfigFormBy {
+				t.Errorf("S1 FAILED: the address %s took %s to appear, past the %s bound. "+
+					"Self-configuration is a link-local DAD plus one solicit/advertise "+
+					"exchange; taking this long means something is retrying, not "+
+					"configuring.", a0.cidr, formed.elapsed.Round(time.Second), selfConfigFormBy)
+			}
+			t.Logf("S1: address %s formed by t+%s", a0.cidr, formed.elapsed.Round(time.Second))
 			for _, bad := range []string{"tentative", "dadfailed", "deprecated"} {
 				if strings.Contains(a0.flags, bad) {
 					t.Errorf("S1 FAILED: the address %s is %s (%q) — it is on the interface "+
