@@ -94,7 +94,8 @@ func parseLft(s string) (int, bool) {
 // selfConfigSample is one observation of the container's v6 state.
 type selfConfigSample struct {
 	elapsed time.Duration
-	addr    string
+	addr    string // ip -6 addr, UNFILTERED: no device is named
+	links   string // ip link, so the log always carries the real names
 	route   string
 
 	// The sysctls are RECORDED AND NOT ASSERTED ON, deliberately.
@@ -335,7 +336,8 @@ func TestDHCPv6_SelfConfiguring_AddressAndRouteSurvive(t *testing.T) {
 				elapsed := time.Since(start)
 				s := selfConfigSample{
 					elapsed:  elapsed,
-					addr:     harness.ExecOutput(t, ctx, id, "ip", "-6", "addr", "show", "dev", ifname),
+					addr:     harness.ExecOutput(t, ctx, id, "ip", "-6", "addr"),
+					links:    harness.ExecOutput(t, ctx, id, "ip", "link"),
 					route:    harness.ExecOutput(t, ctx, id, "ip", "-6", "route", "show"),
 					acceptRA: harness.ExecOutput(t, ctx, id, "cat", fmt.Sprintf("/proc/sys/net/ipv6/conf/%s/accept_ra", ifname)),
 					autoconf: harness.ExecOutput(t, ctx, id, "cat", fmt.Sprintf("/proc/sys/net/ipv6/conf/%s/autoconf", ifname)),
@@ -361,9 +363,10 @@ func TestDHCPv6_SelfConfiguring_AddressAndRouteSurvive(t *testing.T) {
 			a0, ok := globalFromPrefix(parseV6Addrs(f0.addr), harness.V6Prefix)
 			if !ok {
 				t.Fatalf("S1 FAILED: no global IPv6 address on the fixture's prefix %s is "+
-					"on %s inside the container, on a %s segment whose router "+
-					"advertisements carry that prefix:\n%s",
-					harness.V6Prefix, ifname, tc.mode, f0.addr)
+					"on ANY interface inside the container (no device was named, so this "+
+					"cannot be a wrong-interface artifact), on a %s segment whose router "+
+					"advertisements carry that prefix:\nip -6 addr:\n%s\nip link:\n%s",
+					harness.V6Prefix, tc.mode, f0.addr, f0.links)
 			}
 			for _, bad := range []string{"tentative", "dadfailed", "deprecated"} {
 				if strings.Contains(a0.flags, bad) {

@@ -217,11 +217,28 @@ func TestProbe_DHCPv6_WhatDeletesTheDefaultRoute(t *testing.T) {
 			}
 			t.Logf("sandbox interface discovered as %q", nsIf)
 
-			// Sample fast enough to bracket a ten-second window, and
-			// long enough to cover well past it.
+			// THE WINDOW MUST COVER THE DEATH, NOT SIT INSIDE IT.
+			//
+			// This was 45s, chosen against the +3s/+13s observation
+			// from the isolated-namespace measurement. On the CONTAINER
+			// path the route does not die there: the managed interface
+			// test sees it alive at +15s and gone at +150s, and the
+			// first 45s of this very probe showed it healthy the whole
+			// time, counting an 1800s lifetime down one second per
+			// second. A probe whose window ends at 45s would have
+			// reported "no deletion observed" forever, which reads as
+			// exoneration and is really just a short look.
+			//
+			// 180s covers the whole interval in which the route is
+			// known to die, and covers the DHCPv6 lease expiring: the
+			// fixture's lease is dnsmasq's 2-minute floor, so t+120s is
+			// the first moment a renewal can disturb anything. The
+			// interval relaxes to 1s because the netlink monitors carry
+			// the sub-second timing; this poll only samples sysctl and
+			// route STATE.
 			const (
-				probeWindow   = 45 * time.Second
-				probeInterval = 500 * time.Millisecond
+				probeWindow   = 180 * time.Second
+				probeInterval = time.Second
 			)
 			type row struct {
 				at                            time.Duration

@@ -64,7 +64,8 @@ type v6Sample struct {
 	label   string
 	elapsed time.Duration
 
-	addr      string // ip -6 addr show dev <discovered ifname>
+	addr      string // ip -6 addr, UNFILTERED: no device is named
+	links     string // ip link, so the log always carries the real names
 	route     string // ip -6 route show
 	acceptRA  string // /proc/sys/net/ipv6/conf/<ifname>/accept_ra
 	autoconf  string // .../autoconf
@@ -255,7 +256,8 @@ func TestDHCPv6_Managed_AddressAndRouteOnTheInterface(t *testing.T) {
 		smp := v6Sample{
 			label:     s.label,
 			elapsed:   time.Since(start).Round(time.Second),
-			addr:      harness.ExecOutput(t, ctx, id, "ip", "-6", "addr", "show", "dev", ifname),
+			addr:      harness.ExecOutput(t, ctx, id, "ip", "-6", "addr"),
+			links:     harness.ExecOutput(t, ctx, id, "ip", "link"),
 			route:     harness.ExecOutput(t, ctx, id, "ip", "-6", "route", "show"),
 			acceptRA:  harness.ExecOutput(t, ctx, id, "cat", fmt.Sprintf("/proc/sys/net/ipv6/conf/%s/accept_ra", ifname)),
 			autoconf:  harness.ExecOutput(t, ctx, id, "cat", fmt.Sprintf("/proc/sys/net/ipv6/conf/%s/autoconf", ifname)),
@@ -264,12 +266,13 @@ func TestDHCPv6_Managed_AddressAndRouteOnTheInterface(t *testing.T) {
 		}
 		got = append(got, smp)
 		t.Logf("=== %s (t+%s) ===\n"+
-			"ip -6 addr show dev %s:\n%s\n"+
+			"ip -6 addr (UNFILTERED -- no device named):\n%s\n"+
+			"ip link:\n%s\n"+
 			"ip -6 route show:\n%s\n"+
 			"accept_ra=%s autoconf=%s disable_ipv6=%s\n"+
 			"server DHCPREPLY lines so far: %d",
-			smp.label, smp.elapsed, ifname,
-			smp.addr, smp.route,
+			smp.label, smp.elapsed,
+			smp.addr, smp.links, smp.route,
 			strings.TrimSpace(smp.acceptRA), strings.TrimSpace(smp.autoconf),
 			strings.TrimSpace(smp.disableV6), smp.replies)
 	}
@@ -279,10 +282,11 @@ func TestDHCPv6_Managed_AddressAndRouteOnTheInterface(t *testing.T) {
 	// ---- M1: is the address on the interface, and is it usable? ----
 	a0, ok := globalFromPrefix(parseV6Addrs(first.addr), harness.V6Prefix)
 	if !ok {
-		t.Fatalf("M1 FAILED: no global IPv6 address on the fixture's prefix %s is on %s "+
-			"inside the container, on a segment whose DHCPv6 server assigns addresses. "+
-			"The plugin may still report one to the engine; this is the interface:\n%s",
-			harness.V6Prefix, ifname, first.addr)
+		t.Fatalf("M1 FAILED: no global IPv6 address on the fixture's prefix %s is on ANY "+
+			"interface inside the container (no device was named, so this cannot be a "+
+			"wrong-interface artifact), on a segment whose DHCPv6 server assigns "+
+			"addresses.\nip -6 addr:\n%s\nip link:\n%s",
+			harness.V6Prefix, first.addr, first.links)
 	}
 	for _, bad := range []string{"tentative", "dadfailed", "deprecated"} {
 		if strings.Contains(a0.flags, bad) {
