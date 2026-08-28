@@ -327,9 +327,17 @@ fi
 #   - it does not check the `if:` conditions, so a detector step gated
 #     off entirely still satisfies it;
 #   - it does not check that the detector's non-zero exit FAILS the job;
-#   - it treats any live mention as an invocation, so a variable
-#     assignment naming the script counts.
-# The bound is: no workflow invokes this purge without naming the
+#   - it requires the detector to be INVOKED as a command
+#     (`bash scripts/check-missing-runs.sh`), so an invocation assembled
+#     through a variable is not counted. MEASURED 2026-08-28: this comment
+#     used to claim the opposite -- "it treats any live mention as an
+#     invocation, so a variable assignment naming the script counts" --
+#     and the patterns beneath it had already been tightened out from
+#     under the sentence. The direction is the safe one: a
+#     variable-assembled detector call leaves the purge's caller looking
+#     UNOBSERVED and this check goes red, rather than passing on a line it
+#     could not read.
+# The bound is: no workflow invokes this purge without invoking the
 # detector after it. Everything above is outside that bound.
 purge_named=$(grep -rlF 'purge-workflow-runs.sh' "$HERE/../.github/workflows/" 2>/dev/null || true)
 purge_callers=$(wf_invokers 'purge-workflow-runs.sh')
@@ -629,8 +637,57 @@ fi
 # (`GATE_BRANCH""ES=dev`, or a name built from `${{ }}` fragments) passes it.
 # And it judges the checked-out tree, so a scope restated in repository or
 # environment VARIABLES in the GitHub settings is out of reach entirely.
-# The bound is: no literal restatement of these keys, in a line of a workflow
-# file that is not wholly a comment.
+#
+# THE BOUND WAS FALSE A SECOND TIME, and the shape was a QUOTED KEY. Until
+# 2026-08-28 this said "no literal restatement of these keys, in a line of a
+# workflow file that is not wholly a comment", and the pattern demanded
+# `GATE_...[[:space:]]*[:=]`. MEASURED against that version:
+#
+#           "GATE_BRANCHES": "dev"
+#           'GATE_BRANCH_COMMITS': '1'
+#
+# are legal Actions `env:` spellings, are literal restatements -- the key is
+# contiguous in the file -- sit on lines that are not wholly comments, and
+# were NOT returned, because the closing quote sits between the key and the
+# separator. That is the same defect as the `#` shape above: a bound written
+# one spelling wide, falsified by the second spelling of the same thing.
+#
+# SO THE SEPARATOR NOW ADMITS AN OPTIONAL CLOSING QUOTE -- and, more to the
+# point, ENUMERATING SPELLINGS IS THE LOSING MOVE. This is the third check in
+# this file whose domain is `.github/workflows/`, and the other two already
+# refuse a shape they cannot parse: a script named in a workflow and invoked
+# by none of them is REPORTED (`4c`, `4d`), not passed, precisely so an
+# unreadable spelling cannot look like a clean file. This scan was the only
+# one of the three that answered "clean" to a line it could not read.
+#
+# It no longer does. The scan now has TWO arms:
+#   - NAMED    -- the key with a separator this scan can read. A definite
+#                 restatement.
+#   - UNREADABLE -- a live line that mentions one of these keys in any other
+#                 shape. It may or may not be a restatement; a scan that
+#                 cannot read the line must not report it clean.
+# The YAML explicit-key form, which the widened separator still does not
+# match because its key line carries no separator at all --
+#           ? GATE_BRANCHES
+#           : dev
+# -- is caught by the UNREADABLE arm. That is the arm's whole purpose: it
+# closes the CLASS rather than the instance, so the next spelling nobody has
+# thought of goes red instead of quiet.
+#
+# WHAT THE UNREADABLE ARM COSTS, named rather than discovered later: a
+# workflow that merely READS one of these keys (`echo "$GATE_BRANCHES"`) is
+# reported too. Accepted, in the same direction as the trailing-comment trade
+# below -- a workflow reading the scope out of its environment is itself an
+# opinion about the scope -- and MEASURED to cost nothing today: over the
+# real `.github/workflows/` (26 files) neither arm returns a line. A case
+# below pins this report so it cannot be mistaken for a bug.
+#
+# The bound is: no line of a workflow file that is not wholly a comment
+# mentions one of these keys with the key name written contiguously. Three
+# escapes remain and they are the three named above -- outside
+# `.github/workflows/`; a name not contiguous in the file (`GATE_BRANC""HES`,
+# or assembled from `${{ }}` fragments); and the GitHub settings variables,
+# which are not in the tree at all. The quoted key was a fourth until today.
 #
 # THAT BOUND WAS FALSE UNTIL 2026-08-28, and it was false in the shape it
 # was written to exclude. The pattern began `^[^#]*`, forbidding a `#`
@@ -664,13 +721,40 @@ fi
 scan_restates() {   # scan_restates <dir>
     local f
     find "$1" -type f 2>/dev/null | LC_ALL=C sort | while IFS= read -r f; do
-        awk -v F="$f" '
+        # Q carries the single quote the awk program cannot spell inside a
+        # single-quoted shell string; both patterns are built from one key
+        # list so the two arms cannot drift apart.
+        awk -v F="$f" -v Q="'" '
+            BEGIN { keys  = "GATE_(BRANCHES|BRANCH_COMMITS|SCOPE_FILE|SCOPE_BRANCHES|SCOPE_COMMITS)"
+                    named = keys "[\"" Q "]?[[:space:]]*[:=]" }
             { probe = $0
               sub(/^[[:space:]]+/, "", probe)
               if (substr(probe, 1, 1) == "#") next
-              if ($0 ~ /GATE_(BRANCHES|BRANCH_COMMITS|SCOPE_FILE|SCOPE_BRANCHES|SCOPE_COMMITS)[[:space:]]*[:=]/)
-                  printf "%s:%d:%s\n", F, FNR, $0 }' "$f"
+              if ($0 ~ named) { printf "named %s:%d:%s\n", F, FNR, $0; next }
+              if ($0 ~ keys)  { printf "unreadable %s:%d:%s\n", F, FNR, $0 } }' "$f"
     done
+}
+# THE VERDICT IS A FUNCTION TOO, for the reason the arm exists at all. The
+# real `.github/workflows/` is expected to be CLEAN, so the top-level call
+# below can only ever exercise one of the three arms -- the other two would
+# ship having never run, which is the exact complaint this PR is about. The
+# arms are driven on fixtures further down.
+#
+# PRECEDENCE, asserted rather than assumed: a definite restatement outranks
+# an unreadable line, so a file containing both reports NAMED. The quieter
+# verdict must never mask the louder one.
+restate_verdict() {   # restate_verdict <dir> -> NAMED <lines> | UNREADABLE <lines> | CLEAN
+    local out named unreadable
+    out=$(scan_restates "$1") || out=""
+    named=$(printf '%s\n' "$out" | awk '$1 == "named"')
+    unreadable=$(printf '%s\n' "$out" | awk '$1 == "unreadable"')
+    if [ -n "$named" ]; then
+        printf 'NAMED %s\n' "$named"
+    elif [ -n "$unreadable" ]; then
+        printf 'UNREADABLE %s\n' "$unreadable"
+    else
+        printf 'CLEAN\n'
+    fi
 }
 # AND THE DOMAIN MUST NOT BE EMPTY. A universal gate is satisfied by
 # emptying its domain: rename `.github/workflows/`, or point this at a
@@ -681,22 +765,44 @@ wf_files=$(find "$wf_dir" -type f \( -name '*.yml' -o -name '*.yaml' \) 2>/dev/n
 [ "$wf_files" -ge 1 ] \
   && ok "the restatement scan has a non-empty domain ($wf_files workflow file(s) under .github/workflows/)" \
   || no "the restatement scan's domain is EMPTY -- the clean verdict below would prove nothing"
-wf_restates=$(scan_restates "$wf_dir/") || wf_restates=""
-if [ -n "$wf_restates" ]; then
-    no "a workflow restates the branch scope -- a second enumeration that must agree with the scope file: $wf_restates"
-else
-    ok "no workflow restates the branch scope; the scope file is the only definition"
-fi
+# FAIL-CLOSED BY CONSTRUCTION. Only the literal CLEAN verdict reports ok;
+# every other string -- including one this file does not yet know about --
+# reports the finding. Written this way round because the failure being
+# fixed here is a check answering "clean" to something it could not read,
+# and a `case` whose default arm is the QUIET one reproduces exactly that
+# the day somebody adds a fourth verdict and forgets its arm.
+#
+# THE BOUND, since this mapping is one top-level statement and is not
+# itself driven by a case: inverting `CLEAN)` to `*)` deliberately would
+# not be caught here. The three verdicts themselves ARE driven, below.
+wf_verdict=$(restate_verdict "$wf_dir/")
+case "$wf_verdict" in
+    CLEAN) ok "no workflow restates the branch scope; the scope file is the only definition" ;;
+    *)     no "the restatement scan did not report .github/workflows/ clean -- a NAMED line is a second enumeration that must agree with the scope file, an UNREADABLE line is one this scan cannot read and therefore must not pass: $wf_verdict" ;;
+esac
 
 # DRIVE THE ABSENCE: the scan has to go off on each shape, or the clean
 # verdict above proves only that the pattern matches nothing.
 RESTATE=$(mktemp -d)
+# Each helper asserts ITS OWN ARM, never merely "the scan said something".
+# A widening needs a preservation control: if these cases only tested for a
+# non-empty result, deleting the `named` pattern outright would leave every
+# one of them passing through the `unreadable` arm, and the widening would
+# have been graded by a check that cannot tell the two apart.
 restate_case() {   # restate_case <label> <file-content>
     printf '%s' "$2" > "$RESTATE/wf.yml"
-    if [ -n "$(scan_restates "$RESTATE")" ]; then
+    if [ -n "$(scan_restates "$RESTATE" | awk '$1 == "named"')" ]; then
         ok "the restatement scan sees $1"
     else
         no "the restatement scan is BLIND to $1 -- a live second enumeration would ship"
+    fi
+}
+unparse_case() {   # unparse_case <label> <file-content>
+    printf '%s' "$2" > "$RESTATE/wf.yml"
+    if [ -n "$(scan_restates "$RESTATE" | awk '$1 == "unreadable"')" ]; then
+        ok "the restatement scan REPORTS $1 rather than passing it clean"
+    else
+        no "the restatement scan passes $1 clean -- a line it cannot read is being reported as a line it read"
     fi
 }
 restate_case "the YAML env-key spelling" 'jobs:
@@ -745,6 +851,64 @@ restate_case "an indented live assignment inside a block scalar with a # above i
           # the scope file is authoritative
           GATE_SCOPE_FILE=.github/other.env bash scripts/purge-workflow-runs.sh
 '
+# THE SHAPE THAT DEFEATED THE PREVIOUS PATTERN, SECOND INSTANCE. A quoted
+# YAML mapping key is a legal Actions `env:` spelling and the closing quote
+# sat between the key and the separator, so the whole line was invisible.
+# All three spellings, including a space before the colon.
+restate_case "a DOUBLE-quoted env key" 'jobs:
+  x:
+    steps:
+      - env:
+          "GATE_BRANCHES": "dev"
+        run: bash scripts/check-missing-runs.sh 20
+'
+restate_case "a SINGLE-quoted env key" 'jobs:
+  x:
+    steps:
+      - env:
+          '"'"'GATE_BRANCH_COMMITS'"'"': '"'"'1'"'"'
+        run: bash scripts/check-missing-runs.sh 20
+'
+restate_case "a quoted env key with a space before the colon" 'jobs:
+  x:
+    steps:
+      - env:
+          "GATE_SCOPE_FILE" : .github/other-scope.env
+        run: bash scripts/purge-workflow-runs.sh
+'
+# AND THE ARM THAT CLOSES THE CLASS. The widened separator still does not
+# match the YAML explicit-key form -- its key line carries no separator at
+# all -- so this is the case that proves the unreadable arm is load-bearing
+# rather than decorative. Delete that arm and this goes red.
+unparse_case "the YAML explicit-key form, which no separator pattern matches" 'jobs:
+  x:
+    steps:
+      - env:
+          ? GATE_BRANCHES
+          : dev
+        run: bash scripts/check-missing-runs.sh 20
+'
+# THE UNREADABLE ARM'"'"'S COST, PINNED. A workflow that only READS one of
+# these keys is reported. Asserting today'"'"'s answer with the reason in the
+# name, so a later reader meets it as a decision and so that removing it
+# cannot pass unnoticed.
+unparse_case "a workflow that merely READS a scope key (accepted report: a workflow taking the scope from its environment is an opinion about the scope)" 'jobs:
+  x:
+    steps:
+      - run: echo "the scope is $GATE_BRANCHES" && bash scripts/check-missing-runs.sh 20
+'
+# THE OTHER DIRECTION FOR THE UNREADABLE ARM. A name that is not contiguous
+# in the file is the named escape, and it must stay escaped: firing here
+# would mean the arm had become a substring search and the "runtime
+# assembly" escape above would be a false statement.
+printf '%s' 'jobs:
+  x:
+    steps:
+      - run: GATE_BRANC""HES=dev bash scripts/check-missing-runs.sh 20
+' > "$RESTATE/wf.yml"
+[ -z "$(scan_restates "$RESTATE")" ] \
+  && ok "neither arm fires on a name assembled at runtime (the escape named in the bound is really an escape)" \
+  || no "the scan fires on GATE_BRANC\"\"HES -- the bound above names runtime assembly as an escape and the tree now falsifies it"
 # THE OTHER DIRECTION: prose about the scope is not a restatement of it, and
 # missing-runs.yml carries exactly that prose today. A scan that refused it
 # would be unusable, and the clean verdict above would be meaningless.
@@ -773,6 +937,43 @@ printf '%s' 'jobs:
 [ -n "$(scan_restates "$RESTATE")" ] \
   && ok "the restatement scan reports a TRAILING comment on a live line (accepted false positive: a text scan cannot tell an inert shell comment from a live assignment)" \
   || no "the trailing-comment trade changed without this case being updated"
+# ALL THREE VERDICT ARMS, DRIVEN. The top-level call above can only reach
+# CLEAN while the tree is clean.
+verdict_case() {   # verdict_case <expected> <label> <file-content>
+    printf '%s' "$3" > "$RESTATE/wf.yml"
+    local got; got=$(restate_verdict "$RESTATE")
+    case "$got" in
+        "$1"*) ok "the restatement verdict is $1 for $2" ;;
+        *)     no "the restatement verdict for $2 is '${got%% *}', expected $1" ;;
+    esac
+}
+verdict_case CLEAN      "a workflow naming none of the keys" 'jobs:
+  x:
+    steps:
+      - run: bash scripts/check-missing-runs.sh 20
+'
+verdict_case NAMED      "a readable restatement" 'jobs:
+  x:
+    steps:
+      - env:
+          GATE_BRANCHES: dev
+'
+verdict_case UNREADABLE "a key named in a shape the scan cannot read" 'jobs:
+  x:
+    steps:
+      - env:
+          ? GATE_BRANCHES
+          : dev
+'
+verdict_case NAMED      "a file carrying BOTH (the definite finding must outrank the unreadable one)" 'jobs:
+  x:
+    steps:
+      - env:
+          ? GATE_BRANCHES
+          : dev
+      - env:
+          GATE_BRANCH_COMMITS: 10
+'
 rm -rf "$RESTATE"
 
 # --- 18b. an exported value may not stand in for the file ---------------
