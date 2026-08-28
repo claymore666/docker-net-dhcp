@@ -307,4 +307,40 @@ func TestDHCPv6_Managed_AddressAndRouteOnTheInterface(t *testing.T) {
 			"network-unreachable error, which is the kernel saying it has no route at "+
 			"all — not the far end being silent. IPv6 is on-link only:\n%s", offLink, ping)
 	}
+
+	// ---- M4b: is the gateway the container routes through actually a
+	// router, as far as the container is concerned? ----
+	//
+	// This is the property the fixture's forwarding write exists to
+	// produce, asserted from OUTSIDE the fixture. RFC 4861 7.2.5 has a
+	// host drop a default router the moment an advertisement from it
+	// arrives with IsRouter clear, and `ip -6 neigh` prints exactly
+	// that bit as the word `router`. Run 33208729673 recorded the
+	// failure this catches: two default-route deletions, each in the
+	// same millisecond as an advertisement carrying IsRouter=0 from
+	// the gateway's own address.
+	//
+	// It reads the NEIGHBOUR TABLE and not the fixture's sysctl on
+	// purpose. Asserting net.ipv6.conf.<bridge>.forwarding would
+	// assert the mechanism -- it stays green on a kernel where that
+	// knob no longer fills the bit, and it is the fixture reporting on
+	// itself. This reads the container's own record of what arrived on
+	// the wire.
+	//
+	// The BOUND: this is one instant. It can only ever show that the
+	// bad state was absent when it ran.
+	//
+	// WHY IT RUNS LAST. A neighbour entry exists only once something
+	// has resolved the address. Advertisements carry a source
+	// link-layer address option and so populate it on their own, but
+	// M5's ping guarantees it, and "no entry at all" is a refusal
+	// here rather than a pass -- so ordering this after the traffic
+	// removes a way for the check to fail for a reason that is not the
+	// one it is about. That is ordering, not weakening: no assertion
+	// is relaxed and the refusal stays a refusal.
+	lastRoute := got[len(got)-1].route
+	gw := harness.V6DefaultGateway(lastRoute)
+	neigh := harness.ExecOutput(t, ctx, id, "ip", "-6", "neigh", "show")
+	t.Logf("M4b: default gateway %q; container neighbour table:\n%s", gw, neigh)
+	harness.AssertGatewayIsRouter(t, neigh, gw)
 }

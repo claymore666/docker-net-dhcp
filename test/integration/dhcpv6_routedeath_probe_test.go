@@ -20,6 +20,7 @@ import (
 	"time"
 
 	docker "github.com/docker/docker/client"
+	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netlink/nl"
 	"github.com/vishvananda/netns"
 	"golang.org/x/sys/unix"
@@ -296,7 +297,6 @@ func TestProbe_DHCPv6_WhatDeletesTheDefaultRoute(t *testing.T) {
 				route, addr                   string
 				acceptRA, autoconf, disableV6 string
 				fwdIf, fwdAll, fwdDef         string
-				raRx                          string
 				brFwdIf, brFwdAll             string
 			}
 			var rows []row
@@ -312,7 +312,6 @@ func TestProbe_DHCPv6_WhatDeletesTheDefaultRoute(t *testing.T) {
 					fwdIf:     nsenterCat(pid, fmt.Sprintf("/proc/sys/net/ipv6/conf/%s/forwarding", nsIf)),
 					fwdAll:    nsenterCat(pid, "/proc/sys/net/ipv6/conf/all/forwarding"),
 					fwdDef:    nsenterCat(pid, "/proc/sys/net/ipv6/conf/default/forwarding"),
-					raRx:      icmp6Counter(pid, "Icmp6InRouterAdvertisements"),
 					// The ROUTER side, read in the HOST namespace. Every
 					// forwarding reading this probe took until now was
 					// taken inside the container, which is the wrong end
@@ -447,65 +446,26 @@ func TestProbe_DHCPv6_WhatDeletesTheDefaultRoute(t *testing.T) {
 					strings.TrimSpace(last.brFwdIf), strings.TrimSpace(last.brFwdAll))
 			}
 
-			// The RA ARRIVAL CLOCK, read straight out of the kernel's
-			// own per-namespace ICMPv6 counters. This is the second
-			// witness for advertisement arrival and it is better than
-			// the on-link prefix route in one specific way: it counts
-			// EVERY advertisement the kernel accepted, including one
-			// carrying no Prefix Information option, which is exactly
-			// the escape the prefix-route witness has to name and
-			// cannot close.
+			// The RA ARRIVAL CLOCK IS GONE, and its successor is the
+			// wire capture above.
 			//
-			// It exists to answer a question about the correlation
-			// itself rather than about the route. The deletions track a
-			// DHCPv6 REPLY at a suspiciously stable lag, and a stable
-			// lag is equally consistent with the REPLY being the CAUSE
-			// and with the REPLY being a COINCIDENT MARKER for
-			// something else on a similar clock. There is a named
-			// candidate for such a clock: this fixture pins the
-			// advertisement interval, and RFC 4861 6.2.1 lets a router
-			// send unsolicited advertisements as close together as a
-			// third of its configured maximum, which for the pinned
-			// value lands near ten seconds. INFERRED, and deliberately
-			// not relied on -- the counter measures the arrivals
-			// directly, so the probe does not need this guess to be
-			// right.
+			// It sampled the namespace's Icmp6InRouterAdvertisements
+			// counter once a second to time advertisement arrivals. It
+			// never returned a value: MEASURED in run 33208729673, the
+			// counter read empty at every sample in both modes, and the
+			// probe reported "this run carries NO advertisement clock"
+			// rather than reporting zero arrivals. It was right to
+			// refuse, and it was still an instrument that collected
+			// nothing on every run it ever had.
 			//
-			// Reading it: if every deletion sits on an advertisement
-			// arrival, the advertisement is the event and the REPLY is
-			// a marker. If deletions fall where no advertisement
-			// arrived, the REPLY correlation stands as a cause and
-			// candidate 5 is dead.
-			var raSeries []string
-			var lastRA string
-			for _, r := range rows {
-				cur := strings.TrimSpace(r.raRx)
-				if cur != lastRA {
-					raSeries = append(raSeries,
-						fmt.Sprintf("  t+%s: Icmp6InRouterAdvertisements=%s",
-							r.at.Round(probeInterval), cur))
-					lastRA = cur
-				}
-			}
-			if len(raSeries) <= 1 {
-				t.Logf("VERDICT INPUT (RA clock): the received-advertisement counter never "+
-					"changed across %s (last read %q). Either no advertisement was accepted "+
-					"in the window or the counter could not be read; the value above says "+
-					"which. Treat this run as carrying NO advertisement clock rather than as "+
-					"evidence that none arrived.", probeWindow, lastRA)
-			} else {
-				t.Logf("VERDICT INPUT (RA clock): every increment below is an advertisement "+
-					"the kernel ACCEPTED in this namespace.\n%s\n"+
-					"  Correlate these instants against the DELROUTE timestamps in the "+
-					"attribution table and the trace. A deletion ON an increment makes the "+
-					"advertisement the event and the DHCPv6 REPLY a coincident marker; a "+
-					"deletion where the counter did NOT move rules the advertisement out for "+
-					"that deletion.\n"+
-					"  Bound: this counts advertisements ACCEPTED. One dropped before the "+
-					"counter -- by a sysctl, or as malformed -- is invisible here, so a flat "+
-					"counter is not proof that the wire was quiet.",
-					strings.Join(raSeries, "\n"))
-			}
+			// A dead instrument that reports empty is indistinguishable
+			// from a healthy tree, which is the failure this probe
+			// exists to avoid, so it is deleted rather than kept in case
+			// it becomes useful. The raw ICMPv6 socket answers the same
+			// question strictly better: it timestamps each advertisement
+			// as it arrives instead of inferring arrival from a counter
+			// delta, and it reads the Router Lifetime out of the packet
+			// while it is there.
 
 			// The forwarding verdict, which is the one that can be
 			// reached by elimination and therefore the one worth
@@ -751,20 +711,10 @@ func indent(s string) string {
 	return b.String()
 }
 
-// icmp6Counter reads one named row out of the container namespace's
-// /proc/net/snmp6. Those counters are per network namespace, so this is
-// the kernel's own tally of what it accepted on this link and not a
-// figure anything in userspace can flatter.
-func icmp6Counter(pid int, name string) string {
-	out := nsenterCat(pid, "/proc/net/snmp6")
-	for _, line := range strings.Split(out, "\n") {
-		f := strings.Fields(line)
-		if len(f) == 2 && f[0] == name {
-			return f[1]
-		}
-	}
-	return ""
-}
+// attrControlPrefix is an RFC 3849 documentation prefix: reserved for
+// documentation, routable nowhere, and chosen so the control route can
+// never collide with a fixture subnet.
+const attrControlPrefix = "2001:db8:c07c:701::/64"
 
 // attrEvent is one route change as the kernel BROADCAST it, keeping the
 // field `ip monitor` never prints: the netlink port id of whoever asked
@@ -798,6 +748,12 @@ type attrMon struct {
 	sock      *nl.NetlinkSocket
 	start     time.Time
 	netnsPath string
+
+	// The synthetic control's own outcome, kept apart from the events
+	// so a failure to DRIVE the control is never mistaken for the
+	// instrument failing to REPORT it.
+	controlDriven bool
+	controlErr    string
 }
 
 // startAttrMonitor subscribes to route notifications INSIDE the
@@ -844,7 +800,60 @@ func startAttrMonitor(t *testing.T, netnsPath string, start time.Time) *attrMon 
 	}
 	m := &attrMon{sock: sock, start: start, netnsPath: netnsPath}
 	go m.run()
+	m.driveControl()
 	return m
+}
+
+// driveControl adds and immediately removes a throwaway route in the
+// container namespace, from this process, so the monitor has at least
+// one route change whose originator is known to be userspace.
+//
+// WHY IT IS SYNTHETIC. The first version of this control simply hoped to
+// catch the v4 client, which configures routes in this namespace. It
+// never did: MEASURED in run 33208729673, NOT ONE route change of either
+// family carried a non-zero port id across 13 events in two modes,
+// because the v4 route programming happens before this monitor attaches.
+// The consequence was not a missing nicety -- it made every reading in
+// that run UNINTERPRETABLE, including the ones that turned out to be
+// right, because a zero cannot be read as "the kernel" until the
+// instrument has been shown able to print something else.
+//
+// A control that can only fire on someone else's timing is not a
+// control. This one the probe can always drive.
+//
+// The route is a blackhole to a documentation prefix (RFC 3849), which
+// needs no interface, cannot carry traffic, reaches nothing, and is
+// removed in the next call. It is not a default route, so it never
+// appears in the verdict table it exists to validate.
+func (m *attrMon) driveControl() {
+	_, dst, err := net.ParseCIDR(attrControlPrefix)
+	if err != nil {
+		m.controlErr = fmt.Sprintf("parse control prefix: %v", err)
+		return
+	}
+	ns, err := netns.GetFromPath(m.netnsPath)
+	if err != nil {
+		m.controlErr = fmt.Sprintf("open netns: %v", err)
+		return
+	}
+	defer func() { _ = ns.Close() }()
+	h, err := netlink.NewHandleAt(ns)
+	if err != nil {
+		m.controlErr = fmt.Sprintf("netlink handle: %v", err)
+		return
+	}
+	defer h.Close()
+
+	rt := &netlink.Route{Dst: dst, Type: unix.RTN_BLACKHOLE, Table: unix.RT_TABLE_MAIN}
+	if err := h.RouteAdd(rt); err != nil {
+		m.controlErr = fmt.Sprintf("add control route: %v", err)
+		return
+	}
+	if err := h.RouteDel(rt); err != nil {
+		m.controlErr = fmt.Sprintf("delete control route: %v", err)
+		return
+	}
+	m.controlDriven = true
 }
 
 func (m *attrMon) run() {
@@ -923,6 +932,13 @@ func (m *attrMon) report(t *testing.T, mode harness.V6Mode) {
 			break
 		}
 	}
+	if !m.controlDriven {
+		t.Logf("WARNING: the synthetic control could not be DRIVEN (%s). The instrument was "+
+			"therefore never given a userspace route change to report, so neither a "+
+			"non-zero nor its absence below says anything about the instrument. This is a "+
+			"failure to run the control, which is a different fact from the control "+
+			"failing.", m.controlErr)
+	}
 
 	var b strings.Builder
 	for _, e := range events {
@@ -945,11 +961,12 @@ func (m *attrMon) report(t *testing.T, mode harness.V6Mode) {
 
 	if !sawNonZero {
 		t.Logf("VERDICT INPUT (attribution control, %s): NOT ONE route change of EITHER "+
-			"family carried a non-zero port id across %d events. The control failed: this "+
-			"run has not shown that the instrument can report a userspace originator at "+
-			"all, so a zero above is UNINTERPRETABLE and must not be read as "+
-			"'the kernel did it'. The v4 client configures routes in this namespace, so "+
-			"the expected reading here is at least one non-zero.", mode, len(events))
+			"family carried a non-zero port id across %d events, and the probe DROVE a "+
+			"userspace route change of its own (driven=%v). The control failed: this run "+
+			"has not shown that the instrument can report a userspace originator at all, "+
+			"so a zero above is UNINTERPRETABLE and must not be read as 'the kernel did "+
+			"it'. With the control driven, this reading means the instrument is broken "+
+			"rather than merely unlucky.", mode, len(events), m.controlDriven)
 		return
 	}
 	t.Logf("VERDICT INPUT (attribution control, %s): the instrument DID report a non-zero "+

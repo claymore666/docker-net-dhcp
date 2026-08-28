@@ -343,6 +343,103 @@ func NewV6Fixture(t *testing.T, mode V6Mode) *V6Fixture {
 		t.Fatalf("disable DAD on %s: %v", V6BridgeName, err)
 	}
 
+	// This segment advertises a router. Make the kernel behind that
+	// address actually be one.
+	//
+	// WHAT WAS WRONG, stated precisely, because the obvious phrasing is
+	// wrong. RFC 4861 2.1 defines a router by FORWARDING, not by
+	// advertising. So the fixture bridge was a HOST, and answering a
+	// neighbour solicitation with R=0 was truthful and conformant
+	// (4.4, 7.2.4). The false statement was the ROUTER ADVERTISEMENT:
+	// we ran an RA daemon on a host that was not a router, which 6.2.1
+	// describes as accidentally starting to act as one. Two conformant
+	// assertions about one fact, and 2.1 says which was false. The
+	// BOUND: no single MUST is violated by dnsmasq in isolation --
+	// 6.2.1 constrains a default, not an operator -- so this was a
+	// self-contradictory SEGMENT, and the contradiction was ours.
+	//
+	// WHAT THE CONTAINER THEN DID, correctly. 7.2.5 requires a host
+	// that sees IsRouter go true->false to remove that router from its
+	// Default Router List. It did.
+	//
+	// MEASURED, run 33208729673 job 98976446841, managed mode, before
+	// this line existed. Two default-route deletions in a three-minute
+	// window, each in the SAME MILLISECOND as a neighbour advertisement
+	// carrying R=0 from fe80::d86b:d4ff:fe29:204a -- the default route's
+	// own gateway, and the EUI-64 of da:6b:d4:29:20:4a, this bridge.
+	// Each route came back 1ms after the next advertisement. Ten of ten
+	// advertisements carried Router Lifetime 9000, read off the wire, so
+	// an expiring or withdrawn router was already excluded.
+	//
+	// WHY PER-DEVICE, AND WHY conf/all STAYS 0. MEASURED by the
+	// protocol consultant on kernel 6.12.105 under `unshare -Urn`: with
+	// all=0 default=0 dev=0 the advertisement carries R=0; with
+	// all=0 default=0 dev=1 it carries R=1. And the acceptability half
+	// -- packets are forwarded only when `all` is 1; all=0 with dev=1
+	// forwards nothing. So this buys the R bit without turning the
+	// runner into a router. `default` is NOT used: it is no narrower,
+	// because every device created afterwards inherits it, which in
+	// this namespace means every other fixture's bridge and veth.
+	//
+	// INFERRED for the runner kernel. That table is one kernel version,
+	// and these knobs' semantics are exactly the kind of thing that
+	// moves between releases. The wire capture is what settles it on
+	// the kernel that actually runs the suite.
+	//
+	// THE CLOBBER TRAP. Writing conf/all/forwarding 1 and then 0 resets
+	// a per-device 1 back to 0 (measured, same kernel). Anything else
+	// in this namespace touching `all` silently reverts this, and the
+	// failure returns looking like flake. Today nothing does -- start()
+	// has exactly one call site, so there is no dnsmasq restart to
+	// re-assert after -- but that is a fact about today's tree, not a
+	// property. The standing observer is the probe, which samples this
+	// device's forwarding flag repeatedly through the run rather than
+	// once at setup.
+	//
+	// WHY THIS IS NOT A WEAKENING, and how to check that claim rather
+	// than take it. No assertion moves, no timeout grows, nothing is
+	// skipped, and no test is opted out of. The discriminator is that
+	// the WIRE must change: the same capture that recorded R=0 and two
+	// deletions must, after this, record R=1 and none. If it does not,
+	// this line did not do what this comment says and the change is not
+	// defensible.
+	//
+	// THE PURGE IS NAMESPACE-WIDE. addrconf_fixup_forwarding ends in
+	// `if (newf) rt6_purge_dflt_routers(net)`, so this write drops
+	// every `proto ra` default route in THIS namespace, not only the
+	// ones on this device. The consultant measured that a userspace
+	// `proto static` default route survives it, and could not test the
+	// `proto ra` case for want of an RA sender in its probe netns --
+	// bounded, not eliminated. So measure it here rather than reason
+	// about it: enumerate before, enumerate after, fail loudly if the
+	// write took something away. A fixture that silently removed the
+	// runner's own default route would present as unrelated network
+	// failures for the rest of the job.
+	raBefore := v6ProtoRADefaults()
+	fwdPath := filepath.Join("/proc/sys/net/ipv6/conf", V6BridgeName, "forwarding")
+	if err := os.WriteFile(fwdPath, []byte("1"), 0o644); err != nil {
+		t.Fatalf("enable IPv6 forwarding on %s: %v", V6BridgeName, err)
+	}
+	if raAfter := v6ProtoRADefaults(); len(raAfter) < len(raBefore) {
+		t.Fatalf("enabling forwarding on %s purged %d 'proto ra' IPv6 default route(s) "+
+			"from this network namespace (rt6_purge_dflt_routers). Before: %v. After: "+
+			"%v. This fixture has damaged routing the rest of the job depends on; the "+
+			"bound named above has been hit and the fixture needs a namespace of its "+
+			"own.", V6BridgeName, len(raBefore)-len(raAfter), raBefore, raAfter)
+	}
+	// Read back rather than trust the write. A sysctl write that is
+	// silently refused or immediately overwritten looks exactly like one
+	// that took, and this fixture has already paid once for a premise
+	// nobody checked.
+	if got, err := os.ReadFile(fwdPath); err != nil {
+		t.Fatalf("read back forwarding on %s: %v", V6BridgeName, err)
+	} else if strings.TrimSpace(string(got)) != "1" {
+		t.Fatalf("forwarding on %s did not take: wrote 1, read %q. The bridge would "+
+			"advertise a router and then answer neighbour solicitations with R=0, and "+
+			"RFC 4861 7.2.5 would have the container drop the route -- a fixture defect "+
+			"that reads as a product failure.", V6BridgeName, strings.TrimSpace(string(got)))
+	}
+
 	// ...and add each address with IFA_F_NODAD, which is a stronger
 	// statement than the sysctl and answers a different question.
 	//
@@ -675,4 +772,101 @@ func cleanupV6Links() {
 	if link, err := netlink.LinkByName(V6BridgeName); err == nil {
 		_ = netlink.LinkDel(link)
 	}
+}
+
+// v6ProtoRADefaults lists the IPv6 default routes in THIS network
+// namespace that the kernel installed from a router advertisement.
+//
+// It exists for one purpose: to bound the namespace-wide purge that
+// enabling forwarding performs. A count is enough for that, but the
+// strings are returned rather than a number because a failure message
+// naming which route vanished is worth far more than one saying that
+// some route did.
+//
+// It never fails the test. An enumeration error here must not be able
+// to fail a fixture over a check that is itself only a guard -- but it
+// must not read as "none", either, so the error is returned as an
+// element and shows up in the message.
+func v6ProtoRADefaults() []string {
+	routes, err := netlink.RouteList(nil, unix.AF_INET6)
+	if err != nil {
+		return []string{fmt.Sprintf("(enumerate v6 routes: %v)", err)}
+	}
+	var out []string
+	for _, r := range routes {
+		if r.Dst != nil && !r.Dst.IP.IsUnspecified() {
+			continue
+		}
+		if int(r.Protocol) != unix.RTPROT_RA {
+			continue
+		}
+		out = append(out, r.String())
+	}
+	return out
+}
+
+// AssertGatewayIsRouter asserts the PROPERTY the forwarding write is
+// there to produce, from inside the container, using the container's
+// own neighbour table.
+//
+// WHY NOT ASSERT THE SYSCTL. Asserting conf/<dev>/forwarding asserts
+// the MECHANISM: it passes whenever the write landed, including on a
+// kernel where that knob no longer fills the R bit, and it is the
+// fixture reporting on itself. The neighbour table is outside
+// evidence -- it is the container's record of what the wire actually
+// said -- and it goes red for the right reason if anything in the
+// namespace clobbers conf/all/forwarding mid-run.
+//
+// RFC 4861 7.2.5: the container marks a neighbour a router exactly
+// when an advertisement from it carried IsRouter, and unmarks it when
+// one arrives without. `ip -6 neigh` prints that state as the word
+// `router`, so this reads the same bit the standard turns on.
+//
+// The BOUND, stated because a green here is narrower than it looks:
+// this observes the entry at ONE instant. A gateway that is a router
+// now can stop being one a second later, which is the whole defect
+// this guards against. It is a spot check that can only ever prove the
+// bad state was not present when it ran.
+func AssertGatewayIsRouter(t V6Reporter, neigh, gateway string) {
+	t.Helper()
+	if gateway == "" {
+		t.Errorf("no default-route gateway was resolved, so the IsRouter property could "+
+			"not be checked at all. Neighbour table:\n%s", neigh)
+		return
+	}
+	for _, line := range strings.Split(neigh, "\n") {
+		f := strings.Fields(line)
+		if len(f) == 0 || f[0] != gateway {
+			continue
+		}
+		for _, tok := range f {
+			if tok == "router" {
+				return
+			}
+		}
+		t.Errorf("the default gateway %s is in the container's neighbour table but is "+
+			"NOT marked `router`, so its advertisements carried IsRouter=0 and RFC 4861 "+
+			"7.2.5 will have the container drop the default route through it. Check "+
+			"that net.ipv6.conf.%s.forwarding is still 1 -- writing conf/all/forwarding "+
+			"anywhere in this namespace silently resets it. Entry: %q",
+			gateway, V6BridgeName, strings.TrimSpace(line))
+		return
+	}
+	t.Errorf("the default gateway %s has no entry at all in the container's neighbour "+
+		"table, so this says nothing about IsRouter either way -- absent is not a pass. "+
+		"Table:\n%s", gateway, neigh)
+}
+
+// V6DefaultGateway pulls the gateway address out of `ip -6 route show`
+// output. It returns "" when there is no default route, which callers
+// must treat as "unknown", never as "no gateway".
+func V6DefaultGateway(routeText string) string {
+	for _, line := range strings.Split(routeText, "\n") {
+		f := strings.Fields(line)
+		if len(f) < 3 || f[0] != "default" || f[1] != "via" {
+			continue
+		}
+		return f[2]
+	}
+	return ""
 }
