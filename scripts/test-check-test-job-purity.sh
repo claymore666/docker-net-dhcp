@@ -21,9 +21,13 @@
 # The last two blocks drive the ABSENCE: they delete what the gate
 # guards and what invokes the gate, and check that something goes red.
 #
-# MUTATION PASS over arms F(`name:`) and G, through .claude/bin/mutate.sh,
-# 12 mutants: 11 killed, 1 declared survivor. Recorded here because a
-# survivor nobody wrote down is rediscovered at full price.
+# MUTATION PASS over arms F(`name:`) and G, through .claude/bin/mutate.sh.
+# NO TALLY IS WRITTEN HERE -- one was, and it was already stale on the
+# day it landed, in the same series whose round-2 commit is titled "this
+# gate's own header carried a stale count". The figure lives in the pull
+# request, where the run that produced it is named. What belongs beside
+# the code is the ADJUDICATION, because a survivor nobody wrote down is
+# rediscovered at full price:
 #
 #   SURVIVOR: F's `name:` check deleted AND G's exclusion of the two
 #   purity jobs dropped, in one change. It survives because it is
@@ -53,13 +57,14 @@ failures=0
 # tests was written about: a universal is satisfied by emptying its
 # domain, so the domain is measured rather than assumed.
 cases=0
-FLOOR=68
+FLOOR=72
 
 check() {
     local name="$1" want_exit="$2" wf="$3" want_grep="$4"
     cases=$((cases + 1))
     bash "$GATE" "$wf" > "$TMP/out" 2>&1
     local got=$?
+    cat "$TMP/out" >> "$TMP/gate-log"
     if [ "$got" -eq "$want_exit" ] && { [ -z "$want_grep" ] || grep -qF -- "$want_grep" "$TMP/out"; }; then
         echo "PASS: $name"
     else
@@ -78,8 +83,10 @@ check() {
 refutes() {
     local name="$1" want_exit="$2" wf="$3" absent="$4"
     cases=$((cases + 1))
+    printf '%s\n' "$absent" >> "$TMP/refutes-claims"
     bash "$GATE" "$wf" > "$TMP/out" 2>&1
     local got=$?
+    cat "$TMP/out" >> "$TMP/gate-log"
     if [ "$got" -eq "$want_exit" ] && ! grep -qF -- "$absent" "$TMP/out"; then
         echo "PASS: $name"
     else
@@ -331,7 +338,7 @@ MAKEIND=${GOOD_TEST/        run: go build .\/.../        run: |
           go build ./...
           make check-all-policy-gates}
 derived MAKEIND "$GOOD_TEST" "$MAKEIND"
-refutes "KNOWN GAP: a make target inside an allowed step is invisible to C" 0 "$(wf makeind "$MAKEIND" "$GOOD_GATES")" "FINDING"
+refutes "KNOWN GAP: a make target inside an allowed step is invisible to C" 0 "$(wf makeind "$MAKEIND" "$GOOD_GATES")" "split has drifted"
 
 # --- refusals: every one must be 2, never 0 ---------------------------
 check "a missing workflow refuses" 2 "$TMP/nowhere.yaml" "does not exist"
@@ -446,6 +453,32 @@ jobkey namesame "$GOODWF" '  test:' '    name: test'
 refutes "a name: equal to the job key is not a finding" 0 \
     "$TMP/namesame.yaml" "the job sets \`name:"
 
+# `needs:` -- the THIRD spelling of green-by-skip, and the one that
+# arrives through an ordinary edit. A job whose dependency fails or is
+# skipped does not run and reports SKIPPED, so `test` given
+# `needs: [policy-gates]` goes green exactly when `policy-gates` goes
+# red. MEASURED before this arm existed: both fixtures below passed the
+# gate, rc 0. Driven on BOTH halves, because one fix does not reach the
+# copies -- the arm loops over two jobs and a check written for one of
+# them is not a check on the other.
+jobkey needsfwd "$GOODWF" '  test:' '    needs: [policy-gates]'
+check "a needs: on the test job is a finding" 1 "$TMP/needsfwd.yaml" \
+    "test: the job carries a \`needs:\`"
+
+jobkey needsrev "$GOODWF" '  policy-gates:' '    needs: [test]'
+check "a needs: on the policy-gates job is a finding" 1 "$TMP/needsrev.yaml" \
+    "policy-gates: the job carries a \`needs:\`"
+
+# The other direction, and it is a real distinction rather than a
+# formality: `needs: []` declares no dependency, so it cannot cause a
+# skip and must not be a finding. That is why the arm tests the VALUE
+# and not the key's presence -- the same shape as `continue-on-error:
+# false` above, and the reason `if:` is treated the opposite way is that
+# `if: false` is falsy and skips anyway.
+jobkey needsempty "$GOODWF" '  test:' '    needs: []'
+refutes "an empty needs: is not a finding" 0 \
+    "$TMP/needsempty.yaml" "the job carries a \`needs:\`"
+
 # --- G: every OTHER job in this workflow --------------------------------
 #
 # Built from the REAL workflow, not a fixture: G is about the five jobs
@@ -495,7 +528,14 @@ doc["jobs"]["attribution"]["steps"][-1]["if"] = "failure()"
 yaml.safe_dump(doc, open(sys.argv[2], "w"))
 GSTEPBOUND
 refutes "BOUND: a step-level if: on a non-purity job is not a finding" 0 \
-    "$TMP/gstepbound.yaml" "FINDING"
+    "$TMP/gstepbound.yaml" "split has drifted"
+
+# The same key on a job G is about. `attribution` is a required context,
+# so a `needs:` on it is the green-by-skip failure on a check branch
+# protection actually enforces. MEASURED before this arm: rc 0.
+jobkey gneeds "$G_REAL" '  attribution:' '    needs: [package]'
+check "a needs: on a non-purity job is a finding" 1 "$TMP/gneeds.yaml" \
+    "attribution: the job carries a \`needs:\`"
 
 jobkey gif "$G_REAL" '  staticcheck:' "    if: github.ref == 'refs/heads/never'"
 check "an unrecorded job-level if: is a finding" 1 "$TMP/gif.yaml" \
@@ -621,6 +661,7 @@ LIFT
     fi
     bash "$LIFT_GATE" "$G_REAL" > "$TMP/out" 2>&1
     got=$?
+    cat "$TMP/out" >> "$TMP/gate-log"
     if [ "$got" -eq 1 ] && grep -qF "$k: the job carries an \`if:\`" "$TMP/out"; then
         echo "PASS: the JOB_IF entry for $k is load-bearing"
     else
@@ -664,6 +705,7 @@ else
     cases=$((cases + 1))
     bash "$BUYBACK_GATE" "$JOBIF" > "$TMP/out" 2>&1
     got=$?
+    cat "$TMP/out" >> "$TMP/gate-log"
     # shellcheck disable=SC2016  # the backticks are the gate's own prose
     if [ "$got" -eq 1 ] && grep -qF 'test: the job carries an `if:`' "$TMP/out"; then
         echo "PASS: a JOB_IF entry cannot buy the test job an if:"
@@ -710,8 +752,22 @@ check "the tally names the job count" 0 \
 # ALL, which is the standing form of the byte-identical comparison run
 # by hand when G landed (G excised from the gate, same real workflow,
 # same output).
-refutes "the repository's own workflow yields no FINDING at all" 0 \
-    "$REPO/.github/workflows/test.yaml" "FINDING"
+#
+# The string is `split has drifted` and NOT `FINDING`, and the difference
+# is the whole case. `FINDING\t` is the PARSER's internal prefix: the
+# shell half captures the parser's stdout, strips that prefix and
+# re-emits each one as `::error title=The test/policy-gates split has
+# drifted::`. So the token `FINDING` is unreachable in caller-visible
+# output, and an absence predicate keyed on it is constant-true --
+# measured, on a workflow carrying a real finding: rc 1, and
+# `grep -cF FINDING` over the whole output returns 0. Three cases in
+# this file were written that way in round 3, including this one, each
+# reducing silently to its exit code while its own comment claimed the
+# exit code was too weak. The class is now closed by the emittability
+# assertion at the end of this file, not by these three strings being
+# right.
+refutes "the repository's own workflow reports no drift at all" 0 \
+    "$REPO/.github/workflows/test.yaml" "split has drifted"
 
 # --- drive the ABSENCE ------------------------------------------------
 #
@@ -912,6 +968,46 @@ REDIRECTDECOYS
 unredirected "a workflow-level PURITY_WORKFLOW is caught" 1 "$TMP/redirect-workflow.yaml"
 unredirected "a job-level PURITY_WORKFLOW is caught" 1 "$TMP/redirect-job.yaml"
 unredirected "a step-level PURITY_WORKFLOW is caught" 1 "$TMP/redirect-step.yaml"
+
+# EVERY ABSENCE CLAIM MUST BE PROVEN EMITTABLE.
+#
+# `refutes` asserts a string does NOT appear. That assertion is worth
+# nothing if the string can never appear at all: the case then reduces
+# silently to its exit code, while reading like the stronger check its
+# comment claims it is. Three cases in this file were written that way --
+# they keyed on `FINDING`, which is the parser's internal prefix and is
+# stripped before anything reaches the caller.
+#
+# The check is dynamic rather than a cross-reference between two lists,
+# because a list of "strings the gate emits" would be a second
+# enumeration to keep in step with the first. Instead every gate
+# invocation in this run appends its output to one log, and every
+# absence claim must be found SOMEWHERE in that log. A claim that appears
+# nowhere was never driven in the positive direction by any case, and
+# this refuses rather than reporting a pass -- the same trichotomy the
+# gate itself uses.
+#
+# It cannot be satisfied vacuously by the refuting case itself: that case
+# asserts the string is absent from its own run, so the proof has to come
+# from a different one.
+if [ -s "$TMP/refutes-claims" ]; then
+    unproven=0
+    while IFS= read -r claim; do
+        [ -n "$claim" ] || continue
+        if ! grep -qF -- "$claim" "$TMP/gate-log" 2>/dev/null; then
+            echo "REFUSE: the absence claim \"$claim\" was never emitted by the"
+            echo "        gate anywhere in this run, so nothing proves it CAN be."
+            echo "        An absence predicate over an unreachable string is"
+            echo "        constant-true and its case reduces to its exit code."
+            unproven=$((unproven + 1))
+        fi
+    done < <(sort -u "$TMP/refutes-claims")
+    if [ "$unproven" -ne 0 ]; then exit 2; fi
+else
+    echo "REFUSE: no absence claims were recorded, so the emittability"
+    echo "        assertion had an empty domain and proved nothing."
+    exit 2
+fi
 
 if [ "$failures" -ne 0 ]; then echo "$failures failure(s)"; exit 1; fi
 if [ "$cases" -lt "$FLOOR" ]; then

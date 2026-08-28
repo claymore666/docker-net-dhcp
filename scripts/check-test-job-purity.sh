@@ -61,9 +61,9 @@
 #      names -- and F closes the SPELLINGS BELOW of losing that, not the
 #      property. This is a bound, not a guarantee, and the sentence here
 #      used to be written as one. On either job or any of their steps:
-#      no `if:`, no `continue-on-error`, no `|| true` / `|| :` /
-#      `set +e` on a live run line, no `strategy:`, and no `name:`
-#      that differs from the job key. The last two are the same defect
+#      no `if:`, no `needs:`, no `continue-on-error`, no `|| true` /
+#      `|| :` / `set +e` on a live run line, no `strategy:`, and no
+#      `name:` that differs from the job key. The last two are the same defect
 #      arriving by different keys -- a matrix renames the check to
 #      `test (x)` and a `name:` renames it outright, and either way
 #      `test` itself stops existing, so the context branch protection
@@ -80,6 +80,17 @@
 #      was BYTE-IDENTICAL to the real one's, tally included. The
 #      invariant this whole file exists to hold was inverted and every
 #      arm said PASS.
+#
+#      `needs:` is the THIRD spelling of green-by-skip and it was absent
+#      from this arm until #834 round 4. It is worse than `if:` in one
+#      respect: `test` given `needs: [policy-gates]` reports SKIPPED
+#      exactly when `policy-gates` goes red, which is the worst possible
+#      correlation, and it arrives through an ordinary edit -- ordering
+#      two jobs -- rather than through a deliberate one. Measured before
+#      the fix: both purity jobs and `attribution` passed the gate with
+#      a `needs:` on them, rc 0. The two halves are independent by
+#      design and run in parallel; neither may wait on the other, so no
+#      allowlist is offered here.
 #
 #      D and E ask whether the work is written down; F asks whether its
 #      failure can still reach a human. A required check that is green
@@ -98,9 +109,15 @@
 #      permanently green by being permanently skipped. So every OTHER
 #      job in this workflow is held to the check-identity half of F:
 #      no `name:` that differs from its key, no `strategy:`, no
-#      `continue-on-error` on the job OR on any of its steps, and no
-#      job-level `if:` except the exact expressions recorded in JOB_IF
-#      below. The step-level key is the ONE G reaches inside a job it
+#      `needs:`, no `continue-on-error` on the job OR on any of its
+#      steps, and no job-level `if:` except the exact expressions
+#      recorded in JOB_IF below. `needs:` is refused outright rather
+#      than recorded, because no job in this workflow has one: an
+#      allowlist with an empty domain is a universal satisfied by
+#      emptying it, and it would have nothing to drive. The escape is
+#      named rather than pre-built -- if a job legitimately must wait,
+#      this gate gains a JOB_NEEDS record the way JOB_IF was added for
+#      the job that already had an `if:`. The step-level key is the ONE G reaches inside a job it
 #      does not enumerate, and the reason it is the only one is under
 #      WHAT IT CANNOT SEE: it is the shape with no legitimate use, which
 #      is the same criterion F's swallow list is drawn on.
@@ -227,9 +244,12 @@
 #     the other arm -- a mutation pass over these arms found exactly that
 #     and it is a declared survivor, recorded in the self-test. The
 #     consequence for a reader of THIS file: the exclusion at the top of
-#     G is load-bearing for the `if:` property only. A JOB_IF entry
-#     naming `test` buys nothing today because F is unconditional, and
-#     that fact is pinned by a case rather than by this sentence.
+#     G is load-bearing for NOTHING measurable today. A JOB_IF entry
+#     naming `test` buys that job no `if:`, because F's `if:` check is
+#     unconditional -- so the exclusion is a statement of intent, and
+#     the buy-back case is what would notice if F ever stopped being
+#     unconditional. Both halves of that were written here in a form
+#     that contradicted itself until round 4.
 #   * The `PURITY_WORKFLOW` seam -- this gate judging some file other
 #     than the one it is wired into -- is not closed HERE, because a
 #     gate cannot derive its own parameter from its own subject. It is
@@ -239,6 +259,26 @@
 #     `env:` anywhere in that workflow to set PURITY_WORKFLOW. That
 #     assertion runs against decoys as well as the real tree, so it is
 #     driven rather than assumed.
+#   * `needs:` is closed as a KEY, on every job in this file, and that
+#     is not the same as closing green-by-skip. A job can still be
+#     skipped by a condition this gate cannot read: a `needs:` in a
+#     workflow that CALLS this one, or the event filter at the top of
+#     the file.
+#
+#     Two spellings of green-by-skip were closed before `needs:` and a
+#     third turned up, so the job-key space was probed for a fourth
+#     rather than declared finished. MEASURED at this head, on the
+#     `test` job: `concurrency:` with `cancel-in-progress: true`,
+#     `environment:`, and `timeout-minutes:` all pass this gate. None
+#     is a finding and the reason is the same for all three -- they do
+#     not produce a GREEN check that did not run. A cancelled check is
+#     `cancelled`, an environment gate leaves the check waiting, and a
+#     timeout is a failure; branch protection requires `success`, so
+#     each blocks. They are named here because they DO stop a required
+#     check reporting, and a reader looking for that failure should not
+#     have to rediscover that this gate is silent about them. That
+#     probe is a search result and a lower bound, not a proof that the
+#     family is closed.
 #   * It cannot see branch protection. Whether `test` and `policy-gates` are
 #     REQUIRED is a repository setting, not a fact in this tree, and no
 #     gate running inside CI can read it without a token. If `policy-gates` is
@@ -487,6 +527,16 @@ for jname in (TEST_JOB, GATES_JOB):
             "absent-check-reads-as-green failure #829 exists to remove."
             % jname
         )
+    if job.get("needs"):
+        findings.append(
+            "%s: the job carries a `needs:`. A job whose dependency fails or "
+            "is skipped does not run and reports SKIPPED, so this check goes "
+            "green exactly when the job it waits on goes red -- the worst "
+            "possible correlation, and the same green-by-skip failure as "
+            "`if:` reached by an ordinary edit rather than a deliberate one. "
+            "These two halves are independent by design and run in parallel; "
+            "neither may wait on the other." % jname
+        )
     if job.get("continue-on-error"):
         findings.append(
             "%s: the job sets `continue-on-error`. Its failure would no "
@@ -559,6 +609,16 @@ for jname, job in sorted(jobs.items()):
                 "turn the check red. The job still reports under its own "
                 "name, and reports green." % (jname, identity(step))
             )
+    if job.get("needs"):
+        findings.append(
+            "%s: the job carries a `needs:`, so it does not run when its "
+            "dependency fails or is skipped -- green by skip, which is the "
+            "failure `if:` is recorded for. No job in this workflow has one "
+            "today. If one legitimately must wait, this gate gains a record "
+            "for it the way JOB_IF was added for the job that already had an "
+            "`if:` -- deliberately, because it is a standing permission for "
+            "that check to not run." % jname
+        )
     if "if" in job:
         want = JOB_IF.get(jname, None)
         got = job.get("if")
