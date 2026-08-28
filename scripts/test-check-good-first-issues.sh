@@ -566,6 +566,51 @@ check "static: a missing labels.yml cannot see" 2 \
     "$(run --static "$TMP/readme.silent" "$TMP/badge.unmet" "$TMP/gh" "$TMP/no-labels.yml")" \
     'missing or unreadable'
 
+# THE ANCHOR IS A DECLARATION, NOT A MENTION, and until #867 nothing said
+# so. Every fixture above renames the label out of the file ENTIRELY, so a
+# gate that had degraded from `grep -qxF -- "- name: $LABEL"` to a bare
+# substring search would have passed all of them: with the phrase gone,
+# both spellings answer "not found" and agree by accident.
+#
+# MEASURED by mutation: loosening that grep to `grep -qF -- "$LABEL"`
+# survived the whole suite. The witness below separates them — a rename
+# that leaves the old phrase behind in a neighbouring description is
+# exactly how a taxonomy edit really looks, and under the loosened
+# spelling the gate would go on counting a label the tracker no longer
+# has.
+LABELS_RENAMED_DECOY="$TMP/labels-renamed-decoy.yml"
+cat > "$LABELS_RENAMED_DECOY" <<'YML'
+- name: bug
+  role: type
+  description: Something is broken
+
+- name: starter task
+  role: status
+  description: Replaces the old good first issue label — no deep context needed
+YML
+check "static: a rename leaving the old name in prose still cannot see" 2 \
+    "$(run --static "$TMP/readme.silent" "$TMP/badge.unmet" "$TMP/gh" "$LABELS_RENAMED_DECOY")" \
+    'is not declared in'
+
+# The preservation control for the case above: the guard fails in one
+# direction, so drive the other. A decoy mention BESIDE a real
+# declaration must still pass — a gate that started refusing labels.yml
+# because some other entry's description quotes the label name would be
+# the same defect pointing the expensive way.
+LABELS_DECOY_OK="$TMP/labels-decoy-ok.yml"
+cat > "$LABELS_DECOY_OK" <<'YML'
+- name: bug
+  role: type
+  description: Something is broken — not a good first issue
+
+- name: good first issue
+  role: status
+  description: Self-contained starter task — no deep project context needed
+YML
+check "static: a decoy mention beside a real declaration still passes" 0 \
+    "$(run --static "$TMP/readme.silent" "$TMP/badge.unmet" "$TMP/gh" "$LABELS_DECOY_OK")" \
+    'small_tasks is Unmet'
+
 # ---- --live, Met -----------------------------------------------------
 mk_badge Met "The label ($URL) is seeded with #534 (a), #535 (b) and #536 (c)." "$TMP/badge.live"
 
