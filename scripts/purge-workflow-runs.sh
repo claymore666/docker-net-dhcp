@@ -135,6 +135,31 @@ if [ "$KEEP_BRANCH_COMMITS" != "0" ]; then
              "the run records that gate reads (#874)." >&2
         exit 2
     fi
+    # NOTHING IN THAT FILE BUT THE TWO KEYS. It is SOURCED, so every other
+    # line in it runs as this script's own configuration -- and this script
+    # deletes data. Measured 2026-08-28 against the shipped code: a line
+    # reading `DRY_RUN=0` turned a dry run into three real deletions, and
+    # `KEEP_OPEN_PR_HEADS=0` disarmed keep rule 4 and deleted the open PR
+    # head's runs that rule exists to protect, both silently and both
+    # exiting 0. A pasted or typo'd line must REFUSE, not reconfigure the
+    # gate. So every non-comment line has to be an assignment to one of the
+    # two keys, with a value drawn from a character set that cannot expand.
+    #
+    # This check is duplicated in check-missing-runs.sh, and the duplication
+    # is safe in the way the SCOPE VALUES are not. If the two copies drift,
+    # one script becomes stricter and refuses -- and a refusal destroys
+    # nothing. Drift in the VALUES is what deletes evidence the other gate
+    # then demands, which is why those live in one file rather than two.
+    scope_foreign=$(grep -nE '[^[:space:]]' "$SCOPE_FILE" \
+        | grep -vE '^[0-9]+:[[:space:]]*#' \
+        | grep -vE '^[0-9]+:[[:space:]]*GATE_SCOPE_(BRANCHES|COMMITS)=("[A-Za-z0-9_./ -]*"|[A-Za-z0-9_./-]+)[[:space:]]*$')
+    if [ -n "$scope_foreign" ]; then
+        echo "::error title=Branch scope has foreign content::${SCOPE_FILE} contains a line that is" \
+             "neither a comment nor a plain GATE_SCOPE_BRANCHES/GATE_SCOPE_COMMITS assignment. The" \
+             "file is sourced, so such a line reconfigures this purge -- DRY_RUN or a keep rule --" \
+             "and it deletes run records. Refusing (#874). Offending line(s): ${scope_foreign}" >&2
+        exit 2
+    fi
     # shellcheck source=../.github/gate-branch-scope.env disable=SC1091
     . "$SCOPE_FILE"
     if [ -z "${GATE_SCOPE_BRANCHES+x}" ] || [ -z "${GATE_SCOPE_COMMITS:-}" ]; then

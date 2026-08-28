@@ -525,9 +525,18 @@ run_scope() {   # run_scope <scope-file-path> [gh-call-log]
     local rc=$?; cat "$dir/o"; rm -rf "$dir"; return $rc
 }
 
+# ASSERT WHICH REFUSAL FIRED, not merely that one did. Measured
+# 2026-08-28: replacing the `-r` test with `if false` -- so the gate
+# sources an unreadable file and falls through -- SURVIVED this case,
+# because the completeness check below then exits 2 with a different
+# message. Exit 2 was preserved; the DIAGNOSIS was not, and the diagnosis
+# is the whole product of a gate that fires on a schedule at 03:00.
+# test-purge-workflow-runs.sh already asserted its twin this way; this
+# side did not, and the two were written together.
 out=$(run_scope "/nonexistent/gate-branch-scope.env"); rc=$?
-[ "$rc" = 2 ] && ok "an unreadable scope file exits 2 rather than judging on a private default" \
-  || no "missing scope returned $rc (want 2): $out"
+[ "$rc" = 2 ] && grep -q "cannot read the branch scope" <<<"$out" \
+  && ok "an unreadable scope file exits 2 rather than judging on a private default" \
+  || no "missing scope returned $rc (want 2, naming the unreadable file): $out"
 
 SCOPETMP=$(mktemp -d)
 printf 'GATE_SCOPE_BRANCHES="dev main"\n' > "$SCOPETMP/half.env"
@@ -582,6 +591,62 @@ SHIPPED_SCOPE="$HERE/../.github/gate-branch-scope.env"
 [ -r "$SHIPPED_SCOPE" ] \
   && ok "the shipped scope file exists at the path this gate defaults to" \
   || no "no scope file at $SHIPPED_SCOPE -- this gate would exit 2 in production"
+
+# AND IT NAMES AT LEAST ONE BRANCH. The case above proves an empty list
+# reaches the branch phase, which is the seam working; this proves the
+# SHIPPED file is not using it. Measured 2026-08-28: with
+# `GATE_SCOPE_BRANCHES=""` committed to that file, this gate reconciles
+# `[none]`, the purge prints "rule DISABLED", and both suites stayed
+# fully green -- the branch half of this design silently absent with
+# nothing red anywhere. Existence was never the property.
+if [ -r "$SHIPPED_SCOPE" ]; then
+    ( set -u
+      # shellcheck disable=SC1090
+      . "$SHIPPED_SCOPE"
+      [ -n "${GATE_SCOPE_BRANCHES:-}" ] && [ -n "${GATE_SCOPE_COMMITS:-}" ] ) \
+      && ok "the shipped scope names at least one branch and a depth" \
+      || no "the shipped scope is empty or incomplete -- the branch phase is silently off"
+fi
+
+# --- the scope file cannot smuggle this gate's configuration -----------
+# The file is SOURCED, so any other line in it runs as this gate's own
+# configuration. Measured 2026-08-28 against the code as it stood: a line
+# reading `GATE_WORKFLOW=nonexistent.yml` redirected the branch phase at a
+# workflow that does not exist and the gate still exited 0 reporting every
+# commit covered -- a detector reporting health having asked about
+# nothing. The same seam in purge-workflow-runs.sh turns a dry run into
+# real deletions.
+#
+# Driven by EXIT CODE on each shape alone, and paired with the opposite
+# direction below, because a guard fails in one direction.
+SMUG=$(mktemp -d)
+smuggle_scope() {   # smuggle_scope <label> <content>
+    printf '%s' "$2" > "$SMUG/s.env"
+    run_scope "$SMUG/s.env" >/dev/null 2>&1
+    [ "$?" = 2 ] \
+      && ok "a scope file that $1 exits 2" \
+      || no "a scope file that $1 was accepted"
+}
+smuggle_scope "redirects GATE_WORKFLOW" 'GATE_SCOPE_BRANCHES="dev"
+GATE_SCOPE_COMMITS=15
+GATE_WORKFLOW=nonexistent.yml
+'
+smuggle_scope "runs a bare command" 'GATE_SCOPE_BRANCHES="dev"
+GATE_SCOPE_COMMITS=15
+echo smuggled
+'
+smuggle_scope "hides a second assignment behind a semicolon" 'GATE_SCOPE_BRANCHES="dev"; GATE_WORKFLOW=x.yml
+GATE_SCOPE_COMMITS=15
+'
+smuggle_scope "substitutes a command into the value" 'GATE_SCOPE_BRANCHES="$(echo dev)"
+GATE_SCOPE_COMMITS=15
+'
+printf '# a comment, then a blank line\n\n  GATE_SCOPE_BRANCHES="dev release/v1.9"\nGATE_SCOPE_COMMITS=15\n' > "$SMUG/legal.env"
+out=$(run_scope "$SMUG/legal.env"); rc=$?
+[ "$rc" != 2 ] \
+  && ok "a legal scope with comments, blanks, indentation and a slashed branch is ACCEPTED" \
+  || no "the foreign-content guard refused a legal scope file: $out"
+rm -rf "$SMUG"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

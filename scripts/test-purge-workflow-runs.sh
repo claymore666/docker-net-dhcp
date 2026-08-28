@@ -405,6 +405,21 @@ if [ -r "$SHIPPED" ]; then
       [ -n "${GATE_SCOPE_BRANCHES+x}" ] && [ -n "${GATE_SCOPE_COMMITS:-}" ] ) \
       && ok "the shipped scope defines both GATE_SCOPE_BRANCHES and GATE_SCOPE_COMMITS" \
       || no "the shipped scope is incomplete -- both gates would refuse in production"
+    # AND THE BRANCH LIST IS NOT EMPTY. Presence is not the property, and
+    # the difference is not academic: measured 2026-08-28 on the shipped
+    # code, `GATE_SCOPE_BRANCHES=""` in this file disables the branch phase
+    # on BOTH gates -- the purge prints "rule DISABLED", the detector
+    # reconciles `[none]` -- and BOTH self-test suites stayed fully green.
+    # That is a universal gate satisfied by emptying its domain, arriving
+    # through the one file this design made load-bearing. An empty value is
+    # a legitimate SELF-TEST seam, driven through the environment; it is
+    # never a legitimate shipped configuration.
+    ( set -u
+      # shellcheck disable=SC1090
+      . "$SHIPPED"
+      [ -n "${GATE_SCOPE_BRANCHES:-}" ] ) \
+      && ok "the shipped scope names at least one branch (an empty list silently disarms both gates)" \
+      || no "the shipped GATE_SCOPE_BRANCHES is EMPTY -- the branch phase is off on both gates and nothing else says so"
 fi
 # And neither workflow may restate the numbers: a copy in a workflow file
 # is the second enumeration this design exists to remove. Matched as a YAML
@@ -457,6 +472,88 @@ got_beta=$(grep -c 'commits?sha=beta&' "$D/calls.log")   || got_beta=0
 [ "$got_alpha" -ge 1 ] && [ "$got_beta" -ge 1 ] \
   && ok "every branch the scope file names is queried (alpha and beta both on the wire)" \
   || no "the purge did not walk the scope's branch list (alpha=$got_alpha beta=$got_beta): $(grep commits "$D/calls.log")"
+
+# --- 22. the branch-commits query does NOT paginate ---------------------
+# The script's own comment calls this out -- "NOT --paginate ... the
+# detector asks for exactly per_page=N commits and stops; paginating would
+# walk the entire history and protect all of it" -- and nothing asserted
+# it. Measured 2026-08-28: adding `--paginate` to that one call SURVIVED
+# every case above, because the stub, like every stub, ignores the flag.
+# The wire record does not: the flag is in the recorded argv, so assert
+# there. An enumeration beside the code is an unrun checklist.
+#
+# What the mutant costs in production is not a false green, it is the
+# opposite failure -- a keep set that grows without bound, so rule 5
+# protects every commit a gate branch ever had and the purge stops
+# purging. This gate exists because run records accumulate at ~325/day.
+D="$TMP/nopaginate"; mkfix "$D"; runs_json "$NOW" 20 30 > "$D/runs.json"
+cat > "$D/scope.env" <<'SCOPE'
+GATE_SCOPE_BRANCHES="dev"
+GATE_SCOPE_COMMITS=15
+SCOPE
+drive "$D" env RETENTION_DAYS=0 KEEP_GROUPS=1
+paginated=$(grep -c 'commits?sha=.*--paginate\|--paginate.*commits?sha=' "$D/calls.log") || paginated=0
+[ "$paginated" -eq 0 ] \
+  && ok "the branch-commits query is bounded -- no --paginate on the wire" \
+  || no "the branch-commits query carries --paginate; rule 5 would protect the whole branch history: $(grep commits "$D/calls.log")"
+
+# --- 23. the scope file cannot smuggle configuration --------------------
+# THE FILE IS SOURCED, AND THIS SCRIPT DELETES DATA. Measured 2026-08-28
+# against the code as it stood: a line reading `DRY_RUN=0` in the scope
+# file turned a dry run into three real deletions, exiting 0; a line
+# reading `KEEP_OPEN_PR_HEADS=0` disarmed keep rule 4 -- the rule #740 and
+# #837 were paid for -- and deleted the open PR head's runs it exists to
+# protect. Neither said anything a reader would notice.
+#
+# So a scope file may contain comments and the two assignments and
+# nothing else. Each shape below is driven ALONE, and each is asserted by
+# EXIT CODE and by zero deletions, never by message text.
+smuggle() {   # smuggle <label> <scope-content>
+    local d="$TMP/smug$$_$RANDOM"; mkfix "$d"; runs_json "$NOW" 20 30 > "$d/runs.json"
+    printf '%s' "$2" > "$d/scope.env"
+    drive "$d" env RETENTION_DAYS=0 KEEP_GROUPS=1 DRY_RUN=0
+    [ "$RC" = 2 ] && [ "$DELS" = 0 ] \
+      && ok "a scope file that $1 refuses (exit 2, 0 deleted)" \
+      || no "a scope file that $1 was accepted: rc=$RC deleted=$DELS"
+}
+smuggle "turns off DRY_RUN" 'GATE_SCOPE_BRANCHES="dev"
+GATE_SCOPE_COMMITS=15
+DRY_RUN=0
+'
+smuggle "disarms keep rule 4" 'GATE_SCOPE_BRANCHES="dev"
+GATE_SCOPE_COMMITS=15
+KEEP_OPEN_PR_HEADS=0
+'
+smuggle "disarms keep rule 5" 'GATE_SCOPE_BRANCHES="dev"
+GATE_SCOPE_COMMITS=15
+KEEP_BRANCH_COMMITS=0
+'
+smuggle "runs a bare command" 'GATE_SCOPE_BRANCHES="dev"
+GATE_SCOPE_COMMITS=15
+echo smuggled
+'
+smuggle "hides a second assignment behind a semicolon" 'GATE_SCOPE_BRANCHES="dev"; DRY_RUN=0
+GATE_SCOPE_COMMITS=15
+'
+smuggle "substitutes a command into the value" 'GATE_SCOPE_BRANCHES="$(echo dev)"
+GATE_SCOPE_COMMITS=15
+'
+
+# THE OPPOSITE DIRECTION, because a guard fails in ONE direction and the
+# refusal above is worthless if it also refuses a legal file. Comments,
+# blank lines, leading whitespace and a slashed branch name are all legal,
+# and the shipped file itself is exercised by case 19 above.
+D="$TMP/legalscope"; mkfix "$D"; runs_json "$NOW" 20 30 > "$D/runs.json"
+cat > "$D/scope.env" <<'SCOPE'
+# a comment, and a blank line follows
+
+  GATE_SCOPE_BRANCHES="dev release/v1.9 main"
+GATE_SCOPE_COMMITS=15
+SCOPE
+drive "$D" env RETENTION_DAYS=0 KEEP_GROUPS=1
+[ "$RC" = 0 ] && grep -q 'release/v1.9' <<<"$OUT" \
+  && ok "a legal scope with comments, blanks, indentation and a slashed branch is ACCEPTED" \
+  || no "the foreign-content guard refused a legal scope file: rc=$RC: $OUT"
 
 echo
 echo "passed=$pass failed=$fail"

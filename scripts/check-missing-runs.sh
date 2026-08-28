@@ -100,6 +100,26 @@ if [ ! -r "$SCOPE_FILE" ]; then
     echo "check-missing-runs: cannot read the branch scope at ${SCOPE_FILE} — cannot judge" >&2
     exit 2
 fi
+# NOTHING IN THAT FILE BUT THE TWO KEYS. It is SOURCED, so every other
+# line in it runs as this gate's own configuration. Measured 2026-08-28
+# against the shipped code: a line reading `GATE_WORKFLOW=nonexistent.yml`
+# silently redirected the branch phase at a workflow that does not exist,
+# and the gate still exited 0 reporting every commit covered. The same
+# seam in purge-workflow-runs.sh turns a dry run into real deletions. A
+# pasted or typo'd line must REFUSE, not reconfigure the gate.
+#
+# Duplicated in purge-workflow-runs.sh on purpose. That duplication is
+# safe in the way the SCOPE VALUES are not: if the copies drift, one
+# script becomes stricter and refuses, and a refusal destroys nothing.
+scope_foreign=$(grep -nE '[^[:space:]]' "$SCOPE_FILE" \
+    | grep -vE '^[0-9]+:[[:space:]]*#' \
+    | grep -vE '^[0-9]+:[[:space:]]*GATE_SCOPE_(BRANCHES|COMMITS)=("[A-Za-z0-9_./ -]*"|[A-Za-z0-9_./-]+)[[:space:]]*$')
+if [ -n "$scope_foreign" ]; then
+    echo "check-missing-runs: ${SCOPE_FILE} contains a line that is neither a comment nor a plain" \
+         "GATE_SCOPE_BRANCHES/GATE_SCOPE_COMMITS assignment; the file is sourced, so such a line" \
+         "reconfigures this gate — cannot judge. Offending line(s): ${scope_foreign}" >&2
+    exit 2
+fi
 # shellcheck source=../.github/gate-branch-scope.env disable=SC1091
 . "$SCOPE_FILE"
 if [ -z "${GATE_SCOPE_BRANCHES+x}" ] || [ -z "${GATE_SCOPE_COMMITS:-}" ]; then
