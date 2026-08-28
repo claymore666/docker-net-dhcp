@@ -1123,16 +1123,16 @@ downloaded above.</p>
 <a id="__codelineno-5-21" name="__codelineno-5-21" href="#__codelineno-5-21"></a>sha256sum<span class="w"> </span>rootfs/usr/sbin/net-dhcp<span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-5-22" name="__codelineno-5-22" href="#__codelineno-5-22"></a><span class="w">          </span>rootfs/usr/lib/net-dhcp/dhcp-handler
 </code></pre></div>
-<p>The two pairs of digests must match. For <strong>v1.8.0</strong> (<code>linux/amd64</code>) they are:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>53f61af458f931497b09bf05a57b42588ce7218952ad0df2a8c58490c796ffd1  net-dhcp
-<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>32d417e3ece446c5012e619a4725148d7a3c48c5017e6976bde2656898fe2c02  dhcp-handler
+<p>The two pairs of digests must match. For <strong>v1.9.0</strong> (<code>linux/amd64</code>) they are:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>eee5a6d5c269f7d05ea4ce230c30389479d4de3043b57f3cf6ef92fc0b710a06  net-dhcp
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>d1fb8d4487b1ec7170afe7635e7861a220a770e21b351f363b0da58b335eac85  dhcp-handler
 </code></pre></div>
 <p>Since v1.7.0 each release also ships arm64 binaries under the <code>-arm64</code>
 tags; rebuild them the same way on an arm64 host (the build follows the
 host architecture) and unpack <code>net-dhcp-plugin-VERSION-linux-arm64.tar.gz</code>
-in step 4. For <strong>v1.8.0</strong> (<code>linux/arm64</code>) they are:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>884a375f855fea8a559ac2e90f82b18d66b2d07ac1c3a74d74b3972e7c7bf797  net-dhcp
-<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>ef376471963b861ba95c0da2108a5f586e1058c08a27a0c7f395e3681e569fe2  dhcp-handler
+in step 4. For <strong>v1.9.0</strong> (<code>linux/arm64</code>) they are:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>8523f80370e54235c929b8e755c44a3cf10ab33ddf4bde4490e60367dc7ee7b7  net-dhcp
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>c7ed4037a4a20a686f938a4ef8a239fba7d430d1ebc952997e137d2d6521d3d7  dhcp-handler
 </code></pre></div>
 <p>Note that step 4 needs no separate digest list from us: the binaries you
 are comparing against are the ones inside the signed tarball, and
