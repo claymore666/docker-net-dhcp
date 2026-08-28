@@ -524,6 +524,16 @@ jobs:
 runwf "an unparseable workflow refuses rather than deriving fewer" 2 0 "$WFX" \
     "newlane.yml" "could not read every workflow"
 
+# And the last place "I could not tell" could have become "nothing to
+# report": a workflow that parses, triggers on something a fork can
+# reach, and whose jobs are not a mapping this gate can walk.
+WFY="$TMP/wf-nojobs"; wflane "$WFY" 'name: newlane
+on:
+  pull_request:
+'
+runwf "a fork-reachable workflow with no readable jobs refuses" 2 0 "$WFY" \
+    "newlane.yml" "no readable 'jobs:' mapping"
+
 # --- THE PARSER GOING MISSING IS A REFUSAL THAT NAMES IT ---------------
 # This gate has three verdicts and no fallback: the line scan it replaced
 # read one spelling out of seven, so silently degrading to it would be

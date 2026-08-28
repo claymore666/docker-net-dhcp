@@ -378,11 +378,20 @@ for path in sys.argv[1:]:
     triggers = sorted(on_triggers(doc) - SAFE_TRIGGERS)
     if not triggers:
         continue
+    # A fork-reachable workflow whose jobs cannot be read is the one
+    # place left where "I could not tell" could have become "nothing to
+    # report". Every valid workflow has a `jobs:` mapping, so an absent
+    # or malformed one is a parse this gate does not understand, and it
+    # says so rather than deriving a smaller population.
     jobs = doc.get("jobs")
     if not isinstance(jobs, dict):
+        print("ERROR\t%s\ttriggers on %s but has no readable 'jobs:' mapping"
+              % (path, ",".join(triggers)))
         continue
     for job_id, job in jobs.items():
         if not isinstance(job, dict):
+            print("ERROR\t%s\tjob '%s' is not a mapping, so its runner cannot be read"
+                  % (path, job_id))
             continue
         if any(reaches_pool(s) for s in label_sets(job.get("runs-on"), job)):
             print("EXPOSED\t%s\t%s\t%s"
