@@ -161,6 +161,35 @@ for f in "${FILES[@]}"; do
     # parser and actionlint agree on a form, which stops being a question
     # once an unrecognised form is a refusal.
     #
+    # THE BOUND ON THAT CLAIM, AND THE ESCAPE, WRITTEN BESIDE IT. The
+    # sentence above holds only for a form that still leaves the token
+    # `uses` standing at a key position on SOME LINE. This counter is
+    # line-oriented; YAML is not. A `?` indicator alone on its line puts
+    # the key on a LATER line, sharing that line with neither a `?` nor
+    # a `:`, so nothing here counts it, no residue is produced, and the
+    # success line is printed over an unpinned reference. MEASURED on
+    # this script: `- ?` / `uses` / `: actions/checkout@v7` beside one
+    # pinned reference exits 0, and both oracles read that step as a
+    # real action reference -- actionlint answers `invalid format ...
+    # ref should not be empty` on the invalid-ref probe, the same oracle
+    # every shape here rests on, and PyYAML parses it to a `uses` key.
+    # Ten spellings of it were measured; all ten exit 0.
+    #
+    # WIDENING THE EXPRESSION WOULD MOVE THAT BOUNDARY, NOT REMOVE IT,
+    # which is why this states the bound instead of chasing it. A
+    # double-quoted key may be split across lines with a `\` escape --
+    # `? "us\` then `es"` -- and the token `uses` then occurs NOWHERE in
+    # the file. MEASURED: `grep -c uses` returns 1 on a fixture holding
+    # TWO references, and both oracles call the second a reference. No
+    # line-oriented counter can ever see that one, so calling the class
+    # closed would be the same overclaim this paragraph exists to
+    # retract. MEASURED as a mutant, too, rather than argued: joining a
+    # bare `?` to the line after it turns the simple spelling into a
+    # refusal and leaves the split key passing. Closing the class needs
+    # a YAML parser, which is a different change with a dependency this
+    # repo does not carry. Today's behaviour is PINNED as a case, with
+    # the trade written out, in scripts/test-check-action-pins.sh.
+    #
     # HOW THE COUNT IS TAKEN, and why it is not a bare `grep uses:`.
     #
     # A `#` INSIDE A QUOTED SCALAR IS NOT A COMMENT, so those are removed
@@ -190,8 +219,10 @@ for f in "${FILES[@]}"; do
     #
     # THE KEY EXPRESSION MATCHES A KEY, NOT A SPELLING OF ONE. YAML puts
     # no constraint on the space before a `:`, and allows a key to be
-    # written explicitly as `? uses` with its value on the following
-    # line. Both are real references -- actionlint answers `ref is
+    # written explicitly as `? uses` -- the indicator SHARING ITS LINE
+    # with the key -- with the value on the following line. (The
+    # indicator standing alone on its line is the bound named above, not
+    # this arm.) Both are real references -- actionlint answers `ref is
     # missing` on each, byte-identically to the plain form -- and both
     # counted zero here. MEASURED, both exit 0 with a success line.
     # Measured on this tree: 97 parsed, 97 counted, no file differing.

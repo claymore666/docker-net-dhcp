@@ -344,6 +344,82 @@ jobs:
 EOF
 run "an explicit key inside a flow mapping is residue too" 2 "were not resolved"
 
+# ============ A DEFECT PINNED AS A CASE. READ THE EXIT 0 AS A RECORD
+# ============ OF A HOLE, NEVER AS A CLAIM THAT THE GATE IS RIGHT HERE.
+#
+# The two cases above cover the `?` indicator SHARING A LINE with its
+# key. The indicator may also stand ALONE on its line, putting the key
+# on a LATER line, where it shares a line with neither a `?` nor a `:`.
+# The counter is line-oriented, so it counts nothing, produces no
+# residue, and the gate prints its success line over an unpinned
+# `actions/checkout@v7`. MEASURED: exit 0 -- which is what the case
+# below asserts, and it asserts the WRONG answer on purpose.
+#
+# Both oracles call that step a real action reference, so this is not a
+# quibble about an exotic non-reference: actionlint answers `specifying
+# action ... in invalid format because owner and repo and ref should not
+# be empty` on the invalid-ref probe -- the same oracle every shape case
+# above rests on -- and PyYAML parses the step to
+# `{'uses': 'actions/checkout@v7'}`. Ten spellings of this shape were
+# measured (indicator alone; folded and literal keys; either quote
+# character on the key; a comment between indicator and key; the colon a
+# line further down; the dashless spelling; deeper indentation; inside a
+# flow mapping) and all ten exit 0.
+#
+# THE TRADE, WRITTEN DOWN SO THAT "FIXING" IT HAS TO CONFRONT WHAT IT
+# BUYS -- and MEASURED, not argued. The obvious widening is to join a
+# bare `?` to the line after it. Applied to the counter as a mutant, it
+# turns THIS case red and leaves the boundary control below GREEN: the
+# widened counter closes the simple spellings and still cannot see the
+# split key. That is the whole finding -- a widening MOVES the boundary
+# and does not remove it -- and it is measured by the two cases sitting
+# next to each other rather than claimed in a sentence.
+#
+# So the widening buys the spellings someone has already thought of, at
+# the price of a second mechanism to maintain and mutation-test, against
+# an adversary who writes the next spelling instead. Closing the class
+# needs a YAML parser; PyYAML is used by ZERO gates in this repo and
+# introducing the first one is a different change from this one. What
+# this PR does instead is stop CLAIMING the class is refused: the gate's
+# header states the bound, and its refusal message already says its list
+# is open rather than closed. Whoever does widen it should keep both
+# cases -- the first one flips to a refusal, the second one is the
+# reason the words "closed" and "complete" still may not be used.
+fresh
+cat > "$TMP/wf/a.yml" <<EOF
+jobs:
+  x:
+    steps:
+      - uses: actions/setup-go@$SHA
+      - ?
+          uses
+        : actions/checkout@v7
+EOF
+run "PINNED DEFECT: a ? alone on its line escapes the count (exit 0 is wrong)" 0 "all 1 'uses:'"
+
+# THE BOUNDARY CONTROL FOR THE PARAGRAPH ABOVE, and the reason the case
+# above is pinned rather than fixed. A double-quoted key may be split
+# across lines with a `\` escape, so the key `uses` can be spelled `us\`
+# + `es` and the TOKEN never appears contiguously anywhere in the file.
+# No line-oriented counter can ever see this one, whatever expression it
+# is given -- so "a widening cannot close the class" is checked here
+# rather than asserted in a comment.
+fresh
+printf 'jobs:\n  x:\n    steps:\n      - uses: actions/setup-go@%s\n      - ? "us\\\n          es"\n        : actions/checkout@v7\n' "$SHA" > "$TMP/wf/a.yml"
+run "PINNED DEFECT: a key split across lines is beyond any line counter" 0 "all 1 'uses:'"
+
+# ...and the premise that control rests on is itself asserted, because a
+# fixture that quietly stopped splitting the key would make the case
+# above pass for the wrong reason. TWO references live in that file and
+# the token occurs on ONE line.
+n=$((n + 1))
+if [ "$(grep -c -F 'uses' "$TMP/wf/a.yml")" -eq 1 ]; then
+    echo "PASS: the token 'uses' occurs on one line of a fixture holding two references"
+else
+    echo "FAIL: the split-key fixture no longer hides the token -- the boundary control above is testing nothing"
+    sed 's/^/    /' "$TMP/wf/a.yml"; failures=$((failures + 1))
+fi
+
 # THE PRESERVATION CONTROL FOR THAT COUNT. A refusal keyed on a bare
 # `grep uses:` would fire on a step name, on a shell line in a `run:`
 # body, and on this project's own gate scripts quoted in a workflow --
@@ -385,8 +461,10 @@ jobs:
 EOF
 run "a comment holding a comma is still just a comment" 0 "all 1 'uses:'"
 
-# A DEFECT PINNED AS A CASE, DELIBERATELY, so that "fixing" it has to
-# confront what it would cost. A comma inside a quoted scalar splits
+# A SECOND DEFECT PINNED AS A CASE, DELIBERATELY, so that "fixing" it
+# has to confront what it would cost -- and unlike the pair above, this
+# one is a false RED rather than a false green. A comma inside a quoted
+# scalar splits
 # like flow punctuation, so `echo "a, uses: b"` in a run body counts one
 # occurrence the parser cannot resolve and REFUSES. That is a false red,
 # and it is NOT new: MEASURED on the pre-fix script, `"a, uses: b"` and
@@ -553,7 +631,7 @@ fi
 # exits 0, which is a green tick over nothing. The floor is the count
 # this file is known to run; raise it when cases are added, and a
 # deletion has to be deliberate rather than silent.
-FLOOR=41
+FLOOR=44
 if [ "$n" -lt "$FLOOR" ]; then
     echo "REFUSING: ran $n case(s), fewer than the $FLOOR this suite is known to hold."
     echo "  Either cases were lost, or the floor is stale and should be raised with them."
