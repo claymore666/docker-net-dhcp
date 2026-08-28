@@ -20,6 +20,26 @@
 #
 # The last two blocks drive the ABSENCE: they delete what the gate
 # guards and what invokes the gate, and check that something goes red.
+#
+# MUTATION PASS over arms F(`name:`) and G, through .claude/bin/mutate.sh,
+# 12 mutants: 11 killed, 1 declared survivor. Recorded here because a
+# survivor nobody wrote down is rediscovered at full price.
+#
+#   SURVIVOR: F's `name:` check deleted AND G's exclusion of the two
+#   purity jobs dropped, in one change. It survives because it is
+#   EQUIVALENT, not because a case is missing -- G's predicate is the
+#   same `!= jname`, so the property simply moves arms. MEASURED on the
+#   real workflow with both jobs' names swapped: the composed mutant
+#   still reports both jobs; deleting F's check ALONE reports neither
+#   and the suite kills it. Those two mutants differ by exactly one
+#   line, which is what makes the survivor an adjudication rather than
+#   a shrug.
+#
+#   It is deliberately NOT closed. Closing it means asserting WHICH arm
+#   produced a finding, which couples these cases to the gate's shape
+#   instead of to its property -- and the property is what a future
+#   refactor must be allowed to move. The reason the exclusion exists
+#   at all is pinned separately, by the JOB_IF buy-back case below.
 set -u
 
 GATE="$(dirname "$0")/check-test-job-purity.sh"
@@ -27,9 +47,17 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 failures=0
+# Every verdict below increments this, and the run refuses at the end if
+# it comes in under FLOOR. A suite that reports "all passed" having run
+# nothing is the same absent-check-reads-as-green failure the gate it
+# tests was written about: a universal is satisfied by emptying its
+# domain, so the domain is measured rather than assumed.
+cases=0
+FLOOR=68
 
 check() {
     local name="$1" want_exit="$2" wf="$3" want_grep="$4"
+    cases=$((cases + 1))
     bash "$GATE" "$wf" > "$TMP/out" 2>&1
     local got=$?
     if [ "$got" -eq "$want_exit" ] && { [ -z "$want_grep" ] || grep -qF -- "$want_grep" "$TMP/out"; }; then
@@ -49,6 +77,7 @@ check() {
 # the finding nor anything else, and would score as a pass.
 refutes() {
     local name="$1" want_exit="$2" wf="$3" absent="$4"
+    cases=$((cases + 1))
     bash "$GATE" "$wf" > "$TMP/out" 2>&1
     local got=$?
     if [ "$got" -eq "$want_exit" ] && ! grep -qF -- "$absent" "$TMP/out"; then
@@ -342,6 +371,7 @@ UNREADABLE="$TMP/unreadable.yaml"
 cp "$(wf src "$GOOD_TEST" "$GOOD_GATES")" "$UNREADABLE"
 chmod 000 "$UNREADABLE"
 if [ "$(id -u)" -eq 0 ]; then
+    cases=$((cases + 1))
     echo "PASS: an unreadable workflow refuses (declared undrivable as root)"
 else
     check "an unreadable workflow refuses" 2 "$UNREADABLE" "not readable"
@@ -437,6 +467,36 @@ jobkey gcoe "$G_REAL" '  package:' '    continue-on-error: true'
 check "continue-on-error on a non-purity job is a finding" 1 "$TMP/gcoe.yaml" \
     "package: the job sets \`continue-on-error\`"
 
+# The one STEP-level key G closes for the other jobs, driven on the job
+# that made arm G necessary. `attribution` is a required context, and a
+# `continue-on-error` on the step that does its work leaves the check
+# green while the work failed -- the #829 failure at step scope.
+python3 - "$G_REAL" "$TMP/gstepcoe.yaml" <<'GSTEPCOE'
+import sys
+import yaml
+doc = yaml.safe_load(open(sys.argv[1]))
+doc["jobs"]["attribution"]["steps"][-1]["continue-on-error"] = True
+yaml.safe_dump(doc, open(sys.argv[2], "w"))
+GSTEPCOE
+check "step-level continue-on-error on a non-purity job is a finding" 1 \
+    "$TMP/gstepcoe.yaml" "attribution: step"
+
+# Its preservation control, and the bound beside it. A step-level `if:`
+# is NOT closed for these jobs -- `if: failure()` diagnostics are
+# ordinary -- and neither is a swallow on a run line: MEASURED at this
+# head, the govulncheck job legitimately writes `... > vulns.txt || true`
+# and adjudicates the status in a later step. An arm closing either would
+# have fired on correct code the day it landed.
+python3 - "$G_REAL" "$TMP/gstepbound.yaml" <<'GSTEPBOUND'
+import sys
+import yaml
+doc = yaml.safe_load(open(sys.argv[1]))
+doc["jobs"]["attribution"]["steps"][-1]["if"] = "failure()"
+yaml.safe_dump(doc, open(sys.argv[2], "w"))
+GSTEPBOUND
+refutes "BOUND: a step-level if: on a non-purity job is not a finding" 0 \
+    "$TMP/gstepbound.yaml" "FINDING"
+
 jobkey gif "$G_REAL" '  staticcheck:' "    if: github.ref == 'refs/heads/never'"
 check "an unrecorded job-level if: is a finding" 1 "$TMP/gif.yaml" \
     "an \`if:\` this gate does not record"
@@ -496,10 +556,122 @@ for jname in sorted(record):
         sys.exit(1)
 JOBIF
 then
+    cases=$((cases + 1))
     echo "PASS: every JOB_IF entry names a job the real workflow still has"
 else
+    cases=$((cases + 1))
     echo "FAIL: a JOB_IF entry outlived its job"
     failures=$((failures + 1))
+fi
+
+# Every JOB_IF entry must be LOAD-BEARING, driven ONE AT A TIME. An
+# allowlist nobody drives becomes a list of things nobody checks: if the
+# real workflow still passes with an entry removed, that entry is buying
+# nothing, and the permission it records was never the reason the check
+# is green. Removing all of them at once would not show this -- one
+# finding would cover every entry -- so each is lifted alone and the
+# finding must NAME that job.
+#
+# This drives the GATE, not a fixture, so it needs its own copy: the
+# gate `cd`s to its own parent, and the workflow is passed absolute.
+mkdir -p "$TMP/lift/scripts"
+LIFT_GATE="$TMP/lift/scripts/check-test-job-purity.sh"
+JOBIF_KEYS="$(python3 - "$REPO/scripts/check-test-job-purity.sh" <<'KEYS'
+import ast
+import re
+import sys
+
+m = re.search(r"^JOB_IF = (\{.*?^\})", open(sys.argv[1]).read(), re.S | re.M)
+if not m:
+    sys.exit(1)
+for k in sorted(ast.literal_eval(m.group(1))):
+    print(k)
+KEYS
+)"
+if [ -z "$JOBIF_KEYS" ]; then
+    cases=$((cases + 1))
+    echo "FAIL: JOB_IF is empty or unreadable, so the load-bearing drive is vacuous"
+    failures=$((failures + 1))
+fi
+for k in $JOBIF_KEYS; do
+    cases=$((cases + 1))
+    if ! python3 - "$REPO/scripts/check-test-job-purity.sh" "$LIFT_GATE" "$k" <<'LIFT'
+import ast
+import re
+import sys
+
+src = open(sys.argv[1]).read()
+m = re.search(r"^JOB_IF = (\{.*?^\})", src, re.S | re.M)
+if not m:
+    sys.stderr.write("JOB_IF is not where this drive expects it\n")
+    sys.exit(1)
+record = ast.literal_eval(m.group(1))
+del record[sys.argv[3]]
+body = "".join("    %r: %r,\n" % (a, b) for a, b in sorted(record.items()))
+out = src[: m.start(1)] + "{\n" + body + "}" + src[m.end(1) :]
+if out == src:
+    sys.stderr.write("lifting %r changed nothing\n" % sys.argv[3])
+    sys.exit(1)
+open(sys.argv[2], "w").write(out)
+LIFT
+    then
+        echo "FAIL: could not lift the JOB_IF entry for $k"
+        failures=$((failures + 1))
+        continue
+    fi
+    bash "$LIFT_GATE" "$G_REAL" > "$TMP/out" 2>&1
+    got=$?
+    if [ "$got" -eq 1 ] && grep -qF "$k: the job carries an \`if:\`" "$TMP/out"; then
+        echo "PASS: the JOB_IF entry for $k is load-bearing"
+    else
+        echo "FAIL: lifting the JOB_IF entry for $k left the real workflow at exit $got"
+        sed 's/^/    /' "$TMP/out"
+        failures=$((failures + 1))
+    fi
+done
+
+# JOB_IF must not be a way to BUY BACK an `if:` on a purity job. The
+# header says so; nothing drove it until this case, and it was found by
+# asking what a COMPOSED mutant could do: F's `if:` check and G's
+# exclusion of the two purity jobs are separate sites, and if the
+# exclusion were dropped, a JOB_IF entry naming `test` would make the
+# very key F forbids into a recorded permission. F is unconditional
+# today, so the entry buys nothing -- and that is the fact being pinned,
+# because it is the reason the exclusion can be removed by accident
+# without anything going red.
+mkdir -p "$TMP/buyback/scripts"
+BUYBACK_GATE="$TMP/buyback/scripts/check-test-job-purity.sh"
+if ! python3 - "$REPO/scripts/check-test-job-purity.sh" "$BUYBACK_GATE" <<'BUYBACK'
+import re
+import sys
+
+src = open(sys.argv[1]).read()
+m = re.search(r"^JOB_IF = (\{.*?^\})", src, re.S | re.M)
+if not m:
+    sys.stderr.write("JOB_IF is not where this drive expects it\n")
+    sys.exit(1)
+entry = "{\n    'test': False,\n}"
+out = src[: m.start(1)] + entry + src[m.end(1) :]
+if out == src:
+    sys.exit(1)
+open(sys.argv[2], "w").write(out)
+BUYBACK
+then
+    cases=$((cases + 1))
+    echo "FAIL: could not build the JOB_IF buy-back gate"
+    failures=$((failures + 1))
+else
+    cases=$((cases + 1))
+    bash "$BUYBACK_GATE" "$JOBIF" > "$TMP/out" 2>&1
+    got=$?
+    # shellcheck disable=SC2016  # the backticks are the gate's own prose
+    if [ "$got" -eq 1 ] && grep -qF 'test: the job carries an `if:`' "$TMP/out"; then
+        echo "PASS: a JOB_IF entry cannot buy the test job an if:"
+    else
+        echo "FAIL: a JOB_IF entry bought the test job an if: (exit $got)"
+        sed 's/^/    /' "$TMP/out"
+        failures=$((failures + 1))
+    fi
 fi
 
 # Preservation control for G: a non-purity job that changes in ways G is
@@ -517,6 +689,29 @@ check "job-level keys G is not about still pass" 0 "$TMP/gbenign.yaml" "PASS"
 
 # --- the real tree ----------------------------------------------------
 check "the repository's own workflow passes" 0 "$REPO/.github/workflows/test.yaml" "PASS"
+
+# The tally line carries every count this gate's header refuses to write
+# down, so its FIELDS need an observer of their own: a field silently
+# dropped would take the observer for a header sentence with it. Matched
+# by NAME, not by value -- a hardcoded 4 or 7 here would be the stale
+# number this whole file is about.
+check "the tally names the no-invocation count" 0 \
+    "$REPO/.github/workflows/test.yaml" "policy-gates step(s) invoking none"
+check "the tally names the job count" 0 \
+    "$REPO/.github/workflows/test.yaml" "job(s) in the workflow"
+
+# The preservation control for the WIDENING. Arm G was added to this gate
+# in #834 round 3 and holds every non-purity job to four job-level keys;
+# a widening tested only by what it now CATCHES cannot say what it now
+# BREAKS. Exit 0 alone is too weak to answer that -- the gate exits 0
+# while printing findings only if there are none, but a future arm could
+# print a FINDING line and still be judged by a case that only reads the
+# exit code. So the legitimate file is required to yield no finding AT
+# ALL, which is the standing form of the byte-identical comparison run
+# by hand when G landed (G excised from the gate, same real workflow,
+# same output).
+refutes "the repository's own workflow yields no FINDING at all" 0 \
+    "$REPO/.github/workflows/test.yaml" "FINDING"
 
 # --- drive the ABSENCE ------------------------------------------------
 #
@@ -550,6 +745,7 @@ check "folding the corpus back into test goes red" 1 "$TMP/folded.yaml" "invokes
 #    real tree, and three that NAME the script without running it.
 wired() {
     local name="$1" want="$2" wf="$3"
+    cases=$((cases + 1))
     python3 - "$wf" <<'WIRED'
 import re
 import sys
@@ -650,6 +846,7 @@ wired "an invocation carrying an argument does not count as wiring" 1 "$TMP/deco
 # over a workflow nobody judged.
 unredirected() {
     local name="$1" want="$2" wf="$3"
+    cases=$((cases + 1))
     python3 - "$wf" <<'REDIRECT'
 import sys
 import yaml
@@ -717,4 +914,10 @@ unredirected "a job-level PURITY_WORKFLOW is caught" 1 "$TMP/redirect-job.yaml"
 unredirected "a step-level PURITY_WORKFLOW is caught" 1 "$TMP/redirect-step.yaml"
 
 if [ "$failures" -ne 0 ]; then echo "$failures failure(s)"; exit 1; fi
-echo "all passed"
+if [ "$cases" -lt "$FLOOR" ]; then
+    echo "REFUSE: $cases case(s) ran, floor is $FLOOR -- a suite that shrank"
+    echo "        is indistinguishable from a suite that passed. Raise FLOOR"
+    echo "        in the same commit that adds cases; never lower it to go green."
+    exit 2
+fi
+echo "all $cases case(s) passed (floor $FLOOR)"

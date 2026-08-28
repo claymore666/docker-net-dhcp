@@ -36,9 +36,12 @@
 #   C. No non-comment line of any `run:` body in `test` MENTIONS a
 #      `scripts/*.sh` gate. This is the drift that actually happens:
 #      nearly every step of `policy-gates` invokes a script, and the
-#      handful that do not are the checkout, the toolchain and the two
+#      handful that do not are the checkout, the toolchain and the
 #      environment-setup steps -- so a script invocation appearing in
-#      `test` is a gate that moved.
+#      `test` is a gate that moved. That "handful" is not a number
+#      written here either: the tally line prints how many steps of
+#      `policy-gates` invoke nothing, so the sentence has an observer
+#      instead of a reader.
 #
 #      NO COUNT IS WRITTEN HERE, and the sentence above used to carry
 #      one. It said "48 of the 50 steps ... only the two
@@ -85,16 +88,22 @@
 #      wearing its name, is the same absent-check-reads-as-green
 #      failure this split was filed about, wearing a repository setting
 #      instead of a job name.
-#   G. F's failure mode is not confined to the two purity jobs, and the
-#      workflow has five more. `attribution` is a required context and
-#      carries a job-level `if:` -- benign today, because
+#   G. F's failure mode is not confined to the two purity jobs, and this
+#      workflow has others. NO COUNT IS WRITTEN HERE -- the tally line
+#      prints the job total on every run, for the same reason arm C's
+#      paragraph refuses to name one. `attribution` is a required
+#      context and carries a job-level `if:` -- benign today, because
 #      `github.event_name == 'pull_request'` is true on the event that
 #      enforces required checks, and one edit away from a check that is
 #      permanently green by being permanently skipped. So every OTHER
 #      job in this workflow is held to the check-identity half of F:
 #      no `name:` that differs from its key, no `strategy:`, no
-#      `continue-on-error`, and no job-level `if:` except the exact
-#      expressions recorded in JOB_IF below.
+#      `continue-on-error` on the job OR on any of its steps, and no
+#      job-level `if:` except the exact expressions recorded in JOB_IF
+#      below. The step-level key is the ONE G reaches inside a job it
+#      does not enumerate, and the reason it is the only one is under
+#      WHAT IT CANNOT SEE: it is the shape with no legitimate use, which
+#      is the same criterion F's swallow list is drawn on.
 #
 #      JOB_IF is compared in BOTH directions, the way ALLOWED is. An
 #      `if:` that appears is a finding; an `if:` this gate records for a
@@ -176,6 +185,19 @@
 #     workflow's own comment refuses. It is backstopped from the other side by
 #     scripts/check-local-lane.sh, which fails when a `check-*.sh` in
 #     the tree is run by nothing.
+#   * G reaches INSIDE the other jobs for exactly one key -- a step-level
+#     `continue-on-error` -- and for nothing else. A step-level `if:` is
+#     not a finding there, because `if: failure()` diagnostics are
+#     ordinary in jobs whose steps nothing enumerates; and a swallowed
+#     exit status on a run line is not a finding there either. That
+#     second one is not a judgement call: MEASURED at this head, the
+#     `govulncheck` job writes `govulncheck ./... > vulns.txt || true`
+#     and adjudicates the status in a later step, so an arm closing
+#     swallows for these jobs would have fired on correct code the day
+#     it landed. Arm B is what makes the equivalent checks affordable on
+#     `test` and `policy-gates`: their steps are enumerated, so a
+#     finding there can be compared against a record. Nothing enumerates
+#     the other jobs' steps, and this gate does not propose to.
 #   * F and G read the workflow as written, and a job can also stop
 #     reporting for reasons no line of it expresses: the file being
 #     DELETED (this gate is invoked from the very workflow it judges, so
@@ -199,6 +221,15 @@
 #         judgement -- the safe direction, and not an evaluation.
 #     Two spellings closed means a third exists; the three above are the
 #     ones measured, not the boundary.
+#   * F's `name:` check and G's exclusion of the two purity jobs are
+#     SEPARATE SITES holding one property between them. Delete the first
+#     and widen the second in one change and the property survives, in
+#     the other arm -- a mutation pass over these arms found exactly that
+#     and it is a declared survivor, recorded in the self-test. The
+#     consequence for a reader of THIS file: the exclusion at the top of
+#     G is load-bearing for the `if:` property only. A JOB_IF entry
+#     naming `test` buys nothing today because F is unconditional, and
+#     that fact is pinned by a case rather than by this sentence.
 #   * The `PURITY_WORKFLOW` seam -- this gate judging some file other
 #     than the one it is wired into -- is not closed HERE, because a
 #     gate cannot derive its own parameter from its own subject. It is
@@ -419,11 +450,16 @@ if not any(
 
 # E -- `policy-gates` is not vacuous: a script in COMMAND POSITION.
 gate_scripts = set()
+gates_steps_without_invocation = 0
 for step in jobs[GATES_JOB]["steps"]:
+    invoked_here = False
     for ln in live_lines(step):
         hit = SCRIPT_INVOKE.search(ln)
         if hit:
             gate_scripts.add(hit.group(1))
+            invoked_here = True
+    if not invoked_here:
+        gates_steps_without_invocation += 1
 if not gate_scripts:
     findings.append(
         "policy-gates: no step RUNS a scripts/*.sh gate -- naming one is not "
@@ -511,6 +547,18 @@ for jname, job in sorted(jobs.items()):
             "%s: the job sets `continue-on-error`, so its failure cannot "
             "turn its check red." % jname
         )
+    # The one STEP-level key G closes for these jobs, and the reason it is
+    # the only one is in the bound below: `continue-on-error` on a step has
+    # no legitimate use in a job whose verdict is meant to mean something,
+    # which is the same criterion F's swallow list is drawn on. A step-level
+    # `if:` does have legitimate uses here and is NOT closed.
+    for step in job.get("steps") or []:
+        if isinstance(step, dict) and step.get("continue-on-error"):
+            findings.append(
+                "%s: step %r sets `continue-on-error`, so its failure cannot "
+                "turn the check red. The job still reports under its own "
+                "name, and reports green." % (jname, identity(step))
+            )
     if "if" in job:
         want = JOB_IF.get(jname, None)
         got = job.get("if")
@@ -551,8 +599,16 @@ for jname in sorted(JOB_IF):
 for f in findings:
     print("FINDING\t%s" % f)
 print(
-    "COUNTED\t%d step(s) in test, %d in policy-gates, %d distinct gate script(s)"
-    % (len(jobs[TEST_JOB]["steps"]), len(jobs[GATES_JOB]["steps"]), len(gate_scripts))
+    "COUNTED\t%d step(s) in test, %d in policy-gates, %d distinct gate "
+    "script(s), %d policy-gates step(s) invoking none, %d job(s) in the "
+    "workflow"
+    % (
+        len(jobs[TEST_JOB]["steps"]),
+        len(jobs[GATES_JOB]["steps"]),
+        len(gate_scripts),
+        gates_steps_without_invocation,
+        len(jobs),
+    )
 )
 PARSE
 )
