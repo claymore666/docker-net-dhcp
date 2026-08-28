@@ -130,12 +130,153 @@ else
 fi
 
 # An unreadable seam must refuse too, for the same reason.
+#
+# IT READS THE MESSAGE, NOT ONLY THE STATUS, AND THAT IS THE WHOLE CASE.
+# This asserted `rc -eq 2` alone, and the sibling case one block up --
+# which does read its message -- is what made the gap visible. Measured
+# 2026-08-28 at the pre-fix head: mutate domain()'s `[ -d "$SCAN_ROOT" ]
+# || return 1` to `return 0` and the suite stayed 18/18 green. The
+# mutant is not harmless: with the refusal gone, domain() returns an
+# empty list, the NON-VACUITY guard downstream refuses instead, rc is
+# still 2 -- and the entire `cannot measure::SCAN_ROOT ... is not a
+# directory` block becomes unreachable dead code. A DIFFERENT GUARD
+# caught it, which is exactly the reading that makes a surviving mutant
+# look like a covered one.
+#
+# So the assertion is keyed on WHICH refusal fired. `examined nothing`
+# and `cannot measure::SCAN_ROOT` are different verdicts about different
+# faults, and a status code cannot tell them apart.
 n=$((n + 1))
 out=$(SCAN_ROOT="$TMP/does-not-exist" bash "$GATE" 2>&1); rc=$?
-if [ "$rc" -eq 2 ]; then
-    echo "PASS: a missing scan root refuses (exit 2)"
+if [ "$rc" -eq 2 ] \
+   && grep -qF 'cannot measure::SCAN_ROOT' <<< "$out" \
+   && grep -qF 'is not a directory' <<< "$out"; then
+    echo "PASS: a missing scan root refuses AS a missing scan root (exit 2)"
 else
-    echo "FAIL: a missing scan root -- want exit 2, got $rc"
+    echo "FAIL: a missing scan root -- want exit 2 naming SCAN_ROOT, got $rc"
+    printf '%s\n' "$out" | sed 's/^/       /'
+    fail=$((fail + 1))
+fi
+
+echo "--- a member the scan could not read is a refusal, not a clean count"
+
+# THE PARTIAL VACUITY CASE. The guard above closes the all-or-nothing
+# shape: zero files must refuse. It did not close the shape where the
+# domain is populated and the SCAN drops members out of it. Measured
+# 2026-08-28 at the pre-fix head: one readable file plus one mode-000
+# file carrying the hazard produced `counting-fallback: clean, 2 shell
+# file(s) examined.` and exit 0 -- the count came from the domain, the
+# hazard was never read, and the number beside "clean" read as evidence.
+#
+# THE CONSTRUCTION DEPENDS ON PRIVILEGE, AND THAT IS THE TRAP. `chmod
+# 000` denies nothing to root, and root is normal in two of the places
+# this suite runs -- a workstation `local-lane.sh`, and the root
+# containers of the self-hosted pool. A case that chmods and asserts is
+# VACUOUS there. So the two arms below drive the property -- a counted
+# member the scan could not read -- from both directions, and the
+# privilege-independent one runs unconditionally.
+
+# ARM 1: NOT A REGULAR FILE. Uid-independent, because no capability
+# opens a path that is not there. `find | sort` is newline-delimited, so
+# a member whose NAME carries a newline arrives as two paths that do not
+# exist -- both counted into the domain, neither readable. The hazard in
+# it must not be reported as absent.
+n=$((n + 1))
+split="$TMP/split"
+mkdir -p "$split"
+printf 'echo ok\n' > "$split/plain.sh"
+printf '%s\n' 'n=$(grep -c . "$f" || echo 0)' > "$split/carries a
+hazard.sh"
+out=$(SCAN_ROOT="$split" bash "$GATE" 2>&1); rc=$?
+if [ "$rc" -eq 2 ] \
+   && grep -qF 'could not examine a domain member' <<< "$out" \
+   && grep -qF "$split/carries a" <<< "$out" \
+   && ! grep -qF 'clean,' <<< "$out"; then
+    echo "PASS: a domain member that is not a regular file refuses, named (exit 2)"
+else
+    echo "FAIL: an unexaminable member -- want exit 2 naming the file, got $rc"
+    printf '%s\n' "$out" | sed 's/^/       /'
+    fail=$((fail + 1))
+fi
+
+# ARM 2: COUNTED BUT UNOPENABLE -- the construction the defect was
+# measured with, and the one the fix's explicit `exec 3<` exists for.
+#
+# THE FIXTURE IS PROBED, NOT ASSUMED. `chmod 000` is a statement about
+# permission bits; what this case needs is a statement about THIS
+# process. So it opens the fixture the way the gate does and asserts on
+# the result. If the open succeeds -- a privileged runner -- the fixture
+# cannot express the condition and the case says so and drives the
+# unopenable property through the arm that does not need permission,
+# rather than skipping. A skip is how the root case would ship untested,
+# and a sibling PR is red in CI right now for exactly that.
+n=$((n + 1))
+noperm="$TMP/noperm"
+mkdir -p "$noperm"
+printf 'echo ok\n' > "$noperm/plain.sh"
+printf '%s\n' 'n=$(grep -c . "$f" || echo 0)' > "$noperm/locked.sh"
+chmod 000 "$noperm/locked.sh"
+if { : < "$noperm/locked.sh"; } 2>/dev/null; then
+    # Privileged: mode 000 denies this process nothing. Re-aim the same
+    # assertion at a member no capability can open.
+    arm="unopenable-by-anyone (privileged: mode 000 is vacuous here)"
+    chmod 644 "$noperm/locked.sh"
+    mv "$noperm/locked.sh" "$noperm/locked
+by-name.sh"
+    marker="$noperm/locked"
+else
+    arm="mode 000 (measured: this process cannot open it)"
+    marker="$noperm/locked.sh"
+fi
+out=$(SCAN_ROOT="$noperm" bash "$GATE" 2>&1); rc=$?
+if [ "$rc" -eq 2 ] \
+   && grep -qF 'could not examine a domain member' <<< "$out" \
+   && grep -qF "$marker" <<< "$out" \
+   && ! grep -qF 'clean,' <<< "$out"; then
+    echo "PASS: an unreadable domain member refuses, named -- $arm (exit 2)"
+else
+    echo "FAIL: an unreadable domain member -- want exit 2 naming the file, got $rc"
+    echo "       arm: $arm"
+    printf '%s\n' "$out" | sed 's/^/       /'
+    fail=$((fail + 1))
+fi
+
+# THE PRESERVATION CONTROL FOR BOTH ARMS. A refusal that fires on every
+# domain is a gate that measures nothing, and the two arms above are a
+# widening. This is the same directory shape with nothing wrong with it:
+# it must still be examined and still report the examined count.
+n=$((n + 1))
+okdir="$TMP/allreadable"
+mkdir -p "$okdir"
+printf 'echo ok\n' > "$okdir/one.sh"
+printf 'echo also ok\n' > "$okdir/two.sh"
+out=$(SCAN_ROOT="$okdir" bash "$GATE" 2>&1); rc=$?
+if [ "$rc" -eq 0 ] && grep -qF 'clean, 2 shell file(s) examined' <<< "$out"; then
+    echo "PASS: two readable members are examined and counted as two (exit 0)"
+else
+    echo "FAIL: the readable control -- want exit 0 and 'clean, 2', got $rc"
+    printf '%s\n' "$out" | sed 's/^/       /'
+    fail=$((fail + 1))
+fi
+
+# THE COUNT IS WHAT WAS EXAMINED, NOT THE DOMAIN SIZE. Without this the
+# fix could report the domain size beside "clean" and stay green: the
+# refusal above only fires when a member is dropped, and this pins the
+# number in the case where none is. Three members, one of them the gate
+# would have to drop, must never yield a clean three.
+n=$((n + 1))
+mixed="$TMP/mixed"
+mkdir -p "$mixed"
+printf 'echo ok\n' > "$mixed/one.sh"
+printf 'echo ok\n' > "$mixed/two.sh"
+printf 'echo ok\n' > "$mixed/three
+split.sh"
+out=$(SCAN_ROOT="$mixed" bash "$GATE" 2>&1); rc=$?
+if [ "$rc" -eq 2 ] && grep -qF '(2 examined,' <<< "$out"; then
+    echo "PASS: the report counts what was examined, not the domain (2 of 4)"
+else
+    echo "FAIL: the examined count -- want exit 2 reporting '2 examined', got $rc"
+    printf '%s\n' "$out" | sed 's/^/       /'
     fail=$((fail + 1))
 fi
 
@@ -143,9 +284,17 @@ echo "--- the real tree is a real population"
 
 # NON-VACUITY ON THE LIVE RUN. The gate reports how many files it
 # examined; a clean verdict over a suspiciously small domain is the
-# failure this asserts against. The tracked shell corpus was 177 files
-# when this was written (2026-08-28); anything under 50 means the
+# failure this asserts against. The tracked shell corpus was 184 files
+# measured 2026-08-28 over base 9ae67ca; anything under 50 means the
 # domain derivation broke, and a green result would be meaningless.
+#
+# THE FLOOR IS THE LOAD-BEARING HALF, THE NUMBER IS NOT, and that is
+# worth saying because it changes what a mutant here proves. Reverting
+# this dated corpus figure alone leaves the suite green -- the assertion
+# reads `>= 50`, so 177, 182 and 184 are the same fact to it. Deleting
+# the floor is what reddens. The date is here so a reader can tell a
+# corpus that grew from a domain derivation that broke, not so a check
+# can compare against it.
 n=$((n + 1))
 out=$(cd "$HERE/.." && bash "$GATE" 2>&1); rc=$?
 seen=$(sed -n 's/.*clean, \([0-9]*\) shell file.*/\1/p' <<< "$out")
@@ -224,6 +373,8 @@ test-check-counting-fallback.sh  13e20ff8cf3e
 test-check-counting-fallback.sh  7e1f40b36b53
 test-check-counting-fallback.sh  ca31b9a6b5db
 test-check-counting-fallback.sh  ea26377731e1
+test-check-counting-fallback.sh  2e1f1e448525
+test-check-counting-fallback.sh  ff789c8d27d0
 WANT
 )
 # 26d09ee  the attestation-parity defect, verbatim
@@ -233,6 +384,13 @@ WANT
 # 7e1f40b  bundled flags (-rc)
 # ca31b9a  printf as the fallback
 # ea26377  the comment quoting the bad form
+# 2e1f1e4  the newline-named fixture (arm 1 of the unexaminable case)
+# ff789c8  the mode-000 fixture (arm 2 of the unexaminable case)
+#
+# The last two were added when the unexaminable-member cases landed, and
+# the set going red on them is the mechanism working: a fixture carrying
+# the hazard into an EXCLUDED file has to be declared by a person, not
+# absorbed by a count.
 #
 # check-counting-fallback.sh contributes NOTHING to this set and that is
 # asserted by its absence: every line in it that carries the shape is a
