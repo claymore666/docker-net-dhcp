@@ -10,9 +10,17 @@
 # THE TREE IS THE WRONG WITNESS, and that is the whole reason this file
 # exists. When #871 was filed there was a live example in the tree: a
 # symbol defined in an untagged harness file whose only caller was
-# tagged, reported as unused on an open PR. It was fixed at 3c64b8f by
-# giving the symbol a unit test, so today the tree has ZERO symbols
-# crossing the tag boundary and both invocations come back clean.
+# tagged, reported as unused on an open PR. The #869 work gave that
+# symbol a unit test, and the tree now has ZERO symbols crossing the
+# tag boundary: `staticcheck ./...` and `staticcheck -tags integration
+# ./...` are both rc=0, measured on this branch's base.
+#
+# No commit id is quoted for that, deliberately. An earlier draft cited
+# one; the branch it was on was rebased before merging, the id it
+# named exists in no merged history, and the claim could then only be
+# checked by the person who wrote it. The property is what matters and
+# the property is measurable by anyone, in two commands, on whatever
+# tree they are holding.
 #
 # A self-test run over the real tree would therefore pass, and it would
 # pass for a reason with nothing to do with the fix. That is the exact
@@ -32,7 +40,14 @@
 # exercising nothing, which is the bug class the file is about. The
 # gate-self-test runner is told by the marker above that this belongs
 # to the staticcheck job, which is the job that installs the binary,
-# and the runner then requires that job to actually name this file.
+# and the runner then requires a workflow to actually RUN this file.
+#
+# That last sentence read "to actually NAME this file" and it was
+# false: naming was all the runner checked, and a comment naming the
+# file satisfied it, so the step running this suite could be deleted
+# with nothing going red. #872 hardened the runner to look only at
+# shell a workflow executes; the sentence is now true, and it is true
+# because the mechanism changed rather than because the wording did.
 #
 # Usage: bash scripts/test-staticcheck-tag-views.sh
 # Exit:  0 all cases behaved as measured, 1 a case did not, 2 cannot run.

@@ -50,12 +50,41 @@
 # is exit 2. A coverage rule over an empty population is satisfied by
 # emptying the population, and it would read as green.
 #
+# AN INVOCATION IS A COMMAND, NOT A MENTION. The invocation side reads
+# only what a workflow EXECUTES — the scalar after an inline `run:`
+# and the body of a `run: |` block — via
+# `scripts/workflow-shell-lines.sh`. It shipped as a `grep -r` over
+# the whole workflow directory, and the two steps this gate protects
+# are NAMED `Run staticcheck (default view)` and `Run staticcheck
+# (integration view)`. Both name lines matched. Measured: with the
+# untagged `run: staticcheck ./...` line DELETED and only its step
+# name left standing, the gate exited 0 and reported full coverage —
+# the exact state rule 1 exists to forbid, cleared by a step's name.
+# It also printed "4 staticcheck invocation(s)" where there were two,
+# on every run, and that number read as reassuring.
+#
 # WHAT IT DOES NOT SEE. Constraints are read from `//go:build` lines
 # anywhere in a tracked .go file, not from the build-constraint
 # position specifically; a `//go:build` inside a string or a comment
 # block would be counted. That direction is toward reporting, never
 # toward silence. Legacy `// +build` lines are read too — Go still
 # honours them when no `//go:build` is present.
+#
+# ON THE INVOCATION SIDE it judges the COMMAND TEXT and nothing
+# around it. The boundary, stated here rather than in a pull request:
+#
+#   * The PACKAGE PATTERN is not read. `staticcheck -tags integration
+#     ./cmd/...`, under which no tagged file exists, reads as covering
+#     the tag. Answering that needs the package graph, not a regex.
+#   * `if:` is not evaluated. An invocation in a step or job that can
+#     never run still counts.
+#   * A tag assembled from a `${{ }}` expression is not expanded.
+#
+# Each of those would clear a term nothing lints, so they are named
+# rather than left to be discovered. `-tags "integration"` USED to
+# belong on this list — the quote made the tag capture empty and the
+# invocation was filed as untagged, spuriously satisfying rule 1 —
+# and it is now read.
 #
 # Usage: check-lint-tag-coverage.sh
 # Env:   LINT_TAG_ROOT       repo root (default: the parent of scripts/)
@@ -138,12 +167,17 @@ if [ "${#compound[@]}" -ne 0 ]; then
 fi
 
 # --- invocations in the workflows -------------------------------------
-# `go install .../cmd/staticcheck@vX` is not an invocation: staticcheck
-# there is preceded by a slash, so requiring a word boundary in front
-# excludes it without naming the install line.
+# Only lines a workflow EXECUTES are candidates; a step name that
+# happens to contain the word is not an invocation. See the header.
+# shellcheck source=scripts/workflow-shell-lines.sh
+. "$HERE/workflow-shell-lines.sh"
+
+# `go install .../cmd/staticcheck@vX` is not an invocation either:
+# staticcheck there is preceded by a slash, so requiring a word
+# boundary in front excludes it without naming the install line.
 mapfile -t invocations < <(
-    grep -rhE '(^|[[:space:]|;&(])staticcheck[[:space:]]' "$WORKFLOWS" 2>/dev/null |
-        sed 's/^[[:space:]]*//' | grep -v '^#'
+    workflow_shell_lines "$WORKFLOWS" |
+        grep -E '(^|[[:space:]|;&(])staticcheck[[:space:]]'
 )
 
 if [ "${#invocations[@]}" -eq 0 ]; then
@@ -155,7 +189,11 @@ fi
 untagged=0
 declare -A covered=()
 for inv in "${invocations[@]}"; do
-    tags=$(printf '%s' "$inv" | sed -n 's/.*-tags[ =]\{1,\}\([A-Za-z0-9_,]*\).*/\1/p')
+    # The optional quote is load-bearing: `-tags "integration"` otherwise
+    # captures the empty string, and the invocation is filed as UNTAGGED —
+    # which spuriously satisfies rule 1 while covering no term at all.
+    tags=$(printf '%s' "$inv" |
+        sed -n 's/.*-tags[ =]\{1,\}["'\'']\{0,1\}\([A-Za-z0-9_,]*\).*/\1/p')
     if [ -z "$tags" ]; then
         untagged=1
         continue
