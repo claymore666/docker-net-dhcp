@@ -56,6 +56,11 @@
 #                      (default: config-cover.json beside MANIFEST)
 #      CONTRIB_DOC     the page cover-only settings must be documented
 #                      in (default: <docs-dir>/internals.md)
+#      DOCS_DRIFT_AWK  the awk to extract with. A test seam: it is what
+#                      gives the exit-status half of the extraction
+#                      backstop a case, which no Go-source fixture can
+#                      produce once every operand is proved readable in
+#                      the shell first.
 #
 # Exit: 0 clean, 1 drift found, 2 cannot check (bad usage/inputs).
 set -u
@@ -73,10 +78,19 @@ fi
 
 fail=0
 
+# THE awk BINARY IS A SEAM, for the same reason its two sibling gates in
+# this change have one. Both extractions below read awk's exit status,
+# and with every operand proved readable in the shell first, no Go-source
+# fixture can make awk fail while still printing -- so the status half
+# would be a branch with no case, which is the shape this gate was fixed
+# for one rule along. The self-test points this at a stub that prints a
+# full, plausible name list and then exits non-zero.
+AWK="${DOCS_DRIFT_AWK:-awk}"
+
 # ---- 1. health counters -------------------------------------------------
 # The json tags of HealthResponse are the wire contract, so they are what
 # operators grep for and what the docs must name.
-counters=$(awk '
+counters=$("$AWK" '
     /type HealthResponse struct \{/ { in_struct = 1; next }
     in_struct && /^\}/              { in_struct = 0 }
     in_struct && match($0, /json:"[a-z0-9_]+"/) {
@@ -196,7 +210,7 @@ for g in "${go_files[@]}"; do
     fi
 done
 
-options=$(awk '
+options=$("$AWK" '
     /type DHCPNetworkOptions struct \{/ { in_struct = 1; next }
     in_struct && /^\}/                  { in_struct = 0 }
     in_struct {
@@ -311,11 +325,50 @@ for mnt in m.get("mounts", []):
 
 pages=("$DOCS_DIR"/*.md)
 readme="$(dirname "$DOCS_DIR")/README.md"
-[ -f "$readme" ] && pages+=("$readme")
+# `-e`, not `-f`. Absent is a legitimate state -- the docs tree can be
+# checked on its own -- but `-f` folds "absent" together with "present
+# and not a regular file", and a directory named README.md then leaves
+# the page set without a word.
+if [ -e "$readme" ]; then
+    pages+=("$readme")
+fi
+
+# THE SAME REFUSAL RULE 3 GOT, OVER THE WHOLE PAGE SET, AND THIS IS
+# WHERE IT BELONGS RATHER THAN BESIDE ONE LOOP. Rules 4 and 5 search
+# these pages with `grep`, and `grep` on an unreadable page exits 2
+# having matched nothing -- read as "this page documents nothing",
+# which is a silent pass on exactly the page a stale route would be
+# hiding on. Their only test was `[ -f "$page" ]`, and a file at mode
+# 000 IS a regular file.
+#
+# Rule 3 iterates `$DOCS_DIR/*.md` and refuses there, so pages under
+# `docs/` were protected only INCIDENTALLY -- rule 3 exits 2 before
+# rules 4 and 5 are reached. README.md is in this array and in no
+# other, so it was protected by nothing. Measured 2026-08-28 with the
+# control confirmed red first: a real rule-4 finding and a real rule-5
+# finding, each planted in README.md, each reported at exit 1 while
+# readable and each LOST at mode 000 -- exit 0, `docs-drift gate
+# passed`, under both mawk and gawk.
+#
+# Applied to the ARRAY and not inside the two loops on purpose: a page
+# added to `pages` later inherits the refusal instead of needing its
+# own copy of it, which is how README.md came to have none.
+for page in "${pages[@]}"; do
+    if [ ! -f "$page" ] || [ ! -r "$page" ]; then
+        echo "FAIL  $page is not a readable regular file, so it could not be" \
+             "searched for a stale rootfs route or an install procedure." \
+             "Treating that as \"documents nothing\" would pass this page in" \
+             "silence, which is how a finding in README.md was lost." >&2
+        exit 2
+    fi
+done
 
 for d in $mounts; do
     for page in "${pages[@]}"; do
-        [ -f "$page" ] || continue
+        # No `-f` test here: readability is decided once, above, for the
+        # whole array. A per-loop `|| continue` is what let README.md be
+        # skipped in silence, and two copies of a guard are two places
+        # for one of them to be missing.
         # The stale shape is literal: "rootfs" immediately followed by
         # the mounted destination, whatever glob precedes it.
         if grep -qF "rootfs$d" "$page"; then
@@ -349,7 +402,7 @@ for mnt in m.get("mounts", []):
 ' "$MANIFEST")
 
 for page in "${pages[@]}"; do
-    [ -f "$page" ] || continue
+    # Same as rule 4: the array was proved readable once, above.
     for src in $sources; do
         # `/run/docker.sock` and friends are daemon-owned and always
         # present; only paths the plugin itself owns are the operator's

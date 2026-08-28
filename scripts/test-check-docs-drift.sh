@@ -169,7 +169,58 @@ write_reference
 rm -f "$DOCS/guide.md"
 printf '# readme\nsudo cat /var/lib/docker/plugins/*/rootfs/var/lib/net-dhcp/leases.jsonl\n' > "$TMP/README.md"
 expect 1 "a README beside docs/ is scanned" "README.md routes a reader"
+
+# 13a. THE SAME FINDING, ON THE SAME PAGE, WITH THE PAGE UNREADABLE.
+#      The case above is the control and it has to stay green either
+#      side of this one, or this case is measuring the fixture rather
+#      than the gate.
+#
+#      `grep` on an unreadable page exits 2 having matched nothing,
+#      which reads as "this page documents nothing" -- a silent pass on
+#      exactly the page a stale route would be hiding on. Rule 3 was
+#      given a refusal for that; rules 4 and 5 were not, and README.md
+#      is judged by rules 4 and 5 ALONE -- rule 3 iterates
+#      `$DOCS_DIR/*.md` and never sees it. So the pages under `docs/`
+#      were covered only incidentally (rule 3 exits 2 first) and this
+#      one was covered by nothing.
+#
+#      Measured 2026-08-28 against the gate as it stood: exit 1
+#      readable, **exit 0 and `docs-drift gate passed` at mode 000**,
+#      with the identical finding sitting in the file.
+chmod 000 "$TMP/README.md"
+expect 2 "an unreadable README refuses instead of documenting nothing" \
+    "is not a readable regular file"
+chmod 644 "$TMP/README.md"
+expect 1 "the same README readable is still reported" "README.md routes a reader"
 rm -f "$TMP/README.md"
+
+# 13b. `-f` folds "absent" together with "present but not a regular
+#      file". Absent is legitimate -- the docs tree stands on its own --
+#      so the test is `-e` and the refusal below decides the rest. A
+#      DIRECTORY named README.md would otherwise leave the page set
+#      without a word, which is the same silence one shape along.
+mkdir -p "$TMP/README.md"
+expect 2 "a directory named README.md refuses rather than vanishing" \
+    "is not a readable regular file"
+rmdir "$TMP/README.md"
+
+# 13c. PRESERVATION for both of the above: with no README at all the
+#      gate is clean, because absent really is a legitimate state and a
+#      refusal that fired on it would red every repository without one.
+expect 0 "no README beside docs/ is not an error" "docs-drift gate passed"
+
+# 13d. Rule 5 reaches README.md too, and it is the rule the readability
+#      refusal now runs in front of. Without a case here, "rules 4 and
+#      5 both judge this page" would be a claim with one witness.
+write_reference
+printf '# readme\n\n```sh\nmkdir -p /var/lib/net-dhcp\ndocker plugin install x\n```\n\n```sh\ndocker plugin install x\n```\n' > "$TMP/README.md"
+expect 1 "rule 5 reaches README.md as well" "README.md installs the plugin without creating"
+chmod 000 "$TMP/README.md"
+expect 2 "an unreadable README refuses before rule 5 can miss it" \
+    "is not a readable regular file"
+chmod 644 "$TMP/README.md"
+rm -f "$TMP/README.md"
+write_reference
 
 # 14. A vanished struct is an explicit failure, not a vacuous pass —
 #     the check must never go quiet because the code moved.
@@ -484,6 +535,49 @@ pkg_expect 2 "a package declaring no options refuses instead of shortening the l
 mkdir -p "$TMP/pkg-empty"
 pkg_expect 2 "a package directory with no Go sources refuses, at the first guard that sees it" \
     "$TMP/pkg-empty" "could not extract HealthResponse"
+
+# --- the awk seam: the STATUS half of the extraction backstop ----------
+# Both extractions read awk's exit status, and with every Go operand
+# proved readable in the shell first no source fixture can make awk fail
+# while still printing. So that half was a branch with no case -- the
+# same shape this gate was fixed for one rule along, and the reason its
+# two sibling gates in this change each grew a seam. The stub prints a
+# COMPLETE, plausible name list and then exits non-zero, so only the
+# status can tell the gate something went wrong.
+AWK_STUB="$TMP/awk-stub"
+cat > "$AWK_STUB" <<'STUB'
+#!/bin/sh
+printf 'healthy\nleases_renewed\nnaks_received\nmode\nbridge\n'
+exit 3
+STUB
+chmod +x "$AWK_STUB"
+write_reference
+rm -f "$DOCS/guide.md"
+out=$(DOCS_DRIFT_AWK="$AWK_STUB" MANIFEST="$TMP/config.json" \
+      bash "$CHECK" "$PKG" "$DOCS" "$DOCS/reference.md" 2>&1); rc=$?
+if [ "$rc" -eq 2 ] && printf '%s' "$out" | grep -F "awk exit 3" >/dev/null; then
+    echo "PASS: an awk that prints a full name list and then fails is a refusal"
+else
+    echo "FAIL: an awk that prints a full name list and then fails is a refusal — exit $rc"
+    printf '    %s\n' "$out"; fail=1
+fi
+
+# Preservation for the seam itself: the same stub exiting 0 must be
+# BELIEVED, or the case above would pass because the seam is broken
+# rather than because the status is read.
+cat > "$AWK_STUB" <<'STUB'
+#!/bin/sh
+printf 'healthy\nleases_renewed\nnaks_received\nmode\nbridge\n'
+STUB
+chmod +x "$AWK_STUB"
+out=$(DOCS_DRIFT_AWK="$AWK_STUB" MANIFEST="$TMP/config.json" \
+      bash "$CHECK" "$PKG" "$DOCS" "$DOCS/reference.md" 2>&1); rc=$?
+if [ "$rc" -eq 0 ]; then
+    echo "PASS: the same name list with status 0 is believed, not refused"
+else
+    echo "FAIL: the same name list with status 0 is believed, not refused — exit $rc"
+    printf '    %s\n' "$out"; fail=1
+fi
 
 if [ "$fail" -ne 0 ]; then
     echo "check-docs-drift tests FAILED"
