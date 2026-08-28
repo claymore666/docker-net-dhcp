@@ -170,8 +170,14 @@ jobs:
       # unimportable must go red here, not in the gate.
       - name: Provide PyYAML for the fork-execution-policy gate self-test
         run: |
-          python3 -c 'import yaml' 2>/dev/null \
-            || sudo apt-get install -y --no-install-recommends python3-yaml
+          # The install runs only when the module is genuinely absent, and
+          # `apt-get update` runs only then too: the hosted image's package
+          # lists are cleaned during its build, so an install without a
+          # refresh answers "unable to locate package".
+          python3 -c 'import yaml' 2>/dev/null || {
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends python3-yaml
+          }
           python3 -c 'import yaml; print("PyYAML", yaml.__version__)' || {
             echo "::error title=PyYAML unavailable::python3 cannot import yaml" \
                  "after the install step. check-fork-execution-policy.sh parses" \
