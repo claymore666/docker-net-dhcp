@@ -596,6 +596,33 @@ jobs:
 EOF
 run "a merge key pulling in an anchored unpinned step is caught too" 1 "a.yml:6" "not pinned to a 40-hex commit SHA"
 
+# A THIRD FALSE RED, FOUND BY ATTACKING THIS ROUND'S OWN FIX AND PINNED
+# RATHER THAN FIXED. A node property may also sit on the VALUE side --
+# `uses: &a actions/checkout@<40 hex>` -- where the ref extraction does
+# not strip it, so `&a` is judged as the ref and a legitimately PINNED
+# reference is reported unpinned. MEASURED: identical on the pre-fix
+# script, so this round neither introduced it nor widened it.
+#
+# THE TRADE, WRITTEN DOWN. Stripping a property after `uses:` is a small
+# edit to the same sed, and it was deliberately NOT made here. The ref
+# extraction is the one expression in this gate where a mistake produces
+# a WRONG REF rather than a wrong count -- a wrong count refuses, a
+# wrong ref is judged -- and this defect fails in the safe direction: it
+# cries unpinned over something pinned, never the reverse. Widening it
+# belongs in a change that can carry its own mutants, next to the
+# value-side alias (`uses: *a`) which has the same shape. Recorded here
+# so that whoever does it starts from a case rather than from a
+# surprise.
+fresh
+cat > "$TMP/wf/a.yml" <<EOF
+jobs:
+  x:
+    steps:
+      - uses: actions/setup-go@$SHA
+      - uses: &a actions/checkout@$SHA
+EOF
+run "PINNED COST: a property on the VALUE side false-reds a pinned ref" 1 "a.yml:5" "not pinned to a 40-hex commit SHA"
+
 # THE PRICE OF THE WIDENING, PINNED AS A CASE rather than left for a
 # reader to discover. This gate already false-REDS on a bare `uses:` at
 # the start of a line inside a `run: |` block scalar (the case further
@@ -844,7 +871,7 @@ fi
 # exits 0, which is a green tick over nothing. The floor is the count
 # this file is known to run; raise it when cases are added, and a
 # deletion has to be deliberate rather than silent.
-FLOOR=55
+FLOOR=56
 if [ "$n" -lt "$FLOOR" ]; then
     echo "REFUSING: ran $n case(s), fewer than the $FLOOR this suite is known to hold."
     echo "  Either cases were lost, or the floor is stale and should be raised with them."

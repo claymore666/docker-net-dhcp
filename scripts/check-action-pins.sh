@@ -328,6 +328,16 @@ for f in "${FILES[@]}"; do
     while IFS= read -r hit; do
         lineno="${hit%%:*}"
         line="${hit#*:}"
+        # A node property is stripped ahead of the KEY, not ahead of
+        # the VALUE. `uses: &a actions/checkout@<40 hex>` therefore
+        # extracts `&a` and reports a pinned reference as unpinned --
+        # MEASURED, and identical before this expression was widened,
+        # so it is pre-existing rather than introduced here. It fails
+        # in the safe direction and is pinned as a case in the suite
+        # with the trade written out. Widening THIS sed is the one
+        # place a mistake yields a wrong REF rather than a wrong
+        # count, so it belongs in a change that carries its own
+        # mutants, beside the value-side alias (`uses: *a`).
         ref="$(printf '%s' "$line" | sed -E 's/^[[:space:]]*(-[[:space:]]+)?([&!][^[:space:]]*[[:space:]]+)*uses:[[:space:]]*//' | awk '{print $1}' | tr -d '"'"'")"
         [ -n "$ref" ] || continue
         seen=$((seen + 1))
