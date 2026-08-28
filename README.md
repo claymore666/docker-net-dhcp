@@ -195,6 +195,7 @@ gh attestation verify oci://ghcr.io/claymore666/docker-net-dhcp:VERSION --repo c
 
 Contributions are welcome.
 
+<!-- starter-task-claim: begin -->
 - **Looking for somewhere to start?** There are no starter tasks open at the
   moment. The ones that were seeded were closed as the work they described
   landed, and rather than send you to an empty list this section says so. If
@@ -204,6 +205,7 @@ Contributions are welcome.
   documentation you found thin — and one will be scoped against it. When
   starter tasks exist again they carry the `good first issue` label and this
   section links to them.
+<!-- starter-task-claim: end -->
 - **Questions:** ask in
   [Discussions](https://github.com/claymore666/docker-net-dhcp/discussions/new?category=q-a).
   The issue forms are for bugs and feature requests and each stamps a type

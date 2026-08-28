@@ -35,6 +35,19 @@
 #     must still offer it (live). Each has a preservation control beside
 #     it, because "require a route everywhere" and "reject every route"
 #     would both go green without them.
+#
+#   * WHERE the route is, and WHAT counts as one. The first version of
+#     the README half searched the whole file for the string, and the
+#     only case written for it used a fixture containing no route at
+#     all -- so nothing here could ever have caught the shape that
+#     mattered: the route present, but not offered by the claim. The
+#     README links that route twice, so deleting the entire starter-task
+#     bullet stayed green. Those two blind spots are the same one, and
+#     the group at "WHERE the route has to be" drives it: the decoy, the
+#     renderings that are on the page but not clickable, and every way
+#     the claim markers can stop delimiting anything -- against a
+#     preservation control for each rendering the review measured as
+#     legitimate.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -114,12 +127,26 @@ sed 's/^- name: good first issue$/- name: starter task/' "$LABELS" > "$LABELS_RE
 # Every README fixture carries the ask route except the one written to
 # lack it, so that a case about the LABEL detector fails for a label
 # reason and not for a missing route.
-mk_readme() { printf 'Contributing.\n\nPick up a [`good first issue`](%s) to start, or [ask](%s).\n' "$1" "$ROUTE" > "$2"; }
+#
+# THE CLAIM BLOCK. README.md delimits the starter-task claim with a pair
+# of HTML comment markers, so the gate judges the ask route where the
+# denial is made rather than anywhere in the file (#867 review). Every
+# fixture that reaches the route check carries them, because the real
+# README does — a fixture written without them would test a README shape
+# that does not exist, and the case below that drives their ABSENCE
+# would then be indistinguishable from every other case.
+BEGIN='<!-- starter-task-claim: begin -->'
+END='<!-- starter-task-claim: end -->'
+# <block body> -> a whole synthetic README carrying it as the claim.
+mk_claim() { printf 'Contributing.\n\n%s\n%s\n%s\n' "$BEGIN" "$1" "$END"; }
+
+mk_readme() { { printf 'Contributing.\n\nPick up a [`good first issue`](%s) to start.\n\n' "$1"
+                printf '%s\n- No unclaimed ones; [ask](%s).\n%s\n' "$BEGIN" "$ROUTE" "$END"; } > "$2"; }
 # The honest Unmet README: no filter link, but it does name the route.
-mk_readme_nolink() { printf 'Contributing.\n\nNo starter tasks right now; [ask](%s) and one will be scoped.\n' "$ROUTE" > "$1"; }
+mk_readme_nolink() { mk_claim "- No starter tasks right now; [ask]($ROUTE) and one will be scoped." > "$1"; }
 # The defect review found: the promise is dropped and replaced with an
 # invitation to a route the repository does not offer.
-mk_readme_noroute() { printf 'Contributing.\n\nNo starter tasks right now; open an issue and one will be scoped.\n' > "$1"; }
+mk_readme_noroute() { mk_claim "- No starter tasks right now; open an issue and one will be scoped." > "$1"; }
 
 mk_badge() {  # <status> <justification> <out>
     python3 - "$1" "$2" "$3" <<'PY'
@@ -223,7 +250,8 @@ check "static/Unmet: no promise anywhere is green" 0 \
 
 # The control for the group below: the detector must not simply fire on
 # any github.com link, or the honest README could never link the tracker.
-printf 'Open a [GitHub issue](%s), or [ask](%s).\n' "$PLAIN" "$ROUTE" > "$TMP/readme.plain"
+{ printf 'Open a [GitHub issue](%s).\n\n' "$PLAIN"
+  mk_claim "- No starter tasks right now; [ask]($ROUTE)."; } > "$TMP/readme.plain"
 check "static/Unmet: a plain tracker link is not a starter-task promise" 0 \
     "$(run --static "$TMP/readme.plain" "$TMP/badge.unmet")" 'small_tasks is Unmet'
 
@@ -282,6 +310,141 @@ check "static/Unmet: a route named only in prose is not published" 2 \
     "$(run --static "$TMP/readme.silent" "$TMP/badge.unmet" "$TMP/gh" "$LABELS" "$ROUTES_PROSE")" \
     'not published as a contact link'
 
+# ---- --static, WHERE the route has to be, and WHAT counts as one -----
+# The README half used to be a substring search over the whole file, and
+# it failed open. README.md links the same Discussions route twice — once
+# from the starter-task claim, once from an unrelated "Questions" bullet
+# — so deleting the ENTIRE starter-task bullet left the gate green
+# (MEASURED at the pre-fix head: "first task" occurrences 0, rc=0). The
+# route is now read as a link TARGET inside the marked claim block, which
+# is how the contact-link half above has always been read. Each shape
+# that used to pass is driven here, and every legitimate rendering the
+# review measured is driven beside it, because "reject everything" would
+# score green on the group above.
+
+# THE DECOY, and the one reproduction this group exists for: the claim
+# block says nothing about where to ask, while the same route is still
+# linked elsewhere in the file.
+{ mk_claim "- No starter tasks right now."
+  printf -- '- **Questions:** ask in [Discussions](%s).\n' "$ROUTE"; } > "$TMP/readme.decoy"
+check "static/Unmet: the route linked only OUTSIDE the claim is not the claim" 1 \
+    "$(run --static "$TMP/readme.decoy" "$TMP/badge.unmet")" 'names no ask route'
+
+# On the page but not clickable. Three renderings, one property.
+check "static/Unmet: the route only in an HTML comment is not a route" 1 \
+    "$(run --static "$(mk_claim "- No starter tasks. <!-- [ask]($ROUTE) -->" > "$TMP/readme.htmlcomment"; echo "$TMP/readme.htmlcomment")" \
+        "$TMP/badge.unmet")" 'names no ask route'
+
+{ printf 'Contributing.\n\n%s\n- No starter tasks. Someday:\n\n  ```\n  %s\n  ```\n%s\n' \
+    "$BEGIN" "$ROUTE" "$END"; } > "$TMP/readme.fenced"
+check "static/Unmet: the route only in a fenced block is not a route" 1 \
+    "$(run --static "$TMP/readme.fenced" "$TMP/badge.unmet")" 'names no ask route'
+
+# The URL sits INSIDE the span rather than up against its closing
+# backtick, on purpose: abutting it, the collector stops on the backtick
+# and the route is rejected because it came out mis-spelled, which is a
+# rejection by accident. Mid-span the collector yields the route exactly,
+# so the only thing that can reject it is the rule that a code span is
+# not a link — which is what this case is for.
+mk_claim "- No starter tasks; ask at \`$ROUTE and say what interests you\` if you like." \
+    > "$TMP/readme.codespan"
+check "static/Unmet: the route only in backticks is not a route" 1 \
+    "$(run --static "$TMP/readme.codespan" "$TMP/badge.unmet")" 'names no ask route'
+
+# A DIFFERENT route that merely CONTAINS the published one. The substring
+# check accepted this; equality on the extracted target does not.
+mk_claim "- No starter tasks; [ask](${ROUTE}-archive)." > "$TMP/readme.prefix"
+check "static/Unmet: a longer route containing ours is not ours" 1 \
+    "$(run --static "$TMP/readme.prefix" "$TMP/badge.unmet")" 'names no ask route'
+
+# An EMPTY claim block is red, not vacuously green: the gate found the
+# claim and the claim names nowhere to go.
+printf 'Contributing.\n\n%s\n%s\n' "$BEGIN" "$END" > "$TMP/readme.emptyclaim"
+check "static/Unmet: an EMPTY claim block names no route (1, not 0)" 1 \
+    "$(run --static "$TMP/readme.emptyclaim" "$TMP/badge.unmet")" 'names no ask route'
+
+# NOT BEING ABLE TO FIND THE CLAIM IS A REFUSAL, NEVER A PASS. Four ways
+# the markers stop delimiting anything, each exit 2 — the same "cannot
+# see" a renamed label gets. Without these, scoping to a region would
+# have introduced a second way to fail open: no markers, no region, no
+# judgement.
+printf 'Contributing.\n\n- No starter tasks right now; [ask](%s).\n' "$ROUTE" > "$TMP/readme.nomarkers"
+check "static/Unmet: no claim markers at all cannot see (2, not 0)" 2 \
+    "$(run --static "$TMP/readme.nomarkers" "$TMP/badge.unmet")" 'Found 0 begin and 0 end'
+
+{ mk_claim "- No starter tasks right now; [ask]($ROUTE)."
+  mk_claim "- And again, somewhere else."; } > "$TMP/readme.twomarkers"
+check "static/Unmet: a claim marked twice cannot see" 2 \
+    "$(run --static "$TMP/readme.twomarkers" "$TMP/badge.unmet")" 'Found 2 begin and 2 end'
+
+printf 'Contributing.\n\n%s\n- No starter tasks; [ask](%s).\n' "$BEGIN" "$ROUTE" > "$TMP/readme.unclosed"
+check "static/Unmet: an unclosed claim marker cannot see" 2 \
+    "$(run --static "$TMP/readme.unclosed" "$TMP/badge.unmet")" 'Found 1 begin and 0 end'
+
+printf 'Contributing.\n\n%s\n- No starter tasks; [ask](%s).\n%s\n' "$END" "$ROUTE" "$BEGIN" \
+    > "$TMP/readme.crossed"
+check "static/Unmet: markers in the wrong order cannot see" 2 \
+    "$(run --static "$TMP/readme.crossed" "$TMP/badge.unmet")" 'out of order'
+
+# THE PRESERVATION CONTROLS for this whole group. Every rendering the
+# review measured as legitimate must still pass, or the fix has simply
+# traded a gate that accepts everything for one that accepts nothing.
+mk_claim "- No starter tasks right now; [ask in Discussions](<$ROUTE>) and one will be scoped." \
+    > "$TMP/readme.angle"
+check "static/Unmet: an angle-bracketed link target is still a route" 0 \
+    "$(run --static "$TMP/readme.angle" "$TMP/badge.unmet")" 'small_tasks is Unmet'
+
+mk_claim "- No starter tasks right now; [ask]($REPO/discussions/new?category=q%2Da)." \
+    > "$TMP/readme.pct"
+check "static/Unmet: a percent-encoded route is still a route" 0 \
+    "$(run --static "$TMP/readme.pct" "$TMP/badge.unmet")" 'small_tasks is Unmet'
+
+mk_claim "- No starter tasks right now; [ask]($REPO/Discussions/New?category=Q-A)." \
+    > "$TMP/readme.case"
+check "static/Unmet: a differently-cased route is still a route" 0 \
+    "$(run --static "$TMP/readme.case" "$TMP/badge.unmet")" 'small_tasks is Unmet'
+
+# GitHub autolinks a bare URL, and trailing sentence punctuation is not
+# part of the target, so this is a real route and must not go red.
+mk_claim "- No starter tasks right now; ask at $ROUTE." > "$TMP/readme.bare"
+check "static/Unmet: a bare autolinked URL ending a sentence is a route" 0 \
+    "$(run --static "$TMP/readme.bare" "$TMP/badge.unmet")" 'small_tasks is Unmet'
+
+# The markers are matched with their surrounding whitespace tolerated, so
+# a reflow of the README does not turn into a false refusal.
+printf 'Contributing.\n\n  %s  \n- No starter tasks; [ask](%s).\n\t%s\n' \
+    "$BEGIN" "$ROUTE" "$END" > "$TMP/readme.indented"
+check "static/Unmet: indented markers still delimit the claim" 0 \
+    "$(run --static "$TMP/readme.indented" "$TMP/badge.unmet")" 'small_tasks is Unmet'
+
+# A route whose target contains a character the BARE url form stops at.
+# An angle-bracket target is the only way such a link stays clickable,
+# and a collector that ignored it would read the route as its truncated
+# prefix and turn a perfectly good README red. Driven through the seam
+# because today's route needs no brackets — which is exactly why this
+# collection would otherwise be defence nothing exercises.
+ROUTE_Q="$REPO/discussions/new?category=q-a&title=\"first-task\""
+ROUTES_Q="$TMP/config-q.yml"
+cat > "$ROUTES_Q" <<YML
+blank_issues_enabled: false
+contact_links:
+  - name: Ask for a first task
+    url: $ROUTE_Q
+YML
+mk_claim "- No starter tasks right now; [ask](<$ROUTE_Q>)." > "$TMP/readme.qtarget"
+ROUTE_OVERRIDE="$ROUTE_Q"
+check "static/Unmet: an angle-bracket target is the whole route, not its prefix" 0 \
+    "$(run --static "$TMP/readme.qtarget" "$TMP/badge.unmet" "$TMP/gh" "$LABELS" "$ROUTES_Q")" \
+    'small_tasks is Unmet'
+unset ROUTE_OVERRIDE
+
+# And the route must still be found when the claim block ALSO carries an
+# inert copy — stripping the inert renderings must not strip the link.
+mk_claim "- No starter tasks. <!-- moved --> Ask at \`somewhere\`: [ask]($ROUTE)." \
+    > "$TMP/readme.mixed"
+check "static/Unmet: an inert copy beside a real link does not hide it" 0 \
+    "$(run --static "$TMP/readme.mixed" "$TMP/badge.unmet")" 'small_tasks is Unmet'
+
 # THE PRESERVATION CONTROL for the group above. Met sends a newcomer to
 # real tasks, so it makes no ask-route promise and must not be judged
 # against one — without this, "require the route in every arm" would
@@ -305,6 +468,14 @@ check "static: unparseable badge JSON cannot see" 2 \
 
 check "static: a missing README cannot see" 2 \
     "$(run --static "$TMP/does-not-exist" "$TMP/badge.unmet")" 'missing or unreadable'
+
+# A README path that exists and is readable but yields no text. `[ -r ]`
+# is true for a directory, so this gets PAST the guard above and has to
+# be refused by the read itself. Driven as a directory rather than with
+# chmod 000, which proves nothing when the suite runs as root.
+mkdir -p "$TMP/readme-is-a-dir"
+check "static: a README that cannot be read as a file cannot see" 2 \
+    "$(run --static "$TMP/readme-is-a-dir" "$TMP/badge.unmet")" 'could not be read'
 
 # The anchor. If the declaration no longer names the label this gate
 # watches, the gate does not know what to count and must say so — not

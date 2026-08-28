@@ -50,6 +50,29 @@
 # A README sentence naming a route, with nothing that goes red when the
 # route disappears, is precisely the shape this gate exists to refuse.
 #
+# WHERE THE README HALF LOOKS, and why it is not the whole file (#867
+# review). "There are none, ASK HERE" is ONE claim. A search of the whole
+# README cannot tell that claim apart from any other mention of the same
+# URL, and this README has one: the Contributing section links the same
+# Discussions route from its "Questions" bullet for an unrelated reason.
+# MEASURED before this was scoped: deleting the ENTIRE nine-line
+# starter-task bullet left the gate exiting 0 and printing that the route
+# "is published as a contact link" -- about a README that no longer
+# invited anyone to ask for a first task at all. So README.md delimits
+# the claim with a pair of HTML comment markers,
+#
+#     <!-- starter-task-claim: begin -->
+#     ... the bullet that denies starter tasks and says where to ask ...
+#     <!-- starter-task-claim: end -->
+#
+# and the route is judged inside them, as a clickable link TARGET rather
+# than as a byte sequence -- the way the contact-link declaration has
+# always been judged. Markers rather than a heading or a phrase because
+# headings get renamed and sentences get reworded, and either would make
+# this refuse a README that is entirely honest. Marker trouble (absent,
+# duplicated, crossed) is exit 2, never a pass; an EMPTY block is exit 1,
+# because the gate found the claim and the claim names nowhere to go.
+#
 # TWO CHECKS, DELIBERATELY SPLIT BY WHAT THEY NEED (see #537, which asks
 # for this decision to be made before the code is written).
 #
@@ -374,11 +397,110 @@ except Exception as e:
     print(f"::error title=Cannot see::{readme_path}: {e}", file=sys.stderr)
     sys.exit(2)
 
-if norm(want) not in norm(text):
+# THE README HALF IS SCOPED TO THE CLAIM, NOT TO THE FILE, and it reads
+# link TARGETS rather than bytes. Both halves of that mattered, and the
+# review of #867 measured why.
+#
+# The Unmet answer is one claim, not two sentences that happen to share
+# a file: "there are none, ASK HERE". A search of the whole README
+# cannot tell that claim apart from any other mention of the same URL,
+# and this README has one — the Contributing section links the same
+# Discussions route from its "Questions" bullet, for an unrelated
+# reason. MEASURED before this scoping existed: deleting the ENTIRE
+# nine-line starter-task bullet left "first task" nowhere in the file
+# and the gate still exited 0, printing that the route "is published as
+# a contact link" about a README that no longer invited anyone to ask
+# for a first task at all. That deletion is precisely the decay this
+# observable exists to catch, and its own decoy was already in the tree.
+#
+# And a substring search accepts renderings that are not routes: the
+# same URL inside an HTML comment, a fenced block or a backticked span
+# is text a newcomer cannot click. That is the defect the contact-link
+# parse above refuses by construction — "a parser that scanned the file
+# for the string would accept a DESCRIPTION of a route as a route" — and
+# it sat thirteen lines away in the same function, applied to one half
+# and not the other.
+#
+# THE BLOCK IS DELIMITED BY MARKERS, deliberately, rather than located
+# by the heading above it or by a phrase inside it. Headings get renamed
+# and sentences get reworded, and either would make this check refuse a
+# README that is entirely honest — a guard that fails in the wrong
+# direction. HTML comments render as nothing, so the markers cost a
+# reader of the page nothing.
+#
+# NOT BEING ABLE TO FIND THE BLOCK IS EXIT 2, never a pass. Absent,
+# duplicated or crossed markers mean the gate no longer knows which
+# sentences carry the claim, which is the same "cannot see" as a renamed
+# label. An EMPTY block is different and is exit 1: the gate found the
+# claim and the claim names no route.
+#
+# What this still cannot see, stated rather than implied: markers moved
+# to wrap some OTHER bullet would satisfy it. That is a deliberate
+# defeat, not silent decay, and it is the same residual limit the
+# contact-link parse has.
+BEGIN = re.compile(r'^[ \t]*<!--[ \t]*starter-task-claim:[ \t]*begin[ \t]*-->[ \t]*$', re.M)
+END = re.compile(r'^[ \t]*<!--[ \t]*starter-task-claim:[ \t]*end[ \t]*-->[ \t]*$', re.M)
+
+MARKERS = ("the starter-task claim in %s is delimited by a pair of HTML comment markers, "
+           "<!-- starter-task-claim: begin --> and <!-- starter-task-claim: end -->, so that "
+           "the ask route is judged where the denial is made and not anywhere in the file. "
+           % readme_path)
+
+begins = list(BEGIN.finditer(text))
+ends = list(END.finditer(text))
+if len(begins) != 1 or len(ends) != 1 or ends[0].start() < begins[0].end():
+    print("::error title=Cannot see::" + MARKERS +
+          "Found %d begin and %d end marker(s)%s, so this gate cannot tell which sentences "
+          "make the claim. Restore exactly one of each, in that order, around the "
+          "starter-task bullet."
+          % (len(begins), len(ends),
+             ", out of order" if (len(begins) == 1 and len(ends) == 1) else ""),
+          file=sys.stderr)
+    sys.exit(2)
+
+block = text[begins[0].end():ends[0].start()]
+
+
+def strip_fences(s):
+    """Drop fenced code blocks. An unterminated fence swallows the rest,
+    which is the safe direction: it can only remove a candidate route."""
+    out, fence = [], None
+    for line in s.splitlines():
+        m = re.match(r'^[ \t]*(`{3,}|~{3,})', line)
+        if fence is None:
+            if m:
+                fence = m.group(1)[0]
+                continue
+            out.append(line)
+        elif m and m.group(1)[0] == fence:
+            fence = None
+    return "\n".join(out)
+
+
+# The same two patterns the label scan at the top of this file uses, for
+# the same reason: an angle-bracketed target is collected first, or a
+# link whose target runs past a character the bare form stops at is read
+# as its truncated prefix. They are two copies because these are two
+# python processes and there is nowhere to share a definition; change
+# one and change the other.
+URL = re.compile(r'https://github\.com/[^\s)"\]>]+')
+BRACKETED = re.compile(r'<(https://github\.com/[^>]+)>')
+COMMENT = re.compile(r'<!--.*?-->', re.S)
+CODESPAN = re.compile(r'`[^`\n]*`')
+
+inert = CODESPAN.sub(" ", COMMENT.sub(" ", strip_fences(block)))
+# Trailing sentence punctuation is not part of the target GitHub links,
+# so a bare URL ending a sentence stays a route.
+targets = [u.rstrip(".,;:!") for u in BRACKETED.findall(inert) + URL.findall(inert)]
+
+if not any(norm(u) == norm(want) for u in targets):
     print(f"::error title=README names no ask route::small_tasks_status is Unmet, so the "
-          f"README's Contributing section is not merely denying starter tasks, it is telling "
-          f"a newcomer where to ask for one. It does not link the published route, so the "
-          f"invitation names nowhere a newcomer can actually go: {want}", file=sys.stderr)
+          f"README's starter-task claim is not merely denying starter tasks, it is telling "
+          f"a newcomer where to ask for one. The claim links no clickable target for the "
+          f"published route, so the invitation names nowhere a newcomer can actually go. "
+          f"A URL inside an HTML comment, a fenced block or backticks does not count: it is "
+          f"on the page but nobody can follow it. Wanted, as a link, between the "
+          f"starter-task-claim markers: {want}", file=sys.stderr)
     sys.exit(1)
 ROUTEPY
 }
