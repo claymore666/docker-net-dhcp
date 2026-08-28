@@ -1469,6 +1469,37 @@ func TestNewDHCPClient_RefusesRouterAdvertGuardOffThePersistentV6Client(t *testi
 		t.Fatalf("refused the persistent DHCPv6 client: %v", err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(c.workDir) })
+
+	// ...and the flag must actually REACH the prologue. Accepting the
+	// shape and then dropping the option on the floor is indistinguishable
+	// from a working plugin at every other observation point: the refusals
+	// above still pass, the health counter still reads zero, and the
+	// container silently runs with dhcpcd's accept_ra=0.
+	//
+	// MEASURED as a real hole: replacing `HonorRouterAdverts:
+	// opts.HonorRouterAdverts` with `false` in NewDHCPClient's dhcpcdParams
+	// literal SURVIVED the whole unit suite before this assertion existed.
+	// Every guard test above drives mountPrep with a hand-built
+	// dhcpcdParams, so none of them crosses the DHCPClientOptions ->
+	// dhcpcdParams boundary that the plugin actually uses.
+	if got := strings.Join(c.cmd.Args, " "); !strings.Contains(got, sysctlIPv6ConfDir) {
+		t.Errorf("NewDHCPClient accepted HonorRouterAdverts but the guard is absent "+
+			"from the command it built; the option was dropped between "+
+			"DHCPClientOptions and dhcpcdParams.\nargv:\n%s", got)
+	}
+
+	// The opposite direction, so the assertion above cannot be satisfied
+	// by a prologue that always carries the guard.
+	plain := DHCPClientOptions{V6: true, NetNS: &ns, MAC: mustMAC(t, "de:ad:be:ef:00:02")}
+	pc, err := NewDHCPClient("eth0", &plain)
+	if err != nil {
+		t.Fatalf("refused an unguarded persistent DHCPv6 client: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(pc.workDir) })
+	if got := strings.Join(pc.cmd.Args, " "); strings.Contains(got, sysctlIPv6ConfDir) {
+		t.Errorf("a client that did not ask for the guard got it anyway; the "+
+			"emission is not keyed on the option.\nargv:\n%s", got)
+	}
 }
 
 // TestRAGuard_DoesNotClaimKnobsTheShieldCannotHold is the executable
