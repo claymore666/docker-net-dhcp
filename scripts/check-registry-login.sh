@@ -25,10 +25,35 @@
 # the registry. It answers one question — "does this job try to log in
 # before it builds" — which is the question that was answered wrong.
 #
+# THE SCAN IS PROVED TO HAVE HAPPENED, NOT ASSUMED FROM THE FILE LIST.
+# `examined` counted loop visits, and `scan_file()` had no readability
+# guard and its exit status was discarded, so a workflow the parser
+# never opened was reported as a workflow with nothing wrong in it.
+# Measured 2026-08-28 with a real #562 violation planted -- a job on the
+# pool running `docker build` with no login step: exit 1 while readable,
+# and exit 0 at mode 000 AND exit 0 as a directory named `*.yml`,
+# printing `OK -- examined 2 workflow file(s)` and counting the file it
+# could not read. That is non-vacuity evidence derived from the file
+# list rather than from what the parser actually read, which is the
+# defect class this gate belongs to one level up.
+#
+# So readability is decided in the SHELL before awk (`-f` and `-r` are
+# the same on every awk and every uid, and the two awks disagree about a
+# directory: mawk cannot open it and exits 2, gawk SKIPS it with a
+# warning and exits 0), awk exit status is read beside it, and an
+# unreadable workflow is a refusal rather than a silent zero findings.
+#
 # Usage: bash scripts/check-registry-login.sh [workflow-dir]
+# Env:   REGISTRY_LOGIN_AWK  the awk to scan with. A test seam, and it
+#                            exists so the STATUS half of the refusal
+#                            has a case: with `-f` and `-r` asked first
+#                            no workflow fixture can make awk fail while
+#                            still producing output, so without the seam
+#                            that half would be a branch nothing drives.
 # Exit:  0 every pool job that builds authenticates
 #        1 at least one does not
-#        2 the check could not run (missing dir, nothing discovered)
+#        2 the check could not run (missing dir, nothing discovered, a
+#          workflow that could not be read)
 
 set -uo pipefail
 
@@ -70,8 +95,10 @@ fi
 # and already failed. So the login must be seen at a lower line number
 # than the first build, and a job that logs in only afterwards is
 # reported as if it had no login at all, with the reason named.
+AWK="${REGISTRY_LOGIN_AWK:-awk}"
+
 scan_file() {
-    awk -v pool="$POOL_LABEL" -v build_re="$BUILD_RE" -v login_re="$LOGIN_RE" '
+    "$AWK" -v pool="$POOL_LABEL" -v build_re="$BUILD_RE" -v login_re="$LOGIN_RE" '
     function flush(   ) {
         if (job != "" && on_pool && build_line > 0) {
             if (login_line == 0)
@@ -106,12 +133,42 @@ scan_file() {
 
 findings=()
 examined=0
+unreadable=0
 for f in "${files[@]}"; do
+    # Asked BEFORE awk, and asked of the shell, because the answer must
+    # not depend on which awk the runner happens to have. `examined` is
+    # incremented only after the file has actually been read, so the
+    # number in the OK line counts files SCANNED rather than loop
+    # iterations -- a non-vacuity witness has to come from the parser,
+    # not from the glob that fed it.
+    if [ ! -f "$f" ] || [ ! -r "$f" ]; then
+        echo "::error file=$f,title=Cannot read workflow::$(basename "$f") is not a" \
+             "readable regular file, so no job in it was scanned. Reporting that as" \
+             "\"no unauthenticated build found\" would drop the file out of this" \
+             "check's domain in silence, which is how the outage in #562 looked from" \
+             "the outside." >&2
+        unreadable=1
+        continue
+    fi
+    # Captured whole rather than streamed, so awk's exit status can be
+    # read at all: a process substitution consumed by `while read` hides
+    # it, and an awk that dies part way through a file leaves partial
+    # output that is not empty.
+    scan_out="$(scan_file "$f")"
+    scan_rc=$?
+    if [ "$scan_rc" -ne 0 ]; then
+        echo "::error file=$f,title=Cannot read workflow::scanning" \
+             "$(basename "$f") failed (awk exit $scan_rc), so its jobs were not" \
+             "judged. A parser that stopped is not a file with nothing wrong in it." >&2
+        unreadable=1
+        continue
+    fi
     examined=$((examined + 1))
+    [ -n "$scan_out" ] || continue
     while IFS=$'\t' read -r file job why line; do
         [ -n "${file:-}" ] || continue
         findings+=("$(basename "$file")	$job	$why	line $line")
-    done < <(scan_file "$f")
+    done <<< "$scan_out"
 done
 
 if [ "${#findings[@]}" -ne 0 ]; then
@@ -141,6 +198,23 @@ if [ "${#findings[@]}" -ne 0 ]; then
     echo "pull requests are never given them, and a mandatory login would turn" >&2
     echo "every external contribution red." >&2
     exit 1
+fi
+
+# A violation outranks a refusal -- the block above has already exited 1
+# if there was one -- but a refusal outranks a pass.
+#
+# There is deliberately NO second `examined -eq 0` backstop here, and
+# that is a decision rather than an omission. Every path through the
+# loop either increments `examined` or sets `unreadable`, so
+# `examined == 0` with a non-empty file list implies `unreadable == 1`
+# and this refusal has already fired. A zero-check below it would be a
+# branch no fixture can reach -- the shape this branch is fixing one
+# level up, arriving inside the fix for it. What makes `examined`
+# trustworthy is not a backstop, it is that it is incremented AFTER the
+# read rather than at the top of the loop: the number in the OK line
+# now counts files the parser actually read, not loop iterations.
+if [ "$unreadable" -ne 0 ]; then
+    exit 2
 fi
 
 echo "OK — examined $examined workflow file(s); every job building on the '$POOL_LABEL' pool logs in to Docker Hub first."
