@@ -4,13 +4,34 @@
 #
 # Meta-test for check-scheduled-ref-pins.sh (#839).
 #
-# The gate makes four separable claims, and this file is arranged so
+# The gate makes six separable claims, and this file is arranged so
 # that exactly one of them fails per case:
 #
 #   1. every scheduled workflow carries a subject marker
 #   2. the marker agrees with the permission block
 #   3. `tracker` pins every checkout to dev
 #   4. `tree` pins none of them to dev
+#   5. the SHAPE of the file does not decide the verdict
+#   6. a workflow it cannot read is a refusal, never an absence
+#
+# EVERY CASE ASSERTS THE ERROR, NOT ONLY THE EXIT CODE, and that is not
+# tidiness. An exit-code-only oracle cannot tell a guard from anything
+# else that exits with the same number, and two of this suite's guards
+# were surviving deletion because of it:
+#
+#   * deleting the missing-marker guard makes `markers[0]` trip `set -u`.
+#     The shell aborts, the exit code is 1, and 1 is exactly what the
+#     case asserted. The case could not tell its guard from a crash.
+#   * deleting the two-markers guard left `c_two_markers` red anyway,
+#     because that fixture carried `noissues` as well, so `markers[0]`
+#     read `tracker` and the CONTRADICTION fired instead. A mutant
+#     refused by a different guard is not a kill; the fixture is re-cut
+#     below so the double marker is the only thing wrong with it.
+#
+# So run_case takes an expected error: a `clean` run must print no
+# `::error` at all, and every other case names text that has to appear
+# in one. Swapping the two pin-error titles -- a mutation that changes
+# no verdict anywhere -- used to leave the suite fully green.
 #
 # Fixtures are GENERATED per case rather than mutated in place, which is
 # how the sibling gate meta-tests do it and which sidesteps the
@@ -58,7 +79,11 @@ no() { printf 'FAIL  %s\n' "$1" >&2; fail=$((fail + 1)); }
 #   MARKER   tracker | tree | none | <anything else, written verbatim>
 #            `both` writes two markers, which is its own error case.
 #   TRIGGER  sched | nosched
-#   PERMS    issues | noissues
+#   PERMS    issues | noissues | scalar:<value>
+#            `scalar:` writes `permissions: <value>` on one line, which
+#            is the third spelling of the key. For a scalar the content
+#            and the spelling are the same thing, so it belongs on this
+#            axis rather than on WF_SHAPE, and it overrides `flow-perms`.
 #   REF...   one token per actions/checkout step: none | dev | main |
 #            refs/heads/dev. No tokens means no checkout step at all.
 #
@@ -100,7 +125,9 @@ emit_wf() {
                 printf '  push:\n    branches: [dev]\n'
             fi
         fi
-        if [ "$shape" = flow-perms ]; then
+        if [ "${perms#scalar:}" != "$perms" ]; then
+            printf 'permissions: %s\n' "${perms#scalar:}"
+        elif [ "$shape" = flow-perms ]; then
             if [ "$perms" = issues ]; then
                 printf 'permissions: {contents: read, issues: read}\n'
             else
@@ -146,9 +173,39 @@ emit_control() {
 CONTROL_DIR=$(mktemp -d)
 emit_control "$CONTROL_DIR"
 
-# run_case NAME WANT-RC DIFFERS-FROM-CONTROL BUILDER
+# verdict NAME WANT-RC WANT-ERR RC OUT
+#
+#   WANT-ERR   `clean`  the run must print no `::error` line at all
+#              <text>   that text must appear inside a printed `::error`
+#
+# Both halves are asserted, and a case fails naming every half that
+# missed. The exit code alone cannot distinguish a guard from a crash,
+# from a different guard, or from the same guard reporting the wrong
+# thing; the error text is what pins WHICH claim failed.
+verdict() {
+    local name="$1" want="$2" wanterr="$3" rc="$4" out="$5"
+    local why='' errs
+    [ "$rc" = "$want" ] || why="exit $rc, want $want"
+    errs=$(printf '%s\n' "$out" | grep '::error')
+    # Both greps here read to EOF. A piped `grep -q` exits at the first
+    # match and SIGPIPEs its producer, which under pipefail reports
+    # failure on success (check-pipefail-consumers.sh).
+    if [ "$wanterr" = clean ]; then
+        [ -z "$errs" ] || why="${why:+$why; }printed an ::error and should not have"
+    elif ! printf '%s\n' "$errs" | grep -F -- "$wanterr" >/dev/null; then
+        why="${why:+$why; }no ::error matching \"$wanterr\""
+    fi
+    if [ -z "$why" ]; then
+        ok "$name"
+    else
+        no "$name ($why)"
+        printf '      %s\n' "$out" >&2
+    fi
+}
+
+# run_case NAME WANT-RC DIFFERS-FROM-CONTROL WANT-ERR BUILDER
 run_case() {
-    local name="$1" want="$2" differs="$3" builder="$4"
+    local name="$1" want="$2" differs="$3" wanterr="$4" builder="$5"
     local dir rc out
     dir=$(mktemp -d)
     "$builder" "$dir"
@@ -165,19 +222,14 @@ run_case() {
     out=$(bash "$GATE" "$dir" 2>&1)
     rc=$?
     rm -rf "$dir"
-    if [ "$rc" = "$want" ]; then
-        ok "$name"
-    else
-        no "$name (exit $rc, want $want)"
-        printf '      %s\n' "$out" >&2
-    fi
+    verdict "$name" "$want" "$wanterr" "$rc" "$out"
 }
 
 # --- the control: green has to be reachable before any mutant means -----
 # anything. A meta-test whose control fails is measuring a broken gate,
 # and every "mutant died" below would be the same failure repeated.
 c_control() { emit_control "$1"; }
-run_case "a classified, correctly pinned corpus is clean" 0 same c_control
+run_case "a classified, correctly pinned corpus is clean" 0 same clean c_control
 
 # --- claim 3: tracker pins every checkout to dev ------------------------
 c_unpinned() {
@@ -185,14 +237,16 @@ c_unpinned() {
     emit_wf "$1/tree.yml"    tree    sched noissues none
     emit_wf "$1/pushonly.yml" none   nosched issues dev
 }
-run_case "a tracker workflow with an unpinned checkout is reported" 1 differs c_unpinned
+run_case "a tracker workflow with an unpinned checkout is reported" 1 differs \
+    "Tracker workflow not pinned to dev" c_unpinned
 
 c_pinned_elsewhere() {
     emit_wf "$1/tracker.yml" tracker sched issues main
     emit_wf "$1/tree.yml"    tree    sched noissues none
     emit_wf "$1/pushonly.yml" none   nosched issues dev
 }
-run_case "a tracker pinned to a branch that is not dev is reported" 1 differs c_pinned_elsewhere
+run_case "a tracker pinned to a branch that is not dev is reported" 1 differs \
+    "Tracker workflow not pinned to dev" c_pinned_elsewhere
 
 # Two checkouts, one pinned. The rule is EVERY checkout, and a gate that
 # checked "at least one" would pass this — the second, unpinned one is
@@ -202,7 +256,8 @@ c_half_pinned() {
     emit_wf "$1/tree.yml"    tree    sched noissues none
     emit_wf "$1/pushonly.yml" none   nosched issues dev
 }
-run_case "a tracker with one pinned and one unpinned checkout is reported" 1 differs c_half_pinned
+run_case "a tracker with one pinned and one unpinned checkout is reported" 1 differs \
+    "Tracker workflow not pinned to dev" c_half_pinned
 
 # `refs/heads/dev` is the same instruction spelled longer. Accepting only
 # the short form would fail a workflow with nothing wrong with it, and a
@@ -212,7 +267,7 @@ c_long_ref() {
     emit_wf "$1/tree.yml"    tree    sched noissues none
     emit_wf "$1/pushonly.yml" none   nosched issues dev
 }
-run_case "refs/heads/dev counts as pinned to dev" 0 differs c_long_ref
+run_case "refs/heads/dev counts as pinned to dev" 0 differs clean c_long_ref
 
 # A tracker workflow judges the tracker AGAINST THE TREE. With no
 # checkout there is no tree, and "0 of 0 checkouts unpinned" would
@@ -222,7 +277,8 @@ c_no_checkout() {
     emit_wf "$1/tree.yml"    tree    sched noissues none
     emit_wf "$1/pushonly.yml" none   nosched issues dev
 }
-run_case "a tracker workflow with no checkout at all is reported" 1 differs c_no_checkout
+run_case "a tracker workflow with no checkout at all is reported" 1 differs \
+    "Tracker workflow checks out nothing" c_no_checkout
 
 # --- claim 4: tree pins none of them to dev -----------------------------
 # The opposite direction. #839 says pinning everything would be wrong,
@@ -233,7 +289,7 @@ c_tree_pinned() {
     emit_wf "$1/tree.yml"    tree    sched noissues dev
     emit_wf "$1/pushonly.yml" none   nosched issues dev
 }
-run_case "a tree workflow pinned to dev is reported" 1 differs c_tree_pinned
+run_case "a tree workflow pinned to dev is reported" 1 differs "Tree workflow pinned to dev" c_tree_pinned
 
 # A tag or sha pin on a tree workflow is a different question and the
 # gate says so in its header. Reporting it would be the cry-wolf case.
@@ -242,7 +298,8 @@ c_tree_tag() {
     emit_wf "$1/tree.yml"    tree    sched noissues main
     emit_wf "$1/pushonly.yml" none   nosched issues dev
 }
-run_case "a tree workflow pinned to something other than dev is left alone" 0 differs c_tree_tag
+run_case "a tree workflow pinned to something other than dev is left alone" 0 differs \
+    clean c_tree_tag
 
 # --- claim 1: every scheduled workflow carries a marker -----------------
 # This is the case that closes #839 rather than patching its instances.
@@ -252,21 +309,33 @@ c_no_marker() {
     emit_wf "$1/newcomer.yml" none   sched noissues none
     emit_wf "$1/pushonly.yml" none   nosched issues dev
 }
-run_case "a new scheduled workflow with no marker is reported" 1 differs c_no_marker
+run_case "a new scheduled workflow with no marker is reported" 1 differs \
+    "Unclassified scheduled workflow" c_no_marker
 
 c_unknown_marker() {
     emit_wf "$1/tracker.yml" tracker sched issues dev
     emit_wf "$1/tree.yml"    banana  sched noissues none
     emit_wf "$1/pushonly.yml" none   nosched issues dev
 }
-run_case "a marker naming an unknown class is reported" 1 differs c_unknown_marker
+run_case "a marker naming an unknown class is reported" 1 differs "Unknown subject" c_unknown_marker
 
+# The double-marker file is a THIRD workflow, and it is otherwise
+# faultless: it asks for `issues:` and it pins `ref: dev`, so whichever
+# of its two markers is believed, no other rule has anything to say about
+# it. The corpus keeps a real `tree.yml` beside it so no class empties.
+#
+# The first form put `both` on the tree.yml itself, with `noissues`. That
+# made `markers[0]` read `tracker`, so deleting the two-markers guard
+# handed the file straight to the tracker-without-issues contradiction
+# and the case stayed red for a reason that said nothing about the guard
+# it was named after. A mutant refused by a DIFFERENT guard is not a kill.
 c_two_markers() {
     emit_wf "$1/tracker.yml" tracker sched issues dev
-    emit_wf "$1/tree.yml"    both    sched noissues none
+    emit_wf "$1/tree.yml"    tree    sched noissues none
+    emit_wf "$1/dbl.yml"     both    sched issues dev
     emit_wf "$1/pushonly.yml" none   nosched issues dev
 }
-run_case "two markers in one file are reported" 1 differs c_two_markers
+run_case "two markers in one file are reported" 1 differs "Two subject markers" c_two_markers
 
 # --- claim 2: the marker is cross-checked, not trusted ------------------
 # The `gate-selftest-runs-in:` precedent: a declaration is verified
@@ -277,14 +346,132 @@ c_tree_with_issues() {
     emit_wf "$1/tree.yml"    tree    sched issues none
     emit_wf "$1/pushonly.yml" none   nosched issues dev
 }
-run_case "a tree marker on a workflow requesting issues: is reported" 1 differs c_tree_with_issues
+run_case "a tree marker on a workflow requesting issues: is reported" 1 differs \
+    'but requests the `issues:` permission' c_tree_with_issues
 
 c_tracker_without_issues() {
     emit_wf "$1/tracker.yml" tracker sched noissues dev
     emit_wf "$1/tree.yml"    tree    sched noissues none
     emit_wf "$1/pushonly.yml" none   nosched issues dev
 }
-run_case "a tracker marker on a workflow requesting no issues: is reported" 1 differs c_tracker_without_issues
+run_case "a tracker marker on a workflow requesting no issues: is reported" 1 differs \
+    'but requests no `issues:` permission' c_tracker_without_issues
+
+# --- claim 2, continued: the THIRD spelling of `permissions:` ----------
+# The block rule matches a shape and the flow rule matches a shape; a
+# SCALAR value matches neither, and both used to read it as `issues = 0`
+# in silence. `permissions: write-all` is the dangerous half -- full
+# tracker write access declaring `tree`, skipping the pin, and exiting 0
+# clean, which is #839's opening hazard walking through the gate built
+# to stop it. Every case here is paired with a preservation control,
+# because a rule that answered "contradiction" to every scalar would
+# satisfy the defect cases by refusing correct workflows.
+c_scalar_write_all_tree() {
+    emit_wf "$1/tracker.yml" tracker sched issues dev
+    emit_wf "$1/tree.yml"    tree    sched scalar:write-all none
+    emit_wf "$1/pushonly.yml" none   nosched issues dev
+}
+run_case "permissions: write-all contradicts a tree marker" 1 differs \
+    'but requests the `issues:` permission' c_scalar_write_all_tree
+
+# Preservation. `write-all` does grant `issues: write`, so it SATISFIES a
+# tracker marker; the widening must not have turned every scalar red.
+c_scalar_write_all_tracker() {
+    emit_wf "$1/tracker.yml" tracker sched scalar:write-all dev
+    emit_wf "$1/tree.yml"    tree    sched noissues none
+    emit_wf "$1/pushonly.yml" none   nosched issues dev
+}
+run_case "permissions: write-all satisfies a tracker marker" 0 differs \
+    clean c_scalar_write_all_tracker
+
+# `read-all` is NOT the same statement as `write-all`, and this pair is
+# what says so. This repository's default_workflow_permissions is `read`
+# (measured 2026-08-28), so `read-all` narrows nothing and grants exactly
+# what a workflow with no `permissions:` block already has. It states the
+# default; it does not request the tracker. So it neither contradicts a
+# `tree` marker...
+c_scalar_read_all_tree() {
+    emit_wf "$1/tracker.yml" tracker sched issues dev
+    emit_wf "$1/tree.yml"    tree    sched scalar:read-all none
+    emit_wf "$1/pushonly.yml" none   nosched issues dev
+}
+run_case "permissions: read-all does not contradict a tree marker" 0 differs \
+    clean c_scalar_read_all_tree
+
+# ...nor satisfies a `tracker` one. A tracker workflow has to DECLARE the
+# access it needs so the marker has a second statement to agree with, and
+# `read-all` declares nothing -- it is reported exactly as an absent
+# permission block is. Without this case the pair above would be equally
+# consistent with `read-all` having been read as `issues: read`.
+c_scalar_read_all_tracker() {
+    emit_wf "$1/tracker.yml" tracker sched scalar:read-all dev
+    emit_wf "$1/tree.yml"    tree    sched noissues none
+    emit_wf "$1/pushonly.yml" none   nosched issues dev
+}
+run_case "permissions: read-all does not satisfy a tracker marker" 1 differs \
+    'but requests no `issues:` permission' c_scalar_read_all_tracker
+
+# A QUOTED scalar is the same scalar. YAML offers a quoted spelling for
+# every plain one, and this is the same un-varied-parameter trap as
+# WF_SHAPE: without this case, stripping the quotes could be deleted and
+# `permissions: "write-all"` would fall out of the enumeration into the
+# residue -- a refusal where the answer is a contradiction, and the gate
+# reporting "I cannot see" about a file it can see perfectly well.
+c_scalar_quoted() {
+    emit_wf "$1/tracker.yml" tracker sched issues dev
+    emit_wf "$1/tree.yml"    tree    sched "scalar:\"write-all\"" none
+    emit_wf "$1/pushonly.yml" none   nosched issues dev
+}
+run_case "a quoted scalar is read as the scalar it quotes" 1 differs \
+    'but requests the `issues:` permission' c_scalar_quoted
+
+# THE RESIDUE, which is what keeps the enumeration from being the next
+# silence. Three known spellings and no fourth branch would read an
+# unrecognised value as absent -- the identical defect, one spelling
+# along. An unclassifiable value is a REFUSAL: the cross-check cannot be
+# made, and a marker believed alone is what the cross-check exists to
+# prevent.
+c_scalar_residue() {
+    emit_wf "$1/tracker.yml" tracker sched issues dev
+    emit_wf "$1/tree.yml"    tree    sched scalar:read_all none
+    emit_wf "$1/pushonly.yml" none   nosched issues dev
+}
+run_case "an unrecognised permissions value is refused, not read as absent" 2 differs \
+    "Unclassifiable permissions value" c_scalar_residue
+
+# The refusal disables the CROSS-CHECK and nothing else. This file is
+# unreadable on the permission side AND pins a tree workflow to dev; the
+# pin rule reads checkouts, not permissions, so it still fires -- and a
+# violation outranks a refusal, so the exit code is 1, not 2. Without
+# this, "refuse the residue" could have meant "stop judging the file".
+c_scalar_residue_still_pin_checked() {
+    emit_wf "$1/tracker.yml" tracker sched issues dev
+    emit_wf "$1/tree.yml"    tree    sched noissues none
+    emit_wf "$1/odd.yml"     tree    sched scalar:read_all dev
+}
+run_case "a refused permission value still leaves the pin rule judging the file" 1 differs \
+    "Tree workflow pinned to dev" c_scalar_residue_still_pin_checked
+
+# --- claim 6: a workflow it cannot read is a refusal, not an absence ---
+# `facts_of` producing nothing must never read as "not scheduled". The
+# guard says so in the gate and had no case: deleting it left the suite
+# 30/0 green while an unreadable workflow dropped out of the domain
+# without a word.
+#
+# The fixture is a DIRECTORY named *.yml rather than a file at mode 000,
+# and deliberately. Mode 000 depends on who runs the suite -- as root it
+# is readable, the case would pass having exercised nothing, and a case
+# that quietly stops testing is the failure this whole file is about.
+# read(2) on a directory is EISDIR for every uid, so this fixture reaches
+# the guard on any runner.
+c_unreadable() {
+    emit_wf "$1/tracker.yml" tracker sched issues dev
+    emit_wf "$1/tree.yml"    tree    sched noissues none
+    emit_wf "$1/pushonly.yml" none   nosched issues dev
+    mkdir "$1/isadir.yml"
+}
+run_case "a workflow whose facts cannot be extracted is a refusal, not an absence" 2 differs \
+    "Cannot read workflow" c_unreadable
 
 # The composed attack. Each guard above dies to a single mutation; this
 # moves the marker AND the permission together so the cross-check is
@@ -297,7 +484,7 @@ c_consistent_but_unpinned() {
     emit_wf "$1/pushonly.yml" none   nosched issues dev
 }
 run_case "a consistently relabelled workflow is still caught by the pin rule" 1 differs \
-    c_consistent_but_unpinned
+    "Tracker workflow not pinned to dev" c_consistent_but_unpinned
 
 # The defect this gate shipped with in its first form, pinned so it
 # cannot come back: when the only workflow of a class is the broken one,
@@ -310,37 +497,39 @@ c_violation_empties_a_class() {
     emit_wf "$1/tree.yml"    none    sched noissues none
 }
 run_case "a violation that empties its own class still exits 1, not 2" 1 differs \
-    c_violation_empties_a_class
+    "Unclassified scheduled workflow" c_violation_empties_a_class
 
 # --- non-vacuity: green having decided nothing --------------------------
 c_no_schedules() {
     emit_wf "$1/pushonly.yml" none nosched issues dev
     emit_wf "$1/other.yml"    none nosched noissues none
 }
-run_case "a corpus with no scheduled workflow cannot check" 2 differs c_no_schedules
+run_case "a corpus with no scheduled workflow cannot check" 2 differs \
+    "No scheduled workflows" c_no_schedules
 
 c_all_tree() {
     emit_wf "$1/a.yml" tree sched noissues none
     emit_wf "$1/b.yml" tree sched noissues none
 }
-run_case "every scheduled workflow classified tree cannot check" 2 differs c_all_tree
+run_case "every scheduled workflow classified tree cannot check" 2 differs \
+    "No tracker workflows" c_all_tree
 
 c_all_tracker() {
     emit_wf "$1/a.yml" tracker sched issues dev
     emit_wf "$1/b.yml" tracker sched issues dev
 }
-run_case "every scheduled workflow classified tracker cannot check" 2 differs c_all_tracker
+run_case "every scheduled workflow classified tracker cannot check" 2 differs \
+    "No tree workflows" c_all_tracker
 
 c_empty() { :; }
-run_case "an empty directory cannot check" 2 differs c_empty
+run_case "an empty directory cannot check" 2 differs "No workflows found" c_empty
 
 # A missing directory is not an empty one: the empty case proves the
 # glob guard, this proves the gate does not treat an absent subject as a
 # clean one.
 missing=$(mktemp -d); rmdir "$missing"
 out=$(bash "$GATE" "$missing" 2>&1); rc=$?
-if [ "$rc" = 2 ]; then ok "a missing directory cannot check"
-else no "a missing directory cannot check (exit $rc, want 2)"; printf '      %s\n' "$out" >&2; fi
+verdict "a missing directory cannot check" 2 "No workflow directory" "$rc" "$out"
 
 # --- population selection ----------------------------------------------
 # The control already carries a non-scheduled workflow that would break
@@ -352,7 +541,7 @@ c_pushonly_ignored() {
     emit_wf "$1/pushonly1.yml" none  nosched issues dev
     emit_wf "$1/pushonly2.yml" banana nosched issues dev
 }
-run_case "workflows without a schedule are outside the domain" 0 differs c_pushonly_ignored
+run_case "workflows without a schedule are outside the domain" 0 differs clean c_pushonly_ignored
 
 # The one route OUT of the domain, pinned so the next author does not
 # have to rediscover it. A reusable workflow declares no `schedule:`, so
@@ -389,7 +578,7 @@ c_uses_tree() {
     emit_delegating_pair "$1" tree noissues
 }
 run_case "a scheduled tree caller delegating with uses: passes; the callee is outside the domain" \
-    0 differs c_uses_tree
+    0 differs clean c_uses_tree
 
 # The same delegation declared `tracker` is CLOSED, by the rule that a
 # tracker workflow must check something out. This is the boundary of the
@@ -400,7 +589,7 @@ c_uses_tracker() {
     emit_delegating_pair "$1" tracker issues
 }
 run_case "the same delegation declared tracker is caught by the no-checkout rule" \
-    1 differs c_uses_tracker
+    1 differs "Tracker workflow checks out nothing" c_uses_tracker
 
 # --- claim 5: the SHAPE of the file does not decide the verdict ---------
 # The axis emit_wf held constant for 21 cases. Both of the gate's key
@@ -420,14 +609,14 @@ c_flow_on_unclassified() {
     shaped flow-on "$1/newcomer.yml" none sched issues none
 }
 run_case "a flow-style on: does not put a workflow outside the domain" 1 differs \
-    c_flow_on_unclassified
+    "Unclassified scheduled workflow" c_flow_on_unclassified
 
 c_flow_on_clean() {
     emit_wf "$1/tracker.yml" tracker sched issues dev
     shaped flow-on "$1/tree.yml" tree sched noissues none
     emit_wf "$1/pushonly.yml" none nosched issues dev
 }
-run_case "a flow-style on: on a correct workflow is still clean" 0 differs c_flow_on_clean
+run_case "a flow-style on: on a correct workflow is still clean" 0 differs clean c_flow_on_clean
 
 # The cross-check, and this is the dangerous direction. An inline
 # permissions mapping made `issues` read as absent, so the marker became
@@ -441,7 +630,7 @@ c_flow_perms_contradiction() {
     emit_wf "$1/pushonly.yml" none nosched issues dev
 }
 run_case "an inline permissions mapping is still cross-checked" 1 differs \
-    c_flow_perms_contradiction
+    'but requests the `issues:` permission' c_flow_perms_contradiction
 
 c_flow_perms_clean() {
     shaped flow-perms "$1/tracker.yml" tracker sched issues dev
@@ -449,7 +638,7 @@ c_flow_perms_clean() {
     emit_wf "$1/pushonly.yml" none nosched issues dev
 }
 run_case "an inline permissions mapping satisfies the tracker cross-check" 0 differs \
-    c_flow_perms_clean
+    clean c_flow_perms_clean
 
 # The marker anchored at column 0, so a correctly classified, correctly
 # pinned workflow whose marker sat beside the step it governs was
@@ -460,7 +649,7 @@ c_indented_marker() {
     shaped indent "$1/tree.yml" tree sched noissues none
     emit_wf "$1/pushonly.yml" none nosched issues dev
 }
-run_case "a marker indented beside its step is read" 0 differs c_indented_marker
+run_case "a marker indented beside its step is read" 0 differs clean c_indented_marker
 
 # --- prose cannot answer for the file ----------------------------------
 # Both flow rules read a whole line, so both could be satisfied by a
@@ -469,7 +658,7 @@ run_case "a marker indented beside its step is read" 0 differs c_indented_marker
 # describes. Hand-written, because the point is bytes emit_wf will not
 # produce.
 raw_case() {
-    local name="$1" want="$2" body="$3"
+    local name="$1" want="$2" wanterr="$3" body="$4"
     local dir rc out
     dir=$(mktemp -d)
     printf '%s' "$body" > "$dir/a.yml"
@@ -477,11 +666,10 @@ raw_case() {
     emit_wf "$dir/tree.yml"    tree    sched noissues none
     out=$(bash "$GATE" "$dir" 2>&1); rc=$?
     rm -rf "$dir"
-    if [ "$rc" = "$want" ]; then ok "$name"
-    else no "$name (exit $rc, want $want)"; printf '      %s\n' "$out" >&2; fi
+    verdict "$name" "$want" "$wanterr" "$rc" "$out"
 }
 
-raw_case "a comment on the on: line does not declare a schedule" 0 \
+raw_case "a comment on the on: line does not declare a schedule" 0 clean \
 'name: a
 on:  # nightly, on the same schedule: as the others
   push:
@@ -498,6 +686,7 @@ jobs:
 '
 
 raw_case "a comment mentioning issues: does not satisfy the cross-check" 1 \
+'but requests no `issues:` permission' \
 'name: a
 # scheduled-subject: tracker
 on:
@@ -511,6 +700,35 @@ jobs:
       - uses: actions/checkout@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
         with:
           ref: dev
+'
+
+# A STEP ENDS WHERE ITS INDENTATION ENDS, and the rule that closes it at
+# the first shallower line survived every case above -- because in every
+# generated fixture the next `- ` closes the step anyway, and so does
+# END. It is not dead: a job-level `outputs:` mapping is real Actions
+# YAML, a job output called `ref` is an ordinary thing to write, and with
+# the step left open that key is attributed to the checkout above it. An
+# UNPINNED tracker checkout then reads as pinned and the gate exits 0 --
+# the dangerous direction, and the exact defect the gate exists to
+# report. Hand-written, because emit_wf emits no job-level keys after the
+# step list; that constant is one more un-varied parameter.
+raw_case "a job-level key after the step list is not the checkout's ref" 1 \
+'Tracker workflow not pinned to dev' \
+'name: a
+# scheduled-subject: tracker
+on:
+  schedule:
+    - cron: 0 0 * * *
+permissions:
+  contents: read
+  issues: read
+jobs:
+  j:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    outputs:
+      ref: dev
 '
 
 rm -rf "$CONTROL_DIR"
