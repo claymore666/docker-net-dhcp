@@ -26,33 +26,106 @@
 #   A. REFUSE unless both `test` and `policy-gates` exist and both have steps.
 #      A missing half is the absent-check-reads-as-green failure, and it
 #      must send a human to look rather than render a clean verdict.
-#   B. Every step in `test` is one this gate KNOWS, identified by name
-#      (or by `uses:` with the version stripped, so a pin bump is not a
-#      finding). An unknown step is a finding, not an allowance.
-#   C. No non-comment line of any `run:` body in `test` invokes a
+#   B. The steps of `test` are EXACTLY the set this gate knows, in both
+#      directions -- identified by name, or by `uses:` with the version
+#      stripped so a pin bump is not a finding. An unknown step is a
+#      finding, and so is a KNOWN step that has gone missing. One
+#      direction alone is not enough: checking only for strangers lets
+#      the job be emptied one deletion at a time, which is the same
+#      vacuity D exists to stop, arriving through the other door.
+#   C. No non-comment line of any `run:` body in `test` MENTIONS a
 #      `scripts/*.sh` gate. This is the drift that actually happens: on
 #      the tree this gate was written against, 48 of the 50 steps in
 #      `policy-gates` invoke a script and only the two environment-setup steps
 #      do not, so a script invocation appearing in `test` is a gate that
 #      moved.
-#   D. `test` must actually run `go test`. Without this the gate is
-#      satisfied by EMPTYING the job -- a `test` check that runs nothing
-#      passes A, B and C perfectly and means less than before the split.
-#   E. `policy-gates` must invoke at least one `scripts/*.sh`. Same direction,
-#      other half: gutting `policy-gates` must not read as clean.
+#   D. `test` must actually run `go test`, IN COMMAND POSITION.
+#      Without this arm the gate is satisfied by EMPTYING the job -- a
+#      `test` check that runs nothing passes A and C perfectly and means
+#      less than before the split.
+#   E. `policy-gates` must INVOKE at least one `scripts/*.sh`, in command
+#      position. Same direction, other half: gutting `policy-gates` must
+#      not read as clean.
+#   F. Neither job may lose the ability to report a red UNDER ITS OWN
+#      NAME. No `if:` on either job or on any of their steps, no
+#      `continue-on-error`, no `|| true`, `|| :` or `set +e` on a live
+#      run line, and no `strategy:` -- a matrix renames the check to
+#      `test (x)` and `test` itself stops existing, so the context
+#      branch protection requires goes permanently absent. D and E ask
+#      whether the work is written down; F asks whether its failure can
+#      still reach a human. A required check that is green because it
+#      skipped, or because the one step that matters was allowed to
+#      fail, is the same absent-check-reads-as-green failure this split
+#      was filed about, wearing a repository setting instead of a job
+#      name.
+#
+# THE SAME SPELLING IS MATCHED TWO DIFFERENT WAYS, AND THAT IS THE POINT
+#
+# C and E both look for `scripts/*.sh`, and they must not share a
+# predicate, because a match means opposite things to them. For C a
+# match is a FINDING, so the broad substring is right: over-matching
+# costs a false red, and red sends a human to look. For E a match is a
+# PASS, so the broad substring is exactly wrong -- `echo "scripts/
+# check-lock-discipline.sh runs elsewhere"` satisfied it, and the gate
+# certified an emptied corpus (measured, #829 review round 1). An arm
+# whose match is a pass must be anchored in COMMAND POSITION, the same
+# boundary scripts/workflow-shell-lines.sh names in as many words: it
+# answers "is this token in something the workflow runs", not "is this
+# token the command being run". D was defeated identically, by
+# `echo "we no longer go test in CI"`.
 #
 # Comment lines are excluded from C deliberately. This workflow's own
 # prose names scripts -- the `Fuzz (short)` step's comment names
 # check-fuzz-budget.sh -- and prose satisfies a substring search. A gate
 # that counted comments would report the file's explanation of itself.
 #
-# WHAT IT CANNOT SEE, said plainly rather than left to be discovered
+# WHAT IT CANNOT SEE, said plainly rather than left to be discovered.
+# This is a BOUND, not a list of everything: each entry below is a shape
+# measured to pass, and the escapes nobody has thought of yet outnumber
+# them.
 #
 #   * A gate written INLINE in the `test` job as raw shell, invoking no
 #     script, is invisible to C. Arm B is what stands between that and
 #     nothing, and B is keyed on step NAMES: rename the step and B goes
 #     red, which is the intended friction, but B cannot judge what a
 #     step whose name it already knows has come to contain.
+#   * INDIRECTION defeats C, D and E alike, because each reads one line
+#     of shell and none follows a call. `make check-all-policy-gates`
+#     inside an ALLOWED step runs the corpus from `test` and C says
+#     nothing; a `go test` reached only through a Makefile target or a
+#     wrapper script leaves D red rather than quiet, which is the safe
+#     direction, but a `scripts/*.sh` reached the same way from
+#     `policy-gates` leaves E red for a job that is in fact carrying its
+#     corpus. Neither is closed here: following the call would mean
+#     evaluating the shell.
+#   * DEAD CODE in command position satisfies D and E. `if false; then
+#     go test ./...; fi` is a live line, anchored, and never executes.
+#     Reachability is not decidable from a line scan, and F closes the
+#     spellings of this that a repository setting can express -- `if:`
+#     and `continue-on-error` -- not the ones the shell can.
+#   * A HERE DOCUMENT body is indistinguishable from shell to this gate,
+#     so a script name at the start of a heredoc line satisfies E.
+#   * F does not enumerate every way to discard an exit status. `|| echo
+#     "..."`, `|| exit 0`, a trailing `; true`, and a pipeline whose
+#     last stage always succeeds all pass. The three it does name are
+#     the ones with no legitimate use in these two jobs; a wider net
+#     would red-flag ordinary shell in a future gate step, and a gate
+#     that cries wolf gets discharged.
+#   * E asks for AT LEAST ONE invocation, so a `policy-gates` reduced
+#     from 48 gates to 1 still passes. That bound is deliberate -- the
+#     corpus grows every week and a count here would be a stale number
+#     with no observer -- and it is backstopped from the other side by
+#     scripts/check-local-lane.sh, which fails when a `check-*.sh` in
+#     the tree is run by nothing.
+#   * F reads the workflow as written, and a job can also stop reporting
+#     for reasons no line of it expresses: the file being DELETED (this
+#     gate is invoked from the very workflow it judges, so it does not
+#     run at all), a `runs-on` label with no runner behind it, or the
+#     `PURITY_WORKFLOW` seam being pointed at some other file. The first
+#     two are absent required checks, which block; the third would need
+#     a committed decoy workflow and a changed invocation, and
+#     scripts/test-check-test-job-purity.sh asserts the invocation is in
+#     command position in the real file.
 #   * It cannot see branch protection. Whether `test` and `policy-gates` are
 #     REQUIRED is a repository setting, not a fact in this tree, and no
 #     gate running inside CI can read it without a token. If `policy-gates` is
@@ -115,7 +188,26 @@ ALLOWED = {
     "Fuzz (short)",
 }
 
-SCRIPT_RE = re.compile(r"scripts/[A-Za-z0-9_.-]+\.sh")
+# Two predicates for one spelling, because a match means opposite
+# things to C and to E. See the header: broad where a match is a
+# FINDING, anchored in command position where a match is a PASS.
+SCRIPT_MENTION = re.compile(r"scripts/[A-Za-z0-9_.-]+\.sh")
+SCRIPT_INVOKE = re.compile(
+    r"^\s*(?:(?:bash|sh)\s+)?(?:\./)?(scripts/[A-Za-z0-9_.-]+\.sh)(?:\s|$)"
+)
+# The same anchor for arm D. Every `go test` in this workflow today is
+# either the whole command or the body of a loop, so leading whitespace
+# is allowed and nothing else is.
+GO_TEST_INVOKE = re.compile(r"^\s*go\s+test(?:\s|$)")
+
+# Arm F: the ways a run line can discard the exit status it was supposed
+# to report. Bounded on purpose -- see the header for what is NOT here
+# and why widening it would cost more than it buys.
+SWALLOW = (
+    (re.compile(r"\|\|\s*true(?:\s|;|$)"), "`|| true`"),
+    (re.compile(r"\|\|\s*:(?:\s|;|$)"), "`|| :`"),
+    (re.compile(r"(?:^|;|\s)set\s+\+[A-Za-z]*e"), "`set +e`"),
+)
 
 path = sys.argv[1]
 try:
@@ -152,6 +244,15 @@ for want in (TEST_JOB, GATES_JOB):
 
 
 def identity(step):
+    # A step that is not a mapping -- a stray `-` leaving a null entry, a
+    # bare string -- used to reach the caller as a REFUSAL, because
+    # `"uses" in None` raises and the shell maps a crash to exit 2. That
+    # fails closed, so nothing got through, but it is the wrong verdict
+    # and it is the same class already fixed for `run: true` below: a
+    # step like that is still a step in `test`, and the honest answer is
+    # a finding naming it.
+    if not isinstance(step, dict):
+        return "<non-mapping step %r>" % (step,)
     if "uses" in step:
         return "uses:" + str(step["uses"]).split("@")[0]
     return step.get("name") or "<unnamed run step>"
@@ -164,6 +265,8 @@ def live_lines(step):
     # that input, and a crash here reaches the caller as a refusal --
     # the safe direction, but the wrong verdict. The right one is a
     # finding, because a step like that is still a step in `test`.
+    if not isinstance(step, dict):
+        return []
     body = step.get("run")
     if body is None:
         return []
@@ -174,9 +277,9 @@ def live_lines(step):
 
 findings = []
 
-# B -- every step in `test` is one this gate knows.
-for step in jobs[TEST_JOB]["steps"]:
-    ident = identity(step)
+# B -- the steps of `test` are EXACTLY the set this gate knows.
+present = [identity(step) for step in jobs[TEST_JOB]["steps"]]
+for ident in present:
     if ident not in ALLOWED:
         findings.append(
             "test: unrecognised step %r. Either it is not a test of this "
@@ -185,39 +288,94 @@ for step in jobs[TEST_JOB]["steps"]:
             "widening it is widening what a required check named `test` is "
             "allowed to mean." % (ident, GATES_JOB)
         )
+for ident in sorted(ALLOWED - set(present)):
+    findings.append(
+        "test: known step %r is GONE. `test` is a required check, and a "
+        "required check shrinks silently: no name disappears from the "
+        "status list when the job stops doing something. If the step is "
+        "genuinely obsolete, remove it from this gate's ALLOWED set in "
+        "the same commit -- narrowing what `test` means is a decision, "
+        "not a deletion." % ident
+    )
 
-# C -- no gate script is invoked from `test`.
+# C -- no gate script is MENTIONED on a live line of `test`.
 for step in jobs[TEST_JOB]["steps"]:
     for ln in live_lines(step):
-        for hit in SCRIPT_RE.findall(ln):
+        for hit in SCRIPT_MENTION.findall(ln):
             findings.append(
                 "test: step %r invokes %s. Gate scripts belong in the policy job; "
                 "that separation is the whole of #829." % (identity(step), hit)
             )
 
-# D -- `test` is not vacuous.
+# D -- `test` is not vacuous: `go test` in COMMAND POSITION.
 if not any(
-    "go test" in ln
+    GO_TEST_INVOKE.search(ln)
     for step in jobs[TEST_JOB]["steps"]
     for ln in live_lines(step)
 ):
     findings.append(
-        "test: no step runs `go test`. A required check named `test` that "
-        "runs no suite is worse than the job this split replaced."
+        "test: no step RUNS `go test` -- naming it is not running it. A "
+        "required check named `test` that runs no suite is worse than the "
+        "job this split replaced."
     )
 
-# E -- `policy-gates` is not vacuous.
-gate_scripts = {
-    hit
-    for step in jobs[GATES_JOB]["steps"]
-    for ln in live_lines(step)
-    for hit in SCRIPT_RE.findall(ln)
-}
+# E -- `policy-gates` is not vacuous: a script in COMMAND POSITION.
+gate_scripts = set()
+for step in jobs[GATES_JOB]["steps"]:
+    for ln in live_lines(step):
+        hit = SCRIPT_INVOKE.search(ln)
+        if hit:
+            gate_scripts.add(hit.group(1))
 if not gate_scripts:
     findings.append(
-        "policy-gates: no step invokes a scripts/*.sh gate. The corpus this job "
-        "exists to carry has been emptied."
+        "policy-gates: no step RUNS a scripts/*.sh gate -- naming one is not "
+        "running it. The corpus this job exists to carry has been emptied."
     )
+
+# F -- neither job may swallow its own result.
+for jname in (TEST_JOB, GATES_JOB):
+    job = jobs[jname]
+    if "if" in job:
+        findings.append(
+            "%s: the job carries an `if:`. A required check that can be "
+            "SKIPPED is reported green without running, which is the "
+            "absent-check-reads-as-green failure #829 exists to remove."
+            % jname
+        )
+    if job.get("continue-on-error"):
+        findings.append(
+            "%s: the job sets `continue-on-error`. Its failure would no "
+            "longer be able to turn the check red." % jname
+        )
+    if "strategy" in job:
+        findings.append(
+            "%s: the job has a `strategy:`. A matrix renames the check to "
+            "`%s (...)`, so the context branch protection requires goes "
+            "permanently ABSENT -- which blocks rather than passes, but "
+            "stalls every open pull request until someone edits a "
+            "repository setting. If the matrix is wanted, the required "
+            "contexts must be changed in the same breath." % (jname, jname)
+        )
+    for step in job["steps"]:
+        ident = identity(step)
+        if isinstance(step, dict) and "if" in step:
+            findings.append(
+                "%s: step %r carries an `if:`. The check stays green when "
+                "the step does not run." % (jname, ident)
+            )
+        if isinstance(step, dict) and step.get("continue-on-error"):
+            findings.append(
+                "%s: step %r sets `continue-on-error`, so its failure "
+                "cannot turn the check red." % (jname, ident)
+            )
+        for ln in live_lines(step):
+            for rx, label in SWALLOW:
+                if rx.search(ln):
+                    findings.append(
+                        "%s: step %r discards an exit status with %s. The "
+                        "step still appears in the job and still runs; only "
+                        "its verdict is gone." % (jname, ident, label)
+                    )
 
 for f in findings:
     print("FINDING\t%s" % f)
