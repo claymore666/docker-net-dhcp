@@ -58,11 +58,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GATE_REPO: ${{ github.repository }}
-          # 15 covers a merge burst comfortably at an hourly cadence:
-          # the 2026-08-13 incident put six runs on dev in 20 seconds,
-          # and a commit stays in range for well over a day of normal
-          # traffic. Raising it costs one API call per extra commit.
-          GATE_BRANCH_COMMITS: "15"
+          # THE BRANCH SCOPE IS NOT SET HERE (#874). It lives in
+          # .github/gate-branch-scope.env, because the retention purge
+          # has to spare exactly the commits this gate reads and a copy
+          # of the numbers in each workflow would drift silently -- in
+          # the direction that deletes the evidence this gate demands.
+          # Both scripts read that one file; neither workflow restates it.
           # Through env, not expanded into the script text (#737).
           GRACE_MINUTES: ${{ inputs.grace-minutes || '20' }}
         run: bash scripts/check-missing-runs.sh "${GRACE_MINUTES}"

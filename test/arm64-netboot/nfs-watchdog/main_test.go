@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -124,11 +125,25 @@ func TestProber_BlockedProbeGoesStale(t *testing.T) {
 
 func TestProber_FailingProbeStopsPublishing(t *testing.T) {
 	var fail atomic.Bool
+	// Closed by the fake the first time it actually returns the error.
+	// Sampling `frozen` off the wall clock instead raced the prober and
+	// went red on CI: setting the flag does not stop a probe that has
+	// ALREADY returned nil and has not yet reached its Store, so the
+	// timestamp could still move once after the flag flipped and the
+	// test read a value that was not final. Because run() is a single
+	// goroutine, entering the failing probe means every earlier success
+	// has already been stored -- so a sample taken after this signal is
+	// the last one the prober will ever publish, with no timing
+	// assumption at all. This is not a widened window: the 50ms below is
+	// still the window in which a WRONG publish would be caught.
+	failed := make(chan struct{})
+	var failedOnce sync.Once
 	p := &prober{
 		path:     "/irrelevant",
 		interval: time.Millisecond,
 		statfs: func(string) error {
 			if fail.Load() {
+				failedOnce.Do(func() { close(failed) })
 				return errors.New("stale file handle")
 			}
 			return nil
@@ -147,6 +162,11 @@ func TestProber_FailingProbeStopsPublishing(t *testing.T) {
 	}
 
 	fail.Store(true)
+	select {
+	case <-failed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the prober never ran a probe after the filesystem started failing")
+	}
 	frozen := p.lastGood()
 	time.Sleep(50 * time.Millisecond)
 	if got := p.lastGood(); !got.Equal(frozen) {
