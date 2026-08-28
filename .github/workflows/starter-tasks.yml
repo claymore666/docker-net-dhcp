@@ -20,7 +20,8 @@ name: Starter tasks
 # PR because somebody closed an issue, and would fail on a tracker API blip
 # too. The half that IS a property of the tree — the README and the badge
 # justification pointing at the same label — runs there instead, and this
-# workflow covers only what needs the API.
+# workflow covers only what needs the API: the label's open count, and whether
+# the repository still offers the route the Unmet answer sends newcomers to.
 #
 # A red schedule is easier to ignore than a red PR; that is the accepted
 # cost of not charging it to an unrelated contributor. The check exits 2
@@ -41,6 +42,11 @@ on:
 permissions:
   contents: read
   issues: read
+  # The Unmet answer tells a newcomer to ask in Discussions, and the check
+  # confirms that route is still offered — a repository setting can withdraw
+  # it without anybody touching the tree, which is exactly the kind of silent
+  # decay this schedule exists for.
+  discussions: read
 
 jobs:
   starter-tasks:

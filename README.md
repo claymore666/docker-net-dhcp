@@ -196,13 +196,19 @@ gh attestation verify oci://ghcr.io/claymore666/docker-net-dhcp:VERSION --repo c
 Contributions are welcome.
 
 - **Looking for somewhere to start?** There are no starter tasks open at the
-  moment. The ones that were seeded have all been picked up, and rather than
-  send you to an empty list this section says so. If you would like a first
-  task, open an issue describing what interests you — a subsystem, a bug you
-  hit, a piece of the documentation you found thin — and one will be scoped
-  against it. When starter tasks exist again they carry the `good first issue`
-  label and this section links to them.
-- **Questions, bugs, and feature requests:** open a [GitHub issue](https://github.com/claymore666/docker-net-dhcp/issues).
+  moment. The ones that were seeded were closed as the work they described
+  landed, and rather than send you to an empty list this section says so. If
+  you would like a first task,
+  [ask in Discussions](https://github.com/claymore666/docker-net-dhcp/discussions/new?category=q-a)
+  and say what interests you — a subsystem, a bug you hit, a piece of the
+  documentation you found thin — and one will be scoped against it. When
+  starter tasks exist again they carry the `good first issue` label and this
+  section links to them.
+- **Questions:** ask in
+  [Discussions](https://github.com/claymore666/docker-net-dhcp/discussions/new?category=q-a).
+  The issue forms are for bugs and feature requests and each stamps a type
+  label, so a question does not have an honest home on the tracker.
+- **Bugs and feature requests:** open a [GitHub issue](https://github.com/claymore666/docker-net-dhcp/issues).
   For bugs, please include the plugin version, your Docker version, the network
   mode (`bridge`, `macvlan`, or `ipvlan`), and the relevant plugin log.
   Docker has no `plugin logs` subcommand — the log lives in two places

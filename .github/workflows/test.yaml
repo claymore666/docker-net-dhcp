@@ -259,9 +259,11 @@ jobs:
       # Only the half that needs no network (#537, widened by #851). The
       # badge's small_tasks answer and the README's Contributing section must
       # agree with each other: Met means both link a listing of the declared
-      # starter-task label, Unmet means the README promises nothing and the
-      # justification cites nothing. That is a property of the tree, so this
-      # commit is the only thing that can break it.
+      # starter-task label, Unmet means the README promises nothing, the
+      # justification cites nothing, and the route the README tells a newcomer
+      # to ask through is one .github/ISSUE_TEMPLATE/config.yml actually
+      # publishes. That is a property of the tree, so this commit is the only
+      # thing that can break it.
       #
       # Whether the label still HAS open issues is a claim about live tracker
       # state and deliberately does NOT run here: an unrelated PR must not go

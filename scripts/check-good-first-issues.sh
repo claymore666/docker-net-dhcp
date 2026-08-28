@@ -32,6 +32,24 @@
 # red. That is what makes dropping the claim to honest reversible rather
 # than permanent: the flip back to Met is enforced, not remembered.
 #
+# AND THE UNMET ANSWER CARRIES A FOURTH OBSERVABLE, because it is not
+# "there are no starter tasks" but "there are none, ask here". Dropping
+# the false promise and replacing it with a route that does not exist
+# would be the same defect one sentence later, and the first draft of
+# the #851 fix did exactly that: it told a newcomer to open an issue,
+# while
+# .github/ISSUE_TEMPLATE/config.yml disables blank issues and both forms
+# auto-apply a type label (`bug`, `enhancement`) that is wrong for "I
+# would like a first task". So the route is checked too:
+#
+#   * --static  the route named below must be DECLARED as a contact link
+#               in .github/ISSUE_TEMPLATE/config.yml, and README.md must
+#               send the newcomer to that same one.
+#   * --live    the repository must actually still offer it.
+#
+# A README sentence naming a route, with nothing that goes red when the
+# route disappears, is precisely the shape this gate exists to refuse.
+#
 # TWO CHECKS, DELIBERATELY SPLIT BY WHAT THEY NEED (see #537, which asks
 # for this decision to be made before the code is written).
 #
@@ -112,6 +130,10 @@
 #   GFI_README  path to README.md
 #   GFI_BADGE   path to .bestpractices.json
 #   GFI_LABELS  path to .github/labels.yml
+#   GFI_ROUTES  path to .github/ISSUE_TEMPLATE/config.yml
+#   GFI_ASK_ROUTE  the ask route, so the "this check does not understand
+#               that kind of route" refusal can be driven. Empty falls
+#               back to the constant below, which is what production uses.
 #   GFI_GH      the gh command (default: gh), so --live can be driven
 #               against a stub without touching the network.
 
@@ -128,10 +150,27 @@ ROOT="$(dirname "$HERE")"
 README="${GFI_README:-$ROOT/README.md}"
 BADGE="${GFI_BADGE:-$ROOT/.bestpractices.json}"
 LABELS="${GFI_LABELS:-$ROOT/.github/labels.yml}"
+ROUTES="${GFI_ROUTES:-$ROOT/.github/ISSUE_TEMPLATE/config.yml}"
 GH="${GFI_GH:-gh}"
 
 # The label this gate watches. See "WHERE THE LABEL NAME COMES FROM".
 LABEL='good first issue'
+
+# The route the Unmet answer sends a newcomer to. Named here and anchored
+# to the contact-link declaration for the same reason the label name is
+# anchored to labels.yml: a gate that derives the route from the promise
+# it is guarding cannot fail when the promise is the thing that is wrong.
+# Deriving it from the README would mean that deleting the sentence — the
+# one failure worth catching — blinds the check.
+#
+# It is a Discussions route rather than a third issue form on purpose.
+# A form would need a type label, the taxonomy in .github/labels.yml
+# declares none that fits "I would like a first task", and adding one is
+# a taxonomy change with its own gate. Discussions is already enabled on
+# the repository, the Q&A category is answerable, and config.yml already
+# publishes a contact link for security reports, so the mechanism is
+# present and proven here.
+ASK_ROUTE="${GFI_ASK_ROUTE:-https://github.com/claymore666/docker-net-dhcp/discussions/new?category=q-a}"
 
 for f in "$README" "$BADGE" "$LABELS"; do
     [ -r "$f" ] || { echo "::error title=Cannot see::$f is missing or unreadable" >&2; exit 2; }
@@ -259,6 +298,91 @@ case "$badge_status" in
        exit 2 ;;
 esac
 
+# THE ASK ROUTE, static half. Two bindings, and they fail differently
+# on purpose: a route the repository does not publish is "cannot see"
+# (exit 2 — the gate no longer knows where a newcomer is sent, exactly
+# like a renamed label), while a README that names no route at all is a
+# FALSE claim (exit 1 — the Unmet answer promises somewhere to ask and
+# there is nowhere).
+check_ask_route_static() {
+    [ -r "$ROUTES" ] || {
+        echo "::error title=Cannot see::$ROUTES is missing or unreadable, so the" \
+             "starter-task ask route could not be checked" >&2
+        return 2
+    }
+    ROUTES="$ROUTES" README="$README" ASK_ROUTE="$ASK_ROUTE" python3 - <<'ROUTEPY'
+import os, re, sys, urllib.parse
+
+routes_path = os.environ["ROUTES"]
+readme_path = os.environ["README"]
+want = os.environ["ASK_ROUTE"]
+
+
+def norm(u):
+    """Same normalisation the label comparison uses: values, not renderings."""
+    return urllib.parse.unquote_plus(u).casefold().rstrip("/")
+
+
+# A TARGETED PARSE, not a YAML reader, for the reason
+# check-label-taxonomy.sh gives for hand-parsing labels.yml: the CI image
+# carries no YAML dependency. Only `url:` fields that are direct children
+# of an entry under `contact_links:` count. A URL inside a folded
+# `about:` block is prose a newcomer cannot click, and counting it would
+# let the declaration be satisfied by a DESCRIPTION of a route rather
+# than a published one.
+urls = []
+in_links = False
+field_indent = None
+try:
+    lines = open(routes_path, encoding="utf-8").read().splitlines()
+except Exception as e:
+    print(f"::error title=Cannot see::{routes_path}: {e}", file=sys.stderr)
+    sys.exit(2)
+
+for line in lines:
+    if not line.strip():
+        continue
+    indent = len(line) - len(line.lstrip(" "))
+    if indent == 0:
+        in_links = line.strip().startswith("contact_links:")
+        field_indent = None
+        continue
+    if not in_links:
+        continue
+    m = re.match(r"^(\s*)-\s+([A-Za-z_]+):\s*(.*)$", line)
+    if m:
+        field_indent = len(m.group(1)) + 2
+        if m.group(2) == "url":
+            urls.append(m.group(3).strip())
+        continue
+    if field_indent is not None and indent == field_indent:
+        m = re.match(r"^\s*([A-Za-z_]+):\s*(.*)$", line)
+        if m and m.group(1) == "url":
+            urls.append(m.group(2).strip())
+    # Anything deeper than a field is a folded or continued scalar.
+
+if norm(want) not in [norm(u) for u in urls]:
+    print(f"::error title=Cannot see::the starter-task ask route is not published as a "
+          f"contact link in {routes_path}, so this gate does not know where a newcomer is "
+          f"told to ask. If the route moved, move it here too; if it was retired, the "
+          f"Unmet answer must stop naming it. Wanted: {want}", file=sys.stderr)
+    sys.exit(2)
+
+try:
+    text = open(readme_path, encoding="utf-8").read()
+except Exception as e:
+    print(f"::error title=Cannot see::{readme_path}: {e}", file=sys.stderr)
+    sys.exit(2)
+
+if norm(want) not in norm(text):
+    print(f"::error title=README names no ask route::small_tasks_status is Unmet, so the "
+          f"README's Contributing section is not merely denying starter tasks, it is telling "
+          f"a newcomer where to ask for one. It does not link the published route, so the "
+          f"invitation names nowhere a newcomer can actually go: {want}", file=sys.stderr)
+    sys.exit(1)
+ROUTEPY
+}
+
 if [ "$MODE" = "--static" ]; then
     if [ "$badge_status" = "Unmet" ]; then
         # The promise must be GONE, not merely downgraded in the JSON —
@@ -278,8 +402,13 @@ if [ "$MODE" = "--static" ]; then
                  "tasks. An Unmet answer names no tasks." >&2
             exit 1
         fi
-        echo "static: small_tasks is Unmet — the README makes no starter-task promise" \
-             "and the justification cites none"
+        # The Unmet answer names a route. It has to be one that exists.
+        route_rc=0
+        check_ask_route_static || route_rc=$?
+        [ "$route_rc" -eq 0 ] || exit "$route_rc"
+        echo "static: small_tasks is Unmet — the README makes no starter-task promise," \
+             "the justification cites none, and the ask route it does name is published" \
+             "as a contact link"
         exit 0
     fi
 
@@ -316,6 +445,98 @@ if [ "$MODE" = "--static" ]; then
          "\"$LABEL\" listing"
     exit 0
 fi
+
+# THE ASK ROUTE, live half. The static half proves the README and the
+# contact-link declaration name the same route; it cannot see the route
+# stop existing, which happens without a commit — Discussions switched
+# off in repository settings, or the category renamed or deleted. That is
+# the same class of silent decay as the label's open count, so it is
+# checked in the same place and on the same schedule.
+#
+# The repository, and the category, are derived from ASK_ROUTE rather
+# than restated, so there is one copy of the fact and not three.
+#
+# A route kind this cannot verify is exit 2, never a skip: a live check
+# that quietly passes on a route it did not look at is the vacuity this
+# whole gate exists to refuse.
+check_ask_route_live() {
+    local parts owner repo category route_json
+    parts=$(ASK_ROUTE="$ASK_ROUTE" python3 -c '
+import os, sys, urllib.parse
+u = urllib.parse.urlsplit(os.environ["ASK_ROUTE"])
+seg = [p for p in u.path.split("/") if p]
+q = urllib.parse.parse_qs(u.query)
+if u.netloc != "github.com" or len(seg) != 4 or seg[2:4] != ["discussions", "new"] \
+        or not q.get("category"):
+    sys.exit("not a GitHub new-discussion URL")
+print(seg[0]); print(seg[1]); print(q["category"][0])
+' 2>&1) || {
+        echo "::error title=Cannot see::this check does not know how to verify the ask route" \
+             "\"$ASK_ROUTE\" ($parts). It only understands a GitHub new-discussion URL. Teach it" \
+             "the new kind rather than letting the route go unchecked." >&2
+        return 2
+    }
+    { read -r owner; read -r repo; read -r category; } <<< "$parts"
+
+    route_json=$("$GH" api graphql -f query='
+query($owner:String!, $name:String!) {
+  repository(owner:$owner, name:$name) {
+    hasDiscussionsEnabled
+    discussionCategories(first: 100) { nodes { slug } }
+  }
+}' -f owner="$owner" -f name="$repo" 2>/dev/null) || {
+        echo "::error title=Cannot see::could not ask $owner/$repo whether the starter-task" \
+             "ask route still exists" >&2
+        return 2
+    }
+    # Absent data is not a zero, here as well: an empty answer is
+    # unreachable, not "the category is gone".
+    [ -n "$route_json" ] || {
+        echo "::error title=Cannot see::empty response asking $owner/$repo about the ask route" >&2
+        return 2
+    }
+
+    ROUTE_JSON="$route_json" CATEGORY="$category" SLUG_OWNER="$owner/$repo" \
+        ASK_ROUTE="$ASK_ROUTE" python3 -c '
+import json, os, sys
+
+# sys.exit(str) would exit 1, and in the exit-code contract at the top of
+# this file 1 means "the claim is FALSE". Cannot-see is 2, so each of
+# these says so explicitly rather than borrowing a wrong code from a
+# convenience.
+def cannot_see(msg):
+    print("::error title=Cannot see::" + msg, file=sys.stderr)
+    sys.exit(2)
+
+
+try:
+    d = json.loads(os.environ["ROUTE_JSON"])
+except Exception as e:
+    cannot_see("unparseable answer about the ask route: %s" % e)
+if not isinstance(d, dict):
+    cannot_see("expected a JSON object about the ask route, got " + type(d).__name__)
+repo = (d.get("data") or {}).get("repository")
+if not isinstance(repo, dict) or "hasDiscussionsEnabled" not in repo:
+    cannot_see("the answer about the ask route names no repository")
+if not repo["hasDiscussionsEnabled"]:
+    print("::error title=The ask route is gone::small_tasks_status is Unmet and the README "
+          "sends a newcomer to %s, but %s has Discussions turned off. The invitation now "
+          "leads nowhere: turn Discussions back on, or name a route that exists in the "
+          "README and in .github/ISSUE_TEMPLATE/config.yml."
+          % (os.environ["ASK_ROUTE"], os.environ["SLUG_OWNER"]), file=sys.stderr)
+    sys.exit(1)
+nodes = ((repo.get("discussionCategories") or {}).get("nodes")) or []
+slugs = [n.get("slug") for n in nodes if isinstance(n, dict)]
+want = os.environ["CATEGORY"]
+if want not in slugs:
+    print("::error title=The ask route is gone::small_tasks_status is Unmet and the README "
+          "sends a newcomer to %s, but %s has no discussion category \"%s\" any more (it has: "
+          "%s). Point both the README and .github/ISSUE_TEMPLATE/config.yml at a category "
+          "that exists." % (os.environ["ASK_ROUTE"], os.environ["SLUG_OWNER"], want,
+                            ", ".join(sorted(s for s in slugs if s)) or "none"), file=sys.stderr)
+    sys.exit(1)
+' || return $?
+}
 
 # ---- --live ----------------------------------------------------------
 command -v "$GH" >/dev/null 2>&1 || {
@@ -386,7 +607,14 @@ if [ "$badge_status" = "Unmet" ]; then
              "justification, and restore the README's link to the filter." >&2
         exit 1
     fi
-    echo "live: small_tasks is Unmet and \"$LABEL\" has no open issues — the claim is still true"
+    # THE ROUTE, live half. Static binds the README to the declaration;
+    # neither can see the repository turning Discussions off or deleting
+    # the category, which unlinks the route without touching the tree.
+    route_rc=0
+    check_ask_route_live || route_rc=$?
+    [ "$route_rc" -eq 0 ] || exit "$route_rc"
+    echo "live: small_tasks is Unmet, \"$LABEL\" has no open issues and the ask route" \
+         "is still offered — the claim is still true"
     exit 0
 fi
 
