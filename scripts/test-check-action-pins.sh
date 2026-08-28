@@ -562,6 +562,40 @@ jobs:
 EOF
 run "two properties before an explicit ? key are residue as well" 2 "were not resolved"
 
+# AN ALIAS IS NOT AN ESCAPE, AND THAT IS MEASURED RATHER THAN ARGUED.
+# `*a` looks like the dangerous neighbour of a node property -- it
+# stands where the mapping would be and carries no `uses` token. But to
+# alias a step you must first WRITE that step, and the anchor's
+# definition site carries the literal `uses:` line this gate reads. Both
+# routes are driven, because the comment in the gate now claims this and
+# a claim in a comment decays silently: a plain alias, and a `<<:` merge
+# key, each pulling in an anchored UNPINNED step. Each is caught at the
+# definition site.
+fresh
+cat > "$TMP/wf/a.yml" <<EOF
+jobs:
+  x:
+    steps:
+      - uses: actions/setup-go@$SHA
+      - &s
+        uses: actions/checkout@v7
+      - *s
+EOF
+run "an alias reusing an anchored unpinned step is caught" 1 "a.yml:6" "not pinned to a 40-hex commit SHA"
+
+fresh
+cat > "$TMP/wf/a.yml" <<EOF
+jobs:
+  x:
+    steps:
+      - uses: actions/setup-go@$SHA
+      - &s
+        uses: actions/checkout@v7
+      - <<: *s
+        name: second
+EOF
+run "a merge key pulling in an anchored unpinned step is caught too" 1 "a.yml:6" "not pinned to a 40-hex commit SHA"
+
 # THE PRICE OF THE WIDENING, PINNED AS A CASE rather than left for a
 # reader to discover. This gate already false-REDS on a bare `uses:` at
 # the start of a line inside a `run: |` block scalar (the case further
@@ -810,7 +844,7 @@ fi
 # exits 0, which is a green tick over nothing. The floor is the count
 # this file is known to run; raise it when cases are added, and a
 # deletion has to be deliberate rather than silent.
-FLOOR=53
+FLOOR=55
 if [ "$n" -lt "$FLOOR" ]; then
     echo "REFUSING: ran $n case(s), fewer than the $FLOOR this suite is known to hold."
     echo "  Either cases were lost, or the floor is stale and should be raised with them."

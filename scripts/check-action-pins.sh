@@ -200,14 +200,27 @@ for f in "${FILES[@]}"; do
     # exit 1, and the three that neither called a reference refuse
     # rather than pass.
     #
-    # WHAT IT STILL DOES NOT COVER, named rather than left to be found:
-    # a tag shorthand that itself ends in `uses:`, which swallows the
-    # key; a property written BEFORE the dash rather than after it; and
-    # an alias (`*a`) standing where the mapping would be, which is not
-    # a property at all. None of the three is claimed handled. Two
-    # spellings enumerated means a third exists, so that list is a lower
-    # bound on the class exactly as the count below is a lower bound on
-    # the references.
+    # WHAT IT DOES NOT COVER, named AND measured rather than left to be
+    # found. Three shapes sit outside the expression: a tag shorthand
+    # that itself ends in `uses:` (`- !uses: x`), which swallows the
+    # key; a property written BEFORE the dash (`&a - uses: x`); and an
+    # alias (`*a`), which is not a node property at all. All three exit
+    # 0 -- and MEASURED, NEITHER ORACLE CALLS ANY OF THEM A REFERENCE,
+    # so passing them costs nothing observable. That is one spelling of
+    # each, which is a bound on the measurement, not a proof.
+    #
+    # The alias deserves its own sentence because it looks like the
+    # dangerous one and MEASURED it is not: to alias a step you must
+    # first WRITE that step, and the anchor's definition site carries
+    # the literal `uses:` line, which this gate reads. Driven both ways
+    # -- `- *s` reusing an anchored unpinned step, and a `<<: *s` merge
+    # key pulling one in -- the gate answers exit 1 on each, naming the
+    # definition site. An alias cannot hide a reference; it can only
+    # repeat one already judged.
+    #
+    # Two spellings enumerated means a third exists, so that list is a
+    # lower bound on the class exactly as the count below is a lower
+    # bound on the references.
     #
     # THE ESCAPE THAT REMAINS is the one this counter cannot close: it
     # is line-oriented and YAML is not. A `?` indicator alone on its
