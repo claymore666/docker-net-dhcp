@@ -802,6 +802,20 @@ func assertRouterAdvertsAreBeingProcessed(t *testing.T, ctx context.Context, id,
 
 	t.Logf("RA guard: asserting on derived container interface %q (mac %s)", iface, mac)
 
+	// N2, non-vacuity, kept BESIDE the obligation rather than only in the
+	// other lane. raGuardKnobs is derived from
+	// dhcp.RouterAdvertGuardContract(), so an empty table would make this
+	// loop -- and therefore this entire assertion -- pass having measured
+	// nothing. TestRouterAdvertGuardContract_IsTheGuardsOwnTable closes the
+	// same hole under the `test` check, and both are required contexts; but
+	// a guard that lives only in another lane is one the reader of THIS
+	// loop cannot see, and the vacuity would be silent here.
+	if len(raGuardKnobs) == 0 {
+		t.Fatal("raGuardKnobs is empty, so the loop below would assert nothing. It is " +
+			"derived from dhcp.RouterAdvertGuardContract(); an empty table means the " +
+			"guard exports no knobs, NOT that the guard is healthy (#875)")
+	}
+
 	for knob, want := range raGuardKnobs {
 		p := "/proc/sys/net/ipv6/conf/" + iface + "/" + knob
 		got := strings.TrimSpace(harness.ExecOutput(t, ctx, id, "cat", p))
@@ -820,6 +834,48 @@ func assertRouterAdvertsAreBeingProcessed(t *testing.T, ctx context.Context, id,
 				"if_setup_inet6() writes, so this reading means the guard's write or "+
 				"its read-only shield did not take effect (#875)", p, got, want)
 		}
+	}
+
+	// N1. The -writable probes' HEALTHY path, observed on the CI engine.
+	//
+	// WHAT THIS IS, stated because it is not what it looks like: an
+	// assertion about the OBSERVER, not about the effect. The loop above
+	// is the outside evidence -- it reads the container's real sysctls --
+	// and this project's standing rule is to assert on that rather than on
+	// the plugin's own counters. A counter proves intent, not effect, and
+	// on its own it would be the weaker instrument. It is NOT taken here
+	// as a substitute for that loop.
+	//
+	// It earns its place only because it runs AFTER the loop. The loop has
+	// already proven the prologue ran and the knobs hold, so a zero here
+	// reads as "ran, and reported no failure" rather than "never ran" --
+	// which is exactly what a zero would mean on its own. That pairing is
+	// the whole justification, and moving this above the loop would void
+	// it.
+	//
+	// WHY IT IS WORTH ADDING: the false-alarm direction was previously
+	// unobservable in CI. A spurious `<knob>-writable` marker on a healthy
+	// host would have gone unseen, because the plugin log is only dumped
+	// on a failure path -- so the ABSENCE of the marker from a passing
+	// run's logs is not evidence, and must not be read as one.
+	//
+	// WHAT IT CANNOT SEE: which step failed; a guard that never executed
+	// (the loop above is what rules that out); and anything endpoint-
+	// scoped, because the counter is plugin-wide -- a failure raised by
+	// any other client in this shard lands here too. If it ever goes red,
+	// that is a finding to investigate, not a number to relax.
+	if h := harness.PluginHealthOrNil(ctx); h == nil {
+		t.Error("could not read the plugin health surface, so the RA guard's " +
+			"false-alarm direction was not measured here. Absent data is not a " +
+			"zero and must not be recorded as one (#875)")
+	} else if h.RouterAdvertGuardFailures != 0 {
+		t.Errorf("router_advert_guard_failures = %d after a golden path whose knobs "+
+			"all read correctly. The guard reported a failed step on a host where it "+
+			"demonstrably held: a `<knob>-writable` marker means the read-only "+
+			"remount was accepted without taking effect, a `procsys-ro` marker means "+
+			"the remount itself was refused. Note the counter is plugin-wide, so "+
+			"another client in this shard is also a candidate (#875)",
+			h.RouterAdvertGuardFailures)
 	}
 
 	// The RA itself is asynchronous: the container solicits at link-up
