@@ -297,6 +297,13 @@ jobs:
       - name: Pipefail-consumer check
         run: bash scripts/check-pipefail-consumers.sh
 
+      # Every build-constraint term in the tree must be linted by some
+      # staticcheck invocation, and one invocation must carry no tags
+      # at all (#871). A required check that never compiles a tagged
+      # file never parses it, and reports success over it.
+      - name: Lint tag coverage
+        run: bash scripts/check-lint-tag-coverage.sh
+
       # A v2 plugin's bind sources must exist before `docker plugin
       # enable`; a missing one kills container init rather than degrading
       # the mount (#440, #588). The Makefile derives them from the
@@ -627,8 +634,35 @@ jobs:
           cache: true
       - name: Install staticcheck
         run: go install honnef.co/go/tools/cmd/staticcheck@v0.8.1
-      - name: Run staticcheck
+
+      # TWO VIEWS, NOT ONE WIDENED FLAG (#871).
+      #
+      # `staticcheck ./...` alone never compiled the integration-tagged
+      # files, so it never parsed them: 64 of 196 tracked .go files at
+      # 0b73c46 sat outside a required check that reported success over
+      # them. It also reported a defect that did not exist — a symbol
+      # defined untagged whose only caller is tagged reads as unused.
+      #
+      # `-tags integration` alone would cover everything on today's
+      # tree, because the tagged view is currently a strict superset.
+      # That is a property of the tree, not of the check: a file
+      # carrying `//go:build !integration` compiles in the default view
+      # and vanishes from the tagged one. None exists yet, which is why
+      # nothing would notice the day one arrives.
+      #
+      # scripts/check-lint-tag-coverage.sh holds the pair to the tree's
+      # actual constraints, and scripts/test-staticcheck-tag-views.sh
+      # (below) drives the hole on a constructed fixture rather than on
+      # whatever this tree happens to contain.
+      - name: Run staticcheck (default view)
         run: staticcheck ./...
+      - name: Run staticcheck (integration view)
+        run: staticcheck -tags integration ./...
+
+      # Delegated here from the gate-self-test lane: it needs the
+      # staticcheck binary, which only this job installs.
+      - name: Prove one invocation is not enough
+        run: bash scripts/test-staticcheck-tag-views.sh
 
   # Lints all workflow files (+ shellcheck on run: blocks). A workflow
   # parse error doesn't fail loudly on GitHub — it produces zero-job

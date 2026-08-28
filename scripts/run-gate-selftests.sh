@@ -61,10 +61,42 @@ mapfile -t tests < <(printf '%s\n' "${tests[@]}" | sort)
 #     # gate-selftest-runs-in: <job name>
 #
 # and is skipped here. The declaration is NOT taken on trust: the runner
-# then requires the file to be named somewhere under .github/workflows/,
-# so "delegated" cannot quietly mean "runs nowhere". Skips are printed,
-# never silent — an unlisted skip would rebuild the hole this replaced.
+# then requires the file to be RUN by some workflow, so "delegated"
+# cannot quietly mean "runs nowhere". Skips are printed, never silent —
+# an unlisted skip would rebuild the hole this replaced.
+#
+# "RUN BY" IS NOT "MENTIONED IN", and that distinction was bought at a
+# price. This check shipped as `grep -rq -- "$base"` over the whole
+# workflow directory, which a COMMENT satisfies. Measured on #872: with
+# `run: bash scripts/test-staticcheck-tag-views.sh` deleted from
+# test.yaml and only the comment block above it still naming the file,
+# this runner exited 0 and printed the test as delegated. A 14-assertion
+# suite could be removed from CI with nothing going red.
+#
+# The mechanism was pre-existing and protects EVERY delegated self-test
+# the same way, so it is fixed here rather than filed: the reference now
+# has to appear in shell a workflow actually executes, which
+# scripts/workflow-shell-lines.sh extracts. A step NAME containing the
+# filename does not count either — that is the same defect one door
+# along, and it is the one #872's own gate was caught by.
+#
+# THE BOUNDARY. This asks whether the filename appears in an executed
+# line, not whether it is the command's argv[0]. `run: echo
+# scripts/test-x.sh` would satisfy it. Narrowing further would mean
+# parsing shell, and the failure that cost something was prose, not a
+# contrived echo.
 WORKFLOWS="${SELFTEST_WORKFLOWS:-$(cd "$HERE/.." && pwd)/.github/workflows}"
+
+# shellcheck source=scripts/workflow-shell-lines.sh
+. "$HERE/workflow-shell-lines.sh"
+
+# Extracted once: this runs per delegated test, and re-reading every
+# workflow each time would make the cost quadratic in the skip list.
+if [ -d "$WORKFLOWS" ]; then
+    workflow_shell="$(workflow_shell_lines "$WORKFLOWS")"
+else
+    workflow_shell=""
+fi
 
 echo "Discovered ${#tests[@]} gate self-test(s) in $DIR."
 failed=()
@@ -75,9 +107,16 @@ for t in "${tests[@]}"; do
     owner=$(sed -n 's/^#[[:space:]]*gate-selftest-runs-in:[[:space:]]*\(.*\)$/\1/p' "$t" | head -1)
     if [ -n "$owner" ]; then
         skipped+=("$base -> $owner")
-        if [ ! -d "$WORKFLOWS" ] || ! grep -rq -- "$base" "$WORKFLOWS" 2>/dev/null; then
-            undelegated+=("$base")
-        fi
+        # A case glob rather than a pipeline into grep: under pipefail a
+        # consumer that exits early kills the producer with SIGPIPE and
+        # the pipeline reports failure on success. $workflow_shell is
+        # empty when there is no workflow directory, which falls to the
+        # same arm — "no workflows" and "no execution" are both
+        # "delegated to nowhere".
+        case "$workflow_shell" in
+            *"$base"*) : ;;
+            *) undelegated+=("$base") ;;
+        esac
         continue
     fi
     echo "::group::${base}"
@@ -98,7 +137,8 @@ fi
 if [ "${#undelegated[@]}" -ne 0 ]; then
     echo >&2
     echo "::error title=Self-test delegated to nowhere::the following declare" \
-         "gate-selftest-runs-in but are not referenced under $WORKFLOWS," \
+         "gate-selftest-runs-in but are not RUN by anything under $WORKFLOWS" \
+         "-- a step name or a comment naming the file does not count --" \
          "so they run in no job at all:" >&2
     printf '  %s\n' "${undelegated[@]}" >&2
     exit 1
