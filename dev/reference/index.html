@@ -2444,9 +2444,74 @@ not work with the null IPAM driver and is not what you want:</p>
 <ul>
 <li>The leased address lands on the interface as a <code>/128</code> next to the v4
   address; <code>docker inspect</code> reports it as <code>GlobalIPv6Address</code>.</li>
-<li><strong>The default route stays RA-delegated.</strong> DHCPv6 carries no router
-  option by design, and the container's kernel honours Router
-  Advertisements itself. The <code>gateway</code> option is v4-only.</li>
+<li><strong>The default route comes from Router Advertisements.</strong> DHCPv6 carries
+  no router option by design (RFC 8415 §21), so router discovery is the
+  only source of one (RFC 4861 §6.3.4) — and a DHCPv6 address does not
+  make its own prefix on-link either (RFC 5942 §4 rule 1, restated in
+  RFC 8415 §18.2.10.1). The <code>gateway</code> option is v4-only. At <code>Join</code> the
+  plugin additionally copies the host parent interface's own IPv6
+  default route into the endpoint as a starting gateway; that copy does
+  not expire and is not refreshed, so it is a head start, not the
+  mechanism.</li>
+<li><strong>The container's kernel is put in charge of advertisements, and kept
+  in charge</strong> (v1.9.0+, #875). <code>dhcpcd</code> sets
+  <code>net.ipv6.conf.&lt;if&gt;.accept_ra=0</code> and <code>.autoconf=0</code> on the interface it
+  manages, and re-does it on every carrier acquisition — so before
+  v1.9.0 nothing in the container processed advertisements after the
+  first few seconds. The address stopped being refreshed and the default
+  route disappeared at the end of the first advertisement's router
+  lifetime, while on-link traffic kept working, which is what made it
+  hard to spot. The DHCPv6 client now runs with <code>accept_ra=2</code>,
+  <code>autoconf=1</code> and <code>keep_addr_on_down=1</code> set per-interface before
+  <code>dhcpcd</code> starts, after which <code>/proc/sys</code> is returned to read-only
+  inside the client's own private mount namespace, so <code>dhcpcd</code>'s own
+  write is refused — and, because a read-only remount can be accepted
+  without taking effect, each knob is then probed by attempting a write
+  of the value it already holds, with success treated as the failure.
+  The probe is what makes a shield that did not hold <strong>loud</strong>; it does
+  not make one impossible, and the counter below is where it shows up.
+  The read-only step is invisible to the host, to
+  the container and to every other client; the IPv4 client keeps a
+  writable <code>/proc/sys</code>, because its own setup write is fatal if it
+  fails. <code>accept_ra=2</code> rather than <code>1</code> because a container that enables
+  forwarding — VPN, NAT, docker-in-docker — would otherwise lose
+  advertisement processing silently; <code>autoconf=1</code> because the router's
+  prefix A flag is what decides whether an address forms (RFC 4862
+  §5.5.3), not the plugin; <code>keep_addr_on_down=1</code> because a carrier flap
+  otherwise flushes the address the plugin applied and nothing
+  re-applies it. Steps that fail are counted as
+  <code>router_advert_guard_failures</code> (below) and the client starts anyway.
+  <em>Known bound:</em> <code>dhcpcd</code> also sets the interface's address generation
+  mode to <code>none</code> over netlink, which the read-only pin cannot reach, so
+  after a carrier flap the interface does not regenerate a link-local
+  address. The global address survives the flap, but the consequence for
+  the default route is not "unaffected" — an earlier version of this
+  page said that and it was wrong. Without a link-local address the
+  container cannot <em>solicit</em> an advertisement, so after a flap it waits
+  for the router's next unsolicited one. That wait is bounded by the
+  router's <code>MaxRtrAdvInterval</code>, which RFC 4861 §6.2.1 defaults to 600
+  seconds and permits up to 1800. On a segment running those defaults a
+  flapped container can be without a default route for ten minutes; it
+  recovers by itself, without intervention, when the next advertisement
+  arrives.</li>
+<li><strong>On a segment that advertises a prefix with the A flag set <em>and</em> runs
+  stateful DHCPv6, a container gets two global addresses</strong> (v1.9.0+,
+  #875). This follows from <code>autoconf=1</code> above and it is correct
+  behaviour, not a defect: RFC 4861 §6.3.4 has a host apply
+  advertisement-derived configuration as a union with whatever else
+  configured it, so every other host on such a segment does the same.
+  Both addresses are usable and both are renewed by their own mechanism.
+  The consequence worth knowing about is <strong>source address selection</strong>: an
+  outbound connection that does not bind explicitly picks its source per
+  RFC 6724, and the winner there is not necessarily the DHCPv6 address
+  the plugin reports in <code>docker inspect</code>. If a firewall, an ACL or a
+  server-side allowlist is keyed on the leased address, traffic can leave
+  from the other one. The plugin does not currently offer a way to
+  suppress either address, and deliberately so — suppressing the
+  advertised one would override the router, and suppressing the leased
+  one would discard the lease the network administrator issued. Bind
+  explicitly, or advertise the prefix with A=0, which is what the
+  integration fixture's <code>managed</code> mode does.</li>
 <li><strong>Identity is a stable DUID-LL</strong> (type 3) derived from the interface
   MAC via pinned config — no timestamp, so the same MAC always yields the
   same DUID. <strong>The IAID is pinned from the MAC too</strong> (v1.2.0, #152): the
@@ -2472,14 +2537,24 @@ not work with the null IPAM driver and is not what you want:</p>
   <em>configuration</em> (option 23 nameservers, option 24 search domain)
   still reaches the container through the persistent client.</li>
 </ul>
-<p><strong>The container does not get a SLAAC address on such a network.</strong>
-  <code>dhcpcd</code> sets <code>accept_ra=0</code> and <code>autoconf=0</code> on the interface it
-  manages, so the container's kernel does not autoconfigure from the
-  advertised prefix while the plugin's DHCPv6 client is running —
-  measured, not inferred. The endpoint comes up with IPv4 from DHCP, an
-  IPv6 link-local, and IPv6 DNS configuration where the segment offers
-  it. Giving the container a usable global IPv6 address on a
-  stateless/SLAAC segment is a separate piece of work.</p>
+<p><strong>Whether the container gets a SLAAC address on such a network is now
+  the segment's decision, not the plugin's</strong> (changed in v1.9.0 by
+  #875). This paragraph previously said flatly that it does not, on the
+  grounds that <code>dhcpcd</code> sets <code>accept_ra=0</code> and <code>autoconf=0</code> on the
+  interface it manages. That was true and is no longer: the Router
+  Advertisement guard described above leaves the interface at
+  <code>accept_ra=2</code> and <code>autoconf=1</code>, so the container's kernel is free to
+  autoconfigure. What decides it is the A flag on the advertised prefix
+  (RFC 4862 §5.5.3) — the plugin neither forms the address nor
+  suppresses it, and it does not report one in <code>docker inspect</code>, which
+  shows only what the plugin leased. The endpoint still comes up with
+  IPv4 from DHCP, an IPv6 link-local, and IPv6 DNS configuration where
+  the segment offers it.</p>
+<p>Read together with the two-address note above, these are the same
+  fact seen from two segments: on a stateless or SLAAC segment the
+  advertisement-derived address is the <em>only</em> global address, and on a
+  stateful segment that also sets the A flag it sits alongside the
+  DHCPv6 lease.</p>
 <p>What the segment <em>advertised</em> decides this, not how long the plugin
   waited. An RA carrying the managed-address flag says DHCPv6 addresses
   are available here, so a server that then answers nothing is still a
@@ -2846,6 +2921,11 @@ diagnosing a specific container from them alone is not.</p>
 <td>(v1.9.0+) Individual commands in a DHCP client's private mount-namespace preparation that failed. Counts <strong>commands, not clients</strong> — one client that fails three of its four preparation steps adds 3. The commands are chained so that a failure does not stop the ones after it and <code>dhcpcd</code> starts regardless, which is a deliberate degrade and usually harmless; the reason to watch it is the one case that is not. The preparation gives each client its own <code>dhcpcd</code> run directory, and two containers whose interface has the same name (the default <code>eth0</code> on both) otherwise collide on <code>dhcpcd</code>'s control socket — the second client becomes a no-op that never renews and never releases, while everything else looks normal. Before this counter the only trace was a shell error on the plugin's stderr, indistinguishable from <code>dhcpcd</code>'s routine output.</td>
 </tr>
 <tr>
+<td><code>router_advert_guard_failures</code></td>
+<td>no</td>
+<td>(v1.9.0+) Steps of a DHCPv6 client's Router-Advertisement guard that failed. Counts <strong>steps, not clients</strong>, and the steps are not one per sysctl: each guarded sysctl contributes a write, a read-back and — after the pin — a writability probe, while <strong>one</strong> read-only remount of <code>/proc/sys</code> covers all of them. With the three knobs guarded today that is a maximum of ten per client. Read a <code>procsys-ro</code> step as <em>none</em> of the knobs being pinned, never as one of them; read a <code>&lt;knob&gt;-writable</code> step as the remount having been accepted without taking effect, which is what a read-write mount anywhere under <code>/proc/sys</code> produces, one step per knob left writable. An earlier version of this row described a per-sysctl read-only pin and a maximum of three; both were superseded within v1.9.0, before release. The client starts regardless, which is a deliberate degrade and the reason this counter exists: a container whose guard did not take looks completely healthy. Its address and default route are the ones the kernel accepted in the first seconds and nothing refreshes them, so it keeps working on-link and loses everything through the router at the end of the first advertisement's router lifetime — minutes or hours later, with no error anywhere. Any non-zero value means at least one container is on that path. Zero on IPv4-only networks and on any plugin built before v1.9.0, which do not run the guard at all.</td>
+</tr>
+<tr>
 <td><code>ledger_write_failures</code></td>
 <td>no</td>
 <td>Failed <code>audit_log</code> ledger appends — degrades forensics, not networking. Operators using <code>audit_log</code> alert on this.</td>
@@ -2858,7 +2938,7 @@ diagnosing a specific container from them alone is not.</p>
 <tr>
 <td><code>dhcpv6_not_offered</code></td>
 <td>no</td>
-<td>(v1.9.0+) Endpoints that came up on an IPv6 network whose router advertisement offered <strong>no DHCPv6 address</strong> — the RA carried neither the managed flag nor, in the SLAAC case, any DHCPv6 offer at all (#868). Not <code>healthy</code>-affecting and not a fault: the network is working exactly as configured and there is no DHCPv6 address on it to be had. The container comes up with IPv4 from DHCP and an IPv6 link-local; it does <strong>not</strong> get a global IPv6 address, because <code>dhcpcd</code> turns kernel autoconfiguration off on the interface it manages (see the DHCPv6 section). Before v1.9.0 the endpoint was refused outright and no container could start on such a network. Read it together with <code>dhcpv6_config_only</code>: that one says a stateless network answered an information request; this one says the endpoint proceeded without a v6 lease. Kept apart from <code>dhcpv6_no_router_advert</code> below because the two are different situations that would otherwise be indistinguishable — this one is a deliberate operator configuration.</td>
+<td>(v1.9.0+) Endpoints that came up on an IPv6 network whose router advertisement offered <strong>no DHCPv6 address</strong> — the RA carried neither the managed flag nor, in the SLAAC case, any DHCPv6 offer at all (#868). Not <code>healthy</code>-affecting and not a fault: the network is working exactly as configured and there is no DHCPv6 address on it to be had. The container comes up with IPv4 from DHCP and an IPv6 link-local, and no global IPv6 address <strong>from this plugin</strong> — there is no lease to be had. Whether it forms one from the advertised prefix is the segment's decision: since v1.9.0 the Router Advertisement guard (#875) leaves the interface at <code>accept_ra=2</code>/<code>autoconf=1</code>, so the A flag on the prefix decides (RFC 4862 §5.5.3). Before v1.9.0 it could not, because <code>dhcpcd</code> turned kernel autoconfiguration off; this counter's own wording said so and was left behind by that fix. Either way the address is not one the plugin leased, so it is not reported in <code>docker inspect</code> (see the DHCPv6 section). Before v1.9.0 the endpoint was refused outright and no container could start on such a network. Read it together with <code>dhcpv6_config_only</code>: that one says a stateless network answered an information request; this one says the endpoint proceeded without a v6 lease. Kept apart from <code>dhcpv6_no_router_advert</code> below because the two are different situations that would otherwise be indistinguishable — this one is a deliberate operator configuration.</td>
 </tr>
 <tr>
 <td><code>dhcpv6_no_router_advert</code></td>
