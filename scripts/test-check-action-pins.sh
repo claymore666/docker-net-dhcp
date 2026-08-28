@@ -562,6 +562,215 @@ jobs:
 EOF
 run "two properties before an explicit ? key are residue as well" 2 "were not resolved"
 
+# ============ THE POSITION THE ROUND ABOVE DID NOT REACH: A PROPERTY
+# ============ *BETWEEN* THE `?` INDICATOR AND THE KEY.
+#
+# Every case above puts the property BEFORE the `?`. It may equally sit
+# AFTER it -- `- ? &a uses` -- and that position escaped the counter
+# entirely, because the group admitting properties sat ahead of the
+# ALTERNATION: it reached a property in front of `uses:` and a property
+# in front of `?`, and not one in front of the key inside the `?` arm.
+#
+# MEASURED before the fix, at the head that shipped the cases above:
+# exit 0 with the success line, over an unpinned `actions/checkout@v7`,
+# and PyYAML composes that step to a real `uses` key. A SILENT PASS ON
+# AN UNPINNED REFERENCE is the one failure this gate exists to refuse,
+# and it sat inside the arm the gate's own comment said was handled.
+#
+# It is the defect ONE STEP TO THE SIDE of the fix that preceded it,
+# which is why check-action-pins.sh now enumerates the POSITIONS a node
+# property can occupy rather than the spellings -- as a lower bound on
+# that class, never as a completeness claim.
+#
+# Five spellings are driven, because the ones sharing a mechanism are
+# exactly the ones a single fixture cannot tell apart: block; the flow
+# mapping, which is entirely on ONE LINE and so is not excused by the
+# line-oriented bound the pinned cases above rest on; the quoted key,
+# which only reaches the counter after quote stripping; the dashless
+# position; and two properties, which makes the repetition load-bearing
+# in THIS arm as well as in the other one.
+fresh
+cat > "$TMP/wf/a.yml" <<EOF
+jobs:
+  x:
+    steps:
+      - uses: actions/setup-go@$SHA
+      - ? &a uses
+        : actions/checkout@v7
+EOF
+run "an anchor BETWEEN ? and the key is residue, not a silent pass" 2 "were not resolved"
+
+fresh
+cat > "$TMP/wf/a.yml" <<EOF
+jobs:
+  x:
+    steps:
+      - uses: actions/setup-go@$SHA
+      - {? &a uses : actions/checkout@v7}
+EOF
+run "the same shape inside a flow mapping, entirely on one line" 2 "were not resolved"
+
+fresh
+cat > "$TMP/wf/a.yml" <<EOF
+jobs:
+  x:
+    steps:
+      - uses: actions/setup-go@$SHA
+      - ? &a "uses"
+        : actions/checkout@v7
+EOF
+run "a property before a QUOTED explicit key is residue too" 2 "were not resolved"
+
+fresh
+cat > "$TMP/wf/a.yml" <<EOF
+jobs:
+  x:
+    steps:
+      - uses: actions/setup-go@$SHA
+      - name: n
+        ? &a uses
+        : actions/checkout@v7
+EOF
+run "a property between ? and a DASHLESS explicit key is residue" 2 "were not resolved"
+
+fresh
+cat > "$TMP/wf/a.yml" <<EOF
+jobs:
+  x:
+    steps:
+      - uses: actions/setup-go@$SHA
+      - ? &a !x uses
+        : actions/checkout@v7
+EOF
+run "two properties between ? and the key are residue as well" 2 "were not resolved"
+
+# AND THE TWO POSITIONS COMPOSE, which is its own case because each
+# alone was already covered and the combination was NOT: a property
+# before the `?` AND another after it. MEASURED at the previous head:
+# exit 0 with the success line, while `- &a ? uses` -- one property,
+# before the indicator -- correctly refused. Two arms that each work
+# alone can still fail together.
+fresh
+cat > "$TMP/wf/a.yml" <<EOF
+jobs:
+  x:
+    steps:
+      - uses: actions/setup-go@$SHA
+      - &a ? !x uses
+        : actions/checkout@v7
+EOF
+run "a property on BOTH sides of the ? indicator is residue" 2 "were not resolved"
+
+# THE NARROWING CONTROL FOR THAT WIDENING, and the reason it is not a
+# licence to count `? <anything> uses`. Only a NODE PROPERTY may stand
+# there. A bare word does not: `? x uses` is the plain key `x uses`,
+# which PyYAML confirms, and it is not a reference -- so exit 0 here is
+# the RIGHT answer, not a pinned defect. Widening the group to any
+# first token turns this case red, which is what makes it a control.
+fresh
+cat > "$TMP/wf/a.yml" <<EOF
+jobs:
+  x:
+    steps:
+      - uses: actions/setup-go@$SHA
+      - ? x uses
+        : actions/checkout@v7
+EOF
+run "a bare word between ? and uses is a different key, and does not count" 0 "all 1 'uses:'"
+
+# THE OTHER SIDE OF THE SAME BOUNDARY. A property may precede a node; it
+# may not follow one. `uses &a :` is the plain key `uses &a` -- MEASURED
+# with PyYAML -- so it is not a `uses` key and must not count. This case
+# is what stops a later widening from admitting a property between the
+# key and its colon on the theory that YAML is permissive there.
+fresh
+cat > "$TMP/wf/a.yml" <<EOF
+jobs:
+  x:
+    steps:
+      - uses: actions/setup-go@$SHA
+      - uses &a : actions/checkout@v7
+EOF
+run "a token AFTER the key is part of the key, and does not count" 0 "all 1 'uses:'"
+
+# AND THE INTERSECTION OF THE TWO CLASSES, PINNED. A property in front
+# of the key does not rescue the `?`-alone class: with the indicator on
+# its own line the key line carries neither a `?` nor a `:`, so no
+# expression in this file can reach it however the property group is
+# widened. MEASURED: exit 0, and PyYAML composes a real `uses` key. It
+# is recorded here so the enumeration in check-action-pins.sh has a case
+# for the square it leaves open, rather than only prose.
+fresh
+cat > "$TMP/wf/a.yml" <<EOF
+jobs:
+  x:
+    steps:
+      - uses: actions/setup-go@$SHA
+      - ?
+          &a uses
+        : actions/checkout@v7
+EOF
+run "PINNED DEFECT: a property does not rescue the ?-alone class (exit 0 is wrong)" 0 "all 1 'uses:'"
+
+# THE COPIES OF THE PROPERTY GROUP MUST AGREE, AND THAT IS CHECKED
+# RATHER THAN REMEMBERED. The same subexpression appears in the counter
+# twice, in the ref extraction and in the parser feed. The defect this
+# round fixed was precisely a widening that reached some of those
+# positions and not another, and the cases above only catch the copies
+# a fixture happens to exercise -- a future widening of what a PROPERTY
+# may look like (a different leading character, a different terminator)
+# could again land on three of four and leave the fourth behind, with
+# every case above still green because no fixture distinguishes them.
+#
+# So the population is DERIVED from the script rather than counted here:
+# no number is written down, and the copies are located by the thing
+# that cannot move without this whole gate moving -- the `uses` token
+# inside a regular expression -- rather than by what the property group
+# looks like today. A refactor to a single shared variable leaves one
+# site pair and passes, which is the right answer: there is then nothing
+# to drift.
+#
+# THE FIRST VERSION OF THIS CHECK WAS KEYED ON `[&!]` AND WAS INERT.
+# Driving the absence is what found it, and it is worth the sentence
+# because it is the same defect as the one below it: widening ONE copy
+# to `[&!%]` made that copy invisible to the pattern, so the check
+# reported "all 2 copies identical" over a script whose four copies no
+# longer agreed. A check keyed on today's spelling reproduces its own
+# silence. Both directions are now driven below in the comment's place:
+# a differing copy FAILS, a missing group FAILS, an empty domain
+# REFUSES.
+#
+# AND AN EMPTY DOMAIN REFUSES rather than passing. "All copies agree" is
+# vacuously true of zero copies, which is how a check keyed on a literal
+# congratulates itself after the literal is renamed.
+n=$((n + 1))
+# OCCURRENCES, NOT LINES. `grep -c` counts LINES, and the counter holds
+# TWO of these sites on ONE line -- so a line count reported three sites
+# where there are four and the check went red against a correct script.
+# Caught by running it, which is why the control is driven and not read.
+prop_sites="$(grep -oE 'uses:?\[\[:space:\]\]' "$CHECK" | grep -c . || true)"
+prop_admit="$(grep -oE '\([^()]*\)\*\(?uses:?\[\[:space:\]\]' "$CHECK" || true)"
+prop_admit_n="$(printf '%s' "$prop_admit" | grep -c . || true)"
+prop_groups="$(printf '%s\n' "$prop_admit" | sed -E 's/\(?uses:?\[\[:space:\]\]$//' | sort -u)"
+prop_distinct="$(printf '%s' "$prop_groups" | grep -c . || true)"
+if [ "$prop_sites" -lt 2 ]; then
+    echo "FAIL: REFUSING -- found $prop_sites regex site(s) matching a 'uses' key in check-action-pins.sh."
+    echo "    There are several by construction (the counter's two arms, the ref extraction,"
+    echo "    the parser feed). This check was emptied of its domain, not satisfied."
+    failures=$((failures + 1))
+elif [ "$prop_admit_n" -ne "$prop_sites" ]; then
+    echo "FAIL: $prop_admit_n of $prop_sites 'uses' key sites admit a node property --"
+    echo "    a widening reached some positions and not the others, which is exactly the"
+    echo "    defect the cases above exist to stop."
+    failures=$((failures + 1))
+elif [ "$prop_distinct" -ne 1 ]; then
+    echo "FAIL: the node-property group is spelled $prop_distinct different ways across $prop_sites sites:"
+    printf '%s\n' "$prop_groups" | sed 's/^/        /'
+    failures=$((failures + 1))
+else
+    echo "PASS: all $prop_sites 'uses' key sites admit the same node-property group"
+fi
+
 # AN ALIAS IS NOT AN ESCAPE, AND THAT IS MEASURED RATHER THAN ARGUED.
 # `*a` looks like the dangerous neighbour of a node property -- it
 # stands where the mapping would be and carries no `uses` token. But to
@@ -871,7 +1080,7 @@ fi
 # exits 0, which is a green tick over nothing. The floor is the count
 # this file is known to run; raise it when cases are added, and a
 # deletion has to be deliberate rather than silent.
-FLOOR=56
+FLOOR=66
 if [ "$n" -lt "$FLOOR" ]; then
     echo "REFUSING: ran $n case(s), fewer than the $FLOOR this suite is known to hold."
     echo "  Either cases were lost, or the floor is stale and should be raised with them."

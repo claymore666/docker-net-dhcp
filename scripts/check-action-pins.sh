@@ -200,14 +200,48 @@ for f in "${FILES[@]}"; do
     # exit 1, and the three that neither called a reference refuse
     # rather than pass.
     #
-    # WHAT IT DOES NOT COVER, named AND measured rather than left to be
-    # found. Three shapes sit outside the expression: a tag shorthand
-    # that itself ends in `uses:` (`- !uses: x`), which swallows the
-    # key; a property written BEFORE the dash (`&a - uses: x`); and an
-    # alias (`*a`), which is not a node property at all. All three exit
-    # 0 -- and MEASURED, NEITHER ORACLE CALLS ANY OF THEM A REFERENCE,
-    # so passing them costs nothing observable. That is one spelling of
-    # each, which is a bound on the measurement, not a proof.
+    # THE ENUMERATION IS OF POSITIONS, NOT OF SPELLINGS, AND THAT IS THE
+    # CORRECTION THIS PARAGRAPH CARRIES. It used to name three shapes as
+    # outside the expression and read as though everything else were
+    # inside it. A fourth position then escaped: a property BETWEEN the
+    # `?` indicator and the key -- `- ? &a uses` -- because the property
+    # group sat ahead of the ALTERNATION, so it reached a property in
+    # front of `uses:` and one in front of `?`, and not one in front of
+    # the key inside the `?` arm. MEASURED at the time: exit 0 with the
+    # success line over an unpinned reference that PyYAML composes to a
+    # real `uses` key. Enumerating spellings is what missed it; the
+    # positions are finite and the spellings are not, so the positions
+    # are what is written down. Every row is MEASURED and every one has
+    # a case in scripts/test-check-action-pins.sh.
+    #
+    #   before the dash          `&a - uses: x`      OPEN, not a ref
+    #   after the dash           `- &a uses: x`      judged  (exit 1)
+    #   dashless                 `  &a uses: x`      judged  (exit 1)
+    #   own line, key below      `- &a` / `uses:`    judged  (exit 1)
+    #   before the `?`           `- &a ? uses`       refused (exit 2)
+    #   between `?` and key      `- ? &a uses`       refused (exit 2)
+    #   both sides of the `?`    `- &a ? !x uses`    refused (exit 2)
+    #   in a flow mapping        `- {? &a uses : x}` refused (exit 2)
+    #   after the key            `uses &a : x`       not a `uses` key
+    #   on the value side        `uses: &a ref`      OPEN, both ways
+    #   `?` alone on its line    `- ?` / `&a uses`   OPEN, unreachable
+    #
+    # THE OPEN ROWS, each with what it costs. A property before the dash
+    # and a tag shorthand that swallows the key (`- !uses: x`) exit 0
+    # and NEITHER ORACLE CALLS EITHER A REFERENCE, so passing them costs
+    # nothing observable -- one spelling of each was measured, which is
+    # a bound and not a proof. An alias (`*a`) is not a node property at
+    # all and is caught at its definition site. The value side is judged
+    # rather than skipped, which is worse than either: it false-REDS a
+    # pinned ref, and for a tag ending in `@` plus 40 hex it false-GREENS
+    # an unpinned one. Both are pinned as cases. The `?`-alone row is the
+    # structural bound named further up -- no expression here can reach a
+    # key line carrying neither indicator nor colon, whatever the property
+    # group admits.
+    #
+    # AND THE ROWS ARE A LOWER BOUND ON THE POSITIONS, not a proof that
+    # there are eleven. Two spellings enumerated means a third exists,
+    # and this table exists because that was true of the last list.
     #
     # The alias deserves its own sentence because it looks like the
     # dangerous one and MEASURED it is not: to alias a step you must
@@ -322,7 +356,7 @@ for f in "${FILES[@]}"; do
         | sed -E 's/(^|[[:space:]])#.*$//' \
         | tr -d '"'"'" \
         | sed -E 's/[{[,]/\n/g' \
-        | grep -cE '^[[:space:]]*(-[[:space:]]+)*([&!][^[:space:]]*[[:space:]]+)*(uses[[:space:]]*:|\?[[:space:]]+uses[[:space:]]*(:|$))')"
+        | grep -cE '^[[:space:]]*(-[[:space:]]+)*([&!][^[:space:]]*[[:space:]]+)*(uses[[:space:]]*:|\?[[:space:]]+([&!][^[:space:]]*[[:space:]]+)*uses[[:space:]]*(:|$))')"
     parsed=0
 
     while IFS= read -r hit; do
