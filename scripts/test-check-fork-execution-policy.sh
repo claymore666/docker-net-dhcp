@@ -415,7 +415,7 @@ runwf "the real workflow tree derives exactly the declared two" 0 3 \
 # fact moved rather than only that something did.
 runwf "the outsider-reachable trigger census is derived, not written down" 0 3 \
     "$ROOT/.github/workflows" \
-    "can cause: issues, pull_request, pull_request_target" \
+    "can cause: [issues, pull_request, pull_request_target]" \
     "issue-labeler.yml: issues" \
     "issue-state-labels.yml: pull_request_target"
 

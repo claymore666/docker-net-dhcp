@@ -484,8 +484,16 @@ forkreachable=$(printf '%s\n' "$scan" | awk -F'\t' '$1 == "FORKREACHABLE" { prin
 forkreachable_n=$(printf '%s\n' "$forkreachable" | grep -c .)
 forkreachable_n=${forkreachable_n:-0}
 forkreachable_set=$(printf '%s\n' "$scan" | awk -F'\t' '$1 == "FORKREACHABLE" { print $3 }' | tr ',' '\n' | grep . | sort -u | paste -sd, - | sed 's/,/, /g')
-[ -n "$forkreachable_set" ] || forkreachable_set="(none)"
-echo "$forkreachable_n workflow(s) in $WF_DIR trigger on something an outsider can cause: $forkreachable_set"
+# THE SET IS PRINTED BRACKETED, and that is not decoration. The
+# self-test asserts this line as a substring, and an unbracketed tail is
+# a PREFIX -- adding a trigger that sorts last leaves the old text intact
+# inside the new line and the assertion still passes. Measured: with the
+# set printed bare, dropping a `workflow_run` workflow into the real
+# directory left the census case GREEN. A subset assertion standing in
+# for a set assertion is the same fail-open shape this whole gate is
+# about, reproduced inside the check written to close it. The closing
+# bracket is what makes the assertion terminate.
+echo "$forkreachable_n workflow(s) in $WF_DIR trigger on something an outsider can cause: [$forkreachable_set]"
 [ "$forkreachable_n" -gt 0 ] && printf '%s\n' "$forkreachable"
 
 exposed_now=$(printf '%s\n' "$scan" | awk -F'\t' '$1 == "EXPOSED" { print $2 }' | sort -u | tr '\n' ' ')
