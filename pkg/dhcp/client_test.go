@@ -18,6 +18,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/vishvananda/netns"
+
 	"github.com/claymore666/docker-net-dhcp/pkg/util"
 )
 
@@ -275,7 +277,7 @@ func TestNewDHCPClient_FIFOWiredIntoConfig(t *testing.T) {
 }
 
 func TestMountPrep_RemountsProcSysRW(t *testing.T) {
-	script := mountPrep()
+	script := mountPrep(unguardedPrepParams())
 	// dhcpcd's interface setup writes /proc/sys, which is ro in the
 	// managed-plugin rootfs; the wrapper must flip it rw in the private
 	// mount namespace before exec (#247). It must still mount the
@@ -306,7 +308,7 @@ func TestNewDHCPClient_WrapsRemountIntoCommand(t *testing.T) {
 	c := newTestClient(t, "eth0", &DHCPClientOptions{MAC: mustMAC(t, "de:ad:be:ef:00:01")})
 	// The mount-prep script rides as the `sh -c` argument; assert the
 	// /proc/sys remount actually reaches the spawned command.
-	if !hasArg(c.cmd.Args, mountPrep()) {
+	if !hasArg(c.cmd.Args, mountPrep(dhcpcdParams{Iface: "eth0"})) {
 		t.Errorf("mount-prep script not wired into command; args: %v", c.cmd.Args)
 	}
 }
@@ -698,14 +700,26 @@ func mountPrepCommandWords(prep string) []string {
 }
 
 func TestMountPrep_NamesEveryBinaryAbsolutely(t *testing.T) {
-	prep := mountPrep()
-	words := mountPrepCommandWords(prep)
+	// BOTH shapes, because the Router-Advertisement guard (#875) adds
+	// command words that the unguarded string does not contain — and a
+	// test that only ever reads the unguarded shape is exactly the
+	// "word nobody had looked at yet" this test exists for.
+	prep := mountPrep(unguardedPrepParams())
+	words := mountPrepCommandWords(prep + guardedPrep())
 	for _, w := range words {
 		if !strings.HasPrefix(w, "/") {
 			t.Errorf("mountPrep runs %q, resolved through PATH by the shell; "+
 				"name it absolutely as dhcpcdBin and unsharePath are\n---\n%s",
-				w, prep)
+				w, prep+guardedPrep())
 		}
+	}
+	// The guarded shape must actually CONTRIBUTE words, or the loop
+	// above is being satisfied by the unguarded ones alone and the
+	// widening measured nothing.
+	if base, all := len(mountPrepCommandWords(prep)), len(words); all <= base {
+		t.Errorf("the Router-Advertisement guard contributed %d command words on top of "+
+			"%d; it is either absent from the guarded shape or written in a form this "+
+			"splitter cannot read", all-base, base)
 	}
 	// The loop body is a rule about command words that exist, so it is
 	// satisfied completely by there being none — which is what a
@@ -780,22 +794,183 @@ func TestMountPrepCommandWords_SeesBareCommandsAndNotRedirections(t *testing.T) 
 // remount at (3) legitimately fails under a --privileged runtime, where
 // /proc/sys is not a separate mount and is already writable, so `set -e`
 // would kill a client on a host that is fine. Audible, not fatal.
+//
+// # WHY THIS IS NOW A PER-STATEMENT PROPERTY AND NOT A FILE-WIDE BAN
+//
+// The rule above is about a step whose FAILURE must stay visible, and
+// every step in the prologue was of that kind until the RA guard's
+// post-shield writability probe was added (#875).
+// The RA guard's post-shield writability probe is not: its marker fires
+// when the command SUCCEEDS, so its failing path — the path that means
+// the guard is working — is the path on which the shell prints
+// "can't create <sysctl>: Read-only file system", naming dhcpcd's own
+// binary, on every healthy IPv6 endpoint. Suppressing that hides no
+// failure, because the probe's failure is silent by construction; and
+// leaving it manufactures a false lead in the log the operator reads
+// during an incident.
+//
+// The ban is therefore scoped to the family it was written about, and
+// scoped by DERIVATION rather than by a list of exempt step names:
+// the two polarities are read out of prepStep and prepStepMustFail
+// themselves, so a change to either builder moves this gate with it.
+//
+// WHAT THIS GATE REQUIRES. Stated as properties of the code below
+// rather than as a comparison with anything, so a reader can check
+// every line of it against the function and needs no other commit:
+//
+//  1. An ordinary step must NOT move its diagnostic off fd 2. Any `2>`
+//     in the statement is such a move — out of the marker watcher and
+//     out of the bounded stderr tail that reaches the operator.
+//  2. An inverted step MUST suppress. Its failing path is the healthy
+//     one, and it is the path that prints the shell's own "can't create
+//     ...: Read-only file system" naming dhcpcd's binary.
+//  3. The two counts must MATCH: as many suppressing statements as
+//     inverted ones. A suppression can then neither ride into an
+//     ordinary step nor be dropped from a probe.
+//  4. Neither domain may be EMPTY, in either prologue shape. A gate
+//     over "every statement that ..." is satisfied by having none.
 func TestMountPrep_DoesNotSwallowDiagnostics(t *testing.T) {
-	prep := mountPrep()
-	for _, swallow := range []string{
-		"2>/dev/null",
-		"2> /dev/null",
-		"2>&-",
-	} {
-		if strings.Contains(prep, swallow) {
-			t.Errorf("mountPrep redirects a command's stderr away with %q. A failed tmpfs "+
-				"there is undetectable: the commands are `;`-separated so the chain "+
-				"continues, `exec` is unconditional so the exit status is dhcpcd's, and "+
-				"dhcpcd cannot tell it is using the shared state dir instead of a private "+
-				"one. Leave the diagnostic on fd 2, which NewDHCPClient already tees into "+
-				"the plugin log and the exit-error tail\n---\n%s", swallow, prep)
-		}
+	// The two polarities, read out of the builders rather than
+	// transcribed. A test that hard-codes "||" and "&&" here would keep
+	// passing if a builder changed under it, which is the class of
+	// defect this file keeps finding elsewhere.
+	const sentinel = "SENTINEL-CMD"
+	reportsOnFailure := joinerOf(t, prepStep(sentinel, "M", "S"), sentinel)
+	reportsOnSuccess := joinerOf(t, prepStepMustFail(sentinel, "M", "S"), sentinel)
+	if reportsOnFailure == reportsOnSuccess {
+		t.Fatalf("the two step builders produce the same polarity %q; this gate cannot "+
+			"tell an ordinary step from an inverted one and would exempt both",
+			reportsOnFailure)
 	}
+
+	// Keyed on the REDIRECTION, not on a list of destinations.
+	//
+	// A list of destinations cannot be complete, and the ways to be wrong
+	// about it are concrete: `2>/dev/null`, `2> /dev/null`, `2>&-` and
+	// `2>&1` are the spellings that come to mind, while `2>>/dev/null`,
+	// `2>&3` and a redirect to a plain file are just as effective and are
+	// not among them. `exec 2>/dev/null` is worse again -- it silences
+	// every statement AFTER it rather than its own, so a per-statement
+	// check that steps over `exec` cannot see it at all. Any enumeration
+	// here is a guess about what somebody writes next.
+	//
+	// So: any `2>` in a statement is an fd-2 redirection. MEASURED
+	// against what mountPrep actually emits, in both directions -- the
+	// marker's own `>&2` contains no `2>`, and a write step renders as
+	// `/bin/echo 2 > /proc/.../accept_ra`, where the value and the `>`
+	// are separated by a space. Neither is a false positive, so the
+	// predicate needs no exemption list to be exact here.
+	//
+	// The `exec` skip below is therefore conditional on the statement
+	// containing no `2>`: it steps over the trailing `exec "$0" "$@"`
+	// without also stepping over an `exec` that redirects.
+	//
+	// BOUND, because sufficient is not necessary: `2>` catches every
+	// redirection spelling reachable from prepStep/prepStepMustFail today,
+	// but `&>/dev/null` contains no `2>` and would pass. INFERRED, not
+	// measured: whether busybox ash honours `&>` at all is untested, and
+	// no builder can currently emit it. This gate also reads only the
+	// string mountPrep returns, so a redirection applied by the Go code
+	// that WRAPS the prologue is outside its domain by construction.
+	const redirectsFd2 = "2>"
+
+	for _, tc := range []struct {
+		name         string
+		prep         string
+		wantInverted bool
+	}{
+		{"unguarded", mountPrep(unguardedPrepParams()), false},
+		{"guarded", mountPrep(guardedPrepParams()), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ordinary, inverted, suppressing := 0, 0, 0
+			for _, stmt := range strings.Split(tc.prep, ";") {
+				trimmed := strings.TrimSpace(stmt)
+				// The trailing `exec "$0" "$@"` is not a prepared step
+				// and has no marker. It is skipped ONLY while it leaves
+				// fd 2 alone: `exec 2>/dev/null` is a legal statement
+				// that silences every step after it, and a skip keyed on
+				// the word `exec` alone would step straight over it —
+				// the gate's own blind spot, in the one statement whose
+				// redirection has the widest reach.
+				if len(strings.Fields(stmt)) == 0 ||
+					(strings.HasPrefix(trimmed, "exec ") && !strings.Contains(stmt, redirectsFd2)) {
+					continue
+				}
+				isInverted := strings.Contains(stmt, reportsOnSuccess+" "+echoBin)
+				if isInverted {
+					inverted++
+				} else {
+					ordinary++
+				}
+				swallowed := ""
+				if i := strings.Index(stmt, redirectsFd2); i >= 0 {
+					swallowed = strings.TrimSpace(stmt[i:])
+					suppressing++
+				}
+				switch {
+				case swallowed != "" && !isInverted:
+					t.Errorf("step %q moves its stderr away with %q, and its marker fires "+
+						"on FAILURE. A failed tmpfs there is undetectable: the commands "+
+						"are `;`-separated so the chain continues, `exec` is unconditional "+
+						"so the exit status is dhcpcd's, and dhcpcd cannot tell it is "+
+						"using the shared state dir instead of a private one. Leave the "+
+						"diagnostic on fd 2, which NewDHCPClient tees into the plugin log "+
+						"and the exit-error tail\n---\n%s",
+						strings.TrimSpace(stmt), swallowed, tc.prep)
+				case swallowed == "" && isInverted:
+					t.Errorf("step %q reports on SUCCESS but leaves its stderr on fd 2. Its "+
+						"PASSING path is a refused write, so the shell prints "+
+						"\"can't create ...: Read-only file system\" naming dhcpcd's own "+
+						"binary on every healthy endpoint — a fault-shaped line carrying "+
+						"no information the marker does not\n---\n%s",
+						strings.TrimSpace(stmt), tc.prep)
+				}
+			}
+
+			// Non-vacuity, both directions. "Every statement that X" is
+			// satisfied by having no statements, and this shape has been
+			// emptied by accident before.
+			if ordinary == 0 {
+				t.Errorf("no ordinary steps found; the ban above has an empty domain and "+
+					"checks nothing\n---\n%s", tc.prep)
+			}
+			if tc.wantInverted && inverted == 0 {
+				t.Errorf("no inverted steps in the guarded shape; the exemption above has "+
+					"an empty domain\n---\n%s", tc.prep)
+			}
+			if !tc.wantInverted && inverted != 0 {
+				t.Errorf("%d inverted steps in the UNGUARDED shape, want 0: the writability "+
+					"probe writes a container's IPv6 configuration and must not reach the "+
+					"DHCPv4 client\n---\n%s", inverted, tc.prep)
+			}
+			// The counts must match exactly, so neither a suppression
+			// without an inversion nor an inversion without a
+			// suppression can survive as a net-zero pair.
+			if suppressing != inverted {
+				t.Errorf("%d suppressing statements and %d inverted ones; the exemption is "+
+					"exactly the inverted family and nothing else\n---\n%s",
+					suppressing, inverted, tc.prep)
+			}
+		})
+	}
+}
+
+// joinerOf extracts the shell operator a step builder puts between the
+// command and its reporting echo, by rendering the builder against a
+// sentinel command. Derivation, not transcription: it is the builder's
+// own output that decides what this gate treats as an inverted step.
+func joinerOf(t *testing.T, step, sentinel string) string {
+	t.Helper()
+	_, after, ok := strings.Cut(step, sentinel)
+	if !ok {
+		t.Fatalf("step builder did not include its command: %q", step)
+	}
+	f := strings.Fields(after)
+	if len(f) == 0 {
+		t.Fatalf("step builder emitted nothing after the command: %q", step)
+	}
+	return f[0]
 }
 
 // TestGetIP_UnmanagedAdvertisementStopsRetrying pins the early exit
@@ -1220,5 +1395,482 @@ func TestSettleAcquisition_TakesNoContext(t *testing.T) {
 				"segment with a silent server becomes a running container (#868)",
 				fn.In(i), i)
 		}
+	}
+}
+
+// unguardedPrepParams is the mountPrep input for a client with NO
+// Router-Advertisement guard: the DHCPv4 client, and the DHCPv6
+// one-shot that runs against a link still in the host namespace.
+//
+// A named helper rather than a bare literal at each call site so the
+// two shapes this file tests are named rather than implied, and so
+// adding a field to dhcpcdParams cannot silently turn an unguarded
+// assertion into a guarded one.
+func unguardedPrepParams() dhcpcdParams {
+	return dhcpcdParams{Iface: "eth0"}
+}
+
+// guardedPrepParams is the mountPrep input for the persistent DHCPv6
+// client: the one inside the container's network namespace.
+func guardedPrepParams() dhcpcdParams {
+	return dhcpcdParams{Iface: "eth0", V6: true, HonorRouterAdverts: true}
+}
+
+// guardedPrep is the guard's own contribution to the shell body — what
+// the guarded shape has and the unguarded one does not.
+func guardedPrep() string {
+	return raGuardSteps(guardedPrepParams().Iface)
+}
+
+// TestMountPrep_GuardIsAbsentUnlessAsked drives the ABSENCE.
+//
+// The guard writes a container's IPv6 host configuration. If it leaked
+// into the DHCPv4 client or into the CreateEndpoint one-shot it would
+// be writing those values on a link that is still in the HOST network
+// namespace — changing the host's own router-discovery behaviour, on
+// every endpoint, with nothing reporting it.
+//
+// Keyed on the sysctl DIRECTORY rather than on the three knob names, so
+// a fourth knob added to raGuardKnobs is covered without anyone
+// remembering this test.
+func TestMountPrep_GuardIsAbsentUnlessAsked(t *testing.T) {
+	off := mountPrep(unguardedPrepParams())
+	if strings.Contains(off, sysctlIPv6ConfDir) {
+		t.Errorf("mountPrep touches %v without HonorRouterAdverts; that link may still be "+
+			"in the host namespace\n---\n%s", sysctlIPv6ConfDir, off)
+	}
+	on := mountPrep(guardedPrepParams())
+	if !strings.Contains(on, sysctlIPv6ConfDir) {
+		t.Errorf("HonorRouterAdverts produced no guard at all; the check above then has "+
+			"one possible verdict\n---\n%s", on)
+	}
+}
+
+// TestMountPrep_GuardKeyedOnTheFLAGAndNothingElse is the test above
+// widened from the two shapes that were convenient to the WHOLE space
+// mountPrep ranges over, and it exists because the narrow version
+// missed a live defect.
+//
+// MEASURED: with the emission gated on `p.V6` instead of
+// `p.HonorRouterAdverts`, the entire unit suite stayed green. The
+// absence arm above drives `dhcpcdParams{Iface: "eth0"}` — V6 FALSE —
+// so `p.V6` and `p.HonorRouterAdverts` are both false there and the
+// two are indistinguishable. The unguarded shape that actually exists
+// in production is the opposite one: V6 TRUE, guard NOT asked. That is
+// the CreateEndpoint one-shot, and it is the dangerous one, because
+// config.json declares "network": {"type": "host"} — the plugin's own
+// network namespace IS the host's, and /proc/sys/net resolves against
+// the reading task's netns. Under that mutant every endpoint creation
+// rewrites the HOST's router-discovery configuration.
+//
+// So the property is not "V4 gets no guard". It is: the guard is a
+// function of HonorRouterAdverts and of NOTHING ELSE. Driving the
+// cross product of the other booleans is what makes that a property
+// rather than two examples, and it kills a gate mis-keyed on any of
+// them — not only the one spelling that was caught.
+//
+// The bound: this ranges over the BOOLEAN fields of dhcpcdParams. A
+// gate keyed on a string field (Iface, Hostname, RequestedIP) is not
+// in this domain. Those are not plausible mis-keyings of a boolean
+// gate, but the domain is stated rather than implied.
+func TestMountPrep_GuardKeyedOnTheFLAGAndNothingElse(t *testing.T) {
+	bools := []bool{false, true}
+	var cases int
+	for _, v6 := range bools {
+		for _, once := range bools {
+			for _, broadcast := range bools {
+				for _, honor := range bools {
+					p := dhcpcdParams{
+						Iface:              "eth0",
+						V6:                 v6,
+						Once:               once,
+						Broadcast:          broadcast,
+						HonorRouterAdverts: honor,
+					}
+					got := strings.Contains(mountPrep(p), sysctlIPv6ConfDir)
+					if got != honor {
+						t.Errorf("V6=%v Once=%v Broadcast=%v HonorRouterAdverts=%v: "+
+							"guard present = %v, want %v — the emission is keyed on "+
+							"something other than the flag",
+							v6, once, broadcast, honor, got, honor)
+					}
+					cases++
+				}
+			}
+		}
+	}
+	// 2^4. Named so a future field added to the loop without extending
+	// this number is noticed, and so the loop cannot pass by not running.
+	if cases != 16 {
+		t.Fatalf("drove %d combinations, want 16: the cross product is not being covered",
+			cases)
+	}
+}
+
+// TestRAGuard_WritesVerifiesAndShieldsEveryKnob pins the steps a knob
+// needs and the ORDER they must come in.
+//
+// Order is the whole design: shielding before a write makes that write
+// fail, and verifying after the shield verifies the shield's own view
+// rather than the kernel's. Derived from raGuardKnobs so a knob added
+// without its write or its read-back fails here.
+//
+// The shield is ONE step for all knobs (#875) -- it
+// returns /proc/sys itself to read-only rather than binding each leaf,
+// because the per-leaf bind was MEASURED to report success and not hold
+// on the CI runner. So the ordering claim is that EVERY knob's write
+// and verify precede the single shield; a knob written after it would
+// be a write into a read-only tree.
+func TestRAGuard_WritesVerifiesAndShieldsEveryKnob(t *testing.T) {
+	const iface = "eth0"
+	prep := mountPrep(dhcpcdParams{Iface: iface, V6: true, HonorRouterAdverts: true})
+	knobs := raGuardKnobs()
+	if len(knobs) == 0 {
+		t.Fatal("no knobs: every assertion below is satisfied by an empty domain")
+	}
+
+	shield := strings.Index(prep, mountBin+" -o remount,bind,ro "+procSysPath)
+	if shield < 0 {
+		t.Fatalf("no shield: the knobs are written and never protected, and dhcpcd "+
+			"re-runs if_setup_inet6() on every carrier acquisition, so every value "+
+			"below would be undone\n---\n%s", prep)
+	}
+	// Exactly one, for one operation. Three would mean the per-knob
+	// shape came back without the reason for it.
+	if n := strings.Count(prep, mountBin+" -o remount,bind,ro "+procSysPath); n != 1 {
+		t.Errorf("shield appears %d times, want exactly 1", n)
+	}
+	// The shield must come after the prologue's read-WRITE remount,
+	// otherwise it is immediately undone by it.
+	if rw := strings.Index(prep, mountBin+" -o remount,bind,rw "+procSysPath); rw < 0 || rw > shield {
+		t.Errorf("read-only shield at %d does not follow the read-write remount at %d; "+
+			"the guard would be reopened by the very step that lets it write", shield, rw)
+	}
+
+	for _, k := range knobs {
+		path := raGuardPath(iface, k.name)
+		write := strings.Index(prep, echoBin+" "+k.value+" > "+path)
+		verify := strings.Index(prep, grepBin+" -qxF "+k.value+" "+path)
+		// The shield's EFFECT, per knob, AFTER the shield. Located by
+		// its step name so the assertion does not restate the command.
+		probe := strings.Index(prep, raGuardFailMarker+" "+raGuardWritableStep(k.name))
+		switch {
+		case k.value == "":
+			t.Errorf("%v: knob with no value; the guard cannot verify, and therefore "+
+				"cannot claim to hold, a knob it names no value for", k.name)
+		case write < 0:
+			t.Errorf("%v: no write of %q\n---\n%s", k.name, k.value, prep)
+		case verify < 0:
+			t.Errorf("%v: written but never read back; a /proc/sys write that reports "+
+				"success is not evidence the value is there\n---\n%s", k.name, prep)
+		case probe < 0:
+			t.Errorf("%v: shielded but never probed. The shield's exit status is not "+
+				"evidence it holds — MEASURED, a read-write mount under /proc/sys "+
+				"takes the remount, exits 0, emits nothing, and the knob stays "+
+				"writable\n---\n%s", k.name, prep)
+		case !(write < verify && verify < shield && shield < probe):
+			t.Errorf("%v: steps out of order (write=%d verify=%d shield=%d probe=%d); "+
+				"must be write, then read back, both before the single shield, and "+
+				"the writability probe after it — a probe before the shield would "+
+				"report every healthy host as broken\n---\n%s",
+				k.name, write, verify, shield, probe, prep)
+		}
+	}
+}
+
+// TestRAGuard_ShieldIsCheckedByItsEffectAndNotItsExitStatus is the
+// executable form of the blocking finding from #885's second review.
+//
+// The guard reads back every knob it writes, on the stated ground that
+// "we wrote it" is not evidence the value is there. That argument
+// applies unchanged to the shield, and for one round it was not
+// applied: the sole evidence /proc/sys had become read-only was that
+// `mount` returned 0. MEASURED (ra_guard.go's topology table): with a
+// read-write mount anywhere under /proc/sys the remount exits 0, emits
+// no marker, and dhcpcd's write still takes accept_ra to 0.
+//
+// Four separate properties, because three of them can be lost while the
+// step is still present and the ordering test above still passes.
+func TestRAGuard_ShieldIsCheckedByItsEffectAndNotItsExitStatus(t *testing.T) {
+	const iface = "eth0"
+	prep := mountPrep(guardedPrepParams())
+	knobs := raGuardKnobs()
+	if len(knobs) == 0 {
+		t.Fatal("no knobs: every assertion below is satisfied by an empty domain")
+	}
+	for _, k := range knobs {
+		path := raGuardPath(iface, k.name)
+		stmt := ""
+		for _, cand := range strings.Split(prep, ";") {
+			if strings.Contains(cand, raGuardWritableStep(k.name)) {
+				stmt = strings.TrimSpace(cand)
+			}
+		}
+		if stmt == "" {
+			t.Errorf("%v: no writability probe at all", k.name)
+			continue
+		}
+		// 1. POLARITY. The marker must fire when the write SUCCEEDS.
+		// With `||` the step would report a marker exactly when the
+		// shield WORKED — loud on every healthy host, silent on the
+		// defect. That is the inversion this whole step exists to
+		// avoid, and it is one character wide.
+		if !strings.Contains(stmt, "&& "+echoBin+" '"+raGuardFailMarker) {
+			t.Errorf("%v: probe does not report on SUCCESS; a `||` here reports the "+
+				"healthy case and stays silent on the defect\n---\n%s", k.name, stmt)
+		}
+		if strings.Contains(stmt, "|| "+echoBin+" '"+raGuardFailMarker) {
+			t.Errorf("%v: probe reports on FAILURE, which is the opposite of what a "+
+				"writability check means\n---\n%s", k.name, stmt)
+		}
+		// 2. HARMLESS ON SUCCESS. It writes the value the knob is
+		// already meant to hold, so a probe that gets through cannot
+		// change the container's configuration. Any other value would
+		// make the check itself the thing that breaks the guard.
+		if !strings.Contains(stmt, echoBin+" "+k.value+" ") {
+			t.Errorf("%v: probe does not write the guard's own value %q; a probe that "+
+				"gets through would then change the knob it is checking\n---\n%s",
+				k.name, k.value, stmt)
+		}
+		// 3. THE RIGHT PATH. Per-interface, and this knob's leaf.
+		if !strings.Contains(stmt, "> "+path) {
+			t.Errorf("%v: probe does not write %v\n---\n%s", k.name, path, stmt)
+		}
+		// 4. QUIET ON THE PASSING PATH. The refused redirection prints
+		// "Read-only file system" on every HEALTHY endpoint unless the
+		// suppression precedes it. MEASURED, busybox sh 1.37.0:
+		// `echo V > P 2>/dev/null` still prints, because redirections
+		// are applied left to right and the failing one is applied
+		// first. So the order in the statement is load-bearing.
+		sup := strings.Index(stmt, "2>/dev/null")
+		red := strings.Index(stmt, "> "+path)
+		if sup < 0 || sup > red {
+			t.Errorf("%v: stderr suppression at %d does not precede the redirection at "+
+				"%d; the shell's own \"Read-only file system\" reaches the plugin log "+
+				"on every healthy endpoint\n---\n%s", k.name, sup, red, stmt)
+		}
+	}
+	// The probes must not be the ONLY thing keyed on the knob: with the
+	// shield gone, every probe succeeds and therefore fires, on any host
+	// where /proc/sys is writable to begin with. That is the normal case
+	// and the one mountPrep itself creates -- not "every host", since a
+	// /proc/sys already read-only for some other reason would stay quiet.
+	if !strings.Contains(prep, mountBin+" -o remount,bind,ro "+procSysPath) {
+		t.Error("the probes are present and the shield is not; the guard would report " +
+			"itself broken on every host whose /proc/sys is writable")
+	}
+}
+
+// TestRouterAdvertGuardContract_IsTheGuardsOwnTable pins the exported
+// accessor the integration suite reads.
+//
+// That suite used to carry a hand-written copy of the knob table. Value
+// drift between the two went red, which made the copy look safe — but a
+// knob ADDED here was silently unobserved there, because the assertion
+// iterated the copy and the new knob simply was not among the things
+// checked. The copy is gone; this is what stops the accessor becoming
+// the same defect one layer down.
+//
+// It is deliberately keyed on raGuardKnobs() rather than on the three
+// names, so it says "the same table" instead of "these three".
+func TestRouterAdvertGuardContract_IsTheGuardsOwnTable(t *testing.T) {
+	got := RouterAdvertGuardContract()
+	knobs := raGuardKnobs()
+	if len(knobs) == 0 {
+		t.Fatal("no knobs at all: every assertion below is satisfied by an empty domain, " +
+			"and so is every assertion in the integration suite that reads this")
+	}
+	if len(got) != len(knobs) {
+		t.Errorf("contract has %d entries for %d knobs; an observer reading this checks "+
+			"fewer knobs than the guard claims to hold", len(got), len(knobs))
+	}
+	for _, k := range knobs {
+		v, ok := got[k.name]
+		if !ok {
+			t.Errorf("knob %q is guarded and absent from the exported contract; the "+
+				"integration suite would not assert it at all", k.name)
+			continue
+		}
+		if v != k.value {
+			t.Errorf("knob %q: contract says %q, the guard writes %q", k.name, v, k.value)
+		}
+	}
+	// The caller must not be able to rewrite what the next caller sees.
+	// An observer whose expectations are mutable from the outside is not
+	// an observer.
+	got["accept_ra"] = "tampered"
+	delete(got, "autoconf")
+	if again := RouterAdvertGuardContract(); again["accept_ra"] == "tampered" || len(again) != len(knobs) {
+		t.Errorf("the contract is shared state: a caller's edit survived into the next "+
+			"call (%v)", again)
+	}
+}
+
+// The values are not arbitrary and the reasons are not interchangeable,
+// so they are pinned individually with the reason in the failure text.
+func TestRAGuard_ValuesAreTheOnesTheReasonsRequire(t *testing.T) {
+	want := map[string]string{
+		// 1 accepts advertisements only while forwarding is disabled, so
+		// any container that routes — VPN, NAT, docker-in-docker — would
+		// silently lose router discovery. MEASURED, three trials per arm
+		// with the precondition asserted: at accept_ra=1 the default
+		// route was purged 3/3 once forwarding was enabled; at 2 it
+		// survived 3/3. (This comment carried an RFC 7084 §4.2 W-1/W-3
+		// citation, which ra_guard.go records as WITHDRAWN — RFC 7084
+		// governs CE routers, which a container is not. It came back
+		// here once; the measurement above is the reason, and it does
+		// not decay into an analogy.)
+		"accept_ra": "2",
+		// The router's A flag decides whether an address forms
+		// (RFC 4862 §5.5.3); 0 would override the router host-side and
+		// leave a stateless or SLAAC segment with no address at all.
+		"autoconf": "1",
+		// A carrier flap otherwise flushes every global IPv6 address on
+		// the link, and nothing re-applies the one libnetwork set.
+		"keep_addr_on_down": "1",
+	}
+	got := map[string]string{}
+	for _, k := range raGuardKnobs() {
+		got[k.name] = k.value
+	}
+	if len(got) != len(want) {
+		t.Fatalf("guard knobs = %v, want %v: a knob was added or removed without a "+
+			"reason being written down here", got, want)
+	}
+	for name, v := range want {
+		if got[name] != v {
+			t.Errorf("%v = %q, want %q", name, got[name], v)
+		}
+	}
+}
+
+// The guard's paths must be PER-INTERFACE.
+//
+// MEASURED: writing net.ipv6.conf.all.accept_ra=2 left an existing
+// interface's own accept_ra at 0. A guard that wrote the `all` node
+// would report success and change nothing.
+func TestRAGuard_PathsArePerInterface(t *testing.T) {
+	prep := mountPrep(dhcpcdParams{Iface: "veth9", V6: true, HonorRouterAdverts: true})
+	for _, bad := range []string{
+		sysctlIPv6ConfDir + "/all/",
+		sysctlIPv6ConfDir + "/default/",
+	} {
+		if strings.Contains(prep, bad) {
+			t.Errorf("guard writes %v, which does not propagate to an existing "+
+				"interface\n---\n%s", bad, prep)
+		}
+	}
+	if !strings.Contains(prep, sysctlIPv6ConfDir+"/veth9/") {
+		t.Errorf("guard does not name the interface it was given\n---\n%s", prep)
+	}
+}
+
+// The guard is refused on every shape but the persistent DHCPv6 client.
+func TestNewDHCPClient_RefusesRouterAdvertGuardOffThePersistentV6Client(t *testing.T) {
+	ns := netns.NsHandle(0)
+	for _, tc := range []struct {
+		name string
+		opts DHCPClientOptions
+	}{
+		{"v4", DHCPClientOptions{HonorRouterAdverts: true, NetNS: &ns}},
+		{"host namespace", DHCPClientOptions{HonorRouterAdverts: true, V6: true}},
+		{"one-shot", DHCPClientOptions{HonorRouterAdverts: true, V6: true, Once: true, NetNS: &ns}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := tc.opts
+			opts.MAC = mustMAC(t, "de:ad:be:ef:00:01")
+			if _, err := NewDHCPClient("eth0", &opts); err == nil {
+				t.Error("accepted the guard on a client that must not carry it; " +
+					"a silently dropped flag looks exactly like a working plugin")
+			}
+		})
+	}
+	// The other direction: the shape it is FOR must still be accepted,
+	// or the refusal above is satisfied by refusing everything.
+	opts := DHCPClientOptions{
+		HonorRouterAdverts: true, V6: true, NetNS: &ns,
+		MAC: mustMAC(t, "de:ad:be:ef:00:01"),
+	}
+	c, err := NewDHCPClient("eth0", &opts)
+	if err != nil {
+		t.Fatalf("refused the persistent DHCPv6 client: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(c.workDir) })
+
+	// ...and the flag must actually REACH the prologue. Accepting the
+	// shape and then dropping the option on the floor is indistinguishable
+	// from a working plugin at every other observation point: the refusals
+	// above still pass, the health counter still reads zero, and the
+	// container silently runs with dhcpcd's accept_ra=0.
+	//
+	// MEASURED as a real hole: replacing `HonorRouterAdverts:
+	// opts.HonorRouterAdverts` with `false` in NewDHCPClient's dhcpcdParams
+	// literal SURVIVED the whole unit suite before this assertion existed.
+	// Every guard test above drives mountPrep with a hand-built
+	// dhcpcdParams, so none of them crosses the DHCPClientOptions ->
+	// dhcpcdParams boundary that the plugin actually uses.
+	if got := strings.Join(c.cmd.Args, " "); !strings.Contains(got, sysctlIPv6ConfDir) {
+		t.Errorf("NewDHCPClient accepted HonorRouterAdverts but the guard is absent "+
+			"from the command it built; the option was dropped between "+
+			"DHCPClientOptions and dhcpcdParams.\nargv:\n%s", got)
+	}
+
+	// The opposite direction, so the assertion above cannot be satisfied
+	// by a prologue that always carries the guard.
+	plain := DHCPClientOptions{V6: true, NetNS: &ns, MAC: mustMAC(t, "de:ad:be:ef:00:02")}
+	pc, err := NewDHCPClient("eth0", &plain)
+	if err != nil {
+		t.Fatalf("refused an unguarded persistent DHCPv6 client: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(pc.workDir) })
+	if got := strings.Join(pc.cmd.Args, " "); strings.Contains(got, sysctlIPv6ConfDir) {
+		t.Errorf("a client that did not ask for the guard got it anyway; the "+
+			"emission is not keyed on the option.\nargv:\n%s", got)
+	}
+}
+
+// TestRAGuard_DoesNotClaimKnobsTheShieldCannotHold is the executable
+// form of a measurement, and it exists because this guard already had
+// the defect once.
+//
+// The shield is a bind mount. It makes a write through /proc/sys fail
+// and it is BLIND TO NETLINK. addr_gen_mode was added to raGuardKnobs
+// as a shield-only entry and looked completely healthy — the shield
+// step succeeded, no failure marker was emitted, the counter stayed at
+// zero — while dhcpcd went on setting it to 1 (NONE) over netlink
+// (IFLA_INET6_ADDR_GEN_MODE) exactly as before. MEASURED by driving
+// both routes by hand inside the client's own mount namespace: the
+// /proc/sys write is refused, `ip link set dev eth0 addrgenmode none`
+// succeeds.
+//
+// A green step over a knob nothing is holding is worse than no step at
+// all, so the rule is written down where it goes red rather than in a
+// comment somebody has to remember to read. This is a NAMED list, not
+// a property, because "which sysctls does dhcpcd set over netlink" is
+// not derivable from this repo — so it carries its own escape: it
+// cannot catch a fifth knob nobody has measured. What it does catch is
+// the one that was already measured and already got in.
+func TestRAGuard_DoesNotClaimKnobsTheShieldCannotHold(t *testing.T) {
+	// Keys are knob names; values are why the mount shield cannot hold
+	// them, quoted back in the failure so the next person gets the
+	// measurement and not just a veto.
+	cannotHold := map[string]string{
+		"addr_gen_mode": "dhcpcd sets it over netlink (IFLA_INET6_ADDR_GEN_MODE), " +
+			"where a bind mount has no say; MEASURED, the shield holds the " +
+			"/proc/sys write and the netlink write succeeds anyway",
+	}
+	for _, k := range raGuardKnobs() {
+		if why, bad := cannotHold[k.name]; bad {
+			t.Errorf("raGuardKnobs contains %q, which the shield cannot hold: %s",
+				k.name, why)
+		}
+	}
+	// The map must actually be consulted against a non-empty table, or
+	// this passes by having nothing to look at.
+	if len(raGuardKnobs()) == 0 {
+		t.Fatal("no knobs: this test is vacuous")
+	}
+	if len(cannotHold) == 0 {
+		t.Fatal("nothing named: this test is vacuous")
 	}
 }

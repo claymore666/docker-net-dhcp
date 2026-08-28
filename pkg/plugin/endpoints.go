@@ -706,6 +706,26 @@ type HealthResponse struct {
 	DirectivesRefused int32 `json:"directives_refused"`
 	MountPrepFailures int32 `json:"mount_prep_failures"`
 
+	// RouterAdvertGuardFailures counts individual steps of the
+	// Router-Advertisement guard that failed inside a DHCPv6 client's
+	// private mount namespace (#875).
+	//
+	// The guard is what makes the container's kernel perform router
+	// discovery and prefix processing -- the only source of an IPv6
+	// default route and of on-link determination, on the managed path as
+	// much as the stateless one -- and what stops dhcpcd switching that
+	// back off. Like MountPrepFailures its steps are `;`-joined, so a
+	// failure degrades rather than refusing the endpoint, and the
+	// degrade is invisible from inside the plugin: the container has an
+	// address, on-link traffic works, and only off-link traffic stops,
+	// seconds later, when the advertisement nothing refreshed expires.
+	//
+	// NOT healthy-affecting, for the same reason as its two neighbours:
+	// it describes configuration that did not take, not a running
+	// container left without a renewal client. Alert on it moving.
+	// Counts STEPS, not clients.
+	RouterAdvertGuardFailures int32 `json:"router_advert_guard_failures"`
+
 	// Per-family breakdown of the wire counters (#212, #730). Both
 	// halves are STORED; the un-suffixed field above is their sum,
 	// computed in healthSnapshot from the same two values rendered
@@ -750,9 +770,10 @@ type HealthResponse struct {
 	// stateless or SLAAC (#868). NOT healthy-affecting: on those
 	// networks it is the correct outcome, there being no DHCPv6
 	// address on them to be had. The endpoint has no global IPv6
-	// address either -- dhcpcd turns kernel autoconfiguration off on
-	// the interface it manages, so nothing autoconfigures from the
-	// advertised prefix; see docs/reference.md.
+	// address FROM THIS PLUGIN; whether the kernel forms one from the
+	// advertised prefix is the segment's decision since #875, which
+	// leaves accept_ra=2/autoconf=1 on the interface. See v6_absence.go
+	// and docs/reference.md.
 	DHCPv6NotOffered int32 `json:"dhcpv6_not_offered"`
 	// DHCPv6NoRouterAdvert counts endpoints created without a DHCPv6
 	// address because no router advertisement arrived at all (#868).
@@ -807,7 +828,7 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 	tsQuarantines := p.tombstones.quarantines.Load()
 
 	// Pulled from pkg/dhcp rather than held here: see DirectivesRefused.
-	directivesRefused, mountPrepFailures := dhcp.RefusalCounts()
+	directivesRefused, mountPrepFailures, raGuardFailures := dhcp.RefusalCounts()
 
 	// One load per half, used for both the half and the sum.
 	leaseChangedV4 := p.leaseChangedV4.Load()
@@ -895,6 +916,7 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		LedgerWriteFailures:          p.ledgerWriteFailures.Load(),
 		DirectivesRefused:            directivesRefused,
 		MountPrepFailures:            mountPrepFailures,
+		RouterAdvertGuardFailures:    raGuardFailures,
 		LeaseChangedV4:               leaseChangedV4,
 		LeasesObtainedV4:             leasesObtainedV4,
 		LeasesRenewedV4:              leasesRenewedV4,

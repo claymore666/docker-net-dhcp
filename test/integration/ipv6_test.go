@@ -8,23 +8,41 @@
 // --enable-ra); `ipv6=true` networks run a v6 dhcpcd client alongside
 // the v4 one.
 //
-// Audit findings these tests encode (from the busybox source,
-// networking/udhcp/d6_dhcpc.c):
-//   - udhcpc6's CLIENTID is a DUID-LL (type 3) derived from the
-//     interface MAC — NOT a per-process timestamped DUID-LLT. DUID
-//     stability across plugin restarts therefore follows from MAC
-//     stability, which the plugin already guarantees (the container
-//     link keeps its MAC across a plugin disable/enable; tombstones
-//     pin it across container restarts). TestDUID_PersistsAcross-
-//     PluginRestart asserts this end-to-end.
-//   - option 23 (DNS servers) is requested by default — the `dns6`
-//     env arrives without any -O flag.
+// The two findings these tests encode were originally derived from the
+// busybox source (networking/udhcp/d6_dhcpc.c), because the v6 client
+// used to be udhcpc6. Since #152 it is dhcpcd, so that derivation no
+// longer supports anything here. Both were re-derived against dhcpcd
+// (#875) rather than restated, and the mechanism changed underneath
+// each of them even though the conclusion did not:
 //
-// Since #152 the v6 client is dhcpcd (not busybox udhcpc6), and #213
-// wires a preferred-address request: a requested v6 (`--ip6` or
-// tombstone-inherited) is sent as the IA_NA preferred address
-// (`ia_na <iaid> / ADDR`), so v6 stickiness no longer relies on the
-// server's DUID memory alone.
+//   - The client identifier is a DUID-LL (type 3, RFC 8415 §11.4)
+//     over the interface MAC — not a per-process timestamped
+//     DUID-LLT. Under udhcpc6 that was the client's own derivation.
+//     Under dhcpcd the plugin PINS it: dhcpcd.go renders duidLL(MAC)
+//     as a literal `duid` value, deliberately not the `duid ll`
+//     keyword, so a pre-existing /var/lib/dhcpcd/duid cannot override
+//     it. MEASURED as outside evidence — the fixture dnsmasq records
+//     `DUID 00:03:00:01:<mac>` for these containers, i.e. type 0x0003
+//     (link-layer) + hardware type 0x0001 (Ethernet) + the six MAC
+//     bytes, and the IAID is that MAC's low four bytes. DUID
+//     stability across plugin restarts therefore still follows from
+//     MAC stability, which the plugin guarantees (the container link
+//     keeps its MAC across a plugin disable/enable; tombstones pin it
+//     across container restarts). TestDUID_PersistsAcrossPluginRestart
+//     asserts it end-to-end and does not depend on which client is in
+//     use.
+//   - DNS servers still arrive as `dns6`, but NOT "by default with no
+//     -O flag" as they did under udhcpc6. dhcpcd asks because the
+//     plugin's generated config asks: dhcpcd.go emits an explicit
+//     request list containing domain_name_servers, which dhcpcd maps
+//     to the right per-protocol code — option 6 on v4, option 23 on
+//     v6. TestIPv6_DNS6Propagation asserts the arrival, not the
+//     mechanism.
+//
+// #213 wires a preferred-address request on top: a requested v6
+// (`--ip6` or tombstone-inherited) is sent as the IA_NA preferred
+// address (`ia_na <iaid> / ADDR`), so v6 stickiness no longer relies
+// on the server's DUID memory alone.
 package integration
 
 import (
@@ -36,6 +54,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/claymore666/docker-net-dhcp/pkg/dhcp"
 	"github.com/claymore666/docker-net-dhcp/test/integration/harness"
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
@@ -81,21 +100,13 @@ func linkGlobalV6(t *testing.T, ctx context.Context, ctrID string, budget time.D
 // given dnsmasq log — the v6 sibling of the DHCPACK counting in the
 // lease-renew test. dnsmasq logs one DHCPREPLY per blessed
 // REQUEST/RENEW, so bind=1, renewal=2.
-func countDHCPv6Replies(t *testing.T, logPath, addr string) int {
+func countDHCPv6Replies(t *testing.T, logPath, addr string, alsoMatch ...string) int {
 	t.Helper()
 	data, err := os.ReadFile(logPath)
 	if err != nil {
 		t.Fatalf("read dnsmasq log: %v", err)
 	}
-	needle := strings.ToLower(addr)
-	count := 0
-	for _, line := range strings.Split(string(data), "\n") {
-		l := strings.ToLower(line)
-		if strings.Contains(l, "dhcpreply") && strings.Contains(l, needle) {
-			count++
-		}
-	}
-	return count
+	return harness.CountDHCPv6Binds(string(data), append([]string{addr}, alsoMatch...)...)
 }
 
 // leaseDUIDForV6 extracts the client DUID from the dnsmasq lease DB
@@ -212,6 +223,8 @@ func TestLifecycleMacvlan_IPv6_GoldenPath(t *testing.T) {
 		t.Errorf("inspect IPv6 %s != live link IPv6 %s", insV6, liveV6)
 	}
 
+	assertRouterAdvertsAreBeingProcessed(t, ctx, id, liveV6, fixture.DnsmasqLog())
+
 	// Teardown: both families release cleanly.
 	if err := cli.ContainerStop(ctx, id, container.StopOptions{}); err != nil {
 		t.Fatalf("ContainerStop: %v", err)
@@ -325,6 +338,8 @@ func TestLifecycleBridge_IPv6_GoldenPath(t *testing.T) {
 	if !harness.IsInBridgePoolV6(net.ParseIP(liveV6)) {
 		t.Errorf("live IPv6 %s not in bridge fixture v6 pool [%s, %s]", liveV6, harness.BridgeDHCPv6PoolStart, harness.BridgeDHCPv6PoolEnd)
 	}
+
+	assertRouterAdvertsAreBeingProcessed(t, ctx, id, liveV6, fixture.BridgeDnsmasqLogPath())
 }
 
 // TestLeaseRenewIPv6_HonorsT1: the v6 sibling of
@@ -576,4 +591,375 @@ func TestDUID_PersistsAcrossPluginRestart(t *testing.T) {
 		t.Errorf("client DUID changed across plugin restart: %s -> %s — v6 reservations keyed on DUID will not stick",
 			duidBefore, duidAfter)
 	}
+}
+
+// raGuardKnobs is the sysctl contract the Router-Advertisement guard
+// asserts inside the container, and the value each knob must hold
+// (#875).
+//
+// DERIVED from the guard itself, never a second copy of its table.
+//
+// The rejected design is a hand-written map here, and its failure mode
+// is asymmetric in the direction that matters: value drift between the
+// two enumerations goes red, so the copy LOOKS safe, while a knob ADDED
+// in pkg/dhcp is silently unobserved -- the assertion iterates the copy,
+// the new knob is simply not among the things checked, and the suite
+// stays green over a guard it no longer covers. A count check is the
+// same defect one step along, because the count comes from the copy too.
+//
+// A FUNCTION rather than a package-level var, and that is not style.
+// RouterAdvertGuardContract returns a fresh map per call precisely so an
+// observer's expectations cannot be rewritten by anything it observes; a
+// package-level cache would hand that property straight back, since any
+// test in this package could mutate it and every later caller would read
+// the edit. The len guard below catches an EMPTY table but not a
+// rewritten value, so the shape has to be removed rather than checked.
+func raGuardKnobs() map[string]string { return dhcp.RouterAdvertGuardContract() }
+
+// assertRAGuardReportedNoFailure checks that the RA guard's -writable
+// probes raised no marker on a host where the guard demonstrably held.
+//
+// verified/wantVerified are the knobs the CALLER read back from inside
+// the container. They are parameters rather than an adjacent guard on
+// purpose: this assertion is only meaningful AFTER that read-back, and a
+// dependency expressed by adjacency is one a reorder carries with it.
+// The health assertion below is sound ONLY because it runs after this
+// loop has read every knob back from the container's own /proc/sys.
+// That ordering was protected by a comment and by nothing else --
+// moving the block above the loop compiles, vets, and passes. This
+// makes the dependency executable: a reorder leaves verified at 0 and
+// fails here instead of silently asserting nothing.
+func assertRAGuardReportedNoFailure(t *testing.T, ctx context.Context, verified, wantVerified int) {
+	t.Helper()
+	if verified != wantVerified {
+		t.Fatalf("%d of %d RA-guard knobs were verified from inside the container "+
+			"before the health check below. That check reads the plugin's OWN "+
+			"counter, which proves intent rather than effect; a zero there means "+
+			"\"ran and reported no failure\" only once every knob has been read "+
+			"back here. Either a knob assertion above failed, or this block has "+
+			"been moved ahead of the loop (#875)", verified, wantVerified)
+	}
+
+	// N1. The -writable probes' HEALTHY path, observed on the CI engine.
+	//
+	// WHAT THIS IS, stated because it is not what it looks like: an
+	// assertion about the OBSERVER, not about the effect. The loop above
+	// is the outside evidence -- it reads the container's real sysctls --
+	// and this project's standing rule is to assert on that rather than on
+	// the plugin's own counters. A counter proves intent, not effect, and
+	// on its own it would be the weaker instrument. It is NOT taken here
+	// as a substitute for that loop.
+	//
+	// It earns its place only because it runs AFTER the loop. The loop has
+	// already proven the prologue ran and the knobs hold, so a zero here
+	// reads as "ran, and reported no failure" rather than "never ran" --
+	// which is exactly what a zero would mean on its own. That pairing is
+	// the whole justification, and moving this above the loop would void
+	// it.
+	//
+	// WHY IT IS WORTH ADDING: the false-alarm direction was previously
+	// unobservable in CI. A spurious `<knob>-writable` marker on a healthy
+	// host would have gone unseen, because the plugin log is only dumped
+	// on a failure path -- so the ABSENCE of the marker from a passing
+	// run's logs is not evidence, and must not be read as one.
+	//
+	// WHAT IT CANNOT SEE. Which step failed. Anything endpoint-scoped,
+	// the counter being plugin-wide -- a failure raised by any other
+	// client in this shard lands here too. And the case worth naming
+	// because it is the one this assertion is titled about: the PROBES
+	// THEMSELVES BEING DELETED. Remove the probe loop from raGuardSteps
+	// and the knobs still hold, the loop above still passes, the counter
+	// is still zero, and this assertion still passes having observed
+	// nothing about them. That case is closed in the other lane, by
+	// TestRAGuard_ShieldIsCheckedByItsEffectAndNotItsExitStatus.
+	//
+	// What the loop above DOES rule out is the guard as a whole never
+	// executing: accept_ra=2 and keep_addr_on_down=1 are non-default and
+	// nothing but the guard writes them. That is a narrower claim than
+	// "the probes ran", and the difference is the point.
+	//
+	// If it ever goes red, that is a finding to investigate, not a number
+	// to relax.
+	if h := harness.PluginHealthOrNil(ctx); h == nil {
+		t.Error("could not read the plugin health surface, so the RA guard's " +
+			"false-alarm direction was not measured here. Absent data is not a " +
+			"zero and must not be recorded as one (#875)")
+	} else if h.RouterAdvertGuardFailures != 0 {
+		t.Errorf("router_advert_guard_failures = %d after a golden path whose knobs "+
+			"all read correctly. The guard reported a failed step on a host where it "+
+			"demonstrably held: a `<knob>-writable` marker means the read-only "+
+			"remount was accepted without taking effect, a `procsys-ro` marker means "+
+			"the remount itself was refused. Note the counter is plugin-wide, so "+
+			"another client in this shard is also a candidate (#875)",
+			h.RouterAdvertGuardFailures)
+	}
+}
+
+// containerV6Iface returns the name of the interface inside the
+// container that carries addr.
+//
+// It is DERIVED, never assumed. The first version of this helper's
+// caller hardcoded "eth0" and every read returned "No such file or
+// directory": this plugin names the container link after the network
+// (`dh-itest-br20`), not `eth0`, so the assertions below produced no
+// measurement at all while looking like a normal failure. The
+// interface that holds the leased address is by definition the one the
+// guard was supposed to configure, so derive it from the address.
+func containerV6Iface(t *testing.T, ctx context.Context, id, addr string) string {
+	t.Helper()
+	out := harness.ExecOutput(t, ctx, id, "ip", "-6", "-o", "addr", "show", "scope", "global")
+	if iface := harness.V6IfaceFromAddrShow(out, addr); iface != "" {
+		return iface
+	}
+	t.Fatalf("could not derive the container interface carrying %s; "+
+		"every assertion keyed on it would measure nothing.\n"+
+		"`ip -6 -o addr show scope global` said:\n%s", addr, out)
+	return ""
+}
+
+// assertRouterAdvertsAreBeingProcessed is the OUTSIDE observer for
+// #875. Everything else about that fix is visible only to the plugin:
+// the guard's steps run inside dhcpcd's private mount namespace, its
+// failures land in a health counter, and a counter reading zero is
+// equally consistent with "the guard held" and "the guard never ran".
+//
+// So this asserts on the container's own kernel state, in the image
+// that actually ships, through the managed plugin — not on anything
+// the plugin says about itself.
+//
+// Two independent claims, because each one alone can pass while the
+// fix is broken:
+//
+//  1. The knobs read the values the guard writes. dhcpcd's
+//     if_setup_inet6() sets accept_ra=0 and autoconf=0 on every
+//     carrier acquisition; without the guard's write AND its
+//     read-only shield, accept_ra reads 0 here. This is the defect
+//     #875 reported, observed directly.
+//
+//  2. A default route via a LINK-LOCAL address is present. DHCPv6
+//     carries no router — the option catalogue is RFC 8415 §21 and
+//     nothing in it has a next hop — and this plugin sets no IPv6
+//     gateway of its own, so a default route via fe80::/10 can only
+//     have been learned from a Router Advertisement. The knobs being
+//     right is the plugin's doing; this is the KERNEL's, and it can
+//     only happen if an advertisement was actually accepted off the
+//     wire.
+//
+// Claim 2 was first written as a match on `proto ra`, which is a
+// string the container's `ip` PROVABLY NEVER PRINTS: the test image is
+// busybox, whose route output carries no `proto` field at all. It was
+// absence-driven against a probe image with full iproute2 and could
+// never have passed in the image CI runs. Keying on the via-address
+// instead makes the assertion a property of the protocol rather than
+// of one tool's formatting.
+//
+// Note the bound: this does not observe REFRESH. The fixture's dnsmasq
+// runs with --enable-ra and no --ra-param, so its unsolicited interval
+// is dnsmasq's default (up to 600s) — far outside any test budget here
+// — and a container whose addr_gen_mode dhcpcd has set to NONE cannot
+// solicit a fresh one (measured; see the residual in
+// pkg/dhcp/ra_guard.go). Refresh over time is evidenced in the PR by
+// direct measurement, not by this test.
+// persistentV6BindBudget bounds the wait for the persistent v6
+// client's own DHCPv6 bind. MEASURED in the CI run that exposed the
+// ordering bug below: the gap between the one-shot's bind and the
+// persistent client's was 2 s (bridge) and 5 s (macvlan), so this is
+// roughly an order of magnitude of headroom for a loaded runner. It
+// is a deadline, not a settling time — expiry fails the test.
+const persistentV6BindBudget = 45 * time.Second
+
+// awaitPersistentV6Bind blocks until the fixture's DHCP server has
+// recorded a SECOND DHCPv6 bind for addr, which is the precondition
+// every RA-guard assertion below depends on and which none of them
+// used to establish.
+//
+// Why a precondition is needed at all. There are TWO dhcpcd v6 clients
+// per endpoint. The one-shot runs at CreateEndpoint, in the HOST
+// namespace, and it is the one whose lease Docker is told about — so
+// a container has its global v6 address, and `docker inspect` agrees,
+// well before the PERSISTENT client has started inside the container
+// namespace. The RA guard is a property of the persistent client's
+// prologue. An assertion gated only on "the address is there" is
+// therefore free to run before the guard has written anything.
+//
+// It did. MEASURED, macvlan shard, one-second log resolution:
+//
+//	13:57:31  one-shot binds the address (host ns, link pre-rename)
+//	13:57:34.180  test reads eth0/accept_ra          -> 1
+//	13:57:34.456  test reads eth0/keep_addr_on_down  -> 0
+//	13:57:35  the guard's prologue runs on eth0, then dhcpcd solicits
+//
+// Every value read was a kernel default: neither the guard's 2/1/1 nor
+// dhcpcd's 0/0/0. The test read the right file, in the right
+// namespace, one second before anything wrote to it. `autoconf` could
+// never have caught this, its default and its target both being 1.
+//
+// The route half was blind in the same way for a different reason: it
+// polls for 15 s but RETURNS ON THE FIRST SUCCESS, and at 13:57:34 the
+// RA-derived default route is still present because the code that
+// deletes it has not run. A fifteen-second timeout does not make an
+// assertion patient if it is satisfied immediately.
+//
+// So the whole block was vacuous, and vacuous in the worst direction:
+// it could not have witnessed #875's symptom on the UNFIXED tree
+// either, which is the only thing that makes a green here mean
+// anything.
+//
+// Why THIS anchor. It is outside evidence — the DHCP server's own
+// record, not the plugin's opinion of itself (the standing rule).
+// It is strictly downstream of the guard: the prologue runs before
+// dhcpcd is exec'd, so a bind logged by the server proves the
+// prologue completed. And it is FIX-INDEPENDENT — the persistent
+// client binds on the unfixed tree too, so the precondition cannot
+// quietly become a restatement of the thing under test.
+//
+// Why the second bind and not the first: MEASURED — the one-shot
+// contributes exactly one DHCPREPLY per address (the whole fixture log
+// of each failing shard held exactly one, which is also independent
+// corroboration that the persistent client had not bound before the
+// test gave up). dnsmasq logs one DHCPREPLY per blessed REQUEST/RENEW,
+// so the persistent client's own bind is the second.
+//
+// This is a wait for an EVENT, not a retry: nothing here re-reads a
+// failed assertion hoping for a better answer, and expiry is fatal
+// rather than skipped.
+// mac scopes the count to THIS endpoint. The fixture log is shared
+// across every test in a shard, so counting replies by address alone
+// would also count a reply left by an EARLIER container that happened
+// to be handed the same pooled address, firing the anchor early and
+// restoring the race this function exists to close.
+//
+// dnsmasq puts the client's DUID on the reply line, and the plugin
+// pins that DUID as a DUID-LL over the container's MAC, so the MAC is
+// an exact per-endpoint discriminator. MEASURED, one line from the
+// failing run's fixture log next to the plugin's own record of the
+// same endpoint:
+//
+//	DHCPREPLY(dh-itest-br2) fd00:6470:6864::32 00:03:00:01:ea:eb:ed:a4:b0:f5
+//	"dh-itest-br20: IAID ed:a4:b0:f5"
+//
+// i.e. 00:03 (link-layer) + 00:01 (Ethernet) + the six MAC bytes, with
+// the IAID as that MAC's low four.
+//
+// Worth being explicit about the direction of the bug this closes: an
+// early anchor makes the knobs read kernel defaults, so it FAILS the
+// test. It was a flake source, not a hole in the gate. It is fixed
+// anyway because it was exactly eliminable.
+func awaitPersistentV6Bind(t *testing.T, logPath, addr, mac string) {
+	t.Helper()
+
+	if logPath == "" {
+		t.Fatal("awaitPersistentV6Bind: empty dnsmasq log path — the fixture was " +
+			"never started, so this assertion would have measured nothing (#875)")
+	}
+	// An unreadable MAC must not silently degrade to an address-only
+	// match. That is the same "assertion that cannot read its subject
+	// quietly passes" pattern this whole change is about.
+	if mac == "" {
+		t.Fatal("awaitPersistentV6Bind: could not read the container link's MAC, so " +
+			"the bind count cannot be scoped to this endpoint (#875)")
+	}
+
+	deadline := time.Now().Add(persistentV6BindBudget)
+	replies := 0
+	for time.Now().Before(deadline) {
+		replies = countDHCPv6Replies(t, logPath, addr, mac)
+		if replies >= 2 {
+			return
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	t.Fatalf("only %d DHCPv6 bind(s) for %s (mac %s) after %s — the PERSISTENT v6 "+
+		"client never bound, so the Router-Advertisement guard never ran and there is "+
+		"nothing here to assert on. This is a failure, not a reason to skip: an "+
+		"unfixed tree would reach exactly this point too (#875)",
+		replies, addr, mac, persistentV6BindBudget)
+}
+
+func assertRouterAdvertsAreBeingProcessed(t *testing.T, ctx context.Context, id, addr, logPath string) {
+	t.Helper()
+
+	iface := containerV6Iface(t, ctx, id, addr)
+	mac := strings.TrimSpace(harness.ExecOutput(t, ctx, id, "cat", "/sys/class/net/"+iface+"/address"))
+
+	// Establish the precondition BEFORE reading any knob -- see the
+	// measured ordering above. Everything below is a statement about
+	// the persistent client, and until this returns there is no
+	// persistent client to make a statement about.
+	awaitPersistentV6Bind(t, logPath, addr, mac)
+
+	t.Logf("RA guard: asserting on derived container interface %q (mac %s)", iface, mac)
+
+	// N2, non-vacuity, kept BESIDE the obligation rather than only in the
+	// other lane. raGuardKnobs is derived from
+	// dhcp.RouterAdvertGuardContract(), so an empty table would make this
+	// loop -- and therefore this entire assertion -- pass having measured
+	// nothing. TestRouterAdvertGuardContract_IsTheGuardsOwnTable closes the
+	// same hole under the `test` check, and both are required contexts; but
+	// a guard that lives only in another lane is one the reader of THIS
+	// loop cannot see, and the vacuity would be silent here.
+	knobs := raGuardKnobs()
+	if len(knobs) == 0 {
+		t.Fatal("the RA-guard knob contract is empty, so the loop below would assert " +
+			"nothing. It is derived from dhcp.RouterAdvertGuardContract(); an empty " +
+			"table means the guard exports no knobs, NOT that the guard is healthy " +
+			"(#875)")
+	}
+
+	verified := 0
+	for knob, want := range knobs {
+		p := "/proc/sys/net/ipv6/conf/" + iface + "/" + knob
+		got := strings.TrimSpace(harness.ExecOutput(t, ctx, id, "cat", p))
+		// A read that FAILED is a different verdict from a value that is
+		// wrong, and it must never be reported as either a pass or a
+		// mere mismatch: it means this assertion measured nothing.
+		if harness.SysctlReadFailed(got) {
+			t.Errorf("COULD NOT MEASURE %s: %q. The assertion did not run — this is "+
+				"not evidence the guard failed, it is evidence the observer is "+
+				"pointed at the wrong place (#875)", p, got)
+			continue
+		}
+		if got != want {
+			t.Errorf("%s = %q, want %q — the Router-Advertisement guard did not hold "+
+				"this knob inside the shipped image. accept_ra=0 is what dhcpcd's "+
+				"if_setup_inet6() writes, so this reading means the guard's write or "+
+				"its read-only shield did not take effect (#875)", p, got, want)
+			continue
+		}
+		verified++
+	}
+
+	// The counter check is a CALL that takes what the loop proved, not a
+	// statement sitting next to it. Adjacency is not a dependency: a
+	// reorder moves a neighbouring guard along with the thing it guards,
+	// and the guard then travels to where it is vacuous. Passing
+	// `verified` makes the ordering a DATA dependency instead -- moved
+	// above the loop this call passes 0 and fails; moved above the
+	// declaration it does not compile.
+	assertRAGuardReportedNoFailure(t, ctx, verified, len(knobs))
+
+	// The RA itself is asynchronous: the container solicits at link-up
+	// and dnsmasq answers. Poll rather than sample once.
+	//
+	// This poll returns on the first success, which is only sound
+	// because awaitPersistentV6Bind has already run: before that, the
+	// route is trivially present on ANY tree because the code that
+	// would delete it has not executed yet, and this loop exits on
+	// poll #1 having witnessed nothing. Do not hoist this above the
+	// anchor to "save time" -- the fifteen seconds are a deadline for
+	// an RA that may be slow, not a window in which the defect might
+	// show up.
+	deadline := time.Now().Add(harness.IPAcquisitionBudget)
+	var routes string
+	for time.Now().Before(deadline) {
+		routes = harness.ExecOutput(t, ctx, id, "ip", "-6", "route", "show", "default")
+		if harness.HasLinkLocalDefaultRoute(routes) {
+			return
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	t.Errorf("no default route via a link-local address on %s after %s. DHCPv6 carries no "+
+		"router (RFC 8415 §21) and the plugin sets no IPv6 gateway, so the absence of one "+
+		"means the kernel never accepted a Router Advertisement — the #875 symptom. "+
+		"`ip -6 route show default` says:\n%s", iface, harness.IPAcquisitionBudget, routes)
 }

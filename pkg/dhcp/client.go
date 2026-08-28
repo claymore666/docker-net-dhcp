@@ -150,6 +150,12 @@ const (
 	mountBin = "/bin/mount"
 	mkdirBin = "/bin/mkdir"
 	echoBin  = "/bin/echo"
+	// grepBin reads a sysctl back after the Router-Advertisement guard
+	// writes it (#875). It is here rather than in ra_guard.go for the
+	// reason this comment block gives: the Dockerfile parity derivation
+	// reads this package's constants, and a binary with no constant is a
+	// binary that derivation cannot see.
+	grepBin = "/bin/grep"
 )
 
 // shBin is the ABSOLUTE path to the shell unshare execs.
@@ -244,12 +250,21 @@ const workDirPrefix = "net-dhcp-dhcpcd-"
 //
 // NOT A CLAIM THAT A COLLISION HAS HAPPENED. It has not been observed.
 // The finding is that it could not have been observed.
-func mountPrep() string {
-	return mountPrepStep(fmt.Sprintf("%s -t tmpfs tmpfs %s", mountBin, dhcpcdStateDir), "state-tmpfs") +
+func mountPrep(p dhcpcdParams) string {
+	prep := mountPrepStep(fmt.Sprintf("%s -t tmpfs tmpfs %s", mountBin, dhcpcdStateDir), "state-tmpfs") +
 		mountPrepStep(fmt.Sprintf("%s -p %s", mkdirBin, dhcpcdRunDir), "run-mkdir") +
 		mountPrepStep(fmt.Sprintf("%s -t tmpfs tmpfs %s", mountBin, dhcpcdRunDir), "run-tmpfs") +
-		mountPrepStep(fmt.Sprintf("%s -o remount,bind,rw %s", mountBin, procSysPath), "procsys-remount") +
-		"exec \"$0\" \"$@\""
+		mountPrepStep(fmt.Sprintf("%s -o remount,bind,rw %s", mountBin, procSysPath), "procsys-remount")
+	// The Router-Advertisement guard runs AFTER the /proc/sys remount
+	// above and BEFORE the exec below, and both halves of that sentence
+	// are load-bearing: it writes to /proc/sys, which is read-only in
+	// the managed-plugin rootfs until the line above, and its whole
+	// purpose is to be in force before dhcpcd's if_setup_inet6() runs.
+	// See ra_guard.go.
+	if p.HonorRouterAdverts {
+		prep += raGuardSteps(p.Iface)
+	}
+	return prep + "exec \"$0\" \"$@\""
 }
 
 // mountPrepFailMarker prefixes the line mountPrep writes to stderr when
@@ -265,6 +280,18 @@ func mountPrep() string {
 // else.
 const mountPrepFailMarker = "net-dhcp-mountprep-failed:"
 
+// raGuardFailMarker prefixes the line a Router-Advertisement guard step
+// writes to stderr when it fails (#875).
+//
+// A SEPARATE marker, not a reason string under the existing one. The
+// two failures mean different things to an operator -- a namespace
+// isolation that did not land versus a container whose IPv6 will stop
+// working -- and a single counter could not tell them apart. Like its
+// sibling it is deliberately not a word in dhcpcd's vocabulary, so a
+// count can never be manufactured by dhcpcd logging about something
+// else.
+const raGuardFailMarker = "net-dhcp-raguard-failed:"
+
 // mountPrepStep appends `|| echo <marker> <step> >&2; ` to one command.
 //
 // `||` and not `&&`, and the chain stays `;`-separated: a failed step
@@ -279,10 +306,73 @@ const mountPrepFailMarker = "net-dhcp-mountprep-failed:"
 // that by counting markers against commands rather than by naming the
 // four that exist today.
 func mountPrepStep(cmd, step string) string {
-	return fmt.Sprintf("%s || %s '%s %s' >&2; ", cmd, echoBin, mountPrepFailMarker, step)
+	return prepStep(cmd, mountPrepFailMarker, step)
 }
 
-// mountPrepWatcher counts mountPrep failure markers on a byte stream.
+// prepStep is mountPrepStep with the marker as a parameter, so a second
+// family of prepared steps can be counted separately (#875).
+//
+// The marker is what decides WHICH counter a failure lands on, so it is
+// a parameter of the step builder rather than something the watcher
+// infers from the step name. A watcher that guessed from the name would
+// be keyed on today's spelling; this is keyed on the derivation.
+func prepStep(cmd, marker, step string) string {
+	return fmt.Sprintf("%s || %s '%s %s' >&2; ", cmd, echoBin, marker, step)
+}
+
+// prepStepMustFail is prepStep with the polarity INVERTED: the marker
+// is emitted when cmd SUCCEEDS (#875).
+//
+// It exists for one shape — a check whose passing condition is that an
+// operation is REFUSED. The RA guard's shield returns /proc/sys to
+// read-only, and attempting a write and being turned away is the way
+// this package chooses to know it took effect. NOT the only possible
+// way, and saying so would be false: a longest-mount-prefix parse of
+// /proc/mounts would also separate the twelve topologies in raGuardSteps'
+// table. It was rejected for being keyed on the MECHANISM — it has to
+// model how mount flags compose — where this is keyed on the effect the
+// guard actually needs.
+//
+// What IS true without qualification is the negative: the remount's
+// exit status does not carry that information. `mount -o
+// remount,bind,ro P` changes the flags of the mount at P and not its
+// submounts', so a /proc/sys with a
+// read-write mount anywhere beneath it takes the remount, exits 0,
+// emits nothing, and leaves the knobs writable. MEASURED in five such
+// topologies; the table is in raGuardSteps.
+//
+// Two properties the CALLER has to supply, because this helper cannot
+// check them:
+//
+//   - The command must be SAFE WHEN IT SUCCEEDS. A probe that gets
+//     through has performed whatever it attempted, so the guard writes
+//     the value the knob is already meant to hold and a successful
+//     probe changes nothing.
+//   - The command must SILENCE its own diagnostics, with the
+//     suppression BEFORE the redirection. On the passing path the
+//     shell's refused redirection prints "Read-only file system" naming
+//     dhcpcd's own path, which would put a line that reads like a fault
+//     into the log of every healthy endpoint. MEASURED, busybox ash
+//     1.37.0 and dash alike: `echo V 2>/dev/null > P` is quiet and
+//     `echo V > P 2>/dev/null` is not, because redirections are applied
+//     left to right and the shell reports the failing one against the
+//     fd 2 in force at that moment.
+//
+// The shared failure mode with prepStep, stated rather than implied:
+// both report through /bin/echo, so a missing /bin/echo silences the
+// whole prologue — every marker in both families, not only this one.
+// That is closed at BUILD time by the Dockerfile's `test -x /bin/echo`,
+// asserted in the same RUN that installs the packages.
+func prepStepMustFail(cmd, marker, step string) string {
+	return fmt.Sprintf("%s && %s '%s %s' >&2; ", cmd, echoBin, marker, step)
+}
+
+// mountPrepWatcher counts the per-step failure markers that the shell
+// prologue writes to stderr, on a byte stream. It counts TWO marker
+// families, not one: mountPrep's own steps (#780) and the
+// Router-Advertisement guard's write/verify/shield steps (#875), each
+// into its own counter. The type keeps its original name because it is
+// still the mountPrep prologue that emits both.
 //
 // It sits in the client's stderr MultiWriter beside the debug-log pipe
 // and the bounded tail buffer, so it sees exactly what the shell wrote,
@@ -311,8 +401,11 @@ func (w *mountPrepWatcher) Write(p []byte) (int, error) {
 		if i < 0 {
 			break
 		}
-		if bytes.Contains(w.buf[:i], []byte(mountPrepFailMarker)) {
+		switch {
+		case bytes.Contains(w.buf[:i], []byte(mountPrepFailMarker)):
 			mountPrepFailures.Add(1)
+		case bytes.Contains(w.buf[:i], []byte(raGuardFailMarker)):
+			raGuardFailures.Add(1)
 		}
 		w.buf = w.buf[i+1:]
 	}
@@ -450,6 +543,20 @@ type DHCPClientOptions struct {
 	// and #243.
 	Broadcast bool
 
+	// HonorRouterAdverts asks the client to put the interface's KERNEL
+	// in charge of Router Advertisement processing, and to keep dhcpcd
+	// from turning it back off (#875).
+	//
+	// The plugin sets it for the persistent DHCPv6 client, which is the
+	// one that runs inside the container's network namespace. It is
+	// REFUSED on any other shape -- see NewDHCPClient -- because the
+	// values it writes are host configuration for a container's link,
+	// and writing them on a link that is still in the host namespace
+	// would be changing the HOST's router-discovery behaviour.
+	//
+	// What it writes and why each value is what it is: ra_guard.go.
+	HonorRouterAdverts bool
+
 	// FQDN, when non-empty, sets dhcpcd's `fqdn` directive mode (e.g.
 	// "both"), making the client send the DHCP FQDN option (81 v4 / 39 v6)
 	// built from Hostname and ask the server to register it in DNS (#261).
@@ -468,7 +575,8 @@ type DHCPClient struct {
 	fifoRead *os.File    // read end of the event FIFO (scanner side)
 	fifoKeep *os.File    // write keep-alive (O_RDWR) end of the event FIFO
 	stderr   *tailWriter // last bytes of dhcpcd stderr, for the exit error
-	// mountWatch counts mountPrep failure markers on the same stderr
+	// mountWatch counts both families of prologue failure marker on the
+	// same stderr
 	// stream. By value: it is written only by exec's stderr copy
 	// goroutine, exactly like stderr above.
 	mountWatch mountPrepWatcher
@@ -486,6 +594,26 @@ func NewDHCPClient(iface string, opts *DHCPClientOptions) (*DHCPClient, error) {
 	if !ValidIfaceName(iface) {
 		return nil, fmt.Errorf("invalid interface name %q", iface)
 	}
+	// The Router-Advertisement guard writes a container's IPv6 host
+	// configuration, so it is only meaningful on the client that runs
+	// inside that container's network namespace: the persistent DHCPv6
+	// one. REFUSE the other shapes rather than silently ignoring the
+	// flag -- a dropped flag is a wiring mistake that looks like a
+	// working plugin, and the failure it would cause (accept_ra=2 on a
+	// link still in the HOST namespace, or on the CreateEndpoint
+	// one-shot's host-side veth) is not one anything downstream would
+	// report. See ra_guard.go and DHCPClientOptions.HonorRouterAdverts.
+	if opts.HonorRouterAdverts {
+		switch {
+		case !opts.V6:
+			return nil, fmt.Errorf("HonorRouterAdverts is IPv6-only")
+		case opts.NetNS == nil:
+			return nil, fmt.Errorf("HonorRouterAdverts needs a target network namespace")
+		case opts.Once:
+			return nil, fmt.Errorf("HonorRouterAdverts is for the persistent client, not the one-shot")
+		}
+	}
+
 	handler := opts.HandlerScript
 	if handler == "" {
 		handler = DefaultHandler
@@ -512,22 +640,23 @@ func NewDHCPClient(iface string, opts *DHCPClientOptions) (*DHCPClient, error) {
 
 	configPath := filepath.Join(workDir, "dhcpcd.conf")
 	params := dhcpcdParams{
-		Iface:        iface,
-		MAC:          opts.MAC,
-		V6:           opts.V6,
-		Once:         opts.Once,
-		Hostname:     opts.Hostname,
-		FQDN:         opts.FQDN,
-		VendorClass:  vendor,
-		ClientID:     opts.ClientID,
-		RequestedIP:  opts.RequestedIP,
-		PreferredV6:  opts.PreferredV6,
-		Broadcast:    opts.Broadcast,
-		AllowServers: opts.AllowServers,
-		DenyServers:  opts.DenyServers,
-		Handler:      handler,
-		ConfigPath:   configPath,
-		EventFIFO:    fifoPath,
+		Iface:              iface,
+		MAC:                opts.MAC,
+		V6:                 opts.V6,
+		Once:               opts.Once,
+		Hostname:           opts.Hostname,
+		FQDN:               opts.FQDN,
+		VendorClass:        vendor,
+		ClientID:           opts.ClientID,
+		RequestedIP:        opts.RequestedIP,
+		PreferredV6:        opts.PreferredV6,
+		Broadcast:          opts.Broadcast,
+		HonorRouterAdverts: opts.HonorRouterAdverts,
+		AllowServers:       opts.AllowServers,
+		DenyServers:        opts.DenyServers,
+		Handler:            handler,
+		ConfigPath:         configPath,
+		EventFIFO:          fifoPath,
 		// Forward our own GOCOVERDIR to the hook so its coverage counters
 		// survive dhcpcd's environment scrub (cover build only; unset and
 		// thus omitted in production). See renderConfig.
@@ -564,7 +693,7 @@ func NewDHCPClient(iface string, opts *DHCPClientOptions) (*DHCPClient, error) {
 	// Wait target it directly. `sh -c '... exec "$0" "$@"'` passes the
 	// dhcpcd argv as $0/$@, avoiding any quoting of paths.
 	dargs := renderArgs(params)
-	wrapped := append([]string{unsharePath, "-m", shBin, "-c", mountPrep()}, dargs...)
+	wrapped := append([]string{unsharePath, "-m", shBin, "-c", mountPrep(params)}, dargs...)
 
 	// unsharePath, not wrapped[0]. They are the same string — wrapped is
 	// built one line up with unsharePath at index 0 — but an index
@@ -622,7 +751,8 @@ func NewDHCPClient(iface string, opts *DHCPClientOptions) (*DHCPClient, error) {
 	outPipe := log.StandardLogger().WriterLevel(log.DebugLevel)
 	errPipe := log.StandardLogger().WriterLevel(log.DebugLevel)
 	c.cmd.Stdout = outPipe
-	// The third writer counts mountPrep's failure markers (#780). It has
+	// The third writer counts the prologue's failure markers -- both
+	// mountPrep's (#780) and the RA guard's (#875). It has
 	// to be here rather than wrapped around c.stderr, because that
 	// buffer is BOUNDED to its last few KiB — a namespace-prep failure
 	// followed by chatty dhcpcd output would be trimmed out of it before

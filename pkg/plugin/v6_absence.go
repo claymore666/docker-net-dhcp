@@ -34,19 +34,34 @@ const (
 	// there are no DHCPv6 addresses here. This is the NORMAL state, not
 	// a degraded one, and the endpoint is created without a v6 address.
 	//
-	// The endpoint then starts with NO global IPv6 address, and saying
-	// otherwise is the one thing this comment must not do. SLAAC does
-	// NOT step in: dhcpcd writes net.ipv6.conf.<if>.autoconf=0 and
-	// accept_ra=0 on the interface it manages (if-linux.c,
-	// if_setup_inet6, dhcpcd 10.3.2), --noconfigure does not gate that
-	// write, and under --noconfigure -- which this plugin always passes
-	// -- dhcpcd also skips applying the advertisement itself. So the
-	// kernel never autoconfigures from the advertised prefix while our
-	// client is running. What the container does get is IPv4 from DHCP,
-	// an IPv6 link-local, and the stateless DHCPv6 configuration (#815)
-	// where the segment offers it. docs/reference.md's DHCPv6 section
-	// says the same thing and is the reference for it; a usable global
-	// IPv6 address on such a segment is separate work.
+	// The endpoint then starts with no global IPv6 address FROM THIS
+	// PLUGIN -- there is no lease to be had -- and this comment must be
+	// precise about which of the two statements it is making, because
+	// the stronger one used to be true here and is not any more.
+	//
+	// It used to read: SLAAC does NOT step in, because dhcpcd writes
+	// net.ipv6.conf.<if>.autoconf=0 and accept_ra=0 on the interface it
+	// manages (if-linux.c, if_setup_inet6, dhcpcd 10.3.2) and
+	// --noconfigure does not gate that write. Both halves of that are
+	// still true OF DHCPCD, and they are no longer true of the
+	// interface: the RA guard (#875, pkg/dhcp/ra_guard.go) sets
+	// accept_ra=2 and autoconf=1 before dhcpcd starts and then makes
+	// /proc/sys read-only in the client's mount namespace so dhcpcd's
+	// write is refused. The kernel is therefore free to autoconfigure,
+	// and whether it does is decided by the A flag on the advertised
+	// prefix (RFC 4862 section 5.5.3), not by this plugin.
+	//
+	// What is unchanged: under --noconfigure -- which this plugin
+	// always passes -- DHCPCD does not apply the advertisement itself.
+	// The kernel doing it and dhcpcd doing it are different actors, and
+	// only the second is still suppressed. Any address that forms is
+	// the kernel's, is not a lease, and is not reported in
+	// docker inspect.
+	//
+	// What the container gets regardless is IPv4 from DHCP, an IPv6
+	// link-local, and the stateless DHCPv6 configuration (#815) where
+	// the segment offers it. docs/reference.md's DHCPv6 section is the
+	// reference and says the same thing.
 	v6NotOffered
 	// v6NoRouter: no router advertisement arrived at all within the
 	// acquisition budget.

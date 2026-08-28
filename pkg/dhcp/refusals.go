@@ -71,15 +71,32 @@ var (
 	// Counts COMMANDS, not clients: a client whose namespace setup fails
 	// in three of four steps adds 3.
 	mountPrepFailures atomic.Int32
+
+	// raGuardFailures counts individual Router-Advertisement guard steps
+	// that failed inside the client's private mount namespace (#875).
+	//
+	// The guard is what makes a container's kernel perform router
+	// discovery and prefix processing, and what stops dhcpcd from
+	// switching that off again. Its steps are chained with `;` for the
+	// same reason mountPrep's are -- a client that cannot write a sysctl
+	// should still get a lease -- so a failure is a DEGRADE, and the
+	// degrade is invisible: the container has an address, on-link
+	// traffic works, and only off-link traffic stops, some seconds
+	// later, when the advertisement that was never refreshed expires.
+	// That is precisely the shape that hid this bug in the first place.
+	//
+	// Counts STEPS, not clients: a client whose guard fails to write and
+	// to shield one knob adds 2.
+	raGuardFailures atomic.Int32
 )
 
 // RefusalCounts reports how many operator-supplied inputs this process
-// has refused, and how many private-namespace preparation commands
-// failed.
+// has refused, how many private-namespace preparation commands failed,
+// and how many Router-Advertisement guard steps failed.
 //
 // A pull rather than a push, so the plugin's health snapshot reads them
 // in one place instead of every DHCPClientOptions being responsible for
 // carrying a sink.
-func RefusalCounts() (directives, mountPrep int32) {
-	return directivesRefused.Load(), mountPrepFailures.Load()
+func RefusalCounts() (directives, mountPrep, raGuard int32) {
+	return directivesRefused.Load(), mountPrepFailures.Load(), raGuardFailures.Load()
 }
