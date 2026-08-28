@@ -56,7 +56,7 @@ net_dhcp_client_stop_failures_total{family="ipv6"} 7163045
 # TYPE net_dhcp_dhcpv6_config_only_total counter
 net_dhcp_dhcpv6_config_only_total 5338778
 
-# HELP net_dhcp_dhcpv6_not_offered_total Endpoints started on an IPv6 network whose router advertisement offered no DHCPv6 address (stateless or SLAAC). Not a fault: the network is working as configured and there is no DHCPv6 address on it to be had. The container comes up with IPv4, an IPv6 link-local and DHCPv6 configuration where the segment offers it, and no global IPv6 address: dhcpcd turns kernel autoconfiguration off on the interface it manages, so SLAAC does not supply one either. Kept apart from dhcpv6_no_router_advert because that one means no router answered at all.
+# HELP net_dhcp_dhcpv6_not_offered_total Endpoints started on an IPv6 network whose router advertisement offered no DHCPv6 address (stateless or SLAAC). Not a fault: the network is working as configured and there is no DHCPv6 address on it to be had. The container comes up with IPv4, an IPv6 link-local and DHCPv6 configuration where the segment offers it, and no global IPv6 address from this plugin. Since v1.9.0 the interface is left at accept_ra=2/autoconf=1, so the kernel may still form a SLAAC address if the advertised prefix sets the A flag; that address is not a lease and is not reported in docker inspect. Kept apart from dhcpv6_no_router_advert because that one means no router answered at all.
 # TYPE net_dhcp_dhcpv6_not_offered_total counter
 net_dhcp_dhcpv6_not_offered_total 8785870
 
