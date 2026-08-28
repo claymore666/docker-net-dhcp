@@ -300,6 +300,12 @@ jobs:
           # scripts/test-coverage-baseline-at.sh runs on every PR.
           baseline=.github/coverage-baseline.txt
           if [ -n "${BASE_REF:-}" ]; then
+            # The resolver also writes /tmp/coverage-baseline-base.txt.report
+            # and the ratchet picks it up from beside the baseline, with no
+            # second wiring step here that could be forgotten (#791). That
+            # report is what lets the ratchet tell a complete baseline from
+            # a truncated one -- its own `compared` count is derived from
+            # the file it was handed, so it cannot answer that alone.
             bash scripts/coverage-baseline-at.sh "$BASE_REF" /tmp/coverage-baseline-base.txt
             baseline=/tmp/coverage-baseline-base.txt
           else
