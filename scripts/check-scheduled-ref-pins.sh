@@ -274,16 +274,31 @@
 # from `main`. The two sets differ for one release window: a workflow
 # added on `dev` is judged here before it can fire, and one deleted on
 # `dev` leaves this domain while `main`'s copy keeps firing until the
-# release ships. Measured 2026-08-28 at `dev` = 9ae67ca: `main` holds 24
-# workflow files and this branch 26. The two extras are run-retention.yml
-# and fork-execution-policy.yml, neither of which is on `main`; both 404
-# as workflows and have never fired -- a difference in the harmless
-# direction, and nothing on `main` is missing here. This count moved once
-# already, when a rebase brought the second file in, which is the shape
-# of the failure: a number written beside the code is right at the minute
-# it is measured and nothing checks it afterwards. Re-derive it rather
-# than quoting it. Nothing in this gate closes that window; the release
-# does.
+# release ships. Re-derived 2026-08-28 at `dev` = 22251d3, `main` =
+# 56a72b6: `main` holds 24 workflow files and this branch 26. The two
+# extras are run-retention.yml and fork-execution-policy.yml, neither of
+# which is on `main`; both 404 as workflows and have never fired -- a
+# difference in the harmless direction, and nothing on `main` is missing
+# here. This count moved once already, when a rebase brought the second
+# file in, which is the shape of the failure: a number written beside the
+# code is right at the minute it is measured and nothing checks it
+# afterwards. Re-derive it rather than quoting it -- this paragraph
+# carried `dev` = 9ae67ca through two rebases, which is the same defect
+# one level up.
+#
+# WHAT NOW CLOSES PART OF THAT WINDOW, AND WHAT STILL DOES NOT. This
+# sentence used to end "Nothing in this gate closes that window; the
+# release does." The first half is still true and the second was too
+# weak: check-dispatch-reachable.sh now takes `schedule` into its domain
+# alongside `workflow_dispatch`, so a scheduled workflow absent from the
+# default branch must carry a declaration in .github/dispatch-pending.txt
+# saying what clears it, and a declaration left behind after the release
+# fails too. That gate answers "is it on the default branch"; this one
+# answers "does it declare what it judges". Neither answers the other's
+# question, and THIS gate still cannot see the default branch at all --
+# it reads the tree in front of it. A workflow deleted on `dev` whose
+# copy on `main` keeps firing is still outside both: nothing here reads a
+# branch this checkout does not have.
 #
 # WHAT IT DOES NOT CLAIM. It reads workflow text, so it cannot tell
 # that a tracker workflow's script actually reads the checked-out tree,
