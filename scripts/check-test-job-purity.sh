@@ -34,11 +34,19 @@
 #      the job be emptied one deletion at a time, which is the same
 #      vacuity D exists to stop, arriving through the other door.
 #   C. No non-comment line of any `run:` body in `test` MENTIONS a
-#      `scripts/*.sh` gate. This is the drift that actually happens: on
-#      the tree this gate was written against, 48 of the 50 steps in
-#      `policy-gates` invoke a script and only the two environment-setup steps
-#      do not, so a script invocation appearing in `test` is a gate that
-#      moved.
+#      `scripts/*.sh` gate. This is the drift that actually happens:
+#      nearly every step of `policy-gates` invokes a script, and the
+#      handful that do not are the checkout, the toolchain and the two
+#      environment-setup steps -- so a script invocation appearing in
+#      `test` is a gate that moved.
+#
+#      NO COUNT IS WRITTEN HERE, and the sentence above used to carry
+#      one. It said "48 of the 50 steps ... only the two
+#      environment-setup steps do not", and by the time anyone read it
+#      the job held 52 steps of which FOUR invoke nothing -- wrong in
+#      both halves, in a file whose whole subject is a number with no
+#      observer. Ask the file: the tally line below prints both totals
+#      and the distinct-script count on every run.
 #   D. `test` must actually run `go test`, IN COMMAND POSITION.
 #      Without this arm the gate is satisfied by EMPTYING the job -- a
 #      `test` check that runs nothing passes A and C perfectly and means
@@ -112,9 +120,10 @@
 #     would red-flag ordinary shell in a future gate step, and a gate
 #     that cries wolf gets discharged.
 #   * E asks for AT LEAST ONE invocation, so a `policy-gates` reduced
-#     from 48 gates to 1 still passes. That bound is deliberate -- the
-#     corpus grows every week and a count here would be a stale number
-#     with no observer -- and it is backstopped from the other side by
+#     from the whole corpus to a single gate still passes. That bound is
+#     deliberate: the corpus grows every week, and a threshold here would
+#     be a hand-written number with no observer, which is the shape the
+#     workflow's own comment refuses. It is backstopped from the other side by
 #     scripts/check-local-lane.sh, which fails when a `check-*.sh` in
 #     the tree is run by nothing.
 #   * F reads the workflow as written, and a job can also stop reporting
