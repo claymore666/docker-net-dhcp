@@ -246,6 +246,23 @@ jobs:
 '
 runwf "a matrix expression is resolved, not skipped" 2 0 "$WFC" "newlane.yml" "has CHANGED"
 
+# And a matrix entry whose value is itself a LABEL LIST, which is how a
+# self-hosted runner is actually addressed.
+WFC2="$TMP/wf-matrixlist"; wflane "$WFC2" 'name: newlane
+on:
+  pull_request:
+jobs:
+  n:
+    strategy:
+      matrix:
+        include:
+          - runner: [self-hosted, dhcp-ci]
+    runs-on: ${{ matrix.runner }}
+    steps: [{run: "true"}]
+'
+runwf "a matrix value that is a label list is resolved too" 2 0 "$WFC2" \
+    "newlane.yml" "has CHANGED"
+
 WFD="$TMP/wf-group"; wflane "$WFD" 'name: newlane
 on:
   pull_request:
@@ -275,6 +292,27 @@ jobs:
     steps: [{run: "true"}]
 '
 runwf "a quoted trigger key still declares the trigger" 2 0 "$WFF" "newlane.yml" "has CHANGED"
+
+# The remaining two spellings GitHub accepts for `on:` itself. Both are
+# the same class as the flow mapping above -- a document the line scan
+# read one shape of -- and neither costs more than the fixture.
+WFQ="$TMP/wf-flowseq"; wflane "$WFQ" 'name: newlane
+on: [push, pull_request]
+jobs:
+  n:
+    runs-on: [self-hosted, dhcp-ci]
+    steps: [{run: "true"}]
+'
+runwf "a flow-sequence on: still declares the trigger" 2 0 "$WFQ" "newlane.yml" "has CHANGED"
+
+WFP="$TMP/wf-scalaron"; wflane "$WFP" 'name: newlane
+on: pull_request
+jobs:
+  n:
+    runs-on: [self-hosted, dhcp-ci]
+    steps: [{run: "true"}]
+'
+runwf "a scalar on: still declares the trigger" 2 0 "$WFP" "newlane.yml" "has CHANGED"
 
 WFG="$TMP/wf-secondjob"; wflane "$WFG" 'name: newlane
 on:
