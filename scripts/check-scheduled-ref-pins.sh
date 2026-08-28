@@ -60,53 +60,106 @@
 # `issues:` is a contradiction, and so is the reverse. Two independent
 # statements have to agree, and neither alone is believed.
 #
-# THE PERMISSION SIDE OF THAT CROSS-CHECK IS AN ENUMERATION, SO IT
-# STATES WHERE IT ENDS. `permissions:` has four spellings in the Actions
-# schema and this gate reads all four:
+# THE PERMISSION SIDE OF THAT CROSS-CHECK IS AN ENUMERATION OF VALUES,
+# SO IT STATES WHERE IT ENDS. `permissions:` takes three kinds of value
+# and this gate reads all three:
 #
 #     permissions:              a block mapping -> `issues:` at depth
-#     permissions: {...}        a flow mapping  -> `issues:` on the line
+#     permissions: {...}        a flow mapping  -> `issues:` inside it,
+#                               on that line or on any line until the
+#                               brace closes
 #     permissions: write-all    a scalar        -> grants `issues: write`
-#     permissions: read-all     a scalar        -> see the next paragraph
+#     permissions: read-all     a scalar        -> grants `issues: read`
 #
 # Anything else after `permissions:` is a RESIDUE, and the gate REFUSES
-# it (exit 2) rather than reading it as absent. That refusal is the
-# point. A gate keyed on spelling reproduces its own silence: the block
-# rule and the flow rule each match a shape, and a value matching
-# neither used to leave `issues` at 0 without a word -- `read-all` and
-# `write-all` both did, and the second is full tracker WRITE access
-# declaring `tree`, skipping the pin, and passing. Enumerating a third
-# spelling without a residue only moves that silence one spelling along.
+# it (exit 2) rather than reading it as absent -- an unterminated flow
+# mapping included. That refusal is the point. A gate keyed on spelling
+# reproduces its own silence: the block rule and the flow rule each
+# match a shape, and a value matching neither used to leave `issues` at
+# 0 without a word -- `read-all` and `write-all` both did, and the
+# second is full tracker WRITE access declaring `tree`, skipping the
+# pin, and passing. Enumerating a third spelling without a residue only
+# moves that silence one spelling along.
 #
-# `read-all` IS NOT A DECLARATION, deliberately and not by omission.
-# Measured 2026-08-28,
-# `gh api repos/OWNER/REPO/actions/permissions/workflow`:
-# `default_workflow_permissions` is `read`. So `read-all` narrows
-# nothing and grants precisely what a workflow carrying no
-# `permissions:` block at all already has. It states the default; it
-# does not request the tracker. It therefore neither contradicts a
-# `tree` marker nor satisfies a `tracker` one -- a tracker workflow has
-# to DECLARE `issues:`, for the reason WHY THE CLASS IS DECLARED RATHER
-# THAN DERIVED gives above, and
-# `read-all` beside a `tracker` marker is reported exactly as an absent
-# block is. scorecard.yml is the live instance: it writes
-# `permissions: read-all` and declares `tree`, and both statements are
-# right. (Its one job overrides that top-level grant with a narrower
-# block that names no `issues:` at all, so its effective tracker access
-# is none -- a second, independent reason the `tree` marker is the
-# correct one there. The gate does not model job-level overrides; it
-# does not need to, because `read-all` already reads as no declaration.)
+# `read-all` IS A DECLARATION, and this paragraph used to say the
+# opposite. The claim was that this repository's
+# `default_workflow_permissions` is `read` (measured 2026-08-28,
+# `gh api repos/OWNER/REPO/actions/permissions/workflow`, and that half
+# is still true), therefore `read-all` grants exactly what a workflow
+# with no `permissions:` block already has. The premise does not carry
+# the conclusion. The restricted default grants read on `contents` and
+# `packages` ONLY; every other scope, `issues:` included, is `none`
+# (GitHub docs, "Managing GitHub Actions settings for a repository":
+# the token "only has read access for the contents and packages
+# scopes"). `read-all` "grants read access across all available
+# permissions" (GitHub docs, workflow-syntax `permissions`). So
+# `read-all` grants `issues: read` where the default grants
+# `issues: none` -- an ESCALATION above the default, by exactly the
+# argument this file already used to close `write-all`. A discriminator
+# that treats the two differently is not a discriminator; it is the
+# same silence with a different name on it. `read-all` therefore
+# contradicts a `tree` marker and satisfies a `tracker` one, on the
+# same footing as `write-all`.
+#
+# What that cost, and why it is written here rather than quietly fixed:
+# `issues: read` is not a harmless grant in this repository. It is what
+# three of the four tracker workflows declare (label-taxonomy.yml:79,
+# milestone-scope.yml:67, starter-tasks.yml:56), so a scheduled
+# workflow writing `permissions: read-all` beside a `tree` marker held
+# full tracker READ access and exited 0 clean (measured 2026-08-28
+# against the shipped gate). The false premise was pinned by two
+# self-test case names, which is why it had to be corrected rather than
+# left to decay: a wrong claim with a green test defending it does not
+# decay, it gets defended.
+#
+# scorecard.yml was the live instance and is now narrowed to
+# `contents: read` at the workflow level (#839). Nothing needed the
+# wider grant: its one job replaces the top-level block with its own,
+# and a job-level block overrides completely -- unspecified scopes
+# become `none` -- so its effective tracker access was already none.
+# The gate does not model job-level overrides and still does not need
+# to; the workflow-level line now says what the workflow means.
 #
 # THE BOUNDARY THAT LEAVES, WRITTEN BESIDE THE CODE RATHER THAN
 # ANYWHERE ELSE. The cross-check corroborates; it fires only when the
 # permission is present to disagree. A workflow that really judges the
-# tracker, declares `tree`, and asks for no `issues:` at all -- or
-# writes `read-all` -- passes, because nothing contradicts its marker.
-# That hole is not new and cannot be closed from the permission side:
-# the measurement in WHY THE CLASS IS DECLARED RATHER THAN DERIVED is
-# exactly why the permission cannot be the key. `write-all` is closable because it
-# is an ESCALATION above the repository default that no tree workflow
-# can want, and it is closed.
+# tracker, declares `tree`, and asks for no `issues:` at all passes,
+# because nothing contradicts its marker. That hole is not new and
+# cannot be closed from the permission side: the measurement in WHY THE
+# CLASS IS DECLARED RATHER THAN DERIVED is exactly why the permission
+# cannot be the key. `write-all` and `read-all` are closable because
+# each is an ESCALATION above the repository default that no tree
+# workflow can want, and both are closed.
+#
+# THE KEYS ARE NORMALISED, NOT ENUMERATED, AND THAT IS THE SECOND
+# LESSON OF THE SAME DEFECT. Everything above concerns the VALUE after
+# `permissions:`. The KEY has spellings too -- YAML lets a key be
+# quoted and lets a space stand before the colon -- and the first two
+# forms of this gate matched key spellings one at a time: `on:` and
+# then `"on":`, `permissions:` and nothing else. Measured 2026-08-28
+# against that form, on corpora it called clean, exit 0, on both mawk
+# 1.3.4 and gawk 5.2.1, with actionlint 1.7.12 accepting every file and
+# python3 yaml.safe_load confirming each one means what it looks like:
+#
+#     'on':                     never entered the domain at all
+#     on :                      never entered the domain at all
+#     "permissions": write-all  read as no permission block
+#     "issues": write           read as no tracker access
+#     "ref": dev                read as no pin, so a tree workflow
+#                               pinned to dev passed clean
+#
+# The first two are the worse half, and they are why the fix is
+# normalisation rather than another branch. The VALUE enumeration has a
+# residue to fall into; the DOMAIN rule has none and cannot be given
+# one. Its domain is "declares a `schedule:`" and the complement of
+# that is every push-triggered workflow in the repository, which is not
+# an error -- so an unrecognised spelling of `on:` is not reported as
+# unclassified, it is not counted at all, and no residue can tell the
+# two apart. A domain rule cannot be made to fail closed on a spelling
+# it does not know. It can only be made not to have unknown spellings,
+# which is what normalising the key does: `key_of()` strips the
+# indentation, the quotes and the space before the colon, and every
+# rule below compares the result, not the text.
 #
 # THE MARKER. One line, anywhere in the file, exactly:
 #
@@ -185,6 +238,10 @@
 # Env:   SCHEDULED_REF_PINS_DIR  directory to inspect — the seam the
 #                                self-test drives. The positional
 #                                argument wins if both are given.
+#        SCHEDULED_REF_PINS_AWK  the awk to extract facts with. A test
+#                                seam: it is what lets the self-test
+#                                drive an awk that FAILS while printing,
+#                                which no workflow fixture can produce.
 # Exit:  0 every scheduled workflow is classified and pinned to match
 #        1 at least one is unclassified, contradicted, or mispinned
 #        2 cannot check (no directory, no workflows, no schedules, or a
@@ -215,9 +272,12 @@ mapfile -t files < <(printf '%s\n' "${files[@]}" | sort)
 # facts_of emits one `key=value` line per workflow file:
 #
 #   scheduled     1 when the `on:` block declares a `schedule:` trigger
-#   issues        1 when any permissions block declares `issues:`
+#   issues        1 when any permissions value grants `issues:` --
+#                 named in a mapping, or implied by `read-all` or
+#                 `write-all`
 #   unknown_perm  1 when a `permissions:` value was seen that is none of
-#                 the four spellings the header enumerates
+#                 the three kinds the header enumerates, an unterminated
+#                 flow mapping included
 #   checkouts     how many actions/checkout steps the file has
 #   pinned_dev    how many of those pin ref to dev / refs/heads/dev
 #   other_ref     how many pin ref to something else (tag, sha, input)
@@ -225,8 +285,17 @@ mapfile -t files < <(printf '%s\n' "${files[@]}" | sort)
 # Blocks are delimited by indentation, which is what YAML actually uses;
 # nothing here parses YAML, and it does not need to — every fact is a
 # key at a known depth relative to the block that introduces it.
+# THE awk BINARY IS A SEAM, and it exists so the refusal below can be
+# DRIVEN rather than argued. Two halves decide that refusal -- empty
+# stdout, and a non-zero status -- and no workflow fixture can produce
+# the second while `-f` and `-r` hold, so without this the status half
+# would be a branch with no case, which is how the directory fixture
+# came to prove nothing on the runner that matters. The self-test points
+# this at a stub that prints a full fact line and exits non-zero.
+AWK="${SCHEDULED_REF_PINS_AWK:-awk}"
+
 facts_of() {
-    awk '
+    "$AWK" '
         function indent(s,   n) { match(s, /^ */); return RLENGTH }
         function isblank(s) { return s ~ /^[[:space:]]*$/ }
         function iscomment(s) { return s ~ /^[[:space:]]*#/ }
@@ -239,6 +308,37 @@ facts_of() {
         # YAML a `#` opens a comment only after whitespace, so that is
         # what is cut.
         function decomment(s) { sub(/[[:space:]]#.*$/, "", s); return s }
+        # key_of(s) is the NORMALISED key a line declares, or "" for a
+        # line that declares none. YAML permits a key to be quoted and
+        # permits space before the colon, so `on:`, `"on":`, QonQ: and
+        # `on :` are four spellings of ONE key (Q for a single quote --
+        # this comment lives inside a single-quoted awk program and
+        # cannot contain one). Every rule below is keyed on this rather
+        # than on a spelling, which is the difference between an
+        # enumeration that grows a branch per spelling and a rule that
+        # is right for all of them at once. See THE KEYS ARE NORMALISED
+        # in the header for what the enumerating form let through.
+        function key_of(s,   k) {
+            if (s !~ /:/) return ""
+            k = s
+            sub(/:.*$/, "", k)
+            sub(/^[[:space:]]+/, "", k)
+            sub(/[[:space:]]+$/, "", k)
+            if (k ~ /^".*"$/ || k ~ /^'"'"'.*'"'"'$/) k = substr(k, 2, length(k) - 2)
+            return k
+        }
+        # val_of(s) is what stands after that key, comment and trailing
+        # space removed. The three permission rules test THIS, never the
+        # whole line: an unanchored `permissions:.*[^{]` matches the
+        # `contents: read` inside `permissions: {contents: read}` and
+        # reads a flow mapping as a scalar residue, which is a refusal
+        # on a workflow with nothing wrong with it.
+        function val_of(s,   v) {
+            v = decomment(s)
+            sub(/^[^:]*:[[:space:]]*/, "", v)
+            sub(/[[:space:]]+$/, "", v)
+            return v
+        }
 
         BEGIN { sched = 0; issues = 0; co = 0; dev = 0; other = 0; unk = 0 }
 
@@ -257,22 +357,22 @@ facts_of() {
         # is not the format: nothing stops a future workflow being
         # written this way, and the gate would have counted a corpus of
         # two while the third sat outside it holding `issues: write`.
-        /^"?on"?:/ {
-            if (decomment($0) ~ /schedule[[:space:]]*:/) sched = 1
+        indent($0) == 0 && key_of($0) == "on" {
+            if (decomment($0) ~ /schedule["'"'"']?[[:space:]]*:/) sched = 1
             in_on = 1; next
         }
         in_on {
             if (!isblank($0) && !iscomment($0) && indent($0) == 0) { in_on = 0 }
-            else if ($0 ~ /^[[:space:]]+schedule:/) { sched = 1 }
+            else if (key_of($0) == "schedule") { sched = 1 }
         }
 
         # --- any permissions: block, top-level or per-job -------------
-        /^[[:space:]]*permissions:[[:space:]]*(#.*)?$/ {
+        key_of($0) == "permissions" && val_of($0) == "" {
             in_perm = 1; perm_indent = indent($0); next
         }
         in_perm {
             if (!isblank($0) && !iscomment($0) && indent($0) <= perm_indent) { in_perm = 0 }
-            else if ($0 ~ /^[[:space:]]+issues:/) { issues = 1 }
+            else if (key_of($0) == "issues") { issues = 1 }
         }
 
         # The same flow spelling, and here it fails in the DANGEROUS
@@ -284,8 +384,33 @@ facts_of() {
         # marker is believed ALONE. A workflow with real tracker access
         # could then declare `tree`, skip the pin, and pass -- the exact
         # defect #839 reports, through the gate built to stop it.
-        /^[[:space:]]*permissions:[[:space:]]*\{/ {
-            if (decomment($0) ~ /issues[[:space:]]*:/) issues = 1
+        # A flow mapping is ALSO not required to end on the line that
+        # opens it, and that is the third way the same silence was
+        # reached. `permissions: {` with `issues: write` on the next
+        # line opens no block either, so the block rule above and a
+        # single-line flow rule BOTH read `issues = 0` for a workflow
+        # holding full tracker access -- measured 2026-08-28, exit 0
+        # clean on both awks. Braces are therefore COUNTED rather than
+        # assumed balanced on one line, and a mapping still open at EOF
+        # is residue (see the END rule): an unterminated flow mapping is
+        # a file this gate could not read, and a refusal must not look
+        # like an absence.
+        #
+        # The continuation rule is placed BEFORE the rule that opens the
+        # mapping deliberately. awk tries rules in source order, so an
+        # opener placed first would fall straight through into its own
+        # continuation and count the braces on the opening line twice.
+        in_flow {
+            fl = decomment($0)
+            if (fl ~ /issues["'"'"']?[[:space:]]*:/) issues = 1
+            flow_depth += gsub(/\{/, "{", fl) - gsub(/\}/, "}", fl)
+            if (flow_depth <= 0) in_flow = 0
+        }
+        key_of($0) == "permissions" && substr(val_of($0), 1, 1) == "{" {
+            pl = val_of($0)
+            if (pl ~ /issues["'"'"']?[[:space:]]*:/) issues = 1
+            flow_depth = gsub(/\{/, "{", pl) - gsub(/\}/, "}", pl)
+            if (flow_depth > 0) in_flow = 1
         }
 
         # And the SCALAR spelling, which is neither of the two above and
@@ -295,13 +420,11 @@ facts_of() {
         # nothing. Any OTHER value is the residue: refused, not assumed,
         # because an enumeration with no residue just relocates the silence
         # the two rules above already produced twice.
-        /^[[:space:]]*permissions:[[:space:]]*[^[:space:]{#]/ {
-            pv = decomment($0)
-            sub(/^[[:space:]]*permissions:[[:space:]]*/, "", pv)
-            sub(/[[:space:]]+$/, "", pv)
+        key_of($0) == "permissions" && val_of($0) != "" && substr(val_of($0), 1, 1) != "{" {
+            pv = val_of($0)
             gsub(/^["'"'"']|["'"'"']$/, "", pv)
-            if (pv == "write-all") issues = 1
-            else if (pv != "read-all") unk = 1
+            if (pv == "write-all" || pv == "read-all") issues = 1
+            else unk = 1
         }
 
         # --- step blocks ---------------------------------------------
@@ -319,13 +442,14 @@ facts_of() {
                 step_is_checkout = 0; step_ref = ""
             }
             if (in_step) {
-                if ($0 ~ /uses:[[:space:]]*actions\/checkout/) step_is_checkout = 1
-                if ($0 ~ /^[[:space:]]*ref:[[:space:]]*[^[:space:]]/) {
-                    v = $0
-                    sub(/^[[:space:]]*ref:[[:space:]]*/, "", v)
-                    sub(/[[:space:]]*#.*$/, "", v)
+                # Quoted here too, and for the same reason: measured
+                # 2026-08-28, a `tree` workflow writing `"ref": dev`
+                # passed clean, because the pin rule could not see a
+                # pin spelled with a quoted key.
+                if ($0 ~ /uses["'"'"']?[[:space:]]*:[[:space:]]*["'"'"']?actions\/checkout/) step_is_checkout = 1
+                if (key_of($0) == "ref" && val_of($0) != "") {
+                    v = val_of($0)
                     gsub(/^["'"'"']|["'"'"']$/, "", v)
-                    sub(/[[:space:]]+$/, "", v)
                     step_ref = v
                 }
             }
@@ -333,6 +457,11 @@ facts_of() {
 
         END {
             if (in_step) close_step()
+            # A flow mapping that never closed is a permissions value
+            # this program did not finish reading. Reporting it as
+            # `issues = 0` is exactly the absence the residue exists to
+            # refuse, so it is counted as residue instead.
+            if (in_flow) unk = 1
             # unk is a COUNT and never the offending text. These lines
             # are consumed by `eval`, so a value read out of a workflow
             # file must not reach it; the reporting path re-reads the
@@ -380,8 +509,44 @@ for f in "${files[@]}"; do
     # A refusal must not look like an absence, and the refusal below is
     # what enforces that; this line is the pair to it, not a substitute.
     scheduled=0; issues=0; checkouts=0; pinned_dev=0; other_ref=0; unknown_perm=0
+
+    # WHETHER THE FILE CAN BE READ IS DECIDED IN THE SHELL, BEFORE awk,
+    # BECAUSE THE TWO awks DISAGREE ABOUT IT. Measured 2026-08-28 with
+    # the self-test fixture that is a DIRECTORY named *.yml:
+    #
+    #   mawk 1.3.4   cannot open it, prints nothing, exits 2 -> the
+    #                empty-facts refusal below fires. Suite 39/0.
+    #   gawk 5.2.1   SKIPS it with a warning and exits 0, so the END
+    #                rule still runs and prints a complete all-zero
+    #                fact line. The gate then reads a file it never
+    #                opened as `scheduled=0` and drops it out of the
+    #                domain in SILENCE -- the exact fail-open this
+    #                guard exists to prevent, in the gate whose header
+    #                argues it fails closed.
+    #
+    # Same fixture, same gate, opposite verdicts, decided by which awk
+    # the runner happens to have -- and the runner has gawk, so the
+    # green measured on a mawk box was a measurement whose domain
+    # excluded the environment the check runs in. Keying the refusal on
+    # awk`s exit status alone does not close it either: gawk`s skip is
+    # a warning with status 0. `-f` and `-r` are the uid-independent
+    # half, they are the same on every awk, and they are asked first.
+    if [ ! -f "$f" ] || [ ! -r "$f" ]; then
+        echo "::error file=$f,title=Cannot read workflow::$base is not a readable" \
+             "regular file, so no fact could be extracted from it. Treating that as" \
+             "\"not scheduled\" would drop the file out of this gate's domain silently," \
+             "which is the failure the gate exists to prevent." >&2
+        cannot=1
+        continue
+    fi
+
     facts="$(facts_of "$f")"
-    if [ -z "$facts" ]; then
+    facts_rc=$?
+    # Empty stdout AND a non-zero status, because neither implies the
+    # other: gawk prints a full fact line while skipping an argument it
+    # never opened (status 0), and an awk that dies part way through a
+    # file leaves partial output that is not empty.
+    if [ -z "$facts" ] || [ "$facts_rc" -ne 0 ]; then
         echo "::error file=$f,title=Cannot read workflow::extracting facts from $base" \
              "produced nothing. Treating that as \"not scheduled\" would drop the file" \
              "out of this gate's domain silently, which is the failure the gate exists" \
@@ -461,13 +626,17 @@ for f in "${files[@]}"; do
         # than piped through `head`: a consumer that exits early SIGPIPEs
         # the producer, and under pipefail that reports failure on
         # success (check-pipefail-consumers.sh).
-        bad_perm="$(sed -n 's/^[[:space:]]*permissions:[[:space:]]*\([^[:space:]{#][^#]*\)$/\1/p' "$f")"
+        # The key may be quoted and the value may be an unterminated
+        # flow mapping, so this pattern is deliberately wider than the
+        # one that DECIDED the refusal: it only has to name the line for
+        # the reader.
+        bad_perm="$(sed -n 's/^[[:space:]]*["'"'"']\{0,1\}permissions["'"'"']\{0,1\}[[:space:]]*:[[:space:]]*\([^[:space:]#][^#]*\)$/\1/p' "$f")"
         bad_perm="${bad_perm%%$'\n'*}"
         bad_perm="$(printf '%s' "$bad_perm" | tr -cd '[:print:]')"
         bad_perm="${bad_perm:0:60}"
         echo "::error file=$f,title=Unclassifiable permissions value::$base writes" \
-             "\`permissions: $bad_perm\`, which is neither a block mapping, a flow" \
-             "mapping, \`read-all\` nor \`write-all\`. The cross-check that keeps the" \
+             "\`permissions: $bad_perm\`, which is neither a block mapping, a closed" \
+             "flow mapping, \`read-all\` nor \`write-all\`. The cross-check that keeps the" \
              "\`# scheduled-subject:\` marker from being its own only witness cannot be" \
              "made against a permission this gate cannot read, and reading it as absent" \
              "is how \`write-all\` passed as \`tree\` (#839)." >&2
