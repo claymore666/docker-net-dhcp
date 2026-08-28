@@ -870,7 +870,8 @@ func observeRA(o RAObservation, flags string) RAObservation {
 
 // acquisition is what one dhcpcd run has reported SO FAR.
 //
-// "So far" is the whole design, and it is the fix for #873. The first
+// "So far" is the whole design, and it is the fix for the fail-open
+// found while fixing #868 -- the issue record for all of this. The first
 // version accumulated locally in the collector goroutine and published
 // the result by sending on a channel once the event stream closed. The
 // stream closes when dhcpcd is reaped -- so on the one case where the
@@ -950,8 +951,9 @@ func collectAcquisition(events <-chan Event, a *acquisition) {
 // events already sitting in the pipe.
 //
 // It takes NO context, deliberately, and that absence is the fix for
-// #873. The context is expired on exactly the path where the answer
-// decides an endpoint's fate -- a managed segment whose server went
+// the fail-open recorded on #868. The context is expired on exactly
+// the path where the answer decides an endpoint's fate -- a managed
+// segment whose server went
 // silent -- so a context-bounded read there is a read that has already
 // run out of time, and it returned the zero value: "nothing was
 // advertised here" for a segment that had advertised the managed flag.
@@ -1009,8 +1011,8 @@ func attemptGetIP(ctx context.Context, iface string, opts *DHCPClientOptions) (I
 // it is reachable only through a live dhcpcd, so no unit test in this
 // package could execute it, and a mutation that returned the ZERO
 // observation on the error path survived the whole suite. That mutation
-// IS the #873 defect: the error path is the one a managed segment with
-// a silent server takes.
+// IS the fail-open #868 records: the error path is the one a managed
+// segment with a silent server takes.
 //
 // The observation is returned on BOTH paths, and that is the whole
 // point. dhcpcd exiting non-zero on a stateless segment is not evidence

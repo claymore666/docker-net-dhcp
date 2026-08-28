@@ -93,7 +93,7 @@ func TestSettleAcquisition_KeepsAnObservationTakenUnderAnExpiredDeadline(t *test
 			t.Errorf("observation = %+v, want Seen and Managed. The segment advertised "+
 				"the managed flag and the collector had already taken it; discarding it "+
 				"makes classifyV6Absence read v6NoRouter and tolerate a real DHCPv6 "+
-				"outage (#873)", ra)
+				"outage (#868)", ra)
 		}
 		if last != nil {
 			t.Errorf("lease = %+v, want none — an advertisement is not a lease", *last)
@@ -130,7 +130,7 @@ func TestSettleAcquisition_KeepsAnObservationTakenUnderAnExpiredDeadline(t *test
 			t.Errorf("observation = %+v, want Seen and Managed. The advertisement was "+
 				"already in the stream and the collector had not yet taken it; the "+
 				"grace exists to cover exactly that handover, and skipping it reports "+
-				"a segment that advertised as one that stayed silent (#873)", ra)
+				"a segment that advertised as one that stayed silent (#868)", ra)
 		}
 		if last != nil {
 			t.Errorf("lease = %+v, want none — an advertisement is not a lease", *last)
@@ -177,7 +177,7 @@ func TestSettleAcquisition_KeepsAnObservationTakenUnderAnExpiredDeadline(t *test
 			t.Errorf("observation = %+v, want Seen and Managed. The advertisement was on "+
 				"the wire and the collector had folded it; a stream that has not ended "+
 				"is not evidence the segment stayed silent, and the expired deadline is "+
-				"what we were retrying against (#873)", ra)
+				"what we were retrying against (#868)", ra)
 		}
 		if last != nil {
 			t.Errorf("lease = %+v, want none — an advertisement is not a lease", *last)
@@ -201,9 +201,9 @@ func TestSettleAcquisition_KeepsAnObservationTakenUnderAnExpiredDeadline(t *test
 //
 // It is here because a mutation found the gap rather than a reading of
 // the code did: replacing the error path's settle with the zero
-// observation left the whole package green. That mutation is the #873
-// defect itself, and the error path is the one a managed segment with a
-// silent server takes — dhcpcd -1 -p -6 never gets a reply, the
+// observation left the whole package green. That mutation is the
+// fail-open #868 records, and the error path is the one a managed
+// segment with a silent server takes — dhcpcd -1 -p -6 never gets a reply, the
 // acquisition budget runs out, and Finish returns ctx.Err().
 func TestFinishAcquisition_CarriesTheObservationOnBothPaths(t *testing.T) {
 	// managed builds an accumulator that has already observed a managed
@@ -240,7 +240,7 @@ func TestFinishAcquisition_CarriesTheObservationOnBothPaths(t *testing.T) {
 				"evidence the segment stayed silent — it is the expected outcome on a "+
 				"managed segment whose DHCPv6 server answered nothing, and reporting "+
 				"the zero observation there makes classifyV6Absence read v6NoRouter "+
-				"and start the container with no IPv6 address (#873)", ra)
+				"and start the container with no IPv6 address (#868)", ra)
 		}
 	})
 
