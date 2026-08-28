@@ -185,10 +185,19 @@ for f in "${FILES[@]}"; do
     # closed would be the same overclaim this paragraph exists to
     # retract. MEASURED as a mutant, too, rather than argued: joining a
     # bare `?` to the line after it turns the simple spelling into a
-    # refusal and leaves the split key passing. Closing the class needs
-    # a YAML parser, which is a different change with a dependency this
-    # repo does not carry. Today's behaviour is PINNED as a case, with
-    # the trade written out, in scripts/test-check-action-pins.sh.
+    # refusal and leaves the split key passing.
+    #
+    # Closing the class needs a YAML PARSER, and that route is open --
+    # which it was not when this paragraph was first drafted. #844
+    # landed check-fork-execution-policy.sh, which parses the workflow
+    # tree with PyYAML and refuses without it, and test.yaml installs
+    # PyYAML in the SAME job that runs this gate. So the remaining cost
+    # is not a new dependency: it is a rewrite of this gate's judging
+    # mechanism, plus a refusal wherever PyYAML is absent -- and
+    # scripts/local-lane.sh runs this gate while carrying no
+    # PyYAML-dependent gate today. Still a separate change; no longer a
+    # blocked one. Today's behaviour is PINNED as cases, with the trade
+    # written out, in scripts/test-check-action-pins.sh.
     #
     # HOW THE COUNT IS TAKEN, and why it is not a bare `grep uses:`.
     #

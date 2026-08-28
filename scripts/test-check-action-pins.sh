@@ -377,9 +377,18 @@ run "an explicit key inside a flow mapping is residue too" 2 "were not resolved"
 #
 # So the widening buys the spellings someone has already thought of, at
 # the price of a second mechanism to maintain and mutation-test, against
-# an adversary who writes the next spelling instead. Closing the class
-# needs a YAML parser; PyYAML is used by ZERO gates in this repo and
-# introducing the first one is a different change from this one. What
+# an adversary who writes the next spelling instead.
+#
+# Closing the class needs a YAML PARSER, and that route OPENED under
+# this PR's feet, which is worth recording because the first draft of
+# this comment said the opposite. It said PyYAML was used by ZERO gates
+# here; MEASURED against the current base, that is false. #844 landed
+# check-fork-execution-policy.sh, which parses the workflow tree with
+# PyYAML and refuses without it, and test.yaml installs PyYAML in the
+# SAME job that runs this gate. The remaining cost is a rewrite of the
+# judging mechanism plus a refusal wherever PyYAML is absent, and
+# local-lane.sh runs this gate while carrying no PyYAML-dependent gate
+# today. Still a separate change; no longer a blocked one. What
 # this PR does instead is stop CLAIMING the class is refused: the gate's
 # header states the bound, and its refusal message already says its list
 # is open rather than closed. Whoever does widen it should keep both
