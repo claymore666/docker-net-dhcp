@@ -1509,8 +1509,8 @@ the <code>vX.Y.Z</code> milestone (the workflow leans on this for the
    (<code>git log -1 --format='%an &lt;%ae&gt;' &lt;sha&gt;</code>) — a rebase or squash of a
    fork branch is where that quietly becomes the maintainer's.
 5. <strong>PR <code>release/vX.Y.Z</code> → <code>dev</code>.</strong> Required checks on <code>dev</code> are
-   <code>test</code>, <code>staticcheck</code>, <code>integration</code> (every PR builds and exercises
-   its own plugin on the integration runner), <code>actionlint</code>,
+   <code>test</code>, <code>policy-gates</code>, <code>staticcheck</code>, <code>integration</code> (every PR builds
+   and exercises its own plugin on the integration runner), <code>actionlint</code>,
    <code>govulncheck</code>, <code>attribution</code>, and CodeQL's <code>Analyze (go)</code> +
    <code>Analyze (actions)</code>. <code>main</code> requires those <strong>plus <code>coverage</code> and
    <code>coverage-present</code></strong>, which is why the ratchet first bites at the
@@ -1525,11 +1525,12 @@ the <code>vX.Y.Z</code> milestone (the workflow leans on this for the
 </code></pre></div>
 <p>Branch protection is the authority; if the prose and the settings
    disagree, the settings win and the prose is the thing to fix.</p>
-<p><code>policy-gates</code> belongs on both lists and, at the time #829 landed,
-   was on neither. It is the half of the old <code>test</code> job that runs the
-   policy gates rather than the Go suite. If it is missing from the
-   output above, those gates run on every pull request and block
-   nothing — check before trusting a green release PR.</p>
+<p><code>policy-gates</code> is the half of the old <code>test</code> job that runs the policy
+   gates rather than the Go suite (#829). It became required on both
+   branches on 2026-08-28; at the time #829 landed it was on neither
+   list, and for that window those gates ran on every pull request and
+   blocked nothing. If it is ever missing from the output above, that is
+   the state to restore — check before trusting a green release PR.</p>
 <p><code>coverage-present</code> became required in #735. It is the detector that
    tells an <em>absent</em> coverage run apart from a pending one, and it was
    advisory: it could go red without blocking the merge it exists to
@@ -1576,8 +1577,12 @@ the <code>vX.Y.Z</code> milestone (the workflow leans on this for the
    baseline file records, not an error the script can settle.</p>
 <p>Coverage shares a concurrency group with the release PR's own
    integration run, so it normally starts once integration finishes —
-   roughly twelve minutes in. A <code>coverage</code> check still showing nothing
-   after that is worth the next paragraph.</p>
+   five to eight minutes in since the main suite went to five shards
+   (#877; measured 2026-08-28 over the eight most recent successful
+   <code>integration.yml</code> runs). Do not trust that range from this page —
+   <code>gh run list --workflow integration.yml --status success</code> re-derives
+   it in one command. A <code>coverage</code> check still showing nothing well past
+   it is worth the next paragraph.</p>
 <p><strong>Release PR blocked on a check that has no run.</strong> A required check
    that was <em>cancelled</em> looks exactly like one that is <em>pending</em>: the
    PR sits at <code>BLOCKED</code> with nothing to click into. It is not a missing
@@ -1628,10 +1633,13 @@ the <code>vX.Y.Z</code> milestone (the workflow leans on this for the
    <code>git tag -v vX.Y.Z</code> (or the green "Verified" on the tag page).
    The workflow fires on <code>tags: v*</code>. Watch it at
    <a href="https://github.com/claymore666/docker-net-dhcp/actions/workflows/release.yml">https://github.com/claymore666/docker-net-dhcp/actions/workflows/release.yml</a>.
-   Expected steps, in the order the <code>release</code> job runs them and under
-   the names the run shows: Resolve release tag → checkout → setup-go →
-   Log in to GHCR → Log in to Docker Hub (or <em>Warn if Docker Hub
-   credentials missing</em>) → Push to GHCR → <strong>Check the documented
+   Expected steps, under the names the run shows. Tag resolution is its
+   own job: <strong>resolve</strong> runs first and has one step, <em>Resolve release
+   tag</em> — a releaser watching the run sees two job rows, not one. The
+   <strong>release</strong> job then runs, in this order:
+   checkout → setup-go →
+   Log in to GHCR → Log in to Docker Hub → <strong>Both registries, or say
+   why not</strong> → Push to GHCR → <strong>Check the documented
    reference digests against this build</strong> (the gate step 10b is about —
    on the first rc of a new version it is <em>expected</em> to fail and print
    the block to paste into the doc) → Push to Docker Hub (or skip) →
@@ -1640,6 +1648,7 @@ the <code>vX.Y.Z</code> milestone (the workflow leans on this for the
    (cosign keyless)</strong> → Install syft → <strong>Generate SBOM (SPDX +
    CycloneDX)</strong> → <strong>Package and sign release artifact</strong> → <strong>Attest
    release-artifact provenance</strong> → <strong>Attest image provenance (GHCR)</strong> →
+   <strong>Check attestation parity across registries</strong> →
    <strong>Upload signed artifacts for the release job</strong> → Workflow summary.</li>
 </ol>
 <p>Since v1.7.0 the run carries a parallel arm64 chain (#507):
@@ -1923,7 +1932,7 @@ the <code>vX.Y.Z</code> milestone (the workflow leans on this for the
 <tr>
 <td>Tag push succeeded but no Hub publish</td>
 <td><code>HAS_HUB_CREDS</code> evaluated false (secrets blank)</td>
-<td>Set the secrets, dispatch the workflow against the existing tag</td>
+<td>Set the secrets, then exercise the publish from an <strong>rc</strong> tag — <code>gh workflow run release.yml -f tag=vX.Y.Z-rcN --ref main</code>. Do <strong>not</strong> dispatch the bare release tag: it rebuilds and re-points that tag plus <code>:latest</code>, and <code>scripts/assert-newest-release-tag.sh</code> refuses an older one outright — <a href="#dispatching-an-existing-tag">Dispatching an existing tag</a></td>
 </tr>
 </tbody>
 </table>

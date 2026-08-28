@@ -622,6 +622,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#how-ipv6-is-handled" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How IPv6 is handled
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#how-a-network-chooses-its-dhcp-server" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1002,6 +1013,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#how-ipv6-is-handled" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How IPv6 is handled
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#how-a-network-chooses-its-dhcp-server" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1302,6 +1324,70 @@ lifecycle, the event plumbing, and everything below are identical.</p>
   visible from inside that namespace, so reading it means
   <code>nsenter -t &lt;dhcpcd-pid&gt; -m</code> (see
   <a href="../reference/#verifying-that-renewal-works">verifying renewal</a>).</p>
+<h2 id="how-ipv6-is-handled">How IPv6 is handled<a class="headerlink" href="#how-ipv6-is-handled" title="Permanent link">&para;</a></h2>
+<p>Three mechanisms, all of them v1.9.0, all of them about the same fact:
+<strong>DHCPv6 carries no router.</strong> The option catalogue is RFC 8415 §21 and
+nothing in it has a next hop, so router discovery (RFC 4861 §6.3.4) is
+the only source of an IPv6 default route — and assigning an address does
+not make its prefix on-link either, "whether through IPv6 stateless
+address autoconfiguration, DHCPv6, or manual configuration" (RFC 5942 §4
+rule 1, repeated inside the DHCPv6 specification at RFC 8415
+§18.2.10.1). Advertisement processing is therefore mandatory on the
+<em>managed</em> path too, not only the stateless one. Before v1.9.0 none of
+this happened inside a container.</p>
+<p><strong>A DHCPv6 timeout is not one observation.</strong> <code>pkg/plugin/v6_absence.go</code>.
+A failed v6 acquisition has two entirely different meanings and the
+timeout cannot tell them apart: the segment offers DHCPv6 and the server
+went quiet, or the segment offers no DHCPv6 address at all. The second
+is the ordinary configuration of a great many home routers, and treating
+it as fatal meant no container started on such a network (#868). The
+discriminator is what the router <strong>advertised</strong>, never how long the
+plugin waited — the managed-address flag makes silence fatal exactly as
+before, while an advertisement without it, or none at all inside the
+budget, creates the endpoint without a v6 address and counts
+<code>dhcpv6_not_offered</code> or <code>dhcpv6_no_router_advert</code>. Keeping the two
+observations apart is what keeps the tolerance one-directional.</p>
+<p><strong>The engine disables IPv6 on a link with no IPv6 address.</strong>
+<code>pkg/plugin/v6_link.go</code>. libnetwork writes
+<code>net.ipv6.conf.&lt;iface&gt;.disable_ipv6 = 1</code> on a sandbox interface whose
+endpoint has no <code>AddressIPv6</code> — a case #868 made reachable for the first
+time, because before it such an endpoint was never created. The flag the
+engine sets for "no address" also forecloses every mechanism that was
+supposed to supply one: no link-local, no router solicitation, no
+information request, and <code>dhcpcd -6</code> prints nothing at all. So the
+plugin administratively re-enables IPv6 on the link before starting a
+DHCPv6 client, and counts <code>ipv6_link_enable_failures</code> when it cannot.</p>
+<p><strong>The Router-Advertisement guard.</strong> <code>pkg/dhcp/ra_guard.go</code>. <code>dhcpcd</code>
+writes <code>net.ipv6.conf.&lt;if&gt;.accept_ra=0</code> and <code>.autoconf=0</code> on the
+interface it manages, in <code>if_setup_inet6()</code>; <code>--noconfigure</code>, which the
+plugin passes on every client, does not gate that write and additionally
+skips <code>dhcpcd</code>'s own advertisement handling — so nobody in the container
+performed §6.3.4 or §5.5.3. The loss is active rather than a failure to
+refresh: measured in the ordering least favourable to the claim, with a
+<code>proto ra</code> default route installed <em>before</em> <code>dhcpcd</code> starts, the route
+was gone after the unguarded client started and still present after the
+guarded one. Only the <code>-6</code> client does it; a <code>-4</code> <code>dhcpcd</code> left both
+knobs at 1. A one-shot re-write after <code>Start</code> is not enough either,
+because <code>dhcpcd</code> re-runs that setup on <strong>every carrier acquisition</strong> —
+so the guard sets <code>accept_ra=2</code>, <code>autoconf=1</code> and <code>keep_addr_on_down=1</code>
+before <code>dhcpcd</code> execs and then returns <code>/proc/sys</code> to read-only inside
+the client's own private mount namespace, where the remount is invisible
+to the host, to the container and to every other client. Because a
+read-only remount can be accepted without taking effect, each knob is
+then probed by writing back the value it already holds, with success
+treated as the failure. Failed steps count
+<code>router_advert_guard_failures</code> and the client starts anyway — a
+deliberate degrade, and the reason the counter exists: a container whose
+guard did not take looks entirely healthy until off-link IPv6 stops.</p>
+<p><strong>What this does not do</strong>, stated because the shape invites the
+assumption. The plugin does not read RDNSS from advertisements — DNS
+comes from DHCPv6 options 23 and 24, and nothing parses the RA option.
+It does not manage <code>addr_gen_mode</code> or <code>use_tempaddr</code> either, so a
+SLAAC address formed by the container's own kernel is not a function of
+prefix and MAC, is not something the plugin reports, and is not an
+identifier anything should key on. The guard's own bound is narrower and
+is written out at the top of <code>ra_guard.go</code>: <code>dhcpcd</code> sets the address
+generation mode over netlink, which a <code>/proc/sys</code> pin cannot reach.</p>
 <h2 id="how-a-network-chooses-its-dhcp-server">How a network chooses its DHCP server<a class="headerlink" href="#how-a-network-chooses-its-dhcp-server" title="Permanent link">&para;</a></h2>
 <p><code>dhcp_servers</code> ranks the servers a network may lease from and
 <code>dhcp_deny_servers</code> names ones it must never lease from (#111, #669).
@@ -1664,19 +1750,24 @@ nothing else.</p>
 </tbody>
 </table>
 <p><strong><code>make check</code> is the one to run before pushing.</strong> It runs the same
-gates as the <code>test</code> job — build, vet, format, the race suite, the short
-fuzz, every <code>check-*.sh</code>, and the gate self-tests — with no privileges
+gates as the Test workflow's two fast jobs — <code>test</code> for build, vet,
+format, the race suite and the short fuzz, <code>policy-gates</code> for every
+<code>check-*.sh</code> and the gate self-tests (#829 split them, and both are
+required contexts) — with no privileges
 and no host mutation, so the answer you get locally is the answer CI
 will give. The lane's contents live in <code>scripts/local-lane.sh</code>, and
 <code>scripts/check-local-lane.sh</code> fails CI if that file lists fewer gates
 than the workflow runs; a local target that hand-listed them would
 quietly cover less the first time a gate was added (#636, the same
 shape as #542).</p>
-<p>Three things it does <strong>not</strong> do, each declared rather than absent —
-<code>scripts/local-lane.sh --list-exempt</code> prints them with reasons. The two
-attribution gates judge a commit range against a pull-request body, and
-<code>govulncheck</code> needs the network and a pinned install, so a local answer
-would be a different one.</p>
+<p>Everything it does <strong>not</strong> do is declared rather than absent —
+<code>scripts/local-lane.sh --list-exempt</code> prints the list with reasons, and
+that is the place to read it rather than a count written here, which has
+already gone stale once. The reasons fall into two kinds: gates that
+need the pull request that does not exist locally (a commit range, a
+title, a body, or the base ref the PR is opened against), and gates that
+need the network. In every case a local answer would be a different
+answer, not a cheaper one.</p>
 <p>A step whose tool is missing (<code>staticcheck</code>, <code>actionlint</code>, <code>shellcheck</code>)
 is <strong>skipped loudly</strong> and named in the summary rather than passing
 silently. <code>STRICT=1 make check</code> turns any skip into a failure — use that
@@ -1791,17 +1882,6 @@ lane, so the capture happens against the daemon the suite actually talks
 to, and it opens a pull request with the re-recorded bodies:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="gp">$ </span>gh<span class="w"> </span>workflow<span class="w"> </span>run<span class="w"> </span>capture-fixtures.yml<span class="w"> </span>--ref<span class="w"> </span>&lt;branch&gt;
 </code></pre></div>
-<blockquote>
-<p><strong>Not available until v1.8.0 ships.</strong> GitHub only exposes a
-<code>workflow_dispatch</code> workflow from the repository's <em>default</em> branch —
-<code>main</code> here — not from the branch you pass to <code>--ref</code>. This workflow
-merged to <code>dev</code>, so until the next release carries it to <code>main</code> the
-command above answers <code>404</code>, which reads like a typo rather than "not
-yet". Use the by-hand route below in the meantime. The condition is
-declared in <code>.github/dispatch-pending.txt</code> and enforced by
-<code>scripts/check-dispatch-reachable.sh</code>, which also fails once the entry
-stops being true.</p>
-</blockquote>
 <p>A pull request rather than a push, deliberately. A changed request body on
 an engine bump is a finding — it is the signal #218 and #125 are blocked
 on — so the diff wants eyes rather than an automatic commit. Before it

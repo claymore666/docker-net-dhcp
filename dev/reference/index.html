@@ -1612,8 +1612,17 @@ document — and that none of them is documented a second time somewhere
 else (<code>scripts/check-option-docs.sh</code>, <code>scripts/check-docs-drift.sh</code>).
 The claims made <em>about</em> those counters — which five flip <code>healthy</code> —
 are enforced separately, wherever this page states them
-(<code>scripts/check-health-contract.sh</code>). Neither staleness nor a divergent
-copy is possible without turning CI red.</p>
+(<code>scripts/check-health-contract.sh</code>).</p>
+<p><strong>What that enforcement is, and where it stops.</strong> All three gates run in
+one direction, code to document: no option, counter or setting can exist
+in the plugin without being named here, and none may be documented twice.
+Nothing runs the other direction, and nothing reads a sentence <em>about</em> a
+name. An option documented here that the code does not parse, a default
+stated wrongly, or a behaviour described as it used to be, all go green —
+<code>scripts/check-health-contract.sh</code> says as much of itself, calling its
+tally a receipt rather than a proof of completeness. Those are caught by
+the documentation review that is a step of every release
+(<code>docs/release-runbook.md</code>), not by a gate.</p>
 <p>The one deliberate gap: the coverage-instrumented build used by CI
 declares two extra settings that the shipped plugin does not have. They
 are exempt from this page by name — documenting a knob you cannot set
@@ -2032,8 +2041,8 @@ limitations) are catalogued in
 <td><code>ipv6</code></td>
 <td>all</td>
 <td><code>false</code></td>
-<td>upstream; functional again in v1.0.0</td>
-<td>Also run stateful DHCPv6 (a second <code>dhcpcd</code> with <code>-6</code>) alongside DHCPv4 — see <a href="#dhcpv6-ipv6true">DHCPv6</a> for semantics and DUID/IAID identity. The Docker-visible v6 address is renewed as of v1.2.0 (#152).</td>
+<td>upstream; functional again in v1.0.0; usable on stateless and SLAAC segments in v1.9.0</td>
+<td>Also run stateful DHCPv6 (a second <code>dhcpcd</code> with <code>-6</code>) alongside DHCPv4 — see <a href="#dhcpv6-ipv6true">DHCPv6</a> for semantics and DUID/IAID identity. The Docker-visible v6 address is renewed as of v1.2.0 (#152). Since v1.9.0 this works on any IPv6 segment rather than only one running stateful DHCPv6: a segment that offers no DHCPv6 address creates the endpoint without one (#868) instead of refusing every container, stateless DHCPv6 configuration reaches the container instead of being discarded (#815), and a leased address keeps being refreshed with its default route intact (#875).</td>
 </tr>
 <tr>
 <td><code>lease_timeout</code></td>
@@ -2061,7 +2070,7 @@ limitations) are catalogued in
 <td>all</td>
 <td><code>false</code></td>
 <td>v0.9.0</td>
-<td>Write the DHCP-supplied DNS server list (option 6 / v6 option 23) into the container's <code>/etc/resolv.conf</code> on every bind/renew. Overrides Docker's embedded resolver for this network; the <code>search</code> line uses option 119 with fallback to option 15.</td>
+<td>Write the DHCP-supplied DNS server list (option 6 / v6 option 23) into the container's <code>/etc/resolv.conf</code> on every bind/renew. Overrides Docker's embedded resolver for this network; the <code>search</code> line uses option 119 with fallback to option 15 on v4, and DHCPv6 option 24 on v6 (v1.9.0+, #815).</td>
 </tr>
 <tr>
 <td><code>propagate_mtu</code></td>
@@ -2411,7 +2420,8 @@ in every mode:</p>
 <p>Everything the server returns is captured. Some is applied, the rest is
 logged:</p>
 <p><strong>Applied</strong>, when the matching option is enabled — option 6 / v6 option 23
-(DNS servers) and option 119 (search list, falling back to option 15) into
+(DNS servers), option 119 (v4 search list, falling back to option 15) and
+v6 option 24 (v6 search list, read since v1.9.0) into
 <code>/etc/resolv.conf</code> with <code>propagate_dns</code>; option 26 into the link MTU with
 <code>propagate_mtu</code>; option 121 as routes (see
 <a href="#dhcp-classless-static-routes-option-121">classless static routes</a>).</p>
@@ -2495,8 +2505,13 @@ not work with the null IPAM driver and is not what you want:</p>
   recovers by itself, without intervention, when the next advertisement
   arrives.</li>
 <li><strong>On a segment that advertises a prefix with the A flag set <em>and</em> runs
-  stateful DHCPv6, a container gets two global addresses</strong> (v1.9.0+,
-  #875). This follows from <code>autoconf=1</code> above and it is correct
+  stateful DHCPv6, a container gets at least two global addresses</strong>
+  (v1.9.0+, #875) — the DHCPv6 lease, and one formed from the advertised
+  prefix. It can be more, and the plugin does not decide how many: it
+  neither sets nor reads <code>net.ipv6.conf.&lt;if&gt;.use_tempaddr</code>, so an image
+  whose kernel default enables RFC 4941 privacy addressing also forms
+  temporary addresses on that prefix and rotates them. This follows from
+  <code>autoconf=1</code> above and it is correct
   behaviour, not a defect: RFC 4861 §6.3.4 has a host apply
   advertisement-derived configuration as a union with whatever else
   configured it, so every other host on such a segment does the same.
@@ -2512,7 +2527,16 @@ not work with the null IPAM driver and is not what you want:</p>
   one would discard the lease the network administrator issued. Bind
   explicitly, or advertise the prefix with A=0, which is what the
   integration fixture's <code>managed</code> mode does.</li>
-<li><strong>Identity is a stable DUID-LL</strong> (type 3) derived from the interface
+</ul>
+<p>Following from the same fact: <strong>an advertisement-derived address is not
+  a stable identifier, and must not be keyed on by a firewall rule, an
+  ACL or a server-side allowlist.</strong> Its interface identifier is decided
+  by the container's <code>addr_gen_mode</code> and <code>use_tempaddr</code>, neither of which
+  this plugin sets, reads or reports, so it is not a function of the
+  prefix and the MAC and it is not guaranteed to survive a restart. The
+  DHCPv6 lease is the address to key on, and only as far as MAC
+  stability reaches — see the DUID/IAID bullet below.
+- <strong>Identity is a stable DUID-LL</strong> (type 3) derived from the interface
   MAC via pinned config — no timestamp, so the same MAC always yields the
   same DUID. <strong>The IAID is pinned from the MAC too</strong> (v1.2.0, #152): the
   earlier client randomised it per process, so the one-shot and persistent
@@ -2520,13 +2544,15 @@ not work with the null IPAM driver and is not what you want:</p>
   v6 reservations therefore stick exactly as far as MAC stability reaches.
   <em>ipvlan caveat:</em> children share the parent MAC, hence one DUID and one
   IAID for all of them — per-container v6 reservations aren't practical
-  there.</li>
-<li><strong>The Docker-visible v6 address is renewed</strong> as of v1.2.0. Before that
+  there.
+- <strong>The Docker-visible v6 address is renewed</strong> as of v1.2.0. Before that
   the two clients drew different IAIDs, so the interface address could
-  outlive its server-side lease on networks with short v6 lease times.</li>
-<li><code>propagate_dns</code> covers v6 as well, via option 23. The two families are
-  last-writer-wins on <code>resolv.conf</code>.</li>
-<li><strong>A network that offers no DHCPv6 address no longer refuses the
+  outlive its server-side lease on networks with short v6 lease times.
+- <code>propagate_dns</code> covers v6 as well, via option 23 (nameservers) and,
+  since v1.9.0, option 24 (search list — #815; before that a DHCPv6-only
+  lease produced no <code>search</code> line at all). The two families are
+  last-writer-wins on <code>resolv.conf</code>.
+- <strong>A network that offers no DHCPv6 address no longer refuses the
   container</strong> (v1.9.0+, #868). Before this, <code>ipv6=true</code> on a segment
   whose router advertisements are stateless (the RA "other config" flag
   only) or plain SLAAC failed every endpoint: there is no DHCPv6 address
@@ -2535,8 +2561,7 @@ not work with the null IPAM driver and is not what you want:</p>
   configuration of a great many home routers. The endpoint is now
   created without a v6 lease, and on a stateless segment the DHCPv6
   <em>configuration</em> (option 23 nameservers, option 24 search domain)
-  still reaches the container through the persistent client.</li>
-</ul>
+  still reaches the container through the persistent client.</p>
 <p><strong>Whether the container gets a SLAAC address on such a network is now
   the segment's decision, not the plugin's</strong> (changed in v1.9.0 by
   #875). This paragraph previously said flatly that it does not, on the
@@ -3227,6 +3252,16 @@ consumer-side:</p>
 <td>Reservations don't stick on ipvlan</td>
 <td>DHCP server keys on MAC only, ignores option 61</td>
 <td>Use <code>mode=macvlan</code>, or configure the server to honor client identifiers</td>
+</tr>
+<tr>
+<td><code>ipv6=true</code>: the container has a v6 address, on-link IPv6 keeps working, but traffic through the router stops minutes or hours after start</td>
+<td>The Router Advertisement guard did not take on that container (v1.9.0+, #875). DHCPv6 carries no router option, so advertisements are the only source of an IPv6 default route; with advertisement processing off inside the container, nothing reinstalls that route once it goes, and nothing refreshes the address either. It looks completely healthy from outside</td>
+<td>Read <code>router_advert_guard_failures</code> on <code>/Plugin.Health</code> — any non-zero value means at least one container is on this path. A <code>procsys-ro</code> step means <em>none</em> of the knobs was pinned; a <code>&lt;knob&gt;-writable</code> step means the read-only remount was accepted without taking effect, one step per knob left writable. Restart the affected container to get a fresh guard attempt. Separately, and not a guard failure: after a <strong>carrier flap</strong> a container can be without a default route until the router's next unsolicited advertisement — see the known bound under <a href="#dhcpv6-ipv6true">DHCPv6</a></td>
+</tr>
+<tr>
+<td><code>ipv6=true</code> but the container has no global IPv6 address at all</td>
+<td>The segment offers no DHCPv6 address. Since v1.9.0 the endpoint is created anyway (#868) instead of every container being refused, so this is a working container rather than a failed start</td>
+<td>Read three counters on <code>/Plugin.Health</code> and treat them differently. <code>dhcpv6_not_offered</code>: the advertisement offered no DHCPv6 address (stateless or SLAAC) — not a fault, the segment is working as configured and there is no DHCPv6 address to be had. <code>dhcpv6_no_router_advert</code>: no advertisement arrived at all inside the acquisition budget — usually a missing or misconfigured router, not a plugin fault. <code>ipv6_link_enable_failures</code>: the plugin could not administratively enable IPv6 on the container link, so nothing IPv6 could arrive; that one <strong>is</strong> worth investigating. If the advertised prefix sets the A flag the container's own kernel may still form a SLAAC address — it is not a lease and is not reported in <code>docker inspect</code>, which shows only what the plugin leased</td>
 </tr>
 <tr>
 <td>One container on two plugin networks fails to start with <code>cannot program address ... conflicts with existing route</code></td>

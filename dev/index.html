@@ -962,7 +962,7 @@ like any other machine. Bridge, macvlan, and ipvlan attachment modes.</p>
 <p>A maintained fork of
 <a href="https://github.com/devplayer0/docker-net-dhcp"><code>devplayer0/docker-net-dhcp</code></a>
 (quiet since 2021, no longer builds on current Docker). This fork
-modernises the toolchain (Go 1.26, docker SDK v28, current Alpine),
+modernises the toolchain (Go 1.27, docker SDK v28, current Alpine),
 adds <strong>macvlan</strong> and <strong>ipvlan</strong> modes, fixes the daemon-restart
 deadlock and a state data-race, and gates every PR on a live
 integration suite (all three modes + DHCPv6, recovery, failure
@@ -1067,6 +1067,8 @@ right pick when you don't want to reconfigure the host's networking.</p>
   the veth + DHCP-client flow, and how state survives a restart.</li>
 <li><strong><a href="roadmap/">Roadmap</a></strong> — where the project is going over the next
   year, and what it deliberately will not do.</li>
+<li><strong><a href="verifying-releases/">Verifying releases</a></strong> — signatures,
+  provenance, SBOMs, and rebuilding the binaries yourself.</li>
 <li><strong><a href="release-runbook/">Release runbook</a></strong> — maintainer-facing publish
   procedure.</li>
 </ul>
@@ -1095,9 +1097,12 @@ its driver, so a bare tag there names a plugin the host does not have.</p>
 read the docs matching the plugin version you have installed.</p>
 <h2 id="verifying-releases">Verifying releases<a class="headerlink" href="#verifying-releases" title="Permanent link">&para;</a></h2>
 <p>Every release (v1.1.0 onward) is signed and attested via Sigstore. The
-published plugin image is signed with cosign (keyless), carries SLSA
-build provenance, and ships an SBOM; the release-artifact <code>checksums.txt</code>
+published plugin image is signed with cosign (keyless) on <strong>both</strong>
+registries and ships an SBOM; the release-artifact <code>checksums.txt</code>
 manifest is cosign-signed so one signature covers every attached file.
+<strong>SLSA build provenance is attested for the GHCR image only</strong> — the
+Docker Hub mirror is signed but not provenance-attested, so verify
+provenance against the <code>ghcr.io</code> reference.
 The full, copy-pasteable procedure lives in
 <strong><a href="verifying-releases/">Verifying releases</a></strong>, and every
 <a href="https://github.com/claymore666/docker-net-dhcp/releases">GitHub Release</a>

@@ -1074,9 +1074,18 @@ for exactly that reason.</p>
 survive <code>docker restart</code>, plugin restart and daemon restart; a
 <code>/Plugin.Health</code> counter surface and the same counters in Prometheus
 form on <code>/metrics</code> (<a href="https://github.com/claymore666/docker-net-dhcp/issues/651">#651</a>); per-network choice of which DHCP server to
-lease from (<a href="https://github.com/claymore666/docker-net-dhcp/issues/111">#111</a>, <a href="https://github.com/claymore666/docker-net-dhcp/issues/669">#669</a>); signed, attested, reproducible releases.
-v1.8.0 also carries the first human review of the design and its trust
-boundaries (<a href="https://github.com/claymore666/docker-net-dhcp/issues/457">#457</a>, <a href="https://github.com/claymore666/docker-net-dhcp/issues/699">#699</a>) — pulled into this release because it is the
+lease from (<a href="https://github.com/claymore666/docker-net-dhcp/issues/111">#111</a>, <a href="https://github.com/claymore666/docker-net-dhcp/issues/669">#669</a>); signed, attested, reproducible releases.</p>
+<p>v1.9.0 is the release that makes IPv6 usable rather than merely present.
+Before it, <code>ipv6=true</code> was accepted and did not work on most segments:
+no container could start at all where the router advertises stateless or
+SLAAC-only configuration (<a href="https://github.com/claymore666/docker-net-dhcp/issues/868">#868</a>), a stateless server's configuration was
+received and discarded (<a href="https://github.com/claymore666/docker-net-dhcp/issues/815">#815</a>), and on a managed segment the leased
+address stopped being refreshed and its default route disappeared
+(<a href="https://github.com/claymore666/docker-net-dhcp/issues/875">#875</a>). The same release stops the plugin sending DHCPRELEASE on any
+path — an address is held until the lease expires, like any other host's
+(<a href="https://github.com/claymore666/docker-net-dhcp/issues/800">#800</a>).</p>
+<p>v1.8.0 carried the first human review of the design and its trust
+boundaries (<a href="https://github.com/claymore666/docker-net-dhcp/issues/457">#457</a>, <a href="https://github.com/claymore666/docker-net-dhcp/issues/699">#699</a>) — pulled into that release because it is the
 one that opens a TCP port in a process holding <code>CAP_NET_ADMIN</code>. Every
 finding was fixed inside the same cycle rather than carried forward, and
 each one ends in a test or a counter rather than a paragraph. The
@@ -1152,7 +1161,8 @@ Docker's own engine carries a change. They stay open on purpose:</p>
 (<a href="https://github.com/moby/moby/pull/52866">moby/moby#52866</a>) was <strong>merged</strong> to moby master on 2026-08-26 and is
 milestoned for engine <strong>29.8.0</strong>; <a href="https://github.com/moby/moby/issues/52865">moby/moby#52865</a> closed with it. It
 unblocks <a href="https://github.com/claymore666/docker-net-dhcp/issues/125">#125</a> on the first engine <em>release</em> carrying it — 29.8.0 is
-not out yet (latest 29.7.2 as of 2026-08-27), so the blocker moved from
+not out yet (measured 2026-08-28: latest release 29.7.2, with
+29.8.0-rc.1 published as a pre-release that day), so the blocker moved from
 review to a release, not away. The endpoint-name change
 (<a href="https://github.com/moby/moby/pull/52871">moby/moby#52871</a>) is still awaiting review. Neither issue here will be closed as "won't fix" while
 that is the only thing in the way; the fork's own half of each is
@@ -1165,7 +1175,7 @@ is recorded so a contributor can read it before writing the PR.</p>
   pool, no failover of its own. The point of the plugin is that your
   existing server is the authority; a second one would recreate the
   problem it solves. Interoperating with more than one server is a
-  different question, and v1.8.0 answers it: <code>dhcp_servers</code> and
+  different question, and v1.8.0 answered it: <code>dhcp_servers</code> and
   <code>dhcp_deny_servers</code> decide which existing server a network leases
   from (<a href="https://github.com/claymore666/docker-net-dhcp/issues/111">#111</a>). That stays on this side of the line — the plugin picks
   among authorities, it never becomes one.</li>
