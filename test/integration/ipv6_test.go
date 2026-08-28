@@ -54,6 +54,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/claymore666/docker-net-dhcp/pkg/dhcp"
 	"github.com/claymore666/docker-net-dhcp/test/integration/harness"
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
@@ -594,13 +595,17 @@ func TestDUID_PersistsAcrossPluginRestart(t *testing.T) {
 
 // raGuardKnobs is the sysctl contract the Router-Advertisement guard
 // asserts inside the container, and the value each knob must hold
-// (#875). Kept as data so the assertion below cannot quietly check
-// fewer knobs than the guard claims to hold.
-var raGuardKnobs = map[string]string{
-	"accept_ra":         "2",
-	"autoconf":          "1",
-	"keep_addr_on_down": "1",
-}
+// (#875).
+//
+// DERIVED from the guard itself, not a second copy of its table. It was
+// a hand-written map until the third round of #875: value drift between
+// the two enumerations went red, so the copy looked safe, but a knob
+// ADDED in pkg/dhcp was silently unobserved here -- the assertion
+// iterated the copy, so the new knob simply was not among the things
+// checked, and the suite stayed green over a guard it no longer covered.
+// A count check would have been the same defect one step along, since
+// the count comes from the copy as well.
+var raGuardKnobs = dhcp.RouterAdvertGuardContract()
 
 // containerV6Iface returns the name of the interface inside the
 // container that carries addr.

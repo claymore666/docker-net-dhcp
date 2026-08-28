@@ -37,6 +37,30 @@ func TestV6IfaceFromAddrShow(t *testing.T) {
 	if got := V6IfaceFromAddrShow("", "fd00:6470:6864::42"); got != "" {
 		t.Errorf("invented interface %q from empty output", got)
 	}
+	// A PREFIX of a present address is not that address (#875, third
+	// round). The fixture prefixes make this impossible to hit today,
+	// which is why a substring match survived — and `autoconf=1` is
+	// what makes a second global address on one link possible at all,
+	// so this is the case that would arrive without a test naming it.
+	// Driven on the REAL fixture output, then on a two-address line so
+	// the wrong answer would be a real interface name rather than "".
+	if got := V6IfaceFromAddrShow(busyboxAddrShow, "fd00:6470:6864::4"); got != "" {
+		t.Errorf("matched %q on a PREFIX of a present address; the observer would then "+
+			"read sysctls from the wrong interface and report what it found there", got)
+	}
+	const twoAddrs = "" +
+		"2: eth0    inet6 fd00:6470:6864::32/128 scope global \\    valid_lft forever preferred_lft forever\n" +
+		"3: dh-itest-br20    inet6 fd00:6470:6864::3/64 scope global \\    valid_lft 1800sec preferred_lft 1800sec\n"
+	if got := V6IfaceFromAddrShow(twoAddrs, "fd00:6470:6864::3"); got != "dh-itest-br20" {
+		t.Errorf("got %q, want %q: the shorter address must not be answered by the line "+
+			"that merely CONTAINS it", got, "dh-itest-br20")
+	}
+	// Preservation control: the exact-match rewrite must not have made
+	// the ordinary lookup stop working, and the answer must still come
+	// from the line that carries the address rather than the first line.
+	if got := V6IfaceFromAddrShow(twoAddrs, "fd00:6470:6864::32"); got != "eth0" {
+		t.Errorf("got %q, want %q on an exact address that IS present", got, "eth0")
+	}
 }
 
 func TestHasLinkLocalDefaultRoute(t *testing.T) {

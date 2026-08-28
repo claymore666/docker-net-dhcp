@@ -25,13 +25,34 @@ import "strings"
 // "2: NAME    inet6 ADDR/LEN scope global \  valid_lft ...", so the
 // device is field 2. Full iproute2 renders "2: NAME    inet6 ..." too
 // but some versions suffix the index differently, hence the TrimSuffix.
+//
+// The address is matched as a WHOLE FIELD, split at its prefix length,
+// and not as a substring of the line (#875, third round). A substring
+// test answers yes for `fd00::3` on a line carrying `fd00::32/128`, and
+// it would then return that OTHER interface — after which the observer
+// reads its sysctls from the wrong path and reports whatever it finds
+// there. The fixture prefixes make a collision impossible today, which
+// is exactly why nothing would have caught it; and this PR is what
+// makes a second global address on one link possible at all
+// (`autoconf=1`), so the bound is closed here rather than written down.
+// CountDHCPv6Binds keeps the substring behaviour deliberately and has
+// it pinned as such.
+//
+// The remaining bound, named rather than claimed away: a caller passing
+// an address WITH a prefix length ("fd00::42/64") now matches nothing,
+// because the field is split before the comparison. Every caller passes
+// a bare address, and the empty return is the safe direction — the
+// observer reports "not found" rather than the wrong interface.
 func V6IfaceFromAddrShow(out, addr string) string {
 	for _, line := range strings.Split(out, "\n") {
-		if !strings.Contains(line, addr) {
+		f := strings.Fields(line)
+		if len(f) < 3 {
 			continue
 		}
-		if f := strings.Fields(line); len(f) >= 2 {
-			return strings.TrimSuffix(f[1], ":")
+		for _, field := range f[2:] {
+			if a, _, ok := strings.Cut(field, "/"); ok && a == addr {
+				return strings.TrimSuffix(f[1], ":")
+			}
 		}
 	}
 	return ""

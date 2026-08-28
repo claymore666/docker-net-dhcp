@@ -320,6 +320,45 @@ func prepStep(cmd, marker, step string) string {
 	return fmt.Sprintf("%s || %s '%s %s' >&2; ", cmd, echoBin, marker, step)
 }
 
+// prepStepMustFail is prepStep with the polarity INVERTED: the marker
+// is emitted when cmd SUCCEEDS (#875).
+//
+// It exists for one shape — a check whose passing condition is that an
+// operation is REFUSED. The RA guard's shield returns /proc/sys to
+// read-only, and the only way to know it took effect is to attempt a
+// write and be turned away. The remount's exit status does not carry
+// that information: `mount -o remount,bind,ro P` changes the flags of
+// the mount at P and not its submounts', so a /proc/sys with a
+// read-write mount anywhere beneath it takes the remount, exits 0,
+// emits nothing, and leaves the knobs writable. MEASURED in five such
+// topologies; the table is in raGuardSteps.
+//
+// Two properties the CALLER has to supply, because this helper cannot
+// check them:
+//
+//   - The command must be SAFE WHEN IT SUCCEEDS. A probe that gets
+//     through has performed whatever it attempted, so the guard writes
+//     the value the knob is already meant to hold and a successful
+//     probe changes nothing.
+//   - The command must SILENCE its own diagnostics, with the
+//     suppression BEFORE the redirection. On the passing path the
+//     shell's refused redirection prints "Read-only file system" naming
+//     dhcpcd's own path, which would put a line that reads like a fault
+//     into the log of every healthy endpoint. MEASURED, busybox ash
+//     1.37.0 and dash alike: `echo V 2>/dev/null > P` is quiet and
+//     `echo V > P 2>/dev/null` is not, because redirections are applied
+//     left to right and the shell reports the failing one against the
+//     fd 2 in force at that moment.
+//
+// The shared failure mode with prepStep, stated rather than implied:
+// both report through /bin/echo, so a missing /bin/echo silences the
+// whole prologue — every marker in both families, not only this one.
+// That is closed at BUILD time by the Dockerfile's `test -x /bin/echo`,
+// asserted in the same RUN that installs the packages.
+func prepStepMustFail(cmd, marker, step string) string {
+	return fmt.Sprintf("%s && %s '%s %s' >&2; ", cmd, echoBin, marker, step)
+}
+
 // mountPrepWatcher counts the per-step failure markers that the shell
 // prologue writes to stderr, on a byte stream. It counts TWO marker
 // families, not one: mountPrep's own steps (#780) and the

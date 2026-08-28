@@ -227,6 +227,10 @@ import (
 // settings is better than a container with no address at all. What
 // matters is that a refusal is LOUD.
 //
+// A REFUSAL is loud. It is not the only way the shield can fail to
+// hold, and the paragraph further down used to say it was; see the
+// correction there and the topology table in raGuardSteps.
+//
 // The table below is the evidence that CLOSED route A, kept because it
 // is what the current shape is a response to. Each arm ran against a
 // live interface with the precondition asserted (accept_ra=1) first:
@@ -257,15 +261,26 @@ import (
 //	/proc/sys returned ro   accept_ra=2  autoconf=1   dhcpcd exit 0, no abort
 //	/proc/sys left rw       accept_ra=0  autoconf=0   (control: the defect)
 //
-// KNOWINGLY OPEN, and the honest boundary of this comment: a host that
-// refuses the read-only remount itself has not been observed. It would
-// emit one procsys-ro marker rather than three, because one operation
-// covers all the knobs -- read the marker as "none of the knobs are
-// held", never as "one of them is not". The prologue's own
-// read-WRITE remount of the same mount succeeds on every host the
+// A host that REFUSES the read-only remount has still not been
+// observed. It emits one procsys-ro marker rather than three, because
+// one operation covers all the knobs -- read that marker as "none of
+// the knobs are held", never as "one of them is not". The prologue's
+// own read-WRITE remount of the same mount succeeds on every host the
 // suite has run on, including the one that refuses the leaf bind, which
 // is the reason to expect the reverse to be available too; expecting is
 // not measuring, and the integration lane is where it gets decided.
+//
+// WHAT THIS PARAGRAPH USED TO CLAIM, AND WHY IT WAS WRONG. It read
+// "KNOWINGLY OPEN, and the honest boundary of this comment: a host that
+// refuses the read-only remount itself has not been observed. It would
+// emit one procsys-ro marker rather than three" -- a completeness claim
+// that a shield which does not hold always announces itself. It is
+// false, and the -writable steps exist because it is: MEASURED, in five
+// separate mount topologies (the table in raGuardSteps), the remount is
+// ACCEPTED, exits 0, emits nothing at all, and dhcpcd's write still
+// takes accept_ra to 0. A refusal is one way the shield fails and it is
+// the loud one. So the guard now carries per-knob evidence of the
+// EFFECT, and a bare procsys-ro marker means the refusal case only.
 //
 // Also not measured, and open: a rootfs mounted read-only, and a
 // runtime that denies CAP_SYS_ADMIN. The second cannot reach these
@@ -338,6 +353,20 @@ const (
 	// failure, because the consequence differs -- a refused shield
 	// leaves ALL the knobs writable, not one.
 	raGuardShieldStep = "procsys-ro"
+
+	// raGuardWritableSuffix names the per-knob step that checks the
+	// shield by its EFFECT: after the shield, the knob must no longer
+	// be writable. The marker fires when the write SUCCEEDS, which is
+	// the inverse polarity of every other prepared step, so the step
+	// name says what was observed -- "<knob>-writable" -- rather than
+	// naming an operation that failed.
+	//
+	// Per knob and not once, because a read-write mount can sit at any
+	// depth under /proc/sys INCLUDING over a single leaf file. MEASURED:
+	// a read-write bind of accept_ra alone, under a read-only
+	// /proc/sys, produces exactly one -writable marker; a check on any
+	// other knob would have reported the guard healthy.
+	raGuardWritableSuffix = "-writable"
 )
 
 // raGuardKnob is one sysctl the guard writes and then shields.
@@ -365,6 +394,30 @@ func raGuardKnobs() []raGuardKnob {
 	}
 }
 
+// RouterAdvertGuardContract is the guard's sysctl contract as data:
+// knob name to the value the guard holds it at.
+//
+// Exported for ONE reason (#875, third round): the integration suite
+// asserts the same contract from inside the container, and it held a
+// second, hand-written copy of this table. Value drift between the two
+// went red, which is why nobody noticed the half that did not -- a knob
+// ADDED here was silently unobserved, because the assertion iterated
+// the copy. That is the enumeration-beside-the-code failure this file's
+// own doc comment names two paragraphs up, committed in the test that
+// observes it. The observer now iterates this.
+//
+// A fresh map per call: a package-level map would be reachable and
+// mutable from any importer, and an observer whose expectations can be
+// rewritten by the thing it observes is not an observer.
+func RouterAdvertGuardContract() map[string]string {
+	knobs := raGuardKnobs()
+	out := make(map[string]string, len(knobs))
+	for _, k := range knobs {
+		out[k.name] = k.value
+	}
+	return out
+}
+
 // raGuardPath is one knob's sysctl path for iface.
 //
 // path.Join, and iface has already been through ValidIfaceName
@@ -374,6 +427,13 @@ func raGuardKnobs() []raGuardKnob {
 // interpolate into the shell mountPrep builds.
 func raGuardPath(iface, knob string) string {
 	return path.Join(sysctlIPv6ConfDir, iface, knob)
+}
+
+// raGuardWritableStep is the step name for a knob's post-shield
+// writability probe. Derived from the knob name so a knob added to
+// raGuardKnobs cannot get a probe with a hand-written name that drifts.
+func raGuardWritableStep(knob string) string {
+	return knob + raGuardWritableSuffix
 }
 
 // raGuardSteps renders the guard as shell, one prepared step per line
@@ -391,9 +451,12 @@ func raGuardPath(iface, knob string) string {
 // string, whole line, no pattern.
 //
 // EVERY step goes through prepStep, so every step has a marker and a
-// counter; TestRAGuard_EveryStepReportsItsFailure asserts that by
-// counting markers against commands rather than by naming the steps
-// that exist today.
+// counter; TestMountPrep_EveryCommandReportsItsFailure asserts that on
+// BOTH shapes, per statement rather than by naming the steps that exist
+// today. (This sentence named a TestRAGuard_EveryStepReportsItsFailure
+// that has never existed in the tree -- a prose claim that an
+// executable check was in place, which is the failure this file is
+// otherwise written against. The check is real; the name was not.)
 // raGuardSteps emits, per knob, a write and a read-back verify; then a
 // SINGLE step that returns /proc/sys to read-only for the rest of
 // dhcpcd's life.
@@ -484,6 +547,156 @@ func raGuardPath(iface, knob string) string {
 // Order within a knob is still write, then read back, then shield: a
 // shield applied before the write would make the write fail, and a
 // verify after the shield would only prove the shield's own view.
+//
+// # WHY THE SHIELD IS CHECKED BY ITS EFFECT AND NOT BY ITS EXIT STATUS
+//
+// The read-back above exists because "we wrote it" is not evidence the
+// value is there. The same sentence applies to the shield, and for one
+// round of this change it was not applied: the only evidence /proc/sys
+// had become read-only was that `mount` returned 0.
+//
+// It can return 0 and not hold. `mount -o remount,bind,ro P` changes
+// the flags of the mount AT P; it does not touch mounts underneath it.
+// A /proc/sys with a read-write mount anywhere beneath -- at
+// /proc/sys/net, deeper, or over a single leaf file -- keeps that
+// subtree writable, and dhcpcd's if_setup_inet6() write lands exactly
+// as it would with no shield at all. That is route A's failure mode
+// (reports success, does not hold, says nothing) arriving on route H.
+//
+// So each knob gets one more step AFTER the shield: write the value the
+// knob is ALREADY meant to hold, and treat SUCCESS as the failure. The
+// probe cannot damage anything when it gets through, because the value
+// it writes is the value the guard just verified; and it is keyed on
+// the property -- "is this knob still writable" -- rather than on any
+// mechanism by which it might have become so.
+//
+// # THE MOUNT TOPOLOGIES THE SHIELD CAN MEET
+//
+// MEASURED. Twelve arms, each a fresh
+// `unshare -Urmnp --fork --mount-proc --propagation private` namespace on
+// Linux 6.12, running the prologue TAKEN FROM mountPrep's own output
+// rather than transcribed -- exec included -- with busybox 1.37.0 bind
+// mounted over /bin/{mount,grep,echo,mkdir,sh} so the applets are the
+// ones the shipped Alpine image carries. Per arm: raguard markers
+// emitted, and whether a dhcpcd-style write of accept_ra=0 landed
+// afterwards. The `before` column is this file without the -writable
+// steps; `after` is with them.
+//
+//	                                             markers
+//	topology                                    before after  knob writable
+//	------------------------------------------------------------------------
+//	/proc/sys its own ro mount (SHIPPED)           0      0    no
+//	/proc/sys its own rw mount                     0      0    no
+//	two stacked /proc/sys binds                    0      0    no
+//	rw /proc/sys/net bind SHADOWED by a
+//	  later /proc/sys bind                         0      0    no
+//	ro submount at /proc/sys/net                   5      5    no
+//	/proc itself ro, no /proc/sys entry            6      6    no
+//	no /proc/sys mount entry at all                1      4    YES (loud before)
+//	rw bind at /proc/sys/net                       0      3    YES (WAS SILENT)
+//	rw bind at /proc/sys/net/ipv6                  0      3    YES (WAS SILENT)
+//	rw bind at .../conf/<iface>                    0      3    YES (WAS SILENT)
+//	rw bind over the accept_ra FILE alone          0      1    YES (WAS SILENT)
+//	tmpfs over .../conf/<iface>                    0      3    YES (WAS SILENT)
+//
+// Read the last five rows as the finding. In every one of them the
+// shield was ACCEPTED, exited 0, emitted nothing at all, and accept_ra
+// went 2 -> 0 under dhcpcd's write. That is route A's failure mode --
+// reports success where it works, silently absent where it does not --
+// arriving on route H, on the one step the whole guarantee rests on.
+//
+// The six rows where the knob is NOT writable are the preservation
+// control for this widening: each emits exactly the marker count it
+// emitted before, and none emits a -writable marker. A check that goes
+// loud on the defect and on the healthy case as well has not measured
+// the defect.
+//
+// The accept_ra-FILE row is why the probe is PER KNOB rather than one
+// probe for all three: it produces exactly one marker, for accept_ra. A
+// single probe placed on any other knob would have reported the guard
+// healthy over precisely the knob dhcpcd rewrites.
+//
+// The tmpfs row is worth reading twice, because it defeats the
+// READ-BACK as well: the write succeeds and `grep -qxF` confirms the
+// value, on a file that is not the kernel's sysctl at all. The
+// read-back cannot see that by construction -- it asks what the file
+// says. The -writable probe is unaffected, because it asks whether the
+// file can be written rather than what it holds.
+//
+// The "no /proc/sys mount entry" row is OPEN and was open before this
+// change. busybox's mount resolves a remount through /proc/mounts, so
+// with no entry there both the prologue's read-WRITE remount and the
+// shield are refused; the knobs stay writable throughout and dhcpcd
+// wins. It was already loud (1 marker) and is louder now (4). Going
+// loud is the whole of what the guard can do about it. This is the
+// `--privileged` runtime shape that pkg/plugin's v6_link.go records
+// from the other side.
+//
+// NOT OBSERVED anywhere real: no host this project runs on has shown
+// any of the silent topologies. review-885b measured a real installed
+// managed plugin and the CI runner and found /proc/sys a separate mount
+// with no submount in both. What was wrong was trusting an exit status
+// that demonstrably can lie -- not a broken production host.
+//
+// THE BOUND ON THE TABLE ITSELF: it enumerates topologies somebody
+// thought to construct, and a shape nobody thought of is exactly what
+// it cannot contain. That is the argument for keying the check on the
+// PROPERTY: the -writable probe does not consult this table, does not
+// read /proc/mounts, and does not care how a knob came to be writable.
+// The table is evidence about the defect, not the definition of it.
+//
+// # TWO MECHANISMS THAT LOOK LIKE THIS ONE AND DO NOT WORK
+//
+// Both MEASURED rather than reasoned about, and recorded so they are
+// not reached for later:
+//
+//   - Reading /proc/mounts (or /proc/self/mountinfo) back and checking
+//     that the /proc/sys line says `ro`. In the rw-/proc/sys/net arm
+//     that line reads `proc /proc/sys proc ro,nosuid,nodev,noexec,relatime`
+//     verbatim WHILE the knob is writable, so the check reports health
+//     over the exact defect it would be added for. A longest-matching-
+//     mount-prefix parse would in fact separate all twelve arms above --
+//     and it would still be keyed on the mechanism, so it would answer
+//     for mount flags and for nothing else.
+//   - `test -w <knob>`. It answers from the inode's permission bits and
+//     the SUPERBLOCK, and a read-only bind is a MOUNT flag rather than a
+//     superblock one. MEASURED: `[ -w ... ]` prints WRITABLE in the
+//     shipped ro arm, where the write is actually refused, and prints
+//     WRITABLE in the rw-submount arm too. One possible verdict, so no
+//     verdict.
+//
+// The step that does work is the one that performs the actual
+// operation. That is the general form of the read-back's own argument,
+// applied to the shield.
+//
+// # WHY THE PROBE SUPPRESSES ITS OWN STDERR, AND WHAT THAT COSTS
+//
+// On the HEALTHY path the probe's redirection is refused, and the shell
+// says so: `<$0>: line 0: can't create
+// /proc/sys/net/ipv6/conf/eth0/accept_ra: Read-only file system`. $0 is
+// dhcpcd's path, so unsuppressed that line reads as dhcpcd failing to
+// configure the interface -- three times, on every healthy IPv6
+// endpoint, in the debug log and in the bounded stderr tail that a
+// non-zero dhcpcd exit folds into its error. It is a false lead
+// manufactured by the check, and it carries no information the marker
+// does not: the probe's FAILURE case is the command SUCCEEDING, which
+// prints nothing.
+//
+// So this is the one step in the prologue whose stderr is suppressed,
+// and the suppression must PRECEDE the redirection. MEASURED, busybox
+// ash 1.37.0 and dash alike: redirections are applied left to right and
+// the shell reports the failing one against the fd 2 in force at that
+// moment, so `echo V > P 2>/dev/null` still prints and
+// `echo V 2>/dev/null > P` does not.
+//
+// THE ESCAPE, named rather than claimed away: the suppression also
+// hides a probe that failed for a reason OTHER than the shield --
+// ENOENT if the sysctl path is gone, for instance. That case is not
+// silent overall, because the write and read-back steps for the same
+// knob run BEFORE the shield against the same path and are not
+// suppressed; it is silent only in the window between them and the
+// probe. TestMountPrep_DoesNotSwallowDiagnostics is what keeps the
+// exemption to this one family instead of letting it spread.
 func raGuardSteps(iface string) string {
 	out := ""
 	for _, k := range raGuardKnobs() {
@@ -499,5 +712,37 @@ func raGuardSteps(iface string) string {
 	// report three failures for one cause.
 	out += prepStep(fmt.Sprintf("%s -o remount,bind,ro %s", mountBin, procSysPath),
 		raGuardFailMarker, raGuardShieldStep)
+	// Then, per knob, the shield's EFFECT. One shield, but three
+	// verifications: the shield is one operation and its failures are
+	// one cause, whereas a knob left writable is a per-knob fact -- a
+	// read-write mount can sit over one leaf and no other.
+	//
+	// `2>/dev/null` PRECEDES the redirection deliberately; see
+	// prepStepMustFail. The value written is k.value, which the step
+	// above has just verified is already there, so a probe that gets
+	// through is harmless.
+	for _, k := range raGuardKnobs() {
+		out += prepStepMustFail(raGuardWritableProbe(raGuardPath(iface, k.name), k.value),
+			raGuardFailMarker, raGuardWritableStep(k.name))
+	}
 	return out
+}
+
+// raGuardWritableProbe is the command half of one knob's post-shield
+// writability probe: write the value the knob already holds, so that
+// SUCCESS is the failure.
+//
+// A named builder rather than a literal inside raGuardSteps so a test
+// can drive the SAME construction against a real shell instead of
+// transcribing it -- a test that rebuilds this string proves the
+// transcription and nothing else. TestRAGuardProbe_RefusalAndSuccess
+// is that test; it points the probe at a real refused target and a real
+// writable one and reads the counter the plugin actually increments.
+//
+// `2>/dev/null` PRECEDES the redirection and that order is
+// load-bearing; the reasoning is on prepStepMustFail, and
+// TestMountPrep_DoesNotSwallowDiagnostics is what keeps the suppression
+// scoped to this family.
+func raGuardWritableProbe(path, value string) string {
+	return fmt.Sprintf("%s %s 2>/dev/null > %s", echoBin, value, path)
 }
