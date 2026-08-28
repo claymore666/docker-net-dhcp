@@ -69,6 +69,33 @@ const procSysMount = "/proc/sys"
 // default and the Go call does not, which is exactly the kind of
 // difference that makes a shell recipe unsafe to transcribe.
 //
+// IT IS BEST EFFORT, AND THAT IS THE MEASURED TRADE, NOT A SHRUG. The
+// sibling that does the same remount for dhcpcd's argv already carries
+// the measurement -- pkg/dhcp.mountPrep, and the "procsys-remount" step
+// mountPrepStep names there: on a
+// --privileged runtime the remount FAILS -- `can't find /proc/sys in
+// /proc/mounts`, because /proc/sys is not a separate mount there -- and
+// /proc/sys is already writable, so the failure is correct and
+// harmless. That sibling therefore makes it non-fatal deliberately.
+//
+// This function returned an error on that failure, and the caller took
+// it as a verdict: the disable_ipv6 write was then NEVER ATTEMPTED, on
+// a host where it would have succeeded. A guard fails in one direction,
+// and this one failed in the direction that turns a working host into
+// one with no IPv6 -- for a mount that host does not need.
+//
+// So each step reports separately and only the WRITE decides:
+//
+//   - unshare and MS_PRIVATE gate the REMOUNT and nothing else. If
+//     either fails there is no private namespace, so remounting would
+//     propagate to the host's view, and it is skipped. The write still
+//     goes ahead in whatever view we have.
+//   - the remount failing is not a verdict either. clearDisableIPv6
+//     reads and writes the real path, and its own EROFS is the honest
+//     report of "the sysctl tree is not writable" -- one observer, at
+//     the place the obligation lives, instead of a proxy that can be
+//     wrong in both directions.
+//
 // The caller must already hold its OS thread and must restore the
 // original mount namespace afterwards.
 func makeProcSysWritable() error {
@@ -83,6 +110,18 @@ func makeProcSysWritable() error {
 	}
 	return nil
 }
+
+// procSysPrepDisposition says what a makeProcSysWritable error means to
+// the caller. It exists so the "keep going" decision is a value a test
+// can read, rather than a comment beside a `log.Debug` that nothing
+// executes.
+//
+// There is exactly one disposition today -- CONTINUE -- and that is the
+// point: no failure of the preparation step may stop the write. If a
+// future step here ever does have to be fatal, it gets a second value
+// and this function stops being a constant, which is a change a
+// reviewer can see.
+func procSysPrepIsFatal(error) bool { return false }
 
 // ipv6DisablePath is the disable_ipv6 sysctl for one interface, as seen
 // from inside the network namespace that owns it. /proc/sys/net is
@@ -170,7 +209,16 @@ func (m *dhcpManager) enableIPv6OnContainerLink() (bool, error) {
 	defer origMnt.Close()
 
 	if err := makeProcSysWritable(); err != nil {
-		return false, err
+		if procSysPrepIsFatal(err) {
+			return false, err
+		}
+		// Not a verdict -- see makeProcSysWritable. The write below is
+		// the observer, and its own error is the honest report. Audible
+		// rather than silent, because a host where this fails every
+		// time and the write succeeds anyway is worth being able to
+		// recognise in a log.
+		log.WithError(err).WithFields(m.logFields(true)).
+			Debug("Could not make /proc/sys writable; attempting the disable_ipv6 write anyway")
 	}
 	defer func() {
 		if err := unix.Setns(int(origMnt.Fd()), unix.CLONE_NEWNS); err != nil {

@@ -9,8 +9,10 @@ import (
 	"strings"
 	"testing"
 
+	"errors"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
+	"golang.org/x/sys/unix"
 )
 
 func TestIPv6DisablePath(t *testing.T) {
@@ -38,6 +40,23 @@ func TestClearDisableIPv6(t *testing.T) {
 		{name: "disabled by the engine", content: "1\n", wantChanged: true, wantFile: "0\n"},
 		{name: "already enabled", content: "0\n", wantChanged: false, wantFile: "0\n"},
 		{name: "already enabled, no trailing newline", content: "0", wantChanged: false, wantFile: "0"},
+	}
+	// Non-vacuity, keyed on the outcome: "the two outcomes are the
+	// point" is what the comment above claims, and a table reduced to
+	// one of them -- or to none -- passes silently against a
+	// clearDisableIPv6 that always writes or never does.
+	var changed, unchanged int
+	for _, tt := range tests {
+		if tt.wantChanged {
+			changed++
+		} else {
+			unchanged++
+		}
+	}
+	if changed < 1 || unchanged < 1 {
+		t.Fatalf("the table has %d rows expecting a write and %d expecting none; both "+
+			"are needed, since writing unconditionally makes every endpoint look like "+
+			"the #868 case in the log", changed, unchanged)
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -97,6 +116,16 @@ func TestEnableIPv6OnContainerLink_RefusesBeforeTouchingAThread(t *testing.T) {
 			want: "namespace handle is closed",
 		},
 	}
+	// Non-vacuity. Both refusals are named in the comment above, and the
+	// nil-link one is the difference between an error and a panic that
+	// unwinds a goroutine locked to a thread sitting in the container's
+	// network namespace. Dropping it leaves this test green over the
+	// remaining case.
+	if len(tests) != 2 {
+		t.Fatalf("the refusal table has %d rows, want both preconditions — each has to "+
+			"be refused BEFORE any thread is locked or any namespace entered",
+			len(tests))
+	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			changed, err := tt.m.enableIPv6OnContainerLink()
@@ -143,7 +172,7 @@ const startV6BranchWindow = 40
 // spends its whole budget and warns, and enabling IPv6 afterwards
 // arrives ten seconds late with the DHCPv6 client already started
 // against a link that had nothing on it. That is precisely the shape
-// #873's stateless run produced -- "No usable link-local address;
+// the stateless run under #868 produced -- "No usable link-local address;
 // starting DHCPv6 client anyway", then a dhcpcd -6 that never emitted a
 // router solicitation -- so the ordering is the defect, and presence
 // alone would not have caught it.
@@ -199,5 +228,61 @@ func TestStart_EnablesIPv6BeforeWaitingForTheLinkLocal(t *testing.T) {
 			"allows -- they are meant to be the same branch of Start, and a gate that tolerates any "+
 			"distance stops saying so",
 			srcFile, enable, enableLine, client, clientLine, clientLine-enableLine, startV6BranchWindow)
+	}
+}
+
+// TestProcSysPrep_NeverStopsTheWrite pins the direction the /proc/sys
+// preparation is allowed to fail in.
+//
+// The remount is best effort: on a runtime where /proc/sys is not a
+// separate mount it fails and /proc/sys is already writable, so the
+// disable_ipv6 write would have succeeded. Treating the preparation's
+// error as the verdict skipped that write and left the container with
+// no IPv6 for a mount the host did not need — a guard failing in the
+// direction that breaks a working host. pkg/dhcp/client.go carries the
+// measurement and makes the same call non-fatal for dhcpcd's argv.
+//
+// This asserts the disposition rather than the log line, because a
+// comment saying "we keep going" is prose and prose satisfies nothing.
+func TestProcSysPrep_NeverStopsTheWrite(t *testing.T) {
+	for _, err := range []error{
+		errors.New("unshare mount namespace: operation not permitted"),
+		errors.New("make mount propagation private: invalid argument"),
+		errors.New("remount /proc/sys read-write: no such file or directory"),
+		unix.EROFS,
+		unix.EPERM,
+		nil,
+	} {
+		if procSysPrepIsFatal(err) {
+			t.Errorf("a %v from the /proc/sys preparation was treated as fatal. Nothing in "+
+				"that step may decide the outcome: clearDisableIPv6 reads and writes the "+
+				"real path, and its own error is the report. Stopping here is how a host "+
+				"on which the write would have worked ends up with no IPv6", err)
+		}
+	}
+}
+
+// TestClearDisableIPv6_IsTheObserver is the other half: with the
+// preparation contributing no verdict, the write must still fail loudly
+// when the tree really is unwritable. Otherwise the change above would
+// have traded a false negative for a silent one.
+func TestClearDisableIPv6_IsTheObserver(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "disable_ipv6")
+	if err := os.WriteFile(path, []byte("1\n"), 0o444); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := os.Chmod(path, 0o444); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	if os.Geteuid() == 0 {
+		t.Log("running as root: a read-only mode bit does not refuse root, so the " +
+			"unwritable case is exercised by the missing-path arm below only")
+	} else if _, err := clearDisableIPv6(path); err == nil {
+		t.Errorf("clearDisableIPv6 reported success writing an unwritable sysctl. It is " +
+			"the only observer left after the preparation stopped producing verdicts")
+	}
+	if _, err := clearDisableIPv6(filepath.Join(dir, "absent", "disable_ipv6")); err == nil {
+		t.Errorf("clearDisableIPv6 reported success on a path that does not exist")
 	}
 }
