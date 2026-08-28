@@ -64,8 +64,15 @@
 #                    the concurrency group's serialization.
 #
 # Env: GATE_REPO=owner/repo (default: inferred)
-#      GATE_BRANCHES="dev main"   branches to reconcile (empty = skip)
-#      GATE_BRANCH_COMMITS=10     how far back on each branch
+#      GATE_BRANCHES             branches to reconcile (empty = skip);
+#                                default from the scope file below
+#      GATE_BRANCH_COMMITS       how far back on each branch; default from
+#                                the scope file below
+#      GATE_SCOPE_FILE           where those two defaults come from
+#                                (default .github/gate-branch-scope.env).
+#                                Shared with the retention purge so the
+#                                population this gate READS and the one
+#                                that purge SPARES cannot drift (#874).
 #      GATE_WORKFLOW=integration.yml  the workflow a branch head must have
 #
 # Exit: 0 every open PR head has a run and every branch head has an
@@ -77,8 +84,34 @@
 set -uo pipefail
 
 GRACE_MIN="${1:-20}"
-BRANCHES="${GATE_BRANCHES-dev main}"
-BRANCH_COMMITS="${GATE_BRANCH_COMMITS:-10}"
+
+# THE BRANCH SCOPE IS NOT DEFINED HERE (#874). The purge that deletes run
+# records has to spare exactly the commits this gate reads, so both read
+# one file rather than each carrying its own copy of the numbers. A second
+# enumeration that must agree with the first is the defect, not the fix:
+# it drifts silently, and the drift destroys evidence in the direction
+# this gate then reports as an untested commit.
+#
+# Missing or incomplete, this REFUSES. Falling back to a built-in default
+# would let the two gates disagree while both looked healthy, which is the
+# whole failure being closed.
+SCOPE_FILE="${GATE_SCOPE_FILE:-$(dirname "$0")/../.github/gate-branch-scope.env}"
+if [ ! -r "$SCOPE_FILE" ]; then
+    echo "check-missing-runs: cannot read the branch scope at ${SCOPE_FILE} — cannot judge" >&2
+    exit 2
+fi
+# shellcheck source=../.github/gate-branch-scope.env disable=SC1091
+. "$SCOPE_FILE"
+if [ -z "${GATE_SCOPE_BRANCHES+x}" ] || [ -z "${GATE_SCOPE_COMMITS:-}" ]; then
+    echo "check-missing-runs: ${SCOPE_FILE} does not define GATE_SCOPE_BRANCHES and GATE_SCOPE_COMMITS — cannot judge" >&2
+    exit 2
+fi
+
+# The environment still wins, because the self-tests drive these seams.
+# `-` not `:-` on BRANCHES: an explicitly empty value means "skip the
+# branch phase", which is different from "not set".
+BRANCHES="${GATE_BRANCHES-$GATE_SCOPE_BRANCHES}"
+BRANCH_COMMITS="${GATE_BRANCH_COMMITS:-$GATE_SCOPE_COMMITS}"
 WORKFLOW="${GATE_WORKFLOW:-integration.yml}"
 
 if ! command -v gh >/dev/null || ! command -v jq >/dev/null; then
@@ -455,13 +488,36 @@ not \`github-actions\`, so filtering to Actions still answers zero. Once
 the runs are gone the head is genuinely unverified and the only honest
 move is to run something on it.
 
-On a branch head it was a merge burst (#515, #617) until the group was
-keyed per commit for pushes: GitHub keeps at most one running plus one
-pending run per concurrency group and cancels the rest, so several
-merges landing within a few seconds left commits whose run was
-cancelled before any job started. Those commits are permanent points in
-the branch's history that nothing ever tested, and a bisect across them
-lands on a commit with no verdict.
+On a branch head there are TWO causes as well, and the same rule of
+thumb separates them: a cancelled run leaves a record, a purge leaves
+none.
+
+FIRST, a merge burst (#515, #617), until the group was keyed per commit
+for pushes: GitHub keeps at most one running plus one pending run per
+concurrency group and cancels the rest, so several merges landing
+within a few seconds left commits whose run was cancelled before any
+job started. Those commits are permanent points in the branch's history
+that nothing ever tested, and a bisect across them lands on a commit
+with no verdict. This cause prints "only cancelled/skipped run(s)"
+above, because the records are still there.
+
+SECOND, THE RUNS WERE DELETED — the same #837 purge, reaching the same
+gate through the other population. It prints "no run at all", and it is
+the likelier reading for a commit on \`main\`, which moves only at
+releases: the group floor is ten PUSHES wide, which on this repository
+is about twenty minutes of wall clock, so between releases a branch tip
+is held by the 7-day window and nothing else. Once past it the tip's
+runs are deletable, and the reachability walk cannot save a TIP —
+coverage travels from a tested descendant to its ancestors, and a tip
+has no descendant.
+
+Keep rule 5 in scripts/purge-workflow-runs.sh is what makes this
+impossible: it spares every run whose head is one of the last N commits
+of a gate branch, reading .github/gate-branch-scope.env — the same file
+this gate reads, so the population spared and the population demanded
+are one list. Seeing this cause on a branch head means that rule has
+stopped working, or the two scripts have stopped reading the same
+scope, and THAT is the thing to fix rather than the commit.
 
 CHECK THIS FIRST, because every dispatch recipe below depends on it: a
 dispatch uses the workflow file AS IT EXISTS AT THE TARGET REF, so it

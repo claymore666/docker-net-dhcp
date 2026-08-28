@@ -66,6 +66,7 @@ make_branch_gh() {
     cat > "$dir/bin/gh" <<EOF
 #!/usr/bin/env bash
 args="\$*"
+[ -n "\${GHLOG:-}" ] && echo "\$args" >> "\$GHLOG"
 case "\$args" in
   *"pulls?state=open"*) echo '[]' ;;
   *"commits?sha="*)
@@ -267,6 +268,7 @@ make_chain_gh() { # make_chain_gh <dir> <commits-tsv> <sha:states pairs...>
     cat > "$dir/bin/gh" <<EOF
 #!/usr/bin/env bash
 args="\$*"
+[ -n "\${GHLOG:-}" ] && echo "\$args" >> "\$GHLOG"
 case "\$args" in
   *"pulls?state=open"*) echo '[]' ;;
   *"commits?sha="*)
@@ -467,6 +469,119 @@ if [ "$rc" = 0 ] && [ "${out#*is spent}" = "$out" ]; then
 else
     no "a live entry was called spent, or the note changed the verdict (exit $rc): $out"
 fi
+
+# --- the branch-head arm names BOTH causes (#874) ----------------------
+#
+# The PR-head arm was taught the deletion cause when #837's purge deleted
+# an open PR head's runs. The branch-head arm was not, and it reconciles a
+# SECOND population the purge could also empty -- so a maintainer hitting
+# that red found only the merge burst named, and no mention that deletion
+# was possible at all.
+#
+# SCOPED TO THE BRANCH ARM, deliberately. The words "purge" and "deleted"
+# appear all over the PR-head arm above, so an unscoped check for either
+# is satisfied by a message whose branch arm still names one cause -- the
+# exact defect the #874 review found by reading, and the same shape as the
+# mechanism-keying lesson recorded further up this file. Cut the message
+# at the branch arm first, then assert inside it.
+out=$(run_branch "$OLD_COMMIT" ""); rc=$?
+branch_arm=$(printf '%s\n' "$out" | sed -n '/On a branch head/,$p')
+[ -n "$branch_arm" ] \
+  && ok "the failure has a branch-head arm to assert on" \
+  || no "no branch-head arm found in the message: $out"
+case "$branch_arm" in
+  *"THE RUNS WERE DELETED"*) ok "the branch-head arm names deletion as a second cause" ;;
+  *) no "the branch-head arm names only the merge burst: $branch_arm" ;;
+esac
+case "$branch_arm" in
+  *"Keep rule 5"*) ok "the branch-head arm names the keep rule that makes deletion impossible" ;;
+  *) no "the branch-head arm does not name keep rule 5: $branch_arm" ;;
+esac
+case "$branch_arm" in
+  *"gate-branch-scope.env"*) ok "the branch-head arm names the shared scope both gates read" ;;
+  *) no "the branch-head arm does not name the shared scope: $branch_arm" ;;
+esac
+# The merge-burst cause must SURVIVE, not be replaced. A message that
+# swapped one single cause for another single cause would pass every
+# assertion above.
+case "$branch_arm" in
+  *"merge burst"*) ok "the merge-burst cause survives alongside the new one" ;;
+  *) no "the branch-head arm lost the merge-burst cause: $branch_arm" ;;
+esac
+
+# --- the branch scope is READ, not built in (#874) ---------------------
+#
+# check-missing-runs.sh READS the run records of a population and
+# purge-workflow-runs.sh SPARES it. They can only agree if both take the
+# population from one file, so this gate must REFUSE when it cannot read
+# that file rather than falling back to a private default -- a default
+# would let the two disagree while both looked healthy, which is the whole
+# failure being closed.
+run_scope() {   # run_scope <scope-file-path> [gh-call-log]
+    local dir; dir=$(mktemp -d)
+    make_branch_gh "$dir" "$OLD_COMMIT" "completed:success"
+    PATH="$dir/bin:$PATH" GATE_REPO=o/r GATE_SCOPE_FILE="$1" GHLOG="${2:-}" \
+        bash "$CHECK" 20 >"$dir/o" 2>&1
+    local rc=$?; cat "$dir/o"; rm -rf "$dir"; return $rc
+}
+
+out=$(run_scope "/nonexistent/gate-branch-scope.env"); rc=$?
+[ "$rc" = 2 ] && ok "an unreadable scope file exits 2 rather than judging on a private default" \
+  || no "missing scope returned $rc (want 2): $out"
+
+SCOPETMP=$(mktemp -d)
+printf 'GATE_SCOPE_BRANCHES="dev main"\n' > "$SCOPETMP/half.env"
+out=$(run_scope "$SCOPETMP/half.env"); rc=$?
+[ "$rc" = 2 ] && ok "a scope file defining only half the scope exits 2" \
+  || no "half scope returned $rc (want 2): $out"
+
+# And the file is LOAD-BEARING, not decorative: a scope naming no branches
+# must skip the branch phase, which proves the value read from the file is
+# the value the loop actually uses.
+printf 'GATE_SCOPE_BRANCHES=""\nGATE_SCOPE_COMMITS=15\n' > "$SCOPETMP/none.env"
+out=$(run_scope "$SCOPETMP/none.env"); rc=$?
+case "$out" in
+  *"branch commit(s) on [none]"*) ok "the scope file's branch list is what the branch phase reads" ;;
+  *) no "an empty scope branch list did not reach the branch phase (exit $rc): $out" ;;
+esac
+# THE DEPTH IN THE FILE MUST BE THE DEPTH ON THE WIRE. Existence and
+# completeness are not the property. A gate that read the file, ignored it
+# and used a built-in default would pass every assertion above while
+# reconciling a different population from the one the purge spares --
+# which is the silent disagreement this whole design removes. So drive an
+# unusual depth and read it back off the wire.
+# test-purge-workflow-runs.sh asserts the same property on the other gate;
+# together they are what makes the two populations one population.
+printf 'GATE_SCOPE_BRANCHES="dev"\nGATE_SCOPE_COMMITS=3\n' > "$SCOPETMP/depth.env"
+: > "$SCOPETMP/calls.log"
+out=$(run_scope "$SCOPETMP/depth.env" "$SCOPETMP/calls.log"); rc=$?
+depth_hits=$(grep -c 'commits?sha=dev&per_page=3' "$SCOPETMP/calls.log") || depth_hits=0
+[ "$depth_hits" -ge 1 ] \
+  && ok "the gate queries the depth the scope file names (per_page=3, not a built-in default)" \
+  || no "the gate ignored the scope file's depth; commits calls were: $(grep commits "$SCOPETMP/calls.log")"
+
+# The other half: the branch LIST, not just the depth. A branch this gate
+# does not walk is a branch it does not reconcile, and the purge's keep
+# rule 5 would then spare commits nothing asks about while the branch that
+# matters goes unwatched. Named so nothing could guess them.
+printf 'GATE_SCOPE_BRANCHES="alpha beta"\nGATE_SCOPE_COMMITS=15\n' > "$SCOPETMP/names.env"
+: > "$SCOPETMP/names.log"
+out=$(run_scope "$SCOPETMP/names.env" "$SCOPETMP/names.log"); rc=$?
+n_alpha=$(grep -c 'commits?sha=alpha&' "$SCOPETMP/names.log") || n_alpha=0
+n_beta=$(grep -c 'commits?sha=beta&' "$SCOPETMP/names.log")   || n_beta=0
+[ "$n_alpha" -ge 1 ] && [ "$n_beta" -ge 1 ] \
+  && ok "every branch the scope file names is reconciled (alpha and beta both on the wire)" \
+  || no "the gate did not walk the scope's branch list (alpha=$n_alpha beta=$n_beta): $(grep commits "$SCOPETMP/names.log")"
+rm -rf "$SCOPETMP"
+
+# The shipped scope has to exist where the default points, or this gate
+# refuses in production. Asserted against the real artifact, because every
+# case above supplies its own file and would pass with the shipped one
+# absent.
+SHIPPED_SCOPE="$HERE/../.github/gate-branch-scope.env"
+[ -r "$SHIPPED_SCOPE" ] \
+  && ok "the shipped scope file exists at the path this gate defaults to" \
+  || no "no scope file at $SHIPPED_SCOPE -- this gate would exit 2 in production"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

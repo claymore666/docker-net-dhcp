@@ -58,6 +58,7 @@ case "$path" in
     */actions/workflows/*/runs) src="$FIXDIR/wfruns.json" ;;
     */actions/runs)             src="$FIXDIR/runs.json" ;;
     */pulls*)                   src="$FIXDIR/pulls.json" ;;
+    */commits*)                 src="$FIXDIR/commits.json" ;;
     *)                          echo "stub: unexpected path $path" >&2; exit 1 ;;
 esac
 [ -f "$src" ] || { echo "stub: missing fixture $src" >&2; exit 1; }
@@ -89,6 +90,18 @@ JSON
     # not be confused with the two illegitimate ones (a failed query, a
     # renamed field) that the cases below drive separately.
     echo '[]' > "$d/pulls.json"
+    # Keep rule 5's scope, hermetic: the fixture's own file, never the
+    # repository's. The default commits below are deliberately SHAs that
+    # appear in no run, so rule 5 is armed and exercised in every case
+    # while protecting nothing -- the cases that want it to protect
+    # something overwrite commits.json with a SHA the run fixture uses.
+    cat > "$d/scope.env" <<'SCOPE'
+GATE_SCOPE_BRANCHES="dev main"
+GATE_SCOPE_COMMITS=15
+SCOPE
+    cat > "$d/commits.json" <<JSON
+[{"sha":"$(printf '1%.0s' $(seq 40))"},{"sha":"$(printf '2%.0s' $(seq 40))"}]
+JSON
 }
 
 runs_json() { python3 - "$@" <<'PY'
@@ -120,6 +133,7 @@ drive() {  # drive <fixdir> <extra env...>  -> sets OUT, RC
     local d="$1"; shift
     : > "$d/calls.log"; : > "$d/deleted.log"
     OUT=$(FIXDIR="$d" PATH="$TMP/bin:$PATH" REPO=fixture/repo NOW_EPOCH="$NOW" \
+          GATE_SCOPE_FILE="$d/scope.env" \
           "$@" bash "$GATE" 2>&1); RC=$?
     CALLS=$(wc -l < "$d/calls.log"); DELS=$(wc -l < "$d/deleted.log")
 }
@@ -278,6 +292,171 @@ drive "$D" env RETENTION_DAYS=0 KEEP_GROUPS=1 DRY_RUN=0
 [ "$RC" = 0 ] && [ "$DELS" = 57 ] && grep -q "0 head(s) protected" <<<"$OUT" \
   && ok "a repository with no open PRs purges normally (57 deleted, no refusal)" \
   || no "empty open-PR list: rc=$RC, deleted=$DELS (want rc 0, 57 deleted)"
+
+# --- 13. KEEP RULE 5: a gate branch commit survives, however old --------
+# THE COLLISION RULE 4 DID NOT CLOSE (#874). check-missing-runs.sh
+# reconciles TWO populations. Rule 4 covers the first (open PR heads); the
+# second is the last N commits of each gate branch, and nothing protected
+# those.
+#
+# Measured 2026-08-28 against the live listing: the keep-10 group set
+# spanned twenty-one MINUTES, so all 15 of `dev`'s reconciled commits and
+# 14 of `main`'s were outside it, leaving the 7-day window as the only
+# thing holding a branch commit. `main` moves at releases; its tip of
+# 2026-08-23 crossed 7 days on 2026-08-30 with nothing else holding it,
+# and the reachability walk cannot save a TIP because a tip has no tested
+# descendant.
+#
+# So: the OLDEST group, a 0-day window and a floor of one -- which without
+# this rule loses all three of its runs, exactly as the open PR head did.
+BRSHA=$(python3 -c 'print("%040x" % (0xabc000 + 19))')
+D="$TMP/branch"; mkfix "$D"; runs_json "$NOW" 20 30 > "$D/runs.json"
+echo "[{\"sha\":\"$BRSHA\"}]" > "$D/commits.json"
+drive "$D" env RETENTION_DAYS=0 KEEP_GROUPS=1 DRY_RUN=0
+[ "$DELS" = 54 ] \
+  && ok "a gate branch commit survives a 0-day window and a floor of one (54 deleted, not 57)" \
+  || no "gate branch commit not protected: deleted $DELS (expected 54) -- KEEP RULE 5 DID NOT HOLD"
+kept_br=$(python3 - "$D" "$BRSHA" <<'PYCASE13'
+import json,sys,os
+d,sha=sys.argv[1],sys.argv[2]
+deleted={l.strip().rsplit("/",1)[1] for l in open(os.path.join(d,"deleted.log")) if l.strip()}
+runs=json.load(open(os.path.join(d,"runs.json")))["workflow_runs"]
+print(sum(1 for r in runs if r["head_sha"]==sha and str(r["id"]) not in deleted))
+PYCASE13
+)
+[ "$kept_br" = "3" ] \
+  && ok "all 3 of that commit's runs survive, not a shredded subset" \
+  || no "only $kept_br of the gate branch commit's 3 runs survived"
+grep -q "commits" "$D/calls.log" \
+  && ok "witness: the branch commits query was actually made" \
+  || no "witness: no commits call -- case 13 proves nothing"
+
+# --- 14. the rule can be turned off, and that isolates it ---------------
+# The control. Without it case 13 only shows those three runs survived,
+# not that KEEP RULE 5 is what saved them -- rule 4 and the group floor
+# are both in the same fixture.
+D="$TMP/branchoff"; mkfix "$D"; runs_json "$NOW" 20 30 > "$D/runs.json"
+echo "[{\"sha\":\"$BRSHA\"}]" > "$D/commits.json"
+drive "$D" env RETENTION_DAYS=0 KEEP_GROUPS=1 DRY_RUN=0 KEEP_BRANCH_COMMITS=0
+[ "$DELS" = 57 ] \
+  && ok "with rule 5 off the same fixture deletes 57 -- the 3 were saved BY the rule" \
+  || no "rule 5 disabled deleted $DELS (expected 57): the control does not isolate the rule"
+
+# --- 15. a failed branch commits query refuses rather than deleting -----
+# Same dangerous direction as case 10. An unanswerable query yields an
+# empty keep set, which disarms the rule and deletes exactly what it
+# protects, while printing a count that reads like success.
+D="$TMP/brfail"; mkfix "$D"; runs_json "$NOW" 20 30 > "$D/runs.json"
+rm -f "$D/commits.json"        # the stub fails on a missing fixture
+drive "$D" env RETENTION_DAYS=0 KEEP_GROUPS=1 DRY_RUN=0
+[ "$RC" = 2 ] && [ "$DELS" = 0 ] && grep -q "Cannot list branch commits" <<<"$OUT" \
+  && ok "a failed branch commits query exits 2 and deletes nothing" \
+  || no "failed commits query: rc=$RC, deleted=$DELS (want rc 2, 0 deleted)"
+
+# --- 16. commits listed but no SHA is a shape change --------------------
+# The subtler half, as with case 11: the query works, the field moved. A
+# gate branch always has commits, so an empty answer is never legitimate
+# here -- unlike the open-PR list, which may honestly be empty.
+D="$TMP/brshape"; mkfix "$D"; runs_json "$NOW" 20 30 > "$D/runs.json"
+echo '[{"commit":{"message":"no sha field"}}]' > "$D/commits.json"
+drive "$D" env RETENTION_DAYS=0 KEEP_GROUPS=1 DRY_RUN=0
+[ "$RC" = 2 ] && [ "$DELS" = 0 ] && grep -q "shape changed" <<<"$OUT" \
+  && ok "branch commits that yield no SHA refuse, naming the shape change" \
+  || no "commits shape change: rc=$RC, deleted=$DELS (want rc 2, 0 deleted)"
+
+# --- 17. an unreadable scope file refuses -------------------------------
+# THE ANTI-DRIFT PROPERTY, driven. If the scope cannot be read the purge
+# must not fall back to a built-in default: a default could be NARROWER
+# than what check-missing-runs.sh reconciles, and then the purge deletes
+# evidence that gate demands while both look healthy. That silent
+# disagreement is the entire bug being closed, so it has to be loud.
+D="$TMP/noscope"; mkfix "$D"; runs_json "$NOW" 20 30 > "$D/runs.json"
+rm -f "$D/scope.env"
+drive "$D" env RETENTION_DAYS=0 KEEP_GROUPS=1 DRY_RUN=0
+[ "$RC" = 2 ] && [ "$DELS" = 0 ] && grep -q "No branch scope" <<<"$OUT" \
+  && ok "an unreadable scope file exits 2 rather than purging on a private default" \
+  || no "missing scope: rc=$RC, deleted=$DELS (want rc 2, 0 deleted)"
+
+# --- 18. a scope file missing a key refuses -----------------------------
+# Half a scope is not a scope. A file that defines the branches but not
+# the depth would otherwise leave BRANCH_COMMITS empty and the query would
+# ask for a page size of nothing.
+D="$TMP/halfscope"; mkfix "$D"; runs_json "$NOW" 20 30 > "$D/runs.json"
+echo 'GATE_SCOPE_BRANCHES="dev main"' > "$D/scope.env"
+drive "$D" env RETENTION_DAYS=0 KEEP_GROUPS=1 DRY_RUN=0
+[ "$RC" = 2 ] && [ "$DELS" = 0 ] && grep -q "Branch scope incomplete" <<<"$OUT" \
+  && ok "a scope file defining only half the scope refuses" \
+  || no "half scope: rc=$RC, deleted=$DELS (want rc 2, 0 deleted)"
+
+# --- 19. the two gates read ONE scope, and it is the shipped one --------
+# The populations can only agree if both scripts read the same file, so
+# the file has to exist where both defaults point. A test that only ever
+# drives GATE_SCOPE_FILE would pass with the shipped file absent or
+# defining different keys -- which is the drift this closes, one edit
+# later. Assert the real artifact, not the fixture.
+SHIPPED="$HERE/../.github/gate-branch-scope.env"
+[ -r "$SHIPPED" ] \
+  && ok "the shipped scope file exists at the path both scripts default to" \
+  || no "no scope file at $SHIPPED -- both gates would refuse in production"
+if [ -r "$SHIPPED" ]; then
+    ( set -u
+      # shellcheck disable=SC1090
+      . "$SHIPPED"
+      [ -n "${GATE_SCOPE_BRANCHES+x}" ] && [ -n "${GATE_SCOPE_COMMITS:-}" ] ) \
+      && ok "the shipped scope defines both GATE_SCOPE_BRANCHES and GATE_SCOPE_COMMITS" \
+      || no "the shipped scope is incomplete -- both gates would refuse in production"
+fi
+# And neither workflow may restate the numbers: a copy in a workflow file
+# is the second enumeration this design exists to remove. Matched as a YAML
+# env KEY with nothing but non-comment text before it, so the prose above
+# each gate may still name the variables without tripping this.
+wf_restates=$(grep -rnE '^[^#]*GATE_BRANCH(ES|_COMMITS)[[:space:]]*:' \
+                "$HERE/../.github/workflows/" 2>/dev/null) || wf_restates=""
+if [ -n "$wf_restates" ]; then
+    no "a workflow sets GATE_BRANCHES/GATE_BRANCH_COMMITS -- a second enumeration that must agree with the scope file: $wf_restates"
+else
+    ok "no workflow restates the branch scope; the scope file is the only definition"
+fi
+
+# --- 20. the scope file's DEPTH is the depth actually queried -----------
+# Existence and completeness are not the property. The property is that
+# the number in the file is the number this script asks GitHub for -- and
+# a script that read the file, ignored it, and used a built-in default
+# would pass every assertion above while protecting a different population
+# from the one check-missing-runs.sh reconciles. That silent disagreement
+# IS the bug. So drive an unusual depth and read it back off the wire.
+# test-check-missing-runs.sh asserts the same property on the other gate;
+# together they are what makes the two populations one population.
+D="$TMP/depth"; mkfix "$D"; runs_json "$NOW" 20 30 > "$D/runs.json"
+cat > "$D/scope.env" <<'SCOPE'
+GATE_SCOPE_BRANCHES="dev"
+GATE_SCOPE_COMMITS=3
+SCOPE
+drive "$D" env RETENTION_DAYS=0 KEEP_GROUPS=1
+depth_call=$(grep -c 'commits?sha=dev&per_page=3' "$D/calls.log") || depth_call=0
+[ "$depth_call" -ge 1 ] \
+  && ok "the purge queries the depth the scope file names (per_page=3, not a built-in default)" \
+  || no "the purge ignored the scope file's depth; commits calls were: $(grep commits "$D/calls.log")"
+
+# --- 21. and the scope file's BRANCH LIST is the list actually queried ---
+# The other half of the same property, and it was a real gap: a mutant
+# that replaced the scope's branch list with a built-in "dev" SURVIVED the
+# depth case above, because that case names one branch and the fixture
+# answers every branch identically. A branch the purge does not walk is a
+# branch whose commits it does not protect while the detector still
+# reconciles them -- the collision again, one branch at a time. So name
+# branches nothing could guess and require BOTH on the wire.
+D="$TMP/brnames"; mkfix "$D"; runs_json "$NOW" 20 30 > "$D/runs.json"
+cat > "$D/scope.env" <<'SCOPE'
+GATE_SCOPE_BRANCHES="alpha beta"
+GATE_SCOPE_COMMITS=15
+SCOPE
+drive "$D" env RETENTION_DAYS=0 KEEP_GROUPS=1
+got_alpha=$(grep -c 'commits?sha=alpha&' "$D/calls.log") || got_alpha=0
+got_beta=$(grep -c 'commits?sha=beta&' "$D/calls.log")   || got_beta=0
+[ "$got_alpha" -ge 1 ] && [ "$got_beta" -ge 1 ] \
+  && ok "every branch the scope file names is queried (alpha and beta both on the wire)" \
+  || no "the purge did not walk the scope's branch list (alpha=$got_alpha beta=$got_beta): $(grep commits "$D/calls.log")"
 
 echo
 echo "passed=$pass failed=$fail"

@@ -9,7 +9,7 @@
 # one-off purge buys about ten days, so the cleanup has to be scheduled or
 # it is not a fix. This is that scheduled job's body.
 #
-# THE FOUR KEEP RULES, and why each one is not negotiable:
+# THE FIVE KEEP RULES, and why each one is not negotiable:
 #
 #   1. RETENTION_DAYS   everything newer than the window.
 #
@@ -48,6 +48,34 @@
 #      The rule is cheap and self-limiting: open PRs are a handful, and a
 #      head stops being protected the moment its PR closes or merges.
 #
+#   5. GATE BRANCH COMMITS  every run whose head SHA is one of the last N
+#      commits of a branch the missing-run detector reconciles.
+#
+#      Rule 4 closed the collision for OPEN PR HEADS. It left the second
+#      population untouched, and check-missing-runs.sh reconciles both:
+#      besides open PR heads it walks the last GATE_BRANCH_COMMITS commits
+#      of each GATE_BRANCHES branch and demands a run that EXECUTED.
+#
+#      Nothing protected those. Measured 2026-08-28 against the live
+#      listing: the keep-10 group set spanned 05:37:07Z to 05:58:32Z --
+#      twenty-one MINUTES, because ten groups is ten pushes and this
+#      repository pushes constantly. All 15 of `dev`'s reconciled commits
+#      and 14 of `main`'s 15 were outside it. So a branch commit was held
+#      only by rule 1's 7-day window, and `main` moves at releases: its
+#      tip of 2026-08-23 crossed 7 days on 2026-08-30 with nothing else
+#      holding it.
+#
+#      The reachability walk cannot save a branch TIP -- coverage
+#      propagates from a tested descendant to its ancestors, and a tip has
+#      no descendant. So the tip's runs age out, the detector finds no
+#      executed run, and it goes red on a schedule, on main, recurring
+#      every release cycle, for exactly the reason it went red on #221.
+#
+#      THE SCOPE IS READ, NOT RESTATED. Both scripts take the branches and
+#      the depth from .github/gate-branch-scope.env. Setting the same
+#      numbers in two workflow files would recreate the bug one edit later,
+#      silently, in the direction that destroys data.
+#
 # PROVENANCE IS KEYED ON WORKFLOW PATH, NEVER ON DISPLAY NAME. This is not
 # a style choice, it is a bug that was already made and caught: a name-keyed
 # rule was written first, and eight release runs from the first day of
@@ -73,6 +101,14 @@
 #   KEEP_OPEN_PR_HEADS 0 = do not protect open PR heads (default 1). The
 #                     seam the self-test drives; there is no reason to
 #                     turn it off in production.
+#   KEEP_BRANCH_COMMITS 0 = do not protect gate branch commits (default 1).
+#                     The isolation seam for keep rule 5, same as above.
+#   GATE_SCOPE_FILE   where the branch scope comes from
+#                     (default .github/gate-branch-scope.env). Shared with
+#                     check-missing-runs.sh so the population that gate
+#                     READS and the one this SPARES cannot drift (#874).
+#   GATE_BRANCHES / GATE_BRANCH_COMMITS  override the scope file; the
+#                     self-test seams, not set in production.
 #   DRY_RUN           1 = report only, do not delete (default 1)
 #   NOW_EPOCH         override "now" -- the seam the self-test drives
 # Exit:  0 ok, 1 one or more deletions failed, 2 refused to run
@@ -84,6 +120,32 @@ KEEP_GROUPS="${KEEP_GROUPS:-10}"
 DRY_RUN="${DRY_RUN:-1}"
 PROVENANCE_PATHS="${PROVENANCE_PATHS:-.github/workflows/release.yml .github/workflows/runner-image.yml .github/workflows/netboot-image.yml}"
 KEEP_OPEN_PR_HEADS="${KEEP_OPEN_PR_HEADS:-1}"
+KEEP_BRANCH_COMMITS="${KEEP_BRANCH_COMMITS:-1}"
+
+# Keep rule 5's population, read from the file check-missing-runs.sh reads.
+# A missing or incomplete scope REFUSES rather than falling back: a default
+# here could be narrower than the detector's scope, and the whole point of
+# the rule is that the two cannot disagree. Refusing to purge is cheap;
+# deleting the evidence a scheduled gate then demands is not.
+if [ "$KEEP_BRANCH_COMMITS" != "0" ]; then
+    SCOPE_FILE="${GATE_SCOPE_FILE:-$(dirname "$0")/../.github/gate-branch-scope.env}"
+    if [ ! -r "$SCOPE_FILE" ]; then
+        echo "::error title=No branch scope::cannot read ${SCOPE_FILE}, so the branch commits that" \
+             "check-missing-runs.sh reconciles cannot be determined. Refusing rather than deleting" \
+             "the run records that gate reads (#874)." >&2
+        exit 2
+    fi
+    # shellcheck source=../.github/gate-branch-scope.env disable=SC1091
+    . "$SCOPE_FILE"
+    if [ -z "${GATE_SCOPE_BRANCHES+x}" ] || [ -z "${GATE_SCOPE_COMMITS:-}" ]; then
+        echo "::error title=Branch scope incomplete::${SCOPE_FILE} does not define both" \
+             "GATE_SCOPE_BRANCHES and GATE_SCOPE_COMMITS. Refusing rather than protecting a" \
+             "narrower population than check-missing-runs.sh reconciles (#874)." >&2
+        exit 2
+    fi
+    BRANCHES="${GATE_BRANCHES-$GATE_SCOPE_BRANCHES}"
+    BRANCH_COMMITS="${GATE_BRANCH_COMMITS:-$GATE_SCOPE_COMMITS}"
+fi
 
 # The seam is HERE, at the transport, and deliberately not one level up.
 # A seam above the filtering would leave the filtering untested while the
@@ -111,7 +173,8 @@ echo "Group floor: last ${KEEP_GROUPS} CI groups"
 RUNS=$(mktemp) || exit 2
 PROV=$(mktemp) || exit 2
 OPENPR=$(mktemp) || exit 2
-trap 'rm -f "$RUNS" "$PROV" "$OPENPR"' EXIT
+BRSHA=$(mktemp) || exit 2
+trap 'rm -f "$RUNS" "$PROV" "$OPENPR" "$BRSHA"' EXIT
 
 # --- the provenance run ids, resolved from PATHS not names ---------------
 for p in $PROVENANCE_PATHS; do
@@ -143,7 +206,7 @@ echo "Provenance:  $(wc -l < "$PROV") run(s) protected across $(wc -w <<<"$PROVE
 # repository passes through with nothing protected.
 if [ "$KEEP_OPEN_PR_HEADS" != "0" ]; then
     PRRAW=$(mktemp) || exit 2
-    trap 'rm -f "$RUNS" "$PROV" "$OPENPR" "$PRRAW"' EXIT
+    trap 'rm -f "$RUNS" "$PROV" "$OPENPR" "$BRSHA" "$PRRAW"' EXIT
     if ! api "repos/$REPO/pulls?state=open&per_page=100" --paginate \
             --jq '.[] | [.number, .head.sha] | @tsv' > "$PRRAW" 2>/dev/null; then
         echo "::error title=Cannot list open pull requests::the open-PR query failed for $REPO," \
@@ -164,6 +227,47 @@ if [ "$KEEP_OPEN_PR_HEADS" != "0" ]; then
 else
     : > "$OPENPR"
     echo "Open PRs:    rule DISABLED by KEEP_OPEN_PR_HEADS=0"
+fi
+
+# --- the gate branches' recent commits (keep rule 5) ----------------------
+#
+# Same three outcomes as rule 4, and for the same reason: a branch that
+# yields no commits is not a state this repository can be in, so an empty
+# answer here means the query failed or the field moved, and either way the
+# rule would silently protect nothing while printing a count that reads
+# like success.
+#
+# NOT `--paginate`. The detector asks for exactly per_page=N commits and
+# stops; paginating would walk the entire history and protect all of it.
+if [ "$KEEP_BRANCH_COMMITS" != "0" ] && [ -n "${BRANCHES:-}" ]; then
+    BRRAW=$(mktemp) || exit 2
+    trap 'rm -f "$RUNS" "$PROV" "$OPENPR" "$BRSHA" "${PRRAW:-}" "$BRRAW"' EXIT
+    for br in $BRANCHES; do
+        # `select`, not a bare `.sha`: on an object without the field jq
+        # emits the literal string "null", which is non-empty and would
+        # sail through the count below as a protected SHA that protects
+        # nothing. The self-test drives exactly that shape.
+        if ! api "repos/$REPO/commits?sha=${br}&per_page=${BRANCH_COMMITS}" \
+                --jq '.[] | select(.sha != null and .sha != "") | .sha' > "$BRRAW" 2>/dev/null; then
+            echo "::error title=Cannot list branch commits::the commit query for '$br' failed for $REPO," \
+                 "so the branch commits check-missing-runs.sh reconciles cannot be determined." \
+                 "Refusing rather than deleting the run records that gate reads (#874)." >&2
+            exit 2
+        fi
+        br_n=$(grep -c . "$BRRAW")
+        if [ "$br_n" -eq 0 ]; then
+            echo "::error title=Branch commit shape changed::listing '$br' yielded no commit SHAs." \
+                 "A gate branch always has commits, so the .sha field this rule reads has moved or" \
+                 "been renamed, and the rule is now protecting nothing while reporting success." >&2
+            exit 2
+        fi
+        cat "$BRRAW" >> "$BRSHA"
+    done
+    sort -u -o "$BRSHA" "$BRSHA"
+    echo "Gate branches: $(grep -c . "$BRSHA") commit(s) protected across [${BRANCHES}] (last ${BRANCH_COMMITS} each)"
+else
+    : > "$BRSHA"
+    echo "Gate branches: rule DISABLED"
 fi
 
 # --- every run ------------------------------------------------------------
@@ -191,9 +295,9 @@ mapfile -t KEEPSHA < <(
 printf '%s\n' "${KEEPSHA[@]}" | grep -v '^$' | sort -u > "$RUNS.shas"
 
 DEL=$(mktemp) || exit 2
-trap 'rm -f "$RUNS" "$PROV" "$OPENPR" "${PRRAW:-}" "$RUNS.shas" "$DEL"' EXIT
+trap 'rm -f "$RUNS" "$PROV" "$OPENPR" "$BRSHA" "${PRRAW:-}" "${BRRAW:-}" "$RUNS.shas" "$DEL"' EXIT
 
-# ARGV ORDER IS LOAD-BEARING: the three keep sets are read as records and
+# ARGV ORDER IS LOAD-BEARING: the four keep sets are read as records and
 # the run listing last. An empty keep file contributes no records, which is
 # why `prsha` may legitimately stay empty -- and why the emptiness has to be
 # adjudicated above, where the three causes are still distinguishable.
@@ -201,13 +305,15 @@ awk -F'\t' -v cut="$cutoff" '
     FILENAME==ARGV[1] { prov[$1]=1; next }
     FILENAME==ARGV[2] { ksha[$1]=1; next }
     FILENAME==ARGV[3] { prsha[$1]=1; next }
+    FILENAME==ARGV[4] { brsha[$1]=1; next }
     $5 != "completed" { next }          # never touch a run still in flight
     $3 >= cut         { next }
     ($2 in ksha)      { next }
     ($2 in prsha)     { next }          # keep rule 4: head of an open PR
+    ($2 in brsha)     { next }          # keep rule 5: a gate branch commit
     ($1 in prov)      { next }
     { print $1 }
-' "$PROV" "$RUNS.shas" "$OPENPR" "$RUNS" > "$DEL"
+' "$PROV" "$RUNS.shas" "$OPENPR" "$BRSHA" "$RUNS" > "$DEL"
 
 echo "To delete:   $(wc -l < "$DEL")"
 
@@ -239,6 +345,7 @@ if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
         echo "- Group floor: last **${KEEP_GROUPS}** CI groups"
         echo "- Provenance protected: **$(wc -l < "$PROV")** run(s)"
         echo "- Open PR heads protected: **$(grep -c . "$OPENPR")**"
+        echo "- Gate branch commits protected: **$(grep -c . "$BRSHA")**"
         echo "- Deleted: **${ok}**, failed: **${fail}**"
     } >> "$GITHUB_STEP_SUMMARY"
 fi
