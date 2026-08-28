@@ -60,6 +60,12 @@ jobs:
     permissions:
       contents: read
       actions: write   # the only job that deletes runs; nothing else needs it
+      # Keep rule 4 lists the open pull requests to learn which head SHAs
+      # must never be purged (#740). Without this the token is refused on
+      # repos/*/pulls and the purge exits 2 on every scheduled run — a
+      # fail-closed dependency added by #874 and not visible in this file's
+      # `run:` line, which is why it is named here.
+      pull-requests: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 

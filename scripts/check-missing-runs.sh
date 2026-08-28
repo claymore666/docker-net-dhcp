@@ -182,7 +182,11 @@ if [ "$(set -- $GATE_SCOPE_BRANCHES; echo $#)" -eq 0 ]; then
     exit 2
 fi
 # And the depth has to be a positive integer: it goes onto the query as
-# per_page, where `0`, `abc` or a stray character reconciles nothing.
+# per_page, where GitHub answers a `0`, an `abc` or a stray character with
+# its OWN default page size rather than an error (MEASURED 2026-08-28 against
+# the live API: per_page of 0, abc and -1 each returned 30 commits; 999
+# returned 100). So the population reconciled would not be the one this file
+# names, and it would differ from the purge's only if one side is overridden.
 scope_depth_ok=1
 case "$GATE_SCOPE_COMMITS" in
     ''|*[!0-9]*) scope_depth_ok=0 ;;
@@ -190,7 +194,8 @@ case "$GATE_SCOPE_COMMITS" in
 esac
 if [ "$scope_depth_ok" -eq 0 ]; then
     echo "check-missing-runs: ${SCOPE_FILE} sets GATE_SCOPE_COMMITS to '${GATE_SCOPE_COMMITS}', which is" \
-         "not a positive integer; it goes onto the commit query as per_page — cannot judge" >&2
+         "not a positive integer; it goes onto the commit query as per_page, where GitHub substitutes" \
+         "its own default page size — cannot judge" >&2
     exit 2
 fi
 
@@ -200,6 +205,53 @@ fi
 BRANCHES="${GATE_BRANCHES-$GATE_SCOPE_BRANCHES}"
 BRANCH_COMMITS="${GATE_BRANCH_COMMITS:-$GATE_SCOPE_COMMITS}"
 WORKFLOW="${GATE_WORKFLOW:-integration.yml}"
+
+# THE SEAM IS THE SAME DEFECT ONE CHARACTER TO THE SIDE, and the first
+# version of this fix left it open. The two guards above judge the FILE;
+# what reaches `for br in $BRANCHES` is the value after the environment
+# override, and that was tested with `-n` alone. MEASURED 2026-08-28 at
+# 83c27b1: GATE_BRANCHES="   " exited 0 reporting "0 branch commit(s) on
+# [   ], all have an executed integration.yml run" — the branch phase off,
+# and the summary printing a count of zero as a clean verdict.
+#
+# Emptiness through the seam stays legal — it is the documented way to skip
+# the branch phase and the self-tests drive it. A blank list is made to take
+# that SAME path, not a second and quieter one.
+# shellcheck disable=SC2086
+# Same neighbour dependency as the file-side count: `set --` globs. A seam
+# value passes through no character class, so a caller CAN put a `*` here.
+# WHAT ACTUALLY HAPPENS, measured rather than assumed 2026-08-28: the shell
+# expands the glob against the CURRENT DIRECTORY before any query is made,
+# so GATE_BRANCHES='*' in the repository root reconciled branches named
+# 'bin', 'ci', 'cmd' … — each failed the commit query, each was counted
+# UNKNOWN rather than clean, and the gate exited 1. Fail-closed, but for the
+# reason that those names are not branches, not because a glob is not one.
+#
+# THE ESCAPE, named rather than claimed away: an expansion that IS a real
+# branch name resolves, and the branch phase then runs on a population
+# nobody wrote down. Nothing here prevents that; the seam is trusted for
+# CONTENT and only the empty/blank case is normalised. Closing it would mean
+# `set -f` at BOTH globbing sites, which is the judgement recorded at the
+# file-side count — do not harden one of the two.
+if [ "$(set -- $BRANCHES; echo $#)" -eq 0 ]; then
+    BRANCHES=""
+fi
+# And the depth after the seam, for the reason corrected above: a degenerate
+# per_page is not refused by GitHub, it is replaced, so an override here
+# would silently reconcile a different population from the one the scope
+# file names — and a different one from the purge, if only one side carries
+# it. That divergence is the collision this pair of scripts exists to close.
+seam_depth_ok=1
+case "$BRANCH_COMMITS" in
+    ''|*[!0-9]*) seam_depth_ok=0 ;;
+    *) [ "$BRANCH_COMMITS" -ge 1 ] || seam_depth_ok=0 ;;
+esac
+if [ "$seam_depth_ok" -eq 0 ]; then
+    echo "check-missing-runs: the effective GATE_BRANCH_COMMITS is '${BRANCH_COMMITS}', which is not a" \
+         "positive integer; GitHub would answer the commit query with its own default page size and" \
+         "this gate would reconcile a population nothing named — cannot judge" >&2
+    exit 2
+fi
 
 if ! command -v gh >/dev/null || ! command -v jq >/dev/null; then
     echo "check-missing-runs: needs gh and jq" >&2
@@ -327,6 +379,17 @@ while IFS=$'\t' read -r num head branch _ draft; do
         # green run where it matters.
         rec=$(printf '%s' "$recovered" | awk -v s="$head" '$1 == s { print; exit }')
         if [ -n "$rec" ]; then
+            # THE SECOND UNGUARDED `set --` IN THIS FILE, and it carries the
+            # same neighbour dependency documented at the branch-list count
+            # above: word splitting is wanted, pathname expansion is not.
+            # It cannot glob only because every field of a record is
+            # validated before it is read — sha as hex, observed as
+            # YYYY-MM-DD, the run id as digits — and none of those classes
+            # admits `*`, `?` or `[`. If a field is ever added whose class
+            # is wider, this site needs `set -f` and so does the other one;
+            # hardening one of the two would look like the problem was
+            # handled.
+            # shellcheck disable=SC2086
             set -- $rec
             # THE WITNESS IS CHECKED FOR TRUTH, NOT PRESENCE. A numeric
             # field that nothing resolves is an id-shaped hole: any
@@ -563,9 +626,13 @@ Tell them apart before acting. If the head is younger than the purge
 window it cannot be the second cause. If it is older, check that the
 purge still carries KEEP RULE 4 — never delete a run whose head SHA is
 an open PR head (scripts/purge-workflow-runs.sh). With that rule intact
-the second cause is IMPOSSIBLE for an open PR, so seeing it here again
-means the rule has stopped working, and that is the thing to fix rather
-than the head.
+the second cause should not reach an open PR head at all, so seeing it
+here again means the rule has stopped working, and that is the thing to
+fix rather than the head. What the rule does NOT cover, so that its
+silence is not read as a proof: GitHub's own run retention expires
+records on its schedule regardless of any keep rule, a run deleted by
+hand through the UI or the API is gone the same way, and the rule is
+switched off entirely by KEEP_OPEN_PR_HEADS=0.
 
 Note what does NOT recover the answer: the Checks API. On the 2026-08-27
 head the one surviving check-run belonged to \`github-advanced-security\`,
@@ -596,8 +663,9 @@ runs are deletable, and the reachability walk cannot save a TIP —
 coverage travels from a tested descendant to its ancestors, and a tip
 has no descendant.
 
-Keep rule 5 in scripts/purge-workflow-runs.sh is what makes this
-impossible: it spares every run whose head is one of the last N commits
+Keep rule 5 in scripts/purge-workflow-runs.sh is what this purge does
+about it — with the same three exceptions named above, which no keep
+rule can reach: it spares every run whose head is one of the last N commits
 of a gate branch, reading .github/gate-branch-scope.env — the same file
 this gate reads, so the population spared and the population demanded
 are one list. Seeing this cause on a branch head means that rule has

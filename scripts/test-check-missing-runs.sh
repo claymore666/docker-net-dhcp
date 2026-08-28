@@ -415,12 +415,19 @@ rm -rf "$dir"
 [ -f "$HERE/../.github/recovered-heads.tsv" ] \
   && ok "the recovered-heads record exists at the path this gate defaults to" \
   || no "no record at .github/recovered-heads.tsv -- every head it excuses is flagged again with no run to find"
+# AND THE PARSE CASE FAILS RATHER THAN VANISHING. The presence assertion
+# above goes red on a deleted record, so the set is not vacuous -- but this
+# case still disappeared with its fixture (74 cases became 73), which is
+# the same shape one level in. A case that cannot run is a case that
+# reports nothing, and the count is the only place that showed it.
 if [ -f "$HERE/../.github/recovered-heads.tsv" ]; then
     dir=$(mktemp -d); make_gh "$dir" "$ONE_PR" "$NEW" "1"
     out=$(PATH="$dir/bin:$PATH" GATE_REPO=o/r GATE_BRANCHES='' bash "$CHECK" 20 2>&1); rc=$?
     rm -rf "$dir"
     [ "$rc" = 0 ] && ok "the record committed to the tree parses under the real default path" || \
       no "the in-tree record does not load (exit $rc): $out"
+else
+    no "the in-tree record is absent, so whether it PARSES under the real default path was never measured"
 fi
 
 # --- the witness is checked for truth, not presence (#874) -------------
@@ -656,6 +663,92 @@ out=$(run_scope "$SCOPETMP/dupb.env"); rc=$?
 [ "$rc" = 2 ] && grep -q "more than once" <<<"$out" \
   && ok "a scope file assigning GATE_SCOPE_BRANCHES twice exits 2" \
   || no "a duplicated branch key was accepted or refused elsewhere (exit $rc): $out"
+
+# --- THE SEAM, where the first version of this fix stopped (#874) ------
+# Every case above judges the FILE. What reaches `for br in $BRANCHES` is
+# the value after the GATE_BRANCHES override, and it was tested with `-n` --
+# the presence test this whole change replaces, left standing one seam over.
+# MEASURED at 83c27b1: GATE_BRANCHES="   " exited 0 reporting
+# "0 branch commit(s) on [   ], all have an executed integration.yml run".
+#
+# Emptiness through the seam is the documented disable, so a blank list is
+# normalised onto that same path rather than refused. Both directions are
+# asserted: the blank list disables, and a real list still reconciles.
+seam_branch() {   # seam_branch <label> <gate-branches-value>
+    local dir; dir=$(mktemp -d)
+    make_branch_gh "$dir" "$OLD_COMMIT" "completed:success"
+    local out rc
+    out=$(PATH="$dir/bin:$PATH" GATE_REPO=o/r GATE_BRANCHES="$2" bash "$CHECK" 20 2>&1); rc=$?
+    rm -rf "$dir"
+    [ "$rc" = 0 ] && grep -qF "branch commit(s) on [none]" <<<"$out" \
+      && ok "GATE_BRANCHES $1 takes the documented disable path ([none])" \
+      || no "GATE_BRANCHES $1 did not take the disable path (exit $rc): $out"
+}
+SEAM_NL=$'\n'; SEAM_TAB=$'\t'
+seam_branch "set to spaces only" "   "
+seam_branch "set to a tab only" "$SEAM_TAB"
+seam_branch "set to a newline only" "$SEAM_NL"
+seam_branch "set to a space, a tab and a newline" " $SEAM_TAB$SEAM_NL"
+# THE OTHER DIRECTION: a real list through the seam still reconciles, or the
+# normalisation is a disable-only guard that switched the branch phase off.
+dir=$(mktemp -d); make_branch_gh "$dir" "$OLD_COMMIT" "completed:success"
+out=$(PATH="$dir/bin:$PATH" GATE_REPO=o/r GATE_BRANCHES="dev" bash "$CHECK" 20 2>&1); rc=$?
+rm -rf "$dir"
+[ "$rc" = 0 ] && grep -qF "branch commit(s) on [dev]" <<<"$out" \
+  && ok "a real branch list through the GATE_BRANCHES seam still reconciles" \
+  || no "the seam normalisation disarmed a legitimate override (exit $rc): $out"
+
+# THE DEPTH SEAM. The file-side message said a bad depth "would protect
+# nothing"; MEASURED 2026-08-28 against the live API that reason was wrong
+# in the direction that matters -- GitHub CLAMPS an unusable per_page to its
+# own default instead of erroring (0, abc and -1 each returned 30 commits;
+# 999 returned 100). A degenerate depth therefore reconciles a DIFFERENT
+# population, silently, and if only one of the two scripts carries the
+# override they stop reading one list.
+seam_depth() {   # seam_depth <label> <gate-branch-commits-value>
+    local dir; dir=$(mktemp -d)
+    make_branch_gh "$dir" "$OLD_COMMIT" "completed:success"
+    local out rc
+    out=$(PATH="$dir/bin:$PATH" GATE_REPO=o/r GATE_BRANCHES=dev GATE_BRANCH_COMMITS="$2" \
+          bash "$CHECK" 20 2>&1); rc=$?
+    rm -rf "$dir"
+    [ "$rc" = 2 ] && grep -qF "the effective GATE_BRANCH_COMMITS is" <<<"$out" \
+      && ok "a GATE_BRANCH_COMMITS override that $1 exits 2" \
+      || no "a GATE_BRANCH_COMMITS override that $1 was accepted or refused elsewhere (exit $rc): $out"
+}
+seam_depth "is zero" "0"
+seam_depth "is not a number" "abc"
+seam_depth "is negative" "-1"
+seam_depth "is blank" " "
+seam_depth "carries a stray character" "15x"
+# THE OTHER DIRECTION, asserted ON THE WIRE: a legal override is honoured and
+# is the number actually queried. Exit code alone would pass against a gate
+# that accepted the value and then ignored it.
+dir=$(mktemp -d); make_branch_gh "$dir" "$OLD_COMMIT" "completed:success"
+PATH="$dir/bin:$PATH" GATE_REPO=o/r GATE_BRANCHES=dev GATE_BRANCH_COMMITS=7 \
+    GHLOG="$dir/calls" bash "$CHECK" 20 >/dev/null 2>&1; rc=$?
+seam_wire=$(grep -cF 'per_page=7' "$dir/calls" 2>/dev/null || true)
+rm -rf "$dir"
+[ "$rc" = 0 ] && [ "${seam_wire:-0}" -ge 1 ] \
+  && ok "a legal GATE_BRANCH_COMMITS override is accepted and is the depth actually queried" \
+  || no "a legal depth override did not reach the wire (exit $rc, per_page=7 seen ${seam_wire:-0} time(s))"
+
+# THE FOURTH SEAM, enumerated and MEASURED rather than guarded. Two
+# spellings enumerated means a third exists, and a third means a fourth:
+# GATE_WORKFLOW also overrides from the environment and passes through no
+# check. It is NOT the same defect and it is deliberately left alone.
+# MEASURED 2026-08-28: pointed at a workflow with no runs, this gate FLAGS
+# the commit and exits 1 -- loud, not quiet -- and it is detector-only, so
+# it cannot make the two gates read different populations, which is the
+# property the scope file exists to hold. Recorded as a case so the
+# direction is asserted rather than asserted about.
+dir=$(mktemp -d); make_branch_gh "$dir" "$OLD_COMMIT" ""
+out=$(PATH="$dir/bin:$PATH" GATE_REPO=o/r GATE_BRANCHES=dev GATE_WORKFLOW=nonexistent.yml \
+      bash "$CHECK" 20 2>&1); rc=$?
+rm -rf "$dir"
+[ "$rc" = 1 ] && grep -qF "no nonexistent.yml run at all" <<<"$out" \
+  && ok "GATE_WORKFLOW through the environment seam fails LOUD (the commit is flagged), so it is not the branch-list defect" \
+  || no "the GATE_WORKFLOW seam changed direction (exit $rc): $out"
 
 # --- the scope path being a DIRECTORY names the right refusal ----------
 # `-r` alone is true of a directory. Exit 2 was already preserved by the

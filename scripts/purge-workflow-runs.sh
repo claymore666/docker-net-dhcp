@@ -246,11 +246,69 @@ if [ "$KEEP_BRANCH_COMMITS" != "0" ]; then
     if [ "$scope_depth_ok" -eq 0 ]; then
         echo "::error title=Branch scope depth is not a count::${SCOPE_FILE} sets GATE_SCOPE_COMMITS to" \
              "'${GATE_SCOPE_COMMITS}', which is not a positive integer; it goes onto the commit query as" \
-             "per_page and would protect nothing. Refusing (#874)." >&2
+             "per_page, where GitHub substitutes its own default rather than failing -- so the population" \
+             "protected would not be the one this file names. Refusing (#874)." >&2
         exit 2
     fi
     BRANCHES="${GATE_BRANCHES-$GATE_SCOPE_BRANCHES}"
     BRANCH_COMMITS="${GATE_BRANCH_COMMITS:-$GATE_SCOPE_COMMITS}"
+
+    # THE SEAM IS THE SAME DEFECT ONE CHARACTER TO THE SIDE, and it was left
+    # open by the first version of this fix. Both guards above judge the
+    # FILE. What reaches the loop below is the value AFTER the environment
+    # override, and that was tested with `-n` alone. MEASURED 2026-08-28 at
+    # 83c27b1: GATE_BRANCHES="   " exited 0 printing "Gate branches: 0
+    # commit(s) protected across [   ]" -- keep rule 5 disarmed through the
+    # seam by exactly the blank list the file now refuses.
+    #
+    # Emptiness through the seam stays legal: it is the documented way to
+    # switch the rule off, and the self-tests drive it. A blank list is made
+    # to take that SAME path rather than a second, quieter one -- it is not
+    # a refusal here, because the seam's contract is "the caller decides".
+    # shellcheck disable=SC2086
+    # Same neighbour dependency as the file-side count above: `set --` globs.
+    # Unlike the file value, a seam value passes through no character class,
+    # so a caller CAN put a `*` here. WHAT ACTUALLY HAPPENS, measured rather
+    # than assumed 2026-08-28: the glob is expanded by the shell against the
+    # CURRENT DIRECTORY before any query is made, so `GATE_BRANCHES='*'` in
+    # the repository root queried a branch named 'bin' and this script exited
+    # 2 on it. Fail-closed, but not for the reason "a glob is not a branch" --
+    # for the reason that the expansion's first element was not a branch.
+    #
+    # THE ESCAPE, named rather than claimed away: an expansion that IS a real
+    # branch name resolves, and the branch phase then runs on a population
+    # nobody wrote down. Worse for a reader, the summary line below prints
+    # ${BRANCHES} -- the UNEXPANDED value -- so it would report "protected
+    # across [*]" while having walked 'dev'. Nothing here prevents that; the
+    # seam is trusted for CONTENT and only the empty/blank case is
+    # normalised. Closing it would mean `set -f` at BOTH globbing sites,
+    # which is the judgement recorded at the file-side count -- do not
+    # harden one of the two. The self-test pins all three shapes.
+    if [ "$(set -- $BRANCHES; echo $#)" -eq 0 ]; then
+        BRANCHES=""
+    fi
+    # And the depth, for the same reason. The file-side message above used to
+    # say a bad depth "would protect nothing"; MEASURED 2026-08-28 against
+    # the live API, that was wrong in the direction that matters: GitHub
+    # CLAMPS an unusable per_page to its own default instead of erroring
+    # (per_page of 0, abc and -1 each returned 30 commits; 999 returned 100).
+    # So a degenerate depth does not protect nothing -- it silently protects
+    # a DIFFERENT population from the one the scope file names, and if only
+    # one of the two scripts carries the override the purge and the detector
+    # stop reading one list, which is the collision this whole file exists
+    # to close. Refuse rather than let the seam decide.
+    seam_depth_ok=1
+    case "$BRANCH_COMMITS" in
+        ''|*[!0-9]*) seam_depth_ok=0 ;;
+        *) [ "$BRANCH_COMMITS" -ge 1 ] || seam_depth_ok=0 ;;
+    esac
+    if [ "$seam_depth_ok" -eq 0 ]; then
+        echo "::error title=Branch depth is not a count::the effective GATE_BRANCH_COMMITS is" \
+             "'${BRANCH_COMMITS}', which is not a positive integer. GitHub would answer the commit" \
+             "query with its own default page size, protecting a population neither this script nor" \
+             "check-missing-runs.sh named. Refusing (#874)." >&2
+        exit 2
+    fi
 fi
 
 # The seam is HERE, at the transport, and deliberately not one level up.
@@ -283,17 +341,40 @@ BRSHA=$(mktemp) || exit 2
 trap 'rm -f "$RUNS" "$PROV" "$OPENPR" "$BRSHA"' EXIT
 
 # --- the provenance run ids, resolved from PATHS not names ---------------
+#
+# THREE OUTCOMES HERE TOO, and until 2026-08-28 this loop had two. A failed
+# workflows query and a workflow that genuinely no longer exists both left
+# `wid` empty, and both took the warn-and-continue path: the provenance keep
+# set emptied itself, the summary line printed "0 run(s) protected" as
+# though that were an answer, and the purge went on to delete release runs
+# -- the exact fail-open shape keep rules 4 and 5 refuse on, in the one
+# block this file's own header calls "destroying the audit trail for
+# software already in someone else's hands". Note the pipe: `$(api … | head
+# -1)` reports HEAD's status, so the query's failure was not merely ignored,
+# it was unobservable.
 for p in $PROVENANCE_PATHS; do
-    wid=$(api "repos/$REPO/actions/workflows" --paginate \
-        --jq ".workflows[] | select(.path == \"$p\") | .id" 2>/dev/null | head -1)
+    if ! wfids=$(api "repos/$REPO/actions/workflows" --paginate \
+            --jq ".workflows[] | select(.path == \"$p\") | .id" 2>/dev/null); then
+        echo "::error title=Cannot list workflows::the workflow listing failed for $REPO, so the" \
+             "provenance runs protected under '$p' cannot be determined. Refusing rather than" \
+             "deleting release evidence for software already published (#837)." >&2
+        exit 2
+    fi
+    wid=$(printf '%s\n' "$wfids" | head -1)
     if [ -z "$wid" ]; then
         # A provenance workflow that no longer exists is not an error -- but
         # a typo in PROVENANCE_PATHS silently protects nothing, so say so.
+        # This is now the ONLY reading of an empty answer: the query itself
+        # having failed was refused above.
         echo "::warning title=Provenance workflow not found::$p matched no workflow; nothing is being protected under that path"
         continue
     fi
-    api "repos/$REPO/actions/workflows/$wid/runs" --paginate \
-        --jq '.workflow_runs[].id' 2>/dev/null >> "$PROV"
+    if ! api "repos/$REPO/actions/workflows/$wid/runs" --paginate \
+            --jq '.workflow_runs[].id' 2>/dev/null >> "$PROV"; then
+        echo "::error title=Cannot list provenance runs::the run listing for '$p' failed for $REPO," \
+             "so its runs cannot be protected. Refusing rather than deleting release evidence (#837)." >&2
+        exit 2
+    fi
 done
 sort -u -o "$PROV" "$PROV"
 echo "Provenance:  $(wc -l < "$PROV") run(s) protected across $(wc -w <<<"$PROVENANCE_PATHS") workflow path(s)"

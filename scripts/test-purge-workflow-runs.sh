@@ -194,6 +194,86 @@ grep -qE '(^|/)900[12]$' "$D/deleted.log" \
   && no "a provenance run was deleted -- the path keying failed" \
   || ok "provenance runs survive a 0-day window (keyed on workflow path)"
 
+# --- 4b. THE PROVENANCE QUERY HAS THREE OUTCOMES, NOT TWO ---------------
+# Until 2026-08-28 a FAILED workflow listing and a workflow that genuinely
+# no longer exists took the same warn-and-continue path: the keep set
+# emptied itself, "Provenance: 0 run(s) protected" printed as though it
+# were an answer, and the purge deleted release runs -- the audit trail for
+# software already published. It was not merely ignored, it was
+# unobservable: `wid=$(api … | head -1)` reports HEAD's exit status.
+#
+# Rules 4 and 5 refuse on exactly this shape, so rule 1 does now too. The
+# transport failure is driven by removing the fixture the stub reads, which
+# makes the stub exit non-zero -- the same way the open-PR case is driven.
+D="$TMP/wffail"; mkfix "$D"; runs_json "$NOW" 20 30 > "$D/runs.json"
+rm -f "$D/workflows.json"
+drive "$D" env RETENTION_DAYS=0 KEEP_GROUPS=1 DRY_RUN=0
+[ "$RC" = 2 ] && [ "$DELS" = 0 ] && grep -qF "title=Cannot list workflows::" <<<"$OUT" \
+  && ok "a failed workflow listing REFUSES rather than emptying the provenance keep set (exit 2, 0 deleted)" \
+  || no "a failed workflow listing did not refuse: rc=$RC deleted=$DELS: $OUT"
+
+# The SECOND query in the same loop, which had the same hole: the listing
+# succeeds, the workflow resolves, and the runs query then fails. Two
+# spellings of one dependency; both have to refuse or the keep set narrows
+# to whichever half answered.
+D="$TMP/wfrunfail"; mkfix "$D"; runs_json "$NOW" 20 30 > "$D/runs.json"
+rm -f "$D/wfruns.json"
+drive "$D" env RETENTION_DAYS=0 KEEP_GROUPS=1 DRY_RUN=0
+[ "$RC" = 2 ] && [ "$DELS" = 0 ] && grep -qF "title=Cannot list provenance runs::" <<<"$OUT" \
+  && ok "a failed provenance-runs listing REFUSES rather than protecting nothing (exit 2, 0 deleted)" \
+  || no "a failed provenance-runs listing did not refuse: rc=$RC deleted=$DELS: $OUT"
+
+# THE OTHER DIRECTION, and it is the reason this is not simply "refuse on
+# an empty answer": a provenance path that matches no workflow is a
+# LEGITIMATE state -- a workflow retired, a path renamed -- and it must
+# still warn and continue, not refuse. A guard that refused it would stop
+# the nightly purge on a repository that had merely deleted a workflow.
+D="$TMP/wfgone"; mkfix "$D"; runs_json "$NOW" 20 30 > "$D/runs.json"
+echo '{"workflows":[{"id":3,"path":".github/workflows/other.yml","name":"Other"}]}' > "$D/workflows.json"
+drive "$D" env RETENTION_DAYS=0 KEEP_GROUPS=1 DRY_RUN=1
+[ "$RC" = 0 ] && grep -qF "title=Provenance workflow not found::" <<<"$OUT" \
+  && ok "a provenance path matching no workflow still WARNS and continues (the legitimate empty)" \
+  || no "a retired provenance path no longer continues: rc=$RC: $OUT"
+
+# --- 4c. the workflow that RUNS this script must declare what it reads --
+# DERIVED FROM THE SCRIPT, not from a constant. #874 added keep rule 4,
+# which calls repos/*/pulls, to a workflow declaring only `contents: read`
+# and `actions: write`. The dependency is invisible in the workflow's
+# `run:` line and nothing in the tree could see it; the first execution
+# would have been the scheduled one, with DRY_RUN=0.
+#
+# WHAT THIS CANNOT SEE, said rather than claimed away: it maps exactly one
+# endpoint family to exactly one permission. A future call to, say, the
+# issues API is outside it, and so is a caller of this script that is not
+# a workflow file. The bound is: if this script reads the pulls API, every
+# workflow whose run line names it declares pull-requests.
+if grep -qF '/pulls?' "$GATE"; then
+    pulls_callers=$(grep -rlF 'purge-workflow-runs.sh' "$HERE/../.github/workflows/" 2>/dev/null || true)
+    if [ -z "$pulls_callers" ]; then
+        no "purge-workflow-runs.sh reads the pulls API and NO workflow was found invoking it -- this check has an empty domain"
+    else
+        perm_bad=""
+        # `while read`, not `for wf in $pulls_callers`: an unquoted expansion
+        # globs, which is the neighbour dependency this PR documents twice in
+        # the shipped scripts. Writing it here would be the same defect in the
+        # file that checks for it.
+        while IFS= read -r wf; do
+            [ -n "$wf" ] || continue
+            awk '{ probe=$0; sub(/^[[:space:]]+/,"",probe)
+                   if (substr(probe,1,1)=="#") next
+                   if (probe ~ /^pull-requests:[[:space:]]*(read|write)[[:space:]]*$/) found=1 }
+                 END { exit(found?0:1) }' "$wf" || perm_bad="$perm_bad $wf"
+        done <<EOF
+$pulls_callers
+EOF
+        [ -z "$perm_bad" ] \
+          && ok "every workflow invoking purge-workflow-runs.sh declares pull-requests (keep rule 4 reads the pulls API)" \
+          || no "keep rule 4 reads the pulls API but these workflows do not declare pull-requests:$perm_bad -- the token is refused and the purge exits 2 on every scheduled run"
+    fi
+else
+    no "purge-workflow-runs.sh no longer reads the pulls API -- keep rule 4 is gone, or this check's derivation is stale"
+fi
+
 # --- 5. a run still in flight is never deleted --------------------------
 grep -qE '(^|/)7777$' "$D/deleted.log" \
   && no "an in_progress run was deleted" \
@@ -452,16 +532,59 @@ fi
 # (`GATE_BRANCH""ES=dev`, or a name built from `${{ }}` fragments) passes it.
 # And it judges the checked-out tree, so a scope restated in repository or
 # environment VARIABLES in the GitHub settings is out of reach entirely.
-# The bound is: no literal restatement of these keys in a workflow file.
+# The bound is: no literal restatement of these keys, in a line of a workflow
+# file that is not wholly a comment.
+#
+# THAT BOUND WAS FALSE UNTIL 2026-08-28, and it was false in the shape it
+# was written to exclude. The pattern began `^[^#]*`, forbidding a `#`
+# ANYWHERE to the left of the assignment rather than asking whether the line
+# is a comment. MEASURED against the previous version at 83c27b1:
+#
+#     - run: echo "a#b" && GATE_BRANCHES=dev bash scripts/check-missing-runs.sh 20
+#
+# is a live restatement in a workflow file and was NOT returned; the same
+# line without the `#` was. So the sentence above was itself a literal
+# restatement of one of these keys in a workflow file that the scan could
+# not see -- a completeness claim falsified by one character, which is the
+# defect class this whole PR is about.
+#
+# The comment test is now STRUCTURAL: strip leading blanks and ask whether
+# the first character is `#`. That is a property of the line, not of the
+# bytes to the left of the match.
+#
+# WHAT THE STRUCTURAL FORM COSTS, named rather than discovered later: a
+# TRAILING comment on a live line now matches -- `- run: bash x.sh  # sets
+# GATE_BRANCHES` is reported. That is deliberate and it is the safe
+# direction. Inside a `run:` block a `#` introduces a SHELL comment, and a
+# text scan cannot tell `# GATE_BRANCHES=dev` (inert) from `x=1 #comment
+# GATE_BRANCHES=dev` (not); refusing both costs a reword, missing both costs
+# the collision. A case below pins the trade so it cannot be mistaken for an
+# accident.
 #
 # `scan_restates` is a FUNCTION so this suite can drive the shapes it claims
 # to catch. A scan whose only subject is one real directory that is expected
 # to be clean has one possible verdict, which is not a check.
 scan_restates() {   # scan_restates <dir>
-    grep -rnE '^[^#]*GATE_(BRANCHES|BRANCH_COMMITS|SCOPE_FILE|SCOPE_BRANCHES|SCOPE_COMMITS)[[:space:]]*[:=]' \
-         "$1" 2>/dev/null
+    local f
+    find "$1" -type f 2>/dev/null | LC_ALL=C sort | while IFS= read -r f; do
+        awk -v F="$f" '
+            { probe = $0
+              sub(/^[[:space:]]+/, "", probe)
+              if (substr(probe, 1, 1) == "#") next
+              if ($0 ~ /GATE_(BRANCHES|BRANCH_COMMITS|SCOPE_FILE|SCOPE_BRANCHES|SCOPE_COMMITS)[[:space:]]*[:=]/)
+                  printf "%s:%d:%s\n", F, FNR, $0 }' "$f"
+    done
 }
-wf_restates=$(scan_restates "$HERE/../.github/workflows/") || wf_restates=""
+# AND THE DOMAIN MUST NOT BE EMPTY. A universal gate is satisfied by
+# emptying its domain: rename `.github/workflows/`, or point this at a
+# directory that no longer exists, and the scan returns nothing and the
+# clean verdict below reports success having measured no file at all.
+wf_dir="$HERE/../.github/workflows"
+wf_files=$(find "$wf_dir" -type f \( -name '*.yml' -o -name '*.yaml' \) 2>/dev/null | wc -l)
+[ "$wf_files" -ge 1 ] \
+  && ok "the restatement scan has a non-empty domain ($wf_files workflow file(s) under .github/workflows/)" \
+  || no "the restatement scan's domain is EMPTY -- the clean verdict below would prove nothing"
+wf_restates=$(scan_restates "$wf_dir/") || wf_restates=""
 if [ -n "$wf_restates" ]; then
     no "a workflow restates the branch scope -- a second enumeration that must agree with the scope file: $wf_restates"
 else
@@ -505,6 +628,26 @@ restate_case "an exported assignment inside a run block" 'jobs:
           export GATE_BRANCHES=dev
           bash scripts/check-missing-runs.sh 20
 '
+# THE SHAPE THAT DEFEATED THE PREVIOUS PATTERN. A `#` anywhere left of the
+# assignment made the whole line invisible, so a live restatement only had
+# to be preceded by a `#` in a string, a URL fragment or a colour literal.
+restate_case "a live assignment on a line that also contains a #" 'jobs:
+  x:
+    steps:
+      - run: echo "a#b" && GATE_BRANCHES=dev bash scripts/check-missing-runs.sh 20
+'
+restate_case "a live assignment after a URL fragment" 'jobs:
+  x:
+    steps:
+      - run: curl https://example.invalid/a#b; GATE_BRANCH_COMMITS=1 bash scripts/check-missing-runs.sh 20
+'
+restate_case "an indented live assignment inside a block scalar with a # above it" 'jobs:
+  x:
+    steps:
+      - run: |
+          # the scope file is authoritative
+          GATE_SCOPE_FILE=.github/other.env bash scripts/purge-workflow-runs.sh
+'
 # THE OTHER DIRECTION: prose about the scope is not a restatement of it, and
 # missing-runs.yml carries exactly that prose today. A scan that refused it
 # would be unusable, and the clean verdict above would be meaningless.
@@ -518,6 +661,21 @@ jobs:
 [ -z "$(scan_restates "$RESTATE")" ] \
   && ok "the restatement scan does NOT fire on commented prose naming the variables" \
   || no "the restatement scan fires on a comment -- missing-runs.yml's own prose would trip it"
+
+# THE TRADE, PINNED. Asserting today's answer, with the reason in the name:
+# the structural form reports a trailing comment on a live line, because a
+# text scan cannot decide whether a `#` inside a `run:` block comments out
+# the rest of the shell line or sits inside a string. This case asserts the
+# false positive EXISTS so that a later reader meets it as a decision rather
+# than as a bug, and so that removing it cannot pass unnoticed.
+printf '%s' 'jobs:
+  x:
+    steps:
+      - run: bash scripts/check-missing-runs.sh 20  # GATE_BRANCHES= lives in the scope file
+' > "$RESTATE/wf.yml"
+[ -n "$(scan_restates "$RESTATE")" ] \
+  && ok "the restatement scan reports a TRAILING comment on a live line (accepted false positive: a text scan cannot tell an inert shell comment from a live assignment)" \
+  || no "the trailing-comment trade changed without this case being updated"
 rm -rf "$RESTATE"
 
 # --- 18b. an exported value may not stand in for the file ---------------
@@ -604,6 +762,130 @@ drive "$D" env RETENTION_DAYS=0 KEEP_GROUPS=1
 [ "$RC" = 0 ] \
   && ok "a scope naming exactly one branch is still ACCEPTED (the word count is not a refusal-only guard)" \
   || no "the word count refused a legal single-branch scope: rc=$RC: $OUT"
+
+# --- 19bb. THE SEAM, which is where the first version of this fix stopped
+# The guards above all judge the FILE. The value that reaches `for br in
+# $BRANCHES` is the value after the GATE_BRANCHES override, and it was
+# tested with `-n` -- the presence test this PR exists to replace, left
+# standing one seam over. MEASURED at 83c27b1 with a valid scope file:
+# GATE_BRANCHES="   " gave rc 0 and "0 commit(s) protected across [   ]".
+#
+# Emptiness through the seam is the DOCUMENTED disable, so the fix is not a
+# refusal: a blank list is normalised onto that same path. Assert the two
+# now agree, and assert the disable still works, or the normalisation could
+# be a refusal wearing the disable's message.
+seam_branch() {   # seam_branch <label> <gate-branches-value> <expected-tail>
+    local d="$TMP/seam$$_$RANDOM"; mkfix "$d"; runs_json "$NOW" 20 30 > "$d/runs.json"
+    drive "$d" env RETENTION_DAYS=0 KEEP_GROUPS=1 DRY_RUN=1 GATE_BRANCHES="$2"
+    [ "$RC" = 0 ] && grep -qF "Gate branches: $3" <<<"$OUT" \
+      && ok "GATE_BRANCHES $1 takes the documented disable path (\"$3\")" \
+      || no "GATE_BRANCHES $1: rc=$RC, wanted \"Gate branches: $3\": $OUT"
+}
+seam_branch "set to the empty string" "" "rule DISABLED"
+seam_branch "set to spaces only" "   " "rule DISABLED"
+seam_branch "set to a tab only" "$(printf '\t')" "rule DISABLED"
+# $'\n', NOT $(printf '\n'): command substitution strips trailing newlines,
+# so the obvious spelling drives the EMPTY case while claiming to drive a
+# newline -- a case that measures nothing while looking exactly like a
+# result. Same reason the mixed case below is written out literally.
+NL=$'\n'; TAB=$'\t'
+seam_branch "set to a newline only" "$NL" "rule DISABLED"
+seam_branch "set to a space, a tab and a newline" " $TAB$NL" "rule DISABLED"
+# THE OPPOSITE DIRECTION at the seam: a real branch list through the
+# override must still arm the rule, or the normalisation is a disable-only
+# guard that switched keep rule 5 off for everyone.
+D="$TMP/seamlive"; mkfix "$D"; runs_json "$NOW" 20 30 > "$D/runs.json"
+drive "$D" env RETENTION_DAYS=0 KEEP_GROUPS=1 DRY_RUN=1 GATE_BRANCHES="dev"
+[ "$RC" = 0 ] && grep -qF "protected across [dev]" <<<"$OUT" \
+  && ok "a real branch list through the GATE_BRANCHES seam still ARMS keep rule 5" \
+  || no "the seam normalisation disarmed a legitimate override: rc=$RC: $OUT"
+
+# --- 19bc. THE SEAM GLOBS, and the direction is MEASURED, not assumed ---
+# The seam value passes through no character class, so `*` reaches
+# `for br in $BRANCHES`. The first version of this comment said that fails
+# closed "because the commit query for a glob-named branch errors". That is
+# not what happens: the shell expands the glob against the CURRENT DIRECTORY
+# first, and what gets queried is whatever the expansion produced. The
+# outcome is the same and the REASON is not, which is the difference between
+# a measurement and a story.
+#
+# Driven from a controlled CWD, because the expansion depends on it.
+glob_seam() {   # glob_seam <label> <cwd-setup-cmd> <expected-rc> <expected-grep>
+    local d="$TMP/glob$$_$RANDOM"; mkfix "$d"; runs_json "$NOW" 20 30 > "$d/runs.json"
+    # No commits fixture: the stub then FAILS the commits query, which is what
+    # the real API does for a name that is not a branch. Without this the stub
+    # answers for every name and the case measures the stub, not the script.
+    rm -f "$d/commits.json"
+    local w="$d/cwd"; mkdir -p "$w"; ( cd "$w" && eval "$2" )
+    : > "$d/calls.log"; : > "$d/deleted.log"
+    local out rc
+    out=$( cd "$w" && FIXDIR="$d" PATH="$TMP/bin:$PATH" REPO=fixture/repo NOW_EPOCH="$NOW" \
+           GATE_SCOPE_FILE="$d/scope.env" env RETENTION_DAYS=0 KEEP_GROUPS=1 DRY_RUN=0 \
+           GATE_BRANCHES='*' bash "$GATE" 2>&1 ); rc=$?
+    local dels; dels=$(wc -l < "$d/deleted.log")
+    [ "$rc" = "$3" ] && grep -qF "$4" <<<"$out" \
+      && ok "GATE_BRANCHES='*' $1" \
+      || no "GATE_BRANCHES='*' $1: rc=$rc (wanted $3) deleted=$dels, wanted \"$4\": $out"
+}
+# Nothing to expand against: bash leaves the `*` literal and the query for a
+# branch named `*` fails.
+glob_seam "in an empty directory queries a branch named '*' and refuses" \
+          "true" 2 "the commit query for '*' failed"
+# Something to expand against, and it is not a branch: the expansion is
+# queried instead, and that fails too.
+glob_seam "expands against the working directory and refuses on the result" \
+          "touch zzz-definitely-not-a-branch" 2 "the commit query for 'zzz-definitely-not-a-branch' failed"
+# THE ESCAPE, PINNED AS A CASE rather than described. If the expansion
+# happens to name a REAL branch, the query succeeds and keep rule 5 arms on
+# a population nobody wrote down -- silently, exit 0. This asserts today's
+# behaviour, which is NOT the desired behaviour; it is here so the trade is
+# visible and cannot change unnoticed. Closing it needs `set -f` at BOTH
+# globbing sites, which is a judgement recorded in the script, not a defect
+# discovered here.
+D="$TMP/globescape"; mkfix "$D"; runs_json "$NOW" 20 30 > "$D/runs.json"
+mkdir -p "$D/cwd"; ( cd "$D/cwd" && touch dev )
+: > "$D/calls.log"; : > "$D/deleted.log"
+OUT=$( cd "$D/cwd" && FIXDIR="$D" PATH="$TMP/bin:$PATH" REPO=fixture/repo NOW_EPOCH="$NOW" \
+       GATE_SCOPE_FILE="$D/scope.env" env RETENTION_DAYS=0 KEEP_GROUPS=1 DRY_RUN=1 \
+       GATE_BRANCHES='*' bash "$GATE" 2>&1 ); RC=$?
+# Note WHICH list the summary prints: `${BRANCHES}` is the UNEXPANDED value,
+# so the operator is told "protected across [*]" while the rule actually
+# walked whatever the expansion produced. Asserted, so the discrepancy is on
+# the record rather than in a reader's head.
+[ "$RC" = 0 ] && grep -qF "protected across [*]" <<<"$OUT" \
+  && grep -qF "commits?sha=dev" "$D/calls.log" \
+  && ok "KNOWN TRADE: a glob through the seam expands against the CWD and is ACCEPTED (exit 0), and the summary prints the unexpanded [*] while 'dev' is what was queried -- the seam is trusted for content; see the note at the word count" \
+  || no "the glob-expansion trade changed without this case being updated: rc=$RC: $OUT :: $(cat "$D/calls.log")"
+
+# --- 19bd. the DEPTH seam, the same defect on the other half of the scope
+# The file-side depth check said a bad depth "would protect nothing".
+# MEASURED 2026-08-28 against the live API, that reason was wrong: GitHub
+# CLAMPS an unusable per_page to its own default rather than erroring
+# (per_page of 0, abc and -1 each returned 30 commits; 999 returned 100).
+# So a degenerate depth protects a DIFFERENT population, quietly, and if
+# only one of the two scripts carries the override they stop reading one
+# list -- the collision this pair exists to close. The seam is checked
+# with the same rule as the file.
+seam_depth() {   # seam_depth <label> <gate-branch-commits-value>
+    local d="$TMP/sdep$$_$RANDOM"; mkfix "$d"; runs_json "$NOW" 20 30 > "$d/runs.json"
+    drive "$d" env RETENTION_DAYS=0 KEEP_GROUPS=1 DRY_RUN=0 GATE_BRANCH_COMMITS="$2"
+    [ "$RC" = 2 ] && [ "$DELS" = 0 ] && grep -qF "title=Branch depth is not a count::" <<<"$OUT" \
+      && ok "a GATE_BRANCH_COMMITS override that $1 refuses (exit 2, 0 deleted)" \
+      || no "a GATE_BRANCH_COMMITS override that $1: rc=$RC deleted=$DELS: $OUT"
+}
+seam_depth "is zero" "0"
+seam_depth "is not a number" "abc"
+seam_depth "is negative" "-1"
+seam_depth "is blank" " "
+seam_depth "carries a stray character" "15x"
+# THE OPPOSITE DIRECTION: a legal override is still honoured, and honoured
+# ON THE WIRE -- asserting rc alone would pass against a script that
+# accepted the number and then ignored it.
+D="$TMP/seamdepthok"; mkfix "$D"; runs_json "$NOW" 20 30 > "$D/runs.json"
+drive "$D" env RETENTION_DAYS=0 KEEP_GROUPS=1 DRY_RUN=1 GATE_BRANCH_COMMITS=7
+[ "$RC" = 0 ] && grep -qF "per_page=7" "$D/calls.log" \
+  && ok "a legal GATE_BRANCH_COMMITS override is accepted and reaches the commit query" \
+  || no "a legal depth override did not reach the wire: rc=$RC: $(cat "$D/calls.log")"
 
 # --- 19c. the scope path being a DIRECTORY names the right refusal ------
 # `-r` alone is true of a directory, so the path fell through to the
