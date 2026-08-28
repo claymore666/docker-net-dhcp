@@ -175,6 +175,27 @@ fi
 # home is the contributor page, and rule 2b is what holds them to it.
 # Listing them here would make the very page that documents them the
 # duplicate.
+#
+# The operands are collected and PROVED READABLE first, rather than
+# handed to awk as a bare glob. See the backstop below for what that
+# cost when they were not.
+shopt -s nullglob
+go_files=("$PKG_DIR"/*.go)
+shopt -u nullglob
+if [ "${#go_files[@]}" -eq 0 ]; then
+    echo "FAIL  $PKG_DIR matched no *.go, so no option name could be read" >&2
+    exit 2
+fi
+for g in "${go_files[@]}"; do
+    if [ ! -f "$g" ] || [ ! -r "$g" ]; then
+        echo "FAIL  $g is not a readable regular file, so the option names it" \
+             "declares could not be read. awk is silent about an operand it" \
+             "cannot open, and that silence reads exactly like a package with" \
+             "no options in it." >&2
+        exit 2
+    fi
+done
+
 options=$(awk '
     /type DHCPNetworkOptions struct \{/ { in_struct = 1; next }
     in_struct && /^\}/                  { in_struct = 0 }
@@ -193,12 +214,51 @@ options=$(awk '
             }
         }
     }
-' "$PKG_DIR"/*.go)
+' "${go_files[@]}")
+options_rc=$?
+
+# THE NON-VACUITY BACKSTOP THE COUNTER RULE ALREADY HAD AND THIS ONE DID
+# NOT (#839). `counters` refuses on empty output at :88; `options` had
+# nothing, and it is the rule that reads a WHOLE GLOB rather than one
+# named file, so it had more ways to read less than it thought.
+# Measured 2026-08-28, with a real duplicate planted (`| \`mode\` |` as a
+# table row on a second page) and the control confirmed red at rc=1:
+#
+#   a DIRECTORY named aaa.go beside the sources   mawk rc=0 MISSED
+#                                                 gawk rc=1 (skips it)
+#   plugin.go at mode 000                         rc=0 MISSED, BOTH awks
+#
+# The second arm is the awk-independent one and it is the reason the
+# guard is not "handle the directory case": awk's silence about a file
+# it could not open is the defect, whichever way the silence arrives. So
+# readability is proved in the SHELL before awk (`-f` and `-r` are the
+# same on every awk and every uid), awk's exit status is read, and an
+# empty extraction refuses. A gate that reports intent -- "I looped over
+# the file list" -- as if it were coverage is the same shape one level
+# up as the finding this branch is about.
+if [ "$options_rc" -ne 0 ] || [ -z "$options" ]; then
+    echo "FAIL  could not extract DHCPNetworkOptions fields from $PKG_DIR/*.go" \
+         "(awk exit $options_rc, $(printf '%s' "$options" | grep -c . ) name(s) read)." \
+         "Rule 3 below would otherwise judge the duplicate-home rule against a" \
+         "shorter list of names than the code actually declares, and report green" \
+         "having looked for fewer things." >&2
+    exit 2
+fi
 
 names="$counters $envs $options"
 ref_base=$(basename "$DOC")
 
 for page in "$DOCS_DIR"/*.md; do
+    # The same rule, on the other side of the comparison. `grep` on an
+    # unreadable page exits 2 and matches nothing, which rule 3 reads as
+    # "this page does not document the name" -- a silent pass on exactly
+    # the page a second home would be hiding on.
+    if [ ! -f "$page" ] || [ ! -r "$page" ]; then
+        echo "FAIL  $page is not a readable regular file, so it could not be" \
+             "searched for a second home. Treating that as \"documents nothing\"" \
+             "would pass this page in silence." >&2
+        exit 2
+    fi
     [ "$(basename "$page")" = "$ref_base" ] && continue
     # A page may waive a name it legitimately leads a row with for an
     # unrelated reason — the mode-comparison table opens rows with

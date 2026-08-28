@@ -396,6 +396,95 @@ printf '# internals\nThe cover build writes counters to `GOCOVERDIR`.\n' > "$DOC
 expect 0 "the cover manifest is found beside MANIFEST by default" "EXEMPT setting GOCOVERDIR"
 rm -f "$TMP/config-cover.json" "$DOCS/internals.md"
 
+# --- the option list is EVIDENCE, not intent (#839) --------------------
+# Rule 3 judges a duplicate home against the names extracted at :196,
+# and that awk took a bare `"$PKG_DIR"/*.go` glob with no readability
+# guard and no emptiness backstop -- unlike the counter rule beside it,
+# which has had one all along. awk says nothing about an operand it
+# cannot open, and "no options in this package" and "I could not read
+# the package" produced the same shorter list of names, so a real
+# duplicate simply stopped being looked for.
+#
+# Measured 2026-08-28 with the duplicate below planted and the control
+# confirmed red: a DIRECTORY named *.go gave mawk rc=0 (violation
+# MISSED) while gawk skipped it and still reported; the SAME package
+# with one source at mode 000 gave rc=0 under BOTH awks. The second arm
+# is why the guard is readability rather than "handle a directory".
+#
+# The fixture is a directory rather than a mode-000 file because mode
+# 000 is readable as root, and a case that quietly stops testing when
+# the suite runs as root is the failure this file exists to prevent.
+write_reference
+printf '# second\n| `mode` | a second home for the mode option |\n' > "$DOCS/second.md"
+expect 1 "a duplicate option home is reported (the control for the two below)" \
+    "documents \`mode\` in a table row"
+
+mkdir "$PKG/notafile.go"
+expect 2 "an unreadable Go source refuses instead of shortening the option list" \
+    "is not a readable regular file"
+rmdir "$PKG/notafile.go"
+
+# The same rule on the other side of the comparison. `grep` on an
+# unreadable page exits 2 and matches nothing, which rule 3 read as
+# "this page documents nothing" -- a silent pass on exactly the page a
+# second home would be hiding on.
+rm -f "$DOCS/second.md"
+mkdir "$DOCS/second.md"
+expect 2 "an unsearchable docs page refuses instead of reading as documenting nothing" \
+    "could not be" 
+rmdir "$DOCS/second.md"
+
+# Preservation: with both restored to ordinary files and no duplicate,
+# the widening must not have made every corpus refuse.
+write_reference
+expect 0 "an ordinary package and docs directory are still clean"
+
+# The backstop's own two arms, each driven, because a guard with no case
+# reports exactly what a working guard reports. Mutation found both of
+# these missing: deleting the whole backstop, and dropping either half
+# of it, left this suite green.
+pkg_run() { # <pkg-dir>
+    MANIFEST="$TMP/config.json" bash "$CHECK" "$1" "$DOCS" "$DOCS/reference.md" 2>&1
+}
+pkg_expect() { # <want-exit> <label> <pkg-dir> <needle>
+    local want="$1" label="$2" dir="$3" needle="${4:-}" out rc
+    out=$(pkg_run "$dir"); rc=$?
+    if [ "$rc" -ne "$want" ]; then
+        echo "FAIL: $label — exit $rc, want $want"; printf '    %s\n' "$out"; fail=1; return
+    fi
+    if [ -n "$needle" ] && ! printf '%s' "$out" | grep -F "$needle" >/dev/null; then
+        echo "FAIL: $label — output missing '$needle'"; printf '    %s\n' "$out"; fail=1; return
+    fi
+    echo "PASS: $label"
+}
+
+# The EMPTINESS arm. A package whose sources parse but declare no
+# options at all is indistinguishable, downstream, from a package this
+# script failed to read -- and rule 3 would then look for a shorter list
+# of names and report green having looked for fewer things.
+mkdir -p "$TMP/pkg-nostruct"
+cat > "$TMP/pkg-nostruct/endpoints.go" <<'EOF'
+package plugin
+
+type HealthResponse struct {
+	Healthy bool `json:"healthy"`
+}
+EOF
+pkg_expect 2 "a package declaring no options refuses instead of shortening the list" \
+    "$TMP/pkg-nostruct" "could not extract DHCPNetworkOptions"
+
+# No sources at all. The refusal that answers is the COUNTER rule's,
+# not the option glob's: `counters` reads $PKG_DIR/endpoints.go and
+# endpoints.go is itself a *.go file, so the glob cannot be empty
+# unless that earlier guard has already refused. Measured -- this is
+# why the empty-glob branch survives mutation, and the case asserts the
+# ordering rather than a message that cannot appear. If the counters
+# backstop is ever removed, this case still demands exit 2 and the
+# empty-glob refusal is what has to carry it.
+mkdir -p "$TMP/pkg-empty"
+pkg_expect 2 "a package directory with no Go sources refuses, at the first guard that sees it" \
+    "$TMP/pkg-empty" "could not extract HealthResponse"
+
 if [ "$fail" -ne 0 ]; then
     echo "check-docs-drift tests FAILED"
     exit 1
