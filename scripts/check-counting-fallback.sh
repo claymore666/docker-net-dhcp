@@ -140,11 +140,17 @@
 # has not moved, and the day it moves is the day a green measured on the
 # head stops describing what CI scanned.
 #
-# NOT REACHABLE, AND IT MATTERS: `.claude/` is gitignored, so its 14
-# shell instruments -- ci-slot.sh, review-verdict.sh and the rest -- are
+# NOT REACHABLE, AND IT MATTERS: `.claude/` is gitignored, so its shell
+# instruments -- ci-slot.sh, review-verdict.sh and the rest -- are
 # invisible to any gate keyed on tracked files. They are real tooling
 # with real defects (one was fixed on 2026-08-27) and nothing in the
 # gate corpus can see them. Stated rather than silently excluded.
+#
+# 16 of them, measured 2026-08-28 (`ls .claude/bin/*.sh`). This said 14,
+# which was true when written; the set grows with the fleet's tooling and
+# nothing reconciles a number in a comment against it. The count is dated
+# for that reason -- it is here to convey a scale, not to be trusted as
+# current, and the command that re-derives it is beside it.
 #
 # NON-VACUITY HAS A PARTIAL CASE, AND IT IS THE QUIET ONE. The guard
 # below closes the all-or-nothing shape: a domain of zero files must
