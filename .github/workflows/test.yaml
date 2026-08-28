@@ -122,33 +122,45 @@ jobs:
             echo "::endgroup::"
           done
 
-  # THE GATES ARE NOT THE UNIT SUITE, AND THE CHECK NAME NOW SAYS SO.
+  # THESE ARE NOT THE UNIT SUITE, AND THE CHECK NAME NOW SAYS SO.
   #
-  # These ~45 steps used to run inside the `test` job. `test` is a
-  # REQUIRED status check on dev and main, so the single name branch
-  # protection knew covered release-promotion ordering, cosign docs and
-  # Raspberry Pi watchdog wiring — none of which is a test of this Go
-  # program. Six of that job's steps were the unit suite; the rest were
-  # these. A reader seeing `test` go red learned nothing about which of
-  # some fifty subjects failed, and a reader seeing it green was told
-  # "the tests pass" about a job that was mostly not tests.
+  # These steps used to run inside the `test` job. `test` is a REQUIRED
+  # status check on dev and main, so the single name branch protection
+  # knew covered release-promotion ordering, cosign docs and Raspberry
+  # Pi watchdog wiring — none of which is a test of this Go program.
+  # A reader seeing `test` go red learned nothing about which of dozens
+  # of unrelated subjects had failed, and a reader seeing it green was
+  # told "the tests pass" about a job that was mostly not tests.
   #
-  # Splitting costs one extra checkout and one extra setup-go (~9s,
-  # cached) and buys back more than it costs: the two halves now run in
-  # PARALLEL, so the wall clock is the slower half rather than the sum.
+  # No count is written here on purpose. Both halves grow, and a number
+  # in a comment is a measurement with no observer — the one this
+  # replaced already said "~45" over a larger set. Ask the file:
+  # scripts/check-test-job-purity.sh prints both tallies every run.
+  #
+  # Splitting costs one extra checkout and one extra setup-go and buys
+  # back more than it costs: the two halves now run in PARALLEL, so the
+  # wall clock is the slower half rather than the sum.
   #
   # setup-go is NOT vestigial here — it was checked rather than assumed.
   # scripts/check-golden-fixture-name-keyed.sh runs `go test` to
-  # regenerate the metrics golden (its line 90), so this job needs a
-  # toolchain. It is the only gate that does, which is why this comment
-  # names it: a future reader deleting the step should know what breaks.
+  # regenerate the metrics golden, so this job needs a toolchain. It is
+  # the only gate that does, which is why this comment names it: a
+  # future reader deleting the step should know what breaks. The script
+  # is named without a line number deliberately; a line citation into a
+  # file someone else edits expires with nobody setting the date.
   #
-  # `gates` MUST be a required status check on dev and main. Splitting a
-  # required job without requiring BOTH halves is exactly the
-  # absent-check-reads-as-green failure this corpus exists to catch: the
-  # steps below would still RUN on every PR, and nothing would stop a
-  # merge over their red.
-  gates:
+  # WHY `policy-gates` AND NOT `gates`. integration.yml already has a
+  # job called `gate`. A required-context list is typed by hand in a
+  # settings page, and `gate` is one character from `gates` — enter the
+  # wrong one and you newly require a job that passes while these steps
+  # stay advisory, which is the absent-check-reads-as-green failure
+  # this split exists to remove, reintroduced by a typo nothing checks.
+  #
+  # `policy-gates` MUST be a required status check on dev and main.
+  # Splitting a required job without requiring BOTH halves is that same
+  # failure by another route: the steps below would still RUN on every
+  # pull request, and nothing would stop a merge over their red.
+  policy-gates:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

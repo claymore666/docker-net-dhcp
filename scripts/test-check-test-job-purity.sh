@@ -34,14 +34,14 @@ check() {
     fi
 }
 
-# wf NAME <test-steps-block> <gates-steps-block> -> path to a workflow
+# wf NAME <test-steps-block> <policy-gates-steps-block> -> a workflow path
 wf() {
     local f="$TMP/$1.yaml"
     {
         printf 'name: Test\non:\n  pull_request:\njobs:\n'
         printf '  test:\n    runs-on: ubuntu-latest\n    steps:\n'
         printf '%s' "$2"
-        printf '  gates:\n    runs-on: ubuntu-latest\n    steps:\n'
+        printf '  policy-gates:\n    runs-on: ubuntu-latest\n    steps:\n'
         printf '%s' "$3"
     } > "$f"
     echo "$f"
@@ -79,14 +79,14 @@ check "a comment naming a gate script is not a finding" 0 "$(wf commented "$COMM
 NOSUITE=$'      - uses: actions/checkout@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa # v7.0.1\n      - name: Build\n        run: go build ./...\n'
 check "a test job that runs no suite is a finding" 1 "$(wf nosuite "$NOSUITE" "$GOOD_GATES")" "no step runs"
 
-# --- E: gates emptied of its corpus -----------------------------------
+# --- E: policy-gates emptied of its corpus -----------------------------------
 NOCORPUS=$'      - uses: actions/checkout@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa # v7.0.1\n      - name: Provide PyYAML\n        run: python3 -c "import yaml"\n'
-check "a gates job invoking no script is a finding" 1 "$(wf nocorpus "$GOOD_TEST" "$NOCORPUS")" "has been emptied"
+check "a policy-gates job invoking no script is a finding" 1 "$(wf nocorpus "$GOOD_TEST" "$NOCORPUS")" "has been emptied"
 
-# A gates job whose only script sits in a COMMENT is the same emptiness
+# A policy-gates job whose only script is in a COMMENT is the same emptiness
 # wearing prose, and must be caught by the same arm.
 PROSECORPUS=$'      - uses: actions/checkout@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa # v7.0.1\n      - name: Provide PyYAML\n        run: |\n          # scripts/check-lock-discipline.sh runs elsewhere\n          python3 -c "import yaml"\n'
-check "a gates job whose corpus is only named in prose is a finding" 1 "$(wf prosecorpus "$GOOD_TEST" "$PROSECORPUS")" "has been emptied"
+check "a policy-gates job whose corpus is only named in prose is a finding" 1 "$(wf prosecorpus "$GOOD_TEST" "$PROSECORPUS")" "has been emptied"
 
 # --- refusals: every one must be 2, never 0 ---------------------------
 check "a missing workflow refuses" 2 "$TMP/nowhere.yaml" "does not exist"
@@ -102,7 +102,7 @@ check "a workflow with no jobs refuses" 2 "$TMP/nojobs.yaml" "could not be parse
 
 {
     printf 'name: Test\non:\n  pull_request:\njobs:\n'
-    printf '  gates:\n    runs-on: ubuntu-latest\n    steps:\n%s' "$GOOD_GATES"
+    printf '  policy-gates:\n    runs-on: ubuntu-latest\n    steps:\n%s' "$GOOD_GATES"
 } > "$TMP/notest.yaml"
 check "a workflow with no test job refuses" 2 "$TMP/notest.yaml" "could not be parsed"
 
@@ -110,12 +110,12 @@ check "a workflow with no test job refuses" 2 "$TMP/notest.yaml" "could not be p
     printf 'name: Test\non:\n  pull_request:\njobs:\n'
     printf '  test:\n    runs-on: ubuntu-latest\n    steps:\n%s' "$GOOD_TEST"
 } > "$TMP/nogates.yaml"
-check "a workflow with no gates job refuses" 2 "$TMP/nogates.yaml" "could not be parsed"
+check "a workflow with no policy-gates job refuses" 2 "$TMP/nogates.yaml" "could not be parsed"
 
 {
     printf 'name: Test\non:\n  pull_request:\njobs:\n'
     printf '  test:\n    runs-on: ubuntu-latest\n    steps: []\n'
-    printf '  gates:\n    runs-on: ubuntu-latest\n    steps:\n%s' "$GOOD_GATES"
+    printf '  policy-gates:\n    runs-on: ubuntu-latest\n    steps:\n%s' "$GOOD_GATES"
 } > "$TMP/emptysteps.yaml"
 check "a test job with no steps refuses rather than passes" 2 "$TMP/emptysteps.yaml" "could not be parsed"
 
@@ -145,14 +145,14 @@ python3 - "$REPO/.github/workflows/test.yaml" "$TMP/folded.yaml" <<'FOLD'
 import sys
 import yaml
 doc = yaml.safe_load(open(sys.argv[1]))
-doc["jobs"]["test"]["steps"] += doc["jobs"]["gates"]["steps"]
+doc["jobs"]["test"]["steps"] += doc["jobs"]["policy-gates"]["steps"]
 yaml.safe_dump(doc, open(sys.argv[2], "w"))
 FOLD
 check "folding the corpus back into test goes red" 1 "$TMP/folded.yaml" "invokes scripts/"
 
 # 2. Delete the INVOCATION. A gate nothing runs reports nothing, so the
 #    wiring is asserted structurally: the script must appear in COMMAND
-#    POSITION on a non-comment run line of the `gates` job.
+#    POSITION on a non-comment run line of the `policy-gates` job.
 #
 #    Command position is not pedantry. The first draft of this case
 #    grepped the run lines for the script's name, and a mutant that
@@ -179,7 +179,7 @@ INVOKE = re.compile(
     r"^\s*(?:(?:bash|sh)\s+)?(?:\./)?scripts/check-test-job-purity\.sh(?:\s|$)"
 )
 doc = yaml.safe_load(open(sys.argv[1]))
-for step in doc.get("jobs", {}).get("gates", {}).get("steps", []) or []:
+for step in doc.get("jobs", {}).get("policy-gates", {}).get("steps", []) or []:
     body = step.get("run")
     if not isinstance(body, str):
         continue
@@ -200,7 +200,7 @@ WIRED
 }
 
 REAL="$REPO/.github/workflows/test.yaml"
-wired "gate is invoked from a run line of the gates job" 0 "$REAL"
+wired "gate is invoked from a run line of the policy-gates job" 0 "$REAL"
 
 python3 - "$REAL" "$TMP" <<'DECOYS'
 import sys
@@ -229,7 +229,7 @@ decoys = {
 }
 for tag, repl in decoys.items():
     doc = yaml.safe_load(open(real))
-    assert rewrite(doc["jobs"]["gates"]["steps"], repl), tag
+    assert rewrite(doc["jobs"]["policy-gates"]["steps"], repl), tag
     yaml.safe_dump(doc, open("%s/decoy-%s.yaml" % (tmp, tag), "w"))
 DECOYS
 

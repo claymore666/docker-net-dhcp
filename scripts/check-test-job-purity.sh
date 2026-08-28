@@ -12,7 +12,7 @@
 # watchdog wiring, lane hygiene, the gate self-test corpus. One name
 # carried all of it: red said nothing about which of some fifty subjects
 # had failed, and green said "the tests pass" about a job that was
-# mostly not tests. #829 split it into `test` and `gates`.
+# mostly not tests. #829 split it into `test` and `policy-gates`.
 #
 # The split is true by CONSTRUCTION on the day it lands, and after that
 # it is protected by nothing but the reader. The next person with a gate
@@ -23,7 +23,7 @@
 #
 # WHAT IT CHECKS, and each arm's direction
 #
-#   A. REFUSE unless both `test` and `gates` exist and both have steps.
+#   A. REFUSE unless both `test` and `policy-gates` exist and both have steps.
 #      A missing half is the absent-check-reads-as-green failure, and it
 #      must send a human to look rather than render a clean verdict.
 #   B. Every step in `test` is one this gate KNOWS, identified by name
@@ -32,14 +32,14 @@
 #   C. No non-comment line of any `run:` body in `test` invokes a
 #      `scripts/*.sh` gate. This is the drift that actually happens: on
 #      the tree this gate was written against, 48 of the 50 steps in
-#      `gates` invoke a script and only the two environment-setup steps
+#      `policy-gates` invoke a script and only the two environment-setup steps
 #      do not, so a script invocation appearing in `test` is a gate that
 #      moved.
 #   D. `test` must actually run `go test`. Without this the gate is
 #      satisfied by EMPTYING the job -- a `test` check that runs nothing
 #      passes A, B and C perfectly and means less than before the split.
-#   E. `gates` must invoke at least one `scripts/*.sh`. Same direction,
-#      other half: gutting `gates` must not read as clean.
+#   E. `policy-gates` must invoke at least one `scripts/*.sh`. Same direction,
+#      other half: gutting `policy-gates` must not read as clean.
 #
 # Comment lines are excluded from C deliberately. This workflow's own
 # prose names scripts -- the `Fuzz (short)` step's comment names
@@ -53,9 +53,9 @@
 #     nothing, and B is keyed on step NAMES: rename the step and B goes
 #     red, which is the intended friction, but B cannot judge what a
 #     step whose name it already knows has come to contain.
-#   * It cannot see branch protection. Whether `test` and `gates` are
+#   * It cannot see branch protection. Whether `test` and `policy-gates` are
 #     REQUIRED is a repository setting, not a fact in this tree, and no
-#     gate running inside CI can read it without a token. If `gates` is
+#     gate running inside CI can read it without a token. If `policy-gates` is
 #     not a required check then everything it guards -- including this
 #     file -- is advisory, and this gate will still exit 0.
 #   * D is keyed on the literal `go test`, which is a spelling. There is
@@ -76,7 +76,7 @@ cd "$(dirname "$0")/.." || exit 2
 WF="${1:-${PURITY_WORKFLOW:-.github/workflows/test.yaml}}"
 
 refuse() {
-    echo "::error title=test/gates split cannot be judged::$*" >&2
+    echo "::error title=test/policy-gates split cannot be judged::$*" >&2
     exit 2
 }
 
@@ -133,7 +133,15 @@ if not isinstance(jobs, dict):
     sys.stderr.write("the workflow has no `jobs` mapping\n")
     sys.exit(3)
 
-for want in ("test", "gates"):
+# The two job names are the load-bearing literals in this file: they are
+# the strings branch protection is configured with. `policy-gates` is
+# NOT spelled `policy-gates` because integration.yml already has a job named
+# `gate`, and a one-character slip in a hand-typed required-context list
+# requires the wrong job while leaving this one advisory.
+TEST_JOB = "test"
+GATES_JOB = "policy-gates"
+
+for want in (TEST_JOB, GATES_JOB):
     job = jobs.get(want)
     if not isinstance(job, dict):
         sys.stderr.write("job `%s` is absent from %s\n" % (want, path))
@@ -167,30 +175,30 @@ def live_lines(step):
 findings = []
 
 # B -- every step in `test` is one this gate knows.
-for step in jobs["test"]["steps"]:
+for step in jobs[TEST_JOB]["steps"]:
     ident = identity(step)
     if ident not in ALLOWED:
         findings.append(
             "test: unrecognised step %r. Either it is not a test of this "
-            "program and belongs in `gates`, or it is and this gate's "
-            "ALLOWED set must be widened in the same commit -- deliberately, "
-            "because widening it is widening what a required check named "
-            "`test` is allowed to mean." % ident
+            "program and belongs in `%s`, or it is and this gate's ALLOWED "
+            "set must be widened in the same commit -- deliberately, because "
+            "widening it is widening what a required check named `test` is "
+            "allowed to mean." % (ident, GATES_JOB)
         )
 
 # C -- no gate script is invoked from `test`.
-for step in jobs["test"]["steps"]:
+for step in jobs[TEST_JOB]["steps"]:
     for ln in live_lines(step):
         for hit in SCRIPT_RE.findall(ln):
             findings.append(
-                "test: step %r invokes %s. Gate scripts belong in `gates`; "
+                "test: step %r invokes %s. Gate scripts belong in the policy job; "
                 "that separation is the whole of #829." % (identity(step), hit)
             )
 
 # D -- `test` is not vacuous.
 if not any(
     "go test" in ln
-    for step in jobs["test"]["steps"]
+    for step in jobs[TEST_JOB]["steps"]
     for ln in live_lines(step)
 ):
     findings.append(
@@ -198,31 +206,31 @@ if not any(
         "runs no suite is worse than the job this split replaced."
     )
 
-# E -- `gates` is not vacuous.
+# E -- `policy-gates` is not vacuous.
 gate_scripts = {
     hit
-    for step in jobs["gates"]["steps"]
+    for step in jobs[GATES_JOB]["steps"]
     for ln in live_lines(step)
     for hit in SCRIPT_RE.findall(ln)
 }
 if not gate_scripts:
     findings.append(
-        "gates: no step invokes a scripts/*.sh gate. The corpus this job "
+        "policy-gates: no step invokes a scripts/*.sh gate. The corpus this job "
         "exists to carry has been emptied."
     )
 
 for f in findings:
     print("FINDING\t%s" % f)
 print(
-    "COUNTED\t%d step(s) in test, %d in gates, %d distinct gate script(s)"
-    % (len(jobs["test"]["steps"]), len(jobs["gates"]["steps"]), len(gate_scripts))
+    "COUNTED\t%d step(s) in test, %d in policy-gates, %d distinct gate script(s)"
+    % (len(jobs[TEST_JOB]["steps"]), len(jobs[GATES_JOB]["steps"]), len(gate_scripts))
 )
 PARSE
 )
 rc=$?
 
 if [ "$rc" -eq 3 ]; then
-    refuse "$WF could not be parsed into two jobs with steps, so the boundary was not judged. The parser said: $(tr '\n' ' ' < "$err"). PyYAML must be importable and both \`test\` and \`gates\` must exist with steps."
+    refuse "$WF could not be parsed into two jobs with steps, so the boundary was not judged. The parser said: $(tr '\n' ' ' < "$err"). PyYAML must be importable and both \`test\` and \`policy-gates\` must exist with steps."
 fi
 if [ "$rc" -ne 0 ]; then
     refuse "the parse of $WF exited $rc, which is neither a verdict nor a documented refusal. The parser said: $(tr '\n' ' ' < "$err")"
@@ -238,11 +246,11 @@ fi
 if [ -n "$findings" ]; then
     while IFS= read -r f; do
         [ -n "$f" ] || continue
-        echo "::error title=The test/gates split has drifted::$f" >&2
+        echo "::error title=The test/policy-gates split has drifted::$f" >&2
     done <<<"$findings"
     echo "FAIL  the required check named \`test\` no longer means only tests ($counted)" >&2
     exit 1
 fi
 
-echo "PASS  \`test\` runs only the Go suite and \`gates\` carries the corpus ($counted)"
+echo "PASS  \`test\` runs only the Go suite and \`policy-gates\` carries the corpus ($counted)"
 exit 0
