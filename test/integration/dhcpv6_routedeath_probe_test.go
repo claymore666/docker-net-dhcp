@@ -107,11 +107,20 @@ func TestProbe_DHCPv6_WhatDeletesTheDefaultRoute(t *testing.T) {
 			// creates a veth, because the event this candidate turns on
 			// -- the link being moved out of the host namespace -- has
 			// already happened by the time a container exists to enter.
-			hostMon := startMonitor(t, nil)
+			hostMon := startMonitor(t, "")
 			defer hostMon.stop()
 
 			logOff := harness.PluginLogSize(ctx)
 			created := time.Now()
+
+			// The host's own forwarding state, read before anything of
+			// ours exists. A container namespace inherits nothing from
+			// this, but if the host is a router the engine's own
+			// plumbing is more likely to turn it on in the sandbox too,
+			// and knowing that costs one read.
+			t.Logf("host forwarding before the container exists: all=%s default=%s",
+				strings.TrimSpace(readSysctl("/proc/sys/net/ipv6/conf/all/forwarding")),
+				strings.TrimSpace(readSysctl("/proc/sys/net/ipv6/conf/default/forwarding")))
 
 			id, err := startOnV6Segment(t, ctx, cli, f, tc.net)
 			if err != nil {
@@ -127,10 +136,16 @@ func TestProbe_DHCPv6_WhatDeletesTheDefaultRoute(t *testing.T) {
 			if pid <= 0 {
 				t.Fatalf("container has no pid (state %+v); cannot enter its namespace", insp.State)
 			}
-			ctrMon := startMonitor(t, &pid)
+			sandbox := insp.NetworkSettings.SandboxKey
+			if sandbox == "" {
+				t.Fatalf("container has no SandboxKey; cannot attach a monitor to its namespace")
+			}
+			ctrMon := startMonitor(t, sandbox)
 			defer ctrMon.stop()
-			t.Logf("container pid=%d, netlink monitor attached at t+%s",
-				pid, time.Since(created).Round(time.Millisecond))
+			t.Logf("container pid=%d sandbox=%s; namespace monitor attached at t+%s after "+
+				"ContainerStart returned. An ABSENCE of events before that instant is not "+
+				"evidence -- the host monitor is what covers the window before it.",
+				pid, sandbox, time.Since(created).Round(time.Millisecond))
 
 			// Sample fast enough to bracket a ten-second window, and
 			// long enough to cover well past it.
@@ -142,7 +157,7 @@ func TestProbe_DHCPv6_WhatDeletesTheDefaultRoute(t *testing.T) {
 				at                            time.Duration
 				route, addr                   string
 				acceptRA, autoconf, disableV6 string
-				fwd                           string
+				fwdIf, fwdAll, fwdDef         string
 			}
 			var rows []row
 			start := time.Now()
@@ -154,7 +169,9 @@ func TestProbe_DHCPv6_WhatDeletesTheDefaultRoute(t *testing.T) {
 					acceptRA:  nsenterCat(pid, "/proc/sys/net/ipv6/conf/eth0/accept_ra"),
 					autoconf:  nsenterCat(pid, "/proc/sys/net/ipv6/conf/eth0/autoconf"),
 					disableV6: nsenterCat(pid, "/proc/sys/net/ipv6/conf/eth0/disable_ipv6"),
-					fwd:       nsenterCat(pid, "/proc/sys/net/ipv6/conf/eth0/forwarding"),
+					fwdIf:     nsenterCat(pid, "/proc/sys/net/ipv6/conf/eth0/forwarding"),
+					fwdAll:    nsenterCat(pid, "/proc/sys/net/ipv6/conf/all/forwarding"),
+					fwdDef:    nsenterCat(pid, "/proc/sys/net/ipv6/conf/default/forwarding"),
 				})
 				time.Sleep(probeInterval)
 			}
@@ -168,12 +185,16 @@ func TestProbe_DHCPv6_WhatDeletesTheDefaultRoute(t *testing.T) {
 				r := rows[i]
 				if prev == nil || r.route != prev.route || r.addr != prev.addr ||
 					r.acceptRA != prev.acceptRA || r.autoconf != prev.autoconf ||
-					r.disableV6 != prev.disableV6 || r.fwd != prev.fwd {
-					t.Logf("t+%-7s accept_ra=%s autoconf=%s disable_ipv6=%s forwarding=%s\n"+
+					r.disableV6 != prev.disableV6 || r.fwdIf != prev.fwdIf ||
+					r.fwdAll != prev.fwdAll || r.fwdDef != prev.fwdDef {
+					t.Logf("t+%-7s accept_ra=%s autoconf=%s disable_ipv6=%s "+
+						"forwarding[if/all/default]=%s/%s/%s\n"+
 						"  ip -6 route show:\n%s\n  ip -6 addr show dev eth0:\n%s",
 						r.at.Round(probeInterval),
 						strings.TrimSpace(r.acceptRA), strings.TrimSpace(r.autoconf),
-						strings.TrimSpace(r.disableV6), strings.TrimSpace(r.fwd),
+						strings.TrimSpace(r.disableV6),
+						strings.TrimSpace(r.fwdIf), strings.TrimSpace(r.fwdAll),
+						strings.TrimSpace(r.fwdDef),
 						indent(r.route), indent(r.addr))
 					prev = &rows[i]
 				}
@@ -195,16 +216,62 @@ func TestProbe_DHCPv6_WhatDeletesTheDefaultRoute(t *testing.T) {
 					break
 				}
 			}
-			if firstDefault == "" {
-				t.Logf("VERDICT INPUT: no IPv6 default route was EVER seen in the container "+
-					"across %s. If the host monitor below shows one on the veth before the "+
-					"move, that is candidate 1 (the namespace move), not a lifetime problem.",
-					probeWindow)
-			} else {
-				t.Logf("VERDICT INPUT: first default route seen was %q. An `expires` near the "+
-					"advertised Router Lifetime here, followed by a deletion long before it, "+
-					"means the route was REMOVED rather than aged out.", firstDefault)
+			// The forwarding verdict, which is the one that can be
+			// reached by elimination and therefore the one worth
+			// stating explicitly.
+			fwdEverOn := false
+			fwdAlwaysOn := len(rows) > 0
+			for _, r := range rows {
+				on := strings.TrimSpace(r.fwdIf) == "1" || strings.TrimSpace(r.fwdAll) == "1"
+				fwdEverOn = fwdEverOn || on
+				fwdAlwaysOn = fwdAlwaysOn && on
 			}
+			switch {
+			case fwdAlwaysOn:
+				t.Logf("VERDICT INPUT (forwarding): forwarding read 1 for the WHOLE window. " +
+					"This is the ambiguous cell: a redundant 1-over-1 write still purges " +
+					"RA-learned default routers, emits no netconf event and changes no " +
+					"readable value, so candidate 4 can be neither confirmed nor excluded " +
+					"from these observations. Report AMBIGUOUS rather than attributing to " +
+					"candidate 2 by elimination.")
+			case !fwdEverOn:
+				t.Logf("VERDICT INPUT (forwarding): forwarding read 0 on every scope for the " +
+					"whole window. The kernel reaches its purge only on a write of 1, so " +
+					"candidate 4 is EXCLUDED and the deleter is candidate 2 or 5 (or " +
+					"unenumerated).")
+			default:
+				t.Logf("VERDICT INPUT (forwarding): forwarding CHANGED during the window. " +
+					"Correlate the transition above against the DELROUTE timestamp in the " +
+					"namespace trace; a netconf FORWARDING event immediately before the " +
+					"deletion is candidate 4.")
+			}
+
+			if firstDefault == "" {
+				t.Logf("VERDICT INPUT (route): no IPv6 default route was EVER seen in the "+
+					"container across %s. If the host trace below shows one on the veth "+
+					"before the move, that is candidate 1; the namespace monitor's attach "+
+					"time above bounds what its silence can mean.", probeWindow)
+			} else {
+				t.Logf("VERDICT INPUT (route): first default route seen was %q.\n"+
+					"  proto: `proto static` or `proto boot` here EXCLUDES candidate 4 and "+
+					"candidate 5 outright -- the kernel's purge selects RTF_ADDRCONF and "+
+					"RFC 4861 6.3.4 governs RA-derived routers, so neither reaches a route "+
+					"userspace programmed.\n"+
+					"  expires: this IS the advertised Router Lifetime counting down. A "+
+					"small value here is candidate 5 -- an advertisement that asked for the "+
+					"router to be removed -- and a value near the advertised lifetime "+
+					"excludes candidate 5 by arithmetic, leaving a deleter.",
+					firstDefault)
+			}
+
+			// The Router Lifetime could also be read straight out of
+			// dhcpcd's ROUTERADVERT hook environment, which is a
+			// decoded advertisement and is where nd1_flags already
+			// comes from. Not taken here: dumping the complete hook
+			// environment means changing cmd/dhcp-handler, which is
+			// product code, and `expires` answers the same question
+			// from the kernel's own copy of the number. If the two ever
+			// disagree, the hook is the tie-breaker.
 
 			t.Logf("--- %s: HOST netlink trace (veth before and during the move) ---\n%s",
 				tc.mode, indent(hostMon.text()))
@@ -230,18 +297,61 @@ type monitor struct {
 	pth string
 }
 
-func startMonitor(t *testing.T, pid *int) *monitor {
+// monitorSupportsNetconf asks this `ip` whether it accepts the keyword,
+// rather than trusting a version number.
+func monitorSupportsNetconf() bool {
+	out, _ := exec.Command("ip", "monitor", "help").CombinedOutput()
+	return strings.Contains(string(out), "netconf")
+}
+
+func readSysctl(p string) string {
+	b, err := os.ReadFile(p)
+	if err != nil {
+		return fmt.Sprintf("(%v)", err)
+	}
+	return string(b)
+}
+
+// startMonitor attaches in the host namespace when netnsPath is empty,
+// and in that netns otherwise.
+//
+// IT TAKES A NETNS PATH, NOT A PID, AND THAT IS THE POINT. A namespace
+// move flushes on the way OUT of the SOURCE namespace, so it is
+// invisible from inside the destination; and the sandbox namespace
+// exists from Join, which precedes the container process, so a pid is
+// available strictly later than the namespace is. Attaching by the
+// sandbox key is the earliest this observer can exist. Absence of a
+// DELROUTE is candidate 1's entire signature, and an absence only means
+// something if the observer was already there -- so the attach time is
+// logged beside it.
+func startMonitor(t *testing.T, netnsPath string) *monitor {
 	t.Helper()
 	tmp, err := os.CreateTemp("", "dh-itest-v6mon-")
 	if err != nil {
 		t.Fatalf("CreateTemp for netlink monitor: %v", err)
 	}
-	args := []string{"-ts", "-6", "monitor", "route", "addr", "link"}
+	// netconf is what separates a forwarding purge from a userspace
+	// delete: the kernel emits NETCONFA_FORWARDING on a forwarding
+	// CHANGE and `ip monitor` decodes it. Verified as an accepted
+	// OBJECT on iproute2 6.15.0; probed here rather than assumed,
+	// because the runner's build is Debian's and an `ip` that rejects
+	// the keyword would otherwise take the whole monitor down and turn
+	// a missing separator into a missing trace.
+	objs := []string{"route", "addr", "link"}
+	if monitorSupportsNetconf() {
+		objs = append(objs, "netconf")
+	} else {
+		t.Logf("WARNING: this iproute2 does not accept `ip monitor netconf`. The trace " +
+			"cannot separate a forwarding purge from a userspace delete, and any " +
+			"verdict between those two must be reported AMBIGUOUS.")
+	}
+	args := append([]string{"-ts", "-6", "monitor"}, objs...)
+
 	var cmd *exec.Cmd
-	if pid == nil {
+	if netnsPath == "" {
 		cmd = exec.Command("ip", args...)
 	} else {
-		cmd = exec.Command("nsenter", append([]string{"-t", strconv.Itoa(*pid), "-n", "ip"}, args...)...)
+		cmd = exec.Command("nsenter", append([]string{"--net=" + netnsPath, "ip"}, args...)...)
 	}
 	cmd.Stdout = tmp
 	cmd.Stderr = tmp
