@@ -26,8 +26,18 @@ import (
 // instrument, and it is the one available at this level; the strong
 // evidence is the integration lane, which covers exactly one of the two
 // files.
+// KEYED ON THE PROPERTY, NOT ON A SPELLING. The subject is "a site
+// that acquires a lease", and the only thing that makes a line one is
+// the call itself -- not what the caller happened to name its context.
+//
+// MEASURED: this const used to read "p.acquireWithPolicy(ctx," and a
+// third site spelled `p.acquireWithPolicy(reqCtx,` with NO classifier
+// consult passed the whole test, in the per-file loop and in the sweep
+// alike. That is the defect this file exists to catch, reproduced by
+// the gate meant to catch it: a site the fix does not reach, invisible
+// because it renamed one variable.
 const (
-	v6AbsenceAcquireCall = "p.acquireWithPolicy(ctx,"
+	v6AbsenceAcquireCall = "p.acquireWithPolicy("
 	v6AbsenceConsult     = "p.noteV6Absence("
 	// Lines to read after the call before concluding the site does not
 	// consult the classifier. The two real sites answer within six; the
