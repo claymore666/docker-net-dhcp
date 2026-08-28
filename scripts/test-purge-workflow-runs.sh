@@ -414,24 +414,216 @@ if [ -r "$SHIPPED" ]; then
     # through the one file this design made load-bearing. An empty value is
     # a legitimate SELF-TEST seam, driven through the environment; it is
     # never a legitimate shipped configuration.
+    # COUNT WORDS, DO NOT TEST PRESENCE. `-n` is one character to the side of
+    # the property and it is the side that fails silently: measured
+    # 2026-08-28, `GATE_SCOPE_BRANCHES="   "` in this file satisfies the
+    # foreign-content guard, satisfies `-n` in BOTH suites, makes `for br in
+    # $BRANCHES` iterate zero times so the shape refusal never runs, and the
+    # purge then deletes the branch commits keep rule 5 exists to spare --
+    # exiting 0, printing "0 commit(s) protected across [   ]" as though a
+    # count of zero were a result. Both suites stayed 38/0 and 62/0 while it
+    # did. A presence test cannot see a whitespace-only list; a word count can.
     ( set -u
       # shellcheck disable=SC1090
       . "$SHIPPED"
-      [ -n "${GATE_SCOPE_BRANCHES:-}" ] ) \
-      && ok "the shipped scope names at least one branch (an empty list silently disarms both gates)" \
-      || no "the shipped GATE_SCOPE_BRANCHES is EMPTY -- the branch phase is off on both gates and nothing else says so"
+      # shellcheck disable=SC2086
+      [ "$(set -- ${GATE_SCOPE_BRANCHES:-}; echo $#)" -ge 1 ] ) \
+      && ok "the shipped scope names at least one branch, counted as WORDS (an empty or blank list silently disarms both gates)" \
+      || no "the shipped GATE_SCOPE_BRANCHES has no words in it -- the branch phase is off on both gates and nothing else says so"
 fi
-# And neither workflow may restate the numbers: a copy in a workflow file
-# is the second enumeration this design exists to remove. Matched as a YAML
-# env KEY with nothing but non-comment text before it, so the prose above
-# each gate may still name the variables without tripping this.
-wf_restates=$(grep -rnE '^[^#]*GATE_BRANCH(ES|_COMMITS)[[:space:]]*:' \
-                "$HERE/../.github/workflows/" 2>/dev/null) || wf_restates=""
+# And no workflow may restate the scope: a copy in a workflow file is the
+# second enumeration this design exists to remove.
+#
+# TWO SPELLINGS ENUMERATED MEANS A THIRD EXISTS. The first version of this
+# scan matched only the YAML `env:` KEY spelling, and measured 2026-08-28 the
+# same restatement written INLINE on the `run:` line --
+#   run: GATE_BRANCH_COMMITS=10 bash scripts/check-missing-runs.sh 20
+# -- survived both suites: a live second enumeration overriding the scope
+# file, which is exactly the collision being closed. So the separator is now
+# `[:=]`, covering the env key and the inline assignment, and the key set
+# includes GATE_SCOPE_FILE -- pointing either gate at a different scope file
+# restates the scope wholesale without naming a branch or a number.
+#
+# WHAT THIS SCAN CANNOT SEE, stated rather than claimed away. Its domain is
+# `.github/workflows/` only, so a caller outside it -- a Makefile target, a
+# composite action, a local script -- is invisible to it; today there is no
+# `.github/actions/` and `missing-runs.yml` is the only workflow invoking
+# either gate. It is a text scan, so a value assembled at runtime
+# (`GATE_BRANCH""ES=dev`, or a name built from `${{ }}` fragments) passes it.
+# And it judges the checked-out tree, so a scope restated in repository or
+# environment VARIABLES in the GitHub settings is out of reach entirely.
+# The bound is: no literal restatement of these keys in a workflow file.
+#
+# `scan_restates` is a FUNCTION so this suite can drive the shapes it claims
+# to catch. A scan whose only subject is one real directory that is expected
+# to be clean has one possible verdict, which is not a check.
+scan_restates() {   # scan_restates <dir>
+    grep -rnE '^[^#]*GATE_(BRANCHES|BRANCH_COMMITS|SCOPE_FILE|SCOPE_BRANCHES|SCOPE_COMMITS)[[:space:]]*[:=]' \
+         "$1" 2>/dev/null
+}
+wf_restates=$(scan_restates "$HERE/../.github/workflows/") || wf_restates=""
 if [ -n "$wf_restates" ]; then
-    no "a workflow sets GATE_BRANCHES/GATE_BRANCH_COMMITS -- a second enumeration that must agree with the scope file: $wf_restates"
+    no "a workflow restates the branch scope -- a second enumeration that must agree with the scope file: $wf_restates"
 else
     ok "no workflow restates the branch scope; the scope file is the only definition"
 fi
+
+# DRIVE THE ABSENCE: the scan has to go off on each shape, or the clean
+# verdict above proves only that the pattern matches nothing.
+RESTATE=$(mktemp -d)
+restate_case() {   # restate_case <label> <file-content>
+    printf '%s' "$2" > "$RESTATE/wf.yml"
+    if [ -n "$(scan_restates "$RESTATE")" ]; then
+        ok "the restatement scan sees $1"
+    else
+        no "the restatement scan is BLIND to $1 -- a live second enumeration would ship"
+    fi
+}
+restate_case "the YAML env-key spelling" 'jobs:
+  x:
+    steps:
+      - env:
+          GATE_BRANCH_COMMITS: "10"
+        run: bash scripts/check-missing-runs.sh 20
+'
+restate_case "the inline run-line spelling" 'jobs:
+  x:
+    steps:
+      - run: GATE_BRANCH_COMMITS=10 GATE_BRANCHES="dev" bash scripts/check-missing-runs.sh 20
+'
+restate_case "a redirected GATE_SCOPE_FILE" 'jobs:
+  x:
+    steps:
+      - env:
+          GATE_SCOPE_FILE: .github/other-scope.env
+        run: bash scripts/purge-workflow-runs.sh
+'
+restate_case "an exported assignment inside a run block" 'jobs:
+  x:
+    steps:
+      - run: |
+          export GATE_BRANCHES=dev
+          bash scripts/check-missing-runs.sh 20
+'
+# THE OTHER DIRECTION: prose about the scope is not a restatement of it, and
+# missing-runs.yml carries exactly that prose today. A scan that refused it
+# would be unusable, and the clean verdict above would be meaningless.
+printf '%s' '# GATE_BRANCHES: not set here, it lives in the scope file
+jobs:
+  x:
+    steps:
+      # the scope file defines GATE_BRANCHES and GATE_BRANCH_COMMITS
+      - run: bash scripts/check-missing-runs.sh 20
+' > "$RESTATE/wf.yml"
+[ -z "$(scan_restates "$RESTATE")" ] \
+  && ok "the restatement scan does NOT fire on commented prose naming the variables" \
+  || no "the restatement scan fires on a comment -- missing-runs.yml's own prose would trip it"
+rm -rf "$RESTATE"
+
+# --- 18b. an exported value may not stand in for the file ---------------
+# The file is SOURCED, so whatever the environment already exports is still
+# set when the completeness check runs. A scope file defining only half the
+# scope would then be completed by an exported GATE_SCOPE_COMMITS and this
+# script would purge on a population the file never named. Nothing exports
+# those today, which is exactly why it has to be asserted: "unreadable must
+# refuse, not default" is only true while nobody sets them.
+D="$TMP/exported"; mkfix "$D"; runs_json "$NOW" 20 30 > "$D/runs.json"
+echo 'GATE_SCOPE_BRANCHES="dev main"' > "$D/scope.env"
+drive "$D" env GATE_SCOPE_COMMITS=15 RETENTION_DAYS=0 KEEP_GROUPS=1 DRY_RUN=0
+[ "$RC" = 2 ] && [ "$DELS" = 0 ] && grep -q "Branch scope incomplete" <<<"$OUT" \
+  && ok "an exported GATE_SCOPE_COMMITS does not complete a half scope file" \
+  || no "the environment completed a half scope file: rc=$RC deleted=$DELS: $OUT"
+
+# --- 19a. THE SHIPPED SCOPE MUST BE ACCEPTED BY THIS SCRIPT -------------
+# Reading the shipped file's contents is not the same as running the purge
+# against it, and the difference is measurable: with `GATE_SCOPE_COMMITS=1`
+# appended to the shipped file -- a duplicated key, last-wins -- every
+# assertion above still passed, because every other case in this suite
+# supplies its own fixture scope. The detector's suite went red; this one
+# did not. So drive the REAL artifact through the REAL script, and let any
+# degenerate shipped value (blank list, duplicate key, CRLF, bad depth)
+# turn this suite red on its own.
+D="$TMP/shippedscope"; mkfix "$D"; runs_json "$NOW" 20 30 > "$D/runs.json"
+drive "$D" env GATE_SCOPE_FILE="$SHIPPED" RETENTION_DAYS=0 KEEP_GROUPS=1
+# shellcheck disable=SC1090
+shipped_brs=$( . "$SHIPPED"; echo "${GATE_SCOPE_BRANCHES:-}" )
+[ "$RC" != 2 ] && grep -qF "protected across [${shipped_brs}]" <<<"$OUT" \
+  && ok "the purge runs against the SHIPPED scope file and arms keep rule 5 on its branches" \
+  || no "the shipped scope file is not usable by this script: rc=$RC: $OUT"
+
+# --- 19b. the degenerate scope values, each driven ALONE (#874) ---------
+# Every shape below is individually legal to the foreign-content guard and
+# each one silently narrows or disarms keep rule 5 -- the direction that
+# DELETES the run records check-missing-runs.sh then demands. Asserted by
+# EXIT CODE and by zero deletions, never by message text.
+#
+# ASSERT WHICH REFUSAL FIRED, not merely that one did. A shape caught by a
+# guard other than the one it was written for scores a kill for the wrong
+# check -- and one of these is exactly that: a literal TAB is not in the
+# foreign-content character class, so it never reaches the word count. That
+# is recorded below as the guard that actually catches it, not smuggled in
+# as evidence for the new one.
+degen() {   # degen <label> <expected-error-title> <scope-content>
+    local d="$TMP/degen$$_$RANDOM"; mkfix "$d"; runs_json "$NOW" 20 30 > "$d/runs.json"
+    printf '%s' "$3" > "$d/scope.env"
+    drive "$d" env RETENTION_DAYS=0 KEEP_GROUPS=1 DRY_RUN=0
+    [ "$RC" = 2 ] && [ "$DELS" = 0 ] && grep -qF "title=$2::" <<<"$OUT" \
+      && ok "a scope file that $1 refuses as '$2' (exit 2, 0 deleted)" \
+      || no "a scope file that $1: rc=$RC deleted=$DELS, wanted title '$2': $OUT"
+}
+# The one that ran: 54 deletions with a valid scope, 57 with this one, exit 0.
+degen "names no branch at all" "Branch scope names no branch" 'GATE_SCOPE_BRANCHES=""
+GATE_SCOPE_COMMITS=15
+'
+degen "names only whitespace as its branch list" "Branch scope names no branch" 'GATE_SCOPE_BRANCHES="   "
+GATE_SCOPE_COMMITS=15
+'
+degen "names only a tab as its branch list" "Branch scope has foreign content" "$(printf 'GATE_SCOPE_BRANCHES="\t"\nGATE_SCOPE_COMMITS=15\n')"
+degen "sets a depth of zero" "Branch scope depth is not a count" 'GATE_SCOPE_BRANCHES="dev"
+GATE_SCOPE_COMMITS=0
+'
+degen "sets a non-numeric depth" "Branch scope depth is not a count" 'GATE_SCOPE_BRANCHES="dev"
+GATE_SCOPE_COMMITS=abc
+'
+degen "is saved with CRLF endings" "Branch scope has carriage returns" "$(printf 'GATE_SCOPE_BRANCHES="dev"\r\nGATE_SCOPE_COMMITS=15\r\n')"
+degen "assigns GATE_SCOPE_COMMITS twice" "Branch scope defines a key twice" 'GATE_SCOPE_BRANCHES="dev"
+GATE_SCOPE_COMMITS=15
+GATE_SCOPE_COMMITS=1
+'
+degen "assigns GATE_SCOPE_BRANCHES twice" "Branch scope defines a key twice" 'GATE_SCOPE_BRANCHES="dev"
+GATE_SCOPE_BRANCHES=""
+GATE_SCOPE_COMMITS=15
+'
+
+# THE OPPOSITE DIRECTION for the word count specifically: one branch is one
+# branch. A count that refused a legal single-branch scope would be the
+# refusal-only guard the four-move rule exists to catch.
+D="$TMP/onebranch"; mkfix "$D"; runs_json "$NOW" 20 30 > "$D/runs.json"
+printf 'GATE_SCOPE_BRANCHES="dev"\nGATE_SCOPE_COMMITS=15\n' > "$D/scope.env"
+drive "$D" env RETENTION_DAYS=0 KEEP_GROUPS=1
+[ "$RC" = 0 ] \
+  && ok "a scope naming exactly one branch is still ACCEPTED (the word count is not a refusal-only guard)" \
+  || no "the word count refused a legal single-branch scope: rc=$RC: $OUT"
+
+# --- 19c. the scope path being a DIRECTORY names the right refusal ------
+# `-r` alone is true of a directory, so the path fell through to the
+# completeness check and refused as "incomplete" -- exit 2 preserved, the
+# DIAGNOSIS wrong, on a gate that runs unattended and deletes data.
+D="$TMP/dirscope"; mkfix "$D"; runs_json "$NOW" 20 30 > "$D/runs.json"
+mkdir -p "$D/scopedir"
+: > "$D/calls.log"; : > "$D/deleted.log"
+OUT=$(FIXDIR="$D" PATH="$TMP/bin:$PATH" REPO=fixture/repo NOW_EPOCH="$NOW" \
+      GATE_SCOPE_FILE="$D/scopedir" env RETENTION_DAYS=0 KEEP_GROUPS=1 DRY_RUN=0 \
+      bash "$GATE" 2>&1); RC=$?
+DELS=$(wc -l < "$D/deleted.log")
+# ASSERT THE WORDING THAT ONLY THIS GUARD EMITS. Measured 2026-08-28:
+# keying on the "No branch scope" TITLE let the mutant that reverts `-f`
+# survive, because the source-failure refusal below carries the same title
+# -- a directory then refuses for the right exit code under the wrong
+# reason, and the assertion could not tell the two apart.
+[ "$RC" = 2 ] && [ "$DELS" = 0 ] && grep -q "as a regular file" <<<"$OUT" \
+  && ok "a scope path that is a directory refuses as unreadable, not as incomplete" \
+  || no "a directory scope path: rc=$RC deleted=$DELS: $OUT"
 
 # --- 20. the scope file's DEPTH is the depth actually queried -----------
 # Existence and completeness are not the property. The property is that

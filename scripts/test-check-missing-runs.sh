@@ -404,6 +404,17 @@ rm -rf "$dir"
 
 # The record shipped in the tree must itself be loadable -- a file that
 # only the fixtures ever parse is not the file CI reads.
+#
+# PRESENCE IS ITS OWN CASE, and it is asserted OUTSIDE the guard. Measured
+# 2026-08-28: with the case wrapped in `if [ -f ... ]`, deleting
+# .github/recovered-heads.tsv made it silently VANISH -- 61 passed instead
+# of 62, nothing red -- while the scope file's twin assertion a few hundred
+# lines down goes red for the same deletion. A universal gate is satisfied
+# by emptying its domain, and a case that disappears with its fixture is
+# that failure in miniature.
+[ -f "$HERE/../.github/recovered-heads.tsv" ] \
+  && ok "the recovered-heads record exists at the path this gate defaults to" \
+  || no "no record at .github/recovered-heads.tsv -- every head it excuses is flagged again with no run to find"
 if [ -f "$HERE/../.github/recovered-heads.tsv" ]; then
     dir=$(mktemp -d); make_gh "$dir" "$ONE_PR" "$NEW" "1"
     out=$(PATH="$dir/bin:$PATH" GATE_REPO=o/r GATE_BRANCHES='' bash "$CHECK" 20 2>&1); rc=$?
@@ -544,15 +555,116 @@ out=$(run_scope "$SCOPETMP/half.env"); rc=$?
 [ "$rc" = 2 ] && ok "a scope file defining only half the scope exits 2" \
   || no "half scope returned $rc (want 2): $out"
 
-# And the file is LOAD-BEARING, not decorative: a scope naming no branches
-# must skip the branch phase, which proves the value read from the file is
-# the value the loop actually uses.
+# AN EXPORTED VALUE MAY NOT STAND IN FOR THE FILE. The file is sourced, so
+# anything the environment already exports is still set when the
+# completeness check runs, and a half scope file would be completed by it --
+# this gate then judging a population the file never named. Nothing exports
+# these today, which is precisely why it is asserted.
+dir=$(mktemp -d); make_branch_gh "$dir" "$OLD_COMMIT" "completed:success"
+out=$(PATH="$dir/bin:$PATH" GATE_REPO=o/r GATE_SCOPE_FILE="$SCOPETMP/half.env" \
+      GATE_SCOPE_COMMITS=15 bash "$CHECK" 20 2>&1); rc=$?
+rm -rf "$dir"
+[ "$rc" = 2 ] && grep -q "does not define" <<<"$out" \
+  && ok "an exported GATE_SCOPE_COMMITS does not complete a half scope file" \
+  || no "the environment completed a half scope file (exit $rc): $out"
+
+# EMPTINESS IS AN ENVIRONMENT SEAM, NEVER A FILE VALUE (#874). Both halves
+# are asserted, because a guard fails in one direction.
+#
+# The seam still works: an empty GATE_BRANCHES in the ENVIRONMENT skips the
+# branch phase, which is what the self-tests drive and what keeps this file
+# from being the only way to isolate the PR phase.
+dir=$(mktemp -d); make_branch_gh "$dir" "$OLD_COMMIT" "completed:success"
+out=$(PATH="$dir/bin:$PATH" GATE_REPO=o/r GATE_BRANCHES='' bash "$CHECK" 20 2>&1); rc=$?
+rm -rf "$dir"
+case "$out" in
+  *"branch commit(s) on [none]"*) ok "an empty GATE_BRANCHES in the ENVIRONMENT still skips the branch phase" ;;
+  *) no "the environment seam no longer skips the branch phase (exit $rc): $out" ;;
+esac
+
+# And the FILE may not carry it. Measured 2026-08-28 on the code as it stood:
+# an empty branch list in the scope file turned the branch phase off on this
+# gate AND on the purge -- this gate reconciling `[none]`, the purge printing
+# "rule DISABLED" and deleting the commits it was sparing -- with both suites
+# fully green. A universal gate satisfied by emptying its domain.
 printf 'GATE_SCOPE_BRANCHES=""\nGATE_SCOPE_COMMITS=15\n' > "$SCOPETMP/none.env"
 out=$(run_scope "$SCOPETMP/none.env"); rc=$?
-case "$out" in
-  *"branch commit(s) on [none]"*) ok "the scope file's branch list is what the branch phase reads" ;;
-  *) no "an empty scope branch list did not reach the branch phase (exit $rc): $out" ;;
-esac
+[ "$rc" = 2 ] && grep -q "no words in it" <<<"$out" \
+  && ok "a scope FILE naming no branch exits 2 rather than judging nothing" \
+  || no "an empty scope branch list in the file was accepted or refused elsewhere (exit $rc): $out"
+
+# WHITESPACE IS THE SHAPE `-n` CANNOT SEE, and it is the one that got past
+# the first version of this guard: "   " is non-empty to every presence test
+# and yields zero words to the loop that consumes it.
+printf 'GATE_SCOPE_BRANCHES="   "\nGATE_SCOPE_COMMITS=15\n' > "$SCOPETMP/blank.env"
+out=$(run_scope "$SCOPETMP/blank.env"); rc=$?
+[ "$rc" = 2 ] && grep -q "no words in it" <<<"$out" \
+  && ok "a scope FILE whose branch list is only whitespace exits 2 (presence is not the property)" \
+  || no "a whitespace-only scope branch list was accepted or refused elsewhere (exit $rc): $out"
+
+# A TAB IS NOT A SPACE, and driving it rather than assuming showed that it
+# never reaches the word count at all: a literal tab is outside the
+# foreign-content character class, so THAT guard catches it one step earlier.
+# Recorded as the guard that actually fires, because a shape credited to the
+# wrong check is a kill scored for a test that never ran.
+printf 'GATE_SCOPE_BRANCHES="\t"\nGATE_SCOPE_COMMITS=15\n' > "$SCOPETMP/tab.env"
+out=$(run_scope "$SCOPETMP/tab.env"); rc=$?
+[ "$rc" = 2 ] && grep -q "neither a comment nor a plain" <<<"$out" \
+  && ok "a scope FILE whose branch list is a single tab exits 2 (as foreign content, one guard earlier)" \
+  || no "a tab-only scope branch list was accepted or refused elsewhere (exit $rc): $out"
+
+# THE OTHER DIRECTION: one branch is still one branch. A word count that
+# refused a legal single-branch scope would be the refusal-only guard this
+# rule exists to prevent.
+printf 'GATE_SCOPE_BRANCHES="dev"\nGATE_SCOPE_COMMITS=15\n' > "$SCOPETMP/one.env"
+out=$(run_scope "$SCOPETMP/one.env"); rc=$?
+[ "$rc" != 2 ] && ok "a scope naming exactly one branch is still ACCEPTED" \
+  || no "the word count refused a legal single-branch scope: $out"
+
+# --- the depth is a COUNT, not a string (#874) -------------------------
+# It goes onto the query as per_page. `0` reconciles nothing, `abc` is not a
+# number, and `15` written with a CRLF ending carries a character the API
+# does not want -- all three read as configuration and none is one.
+printf 'GATE_SCOPE_BRANCHES="dev"\nGATE_SCOPE_COMMITS=0\n' > "$SCOPETMP/zero.env"
+out=$(run_scope "$SCOPETMP/zero.env"); rc=$?
+[ "$rc" = 2 ] && grep -q "not a positive integer" <<<"$out" \
+  && ok "a scope depth of 0 exits 2 (a page of nothing is not a scope)" \
+  || no "a zero depth was accepted or refused elsewhere (exit $rc): $out"
+printf 'GATE_SCOPE_BRANCHES="dev"\nGATE_SCOPE_COMMITS=abc\n' > "$SCOPETMP/abc.env"
+out=$(run_scope "$SCOPETMP/abc.env"); rc=$?
+[ "$rc" = 2 ] && grep -q "not a positive integer" <<<"$out" \
+  && ok "a non-numeric scope depth exits 2" \
+  || no "a non-numeric depth was accepted or refused elsewhere (exit $rc): $out"
+printf 'GATE_SCOPE_BRANCHES="dev"\r\nGATE_SCOPE_COMMITS=15\r\n' > "$SCOPETMP/crlf.env"
+out=$(run_scope "$SCOPETMP/crlf.env"); rc=$?
+[ "$rc" = 2 ] && grep -q "CRLF line endings" <<<"$out" \
+  && ok "a CRLF scope file exits 2 rather than querying a branch named dev<CR>" \
+  || no "a CRLF scope file was accepted or refused elsewhere (exit $rc): $out"
+
+# --- a duplicated key is a second enumeration inside the file (#874) ----
+# Every line below is individually legal, so the foreign-content guard
+# passes it and the shell takes the last one. Measured 2026-08-28 against
+# the code as it stood: this narrowed both gates from 15 commits to 1 with
+# both suites green. Asserted by EXIT CODE.
+printf 'GATE_SCOPE_BRANCHES="dev"\nGATE_SCOPE_COMMITS=15\nGATE_SCOPE_COMMITS=1\n' > "$SCOPETMP/dupc.env"
+out=$(run_scope "$SCOPETMP/dupc.env"); rc=$?
+[ "$rc" = 2 ] && grep -q "more than once" <<<"$out" \
+  && ok "a scope file assigning GATE_SCOPE_COMMITS twice exits 2" \
+  || no "a duplicated depth key was accepted or refused elsewhere (exit $rc): $out"
+printf 'GATE_SCOPE_BRANCHES="dev"\nGATE_SCOPE_BRANCHES=""\nGATE_SCOPE_COMMITS=15\n' > "$SCOPETMP/dupb.env"
+out=$(run_scope "$SCOPETMP/dupb.env"); rc=$?
+[ "$rc" = 2 ] && grep -q "more than once" <<<"$out" \
+  && ok "a scope file assigning GATE_SCOPE_BRANCHES twice exits 2" \
+  || no "a duplicated branch key was accepted or refused elsewhere (exit $rc): $out"
+
+# --- the scope path being a DIRECTORY names the right refusal ----------
+# `-r` alone is true of a directory. Exit 2 was already preserved by the
+# completeness check below it; the DIAGNOSIS was not, and the diagnosis is
+# the entire product of a gate that runs unattended.
+out=$(run_scope "$SCOPETMP"); rc=$?
+[ "$rc" = 2 ] && grep -q "cannot read the branch scope" <<<"$out" \
+  && ok "a scope path that is a directory refuses as unreadable, not as incomplete" \
+  || no "a directory scope path gave the wrong diagnosis (exit $rc): $out"
 # THE DEPTH IN THE FILE MUST BE THE DEPTH ON THE WIRE. Existence and
 # completeness are not the property. A gate that read the file, ignored it
 # and used a built-in default would pass every assertion above while
@@ -600,12 +712,17 @@ SHIPPED_SCOPE="$HERE/../.github/gate-branch-scope.env"
 # fully green -- the branch half of this design silently absent with
 # nothing red anywhere. Existence was never the property.
 if [ -r "$SHIPPED_SCOPE" ]; then
+    # COUNT WORDS, do not test presence. `-n` is one character to the side of
+    # the property and passes on "   ", which yields zero branches to the
+    # loop that consumes it -- measured 2026-08-28, with both suites green.
     ( set -u
       # shellcheck disable=SC1090
       . "$SHIPPED_SCOPE"
-      [ -n "${GATE_SCOPE_BRANCHES:-}" ] && [ -n "${GATE_SCOPE_COMMITS:-}" ] ) \
-      && ok "the shipped scope names at least one branch and a depth" \
-      || no "the shipped scope is empty or incomplete -- the branch phase is silently off"
+      # shellcheck disable=SC2086
+      [ "$(set -- ${GATE_SCOPE_BRANCHES:-}; echo $#)" -ge 1 ] \
+        && [ -n "${GATE_SCOPE_COMMITS:-}" ] ) \
+      && ok "the shipped scope names at least one branch (counted as words) and a depth" \
+      || no "the shipped scope names no branch or no depth -- the branch phase is silently off"
 fi
 
 # --- the scope file cannot smuggle this gate's configuration -----------

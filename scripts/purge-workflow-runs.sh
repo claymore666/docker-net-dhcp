@@ -129,10 +129,27 @@ KEEP_BRANCH_COMMITS="${KEEP_BRANCH_COMMITS:-1}"
 # deleting the evidence a scheduled gate then demands is not.
 if [ "$KEEP_BRANCH_COMMITS" != "0" ]; then
     SCOPE_FILE="${GATE_SCOPE_FILE:-$(dirname "$0")/../.github/gate-branch-scope.env}"
-    if [ ! -r "$SCOPE_FILE" ]; then
-        echo "::error title=No branch scope::cannot read ${SCOPE_FILE}, so the branch commits that" \
-             "check-missing-runs.sh reconciles cannot be determined. Refusing rather than deleting" \
-             "the run records that gate reads (#874)." >&2
+    if [ ! -f "$SCOPE_FILE" ] || [ ! -r "$SCOPE_FILE" ]; then
+        # `-f` as well as `-r`, because a DIRECTORY is readable. Without it a
+        # scope path that names a directory sails past this test, fails to
+        # source, and is then caught by the completeness check below under the
+        # wrong diagnosis -- "incomplete" for a file that was never a file.
+        # Exit 2 was preserved; the diagnosis is the product of a gate that
+        # fires unattended at 03:00.
+        echo "::error title=No branch scope::cannot read ${SCOPE_FILE} as a regular file, so the branch" \
+             "commits that check-missing-runs.sh reconciles cannot be determined. Refusing rather than" \
+             "deleting the run records that gate reads (#874)." >&2
+        exit 2
+    fi
+    # A CARRIAGE RETURN IS WHITESPACE TO grep AND A CHARACTER TO THE API.
+    # A CRLF-saved scope file sources GATE_SCOPE_BRANCHES as `dev<CR>`: the
+    # guard below accepts it (CR is in [[:space:]], so the anchored `$` still
+    # matches) and the value then goes onto the commit query as a branch that
+    # does not exist -- rule 5 protecting nothing while printing a count.
+    if grep -qF "$(printf '\r')" "$SCOPE_FILE"; then
+        echo "::error title=Branch scope has carriage returns::${SCOPE_FILE} has CRLF line endings, so" \
+             "its values would carry a trailing carriage return onto the commit query and protect" \
+             "nothing. Refusing (#874)." >&2
         exit 2
     fi
     # NOTHING IN THAT FILE BUT THE TWO KEYS. It is SOURCED, so every other
@@ -160,12 +177,76 @@ if [ "$KEEP_BRANCH_COMMITS" != "0" ]; then
              "and it deletes run records. Refusing (#874). Offending line(s): ${scope_foreign}" >&2
         exit 2
     fi
+    # A DUPLICATED KEY IS LAST-WINS, AND EVERY LINE OF IT IS INDIVIDUALLY
+    # LEGAL, so the guard above passes it. Measured 2026-08-28 against the
+    # code as it stood: appending `GATE_SCOPE_COMMITS=1` to the shipped file
+    # narrowed both gates from 15 commits per branch to 1 with both self-test
+    # suites fully green, and appending a second `GATE_SCOPE_BRANCHES=""`
+    # printed "rule DISABLED" and deleted the branch commits keep rule 5
+    # exists to spare. A second definition IS a second enumeration, which is
+    # the defect this file was created to remove -- arriving inside the file.
+    scope_dups=$(sed -nE 's/^[[:space:]]*(GATE_SCOPE_(BRANCHES|COMMITS))=.*/\1/p' "$SCOPE_FILE" \
+        | sort | uniq -d | tr '\n' ' ')
+    if [ -n "${scope_dups% }" ]; then
+        echo "::error title=Branch scope defines a key twice::${SCOPE_FILE} assigns ${scope_dups}more" \
+             "than once. The file is sourced, so the last assignment silently wins and the population" \
+             "this purge spares narrows below the one check-missing-runs.sh reconciles. Refusing (#874)." >&2
+        exit 2
+    fi
+    # UNSET BEFORE SOURCING. The completeness check below has to be satisfied
+    # by the FILE and by nothing else; an exported GATE_SCOPE_BRANCHES in the
+    # environment would otherwise stand in for a file that failed to load, and
+    # this script deletes run records.
+    unset GATE_SCOPE_BRANCHES GATE_SCOPE_COMMITS
     # shellcheck source=../.github/gate-branch-scope.env disable=SC1091
-    . "$SCOPE_FILE"
+    if ! . "$SCOPE_FILE"; then
+        echo "::error title=No branch scope::${SCOPE_FILE} could not be sourced, so the branch commits" \
+             "check-missing-runs.sh reconciles cannot be determined. Refusing (#874)." >&2
+        exit 2
+    fi
     if [ -z "${GATE_SCOPE_BRANCHES+x}" ] || [ -z "${GATE_SCOPE_COMMITS:-}" ]; then
         echo "::error title=Branch scope incomplete::${SCOPE_FILE} does not define both" \
              "GATE_SCOPE_BRANCHES and GATE_SCOPE_COMMITS. Refusing rather than protecting a" \
              "narrower population than check-missing-runs.sh reconciles (#874)." >&2
+        exit 2
+    fi
+    # A BRANCH LIST WITH NO WORDS IS NOT A BRANCH LIST, AND `-n` CANNOT TELL.
+    # Measured 2026-08-28: GATE_SCOPE_BRANCHES="   " satisfies the foreign
+    # content guard (space is in its character class), satisfies every `-n`
+    # presence test in both self-test suites, and then makes `for br in
+    # $BRANCHES` below iterate ZERO times -- so the shape refusal inside that
+    # loop never runs, this purge deletes the branch commits keep rule 5
+    # exists to spare, and it exits 0 printing "0 commit(s) protected across
+    # [   ]" as though that were a count. Presence is one character to the
+    # side of the property; count WORDS.
+    #
+    # Emptiness stays legal through the GATE_BRANCHES environment seam, which
+    # is where the self-tests need it. It is never legal in the file.
+    # shellcheck disable=SC2086
+    # WHAT THIS COUNT DEPENDS ON, because it depends on a neighbour: `set --`
+    # performs pathname expansion, and so does the `for br in $BRANCHES` that
+    # consumes the list further down. Neither can glob only because the
+    # foreign-content class above admits no `*` or `?`. If that class is ever
+    # widened, BOTH sites need `set -f` -- hardening one of the two would look
+    # like the problem was handled.
+    if [ "$(set -- $GATE_SCOPE_BRANCHES; echo $#)" -eq 0 ]; then
+        echo "::error title=Branch scope names no branch::${SCOPE_FILE} sets GATE_SCOPE_BRANCHES to a" \
+             "value with no words in it, which disarms keep rule 5 while it reports a count of zero as" \
+             "success. Refusing rather than deleting the run records check-missing-runs.sh reads (#874)." >&2
+        exit 2
+    fi
+    # And the depth has to be a positive integer, for the same reason one
+    # level down: it goes onto the query as per_page, where `0`, `abc` or a
+    # value carrying a stray character protects a population of nothing.
+    scope_depth_ok=1
+    case "$GATE_SCOPE_COMMITS" in
+        ''|*[!0-9]*) scope_depth_ok=0 ;;
+        *) [ "$GATE_SCOPE_COMMITS" -ge 1 ] || scope_depth_ok=0 ;;
+    esac
+    if [ "$scope_depth_ok" -eq 0 ]; then
+        echo "::error title=Branch scope depth is not a count::${SCOPE_FILE} sets GATE_SCOPE_COMMITS to" \
+             "'${GATE_SCOPE_COMMITS}', which is not a positive integer; it goes onto the commit query as" \
+             "per_page and would protect nothing. Refusing (#874)." >&2
         exit 2
     fi
     BRANCHES="${GATE_BRANCHES-$GATE_SCOPE_BRANCHES}"

@@ -96,8 +96,21 @@ GRACE_MIN="${1:-20}"
 # would let the two gates disagree while both looked healthy, which is the
 # whole failure being closed.
 SCOPE_FILE="${GATE_SCOPE_FILE:-$(dirname "$0")/../.github/gate-branch-scope.env}"
-if [ ! -r "$SCOPE_FILE" ]; then
-    echo "check-missing-runs: cannot read the branch scope at ${SCOPE_FILE} — cannot judge" >&2
+# `-f` as well as `-r`: a DIRECTORY is readable, and a scope path naming one
+# would otherwise pass here, fail to source, and be caught below under the
+# wrong diagnosis. Exit 2 is not the product of this gate; the diagnosis is.
+if [ ! -f "$SCOPE_FILE" ] || [ ! -r "$SCOPE_FILE" ]; then
+    echo "check-missing-runs: cannot read the branch scope at ${SCOPE_FILE} as a regular file — cannot judge" >&2
+    exit 2
+fi
+# A CARRIAGE RETURN IS WHITESPACE TO grep AND A CHARACTER TO THE API. A
+# CRLF-saved scope file sources GATE_SCOPE_BRANCHES as `dev<CR>`: the guard
+# below accepts it (CR is in [[:space:]], so the anchored `$` still matches)
+# and the value goes onto the commit query as a branch that does not exist,
+# so this gate reconciles nothing and says every commit is covered.
+if grep -qF "$(printf '\r')" "$SCOPE_FILE"; then
+    echo "check-missing-runs: ${SCOPE_FILE} has CRLF line endings, so its values would carry a" \
+         "trailing carriage return onto the commit query — cannot judge" >&2
     exit 2
 fi
 # NOTHING IN THAT FILE BUT THE TWO KEYS. It is SOURCED, so every other
@@ -120,10 +133,64 @@ if [ -n "$scope_foreign" ]; then
          "reconfigures this gate — cannot judge. Offending line(s): ${scope_foreign}" >&2
     exit 2
 fi
+# A DUPLICATED KEY IS LAST-WINS AND EVERY LINE OF IT IS INDIVIDUALLY LEGAL,
+# so the guard above passes it. Measured 2026-08-28 against the code as it
+# stood: appending `GATE_SCOPE_COMMITS=1` to the shipped file narrowed both
+# gates from 15 commits per branch to 1 with both self-test suites fully
+# green. A second definition IS a second enumeration, which is the defect
+# this file was created to remove -- arriving inside the file.
+scope_dups=$(sed -nE 's/^[[:space:]]*(GATE_SCOPE_(BRANCHES|COMMITS))=.*/\1/p' "$SCOPE_FILE" \
+    | sort | uniq -d | tr '\n' ' ')
+if [ -n "${scope_dups% }" ]; then
+    echo "check-missing-runs: ${SCOPE_FILE} assigns ${scope_dups}more than once; the file is sourced," \
+         "so the last assignment silently wins and the population narrows — cannot judge" >&2
+    exit 2
+fi
+# UNSET BEFORE SOURCING, so the completeness check below is satisfied by the
+# FILE and not by an exported value standing in for a file that failed to load.
+unset GATE_SCOPE_BRANCHES GATE_SCOPE_COMMITS
 # shellcheck source=../.github/gate-branch-scope.env disable=SC1091
-. "$SCOPE_FILE"
+if ! . "$SCOPE_FILE"; then
+    echo "check-missing-runs: ${SCOPE_FILE} could not be sourced — cannot judge" >&2
+    exit 2
+fi
 if [ -z "${GATE_SCOPE_BRANCHES+x}" ] || [ -z "${GATE_SCOPE_COMMITS:-}" ]; then
     echo "check-missing-runs: ${SCOPE_FILE} does not define GATE_SCOPE_BRANCHES and GATE_SCOPE_COMMITS — cannot judge" >&2
+    exit 2
+fi
+# A BRANCH LIST WITH NO WORDS IS NOT A BRANCH LIST, AND `-n` CANNOT TELL.
+# Measured 2026-08-28: GATE_SCOPE_BRANCHES="   " satisfies the foreign
+# content guard (space is in its character class), satisfies every `-n`
+# presence test in both self-test suites, and then makes `for br in
+# $BRANCHES` iterate ZERO times -- this gate reports "0 branch commit(s) on
+# [   ], all have an executed run" and exits 0, while the purge deletes the
+# very commits it was reconciling. Presence is one character to the side of
+# the property; count WORDS.
+#
+# Emptiness stays legal through the GATE_BRANCHES environment seam, which is
+# where the self-tests need it. It is never legal in the file.
+# shellcheck disable=SC2086
+# WHAT THIS COUNT DEPENDS ON, because it depends on a neighbour: `set --`
+# performs pathname expansion, and so does the `for br in $BRANCHES` that
+# consumes the list further down. Neither can glob only because the
+# foreign-content class above admits no `*` or `?`. If that class is ever
+# widened, BOTH sites need `set -f` -- hardening one of the two would look
+# like the problem was handled.
+if [ "$(set -- $GATE_SCOPE_BRANCHES; echo $#)" -eq 0 ]; then
+    echo "check-missing-runs: ${SCOPE_FILE} sets GATE_SCOPE_BRANCHES to a value with no words in it," \
+         "which silently turns the branch phase off on this gate and on the purge — cannot judge" >&2
+    exit 2
+fi
+# And the depth has to be a positive integer: it goes onto the query as
+# per_page, where `0`, `abc` or a stray character reconciles nothing.
+scope_depth_ok=1
+case "$GATE_SCOPE_COMMITS" in
+    ''|*[!0-9]*) scope_depth_ok=0 ;;
+    *) [ "$GATE_SCOPE_COMMITS" -ge 1 ] || scope_depth_ok=0 ;;
+esac
+if [ "$scope_depth_ok" -eq 0 ]; then
+    echo "check-missing-runs: ${SCOPE_FILE} sets GATE_SCOPE_COMMITS to '${GATE_SCOPE_COMMITS}', which is" \
+         "not a positive integer; it goes onto the commit query as per_page — cannot judge" >&2
     exit 2
 fi
 
@@ -212,7 +279,6 @@ if [ -f "$RECOVERED_FILE" ]; then
         recovered="${recovered}${rsha} ${robs} ${rrun}${rec_nl}"
     done < "$RECOVERED_FILE"
 fi
-rec_used=0
 
 now=$(date -u +%s)
 missing=0
@@ -301,7 +367,6 @@ while IFS=$'\t' read -r num head branch _ draft; do
             fi
             echo "  PR #${num}${d} [${branch}] head ${head:0:8}: no surviving run, but run $3 observed it" \
                  "tested on $2 before the record was deleted (${wverdict}; ${RECOVERED_FILE})"
-            rec_used=$((rec_used + 1))
             continue
         fi
         echo "  PR #${num}${d} [${branch}] head ${head:0:8} pushed ${age_min}m ago has NO workflow run"
