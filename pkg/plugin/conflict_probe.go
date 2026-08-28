@@ -571,6 +571,31 @@ func macsEqual(a, b net.HardwareAddr) bool {
 	return true
 }
 
+// dispatchConflictProbe launches the post-lease probe and records that
+// it was launched, in that order and in one place.
+//
+// The count is taken SYNCHRONOUSLY, here, before the goroutine starts.
+// Taking it inside checkAddressConflict would put it on the far side of
+// the scheduler: a caller that has returned could not then tell whether
+// a probe it had just dispatched was still in flight or had never been
+// dispatched at all, which are the two readings the census has to
+// separate (#881).
+//
+// Both call sites go through this rather than writing `go
+// p.checkAddressConflict(...)` themselves, so the counter and the launch
+// cannot drift apart — the shape that let #551's premise go stale while
+// reading as true.
+func (p *Plugin) dispatchConflictProbe(parent, cidr, mac, endpointID, networkID string) {
+	p.conflictProbesDispatched.Add(1)
+	log.WithFields(log.Fields{
+		"network":  shortID(networkID),
+		"endpoint": shortID(endpointID),
+		"parent":   parent,
+		"address":  cidr,
+	}).Info("[conflict-probe] dispatched")
+	go p.checkAddressConflict(parent, cidr, mac, endpointID, networkID)
+}
+
 // checkAddressConflict runs the probe for a freshly-leased endpoint and
 // records the outcome. It is called asynchronously: nothing about
 // CreateEndpoint's result depends on it, which is what lets the `-A`
@@ -580,7 +605,32 @@ func macsEqual(a, b net.HardwareAddr) bool {
 // and outlives the endpoint being moved into the container's netns, so
 // running late cannot race Join.
 func (p *Plugin) checkAddressConflict(parent, cidr, mac, endpointID, networkID string) {
+	// Deferred, not placed at each return: this has to cover every
+	// terminal exit including ones added later, and the one immediately
+	// below which increments neither outcome counter. A settled count
+	// that misses an exit reintroduces exactly the ambiguity the probe
+	// counters exist to remove (#881).
+	outcome := "no-verdict"
+	defer func() {
+		p.conflictProbesSettled.Add(1)
+		log.WithFields(log.Fields{
+			"network":  shortID(networkID),
+			"endpoint": shortID(endpointID),
+			"outcome":  outcome,
+		}).Info("[conflict-probe] settled")
+	}()
+
+	// A probe with no parent or no address cannot run. This exit
+	// incremented nothing and logged nothing before #881, so an endpoint
+	// that reached it was invisible to the counters AND to the log
+	// census — the blindness #551 closes, one level further in.
 	if parent == "" || cidr == "" {
+		outcome = "not-runnable"
+		log.WithFields(log.Fields{
+			"endpoint": shortID(endpointID),
+			"parent":   parent,
+			"address":  cidr,
+		}).Warn("[conflict-probe] no parent or address; address conflict not checked")
 		return
 	}
 	// The subnet is load-bearing, not decoration: it is what lets the
@@ -594,6 +644,7 @@ func (p *Plugin) checkAddressConflict(parent, cidr, mac, endpointID, networkID s
 				"endpoint": shortID(endpointID),
 				"address":  cidr,
 			}).Warn("[conflict-probe] cannot parse leased address; address conflict not checked")
+			outcome = "parse-address-failed"
 			p.conflictProbeFailures.Add(1)
 			return
 		}
@@ -608,6 +659,7 @@ func (p *Plugin) checkAddressConflict(parent, cidr, mac, endpointID, networkID s
 			"endpoint":    shortID(endpointID),
 			"mac_address": mac,
 		}).Warn("[conflict-probe] cannot parse endpoint MAC; address conflict not checked")
+		outcome = "parse-mac-failed"
 		p.conflictProbeFailures.Add(1)
 		return
 	}
@@ -629,12 +681,14 @@ func (p *Plugin) checkAddressConflict(parent, cidr, mac, endpointID, networkID s
 			"address":  ip,
 			"error":    err,
 		}).Warn("[conflict-probe] address-conflict probe could not run")
+		outcome = "probe-failed"
 		p.conflictProbeFailures.Add(1)
 		return
 	}
 	// A verdict was reached — clean or not. Counted before the branch
 	// so both outcomes land in it.
 	p.addressConflictProbes.Add(1)
+	outcome = "clean"
 
 	if foreign == nil {
 		log.WithFields(log.Fields{
@@ -644,6 +698,7 @@ func (p *Plugin) checkAddressConflict(parent, cidr, mac, endpointID, networkID s
 		return
 	}
 
+	outcome = "conflict"
 	p.addressConflicts.Add(1)
 	// Every fact needed to find the other device, in one line: the
 	// production incident this comes from was diagnosed from exactly

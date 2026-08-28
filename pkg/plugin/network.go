@@ -1142,7 +1142,7 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 	// endpoint answers, and a probe that only asked "did anything reply?"
 	// would report every single endpoint as a conflict.
 	if res.Interface.Address != "" {
-		go p.checkAddressConflict(opts.Bridge, res.Interface.Address, mac, r.EndpointID, r.NetworkID)
+		p.dispatchConflictProbe(opts.Bridge, res.Interface.Address, mac, r.EndpointID, r.NetworkID)
 	}
 
 	log.WithFields(log.Fields{

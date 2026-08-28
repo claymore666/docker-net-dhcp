@@ -542,7 +542,7 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 	// the parent link in the host namespace, so it cannot be raced by
 	// Docker moving the child into the container's netns.
 	if res.Interface.Address != "" {
-		go p.checkAddressConflict(opts.Parent, res.Interface.Address, hintMAC, r.EndpointID, r.NetworkID)
+		p.dispatchConflictProbe(opts.Parent, res.Interface.Address, hintMAC, r.EndpointID, r.NetworkID)
 	}
 
 	log.WithFields(log.Fields{

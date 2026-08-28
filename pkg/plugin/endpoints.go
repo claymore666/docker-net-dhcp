@@ -558,6 +558,18 @@ type HealthResponse struct {
 	// detector did not run, not that the segment is clean.
 	AddressConflictProbes int32 `json:"address_conflict_probes"`
 
+	// ConflictProbesDispatched / ConflictProbesSettled bound the probe's
+	// own population (#881). Read address_conflict_probes against
+	// DISPATCHED, never against leases_obtained: the latter is bumped by
+	// the persistent client's bound event and counts endpoints this
+	// process may never have created, so across a plugin restart it
+	// reports probes as missing that were never this process's to run.
+	//
+	// dispatched > settled means probes are still IN FLIGHT, which is the
+	// only way a reader can tell "not finished yet" from "never ran".
+	ConflictProbesDispatched int32 `json:"conflict_probes_dispatched"`
+	ConflictProbesSettled    int32 `json:"conflict_probes_settled"`
+
 	// SandboxNetnsVisible is how many sandbox netns entries the plugin
 	// can currently see, or -1 when it cannot read the directory at all
 	// (#567). Sampled at request time rather than accumulated — it
@@ -862,6 +874,8 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		ConflictProbeStaleRoutes:     p.conflictProbeStaleRoutes.Load(),
 		ConflictProbeStaleAddrs:      p.conflictProbeStaleAddrs.Load(),
 		AddressConflictProbes:        p.addressConflictProbes.Load(),
+		ConflictProbesDispatched:     p.conflictProbesDispatched.Load(),
+		ConflictProbesSettled:        p.conflictProbesSettled.Load(),
 		SandboxNetnsVisible:          sandboxNetnsVisibleIn(sandboxNetnsDirs),
 		LeasesObtained:               leasesObtainedV4 + leasesObtainedV6,
 		LeasesRenewed:                leasesRenewedV4 + leasesRenewedV6,

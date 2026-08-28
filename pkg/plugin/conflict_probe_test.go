@@ -146,7 +146,12 @@ func TestApiHealth_AddressConflictIsUnhealthy(t *testing.T) {
 	}
 
 	// Pin the wire keys — an operator's alert is written against these.
-	for _, key := range []string{"address_conflicts", "conflict_probe_failures", "address_conflict_probes"} {
+	for _, key := range []string{"address_conflicts", "conflict_probe_failures", "address_conflict_probes",
+		// The census cannot be judged without these, and the floor
+		// treats an absent counter as unjudgeable rather than as zero —
+		// so an operator alert and the gate both depend on the wire
+		// keys being here (#881).
+		"conflict_probes_dispatched", "conflict_probes_settled"} {
 		if !strings.Contains(rec.Body.String(), key) {
 			t.Errorf("Health JSON missing %q field", key)
 		}
@@ -386,4 +391,100 @@ func TestPickProbeSource(t *testing.T) {
 			t.Fatal("expected an error when the parent's addresses cannot be read")
 		}
 	})
+}
+
+// EVERY terminal exit of the probe must settle (#881).
+//
+// The census behind address_conflict_probes can only distinguish "still
+// running" from "never ran" if the settled count covers every way out of
+// checkAddressConflict — including the no-parent/no-address exit, which
+// before #881 incremented nothing and logged nothing and was therefore
+// invisible to the counters AND to the whole-run log census.
+//
+// Driven as a table over every exit rather than asserted once on a happy
+// path: an exit that stops settling is exactly the shape that reads as a
+// probe still in flight, and a floor joining on settled == dispatched
+// would then wait out its budget and fail a healthy run.
+func TestCheckAddressConflict_EveryExitSettles(t *testing.T) {
+	cases := []struct {
+		name              string
+		parent, cidr, mac string
+	}{
+		{"no parent", "", "192.0.2.10/24", "00:00:5e:00:53:01"},
+		{"no address", "eth0", "", "00:00:5e:00:53:01"},
+		{"unparseable address", "eth0", "not-an-address", "00:00:5e:00:53:01"},
+		{"unparseable MAC", "eth0", "192.0.2.10/24", "not-a-mac"},
+		{"empty MAC", "eth0", "192.0.2.10/24", ""},
+		{"probe cannot run on a missing link", "definitely-no-such-link0", "192.0.2.10/24", "00:00:5e:00:53:01"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := newHealthPlugin()
+			p.checkAddressConflict(tc.parent, tc.cidr, tc.mac, "endpoint-id", "network-id")
+			if got := p.conflictProbesSettled.Load(); got != 1 {
+				t.Errorf("conflict_probes_settled = %d after a probe returned, want 1. "+
+					"An exit that does not settle is indistinguishable from a probe still "+
+					"running, which is the ambiguity #881 closes.", got)
+			}
+		})
+	}
+}
+
+// The dispatch count must be taken SYNCHRONOUSLY, before the goroutine
+// starts (#881).
+//
+// This is what makes the join meaningful. If the increment moved inside
+// checkAddressConflict it would land on the far side of the scheduler,
+// and a caller that had just dispatched a probe could not tell a probe
+// in flight from one never dispatched — the two readings the census
+// exists to separate.
+//
+// Asserted without waiting for anything: the count has to be visible the
+// instant dispatchConflictProbe returns.
+func TestDispatchConflictProbe_CountsBeforeTheGoroutineRuns(t *testing.T) {
+	p := newHealthPlugin()
+
+	// An unresolvable parent, so the probe itself fails fast and cannot
+	// influence the dispatched count either way.
+	p.dispatchConflictProbe("definitely-no-such-link0", "192.0.2.10/24",
+		"00:00:5e:00:53:01", "endpoint-id", "network-id")
+
+	if got := p.conflictProbesDispatched.Load(); got != 1 {
+		t.Fatalf("conflict_probes_dispatched = %d immediately after dispatch, want 1. "+
+			"A count taken inside the goroutine cannot be read by the caller that "+
+			"dispatched it, which is what the floor's join depends on.", got)
+	}
+}
+
+// Dispatched and settled must converge, and the invariant is directional:
+// settled never exceeds dispatched.
+//
+// A settled count that ran ahead would make the floor's join succeed
+// while probes were still outstanding, which is the false-green
+// counterpart of the false red #881 reports.
+func TestConflictProbe_SettledNeverExceedsDispatched(t *testing.T) {
+	p := newHealthPlugin()
+	for i := 0; i < 5; i++ {
+		p.dispatchConflictProbe("definitely-no-such-link0", "192.0.2.10/24",
+			"00:00:5e:00:53:01", "endpoint-id", "network-id")
+	}
+	// Converge on the stated condition rather than on a duration.
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		d, s := p.conflictProbesDispatched.Load(), p.conflictProbesSettled.Load()
+		if s > d {
+			t.Fatalf("conflict_probes_settled = %d exceeds dispatched = %d; the join would "+
+				"report no probes outstanding while some were still running", s, d)
+		}
+		if s == d {
+			break
+		}
+		if !time.Now().Before(deadline) {
+			t.Fatalf("probes did not settle: dispatched = %d, settled = %d", d, s)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := p.conflictProbesDispatched.Load(); got != 5 {
+		t.Errorf("conflict_probes_dispatched = %d, want 5", got)
+	}
 }

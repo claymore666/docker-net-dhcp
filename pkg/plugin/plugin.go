@@ -942,6 +942,38 @@ type Plugin struct {
 	// evidence of a clean segment if this advanced.
 	addressConflictProbes atomic.Int32
 
+	// conflictProbesDispatched / conflictProbesSettled bound the probe's
+	// own population, which nothing did before #881.
+	//
+	// The census gate behind address_conflict_probes used to judge it
+	// against leases_obtained. Those are DIFFERENT POPULATIONS:
+	// leases_obtained is bumped by the persistent client's "bound" event
+	// (dhcpManager.handleEvent), while the probe is dispatched from
+	// CreateEndpoint. They diverge across a plugin restart — recovery
+	// re-attaches an existing endpoint and its client binds, in a process
+	// that never created that endpoint and so never dispatched a probe for
+	// it. The gate read that correct behaviour as "the detector stopped
+	// working" and failed a run in which every test passed.
+	//
+	// dispatched is incremented SYNCHRONOUSLY at the dispatch site, before
+	// the goroutine is launched; settled is incremented from a DEFER at the
+	// top of checkAddressConflict. Two consequences, both load-bearing:
+	//
+	//   - settled covers every terminal exit, including the one that
+	//     increments neither address_conflict_probes nor
+	//     conflict_probe_failures and logs nothing — and any exit added
+	//     later. A defer is the only form that covers an exit which does
+	//     not exist yet.
+	//   - dispatched > settled means probes are IN FLIGHT. That is what
+	//     lets a reader join them on a stated condition instead of waiting
+	//     a duration and hoping. A floor that reads the counters while a
+	//     probe is still running is reading a number that has not finished
+	//     being produced.
+	//
+	// Invariant: settled <= dispatched, and at rest settled == dispatched.
+	conflictProbesDispatched atomic.Int32
+	conflictProbesSettled    atomic.Int32
+
 	// leasesObtainedV4 / leasesRenewedV4 / dhcpTimeoutsV4 / clientStopFailuresV4
 	// expose DHCP-wire-level counters via /Plugin.Health (T2-4). They
 	// complement the lease_changed signal and let operators alert on

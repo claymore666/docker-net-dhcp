@@ -815,13 +815,27 @@ func TestConflictProbeLine(t *testing.T) {
 			want: nil,
 		},
 		{
-			name: "no probes is explicitly not evidence",
-			h:    &HealthResponse{},
-			want: []string{"not\n  evidence", "absence of a measurement"},
+			// Dispatched and no verdict: the plugin was asked and did not
+			// answer. This is the reading that used to be printed for
+			// BOTH of these cases (#881).
+			name: "dispatched with no verdict is explicitly not evidence",
+			h:    &HealthResponse{ConflictProbesDispatched: 3, ConflictProbesSettled: 3},
+			want: []string{"3 probe(s) were dispatched", "absence of a measurement"},
 			// Deny the AFFIRMATIVE claim, not the substring: this line
 			// legitimately says "is not evidence the segment was clean",
 			// and a looser check would have failed on the right answer.
 			deny: []string{"detector ran and the segment was clean"},
+		},
+		{
+			// Nothing dispatched: nothing was asked. Distinct from the
+			// case above and it must not borrow its wording, because a
+			// v6-only shard reaching this is correct and a detector that
+			// stopped working reaching the case above is not.
+			name: "nothing dispatched is the honest empty case",
+			h:    &HealthResponse{},
+			want: []string{"no probe was dispatched", "nothing was asked"},
+			deny: []string{"were dispatched and none reached a verdict",
+				"detector ran and the segment was clean"},
 		},
 		{
 			name: "probes ran clean is stated as observed",

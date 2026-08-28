@@ -148,6 +148,14 @@ net_dhcp_restart_link_up_timeouts_total 2453629
 # TYPE net_dhcp_address_conflict_probes_total counter
 net_dhcp_address_conflict_probes_total 8468506
 
+# HELP net_dhcp_conflict_probes_dispatched_total Post-lease conflict probes launched, counted synchronously at the dispatch site. This is the population address_conflict_probes must be read against; leases_obtained is a different population and reports probes as missing across a plugin restart.
+# TYPE net_dhcp_conflict_probes_dispatched_total counter
+net_dhcp_conflict_probes_dispatched_total 3939035
+
+# HELP net_dhcp_conflict_probes_settled_total Conflict probes that reached any terminal outcome, including the ones that could not run and are counted nowhere else. Equal to conflict_probes_dispatched at rest; less than it means probes are still in flight.
+# TYPE net_dhcp_conflict_probes_settled_total counter
+net_dhcp_conflict_probes_settled_total 4477321
+
 # HELP net_dhcp_address_conflicts_total Leased addresses found already in use by another host. Healthy-affecting.
 # TYPE net_dhcp_address_conflicts_total counter
 net_dhcp_address_conflicts_total 1942014

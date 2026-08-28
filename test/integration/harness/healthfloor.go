@@ -20,6 +20,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 )
 
 // HealthResponse mirrors pkg/plugin.HealthResponse. Duplicated here
@@ -108,6 +109,15 @@ type HealthResponse struct {
 	// anything: zero probes and a clean segment read identically
 	// otherwise.
 	AddressConflictProbes int32 `json:"address_conflict_probes"`
+	// ConflictProbesDispatched is the population the probe actually
+	// covers: endpoints created BY THIS PLUGIN PROCESS that received a v4
+	// address. The census judges address_conflict_probes against this and
+	// never against leases_obtained (#881).
+	ConflictProbesDispatched int32 `json:"conflict_probes_dispatched"`
+	// ConflictProbesSettled is how many of those reached a terminal
+	// outcome. Below dispatched means probes are still IN FLIGHT — a
+	// reading taken then is not yet a result.
+	ConflictProbesSettled int32 `json:"conflict_probes_settled"`
 	// SandboxNetnsVisible is how many sandbox netns entries the plugin
 	// can see, or -1 if it cannot read the directory (#567). Sampled per
 	// request, not accumulated. A pointer so an older plugin that does
@@ -615,10 +625,23 @@ func ConflictProbeLine(h *HealthResponse) string {
 			"CONFLICT PROBE: %d leased address(es) were already held by another device on the\n"+
 				"  segment, out of %d probe(s). The floor fails on this — see above (#524).\n",
 			h.AddressConflicts, h.AddressConflictProbes)
+	// "Nothing was dispatched" and "things were dispatched and none
+	// reached a verdict" are different readings and used to print the
+	// same sentence — the ambiguity this line exists to remove, still
+	// present one level in (#881). Split, so a genuinely v6-only shard
+	// is visible as such instead of being indistinguishable from a
+	// detector that stopped working.
+	case h.AddressConflictProbes == 0 && h.ConflictProbesDispatched == 0:
+		return "CONFLICT PROBE: no probe was dispatched this run — no endpoint was created with a\n" +
+			"  v4 address for one to run on. address_conflicts=0 says nothing about the segment\n" +
+			"  because nothing was asked; this is the honest empty case, not a silent one (#881).\n"
 	case h.AddressConflictProbes == 0:
-		return "CONFLICT PROBE: no probe reached a verdict this run, so address_conflicts=0 is not\n" +
-			"  evidence the segment was clean — it is the absence of a measurement. Either no\n" +
-			"  endpoint was leased a v4 address, or the detector did not run (#524).\n"
+		return fmt.Sprintf(
+			"CONFLICT PROBE: %d probe(s) were dispatched and none reached a verdict, so\n"+
+				"  address_conflicts=0 is not evidence the segment was clean — it is the\n"+
+				"  absence of a measurement the plugin was asked for and did not produce\n"+
+				"  (#524, #881).\n",
+			h.ConflictProbesDispatched)
 	case h.ConflictProbeFailures > 0:
 		return fmt.Sprintf(
 			"CONFLICT PROBE: %d probe(s) reached a verdict and found no conflict, but %d could not\n"+
@@ -971,11 +994,101 @@ func ConflictProbeFailuresInLog(logData []byte) int {
 	return n
 }
 
+// conflictProbeDispatchMsg / conflictProbeSettleMsg are the whole-run
+// instrument behind the counters (#881).
+//
+// The counters reset when the plugin does, and shard 4 of the 5-way
+// split restarts it twice, so a counter-only census judges roughly the
+// last 4% of a 180s run. That is how a DOMAIN gets emptied without
+// anyone choosing to empty it: not by a test opting out, but by a
+// restart landing late enough that the population the gate reasons over
+// is a handful of seconds long. The log spans the run and no restart
+// truncates it — the same argument JoinFailureCensus and
+// ConflictProbeFailuresInLog already make for their halves (#385).
+const (
+	conflictProbeDispatchMsg = "[conflict-probe] dispatched"
+	conflictProbeSettleMsg   = "[conflict-probe] settled"
+)
+
+// ProbesOutstanding reports how many dispatched conflict probes have not
+// yet settled (#881).
+//
+// Positive means a counter read taken now is not a result: the probe is
+// asynchronous, and address_conflict_probes has not finished being
+// written. This is the JOIN CONDITION the floor waits on — a stated
+// property the plugin publishes, not a duration guessed to be long
+// enough.
+//
+// A pure function, and deliberately so: the floor's loop that consumes
+// it lives in the integration-tagged suite and cannot run without a live
+// plugin, so the decision is put where a unit test can reach it and the
+// loop is left as a thin caller.
+func ProbesOutstanding(h *HealthResponse) int32 {
+	if h == nil {
+		return 0
+	}
+	// Never negative. settled > dispatched would be a broken invariant
+	// rather than a reason to wait, and reporting it as "outstanding"
+	// would make the floor wait out its budget on a plugin bug it should
+	// be surfacing instead.
+	if n := h.ConflictProbesDispatched - h.ConflictProbesSettled; n > 0 {
+		return n
+	}
+	return 0
+}
+
+// ConflictProbeJoinFinding judges a join that did not complete.
+//
+// Expiry with probes outstanding is FATAL, never a fall-through. Both
+// alternatives are worse and both are the mistakes this project has
+// already made: judging anyway reports "the detector never ran" for a
+// probe that was still running, which is the false red #881 is about;
+// staying quiet is an opt-out with a timer on it.
+func ConflictProbeJoinFinding(h *HealthResponse, waited time.Duration) []FloorFinding {
+	outstanding := ProbesOutstanding(h)
+	if outstanding == 0 {
+		return nil
+	}
+	return []FloorFinding{{
+		Counter: "conflict_probes_settled",
+		Value:   h.ConflictProbesSettled,
+		Fatal:   true,
+		Why: fmt.Sprintf(
+			"%d conflict probe(s) were dispatched and had not settled %v later "+
+				"(dispatched=%d settled=%d). Every terminal exit of the probe settles, "+
+				"including the ones that increment no outcome counter, so a probe "+
+				"outstanding this long is one that did not return (#881).",
+			outstanding, waited, h.ConflictProbesDispatched, h.ConflictProbesSettled),
+	}}
+}
+
+// ConflictProbeCensusInLog counts probe dispatches and settlements
+// across the WHOLE run.
+//
+// Deliberately NOT folded into ConflictProbeFailuresInLog: that function
+// feeds the failure allowance, and a probe that could not run is not a
+// declared failure. Counting them together would turn every unrunnable
+// probe into an unexplained one and fail runs for the opposite reason.
+func ConflictProbeCensusInLog(logData []byte) (dispatched, settled int) {
+	if len(logData) == 0 {
+		return 0, 0
+	}
+	for _, l := range strings.Split(string(logData), "\n") {
+		switch {
+		case strings.Contains(l, conflictProbeDispatchMsg):
+			dispatched++
+		case strings.Contains(l, conflictProbeSettleMsg):
+			settled++
+		}
+	}
+	return dispatched, settled
+}
+
 // ConflictCensusFindings judges the census. observedInLog is the count
 // from ConflictProbeFailuresInLog; the larger of it and the counter wins,
 // because the counter can only ever under-report after a restart and the
 // log can only under-report if a line was lost.
-func ConflictCensusFindings(h *HealthResponse, allowed int32, observedInLog int, baseline *HealthResponse) []FloorFinding {
+func ConflictCensusFindings(h *HealthResponse, allowed int32, observedInLog int, baseline *HealthResponse, logDispatched, logSettled int) []FloorFinding {
 	if h == nil {
 		return nil
 	}
@@ -984,7 +1097,8 @@ func ConflictCensusFindings(h *HealthResponse, allowed int32, observedInLog int,
 	// point — silently treating <not reported> as 0 would rebuild the
 	// blindness this closes.
 	if h.published != nil {
-		for _, k := range []string{"address_conflict_probes", "conflict_probe_failures"} {
+		for _, k := range []string{"address_conflict_probes", "conflict_probe_failures",
+			"conflict_probes_dispatched", "conflict_probes_settled"} {
 			if _, ok := h.published[k]; !ok {
 				return []FloorFinding{{
 					Counter: k,
@@ -1015,7 +1129,9 @@ func ConflictCensusFindings(h *HealthResponse, allowed int32, observedInLog int,
 	// could be masked by subtracting.
 	probeFailures := deltaSincePluginStart(h.ConflictProbeFailures, base(baseline).ConflictProbeFailures)
 	probes := deltaSincePluginStart(h.AddressConflictProbes, base(baseline).AddressConflictProbes)
-	leases := deltaSincePluginStart(h.LeasesObtained, base(baseline).LeasesObtained)
+	// leases_obtained is deliberately NOT read here any more. It was the
+	// operand that made this gate wrong (#881); the population the probe
+	// covers is conflict_probes_dispatched, computed below.
 
 	failures := probeFailures
 	if int32(observedInLog) > failures {
@@ -1037,19 +1153,102 @@ func ConflictCensusFindings(h *HealthResponse, allowed int32, observedInLog int,
 		})
 	}
 
-	// The detector never even tried, on a shard that leased addresses
-	// for it to check. Distinct from the case above: there, probes were
+	// The detector never even tried, on a shard that dispatched probes
+	// for it to run. Distinct from the case above: there, probes were
 	// attempted and failed; here nothing was attempted at all.
-	if probes == 0 && failures == 0 && leases > 0 {
+	//
+	// JUDGED AGAINST DISPATCHED, NOT AGAINST LEASES (#881). The previous
+	// operand was leases_obtained, and it is a different population: it
+	// is bumped by the persistent client's "bound" event, while the
+	// probe is dispatched from CreateEndpoint. Across a plugin restart
+	// they come apart — recovery re-attaches an endpoint and its client
+	// binds in a process that never created it and so never dispatched a
+	// probe for it. The gate read that correct behaviour as a dead
+	// detector and failed four runs in which every test passed.
+	dispatched := deltaSincePluginStart(h.ConflictProbesDispatched, base(baseline).ConflictProbesDispatched)
+	if probes == 0 && failures == 0 && dispatched > 0 {
 		out = append(out, FloorFinding{
 			Counter: "address_conflict_probes",
 			Value:   0,
 			Fatal:   true,
 			Why: fmt.Sprintf(
-				"%d v4 lease(s) were obtained and the conflict detector was never invoked for "+
-					"any of them. The probe is not opt-in, so this is the detector having stopped "+
-					"working rather than a shard with nothing to check (#551).",
-				h.LeasesObtained),
+				"%d conflict probe(s) were dispatched and not one reached a verdict or a "+
+					"recorded failure. Every dispatched probe settles, so this is the detector "+
+					"having stopped working rather than a shard with nothing to check (#551, #881).",
+				dispatched),
+		})
+	}
+
+	// NON-VACUITY, and the reason this is here rather than left implicit.
+	//
+	// Everything above reasons over a per-process counter, so a plugin
+	// restart late in a shard empties the domain and the gate goes quiet
+	// — passing for the reason it exists to fail on. That is the exact
+	// defect #881 reports, and a repair that reintroduced it one domain
+	// over would be worth nothing.
+	//
+	// So the emptiness is JUDGED rather than assumed honest: the log
+	// spans the whole run and no restart truncates it. Counters empty
+	// while the log says probes were dispatched means the counters were
+	// reset, not that nothing happened.
+	if dispatched == 0 && logDispatched > 0 {
+		out = append(out, FloorFinding{
+			Counter: "conflict_probes_dispatched",
+			Value:   0,
+			Fatal:   true,
+			Why: fmt.Sprintf(
+				"the counters report no probe dispatched, but the run's log records %d "+
+					"dispatch(es) and %d settlement(s). The counters were emptied by a plugin "+
+					"restart, so this shard's census covers a window rather than the run and "+
+					"cannot be believed. Judging the log, which a restart does not truncate "+
+					"(#385, #881).",
+				logDispatched, logSettled),
+		})
+	}
+
+	// A probe SETTLED that was never recorded as dispatched.
+	//
+	// This is the hole the rest of this gate cannot see, and it is the
+	// one a future change is most likely to open: a new call site that
+	// writes `go p.checkAddressConflict(...)` directly instead of going
+	// through the dispatcher compiles, runs, probes correctly — and
+	// leaves dispatched at zero. Every other finding here reads that as
+	// the honest empty case and stays quiet, which is this issue's own
+	// defect wearing the fix's clothes.
+	//
+	// pkg/plugin's TestConflictProbe_EveryDispatchGoesThroughTheDispatcher
+	// closes it at the source; this closes it at the evidence, because a
+	// gate that depends on nobody editing the other repository half is
+	// not a gate.
+	if logSettled > logDispatched {
+		out = append(out, FloorFinding{
+			Counter: "conflict_probes_dispatched",
+			Value:   int32(logDispatched),
+			Fatal:   true,
+			Why: fmt.Sprintf(
+				"the run's log records %d probe settlement(s) against %d dispatch(es). A probe "+
+					"that settles without being dispatched came from a call site that bypassed "+
+					"the dispatcher, so the dispatched count no longer bounds the population and "+
+					"this census cannot be believed (#881).",
+				logSettled, logDispatched),
+		})
+	}
+
+	// A probe dispatched somewhere in the run and never settled anywhere
+	// in it. Not the in-flight case — the floor joins those before it
+	// reads (see the health poll in the suite's TestMain) — so a gap
+	// here is a probe that was launched and never came back.
+	if logDispatched > 0 && logSettled == 0 {
+		out = append(out, FloorFinding{
+			Counter: "conflict_probes_settled",
+			Value:   0,
+			Fatal:   true,
+			Why: fmt.Sprintf(
+				"the run's log records %d probe dispatch(es) and no settlement at all. Every "+
+					"terminal exit of the probe logs one, including the exits that increment no "+
+					"outcome counter, so this is the detector not returning rather than a quiet "+
+					"segment (#881).",
+				logDispatched),
 		})
 	}
 

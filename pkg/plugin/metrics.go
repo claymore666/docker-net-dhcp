@@ -134,6 +134,8 @@ func metricDefs() []metricDef {
 
 		// Address conflict detection (#524).
 		{name: "address_conflict_probes", counter: true, help: "Conflict probes that reached a verdict. Read this before believing address_conflicts is zero: zero here means the detector never ran.", field: "address_conflict_probes"},
+		{name: "conflict_probes_dispatched", counter: true, help: "Post-lease conflict probes launched, counted synchronously at the dispatch site. This is the population address_conflict_probes must be read against; leases_obtained is a different population and reports probes as missing across a plugin restart.", field: "conflict_probes_dispatched"},
+		{name: "conflict_probes_settled", counter: true, help: "Conflict probes that reached any terminal outcome, including the ones that could not run and are counted nowhere else. Equal to conflict_probes_dispatched at rest; less than it means probes are still in flight.", field: "conflict_probes_settled"},
 		{name: "address_conflicts", counter: true, healthy: true, help: "Leased addresses found already in use by another host. Healthy-affecting.", field: "address_conflicts"},
 		{name: "conflict_probe_failures", counter: true, help: "Conflict probes that could not reach a verdict.", field: "conflict_probe_failures"},
 		{name: "conflict_probe_stale_routes", counter: true, help: "Leftover probe routes reclaimed from a probe cut short before it cleaned up.", field: "conflict_probe_stale_routes"},

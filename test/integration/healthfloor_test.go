@@ -88,12 +88,37 @@ func checkHealthFloor(suite time.Duration) int {
 	var (
 		h       *harness.HealthResponse
 		lastErr error
+		// outstanding is dispatched-minus-settled at the last read: how
+		// many conflict probes were still in flight when the plugin
+		// answered.
+		outstanding int32
 	)
 	deadline := time.Now().Add(healthFloorBudget)
 	for {
 		h, lastErr = harness.PluginHealth(ctx, cli)
 		if lastErr == nil {
-			break
+			// JOIN THE IN-FLIGHT PROBES BEFORE JUDGING THEM (#881).
+			//
+			// checkAddressConflict is dispatched as a goroutine and
+			// nothing waits for it, so the counters can be read while a
+			// probe is still running. That is not a slow test needing a
+			// nudge: it is reading a number that has not finished being
+			// produced. Run 33156482028 dispatched the shard's only
+			// probe and read /Plugin.Health in the SAME SECOND, then
+			// failed the run for the probe not having happened.
+			//
+			// The wait is on a STATED CONDITION — settled == dispatched,
+			// which the plugin publishes — not on a duration chosen to
+			// be "long enough". The deadline below is the pre-existing
+			// one this loop already had for "did Health answer at all";
+			// it is kept rather than removed because a probe that never
+			// settles must be reported, and a join with no deadline
+			// turns that into a hung shard, which is the one verdict
+			// that produces no evidence at all.
+			outstanding = harness.ProbesOutstanding(h)
+			if outstanding == 0 {
+				break
+			}
 		}
 		if !time.Now().Before(deadline) {
 			break
@@ -110,6 +135,23 @@ func checkHealthFloor(suite time.Duration) int {
 		fmt.Fprintf(os.Stderr,
 			"HEALTH FLOOR: /Plugin.Health did not answer within %v: %v\n", healthFloorBudget, lastErr)
 		return 1
+	}
+
+	// Expiry with probes still in flight is FATAL, never a fall-through.
+	// A floor that gave up waiting and judged anyway would report
+	// "the detector never ran" for a probe that was still running — the
+	// false red #881 is about — and a floor that gave up waiting and
+	// stayed quiet would be an opt-out with a timer on it. Neither: the
+	// probe that did not come back is the finding.
+	if lastErr == nil {
+		if join := harness.ConflictProbeJoinFinding(h, healthFloorBudget); len(join) > 0 {
+			fmt.Fprintln(os.Stderr, "HEALTH FLOOR: the conflict-probe join did not complete.")
+			for _, f := range join {
+				fmt.Fprintf(os.Stderr, "  FATAL %s=%d: %s\n", f.Counter, f.Value, f.Why)
+			}
+			printFloorEvidence(ctx)
+			return 1
+		}
 	}
 
 	// Printed before the verdict, and on every run. The census reads the
@@ -130,7 +172,7 @@ func checkHealthFloor(suite time.Duration) int {
 	// increments each sit next to a distinct log line, and the log
 	// spans the run while the counters span only the last restart —
 	// 10% of one recent run.
-	censusFailures, faultCount, probeFailuresInLog := printCensuses(ctx)
+	censusFailures, faultCount, probeFailuresInLog, logDispatched, logSettled := printCensuses(ctx)
 
 	// Printed before the verdict either way. The census answers "did
 	// anything break"; this answers "did the #406 grace carry attaches
@@ -153,7 +195,7 @@ func checkHealthFloor(suite time.Duration) int {
 	// fails through the existing path rather than a parallel one.
 	findings = append(findings,
 		harness.ConflictCensusFindings(h, harness.AllowedConflictProbeFailures(), probeFailuresInLog,
-			floorHealthBaseline)...)
+			floorHealthBaseline, logDispatched, logSettled)...)
 	if len(findings) == 0 && faultCount > 0 {
 		fmt.Fprintf(os.Stderr,
 			"HEALTH FLOOR: the counters came back clean, but the log records %d "+
@@ -247,7 +289,7 @@ func printFloorEvidence(ctx context.Context) {
 // One read serves both censuses: the log is the single instrument that
 // spans the whole run, and reading it twice would invite the two
 // verdicts to disagree about which run they are describing.
-func printCensuses(ctx context.Context) (joinFailures, otherFaults, probeFailuresInLog int) {
+func printCensuses(ctx context.Context) (joinFailures, otherFaults, probeFailuresInLog, logDispatched, logSettled int) {
 	_, data, err := harness.PluginLog(ctx)
 	if err != nil {
 		// A log we cannot read is reported as a fault rather than
@@ -262,7 +304,7 @@ func printCensuses(ctx context.Context) (joinFailures, otherFaults, probeFailure
 		// The 1 above already fails the run, so the 0 here cannot be
 		// mistaken for "no probe failures" — nothing downstream gets to
 		// treat this as a clean census.
-		return 1, 0, 0
+		return 1, 0, 0, 0, 0
 	}
 	fmt.Fprint(os.Stderr, harness.JoinFailureCensus(data))
 	faults, report := harness.FaultCensus(data)
@@ -276,6 +318,8 @@ func printCensuses(ctx context.Context) (joinFailures, otherFaults, probeFailure
 	// The conflict census is the one that must be scoped, because it is
 	// the only one judged against an allowance that a test process
 	// declares and cannot carry across an exec.
+	scoped := harness.LogSince(data, floorLogBaseline)
+	dispatched, settled := harness.ConflictProbeCensusInLog(scoped)
 	return harness.JoinFailureCount(data), faults,
-		harness.ConflictProbeFailuresInLog(harness.LogSince(data, floorLogBaseline))
+		harness.ConflictProbeFailuresInLog(scoped), dispatched, settled
 }
