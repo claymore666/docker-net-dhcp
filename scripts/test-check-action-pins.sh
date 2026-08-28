@@ -843,6 +843,20 @@ run "PINNED DEFECT: a property does not rescue the ?-alone class (exit 0 is wron
 #      them red. What killed those mutants was the BEHAVIOURAL cases,
 #      not this check -- which is the honest reading of why the gate is
 #      still sound and this observer is not.
+#
+#      AND ADDING A SITE IS THE SAME ESCAPE, QUIETER. Everything above
+#      describes REMOVAL, and both pinned cases drive removal -- but the
+#      realistic route is a FIFTH `uses` matcher appended to the gate and
+#      written outside both keys: `[[:blank:]]` for the class, no
+#      property group ahead of the token. MEASURED: the real file gives
+#      `OK  4 sites, one group` and so does the file with that fifth
+#      matcher added, so the count does not even MOVE, where removal at
+#      least drops it 4 -> 3. The control that makes this a statement
+#      about the KEYS rather than about additions in general: the same
+#      fifth matcher written the ordinary way IS seen by both, and the
+#      verdict becomes `OK  5 sites, one group`. Not separately pinned --
+#      it is escape 1 reached from the other end -- but named here
+#      because the paragraph above, read alone, describes only half of it.
 #   2. Both derivations still key on the literal token `uses`. Rename it
 #      throughout and both go to zero together -- which the floor turns
 #      into a REFUSAL, not a pass.
@@ -1088,12 +1102,27 @@ run "PINNED COST: a nested sequence refuses even when PINNED" 2 "" "were not res
 # case red, and that is the point: the fix has to arrive at a case, not
 # at a surprise.
 #
-# THE BOUND ON THE EXPOSURE, measured rather than assumed: PyYAML
-# refuses the tag outright, no ordinary anchor or tag name ends in `@`
-# plus 40 hex, and an adversary who can write this file already has the
-# disclosed `?`-alone class -- so this widens no reach. actionlint was
-# NOT run against this shape; it is not installed where this was
-# measured, and CI's actionlint judges the real tree, not this fixture.
+# THE BOUND ON THE EXPOSURE, measured rather than assumed -- and HALF OF
+# WHAT THIS PARAGRAPH USED TO SAY WAS WRONG, which is why it now names
+# which oracle answered what. It leaned on PyYAML refusing the tag.
+# PyYAML does refuse it -- `could not determine a constructor for the tag
+# '!a@<40 zeros>'` -- but that is not a bound, because the SECOND oracle
+# disagrees: MEASURED with actionlint v1.7.12, the tagged scalar is read
+# as a REAL action reference and the tag is ignored entirely. Given
+# `!a@<40 zeros> actions/checkout` it answers `specifying action
+# "actions/checkout" ... ref is missing`, the same diagnostic every shape
+# case above rests on. So under the oracle this suite treats as modelling
+# GitHub, the line below IS a live reference at the mutable ref `v7`, and
+# the exit 0 is a real hole rather than a curiosity about a shape nothing
+# would execute.
+#
+# WHAT STILL BOUNDS IT: no ordinary anchor or tag name ends in `@` plus
+# 40 hex; the ref rule's first-`@` split narrows it further, since the
+# property token must now carry exactly ONE `@` where any number of them
+# used to do; and an adversary who can write this file already has the
+# disclosed `?`-alone class, so it widens no reach. The clause saying
+# actionlint had not been run against this shape is gone with the rest of
+# it -- it has been now.
 fresh
 cat > "$TMP/wf/a.yml" <<EOF
 jobs:
