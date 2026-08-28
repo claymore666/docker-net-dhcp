@@ -52,7 +52,7 @@ jobs:
       # scripts/check-go-pins.sh fails the build when they drift apart.
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: '1.26.6'
+          go-version: '1.27.0'
           cache: true
 
       # Drifted go.mod/go.sum slips through silently until someone
@@ -122,6 +122,59 @@ jobs:
             echo "::endgroup::"
           done
 
+  # THESE ARE NOT THE UNIT SUITE, AND THE CHECK NAME NOW SAYS SO.
+  #
+  # These steps used to run inside the `test` job. `test` is a REQUIRED
+  # status check on dev and main, so the single name branch protection
+  # knew covered release-promotion ordering, cosign docs and Raspberry
+  # Pi watchdog wiring — none of which is a test of this Go program.
+  # A reader seeing `test` go red learned nothing about which of dozens
+  # of unrelated subjects had failed, and a reader seeing it green was
+  # told "the tests pass" about a job that was mostly not tests.
+  #
+  # No count is written here on purpose. Both halves grow, and a number
+  # in a comment is a measurement with no observer — the one this
+  # replaced already said "~45" over a larger set. Ask the file:
+  # scripts/check-test-job-purity.sh prints both tallies every run.
+  #
+  # Splitting costs one extra checkout and one extra setup-go and buys
+  # back more than it costs: the two halves now run in PARALLEL, so the
+  # wall clock is the slower half rather than the sum.
+  #
+  # setup-go is NOT vestigial here — it was checked rather than assumed.
+  # scripts/check-golden-fixture-name-keyed.sh runs `go test` to
+  # regenerate the metrics golden, so this job needs a toolchain. It is
+  # the only gate that does, which is why this comment names it: a
+  # future reader deleting the step should know what breaks. The script
+  # is named without a line number deliberately; a line citation into a
+  # file someone else edits expires with nobody setting the date.
+  #
+  # WHY `policy-gates` AND NOT `gates`. integration.yml already has a
+  # job called `gate`. A required-context list is typed by hand in a
+  # settings page, and `gate` is one character from `gates` — enter the
+  # wrong one and you newly require a job that passes while these steps
+  # stay advisory, which is the absent-check-reads-as-green failure
+  # this split exists to remove, reintroduced by a typo nothing checks.
+  #
+  # `policy-gates` MUST be a required status check on dev and main.
+  # Splitting a required job without requiring BOTH halves is that same
+  # failure by another route: the steps below would still RUN on every
+  # pull request, and nothing would stop a merge over their red.
+  policy-gates:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Same pin as the `test` job above, and it has to be — the reason
+      # is written there once rather than twice, because a rationale
+      # copied into two jobs is a rationale that will be corrected in
+      # one of them.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.27.0'
+          cache: true
+
       # The CI gate scripts are code too — their table-driven tests run
       # here so a broken ratchet/vuln gate fails like any unit test.
       #
@@ -150,24 +203,73 @@ jobs:
             exit 1
           }
 
+      # PyYAML IS A NEW DEPENDENCY IN THIS REPOSITORY AND IT IS NOT ON THE
+      # RUNNER (#844). check-fork-execution-policy.sh derives which
+      # workflows an outsider can cause to run by PARSING them, because
+      # the line regexes it replaced saw one `runs-on` spelling out of
+      # seven. MEASURED from actions/runner-images
+      # images/ubuntu/toolsets/toolset-2404.json: the apt list carries
+      # `libyaml-dev` and `python-is-python3` but no `python3-yaml`, and
+      # `yamllint` is installed through PIPX, so its own PyYAML sits in an
+      # isolated venv and is not importable by this `python3`.
+      #
+      # The gate REFUSES rather than degrading when the import fails --
+      # falling back to the line scan is the defect, so a silent fallback
+      # would be worse than saying nothing. That makes this step the thing
+      # standing between the gate and a daily amber, so it asserts the
+      # import afterwards rather than trusting the installer's exit code:
+      # the same bargain as the locale step above, and for the same
+      # reason. An install that reported success while the module is still
+      # unimportable must go red here, not in the gate.
+      - name: Provide PyYAML for the fork-execution-policy gate self-test
+        run: |
+          # The install runs only when the module is genuinely absent, and
+          # `apt-get update` runs only then too: the hosted image's package
+          # lists are cleaned during its build, so an install without a
+          # refresh answers "unable to locate package".
+          python3 -c 'import yaml' 2>/dev/null || {
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends python3-yaml
+          }
+          python3 -c 'import yaml; print("PyYAML", yaml.__version__)' || {
+            echo "::error title=PyYAML unavailable::python3 cannot import yaml" \
+                 "after the install step. check-fork-execution-policy.sh parses" \
+                 "the workflow tree and refuses without it." >&2
+            exit 1
+          }
+
       - name: Gate script self-tests
         run: bash scripts/run-gate-selftests.sh
+
+      # The shard-balance table must name exactly the tests the
+      # partitioner places (#877). A main-suite test with no row is
+      # costed at the mean, which never makes a shard incomplete and
+      # always makes the shards uneven — and the integration gate is
+      # max() over them. A row naming something the partitioner will not
+      # place is caught too: it is never selected, but it moves the mean
+      # that the missing tests are charged.
+      - name: Shard-balance table check
+        run: bash scripts/check-durations-table.sh
 
       # Every driver-option key the code parses must be documented in
       # docs/reference.md — an undocumented option turns CI red (#132).
       - name: Option-docs drift check
         run: bash scripts/check-option-docs.sh
 
-      # Only the half that needs no network (#537). The README's starter-task
-      # filter and the badge justification's must point at the same label, so
-      # a rename cannot leave one of them matching nothing. That is a property
-      # of the tree, so this commit is the only thing that can break it.
+      # Only the half that needs no network (#537, widened by #851). The
+      # badge's small_tasks answer and the README's Contributing section must
+      # agree with each other: Met means both link a listing of the declared
+      # starter-task label, Unmet means the README promises nothing, the
+      # justification cites nothing, and the route the README tells a newcomer
+      # to ask through is one .github/ISSUE_TEMPLATE/config.yml actually
+      # publishes. That is a property of the tree, so this commit is the only
+      # thing that can break it.
       #
       # Whether the label still HAS open issues is a claim about live tracker
       # state and deliberately does NOT run here: an unrelated PR must not go
-      # red because somebody closed the last starter issue. That half runs on
-      # a schedule — see starter-tasks.yml.
-      - name: Starter-task links agree
+      # red because somebody closed the last starter issue — or filed one.
+      # That half runs on a schedule — see starter-tasks.yml.
+      - name: Starter-task claims agree
         run: bash scripts/check-good-first-issues.sh --static
 
       # The companion check (#345): every health counter and settable
@@ -296,6 +398,13 @@ jobs:
       # installs a file two workflow lines install. Same class as #297.
       - name: Pipefail-consumer check
         run: bash scripts/check-pipefail-consumers.sh
+
+      # Every build-constraint term in the tree must be linted by some
+      # staticcheck invocation, and one invocation must carry no tags
+      # at all (#871). A required check that never compiles a tagged
+      # file never parses it, and reports success over it.
+      - name: Lint tag coverage
+        run: bash scripts/check-lint-tag-coverage.sh
 
       # A v2 plugin's bind sources must exist before `docker plugin
       # enable`; a missing one kills container init rather than degrading
@@ -455,6 +564,15 @@ jobs:
       - name: Registry-login check
         run: bash scripts/check-registry-login.sh
 
+      # Docker Hub dual-publish began 2026-05-05; Hub install-verification
+      # landed 2026-08-22 (#777). In between, 20 tags shipped a Hub
+      # artifact nothing proved installable, because the verify set was
+      # four hand-written jobs while the publish set decides what users
+      # can pull. This derives one from the other, so a new registry
+      # cannot be published without a verifier appearing (#833).
+      - name: Publish/verify parity
+        run: bash scripts/check-publish-verify-parity.sh
+
       # Every page that prints a cosign command must state which cosign
       # major it needs (#522). Verifying a signature is the one moment a
       # user is deciding whether to trust the artifact, and cosign v2's
@@ -559,6 +677,14 @@ jobs:
       - name: Dispatch targets are reachable
         run: bash scripts/check-dispatch-reachable.sh
 
+      # Every `uses:` must name a 40-hex commit SHA. Pinning was at 100%
+      # when this landed and was enforced by nothing -- planting
+      # `actions/checkout@v7` produced zero new reds against a clean-tree
+      # baseline. Prophylactic, and said so in the script's own header
+      # so whoever weighs deleting it can see there was no incident (#831).
+      - name: Actions are pinned to commit SHAs
+        run: bash scripts/check-action-pins.sh
+
       # #390 put the three privileged lanes in one concurrency group;
       # #617 changed the key so branch pushes bucket on the commit;
       # 76d0b7f then added a third lane with the pre-#617 spelling two
@@ -604,6 +730,16 @@ jobs:
       # reconciling it against this file rather than on trust. A gate
       # that cannot run on a workstation is declared out of lane with a
       # reason; it is never simply absent.
+      # The boundary this job's own existence rests on (#829). `test`
+      # became a required check that meant "the tests passed, and also
+      # forty-eight unrelated policy gates passed"; splitting it fixed
+      # that by construction, and construction is not a guarantee. The
+      # next person with a gate to wire up appends it where gate steps
+      # have always gone, `test` grows a policy check back, and #829
+      # reopens in silence. Prose decays quietly; a check fails loudly.
+      - name: test/policy-gates split holds
+        run: bash scripts/check-test-job-purity.sh
+
       - name: Local-lane coverage
         run: bash scripts/check-local-lane.sh
 
@@ -614,12 +750,39 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: '1.26.6'
+          go-version: '1.27.0'
           cache: true
       - name: Install staticcheck
-        run: go install honnef.co/go/tools/cmd/staticcheck@v0.7.0
-      - name: Run staticcheck
+        run: go install honnef.co/go/tools/cmd/staticcheck@v0.8.1
+
+      # TWO VIEWS, NOT ONE WIDENED FLAG (#871).
+      #
+      # `staticcheck ./...` alone never compiled the integration-tagged
+      # files, so it never parsed them: 64 of 196 tracked .go files at
+      # 0b73c46 sat outside a required check that reported success over
+      # them. It also reported a defect that did not exist — a symbol
+      # defined untagged whose only caller is tagged reads as unused.
+      #
+      # `-tags integration` alone would cover everything on today's
+      # tree, because the tagged view is currently a strict superset.
+      # That is a property of the tree, not of the check: a file
+      # carrying `//go:build !integration` compiles in the default view
+      # and vanishes from the tagged one. None exists yet, which is why
+      # nothing would notice the day one arrives.
+      #
+      # scripts/check-lint-tag-coverage.sh holds the pair to the tree's
+      # actual constraints, and scripts/test-staticcheck-tag-views.sh
+      # (below) drives the hole on a constructed fixture rather than on
+      # whatever this tree happens to contain.
+      - name: Run staticcheck (default view)
         run: staticcheck ./...
+      - name: Run staticcheck (integration view)
+        run: staticcheck -tags integration ./...
+
+      # Delegated here from the gate-self-test lane: it needs the
+      # staticcheck binary, which only this job installs.
+      - name: Prove one invocation is not enough
+        run: bash scripts/test-staticcheck-tag-views.sh
 
   # Lints all workflow files (+ shellcheck on run: blocks). A workflow
   # parse error doesn't fail loudly on GitHub — it produces zero-job
@@ -634,7 +797,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: '1.26.6'
+          go-version: '1.27.0'
           cache: true
       # actionlint shells out to shellcheck for `run:` blocks. The agent
       # itself is pinned (above), but the runner-supplied shellcheck is
@@ -711,6 +874,10 @@ jobs:
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_BODY: ${{ github.event.pull_request.body }}
+          # Through env like the rest, and never inlined: a login is not
+          # attacker-controlled the way a body is, but the shape of this
+          # step is what a reader copies.
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
@@ -718,7 +885,8 @@ jobs:
           printf '%s' "$PR_BODY" > "$RUNNER_TEMP/pr-body-ref.md"
           bash scripts/check-issue-ref.sh \
             "$BASE_SHA..$HEAD_SHA" \
-            "$RUNNER_TEMP/pr-title.txt" "$RUNNER_TEMP/pr-body-ref.md"
+            "$RUNNER_TEMP/pr-title.txt" "$RUNNER_TEMP/pr-body-ref.md" \
+            "$PR_AUTHOR"
 
       - name: Check commits and PR body for AI attribution
         env:
@@ -778,7 +946,7 @@ jobs:
       # toolchain, which should represent what ships in the plugin.
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: '1.26.6'
+          go-version: '1.27.0'
           cache: true
       - name: Install govulncheck
         run: go install golang.org/x/vuln/cmd/govulncheck@v1.3.0

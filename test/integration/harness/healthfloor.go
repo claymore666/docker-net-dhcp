@@ -113,21 +113,36 @@ type HealthResponse struct {
 	// request, not accumulated. A pointer so an older plugin that does
 	// not publish it is distinguishable from one reporting -1 — absent
 	// data is not a value.
-	SandboxNetnsVisible  *int32 `json:"sandbox_netns_visible"`
-	LeaseChanged         int32  `json:"lease_changed"`
-	LeasesObtained       int32  `json:"leases_obtained"`
-	LeasesRenewed        int32  `json:"leases_renewed"`
-	DHCPTimeouts         int32  `json:"dhcp_timeouts"`
-	LeaseReleaseFailures int32  `json:"lease_release_failures"`
-	NAKsReceived         int32  `json:"naks_received"`
-	LedgerWriteFailures  int32  `json:"ledger_write_failures"`
-	// OrphanedLeasesReleased / OrphanedLeaseReleaseFailures cover the
-	// lease acquired during endpoint setup when no persistent client
-	// ever took ownership of it — a container that exited before the
-	// attach completed (#370). Neither is healthy-affecting: a
-	// short-lived container is an ordinary lifecycle.
-	OrphanedLeasesReleased       int32 `json:"orphaned_leases_released"`
-	OrphanedLeaseReleaseFailures int32 `json:"orphaned_lease_release_failures"`
+	SandboxNetnsVisible *int32 `json:"sandbox_netns_visible"`
+	LeaseChanged        int32  `json:"lease_changed"`
+	LeasesObtained      int32  `json:"leases_obtained"`
+	LeasesRenewed       int32  `json:"leases_renewed"`
+	DHCPTimeouts        int32  `json:"dhcp_timeouts"`
+	// ClientStopFailures was lease_release_failures until #800. A
+	// renewal client that did not shut down cleanly when signalled — it
+	// says nothing about the lease, which is held to expiry either way
+	// because nothing this plugin runs sends a DHCPRELEASE.
+	ClientStopFailures  int32 `json:"client_stop_failures"`
+	NAKsReceived        int32 `json:"naks_received"`
+	LedgerWriteFailures int32 `json:"ledger_write_failures"`
+	// DirectivesRefused / MountPrepFailures are the two places the DHCP
+	// client package declines to do what it was asked and carries on
+	// anyway (#780): a dhcpcd directive dropped for a control character
+	// in its value, and a per-client mount-namespace preparation command
+	// that failed. Neither is healthy-affecting — both describe an input
+	// that did not take effect, not a container without a renewal
+	// client. MountPrepFailures counts COMMANDS, not clients.
+	DirectivesRefused int32 `json:"directives_refused"`
+	MountPrepFailures int32 `json:"mount_prep_failures"`
+	// RouterAdvertGuardFailures counts steps of a DHCPv6 client's
+	// Router-Advertisement guard that failed (#875): the guard puts the
+	// container's kernel in charge of router discovery and prefix
+	// processing and stops dhcpcd turning that off again. Not
+	// healthy-affecting, and it counts STEPS, not clients. A suite that
+	// reads it non-zero is looking at a container whose IPv6 default
+	// route will stop being refreshed, which the plugin's own view
+	// cannot distinguish from a quiet segment.
+	RouterAdvertGuardFailures int32 `json:"router_advert_guard_failures"`
 	// ParentLinkWaits / ParentLinkWaitTimeouts cover contention on a
 	// shared parent NIC, where a macvlan and an ipvlan child cannot
 	// coexist (#486/#549). Waits means an operation queued and got
@@ -146,6 +161,27 @@ type HealthResponse struct {
 	// is healthy-affecting: both describe the segment, not the plugin.
 	DHCPServerTierFallbacks   int32 `json:"dhcp_server_tier_fallbacks"`
 	DHCPServerPolicyExhausted int32 `json:"dhcp_server_policy_exhausted"`
+
+	// DHCPv6ConfigOnly counts DHCPv6 replies that carried configuration
+	// and no address — the stateless case (#815). Not healthy-affecting
+	// and deliberately not in the floor table: on a stateless segment
+	// this rising is the feature working, and on every other segment it
+	// stays at zero on its own.
+	DHCPv6ConfigOnly int32 `json:"dhcpv6_config_only"`
+
+	// DHCPv6NotOffered / DHCPv6NoRouterAdvert cover the two ways an
+	// IPv6 endpoint can come up without a DHCPv6 lease (#868): the
+	// router advertised no managed address, or no router advertised at
+	// all. Neither is healthy-affecting and neither belongs in the
+	// floor table — on a v4-only or managed-v6 segment both stay at
+	// zero on their own, and on a stateless segment the first one
+	// rising is the feature working. They are separate fields for the
+	// same reason they are separate counters: a test that asserted
+	// only their sum could not tell a stateless network from a
+	// segment with no router on it.
+	DHCPv6NotOffered       int32 `json:"dhcpv6_not_offered"`
+	DHCPv6NoRouterAdvert   int32 `json:"dhcpv6_no_router_advert"`
+	IPv6LinkEnableFailures int32 `json:"ipv6_link_enable_failures"`
 
 	// published is the key set of the payload this value was decoded
 	// from. It exists because an absent JSON field decodes to zero,

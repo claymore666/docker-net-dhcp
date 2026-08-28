@@ -29,9 +29,15 @@ const (
 )
 
 // ledgerEntry is one lease-lifecycle event. Kind is one of "bound",
-// "renew", "release", or "release_failed" — the last one is written
-// when the SIGTERM-driven DHCPRELEASE didn't complete cleanly, so the
-// ledger never claims a release that may not have reached the server.
+// "renew", "stopped", or "stop_failed" — the last written when the
+// SIGTERM-driven client shutdown didn't complete cleanly.
+//
+// Neither of the last two says anything about the LEASE. They were
+// "release" and "release_failed" until #800, and that was a claim about
+// what the DHCP server saw; nothing this plugin runs sends a
+// DHCPRELEASE, so the address is held until it expires whichever of the
+// two is written. The rename is breaking for anyone parsing this file
+// and is tabled in RELEASE_NOTES.md.
 type ledgerEntry struct {
 	TS        string `json:"ts"`
 	Kind      string `json:"kind"`

@@ -120,7 +120,7 @@ func (f *Fixture) startBridge() error {
 	if err != nil {
 		return fmt.Errorf("create bridge dnsmasq log: %w", err)
 	}
-	f.bridgeDnsmasq = exec.Command("/usr/sbin/dnsmasq",
+	f.bridgeDnsmasq = withCLocale(exec.Command("/usr/sbin/dnsmasq",
 		"--no-daemon",
 		"--conf-file=/dev/null",
 		"--port=0",
@@ -136,7 +136,7 @@ func (f *Fixture) startBridge() error {
 		"--dhcp-broadcast",
 		"--log-dhcp",
 		"--log-facility=-",
-	)
+	))
 	f.bridgeDnsmasq.Stdout = logF
 	f.bridgeDnsmasq.Stderr = logF
 	f.bridgeDnsmasq.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -222,6 +222,17 @@ func (f *Fixture) DumpBridgeLogs(write func(string)) {
 	write("--- bridge dnsmasq log ---\n" + string(data))
 }
 
+// BridgeDnsmasqLogPath returns the PATH of the bridge fixture's
+// dnsmasq log, the bridge-side twin of Fixture.DnsmasqLog. Named for
+// the path rather than the contents because the neighbouring
+// BridgeLog returns the bytes, and a caller that confuses the two
+// gets a filename parsed as a log rather than an error (#875).
+//
+// Empty when the bridge fixture was never started, which is a
+// distinguishable value: reading it fails loudly instead of silently
+// counting zero lines.
+func (f *Fixture) BridgeDnsmasqLogPath() string { return f.bridgeDnsmasqLog }
+
 // CountBridgeLogLines counts bridge-fixture dnsmasq log lines
 // containing every one of the given substrings (case-insensitive), e.g.
 // ("DHCPRELEASE", mac). The bridge-side twin of Fixture.CountLogLines,
@@ -233,28 +244,7 @@ func (f *Fixture) DumpBridgeLogs(write func(string)) {
 // traffic, so only a delta across a window says anything about the
 // endpoint under test.
 func (f *Fixture) CountBridgeLogLines(substrings ...string) int {
-	if f.bridgeDnsmasqLog == "" {
-		return 0
-	}
-	data, err := os.ReadFile(f.bridgeDnsmasqLog)
-	if err != nil {
-		return 0
-	}
-	count := 0
-	for _, line := range strings.Split(string(data), "\n") {
-		l := strings.ToLower(line)
-		all := true
-		for _, s := range substrings {
-			if !strings.Contains(l, strings.ToLower(s)) {
-				all = false
-				break
-			}
-		}
-		if all && strings.TrimSpace(line) != "" {
-			count++
-		}
-	}
-	return count
+	return countMatchingLines(f.bridgeDnsmasqLog, substrings...)
 }
 
 // IsInBridgePool reports whether ip falls in the bridge fixture's
@@ -283,10 +273,10 @@ func installBridgeForward(bridge string) error {
 		{"-I", "FORWARD", "-i", bridge, "-j", "ACCEPT"},
 		{"-I", "FORWARD", "-o", bridge, "-j", "ACCEPT"},
 	} {
-		if out, err := exec.Command("iptables", args...).CombinedOutput(); err != nil {
+		if out, err := withCLocale(exec.Command("iptables", args...)).CombinedOutput(); err != nil {
 			return fmt.Errorf("iptables %v: %w (%s)", args, err, out)
 		}
-		if out, err := exec.Command("ip6tables", args...).CombinedOutput(); err != nil {
+		if out, err := withCLocale(exec.Command("ip6tables", args...)).CombinedOutput(); err != nil {
 			return fmt.Errorf("ip6tables %v: %w (%s)", args, err, out)
 		}
 	}
@@ -299,7 +289,7 @@ func removeBridgeForward(bridge string) {
 		{"-D", "FORWARD", "-i", bridge, "-j", "ACCEPT"},
 		{"-D", "FORWARD", "-o", bridge, "-j", "ACCEPT"},
 	} {
-		_ = exec.Command("iptables", args...).Run()
-		_ = exec.Command("ip6tables", args...).Run()
+		_ = withCLocale(exec.Command("iptables", args...)).Run()
+		_ = withCLocale(exec.Command("ip6tables", args...)).Run()
 	}
 }

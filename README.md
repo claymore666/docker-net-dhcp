@@ -18,7 +18,7 @@ like any other machine. Bridge, macvlan, and ipvlan attachment modes.
 
 > **This is a maintained fork** of [`devplayer0/docker-net-dhcp`][fork-parent]
 > (quiet since 2021, no longer builds on current Docker). This fork
-> modernises the toolchain (Go 1.26, docker SDK v28, current Alpine),
+> modernises the toolchain (Go 1.27, docker SDK v28, current Alpine),
 > adds **macvlan** and **ipvlan** modes, fixes the daemon-restart
 > deadlock and a state data-race, and gates every PR on a live
 > integration suite (all three modes + DHCPv6, recovery, failure
@@ -47,7 +47,7 @@ like any other machine. Bridge, macvlan, and ipvlan attachment modes.
 >
 > ```bash
 > sudo mkdir -p /var/lib/net-dhcp
-> docker plugin enable ghcr.io/claymore666/docker-net-dhcp:v1.8.0
+> docker plugin enable ghcr.io/claymore666/docker-net-dhcp:v1.9.0
 > ```
 >
 > On arm64, enable the `-arm64` plugin instead — that is the one that
@@ -67,10 +67,10 @@ Install the plugin:
 sudo mkdir -p /var/lib/net-dhcp
 
 # amd64
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.8.0
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.9.0
 
 # arm64 (v1.7.0 onward) — the architecture is in the tag, see below
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.8.0-arm64
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.9.0-arm64
 ```
 
 It requests `host` networking, the host PID namespace, the Docker
@@ -87,7 +87,7 @@ already have a host bridge `my-bridge` on your LAN — see
 ```bash
 # On arm64 use the -arm64 tag here too — a network stores this exact
 # reference as its driver, so it must name the plugin you installed.
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.8.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.9.0 \
   --ipam-driver null -o bridge=my-bridge my-dhcp-net
 
 docker run --rm -ti --network my-dhcp-net alpine ip address show
@@ -170,9 +170,12 @@ Both architectures are signed and attested identically
 ## Verifying releases
 
 Every release (v1.1.0 onward) is signed and attested via Sigstore. The
-published plugin image is signed with cosign (keyless), carries SLSA
-build provenance, and ships an SBOM; the release-artifact `checksums.txt`
+published plugin image is signed with cosign (keyless) on **both**
+registries and ships an SBOM; the release-artifact `checksums.txt`
 manifest is cosign-signed so one signature covers every attached file.
+**SLSA build provenance is attested for the GHCR image only** — the
+Docker Hub mirror is signed but not provenance-attested, so verify
+provenance against the `ghcr.io` reference.
 The full, copy-pasteable procedure lives in
 **[Verifying releases](docs/verifying-releases.md)** (also on the
 [docs site](https://claymore666.github.io/docker-net-dhcp/verifying-releases/)),
@@ -195,12 +198,22 @@ gh attestation verify oci://ghcr.io/claymore666/docker-net-dhcp:VERSION --repo c
 
 Contributions are welcome.
 
-- **Looking for somewhere to start?** Issues tagged
-  [`good first issue`](https://github.com/claymore666/docker-net-dhcp/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
-  are self-contained and need no deep project context — each one states the
-  gap, where to look, and how to check that you fixed it. They are real work
-  that would otherwise sit undone, not busywork.
-- **Questions, bugs, and feature requests:** open a [GitHub issue](https://github.com/claymore666/docker-net-dhcp/issues).
+<!-- starter-task-claim: begin -->
+- **Looking for somewhere to start?** There are no starter tasks open at the
+  moment. The ones that were seeded were closed as the work they described
+  landed, and rather than send you to an empty list this section says so. If
+  you would like a first task,
+  [ask in Discussions](https://github.com/claymore666/docker-net-dhcp/discussions/new?category=q-a)
+  and say what interests you — a subsystem, a bug you hit, a piece of the
+  documentation you found thin — and one will be scoped against it. When
+  starter tasks exist again they carry the `good first issue` label and this
+  section links to them.
+<!-- starter-task-claim: end -->
+- **Questions:** ask in
+  [Discussions](https://github.com/claymore666/docker-net-dhcp/discussions/new?category=q-a).
+  The issue forms are for bugs and feature requests and each stamps a type
+  label, so a question does not have an honest home on the tracker.
+- **Bugs and feature requests:** open a [GitHub issue](https://github.com/claymore666/docker-net-dhcp/issues).
   For bugs, please include the plugin version, your Docker version, the network
   mode (`bridge`, `macvlan`, or `ipvlan`), and the relevant plugin log.
   Docker has no `plugin logs` subcommand — the log lives in two places
@@ -224,9 +237,11 @@ Contributions are welcome.
   - **Before you push:** `make check` runs the whole fast CI lane
     locally — build, vet, format, the race suite, the short fuzz, and
     every gate script — in about a minute, with no privileges and no
-    host mutation. It is the same set the `test` job runs, kept in step
-    by a gate, so it will not tell you a branch is green when CI would
-    not.
+    host mutation. It is the same set the Test workflow's two fast jobs
+    run — `test` for build, vet, format, race and fuzz, and
+    `policy-gates` for the gate scripts and their self-tests — kept in
+    step by a gate, so it will not tell you a branch is green when CI
+    would not.
   - **Authorship:** commits and pull request descriptions must not carry
     AI-assistant attribution — no `Co-authored-by:` trailer naming an
     assistant or an assistant's no-reply address, no "Generated with …"
@@ -244,7 +259,7 @@ Contributions are welcome.
     list and your PR's checks panel shows it applied to your branch — at
     the time of writing it is unit tests, `staticcheck`, the live
     integration suite, `govulncheck`, `actionlint`, CodeQL (`Analyze
-    (go)` and `Analyze (actions)`), and `attribution`. (Docs-only PRs — diffs touching nothing but
+    (go)` and `Analyze (actions)`), `attribution`, and `policy-gates`. (Docs-only PRs — diffs touching nothing but
     `*.md` — satisfy the integration check via a fast in-job skip; any code,
     script, or workflow change runs the full suite.)
   - **Hosted cross-check:** a separate, *non-required* workflow runs the

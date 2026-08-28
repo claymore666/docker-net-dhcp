@@ -7,10 +7,13 @@
 // source, daemon/libnetwork/drivers/remote/driver.go): the engine
 // forwards the endpoint option com.docker.network.endpoint.ifname to
 // remote plugins in CreateEndpoint and Join, and the remote-driver
-// API's InterfaceName response carries DstName — but the proxy calls
+// API's InterfaceName response carries DstName — but the proxy called
 // `iface.SetNames(SrcName, DstPrefix, "")`, DISCARDING the plugin's
 // DstName. Built-in drivers got per-driver interface_name in engine
-// 28; remote drivers were left out. So:
+// 28; remote drivers were left out. moby/moby#52866 fixed the proxy
+// (merged 2026-08-26, milestoned for engine 29.8.0); no released
+// engine carries it yet, so the discard is still what a run on 29.7.x
+// or older sees. So:
 //   - the plugin's side (validate + return DstName) is fully
 //     assertable today, via its own logs and the Join error path;
 //   - whether the ENGINE applies the name is probed at runtime —
@@ -128,7 +131,7 @@ func TestInterfaceName_PluginHonorsOption(t *testing.T) {
 	if engineAppliesIfname(t, ctx, id, "lan0") {
 		t.Log("engine APPLIES remote-driver DstName — upstream pass-through is live on this runner")
 	} else {
-		t.Log("engine ignores remote-driver DstName (expected: moby drivers/remote/driver.go drops it); interface remains ethN")
+		t.Log("engine ignores remote-driver DstName (expected below engine 29.8.0, which carries moby/moby#52866); interface remains ethN")
 	}
 }
 
@@ -181,6 +184,25 @@ func TestInterfaceName_InvalidRejected(t *testing.T) {
 // names must map names to networks identically on every restart.
 // Gated on the engine actually applying DstName — skips with the
 // upstream pointer until then, activates by itself on a fixed engine.
+//
+// THE TWO NETWORKS MUST BE ON DIFFERENT PARENTS IN DIFFERENT SUBNETS,
+// and that is not a stylistic choice. This test was written against a
+// single parent, skipped on every engine for its whole life, and the
+// first engine that ever ran it (a dockerd carrying moby/moby#52866)
+// failed it at ContainerStart with
+//
+//	cannot program address 192.168.99.23/24 in sandbox interface
+//	because it conflicts with existing route {Dst: 192.168.99.0/24 ...}
+//
+// libnetwork refuses a second interface in a subnet the container
+// already routes, so both endpoints leasing from one fixture could
+// never both attach — on any engine, with or without the ifname
+// option. Measured on both sides of the upstream fix; the failure is
+// identical, so it was never the fix's doing.
+//
+// It is also the wrong topology for the report. The reporter runs an
+// mDNS bridge, which exists to relay BETWEEN subnets: distinct subnets
+// are the scenario, not an artefact of the fixture.
 func TestInterfaceName_MultiNetworkDeterministic(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
@@ -199,6 +221,14 @@ func TestInterfaceName_MultiNetworkDeterministic(t *testing.T) {
 	})
 
 	// Probe with a throwaway container first.
+	//
+	// The engine probe comes BEFORE the second fixture is stood up, and
+	// that order is load-bearing: EphemeralFixture asserts on teardown
+	// that its DHCP server actually granted a lease (#472). A fixture
+	// created ahead of a skip is torn down having served nobody, so the
+	// guard fires and the run reports FAIL where it should report SKIP
+	// -- on every engine below 29.8.0, which is all of them today.
+	// Measured: it did exactly that before this was reordered.
 	probeNet := "dh-itest-ifprobe"
 	harness.CreateNetwork(t, ctx, probeNet, "macvlan", nil)
 	probeID, _ := runContainerWithIfname(t, ctx, cli, probeNet, "dh-itest-ifprobe-ctr", "probe0")
@@ -206,10 +236,21 @@ func TestInterfaceName_MultiNetworkDeterministic(t *testing.T) {
 		t.Skip("engine does not apply remote-driver DstName yet (moby drivers/remote/driver.go drops it); test activates once the upstream pass-through ships")
 	}
 
+	// The second subnet. The suite-static fixture serves 192.168.99.0/24
+	// on HostVeth; this one serves 192.168.101.0/24 on its own parent.
+	ef := harness.NewEphemeralFixture(t)
+	t.Cleanup(func() {
+		if t.Failed() {
+			ef.DumpLogs(func(s string) { t.Log(s) })
+		}
+	})
+
 	netA := "dh-itest-ifnetA"
 	netB := "dh-itest-ifnetB"
 	harness.CreateNetwork(t, ctx, netA, "macvlan", nil)
-	harness.CreateNetwork(t, ctx, netB, "macvlan", nil)
+	harness.CreateNetwork(t, ctx, netB, "macvlan", map[string]string{
+		"parent": harness.EphemeralHostVeth,
+	})
 
 	create, err := cli.ContainerCreate(ctx,
 		&container.Config{Image: harness.TestImage, Cmd: []string{"sleep", "infinity"}},
@@ -240,6 +281,21 @@ func TestInterfaceName_MultiNetworkDeterministic(t *testing.T) {
 		return ""
 	}
 
+	// v4ForName is the assertion that makes this test about NETWORKS
+	// rather than about two stable strings. A MAC mapping that never
+	// moves is satisfied by both names landing on the same network;
+	// the subnet each name carries is what says wan0 is the network the
+	// compose file called wan0.
+	v4ForName := func(name string) string {
+		out := harness.ExecOutput(t, ctx, id, "ip", "-o", "-4", "addr", "show", name)
+		for _, f := range strings.Fields(out) {
+			if strings.Contains(f, ".") && strings.Contains(f, "/") {
+				return f
+			}
+		}
+		return ""
+	}
+
 	var wanMAC, lanMAC string
 	for restart := 0; restart < 3; restart++ {
 		if err := cli.ContainerStart(ctx, id, container.StartOptions{}); err != nil {
@@ -258,6 +314,17 @@ func TestInterfaceName_MultiNetworkDeterministic(t *testing.T) {
 		if w == "" || l == "" {
 			t.Fatalf("round %d: wan0/lan0 not both present (wan0=%q lan0=%q)", restart, w, l)
 		}
+
+		// Each name must carry an address from ITS OWN network.
+		wantWan, wantLan := "192.168.99.", "192.168.101."
+		gotWan, gotLan := v4ForName("wan0"), v4ForName("lan0")
+		if !strings.HasPrefix(gotWan, wantWan) {
+			t.Errorf("round %d: wan0 carries %q, want an address in %s0/24 (netA)", restart, gotWan, wantWan)
+		}
+		if !strings.HasPrefix(gotLan, wantLan) {
+			t.Errorf("round %d: lan0 carries %q, want an address in %s0/24 (netB)", restart, gotLan, wantLan)
+		}
+
 		if restart == 0 {
 			wanMAC, lanMAC = w, l
 		} else {

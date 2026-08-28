@@ -247,7 +247,13 @@ integration-test:
 # guarantees every main-suite test lands in exactly one shard.
 # scripts/test-integration-shard.sh asserts that, because a test in no
 # shard is silently never run and the gate goes green having tested
-# less.
+# less. The WEIGHTS it balances by are kept honest separately:
+# scripts/check-durations-table.sh goes red when
+# test/integration/testdata/main-suite-durations.tsv stops naming
+# exactly the tests the partitioner places (#877).
+#
+# CI runs OF=5 (see .github/workflows/integration.yml's matrix, which
+# carries the measurement that chose it); any OF works here.
 integration-test-shard:
 	@if [ -z "$(SHARD)" ] || [ -z "$(OF)" ]; then \
 		echo "usage: make integration-test-shard SHARD=<1-based> OF=<total>"; \

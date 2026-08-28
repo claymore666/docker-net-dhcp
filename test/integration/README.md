@@ -32,7 +32,7 @@ run between that and teardown. The targets deliberately carry no
 rebuild dependency: one would reinstall the plugin mid-run and reset
 the health floor's observation window with it. Note the primary lane
 (`integration.yml`) does not run both suites in one job at all — its
-matrix is `main-1/2/3` plus `failure`, each with its own build step;
+matrix is `main-1`..`main-5` plus `failure`, each with its own build step;
 the single-job shape is `integration-arm64.yml`, `integration-hosted.yml`
 and `coverage.yml`.
 
@@ -41,9 +41,12 @@ runs `go test -v -tags integration -count=1 -timeout 20m -skip
 "TestFailure_" ./test/integration/...`; `integration-test-failure` runs
 the same command with `-run "TestFailure_"` instead, because the
 failure-injection suite is mostly deliberate waiting and does not
-belong in the main feedback loop. Measured on dev (run 30753274506,
-recorded in `.github/workflows/integration.yml`): failure 231s against
-main-1 367s / main-2 361s. Both tee their output to a
+belong in the main feedback loop. Measured 2026-08-28 over 22 runs
+(#877, the numbers are recorded in `.github/workflows/integration.yml`):
+the main corpus is 879s of test time across 70 tests and the failure
+suite 126s across 4, so five main shards run ~176s each against the
+failure suite's 126s, and every suite job adds ~115s of build, install
+and teardown on top. Both tee their output to a
 timestamped file under `$(ITEST_LOG_DIR)` (#378). Plain `go test ./...` skips
 this directory entirely thanks to the `//go:build integration` tag on
 every file here, so the unit-test cadence stays fast.
@@ -99,6 +102,22 @@ means `docker plugin disable`, `set`, `enable`.
   network-namespace creation, ability to bind UDP `:67`).
 
 ### AppArmor (Debian/Ubuntu hosts only)
+
+If a Kea-backed test fails with `ephemeral kea did not become ready`
+and an **empty** server log, this section is the answer. Since #869 the
+fixture says so in that failure itself, along with the commands below —
+but the error string is repeated here so a search for it lands on the
+explanation.
+
+What the fixture reports depends on what it could measure, and it
+distinguishes the cases rather than blurring them. A loaded enforcing
+profile *plus* a kernel denial record naming the fixture's own temp
+directory is stated as the cause, with the record quoted. A loaded
+enforcing profile with no such record is reported as the likely cause
+only: the profile ends in `#include <local/usr.sbin.kea-dhcp4>`, so a
+site override under `/etc/apparmor.d/local/` can leave it enforcing
+while permitting exactly these paths. A profile that is installed but
+measurably **not** loaded is not reported at all.
 
 Debian's `kea-dhcp4-server` package ships an **enforcing** AppArmor
 profile that pins Kea to its own packaged paths — right down to the
@@ -174,18 +193,18 @@ they prove:
 - `vendor_class_test.go` — option 60 round-trip via dnsmasq
   class-tagged gateway override (exact-match route parsing, #130).
 - `audit_log_test.go` — `audit_log=true` ledger lifecycle
-  (bound→release), default-off absence (#109).
-- `orphan_release_test.go` — a container that exits before its attach
-  completes leaves nobody holding the job of releasing its address; the
-  plugin reclaims the binding on a temporary link and releases it
-  (#370), in macvlan, ipvlan, and dual-stack. The counter is not the
-  evidence: `lease_release_failures` sat at 0 throughout the original
-  failure, because it only sees releases that were attempted.
+  (bound→stopped), default-off absence (#109).
 - `join_no_container_test.go` — an attach that fails because no
-  container ever claimed the endpoint releases the address instead of
-  leaving it leased upstream until it expires (#566). The Join is
+  container ever claimed the endpoint leaves the address leased
+  upstream until it expires, and sends no DHCPRELEASE (#800; the file
+  covered the opposite behaviour for #566 before that). The Join is
   issued against a genuinely live sandbox, so "nobody holds this
-  endpoint" is the only branch that can answer.
+  endpoint" is the only branch that can answer. It also asserts no
+  `dh-rel-*` link is on the host — the removed reclaim's fingerprint,
+  which is what a reintroduced one would leave.
+
+  `orphan_release_test.go` covered the reclaim itself and went with it
+  in #800.
 - `concurrent_renew_test.go` — two containers on one network, both with
   the default `eth0`, each keep their own persistent client and each
   renew. dhcpcd keys its pidfile and control sockets by interface name
@@ -205,8 +224,9 @@ they prove:
   TFTP, bootfile, search list).
 - `interface_name_test.go` — plugin honors the ifname endpoint
   option + invalid names rejected at attach; the engine-applied
-  rename tests are capability-probe-gated (engine support pending
-  upstream, #125).
+  rename tests are capability-probe-gated (they need an engine that
+  carries moby/moby#52866 — merged upstream, first shipping in engine
+  29.8.0, #125).
 - `classless_routes_test.go` — a DHCP-pushed classless static route
   (option 121, RFC 3442) reaches the container's routing table, and
   stays absent for a client that did not opt into the vendor class the
@@ -276,26 +296,31 @@ they prove:
   measured over six runs, containerd dies with dockerd and the
   relaunched daemon removes each sandbox as stale, so no adoptable
   endpoint survives. What it asserts instead is read off the DHCP
-  server — the pre-death lease is released rather than burnt until
-  expiry, and the returned container holds a lease the server actually
-  granted.
+  server: the returned container holds a lease the server actually
+  granted, and the pre-death lease was **not** released — since #800
+  the address is held until it expires, the same as for a machine
+  powered off abruptly. The ACK is checked first and is the positive
+  control; the absence after it would otherwise read as a pass against
+  a log that had gone missing or stale.
 - `preflight_probe_test.go` — `validate_dhcp=true` probe accept/
   reject + bridge-mode rejection.
 
 **Parent NIC contention**
 - `parent_gate_test.go` — the per-parent gate serialises two operations
-  that would otherwise be on the parent NIC at the same time, so an
-  unrelated container's orphan reclaim cannot fail a `docker run` with
-  `device or resource busy` (#486, #549). The contender is a second
-  reclaim, not an endpoint: a rival `CreateEndpoint` *issued* 0.000s
-  after the collision window opened still registered no wait at all,
-  because it reached the gate only after the reclaim was done with the
-  parent — a reclaim's hold is one DHCP round trip, and a
-  `CreateEndpoint` spends longer than that getting from the socket to
-  its `LinkAdd`. Both leases coming back to the
-  server is the assertion of record; `parent_link_waits` only proves
-  the plugin believes it queued, and a gate that serialised into a
-  deadlock would satisfy that counter.
+  that would otherwise be on the parent NIC at the same time, so one
+  cannot fail the other with `device or resource busy` (#486, #549).
+  The holder is a `validate_dhcp` preflight probe, which keeps a
+  `dh-probe-*` link on the parent across a DHCP round trip; the
+  contender is a `CreateEndpoint` issued straight at the plugin socket
+  once the probe's link is visible. Until #800 the holder was an orphan
+  reclaim (`dh-rel-*`), which no longer exists — the probe is the
+  remaining operation that holds a parent long enough to collide.
+  The probe's hold budget is 8s against the gate's 4s wait, so the
+  direction is fixed by constants rather than by timing: the contender
+  either waits or times out, and `parent_link_waits + parent_link_wait_timeouts`
+  is asserted non-zero. What this does **not** prove is written in the
+  test header — a gate that serialised into a deadlock would satisfy
+  that sum, so the endpoint's own success is asserted too.
 
 **Host and install contracts**
 - `sandbox_netns_test.go` — the sandbox netns directory is readable
@@ -470,12 +495,14 @@ invocation. Tests select a path by mode:
 new test.** A parent NIC is a macvlan port or an ipvlan port, never
 both — the two kinds contend for its single receive handler, and the
 second to ask is refused with `Device or resource busy`. Plugin
-teardown is asynchronous relative to test boundaries: an orphan-lease
-reclaim keeps its temporary `dh-rel-*` child on the parent for a full
-DHCP round trip after the test that caused it has already returned.
-With one shared parent, a macvlan test's tail could therefore still
-own the parent when the next ipvlan test's head asked for it, and the
-suite went red on the wrong test — an EBUSY from deep inside a netlink
+teardown is asynchronous relative to test boundaries: the `validate_dhcp`
+preflight probe keeps its temporary `dh-probe-*` child on the parent for
+a full DHCP round trip, and until v1.9.0 the orphaned-lease reclaim kept
+a `dh-rel-*` child there for the same span after the test that caused it
+had already returned (that mechanism is gone — see #800 — but the
+asynchrony is not). With one shared parent, a macvlan test's tail could
+therefore still own the parent when the next ipvlan test's head asked
+for it, and the suite went red on the wrong test — an EBUSY from deep inside a netlink
 call that reads as a plugin fault (#556). Dedicated parents remove the
 contention; `harness.CreateNetwork` additionally asserts that the
 parent it is about to use carries no child of the other kind, so a

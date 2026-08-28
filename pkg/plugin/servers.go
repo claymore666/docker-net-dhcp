@@ -405,11 +405,12 @@ func (p *Plugin) acquireWithPolicy(
 	budget time.Duration,
 	endpointID string,
 	base dhcp.DHCPClientOptions,
-) (dhcp.Info, error) {
+) (dhcp.Info, dhcp.RAObservation, error) {
 	attempts := acquisitionAttempts(pol, v6, budget)
 
 	var (
 		info    dhcp.Info
+		ra      dhcp.RAObservation
 		lastErr error
 	)
 	for i, attempt := range attempts {
@@ -421,10 +422,12 @@ func (p *Plugin) acquireWithPolicy(
 		clientOpts.DenyServers = attempt.Deny
 
 		attemptCtx, cancel := context.WithTimeout(ctx, attempt.Budget)
-		info, lastErr = dhcpGetIP(attemptCtx, iface, &clientOpts)
+		var attemptRA dhcp.RAObservation
+		info, attemptRA, lastErr = dhcpGetIP(attemptCtx, iface, &clientOpts)
+		ra = ra.Merge(attemptRA)
 		cancel()
 		if lastErr == nil {
-			return info, nil
+			return info, ra, nil
 		}
 		if i < len(attempts)-1 {
 			p.dhcpServerTierFallbacks.Add(1)
@@ -450,5 +453,5 @@ func (p *Plugin) acquireWithPolicy(
 	if policyRestricted(attempts) {
 		p.dhcpServerPolicyExhausted.Add(1)
 	}
-	return info, lastErr
+	return info, ra, lastErr
 }

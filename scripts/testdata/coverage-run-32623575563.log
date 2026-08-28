@@ -1,0 +1,67 @@
+2026-08-23T07:11:49.1695862Z ##[group]Run mkdir -p coverage-unit
+2026-08-23T07:11:49.1697234Z [36;1mmkdir -p coverage-unit[0m
+2026-08-23T07:11:49.1698984Z [36;1m# `go test` syntax: [flags] [packages] [-args test-args].[0m
+2026-08-23T07:11:49.1701024Z [36;1m# Packages MUST come before `-args`: anything after `-args`[0m
+2026-08-23T07:11:49.1702913Z [36;1m# is passed to the compiled test binary, so the previous form[0m
+2026-08-23T07:11:49.1704725Z [36;1m# made go test see no packages and fall back to '.', failing[0m
+2026-08-23T07:11:49.1706249Z [36;1m# with "no Go files in <repo>".[0m
+2026-08-23T07:11:49.1707648Z [36;1mgo test -count=1 -coverpkg=./... ./pkg/... ./cmd/... \[0m
+2026-08-23T07:11:49.1709257Z [36;1m    -args -test.gocoverdir="$PWD/coverage-unit"[0m
+2026-08-23T07:11:49.1736003Z shell: /usr/bin/bash -e {0}
+2026-08-23T07:11:49.1736941Z env:
+2026-08-23T07:11:49.1738323Z   COVER_PLUGIN_REF: ghcr.io/***/docker-net-dhcp:golang-cover
+2026-08-23T07:11:49.1739882Z   COVER_DIR: /var/lib/dh-cover
+2026-08-23T07:11:49.1741121Z   HAS_HUB_CREDS: true
+2026-08-23T07:11:49.1741977Z   GOTOOLCHAIN: local
+2026-08-23T07:11:49.1742815Z ##[endgroup]
+2026-08-23T07:11:56.2966026Z ok  	github.com/***/docker-net-dhcp/pkg/dhcp	3.303s	coverage: 73.3% of statements in ./...
+2026-08-23T07:12:07.3140532Z ok  	github.com/***/docker-net-dhcp/pkg/plugin	9.258s	coverage: 56.0% of statements in ./...
+2026-08-23T07:12:07.3145057Z ok  	github.com/***/docker-net-dhcp/pkg/util	0.269s	coverage: 92.8% of statements in ./...
+2026-08-23T07:12:07.3147825Z 	github.com/***/docker-net-dhcp/cmd/dhcp-handler		coverage: 0.0% of statements
+2026-08-23T07:12:07.3150850Z ok  	github.com/***/docker-net-dhcp/cmd/net-dhcp	0.018s	coverage: 0.4% of statements in ./...
+2026-08-23T07:12:07.4009219Z ##[group]Run if ! ls "${COVER_DIR}"/covcounters.* >/dev/null 2>&1; then
+2026-08-23T07:12:07.4011669Z [36;1mif ! ls "${COVER_DIR}"/covcounters.* >/dev/null 2>&1; then[0m
+2026-08-23T07:12:07.4013847Z [36;1m  echo "No coverage counter files found — plugin may have crashed before flush."[0m
+2026-08-23T07:12:08.6202576Z ##[group]Run if ls coverage-unit/covcounters.* >/dev/null 2>&1; then
+2026-08-23T07:12:08.6204790Z [36;1mif ls coverage-unit/covcounters.* >/dev/null 2>&1; then[0m
+2026-08-23T07:12:08.6206960Z [36;1m  go tool covdata percent -i="${COVER_DIR}",coverage-unit > /tmp/covdata-percent.txt[0m
+2026-08-23T07:12:08.6208805Z [36;1melse[0m
+2026-08-23T07:12:08.6210817Z [36;1m  echo "No unit counters found — ratcheting on integration coverage alone would false-alarm."[0m
+2026-08-23T07:12:08.6212841Z [36;1m  exit 1[0m
+2026-08-23T07:12:08.6213678Z [36;1mfi[0m
+2026-08-23T07:12:08.6214533Z [36;1mcat /tmp/covdata-percent.txt[0m
+2026-08-23T07:12:08.6215694Z [36;1m[0m
+2026-08-23T07:12:08.6216879Z [36;1m# The resolution lives in a script, not here, because this[0m
+2026-08-23T07:12:08.6218758Z [36;1m# workflow triggers only on pull requests into main: inline,[0m
+2026-08-23T07:12:08.6220866Z [36;1m# its first execution would be the release PR, with a defect[0m
+2026-08-23T07:12:08.6222909Z [36;1m# failing a required check while the release is in flight.[0m
+2026-08-23T07:12:08.6224769Z [36;1m# scripts/test-coverage-baseline-at.sh runs on every PR.[0m
+2026-08-23T07:12:08.6226453Z [36;1mbaseline=.github/coverage-baseline.txt[0m
+2026-08-23T07:12:08.6227772Z [36;1mif [ -n "${BASE_REF:-}" ]; then[0m
+2026-08-23T07:12:08.6229637Z [36;1m  bash scripts/coverage-baseline-at.sh "$BASE_REF" /tmp/coverage-baseline-base.txt[0m
+2026-08-23T07:12:08.6231983Z [36;1m  baseline=/tmp/coverage-baseline-base.txt[0m
+2026-08-23T07:12:08.6233246Z [36;1melse[0m
+2026-08-23T07:12:08.6234732Z [36;1m  echo "No pull_request context — ratcheting against the working copy's baseline."[0m
+2026-08-23T07:12:08.6237500Z [36;1mfi[0m
+2026-08-23T07:12:08.6238873Z [36;1mbash scripts/coverage-ratchet.sh /tmp/covdata-percent.txt "$baseline"[0m
+2026-08-23T07:12:08.6266045Z shell: /usr/bin/bash -e {0}
+2026-08-23T07:12:08.6267058Z env:
+2026-08-23T07:12:08.6268428Z   COVER_PLUGIN_REF: ghcr.io/***/docker-net-dhcp:golang-cover
+2026-08-23T07:12:08.6269916Z   COVER_DIR: /var/lib/dh-cover
+2026-08-23T07:12:08.6271160Z   HAS_HUB_CREDS: true
+2026-08-23T07:12:08.6272042Z   GOTOOLCHAIN: local
+2026-08-23T07:12:08.6272912Z   BASE_REF: 
+2026-08-23T07:12:08.6273668Z ##[endgroup]
+2026-08-23T07:12:09.0661853Z 	github.com/***/docker-net-dhcp/cmd/dhcp-handler		coverage: 75.0% of statements
+2026-08-23T07:12:09.0667700Z 	github.com/***/docker-net-dhcp/cmd/net-dhcp		coverage: 78.3% of statements
+2026-08-23T07:12:09.0670671Z 	github.com/***/docker-net-dhcp/pkg/dhcp		coverage: 91.8% of statements
+2026-08-23T07:12:09.0673652Z 	github.com/***/docker-net-dhcp/pkg/plugin		coverage: 88.3% of statements
+2026-08-23T07:12:09.0676349Z 	github.com/***/docker-net-dhcp/pkg/util		coverage: 95.7% of statements
+2026-08-23T07:12:09.0679365Z No pull_request context — ratcheting against the working copy's baseline.
+2026-08-23T07:12:09.0947468Z PASS  github.com/***/docker-net-dhcp/pkg/util: 95.7% beats baseline 95.0% — raise the floor in .github/coverage-baseline.txt
+2026-08-23T07:12:09.1034653Z PASS  github.com/***/docker-net-dhcp/pkg/plugin: 88.3% beats baseline 86.8% — raise the floor in .github/coverage-baseline.txt
+2026-08-23T07:12:09.1124762Z PASS  github.com/***/docker-net-dhcp/pkg/dhcp: 91.8% beats baseline 89.9% — raise the floor in .github/coverage-baseline.txt
+2026-08-23T07:12:09.1212396Z PASS  github.com/***/docker-net-dhcp/cmd/net-dhcp: 78.3% beats baseline 77.8% — raise the floor in .github/coverage-baseline.txt
+2026-08-23T07:12:09.1301603Z PASS  github.com/***/docker-net-dhcp/cmd/dhcp-handler: 75.0% beats baseline 74.0% — raise the floor in .github/coverage-baseline.txt
+2026-08-23T07:12:09.1476530Z ##[group]Run if ! ls "${COVER_DIR}"/covcounters.* >/dev/null 2>&1; then
+2026-08-23T07:12:09.1478583Z [36;1mif ! ls "${COVER_DIR}"/covcounters.* >/dev/null 2>&1; then[0m

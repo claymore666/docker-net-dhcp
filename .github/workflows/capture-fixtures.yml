@@ -86,8 +86,9 @@ jobs:
   capture:
     runs-on: [self-hosted, dhcp-ci]
     # Three flows, each a full integration test against a freshly built
-    # cover plugin. The suites budget 25 minutes for a sharded third of
-    # one; this runs three whole lifecycles back to back, plus the build.
+    # cover plugin. The suites budget 25 minutes for a sharded fifth of
+    # one (#877); this runs three whole lifecycles back to back, plus the
+    # build.
     timeout-minutes: 40
 
     # Narrower than the workflow default, and only here: this is the one
@@ -114,7 +115,7 @@ jobs:
       # shared by the whole pool, which run 31939915811 exhausted (#562).
       - name: Log in to Docker Hub
         if: env.HAS_HUB_CREDS == 'true'
-        uses: docker/login-action@184bdaa0721073962dff0199f1fb9940f07167d1 # v3.5.0
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}

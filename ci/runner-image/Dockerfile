@@ -30,7 +30,7 @@ RUN mkdir /seed \
 # ---- runner image
 FROM debian:trixie-slim@sha256:3a39a0592364683e6bab97937b72cad5a8fa6dcbbee90edb3bb48c7f8e94f258
 
-ARG GO_VERSION=1.26.6
+ARG GO_VERSION=1.27.0
 # Resolved by the build workflow from actions/runner's latest release;
 # no default on purpose so a stale pin can't hide in this file.
 ARG RUNNER_VERSION
@@ -46,10 +46,14 @@ ARG TARGETARCH
 # version, so treat ">= 28" as what current docker-ce happens to give us,
 # not as a floor anything asserts.
 #
-# Note this is NOT what gates #125: `interface_name` waits on the
-# upstream remote-driver change (moby/moby#52866), not on an engine
-# version, so no engine floor here can unblock it. The suite decides at
-# runtime with the `engineAppliesIfname` capability probe (#673).
+# Note this is NOT what gates #125: `interface_name` waited on the
+# upstream remote-driver change (moby/moby#52866), which merged on
+# 2026-08-26 and is milestoned for engine 29.8.0. So an engine floor
+# CAN eventually unblock it — but only once docker-ce here is an engine
+# that carries the fix, which no released one does yet. Setting a floor
+# short of that turns nothing on. The suite still decides at runtime
+# with the `engineAppliesIfname` capability probe (#673), so nothing
+# here needs a version bump to pick the change up.
 #
 # TWO DHCP servers, deliberately, for the duration of the #356
 # migration. dnsmasq is what the fixture uses today; kea is what it is

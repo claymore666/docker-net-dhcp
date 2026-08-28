@@ -10,7 +10,7 @@ like any other machine. Bridge, macvlan, and ipvlan attachment modes.
     A maintained fork of
     [`devplayer0/docker-net-dhcp`](https://github.com/devplayer0/docker-net-dhcp)
     (quiet since 2021, no longer builds on current Docker). This fork
-    modernises the toolchain (Go 1.26, docker SDK v28, current Alpine),
+    modernises the toolchain (Go 1.27, docker SDK v28, current Alpine),
     adds **macvlan** and **ipvlan** modes, fixes the daemon-restart
     deadlock and a state data-race, and gates every PR on a live
     integration suite (all three modes + DHCPv6, recovery, failure
@@ -36,7 +36,7 @@ like any other machine. Bridge, macvlan, and ipvlan attachment modes.
 
     ```bash
     sudo mkdir -p /var/lib/net-dhcp
-    docker plugin enable ghcr.io/claymore666/docker-net-dhcp:v1.8.0
+    docker plugin enable ghcr.io/claymore666/docker-net-dhcp:v1.9.0
     ```
 
     On arm64, enable the `-arm64` plugin instead — that is the one
@@ -57,10 +57,10 @@ Install the plugin:
 sudo mkdir -p /var/lib/net-dhcp
 
 # amd64
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.8.0
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.9.0
 
 # arm64 (v1.7.0 onward) — the architecture is in the tag, see below
-docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.8.0-arm64
+docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.9.0-arm64
 ```
 
 It requests `host` networking, the host PID namespace, the Docker
@@ -77,7 +77,7 @@ already have a host bridge `my-bridge` on your LAN — see
 ```bash
 # On arm64 use the -arm64 tag here too — a network stores this exact
 # reference as its driver, so it must name the plugin you installed.
-docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.8.0 \
+docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.9.0 \
   --ipam-driver null -o bridge=my-bridge my-dhcp-net
 
 docker run --rm -ti --network my-dhcp-net alpine ip address show
@@ -114,6 +114,8 @@ right pick when you don't want to reconfigure the host's networking.
   the veth + DHCP-client flow, and how state survives a restart.
 - **[Roadmap](roadmap.md)** — where the project is going over the next
   year, and what it deliberately will not do.
+- **[Verifying releases](verifying-releases.md)** — signatures,
+  provenance, SBOMs, and rebuilding the binaries yourself.
 - **[Release runbook](release-runbook.md)** — maintainer-facing publish
   procedure.
 
@@ -146,9 +148,12 @@ read the docs matching the plugin version you have installed.
 ## Verifying releases
 
 Every release (v1.1.0 onward) is signed and attested via Sigstore. The
-published plugin image is signed with cosign (keyless), carries SLSA
-build provenance, and ships an SBOM; the release-artifact `checksums.txt`
+published plugin image is signed with cosign (keyless) on **both**
+registries and ships an SBOM; the release-artifact `checksums.txt`
 manifest is cosign-signed so one signature covers every attached file.
+**SLSA build provenance is attested for the GHCR image only** — the
+Docker Hub mirror is signed but not provenance-attested, so verify
+provenance against the `ghcr.io` reference.
 The full, copy-pasteable procedure lives in
 **[Verifying releases](verifying-releases.md)**, and every
 [GitHub Release](https://github.com/claymore666/docker-net-dhcp/releases)

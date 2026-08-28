@@ -89,12 +89,12 @@ func ledgerKindsForMAC(lines []ledgerLine, mac string) []string {
 
 // TestAuditLog_RecordsLifecycle is #109's stated test plan made
 // concrete: with audit_log=true, a full container lifecycle leaves a
-// bound and a release entry in STATE_DIR/leases.jsonl carrying the
+// bound and a stopped entry in STATE_DIR/leases.jsonl carrying the
 // container's exact MAC and pool IP, every line valid JSON, and
 // ledger_write_failures stays flat.
 //
 // Container lifecycle is inlined (not harness.RunContainer) for the
-// same reason as the health-counters test: the release entry is
+// same reason as the health-counters test: the stopped entry is
 // written during teardown, which must happen inside the test body.
 func TestAuditLog_RecordsLifecycle(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
@@ -200,8 +200,10 @@ func TestAuditLog_RecordsLifecycle(t *testing.T) {
 		t.Errorf("bound entry ts %q is not RFC3339: %v", bound.TS, err)
 	}
 
-	// Stop drives Leave -> dhcpManager.Stop -> DHCPRELEASE -> the
-	// release ledger entry.
+	// Stop drives Leave -> dhcpManager.Stop -> the "stopped" ledger
+	// entry. The kind was "release" until #800; it is "stopped" now
+	// because nothing releases, and a ledger line saying otherwise
+	// would be a claim about what the DHCP server saw.
 	if err := cli.ContainerStop(ctx, id, container.StopOptions{}); err != nil {
 		t.Fatalf("ContainerStop: %v", err)
 	}
@@ -210,13 +212,13 @@ func TestAuditLog_RecordsLifecycle(t *testing.T) {
 	deadline = time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
 		kinds = ledgerKindsForMAC(readLedger(t, ctx, cli), mac)
-		if len(kinds) > 0 && kinds[len(kinds)-1] == "release" {
+		if len(kinds) > 0 && kinds[len(kinds)-1] == "stopped" {
 			break
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
-	if len(kinds) == 0 || kinds[len(kinds)-1] != "release" {
-		t.Fatalf("ledger kinds for MAC %s = %v, want trailing \"release\"", mac, kinds)
+	if len(kinds) == 0 || kinds[len(kinds)-1] != "stopped" {
+		t.Fatalf("ledger kinds for MAC %s = %v, want trailing \"stopped\"", mac, kinds)
 	}
 	if kinds[0] != "bound" {
 		t.Errorf("first ledger kind for MAC %s = %q, want \"bound\"", mac, kinds[0])

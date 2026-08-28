@@ -61,6 +61,18 @@ const dhcpcdBin = "/sbin/dhcpcd"
 // foreground), so the parent opens a FIFO and passes its path here.
 const EventFIFOEnv = "NETDHCP_EVENT_FIFO"
 
+// EmitRAEnv tells the hook to emit ROUTERADVERT as an event (#868).
+// renderConfig sets it for the ONE-SHOT acquisition client only.
+//
+// It is a per-client parameter, not a hidden mode: the same `env`
+// directive already carries EventFIFOEnv and GOCOVERDIR, and
+// dhcpcdParams.Once already distinguishes the two clients in
+// renderArgs. The persistent client never sees it, so #815's boundary
+// -- ROUTERADVERT stays off the long-lived stream, where it arrives
+// repeatedly and nothing consumes it -- holds exactly where it was
+// written to hold.
+const EmitRAEnv = "NETDHCP_EMIT_RA"
+
 // duidLL renders a DUID-LL (RFC 8415 §11.4) for mac in the colon-hex
 // "value" form dhcpcd's `duid` directive accepts (dhcpcd.conf(5): "If
 // not ll, lt or uuid then value will be converted from 00:11:22:33
@@ -168,6 +180,15 @@ type dhcpcdParams struct {
 	PreferredV6 string // v6 IA_NA preferred address; "" omits
 	Broadcast   bool   // request a broadcast reply (v4 only; ipvlan-L2 shared MAC)
 
+	// HonorRouterAdverts turns on the Router-Advertisement guard in the
+	// client's private mount namespace: the kernel is put in charge of
+	// RFC 4861 §6.3.4 / RFC 4862 §5.5.3 on this interface and dhcpcd is
+	// prevented from turning that back off (#875). It reaches the argv
+	// only through mountPrep; renderConfig has nothing to say about it,
+	// because dhcpcd offers no directive that suppresses the write.
+	// See ra_guard.go.
+	HonorRouterAdverts bool
+
 	// AllowServers restricts which DHCPv4 servers may be accepted, as
 	// dhcpcd `whitelist` entries (IPv4 only — dhcp6.c never consults
 	// them). Empty imposes no restriction. Set from the network's
@@ -200,8 +221,14 @@ type dhcpcdParams struct {
 // string fields, feeds each an embedded directive, and fails if one
 // reaches the output. A future field added to the renderer without using
 // this helper fails that test rather than reopening the hole quietly.
-func directive(b *strings.Builder, keyword, value string) {
+//
+// A drop is COUNTED as well as logged (#780). The operator set an
+// option and it never reaches the DHCP server; a warning in a log
+// nobody reads on a healthy plugin is not a way for them to find that
+// out. See directivesRefused for why the counter is package-level.
+func directive(b *configBuilder, keyword, value string) {
 	if !SafeDirectiveValue(value) {
+		directivesRefused.Add(1)
 		log.WithFields(log.Fields{"directive": keyword, "value": fmt.Sprintf("%q", value)}).
 			Warn("Refusing to write dhcpcd directive with a control character in its value")
 		return
@@ -209,10 +236,23 @@ func directive(b *strings.Builder, keyword, value string) {
 	fmt.Fprintf(b, "%s %s\n", keyword, value)
 }
 
+// configBuilder is the config text under construction.
+//
+// It embeds strings.Builder rather than wrapping it so *configBuilder
+// still satisfies io.Writer through the promoted Write method: every
+// fmt.Fprintf(&b, ...) in renderConfig — the constant lines that carry
+// no operator input and so need no refusal check — compiles unchanged,
+// and only the values that go through directive() are subject to it.
+//
+// A distinct type rather than a bare strings.Builder so that a directive
+// cannot be written to some other builder that has no refusal handling.
+type configBuilder struct {
+	strings.Builder
+}
+
 // renderConfig produces the dhcpcd.conf text for p. Only directives
-// confirmed against dhcpcd.conf(5) are emitted: duid, nohook, release,
-// option, hostname, vendorclassid, clientid, interface, iaid, request,
-// ia_na.
+// confirmed against dhcpcd.conf(5) are emitted: duid, nohook, option,
+// hostname, vendorclassid, clientid, interface, iaid, request, ia_na.
 //
 // dhcpcd runs observe-only (--noconfigure) so it never touches the
 // link; the nohook lines are belt-and-braces in case --noconfigure is
@@ -221,18 +261,17 @@ func directive(b *strings.Builder, keyword, value string) {
 // address rides the `request` directive (the dhcpcd equivalent of the
 // old busybox `-r`).
 //
-// The persistent client emits `release` so a graceful stop (Leave /
-// daemon shutdown sends SIGTERM) sends a DHCPRELEASE, freeing the lease
-// — the busybox `-R` behaviour the docker-restart / daemon-restart
-// IP-stability tests depend on. Without it, the server keeps the old
-// lease (keyed on the now-stale endpoint-derived client-id) and hands
-// the post-restart endpoint a different address. The one-shot client
-// must NOT release: it exits with `-1 -p` precisely to KEEP the lease
-// so the persistent client can re-claim the same address moments later.
+// NEITHER client releases its lease. The one-shot exits with `-1 -p`
+// to KEEP the address so the persistent client can re-claim it moments
+// later; the persistent client keeps it so a restarting container can.
+// A lease is a lease — it expires on its own if nobody comes back for
+// it, exactly as it does for any other host on the segment (#800). See
+// the block in renderConfig for why the `release` directive that used
+// to be here was both unnecessary and harmful.
 func renderConfig(p dhcpcdParams) string {
 	iaid := iaidFromMAC(p.MAC)
 
-	var b strings.Builder
+	var b configBuilder
 	// %q, not %s: this is the one line that interpolates a value without
 	// going through directive(), and a comment is just as capable of
 	// carrying a newline into the file as a directive is. ValidIfaceName
@@ -250,6 +289,13 @@ func renderConfig(p dhcpcdParams) string {
 	// process environment).
 	if p.EventFIFO != "" {
 		directive(&b, "env", EventFIFOEnv+"="+p.EventFIFO)
+	}
+
+	// Ask the hook for router advertisements, one-shot client only.
+	// This is the acquisition's only way to tell "this segment offers no
+	// DHCPv6 address" from "the DHCPv6 server did not answer" (#868).
+	if p.Once {
+		directive(&b, "env", EmitRAEnv+"=1")
 	}
 
 	// Forward GOCOVERDIR to the hook in the coverage-instrumented build
@@ -308,11 +354,38 @@ func renderConfig(p dhcpcdParams) string {
 		"wpad",
 	}, ", "))
 
-	// Persistent client only: release the lease on graceful stop (busybox
-	// `-R`). The one-shot acquisition deliberately keeps its lease (-1 -p).
-	if !p.Once {
-		fmt.Fprintf(&b, "release\n")
-	}
+	// NOTHING releases. Not the one-shot, not the persistent client.
+	//
+	// A machine on the LAN does not hand its address back when it
+	// reboots: it comes back, asks for the same address, and the server
+	// gives it, because the lease has not expired. DHCPRELEASE is
+	// optional and most clients never send it. A container is a host on
+	// this segment and now behaves like one (#800).
+	//
+	// The persistent client used to emit `release` here, and the comment
+	// above this block justified it: without it "the server keeps the old
+	// lease (keyed on the now-stale endpoint-derived client-id) and hands
+	// the post-restart endpoint a different address". That premise is no
+	// longer true and had not been for some time. resolveClientID derives
+	// the client-id from the MAC for bridge and macvlan, and the tombstone
+	// restores that MAC across a restart, so the identity the server sees
+	// is the SAME client asking again — the ordinary DHCP path. Measured:
+	// with this directive gone, TestTombstoneRestart_PreservesMACAndIP and
+	// TestTombstoneRestart_PreservesIPv6 both keep MAC and address, v4 and
+	// v6, on a live daemon.
+	//
+	// ipvlan is the one mode with no stable identity to inherit — it
+	// shares the parent MAC, so its client-id is endpoint-derived and
+	// changes on every restart. It is also the one mode DeleteEndpoint
+	// deliberately writes no tombstone for. Those two facts are the same
+	// fact, and neither is affected by this: an ipvlan restart was always
+	// a new client to the server, releasing or not.
+	//
+	// What releasing cost is what #800 is about. The release raced the
+	// tombstone that promised the SAME address to the restart, so the
+	// plugin told the server an address was free while the container was
+	// coming back to claim it. Observed on a live daemon releasing an
+	// address a running container held.
 
 	// Server preference / denial (#111, #669). These match the packet's
 	// IP SOURCE address, not the Server Identifier it advertises
@@ -433,11 +506,23 @@ func renderArgs(p dhcpcdParams) []string {
 	}
 	if p.Once {
 		// One-shot acquisition (CreateEndpoint): exit after the first
-		// lease, and -p (persistent) so the binding is NOT released on
+		// lease, and -p (persistent) so the binding is NOT torn down on
 		// that exit — the persistent client claims the same address
-		// moments later. The persistent client omits -p so it releases
-		// the lease when the plugin stops it (the old busybox -R
-		// behaviour).
+		// moments later.
+		//
+		// The persistent client omits -p, and since #800 that no longer
+		// means anything about releasing. -p governs whether dhcpcd
+		// DE-CONFIGURES on exit; sending a DHCPRELEASE is governed by
+		// the `release` directive, which renderConfig no longer emits
+		// for either client. This comment previously said the omission
+		// was what released the lease, and that was the -R-era reading
+		// carried forward.
+		//
+		// Nothing depends on the distinction here anyway: --noconfigure
+		// above means dhcpcd never configured the link, so it has
+		// nothing to de-configure. What guarantees no release is the
+		// absent directive, and TestRenderConfig_NothingEverReleases is
+		// the guard on it — not this flag.
 		args = append(args, "-1", "-p")
 	}
 	if p.V6 {

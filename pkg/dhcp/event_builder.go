@@ -34,6 +34,7 @@ type Getenv func(string) string
 //   - NAK                 -> "nak"    (server refused; treat as loss)
 //   - EXPIRE / TIMEOUT    -> "leasefail" (v4 lease lapsed / no lease)
 //   - EXPIRE6 / TIMEOUT6  -> "leasefail" (v6 lease lapsed / no lease)
+//   - INFORM6             -> "config" (v6 address-less configuration)
 //
 // REBIND(6) maps to "renew" rather than "bound" because the consumer's
 // renew path already re-applies a possibly-changed address; a rebind is
@@ -47,12 +48,40 @@ type Getenv func(string) string
 // EXPIRE. Verified against dhcpcd 10.3.2: two identical clients, one
 // with `--noconfigure` and one without, both bound to a 2m lease with
 // the server then killed; at the expiry instant the first fired RELEASE
-// and the second EXPIRE. Mapping RELEASE to a lease loss would be wrong
-// anyway, because a graceful stop (Leave / plugin shutdown → SIGTERM →
-// `release` directive) fires the SAME reason, so every clean teardown
-// would count as a DHCP failure. The consumer therefore detects a
-// silent lapse from the lease deadline instead — see LeaseSeconds.
-func mapReason(reason string) (eventType string, v6 bool, emit bool) {
+// and the second EXPIRE.
+//
+// Up to v1.8.x there was a second reason, and it was the decisive one:
+// a graceful stop (Leave / plugin shutdown → SIGTERM → `release`
+// directive) fired the SAME reason, so mapping RELEASE would have
+// counted every clean teardown as a DHCP failure.
+//
+// #800 REMOVED THE `release` DIRECTIVE, AND THAT CHANGES BOTH HALVES.
+// The paragraph above was true, and it was true because of a co-factor
+// it does not name: `release`, not `--noconfigure` alone. Measured on
+// the shipped pair (alpine 3.24.1 + dhcpcd 10.3.2-r0) with this
+// function's own argv from renderArgs, a 2m lease and the server then
+// killed, all four cells run (#855):
+//
+//	--noconfigure + release     -> lapse fires RELEASE   <- the v1.8.x client
+//	--noconfigure, no release   -> lapse fires EXPIRE    <- this build
+//	no --noconfigure + release  -> lapse fires EXPIRE
+//	no --noconfigure, no release-> lapse fires EXPIRE
+//
+// The original experiment compared --noconfigure against not, with both
+// clients carrying `release`, so it could not see that the directive was
+// doing the work. Confirmed with the plugin in the loop, by the failure
+// suite's own logs across the two trees: on dev the outage shows
+// "+0 leasefail / +1 watchdog", on this branch "+1 leasefail / +0
+// watchdog". dhcpcd now speaks, and EXPIRE below already maps to a lease
+// loss.
+//
+// RELEASE stays unmapped anyway, and the reason is now trivial rather
+// than load-bearing: no client this build starts can produce it. Mapping
+// it would be dead code; TestBuildEvent_ReleaseIsNotALeaseLoss keeps the
+// contract pinned in case a `release` directive ever comes back.
+// LeaseSeconds' deadline remains as the backstop for a lapse dhcpcd does
+// not report at all.
+func mapReason(reason string, emitRA bool) (eventType string, v6 bool, emit bool) {
 	switch reason {
 	case "BOUND", "REBOOT":
 		return "bound", false, true
@@ -68,6 +97,40 @@ func mapReason(reason string) (eventType string, v6 bool, emit bool) {
 		return "leasefail", false, true
 	case "EXPIRE6", "TIMEOUT6":
 		return "leasefail", true, true
+	// A DHCPv6 information reply: the server advertised "other
+	// configuration available" (the RA O flag) and answered an
+	// information request with options and NO address (#815). Before
+	// this case the reason fell to the default and was dropped, so a
+	// network that hands out configuration but not addresses looked
+	// exactly like one that answered nothing at all.
+	//
+	// v6 only, deliberately. dhcpcd has a v4 DHCPINFORM mode, but the
+	// plugin never runs it -- it does not pass -I -- so a v4 case here
+	// would be a branch no input can reach.
+	case "INFORM6":
+		return "config", true, true
+	// A router advertisement, carrying the M/O flags that say what the
+	// segment offers (#868). Emitted ONLY when emitRA is set, which
+	// renderConfig arranges for the ONE-SHOT acquisition client and for
+	// nothing else.
+	//
+	// The narrow scope is the point, not caution. #815 pinned
+	// ROUTERADVERT as dropped because it arrives repeatedly on every v6
+	// network, so putting it on the persistent client's stream would add
+	// traffic no consumer reads, forever. That reasoning is still true
+	// there and this case does not touch it. The one-shot client is a
+	// different consumer with a different question: at CreateEndpoint
+	// time, does this segment offer a DHCPv6 address at all? Without an
+	// answer the plugin cannot tell "no DHCPv6 here, and there never was"
+	// from "the DHCPv6 server did not answer", and #868 is what happens
+	// when it guesses -- no container starts at all on a stateless or
+	// SLAAC network.
+	//
+	// Measured, dhcpcd 10.3.2 / dnsmasq 2.92, one mode per netns:
+	// managed advertises nd1_flags=MO, stateless O, SLAAC empty, and a
+	// segment with no router fires no ROUTERADVERT at all.
+	case "ROUTERADVERT":
+		return "routeradvert", true, emitRA
 	default:
 		return "", false, false
 	}
@@ -234,7 +297,7 @@ func BuildEvent(reason string, getenv Getenv) (Event, bool) {
 // early returns is covered by the filter rather than each having to
 // remember it.
 func buildEvent(reason string, getenv Getenv) (Event, bool) {
-	eventType, v6, emit := mapReason(reason)
+	eventType, v6, emit := mapReason(reason, getenv(EmitRAEnv) != "")
 	if !emit {
 		log.Debugf("Ignoring dhcpcd reason %q", reason)
 		return Event{}, false
@@ -245,6 +308,60 @@ func buildEvent(reason string, getenv Getenv) (Event, bool) {
 	// Lease-loss events (nak / leasefail) carry no data — emit Type only
 	// so the consumer goroutine can match on them for its counters.
 	if eventType == "nak" || eventType == "leasefail" {
+		return event, true
+	}
+
+	// A router advertisement carries no lease -- the flags ARE the
+	// event. dhcpcd exports them as nd1_flags, a string of the flag
+	// letters it recognised ("MO", "O", or empty).
+	//
+	// Empty is a meaningful value, not a missing one: an RA with neither
+	// flag is exactly SLAAC. The event's Type already says an
+	// advertisement was seen, so an absent RouterFlags on a routeradvert
+	// event means "no flags were set" and nothing else.
+	if eventType == "routeradvert" {
+		event.RouterFlags = getenv("nd1_flags")
+		return event, true
+	}
+
+	// Address-less configuration (#815). This is assembled BEFORE the
+	// IA_NA guard below, and that ordering is the whole fix: an
+	// information reply has no address by definition, so mapping
+	// INFORM6 onto "bound" would have been dropped one step later by
+	// the very guard that protects the address path. The event carries
+	// options and nothing else -- Data.IP stays empty, and the consumer
+	// must never hand it to the address state machine.
+	//
+	// Measured against dhcpcd 10.3.2 with the plugin's own rendered
+	// config, on a dnsmasq `ra-stateless` network. The reply exported:
+	//
+	//     new_dhcp6_name_servers=<a> <b>
+	//     new_dhcp6_domain_search=<a> <b>
+	//     new_dhcp6_info_refresh_time=600
+	//
+	// and no new_dhcp6_ia_na* variable of any kind. Both lists arrive
+	// space-separated, so strings.Fields is the right reader -- the same
+	// shape as their v4 counterparts.
+	//
+	// The option request list matters here and is easy to lose: dhcpcd
+	// exports only what it ASKED for, and `-f <config>` bypasses the
+	// distro dhcpcd.conf. The plugin's renderConfig requests
+	// domain_name_servers and domain_search explicitly (dhcpcd maps
+	// those names to options 23 and 24 on v6); without that line the
+	// same information reply arrives carrying nothing but the server ID.
+	if eventType == "config" {
+		if dns := getenv("new_dhcp6_name_servers"); dns != "" {
+			event.Data.DNSServers = strings.Fields(dns)
+		}
+		if search := getenv("new_dhcp6_domain_search"); search != "" {
+			event.Data.SearchList = strings.Fields(search)
+		}
+		// Emitted even when the server sent no options at all. The
+		// counter is then the only evidence that the exchange happened,
+		// and a server advertising "other configuration available" while
+		// supplying none is a misconfiguration an operator should be
+		// able to see. The consumer already treats an empty DNS list as
+		// "change nothing".
 		return event, true
 	}
 
@@ -262,6 +379,25 @@ func buildEvent(reason string, getenv Getenv) (Event, bool) {
 		// dhcpcd emits a bare address; defensively strip any /prefix and
 		// canonicalise via ParseCIDR to /128 (stable compressed form for
 		// downstream string comparisons).
+		//
+		// THE /128 IS REQUIRED, NOT A PLACEHOLDER. Do not "fix" it to a
+		// /64 to make the container's address look like its neighbours'.
+		// A DHCPv6 IA_NA address carries no prefix length -- RFC 8415
+		// §21.6 defines the IA Address option with lifetimes and no
+		// on-link information -- and RFC 5942 §4 rule 1 states that
+		// assigning an address "whether through IPv6 stateless address
+		// autoconfiguration, DHCPv6, or manual configuration" MUST NOT
+		// implicitly cause a prefix derived from it to be treated as
+		// on-link. RFC 8415 §18.2.10.1 repeats that inside the DHCPv6
+		// specification itself.
+		//
+		// So /128 is the only length that does not assert something the
+		// server never said. Widening it to /64 would install an on-link
+		// prefix route the segment may not have, and would black-hole
+		// every neighbour inside that /64 that is not actually on-link.
+		// On-link determination comes from Router Advertisements -- see
+		// the Router-Advertisement guard in pkg/dhcp/ra_guard.go (#875),
+		// which exists precisely so that the kernel keeps receiving them.
 		bare := strings.SplitN(addr, "/", 2)[0]
 		_, netV6, err := net.ParseCIDR(bare + "/128")
 		if err != nil {
@@ -273,6 +409,29 @@ func buildEvent(reason string, getenv Getenv) (Event, bool) {
 		if dns := getenv("new_dhcp6_name_servers"); dns != "" {
 			event.Data.DNSServers = strings.Fields(dns)
 		}
+		// DHCPv6 option 24 (domain search list). Found while measuring
+		// #815 and fixed here rather than filed: this branch read the
+		// DNS servers and not the search list, so on a DHCPv6-only
+		// network propagateDNS wrote a resolv.conf with nameservers and
+		// never a `search` line -- for every lease, not just an
+		// information reply. The v4 branch reads new_domain_search; the
+		// v6 name is new_dhcp6_domain_search, and nothing mapped it.
+		//
+		// Info.Domain stays empty on v6 on purpose: DHCPv6 has no
+		// option-15 equivalent, only the search list, and the resolv.conf
+		// writer already falls back from SearchList to Domain rather
+		// than the other way round.
+		if search := getenv("new_dhcp6_domain_search"); search != "" {
+			event.Data.SearchList = strings.Fields(search)
+		}
+		// NTP is deliberately NOT read here. dhcpcd exports the DHCPv6
+		// NTP option (56) as new_dhcp6_ntp_server_addr, and with two
+		// addresses configured on the server exactly ONE reached the
+		// hook environment -- and not the first. Info.NTPServers is
+		// documented as the server list and is surfaced to operators as
+		// one; filling it with an arbitrary single member of a longer
+		// list would be a false claim in an operator-facing log. The
+		// measurement and the four ways out are #859.
 		// IA_NA valid lifetime — the v6 lease clock the outage detector
 		// uses (#353). DHCPv6 exposes no separate T1 through dhcpcd's
 		// variables, so RenewSeconds stays 0 and the consumer falls back

@@ -5,6 +5,7 @@ package dhcp
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -18,6 +19,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -137,9 +139,23 @@ const unsharePath = "/usr/bin/unshare"
 // reported success and left the mounts unmade with nothing said; the
 // stderr is no longer swallowed, which does not stop a decoy but does
 // mean it has to be silent as well as present. See mountPrep.
+//
+// echoBin joined them with #780. It is the one that looks unnecessary —
+// echo is a builtin in busybox ash, so today's shell resolves nothing
+// through PATH for it. Named absolutely anyway, for the reason this
+// comment already gives twice: the guarantee would rest on which shell
+// /bin/sh happens to be, the constant costs nothing, and a value with no
+// constant is a value the Dockerfile parity derivation cannot see.
 const (
 	mountBin = "/bin/mount"
 	mkdirBin = "/bin/mkdir"
+	echoBin  = "/bin/echo"
+	// grepBin reads a sysctl back after the Router-Advertisement guard
+	// writes it (#875). It is here rather than in ra_guard.go for the
+	// reason this comment block gives: the Dockerfile parity derivation
+	// reads this package's constants, and a binary with no constant is a
+	// binary that derivation cannot see.
+	grepBin = "/bin/grep"
 )
 
 // shBin is the ABSOLUTE path to the shell unshare execs.
@@ -234,17 +250,169 @@ const workDirPrefix = "net-dhcp-dhcpcd-"
 //
 // NOT A CLAIM THAT A COLLISION HAS HAPPENED. It has not been observed.
 // The finding is that it could not have been observed.
-func mountPrep() string {
-	return fmt.Sprintf(
-		"%s -t tmpfs tmpfs %s; "+
-			"%s -p %s; "+
-			"%s -t tmpfs tmpfs %s; "+
-			"%s -o remount,bind,rw %s; "+
-			"exec \"$0\" \"$@\"",
-		mountBin, dhcpcdStateDir,
-		mkdirBin, dhcpcdRunDir,
-		mountBin, dhcpcdRunDir,
-		mountBin, procSysPath)
+func mountPrep(p dhcpcdParams) string {
+	prep := mountPrepStep(fmt.Sprintf("%s -t tmpfs tmpfs %s", mountBin, dhcpcdStateDir), "state-tmpfs") +
+		mountPrepStep(fmt.Sprintf("%s -p %s", mkdirBin, dhcpcdRunDir), "run-mkdir") +
+		mountPrepStep(fmt.Sprintf("%s -t tmpfs tmpfs %s", mountBin, dhcpcdRunDir), "run-tmpfs") +
+		mountPrepStep(fmt.Sprintf("%s -o remount,bind,rw %s", mountBin, procSysPath), "procsys-remount")
+	// The Router-Advertisement guard runs AFTER the /proc/sys remount
+	// above and BEFORE the exec below, and both halves of that sentence
+	// are load-bearing: it writes to /proc/sys, which is read-only in
+	// the managed-plugin rootfs until the line above, and its whole
+	// purpose is to be in force before dhcpcd's if_setup_inet6() runs.
+	// See ra_guard.go.
+	if p.HonorRouterAdverts {
+		prep += raGuardSteps(p.Iface)
+	}
+	return prep + "exec \"$0\" \"$@\""
+}
+
+// mountPrepFailMarker prefixes the line mountPrep writes to stderr when
+// one of its commands fails.
+//
+// A marker rather than reading the commands' own stderr, because that
+// stderr shares a stream with all of dhcpcd's routine output and cannot
+// be raised to a warning without raising the rest with it — which is the
+// reason the failure was invisible in the first place (#780).
+//
+// Deliberately not a word that appears in dhcpcd's vocabulary, so a
+// count can never be manufactured by the client logging about something
+// else.
+const mountPrepFailMarker = "net-dhcp-mountprep-failed:"
+
+// raGuardFailMarker prefixes the line a Router-Advertisement guard step
+// writes to stderr when it fails (#875).
+//
+// A SEPARATE marker, not a reason string under the existing one. The
+// two failures mean different things to an operator -- a namespace
+// isolation that did not land versus a container whose IPv6 will stop
+// working -- and a single counter could not tell them apart. Like its
+// sibling it is deliberately not a word in dhcpcd's vocabulary, so a
+// count can never be manufactured by dhcpcd logging about something
+// else.
+const raGuardFailMarker = "net-dhcp-raguard-failed:"
+
+// mountPrepStep appends `|| echo <marker> <step> >&2; ` to one command.
+//
+// `||` and not `&&`, and the chain stays `;`-separated: a failed step
+// must NOT stop the ones after it or abort the exec. That is the
+// pre-existing behaviour and it is the right one — the client degrades
+// to sharing the host's view rather than refusing to start, and #780
+// asks for the failure to become visible, not for it to become fatal.
+// Changing that is a separate decision with a different blast radius.
+//
+// Every step is built through here so a fifth command cannot be added
+// without a marker; TestMountPrep_EveryCommandReportsItsFailure asserts
+// that by counting markers against commands rather than by naming the
+// four that exist today.
+func mountPrepStep(cmd, step string) string {
+	return prepStep(cmd, mountPrepFailMarker, step)
+}
+
+// prepStep is mountPrepStep with the marker as a parameter, so a second
+// family of prepared steps can be counted separately (#875).
+//
+// The marker is what decides WHICH counter a failure lands on, so it is
+// a parameter of the step builder rather than something the watcher
+// infers from the step name. A watcher that guessed from the name would
+// be keyed on today's spelling; this is keyed on the derivation.
+func prepStep(cmd, marker, step string) string {
+	return fmt.Sprintf("%s || %s '%s %s' >&2; ", cmd, echoBin, marker, step)
+}
+
+// prepStepMustFail is prepStep with the polarity INVERTED: the marker
+// is emitted when cmd SUCCEEDS (#875).
+//
+// It exists for one shape — a check whose passing condition is that an
+// operation is REFUSED. The RA guard's shield returns /proc/sys to
+// read-only, and attempting a write and being turned away is the way
+// this package chooses to know it took effect. NOT the only possible
+// way, and saying so would be false: a longest-mount-prefix parse of
+// /proc/mounts would also separate the twelve topologies in raGuardSteps'
+// table. It was rejected for being keyed on the MECHANISM — it has to
+// model how mount flags compose — where this is keyed on the effect the
+// guard actually needs.
+//
+// What IS true without qualification is the negative: the remount's
+// exit status does not carry that information. `mount -o
+// remount,bind,ro P` changes the flags of the mount at P and not its
+// submounts', so a /proc/sys with a
+// read-write mount anywhere beneath it takes the remount, exits 0,
+// emits nothing, and leaves the knobs writable. MEASURED in five such
+// topologies; the table is in raGuardSteps.
+//
+// Two properties the CALLER has to supply, because this helper cannot
+// check them:
+//
+//   - The command must be SAFE WHEN IT SUCCEEDS. A probe that gets
+//     through has performed whatever it attempted, so the guard writes
+//     the value the knob is already meant to hold and a successful
+//     probe changes nothing.
+//   - The command must SILENCE its own diagnostics, with the
+//     suppression BEFORE the redirection. On the passing path the
+//     shell's refused redirection prints "Read-only file system" naming
+//     dhcpcd's own path, which would put a line that reads like a fault
+//     into the log of every healthy endpoint. MEASURED, busybox ash
+//     1.37.0 and dash alike: `echo V 2>/dev/null > P` is quiet and
+//     `echo V > P 2>/dev/null` is not, because redirections are applied
+//     left to right and the shell reports the failing one against the
+//     fd 2 in force at that moment.
+//
+// The shared failure mode with prepStep, stated rather than implied:
+// both report through /bin/echo, so a missing /bin/echo silences the
+// whole prologue — every marker in both families, not only this one.
+// That is closed at BUILD time by the Dockerfile's `test -x /bin/echo`,
+// asserted in the same RUN that installs the packages.
+func prepStepMustFail(cmd, marker, step string) string {
+	return fmt.Sprintf("%s && %s '%s %s' >&2; ", cmd, echoBin, marker, step)
+}
+
+// mountPrepWatcher counts the per-step failure markers that the shell
+// prologue writes to stderr, on a byte stream. It counts TWO marker
+// families, not one: mountPrep's own steps (#780) and the
+// Router-Advertisement guard's write/verify/shield steps (#875), each
+// into its own counter. The type keeps its original name because it is
+// still the mountPrep prologue that emits both.
+//
+// It sits in the client's stderr MultiWriter beside the debug-log pipe
+// and the bounded tail buffer, so it sees exactly what the shell wrote,
+// before dhcpcd itself has said anything.
+//
+// Line-buffered because a Writer receives arbitrary chunks: a marker can
+// arrive split across two Writes, and matching per-chunk would both miss
+// those and double-count a chunk boundary inside one line.
+//
+// WHICH WAY THE BUFFER BOUND FAILS. A stream that never sends a newline
+// would otherwise grow without limit, so the retained partial line is
+// capped and trimmed from the FRONT. Trimming can only destroy a partial
+// marker, never assemble one, so the bound loses counts rather than
+// inventing them — the safe direction for a counter whose whole purpose
+// is to be believed when it is non-zero. Markers are written by `echo`
+// and so always carry their newline; reaching the cap means something
+// other than mountPrep is producing the bytes.
+type mountPrepWatcher struct {
+	buf []byte
+}
+
+func (w *mountPrepWatcher) Write(p []byte) (int, error) {
+	w.buf = append(w.buf, p...)
+	for {
+		i := bytes.IndexByte(w.buf, '\n')
+		if i < 0 {
+			break
+		}
+		switch {
+		case bytes.Contains(w.buf[:i], []byte(mountPrepFailMarker)):
+			mountPrepFailures.Add(1)
+		case bytes.Contains(w.buf[:i], []byte(raGuardFailMarker)):
+			raGuardFailures.Add(1)
+		}
+		w.buf = w.buf[i+1:]
+	}
+	if len(w.buf) > stderrTailMax {
+		w.buf = w.buf[len(w.buf)-stderrTailMax:]
+	}
+	return len(p), nil
 }
 
 // tailWriter retains the last up-to-max bytes written to it. dhcpcd's
@@ -375,6 +543,20 @@ type DHCPClientOptions struct {
 	// and #243.
 	Broadcast bool
 
+	// HonorRouterAdverts asks the client to put the interface's KERNEL
+	// in charge of Router Advertisement processing, and to keep dhcpcd
+	// from turning it back off (#875).
+	//
+	// The plugin sets it for the persistent DHCPv6 client, which is the
+	// one that runs inside the container's network namespace. It is
+	// REFUSED on any other shape -- see NewDHCPClient -- because the
+	// values it writes are host configuration for a container's link,
+	// and writing them on a link that is still in the host namespace
+	// would be changing the HOST's router-discovery behaviour.
+	//
+	// What it writes and why each value is what it is: ra_guard.go.
+	HonorRouterAdverts bool
+
 	// FQDN, when non-empty, sets dhcpcd's `fqdn` directive mode (e.g.
 	// "both"), making the client send the DHCP FQDN option (81 v4 / 39 v6)
 	// built from Hostname and ask the server to register it in DNS (#261).
@@ -393,7 +575,12 @@ type DHCPClient struct {
 	fifoRead *os.File    // read end of the event FIFO (scanner side)
 	fifoKeep *os.File    // write keep-alive (O_RDWR) end of the event FIFO
 	stderr   *tailWriter // last bytes of dhcpcd stderr, for the exit error
-	logPipes []io.Closer // logrus WriterLevel pipe writers; closed by the reaper
+	// mountWatch counts both families of prologue failure marker on the
+	// same stderr
+	// stream. By value: it is written only by exec's stderr copy
+	// goroutine, exactly like stderr above.
+	mountWatch mountPrepWatcher
+	logPipes   []io.Closer // logrus WriterLevel pipe writers; closed by the reaper
 
 	waitErr  error
 	waitDone chan struct{} // closed when cmd.Wait() returns
@@ -407,6 +594,26 @@ func NewDHCPClient(iface string, opts *DHCPClientOptions) (*DHCPClient, error) {
 	if !ValidIfaceName(iface) {
 		return nil, fmt.Errorf("invalid interface name %q", iface)
 	}
+	// The Router-Advertisement guard writes a container's IPv6 host
+	// configuration, so it is only meaningful on the client that runs
+	// inside that container's network namespace: the persistent DHCPv6
+	// one. REFUSE the other shapes rather than silently ignoring the
+	// flag -- a dropped flag is a wiring mistake that looks like a
+	// working plugin, and the failure it would cause (accept_ra=2 on a
+	// link still in the HOST namespace, or on the CreateEndpoint
+	// one-shot's host-side veth) is not one anything downstream would
+	// report. See ra_guard.go and DHCPClientOptions.HonorRouterAdverts.
+	if opts.HonorRouterAdverts {
+		switch {
+		case !opts.V6:
+			return nil, fmt.Errorf("HonorRouterAdverts is IPv6-only")
+		case opts.NetNS == nil:
+			return nil, fmt.Errorf("HonorRouterAdverts needs a target network namespace")
+		case opts.Once:
+			return nil, fmt.Errorf("HonorRouterAdverts is for the persistent client, not the one-shot")
+		}
+	}
+
 	handler := opts.HandlerScript
 	if handler == "" {
 		handler = DefaultHandler
@@ -433,22 +640,23 @@ func NewDHCPClient(iface string, opts *DHCPClientOptions) (*DHCPClient, error) {
 
 	configPath := filepath.Join(workDir, "dhcpcd.conf")
 	params := dhcpcdParams{
-		Iface:        iface,
-		MAC:          opts.MAC,
-		V6:           opts.V6,
-		Once:         opts.Once,
-		Hostname:     opts.Hostname,
-		FQDN:         opts.FQDN,
-		VendorClass:  vendor,
-		ClientID:     opts.ClientID,
-		RequestedIP:  opts.RequestedIP,
-		PreferredV6:  opts.PreferredV6,
-		Broadcast:    opts.Broadcast,
-		AllowServers: opts.AllowServers,
-		DenyServers:  opts.DenyServers,
-		Handler:      handler,
-		ConfigPath:   configPath,
-		EventFIFO:    fifoPath,
+		Iface:              iface,
+		MAC:                opts.MAC,
+		V6:                 opts.V6,
+		Once:               opts.Once,
+		Hostname:           opts.Hostname,
+		FQDN:               opts.FQDN,
+		VendorClass:        vendor,
+		ClientID:           opts.ClientID,
+		RequestedIP:        opts.RequestedIP,
+		PreferredV6:        opts.PreferredV6,
+		Broadcast:          opts.Broadcast,
+		HonorRouterAdverts: opts.HonorRouterAdverts,
+		AllowServers:       opts.AllowServers,
+		DenyServers:        opts.DenyServers,
+		Handler:            handler,
+		ConfigPath:         configPath,
+		EventFIFO:          fifoPath,
 		// Forward our own GOCOVERDIR to the hook so its coverage counters
 		// survive dhcpcd's environment scrub (cover build only; unset and
 		// thus omitted in production). See renderConfig.
@@ -485,7 +693,7 @@ func NewDHCPClient(iface string, opts *DHCPClientOptions) (*DHCPClient, error) {
 	// Wait target it directly. `sh -c '... exec "$0" "$@"'` passes the
 	// dhcpcd argv as $0/$@, avoiding any quoting of paths.
 	dargs := renderArgs(params)
-	wrapped := append([]string{unsharePath, "-m", shBin, "-c", mountPrep()}, dargs...)
+	wrapped := append([]string{unsharePath, "-m", shBin, "-c", mountPrep(params)}, dargs...)
 
 	// unsharePath, not wrapped[0]. They are the same string — wrapped is
 	// built one line up with unsharePath at index 0 — but an index
@@ -499,9 +707,13 @@ func NewDHCPClient(iface string, opts *DHCPClientOptions) (*DHCPClient, error) {
 	// Two reasons, both about signals reaching the wrong process. A
 	// signal sent to the plugin's process group — which is what a
 	// terminal, a supervisor, or a `kill -- -<pgid>` sends — otherwise
-	// reaches every live dhcpcd as well, and the persistent client
-	// omits dhcpcd's -p, so it would RELEASE the lease of a container
-	// that is still running. And in the other direction, a group of its
+	// reaches every live dhcpcd as well, killing the renewal client of a
+	// container that is still running: its lease then stops being
+	// renewed and lapses at the server's deadline, with the container
+	// none the wiser. (Up to v1.8.x this comment said the client would
+	// RELEASE that lease. It would not — dhcpcd's -p governs whether the
+	// interface is de-configured, and the release came from a `release`
+	// directive that #800 removed.) And in the other direction, a group of its
 	// own is what makes the client killable as a unit later, including
 	// the short-lived hook processes dhcpcd spawns.
 	//
@@ -539,7 +751,13 @@ func NewDHCPClient(iface string, opts *DHCPClientOptions) (*DHCPClient, error) {
 	outPipe := log.StandardLogger().WriterLevel(log.DebugLevel)
 	errPipe := log.StandardLogger().WriterLevel(log.DebugLevel)
 	c.cmd.Stdout = outPipe
-	c.cmd.Stderr = io.MultiWriter(errPipe, c.stderr)
+	// The third writer counts the prologue's failure markers -- both
+	// mountPrep's (#780) and the RA guard's (#875). It has
+	// to be here rather than wrapped around c.stderr, because that
+	// buffer is BOUNDED to its last few KiB — a namespace-prep failure
+	// followed by chatty dhcpcd output would be trimmed out of it before
+	// anything read it.
+	c.cmd.Stderr = io.MultiWriter(errPipe, c.stderr, &c.mountWatch)
 	c.logPipes = []io.Closer{outPipe, errPipe}
 
 	log.WithField("cmd", c.cmd.Args).Trace("new dhcpcd client")
@@ -712,54 +930,239 @@ func (c *DHCPClient) await(ctx context.Context) error {
 	}
 }
 
+// RAObservation is what an acquisition attempt learned about the
+// segment's router advertisements while trying to get a lease.
+//
+// It exists because a failed DHCPv6 acquisition has two entirely
+// different meanings and a timeout cannot tell them apart (#868). A
+// segment whose advertisement carries the M flag is offering DHCPv6
+// addresses, so silence is a failure. A segment advertising without M
+// -- stateless, or plain SLAAC -- is saying there are no DHCPv6
+// addresses here, which is the NORMAL configuration of a great many
+// home routers and not a failure at all.
+//
+// Both fields are positive assertions. Zero value means "nothing was
+// observed", which is the honest reading of an attempt that saw no
+// advertisement.
+type RAObservation struct {
+	// Seen is true once any router advertisement reached the hook.
+	Seen bool
+	// Managed is true if any advertisement carried the M flag.
+	Managed bool
+}
+
+// Merge folds another attempt's observation into this one. Both fields
+// are OR-ed rather than overwritten: an advertisement seen on the first
+// attempt is still a fact on the third, and a later attempt that
+// happens to miss it must not erase it.
+func (o RAObservation) Merge(other RAObservation) RAObservation {
+	return RAObservation{
+		Seen:    o.Seen || other.Seen,
+		Managed: o.Managed || other.Managed,
+	}
+}
+
+// raDrainGrace bounds how long an acquisition waits for the collector
+// goroutine to hand over events already in the pipe, after dhcpcd has
+// been reaped. It is a handover bound, not a network one: nothing is
+// still being asked of the segment by the time it is used.
+const raDrainGrace = 500 * time.Millisecond
+
+// raManagedFlag is the letter dhcpcd puts in nd1_flags for a router
+// advertisement's "managed address configuration" bit. Measured against
+// dhcpcd 10.3.2: managed segments advertise "MO", stateless "O", SLAAC
+// the empty string.
+const raManagedFlag = "M"
+
+// observeRA folds one router advertisement's flag string into an
+// observation.
+//
+// It is a named function rather than three lines inside the collector
+// goroutine because it is the only place the wire's spelling becomes a
+// verdict, and everything downstream -- the retry loop's early exit,
+// the fatal/tolerated classification, two health counters -- is decided
+// by the boolean it returns. Inside the goroutine it was reachable only
+// through a live dhcpcd: every unit test of the loop above stubs
+// attemptGetIP out, so deleting the flag check entirely left the whole
+// package green.
+//
+// Seen is set from the CALL, not from the flags. An advertisement with
+// no flags at all is plain SLAAC -- a segment saying, positively, that
+// it offers no DHCPv6 -- and reading that as "nothing was advertised"
+// is the one confusion this whole path exists to prevent.
+func observeRA(o RAObservation, flags string) RAObservation {
+	o.Seen = true
+	if strings.Contains(flags, raManagedFlag) {
+		o.Managed = true
+	}
+	return o
+}
+
+// acquisition is what one dhcpcd run has reported SO FAR.
+//
+// "So far" is the whole design, and it is the fix for the fail-open
+// found while fixing #868 -- the issue record for all of this. The first
+// version accumulated locally in the collector goroutine and published
+// the result by sending on a channel once the event stream closed. The
+// stream closes when dhcpcd is reaped -- so on the one case where the
+// answer decides whether an endpoint is refused, the caller was reading
+// a channel nobody had written to yet:
+//
+//	managed segment, silent server -> dhcpcd never exits on its own ->
+//	the acquisition context expires -> Finish kills and reaps dhcpcd ->
+//	the caller reads the observation with its context ALREADY done
+//
+// At that point the ctx.Done() arm of the select is ready and the
+// observation arm usually is not, so the caller took the zero value:
+// "no router advertised here" for a segment that had advertised the
+// managed flag twice, nine seconds earlier, with both events visible in
+// the plugin's own log. That maps to the tolerated verdict, so a real
+// DHCPv6 outage on a managed network produced a running container with
+// no IPv6 address -- fail-open, on the guard whose entire purpose is to
+// stay closed. It is a race, so it also passed once, which is worse
+// than failing every time: TestDHCPv6_Managed_ServerSilent_IsStillFatal
+// went green at 46d8d61 and red at 28b5eb3 with nothing between them
+// that touches this path.
+//
+// Folding under a mutex as each event arrives removes the question. The
+// observation is monotone -- Seen and Managed are only ever set -- so a
+// snapshot taken at any moment is a true statement about what the
+// segment has said, never a stale one that later becomes wrong.
+type acquisition struct {
+	mu   sync.Mutex
+	last *Info
+	ra   RAObservation
+}
+
+// fold takes one event into the accumulator.
+func (a *acquisition) fold(event Event) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	switch event.Type {
+	case "bound", "renew":
+		v := event.Data
+		a.last = &v
+	case "routeradvert":
+		a.ra = observeRA(a.ra, event.RouterFlags)
+	}
+}
+
+// snapshot reports the last lease seen (nil if none) and the router
+// advertisements observed up to this instant. Safe to call while the
+// collector is still running, which is the point.
+func (a *acquisition) snapshot() (*Info, RAObservation) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.last, a.ra
+}
+
+// collectAcquisition drains one acquisition's event stream into a.
+//
+// Split out of the goroutine that runs it so both halves are reachable
+// without a live dhcpcd. The goroutine's body was previously the only
+// place event.RouterFlags was read, and every unit test of the retry
+// loop stubs attemptGetIP out -- so a version that read the wrong field,
+// or no field, left this package fully green and failed only in the
+// integration lane, ten minutes later and one layer away from the line
+// at fault.
+func collectAcquisition(events <-chan Event, a *acquisition) {
+	for event := range events {
+		a.fold(event)
+	}
+}
+
+// settleAcquisition gives the collector a bounded chance to finish
+// draining, then reports what it has.
+//
+// The bound is NOT a wait for the network and must not be read as one:
+// every caller reaches here with dhcpcd already reaped (Finish kills it
+// before returning on the context path, and it has exited on its own
+// otherwise), so the only thing outstanding is the scanner handing over
+// events already sitting in the pipe.
+//
+// It takes NO context, deliberately, and that absence is the fix for
+// the fail-open recorded on #868. The context is expired on exactly
+// the path where the answer decides an endpoint's fate -- a managed
+// segment whose server went
+// silent -- so a context-bounded read there is a read that has already
+// run out of time, and it returned the zero value: "nothing was
+// advertised here" for a segment that had advertised the managed flag.
+//
+// If the grace expires the snapshot is still returned rather than a
+// zero value. What was folded before the deadline is true, and
+// discarding it can only move the verdict toward tolerating an absence
+// that was never observed.
+func settleAcquisition(collected <-chan struct{}, a *acquisition, grace time.Duration) (*Info, RAObservation) {
+	select {
+	case <-collected:
+	case <-time.After(grace):
+	}
+	return a.snapshot()
+}
+
 // attemptGetIP runs dhcpcd once (opts must already carry Once=true)
-// and returns the lease info obtained. GetIP wraps it in a retry loop;
-// the indirection through attemptGetIPFunc lets unit tests exercise
-// that loop without running a real dhcpcd.
-func attemptGetIP(ctx context.Context, iface string, opts *DHCPClientOptions) (Info, error) {
+// and returns the lease info obtained, plus what the attempt observed
+// about the segment's router advertisements. GetIP wraps it in a retry
+// loop; the indirection through attemptGetIPFunc lets unit tests
+// exercise that loop without running a real dhcpcd.
+func attemptGetIP(ctx context.Context, iface string, opts *DHCPClientOptions) (Info, RAObservation, error) {
 	dummy := Info{}
+	var noRA RAObservation
 
 	client, err := NewDHCPClient(iface, opts)
 	if err != nil {
-		return dummy, fmt.Errorf("failed to create DHCP client: %w", err)
+		return dummy, noRA, fmt.Errorf("failed to create DHCP client: %w", err)
 	}
 
 	events, err := client.Start()
 	if err != nil {
-		return dummy, fmt.Errorf("failed to start DHCP client: %w", err)
+		return dummy, noRA, fmt.Errorf("failed to start DHCP client: %w", err)
 	}
 
-	// ch carries the final lease seen, or stays unsent if no bound/renew
-	// event arrived before the events channel closed. Buffered=1 so the
-	// goroutine never blocks on send.
-	ch := make(chan Info, 1)
+	// The collector folds events into acq as they arrive; collected is
+	// closed when the stream ends. Nothing is published by channel, so
+	// no read of the observation can depend on whether the stream has
+	// finished -- see the acquisition type for what that cost.
+	acq := &acquisition{}
+	collected := make(chan struct{})
 	go func() {
-		var last *Info
-		for event := range events {
-			if event.Type == "bound" || event.Type == "renew" {
-				v := event.Data
-				last = &v
-			}
-		}
-		if last != nil {
-			ch <- *last
-		}
-		close(ch)
+		defer close(collected)
+		collectAcquisition(events, acq)
 	}()
 
-	if err := client.Finish(ctx); err != nil {
-		return dummy, err
-	}
+	return finishAcquisition(client.Finish(ctx), collected, acq, raDrainGrace)
+}
 
-	select {
-	case info, ok := <-ch:
-		if !ok {
-			return dummy, util.ErrNoLease
-		}
-		return info, nil
-	case <-ctx.Done():
-		return dummy, ctx.Err()
+// finishAcquisition forms one attempt's verdict: what the collector has
+// observed, plus what Finish reported.
+//
+// Split out of attemptGetIP for the reason observeRA, collectAcquisition
+// and settleAcquisition were split out before it -- inside attemptGetIP
+// it is reachable only through a live dhcpcd, so no unit test in this
+// package could execute it, and a mutation that returned the ZERO
+// observation on the error path survived the whole suite. That mutation
+// IS the fail-open #868 records: the error path is the one a managed
+// segment with a silent server takes.
+//
+// The observation is returned on BOTH paths, and that is the whole
+// point. dhcpcd exiting non-zero on a stateless segment is not evidence
+// that no advertisement arrived -- the advertisement is what makes that
+// exit interpretable, and returning the zero value there reports "no
+// router on this segment" for a segment whose router had just spoken.
+// classifyV6Absence maps the zero observation to v6NoRouter, which is
+// TOLERATED, so getting this wrong fails OPEN on the guard whose entire
+// purpose is to stay closed.
+func finishAcquisition(finishErr error, collected <-chan struct{}, a *acquisition, grace time.Duration) (Info, RAObservation, error) {
+	dummy := Info{}
+
+	last, ra := settleAcquisition(collected, a, grace)
+	if finishErr != nil {
+		return dummy, ra, finishErr
 	}
+	if last == nil {
+		return dummy, ra, util.ErrNoLease
+	}
+	return *last, ra, nil
 }
 
 var attemptGetIPFunc = attemptGetIP
@@ -809,32 +1212,48 @@ func isRetryableLeaseErr(err error) bool {
 // The caller's opts is not mutated — we work on a local copy so a
 // caller that reuses the options struct between persistent and
 // one-shot calls doesn't get its Once flag flipped on.
-func GetIP(ctx context.Context, iface string, opts *DHCPClientOptions) (Info, error) {
+func GetIP(ctx context.Context, iface string, opts *DHCPClientOptions) (Info, RAObservation, error) {
 	dummy := Info{}
 
 	optsCopy := *opts
 	optsCopy.Once = true
 
 	var lastErr error
+	// Accumulated across attempts, never reset. What the segment
+	// advertised on the first try is still what it advertises on the
+	// last, and the verdict #868 needs is about the SEGMENT, not about
+	// one attempt.
+	var ra RAObservation
 	for {
 		if err := ctx.Err(); err != nil {
 			if lastErr != nil {
-				return dummy, fmt.Errorf("%w (last attempt error: %w)", err, lastErr)
+				return dummy, ra, fmt.Errorf("%w (last attempt error: %w)", err, lastErr)
 			}
-			return dummy, err
+			return dummy, ra, err
 		}
 
-		info, err := attemptGetIPFunc(ctx, iface, &optsCopy)
+		info, attemptRA, err := attemptGetIPFunc(ctx, iface, &optsCopy)
+		ra = ra.Merge(attemptRA)
 		if err == nil {
-			return info, nil
+			return info, ra, nil
+		}
+		// An advertisement WITHOUT the managed flag is conclusive on the
+		// spot: the segment has said there are no DHCPv6 addresses here,
+		// and retrying until the budget expires would burn the whole
+		// container-start budget to reach the same answer. An
+		// advertisement WITH it, or none at all, still gets every
+		// attempt -- the first is a server that may yet answer, the
+		// second may still be a router that has not spoken.
+		if ra.Seen && !ra.Managed {
+			return dummy, ra, err
 		}
 		if !isRetryableLeaseErr(err) {
 			// A context error mid-attempt is the deadline, not a new
 			// failure — report what we were retrying when it hit.
 			if lastErr != nil && ctx.Err() != nil {
-				return dummy, fmt.Errorf("%w (last attempt error: %w)", err, lastErr)
+				return dummy, ra, fmt.Errorf("%w (last attempt error: %w)", err, lastErr)
 			}
-			return dummy, err
+			return dummy, ra, err
 		}
 
 		lastErr = err
@@ -843,7 +1262,7 @@ func GetIP(ctx context.Context, iface string, opts *DHCPClientOptions) (Info, er
 		select {
 		case <-time.After(leaseRetryDelay + rand.N(leaseRetryJitter)):
 		case <-ctx.Done():
-			return dummy, fmt.Errorf("%w (last attempt error: %w)", ctx.Err(), lastErr)
+			return dummy, ra, fmt.Errorf("%w (last attempt error: %w)", ctx.Err(), lastErr)
 		}
 	}
 }

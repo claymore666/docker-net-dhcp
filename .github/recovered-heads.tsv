@@ -1,0 +1,21 @@
+# Heads whose run records were DESTROYED after the fact, with the evidence
+# that they had been tested. One per line, tab-separated:
+#
+#   <full 40-char sha>  <YYYY-MM-DD observed>  <run id>  <why no re-test is possible>
+#
+# THIS IS NOT AN EXEMPTION LIST AND MUST NOT BECOME ONE. An entry says
+# "a run existed and something deleted it", and it is only honest when a
+# named run actually observed that head as tested. check-missing-runs.sh
+# REFUSES to run -- exit 2, not a warning -- if any line is missing a
+# field, carries a short sha, a malformed date or a non-numeric run id.
+# A head with no entry and no runs still fails, which is the whole point.
+#
+# EACH ENTRY ENDS BY ITSELF. It names one commit id, so it stops applying
+# the moment that commit stops being the head it was recorded for. There
+# is no date to police and no condition to remember: push to the branch
+# and the entry is inert. That is deliberate -- an exemption that has to
+# be cleaned up is one that never is.
+#
+# Adding a line is a claim about evidence. If you cannot name the run
+# that saw the head tested, there is no entry to write.
+41aa96b4a302bf0cae849c158e4356c1bd286024	2026-08-27	33036626425	PR #221 head; runs destroyed by the retention purge between 03:31Z and 14:35Z on 2026-08-27. Run 33036626425 logged "5 open PR head(s) past the 20m grace, all have runs" at 03:31Z. That is an AGGREGATE, so membership was measured rather than assumed: PR #221 has been open since 2026-06-14, its timeline carries no head_ref_force_pushed event and its newest commit is 2026-06-14T18:26:19Z, so this sha was its head at 03:31Z and was hours past the 20m grace; the 14:35Z run names the same sha and the "(draft)" tag it printed proves drafts are in the counted population. The head was therefore inside the set the universal quantified over. No re-test is possible: integration.yml at this ref predates workflow_dispatch (#419) and its push filter admits only main and dev, and the branch does not merge into dev.

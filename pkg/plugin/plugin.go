@@ -324,8 +324,8 @@ type DHCPNetworkOptions struct {
 	// hostname already sent as the option-12 hint (#261).
 	RegisterDNS bool `mapstructure:"register_dns"`
 	// AuditLog, when true, appends every lease-lifecycle event on
-	// this network (bound / renew / release, plus release_failed when
-	// the DHCPRELEASE didn't complete) to STATE_DIR/leases.jsonl —
+	// this network (bound / renew / stopped, plus stop_failed when the
+	// client's shutdown didn't complete) to STATE_DIR/leases.jsonl —
 	// an append-only JSONL audit trail answering "which IP did this
 	// container hold last Tuesday?" without dnsmasq-log archaeology
 	// (#109). Rotated at 16 MB or 30 days, whichever first; one
@@ -942,7 +942,7 @@ type Plugin struct {
 	// evidence of a clean segment if this advanced.
 	addressConflictProbes atomic.Int32
 
-	// leasesObtainedV4 / leasesRenewedV4 / dhcpTimeoutsV4 / leaseReleaseFailuresV4
+	// leasesObtainedV4 / leasesRenewedV4 / dhcpTimeoutsV4 / clientStopFailuresV4
 	// expose DHCP-wire-level counters via /Plugin.Health (T2-4). They
 	// complement the lease_changed signal and let operators alert on
 	// regressions in the DHCP exchange itself without scraping dnsmasq
@@ -954,39 +954,28 @@ type Plugin struct {
 	//   - dhcpTimeoutsV4: "leasefail" event — a bound lease lapsed
 	//     (dhcpcd EXPIRE) or the outage watchdog fired without an
 	//     OFFER or ACK
-	//   - leaseReleaseFailuresV4: client.Finish returned an error in
-	//     Stop, meaning the SIGTERM-driven DHCPRELEASE didn't complete
+	//   - clientStopFailuresV4: client.Finish returned an error in
+	//     Stop, meaning the SIGTERM-driven shutdown didn't complete
 	//     cleanly (timeout, exit code, or pipe closure)
+	//
+	//     Called leaseReleaseFailures until v1.9.0, when the plugin
+	//     stopped releasing leases altogether (#800). The old name said
+	//     a DHCPRELEASE had not completed; there is no DHCPRELEASE on
+	//     any path now, and what is left is a client that did not exit
+	//     cleanly when asked. Renamed rather than kept, because a
+	//     counter whose name describes something the plugin no longer
+	//     does is read as the thing it is named after.
 	//
 	// Each counts the v4 client only. The unsuffixed JSON field an
 	// operator alerts on (`leases_obtained`) is this atom PLUS its *V6
 	// sibling, summed in healthSnapshot rather than stored (#730).
-	leasesObtainedV4       atomic.Int32
-	leasesRenewedV4        atomic.Int32
-	dhcpTimeoutsV4         atomic.Int32
-	leaseReleaseFailuresV4 atomic.Int32
+	leasesObtainedV4     atomic.Int32
+	leasesRenewedV4      atomic.Int32
+	dhcpTimeoutsV4       atomic.Int32
+	clientStopFailuresV4 atomic.Int32
 
-	// orphanedLeasesReleased / orphanedLeaseReleaseFailures cover the
-	// lease the CreateEndpoint one-shot acquired when no persistent
-	// client ever took ownership of it — a container that exited before
-	// Join's async Start could attach (#370). See releaseOrphanedLease.
-	//
-	// Deliberately separate from leaseReleaseFailuresV4: that counter
-	// means "a client we were running failed to hand its lease back",
-	// which points at upstream reachability. These mean "no client was
-	// running at all", which points at container churn. Merging them
-	// would make the pattern each one exists to reveal unreadable.
-	//
-	// Neither participates in Healthy. A failed synthesised release
-	// leaves one lease held until it expires — worth alerting on as a
-	// rate, not worth latching a plugin unhealthy over, in the same
-	// spirit as #373/#376/#383: an ordinary container lifecycle must
-	// not read as a plugin fault.
-	orphanedLeasesReleased       atomic.Int32
-	orphanedLeaseReleaseFailures atomic.Int32
-
-	// parentGate serialises child-link creation per parent NIC, so an
-	// asynchronous orphan-lease reclaim cannot hold a parent in one
+	// parentGate serialises child-link creation per parent NIC, so the
+	// validate_dhcp preflight probe cannot hold a parent in one
 	// attachment mode while an endpoint asks for the other. See
 	// parent_gate.go for why this is per-parent and for the lock
 	// ordering.
@@ -1032,10 +1021,61 @@ type Plugin struct {
 	leasesRenewedV6  atomic.Int32
 	dhcpTimeoutsV6   atomic.Int32
 	naksReceivedV6   atomic.Int32
-	// leaseReleaseFailuresV6 joined the split late (#608): until then a
-	// dual-stack operator alerting on lease_release_failures could not
+	// clientStopFailuresV6 joined the split late (#608): until then a
+	// dual-stack operator alerting on client_stop_failures could not
 	// tell which family's client had failed to hand its lease back.
-	leaseReleaseFailuresV6 atomic.Int32
+	clientStopFailuresV6 atomic.Int32
+
+	// dhcpv6ConfigOnly counts DHCPv6 information replies: the server
+	// advertised "other configuration available" and answered with
+	// options and no address (#815). Deliberately NOT part of the
+	// v4/v6 pairs above -- there is no v4 counterpart, because the
+	// plugin never runs dhcpcd's v4 DHCPINFORM mode, and inventing a
+	// zero-forever v4 half would imply a measurement nobody takes.
+	//
+	// It counts replies RECEIVED, not configuration applied, and the
+	// distinction is deliberate: whether anything is applied depends on
+	// PropagateDNS and on what the server actually sent, so a counter
+	// named "applied" would be false on a network that advertises
+	// configuration and supplies none -- which is exactly the
+	// misconfiguration this counter makes visible.
+	dhcpv6ConfigOnly atomic.Int32
+
+	// dhcpv6NotOffered counts endpoints created without a DHCPv6
+	// address because the segment's router advertisement did NOT carry
+	// the managed-address flag -- stateless or SLAAC (#868).
+	//
+	// This is a healthy outcome, not a failure. It is counted because
+	// an operator who expected DHCPv6 on that network needs to see that
+	// the network itself said otherwise, and because the alternative --
+	// silence -- is what made #868 invisible until a container failed
+	// to start.
+	dhcpv6NotOffered atomic.Int32
+
+	// dhcpv6NoRouterAdvert counts endpoints created without a DHCPv6
+	// address because NO router advertisement arrived at all (#868).
+	//
+	// Separate from dhcpv6NotOffered on purpose. "The segment told us
+	// there is no DHCPv6 here" and "the segment told us nothing" are
+	// different facts and call for different operator action: the first
+	// is a correctly configured stateless network, the second is a
+	// segment with no router, which may be a misconfiguration. Folding
+	// them into one counter would hide the second inside the first.
+	dhcpv6NoRouterAdvert atomic.Int32
+
+	// ipv6LinkEnableFailures counts container links the plugin could not
+	// administratively enable IPv6 on before starting a DHCPv6 client
+	// (#868).
+	//
+	// The engine sets disable_ipv6=1 on a sandbox interface whose
+	// endpoint carries no IPv6 address, which #868 made a reachable
+	// state. On such a link nothing IPv6 can arrive at all -- no
+	// link-local, no router solicitation, no information-request -- so a
+	// failure to clear it is the difference between "the segment is
+	// quiet" and "we never listened". Both otherwise present as DHCPv6
+	// timeouts, which is why this gets a counter rather than only the
+	// warning beside it.
+	ipv6LinkEnableFailures atomic.Int32
 
 	// displacedStops tracks the goroutines Join spawns to Stop a
 	// manager it displaced (#338). Join must not block on the dhcpcd
@@ -1051,15 +1091,6 @@ type Plugin struct {
 	// otherwise visible only as scattered log lines.
 	displacedStops      sync.WaitGroup
 	displacedStopsTotal atomic.Int32
-
-	// orphanReleases tracks the goroutines that hand back a lease no
-	// persistent client ever owned (#370). Same reasoning as
-	// displacedStops, and the same reason it must not be bounded: the
-	// work exists to keep a release off the teardown path, so putting a
-	// semaphore in front of it would reintroduce the blocking. Close
-	// waits on it because an interrupted synthesised release leaks the
-	// very lease it was spawned to reclaim.
-	orphanReleases sync.WaitGroup
 
 	// ledger is the append-only lease audit log (#109), written by
 	// dhcpManager.audit for networks created with audit_log=true.
@@ -2026,9 +2057,13 @@ func NewPlugin(opts Options) (*Plugin, error) {
 	//
 	// Placement is the whole point. Every orphan the sweep does not
 	// reach before recoverEndpoints runs becomes a second client on the
-	// same binding, with the same DUID, IAID and client-id -- and on the
-	// eventual Leave one of the pair sends a DHCPRELEASE while the other
-	// keeps renewing.
+	// same binding, with the same DUID, IAID and client-id -- two
+	// clients renewing one lease, each unaware of the other, and the
+	// server's idea of who holds it decided by whichever REQUEST landed
+	// last. (Before #800 the harm was sharper still: on the eventual
+	// Leave one of the pair released the lease while the other kept
+	// renewing it. Nothing releases now, but a duplicate binding is a
+	// defect on its own.)
 	//
 	// Here covers BOTH recovery entry points. recoverEndpoints is called
 	// from two places: synchronously just below, and again from
@@ -2152,12 +2187,17 @@ func waitBounded(wg *sync.WaitGroup, d time.Duration) bool {
 // Join can register a manager while (or after) we stop the existing
 // ones — with the old ordering a Join dispatched during the stop
 // fan-out installed a manager into the fresh registry that nobody ever
-// stopped, orphaning its lease (no DHCPRELEASE) and its dhcpcd.
-// Persistent DHCP clients are then stopped before process exit so they
-// get a chance to send DHCPRELEASE for their leases — otherwise plugin
-// upgrade or `docker plugin disable` would orphan every active lease at
-// the upstream DHCP server, defeating the release-on-stop contract
-// Leave normally honors.
+// stopped, leaking its dhcpcd.
+// Persistent DHCP clients are then stopped before process exit, so that
+// a plugin upgrade or `docker plugin disable` does not leave dhcpcd
+// processes renewing leases for endpoints this plugin no longer manages.
+//
+// Since #800 this is NOT about releasing anything: no path sends a
+// DHCPRELEASE, and a stopped client's address stays leased until it
+// expires, which is the intended behaviour. What must not survive the
+// shutdown is the CLIENT — a stray renewer keeps an address alive that
+// nothing is using, and collides with the client a restarted plugin
+// builds for the same endpoint.
 // ListenMetrics starts the optional TCP listener for /metrics.
 //
 // Off unless METRICS_ADDR is set, and that default is deliberate. The
@@ -2303,18 +2343,13 @@ func (p *Plugin) Close() error {
 	}
 
 	// Drain displaced-manager stops spawned by Join (#338). Each is an
-	// in-flight DHCPRELEASE for a client this plugin displaced; without
-	// this, process exit cuts it short and orphans the lease at the
-	// server — the same failure the fan-out above exists to prevent.
+	// in-flight shutdown of a client this plugin displaced; without this,
+	// process exit cuts it short and leaves it renewing — the same
+	// failure the fan-out above exists to prevent. It is a client leak,
+	// not a lease leak: since #800 nothing releases, so the address is
+	// held either way and the incoming client renews it.
 	if !waitBounded(&p.displacedStops, remaining()) {
 		log.Warn("Timeout waiting for displaced DHCP manager stops; continuing shutdown")
-	}
-
-	// Same for orphan releases (#370). These reclaim a lease that no
-	// client is holding open, so cutting one short is the one case where
-	// shutdown itself causes the leak.
-	if !waitBounded(&p.orphanReleases, remaining()) {
-		log.Warn("Timeout waiting for orphaned-lease releases; continuing shutdown")
 	}
 
 	if err := p.docker.Close(); err != nil {

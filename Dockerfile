@@ -8,7 +8,7 @@
 # the digest is what Docker enforces and the tag is what a reader — or
 # scripts/check-go-pins.sh — can compare against the other Go pins in
 # this tree. A `1.26-alpine` tag hid go1.26.5 here through v1.5.0 (#525).
-FROM golang:1.26.6-alpine@sha256:3889b425f035be855a72fb4755265311293b6d414521f0a519d819df32222d83 AS builder
+FROM golang:1.27.0-alpine@sha256:4c9fe60190a2a3350ddc51de80d0224b8a6698d12bdfc999fee45ea9d6c46dbc AS builder
 
 # COVER_FLAGS is empty for the production build and `-cover -coverpkg=./...`
 # for the instrumented build used by the coverage workflow. Keeping the
@@ -45,11 +45,14 @@ FROM alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6ee
 # share one identity association). A silent regression here would land in
 # plugin builds without warning, so pin and bump deliberately. dhcpcd 10.x
 # is required (the per-interface model used here is removed in dhcpcd 11).
-# `sh`, `mount`, `mkdir` and `unshare` (per-client mount-namespace
-# isolation of dhcpcd's state dir) come from the base Alpine busybox.
-# All four are asserted below; this sentence listed three of them and
-# omitted mkdir, which is the same off-by-one the assertion itself
-# carried.
+# `sh`, `mount`, `mkdir`, `unshare` (per-client mount-namespace
+# isolation of dhcpcd's state dir), `echo` (the per-step failure
+# marker mountPrep writes to stderr, #780) and `grep` (the
+# Router-Advertisement guard reads each sysctl back after writing it,
+# #875) come from the base Alpine busybox. Every one of them is
+# asserted below; the count that used to stand in this sentence is
+# deliberately gone, because it named three while the list beside it
+# named four, and a count goes false without anything editing it.
 #
 # The `test -x` is not belt-and-braces. pkg/dhcp names dhcpcd by the
 # ABSOLUTE path /sbin/dhcpcd (#707) — a bare name would be resolved out
@@ -70,10 +73,18 @@ FROM alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6ee
 # mkdir were missed by the original audit, then sh and unshare were
 # missed by the audit that added mount and mkdir — three passes, each
 # looking at the words the previous one had happened to be looking at.
-# All five would break the per-client mount namespace, and until the
-# same change that derived this list they would have broken it SILENTLY:
-# every call in mountPrep carried 2>/dev/null. Their stderr now reaches
-# the plugin log.
+# Every one of those would break the per-client mount namespace, and
+# until the same change that derived this list they would have broken it
+# SILENTLY: every call in mountPrep carried 2>/dev/null. Their stderr
+# now reaches the plugin log.
+#
+# echo arrived by that derivation rather than by an audit, which is the
+# point: #780 made mountPrep report each failed step by echoing a marker
+# to stderr, and the test named the new command word before it could
+# ship. An unasserted /bin/echo would have been the worst version of
+# this bug — the marker that exists to make a silent failure loud would
+# itself have failed silently, and the counter reading zero would have
+# been indistinguishable from a namespace that prepared cleanly.
 #
 # Separate `test -x` per path, not `test -x a b c`. The one-line form is
 # not a shorthand for them: busybox sh answers it
@@ -85,7 +96,8 @@ RUN mkdir -p /run/docker/plugins /var/lib/net-dhcp && \
         dhcpcd=10.3.2-r0 \
         iproute2=7.0.0-r0 && \
     test -x /sbin/dhcpcd && test -x /bin/mount && test -x /bin/mkdir && \
-    test -x /bin/sh && test -x /usr/bin/unshare
+    test -x /bin/sh && test -x /usr/bin/unshare && test -x /bin/echo && \
+    test -x /bin/grep
 
 COPY --from=builder /usr/local/src/docker-net-dhcp/bin/net-dhcp /usr/sbin/
 COPY --from=builder /usr/local/src/docker-net-dhcp/bin/dhcp-handler /usr/lib/net-dhcp/dhcp-handler

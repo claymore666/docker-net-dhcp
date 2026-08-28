@@ -23,10 +23,39 @@ import (
 // HealthResponse and the floor that reads it live in healthfloor.go,
 // which is untagged so the decision logic is unit-testable.
 
+// pluginExecRoot is where the daemon exposes managed-plugin sockets.
+//
+// It looks like it should follow --exec-root, and it does NOT: moby
+// hardcodes it (daemon/daemon_linux.go, getPluginExecRoot returns
+// "/run/docker/plugins" and ignores its config argument entirely; the
+// Windows build is the one that derives it from the data-root). A
+// second daemon on the same host therefore puts its plugin sockets
+// HERE, beside the first daemon's, distinguished only by plugin id.
+//
+// Verified the expensive way (#125): pointing this at a daemon's own
+// --exec-root made the health floor report an unreachable plugin on a
+// run in which the plugin was serving perfectly well.
+const pluginExecRoot = "/run/docker/plugins"
+
+// dockerDataRoot asks the daemon where its data-root is rather than
+// assuming /var/lib/docker. Derived, not transcribed: a second daemon
+// on the same host must have its own, and a transcribed constant is
+// silently wrong there instead of loudly.
+//
+// The Info call needs a daemon and so stays here; the choice it feeds
+// is chooseDataRoot in dataroot.go, which is untagged so that both of
+// its branches — the answer and the fallback — are covered by the
+// ordinary test lane rather than by nothing.
+func dockerDataRoot(ctx context.Context, cli *docker.Client) string {
+	info, err := cli.Info(ctx)
+	return chooseDataRoot(info.DockerRootDir, err)
+}
+
 // PluginSocketPath returns the absolute path to PluginRef's UNIX
 // socket. Docker exposes plugin sockets under
-// /run/docker/plugins/<plugin-id>/<sock-name>.sock; both fragments
-// come from PluginInspect. Requires root to dial the socket.
+// /run/docker/plugins/<plugin-id>/<sock-name>.sock; the id comes from
+// PluginInspect, the directory from pluginExecRoot. Requires root to
+// dial the socket.
 func PluginSocketPath(ctx context.Context, cli *docker.Client) (string, error) {
 	p, _, err := cli.PluginInspectWithRaw(ctx, PluginRef)
 	if err != nil {
@@ -37,7 +66,7 @@ func PluginSocketPath(ctx context.Context, cli *docker.Client) (string, error) {
 	}
 	// The plugin manifest declares a single socket; net-dhcp.sock is
 	// the canonical name in this fork's config.json.
-	return filepath.Join("/run/docker/plugins", p.ID, "net-dhcp.sock"), nil
+	return filepath.Join(pluginExecRoot, p.ID, "net-dhcp.sock"), nil
 }
 
 // PluginHealth dials the plugin's socket and returns its
@@ -156,7 +185,7 @@ func CountPluginLogLines(t *testing.T, ctx context.Context, subs ...string) int 
 }
 
 // DumpPluginLog tails the plugin's /var/log/net-dhcp.log into t.Log.
-// Plugin logs live under /var/lib/docker/plugins/<plugin-id>/rootfs/
+// Plugin logs live under <data-root>/plugins/<plugin-id>/rootfs/
 // (Docker's standard layout for managed plugins). The plugin id comes
 // from PluginInspect; its rootfs is read directly from the host
 // filesystem (the test process runs as root). Useful as a t.Cleanup
@@ -204,7 +233,7 @@ func PluginLog(ctx context.Context) (string, []byte, error) {
 	if err != nil {
 		return "", nil, fmt.Errorf("PluginInspect: %w", err)
 	}
-	logPath := filepath.Join("/var/lib/docker/plugins", p.ID, "rootfs/var/log/net-dhcp.log")
+	logPath := filepath.Join(dockerDataRoot(ctx, cli), "plugins", p.ID, "rootfs/var/log/net-dhcp.log")
 	data, err := os.ReadFile(logPath)
 	if err != nil {
 		return logPath, nil, fmt.Errorf("read %s: %w", logPath, err)

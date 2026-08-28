@@ -27,8 +27,19 @@ survive `docker restart`, plugin restart and daemon restart; a
 `/Plugin.Health` counter surface and the same counters in Prometheus
 form on `/metrics` ([#651]); per-network choice of which DHCP server to
 lease from ([#111], [#669]); signed, attested, reproducible releases.
-v1.8.0 also carries the first human review of the design and its trust
-boundaries ([#457], [#699]) — pulled into this release because it is the
+
+v1.9.0 is the release that makes IPv6 usable rather than merely present.
+Before it, `ipv6=true` was accepted and did not work on most segments:
+no container could start at all where the router advertises stateless or
+SLAAC-only configuration ([#868]), a stateless server's configuration was
+received and discarded ([#815]), and on a managed segment the leased
+address stopped being refreshed and its default route disappeared
+([#875]). The same release stops the plugin sending DHCPRELEASE on any
+path — an address is held until the lease expires, like any other host's
+([#800]).
+
+v1.8.0 carried the first human review of the design and its trust
+boundaries ([#457], [#699]) — pulled into that release because it is the
 one that opens a TCP port in a process holding `CAP_NET_ADMIN`. Every
 finding was fixed inside the same cycle rather than carried forward, and
 each one ends in a test or a counter rather than a paragraph. The
@@ -97,14 +108,17 @@ Docker's own engine carries a change. They stay open on purpose:
 
 | Here | Needs | Upstream |
 | --- | --- | --- |
-| [#125] — Compose `interface_name` | the remote driver to honour a plugin-returned `DstName` | [moby/moby#52865] (issue), [moby/moby#52866] (PR) |
+| [#125] — Compose `interface_name` | the remote driver to honour a plugin-returned `DstName` | [moby/moby#52865] (issue, closed), [moby/moby#52866] (PR, **merged** — ships in engine 29.8.0) |
 | [#218] — deterministic MAC | network drivers to receive the endpoint name at `CreateEndpoint`, as IPAM drivers already do | [moby/moby#52870] (issue), [moby/moby#52871] (PR) |
 
 Both were filed in June 2026. The `interface_name` pass-through
-([moby/moby#52866]) has since been **approved** and is milestoned for
-engine **29.8.0**; it unblocks [#125] once an engine carrying it is
-released. The endpoint-name change ([moby/moby#52871]) is still
-awaiting review. Neither issue here will be closed as "won't fix" while
+([moby/moby#52866]) was **merged** to moby master on 2026-08-26 and is
+milestoned for engine **29.8.0**; [moby/moby#52865] closed with it. It
+unblocks [#125] on the first engine *release* carrying it — 29.8.0 is
+not out yet (measured 2026-08-28: latest release 29.7.2, with
+29.8.0-rc.1 published as a pre-release that day), so the blocker moved from
+review to a release, not away. The endpoint-name change
+([moby/moby#52871]) is still awaiting review. Neither issue here will be closed as "won't fix" while
 that is the only thing in the way; the fork's own half of each is
 written and waiting.
 
@@ -117,7 +131,7 @@ is recorded so a contributor can read it before writing the PR.
   pool, no failover of its own. The point of the plugin is that your
   existing server is the authority; a second one would recreate the
   problem it solves. Interoperating with more than one server is a
-  different question, and v1.8.0 answers it: `dhcp_servers` and
+  different question, and v1.8.0 answered it: `dhcp_servers` and
   `dhcp_deny_servers` decide which existing server a network leases
   from ([#111]). That stays on this side of the line — the plugin picks
   among authorities, it never becomes one.
@@ -165,6 +179,10 @@ without motion, or a "will not do" has quietly become something the
 project does, that review is where it gets corrected — not the next time
 someone asks.
 
+[#800]: https://github.com/claymore666/docker-net-dhcp/issues/800
+[#815]: https://github.com/claymore666/docker-net-dhcp/issues/815
+[#868]: https://github.com/claymore666/docker-net-dhcp/issues/868
+[#875]: https://github.com/claymore666/docker-net-dhcp/issues/875
 [#111]: https://github.com/claymore666/docker-net-dhcp/issues/111
 [#125]: https://github.com/claymore666/docker-net-dhcp/issues/125
 [#218]: https://github.com/claymore666/docker-net-dhcp/issues/218

@@ -727,7 +727,7 @@ func knownMode(mode string) bool {
 // options through netOptions and hands the name it finds straight to
 // netlink: CreateEndpoint's LinkByName, Join's dstPrefix and route
 // copy, EndpointOperInfo's report back to Docker, the parent-attached
-// paths, orphan release, and daemon-restart recovery. None of them
+// paths and daemon-restart recovery. None of them
 // re-validates, because CreateNetwork was assumed to have.
 //
 // That assumption is false for a network CreateNetwork never validated,
@@ -1061,8 +1061,19 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 				base.RequestedIP = requestedIP
 			}
 
-			info, err := p.acquireWithPolicy(ctx, ctrName, pol, v6, timeout, r.EndpointID, base)
+			info, ra, err := p.acquireWithPolicy(ctx, ctrName, pol, v6, timeout, r.EndpointID, base)
 			if err != nil {
+				// A DHCPv6 acquisition that produced nothing is not
+				// automatically a failure: on a stateless or SLAAC
+				// segment there is no DHCPv6 address by definition, and
+				// treating the timeout as fatal meant no container
+				// started at all on those networks (#868). What the
+				// segment ADVERTISED decides, not how long we waited --
+				// a segment offering managed DHCPv6 that then goes
+				// quiet is still fatal, here as before.
+				if v6 && p.noteV6Absence(ra, ctrName, r.EndpointID, err) {
+					return nil
+				}
 				return fmt.Errorf("failed to get initial IP%v address via DHCP%v: %w", v6str, v6str, err)
 			}
 			ip, err := netlink.ParseAddr(info.IP)
@@ -1770,7 +1781,6 @@ func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) 
 				log.WithError(err).WithFields(fields).
 					Info("Attach cancelled because the endpoint is leaving; no persistent client needed")
 				p.removeDHCPManagerIfSame(r.EndpointID, m)
-				p.spawnOrphanRelease(m)
 				return
 			}
 			if joinAbortedByVanish(err, r.SandboxKey) {
@@ -1778,41 +1788,32 @@ func (p *Plugin) Join(ctx context.Context, r JoinRequest) (JoinResponse, error) 
 				log.WithError(err).WithFields(fields).
 					Info("Container went away during attach; no persistent client needed")
 				p.removeDHCPManagerIfSame(r.EndpointID, m)
-				// No persistent client is needed, but the address the
-				// CreateEndpoint one-shot took is still held upstream —
-				// it was kept on purpose for a handover that is now
-				// never happening. Nothing is using it, so give it back
-				// rather than let it sit until expiry (#370).
-				p.spawnOrphanRelease(m)
+				// No persistent client is needed, and the address the
+				// CreateEndpoint one-shot took is left where it is: it
+				// expires on the server like any other lease nobody
+				// comes back for (#800).
 				return
 			}
-			// No container ever claimed this endpoint on the network.
-			// The address the CreateEndpoint one-shot took is held
-			// upstream for a handover to a persistent client that can
-			// never happen, so give it back (#566).
+			// No container ever claimed this endpoint on the network
+			// (#566). Distinguished from the join_start_failures case
+			// below because it is not a plugin fault and must not flip
+			// Healthy: that counter means "a RUNNING container has no
+			// renewal client", and here there is no container at all.
 			//
-			// Narrow to ErrNoContainer ON PURPOSE, rather than
-			// reclaiming on every start failure. The two cases look
-			// alike from here and are opposites in effect: a start that
-			// failed for any other reason — a missing binary, a netns we
-			// could not enter — leaves a RUNNING container using that
-			// address, and handing it back would be us manufacturing
-			// #524's duplicate assignment. ErrNoContainer is the one
-			// error that says the address is unused, and it says it
-			// after AwaitCondition has retried for the whole attach
-			// budget, so it is a settled answer rather than a glimpse of
-			// a container mid-registration.
-			//
-			// A missed reclaim leaves a lease to expire on its own; a
-			// wrong one takes an address away from something using it.
-			// That asymmetry is why this is an allowlist of one and not
-			// a fallthrough.
+			// This branch used to hand the one-shot's address back, and
+			// the paragraph that stood here explained at length why it
+			// was narrowed to ErrNoContainer: every other start failure
+			// leaves a RUNNING container using the address, so releasing
+			// would manufacture #524's duplicate assignment. That
+			// asymmetry is still real; the reclaim it was guarding is
+			// gone (#800). The address stays leased until it expires,
+			// which is the direction that paragraph already called the
+			// safe one.
 			if joinFailureLeavesAddressUnused(err) {
 				p.joinAbortedNoContainer.Add(1)
 				log.WithError(err).WithFields(fields).
-					Info("No container claimed the endpoint; releasing the address it was holding")
+					Info("No container claimed the endpoint; its address is left to expire on the server")
 				p.removeDHCPManagerIfSame(r.EndpointID, m)
-				p.spawnOrphanRelease(m)
 				return
 			}
 

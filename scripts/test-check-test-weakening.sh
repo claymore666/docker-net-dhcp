@@ -21,29 +21,51 @@ no() { printf 'FAIL  %s\n' "$1" >&2; fail=$((fail + 1)); }
 # Each case builds a throwaway repo with a base commit and one change,
 # then runs the gate over that range. Real git history, not a mocked
 # diff — the gate reads `git diff`, so a fake would test the fake.
-run_case() {
-    local name="$1" base_content="$2" new_content="$3" body="${4-}" want="$5"
-    local dir
+#
+# WHICH FILE the change lands in is a parameter since #828, because the
+# domain is no longer one language. A case that cannot choose its path
+# cannot tell "this pattern admits the file" from "some pattern does".
+run_file_case() { # NAME FILE BASE NEW BODY WANT_RC [WANT_GREP]
+    local name="$1" file="$2" base_content="$3" new_content="$4"
+    local body="${5-}" want="$6" want_grep="${7-}"
+    local dir rc out
     dir=$(mktemp -d)
     (
         cd "$dir" || exit 2
         git init -q .
         git config user.email t@t; git config user.name t
         git config commit.gpgsign false
-        mkdir -p test/integration/harness
-        printf '%s\n' "$base_content" > example_test.go
+        mkdir -p "$(dirname "$file")"
+        printf '%s\n' "$base_content" > "$file"
         git add -A; git commit -qm base
-        printf '%s\n' "$new_content" > example_test.go
+        printf '%s\n' "$new_content" > "$file"
         git add -A; git commit -qm "change"
-        local bodyfile=""
+        bodyfile=""
         if [ -n "$body" ]; then bodyfile="$dir/body.md"; printf '%s\n' "$body" > "$bodyfile"; fi
-        bash "$GATE" HEAD~1..HEAD "$bodyfile" >/dev/null 2>&1
-        echo $?
-    ) > "$dir/rc" 2>/dev/null
-    local rc
-    rc=$(tail -1 "$dir/rc")
+        bash "$GATE" HEAD~1..HEAD "$bodyfile" > "$dir/out" 2>&1
+        echo $? > "$dir/rc"
+    ) >/dev/null 2>&1
+    rc=$(cat "$dir/rc" 2>/dev/null)
+    out=$(cat "$dir/out" 2>/dev/null)
     rm -rf "$dir"
-    if [ "$rc" = "$want" ]; then ok "$name"; else no "$name (exit $rc, want $want)"; fi
+    if [ "$rc" != "$want" ]; then
+        no "$name (exit $rc, want $want)"
+        printf '%s\n' "$out" | sed 's/^/      /' >&2
+        return
+    fi
+    # `grep -q` in a pipeline exits at the first match and SIGPIPEs the
+    # producer, so under `set -o pipefail` a SUCCESSFUL match can report
+    # failure. Read to EOF and discard instead (scripts/check-pipefail-consumers.sh).
+    if [ -n "$want_grep" ] && ! printf '%s\n' "$out" | grep -- "$want_grep" >/dev/null; then
+        no "$name (exit $rc as wanted, but the output never said '$want_grep')"
+        printf '%s\n' "$out" | sed 's/^/      /' >&2
+        return
+    fi
+    ok "$name"
+}
+
+run_case() { # NAME BASE NEW BODY WANT   — the Go case, unchanged
+    run_file_case "$1" example_test.go "$2" "$3" "${4-}" "$5"
 }
 
 BASE='package x
@@ -368,6 +390,415 @@ func TestOther(t *testing.T) {
 		t.Errorf("nope")
 	}
 }' "" 0
+
+# --- 6. the CI's own tests are tests (#828) ---------------------------
+#
+# `scripts/test-*.sh` was outside TEST_PATHS until #828, so a gate
+# self-test could be gutted and the gate said "no test files changed" —
+# byte-identical to what it says for a change that touched no test at
+# all. Nothing distinguished a weakening from an unrelated edit.
+#
+# THE WIDENING IS THE DANGEROUS HALF, not the signals. Widening alone
+# turns that honest silence into "clean (1 test file(s) inspected)": a
+# claim of inspection over a gutted file, which is the class this gate's
+# own header is written about. So the cases below drive BOTH — the
+# mutant must go red, and the domain must be provably inspected.
+
+SH_BASE='#!/usr/bin/env bash
+set -u
+fail=0
+check() { # <got> <want> <what>
+    if [ "$1" != "$2" ]; then
+        echo "FAIL $3"
+        fail=$((fail + 1))
+    fi
+}
+check "$(printf a)" a "printf emits its argument"
+check "$(printf b)" b "and does it twice"
+exit "$fail"'
+
+# THE MUTANT, reproduced rather than described: an assertion deleted and
+# the helper switched off with a comment saying so. Before #828 this was
+# exit 0, "no test files changed".
+run_file_case "REGRESSION a gutted gate self-test is red" scripts/test-thing.sh \
+    "$SH_BASE" '#!/usr/bin/env bash
+set -u
+fail=0
+check() { # <got> <want> <what>
+    return 0  # temporarily skipped
+    if [ "$1" != "$2" ]; then
+        echo "FAIL $3"
+        fail=$((fail + 1))
+    fi
+}
+check "$(printf a)" a "printf emits its argument"
+exit "$fail"' "" 1
+
+# THE OTHER HALF OF THE SAME CASE. Without this the suite cannot tell a
+# gate that inspects the file from a gate that still ignores it and
+# happens to be red for another reason: both are exit 1. The grep is on
+# the count, because "1 test file(s) inspected" and "no test files
+# changed" are the two outputs #828 measured as indistinguishable.
+run_file_case "an ordinary edit to a gate self-test is inspected, not ignored" \
+    scripts/test-thing.sh "$SH_BASE" '#!/usr/bin/env bash
+set -u
+fail=0
+check() { # <got> <want> <what>
+    if [ "$1" != "$2" ]; then
+        echo "FAIL $3 (got $1, want $2)"
+        fail=$((fail + 1))
+    fi
+}
+check "$(printf a)" a "printf emits its argument"
+check "$(printf b)" b "and does it twice"
+exit "$fail"' "" 0 "1 test file(s) inspected"
+
+# The escape hatch reaches the new domain too, or the rule has two
+# different shapes depending on the language.
+run_file_case "the trailer waives a shell finding" scripts/test-thing.sh \
+    "$SH_BASE" '#!/usr/bin/env bash
+set -u
+fail=0
+check() { # <got> <want> <what>
+    return 0  # temporarily skipped
+    if [ "$1" != "$2" ]; then
+        echo "FAIL $3"
+        fail=$((fail + 1))
+    fi
+}
+check "$(printf a)" a "printf emits its argument"
+exit "$fail"' "The stub cannot run in this container.
+
+Test-weakening: #828" 0
+
+# THE 4-IN-60 CLASS THAT MUST STAY SILENT. A bare early `exit 0` fires
+# on four commits in the history of scripts/test-*.sh, every one of them
+# inside a generated stub heredoc — a fixture, not a weakening. The
+# comment requirement is what takes that to zero, so it is driven here:
+# an added bare `exit 0` with nothing calling it temporary is clean.
+run_file_case "a bare exit 0 inside a generated stub is not a weakening" \
+    scripts/test-thing.sh "$SH_BASE" '#!/usr/bin/env bash
+set -u
+fail=0
+cat > /tmp/stub-$$ <<EOF
+#!/usr/bin/env bash
+exit 0
+EOF
+check() { # <got> <want> <what>
+    if [ "$1" != "$2" ]; then
+        echo "FAIL $3"
+        fail=$((fail + 1))
+    fi
+}
+check "$(printf a)" a "printf emits its argument"
+check "$(printf b)" b "and does it twice"
+exit "$fail"' "" 0
+
+# THE COMMENT REQUIREMENT NEEDS AN INPUT WHERE ONLY IT STANDS. Every one
+# of the 4 historical bare-`exit 0` hits is inside a generated stub
+# heredoc, and those are data now, so the code/data classifier alone
+# would silence all four — the requirement would read as covered while
+# nothing measured it. The input where it alone decides is a bare early
+# return in the self-test's OWN executable code: ordinary control flow,
+# no marker, and it must stay silent.
+run_file_case "an ordinary early return in a helper is not a weakening" \
+    scripts/test-thing.sh "$SH_BASE" '#!/usr/bin/env bash
+set -u
+fail=0
+quiet=0
+say() {
+    if [ "$quiet" = 1 ]; then
+        return
+    fi
+    echo "$1"
+}
+check() { # <got> <want> <what>
+    if [ "$1" != "$2" ]; then
+        say "FAIL $3"
+        fail=$((fail + 1))
+    fi
+}
+check "$(printf a)" a "printf emits its argument"
+check "$(printf b)" b "and does it twice"
+exit "$fail"' "" 0
+
+# The marker on the line ABOVE the early exit is the same move written
+# differently, and a signal that only reads one line is evaded by a
+# newline.
+run_file_case "a skip comment on the line above still counts" \
+    scripts/test-thing.sh "$SH_BASE" '#!/usr/bin/env bash
+set -u
+fail=0
+check() { # <got> <want> <what>
+    # disabled until the fixture is rebuilt
+    return
+    if [ "$1" != "$2" ]; then
+        echo "FAIL $3"
+        fail=$((fail + 1))
+    fi
+}
+check "$(printf a)" a "printf emits its argument"
+check "$(printf b)" b "and does it twice"
+exit "$fail"' "" 1
+
+# The sleep rule, both directions, exactly as the Go one is driven.
+run_file_case "a bare sleep in a gate self-test is red" scripts/test-thing.sh \
+    "$SH_BASE" '#!/usr/bin/env bash
+set -u
+fail=0
+check() { # <got> <want> <what>
+    if [ "$1" != "$2" ]; then
+        echo "FAIL $3"
+        fail=$((fail + 1))
+    fi
+}
+sleep 5
+check "$(printf a)" a "printf emits its argument"
+check "$(printf b)" b "and does it twice"
+exit "$fail"' "" 1
+
+run_file_case "a sleep inside a bounded poll is clean" scripts/test-thing.sh \
+    "$SH_BASE" '#!/usr/bin/env bash
+set -u
+fail=0
+check() { # <got> <want> <what>
+    if [ "$1" != "$2" ]; then
+        echo "FAIL $3"
+        fail=$((fail + 1))
+    fi
+}
+deadline=$((SECONDS + 30))
+while [ "$SECONDS" -lt "$deadline" ]; do
+    [ -e /tmp/ready-$$ ] && break
+    sleep 1
+done
+check "$(printf a)" a "printf emits its argument"
+check "$(printf b)" b "and does it twice"
+exit "$fail"' "" 0
+
+# --- 6b. the widening must not leak the Go signals (#828) -------------
+#
+# THIS IS THE ONE THE HISTORY SWEEP FOUND. Every Go signal was written
+# when `*.go` was the whole domain, so none of them checked the
+# language. The shell self-tests are full of Go source — they build
+# fixture files to hand to the gate — so `t.Skip(`, `func …OptOut(` and
+# `t.Errorf(` all appear in them as DATA.
+#
+# Measured over the last 400 non-merge commits: an unguarded widening
+# moves three verdicts from clean to FAILED — 57a2232, f9cbf7c and
+# 4530045 — and every one of them is THIS FILE's own self-test being
+# accused of adding a t.Skip it merely quotes. A gate that fires on the
+# commit writing its own tests is a cry-wolf on the file most likely to
+# be edited next.
+run_file_case "Go signals do not fire on Go source quoted in a shell fixture" \
+    scripts/test-thing.sh "$SH_BASE" '#!/usr/bin/env bash
+set -u
+fail=0
+cat > /tmp/example_test.go-$$ <<EOF
+package x
+import "testing"
+func TestThing(t *testing.T) {
+	t.Skip("the fixture this gate is handed")
+}
+func harnessOptOut(t *testing.T) {}
+EOF
+check() { # <got> <want> <what>
+    if [ "$1" != "$2" ]; then
+        echo "FAIL $3"
+        fail=$((fail + 1))
+    fi
+}
+check "$(printf a)" a "printf emits its argument"
+check "$(printf b)" b "and does it twice"
+exit "$fail"' "" 0
+
+# The assertion counter is diff-WIDE, so a shell file removing quoted
+# `t.Errorf(` lines would net out against a Go file adding none. Same
+# leak, different signal.
+run_file_case "the assertion count ignores t.Errorf quoted in a shell fixture" \
+    scripts/test-thing.sh '#!/usr/bin/env bash
+set -u
+cat > /tmp/example_test.go-$$ <<EOF
+package x
+func TestThing(t *testing.T) {
+	t.Errorf("one")
+	t.Errorf("two")
+	t.Errorf("three")
+}
+EOF
+echo done' '#!/usr/bin/env bash
+set -u
+cat > /tmp/example_test.go-$$ <<EOF
+package x
+func TestThing(t *testing.T) {
+	t.Errorf("one")
+}
+EOF
+echo done' "" 0
+
+# --- 6d. code, not data (#828) ----------------------------------------
+#
+# The moment the domain widened, the gate went red on THIS FILE: the
+# cases above quote `return 0  # temporarily skipped` eight times as
+# fixture text. It was right about the text and wrong about the file.
+#
+# That is structural, not a quirk. A gate that matches on content will
+# always find its own triggers quoted in its own self-test, so admitting
+# scripts/test-*.sh to a content signal guarantees a false positive on
+# the commit that writes the tests. The discriminator is not spelling —
+# it is whether the shell would execute the line.
+
+run_file_case "the trigger inside a here-document is data, not a weakening" \
+    scripts/test-thing.sh "$SH_BASE" '#!/usr/bin/env bash
+set -u
+fail=0
+cat > /tmp/gutted-$$ <<EOF
+check() {
+    return 0  # temporarily skipped
+}
+EOF
+check() { # <got> <want> <what>
+    if [ "$1" != "$2" ]; then
+        echo "FAIL $3"
+        fail=$((fail + 1))
+    fi
+}
+check "$(printf a)" a "printf emits its argument"
+check "$(printf b)" b "and does it twice"
+exit "$fail"' "" 0
+
+run_file_case "the trigger inside a quoted fixture string is data, not a weakening" \
+    scripts/test-thing.sh "$SH_BASE" '#!/usr/bin/env bash
+set -u
+fail=0
+MUTANT='"'"'check() {
+    return 0  # temporarily skipped
+}'"'"'
+check() { # <got> <want> <what>
+    if [ "$1" != "$2" ]; then
+        echo "FAIL $3"
+        fail=$((fail + 1))
+    fi
+}
+check "$(printf a)" a "printf emits its argument"
+check "$(printf b)" b "and does it twice"
+exit "$fail"' "" 0
+
+# A single quote opened inside "$( ... )" is a real construct — two gates
+# in scripts/ are written that way — and a classifier that models double
+# quotes as a flat toggle never sees it. It then keeps calling the fixture
+# CODE, and reports the very line the fixture is quoting.
+run_file_case "a quote opened inside a command substitution is tracked" \
+    scripts/test-thing.sh "$SH_BASE" '#!/usr/bin/env bash
+set -u
+fail=0
+WANT="$(printf '"'"'%s\n'"'"' '"'"'
+check() {
+    return 0  # temporarily skipped
+}'"'"')"
+check() { # <got> <want> <what>
+    if [ "$1" != "$2" ]; then
+        echo "FAIL $3"
+        fail=$((fail + 1))
+    fi
+}
+check "$(printf a)" a "printf emits its argument"
+check "$(printf b)" b "and does it twice"
+exit "$fail"' "" 0
+
+# THE GUARD HAS A DIRECTION, so drive the other one. A classifier that
+# loses track must judge the file whole rather than call everything data
+# — wrong toward reporting, never toward silence. Here an unterminated
+# quote leaves it out of its depth and the weakening below it must still
+# be found.
+run_file_case "a classifier that loses track still judges the file" \
+    scripts/test-thing.sh "$SH_BASE" '#!/usr/bin/env bash
+set -u
+fail=0
+stray='"'"'this quote is never closed
+check() { # <got> <want> <what>
+    return 0  # temporarily skipped
+    if [ "$1" != "$2" ]; then
+        echo "FAIL $3"
+        fail=$((fail + 1))
+    fi
+}
+check "$(printf a)" a "printf emits its argument"
+exit "$fail"' "" 1
+
+# --- 6c. each pattern needs an input where only it stands (#828) ------
+#
+# TEST_PATHS is three patterns now. A suite that only ever exercises one
+# of them reads as coverage while two are unmeasured — mutate the set
+# down to a single pattern and nothing moves. So: one file per pattern
+# that no other pattern admits, and two files that none admits.
+run_file_case "pattern *_test.go: a Go test anywhere in the tree is inspected" \
+    pkg/plugin/thing_test.go 'package plugin
+import "testing"
+func TestThing(t *testing.T) {
+	if 1 != 1 {
+		t.Errorf("boom")
+	}
+}' 'package plugin
+import "testing"
+func TestThing(t *testing.T) {
+	t.Skip("flaky here")
+}' "" 1
+
+run_file_case "pattern test/integration/harness/*.go: a harness file with no _test suffix is inspected" \
+    test/integration/harness/fixture.go 'package harness
+import "testing"
+func Fixture(t *testing.T) {
+	if 1 != 1 {
+		t.Errorf("boom")
+	}
+}' 'package harness
+import "testing"
+func Fixture(t *testing.T) {
+	t.Skip("not here")
+}' "" 1
+
+run_file_case "pattern scripts/test-*.sh: a gate self-test is inspected" \
+    scripts/test-thing.sh "$SH_BASE" '#!/usr/bin/env bash
+set -u
+fail=0
+check() { # <got> <want> <what>
+    return 0  # temporarily skipped
+    if [ "$1" != "$2" ]; then
+        echo "FAIL $3"
+        fail=$((fail + 1))
+    fi
+}
+check "$(printf a)" a "printf emits its argument"
+exit "$fail"' "" 1
+
+# The complement. Weakening production code is a different problem with
+# different reviewers, and the gate must keep saying so rather than
+# growing into a general linter — which is what a widening drifts into
+# if nothing pins the edge.
+run_file_case "a gate itself is not a test file" scripts/check-thing.sh \
+    '#!/usr/bin/env bash
+set -u
+echo ok
+exit 0' '#!/usr/bin/env bash
+set -u
+run_it() {
+    return 0  # temporarily skipped
+    echo ok
+}
+run_it' "" 0 "no test files changed"
+
+run_file_case "production Go is not a test file" cmd/net-dhcp/main.go \
+    'package main
+import "testing"
+func main() {
+	println("hi")
+}' 'package main
+import "testing"
+func main() {
+	t.Skip("nope")
+	println("hi")
+}' "" 0 "no test files changed"
 
 # --- divergent history (#463) ----------------------------------------
 #

@@ -10,6 +10,12 @@ one harness fix that validation surfaced).
 Published as `ghcr.io/claymore666/dhcp-ci-runner` by the
 `runner-image` workflow on changes under `ci/runner-image/`.
 
+`:latest` is what the orchestrator launches, so moving it repoints every
+self-hosted job in this repo. A push to `dev` moves it; a manual
+dispatch does **not**, and publishes only `:<sha7>` and the per-arch
+tags — enough to test a branch image by digest. To repoint the pool at a
+branch build, dispatch with `promote_latest: true` (#812).
+
 ## Orchestrator contract
 
 ```
@@ -160,4 +166,11 @@ directory and on any new host.
   upgrade path if it ever isn't.
 - Image rebuilds don't track `go.mod` bumps automatically — the
   workflow triggers on `ci/runner-image/**` changes and manual
-  dispatch. A stale cache costs seconds, not correctness.
+  dispatch. A stale *cache* costs seconds; a stale **toolchain** costs
+  correctness, and this bullet used to claim otherwise. When the `go`
+  directive moves, the baked Go no longer satisfies it, the runner tries
+  to download the new toolchain, and egress is proxied — so it fails
+  closed. Integration then cannot pass at all until a rebuilt image
+  reaches the pool. #805 sat on exactly that, and because the image
+  source lives in the same PR as the `go.mod` bump, the rebuild has to
+  be dispatched from the PR branch with `promote_latest: true`.

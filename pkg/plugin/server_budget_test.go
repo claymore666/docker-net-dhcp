@@ -322,18 +322,18 @@ func TestAcquireWithPolicy_FallbacksCountStepsNotAcquisitions(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			calls := 0
 			restore := dhcpGetIP
-			dhcpGetIP = func(context.Context, string, *dhcp.DHCPClientOptions) (dhcp.Info, error) {
+			dhcpGetIP = func(context.Context, string, *dhcp.DHCPClientOptions) (dhcp.Info, dhcp.RAObservation, error) {
 				calls++
 				if tc.answerOn != 0 && calls == tc.answerOn {
-					return dhcp.Info{IP: "192.168.0.50/24"}, nil
+					return dhcp.Info{IP: "192.168.0.50/24"}, dhcp.RAObservation{}, nil
 				}
-				return dhcp.Info{}, errors.New("no response")
+				return dhcp.Info{}, dhcp.RAObservation{}, errors.New("no response")
 			}
 			t.Cleanup(func() { dhcpGetIP = restore })
 
 			p := &Plugin{}
 			pol := preferPolicy(t, "10.0.0.1", "10.0.0.2", "10.0.0.3")
-			_, err := p.acquireWithPolicy(t.Context(), "eth0", pol, false, 10*time.Second, "ep-1", dhcp.DHCPClientOptions{})
+			_, _, err := p.acquireWithPolicy(t.Context(), "eth0", pol, false, 10*time.Second, "ep-1", dhcp.DHCPClientOptions{})
 
 			if (err == nil) != (tc.answerOn != 0) {
 				t.Fatalf("err = %v for answerOn=%d", err, tc.answerOn)

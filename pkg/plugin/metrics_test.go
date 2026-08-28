@@ -485,12 +485,12 @@ func familyPairs() []familyPair {
 			func(h HealthResponse) (int32, int32, int32) {
 				return h.NAKsReceived, h.NAKsReceivedV4, h.NAKsReceivedV6
 			}},
-		{"net_dhcp_lease_release_failures_total",
+		{"net_dhcp_client_stop_failures_total",
 			func(p *Plugin) (*atomic.Int32, *atomic.Int32) {
-				return &p.leaseReleaseFailuresV4, &p.leaseReleaseFailuresV6
+				return &p.clientStopFailuresV4, &p.clientStopFailuresV6
 			},
 			func(h HealthResponse) (int32, int32, int32) {
-				return h.LeaseReleaseFailures, h.LeaseReleaseFailuresV4, h.LeaseReleaseFailuresV6
+				return h.ClientStopFailures, h.ClientStopFailuresV4, h.ClientStopFailuresV6
 			}},
 	}
 }
@@ -926,6 +926,78 @@ func TestMetricsExposition_NoPerEndpointIdentifiers(t *testing.T) {
 					"same change — the promise and the code must move together.\n"+
 					"line: %s", name, line)
 			}
+		}
+	}
+}
+
+// TestMetricHelpMatchesHealthyField pins the operator-facing sentence to
+// the declared property, now that only the property is authoritative.
+//
+// WHY THIS EXISTS RATHER THAN A BETTER REGEX. The gate used to decide
+// whether a counter affects health by reading the English in help. That
+// was wrong twice, a month apart, in the same place and in opposite
+// directions: first `Healthy-affecting.` matched inside `Not
+// healthy-affecting:` so a denial read as an assertion (#826), then the
+// negation stripper that fixed it required the negator to sit flush
+// against the term, so `Not a healthy-affecting counter` read as an
+// assertion again (#854). Each fix parsed the sentence better and left
+// the next phrasing open.
+//
+// The property is now declared in metricDef.healthy and the gate reads
+// that. The sentence stays for operators, and the failure mode that
+// replaces misclassification is DRIFT -- a help string that says one
+// thing while the field says the other, with nobody reading both. This
+// test is what reads both.
+//
+// The negative form is constrained to ONE spelling on purpose. Every
+// phrasing that broke the old classifier -- "Not a healthy-affecting
+// counter", "No longer healthy-affecting", "Never a healthy-affecting
+// counter", "not, strictly, healthy-affecting" -- is refused here with
+// the sanctioned form named, so the ambiguity cannot be written in the
+// first place. That is a constructive constraint, not a classifier: it
+// tells the author what to write instead of guessing what they meant.
+func TestMetricHelpMatchesHealthyField(t *testing.T) {
+	const (
+		affirm  = "Healthy-affecting."
+		negForm = "Not healthy-affecting:"
+	)
+	for _, d := range metricDefs() {
+		lower := strings.ToLower(d.help)
+		mentions := strings.Contains(lower, "healthy-affecting")
+
+		if d.healthy {
+			if !strings.Contains(d.help, affirm) {
+				t.Errorf("%s: healthy: true but help does not contain %q.\n"+
+					"  help: %s\n"+
+					"  The field is what the gate reads; the sentence is what an\n"+
+					"  operator reads. Both, or they drift.", d.name, affirm, d.help)
+			}
+			// An affecting counter must not also deny the property.
+			if strings.Contains(lower, strings.ToLower(negForm)) {
+				t.Errorf("%s: healthy: true but help also says %q", d.name, negForm)
+			}
+			continue
+		}
+
+		if !mentions {
+			continue // silent about a property it does not have: fine.
+		}
+		if !strings.Contains(d.help, negForm) {
+			t.Errorf("%s: healthy is false and help mentions healthy-affecting,\n"+
+				"  but not in the one sanctioned negative form %q.\n"+
+				"  help: %s\n"+
+				"  Rephrase to that exact form, or set healthy: true. Free-form\n"+
+				"  negation is what made this property unreadable twice; the\n"+
+				"  spelling is fixed so that no reader -- human or gate -- has\n"+
+				"  to interpret it.", d.name, negForm, d.help)
+		}
+		// `Not healthy-affecting:` contains the affirmative token as a
+		// substring, so counting occurrences is the only way to catch a
+		// line that denies once and asserts once.
+		if strings.Count(lower, "healthy-affecting") != strings.Count(strings.ToLower(negForm), "healthy-affecting") {
+			t.Errorf("%s: healthy is false but help mentions healthy-affecting %d time(s);\n"+
+				"  only the leading %q may mention it.\n  help: %s",
+				d.name, strings.Count(lower, "healthy-affecting"), negForm, d.help)
 		}
 	}
 }

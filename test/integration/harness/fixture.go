@@ -43,11 +43,14 @@ const (
 	// A parent NIC is a macvlan port or an ipvlan port, never both: the
 	// two kinds contend for its single rx_handler and the second to ask
 	// is refused with EBUSY. Plugin teardown is asynchronous relative
-	// to test boundaries — an orphan-release reclaim can hold its
-	// temporary child on the parent for seconds after the test that
-	// caused it has returned — so with one shared parent a macvlan
-	// test's tail could still own it when an ipvlan test's head asked,
-	// and the suite went red on whichever test happened to be next.
+	// to test boundaries — the orphan-release reclaim that first
+	// produced this held its temporary child on the parent for seconds
+	// after the test that caused it had returned — so with one shared
+	// parent a macvlan test's tail could still own it when an ipvlan
+	// test's head asked, and the suite went red on whichever test
+	// happened to be next. That reclaim went in #800; the conflict
+	// probe attaches to a parent the same way, so the asymmetry the two
+	// parents remove is not specific to the mechanism that revealed it.
 	// Both directions are in the CI record. Two parents remove the
 	// contention rather than racing it; CreateNetwork asserts the
 	// invariant so a violation is named rather than surfacing as a
@@ -410,7 +413,7 @@ func (f *Fixture) startDnsmasq() error {
 	if err != nil {
 		return fmt.Errorf("create dnsmasq log: %w", err)
 	}
-	f.dnsmasq = exec.Command("/usr/sbin/dnsmasq",
+	f.dnsmasq = withCLocale(exec.Command("/usr/sbin/dnsmasq",
 		"--no-daemon",
 		"--conf-file=/dev/null",
 		"--port=0",                 // disable DNS
@@ -473,7 +476,7 @@ func (f *Fixture) startDnsmasq() error {
 		// replies, which is fine.
 		"--log-dhcp",
 		"--log-facility=-",
-	)
+	))
 	f.dnsmasq.Stdout = logF
 	f.dnsmasq.Stderr = logF
 	f.dnsmasq.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -585,12 +588,35 @@ func (f *Fixture) DnsmasqLog() string { return f.dnsmasqLog }
 // window: the shared fixture accumulates every test's traffic, so an
 // absolute count says nothing about the endpoint under test.
 func (f *Fixture) CountLogLines(substrings ...string) int {
-	data, err := os.ReadFile(f.dnsmasqLog)
+	return countMatchingLines(f.dnsmasqLog, substrings...)
+}
+
+// countMatchingLines is the one implementation behind both
+// CountLogLines and CountBridgeLogLines.
+//
+// It is shared rather than duplicated because both are load-bearing for
+// #800's absence assertions, and a matcher whose two copies can drift is
+// a matcher only half of which is under test: the control in
+// releasematcher_test.go would go on passing against the copy it drives
+// while the other silently stopped recognising a release.
+//
+// A blank line matches every substring vacuously, so blank lines are
+// skipped. That is only reachable through a call with no substrings,
+// which no caller makes — but a matcher used to prove an absence should
+// not have a way to over-count either.
+func countMatchingLines(path string, substrings ...string) int {
+	if path == "" {
+		return 0
+	}
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return 0
 	}
 	count := 0
 	for _, line := range strings.Split(string(data), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
 		l := strings.ToLower(line)
 		all := true
 		for _, s := range substrings {

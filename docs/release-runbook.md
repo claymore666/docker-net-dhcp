@@ -525,6 +525,39 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
    notes** (e.g. v0.8.0 narrowed the `IsDHCPPlugin` regex — that
    needed a callout).
 
+   **House style — this is the default, not a per-release choice.**
+   A release note is reference material an operator scans, not a
+   narrative. v1.8.0 shipped at 90KB of prose and was rewritten to 7KB;
+   write the short version first.
+
+   - Fixed structure, in this order: a two-to-three sentence lead,
+     then `### Upgrade notes`, `### New`, `### Fixed`,
+     `### Deferred to vX.Y.Z`, `### With thanks to`. Omit a section
+     that has no content; do not add others.
+   - Put operator-visible behaviour changes in a **table** under
+     Upgrade notes — one row per change, "what changed" and "what it
+     does to you". That table is the part most readers need.
+   - Group `### Fixed` by origin (a review, a theme), one line per
+     defect, each ending in its issue number. State the defect and its
+     effect; do not narrate how it was found or how the fix was chosen.
+   - No process commentary, no anecdotes, no meta-commentary about the
+     notes themselves, no HTML comments carrying instructions to the
+     next writer — those belong in the issue or this runbook.
+   - Avoid universal claims ("every defect is fixed", "nothing was
+     carried"). They quantify over things a reader cannot check and go
+     false on somebody else's commit. List what is deferred instead.
+   - Prefer a named list over a count: "six (#720, #721, ...)" rather
+     than "six of the ten", so a wrong number is visible.
+
+   **The maintainer signs off on the release notes before the tag.**
+   Not optional and not implied by approving the release PR: show the
+   rendered `## vX.Y.Z` section and wait for an explicit go. The rc
+   window (step 8) is the checkpoint — by the real `vX.Y.Z` tag the
+   notes must already be signed off, because the tag publishes them.
+   If the notes change after the tag, edit `RELEASE_NOTES.md` on `dev`
+   *and* `gh release edit vX.Y.Z --notes-file` the published body, or
+   the two silently diverge.
+
    **Credit outside contributions by name**, the way the v1.0.0 notes
    do. Find them rather than recalling them — almost every PR here is
    the maintainer's or Dependabot's, so an outside one is easy to miss
@@ -540,16 +573,33 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
    (`git log -1 --format='%an <%ae>' <sha>`) — a rebase or squash of a
    fork branch is where that quietly becomes the maintainer's.
 5. **PR `release/vX.Y.Z` → `dev`.** Required checks on `dev` are
-   `test`, `staticcheck`, `integration` (every PR builds and exercises
-   its own plugin on the integration runner), `actionlint`,
+   `test`, `policy-gates`, `staticcheck`, `integration` (every PR builds
+   and exercises its own plugin on the integration runner), `actionlint`,
    `govulncheck`, `attribution`, and CodeQL's `Analyze (go)` +
-   `Analyze (actions)` — eight in total. Merge when green.
-
-   `main` requires those eight **plus `coverage` and
+   `Analyze (actions)`. `main` requires those **plus `coverage` and
    `coverage-present`**, which is why the ratchet first bites at the
-   release PR in the next step and not before. Branch protection is the
-   authority here; if this list and the settings disagree, the settings
-   win and this list is the thing to fix.
+   release PR in the next step and not before. Merge when green.
+
+   **Do not trust the list above — read the authority.** It carried a
+   hand-written total ("eight in total") that was correct when written
+   and became a number nothing checked:
+
+   ```sh
+   gh api repos/claymore666/docker-net-dhcp/branches/dev/protection \
+     --jq '.required_status_checks.contexts'
+   gh api repos/claymore666/docker-net-dhcp/branches/main/protection \
+     --jq '.required_status_checks.contexts'
+   ```
+
+   Branch protection is the authority; if the prose and the settings
+   disagree, the settings win and the prose is the thing to fix.
+
+   `policy-gates` is the half of the old `test` job that runs the policy
+   gates rather than the Go suite (#829). It became required on both
+   branches on 2026-08-28; at the time #829 landed it was on neither
+   list, and for that window those gates ran on every pull request and
+   blocked nothing. If it is ever missing from the output above, that is
+   the state to restore — check before trusting a green release PR.
 
    `coverage-present` became required in #735. It is the detector that
    tells an *absent* coverage run apart from a pending one, and it was
@@ -581,10 +631,34 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
    floor during the cycle, raise the baseline as part of the release
    branch.
 
+   **Read that run with `scripts/coverage-read.sh <run-id>`, not by eye**
+   (#794). It prints every package's measured number beside *both* floor
+   sets — `dev`'s and `main`'s — because `main`'s floors can be lower, so
+   a package red against `dev` may still clear the release PR, and a
+   package comfortable on `dev` may not. It also refuses rather than
+   reporting a clean read: an incomplete comparison, an empty baseline, a
+   raw block it cannot scope to the ratchet step. Eyeballing the log is
+   how the v1.8.0 read started, and building the instrument instead found
+   three defects an eyeball would have shipped.
+
+   ```sh
+   bash scripts/coverage-read.sh 32623575563
+   ```
+
+   The exit code carries the verdict: 0 a complete reading, 1 the
+   ratchet's account and the raw `covdata` numbers disagree, 2 it cannot
+   judge. What it does *not* do is decide the release — a package under
+   `main`'s floor is information for the raise-or-explain decision the
+   baseline file records, not an error the script can settle.
+
    Coverage shares a concurrency group with the release PR's own
    integration run, so it normally starts once integration finishes —
-   roughly twelve minutes in. A `coverage` check still showing nothing
-   after that is worth the next paragraph.
+   five to eight minutes in since the main suite went to five shards
+   (#877; measured 2026-08-28 over the eight most recent successful
+   `integration.yml` runs). Do not trust that range from this page —
+   `gh run list --workflow integration.yml --status success` re-derives
+   it in one command. A `coverage` check still showing nothing well past
+   it is worth the next paragraph.
 
    **Release PR blocked on a check that has no run.** A required check
    that was *cancelled* looks exactly like one that is *pending*: the
@@ -643,10 +717,13 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
    `git tag -v vX.Y.Z` (or the green "Verified" on the tag page).
    The workflow fires on `tags: v*`. Watch it at
    <https://github.com/claymore666/docker-net-dhcp/actions/workflows/release.yml>.
-   Expected steps, in the order the `release` job runs them and under
-   the names the run shows: Resolve release tag → checkout → setup-go →
-   Log in to GHCR → Log in to Docker Hub (or *Warn if Docker Hub
-   credentials missing*) → Push to GHCR → **Check the documented
+   Expected steps, under the names the run shows. Tag resolution is its
+   own job: **resolve** runs first and has one step, *Resolve release
+   tag* — a releaser watching the run sees two job rows, not one. The
+   **release** job then runs, in this order:
+   checkout → setup-go →
+   Log in to GHCR → Log in to Docker Hub → **Both registries, or say
+   why not** → Push to GHCR → **Check the documented
    reference digests against this build** (the gate step 10b is about —
    on the first rc of a new version it is *expected* to fail and print
    the block to paste into the doc) → Push to Docker Hub (or skip) →
@@ -655,6 +732,7 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
    (cosign keyless)** → Install syft → **Generate SBOM (SPDX +
    CycloneDX)** → **Package and sign release artifact** → **Attest
    release-artifact provenance** → **Attest image provenance (GHCR)** →
+   **Check attestation parity across registries** →
    **Upload signed artifacts for the release job** → Workflow summary.
 
    Since v1.7.0 the run carries a parallel arm64 chain (#507):
@@ -896,7 +974,7 @@ After the workflow succeeds:
 | `Push to Docker Hub` step ends `unauthorized: incorrect username or password` | Token revoked / expired / wrong scope | Regenerate at hub.docker.com, update `DOCKERHUB_TOKEN` repo secret |
 | `Sync Docker Hub description from README` step ends `401` | Token scope is image-push only, not admin | Regenerate token with broader scope (see prerequisites) |
 | Hub page README is stale after a release | Description-sync step skipped (no Hub creds) or 401'd | Check the workflow run; either set creds or fix the token |
-| Tag push succeeded but no Hub publish | `HAS_HUB_CREDS` evaluated false (secrets blank) | Set the secrets, dispatch the workflow against the existing tag |
+| Tag push succeeded but no Hub publish | `HAS_HUB_CREDS` evaluated false (secrets blank) | Set the secrets, then exercise the publish from an **rc** tag — `gh workflow run release.yml -f tag=vX.Y.Z-rcN --ref main`. Do **not** dispatch the bare release tag: it rebuilds and re-points that tag plus `:latest`, and `scripts/assert-newest-release-tag.sh` refuses an older one outright — [Dispatching an existing tag](#dispatching-an-existing-tag) |
 
 ## Backports between `dev` and `main`
 

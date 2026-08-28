@@ -7,7 +7,8 @@
 #
 # Differences from the amd64 lane, all deliberate:
 #
-#   - One unsharded job instead of a 4-job matrix. There is one Pi, so a
+#   - One unsharded job instead of the amd64 lane's 6-job matrix (five
+#     main shards plus failure, #877). There is one Pi, so a
 #     matrix would run serially at best. It no longer deadlocks — the
 #     runner is standing rather than single-use (#632) — but sharding
 #     across one machine buys nothing, so this stays unsharded until

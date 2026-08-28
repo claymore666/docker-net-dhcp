@@ -356,11 +356,15 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 	}
 	link := newChildLink(mode, la)
 
-	// Queue behind anything else holding this parent — in practice an
-	// orphan-lease reclaim, whose temporary link is created in a
-	// goroutine ordered against nothing (#549). Held across the LinkAdd
-	// only: two endpoints on the same parent contend for microseconds,
-	// and it is the reclaim's multi-second DORA this exists to wait out.
+	// Queue behind anything else holding this parent — in practice the
+	// validate_dhcp preflight probe, which holds it across a full DHCP
+	// round trip (#549). Held across the LinkAdd only: two endpoints on
+	// the same parent contend for microseconds, and it is the probe's
+	// multi-second DORA this exists to wait out.
+	//
+	// The orphaned-lease reclaim used to be the holder named here, and
+	// the more demanding one — its link was created from a goroutine
+	// ordered against nothing at all. It was removed in v1.9.0 (#800).
 	guard := p.lockParent(ctx, opts.Parent, "create_endpoint")
 	err = addChildLink(guard, link)
 	guard.Unlock()
@@ -465,8 +469,19 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 				base.RequestedIP = requestedIP
 			}
 
-			info, err := p.acquireWithPolicy(ctx, la.Name, pol, v6, timeout, r.EndpointID, base)
+			info, ra, err := p.acquireWithPolicy(ctx, la.Name, pol, v6, timeout, r.EndpointID, base)
 			if err != nil {
+				// A DHCPv6 acquisition that produced nothing is not
+				// automatically a failure: on a stateless or SLAAC
+				// segment there is no DHCPv6 address by definition, and
+				// treating the timeout as fatal meant no container
+				// started at all on those networks (#868). What the
+				// segment ADVERTISED decides, not how long we waited --
+				// a segment offering managed DHCPv6 that then goes
+				// quiet is still fatal, here as before.
+				if v6 && p.noteV6Absence(ra, la.Name, r.EndpointID, err) {
+					return nil
+				}
 				return fmt.Errorf("failed to get initial IP%v address via DHCP%v: %w", v6str, v6str, err)
 			}
 			addr, err := netlink.ParseAddr(info.IP)

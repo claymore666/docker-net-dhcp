@@ -37,11 +37,16 @@ const pollTime = 100 * time.Millisecond
 // the worst case; this just bounds wall time on the cleanup path.
 const dhcpClientReapTimeout = 5 * time.Second
 
-// dhcpClientFinishTimeout caps how long Stop waits for SIGTERM ->
-// DHCPRELEASE -> exit on the persistent dhcpcd child. Long enough
-// for a DHCPRELEASE round-trip on a healthy LAN; short enough that
-// plugin shutdown / Leave isn't held hostage by an unresponsive
-// upstream DHCP server.
+// dhcpClientFinishTimeout caps how long Stop waits for SIGTERM -> exit
+// on the persistent dhcpcd child.
+//
+// Before #800 this budget covered a DHCPRELEASE round trip. It no longer
+// does — the client has nothing to send and only has to unwind and
+// exit — but the value is unchanged deliberately: dhcpcd's own teardown
+// (dropping the address, closing the lease file, reaping its own
+// children) is what it now bounds, and shortening it would start
+// counting slow-but-clean exits as client_stop_failures. Short enough
+// either way that plugin shutdown / Leave is not held hostage.
 const dhcpClientFinishTimeout = 5 * time.Second
 
 // dnsPropagateTimeout caps the docker-API round-trip cost of
@@ -380,25 +385,25 @@ type dhcpManager struct {
 	lastIP   *netlink.Addr
 	lastIPv6 *netlink.Addr
 
-	// orphanReleaseOnce guards the #370 reclaim. Both abandon paths —
-	// Join's Start goroutine finding the container gone, and a Leave
-	// that got there first — can reach the same manager, and they do
-	// not serialise against each other.
-	orphanReleaseOnce sync.Once
-
 	// boundV4 records that the persistent v4 client actually took
 	// ownership of the binding, i.e. that it reached a bound/renew.
 	//
 	// "Start succeeded" is NOT that proof, and the difference leaks a
 	// lease. CreateEndpoint's one-shot runs `-1 -p` and deliberately
 	// does not release, because handing the binding over is the
-	// persistent client's job. Stop therefore had exactly two branches:
-	// Start failed (reclaim the lease, #370) or Start succeeded (signal
-	// dhcpcd and let its `release` directive do the work). A client that
-	// starts and is SIGTERMed before it ever binds falls between them —
-	// dhcpcd only releases a lease it holds, so it sends nothing, and
-	// startErr is nil so the reclaim never runs. The address is left
-	// held upstream with nobody responsible for it.
+	// persistent client's job. Up to v1.8.x Stop had exactly two
+	// branches: Start failed (reclaim the lease, #370) or Start
+	// succeeded (signal dhcpcd and let its `release` directive do the
+	// work). A client that starts and is SIGTERMed before it ever binds
+	// falls between them, and the lease was left held upstream with
+	// nobody responsible for it.
+	//
+	// #800 removed both halves of that machinery — the reclaim and the
+	// `release` directive — so an outstanding lease is now the DESIGNED
+	// outcome rather than a leak, and it expires on the server's clock.
+	// The flag survives the change because the ledger still has to tell
+	// "this client held the binding" from "it never did": one of those
+	// is a stop worth recording, the other is not.
 	//
 	// Not hypothetical: run 31917924943 has DHCPOFFER/REQUEST/ACK for
 	// 192.168.99.12 and no DHCPRELEASE anywhere in the run, with the
@@ -418,9 +423,10 @@ type dhcpManager struct {
 	// v6 client signalled before it bound was written up as a clean
 	// release of an address the server had never been asked to free,
 	// and the reclaim — v4-only until then — left the IA_NA address the
-	// one-shot took held upstream until it expired. Not a race, the
-	// only behaviour. releaseOrphanedLease now reads both flags to
-	// decide which families it owes.
+	// one-shot took held upstream until it expired, which since #800 is
+	// what happens to every lease. Not a race, the
+	// only behaviour. Both flags are now read the same way when the
+	// ledger entry for each family is written.
 	boundV6 atomic.Bool
 	// MacAddress is set in macvlan mode so we can re-find the link inside
 	// the container netns after Docker has moved and renamed it. Empty in
@@ -595,13 +601,20 @@ func (m *dhcpManager) endpointMAC() net.HardwareAddr {
 
 // clientID resolves this endpoint's DHCP option-61 identity.
 //
-// Every exchange the manager makes — the persistent client's renewals,
-// and the synthesised release of a lease an early-exiting container
-// orphaned (#370) — has to present the id the CreateEndpoint one-shot
-// used. Present a different one and the server sees a different client:
-// the lease it already holds is neither renewed nor freed, silently.
-// Since #371 the id is mode-dependent (MAC-derived, except ipvlan), so
-// deriving it in one place from one input is what keeps those in step.
+// Every exchange the manager makes has to present the id the
+// CreateEndpoint one-shot used. Present a different one and the server
+// sees a different client: the lease it already holds is neither
+// renewed nor handed back to the endpoint that owns it, silently. Since
+// #371 the id is mode-dependent (MAC-derived, except ipvlan), so
+// deriving it in one place from one input is what keeps them in step.
+//
+// This got MORE load-bearing in v1.9.0, not less (#800). The plugin no
+// longer releases anything, so a restarting container gets its address
+// back by asking for it again and being recognised — the identity here
+// IS the mechanism. Before, a wrong id would have shown up as a lease
+// that failed to be freed; now it shows up as a container that came
+// back on a different address, which is the guarantee this project
+// exists to provide.
 func (m *dhcpManager) clientID() []byte {
 	return resolveClientID(m.opts, m.joinReq.EndpointID, m.endpointMAC())
 }
@@ -975,7 +988,7 @@ func (m *dhcpManager) markBound(v6 bool) {
 // neverBound reports whether the persistent client of one family
 // stopped without ever holding its binding. Only meaningful once that
 // family's consumer goroutine has been drained (see stop) or was never
-// started (see releaseOrphanedLease on the Start-failed path).
+// started (see the Start-failed path in stop).
 func (m *dhcpManager) neverBound(v6 bool) bool {
 	if v6 {
 		return !m.boundV6.Load()
@@ -1124,6 +1137,32 @@ func (m *dhcpManager) handleEvent(event dhcp.Event, v6 bool) {
 				WithField("new_ip", event.Data.IP).
 				Error("Failed to execute IP renewal")
 		}
+	case "config":
+		// A DHCPv6 information reply: options, no address (#815). It
+		// must NOT touch the address state machine -- no markBound, no
+		// setLastIP, no renew. renew() begins with
+		// netlink.ParseAddr(info.IP), and Info.IP is empty here by
+		// definition, so routing this through the lease path would fail
+		// on every stateless network rather than configure one.
+		//
+		// It also must not restart the outage deadline. nextAcquiring
+		// leaves the acquiring state unchanged for any event that is not
+		// bound/renew/leasefail, which is the behaviour this case wants
+		// and relies on: an information reply is proof the server is
+		// reachable, but it is NOT proof we hold a lease, and treating
+		// it as one would silence the timeout counter on a network that
+		// answers information requests and refuses addresses.
+		if m.plugin != nil {
+			m.plugin.dhcpv6ConfigOnly.Add(1)
+		}
+		m.audit("config", "")
+		m.logObservedOptions(v6, event.Data)
+		m.propagateDNS(v6, event.Data)
+		log.
+			WithFields(m.logFields(v6)).
+			WithField("dns", event.Data.DNSServers).
+			WithField("search", event.Data.SearchList).
+			Info("DHCPv6 configuration received without an address")
 	case "leasefail":
 		if m.plugin != nil {
 			bumpFamily(&m.plugin.dhcpTimeoutsV4, &m.plugin.dhcpTimeoutsV6, v6)
@@ -1203,6 +1242,21 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 		FQDN:         m.opts.fqdnMode(),
 		V6:           v6,
 		NetNS:        &m.nsHandle,
+		// Put the container's KERNEL in charge of Router Advertisement
+		// processing and keep dhcpcd from turning it off again (#875).
+		//
+		// v6 only, and only here: this is the persistent client, the one
+		// that runs inside the container's network namespace. The
+		// CreateEndpoint one-shot runs against a link that is still in
+		// the HOST namespace, where these values are the host's business
+		// and not ours -- pkg/dhcp refuses the combination rather than
+		// trusting this comment.
+		//
+		// DHCPv6 carries no router (RFC 8415 §21) and an assigned
+		// address does not imply an on-link prefix (RFC 5942 §4 rule 1,
+		// RFC 8415 §18.2.10.1), so advertisement processing is mandatory
+		// on THIS path too, not only on a stateless one.
+		HonorRouterAdverts: v6,
 		// Same MAC the CreateEndpoint one-shot used (this is the same
 		// link, moved into the netns), so dhcpcd derives the identical
 		// DUID-LL/IAID and the persistent client renews the very lease
@@ -1584,6 +1638,14 @@ func (m *dhcpManager) Start(ctx context.Context) (err error) {
 		}
 
 		if m.opts.IPv6 {
+			// The engine disables IPv6 outright on a sandbox interface
+			// whose endpoint carries no IPv6 address, which is now a
+			// reachable state (#868). Clear that BEFORE the link-local
+			// wait below, because on a disabled link the link-local
+			// never appears at all and the wait would time out for a
+			// reason DAD has nothing to do with. See v6_link.go.
+			m.ensureIPv6Enabled()
+
 			// DHCPv6 needs a usable link-local source address. The
 			// link just landed in this netns, so its LL is typically
 			// still DAD-tentative — and a host must NOT answer
@@ -1625,17 +1687,22 @@ func (m *dhcpManager) Start(ctx context.Context) (err error) {
 // is going away.
 //
 // This is the shutdown every caller but Leave wants: plugin Close stops
-// every live manager so their dhcpcds get to send a DHCPRELEASE before
-// the process exits, and the containers behind them keep running. Same
-// for a manager displaced by a newer one for the same endpoint, and for
-// managers cleaned up when a network is removed.
+// every live manager so their dhcpcds exit cleanly rather than being
+// orphaned by process exit, and the containers behind them keep running.
+// Same for a manager displaced by a newer one for the same endpoint, and
+// for managers cleaned up when a network is removed.
+//
+// Stopping is all it is. Since #800 neither this nor the leaving variant
+// releases the lease, which is why the two produce identical ledger
+// entries and identical counters — asserted as an equality in
+// TestStop_LeavingAndNotLeavingAreTheSame.
 func (m *dhcpManager) Stop() error {
 	return m.stop(false)
 }
 
 // StopForLeave is Stop for an endpoint that is being torn down.
 //
-// The difference is the orphan reclaim. A lease whose persistent client
+// The difference was the orphan reclaim, removed in #800. A lease whose persistent client
 // never took ownership has to be handed back, and only here is that
 // unambiguously safe: the endpoint is leaving, so nothing is going to
 // use the address again.
@@ -1667,42 +1734,34 @@ func (m *dhcpManager) stop(leaving bool) error {
 	<-m.startedCh
 	if m.startErr != nil {
 		// No persistent client ever ran, so there is no dhcpcd to
-		// signal — but that does NOT mean there is nothing to clean up.
-		// The CreateEndpoint one-shot acquired an address and kept it
-		// (`-1 -p`) precisely so this manager could take it over; with
-		// Start failed, nobody ever did, and the server holds it until
-		// it expires. Hand it back (#370).
+		// signal, and the CreateEndpoint one-shot's lease is left where
+		// it is. It expires on its own (#800).
 		//
-		// This used to read "If Start failed there's nothing to clean
-		// up" and return. That was true of the manager's own state and
-		// false of the lease, which is how 17 of 32 containers in one
-		// integration run leaked an address.
+		// This block used to reclaim that lease when the endpoint was
+		// leaving, on the reasoning that an address nobody took over is
+		// an address leaked. The reasoning was sound and the mechanism
+		// was not: the reclaim could not tell "this endpoint is gone for
+		// good" from "this endpoint is coming straight back", because at
+		// the moment it runs those two look identical. A `docker
+		// restart` is a Leave followed by a Join for the SAME MAC, and
+		// the tombstone exists precisely to promise that restart the
+		// same address — so a reclaim on the leaving half raced a
+		// promise the joining half was about to collect, and was
+		// observed handing back an address a live container then came
+		// back and used.
 		//
-		// Only when the endpoint is leaving, though - the same condition
-		// the sibling reclaim below consults, for the reason
-		// StopForLeave's comment gives. stop(false) arrives here from
-		// plugin Close, from DeleteNetwork and from the displacement in
-		// Join, and in all three the container behind this manager is
-		// still running and still using its address. A failed Start does
-		// not change that: recovery rebuilds a manager for a *live*
-		// container and seeds lastIP from Docker's record, and that
-		// manager's Start can fail for reasons the container knows
-		// nothing about. Reclaiming there tells the server an address is
-		// free while a live container holds it - the duplicate assignment
-		// #524 added detection for, manufactured by the plugin (#720).
-		//
-		// The other way costs a lease held until it expires. That is the
-		// safe direction of the two, and it is the one the sibling
-		// already takes.
-		if leaving {
-			m.plugin.spawnOrphanRelease(m)
-		} else if v4, v6 := m.lastIPs(); v4 != nil || v6 != nil {
+		// Waiting for it to expire is what a lease is for. A physical
+		// host that loses power does not release anything either; the
+		// server holds its address for the lease time and hands it back
+		// when the host returns. A container is a host on this segment
+		// and now costs the server exactly what one costs.
+		if v4, v6 := m.lastIPs(); v4 != nil || v6 != nil {
 			log.WithFields(m.logFields(false)).
 				WithField("ip", auditIP(v4)).
 				WithField("ipv6", auditIP(v6)).
 				Info("Start failed with the one-shot's lease outstanding; " +
-					"holding it until it expires because the endpoint is not " +
-					"leaving and its container may still be using the address")
+					"leaving it to expire on the server, as it would for any " +
+					"other host on the segment")
 		}
 		return nil
 	}
@@ -1742,13 +1801,12 @@ func (m *dhcpManager) stop(leaving bool) error {
 	// the whole of #607.
 	//
 	// The exit status is a property of a process we deliberately
-	// signalled. dhcpcd answers SIGTERM by releasing and exiting 0 —
-	// but only once it is far enough into startup to have installed the
-	// handler. Signal it before that and it dies ON the signal, so
-	// Finish reaps "signal: terminated" and errV4 is non-nil. Testing
-	// errV4 first therefore routed the never-bound case into the
-	// release-failure branch below, skipping the reclaim and leaving
-	// the lease held upstream with nobody responsible for it. That is
+	// signalled. dhcpcd answers SIGTERM by exiting 0 — but only once it
+	// is far enough into startup to have installed the handler. Signal
+	// it before that and it dies ON the signal, so Finish reaps
+	// "signal: terminated" and errV4 is non-nil. Testing errV4 first
+	// therefore routed the never-bound case into the stop-failure
+	// branch below, counting a fault where none had occurred. That is
 	// #549's bug one branch to the left, and the comment this replaces
 	// stated the assumption that hid it: "the client exited cleanly, so
 	// errV4 is nil". Sometimes it is not, and it changes nothing — a
@@ -1761,7 +1819,7 @@ func (m *dhcpManager) stop(leaving bool) error {
 	//
 	// The v6 client is judged by exactly the same rule (#608). Until
 	// then it was judged on its exit error alone: a v6 client signalled
-	// before it bound exits cleanly, so the ledger recorded "release"
+	// before it bound exits cleanly, so the ledger recorded "stopped"
 	// for the IA_NA address the CreateEndpoint one-shot had taken — the
 	// ledger asserting the server saw a DHCPv6 RELEASE for a specific
 	// address that no client ever held a binding to release — and the
@@ -1773,17 +1831,19 @@ func (m *dhcpManager) stop(leaving bool) error {
 	if m.opts.IPv6 {
 		neverBoundV6 = m.settleFamily(true, lastIPv6, errV6, leaving)
 	}
-	if leaving && (neverBoundV4 || neverBoundV6) {
+	if neverBoundV4 || neverBoundV6 {
 		// The one-shot's lease is still outstanding for at least one
-		// family and the endpoint is going away, so hand it to the same
-		// reclaim that covers a Start that never happened at all;
-		// releaseOrphanedLease reads boundV4/boundV6 to decide which
-		// families it owes and writes the ledger entry for whichever
-		// way that goes. Nothing is audited here: no RELEASE was sent,
-		// and writing "release" would be the ledger claiming something
-		// the server never saw, which is the one thing this ledger
-		// exists not to do.
-		m.plugin.spawnOrphanRelease(m)
+		// family. It stays outstanding and expires on the server's
+		// clock (#800) — the reclaim that used to run here was removed
+		// because it raced the tombstone for the same address. Nothing is audited
+		// either way: no RELEASE was sent, and writing "stopped" would
+		// be the ledger claiming something the server never saw, which
+		// is the one thing this ledger exists not to do.
+		log.WithFields(m.logFields(false)).
+			WithField("v4_outstanding", neverBoundV4).
+			WithField("v6_outstanding", neverBoundV6).
+			Info("a client was signalled before it bound; the one-shot's lease " +
+				"is left to expire on the server")
 	}
 
 	// A client that never bound reports no error, whatever its exit
@@ -1792,7 +1852,7 @@ func (m *dhcpManager) stop(leaving bool) error {
 	// exit status here is what turned a correctly handled teardown into
 	// a 500 from Leave, for a shutdown in which nothing actually
 	// failed. The startErr path earlier in this function already
-	// reclaims and returns nil on the same reasoning (#607).
+	// returns nil on the same reasoning (#607).
 	if errV4 != nil && !neverBoundV4 {
 		return fmt.Errorf("failed shut down DHCP client: %w", errV4)
 	}
@@ -1804,50 +1864,67 @@ func (m *dhcpManager) stop(leaving bool) error {
 
 // settleFamily writes down what one family's shutdown meant — ledger
 // entry, counter, log line — and reports whether that family's client
-// never held its binding, i.e. whether its one-shot lease is still
-// outstanding and owed to the reclaim. Called from stop for v4 always
-// and for v6 when the network is dual-stack, after both consumer
-// goroutines have been drained; the reclaim decision itself is taken by
-// the caller, once, across both families.
+// never held its binding, i.e. whether the one-shot's lease for that
+// family is still outstanding. Called from stop for v4 always and for
+// v6 when the network is dual-stack, after both consumer goroutines
+// have been drained. Nothing is done ABOUT an outstanding lease since
+// #800: it expires on the server's clock. The caller reports it once,
+// across both families, rather than twice.
 func (m *dhcpManager) settleFamily(v6 bool, last *netlink.Addr, exitErr error, leaving bool) bool {
 	neverBound := m.neverBound(v6)
 	neverBoundLog := log.WithFields(m.logFields(v6)).WithField("ip", auditIP(last))
 	if neverBound && exitErr != nil {
 		// Expected rather than a fault, but recorded so a signalled
 		// exit is not simply invisible. Debug, because there is nothing
-		// here for an operator to act on: the lease is handled by the
-		// reclaim the caller spawns.
+		// here for an operator to act on: the one-shot's lease is left
+		// to expire on the server's clock like any other (#800).
 		neverBoundLog = neverBoundLog.WithField("client_exit", exitErr)
 	}
 	switch {
 	case neverBound && leaving:
-		// The reclaim is the caller's to spawn, once for both families;
-		// what is settled here is that nothing is audited as released,
-		// which is the honest record: no RELEASE was sent.
-		neverBoundLog.Info("Persistent client stopped before it ever held the lease; reclaiming it")
+		// This line said "reclaiming it" until #800, and by then it was
+		// naming an action the plugin no longer took — the reclaim it
+		// referred to had been deleted. An operator reading it would
+		// have been told the lease was handed back when it was not.
+		// What is settled here is that nothing is audited as released,
+		// which is the honest record: no RELEASE was sent, on any path.
+		// TestStop_NoStopPathClaimsAReclaimOrRelease keeps it honest,
+		// because prose cannot — and this comment is the proof of that:
+		// it named the test's pre-rename spelling long after the rename,
+		// so a sentence asserting that prose decays had itself decayed.
+		// Nothing observes a Go comment's test references, so this is
+		// the one class of decay the suite cannot catch itself.
+		neverBoundLog.Info("Persistent client stopped before it ever held the lease; " +
+			"the one-shot's lease is left to expire on the server")
 	case neverBound:
 		// Not leaving, so the address may still be in use by a running
 		// container — see StopForLeave. Nothing is released and nothing
-		// is audited as released.
-		neverBoundLog.Debug("Persistent client stopped before it held the lease; not reclaiming, the endpoint is not leaving")
+		// is audited as released; the lease expires on its own either
+		// way, so the two cases differ only in what is worth logging.
+		neverBoundLog.Debug("Persistent client stopped before it held the lease; " +
+			"the endpoint is not leaving")
 	case exitErr != nil:
 		// Held a binding and did not shut down cleanly, so
-		// SIGTERM -> RELEASE -> exit did not complete and the upstream
-		// server may now be holding a phantom lease against this
-		// identity until its own expiry. Bump so operators can alert on
-		// a pattern of releases failing — typically points at upstream
-		// reachability problems mid-teardown; split by family like its
-		// neighbours so a dual-stack host can tell which client failed
-		// (#608). The ledger records release_failed rather than release
-		// so the audit trail never claims a release the server may not
-		// have seen. Both families are audited independently: a failed
-		// v4 release does not hide the v6 outcome from the ledger.
+		// SIGTERM -> exit did not complete: the client was killed, timed
+		// out, or exited non-zero. Bump so operators can alert on a
+		// pattern of clients dying hard — typically points at a wedged
+		// client or an over-tight dhcpClientFinishTimeout; split by
+		// family like its neighbours so a dual-stack host can tell which
+		// client failed (#608).
+		//
+		// This says NOTHING about the lease. Since #800 no path releases
+		// one, so the address is held to expiry whether the client exits
+		// cleanly or is killed — which is why the counter and the ledger
+		// kind are both named for the client (client_stop_failures,
+		// "stop_failed") and not for a release. Both families are
+		// audited independently: a failed v4 stop does not hide the v6
+		// outcome from the ledger.
 		if m.plugin != nil {
-			bumpFamily(&m.plugin.leaseReleaseFailuresV4, &m.plugin.leaseReleaseFailuresV6, v6)
+			bumpFamily(&m.plugin.clientStopFailuresV4, &m.plugin.clientStopFailuresV6, v6)
 		}
-		m.audit("release_failed", auditIP(last))
+		m.audit("stop_failed", auditIP(last))
 	default:
-		m.audit("release", auditIP(last))
+		m.audit("stopped", auditIP(last))
 	}
 	return neverBound
 }

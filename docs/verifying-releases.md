@@ -24,8 +24,11 @@ links here rather than repeating them.
 
 The plugin image itself lives at
 `ghcr.io/claymore666/docker-net-dhcp:vX.Y.Z` (mirrored to Docker Hub as
-`claymore666/net-dhcp`), is cosign-signed, and carries SLSA build
-provenance. The arm64 image is the same at `:vX.Y.Z-arm64`; every
+`claymore666/net-dhcp`), is cosign-signed on both registries, and
+carries SLSA build provenance **on GHCR only** — the Docker Hub mirror
+is signed but not provenance-attested, and the two registries carry
+different digests. Verify provenance against the `ghcr.io` reference.
+The arm64 image is the same at `:vX.Y.Z-arm64`; every
 verification step below applies to it with the `-arm64` tag and the
 `-arm64` artifact names substituted.
 
@@ -36,7 +39,7 @@ signature to chase.
 
 ## Verifying the release artifacts
 
-Replace `VERSION` with the release tag (for example `v1.5.0`). You need
+Replace `VERSION` with the release tag (for example `v1.9.0`). You need
 [`cosign`](https://docs.sigstore.dev/cosign/installation/) and, for the
 provenance step, the [GitHub CLI](https://cli.github.com/).
 
@@ -105,7 +108,11 @@ cosign verify ghcr.io/claymore666/docker-net-dhcp:VERSION \
 
 ## Verifying build provenance
 
-SLSA provenance covers both the image and the release artifacts:
+SLSA provenance covers both the image and the release artifacts. The
+image half is **GHCR only**: no provenance attestation exists for the
+Docker Hub bytes, in any store, so `gh attestation verify` against a
+`docker.io` reference finds nothing. Use the `ghcr.io` reference below
+even if you installed from Docker Hub.
 
 ```sh
 gh attestation verify oci://ghcr.io/claymore666/docker-net-dhcp:VERSION \
@@ -187,8 +194,9 @@ rebuild ever fails to match:
 
 A run of the `Reproducible build` workflow builds the same commit twice
 on two cold builders and fails if the binaries differ, so this is
-checked rather than asserted. It runs weekly, and on any pull request
-touching the Dockerfile or the Go module files.
+checked rather than asserted. It runs weekly, on demand, and on any
+pull request touching the Dockerfile, the Go module files, or the
+workflow and gate script that implement the check.
 
 ## A note on `:latest`
 

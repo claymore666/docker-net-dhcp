@@ -39,7 +39,7 @@ substitute yours; `ip -brief link` lists them):
 # On arm64 use the -arm64 tag — a network stores this exact reference
 # as its driver, so it must name the plugin you installed.
 docker network create \
-    --driver=ghcr.io/claymore666/docker-net-dhcp:v1.8.0 \
+    --driver=ghcr.io/claymore666/docker-net-dhcp:v1.9.0 \
     --ipam-driver=null \
     -o mode=macvlan \
     -o parent=eth0 \
@@ -81,8 +81,10 @@ docker inspect app | jq '.[0].NetworkSettings.Networks'
    lease for the lifetime of the endpoint. It runs observe-only
    (`--noconfigure`); the plugin applies lease changes via netlink.
 6. On `docker stop`, libnetwork calls `Leave` → the persistent `dhcpcd`
-   gets `SIGTERM` → it sends `DHCPRELEASE` so the upstream server's
-   lease table doesn't accumulate stale entries.
+   gets `SIGTERM` and exits. It does **not** release the lease: the
+   address stays leased until it expires, or until the container comes
+   back and re-claims it, exactly as it would for a physical host that
+   rebooted (v1.9.0+, #800).
 7. The macvlan link is reaped automatically when the container netns is
    destroyed.
 

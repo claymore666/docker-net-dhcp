@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/claymore666/docker-net-dhcp/pkg/dhcp"
 	"github.com/claymore666/docker-net-dhcp/pkg/util"
 )
 
@@ -176,14 +177,15 @@ const ifnameOption = "com.docker.network.endpoint.ifname"
 //
 // DstName, when non-empty, asks libnetwork for that exact name inside
 // the container instead of DstPrefix+index. The remote-driver API has
-// carried the field for years, but as of moby master the remote proxy
-// drops it (drivers/remote/driver.go calls
-// `iface.SetNames(SrcName, DstPrefix, "")`), so engines do not yet
-// apply it for plugin drivers — built-in drivers got per-driver
-// interface_name support in engine 28, remote drivers were left out.
-// We return it anyway: it is the documented response shape, costs
-// nothing on engines that ignore it, and activates the moment the
-// upstream pass-through lands (#125).
+// carried the field for years, but the remote proxy dropped it
+// (drivers/remote/driver.go called `iface.SetNames(SrcName, DstPrefix,
+// "")`) until moby/moby#52866, merged 2026-08-26 and milestoned for
+// engine 29.8.0. Built-in drivers got per-driver interface_name in
+// engine 28; remote drivers were left out until that fix. No released
+// engine carries it yet, so on 29.7.x and older the field is still
+// ignored. We return it either way: it is the documented response
+// shape, costs nothing on engines that ignore it, and activates by
+// itself on the first engine that honours it (#125).
 type InterfaceName struct {
 	SrcName   string
 	DstPrefix string
@@ -626,7 +628,16 @@ type HealthResponse struct {
 	// unrestricted one failing identically.
 	DHCPServerPolicyTimeouts int32 `json:"dhcp_server_policy_timeouts"`
 	DHCPTimeouts             int32 `json:"dhcp_timeouts"`
-	LeaseReleaseFailures     int32 `json:"lease_release_failures"`
+	// ClientStopFailures counts renewal clients that did not shut down
+	// cleanly when the plugin signalled them at teardown. Not
+	// Healthy-affecting: the endpoint is going away either way.
+	//
+	// It does NOT mean a lease was not handed back. Nothing this plugin
+	// runs sends a DHCPRELEASE — a stopped container's lease expires on
+	// the server's clock, like any other host's (#800). This counter
+	// was called lease_release_failures until v1.9.0, when that stopped
+	// being true.
+	ClientStopFailures int32 `json:"client_stop_failures"`
 	// NAKsReceived counts server NAKs on renewal/rebind. Not
 	// Healthy-affecting on its own — dhcpcd recovers by
 	// re-DISCOVERing — but each NAK-triggered re-bind widens the
@@ -640,25 +651,11 @@ type HealthResponse struct {
 	// containers are restarting into a plugin that had recovered them,
 	// so pair it with recovered_ok when diagnosing a restart loop.
 	DisplacedStops int32 `json:"displaced_stops"`
-	// OrphanedLeasesReleased / OrphanedLeaseReleaseFailures cover the
-	// lease acquired by the CreateEndpoint one-shot when no persistent
-	// client ever took ownership of it, because the container exited
-	// before Join's async Start could attach (#370). The plugin
-	// synthesises a release rather than leaving the address held until
-	// its own expiry.
-	//
-	// Neither is Healthy-affecting. A short-lived container is an
-	// ordinary lifecycle, and a failed synthesised release costs one
-	// lease until it expires — alert on the failure rate, not on a
-	// latched unhealthy. Read the two together: releases climbing with
-	// failures flat is the mechanism working.
-	OrphanedLeasesReleased       int32 `json:"orphaned_leases_released"`
-	OrphanedLeaseReleaseFailures int32 `json:"orphaned_lease_release_failures"`
 	// ParentLinkWaits / ParentLinkWaitTimeouts cover contention on a
 	// shared parent NIC. A parent is a macvlan port or an ipvlan port,
-	// never both, so an orphan-lease reclaim holding one asynchronously
-	// can collide with an endpoint asking for the other (#486/#549).
-	// The plugin queues them per parent instead.
+	// never both, so the validate_dhcp probe holding one across a DHCP
+	// round trip can collide with an endpoint asking for the other
+	// (#486/#549). The plugin queues them per parent instead.
 	//
 	// Waits counts the operations that had to queue; timeouts counts
 	// those that gave up after parentGateBudget and went to the kernel
@@ -675,6 +672,59 @@ type HealthResponse struct {
 	// degrades forensics, not networking; operators using audit_log
 	// alert on this directly.
 	LedgerWriteFailures int32 `json:"ledger_write_failures"`
+
+	// DirectivesRefused / MountPrepFailures are the two places pkg/dhcp
+	// declines to do what it was asked and carries on anyway (#780).
+	// They are pulled from that package at snapshot time rather than
+	// pushed into a sink, because one of them fires during config
+	// rendering, which no caller watches.
+	//
+	// DirectivesRefused counts dhcpcd directives dropped for carrying a
+	// control character in their value. dhcpcd.conf has no quoting, so a
+	// value with a newline in it would become a second directive; the
+	// drop is correct. What was missing is that an operator who set
+	// hostname, vendor class or client ID then had it silently not
+	// applied, and read a healthy plugin.
+	//
+	// MountPrepFailures counts individual commands in the per-client
+	// mount-namespace preparation that failed. The chain is `;`-joined
+	// deliberately, so dhcpcd starts regardless — but two containers
+	// whose interface is the default eth0 then collide on dhcpcd's
+	// control socket, and the second client silently never renews or
+	// releases. It counts COMMANDS, so one client failing three of four
+	// steps adds 3.
+	//
+	// Neither latches the healthy flag. Both describe an input that did
+	// not take effect, not a container left without a renewal client,
+	// and either can be non-zero on a plugin that is otherwise doing its
+	// job. Alert on them moving, not on their absolute value.
+	//
+	// Both are process-global in pkg/dhcp and therefore do NOT reset
+	// with a plugin restart of anything smaller than the process — which
+	// is the same lifetime as every other counter here, since the
+	// instance_id label changes with the process.
+	DirectivesRefused int32 `json:"directives_refused"`
+	MountPrepFailures int32 `json:"mount_prep_failures"`
+
+	// RouterAdvertGuardFailures counts individual steps of the
+	// Router-Advertisement guard that failed inside a DHCPv6 client's
+	// private mount namespace (#875).
+	//
+	// The guard is what makes the container's kernel perform router
+	// discovery and prefix processing -- the only source of an IPv6
+	// default route and of on-link determination, on the managed path as
+	// much as the stateless one -- and what stops dhcpcd switching that
+	// back off. Like MountPrepFailures its steps are `;`-joined, so a
+	// failure degrades rather than refusing the endpoint, and the
+	// degrade is invisible from inside the plugin: the container has an
+	// address, on-link traffic works, and only off-link traffic stops,
+	// seconds later, when the advertisement nothing refreshed expires.
+	//
+	// NOT healthy-affecting, for the same reason as its two neighbours:
+	// it describes configuration that did not take, not a running
+	// container left without a renewal client. Alert on it moving.
+	// Counts STEPS, not clients.
+	RouterAdvertGuardFailures int32 `json:"router_advert_guard_failures"`
 
 	// Per-family breakdown of the wire counters (#212, #730). Both
 	// halves are STORED; the un-suffixed field above is their sum,
@@ -695,18 +745,45 @@ type HealthResponse struct {
 	LeasesRenewedV4  int32 `json:"leases_renewed_v4"`
 	DHCPTimeoutsV4   int32 `json:"dhcp_timeouts_v4"`
 	NAKsReceivedV4   int32 `json:"naks_received_v4"`
-	// LeaseReleaseFailuresV4 is the v4 half of LeaseReleaseFailures.
-	LeaseReleaseFailuresV4 int32 `json:"lease_release_failures_v4"`
+	// ClientStopFailuresV4 is the v4 half of ClientStopFailures.
+	ClientStopFailuresV4 int32 `json:"client_stop_failures_v4"`
 
 	LeaseChangedV6   int32 `json:"lease_changed_v6"`
 	LeasesObtainedV6 int32 `json:"leases_obtained_v6"`
 	LeasesRenewedV6  int32 `json:"leases_renewed_v6"`
 	DHCPTimeoutsV6   int32 `json:"dhcp_timeouts_v6"`
 	NAKsReceivedV6   int32 `json:"naks_received_v6"`
-	// LeaseReleaseFailuresV6 is the v6 share of LeaseReleaseFailures
-	// (#608): the persistent DHCPv6 client held a binding and its
-	// SIGTERM-driven RELEASE did not complete cleanly.
-	LeaseReleaseFailuresV6 int32 `json:"lease_release_failures_v6"`
+	// ClientStopFailuresV6 is the v6 share of ClientStopFailures
+	// (#608): the persistent DHCPv6 client held a binding and did not
+	// shut down cleanly when the plugin signalled it. No release is
+	// involved — since #800 nothing this plugin runs sends one.
+	ClientStopFailuresV6 int32 `json:"client_stop_failures_v6"`
+	// DHCPv6ConfigOnly counts DHCPv6 information replies -- address-less
+	// configuration from a network advertising the RA "other config"
+	// flag (#815). NOT healthy-affecting: it is a normal exchange on a
+	// stateless network. Before #815 these were dropped unread, so such
+	// a network was indistinguishable from one that answered nothing.
+	// It has no v4 half; see the atom for why.
+	DHCPv6ConfigOnly int32 `json:"dhcpv6_config_only"`
+	// DHCPv6NotOffered counts endpoints created without a DHCPv6
+	// address because the segment advertised no managed DHCPv6 --
+	// stateless or SLAAC (#868). NOT healthy-affecting: on those
+	// networks it is the correct outcome, there being no DHCPv6
+	// address on them to be had. The endpoint has no global IPv6
+	// address FROM THIS PLUGIN; whether the kernel forms one from the
+	// advertised prefix is the segment's decision since #875, which
+	// leaves accept_ra=2/autoconf=1 on the interface. See v6_absence.go
+	// and docs/reference.md.
+	DHCPv6NotOffered int32 `json:"dhcpv6_not_offered"`
+	// DHCPv6NoRouterAdvert counts endpoints created without a DHCPv6
+	// address because no router advertisement arrived at all (#868).
+	// Kept apart from DHCPv6NotOffered because "no DHCPv6 here" and
+	// "nothing said anything" call for different operator action.
+	DHCPv6NoRouterAdvert int32 `json:"dhcpv6_no_router_advert"`
+	// IPv6LinkEnableFailures counts container links IPv6 could not be
+	// enabled on before a DHCPv6 client was started. Distinguishes a
+	// quiet segment from one the plugin could never have heard.
+	IPv6LinkEnableFailures int32 `json:"ipv6_link_enable_failures"`
 }
 
 func (p *Plugin) apiHealth(w http.ResponseWriter, r *http.Request) {
@@ -750,6 +827,9 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 	conflicts := p.addressConflicts.Load()
 	tsQuarantines := p.tombstones.quarantines.Load()
 
+	// Pulled from pkg/dhcp rather than held here: see DirectivesRefused.
+	directivesRefused, mountPrepFailures, raGuardFailures := dhcp.RefusalCounts()
+
 	// One load per half, used for both the half and the sum.
 	leaseChangedV4 := p.leaseChangedV4.Load()
 	leaseChangedV6 := p.leaseChangedV6.Load()
@@ -761,8 +841,8 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 	dhcpTimeoutsV6 := p.dhcpTimeoutsV6.Load()
 	naksReceivedV4 := p.naksReceivedV4.Load()
 	naksReceivedV6 := p.naksReceivedV6.Load()
-	leaseReleaseFailuresV4 := p.leaseReleaseFailuresV4.Load()
-	leaseReleaseFailuresV6 := p.leaseReleaseFailuresV6.Load()
+	clientStopFailuresV4 := p.clientStopFailuresV4.Load()
+	clientStopFailuresV6 := p.clientStopFailuresV6.Load()
 
 	return HealthResponse{
 		// Healthy is false on any condition that means an operator
@@ -828,25 +908,30 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		DHCPServerPolicyExhausted:    p.dhcpServerPolicyExhausted.Load(),
 		DHCPServerPolicyTimeouts:     p.dhcpServerPolicyTimeouts.Load(),
 		DHCPTimeouts:                 dhcpTimeoutsV4 + dhcpTimeoutsV6,
-		LeaseReleaseFailures:         leaseReleaseFailuresV4 + leaseReleaseFailuresV6,
+		ClientStopFailures:           clientStopFailuresV4 + clientStopFailuresV6,
 		NAKsReceived:                 naksReceivedV4 + naksReceivedV6,
 		DisplacedStops:               p.displacedStopsTotal.Load(),
-		OrphanedLeasesReleased:       p.orphanedLeasesReleased.Load(),
-		OrphanedLeaseReleaseFailures: p.orphanedLeaseReleaseFailures.Load(),
 		ParentLinkWaits:              p.parentLinkWaits.Load(),
 		ParentLinkWaitTimeouts:       p.parentLinkWaitTimeouts.Load(),
 		LedgerWriteFailures:          p.ledgerWriteFailures.Load(),
+		DirectivesRefused:            directivesRefused,
+		MountPrepFailures:            mountPrepFailures,
+		RouterAdvertGuardFailures:    raGuardFailures,
 		LeaseChangedV4:               leaseChangedV4,
 		LeasesObtainedV4:             leasesObtainedV4,
 		LeasesRenewedV4:              leasesRenewedV4,
 		DHCPTimeoutsV4:               dhcpTimeoutsV4,
 		NAKsReceivedV4:               naksReceivedV4,
-		LeaseReleaseFailuresV4:       leaseReleaseFailuresV4,
+		ClientStopFailuresV4:         clientStopFailuresV4,
 		LeaseChangedV6:               leaseChangedV6,
 		LeasesObtainedV6:             leasesObtainedV6,
 		LeasesRenewedV6:              leasesRenewedV6,
 		DHCPTimeoutsV6:               dhcpTimeoutsV6,
 		NAKsReceivedV6:               naksReceivedV6,
-		LeaseReleaseFailuresV6:       leaseReleaseFailuresV6,
+		ClientStopFailuresV6:         clientStopFailuresV6,
+		DHCPv6ConfigOnly:             p.dhcpv6ConfigOnly.Load(),
+		DHCPv6NotOffered:             p.dhcpv6NotOffered.Load(),
+		DHCPv6NoRouterAdvert:         p.dhcpv6NoRouterAdvert.Load(),
+		IPv6LinkEnableFailures:       p.ipv6LinkEnableFailures.Load(),
 	}
 }

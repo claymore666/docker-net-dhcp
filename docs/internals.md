@@ -47,11 +47,21 @@ lifecycle, the event plumbing, and everything below are identical.
   resulting address/routes via netlink itself.
 - **A lapsed lease is not one of those events.** The plugin runs
   `dhcpcd --noconfigure`, and in that mode a lease running out is
-  reported as `RELEASE` — the same thing a graceful stop emits. The two
-  are indistinguishable, so treating either as a failure would count
-  every normal container teardown as one, and the handler drops both.
-  This is why the plugin cannot learn about a dead DHCP server by
-  waiting to be told.
+  reported as `RELEASE` — but only while the `release` directive was
+  also set, which it was up to v1.8.x. A graceful stop emitted the same
+  reason, so treating either as a failure would have counted every
+  normal container teardown as one, and the handler dropped both.
+
+  **v1.9.0 removes that directive, and a lapse now fires `EXPIRE`**,
+  which the plugin counts as a lease loss. Measured across all four
+  combinations of `--noconfigure` and `release` on the shipped dhcpcd,
+  and visible in the failure suite across the two trees: the same outage
+  that produced "+0 leasefail / +1 watchdog" before produces "+1
+  leasefail / +0 watchdog" after
+  ([#855](https://github.com/claymore666/docker-net-dhcp/issues/855)).
+  So the plugin CAN now learn about a dead DHCP server by being told,
+  sooner than the lease deadline would have told it. The deadline-based
+  watchdog stays as the backstop for a lapse dhcpcd does not report.
 - **Outages are therefore derived, not reported.** Each bind and renew
   records the lease lifetime the server granted, and a watchdog compares
   it against the time since that endpoint was last served: once
@@ -76,7 +86,7 @@ lifecycle, the event plumbing, and everything below are identical.
   corrupts lease bookkeeping; the runtime collision is worse and silent —
   the second client finds the first one's control socket, forwards its
   arguments to that process and exits 0, so it never runs a client of its
-  own and its lease is never renewed or released (#332). The plugin
+  own and its lease is never renewed (#332). The plugin
   shadows both directories with a private `tmpfs` in each client's own
   mount namespace, which keeps them fully independent.
 
@@ -84,6 +94,76 @@ lifecycle, the event plumbing, and everything below are identical.
   visible from inside that namespace, so reading it means
   `nsenter -t <dhcpcd-pid> -m` (see
   [verifying renewal](reference.md#verifying-that-renewal-works)).
+
+## How IPv6 is handled
+
+Three mechanisms, all of them v1.9.0, all of them about the same fact:
+**DHCPv6 carries no router.** The option catalogue is RFC 8415 §21 and
+nothing in it has a next hop, so router discovery (RFC 4861 §6.3.4) is
+the only source of an IPv6 default route — and assigning an address does
+not make its prefix on-link either, "whether through IPv6 stateless
+address autoconfiguration, DHCPv6, or manual configuration" (RFC 5942 §4
+rule 1, repeated inside the DHCPv6 specification at RFC 8415
+§18.2.10.1). Advertisement processing is therefore mandatory on the
+*managed* path too, not only the stateless one. Before v1.9.0 none of
+this happened inside a container.
+
+**A DHCPv6 timeout is not one observation.** `pkg/plugin/v6_absence.go`.
+A failed v6 acquisition has two entirely different meanings and the
+timeout cannot tell them apart: the segment offers DHCPv6 and the server
+went quiet, or the segment offers no DHCPv6 address at all. The second
+is the ordinary configuration of a great many home routers, and treating
+it as fatal meant no container started on such a network (#868). The
+discriminator is what the router **advertised**, never how long the
+plugin waited — the managed-address flag makes silence fatal exactly as
+before, while an advertisement without it, or none at all inside the
+budget, creates the endpoint without a v6 address and counts
+`dhcpv6_not_offered` or `dhcpv6_no_router_advert`. Keeping the two
+observations apart is what keeps the tolerance one-directional.
+
+**The engine disables IPv6 on a link with no IPv6 address.**
+`pkg/plugin/v6_link.go`. libnetwork writes
+`net.ipv6.conf.<iface>.disable_ipv6 = 1` on a sandbox interface whose
+endpoint has no `AddressIPv6` — a case #868 made reachable for the first
+time, because before it such an endpoint was never created. The flag the
+engine sets for "no address" also forecloses every mechanism that was
+supposed to supply one: no link-local, no router solicitation, no
+information request, and `dhcpcd -6` prints nothing at all. So the
+plugin administratively re-enables IPv6 on the link before starting a
+DHCPv6 client, and counts `ipv6_link_enable_failures` when it cannot.
+
+**The Router-Advertisement guard.** `pkg/dhcp/ra_guard.go`. `dhcpcd`
+writes `net.ipv6.conf.<if>.accept_ra=0` and `.autoconf=0` on the
+interface it manages, in `if_setup_inet6()`; `--noconfigure`, which the
+plugin passes on every client, does not gate that write and additionally
+skips `dhcpcd`'s own advertisement handling — so nobody in the container
+performed §6.3.4 or §5.5.3. The loss is active rather than a failure to
+refresh: measured in the ordering least favourable to the claim, with a
+`proto ra` default route installed *before* `dhcpcd` starts, the route
+was gone after the unguarded client started and still present after the
+guarded one. Only the `-6` client does it; a `-4` `dhcpcd` left both
+knobs at 1. A one-shot re-write after `Start` is not enough either,
+because `dhcpcd` re-runs that setup on **every carrier acquisition** —
+so the guard sets `accept_ra=2`, `autoconf=1` and `keep_addr_on_down=1`
+before `dhcpcd` execs and then returns `/proc/sys` to read-only inside
+the client's own private mount namespace, where the remount is invisible
+to the host, to the container and to every other client. Because a
+read-only remount can be accepted without taking effect, each knob is
+then probed by writing back the value it already holds, with success
+treated as the failure. Failed steps count
+`router_advert_guard_failures` and the client starts anyway — a
+deliberate degrade, and the reason the counter exists: a container whose
+guard did not take looks entirely healthy until off-link IPv6 stops.
+
+**What this does not do**, stated because the shape invites the
+assumption. The plugin does not read RDNSS from advertisements — DNS
+comes from DHCPv6 options 23 and 24, and nothing parses the RA option.
+It does not manage `addr_gen_mode` or `use_tempaddr` either, so a
+SLAAC address formed by the container's own kernel is not a function of
+prefix and MAC, is not something the plugin reports, and is not an
+identifier anything should key on. The guard's own bound is narrower and
+is written out at the top of `ra_guard.go`: `dhcpcd` sets the address
+generation mode over netlink, which a `/proc/sys` pin cannot reach.
 
 ## How a network chooses its DHCP server
 
@@ -203,35 +283,51 @@ a 2-second cap that only an unclaimed address ever pays.
 
 ## How a lease gets handed back
 
-Normally the container's own `dhcpcd` does it: a graceful stop emits a
-`RELEASE` and the server frees the address at once instead of waiting
-for the lease to expire.
+It does not. Nothing this plugin runs ever sends a `DHCPRELEASE`, and
+that is deliberate as of v1.9.0 (#800).
 
-That needs a binding to release. Two cases leave one held with nobody
-responsible for it — the persistent client **never started** (the
-container was already gone), or it **started but never bound** (it was
-signalled before its first `ACK`, so `dhcpcd` had nothing to release and
-exited cleanly). The address was won regardless, by the one-shot at
-`CreateEndpoint`.
+A lease is a lease. When a container stops, its address stays leased
+until the lease expires, and if the container comes back before then it
+asks for the same address and gets it — the ordinary DHCP path, and
+exactly what happens when a physical host on the segment reboots or
+loses power. A container is a host on this segment and costs the server
+what one costs.
 
-The plugin then **reclaims**: a temporary child of the network's kind,
-re-acquire the same address under the endpoint's identity, release it
-properly. Per family — a dual-stack endpoint hands back exactly the
-addresses whose client never bound, IPv4 via the client-id, IPv6 via
-the same DUID and IAID the endpoint used (v1.7.0+, #608; before that
-the IPv6 half was leaked and the ledger wrote it up as released).
-Counted by `orphaned_leases_released` and
-`orphaned_lease_release_failures`, and written to the audit ledger.
+Neither client releases. The `CreateEndpoint` one-shot exits with
+`-1 -p` to keep its address for the persistent client that takes over
+moments later; the persistent client is signalled at `Leave` and keeps
+it for the container that may be about to restart.
 
-**The scoping is load-bearing.** It fires when an endpoint *leaves*, not
-on every manager shutdown — `Close` stops every manager on an upgrade or
-`docker plugin disable`, with containers still running. A never-bound
-manager is legitimate there (a DHCP server that is not answering, while
-the container still holds the one-shot's address), and releasing would
-tell the server an address is free while it is in use: the duplicate
-assignment this release added detection for, manufactured by us.
+**Why this changed.** Up to v1.8.x the plugin released aggressively —
+`dhcpcd` emitted a `RELEASE` on a graceful stop, and a background
+*reclaim* handed back the one-shot's address whenever no persistent
+client had taken ownership of it (a container that exited before the
+attach completed). Both were trying to return an address promptly rather
+than let it sit until expiry. Both raced the tombstone.
 
-A missed reclaim leaves a lease to expire. A wrong one causes an outage.
+A `docker restart` is a `Leave` immediately followed by a `Join` for the
+same MAC, and the tombstone exists to promise that `Join` the same
+address. At the moment the release ran, "this endpoint is gone" and
+"this endpoint is coming straight back" were indistinguishable — so the
+plugin was observed telling the server an address was free in the same
+second the container came back to claim it. The reclaim was measured
+firing four times on ordinary restarts of live containers.
+
+What was gained was a faster return of an address nobody wanted. What
+was risked was an address handed to someone else while a container was
+still using it — the duplicate assignment #524 added detection for,
+manufactured by the plugin itself. Waiting for expiry has no such
+failure mode, so the whole mechanism went: the `release` directive, the
+reclaim, and the `orphaned_leases_released` and
+`orphaned_lease_release_failures` counters that measured it.
+
+The surviving teardown counter was renamed to match: what was
+`lease_release_failures` is now `client_stop_failures`, because a client
+that exits badly is all it can still mean.
+
+The cost is that a short-lived container's address is unavailable for
+one lease time. Size the server's pool and lease time for the churn,
+the same way you would for any other population of hosts.
 
 ## How operations on one parent NIC are serialised
 
@@ -240,17 +336,23 @@ ipvlan port and never both — whichever kind asks second gets `EBUSY`.
 That is a kernel rule; one mode per parent stays the operator-facing
 constraint.
 
-What the plugin can stop is inflicting it on itself. Three of its paths
-attach a child to a parent: creating an endpoint, the `validate_dhcp`
-probe, and the reclaim above — which holds its link for a full DHCP
-round trip, from a goroutine ordered against no Docker request. Since
-v1.6.0 all three take a per-parent gate first, so they queue instead of
-refusing each other (#486, #549).
+What the plugin can stop is inflicting it on itself. Two of its paths
+attach a child to a parent: creating an endpoint, and the
+`validate_dhcp` probe — which holds its link for a full DHCP round
+trip. Since v1.6.0 both take a per-parent gate first, so they queue
+instead of refusing each other (#486, #549).
+
+There used to be a third, the orphaned-lease reclaim, and it was the
+demanding one: it ran from a goroutine ordered against no Docker request
+at all. It is gone (#800, see above), which shortens the worst case the
+gate has to cover but does not remove the need for it — the probe still
+holds a parent across a DHCP round trip while an endpoint may ask for
+the other mode.
 
 `parent_link_waits` counts operations that queued — the mechanism
 working. `parent_link_wait_timeouts` counts ones that gave up and
 proceeded anyway; they may still succeed, but the budget has stopped
-covering a reclaim's duration.
+covering the holder's duration.
 
 The rule is enforced by **two** mechanisms, and it is worth being exact
 about where each one stops, because the guard type exists precisely to
@@ -431,8 +533,10 @@ Four loops, cheapest first. Only the last needs root or a plugin.
 | both integration suites | `sudo make integration-local` | root, Docker |
 
 **`make check` is the one to run before pushing.** It runs the same
-gates as the `test` job — build, vet, format, the race suite, the short
-fuzz, every `check-*.sh`, and the gate self-tests — with no privileges
+gates as the Test workflow's two fast jobs — `test` for build, vet,
+format, the race suite and the short fuzz, `policy-gates` for every
+`check-*.sh` and the gate self-tests (#829 split them, and both are
+required contexts) — with no privileges
 and no host mutation, so the answer you get locally is the answer CI
 will give. The lane's contents live in `scripts/local-lane.sh`, and
 `scripts/check-local-lane.sh` fails CI if that file lists fewer gates
@@ -440,11 +544,14 @@ than the workflow runs; a local target that hand-listed them would
 quietly cover less the first time a gate was added (#636, the same
 shape as #542).
 
-Three things it does **not** do, each declared rather than absent —
-`scripts/local-lane.sh --list-exempt` prints them with reasons. The two
-attribution gates judge a commit range against a pull-request body, and
-`govulncheck` needs the network and a pinned install, so a local answer
-would be a different one.
+Everything it does **not** do is declared rather than absent —
+`scripts/local-lane.sh --list-exempt` prints the list with reasons, and
+that is the place to read it rather than a count written here, which has
+already gone stale once. The reasons fall into two kinds: gates that
+need the pull request that does not exist locally (a commit range, a
+title, a body, or the base ref the PR is opened against), and gates that
+need the network. In every case a local answer would be a different
+answer, not a cheaper one.
 
 A step whose tool is missing (`staticcheck`, `actionlint`, `shellcheck`)
 is **skipped loudly** and named in the summary rather than passing
@@ -452,10 +559,13 @@ silently. `STRICT=1 make check` turns any skip into a failure — use that
 anywhere a green exit is read as coverage instead of by a person who can
 see the summary.
 
-CI shards the main suite across three jobs (#381, #468); `integration-local`
-deliberately does not — a local run is one machine, so sharding would
-serialise the shards and only add overhead. If you want to reproduce a
-single CI shard, `sudo make integration-test-shard SHARD=1 OF=3`.
+CI shards the main suite across five jobs (#381, #468, #877);
+`integration-local` deliberately does not — a local run is one machine, so
+sharding would serialise the shards and only add overhead. If you want to
+reproduce a single CI shard, `sudo make integration-test-shard SHARD=1 OF=5`.
+The count lives in `.github/workflows/integration.yml`'s matrix, beside the
+measurement that justifies it; `scripts/check-durations-table.sh` keeps the
+weights that partition it honest.
 
 **Use `integration-local`, not `integration-test`.**
 
@@ -524,11 +634,13 @@ they probe whether the engine applies a remote driver's `DstName` and
 skip when it does not. The probe (`engineAppliesIfname`, used by
 `TestInterfaceName_MultiNetworkDeterministic`) runs a throwaway
 container and checks the interface the engine actually created — there
-is no version threshold to hit. Today the probe fails on every engine,
-because the upstream fix (moby/moby#52866, stopping the remote-driver
-proxy from dropping `DstName`) has not shipped; until it does, those
-tests skip in CI and locally alike. A skip is expected, not a signal
-that the run diverged.
+is no version threshold to hit. The probe fails on every *released*
+engine: the upstream fix (moby/moby#52866, stopping the remote-driver
+proxy from dropping `DstName`) merged to moby master on 2026-08-26 and
+is milestoned for engine 29.8.0, which is not out yet (latest release
+29.7.2 as of 2026-08-27). Until a box running an engine that carries it
+executes the suite, those tests skip in CI and locally alike. A skip is
+expected, not a signal that the run diverged.
 
 ## Request fixtures
 
@@ -577,16 +689,6 @@ to, and it opens a pull request with the re-recorded bodies:
 ```console
 $ gh workflow run capture-fixtures.yml --ref <branch>
 ```
-
-> **Not available until v1.8.0 ships.** GitHub only exposes a
-> `workflow_dispatch` workflow from the repository's *default* branch —
-> `main` here — not from the branch you pass to `--ref`. This workflow
-> merged to `dev`, so until the next release carries it to `main` the
-> command above answers `404`, which reads like a typo rather than "not
-> yet". Use the by-hand route below in the meantime. The condition is
-> declared in `.github/dispatch-pending.txt` and enforced by
-> `scripts/check-dispatch-reachable.sh`, which also fails once the entry
-> stops being true.
 
 A pull request rather than a push, deliberately. A changed request body on
 an engine bump is a finding — it is the signal #218 and #125 are blocked
@@ -674,11 +776,18 @@ means the request contract moved and somebody has to decide — which is
 the point, because today nothing else would say it moved at all. Model
 the field, or record why it is ignored.
 
-Two open items are waiting on exactly this signal: #218 (stable MAC,
-needs `netlabel.EndpointName` at `CreateEndpoint`) and #125 (Compose
-`interface_name`, needs plugin-returned `DstName` honoured at `Join`).
-The captures confirm both fields are absent on engine 29.7 — the day a
-capture from a newer engine carries one, the test names it. The 26.1 -> 29.7
+#218 (stable MAC) is waiting on exactly this signal: it needs
+`netlabel.EndpointName` to arrive at `CreateEndpoint`, and the captures
+confirm that field is absent on engine 29.7 — the day a capture from a
+newer engine carries it, the test names it.
+
+#125 is **not** covered by this signal, and that is worth stating
+because the shape invites the assumption. Its blocker is on the
+*response* side (the engine honouring the plugin's `DstName` at `Join`,
+moby/moby#52866); the option itself has always been forwarded in the
+request. No request capture will ever change when that fix ships, so
+the thing that detects it is the behavioural probe in the integration
+suite, not these fixtures. The 26.1 -> 29.7
 re-record is the worked example: it introduced
 `com.docker.network.enable_ipv4` on `CreateNetwork`, which is carried
 inside `Options` (a map) and so costs nothing, but it arrived unannounced

@@ -66,10 +66,48 @@ mkdoc() {
     } > "$f"
 }
 
+# mkmetrics_opposed <file> <plain-list> <extra "name=healthy=help" triples...>
+#   Same shape as mkmetrics, but the caller sets the DECLARATION and the
+#   PROSE of each extra entry independently -- so a fixture can say one
+#   thing in `healthy:` and the opposite in `help`.
+#
+#   That opposition is the whole point. This helper replaces an earlier
+#   mkmetrics_phrased, which varied only the wording, because the gate no
+#   longer reads the wording. Its comment was right about its own
+#   predecessor -- mkmetrics "only ever emits Healthy-affecting. and not a
+#   fault., so no fixture it builds can distinguish a gate keyed on the
+#   property from one keyed on that literal spelling" -- and the same
+#   sentence now applies to it: a generator that varies only phrasing
+#   cannot distinguish a gate that reads the declaration from one that
+#   still reads English, because every phrasing it emits agrees with the
+#   declaration it does not set.
+mkmetrics_opposed() {
+    local f="$1" list="$2"; shift 2
+    local n t nm hl hy
+    {
+        printf 'package plugin\n\nvar metricDefs = []metricDef{\n'
+        for n in $list; do
+            printf '\t{name: "%s", counter: true, healthy: true, help: "a fault. Healthy-affecting.", field: "%s"},\n' "$n" "$n"
+        done
+        for n in leases_renewed pending_hints; do
+            printf '\t{name: "%s", counter: true, help: "not a fault.", field: "%s"},\n' "$n" "$n"
+        done
+        for t in "$@"; do
+            nm="${t%%=*}"; hy="${t#*=}"; hl="${hy#*=}"; hy="${hy%%=*}"
+            if [ "$hy" = "yes" ]; then
+                printf '\t{name: "%s", counter: true, healthy: true, help: "%s", field: "%s"},\n' "$nm" "$hl" "$nm"
+            else
+                printf '\t{name: "%s", counter: true, help: "%s", field: "%s"},\n' "$nm" "$hl" "$nm"
+            fi
+        done
+        printf '}\n'
+    } > "$f"
+}
+
 # mkmetrics <file> <counter-list> [<extra-tagged>]
-#   metricDefs as pkg/plugin/metrics.go writes it: name and help on one
-#   line, and the help of a healthy-affecting counter ending
-#   "Healthy-affecting.". Two counters that are NOT healthy-affecting
+#   metricDefs as pkg/plugin/metrics.go writes it: name, `healthy:` and
+#   help on one line, with an affecting counter carrying BOTH the
+#   declaration the gate reads and the sentence an operator reads. Two counters that are NOT healthy-affecting
 #   are always emitted, so a check that merely echoed every name back
 #   would fail here. <extra-tagged> gets the sentence without being in
 #   the doc's column, which is the drift in the other direction.
@@ -78,13 +116,13 @@ mkmetrics() {
     {
         printf 'package plugin\n\nvar metricDefs = []metricDef{\n'
         for n in $list; do
-            printf '\t{name: "%s", counter: true, help: "a fault. Healthy-affecting.", field: "%s"},\n' "$n" "$n"
+            printf '\t{name: "%s", counter: true, healthy: true, help: "a fault. Healthy-affecting.", field: "%s"},\n' "$n" "$n"
         done
         for n in leases_renewed pending_hints; do
             printf '\t{name: "%s", counter: true, help: "not a fault.", field: "%s"},\n' "$n" "$n"
         done
         for n in $extra; do
-            printf '\t{name: "%s", counter: true, help: "not a fault. Healthy-affecting.", field: "%s"},\n' "$n" "$n"
+            printf '\t{name: "%s", counter: true, healthy: true, help: "not a fault. Healthy-affecting.", field: "%s"},\n' "$n" "$n"
         done
         printf '}\n'
     } > "$f"
@@ -224,12 +262,86 @@ out=$(bash "$CHECK" "$DIR/ok.md" "$DIR/ok.go" "$DIR/m2.metrics.go" "$F4" 2>&1); 
 [ $rc -eq 1 ] && ok "a help string claiming \"Healthy-affecting.\" on a counter the doc does not mark fails" \
                || no "the reverse drift is not judged (rc=$rc: $out)"
 
+# --- #826/#854: the gate reads the DECLARATION, not the sentence --------
+# Two heuristics over English lived here and both were wrong. The first
+# matched the fixed string "Healthy-affecting.", which is a substring of
+# "Not Healthy-affecting.", so a denial read as an assertion (#826). The
+# second stripped negated occurrences, but required the negator to sit
+# flush against the term, so "Not a healthy-affecting counter" read as an
+# assertion again (#854). `metricDef.healthy` is now the declaration and
+# this gate reads that.
+#
+# The cases below therefore no longer vary PHRASING -- that axis moved to
+# TestMetricHelpMatchesHealthyField in pkg/plugin, which is where the two
+# fields of one struct can be compared. What replaces it is stronger: the
+# prose and the declaration are set to CONTRADICT each other, so a gate
+# that has quietly gone back to reading English gets the opposite answer
+# from the one asserted. A fixture where the two agree cannot tell the
+# two gates apart, which is the property that let both defects ship.
+
+# ARM 1 -- prose ASSERTS, declaration DENIES. The gate must follow the
+# declaration and stay clean. Every pre-#854 gate collects this: the
+# help string ends in the exact sentence the old matcher looked for.
+# leases_renewed is not in the doc's yes column, so a gate that collects
+# it reports drift that does not exist -- and its remedy line then tells
+# a human to write that counter into the operator-facing table as yes.
+mkmetrics_opposed "$DIR/m826a.metrics.go" "$FOUR" \
+    "leases_renewed=no=a fault. Healthy-affecting."
+out=$(bash "$CHECK" "$DIR/ok.md" "$DIR/ok.go" "$DIR/m826a.metrics.go" "$F4" 2>&1); rc=$?
+[ $rc -eq 0 ] && ok "prose asserting the property does not override healthy: false (#854)" \
+               || no "the help string overrode the declaration (rc=$rc: $out)"
+
+# ARM 2 -- prose DENIES, declaration ASSERTS. The gate must follow the
+# declaration and FAIL, naming the counter. This is the arm that catches
+# a gate still stripping negations: every negated phrasing the old
+# stripper handled -- and every one it did not -- reads as a denial here,
+# so such a gate reports clean and the counter's absence from the doc
+# goes unseen. That is the expensive direction: a real health counter
+# documented as not affecting health.
+mkmetrics_opposed "$DIR/m826b.metrics.go" "$FOUR" \
+    "leases_renewed=yes=Not healthy-affecting: expected, no operator action."
+out=$(bash "$CHECK" "$DIR/ok.md" "$DIR/ok.go" "$DIR/m826b.metrics.go" "$F4" 2>&1); rc=$?
+[ $rc -eq 1 ] && ok "prose denying the property does not override healthy: true (#854)" \
+               || no "a negated help string suppressed the declaration (rc=$rc: $out)"
+case "$out" in *leases_renewed*) ok "the failure names the counter whose declaration the doc does not carry" ;;
+  *) no "the failure does not name leases_renewed: $out" ;; esac
+
+# ARM 3 -- the remedy names a DISAGREEMENT and does not issue an order.
+# The old lines read "the doc does not mark it", which presupposes the
+# code is right. When the classifier was wrong -- twice -- that phrasing
+# instructed a human to write a false entry into the operator-facing
+# table, after which the gate went green over it. A gate that cannot tell
+# which side is wrong must not phrase its output as though it could.
+case "$out" in
+  *"one of the two is wrong"*)
+      ok "the remedy states a disagreement rather than instructing an edit" ;;
+  *) no "the remedy does not name the disagreement: $out" ;;
+esac
+case "$out" in
+  *"does not mark it: "*|*"but the doc does not mark"*)
+      no "the remedy still presupposes which side is correct: $out" ;;
+  *)  ok "the remedy no longer presupposes that the code is the right side" ;;
+esac
+
+# ARM 4 -- the phrasings that broke BOTH heuristics, driven here too.
+# These are refused by the Go test rather than by this gate, but a
+# reader of this file should be able to see that the class was closed
+# and not merely moved. Each of these was collected as ASSERTING by the
+# #826 stripper; under a declaration they are all simply healthy: false
+# and the gate stays clean whatever the sentence says.
+mkmetrics_opposed "$DIR/m854.metrics.go" "$FOUR" \
+    "leases_renewed=no=Not a healthy-affecting counter." \
+    "pending_hints=no=No longer healthy-affecting."
+out=$(bash "$CHECK" "$DIR/ok.md" "$DIR/ok.go" "$DIR/m854.metrics.go" "$F4" 2>&1); rc=$?
+[ $rc -eq 0 ] && ok "phrasings that defeated the negation stripper are inert against a declaration (#854)" \
+               || no "a help-string phrasing still moved the verdict (rc=$rc: $out)"
+
 # A metrics file this gate cannot read is exit 2, never a pass. If
-# metricDefs stops putting name and help on one line, the set comes
+# metricDefs stops putting name and `healthy:` on one line, the set comes
 # back empty and an empty set must not compare clean against anything.
 mkmetrics "$DIR/m3.metrics.go" ""
 out=$(bash "$CHECK" "$DIR/ok.md" "$DIR/ok.go" "$DIR/m3.metrics.go" "$F4" 2>&1); rc=$?
-[ $rc -eq 2 ] && ok "a metrics file with no \"Healthy-affecting.\" at all exits 2, not clean" \
+[ $rc -eq 2 ] && ok "a metrics file with no healthy: true at all exits 2, not clean" \
                || no "an unreadable metrics file returned $rc (: $out)"
 
 # --- the integration health floor --------------------------------------
@@ -262,7 +374,7 @@ out=$(bash "$CHECK" "$DIR/ok.md" "$DIR/ok.go" "$M4" "$DIR/f3.floor.go" 2>&1); rc
 out=$(bash "$CHECK" "$DIR/five5.md" "$DIR/five5.go" "$M5" "$F5" 2>&1); rc=$?
 [ $rc -eq 0 ] && ok "a fifth counter agreed across all five surfaces passes" \
                || no "a correct fifth counter is blocked by the code rails (rc=$rc: $out)"
-case "$out" in *"/metrics help string(s)"*"integration floor entr(ies)"*)
+case "$out" in *"/metrics healthy declaration(s)"*"integration floor entr(ies)"*)
     ok "the PASS line tallies the two code rails too" ;;
   *) no "the PASS line does not report the code rails: $out" ;; esac
 

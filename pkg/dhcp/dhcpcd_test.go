@@ -216,28 +216,74 @@ func TestRenderConfig_CoverDir(t *testing.T) {
 	}
 }
 
-// TestRenderConfig_ReleaseOnlyForPersistent: the persistent client emits
-// `release` (busybox -R: DHCPRELEASE on graceful stop, which the
-// docker-restart / daemon-restart IP-stability tests rely on); the
-// one-shot client must NOT, since -1 -p deliberately keeps the lease for
-// the persistent client to re-claim.
-func TestRenderConfig_ReleaseOnlyForPersistent(t *testing.T) {
+// TestRenderConfig_NothingEverReleases is the guard on #800's rule: no
+// configuration this package renders may ask dhcpcd to release a lease.
+//
+// The rule is "a container is a host on this segment", and a host does
+// not hand its address back when it reboots — the lease expires on the
+// server's clock or the host comes back and re-claims it. The plugin
+// used to emit `release` for the persistent client, which raced the
+// tombstone that promises a restarting container the SAME address, and
+// was observed telling the server an address was free in the same
+// second a live container came back to use it.
+//
+// Enumerated over the whole parameter space rather than checked on one
+// config, because the directive was previously emitted for exactly one
+// combination (persistent, either family) and a spot check on the wrong
+// row is how it would come back. Every row here asserts the same thing,
+// which is the point: there is no combination that releases.
+func TestRenderConfig_NothingEverReleases(t *testing.T) {
 	mac := mustMAC(t, "de:ad:be:ef:00:01")
 
-	persistent := renderConfig(dhcpcdParams{Iface: "eth0", MAC: mac})
-	if !hasLine(persistent, "release") {
-		t.Errorf("persistent config missing release directive:\n%s", persistent)
+	for _, tc := range []struct {
+		name   string
+		params dhcpcdParams
+	}{
+		{"persistent v4", dhcpcdParams{Iface: "eth0", MAC: mac}},
+		{"persistent v6", dhcpcdParams{Iface: "eth0", MAC: mac, V6: true}},
+		{"one-shot v4", dhcpcdParams{Iface: "eth0", MAC: mac, Once: true}},
+		{"one-shot v6", dhcpcdParams{Iface: "eth0", MAC: mac, Once: true, V6: true}},
+		{"ipvlan broadcast", dhcpcdParams{Iface: "eth0", MAC: mac, Broadcast: true}},
+		{"with hostname", dhcpcdParams{Iface: "eth0", MAC: mac, Hostname: "web1"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			conf := renderConfig(tc.params)
+			if hasLine(conf, "release") {
+				t.Errorf("config emits the `release` directive; a stopped container "+
+					"must leave its lease to expire, not hand it back (#800):\n%s", conf)
+			}
+		})
+	}
+}
+
+// The positive control for TestRenderConfig_NothingEverReleases.
+//
+// That test asserts an ABSENCE, and an absence is satisfied by two very
+// different things: a renderer that decided not to release, and a
+// renderer or matcher that would not show a release if one were there.
+// Both halves are checked here, because either failing turns the guard
+// above into a test that passes on any tree at all.
+func TestRenderConfig_NothingEverReleases_Control(t *testing.T) {
+	mac := mustMAC(t, "de:ad:be:ef:00:01")
+	conf := renderConfig(dhcpcdParams{Iface: "eth0", MAC: mac})
+
+	// Half one: the renderer produced a real config, not an empty
+	// string. `duid` is unconditional for every client this package
+	// renders, so its absence means the guard above was reading
+	// nothing.
+	if !hasLine(conf, "duid 00:03:00:01:de:ad:be:ef:00:01") {
+		t.Errorf("renderer produced no recognisable config; the release guard "+
+			"cannot tell \"does not release\" from \"renders nothing\":\n%s", conf)
 	}
 
-	oneShot := renderConfig(dhcpcdParams{Iface: "eth0", MAC: mac, Once: true})
-	if hasLine(oneShot, "release") {
-		t.Errorf("one-shot config must not release (it keeps the lease via -1 -p):\n%s", oneShot)
-	}
-
-	// True for both families: a persistent v6 client should also release.
-	persistentV6 := renderConfig(dhcpcdParams{Iface: "eth0", MAC: mac, V6: true})
-	if !hasLine(persistentV6, "release") {
-		t.Errorf("persistent v6 config missing release directive:\n%s", persistentV6)
+	// Half two: hasLine can actually see a release directive. Fed the
+	// exact line the renderer used to emit, in the position it used to
+	// occupy, so a matcher that stopped recognising it fails here rather
+	// than going quiet in the guard.
+	planted := conf + "release\n"
+	if !hasLine(planted, "release") {
+		t.Error("hasLine does not see a `release` directive even when one is " +
+			"planted; TestRenderConfig_NothingEverReleases proves nothing")
 	}
 }
 
@@ -375,13 +421,26 @@ func TestRenderArgs_PersistentV6(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("args mismatch:\ngot:  %v\nwant: %v", got, want)
 	}
-	// Persistent client must not get the one-shot flag, and must NOT be
-	// -p (it should release its lease when the plugin stops it).
+	// Neither flag, and for two different reasons — see
+	// TestNewDHCPClient_PersistentOmitsTheOneShotFlags in client_test.go
+	// for the long form. -1 would make this client exit after its first
+	// lease and never renew. -p is inert under --noconfigure (nothing
+	// was configured, so there is nothing to de-configure) and is
+	// asserted only to keep the two clients' argv distinguishable.
+	//
+	// This block said "-p ... it should release its lease when the
+	// plugin stops it" until #800. That was false before #800 too — a
+	// release came from the `release` directive, never from this flag —
+	// and it sat 200 lines below TestRenderConfig_NothingEverReleases in
+	// this same file, stating the opposite contract about the same build.
 	if hasArg(got, "-1") {
-		t.Errorf("persistent client got -1: %v", got)
+		t.Errorf("persistent client got -1; it would exit after its first lease "+
+			"and never renew: %v", got)
 	}
 	if hasArg(got, "-p") {
-		t.Errorf("persistent client got -p; it must release on stop: %v", got)
+		t.Errorf("persistent client got -p; its argv has converged with the "+
+			"one-shot's. Nothing in this build releases a lease, with or without "+
+			"this flag: %v", got)
 	}
 }
 
@@ -394,5 +453,37 @@ func TestRenderArgs_FamilyExclusive(t *testing.T) {
 	v6 := renderArgs(dhcpcdParams{Iface: "eth0", V6: true})
 	if !hasArg(v6, "-6") || hasArg(v6, "-4") {
 		t.Errorf("v6 args family flags wrong: %v", v6)
+	}
+}
+
+// TestRenderConfig_RouterAdvertOptInIsOneShotOnly pins the scope of
+// #868's opt-in, in both directions.
+//
+// The opt-in is the whole reason ROUTERADVERT can be an event without
+// disturbing #815's boundary: the persistent renewal client never asks
+// for advertisements, so its stream does not carry the repeated RAs
+// every IPv6 segment produces. A version that set the directive
+// unconditionally still fixes #868 and still passes every other test
+// here — and quietly puts a permanent stream of unread events on every
+// long-lived client on the host.
+//
+// The negative half is the load-bearing one. `Once: false` is the
+// persistent client, and its absence from the config is the claim.
+func TestRenderConfig_RouterAdvertOptInIsOneShotOnly(t *testing.T) {
+	const want = "env " + EmitRAEnv + "=1"
+
+	oneShot := renderConfig(dhcpcdParams{Once: true})
+	if !strings.Contains(oneShot, want) {
+		t.Errorf("the one-shot acquisition config does not ask for router advertisements "+
+			"(%q missing); without them the acquisition cannot tell a segment that "+
+			"offers no DHCPv6 from a server that did not answer:\n%s", want, oneShot)
+	}
+
+	persistent := renderConfig(dhcpcdParams{Once: false})
+	if strings.Contains(persistent, want) {
+		t.Errorf("the PERSISTENT client's config asks for router advertisements (%q). "+
+			"They arrive repeatedly for the life of the container and nothing reads "+
+			"them there — this is exactly the widening #815 decided against:\n%s",
+			want, persistent)
 	}
 }

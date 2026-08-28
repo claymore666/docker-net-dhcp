@@ -22,7 +22,6 @@
 #               both are types, not areas, so a `test(harness):` issue is
 #               `testing`, not `enhancement`.
 #   area        optional, any number.
-#   severity    only ever on an issue that also carries `code-review`.
 #   status      workflow state. `backlog` must never coexist with a milestone
 #               — the milestone is the scheduling truth. That one pairing is
 #               enforced by scripts/check-milestone-scope.sh and is
@@ -75,17 +74,6 @@
   role: area
   description: 'Area: trust boundaries, input from the network or the daemon'
 
-- name: critical
-  role: severity
-  description: 'Critical: data loss, crash, or correctness bug'
-
-- name: warning
-  role: severity
-  description: 'Warning: performance / robustness / maintainability concern'
-
-- name: info
-  role: severity
-  description: 'Info: minor improvement or style nit'
 
 - name: code-review
   role: status
