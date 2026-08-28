@@ -274,6 +274,79 @@ else
     no "purge-workflow-runs.sh no longer reads the pulls API -- keep rule 4 is gone, or this check's derivation is stale"
 fi
 
+# --- 4d. the purge's first REAL execution must be OBSERVED --------------
+# This script has never deleted anything. run-retention.yml lives on `dev`
+# and GitHub registers schedules only from the default branch, so the
+# first execution of the shipping version is a scheduled one, on `main`,
+# with DRY_RUN=0, against several hundred runs.
+#
+# The suite below drives a STUBBED transport, so it grades the author's
+# own fixture. The only outside observer of a real purge is the consumer
+# that went red on #221 -- check-missing-runs.sh -- and asking the purge
+# again would be checking the code against itself, because it excludes
+# the keep sets it built.
+#
+# So: every workflow that invokes this script must also invoke the
+# detector, at a LATER live line, in the same file.
+#
+# WHAT THIS CANNOT SEE, four shapes, said rather than claimed away:
+#   - it does not check the two are in the same JOB, only the same file;
+#   - it does not check the `if:` conditions, so a detector step gated
+#     off entirely still satisfies it;
+#   - it does not check that the detector's non-zero exit FAILS the job;
+#   - it treats any live mention as an invocation, so a variable
+#     assignment naming the script counts.
+# The bound is: no workflow invokes this purge without naming the
+# detector after it. Everything above is outside that bound.
+purge_callers=$(grep -rlF 'purge-workflow-runs.sh' "$HERE/../.github/workflows/" 2>/dev/null || true)
+if [ -z "$purge_callers" ]; then
+    no "no workflow invokes purge-workflow-runs.sh -- this check has an empty domain and cannot refuse"
+else
+    unobserved=""; unlocatable=""
+    # `while read`, not `for wf in $purge_callers`: an unquoted expansion
+    # globs, the neighbour dependency this PR documents in both scripts.
+    while IFS= read -r wf; do
+        [ -n "$wf" ] || continue
+        # AN INVOCATION, NOT A MENTION, and this is the second version of
+        # this check. The first tested whether a live line CONTAINED the
+        # detector's name -- and the step's own ::error message names the
+        # detector, on a live line, after the purge. It therefore reported
+        # the purge observed with the verification step deleted. Measured:
+        # mutants M1 and M2 both SURVIVED. Prose satisfying a presence
+        # check is the defect this PR is about, written into the guard
+        # against it.
+        #
+        # So the line is judged as a COMMAND: leading indentation and an
+        # optional `run:` are stripped, and what remains must BEGIN with
+        # the script, optionally via bash/sh. A string that merely
+        # contains the name begins with a quote and is not an invocation.
+        awk '{ probe=$0; sub(/^[[:space:]]+/,"",probe)
+               if (substr(probe,1,1)=="#") next
+               cmd=probe; sub(/^run:[[:space:]]*/,"",cmd)
+               if (cmd ~ /^(bash[[:space:]]+|sh[[:space:]]+)?(\.\/)?scripts\/purge-workflow-runs\.sh([[:space:]]|$)/ && p==0) p=FNR
+               if (cmd ~ /^(bash[[:space:]]+|sh[[:space:]]+)?(\.\/)?scripts\/check-missing-runs\.sh([[:space:]]|$)/)         c=FNR }
+             END { if (p==0) exit 2; exit (c>p) ? 0 : 1 }' "$wf"
+        case $? in
+            0) ;;
+            2) unlocatable="$unlocatable $wf" ;;
+            *) unobserved="$unobserved $wf" ;;
+        esac
+    done <<EOF
+$purge_callers
+EOF
+    if [ -n "$unlocatable" ]; then
+        # grep found the name and the structural pass found no command:
+        # the invocation is assembled some way this cannot read. Refuse
+        # rather than pass, because passing here is indistinguishable
+        # from the file being correct.
+        no "these workflows name purge-workflow-runs.sh but no line invokes it as a command:$unlocatable -- this check cannot judge them and will not report them clean"
+    else
+        [ -z "$unobserved" ] \
+          && ok "every workflow invoking purge-workflow-runs.sh runs check-missing-runs.sh after it (the purge is observed by its consumer, not by itself)" \
+          || no "these workflows delete runs with nothing outside the purge checking the result:$unobserved -- the first real execution would be unobserved, which is how #740's detector went red on #221"
+    fi
+fi
+
 # --- 5. a run still in flight is never deleted --------------------------
 grep -qE '(^|/)7777$' "$D/deleted.log" \
   && no "an in_progress run was deleted" \

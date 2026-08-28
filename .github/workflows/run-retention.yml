@@ -57,6 +57,11 @@ jobs:
   purge:
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    env:
+      # Hoisted to the JOB so the before/after detector steps can read the
+      # same value the purge acted on. The schedule is the only trigger
+      # that deletes; a dispatch must ask for it.
+      DRY_RUN: ${{ github.event_name == 'schedule' && '0' || (github.event.inputs.dry_run || '1') }}
     permissions:
       contents: read
       actions: write   # the only job that deletes runs; nothing else needs it
@@ -69,13 +74,62 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # THE PURGE'S OWN OPINION IS NOT EVIDENCE THAT IT DID THE RIGHT THING.
+      # It excludes the keep sets it built itself, so asking it again would
+      # be checking the code against itself. check-missing-runs.sh is the
+      # independent consumer -- it is the gate that went red on #221 after
+      # the purge's first real outing -- so this job asks IT, before and
+      # after, and fails on the transition.
+      #
+      # BEFORE, so a pre-existing red cannot be attributed to this purge.
+      # A run that starts red can only report "already red"; only green ->
+      # red is this job's fault, and that is the only case that fails here.
+      - name: Detector state BEFORE the purge
+        if: ${{ env.DRY_RUN == '0' }}
+        id: before
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GATE_REPO: ${{ github.repository }}
+        run: |
+          rc=0
+          bash scripts/check-missing-runs.sh || rc=$?
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          echo "detector before the purge: rc=$rc"
+
       - name: Purge old workflow runs
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           RETENTION_DAYS: ${{ github.event.inputs.retention_days || '7' }}
           KEEP_GROUPS: ${{ github.event.inputs.keep_groups || '10' }}
-          # The schedule is the only trigger that deletes. A dispatch must
-          # ask for it, and the default above is a dry run.
-          DRY_RUN: ${{ github.event_name == 'schedule' && '0' || (github.event.inputs.dry_run || '1') }}
         run: bash scripts/purge-workflow-runs.sh
+
+      # AFTER. `!cancelled()` and not `success()`: the purge exits 1 when
+      # some deletions failed, which means deletions still HAPPENED, and a
+      # refusal (exit 2) deleted nothing but still has to be reported
+      # against a known before-state rather than skipped silently.
+      - name: Verify the purge left the detector's evidence intact
+        if: ${{ !cancelled() && env.DRY_RUN == '0' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GATE_REPO: ${{ github.repository }}
+          BEFORE_RC: ${{ steps.before.outputs.rc }}
+        run: |
+          rc=0
+          bash scripts/check-missing-runs.sh || rc=$?
+          echo "detector after the purge: rc=$rc (before: ${BEFORE_RC:-unknown})"
+          if [ "${BEFORE_RC:-}" != "0" ]; then
+              echo "::warning title=Detector was not green before this purge::the" \
+                   "missing-run detector exited ${BEFORE_RC:-unknown} BEFORE this job" \
+                   "deleted anything, so this run cannot attribute its state to the" \
+                   "purge. Not failing on a red this job did not cause."
+              exit 0
+          fi
+          if [ "$rc" != "0" ]; then
+              echo "::error title=The purge destroyed evidence the detector demands::the" \
+                   "missing-run detector was green before this job ran and exits $rc after" \
+                   "it. Keep rule 4 or 5 did not cover a head that check-missing-runs.sh" \
+                   "reconciles -- the #740/#837 collision, recurring (#874)." >&2
+              exit 1
+          fi
+          echo "the detector is still green after the purge"
