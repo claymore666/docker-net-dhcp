@@ -35,6 +35,24 @@
 #   33142691992 33126731828 33126471548 33125634261 33124986791 
 #   33124593887 33124518969 33124422853 33123576221 33122097314 
 #   33119628132 33119366240 #
+# THREE ROWS ARE DERIVED, NOT MEASURED (#875).
+# TestDHCPv6_SelfConfiguring_AddressAndRouteSurvive,
+# TestDHCPv6_Managed_AddressAndRouteOnTheInterface and
+# TestProbe_DHCPv6_WhatDeletesTheDefaultRoute have never run in CI, so
+# there is no `--- PASS` line anywhere to take a median of. Their
+# figures are DERIVED from the observation window each test declares in
+# its own source, plus 15s of fixture/network/container setup taken
+# from the measured cost of the neighbouring DHCPv6 tests:
+#   SelfConfiguring   2 arms x (150s V6ObserveWindow + 15s)  = 330
+#   Managed           1 arm  x (150s last sample     + 15s)  = 165
+#   Probe             2 arms x (180s probeWindow     + 15s)  = 390
+# A derivation is not a measurement and these rows say so. The shard
+# partitioner needs a weight, not a fact, and a derived weight beats
+# the mean by a wide margin here -- these are the three longest tests
+# in the suite and the mean is 12.56s. REPLACE THEM with medians from
+# the `--- PASS` lines of the first successful Integration runs that
+# include them.
+#
 # FOUR ROWS COME FROM THIS BRANCH, NOT FROM THE 2026-08-28 CORPUS (#868).
 # The DHCPv6 no-address-mode work adds three tests and renames the fourth
 # (TestDHCPv6_NoAddressModes_RefuseTheEndpoint, 47.34, became
@@ -158,3 +176,6 @@ TestV6Fixture_ModesComeUpAsRequested	9.15
 TestVendorClass_DefaultUsesUntaggedGateway	7.33
 TestVendorClass_NonMatchingValueUsesDefaultGateway	7.13
 TestVendorClass_OverrideRoutesViaTaggedGateway	6.91
+TestDHCPv6_Managed_AddressAndRouteOnTheInterface	165.00
+TestDHCPv6_SelfConfiguring_AddressAndRouteSurvive	330.00
+TestProbe_DHCPv6_WhatDeletesTheDefaultRoute	390.00
