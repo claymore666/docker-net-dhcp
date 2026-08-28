@@ -72,8 +72,21 @@ LANE=(
   "go.mod tidy|go|go mod tidy -diff"
   "build|go|go build ./..."
   "vet|go|go vet ./..."
+  # The TAGGED view, and it is not a duplicate of the line above. Files
+  # behind `//go:build integration` are invisible to an untagged vet, so
+  # a build break in test/integration passes the lane silently and lands
+  # as nine red contexts in CI -- measured on #876, where an untagged vet
+  # reported OK over a package that did not compile. CI catches it with
+  # `staticcheck -tags integration`; the lane exists so it is caught
+  # before the push, and it had no tagged compile of any kind.
+  "vet (tagged)|go|go vet -tags integration ./..."
   "format|gofmt|test -z \"\$(gofmt -l .)\" || { echo 'gofmt -l found unformatted files:'; gofmt -l .; false; }"
   "staticcheck|staticcheck|staticcheck ./..."
+  # Mirrors test.yaml, which runs both views. The untagged run above is
+  # required to stay: a file carrying `//go:build !integration` compiles
+  # only in that view, and check-lint-tag-coverage.sh enforces the pair
+  # for the workflows.
+  "staticcheck (tagged)|staticcheck|staticcheck -tags integration ./..."
   "shellcheck (scripts+runner+netboot)|shellcheck|shellcheck -S warning scripts/*.sh ci/runner-image/*.sh test/arm64-netboot/*.sh"
   "actionlint|actionlint|actionlint"
   "option-docs drift|-|bash scripts/check-option-docs.sh"
