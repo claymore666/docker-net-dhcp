@@ -94,6 +94,19 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # See test.yaml for the measurement: PyYAML is not on the hosted
+      # image and `yamllint`'s copy is pipx-isolated. The gate parses the
+      # workflow tree and refuses without it, so the import is asserted
+      # here rather than trusted.
+      - name: Provide PyYAML
+        run: |
+          python3 -c 'import yaml' 2>/dev/null \
+            || sudo apt-get install -y --no-install-recommends python3-yaml
+          python3 -c 'import yaml; print("PyYAML", yaml.__version__)' || {
+            echo "::error title=PyYAML unavailable::python3 cannot import yaml" >&2
+            exit 1
+          }
+
       - name: The fork-execution settings are as documented
         env:
           # Administration: read. GITHUB_TOKEN cannot read these endpoints.

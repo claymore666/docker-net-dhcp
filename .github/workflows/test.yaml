@@ -150,6 +150,35 @@ jobs:
             exit 1
           }
 
+      # PyYAML IS A NEW DEPENDENCY IN THIS REPOSITORY AND IT IS NOT ON THE
+      # RUNNER (#844). check-fork-execution-policy.sh derives which
+      # workflows a fork pull request can reach by PARSING them, because
+      # the line regexes it replaced saw one `runs-on` spelling out of
+      # seven. MEASURED from actions/runner-images
+      # images/ubuntu/toolsets/toolset-2404.json: the apt list carries
+      # `libyaml-dev` and `python-is-python3` but no `python3-yaml`, and
+      # `yamllint` is installed through PIPX, so its own PyYAML sits in an
+      # isolated venv and is not importable by this `python3`.
+      #
+      # The gate REFUSES rather than degrading when the import fails --
+      # falling back to the line scan is the defect, so a silent fallback
+      # would be worse than saying nothing. That makes this step the thing
+      # standing between the gate and a daily amber, so it asserts the
+      # import afterwards rather than trusting the installer's exit code:
+      # the same bargain as the locale step above, and for the same
+      # reason. An install that reported success while the module is still
+      # unimportable must go red here, not in the gate.
+      - name: Provide PyYAML for the fork-execution-policy gate self-test
+        run: |
+          python3 -c 'import yaml' 2>/dev/null \
+            || sudo apt-get install -y --no-install-recommends python3-yaml
+          python3 -c 'import yaml; print("PyYAML", yaml.__version__)' || {
+            echo "::error title=PyYAML unavailable::python3 cannot import yaml" \
+                 "after the install step. check-fork-execution-policy.sh parses" \
+                 "the workflow tree and refuses without it." >&2
+            exit 1
+          }
+
       - name: Gate script self-tests
         run: bash scripts/run-gate-selftests.sh
 
