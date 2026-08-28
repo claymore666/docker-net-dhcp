@@ -404,29 +404,43 @@ func NewV6Fixture(t *testing.T, mode V6Mode) *V6Fixture {
 	// this line did not do what this comment says and the change is not
 	// defensible.
 	//
-	// THE PURGE IS NAMESPACE-WIDE. addrconf_fixup_forwarding ends in
-	// `if (newf) rt6_purge_dflt_routers(net)`, so this write drops
-	// every `proto ra` default route in THIS namespace, not only the
-	// ones on this device. The consultant measured that a userspace
-	// `proto static` default route survives it, and could not test the
-	// `proto ra` case for want of an RA sender in its probe netns --
-	// bounded, not eliminated. So measure it here rather than reason
-	// about it: enumerate before, enumerate after, fail loudly if the
-	// write took something away. A fixture that silently removed the
-	// runner's own default route would present as unrelated network
-	// failures for the rest of the job.
-	raBefore := v6ProtoRADefaults()
+	// THE PURGE IS NAMESPACE-WIDE, AND IT HITS THIS RUNNER.
+	// addrconf_fixup_forwarding ends in
+	// `if (newf) rt6_purge_dflt_routers(net)`, so a 0->1 transition on
+	// ANY device drops every `proto ra` default route in the whole
+	// network namespace -- not only the ones on the device written.
+	//
+	// This was written as a bound and it turned out to be a live
+	// defect. MEASURED, run 33211208318 job 98984641078: the write
+	// purged TWO default routes, `::/0 via fe80::a893:a7ff:fe55:6c2d`
+	// on ifindex 14 and 16 -- the runner's own IPv6 default routing,
+	// removed by a test fixture. It reproduced in three shards, twice
+	// per shard.
+	//
+	// So the routes are put back. The snapshot is taken before the
+	// write and anything missing afterwards is reinstalled with the
+	// attributes it had, protocol included, so the namespace ends the
+	// way it started. Restoring is not cosmetic: without it the rest
+	// of the job runs with no IPv6 default route and fails somewhere
+	// else entirely, which is the shape of bug that costs days.
+	//
+	// WHY NOT AVOID THE PURGE INSTEAD. Nothing avoids it. The R bit
+	// comes from the advertising device's own forwarding flag and
+	// nowhere else, the purge fires on the transition rather than on
+	// the device, and the fixture shares a namespace with the runner
+	// because the engine and the plugin do. A namespace of its own is
+	// the real fix and it is not a release-day change.
+	raBefore, err := v6ProtoRADefaultRoutes()
+	if err != nil {
+		t.Fatalf("enumerate `proto ra` IPv6 default routes before enabling forwarding "+
+			"on %s: %v. Refusing to write a sysctl whose blast radius could not be "+
+			"measured first.", V6BridgeName, err)
+	}
 	fwdPath := filepath.Join("/proc/sys/net/ipv6/conf", V6BridgeName, "forwarding")
 	if err := os.WriteFile(fwdPath, []byte("1"), 0o644); err != nil {
 		t.Fatalf("enable IPv6 forwarding on %s: %v", V6BridgeName, err)
 	}
-	if raAfter := v6ProtoRADefaults(); len(raAfter) < len(raBefore) {
-		t.Fatalf("enabling forwarding on %s purged %d 'proto ra' IPv6 default route(s) "+
-			"from this network namespace (rt6_purge_dflt_routers). Before: %v. After: "+
-			"%v. This fixture has damaged routing the rest of the job depends on; the "+
-			"bound named above has been hit and the fixture needs a namespace of its "+
-			"own.", V6BridgeName, len(raBefore)-len(raAfter), raBefore, raAfter)
-	}
+	restoreV6ProtoRADefaults(t, raBefore)
 	// Read back rather than trust the write. A sysctl write that is
 	// silently refused or immediately overwritten looks exactly like one
 	// that took, and this fixture has already paid once for a premise
@@ -774,25 +788,20 @@ func cleanupV6Links() {
 	}
 }
 
-// v6ProtoRADefaults lists the IPv6 default routes in THIS network
-// namespace that the kernel installed from a router advertisement.
+// v6ProtoRADefaultRoutes lists the IPv6 default routes in THIS network
+// namespace that the kernel installed from a router advertisement --
+// exactly the set rt6_purge_dflt_routers removes.
 //
-// It exists for one purpose: to bound the namespace-wide purge that
-// enabling forwarding performs. A count is enough for that, but the
-// strings are returned rather than a number because a failure message
-// naming which route vanished is worth far more than one saying that
-// some route did.
-//
-// It never fails the test. An enumeration error here must not be able
-// to fail a fixture over a check that is itself only a guard -- but it
-// must not read as "none", either, so the error is returned as an
-// element and shows up in the message.
-func v6ProtoRADefaults() []string {
+// It returns the routes rather than a count because they have to be
+// put back, and an error rather than an empty slice because "none
+// present" and "could not look" must not be the same value. Reading
+// the second as the first would make the restore silently do nothing.
+func v6ProtoRADefaultRoutes() ([]netlink.Route, error) {
 	routes, err := netlink.RouteList(nil, unix.AF_INET6)
 	if err != nil {
-		return []string{fmt.Sprintf("(enumerate v6 routes: %v)", err)}
+		return nil, err
 	}
-	var out []string
+	var out []netlink.Route
 	for _, r := range routes {
 		if r.Dst != nil && !r.Dst.IP.IsUnspecified() {
 			continue
@@ -800,9 +809,96 @@ func v6ProtoRADefaults() []string {
 		if int(r.Protocol) != unix.RTPROT_RA {
 			continue
 		}
-		out = append(out, r.String())
+		out = append(out, r)
 	}
-	return out
+	return out, nil
+}
+
+// restoreV6ProtoRADefaults reinstalls any route from `before` that the
+// forwarding write purged, and fails the fixture if it cannot.
+//
+// It fails rather than warns. A fixture that has removed the runner's
+// IPv6 default routing and cannot put it back has broken every job
+// that follows it, and the failure has to land HERE, naming the cause,
+// rather than as an unexplained network error in something unrelated.
+func restoreV6ProtoRADefaults(t *testing.T, before []netlink.Route) {
+	t.Helper()
+	if len(before) == 0 {
+		return
+	}
+	present := func() map[string]bool {
+		m := map[string]bool{}
+		if now, err := v6ProtoRADefaultRoutes(); err == nil {
+			for _, r := range now {
+				m[r.String()] = true
+			}
+		}
+		return m
+	}
+	have := present()
+	var restored, failed []string
+	for _, r := range before {
+		if have[r.String()] {
+			continue
+		}
+		// MEASURED, kernel 6.12.105 under `unshare -Urn`: userspace
+		// CAN install a default route tagged `proto ra`, so the
+		// protocol is preserved rather than downgraded to static.
+		//
+		// The flags are the part that could not be measured without a
+		// real advertisement to generate one. An RA-derived route
+		// carries kernel-set rtm_flags that the kernel may refuse
+		// coming the other way, so a refusal is retried once with the
+		// flags cleared. That is a DEGRADED restore and it says so --
+		// a default route that is back but not byte-identical beats a
+		// namespace with none, and silently pretending the two are
+		// the same is what would hide it.
+		route := r
+		err := netlink.RouteReplace(&route)
+		if err != nil && route.Flags != 0 {
+			bare := r
+			bare.Flags = 0
+			if err2 := netlink.RouteReplace(&bare); err2 == nil {
+				restored = append(restored,
+					fmt.Sprintf("%s (DEGRADED: reinstalled with flags cleared; "+
+						"original refused with %v)", bare.String(), err))
+				continue
+			}
+		}
+		if err != nil {
+			failed = append(failed, fmt.Sprintf("%s: %v", route.String(), err))
+			continue
+		}
+		restored = append(restored, route.String())
+	}
+	if len(failed) > 0 {
+		t.Fatalf("enabling forwarding on %s purged the namespace's `proto ra` IPv6 "+
+			"default routes (rt6_purge_dflt_routers) and %d of them could NOT be "+
+			"restored: %v. The runner is now without the IPv6 default routing it "+
+			"started with. Restored: %v. Present before: %v.",
+			V6BridgeName, len(failed), failed, restored, before)
+	}
+	if len(restored) > 0 {
+		t.Logf("enabling forwarding on %s purged %d `proto ra` IPv6 default route(s) "+
+			"namespace-wide; all were reinstalled: %v",
+			V6BridgeName, len(restored), restored)
+	}
+	// Verify rather than trust the return codes: RouteReplace can
+	// succeed against a table that then does not contain what was
+	// asked for, and this guard exists precisely because the obvious
+	// reading of a success was wrong once already.
+	have = present()
+	var still []string
+	for _, r := range before {
+		if !have[r.String()] {
+			still = append(still, r.String())
+		}
+	}
+	if len(still) > 0 {
+		t.Fatalf("after reinstalling them, %d `proto ra` IPv6 default route(s) are STILL "+
+			"missing from this namespace: %v. netlink reported success, the table "+
+			"disagrees, and the runner's IPv6 routing is not what it was.", len(still), still)
+	}
 }
 
 // AssertGatewayIsRouter asserts the PROPERTY the forwarding write is
