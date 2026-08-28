@@ -209,7 +209,7 @@ func TestProbe_DHCPv6_WhatDeletesTheDefaultRoute(t *testing.T) {
 			// per-interface value at all. A false exclusion is worse
 			// than an ambiguous one.
 			nsLinks := nsenterOut(pid, "ip", "-o", "link", "show")
-			nsIf, nsIfOK := firstNonLoopback(nsLinks)
+			nsIf, nsIfOK := harness.FirstNonLoopback(nsLinks)
 			if !nsIfOK {
 				t.Fatalf("no non-loopback interface in the sandbox namespace; there is "+
 					"nothing to sample, and every per-interface reading below would be an "+

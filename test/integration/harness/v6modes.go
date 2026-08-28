@@ -166,13 +166,17 @@ func (m V6Mode) String() string {
 // Solicited advertisements are unaffected: dnsmasq answers a Router
 // Solicitation immediately regardless of this interval, and a container
 // sends one at startup.
+// Seconds, as numbers rather than as strings, so the observation
+// window can be DERIVED from the cadence instead of the two being
+// typed independently and drifting apart. v6RAInterval is what
+// V6ObserveWindow is checked against in v6read.go.
 const (
-	v6RAInterval = "30"
-	v6RALifetime = "9000"
+	v6RAIntervalSec = 30
+	v6RALifetimeSec = 9000
 )
 
 func raParam() string {
-	return "--ra-param=" + V6BridgeName + "," + v6RAInterval + "," + v6RALifetime
+	return fmt.Sprintf("--ra-param=%s,%d,%d", V6BridgeName, v6RAIntervalSec, v6RALifetimeSec)
 }
 
 // rangeArgs is the dnsmasq spelling of the mode.

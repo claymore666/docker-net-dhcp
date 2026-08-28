@@ -78,72 +78,6 @@ type v6Sample struct {
 	replies int
 }
 
-// v6Addr is one `inet6` entry with the flag text and lifetimes that
-// belong to it.
-type v6Addr struct {
-	cidr     string
-	flags    string // scope + any of tentative/dadfailed/deprecated/dynamic
-	validLft string
-	prefLft  string
-}
-
-// parseV6Addrs pairs each `inet6` line with the `valid_lft` line the
-// kernel prints under it.
-//
-// Measured 2026-08-28 that this is parseable from the STOCK test
-// image: alpine:3.20's `ip` is busybox, and busybox does print the
-// lifetime fields and does render finite values --
-//
-//	inet 10.99.0.1/24 scope global dynamic eth0
-//	   valid_lft 300sec preferred_lft 200sec
-//
-// -- so no iproute2 install is needed and the container under test
-// stays the one every other test uses. The `dynamic` flag in that
-// output is load-bearing here and not decoration: the kernel sets it
-// on an address that carries a lifetime, so its ABSENCE beside
-// `valid_lft forever` is what distinguishes an address libnetwork
-// applied statically from one the kernel is ageing.
-func parseV6Addrs(out string) []v6Addr {
-	var addrs []v6Addr
-	for _, line := range strings.Split(out, "\n") {
-		f := strings.Fields(line)
-		if len(f) >= 2 && f[0] == "inet6" {
-			addrs = append(addrs, v6Addr{cidr: f[1], flags: strings.Join(f[2:], " ")})
-			continue
-		}
-		if len(f) >= 2 && f[0] == "valid_lft" && len(addrs) > 0 {
-			a := &addrs[len(addrs)-1]
-			a.validLft = f[1]
-			if len(f) >= 4 && f[2] == "preferred_lft" {
-				a.prefLft = f[3]
-			}
-		}
-	}
-	return addrs
-}
-
-// globalFromPrefix picks the address under test: a global-scope
-// address on the fixture's own prefix. Keyed on the prefix rather than
-// on "the first global address" so a leaked address from another
-// segment cannot be mistaken for this server's.
-func globalFromPrefix(addrs []v6Addr, prefix string) (v6Addr, bool) {
-	for _, a := range addrs {
-		if strings.HasPrefix(a.cidr, prefix) && strings.Contains(a.flags, "global") {
-			return a, true
-		}
-	}
-	return v6Addr{}, false
-}
-
-func hasDefaultV6Route(routeOut string) bool {
-	for _, line := range strings.Split(routeOut, "\n") {
-		if strings.HasPrefix(strings.TrimSpace(line), "default") {
-			return true
-		}
-	}
-	return false
-}
-
 // TestDHCPv6_Managed_AddressAndRouteOnTheInterface answers, on a
 // segment where a DHCPv6 server really does assign an address: does
 // the container end up with that address on its interface, does it
@@ -170,34 +104,12 @@ func hasDefaultV6Route(routeOut string) bool {
 func containerIfname(t *testing.T, ctx context.Context, id string) string {
 	t.Helper()
 	out := harness.ExecOutput(t, ctx, id, "ip", "-o", "link", "show")
-	if name, ok := firstNonLoopback(out); ok {
+	if name, ok := harness.FirstNonLoopback(out); ok {
 		return name
 	}
 	t.Fatalf("no non-loopback interface inside the container, so there is nothing to "+
 		"sample; `ip -o link show` said:\n%s", out)
 	return ""
-}
-
-// firstNonLoopback picks the interface name out of `ip -o link show`
-// output. Shared so the in-container and the nsenter callers cannot
-// drift apart.
-func firstNonLoopback(out string) (string, bool) {
-	for _, line := range strings.Split(out, "\n") {
-		// "2: dh-itest-br60@if7: <BROADCAST,MULTICAST,UP,LOWER_UP> ..."
-		_, rest, ok := strings.Cut(strings.TrimSpace(line), ":")
-		if !ok {
-			continue
-		}
-		name := strings.TrimSpace(rest)
-		if i := strings.IndexAny(name, ":@"); i >= 0 {
-			name = name[:i]
-		}
-		if name = strings.TrimSpace(name); name == "" || name == "lo" {
-			continue
-		}
-		return name, true
-	}
-	return "", false
 }
 
 func TestDHCPv6_Managed_AddressAndRouteOnTheInterface(t *testing.T) {
@@ -280,7 +192,7 @@ func TestDHCPv6_Managed_AddressAndRouteOnTheInterface(t *testing.T) {
 	first, last := got[0], got[len(got)-1]
 
 	// ---- M1: is the address on the interface, and is it usable? ----
-	a0, ok := globalFromPrefix(parseV6Addrs(first.addr), harness.V6Prefix)
+	a0, ok := harness.GlobalInSubnet(harness.ParseV6Addrs(first.addr), harness.V6SubnetV6CIDR)
 	if !ok {
 		t.Fatalf("M1 FAILED: no global IPv6 address on the fixture's prefix %s is on ANY "+
 			"interface inside the container (no device was named, so this cannot be a "+
@@ -289,9 +201,9 @@ func TestDHCPv6_Managed_AddressAndRouteOnTheInterface(t *testing.T) {
 			harness.V6Prefix, first.addr, first.links)
 	}
 	for _, bad := range []string{"tentative", "dadfailed", "deprecated"} {
-		if strings.Contains(a0.flags, bad) {
+		if strings.Contains(a0.Flags, bad) {
 			t.Errorf("M1 FAILED: the address %s is %s (%q) — it is on the interface but "+
-				"not usable as a source address", a0.cidr, bad, a0.flags)
+				"not usable as a source address", a0.CIDR, bad, a0.Flags)
 		}
 	}
 
@@ -300,7 +212,7 @@ func TestDHCPv6_Managed_AddressAndRouteOnTheInterface(t *testing.T) {
 	// Two independent server-side records, neither of them the
 	// plugin's. The bare address without its prefix length is what
 	// both the log and the lease database carry.
-	bare := strings.SplitN(a0.cidr, "/", 2)[0]
+	bare := strings.SplitN(a0.CIDR, "/", 2)[0]
 	if n := f.CountLogLines("DHCPREPLY", bare); n < 1 {
 		t.Errorf("M2 FAILED: the server never logged a DHCPv6 REPLY carrying %s, so the "+
 			"address on the container's interface did not come from this segment's "+
@@ -315,11 +227,11 @@ func TestDHCPv6_Managed_AddressAndRouteOnTheInterface(t *testing.T) {
 	}
 
 	// ---- M3: does it survive, and WHICH thing refreshed? ----
-	aN, ok := globalFromPrefix(parseV6Addrs(last.addr), harness.V6Prefix)
+	aN, ok := harness.GlobalInSubnet(harness.ParseV6Addrs(last.addr), harness.V6SubnetV6CIDR)
 	if !ok {
 		t.Errorf("M3 FAILED: the address %s was on the interface at start and is GONE at t+%s, "+
 			"past the %s DHCPv6 lease. The container has silently lost the IPv6 address "+
-			"its network assigned it:\n%s", a0.cidr, last.elapsed, harness.LeaseTime, last.addr)
+			"its network assigned it:\n%s", a0.CIDR, last.elapsed, harness.LeaseTime, last.addr)
 	} else {
 		// The distinction the SLAAC case turned on. A lease renewing
 		// on the wire is NOT the interface's lifetimes being
@@ -327,7 +239,7 @@ func TestDHCPv6_Managed_AddressAndRouteOnTheInterface(t *testing.T) {
 		// letting either stand in for the other.
 		renewedOnWire := last.replies > first.replies
 		switch {
-		case a0.validLft == "forever" && aN.validLft == "forever":
+		case a0.ValidLft == "forever" && aN.ValidLft == "forever":
 			t.Logf("M3: the address carries NO kernel lifetime at either point "+
 				"(valid_lft forever, flags %q) — libnetwork applied it statically from "+
 				"res.Interface.AddressIPv6, so it cannot expire on the interface and "+
@@ -335,15 +247,15 @@ func TestDHCPv6_Managed_AddressAndRouteOnTheInterface(t *testing.T) {
 				"renewed on the wire: %v (server REPLY lines %d -> %d). NOTE the "+
 				"divergence this creates: the interface keeps the address whether or "+
 				"not the lease is still held.",
-				aN.flags, renewedOnWire, first.replies, last.replies)
+				aN.Flags, renewedOnWire, first.replies, last.replies)
 		default:
 			t.Logf("M3: kernel lifetimes at t+%s: valid_lft=%s preferred_lft=%s; "+
 				"at t+%s: valid_lft=%s preferred_lft=%s. Lease renewed on the wire: %v "+
 				"(server REPLY lines %d -> %d).",
-				first.elapsed, a0.validLft, a0.prefLft,
-				last.elapsed, aN.validLft, aN.prefLft,
+				first.elapsed, a0.ValidLft, a0.PrefLft,
+				last.elapsed, aN.ValidLft, aN.PrefLft,
 				renewedOnWire, first.replies, last.replies)
-			if renewedOnWire && aN.validLft != "forever" && aN.validLft == a0.validLft {
+			if renewedOnWire && aN.ValidLft != "forever" && aN.ValidLft == a0.ValidLft {
 				t.Logf("M3: NOTE — identical lifetime strings at both points; if this " +
 					"is a countdown rather than a refresh the sample spacing hid it.")
 			}
@@ -362,7 +274,7 @@ func TestDHCPv6_Managed_AddressAndRouteOnTheInterface(t *testing.T) {
 	// the only other candidate is the RA-derived route the kernel
 	// installs -- which is the one dhcpcd's accept_ra=0 removes.
 	for _, s := range got {
-		if !hasDefaultV6Route(s.route) {
+		if !harness.HasDefaultV6Route(s.route) {
 			t.Errorf("M4 FAILED at %s (t+%s): the container has NO IPv6 default route. "+
 				"On-link traffic still works, which is what hides this; nothing off-link "+
 				"is reachable over IPv6:\n%s", s.label, s.elapsed, s.route)

@@ -8,7 +8,6 @@ package integration
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -45,34 +44,14 @@ import (
 // single sample: whether the lifetime is being refreshed, and whether
 // anything OFF-link is reachable.
 
-// selfConfigWindow is how long the container is observed, and
-// selfConfigInterval how often.
-//
-// PROVISIONAL, pending a measurement of what this fixture's dnsmasq
-// actually advertises. The window has to contain at least one router
-// advertisement AFTER the first, because the whole discrimination below
-// is "did a later advertisement move the lifetime". In the isolated
-// measurement the control refreshed inside the first ten seconds and
-// again around t+58, so 150s contains at least two with margin. If the
-// cadence turns out to be longer than this window the test cannot tell
-// a refresh from a countdown, and it says so in its own failure text
-// rather than reporting the defect -- see the vacuity guard in
-// assertLifetimeRefreshed.
+// The observation window, its cadence and the refresh floor live in
+// the harness beside the verdict that reads them, so the table that
+// drives that verdict drives the PRODUCTION values rather than numbers
+// of its own. See harness.V6ObserveWindow / harness.V6RefreshFloor.
 const (
-	selfConfigWindow   = 150 * time.Second
-	selfConfigInterval = 10 * time.Second
+	selfConfigWindow   = harness.V6ObserveWindow
+	selfConfigInterval = harness.V6ObserveInterval
 )
-
-// refreshFloor is how much the lifetime ceiling must rise across the
-// window before it counts as a refresh.
-//
-// The ceiling is valid_lft + elapsed (see assertLifetimeRefreshed). Its
-// noise is the sum of two roundings -- `ip` prints whole seconds, and
-// the elapsed clock is read separately -- so it is bounded by about two
-// seconds. Ten is comfortably clear of that and far below the tens of
-// seconds a real refresh moves it by, so this is a discriminator and
-// not a threshold anybody has to tune.
-const refreshFloor = 10
 
 // selfConfigFormBy bounds how long self-configuration may take. DAD on
 // the link-local is one RetransTimer (1s by default), and the
@@ -80,23 +59,6 @@ const refreshFloor = 10
 // 60s is far past both and is a bound on something being WRONG, not a
 // tuned wait.
 const selfConfigFormBy = 60 * time.Second
-
-// parseLft turns `ip`'s lifetime field into seconds. "forever" is
-// reported as not-finite rather than as a large number, because the two
-// mean different things here: a finite lifetime is the kernel ageing an
-// address it learned from an advertisement, and `forever` is an address
-// somebody applied statically.
-func parseLft(s string) (int, bool) {
-	s = strings.TrimSpace(s)
-	if s == "" || s == "forever" {
-		return 0, false
-	}
-	n, err := strconv.Atoi(strings.TrimSuffix(s, "sec"))
-	if err != nil {
-		return 0, false
-	}
-	return n, true
-}
 
 // selfConfigSample is one observation of the container's v6 state.
 type selfConfigSample struct {
@@ -116,152 +78,17 @@ type selfConfigSample struct {
 	autoconf string
 }
 
-// assertLifetimeRefreshed is the central claim of this file.
-//
-// THE LEDGER, AND WHY IT IS SHAPED LIKE THIS. A SLAAC address's
-// valid_lft is reset to the advertised prefix lifetime by every
-// advertisement the kernel accepts, and counts down in between. So
-// valid_lft ALONE cannot answer the question: a sample taken just
-// before a refresh and one taken just after are both "some number",
-// and comparing two of them measures where in the cycle the samples
-// landed.
-//
-// lifetime + elapsed does answer it. If no advertisement is ever
-// accepted the sum is constant, because the lifetime falls exactly as
-// fast as the clock rises -- that is the defect. If advertisements ARE
-// accepted the sum steps up by the interval between them. The ceiling
-// is therefore monotone non-decreasing in a healthy configuration and
-// flat in a broken one, whatever the advertised lifetime happens to be
-// and whatever the advertisement cadence is. Neither number has to be
-// known, which matters because both are the server's choice.
-//
-// IT IS A WITHIN-ARM COMPARISON, AND THAT IS THE POINT. The
-// measurement that opened #875 compared a dhcpcd arm against a
-// no-dhcpcd control and concluded one refreshed; both series were
-// countdowns, and the comparison only holds if both arms were sampled
-// at identical elapsed times. Nothing here compares arms. A rise in
-// this ledger is a rise in one address's own lifetime between two of
-// its own samples, which nothing but a reset can produce.
-//
-// WHY PREFERRED IS THE ASSERTED ONE AND VALID IS CORROBORATION.
-// RFC 4862 section 5.5.3(e) resets the preferred lifetime on every
-// accepted advertisement, "regardless of whether the valid lifetime is
-// also reset or ignored" -- unconditionally, with no exceptions. The
-// valid lifetime is reset only when the advertised value "is greater
-// than 2 hours or greater than RemainingLifetime". Both branches
-// normally hold on a refresh, so valid usually rises too; but preferred
-// is the one the standard guarantees, so it is the one a failure is
-// keyed on. Reading only valid_lft would put the two-hour rule between
-// this test and its verdict for no benefit.
-// reporter is the subset of *testing.T that assertLifetimeRefreshed
-// uses.
-//
-// IT IS AN INTERFACE SO THE VERDICT CAN BE DRIVEN DIRECTLY. This
-// function is the whole discrimination in this file, and reaching it
-// through a real test requires root, a bridge, a dnsmasq and a
-// container -- so on any machine without those, the one piece of logic
-// that decides "refresh or countdown" is unexecuted. That is the shape
-// #868 paid for twice: a fold and a verdict step that no unit test
-// could run, each hiding a defect until the integration lane found it
-// ten minutes later and one layer from the line at fault.
-//
-// A *testing.T satisfies this, so callers are unchanged.
-type reporter interface {
-	Errorf(format string, args ...any)
-	Logf(format string, args ...any)
-	Helper()
-}
-
-func assertLifetimeRefreshed(t reporter, samples []selfConfigSample, mode harness.V6Mode) {
-	t.Helper()
-
-	type point struct {
-		elapsed  time.Duration
-		valid    int
-		pref     int
-		ceiling  int // valid + elapsed
-		prefCeil int // preferred + elapsed
-	}
-	var pts []point
+// lftReadings projects the samples onto what the ledger reads: the
+// elapsed clock and the UNFILTERED address output, nothing else. The
+// sysctls and the route deliberately do not cross this boundary -- the
+// verdict is about the address, and a verdict that could see the
+// sysctls would be tempted to key on them.
+func lftReadings(samples []selfConfigSample) []harness.V6LftReading {
+	out := make([]harness.V6LftReading, 0, len(samples))
 	for _, s := range samples {
-		a, ok := globalFromPrefix(parseV6Addrs(s.addr), harness.V6Prefix)
-		if !ok {
-			continue
-		}
-		lft, finite := parseLft(a.validLft)
-		pref, prefFinite := parseLft(a.prefLft)
-		if !finite || !prefFinite {
-			// An address with no lifetime at all is not a
-			// SLAAC address. On this segment nothing should be
-			// applying one statically, so say what was found
-			// rather than silently having nothing to measure.
-			t.Errorf("on a %s segment the address %s has valid_lft=%q preferred_lft=%q, so "+
-				"it is not an address the kernel is ageing from a router advertisement. "+
-				"Something applied it statically; that is not how this segment hands "+
-				"out addresses", mode, a.cidr, a.validLft, a.prefLft)
-			return
-		}
-		e := int(s.elapsed.Seconds())
-		pts = append(pts, point{s.elapsed, lft, pref, lft + e, pref + e})
+		out = append(out, harness.V6LftReading{Elapsed: s.elapsed, Addr: s.addr})
 	}
-
-	// VACUITY GUARD. Everything below is a claim about a sequence of
-	// observations; with fewer than two there is no sequence and the
-	// comparison is trivially satisfied. This is the shape that turns
-	// "the lifetime refreshes" into a statement about nothing -- a
-	// container that lost its address entirely would otherwise reach
-	// the end of this function without a single Errorf.
-	if len(pts) < 2 {
-		t.Errorf("only %d of %d samples on the %s segment had a global address on "+
-			"the fixture's prefix, so there is no sequence to test for a refresh. "+
-			"The address is not merely failing to refresh, it is absent",
-			len(pts), len(samples), mode)
-		return
-	}
-
-	first, last := pts[0], pts[len(pts)-1]
-	rise := last.prefCeil - first.prefCeil
-	validRise := last.ceiling - first.ceiling
-
-	for _, p := range pts {
-		t.Logf("  t+%-5s preferred_lft=%-6d ceiling=%-6d | valid_lft=%-6d ceiling=%d",
-			p.elapsed.Round(time.Second), p.pref, p.prefCeil, p.valid, p.ceiling)
-	}
-
-	// The OTHER direction this could be wrong in, named beside the
-	// verdict rather than left for the reader to think of. If the
-	// advertised lifetime is longer than the window AND the cadence is
-	// longer than the window, a healthy segment also produces a flat
-	// ceiling, and the two are indistinguishable from inside this
-	// function. S2 is what rules that out -- it requires the server to
-	// have advertised at least twice -- so the caveat is a pointer to
-	// the check that settles it, not a hedge.
-	windowMayBeTooShort := first.pref > int(selfConfigWindow.Seconds())
-
-	if rise < refreshFloor {
-		caveat := ""
-		if windowMayBeTooShort {
-			caveat = fmt.Sprintf("\n\nBEFORE WIDENING THE WINDOW: the initial preferred lifetime is %ds, "+
-				"longer than the %s observed here, so a segment whose advertisement "+
-				"cadence also exceeded the window would look identical from inside this "+
-				"check. S2 is what separates those — it requires the server to have "+
-				"advertised at least twice in the same window. If S2 passed and this "+
-				"failed, advertisements were sent and the container did not act on them, "+
-				"which is the defect. Widening the window to make this pass is how the "+
-				"test stops measuring anything.", first.pref, selfConfigWindow)
-		}
-		t.Errorf("on a %s segment the address's preferred-lifetime ceiling "+
-			"(preferred_lft + elapsed) rose by only %ds across %s, want at least %ds. "+
-			"RFC 4862 5.5.3(e) resets the preferred lifetime on EVERY accepted "+
-			"advertisement, unconditionally, so a ceiling that does not rise is an "+
-			"address no advertisement is reaching: preferred_lft went %d -> %d, "+
-			"falling as fast as the clock, and the valid ceiling moved %ds over the "+
-			"same window. The address is on the interface the whole time, which is "+
-			"what hides this; it expires in about %d seconds from the start and the "+
-			"container silently loses IPv6%s",
-			mode, rise, selfConfigWindow, refreshFloor,
-			first.pref, last.pref, validRise, first.valid, caveat)
-	}
+	return out
 }
 
 // TestDHCPv6_SelfConfiguring_AddressAndRouteSurvive is the SLAAC and
@@ -386,32 +213,32 @@ func TestDHCPv6_SelfConfiguring_AddressAndRouteSurvive(t *testing.T) {
 			// t+0, which could only ever fail: an address that never
 			// arrives still fails here, and one that arrives and later
 			// rots still fails S3/S4/S5.
-			var a0 v6Addr
+			var a0 harness.V6Addr
 			var formed *selfConfigSample
 			for i := range samples {
-				if a, ok := globalFromPrefix(parseV6Addrs(samples[i].addr), harness.V6Prefix); ok {
+				if a, ok := harness.GlobalInSubnet(harness.ParseV6Addrs(samples[i].addr), harness.V6SubnetV6CIDR); ok {
 					a0, formed = a, &samples[i]
 					break
 				}
 			}
 			if formed == nil {
-				t.Fatalf("S1 FAILED: no global IPv6 address on the fixture's prefix %s ever "+
+				t.Fatalf("S1 FAILED: no global IPv6 address in the fixture's subnet %s ever "+
 					"appeared on ANY interface inside the container across %s, on a %s "+
 					"segment whose router advertisements carry that prefix. Last state:\n"+
 					"ip -6 addr:\n%s\nip link:\n%s",
-					harness.V6Prefix, selfConfigWindow, tc.mode, fN.addr, fN.links)
+					harness.V6SubnetV6CIDR, selfConfigWindow, tc.mode, fN.addr, fN.links)
 			}
 			if formed.elapsed > selfConfigFormBy {
 				t.Errorf("S1 FAILED: the address %s took %s to appear, past the %s bound. "+
 					"Self-configuration is a link-local DAD plus one solicit/advertise "+
 					"exchange; taking this long means something is retrying, not "+
-					"configuring.", a0.cidr, formed.elapsed.Round(time.Second), selfConfigFormBy)
+					"configuring.", a0.CIDR, formed.elapsed.Round(time.Second), selfConfigFormBy)
 			}
-			t.Logf("S1: address %s formed by t+%s", a0.cidr, formed.elapsed.Round(time.Second))
+			t.Logf("S1: address %s formed by t+%s", a0.CIDR, formed.elapsed.Round(time.Second))
 			for _, bad := range []string{"tentative", "dadfailed", "deprecated"} {
-				if strings.Contains(a0.flags, bad) {
+				if strings.Contains(a0.Flags, bad) {
 					t.Errorf("S1 FAILED: the address %s is %s (%q) — it is on the interface "+
-						"but not usable as a source address", a0.cidr, bad, a0.flags)
+						"but not usable as a source address", a0.CIDR, bad, a0.Flags)
 				}
 			}
 
@@ -431,7 +258,8 @@ func TestDHCPv6_SelfConfiguring_AddressAndRouteSurvive(t *testing.T) {
 
 			// ---- S3: does the address stay valid? ----
 			t.Logf("S3: lifetime ledger on the %s segment", tc.mode)
-			assertLifetimeRefreshed(t, samples, tc.mode)
+			harness.AssertV6LifetimeRefreshed(t, lftReadings(samples), tc.mode,
+				harness.V6SubnetV6CIDR, selfConfigWindow)
 
 			// ---- S4: is there a default route, at EVERY sample? ----
 			//
@@ -441,7 +269,7 @@ func TestDHCPv6_SelfConfiguring_AddressAndRouteSurvive(t *testing.T) {
 			// WHEN it went, and a fix that reinstalled the route late
 			// would look identical to one that never lost it.
 			for _, s := range samples {
-				if !hasDefaultV6Route(s.route) {
+				if !harness.HasDefaultV6Route(s.route) {
 					t.Errorf("S4 FAILED at t+%s on the %s segment: the container has NO IPv6 "+
 						"default route. On-link traffic still works, which is what hides "+
 						"this; nothing off-link is reachable over IPv6:\n%s",
