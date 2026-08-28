@@ -277,6 +277,17 @@ grep -F 'dormant.yml' "$TMP/outs" >/dev/null \
 # gets discharged.
 check "the schedule-only finding names the cron" yes \
     "$(grep -qF 'schedule does not fire at all' "$TMP/outs" && echo yes || echo no)"
+
+# The finding line itself has to name the trigger the file actually
+# declares. Reverting it to the hardcoded word tells the author of a
+# schedule-only workflow that it "declares workflow_dispatch", which is
+# false -- and a gate that states something false about the file it is
+# accusing is the defect this PR is about, arriving in the accusation.
+# Found by mutation: this case did not exist and that revert SURVIVED.
+check "the finding names the derived trigger list, not a hardcoded word" yes \
+    "$(grep -qF 'declares [schedule]' "$TMP/outs" && echo yes || echo no)"
+check "and it does not claim a trigger the file does not declare" yes \
+    "$(grep -qF 'declares workflow_dispatch' "$TMP/outs" && echo no || echo yes)"
 check "and it does not print the workflow_dispatch remedy" yes \
     "$(grep -qF 'gh workflow run' "$TMP/outs" && echo no || echo yes)"
 
