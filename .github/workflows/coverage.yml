@@ -27,8 +27,9 @@ on:
   #
   # THAT GAP IS ACCEPTED, AND IT IS NOT UNWATCHED (#735). Measuring
   # coverage on every dev PR would add a SEVENTH privileged job to the
-  # six a PR run already asks for (#877), against a pool of 16
-  # (dhcp-ci-1..16, MEASURED 2026-08-28 from the runners API): two
+  # 6 a PR run already asks for (#877) (pool-facts: jobs-per-run=6), against a pool of
+  # 16 (pool-facts: pool-size=16) (dhcp-ci-1..16, MEASURED 2026-08-28 from the
+  # runners API): two
   # concurrent PRs would ask for 14 of it, leaving two, so a third would
   # queue most of its jobs rather than run beside them.
   # What was actually dangerous about the gap was
@@ -61,7 +62,8 @@ on:
 # The original argument was that splitting "would put three privileged
 # jobs on the host at once, which is the dose #296 saw flake". That has
 # been overtaken: #375 split the suites and #381/#468/#877 sharded main,
-# so every PR run already puts six privileged jobs on the pool. Three is
+# so every PR run already puts 6 privileged jobs on the pool (pool-facts: jobs-per-run=6).
+# Three is
 # not an untested dose; it is Tuesday.
 #
 # The reason it stays is arithmetic. RE-MEASURED 2026-08-28 (#878) from
@@ -74,13 +76,15 @@ on:
 #                      26 most recent successful three-shard runs
 #   coverage job       1094-1321s (median 1258s), n=13
 #   coverage run       1122-2195s (18m42-36m35, median 22m45), n=13
-#   pool               16 runners, dhcp-ci-1..16
+#   pool               16 runners, dhcp-ci-1..16   (pool-facts: pool-size=16)
 #
 # So on a release PR the split saves one integration gate — ~5 minutes
 # of a ~30 minute wall clock, once per release — and it does so by
-# adding a SEVENTH privileged job to the six a run already asks for
-# (#877), on a pool of 16. Queue time was ~2s across every run in #430's
-# window; that one is NOT re-measured here and is quoted as its own.
+# adding a SEVENTH privileged job to the 6 a run already asks for (#877)
+# — a run is 6 privileged jobs (pool-facts: jobs-per-run=6), against a pool of
+# 16 runners (pool-facts: pool-size=16). Queue time was ~2s across every run in
+# #430's window; that one is NOT re-measured here and is quoted as its
+# own.
 # The overlap it excepted cost a suite job 2m10.
 #
 # So the binding constraint is pool capacity, not contention, and the

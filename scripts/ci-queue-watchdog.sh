@@ -10,8 +10,8 @@
 # looks like it is still working, indefinitely, with the required
 # `integration` context stuck on Expected and the PR blocked behind it.
 #
-# Observed 2026-07-31: a fault on the runner host left one runner
-# registered instead of the contracted eight. One suite job took it, the
+# Observed 2026-07-31: a fault on the runner host left ONE runner
+# registered instead of the whole pool. One suite job took it, the
 # other queued at 15:51 and was still queued when a human cancelled it
 # by hand eleven minutes later. Nothing timed out, nothing went red, no
 # alert fired. Had nobody looked it would still be pending, holding the
@@ -88,6 +88,35 @@ if ! command -v curl >/dev/null || ! command -v jq >/dev/null; then
     echo "watchdog: curl or jq missing — cannot judge whether CI is stuck" >&2
     exit 2
 fi
+
+# The pool facts this script's operator guidance quotes: the pool size
+# and how many jobs one integration run places on it (#879).
+#
+# NOT literals. Both were literals here until #879, in the two advise()
+# messages below, and both were wrong: the text told an operator during a
+# capacity incident that the pool held 8 runners at 2 jobs per run when it
+# held 16 at 4. A diagnostic that misstates its own operands sends the one
+# person reading it in the wrong direction, which is worse than a comment
+# that is merely stale.
+#
+# So they are read from scripts/check-pool-facts.sh, which declares the
+# pool size in one tracked file and DERIVES the per-run job count from
+# integration.yml itself. If that refuses -- no python3, no PyYAML, no
+# checkout -- this returns non-zero and advise() omits the arithmetic and
+# says so. It never prints a fallback number: a wrong number here is the
+# defect, and "unknown" is the honest answer.
+POOL_SIZE=""
+JOBS_PER_RUN=""
+read_pool_facts() {
+    local out
+    out=$(bash "$(dirname "$0")/check-pool-facts.sh" --facts 2>/dev/null) || return 1
+    POOL_SIZE=$(printf '%s\n' "$out" | sed -n 's/^pool-size=//p')
+    JOBS_PER_RUN=$(printf '%s\n' "$out" | sed -n 's/^jobs-per-run=//p')
+    case "$POOL_SIZE" in ""|*[!0-9]*) return 1 ;; esac
+    case "$JOBS_PER_RUN" in ""|*[!0-9]*) return 1 ;; esac
+    [ "$POOL_SIZE" -gt 0 ] && [ "$JOBS_PER_RUN" -gt 0 ] || return 1
+    return 0
+}
 
 api() {
     curl -sf --max-time 20 \
@@ -234,16 +263,41 @@ advise() {
             echo "work and this run never got a runner, so no suite executed. Re-run it once the"
             echo "pool drains; do not go looking for a bug in the diff."
             echo
-            echo "Concurrent runs are expected to fit: each integration run puts 6 jobs on the"
-            echo "pool (the suite matrix; gate, watchdog and the aggregator are hosted). Two runs"
-            echo "fit a 16-runner pool with four to spare, so a third gets a PARTIAL pickup —"
-            echo "four of its six assigned, two queued past the budget (#513)." ;;
+            if read_pool_facts; then
+                fit=$(( POOL_SIZE / JOBS_PER_RUN ))
+                rem=$(( POOL_SIZE % JOBS_PER_RUN ))
+                echo "Concurrent runs are expected to fit: each integration run puts ${JOBS_PER_RUN} jobs on"
+                echo "the pool (the suite matrix; gate, watchdog and the aggregator are hosted), and"
+                if [ "$fit" -lt 1 ]; then
+                    echo "the pool has only ${POOL_SIZE} runners — fewer than one run needs. No run can start"
+                    echo "reliably in this shape; that is a pool problem, not a queue problem (#513)."
+                elif [ "$rem" -eq 0 ]; then
+                    echo "the pool has ${POOL_SIZE} runners. So ${fit} concurrent runs fit exactly; the next one gets"
+                    echo "no runner at all and queues past the budget (#513)."
+                else
+                    echo "the pool has ${POOL_SIZE} runners. So ${fit} concurrent runs fit; the next one gets a"
+                    echo "PARTIAL pickup — ${rem} of its ${JOBS_PER_RUN} jobs assigned and the rest queued past the"
+                    echo "budget, which is why a red here can name only some of the shards (#513)."
+                fi
+            else
+                echo "The pool size and the per-run job count could not be derived from this checkout"
+                echo "(scripts/check-pool-facts.sh refused), so the fit arithmetic is omitted rather"
+                echo "than guessed. Read .github/ci-pool-facts.env and integration.yml by hand (#879)."
+            fi ;;
         "POOL SHORT")
             echo "Nothing else was competing for the pool, so this is not capacity — the pool"
             echo "itself is short, offline, or not being assigned. A re-run queues behind the"
             echo "same condition, so check the orchestrator and the runner host first. This is"
-            echo "the 2026-07-31 shape, where one runner was registered instead of the"
-            echo "contracted eight (#392)."
+            echo "the 2026-07-31 shape, where a host fault left ONE runner registered instead"
+            echo "of the whole pool (#392)."
+            if read_pool_facts; then
+                echo "The pool is contracted at ${POOL_SIZE} runners; count what is actually registered"
+                echo "before looking anywhere else."
+            else
+                echo "The contracted pool size could not be derived from this checkout"
+                echo "(scripts/check-pool-facts.sh refused), so it is not quoted here rather than"
+                echo "quoted wrongly. Read it from .github/ci-pool-facts.env (#879)."
+            fi
             echo
             echo "It says nothing about the change under test either: no suite executed." ;;
         *)

@@ -115,10 +115,12 @@ on:
 #
 # This paragraph used to end "the dose is also smaller: #296 saw three
 # privileged jobs overlap, this is two". That stopped being true when
-# #468 made it four, and #877 makes it SIX. The dose argument is retired
+# #468 made it four, and #877 makes it 6 (pool-facts: jobs-per-run=6). The dose
+# argument is retired
 # rather than renumbered, because it was never the load-bearing one:
 # what makes concurrent privileged jobs safe here is that #296's three
-# shared one bare-metal host and these six share nothing — one job per
+# shared one bare-metal host and these 6 share nothing (pool-facts: jobs-per-run=6) — one
+# job per
 # ephemeral container, each with its own nested Docker daemon and its
 # own fixture. That property does not degrade with the count. What does
 # degrade is pool capacity, and capacity shows up as queueing, not as
@@ -166,11 +168,13 @@ on:
 # contention was three privileged jobs on shared bare metal. The pool is
 # now ephemeral, one job per container, each with its own nested Docker
 # daemon, so the isolation the group provided by hand is provided by the
-# pool. The limit becomes capacity — privileged runners against the six
-# jobs a run now asks for (#877) — which is the correct thing to queue
-# on. That expansion is done: the pool is 16 (dhcp-ci-1..16, MEASURED
-# 2026-08-28 from the runners API) against the six privileged jobs a run
-# asks for, so two concurrent runs fit and a third queues. The watchdog
+# pool. The limit becomes capacity — privileged runners against the
+# 6 jobs a run now asks for (#877) (pool-facts: jobs-per-run=6)
+# — which is the correct thing to queue on. That expansion is done:
+# the pool is 16
+# (dhcp-ci-1..16, MEASURED 2026-08-28 from the runners API) (pool-facts: pool-size=16)
+# against the 6 privileged jobs a run asks for (pool-facts: jobs-per-run=6), so two
+# concurrent runs fit and a third queues. The watchdog
 # names a shortage as a shortage (#513) rather than letting it read as a
 # suite failure.
 concurrency:
@@ -385,7 +389,8 @@ jobs:
   # The suites. Identical except for the make target and log name, so a
   # matrix rather than near-duplicate job bodies — the previous single
   # job had already drifted into per-step `if:` conditions repeated six
-  # times. Six entries today: five main shards plus failure (#877).
+  # times. 6 entries today (pool-facts: jobs-per-run=6): five main shards
+  # plus failure (#877).
   #
   # fail-fast: false is deliberate and is a BEHAVIOUR CHANGE. In the old
   # sequential form a failing main suite skipped the failure suite
@@ -464,13 +469,16 @@ jobs:
         # Five is where the gate first clears five minutes, and past it
         # each extra shard costs a whole privileged runner slot for a
         # shrinking return: 3->5 buys 115s for two slots, 5->7 buys 50s
-        # for two. Five main shards plus failure is SIX privileged jobs
-        # per run where three shards was four, and that is the cost this
-        # change actually spends. #468 stopped at three for exactly that
+        # for two. Five main shards plus failure is
+        # 6 privileged jobs per run (pool-facts: jobs-per-run=6) where three
+        # shards was four, and that is the cost this change actually
+        # spends. #468 stopped at
+        # three for exactly that
         # reason against the pool of 8 it measured, where two concurrent
         # runs had to fit. That premise no longer binds: the pool is 16
-        # (dhcp-ci-1..16, MEASURED 2026-08-28 from the runners API), so
-        # two runs at six jobs fit with headroom and a third queues —
+        # (pool-facts: pool-size=16) (dhcp-ci-1..16, MEASURED 2026-08-28 from the
+        # runners API), so two runs at 6 jobs fit with headroom (pool-facts: jobs-per-run=6)
+        # and a third queues —
         # which the watchdog reports as a capacity shortage rather than
         # as a suite failure (#513), so the symptom is legible rather
         # than silent.

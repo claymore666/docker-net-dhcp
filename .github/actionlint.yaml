@@ -4,8 +4,13 @@
 #
 #   dhcp-ci  — the ephemeral container-in-container runners (image
 #              ghcr.io/claymore666/dhcp-ci-runner; names dhcp-ci-<n>,
-#              pooled 2-4 by the orchestrator). The sole runner target
+#              pooled by the orchestrator). The sole runner target
 #              since the original bare-metal runner was retired (#157).
+#              The pool holds 16 runners (pool-facts: pool-size=16); the
+#              canonical value is .github/ci-pool-facts.env and
+#              scripts/check-pool-facts.sh holds this line to it. This
+#              line said "pooled 2-4" until #879, which is what an
+#              unchecked number does.
 #
 #   dhcp-ci-arm64 — the native arm64 runner on the netbooted Pi (#531).
 #              Deliberately NOT `dhcp-ci`: the amd64 workflows select on

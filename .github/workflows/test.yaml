@@ -657,6 +657,17 @@ jobs:
       - name: Golden fixture is keyed by field name
         run: bash scripts/check-golden-fixture-name-keyed.sh
 
+      # The pool's size and per-run job count are stated in prose in
+      # several tracked files and were checked by nothing, so every one
+      # of them had gone stale -- including the two lines the queue
+      # watchdog prints to an operator during a capacity incident (#879).
+      # This binds every marked site to one canonical value per fact,
+      # derives the per-run job count from integration.yml rather than
+      # reading it anywhere, and REFUSES rather than passing when its
+      # domain is empty or its inputs cannot be read.
+      - name: Pool-fact consistency
+        run: bash scripts/check-pool-facts.sh
+
       # The local lane must not test less than this job does (#636).
       # scripts/local-lane.sh is what `make check` runs before a push;
       # the moment it lists fewer gates than the steps above, it exits 0

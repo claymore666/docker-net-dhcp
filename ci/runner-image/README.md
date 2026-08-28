@@ -79,6 +79,33 @@ it at all, because the daemon has already restored and crashed by then.
 `scripts/test-runner-plugin-bind-source.sh` asserts both halves — that it
 is created, and that it is created first.
 
+## Pool capacity
+
+How many of these containers stay registered, and how many of them one
+integration run consumes at once, together decide whether two pull
+requests can be tested concurrently. Both numbers used to be stated in
+prose in several files and checked in none, and every one of them was
+wrong by the time anybody read it (#879).
+
+Each now has exactly one home:
+
+- **Pool size** is declared in `.github/ci-pool-facts.env`, with the date
+  it was measured. It cannot be derived from the tree: listing a
+  repository's self-hosted runners needs repo `administration` rights,
+  and that is not one of the permission scopes a workflow `GITHUB_TOKEN`
+  can be granted at all. The pool is 16 runners. <!-- pool-facts: pool-size=16 -->
+- **Jobs per integration run** is not written down anywhere. It is
+  derived from `.github/workflows/integration.yml` by
+  `scripts/check-pool-facts.sh`, which matrix-expands every job in that
+  workflow carrying the pool label.
+  One run places 6 jobs on the pool. <!-- pool-facts: jobs-per-run=6 -->
+
+`scripts/check-pool-facts.sh` binds those marked lines — and every other
+marked line in the tracked tree — to the two canonical values, in both
+directions: a sentence that goes stale turns the lane red, and so does a
+marker bumped without the sentence beside it. Run it after resizing the
+pool and it names each site that now disagrees.
+
 ## Standing runner (`register` mode)
 
 For a host with no orchestrator — the arm64 machine — the container
