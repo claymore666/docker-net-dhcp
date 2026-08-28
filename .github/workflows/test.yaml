@@ -122,6 +122,59 @@ jobs:
             echo "::endgroup::"
           done
 
+  # THESE ARE NOT THE UNIT SUITE, AND THE CHECK NAME NOW SAYS SO.
+  #
+  # These steps used to run inside the `test` job. `test` is a REQUIRED
+  # status check on dev and main, so the single name branch protection
+  # knew covered release-promotion ordering, cosign docs and Raspberry
+  # Pi watchdog wiring — none of which is a test of this Go program.
+  # A reader seeing `test` go red learned nothing about which of dozens
+  # of unrelated subjects had failed, and a reader seeing it green was
+  # told "the tests pass" about a job that was mostly not tests.
+  #
+  # No count is written here on purpose. Both halves grow, and a number
+  # in a comment is a measurement with no observer — the one this
+  # replaced already said "~45" over a larger set. Ask the file:
+  # scripts/check-test-job-purity.sh prints both tallies every run.
+  #
+  # Splitting costs one extra checkout and one extra setup-go and buys
+  # back more than it costs: the two halves now run in PARALLEL, so the
+  # wall clock is the slower half rather than the sum.
+  #
+  # setup-go is NOT vestigial here — it was checked rather than assumed.
+  # scripts/check-golden-fixture-name-keyed.sh runs `go test` to
+  # regenerate the metrics golden, so this job needs a toolchain. It is
+  # the only gate that does, which is why this comment names it: a
+  # future reader deleting the step should know what breaks. The script
+  # is named without a line number deliberately; a line citation into a
+  # file someone else edits expires with nobody setting the date.
+  #
+  # WHY `policy-gates` AND NOT `gates`. integration.yml already has a
+  # job called `gate`. A required-context list is typed by hand in a
+  # settings page, and `gate` is one character from `gates` — enter the
+  # wrong one and you newly require a job that passes while these steps
+  # stay advisory, which is the absent-check-reads-as-green failure
+  # this split exists to remove, reintroduced by a typo nothing checks.
+  #
+  # `policy-gates` MUST be a required status check on dev and main.
+  # Splitting a required job without requiring BOTH halves is that same
+  # failure by another route: the steps below would still RUN on every
+  # pull request, and nothing would stop a merge over their red.
+  policy-gates:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Same pin as the `test` job above, and it has to be — the reason
+      # is written there once rather than twice, because a rationale
+      # copied into two jobs is a rationale that will be corrected in
+      # one of them.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.27.0'
+          cache: true
+
       # The CI gate scripts are code too — their table-driven tests run
       # here so a broken ratchet/vuln gate fails like any unit test.
       #
@@ -665,6 +718,16 @@ jobs:
       # reconciling it against this file rather than on trust. A gate
       # that cannot run on a workstation is declared out of lane with a
       # reason; it is never simply absent.
+      # The boundary this job's own existence rests on (#829). `test`
+      # became a required check that meant "the tests passed, and also
+      # forty-eight unrelated policy gates passed"; splitting it fixed
+      # that by construction, and construction is not a guarantee. The
+      # next person with a gate to wire up appends it where gate steps
+      # have always gone, `test` grows a policy check back, and #829
+      # reopens in silence. Prose decays quietly; a check fails loudly.
+      - name: test/policy-gates split holds
+        run: bash scripts/check-test-job-purity.sh
+
       - name: Local-lane coverage
         run: bash scripts/check-local-lane.sh
 

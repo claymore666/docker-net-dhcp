@@ -576,13 +576,29 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
    `test`, `staticcheck`, `integration` (every PR builds and exercises
    its own plugin on the integration runner), `actionlint`,
    `govulncheck`, `attribution`, and CodeQL's `Analyze (go)` +
-   `Analyze (actions)` — eight in total. Merge when green.
-
-   `main` requires those eight **plus `coverage` and
+   `Analyze (actions)`. `main` requires those **plus `coverage` and
    `coverage-present`**, which is why the ratchet first bites at the
-   release PR in the next step and not before. Branch protection is the
-   authority here; if this list and the settings disagree, the settings
-   win and this list is the thing to fix.
+   release PR in the next step and not before. Merge when green.
+
+   **Do not trust the list above — read the authority.** It carried a
+   hand-written total ("eight in total") that was correct when written
+   and became a number nothing checked:
+
+   ```sh
+   gh api repos/claymore666/docker-net-dhcp/branches/dev/protection \
+     --jq '.required_status_checks.contexts'
+   gh api repos/claymore666/docker-net-dhcp/branches/main/protection \
+     --jq '.required_status_checks.contexts'
+   ```
+
+   Branch protection is the authority; if the prose and the settings
+   disagree, the settings win and the prose is the thing to fix.
+
+   `policy-gates` belongs on both lists and, at the time #829 landed,
+   was on neither. It is the half of the old `test` job that runs the
+   policy gates rather than the Go suite. If it is missing from the
+   output above, those gates run on every pull request and block
+   nothing — check before trusting a green release PR.
 
    `coverage-present` became required in #735. It is the detector that
    tells an *absent* coverage run apart from a pending one, and it was
