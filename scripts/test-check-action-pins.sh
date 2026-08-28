@@ -745,7 +745,10 @@ run "PINNED DEFECT: a property does not rescue the ?-alone class (exit 0 is wron
 # with everything green. A check keyed on a spelling reproduces its own
 # silence, twice in this file now.
 #
-# SO THE DOMAIN IS DERIVED TWICE, BY KEYS THAT CANNOT FAIL TOGETHER.
+# SO THE DOMAIN IS DERIVED TWICE, BY KEYS THAT FAIL IN DIFFERENT
+# DIRECTIONS FOR A SINGLE-KEY CHANGE -- which is a weaker claim than the
+# one this paragraph made a round ago, and the weaker one is the true
+# one.
 #   A locates a `uses` key site by the whitespace class the expressions
 #     use today -- `uses:?[[:space:]]`.
 #   B locates a site that ADMITS a property by the group's closing `)*`
@@ -753,23 +756,50 @@ run "PINNED DEFECT: a property does not rescue the ?-alone class (exit 0 is wron
 #     whitespace class at all.
 # A respelt class drops a site from A and not from B; a site that stops
 # admitting a property -- the a3e6bbe defect -- drops from B and not
-# from A. Either way the two disagree and that is the failure. Neither
-# derivation is trusted; their AGREEMENT is what is asserted, and a
-# floor on B refuses an emptied domain rather than congratulating it.
+# from A. Either of those ALONE makes the two disagree, and the
+# disagreement is the failure. Neither derivation is trusted; their
+# AGREEMENT is what is asserted, and a floor refuses an emptied domain
+# rather than congratulating it.
 #
-# THE BOUND, because "cannot fail together" is a completeness claim and
-# this file has now been wrong twice while making one: both derivations
-# still key on the literal token `uses`. Rename that token throughout
-# and both go to zero together -- which the floor turns into a REFUSAL,
-# not a pass, and that is the only reason this bound is affordable. A
-# third derivation that does not mention `uses` would have to parse the
-# expressions, and a parser of ERE inside a self-test is a larger thing
-# than what it guards.
+# THE BOUND, AND THERE ARE TWO ESCAPES, not one. This paragraph said
+# "BY KEYS THAT CANNOT FAIL TOGETHER" for exactly one round, and that
+# was a completeness claim in the file whose subject is that a check can
+# lose part of its own domain. It was false:
+#
+#   1. A COMPOSED change at ONE site defeats both. Take a single site,
+#      remove its property group AND respell its whitespace class in the
+#      same edit -- or simply delete the site outright -- and it drops
+#      out of A and out of B together. The count falls 4 -> 3, both
+#      floors still hold, and this check prints PASS over a script whose
+#      remaining sites can then be widened at leisure. MEASURED at two
+#      different sites; both are PINNED DEFECT cases below, asserting
+#      the wrong verdict this check gives today so that closing it turns
+#      them red. What killed those mutants was the BEHAVIOURAL cases,
+#      not this check -- which is the honest reading of why the gate is
+#      still sound and this observer is not.
+#   2. Both derivations still key on the literal token `uses`. Rename it
+#      throughout and both go to zero together -- which the floor turns
+#      into a REFUSAL, not a pass.
+#
+# Escape 2 is affordable because it fails closed. Escape 1 is not, and
+# it is recorded rather than closed: catching it needs a derivation that
+# does not mention `uses` at all, which means parsing the expressions,
+# and an ERE parser inside a self-test is a larger thing than what it
+# guards. A fix carries the defect class of its own finding, and this
+# one did.
 # The verdict is a FUNCTION of a file, not a block of inline code, so
 # that its own absence can be driven: the cases below hand it copies of
-# check-action-pins.sh with one site removed, one class respelt and one
-# group widened, and require it to go red for each. A check nobody can
-# run against a broken input is a check nobody has tested.
+# check-action-pins.sh, each broken in one way, and pin what it answers
+# for each. A check nobody can run against a broken input is a check
+# nobody has tested.
+#
+# THIS PARAGRAPH ALSO PROMISED A DRIVE THAT DID NOT EXIST. It said the
+# cases hand the check a copy "with one site removed", and no such case
+# was written -- the very shape that would have found escape 1 above.
+# Prose promising a test nobody wrote is indistinguishable from the test
+# for exactly as long as nobody looks. Both removal shapes are cases
+# now, and they are PINNED DEFECT cases because the check gets them
+# WRONG: they assert today's answer, not the right one.
 #
 # OCCURRENCES, NOT LINES. `grep -c` counts LINES, and the counter holds
 # TWO of these sites on ONE line -- so a line count reported three sites
@@ -858,8 +888,20 @@ prop_case "one site stops admitting a property" DISAGREE \
 prop_case "one group widened, the rest left behind" DIFFER \
     '0,/\[&!\]/s/\[&!\]/[\&!%]/'
 # The domain emptied by renaming the token both derivations key on.
-# This is the bound stated above, and it must REFUSE rather than pass.
+# This is escape 2 above, and it must REFUSE rather than pass.
 prop_case "the 'uses' token renamed throughout" REFUSE 's/uses/utilises/g'
+
+# ESCAPE 1, PINNED AS A DEFECT RATHER THAN CORRECTED IN PROSE. Both of
+# these drop ONE site out of BOTH derivations at once, so the two agree
+# at 3 and this check answers OK over a script that has lost a quarter
+# of its domain. The `OK` asserted below is the WRONG answer and is
+# recorded as such: whoever closes escape 1 turns these two red, which
+# is the point of pinning them. In the tree they are harmless only
+# because the behavioural cases above catch the widening that follows.
+prop_case "PINNED DEFECT: a site loses its group AND respells its class -> not seen" OK \
+    's|\(\[&!\]\[\^\[:space:\]\]\*\[\[:space:\]\]\+\)\*uses:\[\[:space:\]\]\*//|uses:[[:blank:]]*//|'
+prop_case "PINNED DEFECT: a site removed outright -> not seen" OK \
+    's|\(\[&!\]\[\^\[:space:\]\]\*\[\[:space:\]\]\+\)\*uses:\[\[:space:\]\]\*\[\^\[:space:\]\]|REMOVED|'
 
 # AN ALIAS IS NOT AN ESCAPE, AND THAT IS MEASURED RATHER THAN ARGUED.
 # `*a` looks like the dangerous neighbour of a node property -- it
@@ -1244,7 +1286,7 @@ fi
 # exits 0, which is a green tick over nothing. The floor is the count
 # this file is known to run; raise it when cases are added, and a
 # deletion has to be deliberate rather than silent.
-FLOOR=73
+FLOOR=75
 if [ "$n" -lt "$FLOOR" ]; then
     echo "REFUSING: ran $n case(s), fewer than the $FLOOR this suite is known to hold."
     echo "  Either cases were lost, or the floor is stale and should be raised with them."
