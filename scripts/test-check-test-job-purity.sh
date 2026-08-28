@@ -348,6 +348,173 @@ else
 fi
 chmod 644 "$UNREADABLE"
 
+# --- F: the job `name:` key, and the SWAP -------------------------------
+#
+# `wf` hardcodes both job headers, so a job-level key cannot be
+# expressed through it -- and a job-level key is the whole subject here.
+# `jobkey` inserts one, and REFUSES unless its anchor matched exactly
+# once, for the same reason `derived` exists: a substitution that misses
+# yields the original in silence, and an expect-PASS case built on it
+# would pass while asserting nothing.
+jobkey() {   # jobkey OUTNAME SRC ANCHOR-LINE TEXT  -> writes $TMP/OUTNAME.yaml
+    local out="$TMP/$1.yaml" src="$2" anchor="$3" text="$4"
+    if ! python3 - "$src" "$out" "$anchor" "$text" <<'JOBKEY'
+import sys
+src, out, anchor, text = sys.argv[1:5]
+lines = open(src).read().split("\n")
+res, hit = [], 0
+for ln in lines:
+    res.append(ln)
+    if ln == anchor:
+        hit += 1
+        res.extend(text.split("\n"))
+if hit != 1:
+    sys.stderr.write("anchor %r matched %d times\n" % (anchor, hit))
+    sys.exit(1)
+open(out, "w").write("\n".join(res))
+JOBKEY
+    then
+        echo "FAIL: fixture $1 could not be built -- its anchor did not match exactly once"
+        failures=$((failures + 1))
+    fi
+}
+
+GOODWF="$(wf namebase "$GOOD_TEST" "$GOOD_GATES")"
+
+# Direction 1: the one-line rename. The required context `test` stops
+# existing; an ABSENT required check is quieter than a red one.
+jobkey namerename "$GOODWF" '  test:' '    name: Unit tests'
+check "a name: on the test job is a finding" 1 "$TMP/namerename.yaml" \
+    "the job sets \`name:"
+
+# Direction 2, and the one that matters: the SWAP. Both required
+# contexts still exist and both are still green -- they have simply
+# traded jobs, so `test` now reports on the gate corpus and the Go suite
+# reports under a name nothing requires. MEASURED before this arm
+# existed: the gate's output on this workflow was BYTE-IDENTICAL to the
+# real one's, tally included. A case covering only direction 1 leaves
+# the inversion open, which is why both are here.
+jobkey nameswap0 "$GOODWF" '  test:' '    name: policy-gates'
+jobkey nameswap "$TMP/nameswap0.yaml" '  policy-gates:' '    name: test'
+check "the test/policy-gates name SWAP is a finding on BOTH jobs" 1 \
+    "$TMP/nameswap.yaml" "policy-gates: the job sets \`name: 'test'\`"
+check "the swap is also a finding on the test job" 1 \
+    "$TMP/nameswap.yaml" "test: the job sets \`name: 'policy-gates'\`"
+
+# Direction 3: an expression. A third spelling exists because two were
+# enumerated. It is compared as the literal string it is written as --
+# a finding, not an evaluation, which is the safe direction.
+# shellcheck disable=SC2016  # the literal ${{ }} is the fixture's point
+jobkey nameexpr "$GOODWF" '  test:' '    name: ${{ github.event_name }}'
+check "a name: built from an expression is a finding" 1 \
+    "$TMP/nameexpr.yaml" "the job sets \`name:"
+
+# The preservation control. `name:` equal to the job key is a no-op and
+# must NOT be a finding, or the arm is keyed on the key's presence
+# rather than on the rename.
+jobkey namesame "$GOODWF" '  test:' '    name: test'
+refutes "a name: equal to the job key is not a finding" 0 \
+    "$TMP/namesame.yaml" "the job sets \`name:"
+
+# --- G: every OTHER job in this workflow --------------------------------
+#
+# Built from the REAL workflow, not a fixture: G is about the five jobs
+# `wf` does not model, and `attribution` -- a required context carrying
+# the very key F forbids -- is the reason this arm exists.
+G_REAL="$REPO/.github/workflows/test.yaml"
+
+jobkey gname "$G_REAL" '  staticcheck:' '    name: Static analysis'
+check "a name: on a non-purity job is a finding" 1 "$TMP/gname.yaml" \
+    "staticcheck: the job sets \`name:"
+
+jobkey gmatrix "$G_REAL" '  govulncheck:' '    strategy:
+      matrix:
+        go: ["1.27.0"]'
+check "a strategy: on a non-purity job is a finding" 1 "$TMP/gmatrix.yaml" \
+    "govulncheck: the job has a \`strategy:\`"
+
+jobkey gcoe "$G_REAL" '  package:' '    continue-on-error: true'
+check "continue-on-error on a non-purity job is a finding" 1 "$TMP/gcoe.yaml" \
+    "package: the job sets \`continue-on-error\`"
+
+jobkey gif "$G_REAL" '  staticcheck:' "    if: github.ref == 'refs/heads/never'"
+check "an unrecorded job-level if: is a finding" 1 "$TMP/gif.yaml" \
+    "an \`if:\` this gate does not record"
+
+# The recorded entry, driven in both directions. A changed condition and
+# a REMOVED condition are both findings: removal is the safe direction,
+# and the friction is deliberate, because a JOB_IF entry that outlives
+# its job is a standing permission nobody re-granted.
+sed "s|    if: github.event_name == 'pull_request'|    if: false|" \
+    "$G_REAL" > "$TMP/gifchanged.yaml"
+if cmp -s "$G_REAL" "$TMP/gifchanged.yaml"; then
+    echo "FAIL: fixture gifchanged did not apply -- its pattern matched nothing"
+    failures=$((failures + 1))
+fi
+check "a CHANGED recorded if: is a finding" 1 "$TMP/gifchanged.yaml" \
+    "and this gate records"
+
+grep -v "^    if: github.event_name == 'pull_request'\$" "$G_REAL" \
+    > "$TMP/gifgone.yaml"
+if cmp -s "$G_REAL" "$TMP/gifgone.yaml"; then
+    echo "FAIL: fixture gifgone did not apply -- its pattern matched nothing"
+    failures=$((failures + 1))
+fi
+check "a recorded if: that is GONE is a finding" 1 "$TMP/gifgone.yaml" \
+    "records an \`if:\` for a job that no longer has one"
+
+# The stale-entry direction the GATE cannot carry: an entry whose JOB is
+# gone. The gate is handed arbitrary workflows and every synthetic
+# fixture here legitimately lacks `attribution`, so flagging an absent
+# job there red-flagged the whole suite (measured this round). JOB_IF
+# describes ONE file, so the assertion belongs against that file --
+# here, reading the record out of the gate rather than restating it,
+# because a second copy of an enumeration is how the two drift apart.
+if python3 - "$REPO/scripts/check-test-job-purity.sh" "$G_REAL" <<'JOBIF'
+import ast
+import re
+import sys
+import yaml
+
+src = open(sys.argv[1]).read()
+m = re.search(r"^JOB_IF = (\{.*?^\})", src, re.S | re.M)
+if not m:
+    sys.stderr.write("JOB_IF is not where this assertion expects it\n")
+    sys.exit(1)
+record = ast.literal_eval(m.group(1))
+if not record:
+    sys.stderr.write("JOB_IF is empty -- this assertion would be vacuous\n")
+    sys.exit(1)
+jobs = yaml.safe_load(open(sys.argv[2]))["jobs"]
+for jname in sorted(record):
+    if jname not in jobs:
+        sys.stderr.write(
+            "JOB_IF records an `if:` for job %r, which is not in the real "
+            "workflow. A permission that outlives its job is waved through "
+            "if a job by that name comes back.\n" % jname
+        )
+        sys.exit(1)
+JOBIF
+then
+    echo "PASS: every JOB_IF entry names a job the real workflow still has"
+else
+    echo "FAIL: a JOB_IF entry outlived its job"
+    failures=$((failures + 1))
+fi
+
+# Preservation control for G: a non-purity job that changes in ways G is
+# not about must still pass. G is keyed on four job-level keys, not on
+# "this job changed".
+python3 - "$G_REAL" "$TMP/gbenign.yaml" <<'BENIGN'
+import sys
+import yaml
+doc = yaml.safe_load(open(sys.argv[1]))
+doc["jobs"]["package"]["timeout-minutes"] = 42
+doc["jobs"]["staticcheck"]["env"] = {"CGO_ENABLED": "0"}
+yaml.safe_dump(doc, open(sys.argv[2], "w"))
+BENIGN
+check "job-level keys G is not about still pass" 0 "$TMP/gbenign.yaml" "PASS"
+
 # --- the real tree ----------------------------------------------------
 check "the repository's own workflow passes" 0 "$REPO/.github/workflows/test.yaml" "PASS"
 
@@ -391,8 +558,14 @@ import yaml
 # The invocation forms this repository actually uses for a gate, anchored
 # at the start of the command. Anything else -- an echo argument, a here
 # document, a quoted string -- names the script without running it.
+#
+# The trailing `\s*$` is the PURITY_WORKFLOW seam, closed here rather
+# than in the gate because a gate cannot derive its own parameter from
+# its own subject. `check-test-job-purity.sh some-decoy.yaml` is an
+# invocation in command position and would have satisfied the first
+# version of this regex, while judging a file nobody reads.
 INVOKE = re.compile(
-    r"^\s*(?:(?:bash|sh)\s+)?(?:\./)?scripts/check-test-job-purity\.sh(?:\s|$)"
+    r"^\s*(?:(?:bash|sh)\s+)?(?:\./)?scripts/check-test-job-purity\.sh\s*$"
 )
 doc = yaml.safe_load(open(sys.argv[1]))
 for step in doc.get("jobs", {}).get("policy-gates", {}).get("steps", []) or []:
@@ -452,6 +625,96 @@ DECOYS
 wired "an echo naming the gate does not count as wiring" 1 "$TMP/decoy-echo.yaml"
 wired "a comment naming the gate does not count as wiring" 1 "$TMP/decoy-comment.yaml"
 wired "a step that only names the gate does not count as wiring" 1 "$TMP/decoy-nameonly.yaml"
+
+# An ARGUMENT is the other half of the same seam, and it is invisible to
+# the gate: `check-test-job-purity.sh docs/decoy.yaml` is a real
+# invocation in command position that judges a file nobody requires.
+python3 - "$REAL" "$TMP/decoy-arg.yaml" <<'ARGDECOY'
+import sys
+import yaml
+doc = yaml.safe_load(open(sys.argv[1]))
+for step in doc["jobs"]["policy-gates"]["steps"]:
+    body = step.get("run")
+    if isinstance(body, str) and "scripts/check-test-job-purity.sh" in body:
+        step["run"] = "bash scripts/check-test-job-purity.sh docs/decoy.yaml"
+        break
+else:
+    raise SystemExit("no invocation to redirect")
+yaml.safe_dump(doc, open(sys.argv[2], "w"))
+ARGDECOY
+wired "an invocation carrying an argument does not count as wiring" 1 "$TMP/decoy-arg.yaml"
+
+# The env half of the seam. PURITY_WORKFLOW exists so THIS suite can
+# hand the gate a fixture; set from inside the workflow it would point
+# the gate away from the file it is wired into, and every arm would pass
+# over a workflow nobody judged.
+unredirected() {
+    local name="$1" want="$2" wf="$3"
+    python3 - "$wf" <<'REDIRECT'
+import sys
+import yaml
+
+VAR = "PURITY_WORKFLOW"
+doc = yaml.safe_load(open(sys.argv[1]))
+
+
+def has(env):
+    return isinstance(env, dict) and VAR in env
+
+
+if has(doc.get("env")):
+    sys.exit(1)
+for job in (doc.get("jobs") or {}).values():
+    if not isinstance(job, dict):
+        continue
+    if has(job.get("env")):
+        sys.exit(1)
+    for step in job.get("steps") or []:
+        if isinstance(step, dict) and has(step.get("env")):
+            sys.exit(1)
+sys.exit(0)
+REDIRECT
+    local got=$?
+    if [ "$got" -eq "$want" ]; then
+        echo "PASS: $name"
+    else
+        echo "FAIL: $name (exit $got, want $want)"
+        failures=$((failures + 1))
+    fi
+}
+
+unredirected "the real workflow sets PURITY_WORKFLOW nowhere" 0 "$REAL"
+
+# Driven at all three levels the seam can be set from, so the assertion
+# is not keyed on the one place someone happened to try first.
+python3 - "$REAL" "$TMP" <<'REDIRECTDECOYS'
+import sys
+import yaml
+
+real, tmp = sys.argv[1], sys.argv[2]
+
+doc = yaml.safe_load(open(real))
+doc["env"] = {"PURITY_WORKFLOW": "docs/decoy.yaml"}
+yaml.safe_dump(doc, open(tmp + "/redirect-workflow.yaml", "w"))
+
+doc = yaml.safe_load(open(real))
+doc["jobs"]["policy-gates"]["env"] = {"PURITY_WORKFLOW": "docs/decoy.yaml"}
+yaml.safe_dump(doc, open(tmp + "/redirect-job.yaml", "w"))
+
+doc = yaml.safe_load(open(real))
+for step in doc["jobs"]["policy-gates"]["steps"]:
+    body = step.get("run")
+    if isinstance(body, str) and "scripts/check-test-job-purity.sh" in body:
+        step["env"] = {"PURITY_WORKFLOW": "docs/decoy.yaml"}
+        break
+else:
+    raise SystemExit("no invocation to redirect")
+yaml.safe_dump(doc, open(tmp + "/redirect-step.yaml", "w"))
+REDIRECTDECOYS
+
+unredirected "a workflow-level PURITY_WORKFLOW is caught" 1 "$TMP/redirect-workflow.yaml"
+unredirected "a job-level PURITY_WORKFLOW is caught" 1 "$TMP/redirect-job.yaml"
+unredirected "a step-level PURITY_WORKFLOW is caught" 1 "$TMP/redirect-step.yaml"
 
 if [ "$failures" -ne 0 ]; then echo "$failures failure(s)"; exit 1; fi
 echo "all passed"

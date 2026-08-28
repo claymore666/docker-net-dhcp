@@ -121,7 +121,7 @@ LANE=(
   "allowlist parity|-|bash scripts/check-allowlist-parity.sh"
   "shard-balance table|-|bash scripts/check-durations-table.sh"
   "golden fixture keying|go|bash scripts/check-golden-fixture-name-keyed.sh"
-  "test/gates split|-|bash scripts/check-test-job-purity.sh"
+  "test/policy-gates split|-|bash scripts/check-test-job-purity.sh"
   # The lane checks itself: if test.yaml gains a gate this file does
   # not list, a local run says so instead of quietly covering less.
   "local-lane coverage|-|bash scripts/check-local-lane.sh"

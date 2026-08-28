@@ -725,7 +725,7 @@ jobs:
       # next person with a gate to wire up appends it where gate steps
       # have always gone, `test` grows a policy check back, and #829
       # reopens in silence. Prose decays quietly; a check fails loudly.
-      - name: test/gates split holds
+      - name: test/policy-gates split holds
         run: bash scripts/check-test-job-purity.sh
 
       - name: Local-lane coverage

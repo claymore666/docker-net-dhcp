@@ -54,18 +54,68 @@
 #   E. `policy-gates` must INVOKE at least one `scripts/*.sh`, in command
 #      position. Same direction, other half: gutting `policy-gates` must
 #      not read as clean.
-#   F. Neither job may lose the ability to report a red UNDER ITS OWN
-#      NAME. No `if:` on either job or on any of their steps, no
-#      `continue-on-error`, no `|| true`, `|| :` or `set +e` on a live
-#      run line, and no `strategy:` -- a matrix renames the check to
-#      `test (x)` and `test` itself stops existing, so the context
-#      branch protection requires goes permanently absent. D and E ask
-#      whether the work is written down; F asks whether its failure can
-#      still reach a human. A required check that is green because it
-#      skipped, or because the one step that matters was allowed to
-#      fail, is the same absent-check-reads-as-green failure this split
-#      was filed about, wearing a repository setting instead of a job
-#      name.
+#   F. The two purity jobs must keep reporting a red under their own
+#      names -- and F closes the SPELLINGS BELOW of losing that, not the
+#      property. This is a bound, not a guarantee, and the sentence here
+#      used to be written as one. On either job or any of their steps:
+#      no `if:`, no `continue-on-error`, no `|| true` / `|| :` /
+#      `set +e` on a live run line, no `strategy:`, and no `name:`
+#      that differs from the job key. The last two are the same defect
+#      arriving by different keys -- a matrix renames the check to
+#      `test (x)` and a `name:` renames it outright, and either way
+#      `test` itself stops existing, so the context branch protection
+#      requires goes permanently ABSENT. The ways F does NOT close are
+#      named under WHAT IT CANNOT SEE below; they are open-ended and
+#      this list will never be all of them.
+#
+#      `name:` was absent from this arm until #834 round 3, and its
+#      worst shape is not the rename. It is the SWAP: put
+#      `name: policy-gates` on the `test` job and `name: test` on the
+#      gate job, and the required context named `test` is produced by
+#      the gate corpus while the Go suite reports under a name nothing
+#      requires. Measured before the fix: that workflow's gate output
+#      was BYTE-IDENTICAL to the real one's, tally included. The
+#      invariant this whole file exists to hold was inverted and every
+#      arm said PASS.
+#
+#      D and E ask whether the work is written down; F asks whether its
+#      failure can still reach a human. A required check that is green
+#      because it skipped, or because the one step that matters was
+#      allowed to fail, or that is green because some OTHER job is now
+#      wearing its name, is the same absent-check-reads-as-green
+#      failure this split was filed about, wearing a repository setting
+#      instead of a job name.
+#   G. F's failure mode is not confined to the two purity jobs, and the
+#      workflow has five more. `attribution` is a required context and
+#      carries a job-level `if:` -- benign today, because
+#      `github.event_name == 'pull_request'` is true on the event that
+#      enforces required checks, and one edit away from a check that is
+#      permanently green by being permanently skipped. So every OTHER
+#      job in this workflow is held to the check-identity half of F:
+#      no `name:` that differs from its key, no `strategy:`, no
+#      `continue-on-error`, and no job-level `if:` except the exact
+#      expressions recorded in JOB_IF below.
+#
+#      JOB_IF is compared in BOTH directions, the way ALLOWED is. An
+#      `if:` that appears is a finding; an `if:` this gate records for a
+#      job that no longer has one is also a finding, because a stale
+#      entry is a standing permission nobody re-granted. Removing an
+#      `if:` is the safe direction and the friction is deliberate: the
+#      enumeration has a watcher or it is an unrun checklist.
+#
+#      That second direction fires only for a job that is PRESENT, and
+#      the reason is a bound worth stating: JOB_IF describes ONE file,
+#      and this script is handed arbitrary ones. A first draft flagged
+#      an entry whose job was absent, and red-flagged every synthetic
+#      two-job fixture in the suite -- a gate cannot derive its
+#      parameter from its subject. The entry-outlives-the-JOB case is
+#      asserted one level out, against the real workflow, by
+#      scripts/test-check-test-job-purity.sh.
+#
+#      G does not know which contexts are REQUIRED -- that is a
+#      repository setting, see the bound below. It treats every job in
+#      this workflow as if it were, which is wrong in the cheap
+#      direction.
 #
 # THE SAME SPELLING IS MATCHED TWO DIFFERENT WAYS, AND THAT IS THE POINT
 #
@@ -126,15 +176,38 @@
 #     workflow's own comment refuses. It is backstopped from the other side by
 #     scripts/check-local-lane.sh, which fails when a `check-*.sh` in
 #     the tree is run by nothing.
-#   * F reads the workflow as written, and a job can also stop reporting
-#     for reasons no line of it expresses: the file being DELETED (this
-#     gate is invoked from the very workflow it judges, so it does not
-#     run at all), a `runs-on` label with no runner behind it, or the
-#     `PURITY_WORKFLOW` seam being pointed at some other file. The first
-#     two are absent required checks, which block; the third would need
-#     a committed decoy workflow and a changed invocation, and
-#     scripts/test-check-test-job-purity.sh asserts the invocation is in
-#     command position in the real file.
+#   * F and G read the workflow as written, and a job can also stop
+#     reporting for reasons no line of it expresses: the file being
+#     DELETED (this gate is invoked from the very workflow it judges, so
+#     it does not run at all), or a `runs-on` label with no runner
+#     behind it. Both are absent required checks, which block.
+#   * F and G close the `name:` and `strategy:` keys, which are the two
+#     ways a job in THIS file renames its own check. They are not the
+#     only ways a required context can be produced by something other
+#     than the job named here, and the rest are outside this file:
+#       - a job-level `uses:` (a reusable workflow call) reports as
+#         `<job> / <called job>`. For `test` and `policy-gates` that is
+#         refused by A, because such a job has no `steps:`. For the
+#         other five jobs G cannot see it, because G does not require
+#         steps of them.
+#       - ANOTHER workflow file may declare a job whose check name
+#         collides with one of these. This gate reads ONE file, named
+#         by PURITY_WORKFLOW, and knows nothing of the rest of
+#         .github/workflows.
+#       - a `name:` built from an expression is compared as the literal
+#         string it is written as, so it is a finding rather than a
+#         judgement -- the safe direction, and not an evaluation.
+#     Two spellings closed means a third exists; the three above are the
+#     ones measured, not the boundary.
+#   * The `PURITY_WORKFLOW` seam -- this gate judging some file other
+#     than the one it is wired into -- is not closed HERE, because a
+#     gate cannot derive its own parameter from its own subject. It is
+#     closed one level out, in scripts/test-check-test-job-purity.sh:
+#     the `wired` assertion requires the real workflow to invoke this
+#     script in command position, with NO argument, and requires no
+#     `env:` anywhere in that workflow to set PURITY_WORKFLOW. That
+#     assertion runs against decoys as well as the real tree, so it is
+#     driven rather than assumed.
 #   * It cannot see branch protection. Whether `test` and `policy-gates` are
 #     REQUIRED is a repository setting, not a fact in this tree, and no
 #     gate running inside CI can read it without a token. If `policy-gates` is
@@ -197,6 +270,17 @@ ALLOWED = {
     "Fuzz (short)",
 }
 
+# Arm G: the job-level `if:` expressions this workflow is allowed to
+# carry, keyed by job. Compared in BOTH directions on every run, exactly
+# as ALLOWED is -- an unrecorded `if:` is a finding, and a recorded one
+# that is no longer there is also a finding, because a standing
+# permission nobody re-granted is how a hole outlives the reason for it.
+# `test` and `policy-gates` are NOT eligible: arm F forbids them an
+# `if:` outright, and an entry here would be a way to buy one back.
+JOB_IF = {
+    "attribution": "github.event_name == 'pull_request'",
+}
+
 # Two predicates for one spelling, because a match means opposite
 # things to C and to E. See the header: broad where a match is a
 # FINDING, anchored in command position where a match is a PASS.
@@ -235,10 +319,15 @@ if not isinstance(jobs, dict):
     sys.exit(3)
 
 # The two job names are the load-bearing literals in this file: they are
-# the strings branch protection is configured with. `policy-gates` is
-# NOT spelled `policy-gates` because integration.yml already has a job named
-# `gate`, and a one-character slip in a hand-typed required-context list
-# requires the wrong job while leaving this one advisory.
+# the strings branch protection is configured with. The gate job is
+# spelled `policy-gates` and NOT `gates`, because integration.yml
+# already has a job named `gate`, and a one-character slip in a
+# hand-typed required-context list requires the wrong job while leaving
+# this one advisory. (The sentence here used to read "`policy-gates` is
+# NOT spelled `policy-gates`" -- a rename reached every identifier and
+# left the prose saying nothing. Two step labels still carrying the old
+# `test/gates` spelling were renamed in the same commit, for the same
+# reason the spelling was chosen.)
 TEST_JOB = "test"
 GATES_JOB = "policy-gates"
 
@@ -344,6 +433,17 @@ if not gate_scripts:
 # F -- neither job may swallow its own result.
 for jname in (TEST_JOB, GATES_JOB):
     job = jobs[jname]
+    if "name" in job and job.get("name") != jname:
+        findings.append(
+            "%s: the job sets `name: %r`, so the check it produces is not "
+            "called `%s` and the required context by that name goes "
+            "permanently ABSENT. Worse than the rename is the SWAP -- name "
+            "this job after the other one and the required check keeps "
+            "existing while reporting on the wrong job, with every other arm "
+            "of this gate still green. If the rename is wanted, the required "
+            "contexts must be changed in the same breath."
+            % (jname, job.get("name"), jname)
+        )
     if "if" in job:
         findings.append(
             "%s: the job carries an `if:`. A required check that can be "
@@ -385,6 +485,68 @@ for jname in (TEST_JOB, GATES_JOB):
                         "step still appears in the job and still runs; only "
                         "its verdict is gone." % (jname, ident, label)
                     )
+
+# G -- every OTHER job in this workflow keeps its check identity too.
+# F's failure mode is not a property of the two purity jobs; `attribution`
+# is a required context one job away carrying the very key F forbids.
+for jname, job in sorted(jobs.items()):
+    if jname in (TEST_JOB, GATES_JOB) or not isinstance(job, dict):
+        continue
+    if "name" in job and job.get("name") != jname:
+        findings.append(
+            "%s: the job sets `name: %r`. If `%s` is a required context it "
+            "goes permanently ABSENT; if the new name collides with another "
+            "job's, two jobs report under one name. This gate does not know "
+            "which contexts are required, so it treats every job in this "
+            "workflow as if it were." % (jname, job.get("name"), jname)
+        )
+    if "strategy" in job:
+        findings.append(
+            "%s: the job has a `strategy:`. A matrix renames the check to "
+            "`%s (...)`, so a required context by that bare name goes "
+            "permanently ABSENT." % (jname, jname)
+        )
+    if job.get("continue-on-error"):
+        findings.append(
+            "%s: the job sets `continue-on-error`, so its failure cannot "
+            "turn its check red." % jname
+        )
+    if "if" in job:
+        want = JOB_IF.get(jname, None)
+        got = job.get("if")
+        if jname not in JOB_IF:
+            findings.append(
+                "%s: the job carries an `if:` this gate does not record. A "
+                "job that can be SKIPPED reports green without running, and "
+                "for a required context that is indistinguishable from "
+                "passing. If the condition is wanted, add it to JOB_IF in "
+                "this gate in the same commit -- deliberately, because it is "
+                "a standing permission for that check to not run." % jname
+            )
+        elif got != want:
+            findings.append(
+                "%s: the job's `if:` is %r, and this gate records %r. The "
+                "condition under which a required check may be skipped "
+                "changed without the record changing with it."
+                % (jname, got, want)
+            )
+# The other direction of JOB_IF, and it fires only for a job that is
+# PRESENT. A gate cannot derive its parameter from its subject: JOB_IF
+# describes .github/workflows/test.yaml, and this script is handed
+# arbitrary workflows -- every synthetic two-job fixture legitimately has
+# no `attribution`, and an absent-job finding red-flagged all of them
+# (measured, this round, by the suite below). The entry-outlives-the-job
+# case is therefore asserted one level out, against the real file, by
+# scripts/test-check-test-job-purity.sh.
+for jname in sorted(JOB_IF):
+    job = jobs.get(jname)
+    if isinstance(job, dict) and "if" not in job:
+        findings.append(
+            "%s: this gate records an `if:` for a job that no longer has "
+            "one. Removing it is the SAFE direction and this finding is "
+            "deliberate friction: drop the JOB_IF entry in the same commit, "
+            "so the record cannot outlive the reason for it." % jname
+        )
 
 for f in findings:
     print("FINDING\t%s" % f)
