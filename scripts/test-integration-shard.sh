@@ -34,7 +34,10 @@ TOTAL_TESTS=$(all_tests | wc -l)
 [ "$TOTAL_TESTS" -gt 0 ] && ok "found $TOTAL_TESTS main-suite tests to partition" \
     || no "no tests found — every case below would pass vacuously"
 
-for n in 1 2 3 4 7 13; do
+# 5 is the value CI actually ships (#877); the rest bracket it. A
+# completeness property asserted at every n EXCEPT the production one
+# is a property nobody has checked where it matters.
+for n in 1 2 3 4 5 7 13; do
     union=$(for i in $(seq 1 "$n"); do names_of "$i" "$n"; done | sort)
     dupes=$(printf '%s\n' "$union" | uniq -d)
     uniq_count=$(printf '%s\n' "$union" | sort -u | wc -l)

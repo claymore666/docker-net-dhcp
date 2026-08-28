@@ -17,13 +17,16 @@ name: Integration
 # JOB TOPOLOGY (#375). The two suites used to run as sequential steps in
 # one job — ~10:38 then ~8:45, a ~20:20 gate. Nothing couples them: they
 # are separate `go test` invocations, each standing up its own fixture
-# in its own TestMain. They now run as two concurrent jobs on two
-# runners, so the gate is max(main, failure) rather than the sum.
+# in its own TestMain. They now run as concurrent jobs on their own
+# runners, so the gate is max() over them rather than the sum.
 #
 #   gate            decide once whether the suites are needed at all
-#   main-suite  \   one `go test` each, own runner, own :integration
-#   failure-suite/  plugin build (~60s, duplicated but parallel)
+#   main-1..5-suite \  one `go test` each, own runner, own :integration
+#   failure-suite   /  plugin build (~60s, duplicated but parallel)
 #   integration     aggregator — the required check
+#
+# The main suite is split five ways (#381, #468, #877); the count lives
+# in the matrix below, next to the measurement that justifies it.
 #
 # The aggregator is named `integration` ON PURPOSE. That is the literal
 # required-status context on both `dev` and `main`, so this topology
@@ -95,20 +98,30 @@ on:
 # another's.
 #
 # Note what this does NOT do, because #375 turns on it: a concurrency
-# group serializes runs, not the jobs within a run. The two suite jobs
-# below therefore run concurrently, deliberately, and are not covered by
-# this guard. That is a re-test of #296 rather than a route around it:
-# of the two tests that flaked under the old bare-metal parallelism, one
-# was misdiagnosed (#307 reproduced it running solo — a 5s probe budget
+# group serializes runs, not the jobs within a run. The suite jobs below
+# therefore run concurrently, deliberately, and are not covered by this
+# guard. That is a re-test of #296 rather than a route around it: of the
+# two tests that flaked under the old bare-metal parallelism, one was
+# misdiagnosed (#307 reproduced it running solo — a 5s probe budget
 # undersized against dhcpcd's retransmit timing, now 8s and stable since)
-# and the other left the suite with the #219 revert. The dose is also
-# smaller: #296 saw three privileged jobs overlap, this is two.
+# and the other left the suite with the #219 revert.
 #
-# Coverage is the reason it stays two. coverage.yml is not manual-only —
-# it also runs on `pull_request` into main, i.e. on the release PR, and
-# it shares this group. Keeping it in the same group means the release
-# PR's coverage run queues behind this one instead of adding a third
-# concurrent privileged job on the same host. That costs ~12 minutes
+# This paragraph used to end "the dose is also smaller: #296 saw three
+# privileged jobs overlap, this is two". That stopped being true when
+# #468 made it four, and #877 makes it SIX. The dose argument is retired
+# rather than renumbered, because it was never the load-bearing one:
+# what makes concurrent privileged jobs safe here is that #296's three
+# shared one bare-metal host and these six share nothing — one job per
+# ephemeral container, each with its own nested Docker daemon and its
+# own fixture. That property does not degrade with the count. What does
+# degrade is pool capacity, and capacity shows up as queueing, not as
+# flaking.
+#
+# Coverage shares this group deliberately. coverage.yml is not
+# manual-only — it also runs on `pull_request` into main, i.e. on the
+# release PR, and it shares this group. Keeping it here means the
+# release PR's coverage run queues behind this one instead of putting a
+# second privileged workload on the pool beside it. That costs ~12 minutes
 # once per release, which is the cheaper side of the trade against
 # flaking the one gate that cannot be waved through (#365).
 #
@@ -135,8 +148,11 @@ on:
 # contention was three privileged jobs on shared bare metal. The pool is
 # now ephemeral, one job per container, each with its own nested Docker
 # daemon, so the isolation the group provided by hand is provided by the
-# pool. The limit becomes capacity — 8 runners at 2 jobs per run — which
-# is the correct thing to queue on.
+# pool. The limit becomes capacity — privileged runners against the six
+# jobs a run now asks for (#877) — which is the correct thing to queue
+# on. The pool was 8 as of 2026-07-31 and is being expanded to carry the
+# wider matrix; the watchdog names a shortage as a shortage (#513)
+# rather than letting it read as a suite failure.
 concurrency:
   # Branch pushes key on the COMMIT (#617): a merge burst into dev used to
   # evict the queued run, leaving a commit nothing ever tested. PR events
@@ -209,7 +225,7 @@ jobs:
   # exit in seconds instead of holding a privileged pool slot for ~20
   # minutes.
   #
-  # Its own job rather than a step in each suite (#375): two suites
+  # Its own job rather than a step in each suite (#375): suite jobs
   # evaluating the same gate independently could disagree — the #312
   # dedupe looks at past runs of this workflow, and the first suite to
   # finish changes what the second one would see.
@@ -326,16 +342,30 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GATE_REPO: ${{ github.repository }}
-        # 10 minutes: the suites themselves take ~8-10, and the observed
-        # incident sat unassigned for 11 before a human noticed. Long
-        # enough that ordinary pool contention resolves, short enough to
-        # beat a person watching the Actions tab.
+        # 10 minutes, and the budget is a QUEUE budget: it bounds how
+        # long a job may sit with no runner, not how long one may run.
+        # The floor it has to clear is therefore one suite generation —
+        # a job queued behind a full pool waits for a running suite to
+        # release its runner. Measured 2026-08-28 over 22 runs, the
+        # longest suite job was 511s (8m31) and the median 441s; #877
+        # takes the predicted figure to ~293s. 600s cleared the old
+        # number and clears the new one with more room, and the observed
+        # #392 incident sat unassigned for 11 minutes before a human
+        # noticed, so it still beats a person watching the Actions tab.
+        #
+        # Deliberately NOT tightened alongside #877's shorter suites.
+        # Firing this watchdog CANCELS the run, and #877 also takes the
+        # per-run privileged job count from four to six against a pool
+        # whose expanded size is not measured here. Tightening a
+        # destructive timeout at the same moment the demand on the pool
+        # rises is how a capacity wobble becomes a cancelled run. Retune
+        # it against a measured pool, not against this change.
         run: bash scripts/ci-queue-watchdog.sh "${{ github.run_id }}" 600 30
 
-  # The two suites. Identical except for the make target and log name,
-  # so a matrix rather than two near-duplicate job bodies — the previous
-  # single job had already drifted into per-step `if:` conditions
-  # repeated six times.
+  # The suites. Identical except for the make target and log name, so a
+  # matrix rather than near-duplicate job bodies — the previous single
+  # job had already drifted into per-step `if:` conditions repeated six
+  # times. Six entries today: five main shards plus failure (#877).
   #
   # fail-fast: false is deliberate and is a BEHAVIOUR CHANGE. In the old
   # sequential form a failing main suite skipped the failure suite
@@ -348,55 +378,91 @@ jobs:
     if: needs.gate.outputs.decision == 'run'
     name: ${{ matrix.suite }}-suite
     runs-on: [self-hosted, dhcp-ci]
-    # 25 per suite. Measured on dev after #356 and #468: each main shard
-    # ~4:36, failure ~3:51, both inclusive of the ~60s plugin build. The
-    # old single job carried 40 for both sequentially, so the headroom
-    # here is several times the job rather than a fraction of it —
-    # deliberately, since this timeout exists to bound a hang, not to
-    # police a slow run.
+    # 25 per suite. Measured 2026-08-28 over 22 runs on the pool: the
+    # longest main shard ran 511s (8m31) and the failure suite 299s
+    # (4m59), both inclusive of the ~115s of build, install and
+    # teardown; #877's five-way split takes the predicted main shard to
+    # ~293s (4m53). The old single job carried 40 for both suites
+    # sequentially, so the headroom here is several times the job rather
+    # than a fraction of it — deliberately, since this timeout exists to
+    # bound a hang, not to police a slow run. It is left at 25 for the
+    # same reason: shortening it would convert a slow runner into a red
+    # check, which is not what it is for.
     timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
-        # The main suite is sharded (#381, widened to three in #468).
+        # The main suite is sharded (#381, three in #468, five in #877).
         #
-        # #381 stopped at two, and said why: at n=3 the shards balance
-        # to ~190s, "and neither improves the gate by a second — failure's
-        # 495s already dominates". That was true when written. #356 then
-        # put the failure suite on kea and it fell to 231s, so the main
-        # shards set the gate again and the reason to stop at two was
-        # gone. Measured on dev, run 30753274506:
+        # RE-DERIVED 2026-08-28 (#877). The #468 reasoning that stopped
+        # at three was correct against the corpus it measured — 99 tests
+        # at 540s — and that corpus no longer exists. The main suite is
+        # now 70 tests at 879s, roughly double, and rebalancing alone
+        # cannot reach the ~5-minute design target: only shard count
+        # moves it. The old table is not reproduced here on purpose; it
+        # described a tree that is gone, and a stale derivation left in
+        # place is read as a current one.
         #
-        #   main-1 367s   main-2 361s   failure 231s   gate = 367s
+        # MEASURED over the 22 successful Integration runs that produced
+        # suite logs inside the API's retention window at
+        # 2026-08-28T06:00Z. Medians unless stated:
         #
-        # Per-shard TEST time comes straight from the partitioner against
-        # testdata/main-suite-durations.tsv (99 tests, 540s); job overhead
-        # is the measured 96s difference (367 - 271), most of it the
-        # plugin build:
+        #   main corpus     879.2s over 70 tests — the per-test medians
+        #                   in testdata/main-suite-durations.tsv, which
+        #                   #877 regenerated from the same runs
+        #   failure suite   126.2s over 4 tests
+        #   job overhead    115s: checkout, plugin build + install,
+        #                   fixture bring-up, teardown. Ranged 91-172s
+        #                   over the window, which is why the shard
+        #                   arithmetic below is quoted to the second and
+        #                   the timeouts to the minute.
         #
-        #   OF=2   271/269s  ->  367s job  ->  gate 367s
-        #   OF=3   179/181/180s -> 276s job -> gate 276s   <- here
-        #   OF=4   134..136s -> 231s job   ->  gate 231s
+        #   observed gate   main-1 441s median, 511s max — 7m21 against
+        #                   a 5-minute design. The three shards had
+        #                   drifted to 322/320/239s of test time because
+        #                   18 of the 70 tests had no row in the
+        #                   durations table and were costed at the mean.
         #
-        # Three, not four, and this time the reason is the POOL rather
-        # than the suite. OF=4 lands the shards exactly on the failure
-        # suite's 231s — the natural stopping point, since past it the
-        # failure suite is the critical path and stage 3 (sharding it) is
-        # the next lever. But it makes a run take five privileged jobs of
-        # eight, where three take four and two concurrent PRs still fit.
-        # That ceiling is not theoretical: on 2026-08-02 two overlapping
-        # runs at six of eight slots left main-2-suite queued 2m10,
-        # against the ~2s that is otherwise universal. OF=4 buys 45s and
-        # spends it back the first time two PRs land together. It is
-        # worth revisiting with a bigger pool — that is #430's question,
-        # re-scoped.
+        # PREDICTED with the regenerated table (per-shard test time from
+        # scripts/integration-shard.sh, plus the 115s overhead):
+        #
+        #   OF=3   293/293/293s     ->  408s job  ->  gate 408s  6m48
+        #   OF=4   219..221s        ->  336s job  ->  gate 336s  5m36
+        #   OF=5   173..178s        ->  293s job  ->  gate 293s  4m53  <-
+        #   OF=6   145..149s        ->  264s job  ->  gate 264s  4m24
+        #   OF=7   123..128s        ->  243s job  ->  gate 243s  4m03
+        #
+        #   failure suite   126s test -> 239s job median, 299s max
+        #
+        # Five, and this time the failure suite is NOT the reason. It
+        # does not become the critical path here: 293s of main against
+        # 239s of failure. The crossover is OF=7, where the shards land
+        # on the failure job and sharding THAT becomes the next lever
+        # (#430) — so a sixth or seventh shard is available if wanted,
+        # it just is not what this change is buying.
+        #
+        # Five is where the gate first clears five minutes, and past it
+        # each extra shard costs a whole privileged runner slot for a
+        # shrinking return: 3->5 buys 115s for two slots, 5->7 buys 50s
+        # for two. Five main shards plus failure is SIX privileged jobs
+        # per run where three shards was four, and that is the cost this
+        # change actually spends. #468 stopped at three for exactly that
+        # reason against a pool of 8, where two concurrent runs had to
+        # fit; #877 widens on the premise that the pool is expanded to
+        # carry it. If it is not, two overlapping runs queue — which the
+        # watchdog reports as a capacity shortage rather than as a suite
+        # failure (#513), so the symptom is legible rather than silent.
         include:
           - suite: main-1
-            target: integration-test-shard SHARD=1 OF=3
+            target: integration-test-shard SHARD=1 OF=5
           - suite: main-2
-            target: integration-test-shard SHARD=2 OF=3
+            target: integration-test-shard SHARD=2 OF=5
           - suite: main-3
-            target: integration-test-shard SHARD=3 OF=3
+            target: integration-test-shard SHARD=3 OF=5
+          - suite: main-4
+            target: integration-test-shard SHARD=4 OF=5
+          - suite: main-5
+            target: integration-test-shard SHARD=5 OF=5
           - suite: failure
             target: integration-test-failure
     env:
@@ -417,7 +483,7 @@ jobs:
       # Authenticate to Docker Hub before anything pulls from it (#562).
       #
       # The plugin build pulls two Hub base images — golang:*-alpine and
-      # alpine:* — on each of the four suite jobs. Anonymously, those are
+      # alpine:* — on each of the six suite jobs. Anonymously, those are
       # billed to a per-ADDRESS quota shared by the whole runner pool and
       # by anything else behind the same address. Run 31939915811 spent
       # it: two suite jobs died 15s into `make plugin` with
@@ -520,8 +586,8 @@ jobs:
       # modified plugin code (new driver-opts, RPC shape changes,
       # etc.), since the production plugin pre-dated the change.
       #
-      # Both suite jobs build their own. The tag is identical in both,
-      # which is safe because the dhcp-ci runners are ephemeral and
+      # Every suite job builds its own. The tag is identical in all of
+      # them, which is safe because the dhcp-ci runners are ephemeral and
       # one-job-per-container — each has its own nested Docker daemon,
       # so there is no shared plugin namespace to collide in. The ~60s
       # is duplicated but parallel: it costs aggregate CPU, not wall
@@ -575,7 +641,7 @@ jobs:
           docker plugin disable "${INTEGRATION_PLUGIN_REF}" 2>/dev/null || true
           docker plugin rm -f "${INTEGRATION_PLUGIN_REF}" 2>/dev/null || true
 
-  # The required check. Collapses the two suite jobs into the single
+  # The required check. Collapses the whole suite matrix into the single
   # context branch protection knows about (see the topology note at the
   # top — this name is load-bearing).
   #
@@ -608,7 +674,7 @@ jobs:
 
           if [ "$DECISION" != "run" ]; then
             if [ "$SUITES" = "skipped" ]; then
-              echo "PASS: gate decided the suites were not needed for this event; both were skipped."
+              echo "PASS: gate decided the suites were not needed for this event; every suite job was skipped."
               exit 0
             fi
             echo "FAIL: gate said '$DECISION' but the suite rollup is '$SUITES' — expected 'skipped'."
@@ -617,13 +683,13 @@ jobs:
 
           case "$SUITES" in
             success)
-              echo "PASS: both suites passed."
+              echo "PASS: every suite job passed."
               ;;
             skipped)
               # Would mean the suites were skipped while the gate asked
               # for them: a green here would report "tested" for a run
               # that tested nothing.
-              echo "FAIL: gate asked for a run but both suites were skipped."
+              echo "FAIL: gate asked for a run but every suite job was skipped."
               exit 1
               ;;
             *)
