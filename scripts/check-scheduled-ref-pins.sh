@@ -23,11 +23,18 @@
 #
 # WHY A GATE AND NOT A COMMENT. This was fixed once, in
 # issue-state-labels.yml (#490), and the fix reached none of its three
-# siblings for three releases. Two of them carried a comment describing
-# the hazard they were suffering from. The comment was correct and
-# changed nothing, which is the finding #839 actually reports: the
-# defect is that ONE workflow was fixed and nothing reconciled the
-# others against it.
+# siblings for three releases. ALL THREE of them carried a comment
+# describing the hazard they were suffering from, and this change
+# removes all three. Measured at dd5e3fe -- a fixed tree, so the
+# citation does not go stale when this branch is rebased:
+# label-taxonomy.yml:48, milestone-scope.yml:38, starter-tasks.yml:24. The comment was correct and changed nothing,
+# which is the finding #839 actually reports: the defect is that ONE
+# workflow was fixed and nothing reconciled the others against it.
+#
+# This paragraph said "two of them" until somebody counted. It
+# understated its own argument, which is the cheap direction to be
+# wrong in -- and it is still a count in a header meant to be the
+# durable record, so it carries a file:line for every item now.
 #
 # WHY THE CLASS IS DECLARED RATHER THAN DERIVED. Two derivations were
 # measured against the real corpus and both fail:
@@ -53,6 +60,54 @@
 # `issues:` is a contradiction, and so is the reverse. Two independent
 # statements have to agree, and neither alone is believed.
 #
+# THE PERMISSION SIDE OF THAT CROSS-CHECK IS AN ENUMERATION, SO IT
+# STATES WHERE IT ENDS. `permissions:` has four spellings in the Actions
+# schema and this gate reads all four:
+#
+#     permissions:              a block mapping -> `issues:` at depth
+#     permissions: {...}        a flow mapping  -> `issues:` on the line
+#     permissions: write-all    a scalar        -> grants `issues: write`
+#     permissions: read-all     a scalar        -> see the next paragraph
+#
+# Anything else after `permissions:` is a RESIDUE, and the gate REFUSES
+# it (exit 2) rather than reading it as absent. That refusal is the
+# point. A gate keyed on spelling reproduces its own silence: the block
+# rule and the flow rule each match a shape, and a value matching
+# neither used to leave `issues` at 0 without a word -- `read-all` and
+# `write-all` both did, and the second is full tracker WRITE access
+# declaring `tree`, skipping the pin, and passing. Enumerating a third
+# spelling without a residue only moves that silence one spelling along.
+#
+# `read-all` IS NOT A DECLARATION, deliberately and not by omission.
+# Measured 2026-08-28,
+# `gh api repos/OWNER/REPO/actions/permissions/workflow`:
+# `default_workflow_permissions` is `read`. So `read-all` narrows
+# nothing and grants precisely what a workflow carrying no
+# `permissions:` block at all already has. It states the default; it
+# does not request the tracker. It therefore neither contradicts a
+# `tree` marker nor satisfies a `tracker` one -- a tracker workflow has
+# to DECLARE `issues:`, for the reason WHY THE CLASS IS DECLARED RATHER
+# THAN DERIVED gives above, and
+# `read-all` beside a `tracker` marker is reported exactly as an absent
+# block is. scorecard.yml is the live instance: it writes
+# `permissions: read-all` and declares `tree`, and both statements are
+# right. (Its one job overrides that top-level grant with a narrower
+# block that names no `issues:` at all, so its effective tracker access
+# is none -- a second, independent reason the `tree` marker is the
+# correct one there. The gate does not model job-level overrides; it
+# does not need to, because `read-all` already reads as no declaration.)
+#
+# THE BOUNDARY THAT LEAVES, WRITTEN BESIDE THE CODE RATHER THAN
+# ANYWHERE ELSE. The cross-check corroborates; it fires only when the
+# permission is present to disagree. A workflow that really judges the
+# tracker, declares `tree`, and asks for no `issues:` at all -- or
+# writes `read-all` -- passes, because nothing contradicts its marker.
+# That hole is not new and cannot be closed from the permission side:
+# the measurement in WHY THE CLASS IS DECLARED RATHER THAN DERIVED is
+# exactly why the permission cannot be the key. `write-all` is closable because it
+# is an ESCALATION above the repository default that no tree workflow
+# can want, and it is closed.
+#
 # THE MARKER. One line, anywhere in the file, exactly:
 #
 #     # scheduled-subject: tracker
@@ -63,6 +118,16 @@
 #            `ref: dev`, and there must be a checkout at all.
 # `tree`     judges the tree itself -> no actions/checkout may pin
 #            `ref: dev`; `main`'s copy is the right copy.
+#
+# WHAT `tree` MEANS AT ITS EDGE. The two classes split on ONE question
+# -- does this workflow's verdict depend on live tracker state? --
+# and `tree` is the answer "no", not the claim "it reads the tree".
+# run-retention.yml is the member that makes the difference visible: it
+# deletes old workflow runs through the API and reads nothing out of its
+# checkout, so it judges neither subject. It is `tree` because that is
+# the class whose operative rule is right for it -- do not pin. Pinning
+# it to `dev` would be the over-correction #839 names, and a third class
+# would need a third RULE to be worth declaring, which it has not got.
 #
 # A MISSING MARKER FAILS. That is the part that closes #839 rather than
 # patching its instances: a scheduled workflow added tomorrow cannot
@@ -96,6 +161,18 @@
 # #839 reports; forbidding it on tree workflows catches the
 # over-correction the issue explicitly names ("pinning everything would
 # be wrong"). A guard with one direction only half-states its rule.
+#
+# THE DOMAIN IS THIS BRANCH'S DIRECTORY; THE POPULATION THAT FIRES IS
+# THE DEFAULT BRANCH'S. This gate runs per pull request, so it judges
+# the workflows in front of it, while the crons it reasons about fire
+# from `main`. The two sets differ for one release window: a workflow
+# added on `dev` is judged here before it can fire, and one deleted on
+# `dev` leaves this domain while `main`'s copy keeps firing until the
+# release ships. Measured 2026-08-28: `main` holds 24 workflow files and
+# this branch 25, the extra being run-retention.yml, which is not on
+# `main`, 404s as a workflow, and has never fired -- a difference in the
+# harmless direction, and nothing on `main` is missing here. Nothing in
+# this gate closes that window; the release does.
 #
 # WHAT IT DOES NOT CLAIM. It reads workflow text, so it cannot tell
 # that a tracker workflow's script actually reads the checked-out tree,
@@ -138,7 +215,9 @@ mapfile -t files < <(printf '%s\n' "${files[@]}" | sort)
 # facts_of emits one `key=value` line per workflow file:
 #
 #   scheduled     1 when the `on:` block declares a `schedule:` trigger
-#   issues        1 when any permissions block grants `issues:`
+#   issues        1 when any permissions block declares `issues:`
+#   unknown_perm  1 when a `permissions:` value was seen that is none of
+#                 the four spellings the header enumerates
 #   checkouts     how many actions/checkout steps the file has
 #   pinned_dev    how many of those pin ref to dev / refs/heads/dev
 #   other_ref     how many pin ref to something else (tag, sha, input)
@@ -161,7 +240,7 @@ facts_of() {
         # what is cut.
         function decomment(s) { sub(/[[:space:]]#.*$/, "", s); return s }
 
-        BEGIN { sched = 0; issues = 0; co = 0; dev = 0; other = 0 }
+        BEGIN { sched = 0; issues = 0; co = 0; dev = 0; other = 0; unk = 0 }
 
         # --- the on: block -------------------------------------------
         # A flow mapping puts the trigger on the `on:` line itself:
@@ -209,6 +288,22 @@ facts_of() {
             if (decomment($0) ~ /issues[[:space:]]*:/) issues = 1
         }
 
+        # And the SCALAR spelling, which is neither of the two above and
+        # was read as `issues = 0` in silence by both. `write-all` grants
+        # `issues: write`; `read-all` grants exactly this repository default
+        # (measured: default_workflow_permissions is read) and so declares
+        # nothing. Any OTHER value is the residue: refused, not assumed,
+        # because an enumeration with no residue just relocates the silence
+        # the two rules above already produced twice.
+        /^[[:space:]]*permissions:[[:space:]]*[^[:space:]{#]/ {
+            pv = decomment($0)
+            sub(/^[[:space:]]*permissions:[[:space:]]*/, "", pv)
+            sub(/[[:space:]]+$/, "", pv)
+            gsub(/^["'"'"']|["'"'"']$/, "", pv)
+            if (pv == "write-all") issues = 1
+            else if (pv != "read-all") unk = 1
+        }
+
         # --- step blocks ---------------------------------------------
         # A step opens at `- ` and closes at the next non-blank,
         # non-comment line indented no deeper than its dash. The closing
@@ -238,8 +333,12 @@ facts_of() {
 
         END {
             if (in_step) close_step()
-            printf "scheduled=%d\nissues=%d\ncheckouts=%d\npinned_dev=%d\nother_ref=%d\n",
-                   sched, issues, co, dev, other
+            # unk is a COUNT and never the offending text. These lines
+            # are consumed by `eval`, so a value read out of a workflow
+            # file must not reach it; the reporting path re-reads the
+            # file for the value instead.
+            printf "scheduled=%d\nissues=%d\ncheckouts=%d\npinned_dev=%d\nother_ref=%d\nunknown_perm=%d\n",
+                   sched, issues, co, dev, other, unk
         }
 
         function close_step() {
@@ -262,14 +361,25 @@ sched_n=0
 for f in "${files[@]}"; do
     base="$(basename "$f")"
 
-    # Pre-set, then overwritten by the eval. Two reasons, and the
-    # second is the load-bearing one: shellcheck cannot see through an
-    # eval (SC2154), and without the reset a facts_of that produced
-    # nothing would leave the PREVIOUS file's values in place — a
-    # workflow would inherit its neighbour's verdict, and an awk that
-    # stopped working would look like a corpus of unscheduled files.
-    # A refusal must not look like an absence.
-    scheduled=0; issues=0; checkouts=0; pinned_dev=0; other_ref=0
+    # Pre-set, then overwritten by the eval, and both halves of the
+    # reason were re-measured rather than restated:
+    #
+    #   * shellcheck cannot see through an eval. Deleting this line
+    #     produces six SC2154 warnings (measured, shellcheck 0.10.0), and
+    #     `shellcheck -S warning scripts/*.sh` is a lane step, so the lane
+    #     goes red. This is the half the self-test cannot observe, and the
+    #     line's mutant is killed there rather than here.
+    #
+    #   * it stops a file being judged on the PREVIOUS file's facts when
+    #     facts_of produces nothing. On its own that is defence in depth:
+    #     the refusal below `continue`s first, so deleting this line alone
+    #     changes no verdict (measured). Delete BOTH and `set -u` aborts
+    #     the run on the first unreadable file (measured) — noisy, but
+    #     mid-corpus, so the files after it are never examined.
+    #
+    # A refusal must not look like an absence, and the refusal below is
+    # what enforces that; this line is the pair to it, not a substitute.
+    scheduled=0; issues=0; checkouts=0; pinned_dev=0; other_ref=0; unknown_perm=0
     facts="$(facts_of "$f")"
     if [ -z "$facts" ]; then
         echo "::error file=$f,title=Cannot read workflow::extracting facts from $base" \
@@ -338,12 +448,38 @@ for f in "${files[@]}"; do
             ;;
     esac
 
+    # A `permissions:` value the enumeration does not cover disables the
+    # CROSS-CHECK and nothing else: with the permission unreadable the
+    # marker would be the only witness, and the marker being believed
+    # alone is the failure the cross-check exists to prevent. The pin
+    # rule below still runs -- it reads checkouts, not permissions -- so
+    # the file is still judged on everything that can still be judged.
+    # This is a refusal (exit 2), not a violation: the gate could not
+    # see, and it says so instead of passing.
+    if [ "$unknown_perm" -ne 0 ]; then
+        # Captured whole and trimmed with parameter expansion rather
+        # than piped through `head`: a consumer that exits early SIGPIPEs
+        # the producer, and under pipefail that reports failure on
+        # success (check-pipefail-consumers.sh).
+        bad_perm="$(sed -n 's/^[[:space:]]*permissions:[[:space:]]*\([^[:space:]{#][^#]*\)$/\1/p' "$f")"
+        bad_perm="${bad_perm%%$'\n'*}"
+        bad_perm="$(printf '%s' "$bad_perm" | tr -cd '[:print:]')"
+        bad_perm="${bad_perm:0:60}"
+        echo "::error file=$f,title=Unclassifiable permissions value::$base writes" \
+             "\`permissions: $bad_perm\`, which is neither a block mapping, a flow" \
+             "mapping, \`read-all\` nor \`write-all\`. The cross-check that keeps the" \
+             "\`# scheduled-subject:\` marker from being its own only witness cannot be" \
+             "made against a permission this gate cannot read, and reading it as absent" \
+             "is how \`write-all\` passed as \`tree\` (#839)." >&2
+        cannot=1
+    fi
+
     # The declaration is not taken on trust. `issues:` is the permission
     # a tracker workflow needs and a tree workflow has no use for, so
     # the two statements have to agree. Neither is believed alone: the
     # permission cannot be the key (default_workflow_permissions is
     # `read`, so omitting it still works), and the marker is prose.
-    if [ "$subject" = "tree" ] && [ "$issues" -eq 1 ]; then
+    if [ "$unknown_perm" -eq 0 ] && [ "$subject" = "tree" ] && [ "$issues" -eq 1 ]; then
         echo "::error file=$f,title=Marker contradicts permissions::$base declares" \
              "\`# scheduled-subject: tree\` but requests the \`issues:\` permission." \
              "A workflow that judges only the tree has no use for tracker access; one" \
@@ -351,7 +487,7 @@ for f in "${files[@]}"; do
         fail=1
         continue
     fi
-    if [ "$subject" = "tracker" ] && [ "$issues" -eq 0 ]; then
+    if [ "$unknown_perm" -eq 0 ] && [ "$subject" = "tracker" ] && [ "$issues" -eq 0 ]; then
         echo "::error file=$f,title=Marker contradicts permissions::$base declares" \
              "\`# scheduled-subject: tracker\` but requests no \`issues:\` permission." \
              "A workflow that judges the tracker declares the access it needs, so that" \
