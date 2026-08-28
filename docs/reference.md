@@ -639,9 +639,38 @@ docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.8.0 \
 
 - The leased address lands on the interface as a `/128` next to the v4
   address; `docker inspect` reports it as `GlobalIPv6Address`.
-- **The default route stays RA-delegated.** DHCPv6 carries no router
-  option by design, and the container's kernel honours Router
-  Advertisements itself. The `gateway` option is v4-only.
+- **The default route comes from Router Advertisements.** DHCPv6 carries
+  no router option by design (RFC 8415 §21), so router discovery is the
+  only source of one (RFC 4861 §6.3.4) — and a DHCPv6 address does not
+  make its own prefix on-link either (RFC 5942 §4 rule 1, restated in
+  RFC 8415 §18.2.10.1). The `gateway` option is v4-only. At `Join` the
+  plugin additionally copies the host parent interface's own IPv6
+  default route into the endpoint as a starting gateway; that copy does
+  not expire and is not refreshed, so it is a head start, not the
+  mechanism.
+- **The container's kernel is put in charge of advertisements, and kept
+  in charge** (v1.9.0+, #875). `dhcpcd` sets
+  `net.ipv6.conf.<if>.accept_ra=0` and `.autoconf=0` on the interface it
+  manages, and re-does it on every carrier acquisition — so before
+  v1.9.0 nothing in the container processed advertisements after the
+  first few seconds. The address stopped being refreshed and the default
+  route disappeared at the end of the first advertisement's router
+  lifetime, while on-link traffic kept working, which is what made it
+  hard to spot. The DHCPv6 client now runs with `accept_ra=2`,
+  `autoconf=1` and `keep_addr_on_down=1` pinned per-interface and held
+  read-only for the client's own view, so `dhcpcd` cannot turn them off
+  again. `accept_ra=2` rather than `1` because a container that enables
+  forwarding — VPN, NAT, docker-in-docker — would otherwise lose
+  advertisement processing silently; `autoconf=1` because the router's
+  prefix A flag is what decides whether an address forms (RFC 4862
+  §5.5.3), not the plugin; `keep_addr_on_down=1` because a carrier flap
+  otherwise flushes the address the plugin applied and nothing
+  re-applies it. Steps that fail are counted as
+  `router_advert_guard_failures` (below) and the client starts anyway.
+  *Known bound:* `dhcpcd` also sets the interface's address generation
+  mode to `none` over netlink, which the read-only pin cannot reach, so
+  after a carrier flap the interface does not regenerate a link-local
+  address. Global addressing and the default route are unaffected.
 - **Identity is a stable DUID-LL** (type 3) derived from the interface
   MAC via pinned config — no timestamp, so the same MAC always yields the
   same DUID. **The IAID is pinned from the MAC too** (v1.2.0, #152): the
@@ -856,6 +885,7 @@ diagnosing a specific container from them alone is not.
 | `mtu_refused` | no | (v1.8.0+) Option-26 MTUs outside `[576, 65535]`, refused with the container link left at the MTU it had. Only moves with `propagate_mtu=true`. Neither `dhcpcd` nor the kernel holds the bottom of that range — a server-supplied 68 is exported verbatim and accepted — and the result is destroyed throughput plus black-holed path MTU discovery, re-applied on every renewal, which looks like a slow network rather than a misconfiguration. |
 | `directives_refused` | no | (v1.9.0+) `dhcpcd.conf` directives dropped before being written because their value carried a control character. `dhcpcd.conf` has no quoting, so a value containing a newline would not be escaped — it would become a second directive — and dropping it is the correct handling. The counter exists because the drop is otherwise **silent to the operator**: a `hostname`, `vendor_class` or `client_id` you set is simply not applied, the lease is obtained without it, and the plugin reports `healthy`. Distinct from `unsafe_hostnames_rejected`, which counts the *container* hostname rejected earlier, and from `unsafe_option_values_dropped`, which counts values the *server* sent. This one counts what **you** configured. Any non-zero value is worth reading: a legitimate value never contains a control character. |
 | `mount_prep_failures` | no | (v1.9.0+) Individual commands in a DHCP client's private mount-namespace preparation that failed. Counts **commands, not clients** — one client that fails three of its four preparation steps adds 3. The commands are chained so that a failure does not stop the ones after it and `dhcpcd` starts regardless, which is a deliberate degrade and usually harmless; the reason to watch it is the one case that is not. The preparation gives each client its own `dhcpcd` run directory, and two containers whose interface has the same name (the default `eth0` on both) otherwise collide on `dhcpcd`'s control socket — the second client becomes a no-op that never renews and never releases, while everything else looks normal. Before this counter the only trace was a shell error on the plugin's stderr, indistinguishable from `dhcpcd`'s routine output. |
+| `router_advert_guard_failures` | no | (v1.9.0+) Steps of a DHCPv6 client's Router-Advertisement guard that failed. Counts **steps, not clients** — each guarded sysctl contributes a write, a read-back and a read-only pin, so one client can add up to three. The client starts regardless, which is a deliberate degrade and the reason this counter exists: a container whose guard did not take looks completely healthy. Its address and default route are the ones the kernel accepted in the first seconds and nothing refreshes them, so it keeps working on-link and loses everything through the router at the end of the first advertisement's router lifetime — minutes or hours later, with no error anywhere. Any non-zero value means at least one container is on that path. Zero on IPv4-only networks and on any plugin built before v1.9.0, which do not run the guard at all. |
 | `ledger_write_failures` | no | Failed `audit_log` ledger appends — degrades forensics, not networking. Operators using `audit_log` alert on this. |
 | `dhcpv6_config_only` | no | (v1.9.0+) DHCPv6 **information replies** received: a network advertising the RA "other configuration available" flag answered an information request with options and no address (#815). Not `healthy`-affecting — this is the normal exchange on a stateless IPv6 network, not a fault. Before v1.9.0 these were dropped unread, so such a network was indistinguishable from one that answered nothing at all. It counts replies **received**, not configuration applied: whether anything reaches the container depends on `propagate_dns` and on what the server actually sent, so a value climbing while the container's resolver never changes is the signal that the network advertises configuration it does not supply. No `_v4` half exists — the plugin never runs `dhcpcd`'s v4 DHCPINFORM mode, and a zero-forever v4 series would imply a measurement nobody takes. |
 | `dhcpv6_not_offered` | no | (v1.9.0+) Endpoints that came up on an IPv6 network whose router advertisement offered **no DHCPv6 address** — the RA carried neither the managed flag nor, in the SLAAC case, any DHCPv6 offer at all (#868). Not `healthy`-affecting and not a fault: the network is working exactly as configured and there is no DHCPv6 address on it to be had. The container comes up with IPv4 from DHCP and an IPv6 link-local; it does **not** get a global IPv6 address, because `dhcpcd` turns kernel autoconfiguration off on the interface it manages (see the DHCPv6 section). Before v1.9.0 the endpoint was refused outright and no container could start on such a network. Read it together with `dhcpv6_config_only`: that one says a stateless network answered an information request; this one says the endpoint proceeded without a v6 lease. Kept apart from `dhcpv6_no_router_advert` below because the two are different situations that would otherwise be indistinguishable — this one is a deliberate operator configuration. |
