@@ -1623,6 +1623,14 @@ func (m *dhcpManager) Start(ctx context.Context) (err error) {
 		}
 
 		if m.opts.IPv6 {
+			// The engine disables IPv6 outright on a sandbox interface
+			// whose endpoint carries no IPv6 address, which is now a
+			// reachable state (#868). Clear that BEFORE the link-local
+			// wait below, because on a disabled link the link-local
+			// never appears at all and the wait would time out for a
+			// reason DAD has nothing to do with. See v6_link.go.
+			m.ensureIPv6Enabled()
+
 			// DHCPv6 needs a usable link-local source address. The
 			// link just landed in this netns, so its LL is typically
 			// still DAD-tentative — and a host must NOT answer

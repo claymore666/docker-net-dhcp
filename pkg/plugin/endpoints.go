@@ -745,6 +745,24 @@ type HealthResponse struct {
 	// a network was indistinguishable from one that answered nothing.
 	// It has no v4 half; see the atom for why.
 	DHCPv6ConfigOnly int32 `json:"dhcpv6_config_only"`
+	// DHCPv6NotOffered counts endpoints created without a DHCPv6
+	// address because the segment advertised no managed DHCPv6 --
+	// stateless or SLAAC (#868). NOT healthy-affecting: on those
+	// networks it is the correct outcome, there being no DHCPv6
+	// address on them to be had. The endpoint has no global IPv6
+	// address either -- dhcpcd turns kernel autoconfiguration off on
+	// the interface it manages, so nothing autoconfigures from the
+	// advertised prefix; see docs/reference.md.
+	DHCPv6NotOffered int32 `json:"dhcpv6_not_offered"`
+	// DHCPv6NoRouterAdvert counts endpoints created without a DHCPv6
+	// address because no router advertisement arrived at all (#868).
+	// Kept apart from DHCPv6NotOffered because "no DHCPv6 here" and
+	// "nothing said anything" call for different operator action.
+	DHCPv6NoRouterAdvert int32 `json:"dhcpv6_no_router_advert"`
+	// IPv6LinkEnableFailures counts container links IPv6 could not be
+	// enabled on before a DHCPv6 client was started. Distinguishes a
+	// quiet segment from one the plugin could never have heard.
+	IPv6LinkEnableFailures int32 `json:"ipv6_link_enable_failures"`
 }
 
 func (p *Plugin) apiHealth(w http.ResponseWriter, r *http.Request) {
@@ -890,5 +908,8 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		NAKsReceivedV6:               naksReceivedV6,
 		ClientStopFailuresV6:         clientStopFailuresV6,
 		DHCPv6ConfigOnly:             p.dhcpv6ConfigOnly.Load(),
+		DHCPv6NotOffered:             p.dhcpv6NotOffered.Load(),
+		DHCPv6NoRouterAdvert:         p.dhcpv6NoRouterAdvert.Load(),
+		IPv6LinkEnableFailures:       p.ipv6LinkEnableFailures.Load(),
 	}
 }

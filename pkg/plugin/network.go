@@ -1061,8 +1061,19 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 				base.RequestedIP = requestedIP
 			}
 
-			info, err := p.acquireWithPolicy(ctx, ctrName, pol, v6, timeout, r.EndpointID, base)
+			info, ra, err := p.acquireWithPolicy(ctx, ctrName, pol, v6, timeout, r.EndpointID, base)
 			if err != nil {
+				// A DHCPv6 acquisition that produced nothing is not
+				// automatically a failure: on a stateless or SLAAC
+				// segment there is no DHCPv6 address by definition, and
+				// treating the timeout as fatal meant no container
+				// started at all on those networks (#868). What the
+				// segment ADVERTISED decides, not how long we waited --
+				// a segment offering managed DHCPv6 that then goes
+				// quiet is still fatal, here as before.
+				if v6 && p.noteV6Absence(ra, ctrName, r.EndpointID, err) {
+					return nil
+				}
 				return fmt.Errorf("failed to get initial IP%v address via DHCP%v: %w", v6str, v6str, err)
 			}
 			ip, err := netlink.ParseAddr(info.IP)

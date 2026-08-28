@@ -19,6 +19,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -799,54 +800,239 @@ func (c *DHCPClient) await(ctx context.Context) error {
 	}
 }
 
+// RAObservation is what an acquisition attempt learned about the
+// segment's router advertisements while trying to get a lease.
+//
+// It exists because a failed DHCPv6 acquisition has two entirely
+// different meanings and a timeout cannot tell them apart (#868). A
+// segment whose advertisement carries the M flag is offering DHCPv6
+// addresses, so silence is a failure. A segment advertising without M
+// -- stateless, or plain SLAAC -- is saying there are no DHCPv6
+// addresses here, which is the NORMAL configuration of a great many
+// home routers and not a failure at all.
+//
+// Both fields are positive assertions. Zero value means "nothing was
+// observed", which is the honest reading of an attempt that saw no
+// advertisement.
+type RAObservation struct {
+	// Seen is true once any router advertisement reached the hook.
+	Seen bool
+	// Managed is true if any advertisement carried the M flag.
+	Managed bool
+}
+
+// Merge folds another attempt's observation into this one. Both fields
+// are OR-ed rather than overwritten: an advertisement seen on the first
+// attempt is still a fact on the third, and a later attempt that
+// happens to miss it must not erase it.
+func (o RAObservation) Merge(other RAObservation) RAObservation {
+	return RAObservation{
+		Seen:    o.Seen || other.Seen,
+		Managed: o.Managed || other.Managed,
+	}
+}
+
+// raDrainGrace bounds how long an acquisition waits for the collector
+// goroutine to hand over events already in the pipe, after dhcpcd has
+// been reaped. It is a handover bound, not a network one: nothing is
+// still being asked of the segment by the time it is used.
+const raDrainGrace = 500 * time.Millisecond
+
+// raManagedFlag is the letter dhcpcd puts in nd1_flags for a router
+// advertisement's "managed address configuration" bit. Measured against
+// dhcpcd 10.3.2: managed segments advertise "MO", stateless "O", SLAAC
+// the empty string.
+const raManagedFlag = "M"
+
+// observeRA folds one router advertisement's flag string into an
+// observation.
+//
+// It is a named function rather than three lines inside the collector
+// goroutine because it is the only place the wire's spelling becomes a
+// verdict, and everything downstream -- the retry loop's early exit,
+// the fatal/tolerated classification, two health counters -- is decided
+// by the boolean it returns. Inside the goroutine it was reachable only
+// through a live dhcpcd: every unit test of the loop above stubs
+// attemptGetIP out, so deleting the flag check entirely left the whole
+// package green.
+//
+// Seen is set from the CALL, not from the flags. An advertisement with
+// no flags at all is plain SLAAC -- a segment saying, positively, that
+// it offers no DHCPv6 -- and reading that as "nothing was advertised"
+// is the one confusion this whole path exists to prevent.
+func observeRA(o RAObservation, flags string) RAObservation {
+	o.Seen = true
+	if strings.Contains(flags, raManagedFlag) {
+		o.Managed = true
+	}
+	return o
+}
+
+// acquisition is what one dhcpcd run has reported SO FAR.
+//
+// "So far" is the whole design, and it is the fix for the fail-open
+// found while fixing #868 -- the issue record for all of this. The first
+// version accumulated locally in the collector goroutine and published
+// the result by sending on a channel once the event stream closed. The
+// stream closes when dhcpcd is reaped -- so on the one case where the
+// answer decides whether an endpoint is refused, the caller was reading
+// a channel nobody had written to yet:
+//
+//	managed segment, silent server -> dhcpcd never exits on its own ->
+//	the acquisition context expires -> Finish kills and reaps dhcpcd ->
+//	the caller reads the observation with its context ALREADY done
+//
+// At that point the ctx.Done() arm of the select is ready and the
+// observation arm usually is not, so the caller took the zero value:
+// "no router advertised here" for a segment that had advertised the
+// managed flag twice, nine seconds earlier, with both events visible in
+// the plugin's own log. That maps to the tolerated verdict, so a real
+// DHCPv6 outage on a managed network produced a running container with
+// no IPv6 address -- fail-open, on the guard whose entire purpose is to
+// stay closed. It is a race, so it also passed once, which is worse
+// than failing every time: TestDHCPv6_Managed_ServerSilent_IsStillFatal
+// went green at 46d8d61 and red at 28b5eb3 with nothing between them
+// that touches this path.
+//
+// Folding under a mutex as each event arrives removes the question. The
+// observation is monotone -- Seen and Managed are only ever set -- so a
+// snapshot taken at any moment is a true statement about what the
+// segment has said, never a stale one that later becomes wrong.
+type acquisition struct {
+	mu   sync.Mutex
+	last *Info
+	ra   RAObservation
+}
+
+// fold takes one event into the accumulator.
+func (a *acquisition) fold(event Event) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	switch event.Type {
+	case "bound", "renew":
+		v := event.Data
+		a.last = &v
+	case "routeradvert":
+		a.ra = observeRA(a.ra, event.RouterFlags)
+	}
+}
+
+// snapshot reports the last lease seen (nil if none) and the router
+// advertisements observed up to this instant. Safe to call while the
+// collector is still running, which is the point.
+func (a *acquisition) snapshot() (*Info, RAObservation) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.last, a.ra
+}
+
+// collectAcquisition drains one acquisition's event stream into a.
+//
+// Split out of the goroutine that runs it so both halves are reachable
+// without a live dhcpcd. The goroutine's body was previously the only
+// place event.RouterFlags was read, and every unit test of the retry
+// loop stubs attemptGetIP out -- so a version that read the wrong field,
+// or no field, left this package fully green and failed only in the
+// integration lane, ten minutes later and one layer away from the line
+// at fault.
+func collectAcquisition(events <-chan Event, a *acquisition) {
+	for event := range events {
+		a.fold(event)
+	}
+}
+
+// settleAcquisition gives the collector a bounded chance to finish
+// draining, then reports what it has.
+//
+// The bound is NOT a wait for the network and must not be read as one:
+// every caller reaches here with dhcpcd already reaped (Finish kills it
+// before returning on the context path, and it has exited on its own
+// otherwise), so the only thing outstanding is the scanner handing over
+// events already sitting in the pipe.
+//
+// It takes NO context, deliberately, and that absence is the fix for
+// the fail-open recorded on #868. The context is expired on exactly
+// the path where the answer decides an endpoint's fate -- a managed
+// segment whose server went
+// silent -- so a context-bounded read there is a read that has already
+// run out of time, and it returned the zero value: "nothing was
+// advertised here" for a segment that had advertised the managed flag.
+//
+// If the grace expires the snapshot is still returned rather than a
+// zero value. What was folded before the deadline is true, and
+// discarding it can only move the verdict toward tolerating an absence
+// that was never observed.
+func settleAcquisition(collected <-chan struct{}, a *acquisition, grace time.Duration) (*Info, RAObservation) {
+	select {
+	case <-collected:
+	case <-time.After(grace):
+	}
+	return a.snapshot()
+}
+
 // attemptGetIP runs dhcpcd once (opts must already carry Once=true)
-// and returns the lease info obtained. GetIP wraps it in a retry loop;
-// the indirection through attemptGetIPFunc lets unit tests exercise
-// that loop without running a real dhcpcd.
-func attemptGetIP(ctx context.Context, iface string, opts *DHCPClientOptions) (Info, error) {
+// and returns the lease info obtained, plus what the attempt observed
+// about the segment's router advertisements. GetIP wraps it in a retry
+// loop; the indirection through attemptGetIPFunc lets unit tests
+// exercise that loop without running a real dhcpcd.
+func attemptGetIP(ctx context.Context, iface string, opts *DHCPClientOptions) (Info, RAObservation, error) {
 	dummy := Info{}
+	var noRA RAObservation
 
 	client, err := NewDHCPClient(iface, opts)
 	if err != nil {
-		return dummy, fmt.Errorf("failed to create DHCP client: %w", err)
+		return dummy, noRA, fmt.Errorf("failed to create DHCP client: %w", err)
 	}
 
 	events, err := client.Start()
 	if err != nil {
-		return dummy, fmt.Errorf("failed to start DHCP client: %w", err)
+		return dummy, noRA, fmt.Errorf("failed to start DHCP client: %w", err)
 	}
 
-	// ch carries the final lease seen, or stays unsent if no bound/renew
-	// event arrived before the events channel closed. Buffered=1 so the
-	// goroutine never blocks on send.
-	ch := make(chan Info, 1)
+	// The collector folds events into acq as they arrive; collected is
+	// closed when the stream ends. Nothing is published by channel, so
+	// no read of the observation can depend on whether the stream has
+	// finished -- see the acquisition type for what that cost.
+	acq := &acquisition{}
+	collected := make(chan struct{})
 	go func() {
-		var last *Info
-		for event := range events {
-			if event.Type == "bound" || event.Type == "renew" {
-				v := event.Data
-				last = &v
-			}
-		}
-		if last != nil {
-			ch <- *last
-		}
-		close(ch)
+		defer close(collected)
+		collectAcquisition(events, acq)
 	}()
 
-	if err := client.Finish(ctx); err != nil {
-		return dummy, err
-	}
+	return finishAcquisition(client.Finish(ctx), collected, acq, raDrainGrace)
+}
 
-	select {
-	case info, ok := <-ch:
-		if !ok {
-			return dummy, util.ErrNoLease
-		}
-		return info, nil
-	case <-ctx.Done():
-		return dummy, ctx.Err()
+// finishAcquisition forms one attempt's verdict: what the collector has
+// observed, plus what Finish reported.
+//
+// Split out of attemptGetIP for the reason observeRA, collectAcquisition
+// and settleAcquisition were split out before it -- inside attemptGetIP
+// it is reachable only through a live dhcpcd, so no unit test in this
+// package could execute it, and a mutation that returned the ZERO
+// observation on the error path survived the whole suite. That mutation
+// IS the fail-open #868 records: the error path is the one a managed
+// segment with a silent server takes.
+//
+// The observation is returned on BOTH paths, and that is the whole
+// point. dhcpcd exiting non-zero on a stateless segment is not evidence
+// that no advertisement arrived -- the advertisement is what makes that
+// exit interpretable, and returning the zero value there reports "no
+// router on this segment" for a segment whose router had just spoken.
+// classifyV6Absence maps the zero observation to v6NoRouter, which is
+// TOLERATED, so getting this wrong fails OPEN on the guard whose entire
+// purpose is to stay closed.
+func finishAcquisition(finishErr error, collected <-chan struct{}, a *acquisition, grace time.Duration) (Info, RAObservation, error) {
+	dummy := Info{}
+
+	last, ra := settleAcquisition(collected, a, grace)
+	if finishErr != nil {
+		return dummy, ra, finishErr
 	}
+	if last == nil {
+		return dummy, ra, util.ErrNoLease
+	}
+	return *last, ra, nil
 }
 
 var attemptGetIPFunc = attemptGetIP
@@ -896,32 +1082,48 @@ func isRetryableLeaseErr(err error) bool {
 // The caller's opts is not mutated — we work on a local copy so a
 // caller that reuses the options struct between persistent and
 // one-shot calls doesn't get its Once flag flipped on.
-func GetIP(ctx context.Context, iface string, opts *DHCPClientOptions) (Info, error) {
+func GetIP(ctx context.Context, iface string, opts *DHCPClientOptions) (Info, RAObservation, error) {
 	dummy := Info{}
 
 	optsCopy := *opts
 	optsCopy.Once = true
 
 	var lastErr error
+	// Accumulated across attempts, never reset. What the segment
+	// advertised on the first try is still what it advertises on the
+	// last, and the verdict #868 needs is about the SEGMENT, not about
+	// one attempt.
+	var ra RAObservation
 	for {
 		if err := ctx.Err(); err != nil {
 			if lastErr != nil {
-				return dummy, fmt.Errorf("%w (last attempt error: %w)", err, lastErr)
+				return dummy, ra, fmt.Errorf("%w (last attempt error: %w)", err, lastErr)
 			}
-			return dummy, err
+			return dummy, ra, err
 		}
 
-		info, err := attemptGetIPFunc(ctx, iface, &optsCopy)
+		info, attemptRA, err := attemptGetIPFunc(ctx, iface, &optsCopy)
+		ra = ra.Merge(attemptRA)
 		if err == nil {
-			return info, nil
+			return info, ra, nil
+		}
+		// An advertisement WITHOUT the managed flag is conclusive on the
+		// spot: the segment has said there are no DHCPv6 addresses here,
+		// and retrying until the budget expires would burn the whole
+		// container-start budget to reach the same answer. An
+		// advertisement WITH it, or none at all, still gets every
+		// attempt -- the first is a server that may yet answer, the
+		// second may still be a router that has not spoken.
+		if ra.Seen && !ra.Managed {
+			return dummy, ra, err
 		}
 		if !isRetryableLeaseErr(err) {
 			// A context error mid-attempt is the deadline, not a new
 			// failure — report what we were retrying when it hit.
 			if lastErr != nil && ctx.Err() != nil {
-				return dummy, fmt.Errorf("%w (last attempt error: %w)", err, lastErr)
+				return dummy, ra, fmt.Errorf("%w (last attempt error: %w)", err, lastErr)
 			}
-			return dummy, err
+			return dummy, ra, err
 		}
 
 		lastErr = err
@@ -930,7 +1132,7 @@ func GetIP(ctx context.Context, iface string, opts *DHCPClientOptions) (Info, er
 		select {
 		case <-time.After(leaseRetryDelay + rand.N(leaseRetryJitter)):
 		case <-ctx.Done():
-			return dummy, fmt.Errorf("%w (last attempt error: %w)", ctx.Err(), lastErr)
+			return dummy, ra, fmt.Errorf("%w (last attempt error: %w)", ctx.Err(), lastErr)
 		}
 	}
 }

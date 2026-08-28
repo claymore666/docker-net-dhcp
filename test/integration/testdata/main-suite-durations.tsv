@@ -35,6 +35,17 @@
 #   33142691992 33126731828 33126471548 33125634261 33124986791 
 #   33124593887 33124518969 33124422853 33123576221 33122097314 
 #   33119628132 33119366240 #
+# FOUR ROWS COME FROM THIS BRANCH, NOT FROM THE 2026-08-28 CORPUS (#868).
+# The DHCPv6 no-address-mode work adds three tests and renames the fourth
+# (TestDHCPv6_NoAddressModes_RefuseTheEndpoint, 47.34, became
+# _StartTheEndpoint once the modes started rather than being refused), so
+# none of them appears in the runs sampled above. Their figures are the
+# median of the same `--- PASS: <name> (<n>s)` lines over the three
+# successful Integration runs this branch produced -- 33119628132,
+# 33126731828 and 33148580807 -- n=3 rather than n=22, spreads of 1.5s,
+# 1.4s, 1.8s and 1.7s respectively. Refresh them from the main corpus
+# once they have run on dev for a window.
+#
 # ONE ROW IS A SKIP COST, NOT A RUN COST.
 # TestInterfaceName_MultiNetworkDeterministic skipped in all 22 samples —
 # the engine does not yet honour a plugin-returned DstName (#125), so the
@@ -87,7 +98,10 @@ TestClientID_OverrideAppearsInLeaseFile	7.16
 TestConcurrency_DistinctLeases	27.35
 TestConcurrentRenew_SameInterfaceNameBothRenew	32.15
 TestConflictProbe_ReclaimsLeftoverRoute	13.73
-TestDHCPv6_NoAddressModes_RefuseTheEndpoint	47.34
+TestDHCPv6_Managed_ServerSilent_IsStillFatal	18.14
+TestDHCPv6_Managed_StillRequiresALease	10.74
+TestDHCPv6_NoAddressModes_StartTheEndpoint	41.03
+TestDHCPv6_Stateless_ConfigurationReachesTheContainer	12.46
 TestDNSPropagate_DefaultIsUnchanged	7.26
 TestDNSPropagate_OptInWritesResolvConf	8.71
 TestDUID_PersistsAcrossPluginRestart	13.86

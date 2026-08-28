@@ -1041,6 +1041,42 @@ type Plugin struct {
 	// misconfiguration this counter makes visible.
 	dhcpv6ConfigOnly atomic.Int32
 
+	// dhcpv6NotOffered counts endpoints created without a DHCPv6
+	// address because the segment's router advertisement did NOT carry
+	// the managed-address flag -- stateless or SLAAC (#868).
+	//
+	// This is a healthy outcome, not a failure. It is counted because
+	// an operator who expected DHCPv6 on that network needs to see that
+	// the network itself said otherwise, and because the alternative --
+	// silence -- is what made #868 invisible until a container failed
+	// to start.
+	dhcpv6NotOffered atomic.Int32
+
+	// dhcpv6NoRouterAdvert counts endpoints created without a DHCPv6
+	// address because NO router advertisement arrived at all (#868).
+	//
+	// Separate from dhcpv6NotOffered on purpose. "The segment told us
+	// there is no DHCPv6 here" and "the segment told us nothing" are
+	// different facts and call for different operator action: the first
+	// is a correctly configured stateless network, the second is a
+	// segment with no router, which may be a misconfiguration. Folding
+	// them into one counter would hide the second inside the first.
+	dhcpv6NoRouterAdvert atomic.Int32
+
+	// ipv6LinkEnableFailures counts container links the plugin could not
+	// administratively enable IPv6 on before starting a DHCPv6 client
+	// (#868).
+	//
+	// The engine sets disable_ipv6=1 on a sandbox interface whose
+	// endpoint carries no IPv6 address, which #868 made a reachable
+	// state. On such a link nothing IPv6 can arrive at all -- no
+	// link-local, no router solicitation, no information-request -- so a
+	// failure to clear it is the difference between "the segment is
+	// quiet" and "we never listened". Both otherwise present as DHCPv6
+	// timeouts, which is why this gets a counter rather than only the
+	// warning beside it.
+	ipv6LinkEnableFailures atomic.Int32
+
 	// displacedStops tracks the goroutines Join spawns to Stop a
 	// manager it displaced (#338). Join must not block on the dhcpcd
 	// release cycle, but Close must not exit while one is mid-release

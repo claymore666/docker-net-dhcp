@@ -295,6 +295,16 @@ func TestBuildEvent_LeaseLossEvents_EmitTypeOnly(t *testing.T) {
 //
 // INFORM (v4) stays. dhcpcd only fires it under -I, which renderArgs
 // never passes, so it is a reason no plugin input can produce.
+//
+// ROUTERADVERT stays too, and its presence here now says something
+// narrower than it used to (#868). The fakeEnv below does not set
+// NETDHCP_EMIT_RA, so this list is the claim about the DEFAULT scope --
+// the persistent renewal client, whose stream is what #815 protected.
+// The one-shot acquisition client opts in, and that path has its own
+// coverage in TestBuildEvent_RouterAdvertEmitsOnlyWhenOptedIn and
+// TestBuildEvent_RouterAdvertCarriesTheFlags. Reading this list as
+// "ROUTERADVERT is never an event" would be reading it wider than it
+// is measured.
 func TestBuildEvent_UnactionedReasonsSkipped(t *testing.T) {
 	for _, reason := range []string{
 		"PREINIT", "CARRIER", "NOCARRIER", "ROUTERADVERT", "STOP", "STOP6",
@@ -692,14 +702,147 @@ func TestBuildEvent_BoundV6DoesNotReportPartialNTP(t *testing.T) {
 
 // dhcpcd fires the hook far more often than we act on it. ROUTERADVERT
 // in particular arrives repeatedly on every v6 network, including the
-// stateless one, and must stay outside the event stream — otherwise
-// #815's new case would have widened the domain rather than the map.
+// stateless one, and must stay outside the persistent client's event
+// stream — otherwise #815's new case would have widened the domain
+// rather than the map.
+//
+// #868 added an opt-in for ROUTERADVERT, so this test no longer proves
+// what its name says on its own: without the env variable every reason
+// here is dropped, which is the default-scope claim and nothing more.
+// TestBuildEvent_OptingIntoRAWidensTheSetByExactlyOne is the other half
+// — it runs the same list WITH the opt-in and requires the other six to
+// stay dropped.
 func TestBuildEvent_Inform6DidNotWidenTheReasonSet(t *testing.T) {
-	for _, reason := range []string{"ROUTERADVERT", "INFORM", "PREINIT", "CARRIER", "STOP6", "STOPPED", "DELEGATED6"} {
+	for _, reason := range inform6UnwidenedReasons {
 		if _, emit := BuildEvent(reason, fakeEnv(map[string]string{
 			"new_dhcp6_name_servers": "2001:db8::53",
 		})); emit {
 			t.Errorf("reason %q became an event; only INFORM6 was added", reason)
 		}
+	}
+}
+
+// inform6UnwidenedReasons is shared by the two halves of the boundary
+// on purpose. Two copies of this list would let the opt-in half go
+// green over a smaller domain than the default half, which is exactly
+// the failure the pair exists to catch.
+var inform6UnwidenedReasons = []string{
+	"ROUTERADVERT", "INFORM", "PREINIT", "CARRIER", "STOP6", "STOPPED", "DELEGATED6",
+}
+
+// TestBuildEvent_OptingIntoRAWidensTheSetByExactlyOne drives the same
+// list as above with NETDHCP_EMIT_RA set — the one-shot acquisition
+// client's configuration (#868).
+//
+// The opt-in must move ROUTERADVERT and nothing else. Widening
+// mapReason's default arm, or keying the opt-in on anything coarser
+// than the single reason, is caught here and not by either half alone.
+func TestBuildEvent_OptingIntoRAWidensTheSetByExactlyOne(t *testing.T) {
+	for _, reason := range inform6UnwidenedReasons {
+		_, emit := BuildEvent(reason, fakeEnv(map[string]string{
+			EmitRAEnv:                "1",
+			"new_dhcp6_name_servers": "2001:db8::53",
+		}))
+		want := reason == "ROUTERADVERT"
+		if emit != want {
+			t.Errorf("reason %q with the opt-in set: emit=%v, want %v", reason, emit, want)
+		}
+	}
+}
+
+// TestBuildEvent_RouterAdvertEmitsOnlyWhenOptedIn pins the gate itself
+// rather than the reason set: the SAME reason and the SAME flags,
+// differing only in whether the one-shot client's env variable is
+// present.
+//
+// Without this, mapReason returning `true` unconditionally for
+// ROUTERADVERT would still pass TestBuildEvent_RouterAdvertCarriesTheFlags
+// below, and the only thing that would go red is the default-scope list
+// — which reads as a change to #815's contract rather than as a broken
+// gate.
+func TestBuildEvent_RouterAdvertEmitsOnlyWhenOptedIn(t *testing.T) {
+	base := map[string]string{"nd1_flags": "MO"}
+
+	if _, emit := BuildEvent("ROUTERADVERT", fakeEnv(base)); emit {
+		t.Error("ROUTERADVERT emitted without the opt-in; #815's persistent stream would carry every RA on the segment")
+	}
+
+	optedIn := map[string]string{"nd1_flags": "MO", EmitRAEnv: "1"}
+	if _, emit := BuildEvent("ROUTERADVERT", fakeEnv(optedIn)); !emit {
+		t.Error("ROUTERADVERT dropped WITH the opt-in; the acquisition client would see no advertisement and #868 would be unfixed")
+	}
+}
+
+// TestBuildEvent_RouterAdvertCarriesTheFlags covers the three flag
+// spellings dhcpcd exports, measured against dhcpcd 10.3.2 and dnsmasq
+// 2.92 with one mode per network namespace:
+//
+//	managed (--dhcp-range=<pool> --enable-ra)              nd1_flags=MO
+//	stateless (--dhcp-range=<prefix>,ra-stateless)         nd1_flags=O
+//	SLAAC (--dhcp-range=<prefix>,ra-only)                  nd1_flags= (empty)
+//
+// The fourth mode — no router at all — is deliberately absent from this
+// table: it fires no ROUTERADVERT, so there is no builder input to
+// assert on. Its coverage lives one layer up, where the acquisition
+// client distinguishes "an advertisement said no DHCPv6" from "nothing
+// advertised", because that is the layer that can observe an absence.
+//
+// The empty case is the one worth stating: an RA with neither flag is
+// SLAAC, so an empty RouterFlags on an emitted routeradvert event means
+// "no flags were set", never "no advertisement". The event's existence
+// carries that.
+func TestBuildEvent_RouterAdvertCarriesTheFlags(t *testing.T) {
+	cases := []struct {
+		name  string
+		flags string
+	}{
+		{"managed", "MO"},
+		{"stateless", "O"},
+		{"slaac", ""},
+	}
+
+	// Non-vacuity. The three spellings ARE the claim -- the comment
+	// above names them as measured against dhcpcd 10.3.2 -- and the
+	// empty one carries the part that is easy to lose: an RA with no
+	// flags is SLAAC, not an absent advertisement. Emptying this table,
+	// or dropping just that row, leaves the lane green.
+	haveEmpty := false
+	for _, tc := range cases {
+		if tc.flags == "" {
+			haveEmpty = true
+		}
+	}
+	if len(cases) != 3 || !haveEmpty {
+		t.Fatalf("the flag table has %d rows, empty-flags row present=%v; want the 3 "+
+			"spellings dhcpcd exports, the empty one among them — that row is what "+
+			"says an advertisement with no flags is still an advertisement",
+			len(cases), haveEmpty)
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := map[string]string{EmitRAEnv: "1"}
+			if tc.flags != "" {
+				env["nd1_flags"] = tc.flags
+			}
+
+			got, emit := BuildEvent("ROUTERADVERT", fakeEnv(env))
+			if !emit {
+				t.Fatal("ROUTERADVERT with the opt-in did not emit")
+			}
+			if got.Type != "routeradvert" {
+				t.Errorf("Type = %q, want %q", got.Type, "routeradvert")
+			}
+			if got.RouterFlags != tc.flags {
+				t.Errorf("RouterFlags = %q, want %q", got.RouterFlags, tc.flags)
+			}
+			// An advertisement carries no lease. A non-empty IP here
+			// would mean the routeradvert arm fell through into the
+			// address path and handed the consumer an address the
+			// segment never offered.
+			if got.Data.IP != "" {
+				t.Errorf("routeradvert event carried an address %q; it must carry flags only", got.Data.IP)
+			}
+		})
 	}
 }
