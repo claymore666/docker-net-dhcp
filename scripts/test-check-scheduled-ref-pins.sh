@@ -110,9 +110,33 @@ wkey() { printf '%s%s%s%s:' "$KQ" "$1" "$KQ" "$KSP"; }
 #
 #   block            (default) block mappings throughout, marker at column 0
 #   flow-on          `on: {schedule: [{cron: ...}]}` on one line
+#   flow-on-next     the same flow mapping on the line AFTER `on:`, so the
+#                    key that carries the trigger is not the key that
+#                    opens the block
+#   explicit-on      YAML's explicit key inside the on: block --
+#                    `? schedule` on one line, `:` on the next
 #   flow-perms       `permissions: {contents: read, issues: read}` on one line
 #   flow-perms-multi the same flow mapping spread over three lines, so it
 #                    does not end on the line that opens it
+#   flow-perms-next  the flow mapping on the line AFTER `permissions:`
+#   flow-perms-next2 the same, split so it does not end on the line that
+#                    opens it either -- and with `issues:` on the OPENING
+#                    line, because an entry on a later line carries no
+#                    brace and the pre-fix gate read it fine. A generator
+#                    whose variant differs from the control but not on the
+#                    axis under test is a case that proves nothing; this
+#                    one was written the harmless way first and measured
+#                    green against the pre-fix gate, which is what caught
+#                    it.
+#
+# The three `-next` shapes are the axis that shipped broken twice. The
+# generator wrote a flow mapping only ever on the SAME line as its key,
+# so every flow case in this file drove the gate's OPENER rules and none
+# drove their CONTINUATIONS -- and the continuations were the half that
+# was keyed on a spelling. Five spellings walked a scheduled, unmarked
+# workflow holding `issues: write` past the gate, actionlint clean on
+# every one (measured 2026-08-28). Un-varied generator parameters are
+# the blind spot; this is the third one found on the same generator.
 #   indent           the marker indented, beside the step it governs
 #   dq-keys          every key double-quoted
 #   sq-keys          every key single-quoted
@@ -145,6 +169,20 @@ emit_wf() {
             else
                 printf '%s {%s {%s [dev]}}\n' "$(wkey on)" "$(wkey push)" "$(wkey branches)"
             fi
+        elif [ "$shape" = flow-on-next ]; then
+            printf '%s\n' "$(wkey on)"
+            if [ "$trigger" = sched ]; then
+                printf "  {%s [{%s '0 0 * * *'}]}\n" "$(wkey schedule)" "$(wkey cron)"
+            else
+                printf '  {%s {%s [dev]}}\n' "$(wkey push)" "$(wkey branches)"
+            fi
+        elif [ "$shape" = explicit-on ]; then
+            printf '%s\n' "$(wkey on)"
+            if [ "$trigger" = sched ]; then
+                printf "  ? %sschedule%s\n  :\n    - %s '0 0 * * *'\n" "$KQ" "$KQ" "$(wkey cron)"
+            else
+                printf '  ? %spush%s\n  :\n    %s [dev]\n' "$KQ" "$KQ" "$(wkey branches)"
+            fi
         else
             printf '%s\n' "$(wkey on)"
             if [ "$trigger" = sched ]; then
@@ -163,6 +201,20 @@ emit_wf() {
                        "$(wkey permissions)" "$(wkey contents)" "$(wkey issues)"
             else
                 printf '%s {%s read}\n' "$(wkey permissions)" "$(wkey contents)"
+            fi
+        elif [ "$shape" = flow-perms-next ]; then
+            printf '%s\n' "$(wkey permissions)"
+            if [ "$perms" = issues ]; then
+                printf '  {%s read, %s read}\n' "$(wkey contents)" "$(wkey issues)"
+            else
+                printf '  {%s read, %s read}\n' "$(wkey contents)" "$(wkey packages)"
+            fi
+        elif [ "$shape" = flow-perms-next2 ]; then
+            printf '%s\n' "$(wkey permissions)"
+            if [ "$perms" = issues ]; then
+                printf '  {%s read,\n   %s read}\n' "$(wkey issues)" "$(wkey contents)"
+            else
+                printf '  {%s read,\n   %s read}\n' "$(wkey packages)" "$(wkey contents)"
             fi
         elif [ "$shape" = flow-perms-multi ]; then
             printf '%s {\n  %s read%s\n}\n' "$(wkey permissions)" "$(wkey contents)" \
@@ -259,6 +311,44 @@ run_case() {
     rc=$?
     rm -rf "$dir"
     verdict "$name" "$want" "$wanterr" "$rc" "$out"
+}
+
+# raw_case NAME WANT-RC WANT-ERR BODY -- the same, on bytes emit_wf will
+# not produce (a comment in the wrong place, a BOM, an explicit key).
+# The subject file is written verbatim beside a valid tracker and tree,
+# so the corpus is never vacuous.
+#
+# DEFINED HERE, BESIDE run_case, AND NOT BESIDE ITS FIRST CALLER, and
+# that placement is the fix for a defect this round shipped and caught.
+# Two cases added below were written into the section they belong to,
+# which sits ABOVE the line this function used to be defined on. bash
+# resolved neither: `command not found`, status 127, and this suite does
+# not `set -e`, so the run stayed 73/0 green with two of its cases
+# absent. A case that never ran looks exactly like a case that passed.
+# Ordering is now not a thing an author has to know; the handler below
+# is the observer for whatever ordering still bites.
+raw_case() {
+    local name="$1" want="$2" wanterr="$3" body="$4"
+    local dir rc out
+    dir=$(mktemp -d)
+    printf '%s' "$body" > "$dir/a.yml"
+    emit_wf "$dir/tracker.yml" tracker sched issues dev
+    emit_wf "$dir/tree.yml"    tree    sched noissues none
+    out=$(bash "$GATE" "$dir" 2>&1); rc=$?
+    rm -rf "$dir"
+    verdict "$name" "$want" "$wanterr" "$rc" "$out"
+}
+
+# THE OBSERVER FOR A CASE THAT NEVER RAN. bash prints `command not
+# found` to stderr and returns 127; a suite that counts only what it
+# was asked to count reports the short total as a pass. This makes the
+# absence a FAIL, for any helper, any typo and any future ordering
+# mistake -- not just the two that were caught by hand. It fires on a
+# missing external tool too, which is the same claim: a case whose
+# subject could not be invoked decided nothing.
+command_not_found_handle() {
+    no "INTERNAL: \`$1\` is not a command where it was called — a case that never ran"
+    return 127
 }
 
 # --- the control: green has to be reachable before any mutant means -----
@@ -706,6 +796,138 @@ c_flow_perms_clean() {
 run_case "an inline permissions mapping satisfies the tracker cross-check" 0 differs \
     clean c_flow_perms_clean
 
+# --- claim 5, continued: the key that CARRIES a fact is not always the
+# --- key that OPENS the block ------------------------------------------
+#
+# Every flow case above puts the mapping on the SAME LINE as its key, so
+# every one of them drives an OPENER rule. The opener rules were made
+# flow-aware; their CONTINUATIONS were not, and a flow mapping is not
+# required to start on the line that opens the block. Measured
+# 2026-08-28 against the gate as it stood at 32b20ec, on mawk 1.3.4 and
+# gawk 5.4.1, with actionlint 1.7.12 accepting every file and
+# python3 yaml.safe_load parsing each one to a scheduled workflow
+# holding `issues: write`:
+#
+#   on: / {schedule: [{cron: ...}]}          exit 0, clean
+#   on: / {"schedule": [{"cron": ...}]}      exit 0, clean
+#   on: / ? schedule / :                     exit 0, clean
+#   permissions: / {issues: write, ...}      exit 0, clean
+#   permissions: / {issues: write,           exit 0, clean
+#
+# The first three did not merely go unjudged, they were not COUNTED: the
+# gate printed `scheduled workflows: 2` over a corpus of three. That is
+# the domain rule reporting a number it had not measured.
+#
+# The remedy is not five more branches. `declares()` in the gate is now
+# the ONE place that answers "does this line declare key K", and every
+# rule that asks calls it -- so the opener and the continuation cannot
+# disagree about a spelling again, because they no longer hold two
+# opinions. Each shape below is driven in both directions: the attack,
+# and a preservation control written the same way, because a rule that
+# answered "yes" to every line would satisfy the attacks by refusing
+# correct workflows.
+
+for ONSHAPE in flow-on-next explicit-on; do
+    c_onshape_domain() {
+        emit_wf "$1/tracker.yml" tracker sched issues dev
+        emit_wf "$1/tree.yml"    tree    sched noissues none
+        shaped "$ONSHAPE" "$1/sneak.yml" none sched issues none
+    }
+    run_case "$ONSHAPE: an unmarked scheduled workflow still enters the domain" 1 differs \
+        "Unclassified scheduled workflow" c_onshape_domain
+
+    # Preservation, and it is the half that says the widening did not
+    # simply start answering yes. This workflow is scheduled, marked and
+    # correctly unpinned: it has to stay in the domain AND stay clean.
+    c_onshape_clean() {
+        emit_wf "$1/tracker.yml" tracker sched issues dev
+        shaped "$ONSHAPE" "$1/tree.yml" tree sched noissues none
+        emit_wf "$1/pushonly.yml" none nosched issues dev
+    }
+    run_case "$ONSHAPE: a correct scheduled workflow written this way is clean" 0 differs \
+        clean c_onshape_clean
+
+    # And the pin rule, which reads the same file through a different
+    # fact. A `tree` workflow pinned to dev is #839 over-correction.
+    c_onshape_pin() {
+        emit_wf "$1/tracker.yml" tracker sched issues dev
+        shaped "$ONSHAPE" "$1/tree.yml" tree sched noissues dev
+        emit_wf "$1/pushonly.yml" none nosched issues dev
+    }
+    run_case "$ONSHAPE: a dev pin on a workflow written this way is still seen" 1 differs \
+        "Tree workflow pinned to dev" c_onshape_pin
+done
+
+for PERMSHAPE in flow-perms-next flow-perms-next2; do
+    # The dangerous direction: the marker becomes its own only witness.
+    c_permshape_crosscheck() {
+        emit_wf "$1/tracker.yml" tracker sched issues dev
+        shaped "$PERMSHAPE" "$1/tree.yml" tree sched issues none
+        emit_wf "$1/pushonly.yml" none nosched issues dev
+    }
+    run_case "$PERMSHAPE: a tree marker beside issues: written this way is caught" 1 differs \
+        'but requests the `issues:` permission' c_permshape_crosscheck
+
+    # Two preservation controls in one corpus, because this rule can
+    # fail in both directions. The tracker must still be seen to HOLD
+    # `issues:` (a rule that stopped reading flow continuations reports
+    # "requests no issues: permission" about a correct tracker), and the
+    # tree must still be seen NOT to (a rule that matched any line in
+    # the block reports a contradiction about a correct tree).
+    c_permshape_clean() {
+        shaped "$PERMSHAPE" "$1/tracker.yml" tracker sched issues dev
+        shaped "$PERMSHAPE" "$1/tree.yml"    tree    sched noissues none
+        emit_wf "$1/pushonly.yml" none nosched issues dev
+    }
+    run_case "$PERMSHAPE: correct tracker and tree written this way are both clean" 0 differs \
+        clean c_permshape_clean
+done
+
+# The `on:` block is not a permissions block, and prose in it must not
+# declare a trigger. `declares()` reads a whole line, so a trailing
+# comment naming `schedule:` inside the block is the same hazard the
+# opener already carries a case for one line up -- driven here on the
+# CONTINUATION, which is the half that had no case.
+raw_case "a comment inside the on: block does not declare a schedule" 0 clean \
+'name: a
+on:
+  push:  # nightly, on the same schedule: as the others
+    branches: [dev]
+permissions:
+  contents: read
+jobs:
+  j:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+        with:
+          ref: dev
+'
+
+# A key whose name merely CONTAINS the one being looked for is a
+# different key. `no-schedule:` and `schedules:` are not `schedule:`,
+# and a substring match would put a push-only workflow into the domain
+# and then report it unclassified -- a gate crying wolf, which is how a
+# gate gets discharged.
+raw_case "a key that merely contains schedule is not a schedule trigger" 0 clean \
+'name: a
+on:
+  workflow_dispatch:
+    inputs:
+      no-schedule:
+        default: x
+      schedules:
+        default: y
+permissions:
+  contents: read
+  issues: write
+jobs:
+  j:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+'
+
 # The marker anchored at column 0, so a correctly classified, correctly
 # pinned workflow whose marker sat beside the step it governs was
 # rejected as unclassified -- a red naming the wrong remedy, telling the
@@ -716,24 +938,6 @@ c_indented_marker() {
     emit_wf "$1/pushonly.yml" none nosched issues dev
 }
 run_case "a marker indented beside its step is read" 0 differs clean c_indented_marker
-
-# --- prose cannot answer for the file ----------------------------------
-# Both flow rules read a whole line, so both could be satisfied by a
-# trailing comment. That is the shape check-python-deps.sh shipped
-# (#743): a gate reading its own description instead of the thing it
-# describes. Hand-written, because the point is bytes emit_wf will not
-# produce.
-raw_case() {
-    local name="$1" want="$2" wanterr="$3" body="$4"
-    local dir rc out
-    dir=$(mktemp -d)
-    printf '%s' "$body" > "$dir/a.yml"
-    emit_wf "$dir/tracker.yml" tracker sched issues dev
-    emit_wf "$dir/tree.yml"    tree    sched noissues none
-    out=$(bash "$GATE" "$dir" 2>&1); rc=$?
-    rm -rf "$dir"
-    verdict "$name" "$want" "$wanterr" "$rc" "$out"
-}
 
 raw_case "a comment on the on: line does not declare a schedule" 0 clean \
 'name: a
@@ -977,6 +1181,191 @@ jobs:
         with:
           ref: dev
 '
+
+# --- claim 9b: the TRIGGER side has a residue too ----------------------
+#
+# Claim 9 refuses a file whose `on` KEY could not be read. These refuse
+# a file whose `on` key WAS read and whose CONTENTS could not be.
+# `declares()` sees a key whose text is on the line; YAML has four ways
+# to put the text somewhere else, and each one makes a scheduled
+# workflow look unscheduled.
+#
+# Measured 2026-08-28 against the gate WITH `declares()` already in it,
+# so these are escapes from the FIX and not from what it replaced. Each
+# file is scheduled and holds `issues: write`, confirmed by
+# python3 yaml.safe_load; the actionlint column is the reason two of
+# them matter more than the other two:
+#
+#   on: *sched          gate exit 0   actionlint rc=1
+#   on: / <<: *sched    gate exit 0   actionlint rc=1
+#   "sched\u0075le": ...   gate exit 0   actionlint rc=0
+#   ? / schedule / :    gate exit 0   actionlint rc=0
+#
+# Nothing in this tree stood behind the gate for the last two. The
+# previous round shipped a bound whose only named member was caught by
+# actionlint, which reads as "no live exposure"; these two are why that
+# reading was wrong.
+OPAQUE_TAIL='permissions:
+  contents: read
+  issues: write
+jobs:
+  j:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      - name: work
+        run: echo hi
+'
+
+raw_case "an on: block that is an alias is refused, not read as unscheduled" 2 \
+    "Unreadable trigger block" \
+"name: a
+x-defs: &sched
+  schedule:
+    - cron: '0 0 * * *'
+on: *sched
+$OPAQUE_TAIL"
+
+# A merge key is refused by the ALIAS arm rather than by an arm of its
+# own -- a merge value is an alias, or a sequence of them, by
+# construction. A dedicated `<<` arm was written and SURVIVED
+# mutation for exactly that reason, and was removed rather than kept
+# as a branch no case reaches. The case stays: it pins the VERDICT,
+# which is what a reader depends on, not the arm that produces it.
+raw_case "a merge key inside on: is refused" 2 "Unreadable trigger block" \
+"name: a
+x-defs: &sched
+  schedule:
+    - cron: '0 0 * * *'
+on:
+  <<: *sched
+$OPAQUE_TAIL"
+
+# The two actionlint accepts. A double-quoted YAML escape spells the
+# key with bytes that are not the key: `schedule` IS `schedule`
+# to every YAML parser and is not to any text scanner.
+raw_case "a backslash escape in a quoted trigger key is refused" 2 \
+    "Unreadable trigger block" \
+'name: a
+on:
+  "sched\u0075le":
+    - cron: 0 0 * * *
+'"$OPAQUE_TAIL"
+
+# YAML explicit key with the key on its OWN line. `? schedule` on one
+# line is caught by declares(); a lone `?` puts the key text on the
+# next line, where nothing marks it as a key.
+raw_case "a lone explicit-key indicator inside on: is refused" 2 \
+    "Unreadable trigger block" \
+"name: a
+on:
+  ?
+    schedule
+  :
+    - cron: '0 0 * * *'
+$OPAQUE_TAIL"
+
+# A file that is BOTH visibly scheduled AND partly unreadable. This is
+# the case that makes the refusal `continue`, and it was written after
+# the mutant that drops that `continue` SURVIVED: in every fixture above
+# the trigger is invisible, so `scheduled` is 0 and the loop stops at
+# the next line anyway -- the mutant was a no-op against the corpus, not
+# against the gate. Here the schedule IS read, so without the `continue`
+# the file goes on to be judged unclassified and the run exits 1: a
+# gate that could not read the trigger block reporting a VIOLATION it is
+# not entitled to claim, instead of the refusal it owes.
+raw_case "a block that is scheduled AND partly unreadable refuses, it does not accuse" 2 \
+    "Unreadable trigger block" \
+"name: a
+x-defs: &extra
+  workflow_dispatch:
+on:
+  schedule:
+    - cron: '0 0 * * *'
+  <<: *extra
+$OPAQUE_TAIL"
+
+# --- and the preservation controls, which are the whole risk here ------
+# A refusal keyed on `*` would fire on every cron expression in the
+# repository, and a gate that cries wolf gets discharged. An alias is
+# `*` followed by a NAME character; a cron field is `*` followed by a
+# space or a slash, and a path filter is `*` followed by `*` or `.`.
+# These three cases are what stop the residue being widened into one.
+raw_case "cron star fields are not aliases" 0 clean \
+"name: a
+# scheduled-subject: tree
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+    - cron: '0 0 * * *'
+permissions:
+  contents: read
+jobs:
+  j:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+"
+
+raw_case "a glob in a path filter is not an alias" 0 clean \
+"name: a
+on:
+  push:
+    paths: ['**/*.go', '**.md']
+permissions:
+  contents: read
+jobs:
+  j:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+"
+
+# A comment declares nothing, and integration.yml really does write
+# `*pending*` inside one. Measured over the 26 tracked workflows, that
+# comment is the ONLY line in any `on:` block matching the alias shape
+# — so without this exclusion the residue would refuse a workflow with
+# nothing wrong with it, on prose.
+raw_case "an emphasis marker in a comment inside on: is not an alias" 0 clean \
+"name: a
+on:
+# at most one *pending* run per group, so this is fine -- and it sits at
+# COLUMN 0 deliberately. decomment() only cuts a \`#\` that has whitespace
+# before it, so an INDENTED comment is already stripped and a fixture
+# written that way cannot drive the iscomment() guard at all: measured
+# 2026-08-28, deleting that guard survived an indented fixture and dies
+# on this one. integration.yml writes its *pending* comment at column 0,
+# which is what made this the realistic shape rather than a contrived one.
+  push:
+    branches: [dev]
+permissions:
+  contents: read
+jobs:
+  j:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+"
+
+# And the boundary of the block: an alias BELOW the on: block is none
+# of this gate's business. Without this the residue would follow the
+# file rather than the trigger declaration, and every workflow using a
+# YAML anchor for its job matrix would refuse.
+raw_case "an alias outside the on: block is not this rule's business" 0 clean \
+"name: a
+on:
+  push:
+    branches: [dev]
+permissions:
+  contents: read
+x-anchor: &thing
+  a: b
+jobs:
+  j:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+"
 
 # --- claim 10: `uses:` resolves case-insensitively ----------------------
 # GitHub resolves `uses:` through repository names and those are

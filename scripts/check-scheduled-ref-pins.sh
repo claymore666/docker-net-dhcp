@@ -346,6 +346,14 @@ mapfile -t files < <(printf '%s\n' "${files[@]}" | sort)
 #                 declare `on:`, so a file that declares none is one
 #                 this program could not read as a workflow, not one
 #                 that is merely unscheduled
+#   opaque_on     1 when the `on:` block carries a construct whose key
+#                 TEXT is somewhere else -- an alias, a merge key, an
+#                 explicit-key indicator with no key beside it, or a
+#                 backslash escape inside a quoted key. This is the
+#                 residue on the TRIGGER side, and it is the pair to
+#                 on_keys: that one refuses a file whose `on` key
+#                 cannot be read, this one refuses a file whose `on`
+#                 key can be read and whose CONTENTS cannot.
 #
 # Blocks are delimited by indentation, which is what YAML actually uses;
 # nothing here parses YAML, and it does not need to — every fact is a
@@ -405,7 +413,57 @@ facts_of() {
             return v
         }
 
-        BEGIN { sched = 0; issues = 0; co = 0; dev = 0; other = 0; unk = 0; onk = 0 }
+        # declares(s, name) answers ONE question -- does this line
+        # declare a key called `name`? -- and it is the only thing in
+        # this program that answers it. That is the whole point of it.
+        #
+        # `key_of()` answers a DIFFERENT question: what is the single
+        # key the block-mapping form on this line declares. Both are
+        # needed, but they are not interchangeable, and the round before
+        # this one used one where it needed the other. The `on:` OPENER
+        # tested raw text so it saw `on: {schedule: ...}`; the
+        # continuation tested `key_of()` only, and `key_of()` of
+        # `  {schedule: [{cron: ...}]}` is `{schedule`, which is not
+        # `schedule`. So a flow mapping that opened on the line AFTER
+        # `on:` left the domain in silence -- scheduled, holding
+        # `issues: write`, no marker, exit 0 clean on both awks and
+        # actionlint clean. The permissions cross-check had the
+        # identical split and lost the identical way. Measured
+        # 2026-08-28; five spellings, all five in the dangerous
+        # direction.
+        #
+        # The fix is not five more branches. A rule that is
+        # property-keyed on one operand and spelling-keyed on the other
+        # is spelling-keyed, and this PR has now been caught on that
+        # axis three times. So EVERY rule below that asks "does this
+        # line declare key K" asks it here, and there is no second
+        # place for the two answers to diverge.
+        #
+        # The property: a YAML key is a token that carries a value
+        # indicator, and the flow punctuation around it -- braces,
+        # brackets, commas, quotes -- is separator, not name. So the
+        # punctuation is reduced to separators and the token is looked
+        # for between them. YAML also lets the value indicator sit on a
+        # LATER line, behind the explicit-key `?`, which is why that
+        # form is a second test rather than an absent one.
+        #
+        # WHAT IT CANNOT SEE, because a bound belongs beside the claim:
+        # a key whose TEXT is not on the line at all. An alias
+        # (`on: *sched`), a merge key, a double-quoted escape spelling
+        # (`"sched\u0075le":`) and a lone `?` with the key on the
+        # following line are four, and they are measured in the PR body
+        # against actionlint rather than asserted away here.
+        function declares(s, name,   t) {
+            t = decomment(s)
+            gsub(/["'"'"']/, " ", t)
+            gsub(/[][{},]/, " ", t)
+            t = " " t " "
+            if (t ~ ("[[:space:]]" name "[[:space:]]*:")) return 1
+            if (t ~ ("[[:space:]][?][[:space:]]+" name "[[:space:]]")) return 1
+            return 0
+        }
+
+        BEGIN { sched = 0; issues = 0; co = 0; dev = 0; other = 0; unk = 0; onk = 0; opq = 0 }
 
         # --- the on: block -------------------------------------------
         # A flow mapping puts the trigger on the `on:` line itself:
@@ -427,14 +485,71 @@ facts_of() {
         # entered. See THE DOMAIN RULE HAS A RESIDUE in the header for
         # why "no `on` key at all" is a distinguishable state and not
         # simply "a push-triggered workflow".
+        # opaque(s) is the residue on the trigger side, and it is the
+        # pair to the `on_keys == 0` refusal rather than another
+        # detector. `declares()` can only see a key whose TEXT is on
+        # the line; YAML has four ways to put it somewhere else, and
+        # each of them makes a scheduled workflow look unscheduled --
+        # silently, which is the one outcome this gate is not allowed.
+        #
+        # Measured 2026-08-28 against the gate WITH declares() in it,
+        # so these are escapes from the fix and not from the thing it
+        # replaced. actionlint 1.7.12 and python3 yaml.safe_load agree
+        # each file is a scheduled workflow holding `issues: write`:
+        #
+        #   on: *sched  (anchor elsewhere)     gate 0   actionlint 1
+        #   on: / <<: *sched                   gate 0   actionlint 1
+        #     (a merge key is caught by the ALIAS arm, not by an arm of
+        #      its own: a merge value is an alias or a sequence of them
+        #      by construction, and an inline `<<: {schedule: ...}` is
+        #      readable text that declares() already sees. A separate
+        #      `<<` arm was written, SURVIVED mutation because the alias
+        #      arm always got there first, and was removed rather than
+        #      kept as a branch no case can reach -- which is the defect
+        #      this whole change is about, one level in.)
+        #   on: / "sched\u0075le": [...]       gate 0   actionlint 0
+        #   on: / ? / schedule / :             gate 0   actionlint 0
+        #
+        # The last two are the expensive pair: nothing else in this
+        # tree stands behind the gate for either, which is exactly what
+        # was wrong with the bound the previous round shipped.
+        #
+        # THIS IS STILL AN ENUMERATION, and saying so is the point. The
+        # difference from the enumeration that keeps failing here is
+        # WHICH SIDE it is on: an enumeration of things to DETECT fails
+        # open, and every spelling nobody listed becomes a silent pass;
+        # an enumeration of things to REFUSE fails closed, and a
+        # construct nobody listed is the bound -- named in the header,
+        # not claimed away. A construct outside this list still passes
+        # silently. That is the escape, stated beside the claim.
+        #
+        # `*` is deliberately required to be followed by a name
+        # character: a cron field is full of `*`, and `*/5 * * * *` is
+        # not an alias. Comments are excluded because a comment
+        # declares nothing -- integration.yml writes `*pending*` in one
+        # (measured: the only hit over 26 tracked workflows, and it is
+        # prose).
+        function opaque(s,   t) {
+            if (iscomment(s)) return 0
+            t = decomment(s)
+            if (t ~ /(^|[[:space:]])\*[A-Za-z_]/) return 1
+            if (t ~ /^[[:space:]]*\?[[:space:]]*$/) return 1
+            if (t ~ /"[^"]*\\/) return 1
+            return 0
+        }
+
         indent($0) == 0 && key_of($0) == "on" {
             onk++
-            if (decomment($0) ~ /schedule["'"'"']?[[:space:]]*:/) sched = 1
+            if (declares($0, "schedule")) sched = 1
+            if (opaque($0)) opq = 1
             in_on = 1; next
         }
         in_on {
             if (!isblank($0) && !iscomment($0) && indent($0) == 0) { in_on = 0 }
-            else if (key_of($0) == "schedule") { sched = 1 }
+            else {
+                if (declares($0, "schedule")) sched = 1
+                if (opaque($0)) opq = 1
+            }
         }
 
         # --- any permissions: block, top-level or per-job -------------
@@ -443,7 +558,7 @@ facts_of() {
         }
         in_perm {
             if (!isblank($0) && !iscomment($0) && indent($0) <= perm_indent) { in_perm = 0 }
-            else if (key_of($0) == "issues") { issues = 1 }
+            else if (declares($0, "issues")) { issues = 1 }
         }
 
         # The same flow spelling, and here it fails in the DANGEROUS
@@ -473,13 +588,13 @@ facts_of() {
         # continuation and count the braces on the opening line twice.
         in_flow {
             fl = decomment($0)
-            if (fl ~ /issues["'"'"']?[[:space:]]*:/) issues = 1
+            if (declares($0, "issues")) issues = 1
             flow_depth += gsub(/\{/, "{", fl) - gsub(/\}/, "}", fl)
             if (flow_depth <= 0) in_flow = 0
         }
         key_of($0) == "permissions" && substr(val_of($0), 1, 1) == "{" {
             pl = val_of($0)
-            if (pl ~ /issues["'"'"']?[[:space:]]*:/) issues = 1
+            if (declares($0, "issues")) issues = 1
             flow_depth = gsub(/\{/, "{", pl) - gsub(/\}/, "}", pl)
             if (flow_depth > 0) in_flow = 1
         }
@@ -551,8 +666,8 @@ facts_of() {
             # are consumed by `eval`, so a value read out of a workflow
             # file must not reach it; the reporting path re-reads the
             # file for the value instead.
-            printf "scheduled=%d\nissues=%d\ncheckouts=%d\npinned_dev=%d\nother_ref=%d\nunknown_perm=%d\non_keys=%d\n",
-                   sched, issues, co, dev, other, unk, onk
+            printf "scheduled=%d\nissues=%d\ncheckouts=%d\npinned_dev=%d\nother_ref=%d\nunknown_perm=%d\non_keys=%d\nopaque_on=%d\n",
+                   sched, issues, co, dev, other, unk, onk, opq
         }
 
         function close_step() {
@@ -594,6 +709,7 @@ for f in "${files[@]}"; do
     # A refusal must not look like an absence, and the refusal below is
     # what enforces that; this line is the pair to it, not a substitute.
     scheduled=0; issues=0; checkouts=0; pinned_dev=0; other_ref=0; unknown_perm=0; on_keys=0
+    opaque_on=0
 
     # WHETHER THE FILE CAN BE READ IS DECIDED IN THE SHELL, BEFORE awk,
     # BECAUSE THE TWO awks DISAGREE ABOUT IT. Measured 2026-08-28 with
@@ -660,6 +776,35 @@ for f in "${files[@]}"; do
     # That is the difference between this and adding a branch per
     # spelling, which is what let the first two forms of this gate
     # through.
+    # THE TRIGGER SIDE'S RESIDUE, and the pair to the one below it.
+    # `on_keys == 0` refuses a file whose `on` KEY could not be read;
+    # this refuses a file whose `on` key WAS read and whose contents
+    # could not be. Without it the four constructs named beside
+    # `opaque()` each turn a scheduled workflow into an unscheduled
+    # one -- silently, and two of the four are accepted by actionlint,
+    # so nothing else in this tree stands behind them.
+    #
+    # It is a refusal (exit 2) and not a violation: the gate could not
+    # see, and a refusal must not be reported as an absence. The remedy
+    # in the message is to write the trigger where it can be read,
+    # because that is a change to the workflow the author controls --
+    # not "teach the gate this construct", which is a change to the
+    # gate and would be the wrong instruction to hand somebody whose
+    # cron is not firing correctly.
+    if [ "$opaque_on" -ne 0 ]; then
+        echo "::error file=$f,title=Unreadable trigger block::$base declares an" \
+             "\`on:\` block carrying a YAML alias, a merge key, an explicit-key" \
+             "indicator or a quoted key with a backslash escape — constructs whose" \
+             "key text is not on the line that uses them, so this gate cannot tell" \
+             "whether the block declares a \`schedule:\` trigger. Reading that as" \
+             "\"not scheduled\" would drop the file out of the domain in silence," \
+             "which is how three earlier spellings carried a scheduled, unmarked" \
+             "workflow holding \`issues: write\` past this gate (#839). Write the" \
+             "trigger block out where it can be read." >&2
+        cannot=1
+        continue
+    fi
+
     if [ "$on_keys" -eq 0 ]; then
         echo "::error file=$f,title=Not readable as a workflow::$base declares no" \
              "top-level \`on:\` key that this gate can read, and every GitHub Actions" \
