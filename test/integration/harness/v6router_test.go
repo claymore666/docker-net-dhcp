@@ -5,7 +5,13 @@
 
 package harness
 
-import "testing"
+import (
+	"net"
+	"testing"
+
+	"github.com/vishvananda/netlink"
+	"golang.org/x/sys/unix"
+)
 
 // The IsRouter verdict is driven here rather than only through a
 // container, for the reason the route verdict beside it already gives:
@@ -117,6 +123,78 @@ func TestV6DefaultGateway(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := V6DefaultGateway(tc.in); got != tc.want {
 				t.Errorf("got %q want %q — this case proves %s", got, tc.want, tc.proves)
+			}
+		})
+	}
+}
+
+// The restore's verification is driven here because the failure that
+// matters most cannot be produced in CI on demand: a restore that
+// reports success and reinstates NOTHING. Reaching that state for real
+// needs a router advertisement, a purge and a netlink call that lies.
+// Reaching it here needs a map.
+func TestRoutesMissingFrom(t *testing.T) {
+	mk := func(gw string, idx int) netlink.Route {
+		return netlink.Route{
+			LinkIndex: idx,
+			Dst:       &net.IPNet{IP: net.ParseIP("::"), Mask: net.CIDRMask(0, 128)},
+			Gw:        net.ParseIP(gw),
+			Protocol:  unix.RTPROT_RA,
+		}
+	}
+	a := mk("fe80::a893:a7ff:fe55:6c2d", 14)
+	b := mk("fe80::a893:a7ff:fe55:6c2d", 16)
+	set := func(rs ...netlink.Route) map[string]bool {
+		m := map[string]bool{}
+		for _, r := range rs {
+			m[r.String()] = true
+		}
+		return m
+	}
+
+	cases := []struct {
+		name   string
+		before []netlink.Route
+		now    map[string]bool
+		want   int
+		proves string
+	}{
+		{
+			name: "the restore silently no-opped", before: []netlink.Route{a, b},
+			now: set(), want: 2,
+			proves: "THE CASE THIS EXISTS FOR. netlink reported success, the table has " +
+				"nothing, and the verification must report both routes missing. A " +
+				"check that trusted the return code would pass here.",
+		},
+		{
+			name: "the restore worked", before: []netlink.Route{a, b},
+			now: set(a, b), want: 0,
+			proves: "the PRESERVATION control: a real restore must not be reported as a " +
+				"failure, or the fixture refuses every run and the guard is an outage.",
+		},
+		{
+			name: "the restore was partial", before: []netlink.Route{a, b},
+			now: set(a), want: 1,
+			proves: "a count, not a boolean. One of two restored must not read as " +
+				"success — this is what a `len(now) > 0` check would get wrong.",
+		},
+		{
+			name: "nothing was purged", before: nil, now: set(a), want: 0,
+			proves: "an empty snapshot has nothing to verify and must not fabricate a " +
+				"failure from routes it never took.",
+		},
+		{
+			name:   "a DIFFERENT route appeared in place of the purged ones",
+			before: []netlink.Route{a, b}, now: set(mk("fe80::dead", 14)), want: 2,
+			proves: "identity is per-route. A namespace that has *a* default route is " +
+				"not a namespace that has the ones that were taken, and a count-only " +
+				"check would call this restored.",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := len(routesMissingFrom(tc.before, tc.now)); got != tc.want {
+				t.Errorf("got %d missing, want %d — this case proves %s", got, tc.want, tc.proves)
 			}
 		})
 	}

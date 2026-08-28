@@ -413,16 +413,44 @@ func NewV6Fixture(t *testing.T, mode V6Mode) *V6Fixture {
 	// This was written as a bound and it turned out to be a live
 	// defect. MEASURED, run 33211208318 job 98984641078: the write
 	// purged TWO default routes, `::/0 via fe80::a893:a7ff:fe55:6c2d`
-	// on ifindex 14 and 16 -- the runner's own IPv6 default routing,
-	// removed by a test fixture. It reproduced in three shards, twice
-	// per shard.
+	// on ifindex 14 and 16. It reproduced in three shards, twice per
+	// shard.
+	//
+	// WHOSE ROUTES, MEASURED -- and narrower than the first telling of
+	// this. Ifindex 14 is `dh-itest-host` and 16 is `dh-itest-ipv`,
+	// the OTHER integration fixtures' veths, and the gateway
+	// fe80::a893:a7ff:fe55:6c2d is `dh-itest-dhcp` (ifindex 12), the
+	// harness's own RA-sending dnsmasq. The purged route reads
+	// `default via fe80::a893:a7ff:fe55:6c2d dev dh-itest-host proto
+	// ra metric 1024 expires 1800sec`.
+	//
+	// So the blast radius is the JOB CONTAINER's own namespace and the
+	// other fixtures living in it -- not the runner's uplink and
+	// nothing outside the job. That is a real bound and it was
+	// measured, not read off the pool's design. It does not make the
+	// defect benign: those routes belong to the bridge, macvlan and
+	// ipvlan suites sharing this namespace, and this fixture was
+	// deleting them out from under whichever ran next.
+	//
+	// The first version of this comment said "the runner's own IPv6
+	// default routing". That was wrong in the alarming direction and
+	// is corrected here rather than quietly dropped.
 	//
 	// So the routes are put back. The snapshot is taken before the
 	// write and anything missing afterwards is reinstalled with the
 	// attributes it had, protocol included, so the namespace ends the
 	// way it started. Restoring is not cosmetic: without it the rest
-	// of the job runs with no IPv6 default route and fails somewhere
-	// else entirely, which is the shape of bug that costs days.
+	// of the job runs with the other fixtures' default routes missing
+	// and fails somewhere else entirely, which is the shape of bug
+	// that costs days.
+	//
+	// A BOUND ON THE RESTORE ITSELF: the reinstalled route carries no
+	// `expires`, because userspace cannot recreate an advertisement
+	// lifetime. Any test that reads the expiry of a route on
+	// dh-itest-host or dh-itest-ipv after a v6 fixture has run would
+	// see a permanent route where it expected a counting-down one.
+	// None does today. That is a fact about today's tree, so it is
+	// written here rather than assumed to stay true.
 	//
 	// WHY NOT AVOID THE PURGE INSTEAD. Nothing avoids it. The R bit
 	// comes from the advertising device's own forwarding flag and
@@ -826,17 +854,32 @@ func restoreV6ProtoRADefaults(t *testing.T, before []netlink.Route) {
 	if len(before) == 0 {
 		return
 	}
-	present := func() map[string]bool {
+	// The comparison is a PURE function over two route lists, and the
+	// verify below runs through it, so the case that matters most --
+	// a restore that reports success and silently reinstates nothing
+	// -- is drivable by `go test` rather than only by a CI run that
+	// needs a router advertisement to exist.
+	//
+	// An enumeration error must not read as "nothing is missing", so
+	// it is surfaced rather than folded into a value.
+	present := func() (map[string]bool, error) {
 		m := map[string]bool{}
-		if now, err := v6ProtoRADefaultRoutes(); err == nil {
-			for _, r := range now {
-				m[r.String()] = true
-			}
+		now, err := v6ProtoRADefaultRoutes()
+		if err != nil {
+			return nil, err
 		}
-		return m
+		for _, r := range now {
+			m[r.String()] = true
+		}
+		return m, nil
 	}
-	have := present()
-	var restored, failed []string
+	have, err := present()
+	if err != nil {
+		t.Fatalf("enumerate `proto ra` IPv6 default routes after enabling forwarding on "+
+			"%s: %v. The namespace may be missing the %d default route(s) it had, and "+
+			"this cannot tell. Routes before: %v.", V6BridgeName, err, len(before), before)
+	}
+	var restored, degraded, failed []string
 	for _, r := range before {
 		if have[r.String()] {
 			continue
@@ -877,9 +920,9 @@ func restoreV6ProtoRADefaults(t *testing.T, before []netlink.Route) {
 			bare := r
 			bare.Flags = 0
 			if err2 := netlink.RouteReplace(&bare); err2 == nil {
-				restored = append(restored,
-					fmt.Sprintf("%s (DEGRADED: reinstalled with flags cleared; "+
-						"original refused with %v)", bare.String(), err))
+				degraded = append(degraded,
+					fmt.Sprintf("%s (reinstalled with flags cleared; original refused "+
+						"with %v)", bare.String(), err))
 				continue
 			}
 		}
@@ -888,6 +931,23 @@ func restoreV6ProtoRADefaults(t *testing.T, before []netlink.Route) {
 			continue
 		}
 		restored = append(restored, route.String())
+	}
+	// A DEGRADED restore REFUSES the run, after repairing the routing.
+	//
+	// Repair first so the namespace is not left broken, then fail --
+	// the two are not in tension. The reason it cannot be a warning is
+	// the shape of the resulting green: a suite that continues here
+	// passes whether the routes came back equal or came back worse,
+	// and it is exactly the case nobody could measure. An unmeasured
+	// case and a silent-continue path must not be the same path.
+	if len(degraded) > 0 {
+		t.Fatalf("enabling forwarding on %s purged the namespace's `proto ra` IPv6 "+
+			"default routes, and %d of them could only be restored in a DEGRADED form: "+
+			"%v. Routing has been repaired, but what was reinstalled is not what was "+
+			"taken away, and this run cannot tell you whether that matters. It is "+
+			"refused rather than warned about precisely because the difference would "+
+			"otherwise be invisible in a green run. Present before: %v.",
+			V6BridgeName, len(degraded), degraded, before)
 	}
 	if len(failed) > 0 {
 		t.Fatalf("enabling forwarding on %s purged the namespace's `proto ra` IPv6 "+
@@ -905,13 +965,13 @@ func restoreV6ProtoRADefaults(t *testing.T, before []netlink.Route) {
 	// succeed against a table that then does not contain what was
 	// asked for, and this guard exists precisely because the obvious
 	// reading of a success was wrong once already.
-	have = present()
-	var still []string
-	for _, r := range before {
-		if !have[r.String()] {
-			still = append(still, r.String())
-		}
+	nowSet, err := present()
+	if err != nil {
+		t.Fatalf("re-enumerate `proto ra` IPv6 default routes to verify the restore: %v. "+
+			"The restore reported success and cannot be checked, which is the one "+
+			"outcome this verification exists to refuse.", err)
 	}
+	still := routesMissingFrom(before, nowSet)
 	if len(still) > 0 {
 		t.Fatalf("after reinstalling them, %d `proto ra` IPv6 default route(s) are STILL "+
 			"missing from this namespace: %v. netlink reported success, the table "+
@@ -983,4 +1043,22 @@ func V6DefaultGateway(routeText string) string {
 		return f[2]
 	}
 	return ""
+}
+
+// routesMissingFrom reports which of `before` are absent from the set
+// of routes present now.
+//
+// It is a separate, pure function for one reason: the failure that
+// matters is a restore that reports success and reinstates NOTHING,
+// and that case has to be drivable without a kernel, a container or a
+// router advertisement. Everything the verification concludes goes
+// through here.
+func routesMissingFrom(before []netlink.Route, now map[string]bool) []string {
+	var missing []string
+	for _, r := range before {
+		if !now[r.String()] {
+			missing = append(missing, r.String())
+		}
+	}
+	return missing
 }
