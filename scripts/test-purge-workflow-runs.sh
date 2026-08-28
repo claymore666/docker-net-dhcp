@@ -974,6 +974,43 @@ verdict_case NAMED      "a file carrying BOTH (the definite finding must outrank
       - env:
           GATE_BRANCH_COMMITS: 10
 '
+# EVERY KEY THE SCOPE FILE DEFINES MUST BE DRIVEN, AND THE DOMAIN COMES FROM
+# THE SCOPE FILE RATHER THAN FROM THE SCAN. MEASURED 2026-08-28: dropping
+# either GATE_SCOPE_BRANCHES or GATE_SCOPE_COMMITS from the scan's key list
+# left this whole suite GREEN. Two of the five keys had no positive case at
+# all, and the first of those is the key the shipped scope file actually
+# sets -- a gate whose most-used key is unexercised is this PR's own subject
+# pointed at itself.
+#
+# The named cases above are written by hand and therefore drift: they
+# happened to cover three keys and nobody could see which three. This loop
+# is DERIVED, so a sixth key cannot join the unexercised set quietly.
+#
+# THE DOMAIN IS READ OUT OF THE SHIPPED SCOPE FILE, DELIBERATELY NOT OUT OF
+# THE SCAN. A loop whose domain is the scan's own key list is satisfied by
+# emptying that list -- deleting a key would delete its own case and stay
+# green, which is the failure being closed rather than a test of it. The
+# scope file is the independent source, and it is the artifact whose keys a
+# workflow would restate in the first place.
+scope_keys=$(awk '/^[[:space:]]*GATE_[A-Z_]+=/ { sub(/^[[:space:]]*/, ""); sub(/=.*$/, ""); print }' \
+    "$HERE/../.github/gate-branch-scope.env" 2>/dev/null | LC_ALL=C sort -u)
+scope_key_n=$(printf '%s\n' "$scope_keys" | awk 'NF' | wc -l)
+if [ "$scope_key_n" -eq 0 ]; then
+    no "the shipped scope file defines no GATE_ assignment -- this per-key loop has an EMPTY domain and would report success having driven nothing"
+else
+    ok "the per-key coverage loop has a non-empty domain ($scope_key_n key(s) read from the shipped scope file, not from the scan)"
+    while IFS= read -r k; do
+        [ -n "$k" ] || continue
+        printf 'jobs:\n  x:\n    steps:\n      - env:\n          %s: something\n        run: bash scripts/check-missing-runs.sh 20\n' "$k" > "$RESTATE/wf.yml"
+        if [ -n "$(scan_restates "$RESTATE" | awk '$1 == "named"')" ]; then
+            ok "the restatement scan sees a workflow restating $k (key derived from the shipped scope file)"
+        else
+            no "the restatement scan is BLIND to $k -- the shipped scope file defines that key, so a workflow can restate it and this scan would still report the tree clean"
+        fi
+    done <<EOF
+$scope_keys
+EOF
+fi
 rm -rf "$RESTATE"
 
 # --- 18b. an exported value may not stand in for the file ---------------
