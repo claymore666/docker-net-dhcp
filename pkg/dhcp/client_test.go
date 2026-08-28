@@ -1625,6 +1625,51 @@ func TestRAGuard_ShieldIsCheckedByItsEffectAndNotItsExitStatus(t *testing.T) {
 	}
 }
 
+// TestRouterAdvertGuardContract_IsTheGuardsOwnTable pins the exported
+// accessor the integration suite reads.
+//
+// That suite used to carry a hand-written copy of the knob table. Value
+// drift between the two went red, which made the copy look safe — but a
+// knob ADDED here was silently unobserved there, because the assertion
+// iterated the copy and the new knob simply was not among the things
+// checked. The copy is gone; this is what stops the accessor becoming
+// the same defect one layer down.
+//
+// It is deliberately keyed on raGuardKnobs() rather than on the three
+// names, so it says "the same table" instead of "these three".
+func TestRouterAdvertGuardContract_IsTheGuardsOwnTable(t *testing.T) {
+	got := RouterAdvertGuardContract()
+	knobs := raGuardKnobs()
+	if len(knobs) == 0 {
+		t.Fatal("no knobs at all: every assertion below is satisfied by an empty domain, " +
+			"and so is every assertion in the integration suite that reads this")
+	}
+	if len(got) != len(knobs) {
+		t.Errorf("contract has %d entries for %d knobs; an observer reading this checks "+
+			"fewer knobs than the guard claims to hold", len(got), len(knobs))
+	}
+	for _, k := range knobs {
+		v, ok := got[k.name]
+		if !ok {
+			t.Errorf("knob %q is guarded and absent from the exported contract; the "+
+				"integration suite would not assert it at all", k.name)
+			continue
+		}
+		if v != k.value {
+			t.Errorf("knob %q: contract says %q, the guard writes %q", k.name, v, k.value)
+		}
+	}
+	// The caller must not be able to rewrite what the next caller sees.
+	// An observer whose expectations are mutable from the outside is not
+	// an observer.
+	got["accept_ra"] = "tampered"
+	delete(got, "autoconf")
+	if again := RouterAdvertGuardContract(); again["accept_ra"] == "tampered" || len(again) != len(knobs) {
+		t.Errorf("the contract is shared state: a caller's edit survived into the next "+
+			"call (%v)", again)
+	}
+}
+
 // The values are not arbitrary and the reasons are not interchangeable,
 // so they are pinned individually with the reason in the failure text.
 func TestRAGuard_ValuesAreTheOnesTheReasonsRequire(t *testing.T) {
