@@ -507,6 +507,16 @@ func (f *V6Fixture) AwaitIgnoredSolicit(budget time.Duration) {
 		"silent at all; log:\n%s", f.mode, budget, f.readLog())
 }
 
+// LeaseFile is the path to the server's own lease database.
+//
+// A third record, independent of both the plugin's report and the
+// server's log. CountLogLines says what the server SAID it replied;
+// this says what it recorded having handed out. A test that needs to
+// know an address really came from this server should read both --
+// two records with one observer is the failure mode, and the plugin's
+// view of its own lease is not one of the two.
+func (f *V6Fixture) LeaseFile() string { return f.leaseFile }
+
 func (f *V6Fixture) readLog() string {
 	data, err := os.ReadFile(f.logFile)
 	if err != nil {
