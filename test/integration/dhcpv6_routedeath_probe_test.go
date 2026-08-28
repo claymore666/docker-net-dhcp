@@ -8,8 +8,10 @@ package integration
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -227,6 +229,23 @@ func TestProbe_DHCPv6_WhatDeletesTheDefaultRoute(t *testing.T) {
 			// does.
 			attrMon := startAttrMonitor(t, sandbox, time.Now())
 			defer attrMon.stop()
+
+			// The WIRE capture, and the reason it is here is that it
+			// falsifies as cheaply as it confirms. The leading candidate
+			// is RFC 4861 7.2.5: a Neighbour Advertisement with the R
+			// bit CLEAR obliges a host to drop that router from its
+			// Default Router List. If the advertisements on this segment
+			// carry R=1, that candidate is dead on the spot and no
+			// amount of correlation can revive it.
+			//
+			// A raw ICMPv6 socket rather than a packet capture: this
+			// runner image has no tcpdump, and it does not need one. The
+			// same socket also reads the Router Lifetime out of every
+			// advertisement, which checks the lifetime-0 candidate
+			// against the wire instead of against the kernel's copy of
+			// the number.
+			icmpMon := startICMP6Monitor(t, sandbox, time.Now())
+			defer icmpMon.stop()
 			t.Logf("container pid=%d sandbox=%s; namespace monitor attached at t+%s after "+
 				"ContainerStart returned. An ABSENCE of events before that instant is not "+
 				"evidence -- the host monitor is what covers the window before it.",
@@ -278,6 +297,7 @@ func TestProbe_DHCPv6_WhatDeletesTheDefaultRoute(t *testing.T) {
 				acceptRA, autoconf, disableV6 string
 				fwdIf, fwdAll, fwdDef         string
 				raRx                          string
+				brFwdIf, brFwdAll             string
 			}
 			var rows []row
 			start := time.Now()
@@ -293,6 +313,19 @@ func TestProbe_DHCPv6_WhatDeletesTheDefaultRoute(t *testing.T) {
 					fwdAll:    nsenterCat(pid, "/proc/sys/net/ipv6/conf/all/forwarding"),
 					fwdDef:    nsenterCat(pid, "/proc/sys/net/ipv6/conf/default/forwarding"),
 					raRx:      icmp6Counter(pid, "Icmp6InRouterAdvertisements"),
+					// The ROUTER side, read in the HOST namespace. Every
+					// forwarding reading this probe took until now was
+					// taken inside the container, which is the wrong end
+					// for RFC 4861 7.2.5: Linux fills the R bit of a
+					// solicited neighbour advertisement from the
+					// ADVERTISING interface's forwarding sysctl. So a
+					// fixture bridge that advertises itself as a router
+					// through dnsmasq while its kernel answers "I am not
+					// a router" is a self-contradictory segment, and
+					// these two files are where that shows up.
+					brFwdIf: hostCat(fmt.Sprintf(
+						"/proc/sys/net/ipv6/conf/%s/forwarding", harness.V6BridgeName)),
+					brFwdAll: hostCat("/proc/sys/net/ipv6/conf/all/forwarding"),
 				})
 				time.Sleep(probeInterval)
 			}
@@ -391,6 +424,27 @@ func TestProbe_DHCPv6_WhatDeletesTheDefaultRoute(t *testing.T) {
 					"would be invisible to this witness. Reading the advertisements off the "+
 					"wire is what closes that, and this probe does not.",
 					b.String())
+			}
+
+			// The ROUTER-SIDE forwarding reading, which is premise one
+			// of the RFC 4861 7.2.5 candidate and is stated separately
+			// from it so the premise can fail on its own.
+			if len(rows) > 0 {
+				first, last := rows[0], rows[len(rows)-1]
+				t.Logf("VERDICT INPUT (router side, %s): forwarding on the fixture bridge %s "+
+					"[if/all] = %s/%s at t+0 and %s/%s at the end of the window.\n"+
+					"  Linux sets the R bit of a solicited neighbour advertisement from the "+
+					"advertising interface's forwarding sysctl. A ZERO here means this "+
+					"segment advertises a router via the DHCP server while the kernel behind "+
+					"that address answers neighbour solicitations with R=0, which is the "+
+					"precondition for RFC 4861 7.2.5 to remove it from the Default Router "+
+					"List -- correct host behaviour on a self-contradictory segment.\n"+
+					"  This is a reading of a PREMISE, not a finding. The wire capture above "+
+					"is what says whether an R=0 advertisement actually arrived, and nothing "+
+					"here licenses changing the fixture before it does.",
+					tc.mode, harness.V6BridgeName,
+					strings.TrimSpace(first.brFwdIf), strings.TrimSpace(first.brFwdAll),
+					strings.TrimSpace(last.brFwdIf), strings.TrimSpace(last.brFwdAll))
 			}
 
 			// The RA ARRIVAL CLOCK, read straight out of the kernel's
@@ -549,6 +603,8 @@ func TestProbe_DHCPv6_WhatDeletesTheDefaultRoute(t *testing.T) {
 			// disagree, the hook is the tie-breaker.
 
 			attrMon.report(t, tc.mode, sandbox)
+			icmpMon.report(t, tc.mode)
+			reportDockerdLog(t, tc.mode, probeWindow)
 
 			t.Logf("--- %s: HOST netlink trace (veth before and during the move) ---\n%s",
 				tc.mode, indent(hostMon.text()))
@@ -614,7 +670,15 @@ func startMonitor(t *testing.T, netnsPath string) *monitor {
 	// because the runner's build is Debian's and an `ip` that rejects
 	// the keyword would otherwise take the whole monitor down and turn
 	// a missing separator into a missing trace.
-	objs := []string{"route", "addr", "link"}
+	// `neigh` is not padding. RFC 4861 7.2.5 removes a router from the
+	// Default Router List when a Neighbour Advertisement arrives with
+	// the R bit clear, and that path emits a NEIGH event and nothing
+	// else: no route lifetime change, no addr event, no link event, no
+	// netconf event. A monitor without `neigh` cannot see the only
+	// remaining RFC 4861 path that removes a default router, which
+	// would make its silence on that candidate an artefact of the
+	// object list rather than a finding.
+	objs := []string{"route", "addr", "link", "neigh"}
 	if monitorSupportsNetconf() {
 		objs = append(objs, "netconf")
 	} else {
@@ -917,4 +981,290 @@ func sameNetNS(pid int, netnsPath string) bool {
 	as, ok1 := a.Sys().(*syscall.Stat_t)
 	bs, ok2 := b.Sys().(*syscall.Stat_t)
 	return ok1 && ok2 && as.Ino == bs.Ino && as.Dev == bs.Dev
+}
+
+// icmp6Event is one ICMPv6 message as it arrived on the wire in the
+// container's namespace, decoded only as far as the two fields this
+// investigation turns on.
+type icmp6Event struct {
+	at     time.Duration
+	typ    uint8
+	src    string
+	naR    bool
+	naS    bool
+	naO    bool
+	naTgt  string
+	raLife uint16
+}
+
+type icmp6Mon struct {
+	mu     sync.Mutex
+	events []icmp6Event
+	errs   []string
+	closed bool
+	fd     int
+	start  time.Time
+	dead   bool
+}
+
+// startICMP6Monitor opens a raw ICMPv6 socket INSIDE the container's
+// network namespace.
+//
+// Why a raw socket and not a capture: the runner image has no tcpdump,
+// which is the reason the earlier round of this probe reasoned about
+// Router Lifetime from the kernel's `expires` instead of reading it off
+// the wire. A raw ICMPv6 socket needs no extra package, and the probe
+// already requires root for everything else it does.
+//
+// What it is FOR, stated as a falsification rather than a hunt: if the
+// Neighbour Advertisements on this segment carry R=1, then RFC 4861
+// 7.2.5 cannot be removing the default router and the candidate dies
+// here regardless of how well it fits every other measurement. A
+// candidate that explains everything is exactly the one to point an
+// instrument at that can kill it.
+//
+// Bounds, both real. It sees what the KERNEL delivers to a raw socket in
+// this namespace, so a message dropped before that point is invisible;
+// and it starts when the probe starts, so anything before the container
+// was running is out of its reach by construction.
+func startICMP6Monitor(t *testing.T, netnsPath string, start time.Time) *icmp6Mon {
+	t.Helper()
+	m := &icmp6Mon{fd: -1, start: start}
+	fd, err := rawICMP6InNetNS(netnsPath)
+	if err != nil {
+		m.dead = true
+		t.Logf("WARNING: could not open a raw ICMPv6 socket in the container namespace: %v. "+
+			"This run carries NO wire capture: the R bit of the neighbour advertisements "+
+			"and the advertised Router Lifetime are both UNMEASURED, and neither "+
+			"RFC 4861 7.2.5 nor a lifetime-0 advertisement can be confirmed OR ruled out "+
+			"from it. Read any conclusion below accordingly.", err)
+		return m
+	}
+	m.fd = fd
+	go m.run()
+	return m
+}
+
+// rawICMP6InNetNS creates the socket in the target namespace and returns
+// to the caller's, on a locked thread so the namespace switch cannot
+// leak to another goroutine.
+func rawICMP6InNetNS(netnsPath string) (int, error) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
+	cur, err := netns.Get()
+	if err != nil {
+		return -1, fmt.Errorf("read current netns: %w", err)
+	}
+	defer func() {
+		_ = netns.Set(cur)
+		_ = cur.Close()
+	}()
+
+	target, err := netns.GetFromPath(netnsPath)
+	if err != nil {
+		return -1, fmt.Errorf("open %s: %w", netnsPath, err)
+	}
+	defer func() { _ = target.Close() }()
+
+	if err := netns.Set(target); err != nil {
+		return -1, fmt.Errorf("enter %s: %w", netnsPath, err)
+	}
+	fd, err := unix.Socket(unix.AF_INET6, unix.SOCK_RAW|unix.SOCK_CLOEXEC, unix.IPPROTO_ICMPV6)
+	if err != nil {
+		return -1, fmt.Errorf("raw ICMPv6 socket: %w", err)
+	}
+	// A receive timeout rather than closing the fd under a blocked
+	// read: the loop then notices the stop flag on its own, and the
+	// probe never races a close against a reader.
+	tv := unix.Timeval{Sec: 1}
+	if err := unix.SetsockoptTimeval(fd, unix.SOL_SOCKET, unix.SO_RCVTIMEO, &tv); err != nil {
+		_ = unix.Close(fd)
+		return -1, fmt.Errorf("set receive timeout: %w", err)
+	}
+	return fd, nil
+}
+
+func (m *icmp6Mon) run() {
+	buf := make([]byte, 1500)
+	for {
+		m.mu.Lock()
+		stop := m.closed
+		m.mu.Unlock()
+		if stop {
+			return
+		}
+		n, from, err := unix.Recvfrom(m.fd, buf, 0)
+		if err != nil {
+			if err == unix.EAGAIN || err == unix.EWOULDBLOCK || err == unix.EINTR {
+				continue
+			}
+			m.mu.Lock()
+			if !m.closed {
+				m.errs = append(m.errs, err.Error())
+			}
+			m.mu.Unlock()
+			return
+		}
+		if n < 8 {
+			continue
+		}
+		ev := icmp6Event{at: time.Since(m.start), typ: buf[0]}
+		if sa, ok := from.(*unix.SockaddrInet6); ok {
+			ev.src = net.IP(sa.Addr[:]).String()
+		}
+		switch buf[0] {
+		case 134: // Router Advertisement
+			// cur hop limit, flags, then the Router Lifetime as a
+			// big-endian 16-bit count of seconds.
+			ev.raLife = uint16(buf[6])<<8 | uint16(buf[7])
+		case 136: // Neighbour Advertisement
+			// R, S and O are the top three bits of the first byte
+			// after the checksum; the target address follows the
+			// four flag/reserved bytes.
+			ev.naR = buf[4]&0x80 != 0
+			ev.naS = buf[4]&0x40 != 0
+			ev.naO = buf[4]&0x20 != 0
+			if n >= 24 {
+				ev.naTgt = net.IP(buf[8:24]).String()
+			}
+		default:
+			continue
+		}
+		m.mu.Lock()
+		m.events = append(m.events, ev)
+		m.mu.Unlock()
+	}
+}
+
+func (m *icmp6Mon) stop() {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.closed = true
+	m.mu.Unlock()
+	if m.fd >= 0 {
+		// Given the receive timeout, the reader is at most one second
+		// from noticing the flag; closing after that is safe.
+		time.Sleep(1200 * time.Millisecond)
+		_ = unix.Close(m.fd)
+		m.fd = -1
+	}
+}
+
+func (m *icmp6Mon) report(t *testing.T, mode string) {
+	if m == nil || m.dead {
+		return
+	}
+	m.mu.Lock()
+	events := append([]icmp6Event(nil), m.events...)
+	errs := append([]string(nil), m.errs...)
+	m.mu.Unlock()
+
+	for _, e := range errs {
+		t.Logf("WARNING: wire capture (%s) read error: %s. Silence below is bounded by "+
+			"this rather than by a quiet segment.", mode, e)
+	}
+	if len(events) == 0 {
+		t.Logf("VERDICT INPUT (wire, %s): the raw ICMPv6 socket opened and received NOTHING "+
+			"-- no advertisements of either kind. That is an instrument that collected "+
+			"nothing, and it leaves BOTH RFC 4861 7.2.5 and a lifetime-0 advertisement "+
+			"unmeasured. It is not evidence that the segment was quiet.", mode)
+		return
+	}
+
+	var nas, ras strings.Builder
+	naCount, naRClear, raCount, raLife0 := 0, 0, 0, 0
+	for _, e := range events {
+		switch e.typ {
+		case 134:
+			raCount++
+			if e.raLife == 0 {
+				raLife0++
+			}
+			fmt.Fprintf(&ras, "  t+%-8s RA from %s  RouterLifetime=%ds\n",
+				e.at.Round(time.Millisecond), e.src, e.raLife)
+		case 136:
+			naCount++
+			if !e.naR {
+				naRClear++
+			}
+			fmt.Fprintf(&nas, "  t+%-8s NA from %s  R=%v S=%v O=%v  target=%s\n",
+				e.at.Round(time.Millisecond), e.src, b2i(e.naR), b2i(e.naS), b2i(e.naO), e.naTgt)
+		}
+	}
+
+	if naCount == 0 {
+		t.Logf("VERDICT INPUT (wire NA, %s): no neighbour advertisement was received at all. "+
+			"RFC 4861 7.2.5 requires one to fire, so this run does not support that "+
+			"candidate -- but read it as 'not observed', not as 'excluded': the container "+
+			"only receives a solicited advertisement if something in it solicited.", mode)
+	} else {
+		t.Logf("VERDICT INPUT (wire NA, %s): %d neighbour advertisement(s), %d with the R bit "+
+			"CLEAR.\n%s"+
+			"  R=0 from the router is the RFC 4861 7.2.5 precondition: a host MUST remove a "+
+			"router from the Default Router List when its IsRouter flag goes true->false. "+
+			"Correlate any R=0 instant against the DELROUTE timestamps.\n"+
+			"  If every R is 1, the candidate is DEAD for this run no matter how well it "+
+			"fits the other measurements.",
+			mode, naCount, naRClear, nas.String())
+	}
+
+	t.Logf("VERDICT INPUT (wire RA, %s): %d advertisement(s), %d carrying Router Lifetime 0.\n%s"+
+		"  This is the advertised lifetime read off the WIRE rather than off the kernel's "+
+		"copy, so it settles the lifetime-0 candidate directly and at every arrival rather "+
+		"than at the first sample only.",
+		mode, raCount, raLife0, ras.String())
+}
+
+func b2i(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// reportDockerdLog collects the container engine's own log for the probe
+// window. The engine is the one remaining candidate that is USERSPACE,
+// which means the attribution monitor would catch it -- so this is
+// corroboration rather than the primary instrument, and it is here
+// because collecting it costs one command and arguing about it costs
+// more.
+func reportDockerdLog(t *testing.T, mode string, window time.Duration) {
+	since := fmt.Sprintf("%d seconds ago", int(window.Seconds())+30)
+	sources := [][]string{
+		{"journalctl", "-u", "docker.service", "--no-pager", "--since", since},
+		{"journalctl", "-u", "docker", "--no-pager", "--since", since},
+	}
+	for _, args := range sources {
+		out, err := exec.Command(args[0], args[1:]...).CombinedOutput()
+		if err == nil && len(strings.TrimSpace(string(out))) > 0 {
+			t.Logf("--- %s: container engine log for the probe window (%v) ---\n%s",
+				mode, args, indent(string(out)))
+			return
+		}
+	}
+	if b, err := os.ReadFile("/var/log/docker.log"); err == nil {
+		t.Logf("--- %s: container engine log (/var/log/docker.log) ---\n%s",
+			mode, indent(string(b)))
+		return
+	}
+	t.Logf("VERDICT INPUT (engine log, %s): the container engine's log could NOT be "+
+		"collected from this runner -- neither journalctl nor /var/log/docker.log "+
+		"produced anything. The engine is therefore uncorroborated here; the attribution "+
+		"monitor is what actually covers it, since an engine-issued deletion is a "+
+		"userspace one and would carry a non-zero port id.", mode)
+}
+
+// hostCat reads a file in the HOST namespace. Every other sysctl reader
+// in this probe deliberately enters the container's namespaces; this one
+// deliberately does not, because the router side of the segment is where
+// the R bit comes from.
+func hostCat(path string) string {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Sprintf("(cat %s: %v)", path, err)
+	}
+	return string(b)
 }
