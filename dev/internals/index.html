@@ -1682,10 +1682,13 @@ is <strong>skipped loudly</strong> and named in the summary rather than passing
 silently. <code>STRICT=1 make check</code> turns any skip into a failure — use that
 anywhere a green exit is read as coverage instead of by a person who can
 see the summary.</p>
-<p>CI shards the main suite across three jobs (#381, #468); <code>integration-local</code>
-deliberately does not — a local run is one machine, so sharding would
-serialise the shards and only add overhead. If you want to reproduce a
-single CI shard, <code>sudo make integration-test-shard SHARD=1 OF=3</code>.</p>
+<p>CI shards the main suite across five jobs (#381, #468, #877);
+<code>integration-local</code> deliberately does not — a local run is one machine, so
+sharding would serialise the shards and only add overhead. If you want to
+reproduce a single CI shard, <code>sudo make integration-test-shard SHARD=1 OF=5</code>.
+The count lives in <code>.github/workflows/integration.yml</code>'s matrix, beside the
+measurement that justifies it; <code>scripts/check-durations-table.sh</code> keeps the
+weights that partition it honest.</p>
 <p><strong>Use <code>integration-local</code>, not <code>integration-test</code>.</strong></p>
 <p><code>make integration-test</code> and <code>make integration-test-failure</code> only run
 <code>go test</code>. Building and installing the plugin is a separate chain
