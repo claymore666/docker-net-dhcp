@@ -326,16 +326,19 @@ func TestDHCPv6_SelfConfiguring_AddressAndRouteSurvive(t *testing.T) {
 					"work; nothing below can be measured:\n%v", tc.mode, err)
 			}
 
+			ifname := containerIfname(t, ctx, id)
+			t.Logf("%s segment: container interface discovered as %q", tc.mode, ifname)
+
 			start := time.Now()
 			var samples []selfConfigSample
 			for {
 				elapsed := time.Since(start)
 				s := selfConfigSample{
 					elapsed:  elapsed,
-					addr:     harness.ExecOutput(t, ctx, id, "ip", "-6", "addr", "show", "dev", "eth0"),
+					addr:     harness.ExecOutput(t, ctx, id, "ip", "-6", "addr", "show", "dev", ifname),
 					route:    harness.ExecOutput(t, ctx, id, "ip", "-6", "route", "show"),
-					acceptRA: harness.ExecOutput(t, ctx, id, "cat", "/proc/sys/net/ipv6/conf/eth0/accept_ra"),
-					autoconf: harness.ExecOutput(t, ctx, id, "cat", "/proc/sys/net/ipv6/conf/eth0/autoconf"),
+					acceptRA: harness.ExecOutput(t, ctx, id, "cat", fmt.Sprintf("/proc/sys/net/ipv6/conf/%s/accept_ra", ifname)),
+					autoconf: harness.ExecOutput(t, ctx, id, "cat", fmt.Sprintf("/proc/sys/net/ipv6/conf/%s/autoconf", ifname)),
 				}
 				samples = append(samples, s)
 				if elapsed >= selfConfigWindow {
@@ -358,9 +361,9 @@ func TestDHCPv6_SelfConfiguring_AddressAndRouteSurvive(t *testing.T) {
 			a0, ok := globalFromPrefix(parseV6Addrs(f0.addr), harness.V6Prefix)
 			if !ok {
 				t.Fatalf("S1 FAILED: no global IPv6 address on the fixture's prefix %s is "+
-					"on eth0 inside the container, on a %s segment whose router "+
+					"on %s inside the container, on a %s segment whose router "+
 					"advertisements carry that prefix:\n%s",
-					harness.V6Prefix, tc.mode, f0.addr)
+					harness.V6Prefix, ifname, tc.mode, f0.addr)
 			}
 			for _, bad := range []string{"tentative", "dadfailed", "deprecated"} {
 				if strings.Contains(a0.flags, bad) {

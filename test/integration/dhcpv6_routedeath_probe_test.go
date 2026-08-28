@@ -200,6 +200,23 @@ func TestProbe_DHCPv6_WhatDeletesTheDefaultRoute(t *testing.T) {
 				"evidence -- the host monitor is what covers the window before it.",
 				pid, sandbox, time.Since(created).Round(time.Millisecond))
 
+			// The interface name is DISCOVERED. Bridge endpoints are not
+			// named eth0 -- the Join response's DstPrefix is the bridge
+			// name -- and this probe used to read conf/eth0/forwarding,
+			// get "cat: No such file", and score that as "not 1". With
+			// conf.all also 0 the verdict then read "forwarding 0 on
+			// every scope, candidate 4 EXCLUDED" having never read the
+			// per-interface value at all. A false exclusion is worse
+			// than an ambiguous one.
+			nsLinks := nsenterOut(pid, "ip", "-o", "link", "show")
+			nsIf, nsIfOK := firstNonLoopback(nsLinks)
+			if !nsIfOK {
+				t.Fatalf("no non-loopback interface in the sandbox namespace; there is "+
+					"nothing to sample, and every per-interface reading below would be an "+
+					"error string scored as a value:\n%s", nsLinks)
+			}
+			t.Logf("sandbox interface discovered as %q", nsIf)
+
 			// Sample fast enough to bracket a ten-second window, and
 			// long enough to cover well past it.
 			const (
@@ -218,11 +235,11 @@ func TestProbe_DHCPv6_WhatDeletesTheDefaultRoute(t *testing.T) {
 				rows = append(rows, row{
 					at:        time.Since(start),
 					route:     nsenterOut(pid, "ip", "-6", "route", "show"),
-					addr:      nsenterOut(pid, "ip", "-6", "addr", "show", "dev", "eth0"),
-					acceptRA:  nsenterCat(pid, "/proc/sys/net/ipv6/conf/eth0/accept_ra"),
-					autoconf:  nsenterCat(pid, "/proc/sys/net/ipv6/conf/eth0/autoconf"),
-					disableV6: nsenterCat(pid, "/proc/sys/net/ipv6/conf/eth0/disable_ipv6"),
-					fwdIf:     nsenterCat(pid, "/proc/sys/net/ipv6/conf/eth0/forwarding"),
+					addr:      nsenterOut(pid, "ip", "-6", "addr", "show", "dev", nsIf),
+					acceptRA:  nsenterCat(pid, fmt.Sprintf("/proc/sys/net/ipv6/conf/%s/accept_ra", nsIf)),
+					autoconf:  nsenterCat(pid, fmt.Sprintf("/proc/sys/net/ipv6/conf/%s/autoconf", nsIf)),
+					disableV6: nsenterCat(pid, fmt.Sprintf("/proc/sys/net/ipv6/conf/%s/disable_ipv6", nsIf)),
+					fwdIf:     nsenterCat(pid, fmt.Sprintf("/proc/sys/net/ipv6/conf/%s/forwarding", nsIf)),
 					fwdAll:    nsenterCat(pid, "/proc/sys/net/ipv6/conf/all/forwarding"),
 					fwdDef:    nsenterCat(pid, "/proc/sys/net/ipv6/conf/default/forwarding"),
 				})
@@ -242,7 +259,7 @@ func TestProbe_DHCPv6_WhatDeletesTheDefaultRoute(t *testing.T) {
 					r.fwdAll != prev.fwdAll || r.fwdDef != prev.fwdDef {
 					t.Logf("t+%-7s accept_ra=%s autoconf=%s disable_ipv6=%s "+
 						"forwarding[if/all/default]=%s/%s/%s\n"+
-						"  ip -6 route show:\n%s\n  ip -6 addr show dev eth0:\n%s",
+						"  ip -6 route show:\n%s\n  ip -6 addr show dev "+nsIf+":\n%s",
 						r.at.Round(probeInterval),
 						strings.TrimSpace(r.acceptRA), strings.TrimSpace(r.autoconf),
 						strings.TrimSpace(r.disableV6),
@@ -274,10 +291,16 @@ func TestProbe_DHCPv6_WhatDeletesTheDefaultRoute(t *testing.T) {
 			// stating explicitly.
 			fwdEverOn := false
 			fwdAlwaysOn := len(rows) > 0
+			fwdReadable := len(rows) > 0
+			scorable := func(s string) bool {
+				s = strings.TrimSpace(s)
+				return s == "0" || s == "1"
+			}
 			for _, r := range rows {
 				on := strings.TrimSpace(r.fwdIf) == "1" || strings.TrimSpace(r.fwdAll) == "1"
 				fwdEverOn = fwdEverOn || on
 				fwdAlwaysOn = fwdAlwaysOn && on
+				fwdReadable = fwdReadable && scorable(r.fwdIf) && scorable(r.fwdAll)
 			}
 			// The purge SKIPS any interface whose accept_ra is 2: in
 			// __rt6_purge_dflt_routers the flag test is AND-ed with
@@ -297,6 +320,12 @@ func TestProbe_DHCPv6_WhatDeletesTheDefaultRoute(t *testing.T) {
 					"accept_ra=2, so candidate 4 is EXCLUDED regardless of what " +
 					"forwarding reads, and the ambiguous 1-over-1 cell does not apply. " +
 					"The deleter is candidate 2 or 5 (or unenumerated).")
+			case !fwdReadable:
+				t.Logf("VERDICT INPUT (forwarding): a forwarding value was NOT READABLE as " +
+					"0 or 1 in at least one sample, so it cannot be scored. Candidate 4 is " +
+					"neither confirmed nor excluded: an unreadable value must never be " +
+					"counted as 'not 1', which is how a false EXCLUSION gets reported. " +
+					"Report AMBIGUOUS and repair the reading before trusting this cell.")
 			case fwdAlwaysOn:
 				t.Logf("VERDICT INPUT (forwarding): forwarding read 1 for the WHOLE window. " +
 					"This is the ambiguous cell: a redundant 1-over-1 write still purges " +

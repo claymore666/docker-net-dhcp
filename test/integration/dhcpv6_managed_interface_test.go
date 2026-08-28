@@ -7,6 +7,7 @@ package integration
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -63,9 +64,9 @@ type v6Sample struct {
 	label   string
 	elapsed time.Duration
 
-	addr      string // ip -6 addr show dev eth0
+	addr      string // ip -6 addr show dev <discovered ifname>
 	route     string // ip -6 route show
-	acceptRA  string // /proc/sys/net/ipv6/conf/eth0/accept_ra
+	acceptRA  string // /proc/sys/net/ipv6/conf/<ifname>/accept_ra
 	autoconf  string // .../autoconf
 	disableV6 string // .../disable_ipv6
 
@@ -146,6 +147,58 @@ func hasDefaultV6Route(routeOut string) bool {
 // segment where a DHCPv6 server really does assign an address: does
 // the container end up with that address on its interface, does it
 // keep it, and can it route off-link.
+// containerIfname returns the name of the container's single
+// non-loopback interface, DISCOVERED rather than assumed.
+//
+// The plugin does not always produce "eth0". pkg/plugin/network.go
+// builds the Join response's DstPrefix from the endpoint mode: a
+// parent-attached endpoint (macvlan/ipvlan) gets "eth", so libnetwork
+// names the link eth0 -- but a BRIDGE endpoint gets the bridge name as
+// the prefix, and the link inside the container is named "<bridge>0".
+// The v6 fixtures are bridges. lifecycle_bridge_test.go already knew
+// this and worked around it by never naming the link; these samples
+// need the name, because per-interface sysctls live under it.
+//
+// This mattered: every sample here used to read "dev eth0", `ip`
+// answered "can't find device", and the assertions reported that as
+// "no global IPv6 address on the interface" -- a red that named a
+// product defect and measured only a wrong device name.
+//
+// It fails rather than falling back to a default, because a sample
+// keyed on the wrong device measures nothing at all.
+func containerIfname(t *testing.T, ctx context.Context, id string) string {
+	t.Helper()
+	out := harness.ExecOutput(t, ctx, id, "ip", "-o", "link", "show")
+	if name, ok := firstNonLoopback(out); ok {
+		return name
+	}
+	t.Fatalf("no non-loopback interface inside the container, so there is nothing to "+
+		"sample; `ip -o link show` said:\n%s", out)
+	return ""
+}
+
+// firstNonLoopback picks the interface name out of `ip -o link show`
+// output. Shared so the in-container and the nsenter callers cannot
+// drift apart.
+func firstNonLoopback(out string) (string, bool) {
+	for _, line := range strings.Split(out, "\n") {
+		// "2: dh-itest-br60@if7: <BROADCAST,MULTICAST,UP,LOWER_UP> ..."
+		_, rest, ok := strings.Cut(strings.TrimSpace(line), ":")
+		if !ok {
+			continue
+		}
+		name := strings.TrimSpace(rest)
+		if i := strings.IndexAny(name, ":@"); i >= 0 {
+			name = name[:i]
+		}
+		if name = strings.TrimSpace(name); name == "" || name == "lo" {
+			continue
+		}
+		return name, true
+	}
+	return "", false
+}
+
 func TestDHCPv6_Managed_AddressAndRouteOnTheInterface(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
@@ -191,6 +244,9 @@ func TestDHCPv6_Managed_AddressAndRouteOnTheInterface(t *testing.T) {
 		{"c) +150s, past the 2m DHCPv6 lease", 150 * time.Second},
 	}
 
+	ifname := containerIfname(t, ctx, id)
+	t.Logf("container interface discovered as %q (bridge mode does not name it eth0)", ifname)
+
 	var got []v6Sample
 	for _, s := range samples {
 		if d := s.at - time.Since(start); d > 0 {
@@ -199,20 +255,20 @@ func TestDHCPv6_Managed_AddressAndRouteOnTheInterface(t *testing.T) {
 		smp := v6Sample{
 			label:     s.label,
 			elapsed:   time.Since(start).Round(time.Second),
-			addr:      harness.ExecOutput(t, ctx, id, "ip", "-6", "addr", "show", "dev", "eth0"),
+			addr:      harness.ExecOutput(t, ctx, id, "ip", "-6", "addr", "show", "dev", ifname),
 			route:     harness.ExecOutput(t, ctx, id, "ip", "-6", "route", "show"),
-			acceptRA:  harness.ExecOutput(t, ctx, id, "cat", "/proc/sys/net/ipv6/conf/eth0/accept_ra"),
-			autoconf:  harness.ExecOutput(t, ctx, id, "cat", "/proc/sys/net/ipv6/conf/eth0/autoconf"),
-			disableV6: harness.ExecOutput(t, ctx, id, "cat", "/proc/sys/net/ipv6/conf/eth0/disable_ipv6"),
+			acceptRA:  harness.ExecOutput(t, ctx, id, "cat", fmt.Sprintf("/proc/sys/net/ipv6/conf/%s/accept_ra", ifname)),
+			autoconf:  harness.ExecOutput(t, ctx, id, "cat", fmt.Sprintf("/proc/sys/net/ipv6/conf/%s/autoconf", ifname)),
+			disableV6: harness.ExecOutput(t, ctx, id, "cat", fmt.Sprintf("/proc/sys/net/ipv6/conf/%s/disable_ipv6", ifname)),
 			replies:   f.CountLogLines("DHCPREPLY"),
 		}
 		got = append(got, smp)
 		t.Logf("=== %s (t+%s) ===\n"+
-			"ip -6 addr show dev eth0:\n%s\n"+
+			"ip -6 addr show dev %s:\n%s\n"+
 			"ip -6 route show:\n%s\n"+
 			"accept_ra=%s autoconf=%s disable_ipv6=%s\n"+
 			"server DHCPREPLY lines so far: %d",
-			smp.label, smp.elapsed,
+			smp.label, smp.elapsed, ifname,
 			smp.addr, smp.route,
 			strings.TrimSpace(smp.acceptRA), strings.TrimSpace(smp.autoconf),
 			strings.TrimSpace(smp.disableV6), smp.replies)
@@ -223,10 +279,10 @@ func TestDHCPv6_Managed_AddressAndRouteOnTheInterface(t *testing.T) {
 	// ---- M1: is the address on the interface, and is it usable? ----
 	a0, ok := globalFromPrefix(parseV6Addrs(first.addr), harness.V6Prefix)
 	if !ok {
-		t.Fatalf("M1 FAILED: no global IPv6 address on the fixture's prefix %s is on eth0 "+
+		t.Fatalf("M1 FAILED: no global IPv6 address on the fixture's prefix %s is on %s "+
 			"inside the container, on a segment whose DHCPv6 server assigns addresses. "+
 			"The plugin may still report one to the engine; this is the interface:\n%s",
-			harness.V6Prefix, first.addr)
+			harness.V6Prefix, ifname, first.addr)
 	}
 	for _, bad := range []string{"tentative", "dadfailed", "deprecated"} {
 		if strings.Contains(a0.flags, bad) {
@@ -257,7 +313,7 @@ func TestDHCPv6_Managed_AddressAndRouteOnTheInterface(t *testing.T) {
 	// ---- M3: does it survive, and WHICH thing refreshed? ----
 	aN, ok := globalFromPrefix(parseV6Addrs(last.addr), harness.V6Prefix)
 	if !ok {
-		t.Errorf("M3 FAILED: the address %s was on eth0 at start and is GONE at t+%s, "+
+		t.Errorf("M3 FAILED: the address %s was on the interface at start and is GONE at t+%s, "+
 			"past the %s DHCPv6 lease. The container has silently lost the IPv6 address "+
 			"its network assigned it:\n%s", a0.cidr, last.elapsed, harness.LeaseTime, last.addr)
 	} else {
