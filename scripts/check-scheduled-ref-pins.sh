@@ -221,11 +221,16 @@
 # from `main`. The two sets differ for one release window: a workflow
 # added on `dev` is judged here before it can fire, and one deleted on
 # `dev` leaves this domain while `main`'s copy keeps firing until the
-# release ships. Measured 2026-08-28: `main` holds 24 workflow files and
-# this branch 25, the extra being run-retention.yml, which is not on
-# `main`, 404s as a workflow, and has never fired -- a difference in the
-# harmless direction, and nothing on `main` is missing here. Nothing in
-# this gate closes that window; the release does.
+# release ships. Measured 2026-08-28 at `dev` = 9ae67ca: `main` holds 24
+# workflow files and this branch 26. The two extras are run-retention.yml
+# and fork-execution-policy.yml, neither of which is on `main`; both 404
+# as workflows and have never fired -- a difference in the harmless
+# direction, and nothing on `main` is missing here. This count moved once
+# already, when a rebase brought the second file in, which is the shape
+# of the failure: a number written beside the code is right at the minute
+# it is measured and nothing checks it afterwards. Re-derive it rather
+# than quoting it. Nothing in this gate closes that window; the release
+# does.
 #
 # WHAT IT DOES NOT CLAIM. It reads workflow text, so it cannot tell
 # that a tracker workflow's script actually reads the checked-out tree,
