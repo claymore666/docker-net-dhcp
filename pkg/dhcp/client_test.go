@@ -1285,6 +1285,67 @@ func TestMountPrep_GuardIsAbsentUnlessAsked(t *testing.T) {
 	}
 }
 
+// TestMountPrep_GuardKeyedOnTheFLAGAndNothingElse is the test above
+// widened from the two shapes that were convenient to the WHOLE space
+// mountPrep ranges over, and it exists because the narrow version
+// missed a live defect.
+//
+// MEASURED: with the emission gated on `p.V6` instead of
+// `p.HonorRouterAdverts`, the entire unit suite stayed green. The
+// absence arm above drives `dhcpcdParams{Iface: "eth0"}` — V6 FALSE —
+// so `p.V6` and `p.HonorRouterAdverts` are both false there and the
+// two are indistinguishable. The unguarded shape that actually exists
+// in production is the opposite one: V6 TRUE, guard NOT asked. That is
+// the CreateEndpoint one-shot, and it is the dangerous one, because
+// config.json declares "network": {"type": "host"} — the plugin's own
+// network namespace IS the host's, and /proc/sys/net resolves against
+// the reading task's netns. Under that mutant every endpoint creation
+// rewrites the HOST's router-discovery configuration.
+//
+// So the property is not "V4 gets no guard". It is: the guard is a
+// function of HonorRouterAdverts and of NOTHING ELSE. Driving the
+// cross product of the other booleans is what makes that a property
+// rather than two examples, and it kills a gate mis-keyed on any of
+// them — not only the one spelling that was caught.
+//
+// The bound: this ranges over the BOOLEAN fields of dhcpcdParams. A
+// gate keyed on a string field (Iface, Hostname, RequestedIP) is not
+// in this domain. Those are not plausible mis-keyings of a boolean
+// gate, but the domain is stated rather than implied.
+func TestMountPrep_GuardKeyedOnTheFLAGAndNothingElse(t *testing.T) {
+	bools := []bool{false, true}
+	var cases int
+	for _, v6 := range bools {
+		for _, once := range bools {
+			for _, broadcast := range bools {
+				for _, honor := range bools {
+					p := dhcpcdParams{
+						Iface:              "eth0",
+						V6:                 v6,
+						Once:               once,
+						Broadcast:          broadcast,
+						HonorRouterAdverts: honor,
+					}
+					got := strings.Contains(mountPrep(p), sysctlIPv6ConfDir)
+					if got != honor {
+						t.Errorf("V6=%v Once=%v Broadcast=%v HonorRouterAdverts=%v: "+
+							"guard present = %v, want %v — the emission is keyed on "+
+							"something other than the flag",
+							v6, once, broadcast, honor, got, honor)
+					}
+					cases++
+				}
+			}
+		}
+	}
+	// 2^4. Named so a future field added to the loop without extending
+	// this number is noticed, and so the loop cannot pass by not running.
+	if cases != 16 {
+		t.Fatalf("drove %d combinations, want 16: the cross product is not being covered",
+			cases)
+	}
+}
+
 // TestRAGuard_WritesVerifiesAndShieldsEveryKnob pins the steps a knob
 // needs and the ORDER they must come in.
 //
