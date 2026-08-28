@@ -56,6 +56,24 @@
 #     | sed -E 's/--- [A-Z]+: ([A-Za-z_0-9]+) \(([0-9.]+)s\)/\1\t\2/'
 #   # then take the median per test across runs, and re-run
 #   # scripts/check-durations-table.sh
+#
+# A TEST WITH NO CI HISTORY has no line for that recipe to harvest: it
+# reads green runs, and a test added on a branch has never been in one.
+# check-durations-table.sh reddens on the missing row all the same, so
+# the recipe needs a second half or every new main-suite test costs its
+# author a round (#878). Measure it once yourself and add the row:
+#
+#   # same preconditions as `make integration-test` (root, plugin built
+#   # and installed); ONE test, not the suite
+#   go test -v -tags integration -count=1 -timeout 20m \
+#     -run '^TestYourNewTest$' ./test/integration/...
+#   # take the `--- PASS: <name> (<n>s)` figure, add the row, then
+#   # scripts/check-durations-table.sh
+#
+# One sample is a worse number than a 22-run median and that is fine:
+# the value only weights a shard, and the next regeneration replaces it.
+# No row is the strictly worse option — it costs the test at the mean
+# AND reddens the gate.
 TestAddressConflict_BareParentIsUndetermined	6.14
 TestAddressConflict_BridgeModeDoesNotSelfReport	7.95
 TestAddressConflict_CleanSegmentIsNotReported	6.71

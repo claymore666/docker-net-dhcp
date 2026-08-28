@@ -17,7 +17,7 @@
 # file was one run from 2026-08-02 and had drifted both ways at once:
 #
 #   - 18 of the 70 main-suite tests had no row and ran on a mean guess.
-#     The three shards had drifted to 322/320/239s of test time and the
+#     The three shards had drifted to 321.9/318.2/239.1s of test time and the
 #     longest job to 8m31, against a ~5-minute design.
 #   - 38 rows named tests that live in test/integration/harness/ rather
 #     than in the suite. They came from an old unsharded log that ran

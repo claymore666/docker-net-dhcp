@@ -12,7 +12,14 @@ name: Integration
 # The `dhcp-ci` runners are ephemeral: one container = one job, each
 # with its own nested Docker daemon (image ghcr.io/claymore666/
 # dhcp-ci-runner, Docker Engine >= 28). An orchestrator pools them
-# (names dhcp-ci-<n>); the pool was 8 as of 2026-07-31.
+# (names dhcp-ci-<n>); 16 of them, dhcp-ci-1..16 — MEASURED 2026-08-28
+# from the runners API. This line said 8, and so did every other
+# capacity comment in this file and in coverage.yml, until #878
+# re-measured them — which is why each of them now carries its operand
+# and the date it was measured. How long they had been wrong is not
+# known and is not claimed: nothing recorded when the pool grew, which
+# is the whole reason a comment is the wrong place to keep a count.
+# Read it from the API, not from a comment.
 #
 # JOB TOPOLOGY (#375). The two suites used to run as sequential steps in
 # one job — ~10:38 then ~8:45, a ~20:20 gate. Nothing couples them: they
@@ -121,9 +128,20 @@ on:
 # manual-only — it also runs on `pull_request` into main, i.e. on the
 # release PR, and it shares this group. Keeping it here means the
 # release PR's coverage run queues behind this one instead of putting a
-# second privileged workload on the pool beside it. That costs ~12 minutes
-# once per release, which is the cheaper side of the trade against
-# flaking the one gate that cannot be waved through (#365).
+# second privileged workload on the pool beside it.
+#
+# The cost is one INTEGRATION GATE of extra wall clock, once per release
+# — that is the operand, not the coverage run: serialising costs the
+# shorter of the two, and the gate is the shorter. MEASURED 2026-08-28
+# from the jobs API, gate = max over a run's suite jobs: 311s (5m11) on
+# the first five-shard run, against a 469s (7m49) median over the 26 most
+# recent successful three-shard runs. That window is later and wider than
+# the one the matrix comment below quotes (441s main-1 median at 06:00Z),
+# which is why the two differ; each names its own sample on purpose.
+# This line read "~12 minutes" and named no operand until #878, and had
+# not been re-measured since the suites were split. That is still the
+# cheaper side of the trade against flaking the one gate that cannot be
+# waved through (#365).
 #
 # EXIT CONDITION, if you are here because CI got flaky: any
 # contention-signature failure — `context deadline exceeded` on the
@@ -150,9 +168,11 @@ on:
 # daemon, so the isolation the group provided by hand is provided by the
 # pool. The limit becomes capacity — privileged runners against the six
 # jobs a run now asks for (#877) — which is the correct thing to queue
-# on. The pool was 8 as of 2026-07-31 and is being expanded to carry the
-# wider matrix; the watchdog names a shortage as a shortage (#513)
-# rather than letting it read as a suite failure.
+# on. That expansion is done: the pool is 16 (dhcp-ci-1..16, MEASURED
+# 2026-08-28 from the runners API) against the six privileged jobs a run
+# asks for, so two concurrent runs fit and a third queues. The watchdog
+# names a shortage as a shortage (#513) rather than letting it read as a
+# suite failure.
 concurrency:
   # Branch pushes key on the COMMIT (#617): a merge burst into dev used to
   # evict the queued run, leaving a commit nothing ever tested. PR events
@@ -419,7 +439,7 @@ jobs:
         #
         #   observed gate   main-1 441s median, 511s max — 7m21 against
         #                   a 5-minute design. The three shards had
-        #                   drifted to 322/320/239s of test time because
+        #                   drifted to 321.9/318.2/239.1s of test time because
         #                   18 of the 70 tests had no row in the
         #                   durations table and were costed at the mean.
         #
@@ -447,11 +467,13 @@ jobs:
         # for two. Five main shards plus failure is SIX privileged jobs
         # per run where three shards was four, and that is the cost this
         # change actually spends. #468 stopped at three for exactly that
-        # reason against a pool of 8, where two concurrent runs had to
-        # fit; #877 widens on the premise that the pool is expanded to
-        # carry it. If it is not, two overlapping runs queue — which the
-        # watchdog reports as a capacity shortage rather than as a suite
-        # failure (#513), so the symptom is legible rather than silent.
+        # reason against the pool of 8 it measured, where two concurrent
+        # runs had to fit. That premise no longer binds: the pool is 16
+        # (dhcp-ci-1..16, MEASURED 2026-08-28 from the runners API), so
+        # two runs at six jobs fit with headroom and a third queues —
+        # which the watchdog reports as a capacity shortage rather than
+        # as a suite failure (#513), so the symptom is legible rather
+        # than silent.
         include:
           - suite: main-1
             target: integration-test-shard SHARD=1 OF=5

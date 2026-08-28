@@ -54,8 +54,11 @@ permissions:
 jobs:
   coverage-present:
     runs-on: ubuntu-latest
-    # The gate's own wait is 75 minutes (coverage is 22-34 min and
-    # queues behind the same ref's integration run first). This is that
+    # The gate's own wait is 75 minutes. A coverage RUN is 18m42-36m35
+    # (median 22m45) over the 13 successful runs retained, MEASURED
+    # 2026-08-28 from the runs API, and it queues behind the same ref's
+    # integration run first (5m11 at five shards, #877) — so the worst
+    # case measured is ~42 min against a 75-minute wait. This is that
     # plus margin, so the job never dies before the gate can speak.
     timeout-minutes: 80
     steps:

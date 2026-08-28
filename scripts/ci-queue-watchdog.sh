@@ -234,9 +234,10 @@ advise() {
             echo "work and this run never got a runner, so no suite executed. Re-run it once the"
             echo "pool drains; do not go looking for a bug in the diff."
             echo
-            echo "Concurrent runs are expected to fit: each integration run puts 4 jobs on the"
+            echo "Concurrent runs are expected to fit: each integration run puts 6 jobs on the"
             echo "pool (the suite matrix; gate, watchdog and the aggregator are hosted). Two runs"
-            echo "fit an 8-runner pool exactly, a third cannot start inside the budget (#513)." ;;
+            echo "fit a 16-runner pool with four to spare, so a third gets a PARTIAL pickup —"
+            echo "four of its six assigned, two queued past the budget (#513)." ;;
         "POOL SHORT")
             echo "Nothing else was competing for the pool, so this is not capacity — the pool"
             echo "itself is short, offline, or not being assigned. A re-run queues behind the"
