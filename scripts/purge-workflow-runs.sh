@@ -56,14 +56,24 @@
 #      besides open PR heads it walks the last GATE_BRANCH_COMMITS commits
 #      of each GATE_BRANCHES branch and demands a run that EXECUTED.
 #
-#      Nothing protected those. Measured 2026-08-28 against the live
-#      listing: the keep-10 group set spanned 05:37:07Z to 05:58:32Z --
-#      twenty-one MINUTES, because ten groups is ten pushes and this
-#      repository pushes constantly. All 15 of `dev`'s reconciled commits
-#      and 14 of `main`'s 15 were outside it. So a branch commit was held
-#      only by rule 1's 7-day window, and `main` moves at releases: its
-#      tip of 2026-08-23 crossed 7 days on 2026-08-30 with nothing else
-#      holding it.
+#      Nothing protected those. TWO SAMPLES OF A FAST-MOVING SERIES, both
+#      2026-08-28 against the live listing, quoted with their hour because
+#      a single sample of this reads like a standing property and is not:
+#
+#        05:37:07Z-05:58:32Z  floor 21 min wide; 15 of `dev`'s 15
+#                             reconciled commits and 14 of `main`'s 15
+#                             outside it
+#        14:53:45Z-15:48:05Z  floor 54 min wide; 26 of the 30 outside it
+#                             (`dev`'s tip, `main`'s tip and two more had
+#                             a run inside the window)
+#
+#      The membership churns by the hour; the DURABLE fact is the ratio.
+#      Ten groups is ten pushes and this repository pushes constantly, so
+#      the floor is tens of minutes wide against a seven-DAY window: any
+#      hold rule 2 has on a branch commit expires within the hour, and
+#      what is actually holding it is rule 1. `main` then moves only at
+#      releases -- its tip of 2026-08-23 crosses 7 days on 2026-08-30 with
+#      nothing else holding it.
 #
 #      The reachability walk cannot save a branch TIP -- coverage
 #      propagates from a tested descendant to its ancestors, and a tip has
