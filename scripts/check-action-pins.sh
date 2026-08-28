@@ -142,12 +142,15 @@ for f in "${FILES[@]}"; do
 
     # THE DOMAIN MUST NOT BE A LINE SPELLING. The anchored expression
     # below resolves the two forms this tree uses; it cannot see a flow
-    # mapping (`- {uses: a/b@v1}`) or a value on the following indented
-    # line, and BOTH are real action references -- substituting an
-    # invalid ref in either makes actionlint emit its "ref is missing"
-    # diagnostic, identically to the plain form. So a contributor could
-    # write either, pass this gate, pass actionlint, and run an
-    # unreviewed action on the self-hosted pool.
+    # mapping (`- {uses: a/b@v1}`), a value on the following indented
+    # line, whitespace before the colon (`uses : a/b@v1`) or an explicit
+    # `? uses` key -- and every one of those is a real action reference:
+    # substituting an invalid ref in any of them makes actionlint emit
+    # its "ref is missing" diagnostic, identically to the plain form. So
+    # a contributor could write any of them, pass this gate, pass
+    # actionlint, and run an unreviewed action on the self-hosted pool.
+    # FOUR is not the number of such shapes; it is the number found so
+    # far, which is why the mechanism below counts rather than enumerates.
     #
     # Chasing spellings loses to the spelling nobody has thought of yet,
     # so this COUNTS instead: every `uses:` standing in a key position is
@@ -159,24 +162,50 @@ for f in "${FILES[@]}"; do
     # once an unrecognised form is a refusal.
     #
     # HOW THE COUNT IS TAKEN, and why it is not a bare `grep uses:`.
-    # Comments go first, so a disabled reference stays not-a-violation.
-    # Quotes go next, which does two things at once: a quoted KEY
+    #
+    # A `#` INSIDE A QUOTED SCALAR IS NOT A COMMENT, so those are removed
+    # first. Stripping comments before this ran was itself a spelling
+    # assumption, and in the permissive direction: on
+    # `- {name: "release #1", uses: a/b@v7}` the comment expression saw
+    # the quoted `#`, deleted the rest of the line, and took the `uses:`
+    # with it -- occurrences fell to zero, matched a parsed zero, and the
+    # gate printed its success line over a reference it had never seen.
+    # MEASURED, exit 0. The step is safe in the one direction that
+    # matters: deleting a `#` can only leave MORE text standing, so it
+    # can only ever RAISE the count, and a lower bound is allowed to err
+    # upward -- an over-count refuses, an under-count passes.
+    #
+    # Comments go next, so a disabled reference stays not-a-violation --
+    # and they are stripped BEFORE flow punctuation is split, or a
+    # comment containing a comma would have its tail promoted to a line
+    # of its own and counted as a key.
+    #
+    # Quotes go after that, which does two things at once: a quoted KEY
     # (`"uses":`) is counted, and a `uses:` living inside a quoted VALUE
     # -- `run: echo "uses: x"`, `grep 'uses:' f` -- stops looking like a
     # key. Flow punctuation is then turned into newlines, which puts
     # `- {uses: a}` and `[{uses: a}]` at the head of a line of their own.
     # What is left matches only at a key position, so a step NAME
-    # containing the word never counts. Measured on this tree: 97
-    # parsed, 97 counted, no file differing.
+    # containing the word never counts.
+    #
+    # THE KEY EXPRESSION MATCHES A KEY, NOT A SPELLING OF ONE. YAML puts
+    # no constraint on the space before a `:`, and allows a key to be
+    # written explicitly as `? uses` with its value on the following
+    # line. Both are real references -- actionlint answers `ref is
+    # missing` on each, byte-identically to the plain form -- and both
+    # counted zero here. MEASURED, both exit 0 with a success line.
+    # Measured on this tree: 97 parsed, 97 counted, no file differing.
     #
     # The count is a LOWER BOUND on references and is only ever compared
     # upward: fewer counted than parsed is not a finding, more counted
     # than parsed is.
     occurrences="$(printf '%s\n' "$content" \
+        | sed -E ':a; s/("[^"]*)#([^"]*")/\1\2/g; ta' \
+        | sed -E ":b; s/('[^']*)#([^']*')/\1\2/g; tb" \
         | sed -E 's/(^|[[:space:]])#.*$//' \
         | tr -d '"'"'" \
         | sed -E 's/[{[,]/\n/g' \
-        | grep -cE '^[[:space:]]*(-[[:space:]]+)*uses:')"
+        | grep -cE '^[[:space:]]*(-[[:space:]]+)*(uses[[:space:]]*:|\?[[:space:]]+uses[[:space:]]*(:|$))')"
     parsed=0
 
     while IFS= read -r hit; do
@@ -255,7 +284,7 @@ done
 # THE RESIDUE REFUSES, IT DOES NOT FAIL. An unparsed `uses:` is not a
 # proven violation -- it is a reference this gate cannot judge, which is
 # the same answer as an empty corpus and gets the same exit code.
-[ "$unparsed" -eq 0 ] || refuse "$unparsed 'uses:' occurrence(s) named above were not resolved to an action reference. This gate reads a plain 'uses: <ref>' line; a flow mapping or a value on the next line reads as a real reference to GitHub and to actionlint but not to this parser, so it cannot claim they are pinned."
+[ "$unparsed" -eq 0 ] || refuse "$unparsed 'uses:' occurrence(s) named above were not resolved to an action reference. This gate reads a plain 'uses: <ref>' line, and YAML writes that key in more ways than one -- a flow mapping, a value on the next line, whitespace before the colon and an explicit '? uses' key are four of them, and four is the number found so far, not the number that exist. Each reads as a real reference to GitHub and to actionlint but not to this parser, so it cannot claim they are pinned."
 
 # THE SECOND HALF OF THE NON-VACUITY PREMISE. Files can exist and contain
 # no `uses:` at all -- a tree of workflows that only run `run:` steps, or

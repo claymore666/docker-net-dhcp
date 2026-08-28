@@ -231,6 +231,119 @@ jobs:
 EOF
 run "a quoted uses: key is residue, not a silent pass" 2 "were not resolved"
 
+# THE COMMENT EXPRESSION IS A SPELLING ASSUMPTION TOO, and it ran in the
+# permissive direction -- which is the one direction this gate is not
+# allowed to be wrong in. A `#` inside a quoted scalar is not a comment,
+# but comments were stripped before quotes, so the `#` below deleted the
+# rest of its own line and took the `uses:` with it: occurrences fell to
+# zero, matched a parsed zero, no residue was reported, and the gate
+# printed "all 1 'uses:' reference(s) ... are SHA-pinned" over a
+# reference it had never seen. MEASURED on the pre-fix script: exit 0.
+# actionlint answers `ref is missing` on this shape byte-identically to
+# the plain form, so it is a real reference by the same oracle the
+# flow-mapping case above rests on.
+fresh
+cat > "$TMP/wf/a.yml" <<EOF
+jobs:
+  x:
+    steps:
+      - uses: actions/setup-go@$SHA
+      - {name: "release #1", uses: actions/checkout@v7}
+EOF
+run "a quoted # ahead of uses: is residue, not a silent pass" 2 "were not resolved"
+
+# Both quote characters, because the neutraliser is two expressions and a
+# suite that drove only one left the other with nothing holding it:
+# deleting the single-quote expression alone left all cases green.
+# MEASURED -- it survived, which is what put this case here.
+fresh
+cat > "$TMP/wf/a.yml" <<EOF
+jobs:
+  x:
+    steps:
+      - uses: actions/setup-go@$SHA
+      - {name: 'release #1', uses: actions/checkout@v7}
+EOF
+run "a single-quoted # ahead of uses: is residue too" 2 "were not resolved"
+
+# THE SAME HOLE REACHED THROUGH AN ESCAPED QUOTE, which is what separates
+# a fix from one that only happens to work on the reported input. A
+# remedy that tracks quote state character by character loses that state
+# at the `\"` and strips from the `#` again; a remedy that splits flow
+# punctuation before stripping comments survives this but turns an
+# ordinary comment into a refusal, which the control further down
+# catches. Deleting quoted `#`s outright is neither: it can only leave
+# MORE text standing, so it can only raise the count, and the count is a
+# lower bound that is allowed to err upward.
+fresh
+cat > "$TMP/wf/a.yml" <<EOF
+jobs:
+  x:
+    steps:
+      - uses: actions/setup-go@$SHA
+      - {name: "say \\"hi\\" #1", uses: actions/checkout@v7}
+EOF
+run "an escaped quote before the # does not reopen the hole" 2 "were not resolved"
+
+# YAML PUTS NO CONSTRAINT ON THE SPACE BEFORE A `:`. The count spelled
+# the key `uses:` with none, and the parser has the same blind spot, so
+# `uses :` was neither counted nor parsed -- occurrences and parsed were
+# both zero, the difference was zero, and nothing refused. MEASURED on
+# the pre-fix script: exit 0 with the success line. actionlint reads it
+# as an action reference and answers `ref is missing`.
+fresh
+cat > "$TMP/wf/a.yml" <<EOF
+jobs:
+  x:
+    steps:
+      - uses: actions/setup-go@$SHA
+      - uses : actions/checkout@v7
+EOF
+run "whitespace before the colon is residue, not a silent pass" 2 "were not resolved"
+
+# A tab is whitespace too, and an expression widened with a literal
+# space would still pass the case above.
+fresh
+cat > "$TMP/wf/a.yml" <<EOF
+jobs:
+  x:
+    steps:
+      - uses: actions/setup-go@$SHA
+      - uses$(printf '\t'): actions/checkout@v7
+EOF
+run "a tab before the colon is residue too" 2 "were not resolved"
+
+# AND THE KEY CAN BE WRITTEN WITHOUT A COLON ON ITS LINE AT ALL. `? uses`
+# with the value on the following line is an explicit mapping key in
+# YAML and an action reference to actionlint -- the same `ref is missing`
+# diagnostic -- so an expression anchored on `uses:` cannot see it in ANY
+# spelling of the space before the colon, because there is no colon.
+# MEASURED on the pre-fix script: exit 0. This shape was not among the
+# pair the review reported; it came out of the search the review asked
+# for, which is the point of asking.
+fresh
+cat > "$TMP/wf/a.yml" <<EOF
+jobs:
+  x:
+    steps:
+      - uses: actions/setup-go@$SHA
+      - ? uses
+        : actions/checkout@v7
+EOF
+run "an explicit ? uses key is residue, not a silent pass" 2 "were not resolved"
+
+# ...and inside a flow mapping, where the key arrives at the head of a
+# line only after flow punctuation has been split.
+fresh
+cat > "$TMP/wf/a.yml" <<EOF
+jobs:
+  x:
+    steps:
+      - uses: actions/setup-go@$SHA
+      - {? uses: actions/checkout@v7}
+EOF
+run "an explicit key inside a flow mapping is residue too" 2 "were not resolved"
+
 # THE PRESERVATION CONTROL FOR THAT COUNT. A refusal keyed on a bare
 # `grep uses:` would fire on a step name, on a shell line in a `run:`
 # body, and on this project's own gate scripts quoted in a workflow --
@@ -252,6 +365,53 @@ jobs:
           printf '%s\\n' --uses: x
 EOF
 run "prose, shell and step names are not references" 0 "all 1 'uses:'"
+
+# AND THE ORDERING PRESERVATION CONTROL, which is a separate claim from
+# the one above. Comments must be stripped BEFORE flow punctuation is
+# split, not after. Splitting first also closes the quoted-`#` and
+# `uses :` shapes -- MEASURED, it does -- but it promotes the tail of the
+# comment below to a line of its own, where `uses:` stands at a key
+# position and counts, and an ordinary comment becomes a refusal nobody
+# can act on. A gate that cries wolf gets discharged, and the residue
+# refusal above is then worth nothing. MEASURED both ways on this
+# fixture: exit 0 with the order kept, exit 2 with it reversed.
+fresh
+cat > "$TMP/wf/a.yml" <<EOF
+jobs:
+  x:
+    steps:
+      # note: pinned by sha, uses: actions/evil@v1 was the old one
+      - uses: actions/checkout@$SHA
+EOF
+run "a comment holding a comma is still just a comment" 0 "all 1 'uses:'"
+
+# A DEFECT PINNED AS A CASE, DELIBERATELY, so that "fixing" it has to
+# confront what it would cost. A comma inside a quoted scalar splits
+# like flow punctuation, so `echo "a, uses: b"` in a run body counts one
+# occurrence the parser cannot resolve and REFUSES. That is a false red,
+# and it is NOT new: MEASURED on the pre-fix script, `"a, uses: b"` and
+# `- name: "a, uses: b"` already exited 2. What changed is that the
+# quoted-`#` bug used to MASK one route to it -- `"issue #831, uses: x"`
+# exited 0 before, because the comment expression ate the line, which is
+# the same swallow that let a real reference through.
+#
+# Splitting only punctuation that is OUTSIDE quotes would need a scanner
+# that tracks quote state, and every such scanner MEASURED here loses
+# that state at a `\"` and strips from the `#` again -- trading this
+# refusal for the fail-open the whole commit exists to close. For a gate
+# whose count is a lower bound compared upward, the noisy direction is
+# the correct one to keep. This case exists so that the trade is made on
+# purpose rather than rediscovered.
+fresh
+cat > "$TMP/wf/a.yml" <<EOF
+jobs:
+  x:
+    steps:
+      - uses: actions/checkout@$SHA
+      - run: |
+          echo "a, uses: b"
+EOF
+run "a comma inside a quoted scalar over-counts, and refuses rather than passing" 2 "were not resolved"
 
 # --- a file that cannot be READ is partial vacuity ---------------------
 #
@@ -332,11 +492,19 @@ mkdir -p "$TMP/scan"
 printf 'not a composite action\n' > "$TMP/scan/my-action.yml"
 SCAN="$TMP/scan" run "a file merely ending in action.yml is not a composite action" 0 "all 1 'uses:'"
 
-# BOTH DISCOVERY ARMS ARE DRIVEN. Inside a checkout the scan asks git,
-# so that a maintainer's ignored trees -- whole other branches in git
-# worktrees -- cannot produce a red that CI never sees. `--others`
-# is there because a composite action added and not yet committed is
-# precisely the case worth catching.
+# BOTH DISCOVERY ARMS ARE DRIVEN, AND BOTH WAYS ROUND. Inside a checkout
+# the scan asks git, so that a maintainer's ignored trees -- whole other
+# branches in git worktrees -- cannot produce a red that CI never sees.
+# `--others` is there because a composite action added and not yet
+# committed is precisely the case worth catching.
+#
+# This comment used to end here, and it was prose standing in for a case:
+# it read as though both arms were covered on both sides, and only the
+# find arm's basename precision actually had one. Mutating the find arm's
+# `-name 'action.yml'` to `-name '*action.yml'` turned this suite red;
+# mutating the git arm's `(^|/)action\.ya?ml$` to `action\.ya?ml` left
+# all 31 cases passing. MEASURED, both ways. The near-miss case below
+# closes that side.
 fresh
 printf 'jobs:\n  x:\n    steps:\n      - uses: actions/checkout@%s\n' "$SHA" > "$TMP/wf/a.yml"
 mkdir -p "$TMP/scan/.github/actions/setup"
@@ -353,6 +521,16 @@ git -C "$TMP/scan" init -q 2>/dev/null
 printf 'ignored/\n' > "$TMP/scan/.gitignore"
 printf 'runs:\n  using: composite\n' > "$TMP/scan/ignored/.github/actions/setup/action.yml"
 SCAN="$TMP/scan" run "an ignored tree does not produce a red CI never sees" 0 "all 1 'uses:'"
+
+# The near miss, INSIDE a checkout. `my-action.yml` ends in the basename
+# and is not one; the find arm has this case above, the git arm did not,
+# and its `(^|/)` anchor therefore had nothing holding it.
+fresh
+printf 'jobs:\n  x:\n    steps:\n      - uses: actions/checkout@%s\n' "$SHA" > "$TMP/wf/a.yml"
+mkdir -p "$TMP/scan"
+git -C "$TMP/scan" init -q 2>/dev/null
+printf 'not a composite action\n' > "$TMP/scan/my-action.yml"
+SCAN="$TMP/scan" run "a near miss inside a checkout is not a composite action" 0 "all 1 'uses:'"
 
 # --- the real tree, judged by the same code ---------------------------
 n=$((n + 1))
@@ -375,7 +553,7 @@ fi
 # exits 0, which is a green tick over nothing. The floor is the count
 # this file is known to run; raise it when cases are added, and a
 # deletion has to be deliberate rather than silent.
-FLOOR=31
+FLOOR=41
 if [ "$n" -lt "$FLOOR" ]; then
     echo "REFUSING: ran $n case(s), fewer than the $FLOOR this suite is known to hold."
     echo "  Either cases were lost, or the floor is stale and should be raised with them."
