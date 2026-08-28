@@ -222,11 +222,38 @@ func TestDHCPv6_SelfConfiguring_AddressAndRouteSurvive(t *testing.T) {
 				}
 			}
 			if formed == nil {
+				// WHICH DEFECT IS THIS? Two of them produce exactly this
+				// symptom and they have different owners.
+				//
+				// On a stateless or SLAAC segment the endpoint carries no
+				// IPv6 address, and the engine disables IPv6 outright on a
+				// sandbox interface whose endpoint has none. The plugin
+				// clears that switch before starting its DHCPv6 client
+				// (#868). If that clear failed, the container has no IPv6
+				// on the interface at all, and "no global address" says
+				// nothing whatever about advertisement processing.
+				//
+				// The kernel forms a link-local on any IPv6-enabled
+				// interface without needing a router, so its presence
+				// settles which of the two this is. Reported rather than
+				// asserted separately, because the verdict is the same
+				// either way -- what changes is who reads the failure.
+				ll, haveLL := harness.LinkLocal(harness.ParseV6Addrs(fN.addr))
+				attribution := fmt.Sprintf("The interface HAS a link-local (%s), so IPv6 is "+
+					"enabled on it and the missing global address is about advertisements "+
+					"not being acted on — #875, this test's subject.", ll.CIDR)
+				if !haveLL {
+					attribution = "The interface has NO IPv6 link-local either, so IPv6 is " +
+						"administratively disabled on it and nothing downstream is a " +
+						"statement about #875. That is #868's enable path failing — check " +
+						"ipv6_link_enable_failures before reading anything else here."
+				}
 				t.Fatalf("S1 FAILED: no global IPv6 address in the fixture's subnet %s ever "+
 					"appeared on ANY interface inside the container across %s, on a %s "+
-					"segment whose router advertisements carry that prefix. Last state:\n"+
-					"ip -6 addr:\n%s\nip link:\n%s",
-					harness.V6SubnetV6CIDR, selfConfigWindow, tc.mode, fN.addr, fN.links)
+					"segment whose router advertisements carry that prefix.\n\n%s\n\n"+
+					"Last state:\nip -6 addr:\n%s\nip link:\n%s",
+					harness.V6SubnetV6CIDR, selfConfigWindow, tc.mode, attribution,
+					fN.addr, fN.links)
 			}
 			if formed.elapsed > selfConfigFormBy {
 				t.Errorf("S1 FAILED: the address %s took %s to appear, past the %s bound. "+

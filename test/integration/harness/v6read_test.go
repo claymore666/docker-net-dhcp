@@ -386,6 +386,94 @@ func TestParseV6Addrs(t *testing.T) {
 	}
 }
 
+// TestLinkLocal drives the discriminator that separates "#868's enable
+// failed" from "#875's advertisements were not processed". Both show up
+// as a missing global address; only the link-local tells them apart.
+//
+// Keyed on SCOPE, not on the text "fe80": a link-local compresses its
+// zero groups, so a prefix test here would repeat the RFC 5952 defect
+// TestGlobalInSubnet_SLAACRenderingIsNotCompressed records. The rows
+// therefore include a link-local written both ways round.
+func TestLinkLocal(t *testing.T) {
+	cases := []struct {
+		name  string
+		addrs []V6Addr
+		want  string
+	}{
+		{
+			name:  "the ordinary rendering",
+			addrs: []V6Addr{{CIDR: "fe80::42:acff:fe11:2/64", Flags: "link"}},
+			want:  "fe80::42:acff:fe11:2/64",
+		},
+		{
+			name:  "an uncompressed rendering of the same scope",
+			addrs: []V6Addr{{CIDR: "fe80:0:0:0:42:acff:fe11:2/64", Flags: "link"}},
+			want:  "fe80:0:0:0:42:acff:fe11:2/64",
+		},
+		{
+			name: "a global address is not a link-local",
+			addrs: []V6Addr{
+				{CIDR: slaacRendering + "/64", Flags: "global dynamic"},
+			},
+			want: "",
+		},
+		{
+			name:  "IPv6 disabled: nothing but loopback",
+			addrs: []V6Addr{{CIDR: "::1/128", Flags: "host"}},
+			want:  "",
+		},
+		{
+			name:  "an IPv4 link-local is not one of these",
+			addrs: []V6Addr{{CIDR: "169.254.3.4/16", Flags: "link"}},
+			want:  "",
+		},
+		{
+			name:  "unparseable input is not a match",
+			addrs: []V6Addr{{CIDR: "not-an-address/64", Flags: "link"}},
+			want:  "",
+		},
+		{
+			name: "the global address is skipped and the link-local found",
+			addrs: []V6Addr{
+				{CIDR: slaacRendering + "/64", Flags: "global dynamic"},
+				{CIDR: "fe80::42:acff:fe11:2/64", Flags: "link"},
+			},
+			want: "fe80::42:acff:fe11:2/64",
+		},
+	}
+
+	// NON-VACUITY, keyed on both verdicts: a table reaching only the
+	// found case would pass against a LinkLocal that returns its first
+	// argument, and one reaching only the not-found case would pass
+	// against a LinkLocal that never matches -- which is the direction
+	// that silently disarms the discriminator.
+	var found, notFound int
+	for _, tc := range cases {
+		if tc.want == "" {
+			notFound++
+		} else {
+			found++
+		}
+	}
+	if found < 1 || notFound < 1 {
+		t.Fatalf("the table has %d rows expecting a link-local and %d expecting none; "+
+			"both are needed, since this reader's whole job is to answer no when IPv6 "+
+			"is off and yes when it is on", found, notFound)
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := LinkLocal(tc.addrs)
+			if (tc.want != "") != ok {
+				t.Fatalf("LinkLocal found=%v, want found=%v (got %q)", ok, tc.want != "", got.CIDR)
+			}
+			if ok && got.CIDR != tc.want {
+				t.Errorf("LinkLocal = %q, want %q", got.CIDR, tc.want)
+			}
+		})
+	}
+}
+
 func TestParseLft(t *testing.T) {
 	cases := []struct {
 		in     string

@@ -181,6 +181,42 @@ func FirstNonLoopback(out string) (string, bool) {
 	return "", false
 }
 
+// LinkLocal returns an IPv6 link-local address (fe80::/10) from a
+// parsed `ip -6 addr` dump, if there is one.
+//
+// IT EXISTS TO SEPARATE TWO REDS THAT LOOK IDENTICAL. On a stateless or
+// SLAAC segment the endpoint carries no IPv6 address, and the engine
+// disables IPv6 outright on a sandbox interface whose endpoint has
+// none. The plugin clears that switch before starting its DHCPv6 client
+// (#868); if the clear ever fails, the container has NO IPv6 on that
+// interface at all.
+//
+// "No global address in the advertised prefix" is then the symptom of
+// both #868's enable failing and #875's advertisements not being
+// processed, and they are different bugs with different owners. A
+// link-local is the discriminator: the kernel forms one on any
+// IPv6-enabled interface without needing a router, so its presence says
+// IPv6 is on and the missing global address is about advertisements,
+// and its absence says IPv6 was never enabled and nothing downstream of
+// that is a statement about #875.
+//
+// Scope rather than prefix text: a link-local renders fe80:: with
+// several zero groups compressed, so a string test would be a second
+// instance of the RFC 5952 trap GlobalInSubnet already fell into.
+func LinkLocal(addrs []V6Addr) (V6Addr, bool) {
+	for _, a := range addrs {
+		host, _, _ := strings.Cut(a.CIDR, "/")
+		ip := net.ParseIP(strings.TrimSpace(host))
+		if ip == nil {
+			continue
+		}
+		if ip.To4() == nil && ip.IsLinkLocalUnicast() {
+			return a, true
+		}
+	}
+	return V6Addr{}, false
+}
+
 // ParseLft turns `ip`'s lifetime field into seconds. "forever" is
 // reported as not-finite rather than as a large number, because the two
 // mean different things here: a finite lifetime is the kernel ageing an
