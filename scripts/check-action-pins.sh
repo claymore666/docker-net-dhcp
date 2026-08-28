@@ -234,7 +234,16 @@ for f in "${FILES[@]}"; do
     # this arm.) Both are real references -- actionlint answers `ref is
     # missing` on each, byte-identically to the plain form -- and both
     # counted zero here. MEASURED, both exit 0 with a success line.
-    # Measured on this tree: 97 parsed, 97 counted, no file differing.
+    #
+    # NO COUNT IS WRITTEN DOWN HERE, DELIBERATELY. This line used to
+    # read "Measured on this tree: 97 parsed, 97 counted" -- and the
+    # tree moved to 98 without it, which is precisely the stale-number
+    # defect this gate exists to stop, sitting inside the gate. A
+    # population does not belong in a comment: it is re-derived by the
+    # suite's real-tree case on every run, and the property that
+    # matters is not the size of the two numbers but their RELATION,
+    # stated just below and enforced by the residue refusal rather than
+    # by anyone reading this.
     #
     # The count is a LOWER BOUND on references and is only ever compared
     # upward: fewer counted than parsed is not a finding, more counted

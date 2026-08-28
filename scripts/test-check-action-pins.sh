@@ -434,8 +434,11 @@ fi
 # body, and on this project's own gate scripts quoted in a workflow --
 # a gate that cries wolf gets discharged, and then the refusal above is
 # worth nothing. None of the four below is a reference and none may
-# count. Measured on the real tree: 97 parsed, 97 counted, no file
-# differing.
+# count. The real-tree case at the bottom of this file is what holds
+# that claim: it runs the gate bare and requires exit 0, and exit 0
+# already implies no file counted more than it parsed -- so the
+# assertion is executable and re-derived every run. No tree-wide total
+# is quoted here on purpose; the one that used to be went stale.
 fresh
 cat > "$TMP/wf/a.yml" <<EOF
 jobs:
