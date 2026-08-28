@@ -1349,11 +1349,17 @@ func TestMountPrep_GuardKeyedOnTheFLAGAndNothingElse(t *testing.T) {
 // TestRAGuard_WritesVerifiesAndShieldsEveryKnob pins the steps a knob
 // needs and the ORDER they must come in.
 //
-// Order is the whole design: shielding before the write makes the write
+// Order is the whole design: shielding before a write makes that write
 // fail, and verifying after the shield verifies the shield's own view
 // rather than the kernel's. Derived from raGuardKnobs so a knob added
-// with only two of its three steps fails here.
-
+// without its write or its read-back fails here.
+//
+// The shield is ONE step for all knobs since #875's second round -- it
+// returns /proc/sys itself to read-only rather than binding each leaf,
+// because the per-leaf bind was MEASURED to report success and not hold
+// on the CI runner. So the ordering claim is that EVERY knob's write
+// and verify precede the single shield; a knob written after it would
+// be a write into a read-only tree.
 func TestRAGuard_WritesVerifiesAndShieldsEveryKnob(t *testing.T) {
 	const iface = "eth0"
 	prep := mountPrep(dhcpcdParams{Iface: iface, V6: true, HonorRouterAdverts: true})
@@ -1361,9 +1367,27 @@ func TestRAGuard_WritesVerifiesAndShieldsEveryKnob(t *testing.T) {
 	if len(knobs) == 0 {
 		t.Fatal("no knobs: every assertion below is satisfied by an empty domain")
 	}
+
+	shield := strings.Index(prep, mountBin+" -o remount,bind,ro "+procSysPath)
+	if shield < 0 {
+		t.Fatalf("no shield: the knobs are written and never protected, and dhcpcd "+
+			"re-runs if_setup_inet6() on every carrier acquisition, so every value "+
+			"below would be undone\n---\n%s", prep)
+	}
+	// Exactly one, for one operation. Three would mean the per-knob
+	// shape came back without the reason for it.
+	if n := strings.Count(prep, mountBin+" -o remount,bind,ro "+procSysPath); n != 1 {
+		t.Errorf("shield appears %d times, want exactly 1", n)
+	}
+	// The shield must come after the prologue's read-WRITE remount,
+	// otherwise it is immediately undone by it.
+	if rw := strings.Index(prep, mountBin+" -o remount,bind,rw "+procSysPath); rw < 0 || rw > shield {
+		t.Errorf("read-only shield at %d does not follow the read-write remount at %d; "+
+			"the guard would be reopened by the very step that lets it write", shield, rw)
+	}
+
 	for _, k := range knobs {
 		path := raGuardPath(iface, k.name)
-		shield := strings.Index(prep, mountBin+" -o remount,bind,ro "+path)
 		write := strings.Index(prep, echoBin+" "+k.value+" > "+path)
 		verify := strings.Index(prep, grepBin+" -qxF "+k.value+" "+path)
 		switch {
@@ -1375,12 +1399,9 @@ func TestRAGuard_WritesVerifiesAndShieldsEveryKnob(t *testing.T) {
 		case verify < 0:
 			t.Errorf("%v: written but never read back; a /proc/sys write that reports "+
 				"success is not evidence the value is there\n---\n%s", k.name, prep)
-		case shield < 0:
-			t.Errorf("%v: written but not shielded; dhcpcd re-runs if_setup_inet6() on "+
-				"every carrier acquisition and would undo it\n---\n%s", k.name, prep)
 		case !(write < verify && verify < shield):
 			t.Errorf("%v: steps out of order (write=%d verify=%d shield=%d); must be "+
-				"write, then read back, then shield\n---\n%s",
+				"write, then read back, and both before the single shield\n---\n%s",
 				k.name, write, verify, shield, prep)
 		}
 	}

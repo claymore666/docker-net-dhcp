@@ -176,7 +176,8 @@ import (
 // force: the /proc/sys write is refused ("Read-only file system") and
 // `ip link set dev eth0 addrgenmode none` SUCCEEDS, after which the
 // container reads 1. dhcpcd sets this one over netlink
-// (IFLA_INET6_ADDR_GEN_MODE), where a bind mount has no say.
+// (IFLA_INET6_ADDR_GEN_MODE), which a read-only /proc/sys does not
+// reach at all.
 //
 // A guard step that reports success while the value it guards changes
 // anyway is worse than an absent one -- it puts a green step and a
@@ -224,31 +225,52 @@ import (
 // Every step is non-fatal by construction: the client starts either
 // way, because a container with a working lease and stale advertisement
 // settings is better than a container with no address at all. What
-// matters is that a refusal is LOUD. MEASURED, one arm per refusal
-// mode, each against a live interface with the precondition asserted
-// (accept_ra=1) before the arm ran:
+// matters is that a refusal is LOUD.
 //
-//	shield honoured      accept_ra=2   0 markers   dhcpcd saw EROFS
-//	bind-mount denied    accept_ra=0   3 markers   (the three -shield steps)
+// The table below is the evidence that CLOSED route A, kept because it
+// is what the current shape is a response to. Each arm ran against a
+// live interface with the precondition asserted (accept_ra=1) first:
+//
+//	leaf bind honoured   accept_ra=2   0 markers   dhcpcd saw EROFS
+//	leaf bind denied     accept_ra=0   3 markers   (the three -shield steps)
 //	/proc/sys absent     accept_ra=0   9 markers   (write+verify+shield x3)
 //	guard not asked      accept_ra=0   0 markers   (control)
 //
-// Two things to read off that table. First, a refused shield is never
-// silent: it costs the knob AND raises router_advert_guard_failures, so
-// the zero-marker rows are the only ones where a zero counter means
-// what it looks like -- and the last two rows are distinguishable, which
-// is what stops "guard failed" being confused with "guard not asked".
+// Row 2 is why a write-only design would have shipped broken: the write
+// succeeds, the shield does not, and accept_ra reads 0 afterwards
+// because dhcpcd overwrote it. The shield is not belt-and-braces on top
+// of the write; it is the half that works.
 //
-// Second, the write-only design would have shipped broken. Row 2 is
-// exactly that design -- the write succeeds, the shield does not -- and
-// accept_ra reads 0 afterwards, because dhcpcd overwrote it. The shield
-// is not belt-and-braces on top of the write; it is the half that
-// works.
+// And row 2 is not hypothetical. MEASURED on the CI runner, with the
+// per-leaf bind in force and the assertion correctly anchored: write 3
+// of 3 succeeded, verify 3 of 3 succeeded, and the shield was refused 3
+// of 3, after which the container read accept_ra=0 and autoconf=0 --
+// dhcpcd's values -- while keep_addr_on_down held at 1 because dhcpcd
+// never writes that knob. A mechanism that reports success where it
+// works and is silently absent where it does not is the failure this
+// package exists to avoid, which is what sent route A to the
+// enumeration in raGuardSteps.
 //
-// Not measured, and open: a rootfs mounted read-only, and a runtime
-// that denies CAP_SYS_ADMIN. The second cannot reach these steps at all
-// -- unshare(1) -m fails first and the prologue never runs -- so it is
-// a mountPrep concern rather than a guard one.
+// For the mechanism now in force, MEASURED against a control in the
+// shipped image:
+//
+//	/proc/sys returned ro   accept_ra=2  autoconf=1   dhcpcd exit 0, no abort
+//	/proc/sys left rw       accept_ra=0  autoconf=0   (control: the defect)
+//
+// KNOWINGLY OPEN, and the honest boundary of this comment: a host that
+// refuses the read-only remount itself has not been observed. It would
+// emit one procsys-ro marker rather than three, because one operation
+// covers all the knobs -- read the marker as "none of the knobs are
+// held", never as "one of them is not". The prologue's own
+// read-WRITE remount of the same mount succeeds on every host the
+// suite has run on, including the one that refuses the leaf bind, which
+// is the reason to expect the reverse to be available too; expecting is
+// not measuring, and the integration lane is where it gets decided.
+//
+// Also not measured, and open: a rootfs mounted read-only, and a
+// runtime that denies CAP_SYS_ADMIN. The second cannot reach these
+// steps at all -- unshare(1) -m fails first and the prologue never
+// runs -- so it is a mountPrep concern rather than a guard one.
 //
 // # THE BOUND ON ALL OF THIS
 //
@@ -261,7 +283,7 @@ import (
 // advertisement, so a DHCPv6-only segment with RAs disabled has no
 // default route to discover and this guard will not invent one.
 //
-// The shield's own escape, stated because a read-only bind mount reads
+// The shield's own escape, stated because a read-only /proc/sys reads
 // like a stronger promise than it is: it constrains DHCPCD, because
 // dhcpcd is what runs inside that mount namespace. It constrains
 // nothing else. Any other writer in the container's network namespace
@@ -274,13 +296,17 @@ import (
 // test/integration/ipv6_test.go is what reads the live value.
 //
 // Two writers reach these paths in this codebase, and they compose.
-// MEASURED: the shield does not escape unshare(1) -m -- after a
-// shielded child exits, the parent's mountinfo carries no entry for the
-// shielded leaf and the parent's accept_ra is writable again -- and
-// pkg/plugin/v6_link.go's disable_ipv6 write targets a different leaf,
-// which stayed writable both inside and outside the shielded namespace.
-// The guard cannot break that path and that path cannot break the
-// guard.
+// The mount is private to the client: MEASURED for route A's leaf bind
+// (after a shielded child exits, the parent's mountinfo carries no
+// entry for the shielded leaf and the parent's accept_ra is writable
+// again), and the same unshare(1) -m boundary is what the prologue has
+// always relied on for its read-WRITE remount of this very mount --
+// that has never leaked to the host or to another client. Stated as the
+// boundary rather than re-quoting the leaf measurement at the new
+// mechanism, since the mechanism changed under it. pkg/plugin's
+// v6_link.go writes disable_ipv6 from the plugin process, outside that
+// namespace, so it is unaffected either way: the guard cannot break
+// that path and that path cannot break the guard.
 const (
 	// sysctlIPv6ConfDir is the per-interface IPv6 configuration tree.
 	// /proc/sys/net is per-NETWORK-NAMESPACE: the same path names a
@@ -297,6 +323,13 @@ const (
 	raAutoconfValue = "1"
 	// raKeepAddrValue keeps configured addresses across a carrier loss.
 	raKeepAddrValue = "1"
+
+	// raGuardShieldStep names the single step that returns /proc/sys to
+	// read-only. One name for one operation: the marker a host emits
+	// when the shield is refused must not be mistakable for a per-knob
+	// failure, because the consequence differs -- a refused shield
+	// leaves ALL the knobs writable, not one.
+	raGuardShieldStep = "procsys-ro"
 )
 
 // raGuardKnob is one sysctl the guard writes and then shields.
@@ -353,6 +386,80 @@ func raGuardPath(iface, knob string) string {
 // counter; TestRAGuard_EveryStepReportsItsFailure asserts that by
 // counting markers against commands rather than by naming the steps
 // that exist today.
+// raGuardSteps emits, per knob, a write and a read-back verify; then a
+// SINGLE step that returns /proc/sys to read-only for the rest of
+// dhcpcd's life.
+//
+// THE ROUTES TO DURABILITY, AND WHY THIS ONE (#875)
+//
+// Setting the knobs once is not enough: dhcpcd re-runs if_setup_inet6()
+// on every carrier acquisition, so whatever we write it writes back.
+// Durability is the whole guarantee, not a refinement of it. These are
+// the routes considered, each marked closed or knowingly open.
+//
+//	A. Read-only bind mount over each sysctl LEAF (what this used to
+//	   do). CLOSED as unreliable: MEASURED on the CI runner, `mount -o
+//	   bind P P` returns 0 but leaves no /proc/mounts entry, so the
+//	   following `remount,bind,ro` reports "can't find P in
+//	   /proc/mounts" and the leaf stays writable. It works on other
+//	   hosts, which is exactly what made it dangerous -- it reported
+//	   success where it worked and its absence was invisible where it
+//	   did not.
+//	B. Stop the WRITER: dhcpcd's `noipv6rs`. MEASURED to work on the
+//	   sysctls -- accept_ra stays 2 and autoconf stays 1, while an
+//	   unrelated directive (`slaac private`) does not have that effect,
+//	   so the effect is specific rather than "any config". CLOSED
+//	   anyway, on protocol risk: noipv6rs also stops dhcpcd processing
+//	   Router Advertisements, and MEASURED it emits no Router
+//	   Solicitation at all. dhcpcd learns to start DHCPv6 from the RA's
+//	   M flag, so suppressing RA handling risks never starting the
+//	   DHCPv6 exchange this plugin exists to run. Trading a lease for a
+//	   sysctl is not a trade worth making.
+//	C. Re-assert in a loop after each of dhcpcd's writes. CLOSED: racy
+//	   by construction (the container is exposed between the write and
+//	   the re-assert), and it needs a process per endpoint.
+//	D. Set the knobs over netlink instead of /proc. CLOSED: addresses
+//	   the write, not the DURABILITY -- dhcpcd overwrites either way.
+//	E. Overmount a leaf with a DIFFERENT file (tmpfs). CLOSED, and it
+//	   is a correctness hazard rather than merely ineffective: the
+//	   container would then read our file instead of the kernel's
+//	   sysctl, so the guard would look like it held while the kernel
+//	   value underneath was whatever dhcpcd last wrote.
+//	F. seccomp/LSM to deny the write. KNOWINGLY OPEN, out of scope: it
+//	   needs machinery this plugin does not have, for a case the route
+//	   below already covers.
+//	G. Drop CAP_NET_ADMIN from dhcpcd so its sysctl writes fail. OPEN,
+//	   not taken: plausible, but it changes what dhcpcd may do for
+//	   every other purpose, and the failure mode if it needs the
+//	   capability elsewhere is a broken lease rather than a loud error.
+//	H. Return /proc/sys to READ-ONLY in the client's private mount
+//	   namespace, after our writes and before dhcpcd starts. TAKEN.
+//
+// H is chosen because it is the one route that uses an operation
+// already MEASURED to work in the environment where A fails: the
+// prologue's own `remount,bind,rw /proc/sys` succeeds on that runner
+// (zero procsys-remount markers). It is also the conceptually correct
+// shape -- /proc/sys is read-only in the managed-plugin rootfs, and it
+// is OUR prologue that widens it so dhcpcd's v4 setup can write
+// promote_secondaries (#247). Leaving it open for the whole of dhcpcd's
+// life is what let dhcpcd write accept_ra back to 0. This closes the
+// door we opened, rather than adding a new lock beside it.
+//
+// MEASURED against a control, in the shipped image: with /proc/sys left
+// read-write dhcpcd takes accept_ra 2 -> 0 and autoconf 1 -> 0; with it
+// returned to read-only both hold at 2 and 1, dhcpcd exits 0, prints no
+// abort signature, and its protocol behaviour is unchanged (it still
+// solicits, unlike under route B).
+//
+// Scope, and it is load-bearing: this runs ONLY for the persistent v6
+// client (pkg/dhcp refuses the combination otherwise). The v4 client
+// keeps a writable /proc/sys, because its promote_secondaries write is
+// FATAL if it fails -- that is #247, and re-breaking it would trade one
+// user-visible bug for another.
+//
+// Order within a knob is still write, then read back, then shield: a
+// shield applied before the write would make the write fail, and a
+// verify after the shield would only prove the shield's own view.
 func raGuardSteps(iface string) string {
 	out := ""
 	for _, k := range raGuardKnobs() {
@@ -361,14 +468,12 @@ func raGuardSteps(iface string) string {
 			raGuardFailMarker, k.name+"-write")
 		out += prepStep(fmt.Sprintf("%s -qxF %s %s", grepBin, k.value, p),
 			raGuardFailMarker, k.name+"-verify")
-		// bind-then-remount: `-o bind` makes the file its own mount,
-		// and only then can `remount,bind,ro` make that mount
-		// read-only. One step, because a half-applied shield is not a
-		// state worth reporting separately -- either dhcpcd's write
-		// fails or it does not.
-		out += prepStep(fmt.Sprintf("%s -o bind %s %s && %s -o remount,bind,ro %s",
-			mountBin, p, p, mountBin, p),
-			raGuardFailMarker, k.name+"-shield")
 	}
+	// One shield for all three knobs, last. Not per-knob: the thing
+	// being made read-only is the /proc/sys mount itself, so repeating
+	// it per knob would be the same operation three times and would
+	// report three failures for one cause.
+	out += prepStep(fmt.Sprintf("%s -o remount,bind,ro %s", mountBin, procSysPath),
+		raGuardFailMarker, raGuardShieldStep)
 	return out
 }

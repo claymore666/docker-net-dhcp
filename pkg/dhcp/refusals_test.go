@@ -190,7 +190,7 @@ func TestRAGuardWatcher_CountsARealFailedStepSeparately(t *testing.T) {
 	// Counts STEPS: a guard that failed to write and to shield one knob
 	// reads 2, not 1.
 	body := prepStep(falseBin, raGuardFailMarker, "accept_ra-write") +
-		prepStep(falseBin, raGuardFailMarker, "accept_ra-shield")
+		prepStep(falseBin, raGuardFailMarker, raGuardShieldStep)
 	if _, r := run(t, body); r != 2 {
 		t.Errorf("ra_guard moved by %d for two failed steps, want 2", r)
 	}

@@ -657,9 +657,13 @@ docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.8.0 \
   route disappeared at the end of the first advertisement's router
   lifetime, while on-link traffic kept working, which is what made it
   hard to spot. The DHCPv6 client now runs with `accept_ra=2`,
-  `autoconf=1` and `keep_addr_on_down=1` pinned per-interface and held
-  read-only for the client's own view, so `dhcpcd` cannot turn them off
-  again. `accept_ra=2` rather than `1` because a container that enables
+  `autoconf=1` and `keep_addr_on_down=1` set per-interface before
+  `dhcpcd` starts, after which `/proc/sys` is returned to read-only
+  inside the client's own private mount namespace, so `dhcpcd` cannot
+  turn them off again. The read-only step is invisible to the host, to
+  the container and to every other client; the IPv4 client keeps a
+  writable `/proc/sys`, because its own setup write is fatal if it
+  fails. `accept_ra=2` rather than `1` because a container that enables
   forwarding — VPN, NAT, docker-in-docker — would otherwise lose
   advertisement processing silently; `autoconf=1` because the router's
   prefix A flag is what decides whether an address forms (RFC 4862
