@@ -212,7 +212,7 @@ func TestLifecycleMacvlan_IPv6_GoldenPath(t *testing.T) {
 		t.Errorf("inspect IPv6 %s != live link IPv6 %s", insV6, liveV6)
 	}
 
-	assertRouterAdvertsAreBeingProcessed(t, ctx, id, "eth0")
+	assertRouterAdvertsAreBeingProcessed(t, ctx, id, liveV6)
 
 	// Teardown: both families release cleanly.
 	if err := cli.ContainerStop(ctx, id, container.StopOptions{}); err != nil {
@@ -328,7 +328,7 @@ func TestLifecycleBridge_IPv6_GoldenPath(t *testing.T) {
 		t.Errorf("live IPv6 %s not in bridge fixture v6 pool [%s, %s]", liveV6, harness.BridgeDHCPv6PoolStart, harness.BridgeDHCPv6PoolEnd)
 	}
 
-	assertRouterAdvertsAreBeingProcessed(t, ctx, id, "eth0")
+	assertRouterAdvertsAreBeingProcessed(t, ctx, id, liveV6)
 }
 
 // TestLeaseRenewIPv6_HonorsT1: the v6 sibling of
@@ -592,10 +592,32 @@ var raGuardKnobs = map[string]string{
 	"keep_addr_on_down": "1",
 }
 
+// containerV6Iface returns the name of the interface inside the
+// container that carries addr.
+//
+// It is DERIVED, never assumed. The first version of this helper's
+// caller hardcoded "eth0" and every read returned "No such file or
+// directory": this plugin names the container link after the network
+// (`dh-itest-br20`), not `eth0`, so the assertions below produced no
+// measurement at all while looking like a normal failure. The
+// interface that holds the leased address is by definition the one the
+// guard was supposed to configure, so derive it from the address.
+func containerV6Iface(t *testing.T, ctx context.Context, id, addr string) string {
+	t.Helper()
+	out := harness.ExecOutput(t, ctx, id, "ip", "-6", "-o", "addr", "show", "scope", "global")
+	if iface := harness.V6IfaceFromAddrShow(out, addr); iface != "" {
+		return iface
+	}
+	t.Fatalf("could not derive the container interface carrying %s; "+
+		"every assertion keyed on it would measure nothing.\n"+
+		"`ip -6 -o addr show scope global` said:\n%s", addr, out)
+	return ""
+}
+
 // assertRouterAdvertsAreBeingProcessed is the OUTSIDE observer for
 // #875. Everything else about that fix is visible only to the plugin:
 // the guard's steps run inside dhcpcd's private mount namespace, its
-// failures land in a health counter, and a counter reporting zero is
+// failures land in a health counter, and a counter reading zero is
 // equally consistent with "the guard held" and "the guard never ran".
 //
 // So this asserts on the container's own kernel state, in the image
@@ -611,26 +633,48 @@ var raGuardKnobs = map[string]string{
 //     read-only shield, accept_ra reads 0 here. This is the defect
 //     #875 reported, observed directly.
 //
-//  2. A default route derived from a Router Advertisement is present.
-//     The knobs being right is the plugin's doing; a `proto ra` route
-//     is the KERNEL's, and it can only exist if the kernel actually
-//     accepted an RA off the wire. A test that checked only (1) would
-//     still pass if the guard wrote the right numbers to an interface
-//     nothing was advertising on.
+//  2. A default route via a LINK-LOCAL address is present. DHCPv6
+//     carries no router — the option catalogue is RFC 8415 §21 and
+//     nothing in it has a next hop — and this plugin sets no IPv6
+//     gateway of its own, so a default route via fe80::/10 can only
+//     have been learned from a Router Advertisement. The knobs being
+//     right is the plugin's doing; this is the KERNEL's, and it can
+//     only happen if an advertisement was actually accepted off the
+//     wire.
 //
-// Note the bound: this does not observe REFRESH. The fixture's
-// dnsmasq runs with --enable-ra and no --ra-param, so its unsolicited
-// interval is dnsmasq's default (up to 600s) — far outside any test
-// budget here — and a container whose addr_gen_mode dhcpcd has set to
-// NONE cannot solicit a fresh one (measured; see the residual in
+// Claim 2 was first written as a match on `proto ra`, which is a
+// string the container's `ip` PROVABLY NEVER PRINTS: the test image is
+// busybox, whose route output carries no `proto` field at all. It was
+// absence-driven against a probe image with full iproute2 and could
+// never have passed in the image CI runs. Keying on the via-address
+// instead makes the assertion a property of the protocol rather than
+// of one tool's formatting.
+//
+// Note the bound: this does not observe REFRESH. The fixture's dnsmasq
+// runs with --enable-ra and no --ra-param, so its unsolicited interval
+// is dnsmasq's default (up to 600s) — far outside any test budget here
+// — and a container whose addr_gen_mode dhcpcd has set to NONE cannot
+// solicit a fresh one (measured; see the residual in
 // pkg/dhcp/ra_guard.go). Refresh over time is evidenced in the PR by
 // direct measurement, not by this test.
-func assertRouterAdvertsAreBeingProcessed(t *testing.T, ctx context.Context, id, iface string) {
+func assertRouterAdvertsAreBeingProcessed(t *testing.T, ctx context.Context, id, addr string) {
 	t.Helper()
+
+	iface := containerV6Iface(t, ctx, id, addr)
+	t.Logf("RA guard: asserting on derived container interface %q", iface)
 
 	for knob, want := range raGuardKnobs {
 		p := "/proc/sys/net/ipv6/conf/" + iface + "/" + knob
 		got := strings.TrimSpace(harness.ExecOutput(t, ctx, id, "cat", p))
+		// A read that FAILED is a different verdict from a value that is
+		// wrong, and it must never be reported as either a pass or a
+		// mere mismatch: it means this assertion measured nothing.
+		if harness.SysctlReadFailed(got) {
+			t.Errorf("COULD NOT MEASURE %s: %q. The assertion did not run — this is "+
+				"not evidence the guard failed, it is evidence the observer is "+
+				"pointed at the wrong place (#875)", p, got)
+			continue
+		}
 		if got != want {
 			t.Errorf("%s = %q, want %q — the Router-Advertisement guard did not hold "+
 				"this knob inside the shipped image. accept_ra=0 is what dhcpcd's "+
@@ -645,13 +689,13 @@ func assertRouterAdvertsAreBeingProcessed(t *testing.T, ctx context.Context, id,
 	var routes string
 	for time.Now().Before(deadline) {
 		routes = harness.ExecOutput(t, ctx, id, "ip", "-6", "route", "show", "default")
-		if strings.Contains(routes, "proto ra") {
+		if harness.HasLinkLocalDefaultRoute(routes) {
 			return
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
-	t.Errorf("no default route with `proto ra` on %s after %s. The kernel never accepted "+
-		"a Router Advertisement, so the container has no router the DHCPv6 server did "+
-		"not give it — the #875 symptom. `ip -6 route show default` says:\n%s",
-		iface, harness.IPAcquisitionBudget, routes)
+	t.Errorf("no default route via a link-local address on %s after %s. DHCPv6 carries no "+
+		"router (RFC 8415 §21) and the plugin sets no IPv6 gateway, so the absence of one "+
+		"means the kernel never accepted a Router Advertisement — the #875 symptom. "+
+		"`ip -6 route show default` says:\n%s", iface, harness.IPAcquisitionBudget, routes)
 }
