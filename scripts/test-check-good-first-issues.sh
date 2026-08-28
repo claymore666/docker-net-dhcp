@@ -406,6 +406,38 @@ check "static/Unmet: a REFERENCED link definition is a route" 0 \
 check "static/Unmet: a definition-shaped line MID-PARAGRAPH is still a route" 0 \
     "$(run --static "$TMP/readme.midref" "$TMP/badge.unmet")" ''
 
+# PINNED KNOWN OVER-REFUSAL — this asserts the answer the gate gives, and
+# that answer is WRONG. A link reference definition is scoped to the whole
+# DOCUMENT; this gate reads only the bytes between the markers. So a
+# reference-style link inside the claim block whose definition sits later in
+# the README renders as a real clickable link on GitHub and the gate still
+# refuses it.
+#
+# MEASURED against GitHub's own /markdown API, the same oracle the two
+# controls above are scored with: this exact fixture renders
+# <a href="...discussions/new?category=q-a">. The gate exits 1.
+#
+# It is pinned rather than fixed, deliberately, and the direction is why.
+# Every other bound this gate has is fail-OPEN — it accepts something it
+# should refuse — and those are the dangerous ones because the green says
+# nothing happened. This one is fail-CLOSED: it goes red, and the error
+# message names the exact URL it wanted between the markers, so an author
+# who writes this shape is told what to write instead and is out of it in a
+# minute. Widening the block-scoped read to resolve definitions from the
+# whole document is the real fix; it is a widening of the ACCEPT set on a
+# gate whose whole job is refusing, so it wants its own preservation
+# controls (a definition inside a later fenced block must not count) and it
+# is not worth carrying into a docs PR at review round 3.
+#
+# If you are here because this case went red: you probably fixed it. Good —
+# delete this case, keep the two controls above, and add a control for a
+# definition that appears only inside a fence.
+{ printf 'Contributing.\n\n%s\n' "$BEGIN"
+  printf -- '- No starter tasks; [ask][dq] and one will be scoped.\n'
+  printf '%s\n\nLater prose.\n\n[dq]: %s\n' "$END" "$ROUTE"; } > "$TMP/readme.docref"
+check "static/Unmet: a definition OUTSIDE the block is refused (known over-refusal)" 1 \
+    "$(run --static "$TMP/readme.docref" "$TMP/badge.unmet")" 'names no ask route'
+
 # An UNPAIRED backtick is literal text, not an open code span. This is the
 # over-refusal a naive multi-line pattern introduces: match lazily across
 # newlines and one stray backtick swallows the real link below it. Code
