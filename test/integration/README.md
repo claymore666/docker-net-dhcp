@@ -32,7 +32,7 @@ run between that and teardown. The targets deliberately carry no
 rebuild dependency: one would reinstall the plugin mid-run and reset
 the health floor's observation window with it. Note the primary lane
 (`integration.yml`) does not run both suites in one job at all — its
-matrix is `main-1/2/3` plus `failure`, each with its own build step;
+matrix is `main-1`..`main-5` plus `failure`, each with its own build step;
 the single-job shape is `integration-arm64.yml`, `integration-hosted.yml`
 and `coverage.yml`.
 
@@ -41,9 +41,12 @@ runs `go test -v -tags integration -count=1 -timeout 20m -skip
 "TestFailure_" ./test/integration/...`; `integration-test-failure` runs
 the same command with `-run "TestFailure_"` instead, because the
 failure-injection suite is mostly deliberate waiting and does not
-belong in the main feedback loop. Measured on dev (run 30753274506,
-recorded in `.github/workflows/integration.yml`): failure 231s against
-main-1 367s / main-2 361s. Both tee their output to a
+belong in the main feedback loop. Measured 2026-08-28 over 22 runs
+(#877, the numbers are recorded in `.github/workflows/integration.yml`):
+the main corpus is 879s of test time across 70 tests and the failure
+suite 126s across 4, so five main shards run ~176s each against the
+failure suite's 126s, and every suite job adds ~115s of build, install
+and teardown on top. Both tee their output to a
 timestamped file under `$(ITEST_LOG_DIR)` (#378). Plain `go test ./...` skips
 this directory entirely thanks to the `//go:build integration` tag on
 every file here, so the unit-test cadence stays fast.

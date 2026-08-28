@@ -1,123 +1,146 @@
-# Measured per-test wall clock for the main suite, from run 30724380555
-# (2026-08-02). Used ONLY to balance shards (#381).
+# Measured per-test wall clock for the MAIN integration suite. Used ONLY
+# to balance shards (#381, #877).
 #
 # A test missing from this file is NOT skipped — it is assigned the mean,
 # so the file going stale makes shards less even and never makes one
 # incomplete. scripts/test-integration-shard.sh asserts completeness
 # independently of this file.
 #
-# These entries post-date that run and are local measurements. The list
-# is kept rather than a count of it, so adding one does not require
-# noticing a number two lines up:
+# Provenance (regenerated 2026-08-28, #877). The previous edition was a
+# single run from 2026-08-02 and had drifted: 18 of the tree's main-suite
+# tests had no row and ran on a mean guess, and 38 rows named tests that
+# live in test/integration/harness/ rather than the suite — those rows
+# were nearly all 0.00 and dragged the mean that the absent tests were
+# costed at DOWN, which is the wrong direction twice over.
 #
-#   TestRecovery_DaemonKilled_LeaseIsHeldUntilItExpires (22.36s, median
-#   of six). It is here rather than left to the mean because the mean is
-#   6.66s, and a 22s test costed at 6.66 puts its shard a quarter over.
+#   source     the 22 successful Integration runs that produced suite
+#              logs, out of the 24 most recent successful runs in the
+#              API's retention window at 2026-08-28T06:00Z (two of the
+#              24 were gate-skipped and ran no suite job)
+#   method     median of the per-test `--- PASS/SKIP: <name> (<n>s)`
+#              lines, across every sampled run. Median rather than mean:
+#              the ephemeral runner pool produces occasional slow jobs
+#              (job overhead ranged 91-172s over the same window) and one
+#              such sample should not move a test's weight.
+#   samples    22 for 67 of the 70 tests. The three exceptions are tests
+#              that did not exist for the whole window:
+#                TestDHCPv6_NoAddressModes_RefuseTheEndpoint         20
+#                TestInterfaceName_ProbeSkipPrecedesTheEphemeralFixture  11
+#                TestMultiNetwork_SameSubnetRefused                   8
+#   corpus     879.2s across 70 tests; mean 12.56s
 #
-#   TestMetrics_SocketServesTheFullSurface (0.55s, against a real installed
-#   plugin). It does no waiting — it scrapes one endpoint — so its cost is
-#   nearly all fixture setup, which its shard already pays.
+# Runs sampled:
+#   33146366330 33145891905 33145646801 33145007735 33144508563 
+#   33143895556 33143597868 33143259461 33143150558 33143090672 
+#   33142691992 33126731828 33126471548 33125634261 33124986791 
+#   33124593887 33124518969 33124422853 33123576221 33122097314 
+#   33119628132 33119366240 #
+# ONE ROW IS A SKIP COST, NOT A RUN COST.
+# TestInterfaceName_MultiNetworkDeterministic skipped in all 22 samples —
+# the engine does not yet honour a plugin-returned DstName (#125), so the
+# test's probe runs a throwaway container and then skips. Its 7.41s is
+# therefore the cost of the PROBE. When the engine ships that support the
+# test activates and this row becomes an underestimate; refresh then.
 #
-#   TestLeaseRetention_NothingEverReleases (25.58s),
-#   TestJoinNoContainer_AddressIsHeldUntilItExpires (20.02s) and
-#   TestParentGate_EndpointQueuesBehindAProbe (16.29s) — the three tests
-#   #800 added or rewrote, none of which existed in the run above. All
-#   are well over the 6.66s mean and would unbalance a shard costed at it.
+# THIS FILE IS THE MAIN SUITE ONLY. TestFailure_* runs in its own
+# unsharded job and TestMain is not selectable, so neither is costed
+# here. scripts/check-durations-table.sh enforces the set both ways: a
+# main-suite test with no row is an error, and a row naming anything the
+# partitioner will not place is an error too — a stray row is what
+# poisoned the mean above.
 #
-# Refreshing from a green run replaces all of these with CI numbers and
-# this note can go.
+# To refresh, from green runs (aggregate several, do not trust one):
+#   gh api repos/<owner>/<repo>/actions/runs/<id>/logs > run.zip
+#   unzip -p run.zip '*_main-*-suite.txt' \
+#     | grep -oE -- '--- (PASS|SKIP): [A-Za-z_0-9]+ \([0-9.]+s\)' \
+#     | sed -E 's/--- [A-Z]+: ([A-Za-z_0-9]+) \(([0-9.]+)s\)/\1\t\2/'
+#   # then take the median per test across runs, and re-run
+#   # scripts/check-durations-table.sh
 #
-# To refresh, from a green run:
-#   gh run view <id> --log | grep -oE -- '--- PASS: [A-Za-z_0-9]+ \([0-9.]+s\)' \
-#     | sed -E 's/--- PASS: ([A-Za-z_0-9]+) \(([0-9.]+)s\)/\1\t\2/' \
-#     | grep -v '^TestFailure_' | sort -u
-TestACKedTo	0.00
-TestAttachGraceLine_DistinguishesQuietFromFixed	0.00
-TestAuditLog_DefaultOff	9.99
-TestAuditLog_RecordsLifecycle	9.72
-TestCheckHealthFloor	0.00
-TestCheckHealthFloorPresence	0.00
-TestClasslessStaticRoutes_AbsentWithoutOptIn	6.49
-TestClasslessStaticRoutes_AppliedFromDHCP	7.04
-TestClientID_DefaultIsMACDerived	8.06
-TestClientID_OverrideAppearsInLeaseFile	6.65
-TestCompareInstances_HandBuiltValuesJudgedOnTheField	0.00
-TestCompareInstances_KeyNeverPublished	0.00
-TestCompareInstances_OneSideMissing	0.00
-TestCompareInstances_Recycled	0.00
-TestCompareInstances_SameProcess	0.00
-TestCompareInstances_TwoEmptyIDsAreNotTheSameProcess	0.00
-TestConcurrency_DistinctLeases	31.84
-TestConcurrentRenew_SameInterfaceNameBothRenew	37.36
-TestCounterWindowError_AcceptsOnlyTheTwoIntendedShapes	0.00
-TestCounterWindowError_NamesTheVoidCounters	0.00
-TestCounterWindowError_UnknownSaysWhichSideFailed	0.00
-TestCounterWindow_GuardWouldCatchTheOldPattern	0.00
-TestCounterWindow_NoDirectHealthReadsInSuite	0.00
-TestDNSPropagate_DefaultIsUnchanged	8.66
-TestDNSPropagate_OptInWritesResolvConf	10.44
-TestDUID_PersistsAcrossPluginRestart	13.51
-TestErrors_DriverOptIPMalformed	0.40
-TestErrors_NetworkCreateValidation	0.02
+# A TEST WITH NO CI HISTORY has no line for that recipe to harvest: it
+# reads green runs, and a test added on a branch has never been in one.
+# check-durations-table.sh reddens on the missing row all the same, so
+# the recipe needs a second half or every new main-suite test costs its
+# author a round (#878). Measure it once yourself and add the row:
+#
+#   # same preconditions as `make integration-test` (root, plugin built
+#   # and installed); ONE test, not the suite
+#   go test -v -tags integration -count=1 -timeout 20m \
+#     -run '^TestYourNewTest$' ./test/integration/...
+#   # take the `--- PASS: <name> (<n>s)` figure, add the row, then
+#   # scripts/check-durations-table.sh
+#
+# One sample is a worse number than a 22-run median and that is fine:
+# the value only weights a shard, and the next regeneration replaces it.
+# No row is the strictly worse option — it costs the test at the mean
+# AND reddens the gate.
+TestAddressConflict_BareParentIsUndetermined	6.14
+TestAddressConflict_BridgeModeDoesNotSelfReport	7.95
+TestAddressConflict_CleanSegmentIsNotReported	6.71
+TestAddressConflict_SquattedAddressIsReported	5.77
+TestAuditLog_DefaultOff	8.75
+TestAuditLog_RecordsLifecycle	8.33
+TestClasslessStaticRoutes_AbsentWithoutOptIn	7.28
+TestClasslessStaticRoutes_AppliedFromDHCP	6.83
+TestClientID_DefaultIsMACDerived	7.14
+TestClientID_OverrideAppearsInLeaseFile	7.16
+TestConcurrency_DistinctLeases	27.35
+TestConcurrentRenew_SameInterfaceNameBothRenew	32.15
+TestConflictProbe_ReclaimsLeftoverRoute	13.73
+TestDHCPv6_NoAddressModes_RefuseTheEndpoint	47.34
+TestDNSPropagate_DefaultIsUnchanged	7.26
+TestDNSPropagate_OptInWritesResolvConf	8.71
+TestDUID_PersistsAcrossPluginRestart	13.86
+TestErrors_DriverOptIPMalformed	0.42
+TestErrors_NetworkCreateValidation	0.04
 TestErrors_ParentDown	0.01
-TestErrors_ParentIsBridge	0.09
-TestExtraOptions_NTPAndTFTPLogged	7.86
-TestExtraOptions_SearchListInResolvConf	8.98
-TestExtraOptions_WPADAndTimezoneLogged	7.02
-TestFatalFaultSignaturesCoverEveryIncrementSite	0.01
-TestFatalFaultSignaturesExistInPluginSource	0.01
-TestFaultCensus_CountsEverySignature	0.00
-TestFaultCensus_CountsRepeats	0.00
-TestFaultCensus_EmptyLogReportsZeroAndSaysNothing	0.00
-TestFaultCensus_QuietOnACleanLog	0.00
-TestFloorCleanLine	0.00
-TestFloorCounterNamesMatchJSONTags	0.00
-TestFloorEvidence	0.00
-TestFloorFailedEmpty	0.00
-TestFQDN_RegistersInDNS	9.76
-TestHealthCounters_ObtainedAndReleased	9.87
-TestHostConfig_EnablesInit	0.00
-TestHostConfig_FreshPerCall	0.00
-TestHostConfig_NoBareLiteralsInSuite	0.01
-TestHostConfig_NoSlowStopOptOut	0.00
-TestInstanceVerdict_StringIsUnambiguous	0.00
-TestInstanceVerdict_ZeroValueIsUnknown	0.00
-TestInterfaceName_InvalidRejected	0.39
-TestInterfaceName_PluginHonorsOption	7.08
-TestIPv6_DNS6Propagation	23.67
-TestJoinFailureCensus	0.00
-TestJoinFailureCount_MatchesTheCensus	0.00
-TestJoinFailureCount_ZeroIsZero	0.00
-TestLeaseRenew_HonorsT1	25.80
-TestLeaseRenewIPv6_HonorsT1	85.27
-TestLifecycleBridge_GoldenPath	7.49
-TestLifecycleBridge_IPv6_GoldenPath	9.79
-TestLifecycleIPvlan_GoldenPath	7.88
-TestLifecycleMacvlan_GoldenPath	7.05
-TestLifecycleMacvlan_IPv6_GoldenPath	11.17
-TestMetrics_SocketServesTheFullSurface	0.55
-TestMTUPropagate_DefaultIsUnchanged	7.45
-TestMTUPropagate_OptInSetsLinkMTU	10.56
-TestNonRootContainer_PersistentClientStarts	25.33
-TestPreflightProbe_FailsWhenServerUnreachable	8.12
-TestPreflightProbe_PassesOnReachableServer	2.14
+TestErrors_ParentIsBridge	0.08
+TestExtraOptions_NTPAndTFTPLogged	7.31
+TestExtraOptions_SearchListInResolvConf	8.45
+TestExtraOptions_WPADAndTimezoneLogged	7.28
+TestFQDN_RegistersInDNS	8.36
+TestHealthCounters_ObtainedAndReleased	8.00
+TestIPv6_DNS6Propagation	24.31
+TestInterfaceName_InvalidRejected	0.41
+TestInterfaceName_MultiNetworkDeterministic	7.41
+TestInterfaceName_PluginHonorsOption	7.04
+TestInterfaceName_ProbeSkipPrecedesTheEphemeralFixture	0.00
+TestJoinNoContainer_AddressIsHeldUntilItExpires	18.48
+TestLeaseRenewIPv6_HonorsT1	85.21
+TestLeaseRenew_HonorsT1	22.52
+TestLeaseRetention_NothingEverReleases	26.21
+TestLifecycleBridge_GoldenPath	7.73
+TestLifecycleBridge_IPv6_GoldenPath	9.87
+TestLifecycleIPvlan_GoldenPath	7.29
+TestLifecycleMacvlan_GoldenPath	7.53
+TestLifecycleMacvlan_IPv6_GoldenPath	10.09
+TestMTUPropagate_DefaultIsUnchanged	7.46
+TestMTUPropagate_OptInSetsLinkMTU	8.30
+TestMetrics_SocketServesTheFullSurface	0.01
+TestMultiNetwork_SameSubnetRefused	18.84
+TestNonRootContainer_PersistentClientStarts	22.55
+TestParentGate_EndpointQueuesBehindAProbe	16.20
+TestPreflightProbe_FailsWhenServerUnreachable	8.11
+TestPreflightProbe_IPvlanProbeCoexistsWithIPvlanEndpoints	11.91
+TestPreflightProbe_PassesOnReachableServer	5.00
 TestPreflightProbe_RejectedInBridgeMode	0.01
-TestRecovery_DaemonRestart_PreservesContainer	23.73
-TestRecovery_DaemonKilled_LeaseIsHeldUntilItExpires	22.36
-TestRecovery_PluginDisableEnable_PreservesEndpoint	12.92
-TestStaticIP_DriverOpt	4.69
-TestStaticReservation_IsInsideThePool	0.00
-TestStaticReservation_IsPassedToDnsmasq	0.00
-TestStaticReservation_TestUsesTheConstants	0.00
-TestStaticRoutes_BridgeCopiesToContainer	7.20
-TestStaticRoutes_MacvlanCopiesToContainer	6.33
-TestStaticRoutes_MacvlanSkipRoutesOpt	7.73
-TestTombstoneRestart_PreservesIPv6	17.62
-TestTombstoneRestart_PreservesMACAndIP	9.68
-TestUnmarshalKeepsDecodingValues	0.00
-TestVendorClass_DefaultUsesUntaggedGateway	5.93
-TestVendorClass_NonMatchingValueUsesDefaultGateway	7.49
-TestVendorClass_OverrideRoutesViaTaggedGateway	7.47
-TestLeaseRetention_NothingEverReleases	25.58
-TestJoinNoContainer_AddressIsHeldUntilItExpires	20.02
-TestParentGate_EndpointQueuesBehindAProbe	16.29
+TestRecovery_DaemonKilled_LeaseIsHeldUntilItExpires	23.52
+TestRecovery_DaemonRestart_PreservesContainer	21.28
+TestRecovery_PluginDisableEnable_PreservesEndpoint	7.57
+TestSandboxNetnsIsVisibleToThePlugin	7.28
+TestServerPolicy_DenyBeatsPreferForTheSameServer	21.16
+TestServerPolicy_DenyExcludesTheNamedServer	42.45
+TestServerPolicy_ExhaustedFailsClosed	12.79
+TestServerPolicy_FallsBackToTheNextServer	16.04
+TestServerPolicy_PrefersTheNamedServer	41.32
+TestStateDirBindSource_MissingSourceContract	6.92
+TestStaticIP_DriverOpt	3.75
+TestStaticRoutes_BridgeCopiesToContainer	7.29
+TestStaticRoutes_MacvlanCopiesToContainer	6.94
+TestStaticRoutes_MacvlanSkipRoutesOpt	7.55
+TestTombstoneRestart_PreservesIPv6	16.69
+TestTombstoneRestart_PreservesMACAndIP	11.28
+TestV6Fixture_ModesComeUpAsRequested	9.15
+TestVendorClass_DefaultUsesUntaggedGateway	7.33
+TestVendorClass_NonMatchingValueUsesDefaultGateway	7.13
+TestVendorClass_OverrideRoutesViaTaggedGateway	6.91

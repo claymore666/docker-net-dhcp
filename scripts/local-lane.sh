@@ -119,6 +119,7 @@ LANE=(
   "concurrency parity|-|bash scripts/check-concurrency-parity.sh"
   "lane hygiene|-|bash scripts/check-lane-hygiene.sh"
   "allowlist parity|-|bash scripts/check-allowlist-parity.sh"
+  "shard-balance table|-|bash scripts/check-durations-table.sh"
   "golden fixture keying|go|bash scripts/check-golden-fixture-name-keyed.sh"
   # The lane checks itself: if test.yaml gains a gate this file does
   # not list, a local run says so instead of quietly covering less.

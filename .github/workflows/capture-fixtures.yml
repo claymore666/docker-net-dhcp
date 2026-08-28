@@ -86,8 +86,9 @@ jobs:
   capture:
     runs-on: [self-hosted, dhcp-ci]
     # Three flows, each a full integration test against a freshly built
-    # cover plugin. The suites budget 25 minutes for a sharded third of
-    # one; this runs three whole lifecycles back to back, plus the build.
+    # cover plugin. The suites budget 25 minutes for a sharded fifth of
+    # one (#877); this runs three whole lifecycles back to back, plus the
+    # build.
     timeout-minutes: 40
 
     # Narrower than the workflow default, and only here: this is the one

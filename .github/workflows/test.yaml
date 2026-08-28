@@ -188,6 +188,16 @@ jobs:
       - name: Gate script self-tests
         run: bash scripts/run-gate-selftests.sh
 
+      # The shard-balance table must name exactly the tests the
+      # partitioner places (#877). A main-suite test with no row is
+      # costed at the mean, which never makes a shard incomplete and
+      # always makes the shards uneven — and the integration gate is
+      # max() over them. A row naming something the partitioner will not
+      # place is caught too: it is never selected, but it moves the mean
+      # that the missing tests are charged.
+      - name: Shard-balance table check
+        run: bash scripts/check-durations-table.sh
+
       # Every driver-option key the code parses must be documented in
       # docs/reference.md — an undocumented option turns CI red (#132).
       - name: Option-docs drift check

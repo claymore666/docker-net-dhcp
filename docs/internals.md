@@ -484,10 +484,13 @@ silently. `STRICT=1 make check` turns any skip into a failure — use that
 anywhere a green exit is read as coverage instead of by a person who can
 see the summary.
 
-CI shards the main suite across three jobs (#381, #468); `integration-local`
-deliberately does not — a local run is one machine, so sharding would
-serialise the shards and only add overhead. If you want to reproduce a
-single CI shard, `sudo make integration-test-shard SHARD=1 OF=3`.
+CI shards the main suite across five jobs (#381, #468, #877);
+`integration-local` deliberately does not — a local run is one machine, so
+sharding would serialise the shards and only add overhead. If you want to
+reproduce a single CI shard, `sudo make integration-test-shard SHARD=1 OF=5`.
+The count lives in `.github/workflows/integration.yml`'s matrix, beside the
+measurement that justifies it; `scripts/check-durations-table.sh` keeps the
+weights that partition it honest.
 
 **Use `integration-local`, not `integration-test`.**
 

@@ -40,9 +40,10 @@
 # Usage: check-coverage-run.sh <head-sha> [wait-minutes]
 #   <head-sha>:     the PR head commit the coverage run must cover.
 #   [wait-minutes]: how long a run may take to reach a terminal state
-#                   before that counts as absent (default 75 — the
-#                   coverage job is 22-34 min and queues behind the same
-#                   ref's integration run).
+#                   before that counts as absent (default 75 — a
+#                   coverage RUN is 18m42-36m35, median 22m45, MEASURED
+#                   2026-08-28 over the 13 successful runs retained, and
+#                   it queues behind the same ref's integration run).
 #
 # Env: GATE_REPO=owner/repo (default: inferred)
 #      GATE_POLL_SECONDS=60
