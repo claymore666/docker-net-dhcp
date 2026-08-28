@@ -3,9 +3,9 @@ name: Fork execution policy
 # Are the three settings that stand between a fork PR and root on the
 # self-hosted pool still what they were? (#830)
 #
-# TWO workflows can be reached by a fork pull request AND place jobs off the
-# GitHub-hosted images: `coverage.yml` and `integration.yml`. Neither carries
-# a fork guard — there is no
+# TWO workflows trigger on something an outsider can cause AND place jobs
+# off the GitHub-hosted images: `coverage.yml` and `integration.yml`.
+# Neither carries a fork guard — there is no
 # `github.event.pull_request.head.repo.full_name == github.repository`
 # anywhere in the tree — and the integration lane runs as root. So the
 # approval policy is not one layer of several; on the day it is relaxed it is
@@ -27,10 +27,19 @@ name: Fork execution policy
 # job here". So the paragraph above was watched by something that could not
 # have seen the change it promised to catch, which is worse than not watching
 # it: the claim reads as enforced. It is a YAML parse now, and the trigger
-# domain is every trigger a fork can reach — `pull_request`,
-# `pull_request_target`, `workflow_run`, `issue_comment` — because a
-# `pull_request_target` job on the pool would not merely relax the setting
-# this workflow watches, it would route around it entirely.
+# domain is deliberately NOT a list of the dangerous triggers: that shape is
+# the same defect, one level up — it excludes the next one silently and in
+# the permissive direction. The script names the triggers no OUTSIDER can
+# cause or steer, in `SAFE_TRIGGERS`, and counts everything else, so a
+# trigger nobody wrote down refuses rather than vanishing. "Outsider", not
+# "fork", is the governing word and the difference is live in this tree:
+# `issues` is causable by any GitHub account and reachable by no fork.
+# Which triggers qualify TODAY is derived and printed on every run and
+# pinned by a self-test case against the real workflow directory, so no
+# list is restated here to rot. `pull_request_target` earns its own clause
+# for a reason that is not about enumeration: a job on it would not merely
+# relax the setting this workflow watches, it would route around it
+# entirely.
 #
 # THIS IS PROPHYLACTIC AND SAYS SO. No incident sits behind it. Precautionary
 # gates are a small minority of the corpus — `check-apk-pins.sh` is the other

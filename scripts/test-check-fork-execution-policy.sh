@@ -329,7 +329,7 @@ jobs:
 '
 runwf "the SECOND job is read too" 2 0 "$WFG" "newlane.yml" "has CHANGED"
 
-# --- THE TRIGGER DOMAIN IS "A FORK CAN REACH IT", NOT THE WORD ---------
+# --- THE TRIGGER DOMAIN IS "AN OUTSIDER CAN CAUSE IT", NOT THE WORD ----
 # `pull_request_target` is the one that matters most and the one the
 # first version explicitly excluded: it runs with repository credentials
 # and can be pointed at the fork's head ref, which is the approval policy
@@ -521,7 +521,7 @@ jobs:
     runs-on: [self-hosted, dhcp-ci]
     steps: [{run: "true"}]
 '
-runwf "a self-hosted job no fork can trigger is not exposure" 0 3 "$WFS"
+runwf "a self-hosted job no outsider can trigger is not exposure" 0 3 "$WFS"
 
 # --- THE `on:`-SCOPING, WITH AN INPUT THAT ACTUALLY DISTINGUISHES IT ----
 # The case above ("mentioning pull_request in an if:") does NOT test the
@@ -575,13 +575,13 @@ runwf "an unparseable workflow refuses rather than deriving fewer" 2 0 "$WFX" \
     "newlane.yml" "could not read every workflow"
 
 # And the last place "I could not tell" could have become "nothing to
-# report": a workflow that parses, triggers on something a fork can
-# reach, and whose jobs are not a mapping this gate can walk.
+# report": a workflow that parses, triggers on something an outsider can
+# cause, and whose jobs are not a mapping this gate can walk.
 WFY="$TMP/wf-nojobs"; wflane "$WFY" 'name: newlane
 on:
   pull_request:
 '
-runwf "a fork-reachable workflow with no readable jobs refuses" 2 0 "$WFY" \
+runwf "an outsider-reachable workflow with no readable jobs refuses" 2 0 "$WFY" \
     "newlane.yml" "no readable 'jobs:' mapping"
 
 # AND THE MIRROR IMAGE OF IT, which was asymmetric until review caught

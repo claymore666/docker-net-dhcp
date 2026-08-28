@@ -152,7 +152,7 @@ jobs:
 
       # PyYAML IS A NEW DEPENDENCY IN THIS REPOSITORY AND IT IS NOT ON THE
       # RUNNER (#844). check-fork-execution-policy.sh derives which
-      # workflows a fork pull request can reach by PARSING them, because
+      # workflows an outsider can cause to run by PARSING them, because
       # the line regexes it replaced saw one `runs-on` spelling out of
       # seven. MEASURED from actions/runner-images
       # images/ubuntu/toolsets/toolset-2404.json: the apt list carries

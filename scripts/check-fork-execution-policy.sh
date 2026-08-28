@@ -5,8 +5,8 @@
 # The three settings that stand between a fork PR and root on the
 # self-hosted pool (#830).
 #
-# WHAT IS ACTUALLY AT STAKE. TWO workflows can be reached by a fork
-# pull request AND place jobs off the GitHub-hosted images:
+# WHAT IS ACTUALLY AT STAKE. TWO workflows trigger on something an
+# outsider can cause AND place jobs off the GitHub-hosted images:
 # `coverage.yml` and `integration.yml`. Neither carries a fork guard --
 # no `if: github.event.pull_request.head.repo.full_name ==
 # github.repository` anywhere in the tree. The integration lane runs as
@@ -29,8 +29,8 @@
 # were invisible and every miss was permissive, so the sentence above
 # was checked by something that could not have caught the thing it
 # claimed to catch. The scan is a YAML parse now, and the trigger domain
-# is "a fork can reach it" rather than "the word pull_request appears" --
-# both are argued where the code is, below.
+# is "an outsider can cause or steer it" rather than "the word
+# pull_request appears" -- both are argued where the code is, below.
 #
 # #593 was this class -- an untrusted ref reaching credentialed,
 # root, self-hosted jobs -- and the answer then was a gate.
@@ -147,10 +147,13 @@ refuse() {
 # comments in it and no `if:` expressions in its `on:` mapping.
 #
 # WHICH TRIGGERS COUNT, AND WHY IT IS NOT JUST `pull_request` (#844).
-# The question this gate answers is "can a pull request from a fork
-# reach the private pool", not "does the word pull_request appear in
-# `on:`". Other triggers carry fork-controlled input, and one of them
-# defeats the very setting this gate watches: a workflow with
+# The question this gate answers is "can somebody with no write access
+# to this repository cause a job on the private pool", not "does the
+# word pull_request appear in `on:`". Note the width: "outsider", not
+# "fork" -- `issues` is causable by any GitHub account and reachable by
+# no fork, and it is in this tree. Other triggers carry input an outsider
+# controls, and one of them defeats the very setting this gate watches:
+# a workflow with
 #
 #     on: pull_request_target
 #     jobs: { x: { runs-on: [self-hosted, dhcp-ci],
@@ -234,13 +237,13 @@ except ImportError:
 # that set is an ENUMERATION, which is the exact defect this gate is being
 # fixed for: an enumeration silently excludes everything added after it
 # was written, and it excludes it in the permissive direction. A fifth
-# fork-influenceable trigger, or one GitHub has not shipped yet, would
+# outsider-causable trigger, or one GitHub has not shipped yet, would
 # read as "not exposure" and nothing would go red.
 #
 # So the constant below names the triggers NO OUTSIDER CAN CAUSE OR STEER
 # -- a `push` needs write access, a `schedule` is the repository's own
 # clock, a `workflow_dispatch` needs a permission -- and EVERYTHING ELSE
-# counts as fork-reachable. A trigger this list has never heard of is
+# counts as outsider-reachable. A trigger this list has never heard of is
 # therefore counted, the derived population diverges, and this gate
 # refuses and sends a human to look. That is the residue: the unknown
 # case fails closed instead of vanishing.
@@ -418,7 +421,7 @@ for path in sys.argv[1:]:
     # very SHA it named -- it missed `issues`. A derived line cannot be
     # false; a sentence can, and did, in the flattering direction.
     print("FORKREACHABLE\t%s\t%s" % (os.path.basename(path), ",".join(triggers)))
-    # A fork-reachable workflow whose jobs cannot be read is the one
+    # An outsider-reachable workflow whose jobs cannot be read is the one
     # place left where "I could not tell" could have become "nothing to
     # report". Every valid workflow has a `jobs:` mapping, so an absent
     # or malformed one is a parse this gate does not understand, and it
@@ -465,15 +468,19 @@ fi
 # named: `issue-labeler.yml` triggers on `issues`, which anyone with a
 # GitHub account can cause. The code counted it correctly the whole time.
 # Only the sentence was wrong, and it was wrong in the direction that
-# made the fork-reachable surface look smaller than it is.
+# made the outsider-reachable surface look smaller than it is.
 #
 # That is the same defect this change exists to remove, so it gets the
 # same remedy rather than a corrected sentence: the census is derived on
 # every run and printed where a human reading CI sees it, and the
 # self-test pins the set against the real tree. There is deliberately no
 # refusal on this half -- a new `issues` workflow on a hosted image is
-# not a security event and must not go red in CI -- but it does go red in
-# the self-test, which is where a stale record belongs.
+# not a security event, and a gate that refuses on one gets discharged as
+# noise, which costs the half that IS a security event. It DOES go red in
+# CI, in the self-test, which runs in the required `test` context: a stale
+# census is a bookkeeping failure, and the self-test is where this project
+# puts bookkeeping. The distinction is which lane goes red and what the
+# red means, not whether anything does.
 # The per-file lines carry the COUNT, which moves whenever any workflow
 # is added; the summary line carries the SET of distinct triggers, which
 # is the thing the header used to assert and the thing a reader reasons
@@ -502,11 +509,11 @@ exposed_want=$(printf '%s\n' $EXPOSED_DECLARED | sort | tr '\n' ' ')
 exposed_want="${exposed_want% }"
 
 if [ -z "$exposed_now" ]; then
-    refuse "derived ZERO workflows that a fork pull request can reach AND that place a job off the GitHub-hosted images, while this gate's entire justification is that '$exposed_want' do. Either the pool is no longer reachable from a pull request -- in which case this gate's reason is gone and it should be reconsidered, not left passing -- or, far more likely, the scan over $WF_DIR stopped matching."
+    refuse "derived ZERO workflows that trigger on something an outsider can cause AND that place a job off the GitHub-hosted images, while this gate's entire justification is that '$exposed_want' do. Either the pool is no longer reachable from outside -- in which case this gate's reason is gone and it should be reconsidered, not left passing -- or, far more likely, the scan over $WF_DIR stopped matching."
 fi
 
 if [ "$exposed_now" != "$exposed_want" ]; then
-    refuse "the set of workflows exposing the self-hosted pool to fork-reachable triggers has CHANGED. This header documents '$exposed_want'; the tree now has '$exposed_now'. That enumeration is the reason this gate exists and the thing a reader acts on, so it is corrected here before any setting is judged. If the new set is right, update EXPOSED_DECLARED and the header together."$'\n'"$(printf '%s\n' "$scan" | awk -F'\t' '$1 == "EXPOSED" { print "    " $2 ": job \"" $3 "\" is not on a hosted image, and the workflow triggers on " $4 }')"
+    refuse "the set of workflows exposing the self-hosted pool to outsider-reachable triggers has CHANGED. This header documents '$exposed_want'; the tree now has '$exposed_now'. That enumeration is the reason this gate exists and the thing a reader acts on, so it is corrected here before any setting is judged. If the new set is right, update EXPOSED_DECLARED and the header together."$'\n'"$(printf '%s\n' "$scan" | awk -F'\t' '$1 == "EXPOSED" { print "    " $2 ": job \"" $3 "\" is not on a hosted image, and the workflow triggers on " $4 }')"
 fi
 
 # ask <endpoint> <jq> -> prints `value:<v>` | `error:<text>`
