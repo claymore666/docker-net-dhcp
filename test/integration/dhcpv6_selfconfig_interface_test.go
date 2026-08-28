@@ -288,21 +288,38 @@ func TestDHCPv6_SelfConfiguring_AddressAndRouteSurvive(t *testing.T) {
 			harness.AssertV6LifetimeRefreshed(t, lftReadings(samples), tc.mode,
 				harness.V6SubnetV6CIDR, selfConfigWindow)
 
-			// ---- S4: is there a default route, at EVERY sample? ----
+			// ---- S4: does a default route FORM, and does it hold? ----
 			//
 			// Not just at the end: the measured shape is a route that
-			// is present at +3s and gone by +13s, so a test that looked
+			// is present early and gone later, so a test that looked
 			// only at the ends would still catch it but would not say
 			// WHEN it went, and a fix that reinstalled the route late
-			// would look identical to one that never lost it.
+			// would look identical to one that never lost it. The
+			// verdict reports the formation point for exactly that
+			// reason, and fails on any later absence.
+			//
+			// This asserted at EVERY sample, t+0 included, and went red
+			// at t+0 on both segments in the run that first exercised
+			// it against a fixed tree. That is the same unsatisfiable
+			// premise M4 carried -- an RA-derived route cannot exist
+			// before DAD on the link-local and the exchange it gates
+			// have completed -- sitting one FILE to the side of the
+			// place it was corrected. S1 above already bounds address
+			// formation for this reason; S4 was left asserting
+			// instantaneously against the same physics.
+			//
+			// It shares M4's verdict rather than repeating its logic:
+			// two copies of one rule is how the fix reaches one of them
+			// and not the other, which is precisely what happened here.
+			routeReadings := make([]harness.V6RouteReading, 0, len(samples))
 			for _, s := range samples {
-				if !harness.HasDefaultV6Route(s.route) {
-					t.Errorf("S4 FAILED at t+%s on the %s segment: the container has NO IPv6 "+
-						"default route. On-link traffic still works, which is what hides "+
-						"this; nothing off-link is reachable over IPv6:\n%s",
-						s.elapsed.Round(time.Second), tc.mode, s.route)
-				}
+				routeReadings = append(routeReadings, harness.V6RouteReading{
+					Label:   fmt.Sprintf("t+%s on the %s segment", s.elapsed.Round(time.Second), tc.mode),
+					Elapsed: s.elapsed,
+					Route:   s.route,
+				})
 			}
+			harness.AssertV6DefaultRouteFormsAndHolds(t, routeReadings, selfConfigFormBy)
 
 			// ---- S5: off-link reachability ----
 			//
