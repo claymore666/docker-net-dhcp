@@ -748,8 +748,11 @@ type HealthResponse struct {
 	// DHCPv6NotOffered counts endpoints created without a DHCPv6
 	// address because the segment advertised no managed DHCPv6 --
 	// stateless or SLAAC (#868). NOT healthy-affecting: on those
-	// networks it is the correct outcome, and the address comes from
-	// SLAAC on the container's own link.
+	// networks it is the correct outcome, there being no DHCPv6
+	// address on them to be had. The endpoint has no global IPv6
+	// address either -- dhcpcd turns kernel autoconfiguration off on
+	// the interface it manages, so nothing autoconfigures from the
+	// advertised prefix; see docs/reference.md.
 	DHCPv6NotOffered int32 `json:"dhcpv6_not_offered"`
 	// DHCPv6NoRouterAdvert counts endpoints created without a DHCPv6
 	// address because no router advertisement arrived at all (#868).

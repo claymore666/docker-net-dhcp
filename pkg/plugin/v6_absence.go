@@ -32,8 +32,21 @@ const (
 	// v6NotOffered: a router advertisement arrived WITHOUT the managed
 	// flag -- stateless (O only) or plain SLAAC. The segment has said
 	// there are no DHCPv6 addresses here. This is the NORMAL state, not
-	// a degraded one, and the endpoint is created without a v6 address
-	// so SLAAC can provide one on the container's own link.
+	// a degraded one, and the endpoint is created without a v6 address.
+	//
+	// The endpoint then starts with NO global IPv6 address, and saying
+	// otherwise is the one thing this comment must not do. SLAAC does
+	// NOT step in: dhcpcd writes net.ipv6.conf.<if>.autoconf=0 and
+	// accept_ra=0 on the interface it manages (if-linux.c,
+	// if_setup_inet6, dhcpcd 10.3.2), --noconfigure does not gate that
+	// write, and under --noconfigure -- which this plugin always passes
+	// -- dhcpcd also skips applying the advertisement itself. So the
+	// kernel never autoconfigures from the advertised prefix while our
+	// client is running. What the container does get is IPv4 from DHCP,
+	// an IPv6 link-local, and the stateless DHCPv6 configuration (#815)
+	// where the segment offers it. docs/reference.md's DHCPv6 section
+	// says the same thing and is the reference for it; a usable global
+	// IPv6 address on such a segment is separate work.
 	v6NotOffered
 	// v6NoRouter: no router advertisement arrived at all within the
 	// acquisition budget.
