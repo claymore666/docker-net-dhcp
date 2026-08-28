@@ -459,6 +459,22 @@ func raGuardPath(iface, knob string) string {
 // abort signature, and its protocol behaviour is unchanged (it still
 // solicits, unlike under route B).
 //
+// Confirmed on the CI runner by an absence drive with BOTH arms, which
+// is the only form that says anything: the pre-fix control (this same
+// tree with HonorRouterAdverts forced false) read accept_ra=0,
+// autoconf=0, keep_addr_on_down=0 on BOTH the macvlan and bridge
+// endpoints -- dhcpcd's if_setup_inet6 signature -- and failed exactly
+// the two v6 golden-path tests and nothing else. The fixed tree read
+// the guarded 2/1/1 on both. Route H therefore holds where route A was
+// refused, on the host where A was refused.
+//
+// One bound worth carrying: the DEFAULT-ROUTE half of that observer did
+// NOT discriminate -- it passed on the unfixed tree too, because a
+// route already installed outlives the test even once accept_ra is 0.
+// The knobs are the discriminating assertion. A future change that
+// keeps only the route check is back to an observer that cannot see the
+// defect.
+//
 // Scope, and it is load-bearing: this runs ONLY for the persistent v6
 // client (pkg/dhcp refuses the combination otherwise). The v4 client
 // keeps a writable /proc/sys, because its promote_secondaries write is
