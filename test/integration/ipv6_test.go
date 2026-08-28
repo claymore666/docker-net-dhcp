@@ -212,6 +212,8 @@ func TestLifecycleMacvlan_IPv6_GoldenPath(t *testing.T) {
 		t.Errorf("inspect IPv6 %s != live link IPv6 %s", insV6, liveV6)
 	}
 
+	assertRouterAdvertsAreBeingProcessed(t, ctx, id, "eth0")
+
 	// Teardown: both families release cleanly.
 	if err := cli.ContainerStop(ctx, id, container.StopOptions{}); err != nil {
 		t.Fatalf("ContainerStop: %v", err)
@@ -325,6 +327,8 @@ func TestLifecycleBridge_IPv6_GoldenPath(t *testing.T) {
 	if !harness.IsInBridgePoolV6(net.ParseIP(liveV6)) {
 		t.Errorf("live IPv6 %s not in bridge fixture v6 pool [%s, %s]", liveV6, harness.BridgeDHCPv6PoolStart, harness.BridgeDHCPv6PoolEnd)
 	}
+
+	assertRouterAdvertsAreBeingProcessed(t, ctx, id, "eth0")
 }
 
 // TestLeaseRenewIPv6_HonorsT1: the v6 sibling of
@@ -576,4 +580,78 @@ func TestDUID_PersistsAcrossPluginRestart(t *testing.T) {
 		t.Errorf("client DUID changed across plugin restart: %s -> %s — v6 reservations keyed on DUID will not stick",
 			duidBefore, duidAfter)
 	}
+}
+
+// raGuardKnobs is the sysctl contract the Router-Advertisement guard
+// asserts inside the container, and the value each knob must hold
+// (#875). Kept as data so the assertion below cannot quietly check
+// fewer knobs than the guard claims to hold.
+var raGuardKnobs = map[string]string{
+	"accept_ra":         "2",
+	"autoconf":          "1",
+	"keep_addr_on_down": "1",
+}
+
+// assertRouterAdvertsAreBeingProcessed is the OUTSIDE observer for
+// #875. Everything else about that fix is visible only to the plugin:
+// the guard's steps run inside dhcpcd's private mount namespace, its
+// failures land in a health counter, and a counter reporting zero is
+// equally consistent with "the guard held" and "the guard never ran".
+//
+// So this asserts on the container's own kernel state, in the image
+// that actually ships, through the managed plugin — not on anything
+// the plugin says about itself.
+//
+// Two independent claims, because each one alone can pass while the
+// fix is broken:
+//
+//  1. The knobs read the values the guard writes. dhcpcd's
+//     if_setup_inet6() sets accept_ra=0 and autoconf=0 on every
+//     carrier acquisition; without the guard's write AND its
+//     read-only shield, accept_ra reads 0 here. This is the defect
+//     #875 reported, observed directly.
+//
+//  2. A default route derived from a Router Advertisement is present.
+//     The knobs being right is the plugin's doing; a `proto ra` route
+//     is the KERNEL's, and it can only exist if the kernel actually
+//     accepted an RA off the wire. A test that checked only (1) would
+//     still pass if the guard wrote the right numbers to an interface
+//     nothing was advertising on.
+//
+// Note the bound: this does not observe REFRESH. The fixture's
+// dnsmasq runs with --enable-ra and no --ra-param, so its unsolicited
+// interval is dnsmasq's default (up to 600s) — far outside any test
+// budget here — and a container whose addr_gen_mode dhcpcd has set to
+// NONE cannot solicit a fresh one (measured; see the residual in
+// pkg/dhcp/ra_guard.go). Refresh over time is evidenced in the PR by
+// direct measurement, not by this test.
+func assertRouterAdvertsAreBeingProcessed(t *testing.T, ctx context.Context, id, iface string) {
+	t.Helper()
+
+	for knob, want := range raGuardKnobs {
+		p := "/proc/sys/net/ipv6/conf/" + iface + "/" + knob
+		got := strings.TrimSpace(harness.ExecOutput(t, ctx, id, "cat", p))
+		if got != want {
+			t.Errorf("%s = %q, want %q — the Router-Advertisement guard did not hold "+
+				"this knob inside the shipped image. accept_ra=0 is what dhcpcd's "+
+				"if_setup_inet6() writes, so this reading means the guard's write or "+
+				"its read-only shield did not take effect (#875)", p, got, want)
+		}
+	}
+
+	// The RA itself is asynchronous: the container solicits at link-up
+	// and dnsmasq answers. Poll rather than sample once.
+	deadline := time.Now().Add(harness.IPAcquisitionBudget)
+	var routes string
+	for time.Now().Before(deadline) {
+		routes = harness.ExecOutput(t, ctx, id, "ip", "-6", "route", "show", "default")
+		if strings.Contains(routes, "proto ra") {
+			return
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	t.Errorf("no default route with `proto ra` on %s after %s. The kernel never accepted "+
+		"a Router Advertisement, so the container has no router the DHCPv6 server did "+
+		"not give it — the #875 symptom. `ip -6 route show default` says:\n%s",
+		iface, harness.IPAcquisitionBudget, routes)
 }
