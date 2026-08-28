@@ -12,11 +12,15 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
 
 	docker "github.com/docker/docker/client"
+	"github.com/vishvananda/netlink/nl"
+	"github.com/vishvananda/netns"
+	"golang.org/x/sys/unix"
 
 	"github.com/claymore666/docker-net-dhcp/test/integration/harness"
 )
@@ -206,6 +210,23 @@ func TestProbe_DHCPv6_WhatDeletesTheDefaultRoute(t *testing.T) {
 			}
 			ctrMon := startMonitor(t, sandbox)
 			defer ctrMon.stop()
+
+			// The ATTRIBUTION monitor. `ip monitor` prints the route
+			// that changed and never prints WHO changed it, and the
+			// netlink helper library this repo already depends on
+			// decodes the broadcast into a struct that drops the field
+			// on the floor. That field is the originating netlink port
+			// id, and it is the whole question: the kernel sets it from
+			// the requesting socket for a userspace-initiated change
+			// and leaves it ZERO for one the kernel itself made.
+			//
+			// Not a novel technique and not an inference -- dhcpcd
+			// reads the same field off the same broadcast to log "pid N
+			// deleted" when something other than itself removes one of
+			// its routes. This subscribes to the same two groups it
+			// does.
+			attrMon := startAttrMonitor(t, sandbox, time.Now())
+			defer attrMon.stop()
 			t.Logf("container pid=%d sandbox=%s; namespace monitor attached at t+%s after "+
 				"ContainerStart returned. An ABSENCE of events before that instant is not "+
 				"evidence -- the host monitor is what covers the window before it.",
@@ -256,6 +277,7 @@ func TestProbe_DHCPv6_WhatDeletesTheDefaultRoute(t *testing.T) {
 				route, addr                   string
 				acceptRA, autoconf, disableV6 string
 				fwdIf, fwdAll, fwdDef         string
+				raRx                          string
 			}
 			var rows []row
 			start := time.Now()
@@ -270,6 +292,7 @@ func TestProbe_DHCPv6_WhatDeletesTheDefaultRoute(t *testing.T) {
 					fwdIf:     nsenterCat(pid, fmt.Sprintf("/proc/sys/net/ipv6/conf/%s/forwarding", nsIf)),
 					fwdAll:    nsenterCat(pid, "/proc/sys/net/ipv6/conf/all/forwarding"),
 					fwdDef:    nsenterCat(pid, "/proc/sys/net/ipv6/conf/default/forwarding"),
+					raRx:      icmp6Counter(pid, "Icmp6InRouterAdvertisements"),
 				})
 				time.Sleep(probeInterval)
 			}
@@ -370,6 +393,66 @@ func TestProbe_DHCPv6_WhatDeletesTheDefaultRoute(t *testing.T) {
 					b.String())
 			}
 
+			// The RA ARRIVAL CLOCK, read straight out of the kernel's
+			// own per-namespace ICMPv6 counters. This is the second
+			// witness for advertisement arrival and it is better than
+			// the on-link prefix route in one specific way: it counts
+			// EVERY advertisement the kernel accepted, including one
+			// carrying no Prefix Information option, which is exactly
+			// the escape the prefix-route witness has to name and
+			// cannot close.
+			//
+			// It exists to answer a question about the correlation
+			// itself rather than about the route. The deletions track a
+			// DHCPv6 REPLY at a suspiciously stable lag, and a stable
+			// lag is equally consistent with the REPLY being the CAUSE
+			// and with the REPLY being a COINCIDENT MARKER for
+			// something else on a similar clock. There is a named
+			// candidate for such a clock: this fixture pins the
+			// advertisement interval, and RFC 4861 6.2.1 lets a router
+			// send unsolicited advertisements as close together as a
+			// third of its configured maximum, which for the pinned
+			// value lands near ten seconds. INFERRED, and deliberately
+			// not relied on -- the counter measures the arrivals
+			// directly, so the probe does not need this guess to be
+			// right.
+			//
+			// Reading it: if every deletion sits on an advertisement
+			// arrival, the advertisement is the event and the REPLY is
+			// a marker. If deletions fall where no advertisement
+			// arrived, the REPLY correlation stands as a cause and
+			// candidate 5 is dead.
+			var raSeries []string
+			var lastRA string
+			for _, r := range rows {
+				cur := strings.TrimSpace(r.raRx)
+				if cur != lastRA {
+					raSeries = append(raSeries,
+						fmt.Sprintf("  t+%s: Icmp6InRouterAdvertisements=%s",
+							r.at.Round(probeInterval), cur))
+					lastRA = cur
+				}
+			}
+			if len(raSeries) <= 1 {
+				t.Logf("VERDICT INPUT (RA clock): the received-advertisement counter never "+
+					"changed across %s (last read %q). Either no advertisement was accepted "+
+					"in the window or the counter could not be read; the value above says "+
+					"which. Treat this run as carrying NO advertisement clock rather than as "+
+					"evidence that none arrived.", probeWindow, lastRA)
+			} else {
+				t.Logf("VERDICT INPUT (RA clock): every increment below is an advertisement "+
+					"the kernel ACCEPTED in this namespace.\n%s\n"+
+					"  Correlate these instants against the DELROUTE timestamps in the "+
+					"attribution table and the trace. A deletion ON an increment makes the "+
+					"advertisement the event and the DHCPv6 REPLY a coincident marker; a "+
+					"deletion where the counter did NOT move rules the advertisement out for "+
+					"that deletion.\n"+
+					"  Bound: this counts advertisements ACCEPTED. One dropped before the "+
+					"counter -- by a sysctl, or as malformed -- is invisible here, so a flat "+
+					"counter is not proof that the wire was quiet.",
+					strings.Join(raSeries, "\n"))
+			}
+
 			// The forwarding verdict, which is the one that can be
 			// reached by elimination and therefore the one worth
 			// stating explicitly.
@@ -464,6 +547,8 @@ func TestProbe_DHCPv6_WhatDeletesTheDefaultRoute(t *testing.T) {
 			// product code, and `expires` answers the same question
 			// from the kernel's own copy of the number. If the two ever
 			// disagree, the hook is the tie-breaker.
+
+			attrMon.report(t, tc.mode, sandbox)
 
 			t.Logf("--- %s: HOST netlink trace (veth before and during the move) ---\n%s",
 				tc.mode, indent(hostMon.text()))
@@ -600,4 +685,236 @@ func indent(s string) string {
 		b.WriteString("    " + line + "\n")
 	}
 	return b.String()
+}
+
+// icmp6Counter reads one named row out of the container namespace's
+// /proc/net/snmp6. Those counters are per network namespace, so this is
+// the kernel's own tally of what it accepted on this link and not a
+// figure anything in userspace can flatter.
+func icmp6Counter(pid int, name string) string {
+	out := nsenterCat(pid, "/proc/net/snmp6")
+	for _, line := range strings.Split(out, "\n") {
+		f := strings.Fields(line)
+		if len(f) == 2 && f[0] == name {
+			return f[1]
+		}
+	}
+	return ""
+}
+
+// attrEvent is one route change as the kernel BROADCAST it, keeping the
+// field `ip monitor` never prints: the netlink port id of whoever asked
+// for the change.
+type attrEvent struct {
+	at     time.Duration
+	del    bool
+	pid    uint32
+	family uint8
+	dstLen uint8
+	proto  uint8
+}
+
+func (e attrEvent) v6Default() bool { return e.family == unix.AF_INET6 && e.dstLen == 0 }
+
+type attrMon struct {
+	mu     sync.Mutex
+	events []attrEvent
+	errs   []string
+	closed bool
+	sock   *nl.NetlinkSocket
+	start  time.Time
+}
+
+// startAttrMonitor subscribes to route notifications INSIDE the
+// container's network namespace and records the originating port id of
+// every route change.
+//
+// Why this and not eBPF or strace. strace on a named process can only
+// exonerate the process you thought to name, which is the failure mode
+// this whole investigation has already hit twice: the two userspace
+// suspects were excluded by reading their source, and the remaining
+// candidates include both the kernel itself and the container engine,
+// which is a process nobody would have thought to attach to. A port id
+// read off the broadcast names whoever it actually was, including "no
+// one" -- and "no one" is a specific, checkable answer here rather than
+// an absence of evidence, because the kernel writes zero in that field
+// only when it made the change itself.
+//
+// The bound, stated rather than discovered later: a netlink port id is
+// not guaranteed to equal a process id. It does by default, because the
+// kernel autobinds a socket to the caller's pid, but a process holding
+// more than one netlink socket gets something else for the later ones.
+// So a NON-ZERO value resolves to a process only as a lead, and the
+// report says so. ZERO is the reliable half, and zero is the reading
+// this run is going in expecting.
+func startAttrMonitor(t *testing.T, netnsPath string, start time.Time) *attrMon {
+	t.Helper()
+	ns, err := netns.GetFromPath(netnsPath)
+	if err != nil {
+		t.Fatalf("open netns %s for the attribution monitor: %v", netnsPath, err)
+	}
+	defer func() { _ = ns.Close() }()
+
+	// Both families on purpose. The v4 client is CONFIGURING -- it is
+	// the one process in this namespace whose route code is live -- so
+	// its route changes are the positive control for this instrument.
+	// If no event in the whole window carries a non-zero port id, the
+	// instrument has not been shown to be able to report one, and a
+	// zero on the v6 deletions proves nothing. That check is in
+	// report(), and it is the reason this subscribes to v4 at all.
+	sock, err := nl.SubscribeAt(ns, netns.None(), unix.NETLINK_ROUTE,
+		unix.RTNLGRP_IPV4_ROUTE, unix.RTNLGRP_IPV6_ROUTE)
+	if err != nil {
+		t.Fatalf("subscribe to route notifications in the container namespace: %v", err)
+	}
+	m := &attrMon{sock: sock, start: start}
+	go m.run()
+	return m
+}
+
+func (m *attrMon) run() {
+	for {
+		msgs, _, err := m.sock.Receive()
+		if err != nil {
+			m.mu.Lock()
+			if !m.closed {
+				m.errs = append(m.errs, err.Error())
+			}
+			m.mu.Unlock()
+			return
+		}
+		at := time.Since(m.start)
+		for _, msg := range msgs {
+			del := msg.Header.Type == unix.RTM_DELROUTE
+			if !del && msg.Header.Type != unix.RTM_NEWROUTE {
+				continue
+			}
+			// struct rtmsg is eight single bytes then a u32, so the
+			// fields read here need no endianness handling and no
+			// unsafe cast: family, dst_len, src_len, tos, table,
+			// protocol, scope, type.
+			if len(msg.Data) < 12 {
+				continue
+			}
+			m.mu.Lock()
+			m.events = append(m.events, attrEvent{
+				at:     at,
+				del:    del,
+				pid:    msg.Header.Pid,
+				family: msg.Data[0],
+				dstLen: msg.Data[1],
+				proto:  msg.Data[5],
+			})
+			m.mu.Unlock()
+		}
+	}
+}
+
+func (m *attrMon) stop() {
+	m.mu.Lock()
+	m.closed = true
+	m.mu.Unlock()
+	if m.sock != nil {
+		m.sock.Close()
+	}
+}
+
+func (m *attrMon) report(t *testing.T, mode, netnsPath string) {
+	m.mu.Lock()
+	events := append([]attrEvent(nil), m.events...)
+	errs := append([]string(nil), m.errs...)
+	m.mu.Unlock()
+
+	for _, e := range errs {
+		t.Logf("WARNING: attribution monitor (%s) read error: %s. Any silence below is "+
+			"bounded by this, not by the absence of route changes.", mode, e)
+	}
+	if len(events) == 0 {
+		t.Logf("VERDICT INPUT (attribution, %s): the attribution monitor recorded NO route "+
+			"change of either family. That is an instrument reporting nothing, not a "+
+			"namespace in which nothing happened -- the traces below are the check on "+
+			"which of those it was.", mode)
+		return
+	}
+
+	// The positive control comes first, because every reading below is
+	// worthless without it.
+	sawNonZero := false
+	for _, e := range events {
+		if e.pid != 0 {
+			sawNonZero = true
+			break
+		}
+	}
+
+	var b strings.Builder
+	for _, e := range events {
+		if !e.v6Default() {
+			continue
+		}
+		verb := "installed"
+		if e.del {
+			verb = "DELETED  "
+		}
+		fmt.Fprintf(&b, "  t+%-8s %s  proto=%-3d  by %s\n",
+			e.at.Round(time.Millisecond), verb, e.proto,
+			describeNetlinkPeer(e.pid, netnsPath))
+	}
+	if b.Len() == 0 {
+		fmt.Fprintf(&b, "  (no IPv6 default-route change was broadcast in this window)\n")
+	}
+
+	t.Logf("VERDICT INPUT (attribution, %s): IPv6 default-route changes and who asked for "+
+		"them.\n%s", mode, b.String())
+
+	if !sawNonZero {
+		t.Logf("VERDICT INPUT (attribution control, %s): NOT ONE route change of EITHER "+
+			"family carried a non-zero port id across %d events. The control failed: this "+
+			"run has not shown that the instrument can report a userspace originator at "+
+			"all, so a zero above is UNINTERPRETABLE and must not be read as "+
+			"'the kernel did it'. The v4 client configures routes in this namespace, so "+
+			"the expected reading here is at least one non-zero.", mode, len(events))
+		return
+	}
+	t.Logf("VERDICT INPUT (attribution control, %s): the instrument DID report a non-zero "+
+		"port id somewhere in the window, so it is able to name a userspace originator and "+
+		"a zero above is meaningful: the kernel made that change with no userspace caller. "+
+		"That excludes every userspace candidate for that specific deletion at once -- "+
+		"dhcpcd, the plugin and the container engine alike -- and points the remaining "+
+		"question at which kernel path did it.", mode)
+}
+
+// describeNetlinkPeer turns a netlink port id into something a reader
+// can act on, and is careful to say which half of the answer is solid.
+func describeNetlinkPeer(pid uint32, netnsPath string) string {
+	if pid == 0 {
+		return "the KERNEL (no userspace originator)"
+	}
+	comm := "?"
+	if b, err := os.ReadFile(fmt.Sprintf("/proc/%d/comm", pid)); err == nil {
+		comm = strings.TrimSpace(string(b))
+	}
+	where := "OUTSIDE the container namespace"
+	if sameNetNS(int(pid), netnsPath) {
+		where = "INSIDE the container namespace"
+	}
+	return fmt.Sprintf("port id %d (a LEAD, not an identification: likely pid %d, comm %q, %s)",
+		pid, pid, comm, where)
+}
+
+// sameNetNS compares namespaces by inode. The container's netns is a
+// bind mount rather than a symlink, so this cannot be done by comparing
+// readlink strings.
+func sameNetNS(pid int, netnsPath string) bool {
+	a, err := os.Stat(fmt.Sprintf("/proc/%d/ns/net", pid))
+	if err != nil {
+		return false
+	}
+	b, err := os.Stat(netnsPath)
+	if err != nil {
+		return false
+	}
+	as, ok1 := a.Sys().(*syscall.Stat_t)
+	bs, ok2 := b.Sys().(*syscall.Stat_t)
+	return ok1 && ok2 && as.Ino == bs.Ino && as.Dev == bs.Dev
 }
