@@ -3,9 +3,9 @@ name: Fork execution policy
 # Are the three settings that stand between a fork PR and root on the
 # self-hosted pool still what they were? (#830)
 #
-# TWO workflows trigger on `pull_request` AND place jobs on self-hosted
-# runners: `coverage.yml` and `integration.yml`. Neither carries a fork guard
-# — there is no
+# TWO workflows can be reached by a fork pull request AND place jobs off the
+# GitHub-hosted images: `coverage.yml` and `integration.yml`. Neither carries
+# a fork guard — there is no
 # `github.event.pull_request.head.repo.full_name == github.repository`
 # anywhere in the tree — and the integration lane runs as root. So the
 # approval policy is not one layer of several; on the day it is relaxed it is
@@ -20,6 +20,17 @@ name: Fork execution policy
 # guard nothing and concluded the window was shut. The script now DERIVES this
 # population and refuses when it diverges from the two named above, so the
 # enumeration is checked by something that goes red rather than by a reader.
+#
+# THE DERIVATION WAS TWO LINE REGEXES UNTIL #844, and it detected one spelling
+# of `runs-on` out of seven legal ones — a block sequence, a bare custom label,
+# a matrix expression, a runner group and the rest all read as "no self-hosted
+# job here". So the paragraph above was watched by something that could not
+# have seen the change it promised to catch, which is worse than not watching
+# it: the claim reads as enforced. It is a YAML parse now, and the trigger
+# domain is every trigger a fork can reach — `pull_request`,
+# `pull_request_target`, `workflow_run`, `issue_comment` — because a
+# `pull_request_target` job on the pool would not merely relax the setting
+# this workflow watches, it would route around it entirely.
 #
 # THIS IS PROPHYLACTIC AND SAYS SO. No incident sits behind it. Precautionary
 # gates are a small minority of the corpus — `check-apk-pins.sh` is the other

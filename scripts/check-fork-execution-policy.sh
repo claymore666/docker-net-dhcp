@@ -5,14 +5,14 @@
 # The three settings that stand between a fork PR and root on the
 # self-hosted pool (#830).
 #
-# WHAT IS ACTUALLY AT STAKE. TWO workflows trigger on `pull_request`
-# AND place jobs on self-hosted runners: `coverage.yml` and
-# `integration.yml`. Neither carries a fork guard -- no `if:
-# github.event.pull_request.head.repo.full_name == github.repository`
-# anywhere in the tree. The integration lane runs as root. So the
-# approval policy below is not defence in depth; on the day it is
-# relaxed it is the ONLY thing that was stopping fork-authored code from
-# executing there, and nothing in the repository goes red.
+# WHAT IS ACTUALLY AT STAKE. TWO workflows can be reached by a fork
+# pull request AND place jobs off the GitHub-hosted images:
+# `coverage.yml` and `integration.yml`. Neither carries a fork guard --
+# no `if: github.event.pull_request.head.repo.full_name ==
+# github.repository` anywhere in the tree. The integration lane runs as
+# root. So the approval policy below is not defence in depth; on the day
+# it is relaxed it is the ONLY thing that was stopping fork-authored
+# code from executing there, and nothing in the repository goes red.
 #
 # THE NUMBER WAS FIVE HERE UNTIL IT WAS MEASURED. This header claimed
 # coverage-presence, release-backmerge and test as well; all three run
@@ -23,6 +23,14 @@
 # in the direction that flatters this gate. The population is now
 # DERIVED below and compared against the two named above, so the next
 # time it moves this refuses instead of misinforming.
+#
+# AND THE DERIVATION ITSELF WAS WRONG BEFORE #844. It was two line
+# regexes: one spelling of `runs-on`, one trigger. Seven legal shapes
+# were invisible and every miss was permissive, so the sentence above
+# was checked by something that could not have caught the thing it
+# claimed to catch. The scan is a YAML parse now, and the trigger domain
+# is "a fork can reach it" rather than "the word pull_request appears" --
+# both are argued where the code is, below.
 #
 # #593 was this class -- an untrusted ref reaching credentialed,
 # root, self-hosted jobs -- and the answer then was a gate.
@@ -100,41 +108,270 @@ refuse() {
 # is the precedent: derive the subjects, and refuse at zero rather than
 # pass over nothing.
 #
-# THE `on:` BLOCK, NOT THE WHOLE FILE. A file-wide grep for
-# `pull_request` matches `github.event.pull_request...` in an `if:`, and
-# matches prose in a comment -- including the comment above. Both would
-# admit workflows that do not trigger on it at all. The scan below reads
-# the top-level `on:` mapping and nothing else.
+# THE FIRST VERSION OF THIS OBSERVER WAS KEYED ON A SPELLING, and its
+# claim was wider than its code. It matched `/runs-on:.*self-hosted/`
+# and nothing else, while this header, the workflow and the pull request
+# all said a new self-hosted job "cannot be added silently". MEASURED at
+# f1aceb8: it detected exactly ONE spelling out of the shapes GitHub
+# accepts, and EVERY miss was in the permissive direction --
+#
+#   runs-on:                     a block sequence
+#     - self-hosted
+#   runs-on: [dhcp-ci]           the custom label alone, which routes to
+#                                the private pool just as well
+#   runs-on: ${{ matrix.runner }}    with self-hosted in the matrix; and
+#                                `runner-image.yml` ALREADY uses this form
+#   runs-on:                     a runner GROUP
+#     group: private
+#   on: {pull_request: ...}      a flow mapping
+#   "pull_request":              a quoted key
+#
+# -- plus a block-sequence `runs-on:` in a file's SECOND job, which the
+# line scanner missed for a different reason again. Every one of those
+# is a workflow that reaches the pool and derived as if it did not, so
+# the divergence refusal would never have fired and the header would
+# have gone on being trusted.
+#
+# A GATE WHOSE CLAIM IS "ANY SHAPE" CANNOT BE WRITTEN IN LINE REGEXES.
+# The scan below hands the file to a YAML parser and asks the resolved
+# document, which is the only way the seven shapes above collapse into
+# one question. `check-publish-verify-parity.sh` and seven other gates
+# here already shell out to python3 for a parse of this kind; this
+# follows that convention rather than inventing one.
+#
+# THE `on:` BLOCK, NOT THE WHOLE FILE, is now structural rather than a
+# heuristic: a file-wide grep for `pull_request` matches
+# `github.event.pull_request...` in an `if:` and matches prose in a
+# comment -- including the comments above -- and both would admit
+# workflows that do not trigger on it at all. A parsed document has no
+# comments in it and no `if:` expressions in its `on:` mapping.
+#
+# WHICH TRIGGERS COUNT, AND WHY IT IS NOT JUST `pull_request` (#844).
+# The question this gate answers is "can a pull request from a fork
+# reach the private pool", not "does the word pull_request appear in
+# `on:`". Three other triggers carry fork-controlled input, and one of
+# them defeats the very setting this gate watches: a workflow with
+#
+#     on: pull_request_target
+#     jobs: { x: { runs-on: [self-hosted, dhcp-ci],
+#                  steps: [{uses: actions/checkout@v5,
+#                           with: {ref: '${{ github.event.pull_request.head.sha }}'}}] } }
+#
+# runs fork code on the pool AND bypasses the approval policy entirely,
+# because bypassing it is what `pull_request_target` is FOR. `workflow_run`
+# and `issue_comment` are the same class. MEASURED on the tree at b9b31bb:
+# there is no `workflow_run` and no `issue_comment` workflow, and exactly
+# one `pull_request_target` workflow -- `issue-state-labels.yml`, which is
+# safe today because every job is on `ubuntu-latest` and it pins `ref: dev`.
+# That "none today" is pinned by a self-test case that derives against the
+# REAL workflow directory, because a fact left true by the accident of the
+# current tree is an unrun checklist.
+#
+# WHAT COUNTS AS REACHING THE POOL. Any label set that is not entirely
+# GitHub-hosted -- `ubuntu-*`, `windows-*`, `macos-*`. Not "contains
+# self-hosted": `runs-on: [dhcp-ci]` routes to this project's private
+# runners without the word appearing. The boundary of that rule, stated
+# rather than discovered: a self-hosted runner deliberately labelled
+# `ubuntu-something` would read as hosted here. Nothing in this project
+# does that, and the alternative -- an allowlist of exact hosted labels
+# -- goes stale in the permissive direction every time GitHub adds an
+# image, which is the failure this whole file is about.
+#
+# AND IT FAILS CLOSED. A `runs-on` this parser cannot resolve -- an
+# expression that is not `matrix.<key>`, a job with no `runs-on` because
+# it `uses:` a reusable workflow whose runners are in another file -- is
+# counted as reaching the pool. "I could not tell" must send a human to
+# look, never render a clean population.
 EXPOSED_DECLARED="coverage.yml integration.yml"
 WF_DIR="${WF_DIR:-.github/workflows}"
 
+command -v python3 >/dev/null 2>&1 || refuse \
+    "python3 is required to derive which workflows expose the self-hosted pool, and it is not on PATH. The population this gate's whole argument rests on cannot be read, so nothing below is a measurement."
+
 derive_exposed() {
-    local f
+    local files=()
     shopt -s nullglob
-    for f in "$WF_DIR"/*.yml "$WF_DIR"/*.yaml; do
-        awk -v name="$(basename "$f")" '
-            # Track the top-level `on:` mapping. Any other column-0 key
-            # ends it, so `jobs:` closes the block.
-            /^[A-Za-z_"'"'"'-]+:/ { in_on = ($0 ~ /^(on|"on"|'"'"'on'"'"'):/) }
-            in_on && /(^|[[:space:],[])pull_request([:,\]]|$)/ { pr = 1 }
-            /runs-on:.*self-hosted/ { sh = 1 }
-            END { if (pr && sh) print name }
-        ' "$f"
-    done
+    files=("$WF_DIR"/*.yml "$WF_DIR"/*.yaml)
     shopt -u nullglob
+    if [ "${#files[@]}" -eq 0 ]; then
+        printf 'ERROR\t%s\tno *.yml or *.yaml files in this directory\n' "$WF_DIR"
+        return 0
+    fi
+    python3 - "${files[@]}" <<'PARSE'
+import os
+import re
+import sys
+
+try:
+    import yaml
+except ImportError:
+    sys.stderr.write("PyYAML is not importable by this python3\n")
+    sys.exit(3)
+
+# Triggers whose runs carry, or can be steered by, input from a fork
+# pull request. `pull_request_target`, `workflow_run` and `issue_comment`
+# are here for the reason spelled out in the caller: the first of them
+# runs with repository credentials and can be pointed at the fork's head
+# ref, which is exactly the approval policy this gate watches being made
+# irrelevant.
+TRIGGERS = {
+    "pull_request",
+    "pull_request_target",
+    "workflow_run",
+    "issue_comment",
 }
 
-exposed_now=$(derive_exposed | sort | tr '\n' ' ')
+# The GitHub-hosted image families. Everything else -- `self-hosted`, a
+# bare custom label, a runner group, an expression that cannot be
+# resolved -- reaches this project's private pool.
+HOSTED = re.compile(r"^(ubuntu|windows|macos)-[A-Za-z0-9._-]+$")
+
+# A `runs-on` that is EXACTLY one expression, e.g. `${{ matrix.runner }}`.
+EXPR = re.compile(r"^\$\{\{\s*(.+?)\s*\}\}$")
+
+
+def on_triggers(doc):
+    # YAML 1.1 -- which is what PyYAML implements -- resolves a bare
+    # `on` to the boolean True, so the key of a workflow's trigger block
+    # is `True` and not the string "on" unless it was quoted. Reading
+    # only doc["on"] finds nothing in every real workflow in this tree.
+    for key, value in doc.items():
+        if key is True or (isinstance(key, str) and key.lower() == "on"):
+            if isinstance(value, str):
+                return {value}
+            if isinstance(value, (list, dict)):
+                return {v for v in value if isinstance(v, str)}
+            return set()
+    return set()
+
+
+def matrix_values(job, name):
+    strategy = job.get("strategy")
+    matrix = strategy.get("matrix") if isinstance(strategy, dict) else None
+    if not isinstance(matrix, dict):
+        return []
+    out = []
+    direct = matrix.get(name)
+    if isinstance(direct, list):
+        out.extend(direct)
+    elif direct is not None:
+        out.append(direct)
+    include = matrix.get("include")
+    if isinstance(include, list):
+        for entry in include:
+            if isinstance(entry, dict) and name in entry:
+                out.append(entry[name])
+    return out
+
+
+def expand(value, job):
+    """A single runs-on term -> the concrete values it can take.
+
+    `None` in the returned list means this parser could not resolve it,
+    which the caller treats as reaching the pool.
+    """
+    if not isinstance(value, str):
+        return [value]
+    match = EXPR.match(value.strip())
+    if match is None:
+        return [None] if "${{" in value else [value]
+    expr = match.group(1)
+    if expr.startswith("matrix."):
+        values = matrix_values(job, expr[len("matrix."):])
+        return values if values else [None]
+    return [None]
+
+
+def label_sets(runs_on, job):
+    """-> a list of candidate label sets; `None` means unresolvable."""
+    if runs_on is None:
+        return [None]
+    if isinstance(runs_on, dict):
+        # `runs-on: {group: ..., labels: [...]}`. A runner GROUP is a
+        # self-hosted concept; naming one is enough to reach the pool.
+        if "group" in runs_on:
+            return [["group:%s" % runs_on["group"]]]
+        return label_sets(runs_on.get("labels"), job)
+    if isinstance(runs_on, list):
+        labels, unresolved = [], False
+        for item in runs_on:
+            for candidate in expand(item, job):
+                if candidate is None:
+                    unresolved = True
+                elif isinstance(candidate, list):
+                    labels.extend(str(x) for x in candidate)
+                else:
+                    labels.append(str(candidate))
+        return [None] if unresolved else [labels]
+    out = []
+    for candidate in expand(runs_on, job):
+        if candidate is None:
+            out.append(None)
+        elif isinstance(candidate, list):
+            out.append([str(x) for x in candidate])
+        else:
+            out.append([str(candidate)])
+    return out
+
+
+def reaches_pool(labels):
+    if not labels:
+        return True
+    return not all(HOSTED.match(label) for label in labels)
+
+
+for path in sys.argv[1:]:
+    try:
+        with open(path, encoding="utf-8") as fh:
+            doc = yaml.safe_load(fh)
+    except Exception as exc:                      # noqa: BLE001
+        detail = " ".join(str(exc).split())[:200]
+        print("ERROR\t%s\t%s" % (path, detail))
+        continue
+    if not isinstance(doc, dict):
+        print("ERROR\t%s\ttop level is not a mapping" % path)
+        continue
+    triggers = sorted(on_triggers(doc) & TRIGGERS)
+    if not triggers:
+        continue
+    jobs = doc.get("jobs")
+    if not isinstance(jobs, dict):
+        continue
+    for job_id, job in jobs.items():
+        if not isinstance(job, dict):
+            continue
+        if any(reaches_pool(s) for s in label_sets(job.get("runs-on"), job)):
+            print("EXPOSED\t%s\t%s\t%s"
+                  % (os.path.basename(path), job_id, ",".join(triggers)))
+            break
+PARSE
+}
+
+scan="$(derive_exposed)"
+scan_rc=$?
+if [ "$scan_rc" -eq 3 ]; then
+    refuse "PyYAML is not importable by python3, so the set of workflows that reach the self-hosted pool could not be derived. This gate does not fall back to a line scan: the line scan is what #844 replaced, and it read one spelling out of seven. Install PyYAML in the lane that runs this."
+fi
+if [ "$scan_rc" -ne 0 ]; then
+    refuse "the workflow scan exited $scan_rc. The population this gate's argument rests on was not derived, so nothing below is a measurement."
+fi
+
+scan_errors="$(printf '%s\n' "$scan" | awk -F'\t' '$1 == "ERROR" { print "    " $2 ": " $3 }')"
+if [ -n "$scan_errors" ]; then
+    refuse "could not read every workflow in $WF_DIR, so the derived population is incomplete and an incomplete population is not a smaller one -- it is a wrong one:"$'\n'"$scan_errors"
+fi
+
+exposed_now=$(printf '%s\n' "$scan" | awk -F'\t' '$1 == "EXPOSED" { print $2 }' | sort -u | tr '\n' ' ')
 exposed_now="${exposed_now% }"
 exposed_want=$(printf '%s\n' $EXPOSED_DECLARED | sort | tr '\n' ' ')
 exposed_want="${exposed_want% }"
 
 if [ -z "$exposed_now" ]; then
-    refuse "derived ZERO workflows that trigger on pull_request AND place a job on a self-hosted runner, while this gate's entire justification is that '$exposed_want' do. Either the pool is no longer reachable from a pull request -- in which case this gate's reason is gone and it should be reconsidered, not left passing -- or, far more likely, the scan over $WF_DIR stopped matching."
+    refuse "derived ZERO workflows that a fork pull request can reach AND that place a job off the GitHub-hosted images, while this gate's entire justification is that '$exposed_want' do. Either the pool is no longer reachable from a pull request -- in which case this gate's reason is gone and it should be reconsidered, not left passing -- or, far more likely, the scan over $WF_DIR stopped matching."
 fi
 
 if [ "$exposed_now" != "$exposed_want" ]; then
-    refuse "the set of workflows exposing the self-hosted pool to pull requests has CHANGED. This header documents '$exposed_want'; the tree now has '$exposed_now'. That enumeration is the reason this gate exists and the thing a reader acts on, so it is corrected here before any setting is judged. If the new set is right, update EXPOSED_DECLARED and the header together."
+    refuse "the set of workflows exposing the self-hosted pool to fork-reachable triggers has CHANGED. This header documents '$exposed_want'; the tree now has '$exposed_now'. That enumeration is the reason this gate exists and the thing a reader acts on, so it is corrected here before any setting is judged. If the new set is right, update EXPOSED_DECLARED and the header together."$'\n'"$(printf '%s\n' "$scan" | awk -F'\t' '$1 == "EXPOSED" { print "    " $2 ": job \"" $3 "\" is not on a hosted image, and the workflow triggers on " $4 }')"
 fi
 
 # ask <endpoint> <jq> -> prints `value:<v>` | `error:<text>`

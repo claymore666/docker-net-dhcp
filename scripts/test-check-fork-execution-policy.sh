@@ -187,6 +187,305 @@ WFM="$TMP/wf-mention"; mkwf "$WFM"
 printf 'name: mentions\n# guarded on github.event.pull_request.head.repo.full_name\non:\n  push:\n    branches: [main]\njobs:\n  m:\n    if: github.event.pull_request.head.repo.full_name == github.repository\n    runs-on: [self-hosted, dhcp-ci]\n    steps: [{run: "true"}]\n' > "$WFM/mentions.yml"
 runwf "mentioning pull_request in an if: is not a pull_request trigger" 0 3 "$WFM"
 
+# --- THE SEVEN SHAPES THE LINE SCANNER COULD NOT SEE (#844) -------------
+# The first version of the observer matched `/runs-on:.*self-hosted/` and
+# `pull_request` as line regexes, while this file, the workflow and the
+# pull request all claimed a new self-hosted job on `pull_request`
+# "cannot be added silently". MEASURED at f1aceb8: seven legal spellings
+# were invisible and every miss was permissive. Each is a case here, and
+# each is written as a THIRD workflow arriving beside the two declared --
+# so a shape that is not seen does not merely go unreported, it produces
+# a silent PASS over a changed population, which is the failure exactly.
+#
+# `wflane DIR CONTENT` writes the newcomer beside the declared two.
+wflane() { local d="$1"; shift; mkwf "$d"; printf '%s' "$*" > "$d/newlane.yml"; }
+
+WFA="$TMP/wf-seq"; wflane "$WFA" 'name: newlane
+on:
+  pull_request:
+jobs:
+  n:
+    runs-on:
+      - self-hosted
+      - dhcp-ci
+    steps: [{run: "true"}]
+'
+runwf "a block-sequence runs-on is a self-hosted job" 2 0 "$WFA" "newlane.yml" "has CHANGED"
+
+WFB="$TMP/wf-label"; wflane "$WFB" 'name: newlane
+on:
+  pull_request:
+jobs:
+  n:
+    runs-on: [dhcp-ci]
+    steps: [{run: "true"}]
+'
+runwf "the custom label alone routes to the pool" 2 0 "$WFB" "newlane.yml" "has CHANGED"
+
+WFC="$TMP/wf-matrix"; wflane "$WFC" 'name: newlane
+on:
+  pull_request:
+jobs:
+  n:
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-latest
+          - runner: self-hosted
+    runs-on: ${{ matrix.runner }}
+    steps: [{run: "true"}]
+'
+runwf "a matrix expression is resolved, not skipped" 2 0 "$WFC" "newlane.yml" "has CHANGED"
+
+WFD="$TMP/wf-group"; wflane "$WFD" 'name: newlane
+on:
+  pull_request:
+jobs:
+  n:
+    runs-on:
+      group: private-pool
+    steps: [{run: "true"}]
+'
+runwf "a runner group is not a hosted image" 2 0 "$WFD" "newlane.yml" "has CHANGED"
+
+WFE="$TMP/wf-flowon"; wflane "$WFE" 'name: newlane
+on: {pull_request: {branches: [dev]}}
+jobs:
+  n:
+    runs-on: [self-hosted, dhcp-ci]
+    steps: [{run: "true"}]
+'
+runwf "a flow-mapping on: still declares the trigger" 2 0 "$WFE" "newlane.yml" "has CHANGED"
+
+WFF="$TMP/wf-quoted"; wflane "$WFF" 'name: newlane
+on:
+  "pull_request":
+jobs:
+  n:
+    runs-on: [self-hosted, dhcp-ci]
+    steps: [{run: "true"}]
+'
+runwf "a quoted trigger key still declares the trigger" 2 0 "$WFF" "newlane.yml" "has CHANGED"
+
+WFG="$TMP/wf-secondjob"; wflane "$WFG" 'name: newlane
+on:
+  pull_request:
+jobs:
+  first:
+    runs-on: ubuntu-latest
+    steps: [{run: "true"}]
+  second:
+    runs-on:
+      - self-hosted
+      - dhcp-ci
+    steps: [{run: "true"}]
+'
+runwf "the SECOND job is read too" 2 0 "$WFG" "newlane.yml" "has CHANGED"
+
+# --- THE TRIGGER DOMAIN IS "A FORK CAN REACH IT", NOT THE WORD ---------
+# `pull_request_target` is the one that matters most and the one the
+# first version explicitly excluded: it runs with repository credentials
+# and can be pointed at the fork's head ref, which is the approval policy
+# this gate watches being made irrelevant rather than relaxed.
+WFT="$TMP/wf-prtarget"; wflane "$WFT" 'name: newlane
+on:
+  pull_request_target:
+jobs:
+  n:
+    runs-on: [self-hosted, dhcp-ci]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+'
+runwf "pull_request_target on the pool is exposure" 2 0 "$WFT" "newlane.yml" "has CHANGED"
+
+WFR="$TMP/wf-wfrun"; wflane "$WFR" 'name: newlane
+on:
+  workflow_run:
+    workflows: [Test]
+    types: [completed]
+jobs:
+  n:
+    runs-on: [self-hosted, dhcp-ci]
+    steps: [{run: "true"}]
+'
+runwf "workflow_run on the pool is exposure" 2 0 "$WFR" "newlane.yml" "has CHANGED"
+
+WFI="$TMP/wf-issuecomment"; wflane "$WFI" 'name: newlane
+on:
+  issue_comment:
+    types: [created]
+jobs:
+  n:
+    runs-on: [self-hosted, dhcp-ci]
+    steps: [{run: "true"}]
+'
+runwf "issue_comment on the pool is exposure" 2 0 "$WFI" "newlane.yml" "has CHANGED"
+
+# THE FACT THAT THERE ARE NONE OF THOSE TODAY IS PINNED, NOT ASSUMED.
+# MEASURED at b9b31bb: no workflow_run and no issue_comment workflow
+# exists, and the one `pull_request_target` workflow --
+# issue-state-labels.yml -- is on `ubuntu-latest` and pins `ref: dev`.
+# That is a fact about the tree, so it is asserted against the REAL
+# workflow directory. An enumeration beside the code is an unrun
+# checklist; this case runs it.
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+runwf "the real workflow tree derives exactly the declared two" 0 3 \
+    "$ROOT/.github/workflows" "all 3 settings are as documented"
+
+# --- FAIL CLOSED WHERE IT CANNOT TELL ----------------------------------
+# "I could not resolve this runner" must send a human to look. Both of
+# these are permissive-by-default in any scanner that only looks for a
+# known-bad string.
+WFU="$TMP/wf-unresolvable"; wflane "$WFU" 'name: newlane
+on:
+  pull_request:
+jobs:
+  n:
+    runs-on: ${{ env.RUNNER }}
+    steps: [{run: "true"}]
+'
+runwf "an unresolvable runs-on expression counts as exposure" 2 0 "$WFU" \
+    "newlane.yml" "has CHANGED"
+
+WFJ="$TMP/wf-uses"; wflane "$WFJ" 'name: newlane
+on:
+  pull_request:
+jobs:
+  n:
+    uses: ./.github/workflows/other.yml
+'
+runwf "a job that delegates to a reusable workflow counts as exposure" 2 0 "$WFJ" \
+    "newlane.yml" "has CHANGED"
+
+# --- AND HOSTED STAYS HOSTED, or the gate refuses on every push --------
+# A widening needs a preservation control: the cases above prove the new
+# shapes are SEEN, and these prove the widening did not swallow the
+# ordinary hosted job, which is most of this tree.
+WFH2="$TMP/wf-hosted-arm"; wflane "$WFH2" 'name: newlane
+on:
+  pull_request:
+jobs:
+  n:
+    runs-on: ubuntu-24.04-arm
+    steps: [{run: "true"}]
+'
+runwf "a hosted arm64 image is not the private pool" 0 3 "$WFH2"
+
+WFH3="$TMP/wf-hosted-list"; wflane "$WFH3" 'name: newlane
+on:
+  pull_request:
+jobs:
+  n:
+    runs-on: [ubuntu-latest]
+    steps: [{run: "true"}]
+'
+runwf "a single-element hosted list is not the private pool" 0 3 "$WFH3"
+
+WFH4="$TMP/wf-hosted-matrix"; wflane "$WFH4" 'name: newlane
+on:
+  pull_request:
+jobs:
+  n:
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-latest
+          - runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps: [{run: "true"}]
+'
+runwf "a matrix of hosted images is not the private pool" 0 3 "$WFH4"
+
+WFS="$TMP/wf-selfhosted-nopr"; wflane "$WFS" 'name: newlane
+on:
+  workflow_dispatch:
+jobs:
+  n:
+    runs-on: [self-hosted, dhcp-ci]
+    steps: [{run: "true"}]
+'
+runwf "a self-hosted job no fork can trigger is not exposure" 0 3 "$WFS"
+
+# --- THE `on:`-SCOPING, WITH AN INPUT THAT ACTUALLY DISTINGUISHES IT ----
+# The case above ("mentioning pull_request in an if:") does NOT test the
+# scoping: its fixture writes `github.event.pull_request.head...`, where
+# the word is followed by a dot and was already excluded by the line
+# regex's own boundary. MEASURED at f1aceb8: deleting the `in_on &&`
+# scoping left the suite 14/14 GREEN.
+#
+# These two do distinguish it. A push-only workflow with a self-hosted
+# job whose COMMENT ends on the bare word -- once inside the `on:` block,
+# once outside it -- derives as exposure the moment the scan reads
+# anything other than the resolved `on:` mapping. MEASURED at f1aceb8
+# with `in_on &&` removed: exit 2 instead of 0.
+WFC1="$TMP/wf-comment-in-on"; wflane "$WFC1" 'name: newlane
+on:
+  # deliberately not run on pull_request
+  push:
+    branches: [main]
+jobs:
+  n:
+    runs-on: [self-hosted, dhcp-ci]
+    steps: [{run: "true"}]
+'
+runwf "a comment inside on: ending on the bare word is not a trigger" 0 3 "$WFC1"
+
+WFC2="$TMP/wf-comment-out"; wflane "$WFC2" '# deliberately not run on pull_request
+name: newlane
+on:
+  push:
+    branches: [main]
+jobs:
+  n:
+    runs-on: [self-hosted, dhcp-ci]
+    steps: [{run: "true"}]
+'
+runwf "a comment above on: ending on the bare word is not a trigger" 0 3 "$WFC2"
+
+# --- A WORKFLOW THIS GATE CANNOT READ IS NOT A WORKFLOW WITHOUT JOBS ----
+# Drive the absence: take the parser's input away and the gate must go
+# red naming the file, never derive a smaller population and pass. An
+# incomplete population is not a smaller one, it is a wrong one.
+WFX="$TMP/wf-broken"; wflane "$WFX" 'name: newlane
+on:
+  pull_request:
+jobs:
+  n:
+   runs-on: [self-hosted
+    steps: [{run: "true"}]
+'
+runwf "an unparseable workflow refuses rather than deriving fewer" 2 0 "$WFX" \
+    "newlane.yml" "could not read every workflow"
+
+# --- THE PARSER GOING MISSING IS A REFUSAL THAT NAMES IT ---------------
+# This gate has three verdicts and no fallback: the line scan it replaced
+# read one spelling out of seven, so silently degrading to it would be
+# worse than saying nothing. The exit-3 branch is an error path, and an
+# error path no test executes is #827 exactly, so it is driven here with
+# python3 stubbed to the shape a missing PyYAML produces.
+NOPY="$TMP/nopy"; mkdir -p "$NOPY"
+cat > "$NOPY/python3" <<'PYEOF'
+#!/usr/bin/env bash
+cat > /dev/null
+echo "PyYAML is not importable by this python3" >&2
+exit 3
+PYEOF
+chmod +x "$NOPY/python3"
+: > "$GH_CALLS"
+n=$((n + 1))
+PATH="$NOPY:$STUB:$PATH" REPO="owner/name" WF_DIR="$WFOK" bash "$CHECK" > "$TMP/out" 2>&1
+nopy_rc=$?
+nopy_calls=$(grep -c . "$GH_CALLS" 2>/dev/null); nopy_calls=${nopy_calls:-0}
+if [ "$nopy_rc" -ne 2 ] || [ "$nopy_calls" -ne 0 ] \
+   || ! grep -F -- "PyYAML is not importable" "$TMP/out" >/dev/null; then
+    echo "FAIL: a missing PyYAML refuses and names it -- want exit 2 / 0 call(s), got $nopy_rc / $nopy_calls"
+    sed 's/^/    /' "$TMP/out"; failures=$((failures + 1))
+else
+    echo "PASS: a missing PyYAML refuses and names it (exit $nopy_rc, $nopy_calls gh call(s))"
+fi
+
 set_values
 
 # --- each setting drifts on its own, and the message names the stakes --
