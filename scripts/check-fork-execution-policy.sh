@@ -420,7 +420,7 @@ for path in sys.argv[1:]:
     # to carry that census as a written sentence and it was false at the
     # very SHA it named -- it missed `issues`. A derived line cannot be
     # false; a sentence can, and did, in the flattering direction.
-    print("FORKREACHABLE\t%s\t%s" % (os.path.basename(path), ",".join(triggers)))
+    print("OUTSIDER_REACHABLE\t%s\t%s" % (os.path.basename(path), ",".join(triggers)))
     # An outsider-reachable workflow whose jobs cannot be read is the one
     # place left where "I could not tell" could have become "nothing to
     # report". Every valid workflow has a `jobs:` mapping, so an absent
@@ -487,10 +487,10 @@ fi
 # about. The self-test pins the set and not the count, so a fourteenth
 # `pull_request` workflow costs nothing while a first `workflow_run` one
 # goes red.
-forkreachable=$(printf '%s\n' "$scan" | awk -F'\t' '$1 == "FORKREACHABLE" { print "    " $2 ": " $3 }' | sort)
-forkreachable_n=$(printf '%s\n' "$forkreachable" | grep -c .)
-forkreachable_n=${forkreachable_n:-0}
-forkreachable_set=$(printf '%s\n' "$scan" | awk -F'\t' '$1 == "FORKREACHABLE" { print $3 }' | tr ',' '\n' | grep . | sort -u | paste -sd, - | sed 's/,/, /g')
+outsider_reachable=$(printf '%s\n' "$scan" | awk -F'\t' '$1 == "OUTSIDER_REACHABLE" { print "    " $2 ": " $3 }' | sort)
+outsider_reachable_n=$(printf '%s\n' "$outsider_reachable" | grep -c .)
+outsider_reachable_n=${outsider_reachable_n:-0}
+outsider_reachable_set=$(printf '%s\n' "$scan" | awk -F'\t' '$1 == "OUTSIDER_REACHABLE" { print $3 }' | tr ',' '\n' | grep . | sort -u | paste -sd, - | sed 's/,/, /g')
 # THE SET IS PRINTED BRACKETED, and that is not decoration. The
 # self-test asserts this line as a substring, and an unbracketed tail is
 # a PREFIX -- adding a trigger that sorts last leaves the old text intact
@@ -500,8 +500,8 @@ forkreachable_set=$(printf '%s\n' "$scan" | awk -F'\t' '$1 == "FORKREACHABLE" { 
 # for a set assertion is the same fail-open shape this whole gate is
 # about, reproduced inside the check written to close it. The closing
 # bracket is what makes the assertion terminate.
-echo "$forkreachable_n workflow(s) in $WF_DIR trigger on something an outsider can cause: [$forkreachable_set]"
-[ "$forkreachable_n" -gt 0 ] && printf '%s\n' "$forkreachable"
+echo "$outsider_reachable_n workflow(s) in $WF_DIR trigger on something an outsider can cause: [$outsider_reachable_set]"
+[ "$outsider_reachable_n" -gt 0 ] && printf '%s\n' "$outsider_reachable"
 
 exposed_now=$(printf '%s\n' "$scan" | awk -F'\t' '$1 == "EXPOSED" { print $2 }' | sort -u | tr '\n' ' ')
 exposed_now="${exposed_now% }"
