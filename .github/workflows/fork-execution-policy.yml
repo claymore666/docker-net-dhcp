@@ -1,0 +1,130 @@
+name: Fork execution policy
+
+# Are the three settings that stand between a fork PR and root on the
+# self-hosted pool still what they were? (#830)
+#
+# TWO workflows trigger on something an outsider can cause AND place jobs
+# off the GitHub-hosted images: `coverage.yml` and `integration.yml`.
+# Neither carries a fork guard — there is no
+# `github.event.pull_request.head.repo.full_name == github.repository`
+# anywhere in the tree — and the integration lane runs as root. So the
+# approval policy is not one layer of several; on the day it is relaxed it is
+# the only thing that was stopping fork-authored code from running there.
+#
+# #593 was this class — an untrusted ref reaching credentialed, root,
+# self-hosted jobs — and the answer then was a gate.
+#
+# THIS SAID FIVE UNTIL IT WAS MEASURED, naming Coverage presence, Release
+# back-merge and Test as well; all three run every job on `ubuntu-latest`.
+# Whoever acted on that sentence would have added three `if:` conditions that
+# guard nothing and concluded the window was shut. The script now DERIVES this
+# population and refuses when it diverges from the two named above, so the
+# enumeration is checked by something that goes red rather than by a reader.
+#
+# THE DERIVATION WAS TWO LINE REGEXES UNTIL #844, and it detected one spelling
+# of `runs-on` out of seven legal ones — a block sequence, a bare custom label,
+# a matrix expression, a runner group and the rest all read as "no self-hosted
+# job here". So the paragraph above was watched by something that could not
+# have seen the change it promised to catch, which is worse than not watching
+# it: the claim reads as enforced. It is a YAML parse now, and the trigger
+# domain is deliberately NOT a list of the dangerous triggers: that shape is
+# the same defect, one level up — it excludes the next one silently and in
+# the permissive direction. The script names the triggers no OUTSIDER can
+# cause or steer, in `SAFE_TRIGGERS`, and counts everything else, so a
+# trigger nobody wrote down refuses rather than vanishing. "Outsider", not
+# "fork", is the governing word and the difference is live in this tree:
+# `issues` is causable by any GitHub account and reachable by no fork.
+# Which triggers qualify TODAY is derived and printed on every run and
+# pinned by a self-test case against the real workflow directory, so no
+# list is restated here to rot. `pull_request_target` earns its own clause
+# for a reason that is not about enumeration: a job on it would not merely
+# relax the setting this workflow watches, it would route around it
+# entirely.
+#
+# THIS IS PROPHYLACTIC AND SAYS SO. No incident sits behind it. Precautionary
+# gates are a small minority of the corpus — `check-apk-pins.sh` is the other
+# shape — which is recorded in the script's own header too, where whoever
+# later weighs deleting it will actually be looking. The count that used to
+# sit here is gone on purpose: it measured 60 when written and 62 a day
+# later, and named no population anyone could check it against.
+#
+# WHY THIS IS NOT IN test.yaml, twice over. First, for the reason Label
+# taxonomy gives: the claim can become false with nobody touching the tree,
+# so gating a pull request on it charges that cost to whoever pushed next.
+# Second, and specific to this one: it needs a token with Administration:
+# read, and secrets are withheld from fork pull requests. In the Test lane it
+# would refuse on every fork PR and be discharged as noise inside a month.
+#
+# WHEN THIS STARTS OBSERVING ANYTHING. Not at merge. GitHub runs `schedule`
+# only from the DEFAULT branch, and this project develops on `dev` and releases
+# to `main`. Until v1.9.0 carries this file to `main` the workflow is not in the
+# workflows API at all -- neither the cron nor a manual dispatch is reachable,
+# and nothing errors, because nothing is scheduled to fail. The window described
+# below opens at the RELEASE, not at the merge. Declared in
+# .github/dispatch-pending.txt, which is what makes that expiry something a gate
+# checks rather than something a reader has to remember.
+#
+# WHAT A SCHEDULE COSTS HERE, STATED RATHER THAN GLOSSED. Label taxonomy can
+# argue that a wrong label sits for days before it misleads anybody. This one
+# cannot: if the approval policy is relaxed, the exposure starts with the next
+# fork pull request, not with the next scheduled run. A daily cron therefore
+# leaves a window, and the honest description of this gate is "notices within
+# a day", not "prevents". Closing the window needs a fork guard in those TWO
+# workflows, which is a change to those workflows and not to this one.
+#
+# AND IT IS NOT FREE, which is why two `if:` lines have not simply been added.
+# The approval policy is a maintainer-gated YES: an outside contributor's
+# integration run can be approved and will then execute. A fork guard is a
+# permanent NO — an approved fork PR could never run integration, with no way
+# for the maintainer to grant it. That capability is the price, and it is the
+# reason this gate notices rather than prevents.
+#
+# THE TOKEN IS THE ONE SCORECARD ALREADY USES. A read-only, single-repo
+# fine-grained PAT with Administration: read. The default GITHUB_TOKEN cannot
+# read these endpoints — scorecard.yml records the same fact for
+# branch-protection. Reusing it adds no new credential; it does mean this lane
+# goes amber when that PAT expires, which is a refusal (exit 2) naming the
+# token, not a silent pass.
+
+on:
+  schedule:
+    # Daily, offset from Label taxonomy (7 8), Milestone scope (23 6) and
+    # Starter tasks (41 7) so the API-reading jobs do not land together.
+    - cron: '19 9 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fork-execution-policy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # See test.yaml for the measurement: PyYAML is not on the hosted
+      # image and `yamllint`'s copy is pipx-isolated. The gate parses the
+      # workflow tree and refuses without it, so the import is asserted
+      # here rather than trusted.
+      - name: Provide PyYAML
+        run: |
+          # The install runs only when the module is genuinely absent, and
+          # `apt-get update` runs only then too: the hosted image's package
+          # lists are cleaned during its build, so an install without a
+          # refresh answers "unable to locate package".
+          python3 -c 'import yaml' 2>/dev/null || {
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends python3-yaml
+          }
+          python3 -c 'import yaml; print("PyYAML", yaml.__version__)' || {
+            echo "::error title=PyYAML unavailable::python3 cannot import yaml" >&2
+            exit 1
+          }
+
+      - name: The fork-execution settings are as documented
+        env:
+          # Administration: read. GITHUB_TOKEN cannot read these endpoints.
+          GH_TOKEN: ${{ secrets.SCORECARD_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: bash scripts/check-fork-execution-policy.sh

@@ -150,3 +150,18 @@
     Triggers: workflow_dispatch schedule
     Clears:  when this reaches `main` with the v1.9.0 release. Remove this
              entry then — the gate fails while a stale entry remains.
+
+.github/workflows/fork-execution-policy.yml
+    Reason:  added on dev for v1.9.0 (#830). BOTH triggers are dead until
+             this reaches the default branch, not just the manual one.
+             GitHub runs `schedule` only from the default branch, and a
+             workflow absent from it is not in the workflows API at all.
+             Measured 2026-08-27: run-retention.yml was merged to dev and
+             `gh workflow list --all` does not return it, and all 40 most
+             recent scheduled runs fired on `main`. So this gate observes
+             nothing whatsoever until the release ships -- it is NOT a case
+             of losing a manual convenience while the cron carries the
+             function.
+    Clears:  when this reaches `main` with the v1.9.0 release. Remove this
+             entry then — the gate fails while a stale entry remains.
+    Triggers: schedule workflow_dispatch
