@@ -147,6 +147,34 @@ func (m V6Mode) String() string {
 	return fmt.Sprintf("V6Mode(%d)", int(m))
 }
 
+// raParam PINS the advertised Router Lifetime instead of letting
+// dnsmasq derive it.
+//
+// THIS IS A CONTROL, and it exists because the derivation is a trap.
+// dnsmasq computes the router lifetime FROM the advertisement interval
+// unless it is given one, so shortening the interval silently shortens
+// the lifetime -- which manufactures the exact defect #875 is
+// investigating (a default route that stops being valid) and would let
+// a fixture change masquerade as a product finding.
+//
+// Pinning it decouples route survival from advertisement cadence. If a
+// container's default route still disappears well inside 9000s, the
+// route did NOT age out and something removed it or stopped owning it.
+// 9000 is the ceiling RFC 4861 6.2.1 allows for AdvDefaultLifetime, and
+// the interval stays comfortably below it as that section requires.
+//
+// Solicited advertisements are unaffected: dnsmasq answers a Router
+// Solicitation immediately regardless of this interval, and a container
+// sends one at startup.
+const (
+	v6RAInterval = "30"
+	v6RALifetime = "9000"
+)
+
+func raParam() string {
+	return "--ra-param=" + V6BridgeName + "," + v6RAInterval + "," + v6RALifetime
+}
+
 // rangeArgs is the dnsmasq spelling of the mode.
 //
 // THESE ARE DNSMASQ FLAGS, NOT PROTOCOL NAMES. "ra-stateless" and
@@ -159,16 +187,19 @@ func (m V6Mode) rangeArgs() []string {
 		return []string{
 			"--dhcp-range=" + V6PoolStartV6 + "," + V6PoolEndV6 + "," + LeaseTime,
 			"--enable-ra",
+			raParam(),
 		}
 	case V6Stateless:
 		return []string{
 			"--dhcp-range=" + V6Prefix + ",ra-stateless," + LeaseTime,
 			"--enable-ra",
+			raParam(),
 		}
 	case V6SLAAC:
 		return []string{
 			"--dhcp-range=" + V6Prefix + ",ra-only," + LeaseTime,
 			"--enable-ra",
+			raParam(),
 		}
 	case V6NoRA:
 		// --enable-ra deliberately omitted; that is the whole mode.
@@ -198,6 +229,7 @@ func (m V6Mode) rangeArgs() []string {
 		return []string{
 			"--dhcp-range=" + V6PoolStartV6 + "," + V6PoolEndV6 + "," + LeaseTime,
 			"--enable-ra",
+			raParam(),
 			"--dhcp-ignore=tag:dhcpv6",
 		}
 	}
