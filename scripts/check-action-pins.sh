@@ -149,8 +149,16 @@ for f in "${FILES[@]}"; do
     # its "ref is missing" diagnostic, identically to the plain form. So
     # a contributor could write any of them, pass this gate, pass
     # actionlint, and run an unreviewed action on the self-hosted pool.
-    # FOUR is not the number of such shapes; it is the number found so
-    # far, which is why the mechanism below counts rather than enumerates.
+    #
+    # NO COUNT OF SUCH SHAPES IS WRITTEN HERE. This sentence used to say
+    # "FOUR is not the number of such shapes; it is the number found so
+    # far" -- and the number found so far then grew twice, to a `?`
+    # indicator standing alone on its line and to a YAML node property
+    # sitting between the dash and the key, while this line did not
+    # move. A count of an OPEN SET is a stale number waiting to happen,
+    # which is the defect this gate exists to stop. The list above is
+    # examples; the mechanism below COUNTS rather than enumerates,
+    # precisely so that the size of the list does not matter.
     #
     # Chasing spellings loses to the spelling nobody has thought of yet,
     # so this COUNTS instead: every `uses:` standing in a key position is
@@ -161,31 +169,78 @@ for f in "${FILES[@]}"; do
     # parser and actionlint agree on a form, which stops being a question
     # once an unrecognised form is a refusal.
     #
-    # THE BOUND ON THAT CLAIM, AND THE ESCAPE, WRITTEN BESIDE IT. The
-    # sentence above holds only for a form that still leaves the token
-    # `uses` standing at a key position on SOME LINE. This counter is
-    # line-oriented; YAML is not. A `?` indicator alone on its line puts
-    # the key on a LATER line, sharing that line with neither a `?` nor
-    # a `:`, so nothing here counts it, no residue is produced, and the
-    # success line is printed over an unpinned reference. MEASURED on
-    # this script: `- ?` / `uses` / `: actions/checkout@v7` beside one
-    # pinned reference exits 0, and both oracles read that step as a
-    # real action reference -- actionlint answers `invalid format ...
-    # ref should not be empty` on the invalid-ref probe, the same oracle
-    # every shape here rests on, and PyYAML parses it to a `uses` key.
-    # Ten spellings of it were measured; all ten exit 0.
+    # THE BOUND ON THAT CLAIM, AND THE ESCAPE, WRITTEN BESIDE IT.
     #
-    # WIDENING THE EXPRESSION WOULD MOVE THAT BOUNDARY, NOT REMOVE IT,
-    # which is why this states the bound instead of chasing it. A
-    # double-quoted key may be split across lines with a `\` escape --
-    # `? "us\` then `es"` -- and the token `uses` then occurs NOWHERE in
-    # the file. MEASURED: `grep -c uses` returns 1 on a fixture holding
-    # TWO references, and both oracles call the second a reference. No
-    # line-oriented counter can ever see that one, so calling the class
-    # closed would be the same overclaim this paragraph exists to
-    # retract. MEASURED as a mutant, too, rather than argued: joining a
-    # bare `?` to the line after it turns the simple spelling into a
-    # refusal and leaves the split key passing.
+    # THIS PARAGRAPH ONCE STATED THAT BOUND WRONGLY, AND THE WRONG
+    # VERSION SHIPPED INSIDE THIS PR. It said the counter sees any form
+    # that "still leaves the token `uses` standing at a key position on
+    # SOME LINE". False as written: a YAML NODE PROPERTY may sit between
+    # the block-sequence dash and the mapping's first key --
+    # `- &a uses: actions/checkout@v7`, `- !!map uses: ...` -- which
+    # leaves `uses` at a key position on that very line and escaped the
+    # counter anyway, because the expression admitted only DASHES ahead
+    # of the key. MEASURED at the time: exit 0, success line, no
+    # residue, over an unpinned reference. It is FIXED above rather than
+    # documented -- the counter, the parser feed and the ref extraction
+    # all admit a node property now, in lockstep, so those forms are
+    # judged and the unpinned ones go red naming file and line. A form
+    # this gate PASSES must not depend on GitHub's parser being stricter
+    # than this one.
+    #
+    # WHAT MAY SIT THERE, ENUMERATED, AND WHAT THE ENUMERATION MISSES.
+    # YAML allows an anchor (`&name`) and a tag before a node, in either
+    # order and in any number; `!`, `!local`, `!!std`, `!<verbatim>` and
+    # `!handle!suffix` are all tags. The expression admits any
+    # whitespace-free token beginning `&` or `!`, which covers all of
+    # them without enumerating them. That rests on ONE assumption,
+    # written here so it can be attacked rather than left implicit: a
+    # node property never contains whitespace, so a single token is
+    # always enough. FIFTEEN spellings were measured against both
+    # oracles; the twelve that either oracle called a real reference now
+    # exit 1, and the three that neither called a reference refuse
+    # rather than pass.
+    #
+    # WHAT IT STILL DOES NOT COVER, named rather than left to be found:
+    # a tag shorthand that itself ends in `uses:`, which swallows the
+    # key; a property written BEFORE the dash rather than after it; and
+    # an alias (`*a`) standing where the mapping would be, which is not
+    # a property at all. None of the three is claimed handled. Two
+    # spellings enumerated means a third exists, so that list is a lower
+    # bound on the class exactly as the count below is a lower bound on
+    # the references.
+    #
+    # THE ESCAPE THAT REMAINS is the one this counter cannot close: it
+    # is line-oriented and YAML is not. A `?` indicator alone on its
+    # line puts the key on a LATER line, sharing that line with neither
+    # a `?` nor a `:`, so nothing here counts it, no residue is
+    # produced, and the success line is printed over an unpinned
+    # reference. MEASURED on this script: `- ?` / `uses` /
+    # `: actions/checkout@v7` beside one pinned reference exits 0, and
+    # both oracles read that step as a real action reference --
+    # actionlint answers `invalid format ... ref should not be empty` on
+    # the invalid-ref probe, and PyYAML parses it to a `uses` key. Ten
+    # spellings of it were measured; all ten exit 0.
+    #
+    # WIDENING MOVES THAT BOUNDARY, IT DOES NOT REMOVE IT -- and that is
+    # now MEASURED rather than predicted, because the widening above is
+    # the move this paragraph used to decline. A double-quoted key may
+    # be split across lines with a `\` escape -- `? "us\` then `es"` --
+    # and the token `uses` then occurs NOWHERE in the file. MEASURED:
+    # `grep -c uses` returns 1 on a fixture holding TWO references, and
+    # both oracles call the second a reference. No line-oriented counter
+    # can ever see that one, so calling the class closed would be the
+    # same overclaim this paragraph exists to retract.
+    #
+    # THE PRICE OF THE WIDENING, MEASURED, not asserted to be zero. This
+    # gate has an existing false RED -- a bare `uses:` at the start of a
+    # line inside a `run: |` block scalar -- and it now extends to a
+    # line whose FIRST token is a `!` or `&` word followed by `uses:`.
+    # Four such shapes were measured moving from pass to red;
+    # `cmd & uses: x` and `grep uses: f` do NOT move, because the
+    # property has to be the first token. That is the false-red class
+    # already pinned in the suite, made slightly wider, in the direction
+    # that fails loudly. Against the real tree the two runs are
+    # byte-identical on both streams.
     #
     # Closing the class needs a YAML PARSER, and that route is open --
     # which it was not when this paragraph was first drafted. #844
@@ -254,13 +309,13 @@ for f in "${FILES[@]}"; do
         | sed -E 's/(^|[[:space:]])#.*$//' \
         | tr -d '"'"'" \
         | sed -E 's/[{[,]/\n/g' \
-        | grep -cE '^[[:space:]]*(-[[:space:]]+)*(uses[[:space:]]*:|\?[[:space:]]+uses[[:space:]]*(:|$))')"
+        | grep -cE '^[[:space:]]*(-[[:space:]]+)*([&!][^[:space:]]*[[:space:]]+)*(uses[[:space:]]*:|\?[[:space:]]+uses[[:space:]]*(:|$))')"
     parsed=0
 
     while IFS= read -r hit; do
         lineno="${hit%%:*}"
         line="${hit#*:}"
-        ref="$(printf '%s' "$line" | sed -E 's/^[[:space:]]*(-[[:space:]]+)?uses:[[:space:]]*//' | awk '{print $1}' | tr -d '"'"'")"
+        ref="$(printf '%s' "$line" | sed -E 's/^[[:space:]]*(-[[:space:]]+)?([&!][^[:space:]]*[[:space:]]+)*uses:[[:space:]]*//' | awk '{print $1}' | tr -d '"'"'")"
         [ -n "$ref" ] || continue
         seen=$((seen + 1))
         parsed=$((parsed + 1))
@@ -322,7 +377,7 @@ for f in "${FILES[@]}"; do
                 violations=$((violations + 1)) ;;
         esac
     done < <(printf '%s\n' "$content" \
-        | grep -nE '^[[:space:]]*(-[[:space:]]+)?uses:[[:space:]]*[^[:space:]]')
+        | grep -nE '^[[:space:]]*(-[[:space:]]+)?([&!][^[:space:]]*[[:space:]]+)*uses:[[:space:]]*[^[:space:]]')
 
     if [ "$occurrences" -gt "$parsed" ]; then
         echo "  ${f#"$WORKFLOW_DIR"/}: $occurrences 'uses:' occurrence(s) present, $parsed resolved to a ref." >&2
@@ -333,7 +388,7 @@ done
 # THE RESIDUE REFUSES, IT DOES NOT FAIL. An unparsed `uses:` is not a
 # proven violation -- it is a reference this gate cannot judge, which is
 # the same answer as an empty corpus and gets the same exit code.
-[ "$unparsed" -eq 0 ] || refuse "$unparsed 'uses:' occurrence(s) named above were not resolved to an action reference. This gate reads a plain 'uses: <ref>' line, and YAML writes that key in more ways than one -- a flow mapping, a value on the next line, whitespace before the colon and an explicit '? uses' key are four of them, and four is the number found so far, not the number that exist. Each reads as a real reference to GitHub and to actionlint but not to this parser, so it cannot claim they are pinned."
+[ "$unparsed" -eq 0 ] || refuse "$unparsed 'uses:' occurrence(s) named above were not resolved to an action reference. This gate reads a plain 'uses: <ref>' line, and YAML writes that key in more ways than one -- a flow mapping, a value on the next line, whitespace before the colon and an explicit '? uses' key are among them. That list is examples, not an inventory -- it has grown twice since it was written. Each reads as a real reference to GitHub and to actionlint but not to this parser, so it cannot claim they are pinned."
 
 # THE SECOND HALF OF THE NON-VACUITY PREMISE. Files can exist and contain
 # no `uses:` at all -- a tree of workflows that only run `run:` steps, or

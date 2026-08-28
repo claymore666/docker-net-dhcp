@@ -429,6 +429,173 @@ else
     sed 's/^/    /' "$TMP/wf/a.yml"; failures=$((failures + 1))
 fi
 
+# ============ A YAML NODE PROPERTY BETWEEN THE DASH AND THE KEY.
+#
+# This class is NOT pinned -- it is fixed, and these cases are what hold
+# the fix. It is recorded here because it FALSIFIED the bound the two
+# pinned cases above rest on. That bound said the counter sees any form
+# leaving the token `uses` at a key position on SOME LINE; a node
+# property leaves it exactly there and escaped anyway, because the
+# expression admitted only block-sequence dashes ahead of the key.
+# Before the fix every case below exited 0 with the success line, over
+# an unpinned `actions/checkout@v7`.
+#
+# Both oracles were consulted per shape rather than assumed together,
+# because they DISAGREE here and the disagreement is the point. On
+# `- !!map uses: ...` the tag attaches to the KEY SCALAR, so PyYAML
+# refuses to construct the mapping ("found unhashable key") while
+# actionlint -- the tool that models GitHub's own workflow parsing --
+# resolves the step and answers `specifying action ... in invalid
+# format because owner and repo and ref should not be empty` on the
+# invalid-ref probe. A form this gate PASSES must not depend on
+# GitHub's parser being stricter than this one, so actionlint calling
+# it a reference is sufficient to require a verdict here.
+#
+# Fifteen spellings were measured. The twelve either oracle called a
+# real reference now exit 1; the three neither called a reference
+# refuse rather than pass. The four below are the load-bearing ones:
+# anchor, tag, the dashless position, and a pinned ref that must still
+# pass.
+fresh
+cat > "$TMP/wf/a.yml" <<EOF
+jobs:
+  x:
+    steps:
+      - uses: actions/setup-go@$SHA
+      - &a uses: actions/checkout@v7
+EOF
+run "an anchor before the key does not hide the ref" 1 "a.yml:5" "not a commit SHA"
+
+fresh
+cat > "$TMP/wf/a.yml" <<EOF
+jobs:
+  x:
+    steps:
+      - uses: actions/setup-go@$SHA
+      - !!map uses: actions/checkout@v7
+EOF
+run "a tag before the key does not hide the ref" 1 "a.yml:5" "not a commit SHA"
+
+# The dashless position matters separately: a node property may precede
+# a key that is not a sequence entry's first, and the parser's dash is
+# optional, so the two arms had to be widened in lockstep.
+fresh
+cat > "$TMP/wf/a.yml" <<EOF
+jobs:
+  x:
+    steps:
+      - uses: actions/setup-go@$SHA
+      - name: n
+        !!str uses: actions/checkout@v7
+EOF
+run "a tag before a dashless key does not hide the ref either" 1 "a.yml:6" "not a commit SHA"
+
+# THE PRESERVATION CONTROL FOR THE WIDENING. Admitting a node property
+# must not turn every property-bearing step into a finding: a PINNED ref
+# behind an anchor is still pinned, and the count must reach 2 rather
+# than stopping at the reference the widening was written for. If the
+# ref extraction had been widened wrongly -- stripping too little, or
+# too much -- this case goes red, because the garbage it would extract
+# is not 40 hex characters.
+fresh
+cat > "$TMP/wf/a.yml" <<EOF
+jobs:
+  x:
+    steps:
+      - uses: actions/setup-go@$SHA
+      - &a !x uses: actions/checkout@$SHA
+EOF
+run "two properties before a PINNED ref still pass, and still count" 0 "all 2 'uses:'"
+
+# THE COUNTER'S OWN CONTRIBUTION, WHICH THE FOUR CASES ABOVE DO NOT
+# TEST. The count is a LOWER bound and is only compared upward -- the
+# gate acts on `occurrences > parsed` -- so narrowing the COUNTER alone
+# changes no verdict on a form the PARSER can still read. MEASURED as a
+# mutant: reverting the counter's node-property group, and reverting it
+# to anchors-only, both SURVIVED the four cases above. That is a missing
+# test, not a no-op change, and these two are it.
+#
+# A node property in front of an EXPLICIT `? uses` key is the shape that
+# separates them: the counter sees a key, the parser cannot read it, and
+# the difference is residue. Residue REFUSES -- exit 2, not exit 0 --
+# which is the whole contract, and without the widened counter the
+# occurrence is never counted, no residue is produced, and the gate
+# prints its success line over a step it never judged. Neither oracle
+# calls this shape a real reference; refusing an unrecognised form is
+# the honest answer either way, and it is the direction that fails
+# loudly.
+fresh
+cat > "$TMP/wf/a.yml" <<EOF
+jobs:
+  x:
+    steps:
+      - uses: actions/setup-go@$SHA
+      - &a ? uses
+        : actions/checkout@v7
+EOF
+run "an anchor before an explicit ? key is residue, not a silent pass" 2 "were not resolved"
+
+fresh
+cat > "$TMP/wf/a.yml" <<EOF
+jobs:
+  x:
+    steps:
+      - uses: actions/setup-go@$SHA
+      - !!map ? uses
+        : actions/checkout@v7
+EOF
+run "a tag before an explicit ? key is residue too" 2 "were not resolved"
+
+# AND THE REPETITION IS LOAD-BEARING SEPARATELY. YAML allows an anchor
+# AND a tag before the same node, in either order, so the group repeats.
+# MEASURED as a mutant: changing that `*` to a `?` -- one property only
+# -- SURVIVED both cases above, because a single-property fixture cannot
+# tell the two apart. This case is what tells them apart.
+fresh
+cat > "$TMP/wf/a.yml" <<EOF
+jobs:
+  x:
+    steps:
+      - uses: actions/setup-go@$SHA
+      - &a !x ? uses
+        : actions/checkout@v7
+EOF
+run "two properties before an explicit ? key are residue as well" 2 "were not resolved"
+
+# THE PRICE OF THE WIDENING, PINNED AS A CASE rather than left for a
+# reader to discover. This gate already false-REDS on a bare `uses:` at
+# the start of a line inside a `run: |` block scalar (the case further
+# down asserts the shapes that do NOT fire). Admitting a leading `!` or
+# `&` token extends that false red: a block-scalar line whose FIRST
+# token is such a word, followed by `uses:`, now goes red too. That is
+# the noisy direction and it is deliberate -- but it is a real cost and
+# it is asserted here so that a later widening cannot enlarge it
+# silently. The control immediately after is what bounds it: the
+# property must be the FIRST token, so ordinary shell does not fire.
+fresh
+cat > "$TMP/wf/a.yml" <<EOF
+jobs:
+  x:
+    steps:
+      - uses: actions/setup-go@$SHA
+      - run: |
+          ! uses: not-a-reference
+EOF
+run "PINNED COST: a '!' token before uses: in a run body false-reds" 1 "a.yml:6" "not pinned to a 40-hex commit SHA"
+
+fresh
+cat > "$TMP/wf/a.yml" <<EOF
+jobs:
+  x:
+    steps:
+      - uses: actions/setup-go@$SHA
+      - run: |
+          grep uses: f
+          cmd & uses: x
+          make TARGET=x && echo done
+EOF
+run "shell lines that merely CONTAIN & or ! still do not fire" 0 "all 1 'uses:'"
+
 # THE PRESERVATION CONTROL FOR THAT COUNT. A refusal keyed on a bare
 # `grep uses:` would fire on a step name, on a shell line in a `run:`
 # body, and on this project's own gate scripts quoted in a workflow --
@@ -643,7 +810,7 @@ fi
 # exits 0, which is a green tick over nothing. The floor is the count
 # this file is known to run; raise it when cases are added, and a
 # deletion has to be deliberate rather than silent.
-FLOOR=44
+FLOOR=53
 if [ "$n" -lt "$FLOOR" ]; then
     echo "REFUSING: ran $n case(s), fewer than the $FLOOR this suite is known to hold."
     echo "  Either cases were lost, or the floor is stale and should be raised with them."
