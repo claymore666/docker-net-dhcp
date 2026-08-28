@@ -60,6 +60,9 @@ set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
 DIR="${1:-$ROOT/.github/workflows}"
+# Env: RUN_EXPANSIONS_AWK  the awk to scan with. A test seam -- it is what
+#                          lets the self-test drive an awk that FAILS while
+#                          printing, which no workflow fixture can produce.
 
 if [ ! -d "$DIR" ]; then
     echo "::error title=Workflow directory missing::$DIR is not a directory" >&2
@@ -92,8 +95,19 @@ SECRET='^secrets\.'
 # these workflows explain this very rule in prose that quotes the unsafe
 # form, and a check that read its own documentation would never go
 # green.
+# THE awk BINARY IS A SEAM, and it exists so the status half of the
+# refusal below can be DRIVEN rather than argued. `-f` and `-r` are
+# asked in the shell first, so no workflow fixture can reach awk with a
+# file awk cannot open -- which would leave the status check a branch
+# with no case, the same defect one level down (a guard whose test
+# cannot reach it reports exactly what a working guard reports). The
+# self-test points this at a stub that prints a plausible partial scan
+# and then exits non-zero: partial output is not empty output, and the
+# aggregate `run_bodies` sentinel below cannot tell the difference.
+AWK="${RUN_EXPANSIONS_AWK:-awk}"
+
 scan_file() {
-    awk '
+    "$AWK" '
     function emit(line, n, i, s, expr) {
         s = line
         while (match(s, /\$\{\{[[:space:]]*[^}]*\}\}/)) {
@@ -140,6 +154,40 @@ expansions=0
 run_bodies=0
 
 for f in "${files[@]}"; do
+    # WHETHER THE FILE WAS READ IS DECIDED HERE, NOT INFERRED FROM THE
+    # LOOP (#839). `examined` counted files this loop VISITED, and the
+    # `run_bodies` sentinel below is an AGGREGATE, so one unreadable
+    # workflow among two dozen readable ones lost its findings without
+    # moving either number. Measured 2026-08-28 with a real
+    # script-injection finding planted -- `${{ github.event.pull_request.title }}`
+    # in a `run:` body, control rc=1 -- and the same file at mode 000:
+    # rc=0 under mawk 1.3.4 AND under gawk 5.4.1. This is the gate that
+    # guards the one workflow holding `id-token: write`, so a finding it
+    # silently drops is the expensive kind.
+    #
+    # `-f` and `-r` are asked in the SHELL because the two awks disagree
+    # about an argument they cannot open -- mawk exits non-zero, gawk
+    # warns and exits 0 -- so neither awk's status nor its silence is a
+    # portable answer on its own. The status is read too, below, because
+    # an awk that dies part way through a file leaves partial output
+    # that is not empty. A file this check could not read is a REFUSAL
+    # (exit 2), never an absence.
+    if [ ! -f "$f" ] || [ ! -r "$f" ]; then
+        echo "::error file=$f,title=Cannot read workflow::$(basename "$f") is not a" \
+             "readable regular file, so no \`run:\` body could be scanned in it." \
+             "Treating that as \"no untrusted expansion here\" would drop the file" \
+             "out of this check in silence, which is the failure it exists to" \
+             "prevent." >&2
+        exit 2
+    fi
+    scan_out=$(scan_file "$f")
+    scan_rc=$?
+    if [ "$scan_rc" -ne 0 ]; then
+        echo "::error file=$f,title=Cannot read workflow::scanning $(basename "$f")" \
+             "failed (exit $scan_rc). Any \`run:\` body after the point it stopped is" \
+             "unexamined, and a partial read must not be reported as a clean one." >&2
+        exit 2
+    fi
     examined=$((examined + 1))
     while IFS=$'\t' read -r line expr; do
         [ -n "${expr:-}" ] || continue
@@ -153,7 +201,7 @@ for f in "${files[@]}"; do
         elif [[ "$expr" =~ $SECRET ]]; then
             secret_findings+=("$(basename "$f")	$line	$expr")
         fi
-    done < <(scan_file "$f")
+    done <<< "$scan_out"
 done
 
 # The sentinel is the number of run bodies PARSED, not the number of
