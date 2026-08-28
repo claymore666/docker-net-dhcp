@@ -421,14 +421,17 @@ for f in "${FILES[@]}"; do
         # "cries unpinned over something pinned, never the reverse".
         # THE ESCAPE, MEASURED: `uses: !a@<40 hex> actions/checkout@v7`
         # exits 0 with the success line, because `awk '{print $1}'`
-        # returns the property token and ITS tail after the last `@` is
-        # 40 hex, so the property is judged and passes while the real
-        # reference is never looked at. Both spellings are pinned as
-        # cases. The bound on the exposure -- also measured, and stated
-        # rather than left implied -- is that no ordinary anchor or tag
-        # name ends in `@` plus 40 hex, so reaching this needs an
-        # adversary, and an adversary already has the `?`-alone class
-        # above; it adds no reach that is not already disclosed.
+        # returns the property token and the ref rule below reads ITS
+        # tail after the first `@` as 40 hex, so the property is judged
+        # and passes while the real reference is never looked at. Both
+        # spellings are pinned as cases. The bound on the exposure --
+        # also measured, and stated rather than left implied -- is that
+        # no ordinary anchor or tag name ends in `@` plus 40 hex, so
+        # reaching this needs an adversary, and an adversary already has
+        # the `?`-alone class above; it adds no reach that is not already
+        # disclosed. The first-@ split narrows it further: the property
+        # token must now carry exactly ONE `@`, where the last-@ rule
+        # accepted any number of them.
         #
         # Widening THIS sed is the one place a mistake yields a wrong
         # REF rather than a wrong count, so it belongs in a change that
@@ -464,7 +467,20 @@ for f in "${FILES[@]}"; do
                 # distinction the 40-hex rule enforces on the other
                 # branch, and a gate that accepts the shape of an answer
                 # teaches the wrong thing.
-                digest="${ref##*@sha256:}"
+                #
+                # THE SAME FIRST-VERSUS-LAST SPLIT as the ref branch
+                # below, found by measuring the neighbour of that fix
+                # rather than only the spot it was reported at. Taking the
+                # LAST `@sha256:` read a well-formed digest out of
+                # `docker://alpine@sha256:zz@sha256:<64 hex>` and passed
+                # it. Taking the FIRST makes the whole tail the digest, so
+                # it fails. MEASURED that neither ordering is executable --
+                # `docker pull` answers `invalid reference format` on both
+                # -- so the exposure was a failed run rather than an
+                # unreviewed one. That is the same standing as the
+                # two-character digest above, and the same reason to refuse
+                # it rather than print a pin.
+                digest="${ref#*@sha256:}"
                 case "$ref" in
                     *@sha256:*)
                         if [[ "$digest" =~ ^[0-9a-f]{64}$ ]]; then
@@ -480,10 +496,40 @@ for f in "${FILES[@]}"; do
                 continue ;;
         esac
 
-        # owner/repo[/path]@ref -- the ref after the LAST @ must be 40 hex.
+        # owner/repo[/path]@ref -- the ref is everything after the FIRST
+        # @, and it must be 40 hex.
+        #
+        # IT SPLIT AT THE LAST `@` UNTIL A REVIEWER DROVE IT, which made
+        # this gate LOOSER than the parser it models -- the one direction
+        # it may not be wrong in, and the outcome it exists to refuse.
+        # `evil/action@v7@<40 hex>` is an ordinary single-line `uses:` in
+        # the ordinary position, so it defeats a human reader too; under a
+        # last-@ split its tail is 40 hex and the gate printed
+        # `action pins: all N ... are SHA-pinned` over it.
+        #
+        # THE SPLIT IS MEASURED, NOT PREFERRED. actionlint v1.7.12 ACCEPTS
+        # `actions/checkout@v7@` while rejecting `actions/checkout@` with
+        # `owner and repo and ref should not be empty` -- so the ref of the
+        # first is `v7@`, non-empty, which only a first-@ split produces.
+        # `actions/checkout@@v2` is accepted too, ref `@v2`. And
+        # `git check-ref-format refs/tags/v7@<40 hex>` ACCEPTS, so the
+        # mutable tag such a reference names is creatable rather than
+        # theoretical.
+        #
+        # actionlint is ONE implementation and not GitHub's runtime parser:
+        # the first-@ reading is MEASURED there and INFERRED for GitHub. It
+        # is used here only to make this gate STRICTER, never to excuse a
+        # pass -- the contract being that a form this gate passes must not
+        # depend on GitHub's parser being stricter than this one.
+        #
+        # No reference in this tree carries two `@`, so this was a
+        # completeness defect rather than a shipped hole -- and that is
+        # exactly why no test constrained it: at one `@` the two splits
+        # agree, so a mutant flipping them killed nothing. The suite drives
+        # the disagreement now.
         case "$ref" in
             *@*)
-                after="${ref##*@}"
+                after="${ref#*@}"
                 if [[ "$after" =~ ^[0-9a-f]{40}$ ]]; then
                     continue
                 fi

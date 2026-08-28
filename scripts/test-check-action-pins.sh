@@ -135,6 +135,61 @@ mutant "an uppercase sha is not a pin"   "actions/checkout@$(printf 'A%.0s' $(se
 mutant "no ref at all"                   "actions/checkout"           1 "default branch"
 mutant "a full 40-hex sha passes"        "actions/checkout@$SHA"      0 "all 1 'uses:'"
 
+# WHICH `@` THE RULE SPLITS ON, DRIVEN. The gate read the ref as the tail
+# after the LAST `@` and GitHub reads it as the tail after the FIRST, so
+# `owner/repo@v7@<40 hex>` was judged SHA-pinned here and resolves at the
+# MUTABLE tag `v7@<40 hex>` there. An ordinary single-line `uses:` in the
+# ordinary position, so it defeated a human reader as well as the gate.
+#
+# NOTHING IN THIS SUITE CONSTRAINED THE SPLIT BEFORE THESE CASES, and
+# that is the finding rather than a footnote: every fixture here and
+# every reference in the tree carries exactly ONE `@`, the position where
+# the two rules agree, so flipping the split killed nothing and the
+# mutation table was full while the rule was free to move.
+#
+# THE FIRST-@ READING IS MEASURED, NOT PREFERRED. actionlint v1.7.12
+# accepts `actions/checkout@v7@` and rejects `actions/checkout@` for an
+# empty ref -- so the former's ref is `v7@`, which only a first-@ split
+# yields; `actions/checkout@@v2` is accepted with ref `@v2`; and
+# `git check-ref-format refs/tags/v7@<40 hex>` accepts, so the tag is
+# creatable. actionlint is one implementation and not GitHub's runtime
+# parser: MEASURED there, INFERRED for GitHub, and used only in the
+# direction that makes this gate stricter.
+mutant "a 40-hex tail after a SECOND @ is not a pin" \
+    "actions/checkout@v7@$SHA"   1 "a.yml:4" "repoint it at any commit"
+mutant "a doubled @ with a 40-hex tail is not a pin" \
+    "actions/checkout@@$SHA"     1 "a.yml:4"
+mutant "a 40-hex tail after THREE @ is not a pin" \
+    "actions/checkout@v7@v8@$SHA" 1 "a.yml:4"
+# A leading `@` reaches the same hole from the other end -- and it is the
+# spelling a typo produces rather than an adversary. actionlint rejects it
+# outright (`owner is missing`), so nothing legitimate is lost by the red.
+# Quoted, because an unquoted `@` cannot start a YAML scalar at all.
+mutant "a leading @ with a 40-hex tail is not a pin" \
+    "\"@actions/checkout@$SHA\"" 1 "a.yml:4"
+# THE OTHER DIRECTION OF THE SAME EDIT. This shape was caught before and
+# must stay caught: a rule that split at the first `@` and then compared
+# the wrong end of the result would let it through.
+mutant "a second @ AFTER the sha is still not a pin" \
+    "actions/checkout@$SHA@v7"   1 "a.yml:4"
+
+# ...AND THE SHAPE AS IT WOULD ACTUALLY ARRIVE, beside an ordinary pinned
+# reference. The failure this closes was not a missing red, it was a
+# CONFIDENT SUCCESS LINE counting the unpinned reference among the
+# pinned, which is the one outcome this gate exists to refuse. The
+# mutants above would all still fail loudly if the whole file were
+# rejected for some unrelated reason; this one asserts the tally.
+fresh
+cat > "$TMP/wf/a.yml" <<EOF
+jobs:
+  x:
+    steps:
+      - uses: actions/setup-go@$SHA
+      - uses: evil/action@v7@$SHA
+EOF
+run "a two-@ ref beside a pinned one does not produce a success line" 1 \
+    "a.yml:5" "1 of 2 'uses:'"
+
 # --- shapes that are legitimately exempt, and must not be flagged ------
 mutant "a local action needs no pin"     "./.github/actions/setup"    0 "all 1 'uses:'"
 mutant "a docker action pinned by digest" "docker://alpine@sha256:$(printf 'b%.0s' $(seq 1 64))" 0
@@ -151,6 +206,17 @@ mutant "a docker digest of the right length but not hex is not a pin" \
     "docker://alpine@sha256:$(printf 'z%.0s' $(seq 1 64))" 1 "not a 64-hex digest"
 mutant "an uppercase docker digest is not a pin" \
     "docker://alpine@sha256:$(printf 'B%.0s' $(seq 1 64))" 1 "not a 64-hex digest"
+
+# THE SAME FIRST-VERSUS-LAST SPLIT ON THIS BRANCH, found by measuring the
+# NEIGHBOUR of the ref-side fix rather than only the spot it was reported
+# at. `@sha256:` can appear twice, and taking the LAST occurrence found a
+# well-formed digest inside a reference that names no image. MEASURED
+# that the shape is not executable in either ordering -- `docker pull`
+# answers `invalid reference format` -- so the exposure was a failed run
+# rather than an unreviewed one, which is the same standing as the
+# two-character digest above and the same reason to refuse it.
+mutant "a docker digest after a SECOND @sha256: is not a pin" \
+    "docker://alpine@sha256:zz@sha256:$(printf 'b%.0s' $(seq 1 64))" 1 "not a 64-hex digest"
 
 # A commented-out reference is not executed, so it is not a violation.
 # Without this case the obvious `grep uses:` implementation looks correct.
@@ -1286,7 +1352,7 @@ fi
 # exits 0, which is a green tick over nothing. The floor is the count
 # this file is known to run; raise it when cases are added, and a
 # deletion has to be deliberate rather than silent.
-FLOOR=75
+FLOOR=82
 if [ "$n" -lt "$FLOOR" ]; then
     echo "REFUSING: ran $n case(s), fewer than the $FLOOR this suite is known to hold."
     echo "  Either cases were lost, or the floor is stale and should be raised with them."
