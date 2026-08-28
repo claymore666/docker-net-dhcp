@@ -308,10 +308,11 @@ else
 fi
 
 # --- 4d. the purge's first REAL execution must be OBSERVED --------------
-# This script has never deleted anything. run-retention.yml lives on `dev`
-# and GitHub registers schedules only from the default branch, so the
-# first execution of the shipping version is a scheduled one, on `main`,
-# with DRY_RUN=0, against several hundred runs.
+# This script has never deleted anything. run-retention.yml reached `main`
+# with the v1.9.0 release, and GitHub registers schedules only from the
+# default branch, so the first execution of the shipping version is the
+# NEXT scheduled one, on `main`, with DRY_RUN=0, against several hundred
+# runs.
 #
 # The suite below drives a STUBBED transport, so it grades the author's
 # own fixture. The only outside observer of a real purge is the consumer

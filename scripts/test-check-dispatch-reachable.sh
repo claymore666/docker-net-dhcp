@@ -401,6 +401,50 @@ led <<'EOF'
 EOF
 check "a ledger that parses to no entries is rc2, not a verdict" 2 "$(verdict3 | sed 's/^rc//;s/^pass$/0/')"
 
+# --- A LEDGER WITH NO ENTRIES AT ALL IS A LEGITIMATE STATE --------------
+# The case above covers a ledger with CONTENT that parses to nothing: the
+# format moved, and that is rc2. This is a DIFFERENT state, and it is the
+# one the tree entered when the last pending entries were pruned after
+# their workflows reached the default branch — comments only, so zero
+# non-comment lines, the vacuity guard correctly does not fire, and the
+# allowlist is simply empty. Nothing covered it. The two states are one
+# `grep -c` apart inside the gate.
+#
+# Both directions are driven, because an empty allowlist that had quietly
+# become a blanket pass would print the same clean line as a healthy tree,
+# which is the shape this gate exists to refuse.
+#
+# It gets its OWN fixture rather than reusing repo3: repo3 accumulates
+# off-main workflows from the cases above it, so a case written there
+# would be asserting on which neighbours happened to run first, and would
+# change meaning when one of them is edited.
+REPO5="$TMP/repo5"
+mkdir -p "$REPO5/.github/workflows"
+git -C "$REPO5" init -q -b main
+git -C "$REPO5" config user.email t@example.com
+git -C "$REPO5" config user.name t
+git -C "$REPO5" config commit.gpgsign false
+dispatchable onmain5 > "$REPO5/.github/workflows/onmain5.yml"
+printf '# every entry has been pruned; nothing is pending.\n' \
+    > "$REPO5/.github/dispatch-pending.txt"
+git -C "$REPO5" add -A && git -C "$REPO5" commit -qm base
+git -C "$REPO5" checkout -q -b work
+
+verdict5() {
+    ( cd "$REPO5" && BASE_REF=main bash "$CHECK" >"$TMP/out5" 2>&1 ) \
+        && echo pass || echo "rc$?"
+}
+check "a comment-only ledger with nothing pending passes, not rc2" pass "$(verdict5)"
+
+dispatchable pending5 > "$REPO5/.github/workflows/pending5.yml"
+check "a comment-only ledger still fails an undeclared workflow" rc1 "$(verdict5)"
+grep -F 'pending5.yml' "$TMP/out5" >/dev/null \
+    && echo "PASS: and the undeclared workflow is still named" \
+    || { echo "FAIL: undeclared workflow not named under an empty ledger"; fails=1; }
+
+rm -f "$REPO5/.github/workflows/pending5.yml"
+check "and removing it returns the empty ledger to a pass (control)" pass "$(verdict5)"
+
 # --- #849 review: an ABSENT field with a PRESENT one after it ----------
 #
 # The suite had no case where one field is missing and a later one is
