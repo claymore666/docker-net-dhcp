@@ -842,8 +842,15 @@ func TestMountPrep_DoesNotSwallowDiagnostics(t *testing.T) {
 			reportsOnFailure)
 	}
 
-	// Every way a statement can move its own diagnostic off fd 2.
-	swallows := []string{"2>/dev/null", "2> /dev/null", "2>&-", "2>&1"}
+	// Keyed on the REDIRECTION, not on a list of destinations. The
+	// version this replaces enumerated three spellings of "somewhere
+	// else" (`2>/dev/null`, `2> /dev/null`, `2>&-`) and therefore could
+	// not see `2>&1`, `2>>/dev/null`, `2>&3` or a redirect to a file —
+	// and two spellings enumerated means a third exists. Any `2>` in a
+	// statement is an fd-2 redirection; the marker's own `>&2` does not
+	// contain that sequence, and neither does a `echo <value> > <path>`
+	// write step, so the predicate needs no exemption to be exact here.
+	const redirectsFd2 = "2>"
 
 	for _, tc := range []struct {
 		name         string
@@ -856,7 +863,16 @@ func TestMountPrep_DoesNotSwallowDiagnostics(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ordinary, inverted, suppressing := 0, 0, 0
 			for _, stmt := range strings.Split(tc.prep, ";") {
-				if len(strings.Fields(stmt)) == 0 || strings.HasPrefix(strings.TrimSpace(stmt), "exec ") {
+				trimmed := strings.TrimSpace(stmt)
+				// The trailing `exec "$0" "$@"` is not a prepared step
+				// and has no marker. It is skipped ONLY while it leaves
+				// fd 2 alone: `exec 2>/dev/null` is a legal statement
+				// that silences every step after it, and a skip keyed on
+				// the word `exec` alone would step straight over it —
+				// the gate's own blind spot, in the one statement whose
+				// redirection has the widest reach.
+				if len(strings.Fields(stmt)) == 0 ||
+					(strings.HasPrefix(trimmed, "exec ") && !strings.Contains(stmt, redirectsFd2)) {
 					continue
 				}
 				isInverted := strings.Contains(stmt, reportsOnSuccess+" "+echoBin)
@@ -866,13 +882,8 @@ func TestMountPrep_DoesNotSwallowDiagnostics(t *testing.T) {
 					ordinary++
 				}
 				swallowed := ""
-				for _, sw := range swallows {
-					if strings.Contains(stmt, sw) {
-						swallowed = sw
-						break
-					}
-				}
-				if swallowed != "" {
+				if i := strings.Index(stmt, redirectsFd2); i >= 0 {
+					swallowed = strings.TrimSpace(stmt[i:])
 					suppressing++
 				}
 				switch {
