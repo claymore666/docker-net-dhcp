@@ -274,7 +274,7 @@
 # from `main`. The two sets differ for one release window: a workflow
 # added on `dev` is judged here before it can fire, and one deleted on
 # `dev` leaves this domain while `main`'s copy keeps firing until the
-# release ships. Re-derived 2026-08-28 at `dev` = 22251d3, `main` =
+# release ships. Re-derived 2026-08-28 at `dev` = 25ef1cc, `main` =
 # 56a72b6: `main` holds 24 workflow files and this branch 26. The two
 # extras are run-retention.yml and fork-execution-policy.yml, neither of
 # which is on `main`; both 404 as workflows and have never fired -- a
@@ -283,8 +283,12 @@
 # file in, which is the shape of the failure: a number written beside the
 # code is right at the minute it is measured and nothing checks it
 # afterwards. Re-derive it rather than quoting it -- this paragraph
-# carried `dev` = 9ae67ca through two rebases, which is the same defect
-# one level up.
+# carried `dev` = 9ae67ca through two rebases, and then went stale a
+# third time on the very rebase that published the fix for the first
+# two, which is the same defect one level up. The counts and the two
+# extras were re-measured at each of those bases and did not move; only
+# the base SHA did, which is exactly why the SHA is the part that has to
+# be re-derived rather than carried.
 #
 # WHAT NOW CLOSES PART OF THAT WINDOW, AND WHAT STILL DOES NOT. This
 # sentence used to end "Nothing in this gate closes that window; the
