@@ -137,7 +137,7 @@ prefix:
 | --- | --- | --- |
 | `dhcpv6_config_only` | stateless information replies received | #815 |
 | `dhcpv6_not_offered` | endpoints started on a segment offering no DHCPv6 address | #868 |
-| `dhcpv6_no_router_advert` | no advertisement arrived inside the budget | #875 |
+| `dhcpv6_no_router_advert` | no advertisement arrived inside the budget | #868 |
 | `router_advert_guard_failures` | steps of the advertisement guard that failed | #875 |
 | `ipv6_link_enable_failures` | failures enabling IPv6 on the sandbox link | #868 |
 | `directives_refused` | `dhcpcd` directives dropped because the value carried a control character — a `hostname`, `vendor_class` or `client_id` that never reached the server | #780 |
