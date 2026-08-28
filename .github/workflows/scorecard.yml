@@ -25,7 +25,16 @@ on:
     - cron: '41 7 * * 2'
   workflow_dispatch:
 
-permissions: read-all
+# Least privilege at the workflow level, and it has to be, for a reason
+# that is not style: `read-all` grants READ on every scope there is,
+# `issues:` included, while this repository's default is read on
+# `contents` and `packages` only -- so `read-all` is an ESCALATION above
+# the default, not a statement of it. `scripts/check-scheduled-ref-pins.sh`
+# reads it that way, which makes it contradict the `tree` marker above
+# (#839). Nothing here needed it: the one job below replaces this grant
+# with its own block, so this line is what a future job would inherit.
+permissions:
+  contents: read
 
 jobs:
   analysis:

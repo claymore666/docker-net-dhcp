@@ -74,16 +74,33 @@ fail=0
 ok() { printf 'PASS  %s\n' "$1"; pass=$((pass + 1)); }
 no() { printf 'FAIL  %s\n' "$1" >&2; fail=$((fail + 1)); }
 
+# wkey NAME writes NAME as a YAML key, honouring the KEY-SPELLING axis
+# (KQ, KSP -- set by emit_wf, read here through bash dynamic scope).
+# YAML lets a key be quoted with either quote character and lets a space
+# stand before the colon, so `on:`, `"on":`, 'on':` and `on :` are FOUR
+# SPELLINGS OF ONE KEY. Measured 2026-08-28, the gate read only the
+# first two, and a scheduled workflow spelling it either of the other
+# two never entered the domain at all -- not reported as unclassified,
+# not counted, exit 0 clean while holding `issues: write` (#839). The
+# generator could not reach that because it hardcoded one spelling,
+# which is the SAME un-varied-parameter defect WF_SHAPE was introduced
+# for, one axis along: the key is a constant of this generator exactly
+# as the block/flow shape was.
+wkey() { printf '%s%s%s%s:' "$KQ" "$1" "$KQ" "$KSP"; }
+
 # emit_wf FILE MARKER TRIGGER PERMS [REF...]
 #
 #   MARKER   tracker | tree | none | <anything else, written verbatim>
 #            `both` writes two markers, which is its own error case.
 #   TRIGGER  sched | nosched
-#   PERMS    issues | noissues | scalar:<value>
+#   PERMS    issues | noissues | scalar:<value> | openflow
 #            `scalar:` writes `permissions: <value>` on one line, which
-#            is the third spelling of the key. For a scalar the content
+#            is the third KIND of value. For a scalar the content
 #            and the spelling are the same thing, so it belongs on this
 #            axis rather than on WF_SHAPE, and it overrides `flow-perms`.
+#            `openflow` writes a flow mapping that is never closed --
+#            the residue case for a value the gate cannot finish
+#            reading.
 #   REF...   one token per actions/checkout step: none | dev | main |
 #            refs/heads/dev. No tokens means no checkout step at all.
 #
@@ -91,10 +108,15 @@ no() { printf 'FAIL  %s\n' "$1" >&2; fail=$((fail + 1)); }
 # a positional because REF... is variadic. It varies how the file is
 # WRITTEN, not what it says:
 #
-#   block        (default) block mappings throughout, marker at column 0
-#   flow-on      `on: {schedule: [{cron: ...}]}` on one line
-#   flow-perms   `permissions: {contents: read, issues: read}` on one line
-#   indent       the marker indented, beside the step it governs
+#   block            (default) block mappings throughout, marker at column 0
+#   flow-on          `on: {schedule: [{cron: ...}]}` on one line
+#   flow-perms       `permissions: {contents: read, issues: read}` on one line
+#   flow-perms-multi the same flow mapping spread over three lines, so it
+#                    does not end on the line that opens it
+#   indent           the marker indented, beside the step it governs
+#   dq-keys          every key double-quoted
+#   sq-keys          every key single-quoted
+#   spaced           a space before every colon, which YAML permits
 #
 # Every value must produce a file with the SAME MEANING as `block`.
 # That is what makes these cases evidence: if the gate's verdict moves
@@ -102,9 +124,15 @@ no() { printf 'FAIL  %s\n' "$1" >&2; fail=$((fail + 1)); }
 emit_wf() {
     local file="$1" marker="$2" trigger="$3" perms="$4"; shift 4
     local shape="${WF_SHAPE:-block}" mark_pfx=''
+    local KQ='' KSP=''
     [ "$shape" = indent ] && mark_pfx='      '
+    case "$shape" in
+        dq-keys) KQ='"' ;;
+        sq-keys) KQ="'" ;;
+        spaced)  KSP=' ' ;;
+    esac
     {
-        printf 'name: %s\n' "$(basename "$file")"
+        printf '%s %s\n' "$(wkey name)" "$(basename "$file")"
         case "$marker" in
             none) ;;
             both) printf '%s# scheduled-subject: tracker\n%s# scheduled-subject: tree\n' \
@@ -113,39 +141,47 @@ emit_wf() {
         esac
         if [ "$shape" = flow-on ]; then
             if [ "$trigger" = sched ]; then
-                printf "on: {schedule: [{cron: '0 0 * * *'}]}\n"
+                printf "%s {%s [{%s '0 0 * * *'}]}\n" "$(wkey on)" "$(wkey schedule)" "$(wkey cron)"
             else
-                printf 'on: {push: {branches: [dev]}}\n'
+                printf '%s {%s {%s [dev]}}\n' "$(wkey on)" "$(wkey push)" "$(wkey branches)"
             fi
         else
-            printf 'on:\n'
+            printf '%s\n' "$(wkey on)"
             if [ "$trigger" = sched ]; then
-                printf "  schedule:\n    - cron: '0 0 * * *'\n"
+                printf "  %s\n    - %s '0 0 * * *'\n" "$(wkey schedule)" "$(wkey cron)"
             else
-                printf '  push:\n    branches: [dev]\n'
+                printf '  %s\n    %s [dev]\n' "$(wkey push)" "$(wkey branches)"
             fi
         fi
-        if [ "${perms#scalar:}" != "$perms" ]; then
-            printf 'permissions: %s\n' "${perms#scalar:}"
+        if [ "$perms" = openflow ]; then
+            printf '%s {\n  %s read\n' "$(wkey permissions)" "$(wkey contents)"
+        elif [ "${perms#scalar:}" != "$perms" ]; then
+            printf '%s %s\n' "$(wkey permissions)" "${perms#scalar:}"
         elif [ "$shape" = flow-perms ]; then
             if [ "$perms" = issues ]; then
-                printf 'permissions: {contents: read, issues: read}\n'
+                printf '%s {%s read, %s read}\n' \
+                       "$(wkey permissions)" "$(wkey contents)" "$(wkey issues)"
             else
-                printf 'permissions: {contents: read}\n'
+                printf '%s {%s read}\n' "$(wkey permissions)" "$(wkey contents)"
             fi
+        elif [ "$shape" = flow-perms-multi ]; then
+            printf '%s {\n  %s read%s\n}\n' "$(wkey permissions)" "$(wkey contents)" \
+                   "$([ "$perms" = issues ] && printf ',\n  %s read' "$(wkey issues)")"
         else
-            printf 'permissions:\n  contents: read\n'
-            [ "$perms" = issues ] && printf '  issues: read\n'
+            printf '%s\n  %s read\n' "$(wkey permissions)" "$(wkey contents)"
+            [ "$perms" = issues ] && printf '  %s read\n' "$(wkey issues)"
         fi
-        printf 'jobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n'
+        printf '%s\n  %s\n    %s ubuntu-latest\n    %s\n' \
+               "$(wkey jobs)" "$(wkey j)" "$(wkey runs-on)" "$(wkey steps)"
         local r
         for r in "$@"; do
-            printf '      - uses: actions/checkout@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n'
+            printf '      - %s actions/checkout@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n' \
+                   "$(wkey uses)"
             if [ "$r" != none ]; then
-                printf '        with:\n          ref: %s\n' "$r"
+                printf '        %s\n          %s %s\n' "$(wkey with)" "$(wkey ref)" "$r"
             fi
         done
-        printf '      - name: work\n        run: echo hi\n'
+        printf '      - %s work\n        %s echo hi\n' "$(wkey name)" "$(wkey run)"
     } > "$file"
 }
 
@@ -384,32 +420,45 @@ c_scalar_write_all_tracker() {
 run_case "permissions: write-all satisfies a tracker marker" 0 differs \
     clean c_scalar_write_all_tracker
 
-# `read-all` is NOT the same statement as `write-all`, and this pair is
-# what says so. This repository's default_workflow_permissions is `read`
-# (measured 2026-08-28), so `read-all` narrows nothing and grants exactly
-# what a workflow with no `permissions:` block already has. It states the
-# default; it does not request the tracker. So it neither contradicts a
-# `tree` marker...
+# `read-all` IS the same KIND of statement as `write-all`, and these two
+# cases used to assert the opposite -- in their NAMES, which is why the
+# false claim had to be corrected rather than left to decay. A wrong
+# claim with a green test defending it does not decay quietly; it gets
+# defended.
+#
+# The claim was: this repository's default_workflow_permissions is
+# `read` (measured 2026-08-28, and still true), therefore `read-all`
+# grants exactly what a workflow with no `permissions:` block already
+# has. The premise does not carry the conclusion. The restricted default
+# grants read on `contents` and `packages` ONLY -- every other scope,
+# `issues:` included, is `none` -- while `read-all` grants read across
+# ALL scopes (GitHub docs: "Managing GitHub Actions settings for a
+# repository"; workflow-syntax `permissions`). So `read-all` grants
+# `issues: read` where the default grants `issues: none`: an escalation
+# above the default, by exactly the argument that closes `write-all`.
+# Measured 2026-08-28 against the gate that shipped: a scheduled
+# workflow with `permissions: read-all` and a `tree` marker exited 0
+# clean while holding read on every tracker scope there is.
 c_scalar_read_all_tree() {
     emit_wf "$1/tracker.yml" tracker sched issues dev
     emit_wf "$1/tree.yml"    tree    sched scalar:read-all none
     emit_wf "$1/pushonly.yml" none   nosched issues dev
 }
-run_case "permissions: read-all does not contradict a tree marker" 0 differs \
-    clean c_scalar_read_all_tree
+run_case "permissions: read-all contradicts a tree marker" 1 differs \
+    'but requests the `issues:` permission' c_scalar_read_all_tree
 
-# ...nor satisfies a `tracker` one. A tracker workflow has to DECLARE the
-# access it needs so the marker has a second statement to agree with, and
-# `read-all` declares nothing -- it is reported exactly as an absent
-# permission block is. Without this case the pair above would be equally
-# consistent with `read-all` having been read as `issues: read`.
+# Preservation, and the pair that stops the rule above from being
+# "every scalar is a contradiction": `read-all` does grant `issues:
+# read`, which is the access a tracker workflow needs, so it SATISFIES
+# a tracker marker. This case asserted the opposite until the review
+# of #839 checked the premise against the GitHub docs.
 c_scalar_read_all_tracker() {
     emit_wf "$1/tracker.yml" tracker sched scalar:read-all dev
     emit_wf "$1/tree.yml"    tree    sched noissues none
     emit_wf "$1/pushonly.yml" none   nosched issues dev
 }
-run_case "permissions: read-all does not satisfy a tracker marker" 1 differs \
-    'but requests no `issues:` permission' c_scalar_read_all_tracker
+run_case "permissions: read-all satisfies a tracker marker" 0 differs \
+    clean c_scalar_read_all_tracker
 
 # A QUOTED scalar is the same scalar. YAML offers a quoted spelling for
 # every plain one, and this is the same un-varied-parameter trap as
@@ -462,8 +511,25 @@ run_case "a refused permission value still leaves the pin rule judging the file"
 # and deliberately. Mode 000 depends on who runs the suite -- as root it
 # is readable, the case would pass having exercised nothing, and a case
 # that quietly stops testing is the failure this whole file is about.
-# read(2) on a directory is EISDIR for every uid, so this fixture reaches
-# the guard on any runner.
+#
+# THE JUSTIFICATION THAT USED TO STAND HERE WAS FALSE, and the case it
+# defended was the red this branch went out on. It said: "read(2) on a
+# directory is EISDIR for every uid, so this fixture reaches the guard
+# on any runner." gawk never issues read(2) on it. It stats the
+# argument, prints `warning: command line argument ... is a directory:
+# skipped`, and carries on with status 0 -- so its END rule runs and
+# emits a complete all-zero fact line. Measured 2026-08-28:
+#
+#   mawk 1.3.4 (this box)  cannot open it, no output, status 2
+#   gawk 5.2.1 (the lane)  skips it, full all-zero output, status 0
+#
+# The fixture was right and the gate was wrong: keyed on empty stdout,
+# the refusal fired under one awk and not the other, and under the
+# other the gate read a file it never opened as `scheduled=0`. The
+# guard is now made in the SHELL, with `-f` and `-r`, which are the
+# same on every awk and every uid; that is what makes this fixture
+# reach it on any runner, and the sentence above is the reason the
+# claim is now about the GATE rather than about read(2).
 c_unreadable() {
     emit_wf "$1/tracker.yml" tracker sched issues dev
     emit_wf "$1/tree.yml"    tree    sched noissues none
@@ -730,6 +796,173 @@ jobs:
     outputs:
       ref: dev
 '
+
+# --- claim 7: the KEY has spellings too, and they are normalised -------
+#
+# Everything above varies the SHAPE of a value. The KEY was the
+# generator constant nobody had varied: every fixture in this file wrote
+# `on:` and `permissions:` bare and unquoted, and the gate matched them
+# with `/^"?on"?:/` and `/^[[:space:]]*permissions:/`. YAML permits a key
+# to be quoted with either quote character and permits a space before the
+# colon, so those are four spellings of one key, and the gate read two.
+#
+# Measured 2026-08-28 against the shipped gate, on both mawk 1.3.4 and
+# gawk 5.2.1, with actionlint 1.7.12 accepting every file and
+# python3 yaml.safe_load parsing each to the same document as the bare
+# spelling: 'on': and `on :` NEVER ENTERED THE DOMAIN -- not reported as
+# unclassified, not counted -- while holding `issues: write`; and
+# "permissions", 'permissions', "issues" and "ref" were each read as
+# absent.
+#
+# The domain half is the worse one, and it is why the fix is
+# normalisation rather than one more branch: the VALUE enumeration has a
+# residue to fall into, and the domain rule cannot have one. Its
+# complement is every push-triggered workflow in the repository, which is
+# not an error, so an unrecognised spelling of `on:` is indistinguishable
+# from a workflow that simply is not scheduled.
+#
+# Each shape is driven four ways: the whole corpus written that way must
+# still be CLEAN (the preservation control -- a rule that answered
+# "unreadable" to every quoted key would satisfy the three defect cases
+# by refusing correct workflows), and then one workflow written that way
+# is planted in an otherwise ordinary corpus to attack the domain rule,
+# the cross-check and the pin rule in turn. Planted rather than
+# corpus-wide on purpose: a corpus written entirely in an unreadable
+# spelling makes the gate refuse for non-vacuity, which is a different
+# verdict from the silent pass an attacker gets by planting ONE file.
+for KEYSHAPE in dq-keys sq-keys spaced; do
+    c_keyshape_control() {
+        shaped "$KEYSHAPE" "$1/tracker.yml"  tracker sched issues dev
+        shaped "$KEYSHAPE" "$1/tree.yml"     tree    sched noissues none
+        shaped "$KEYSHAPE" "$1/pushonly.yml" none    nosched issues dev
+    }
+    run_case "$KEYSHAPE: a correct corpus written this way is still clean" 0 differs \
+        clean c_keyshape_control
+
+    c_keyshape_domain() {
+        emit_wf "$1/tracker.yml" tracker sched issues dev
+        emit_wf "$1/tree.yml"    tree    sched noissues none
+        shaped "$KEYSHAPE" "$1/sneak.yml" none sched issues none
+    }
+    run_case "$KEYSHAPE: an unmarked scheduled workflow still enters the domain" 1 differs \
+        "Unclassified scheduled workflow" c_keyshape_domain
+
+    c_keyshape_crosscheck() {
+        emit_wf "$1/tracker.yml" tracker sched issues dev
+        shaped "$KEYSHAPE" "$1/tree.yml" tree sched issues none
+        emit_wf "$1/pushonly.yml" none   nosched issues dev
+    }
+    run_case "$KEYSHAPE: a tree marker beside issues: written this way is caught" 1 differs \
+        'but requests the `issues:` permission' c_keyshape_crosscheck
+
+    c_keyshape_pin() {
+        emit_wf "$1/tracker.yml" tracker sched issues dev
+        shaped "$KEYSHAPE" "$1/tree.yml" tree sched noissues dev
+        emit_wf "$1/pushonly.yml" none   nosched issues dev
+    }
+    run_case "$KEYSHAPE: a dev pin written this way is still seen" 1 differs \
+        "Tree workflow pinned to dev" c_keyshape_pin
+done
+
+# The quoted SCALAR with a quoted KEY. `"permissions": write-all` is the
+# author's own precedent turned around: the domain rule already handled
+# a quoted `on:` because a quoted key is a real spelling, and the
+# permission rules were never given the same treatment. Measured
+# 2026-08-28 against the shipped gate: exit 0, clean, holding write on
+# every scope.
+c_quoted_key_scalar() {
+    emit_wf "$1/tracker.yml" tracker sched issues dev
+    shaped dq-keys "$1/tree.yml" tree sched scalar:write-all none
+    emit_wf "$1/pushonly.yml" none nosched issues dev
+}
+run_case "a quoted permissions key carrying write-all is still read" 1 differs \
+    'but requests the `issues:` permission' c_quoted_key_scalar
+
+# --- claim 8: a flow mapping need not end on the line that opens it ----
+# The single-line flow rule reads the opening line and nothing else, so
+# `permissions: {` with `issues: write` beneath it opened no block for
+# the block rule and closed no mapping for the flow rule: BOTH read
+# `issues = 0` for a workflow holding full tracker access. Measured
+# 2026-08-28 against the shipped gate: exit 0, clean.
+c_flow_multiline() {
+    emit_wf "$1/tracker.yml" tracker sched issues dev
+    shaped flow-perms-multi "$1/tree.yml" tree sched issues none
+    emit_wf "$1/pushonly.yml" none nosched issues dev
+}
+run_case "a flow mapping spread over several lines is still cross-checked" 1 differs \
+    'but requests the `issues:` permission' c_flow_multiline
+
+# Preservation for the rule above. A multi-line flow mapping that names
+# no `issues:` is a correct tree workflow and must stay clean; a brace
+# counter that never left the mapping would report every later line of
+# the file as permission text.
+c_flow_multiline_clean() {
+    emit_wf "$1/tracker.yml" tracker sched issues dev
+    shaped flow-perms-multi "$1/tree.yml" tree sched noissues none
+    emit_wf "$1/pushonly.yml" none nosched issues dev
+}
+run_case "a multi-line flow mapping without issues: stays clean" 0 differs \
+    clean c_flow_multiline_clean
+
+# And its residue. A flow mapping still open at end of file is a value
+# this gate did not finish reading; reporting it as `issues = 0` is
+# precisely the absence the residue exists to refuse.
+c_flow_unterminated() {
+    emit_wf "$1/tracker.yml" tracker sched issues dev
+    emit_wf "$1/tree.yml"    tree    sched noissues none
+    emit_wf "$1/odd.yml"     tree    sched openflow none
+}
+run_case "an unterminated flow mapping is refused, not read as absent" 2 differs \
+    "Unclassifiable permissions value" c_flow_unterminated
+
+# --- claim 6, continued: the OTHER half of the same refusal ------------
+# The refusal has two halves -- empty stdout, and a non-zero status --
+# and the fixture above can only drive the first: with `-f` and `-r`
+# asked in the shell first, no workflow file reaches awk unless awk can
+# open it. So the status half was a branch with no case, which is the
+# same defect one level down (a guard whose test cannot reach it reports
+# exactly what a working guard reports). SCHEDULED_REF_PINS_AWK is the
+# seam; the stub prints a COMPLETE, plausible fact line and then exits
+# non-zero, so only the status can tell the gate that something went
+# wrong. An awk that dies part way through a file is the real shape of
+# this: partial output is not empty output.
+c_awk_fails_loudly() {
+    emit_wf "$1/tracker.yml" tracker sched issues dev
+    emit_wf "$1/tree.yml"    tree    sched noissues none
+}
+seam_case() {
+    local name="$1" want="$2" wanterr="$3" builder="$4" awkstub="$5"
+    local dir rc out
+    dir=$(mktemp -d)
+    "$builder" "$dir"
+    out=$(SCHEDULED_REF_PINS_AWK="$awkstub" bash "$GATE" "$dir" 2>&1)
+    rc=$?
+    rm -rf "$dir"
+    verdict "$name" "$want" "$wanterr" "$rc" "$out"
+}
+
+AWK_STUB=$(mktemp)
+cat > "$AWK_STUB" <<'STUB'
+#!/bin/sh
+printf 'scheduled=1\nissues=1\ncheckouts=1\npinned_dev=1\nother_ref=0\nunknown_perm=0\n'
+exit 2
+STUB
+chmod +x "$AWK_STUB"
+seam_case "an awk that prints a full fact line and then fails is a refusal" 2 \
+    "Cannot read workflow" c_awk_fails_loudly "$AWK_STUB"
+
+# Preservation for the seam itself: the same stub exiting 0 must be
+# BELIEVED, or the case above would pass because the seam is broken
+# rather than because the status is read. A case that cannot tell its
+# subject from its harness is not evidence.
+cat > "$AWK_STUB" <<'STUB'
+#!/bin/sh
+printf 'scheduled=1\nissues=1\ncheckouts=1\npinned_dev=1\nother_ref=0\nunknown_perm=0\n'
+STUB
+chmod +x "$AWK_STUB"
+seam_case "the same fact line with status 0 is believed, not refused" 1 \
+    'but requests the `issues:` permission' c_awk_fails_loudly "$AWK_STUB"
+rm -f "$AWK_STUB"
 
 rm -rf "$CONTROL_DIR"
 
