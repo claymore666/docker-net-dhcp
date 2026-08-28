@@ -10,7 +10,7 @@ like any other machine. Bridge, macvlan, and ipvlan attachment modes.
     A maintained fork of
     [`devplayer0/docker-net-dhcp`](https://github.com/devplayer0/docker-net-dhcp)
     (quiet since 2021, no longer builds on current Docker). This fork
-    modernises the toolchain (Go 1.26, docker SDK v28, current Alpine),
+    modernises the toolchain (Go 1.27, docker SDK v28, current Alpine),
     adds **macvlan** and **ipvlan** modes, fixes the daemon-restart
     deadlock and a state data-race, and gates every PR on a live
     integration suite (all three modes + DHCPv6, recovery, failure
@@ -114,6 +114,8 @@ right pick when you don't want to reconfigure the host's networking.
   the veth + DHCP-client flow, and how state survives a restart.
 - **[Roadmap](roadmap.md)** — where the project is going over the next
   year, and what it deliberately will not do.
+- **[Verifying releases](verifying-releases.md)** — signatures,
+  provenance, SBOMs, and rebuilding the binaries yourself.
 - **[Release runbook](release-runbook.md)** — maintainer-facing publish
   procedure.
 
@@ -146,9 +148,12 @@ read the docs matching the plugin version you have installed.
 ## Verifying releases
 
 Every release (v1.1.0 onward) is signed and attested via Sigstore. The
-published plugin image is signed with cosign (keyless), carries SLSA
-build provenance, and ships an SBOM; the release-artifact `checksums.txt`
+published plugin image is signed with cosign (keyless) on **both**
+registries and ships an SBOM; the release-artifact `checksums.txt`
 manifest is cosign-signed so one signature covers every attached file.
+**SLSA build provenance is attested for the GHCR image only** — the
+Docker Hub mirror is signed but not provenance-attested, so verify
+provenance against the `ghcr.io` reference.
 The full, copy-pasteable procedure lives in
 **[Verifying releases](verifying-releases.md)**, and every
 [GitHub Release](https://github.com/claymore666/docker-net-dhcp/releases)
