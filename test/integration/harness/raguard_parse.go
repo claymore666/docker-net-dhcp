@@ -27,7 +27,7 @@ import "strings"
 // but some versions suffix the index differently, hence the TrimSuffix.
 //
 // The address is matched as a WHOLE FIELD, split at its prefix length,
-// and not as a substring of the line (#875, third round). A substring
+// and not as a substring of the line (#875). A substring
 // test answers yes for `fd00::3` on a line carrying `fd00::32/128`, and
 // it would then return that OTHER interface — after which the observer
 // reads its sysctls from the wrong path and reports whatever it finds

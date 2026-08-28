@@ -798,7 +798,8 @@ func TestMountPrepCommandWords_SeesBareCommandsAndNotRedirections(t *testing.T) 
 // # WHY THIS IS NOW A PER-STATEMENT PROPERTY AND NOT A FILE-WIDE BAN
 //
 // The rule above is about a step whose FAILURE must stay visible, and
-// every step in the prologue was of that kind until #875's third round.
+// every step in the prologue was of that kind until the RA guard's
+// post-shield writability probe was added (#875).
 // The RA guard's post-shield writability probe is not: its marker fires
 // when the command SUCCEEDS, so its failing path — the path that means
 // the guard is working — is the path on which the shell prints
@@ -808,26 +809,26 @@ func TestMountPrepCommandWords_SeesBareCommandsAndNotRedirections(t *testing.T) 
 // leaving it manufactures a false lead in the log the operator reads
 // during an incident.
 //
-// So the ban is now scoped to the family it was written about, and it
-// is scoped by DERIVATION rather than by a list of exempt step names:
+// The ban is therefore scoped to the family it was written about, and
+// scoped by DERIVATION rather than by a list of exempt step names:
 // the two polarities are read out of prepStep and prepStepMustFail
 // themselves, so a change to either builder moves this gate with it.
 //
-// It is STRICTER than the version it replaces in three ways, which is
-// the reason to believe the scoping is not a loophole:
+// WHAT THIS GATE REQUIRES. Stated as properties of the code below
+// rather than as a comparison with anything, so a reader can check
+// every line of it against the function and needs no other commit:
 //
-//  1. `2>&1` is now refused as well. The old ban listed three spellings
-//     and `2>&1 > P` was not one of them, so a step could have moved
-//     its diagnostic off fd 2 — out of the marker watcher and out of the
-//     bounded stderr tail — without this test noticing.
-//  2. An inverted step that does NOT suppress is now a failure too. The
-//     old gate had no concept of the family and so no opinion about it.
-//  3. The counts must MATCH: as many suppressing statements as inverted
-//     ones, so a suppression cannot ride into an ordinary step and a
-//     suppression cannot be dropped from a probe.
-//
-// And it refuses an empty domain in both directions, because a gate
-// over "every statement that ..." is satisfied by having no statements.
+//  1. An ordinary step must NOT move its diagnostic off fd 2. Any `2>`
+//     in the statement is such a move — out of the marker watcher and
+//     out of the bounded stderr tail that reaches the operator.
+//  2. An inverted step MUST suppress. Its failing path is the healthy
+//     one, and it is the path that prints the shell's own "can't create
+//     ...: Read-only file system" naming dhcpcd's binary.
+//  3. The two counts must MATCH: as many suppressing statements as
+//     inverted ones. A suppression can then neither ride into an
+//     ordinary step nor be dropped from a probe.
+//  4. Neither domain may be EMPTY, in either prologue shape. A gate
+//     over "every statement that ..." is satisfied by having none.
 func TestMountPrep_DoesNotSwallowDiagnostics(t *testing.T) {
 	// The two polarities, read out of the builders rather than
 	// transcribed. A test that hard-codes "||" and "&&" here would keep
@@ -844,25 +845,25 @@ func TestMountPrep_DoesNotSwallowDiagnostics(t *testing.T) {
 
 	// Keyed on the REDIRECTION, not on a list of destinations.
 	//
-	// The version this replaces -- an earlier commit on this same branch,
-	// not the one on dev -- enumerated FOUR spellings of "somewhere else":
-	// `2>/dev/null`, `2> /dev/null`, `2>&-` and `2>&1`. So `2>&1` was
-	// COVERED by it and is not one of the escapes. The escapes it actually
-	// had, each driven as a mutant against it and each SURVIVING:
-	// `2>>/dev/null`, `2>&3`, and a redirect to a plain file.
+	// A list of destinations cannot be complete, and the ways to be wrong
+	// about it are concrete: `2>/dev/null`, `2> /dev/null`, `2>&-` and
+	// `2>&1` are the spellings that come to mind, while `2>>/dev/null`,
+	// `2>&3` and a redirect to a plain file are just as effective and are
+	// not among them. `exec 2>/dev/null` is worse again -- it silences
+	// every statement AFTER it rather than its own, so a per-statement
+	// check that steps over `exec` cannot see it at all. Any enumeration
+	// here is a guess about what somebody writes next.
 	//
-	// It also skipped any statement whose first word is `exec`, and that
-	// opened a hole the version before it did NOT have. `exec 2>/dev/null`
-	// silences every statement after it; the file-wide `strings.Contains`
-	// on dev catches that spelling, and a per-statement check that skips
-	// `exec` does not. MEASURED. That hole was introduced by the rework,
-	// not inherited by it -- which is the argument for keying on the
-	// property rather than re-deriving a list each time this is touched.
+	// So: any `2>` in a statement is an fd-2 redirection. MEASURED
+	// against what mountPrep actually emits, in both directions -- the
+	// marker's own `>&2` contains no `2>`, and a write step renders as
+	// `/bin/echo 2 > /proc/.../accept_ra`, where the value and the `>`
+	// are separated by a space. Neither is a false positive, so the
+	// predicate needs no exemption list to be exact here.
 	//
-	// So: any `2>` in a statement is an fd-2 redirection. The marker's own
-	// `>&2` does not contain that sequence, and neither does an
-	// `echo <value> > <path>` write step, so the predicate needs no
-	// exemption list to be exact over what mountPrep emits.
+	// The `exec` skip below is therefore conditional on the statement
+	// containing no `2>`: it steps over the trailing `exec "$0" "$@"`
+	// without also stepping over an `exec` that redirects.
 	//
 	// BOUND, because sufficient is not necessary: `2>` catches every
 	// redirection spelling reachable from prepStep/prepStepMustFail today,
@@ -1514,7 +1515,7 @@ func TestMountPrep_GuardKeyedOnTheFLAGAndNothingElse(t *testing.T) {
 // rather than the kernel's. Derived from raGuardKnobs so a knob added
 // without its write or its read-back fails here.
 //
-// The shield is ONE step for all knobs since #875's second round -- it
+// The shield is ONE step for all knobs (#875) -- it
 // returns /proc/sys itself to read-only rather than binding each leaf,
 // because the per-leaf bind was MEASURED to report success and not hold
 // on the CI runner. So the ordering claim is that EVERY knob's write

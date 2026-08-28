@@ -597,15 +597,103 @@ func TestDUID_PersistsAcrossPluginRestart(t *testing.T) {
 // asserts inside the container, and the value each knob must hold
 // (#875).
 //
-// DERIVED from the guard itself, not a second copy of its table. It was
-// a hand-written map until the third round of #875: value drift between
-// the two enumerations went red, so the copy looked safe, but a knob
-// ADDED in pkg/dhcp was silently unobserved here -- the assertion
-// iterated the copy, so the new knob simply was not among the things
-// checked, and the suite stayed green over a guard it no longer covered.
-// A count check would have been the same defect one step along, since
-// the count comes from the copy as well.
-var raGuardKnobs = dhcp.RouterAdvertGuardContract()
+// DERIVED from the guard itself, never a second copy of its table.
+//
+// The rejected design is a hand-written map here, and its failure mode
+// is asymmetric in the direction that matters: value drift between the
+// two enumerations goes red, so the copy LOOKS safe, while a knob ADDED
+// in pkg/dhcp is silently unobserved -- the assertion iterates the copy,
+// the new knob is simply not among the things checked, and the suite
+// stays green over a guard it no longer covers. A count check is the
+// same defect one step along, because the count comes from the copy too.
+//
+// A FUNCTION rather than a package-level var, and that is not style.
+// RouterAdvertGuardContract returns a fresh map per call precisely so an
+// observer's expectations cannot be rewritten by anything it observes; a
+// package-level cache would hand that property straight back, since any
+// test in this package could mutate it and every later caller would read
+// the edit. The len guard below catches an EMPTY table but not a
+// rewritten value, so the shape has to be removed rather than checked.
+func raGuardKnobs() map[string]string { return dhcp.RouterAdvertGuardContract() }
+
+// assertRAGuardReportedNoFailure checks that the RA guard's -writable
+// probes raised no marker on a host where the guard demonstrably held.
+//
+// verified/wantVerified are the knobs the CALLER read back from inside
+// the container. They are parameters rather than an adjacent guard on
+// purpose: this assertion is only meaningful AFTER that read-back, and a
+// dependency expressed by adjacency is one a reorder carries with it.
+// The health assertion below is sound ONLY because it runs after this
+// loop has read every knob back from the container's own /proc/sys.
+// That ordering was protected by a comment and by nothing else --
+// moving the block above the loop compiles, vets, and passes. This
+// makes the dependency executable: a reorder leaves verified at 0 and
+// fails here instead of silently asserting nothing.
+func assertRAGuardReportedNoFailure(t *testing.T, ctx context.Context, verified, wantVerified int) {
+	t.Helper()
+	if verified != wantVerified {
+		t.Fatalf("%d of %d RA-guard knobs were verified from inside the container "+
+			"before the health check below. That check reads the plugin's OWN "+
+			"counter, which proves intent rather than effect; a zero there means "+
+			"\"ran and reported no failure\" only once every knob has been read "+
+			"back here. Either a knob assertion above failed, or this block has "+
+			"been moved ahead of the loop (#875)", verified, wantVerified)
+	}
+
+	// N1. The -writable probes' HEALTHY path, observed on the CI engine.
+	//
+	// WHAT THIS IS, stated because it is not what it looks like: an
+	// assertion about the OBSERVER, not about the effect. The loop above
+	// is the outside evidence -- it reads the container's real sysctls --
+	// and this project's standing rule is to assert on that rather than on
+	// the plugin's own counters. A counter proves intent, not effect, and
+	// on its own it would be the weaker instrument. It is NOT taken here
+	// as a substitute for that loop.
+	//
+	// It earns its place only because it runs AFTER the loop. The loop has
+	// already proven the prologue ran and the knobs hold, so a zero here
+	// reads as "ran, and reported no failure" rather than "never ran" --
+	// which is exactly what a zero would mean on its own. That pairing is
+	// the whole justification, and moving this above the loop would void
+	// it.
+	//
+	// WHY IT IS WORTH ADDING: the false-alarm direction was previously
+	// unobservable in CI. A spurious `<knob>-writable` marker on a healthy
+	// host would have gone unseen, because the plugin log is only dumped
+	// on a failure path -- so the ABSENCE of the marker from a passing
+	// run's logs is not evidence, and must not be read as one.
+	//
+	// WHAT IT CANNOT SEE. Which step failed. Anything endpoint-scoped,
+	// the counter being plugin-wide -- a failure raised by any other
+	// client in this shard lands here too. And the case worth naming
+	// because it is the one this assertion is titled about: the PROBES
+	// THEMSELVES BEING DELETED. Remove the probe loop from raGuardSteps
+	// and the knobs still hold, the loop above still passes, the counter
+	// is still zero, and this assertion still passes having observed
+	// nothing about them. That case is closed in the other lane, by
+	// TestRAGuard_ShieldIsCheckedByItsEffectAndNotItsExitStatus.
+	//
+	// What the loop above DOES rule out is the guard as a whole never
+	// executing: accept_ra=2 and keep_addr_on_down=1 are non-default and
+	// nothing but the guard writes them. That is a narrower claim than
+	// "the probes ran", and the difference is the point.
+	//
+	// If it ever goes red, that is a finding to investigate, not a number
+	// to relax.
+	if h := harness.PluginHealthOrNil(ctx); h == nil {
+		t.Error("could not read the plugin health surface, so the RA guard's " +
+			"false-alarm direction was not measured here. Absent data is not a " +
+			"zero and must not be recorded as one (#875)")
+	} else if h.RouterAdvertGuardFailures != 0 {
+		t.Errorf("router_advert_guard_failures = %d after a golden path whose knobs "+
+			"all read correctly. The guard reported a failed step on a host where it "+
+			"demonstrably held: a `<knob>-writable` marker means the read-only "+
+			"remount was accepted without taking effect, a `procsys-ro` marker means "+
+			"the remount itself was refused. Note the counter is plugin-wide, so "+
+			"another client in this shard is also a candidate (#875)",
+			h.RouterAdvertGuardFailures)
+	}
+}
 
 // containerV6Iface returns the name of the interface inside the
 // container that carries addr.
@@ -810,13 +898,16 @@ func assertRouterAdvertsAreBeingProcessed(t *testing.T, ctx context.Context, id,
 	// same hole under the `test` check, and both are required contexts; but
 	// a guard that lives only in another lane is one the reader of THIS
 	// loop cannot see, and the vacuity would be silent here.
-	if len(raGuardKnobs) == 0 {
-		t.Fatal("raGuardKnobs is empty, so the loop below would assert nothing. It is " +
-			"derived from dhcp.RouterAdvertGuardContract(); an empty table means the " +
-			"guard exports no knobs, NOT that the guard is healthy (#875)")
+	knobs := raGuardKnobs()
+	if len(knobs) == 0 {
+		t.Fatal("the RA-guard knob contract is empty, so the loop below would assert " +
+			"nothing. It is derived from dhcp.RouterAdvertGuardContract(); an empty " +
+			"table means the guard exports no knobs, NOT that the guard is healthy " +
+			"(#875)")
 	}
 
-	for knob, want := range raGuardKnobs {
+	verified := 0
+	for knob, want := range knobs {
 		p := "/proc/sys/net/ipv6/conf/" + iface + "/" + knob
 		got := strings.TrimSpace(harness.ExecOutput(t, ctx, id, "cat", p))
 		// A read that FAILED is a different verdict from a value that is
@@ -833,50 +924,19 @@ func assertRouterAdvertsAreBeingProcessed(t *testing.T, ctx context.Context, id,
 				"this knob inside the shipped image. accept_ra=0 is what dhcpcd's "+
 				"if_setup_inet6() writes, so this reading means the guard's write or "+
 				"its read-only shield did not take effect (#875)", p, got, want)
+			continue
 		}
+		verified++
 	}
 
-	// N1. The -writable probes' HEALTHY path, observed on the CI engine.
-	//
-	// WHAT THIS IS, stated because it is not what it looks like: an
-	// assertion about the OBSERVER, not about the effect. The loop above
-	// is the outside evidence -- it reads the container's real sysctls --
-	// and this project's standing rule is to assert on that rather than on
-	// the plugin's own counters. A counter proves intent, not effect, and
-	// on its own it would be the weaker instrument. It is NOT taken here
-	// as a substitute for that loop.
-	//
-	// It earns its place only because it runs AFTER the loop. The loop has
-	// already proven the prologue ran and the knobs hold, so a zero here
-	// reads as "ran, and reported no failure" rather than "never ran" --
-	// which is exactly what a zero would mean on its own. That pairing is
-	// the whole justification, and moving this above the loop would void
-	// it.
-	//
-	// WHY IT IS WORTH ADDING: the false-alarm direction was previously
-	// unobservable in CI. A spurious `<knob>-writable` marker on a healthy
-	// host would have gone unseen, because the plugin log is only dumped
-	// on a failure path -- so the ABSENCE of the marker from a passing
-	// run's logs is not evidence, and must not be read as one.
-	//
-	// WHAT IT CANNOT SEE: which step failed; a guard that never executed
-	// (the loop above is what rules that out); and anything endpoint-
-	// scoped, because the counter is plugin-wide -- a failure raised by
-	// any other client in this shard lands here too. If it ever goes red,
-	// that is a finding to investigate, not a number to relax.
-	if h := harness.PluginHealthOrNil(ctx); h == nil {
-		t.Error("could not read the plugin health surface, so the RA guard's " +
-			"false-alarm direction was not measured here. Absent data is not a " +
-			"zero and must not be recorded as one (#875)")
-	} else if h.RouterAdvertGuardFailures != 0 {
-		t.Errorf("router_advert_guard_failures = %d after a golden path whose knobs "+
-			"all read correctly. The guard reported a failed step on a host where it "+
-			"demonstrably held: a `<knob>-writable` marker means the read-only "+
-			"remount was accepted without taking effect, a `procsys-ro` marker means "+
-			"the remount itself was refused. Note the counter is plugin-wide, so "+
-			"another client in this shard is also a candidate (#875)",
-			h.RouterAdvertGuardFailures)
-	}
+	// The counter check is a CALL that takes what the loop proved, not a
+	// statement sitting next to it. Adjacency is not a dependency: a
+	// reorder moves a neighbouring guard along with the thing it guards,
+	// and the guard then travels to where it is vacuous. Passing
+	// `verified` makes the ordering a DATA dependency instead -- moved
+	// above the loop this call passes 0 and fails; moved above the
+	// declaration it does not compile.
+	assertRAGuardReportedNoFailure(t, ctx, verified, len(knobs))
 
 	// The RA itself is asynchronous: the container solicits at link-up
 	// and dnsmasq answers. Poll rather than sample once.

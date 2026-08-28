@@ -331,9 +331,12 @@ func prepStep(cmd, marker, step string) string {
 // /proc/mounts would also separate the twelve topologies in raGuardSteps'
 // table. It was rejected for being keyed on the MECHANISM — it has to
 // model how mount flags compose — where this is keyed on the effect the
-// guard actually needs. What IS true without qualification is the
-// negative: the remount's exit status does not carry that information: `mount -o remount,bind,ro P` changes the flags of
-// the mount at P and not its submounts', so a /proc/sys with a
+// guard actually needs.
+//
+// What IS true without qualification is the negative: the remount's
+// exit status does not carry that information. `mount -o
+// remount,bind,ro P` changes the flags of the mount at P and not its
+// submounts', so a /proc/sys with a
 // read-write mount anywhere beneath it takes the remount, exits 0,
 // emits nothing, and leaves the knobs writable. MEASURED in five such
 // topologies; the table is in raGuardSteps.

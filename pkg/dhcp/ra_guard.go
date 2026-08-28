@@ -261,23 +261,29 @@ import (
 //	/proc/sys returned ro   accept_ra=2  autoconf=1   dhcpcd exit 0, no abort
 //	/proc/sys left rw       accept_ra=0  autoconf=0   (control: the defect)
 //
-// A host that REFUSES the read-only remount HAS been observed, and an
-// earlier version of this paragraph said it had not. MEASURED, and
-// recorded from the other side in mountPrep's own comment: on a
-// --privileged runtime /proc/sys is not a separate mount, busybox's
-// mount resolves a remount through /proc/mounts, and so BOTH remounts
-// -- the prologue's read-WRITE one at step (3) and this read-only one
-// -- are refused with `mount: can't find /proc/sys in /proc/mounts`.
-// That is the "no /proc/sys mount entry" row of the topology table
-// below, and it is loud: 1 marker before the -writable probes existed,
-// 4 with them.
+// Whether a host can REFUSE the read-only remount, with the two halves
+// labelled separately because only one of them was observed:
 //
-// The scoped claim that IS true, and the one this paragraph should have
-// made: under the capability set this plugin actually declares
-// (CAP_SYS_ADMIN, CAP_NET_ADMIN, CAP_SYS_PTRACE, no --privileged), both
-// remounts succeed on every host measured so far. The refusal shape
-// belongs to a runtime this plugin does not ask for -- which makes it
-// unlikely, not unobserved, and those are different words.
+//   - MEASURED, and recorded from the other side in mountPrep's own
+//     comment: on a --privileged runtime /proc/sys is not a separate
+//     mount, and the prologue's read-WRITE remount at step (3) is
+//     refused with `mount: can't find /proc/sys in /proc/mounts`.
+//   - INFERRED, not observed: that this read-ONLY remount is refused on
+//     that same runtime. The inference is strong and the mechanism is
+//     the same one -- busybox's mount resolves a remount through
+//     /proc/mounts, and there is no entry to resolve -- but no run has
+//     been watched doing it, and a strong inference is still not a
+//     measurement.
+//
+// Either way it is the "no /proc/sys mount entry" row of the topology
+// table below, and that row is LOUD: 1 marker without the -writable
+// probes, 4 with them.
+//
+// The scoped claim: under the capability set this plugin actually
+// declares (CAP_SYS_ADMIN, CAP_NET_ADMIN, CAP_SYS_PTRACE, no
+// --privileged), both remounts succeed on every host measured so far.
+// The refusal shape belongs to a runtime this plugin does not ask for,
+// which makes it unlikely rather than unobserved -- different words.
 //
 // When the shield alone is refused it emits one procsys-ro marker
 // rather than three, because one operation covers all the knobs -- read
@@ -411,7 +417,7 @@ func raGuardKnobs() []raGuardKnob {
 // RouterAdvertGuardContract is the guard's sysctl contract as data:
 // knob name to the value the guard holds it at.
 //
-// Exported for ONE reason (#875, third round): the integration suite
+// Exported for ONE reason (#875): the integration suite
 // asserts the same contract from inside the container, and it held a
 // second, hand-written copy of this table. Value drift between the two
 // went red, which is why nobody noticed the half that did not -- a knob

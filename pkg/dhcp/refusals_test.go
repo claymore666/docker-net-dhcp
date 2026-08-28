@@ -199,7 +199,7 @@ func TestRAGuardWatcher_CountsARealFailedStepSeparately(t *testing.T) {
 		t.Errorf("ra_guard moved by %d for two failed steps, want 2", r)
 	}
 
-	// The INVERTED family (#875, third round). prepStepMustFail is the
+	// The INVERTED family (#875). prepStepMustFail is the
 	// shield's effect check: the marker fires when the command
 	// SUCCEEDS. Driven through the same real shell and the same real
 	// watcher as the steps above, with the polarity's two arms the
@@ -233,7 +233,7 @@ func TestRAGuardWatcher_CountsARealFailedStepSeparately(t *testing.T) {
 // TestRAGuardProbe_RefusalAndSuccess drives the writability probe
 // against real targets, through a real shell, into the real counter.
 //
-// This is the executable half of #885's third round. The topology
+// This is the executable half of the shield verification (#875). The topology
 // evidence in ra_guard.go is a manual drive under mount namespaces and
 // cannot run here: the unit lane has no CAP_SYS_ADMIN and constructing
 // a read-write mount under /proc/sys is not something a test may do to
