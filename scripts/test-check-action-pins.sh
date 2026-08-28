@@ -816,12 +816,17 @@ run "a merge key pulling in an anchored unpinned step is caught too" 1 "a.yml:6"
 # edit to the same sed, and it was deliberately NOT made here. The ref
 # extraction is the one expression in this gate where a mistake produces
 # a WRONG REF rather than a wrong count -- a wrong count refuses, a
-# wrong ref is judged -- and this defect fails in the safe direction: it
-# cries unpinned over something pinned, never the reverse. Widening it
-# belongs in a change that can carry its own mutants, next to the
-# value-side alias (`uses: *a`) which has the same shape. Recorded here
-# so that whoever does it starts from a case rather than from a
-# surprise.
+# wrong ref is judged. Widening it belongs in a change that can carry
+# its own mutants, next to the value-side alias (`uses: *a`) which has
+# the same shape. Recorded here so that whoever does it starts from a
+# case rather than from a surprise.
+#
+# THIS COMMENT USED TO CLAIM THE DEFECT FAILS IN THE SAFE DIRECTION,
+# "never the reverse". That universal is FALSE and the case after this
+# one is the escape: a tag whose own text ends in `@` plus 40 hex is
+# returned by `awk '{print $1}'`, satisfies the pin test, and the real
+# reference is never judged -- exit 0 over `actions/checkout@v7`. A
+# bound with its escape named beside it, not a guarantee.
 fresh
 cat > "$TMP/wf/a.yml" <<EOF
 jobs:
@@ -831,6 +836,36 @@ jobs:
       - uses: &a actions/checkout@$SHA
 EOF
 run "PINNED COST: a property on the VALUE side false-reds a pinned ref" 1 "a.yml:5" "not pinned to a 40-hex commit SHA"
+
+# THE ESCAPE FROM THE "SAFE DIRECTION" CLAIM, PINNED AS A CASE RATHER
+# THAN LEFT AS A CORRECTED SENTENCE -- a rule with no observer is prose,
+# and prose decays silently. The value-side property is returned by
+# `awk '{print $1}'` and JUDGED as the ref. Usually that is a false red.
+# When the property's own text ends in `@` plus 40 hex it is a false
+# GREEN instead: the gate prints `all 2 ... are SHA-pinned` over
+# `actions/checkout@v7`. MEASURED here and identical on the pre-fix
+# script, so it is pre-existing rather than introduced.
+#
+# It asserts the WRONG answer on purpose, exactly like the two `?`
+# cases above. Whoever strips a property from the VALUE side turns this
+# case red, and that is the point: the fix has to arrive at a case, not
+# at a surprise.
+#
+# THE BOUND ON THE EXPOSURE, measured rather than assumed: PyYAML
+# refuses the tag outright, no ordinary anchor or tag name ends in `@`
+# plus 40 hex, and an adversary who can write this file already has the
+# disclosed `?`-alone class -- so this widens no reach. actionlint was
+# NOT run against this shape; it is not installed where this was
+# measured, and CI's actionlint judges the real tree, not this fixture.
+fresh
+cat > "$TMP/wf/a.yml" <<EOF
+jobs:
+  x:
+    steps:
+      - uses: actions/setup-go@$SHA
+      - uses: !a@$(printf '0%.0s' $(seq 1 40)) actions/checkout@v7
+EOF
+run "PINNED DEFECT: a 40-hex-tailed tag on the VALUE side passes (exit 0 is wrong)" 0 "all 2 'uses:'"
 
 # THE PRICE OF THE WIDENING, PINNED AS A CASE rather than left for a
 # reader to discover. This gate already false-REDS on a bare `uses:` at
@@ -1080,7 +1115,7 @@ fi
 # exits 0, which is a green tick over nothing. The floor is the count
 # this file is known to run; raise it when cases are added, and a
 # deletion has to be deliberate rather than silent.
-FLOOR=66
+FLOOR=67
 if [ "$n" -lt "$FLOOR" ]; then
     echo "REFUSING: ran $n case(s), fewer than the $FLOOR this suite is known to hold."
     echo "  Either cases were lost, or the floor is stale and should be raised with them."

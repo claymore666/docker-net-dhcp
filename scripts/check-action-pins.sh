@@ -366,12 +366,27 @@ for f in "${FILES[@]}"; do
         # the VALUE. `uses: &a actions/checkout@<40 hex>` therefore
         # extracts `&a` and reports a pinned reference as unpinned --
         # MEASURED, and identical before this expression was widened,
-        # so it is pre-existing rather than introduced here. It fails
-        # in the safe direction and is pinned as a case in the suite
-        # with the trade written out. Widening THIS sed is the one
-        # place a mistake yields a wrong REF rather than a wrong
-        # count, so it belongs in a change that carries its own
-        # mutants, beside the value-side alias (`uses: *a`).
+        # so it is pre-existing rather than introduced here. It is
+        # pinned as a case in the suite with the trade written out.
+        #
+        # THE DIRECTION IT FAILS IN IS A BOUND, NOT A GUARANTEE, and
+        # this sentence used to state the guarantee. It said the defect
+        # "cries unpinned over something pinned, never the reverse".
+        # THE ESCAPE, MEASURED: `uses: !a@<40 hex> actions/checkout@v7`
+        # exits 0 with the success line, because `awk '{print $1}'`
+        # returns the property token and ITS tail after the last `@` is
+        # 40 hex, so the property is judged and passes while the real
+        # reference is never looked at. Both spellings are pinned as
+        # cases. The bound on the exposure -- also measured, and stated
+        # rather than left implied -- is that no ordinary anchor or tag
+        # name ends in `@` plus 40 hex, so reaching this needs an
+        # adversary, and an adversary already has the `?`-alone class
+        # above; it adds no reach that is not already disclosed.
+        #
+        # Widening THIS sed is the one place a mistake yields a wrong
+        # REF rather than a wrong count, so it belongs in a change that
+        # carries its own mutants, beside the value-side alias
+        # (`uses: *a`).
         ref="$(printf '%s' "$line" | sed -E 's/^[[:space:]]*(-[[:space:]]+)?([&!][^[:space:]]*[[:space:]]+)*uses:[[:space:]]*//' | awk '{print $1}' | tr -d '"'"'")"
         [ -n "$ref" ] || continue
         seen=$((seen + 1))
