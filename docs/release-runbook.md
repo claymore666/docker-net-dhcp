@@ -573,8 +573,8 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
    (`git log -1 --format='%an <%ae>' <sha>`) — a rebase or squash of a
    fork branch is where that quietly becomes the maintainer's.
 5. **PR `release/vX.Y.Z` → `dev`.** Required checks on `dev` are
-   `test`, `staticcheck`, `integration` (every PR builds and exercises
-   its own plugin on the integration runner), `actionlint`,
+   `test`, `policy-gates`, `staticcheck`, `integration` (every PR builds
+   and exercises its own plugin on the integration runner), `actionlint`,
    `govulncheck`, `attribution`, and CodeQL's `Analyze (go)` +
    `Analyze (actions)`. `main` requires those **plus `coverage` and
    `coverage-present`**, which is why the ratchet first bites at the
@@ -594,11 +594,12 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
    Branch protection is the authority; if the prose and the settings
    disagree, the settings win and the prose is the thing to fix.
 
-   `policy-gates` belongs on both lists and, at the time #829 landed,
-   was on neither. It is the half of the old `test` job that runs the
-   policy gates rather than the Go suite. If it is missing from the
-   output above, those gates run on every pull request and block
-   nothing — check before trusting a green release PR.
+   `policy-gates` is the half of the old `test` job that runs the policy
+   gates rather than the Go suite (#829). It became required on both
+   branches on 2026-08-28; at the time #829 landed it was on neither
+   list, and for that window those gates ran on every pull request and
+   blocked nothing. If it is ever missing from the output above, that is
+   the state to restore — check before trusting a green release PR.
 
    `coverage-present` became required in #735. It is the detector that
    tells an *absent* coverage run apart from a pending one, and it was
@@ -652,8 +653,12 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
 
    Coverage shares a concurrency group with the release PR's own
    integration run, so it normally starts once integration finishes —
-   roughly twelve minutes in. A `coverage` check still showing nothing
-   after that is worth the next paragraph.
+   five to eight minutes in since the main suite went to five shards
+   (#877; measured 2026-08-28 over the eight most recent successful
+   `integration.yml` runs). Do not trust that range from this page —
+   `gh run list --workflow integration.yml --status success` re-derives
+   it in one command. A `coverage` check still showing nothing well past
+   it is worth the next paragraph.
 
    **Release PR blocked on a check that has no run.** A required check
    that was *cancelled* looks exactly like one that is *pending*: the
@@ -712,10 +717,13 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
    `git tag -v vX.Y.Z` (or the green "Verified" on the tag page).
    The workflow fires on `tags: v*`. Watch it at
    <https://github.com/claymore666/docker-net-dhcp/actions/workflows/release.yml>.
-   Expected steps, in the order the `release` job runs them and under
-   the names the run shows: Resolve release tag → checkout → setup-go →
-   Log in to GHCR → Log in to Docker Hub (or *Warn if Docker Hub
-   credentials missing*) → Push to GHCR → **Check the documented
+   Expected steps, under the names the run shows. Tag resolution is its
+   own job: **resolve** runs first and has one step, *Resolve release
+   tag* — a releaser watching the run sees two job rows, not one. The
+   **release** job then runs, in this order:
+   checkout → setup-go →
+   Log in to GHCR → Log in to Docker Hub → **Both registries, or say
+   why not** → Push to GHCR → **Check the documented
    reference digests against this build** (the gate step 10b is about —
    on the first rc of a new version it is *expected* to fail and print
    the block to paste into the doc) → Push to Docker Hub (or skip) →
@@ -724,6 +732,7 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
    (cosign keyless)** → Install syft → **Generate SBOM (SPDX +
    CycloneDX)** → **Package and sign release artifact** → **Attest
    release-artifact provenance** → **Attest image provenance (GHCR)** →
+   **Check attestation parity across registries** →
    **Upload signed artifacts for the release job** → Workflow summary.
 
    Since v1.7.0 the run carries a parallel arm64 chain (#507):
@@ -965,7 +974,7 @@ After the workflow succeeds:
 | `Push to Docker Hub` step ends `unauthorized: incorrect username or password` | Token revoked / expired / wrong scope | Regenerate at hub.docker.com, update `DOCKERHUB_TOKEN` repo secret |
 | `Sync Docker Hub description from README` step ends `401` | Token scope is image-push only, not admin | Regenerate token with broader scope (see prerequisites) |
 | Hub page README is stale after a release | Description-sync step skipped (no Hub creds) or 401'd | Check the workflow run; either set creds or fix the token |
-| Tag push succeeded but no Hub publish | `HAS_HUB_CREDS` evaluated false (secrets blank) | Set the secrets, dispatch the workflow against the existing tag |
+| Tag push succeeded but no Hub publish | `HAS_HUB_CREDS` evaluated false (secrets blank) | Set the secrets, then exercise the publish from an **rc** tag — `gh workflow run release.yml -f tag=vX.Y.Z-rcN --ref main`. Do **not** dispatch the bare release tag: it rebuilds and re-points that tag plus `:latest`, and `scripts/assert-newest-release-tag.sh` refuses an older one outright — [Dispatching an existing tag](#dispatching-an-existing-tag) |
 
 ## Backports between `dev` and `main`
 

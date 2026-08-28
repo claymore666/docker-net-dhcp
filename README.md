@@ -18,7 +18,7 @@ like any other machine. Bridge, macvlan, and ipvlan attachment modes.
 
 > **This is a maintained fork** of [`devplayer0/docker-net-dhcp`][fork-parent]
 > (quiet since 2021, no longer builds on current Docker). This fork
-> modernises the toolchain (Go 1.26, docker SDK v28, current Alpine),
+> modernises the toolchain (Go 1.27, docker SDK v28, current Alpine),
 > adds **macvlan** and **ipvlan** modes, fixes the daemon-restart
 > deadlock and a state data-race, and gates every PR on a live
 > integration suite (all three modes + DHCPv6, recovery, failure
@@ -170,9 +170,12 @@ Both architectures are signed and attested identically
 ## Verifying releases
 
 Every release (v1.1.0 onward) is signed and attested via Sigstore. The
-published plugin image is signed with cosign (keyless), carries SLSA
-build provenance, and ships an SBOM; the release-artifact `checksums.txt`
+published plugin image is signed with cosign (keyless) on **both**
+registries and ships an SBOM; the release-artifact `checksums.txt`
 manifest is cosign-signed so one signature covers every attached file.
+**SLSA build provenance is attested for the GHCR image only** — the
+Docker Hub mirror is signed but not provenance-attested, so verify
+provenance against the `ghcr.io` reference.
 The full, copy-pasteable procedure lives in
 **[Verifying releases](docs/verifying-releases.md)** (also on the
 [docs site](https://claymore666.github.io/docker-net-dhcp/verifying-releases/)),
@@ -234,9 +237,11 @@ Contributions are welcome.
   - **Before you push:** `make check` runs the whole fast CI lane
     locally — build, vet, format, the race suite, the short fuzz, and
     every gate script — in about a minute, with no privileges and no
-    host mutation. It is the same set the `test` job runs, kept in step
-    by a gate, so it will not tell you a branch is green when CI would
-    not.
+    host mutation. It is the same set the Test workflow's two fast jobs
+    run — `test` for build, vet, format, race and fuzz, and
+    `policy-gates` for the gate scripts and their self-tests — kept in
+    step by a gate, so it will not tell you a branch is green when CI
+    would not.
   - **Authorship:** commits and pull request descriptions must not carry
     AI-assistant attribution — no `Co-authored-by:` trailer naming an
     assistant or an assistant's no-reply address, no "Generated with …"
@@ -254,7 +259,7 @@ Contributions are welcome.
     list and your PR's checks panel shows it applied to your branch — at
     the time of writing it is unit tests, `staticcheck`, the live
     integration suite, `govulncheck`, `actionlint`, CodeQL (`Analyze
-    (go)` and `Analyze (actions)`), and `attribution`. (Docs-only PRs — diffs touching nothing but
+    (go)` and `Analyze (actions)`), `attribution`, and `policy-gates`. (Docs-only PRs — diffs touching nothing but
     `*.md` — satisfy the integration check via a fast in-job skip; any code,
     script, or workflow change runs the full suite.)
   - **Hosted cross-check:** a separate, *non-required* workflow runs the

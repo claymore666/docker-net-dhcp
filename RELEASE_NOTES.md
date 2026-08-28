@@ -61,7 +61,9 @@ re-accepting it.
 
 ## v1.9.0
 
-*In development.*
+IPv6 works on stateless, SLAAC-only and managed segments. The plugin no longer
+sends DHCPRELEASE on any path. Every place the plugin refuses operator input is
+now counted.
 
 ### Upgrade notes
 
@@ -71,43 +73,164 @@ Required on every host before `docker plugin install`, unchanged since v1.5.0:
 sudo mkdir -p /var/lib/net-dhcp
 ```
 
-**Behaviour changes.** These take effect on upgrade:
+**Behaviour changes.** These take effect on upgrade.
 
 | change | effect |
 | --- | --- |
-| A container's address on stop, restart, or removal | **held until the lease expires.** The plugin no longer sends a DHCPRELEASE on any path, and no longer scans for and releases orphaned leases (#800) |
-| Log line for a client signalled before it ever bound | said `Persistent client stopped before it ever held the lease; reclaiming it`; now ends `the one-shot's lease is left to expire on the server`. Log alerts matching the old wording stop matching |
-| How a DHCP outage is first noticed | **the DHCP client now reports it.** Dropping the `release` directive also changed what `dhcpcd` fires when a lease lapses — `EXPIRE` instead of `RELEASE`, which the plugin counts. `dhcp_timeouts` therefore rises at the lease deadline instead of one watchdog grace later, and the plugin log carries a lease-failure record where it previously carried only a watchdog line. `dhcp_timeouts` itself is untouched — same name, same labels, before and after; the counter renames in the table below are a separate change. The deadline watchdog stays as the backstop (#800; whether it still earns its place is the open measurement in #855) |
+| A container's address on stop, restart or removal | **Held until the lease expires.** No DHCPRELEASE is sent on any path, and the orphaned-lease sweep is gone (#800) |
+| Log line for a client signalled before it ever bound | Was `Persistent client stopped before it ever held the lease; reclaiming it`. Now ends `the one-shot's lease is left to expire on the server`. Log alerts matching the old wording stop matching (#800) |
+| `ipv6=true` on a segment offering no DHCPv6 address | **Containers start.** Endpoints on a stateless segment (RA "other configuration" flag only) or a SLAAC-only segment previously failed: no DHCPv6 address exists there by definition, the acquisition always timed out, and the timeout was fatal. The endpoint is now created without a v6 lease. The discriminator is the advertised managed-address flag, not how long the plugin waited — a segment advertising managed-address whose server then goes quiet is still a fatal error (#868) |
+| Router Advertisements inside the container | **Processed by the container's kernel.** `dhcpcd` set `accept_ra=0` and `autoconf=0` on the interface it manages, and re-did it on every carrier acquisition, so no router discovery ran. DHCPv6 carries no router option, so the IPv6 default route lapsed and the address stopped being refreshed while on-link traffic kept working. The DHCPv6 client now runs with `accept_ra=2`, `autoconf=1` and `keep_addr_on_down=1` (#875) |
+| A segment advertising a prefix with the A flag **and** running stateful DHCPv6 | **More than one global IPv6 address per container**: the DHCPv6 lease, plus one the kernel forms from the prefix, plus privacy addresses where the image's kernel enables them. An outbound connection that does not bind explicitly selects its source per RFC 6724, which need not be the leased address `docker inspect` reports; a firewall, ACL or allowlist keyed on the leased address can see traffic from another. Mitigation: advertise the prefix with A=0, or bind explicitly (#875) |
+| Stateless DHCPv6 replies | **Applied, not dropped.** A segment advertising "other configuration available" answers an information request with options and no address; those replies were discarded at two points. With `propagate_dns`, option 23 nameservers and option 24 search domain now reach the container (#815) |
+| The `search` line in `resolv.conf` on a DHCPv6 lease | **Written.** The v6 branch mapped nameservers and not the search list, so a DHCPv6-only lease produced no `search` line. It now comes from option 24 (#815) |
+| How a DHCP outage is first noticed | **The DHCP client reports it.** Dropping the `release` directive changed the event `dhcpcd` fires on a lapsed lease from `RELEASE` to `EXPIRE`, which the plugin counts. `dhcp_timeouts` rises at the lease deadline instead of one watchdog grace later, and the log carries a lease-failure record where it previously carried only a watchdog line. `dhcp_timeouts` is otherwise unchanged — same name, same labels. The deadline watchdog stays as the backstop; whether it still earns its place is #855 (#800) |
 
-**The plugin now behaves like an ordinary machine on the segment.** A host
-does not hand its address back when it reboots — it comes back, asks for the
-same address, and gets it, because the lease has not expired. DHCPRELEASE is
-optional in the protocol and most clients never send it. Releasing was
-actively harmful here: a `docker stop` released an address that the
-`docker start` seconds later was about to ask for again, and the server was
-then free to have given it away.
-
-There is no setting for this. A lease is a lease; it expires on the server's
-schedule, and that schedule is the operator's to set on the DHCP server.
+No setting controls release behaviour. A lease expires on the DHCP server's
+schedule, and that schedule is the operator's to set there.
 
 **Breaking for metrics scrapers and health checks.** Changes across the
-`/metrics` surface, `/Plugin.Health`, and the audit ledger:
+`/metrics` surface, `/Plugin.Health` and the audit ledger:
 
 | surface | before | after |
 | --- | --- | --- |
-| `/metrics` counter | `net_dhcp_lease_release_failures_total` (carrying `family="ipv4"` / `family="ipv6"`) | `net_dhcp_client_stop_failures_total`, same labels — same event, honest name: a renewal client that did not shut down cleanly. It never meant a lease went unreleased, and now cannot |
-| `/metrics` counter | `net_dhcp_orphaned_leases_released_total`, `net_dhcp_orphaned_lease_release_failures_total` | **removed.** Nothing releases, so neither has a subject |
+| `/metrics` counter | `net_dhcp_lease_release_failures_total` (carrying `family="ipv4"` / `family="ipv6"`) | `net_dhcp_client_stop_failures_total`, same labels — same event, accurate name: a renewal client that did not shut down cleanly. It never meant a lease went unreleased, and now cannot |
+| `/metrics` counter | `net_dhcp_orphaned_leases_released_total`, `net_dhcp_orphaned_lease_release_failures_total` | **Removed.** Nothing releases, so neither has a subject |
 | `/Plugin.Health` keys | `lease_release_failures`, `lease_release_failures_v4`, `lease_release_failures_v6` | `client_stop_failures`, `client_stop_failures_v4`, `client_stop_failures_v6` |
-| `/Plugin.Health` keys | `orphaned_leases_released`, `orphaned_lease_release_failures` | **removed** |
+| `/Plugin.Health` keys | `orphaned_leases_released`, `orphaned_lease_release_failures` | **Removed** |
 | `leases.jsonl` kinds | `release`, `release_failed` | `stopped`, `stop_failed` |
 
-Update dashboards and alerts before upgrading. The health rows matter most and
-are the easiest to miss: a JSON consumer reading a key that has vanished gets a
-zero, not an error, so a `jq`-over-the-socket check of the kind in
-`docs/reference.md` keeps reporting healthy after the thing it watched stopped
-existing. The ledger rename matters for the same reason as the counter one: a
-line saying `release` was a claim about what the DHCP server saw, and it was
-false.
+Update dashboards and alerts before upgrading. A JSON consumer reading a
+`/Plugin.Health` key that has been removed receives zero, not an error, so a
+`jq`-over-the-socket check of the kind in `docs/reference.md` keeps reporting
+healthy over a key that no longer exists.
+
+### New
+
+**IPv6 on the segment you actually have** (#868, #815, #875). Four changes, in
+the order a container meets them:
+
+- A DHCPv6 acquisition that produces nothing is no longer read as a failure by
+  default. The discriminator is the router advertisement's managed-address
+  flag, so "this segment has no DHCPv6 addresses" and "this segment has DHCPv6
+  and the server went quiet" are two observations rather than two readings of
+  one timeout (#868).
+- The engine writes `disable_ipv6=1` on a sandbox interface whose endpoint has
+  no IPv6 address — reachable only once the previous point stopped refusing
+  those endpoints. Nothing IPv6 can arrive on such a link, so the plugin
+  enables IPv6 on it before starting a DHCPv6 client (#868).
+- Address-less DHCPv6 configuration replies become an event the plugin
+  consumes instead of being dropped at two separate points (#815).
+- The container's kernel is put in charge of router discovery and kept there
+  for the life of the client, rather than only until `dhcpcd`'s next carrier
+  event (#875).
+
+`docs/reference.md` carries the full semantics, including the two bounds this
+release does **not** close: after a carrier flap a container waits for the
+router's next unsolicited advertisement before it regains a default route, and
+an address the container's own kernel forms is not a stable identifier.
+
+**Seven new health counters**, all also on `/metrics` with the `net_dhcp_`
+prefix:
+
+| counter | counts | from |
+| --- | --- | --- |
+| `dhcpv6_config_only` | stateless information replies received | #815 |
+| `dhcpv6_not_offered` | endpoints started on a segment offering no DHCPv6 address | #868 |
+| `dhcpv6_no_router_advert` | no advertisement arrived inside the budget | #875 |
+| `router_advert_guard_failures` | steps of the advertisement guard that failed | #875 |
+| `ipv6_link_enable_failures` | failures enabling IPv6 on the sandbox link | #868 |
+| `directives_refused` | `dhcpcd` directives dropped because the value carried a control character — a `hostname`, `vendor_class` or `client_id` that never reached the server | #780 |
+| `mount_prep_failures` | steps of a DHCP client's private mount-namespace preparation that failed | #780 |
+
+None of the seven affects `healthy`; the five that do are unchanged. The
+counted unit differs between them, and `docs/reference.md` states the unit per
+counter.
+
+### Fixed
+
+IPv6 (#868, #815, #875) — listed under **New** above; the change an operator
+sees is a capability rather than a repair.
+
+Lease handling:
+
+- The plugin sent DHCPRELEASE on stop, restart and removal, and swept for
+  orphaned leases to release those too. A `docker stop` released an address
+  that the `docker start` seconds later was about to ask for again, and the
+  server was free to have given it away in between. Nothing releases now
+  (#800).
+
+Operator input the plugin refuses (#780) — each refusal is correct and each was
+silent:
+
+- A `dhcpcd` directive whose value carries a control character is dropped
+  rather than written, because `dhcpcd.conf` has no quoting and the value would
+  become a second directive. The lease is obtained without it and the plugin
+  reports `healthy`.
+- Steps of a DHCP client's mount-namespace preparation can fail without
+  stopping the client. Two containers whose interface has the same name then
+  collide on `dhcpcd`'s control socket, and the second client becomes a no-op
+  that never renews.
+
+CI gates that reported success over something they could not see:
+
+- `staticcheck` never looked at the integration-tagged files, and reported a
+  defect that was not there (#871).
+- A required check named `test` ran a large set of gates that are not tests, so
+  a gate failure and a test failure were one signal (#829).
+- Two gates judged a narrower set than their own headers claimed (#832); the
+  health-contract gate could not see a negated property (#826); the
+  test-weakening gate could not see CI's own gate self-tests (#828); the
+  label-taxonomy gate's queries had never executed under test (#840, #715).
+- Nothing enforced action SHA-pinning, so a tag could have shipped (#831). The
+  only barrier to fork code on the self-hosted runners was a web-UI toggle
+  (#830).
+- The install-verify set is now derived from the publish set, so a new registry
+  cannot ship unverified (#833).
+- The retention purge could delete an open pull request head's only evidence
+  (#874, #837).
+- The dispatch-pending ledger's framing left schedule-only workflows out of its
+  domain (#846). A runner-image dispatch from any branch could repoint the CI
+  pool's `:latest` (#812). The issue-reference gate was unsatisfiable for
+  Dependabot, failing a required check on every dependency bump (#809).
+
+Tests and harness:
+
+- The `interface_name` acceptance test had never run and could not have passed
+  (#841). The coverage baseline's cleanup arm had no observer, and its
+  non-vacuity guard caught zero rather than incompleteness (#789, #791). The
+  wiring gate's presence check stopped one level short of the wrapper (#790). A
+  denied Kea reported only that it never became ready (#869).
+- The integration gate ran over its design budget on a stale shard-balance
+  table; the main suite is now five shards (#877).
+
+Documentation:
+
+- Two networks on one subnet cannot both attach, and nothing said so (#847).
+  The starter-task promise in the README and its badge was false (#851). The
+  `interface_name` upstream blocker was stale — the engine change is merged and
+  waiting on a release (#822).
+
+Dependencies: Go 1.27.0, `logrus` 1.10.1, and a GitHub Actions group bump.
+
+### Deferred to v1.10.0
+
+- The rest of IPv6. An acquisition still reports a lease timeout where no
+  exchange was possible (#816). Fresh and restarted containers take different
+  DHCPv6 paths on the same network (#820). The gateway, DNS, MTU and routes are
+  not taken from the advertisement (#821). SLAAC is not something the plugin
+  acquires (#818). Address lifetimes, withdrawal and renumbering (#819) and
+  prefix delegation (#214) are later still.
+- Sweeping `STATE_DIR` at startup, so an upgrade tightens the state files it
+  finds rather than only the ones it writes (#804).
+- The harness treats a netlink dump interruption as fatal, and two product
+  sites share the hazard (#802).
+- Whether the outage watchdog still earns its place now that `dhcpcd` reports a
+  lapse directly (#855).
+- What each `config.json` capability buys (#690), and whether a restricted
+  socket proxy would serve the three read-only Docker API calls the plugin
+  makes (#691). Both were listed under v1.8.0's "Deferred to v1.9.0" and
+  neither was done.
 
 ## v1.8.0
 

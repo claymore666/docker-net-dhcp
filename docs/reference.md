@@ -13,8 +13,18 @@ document — and that none of them is documented a second time somewhere
 else (`scripts/check-option-docs.sh`, `scripts/check-docs-drift.sh`).
 The claims made *about* those counters — which five flip `healthy` —
 are enforced separately, wherever this page states them
-(`scripts/check-health-contract.sh`). Neither staleness nor a divergent
-copy is possible without turning CI red.
+(`scripts/check-health-contract.sh`).
+
+**What that enforcement is, and where it stops.** All three gates run in
+one direction, code to document: no option, counter or setting can exist
+in the plugin without being named here, and none may be documented twice.
+Nothing runs the other direction, and nothing reads a sentence *about* a
+name. An option documented here that the code does not parse, a default
+stated wrongly, or a behaviour described as it used to be, all go green —
+`scripts/check-health-contract.sh` says as much of itself, calling its
+tally a receipt rather than a proof of completeness. Those are caught by
+the documentation review that is a step of every release
+(`docs/release-runbook.md`), not by a gate.
 
 The one deliberate gap: the coverage-instrumented build used by CI
 declares two extra settings that the shipped plugin does not have. They
@@ -318,11 +328,11 @@ Passed as `-o key=value` on `docker network create`, or under
 | `bridge` | bridge | *(required)* | upstream | Existing Linux bridge to plug container veths into. |
 | `parent` | macvlan, ipvlan | *(required)* | v0.2.0 | Host NIC to attach children to (e.g. `eth0`, `ens18`). Must exist and be administratively `UP`. |
 | `gateway` | all | from DHCP | v0.3.0 | Override the IPv4 default gateway returned by the DHCP server — for split-horizon LANs where containers should egress via a different router (e.g. a VPN gateway). |
-| `ipv6` | all | `false` | upstream; functional again in v1.0.0 | Also run stateful DHCPv6 (a second `dhcpcd` with `-6`) alongside DHCPv4 — see [DHCPv6](#dhcpv6-ipv6true) for semantics and DUID/IAID identity. The Docker-visible v6 address is renewed as of v1.2.0 (#152). |
+| `ipv6` | all | `false` | upstream; functional again in v1.0.0; usable on stateless and SLAAC segments in v1.9.0 | Also run stateful DHCPv6 (a second `dhcpcd` with `-6`) alongside DHCPv4 — see [DHCPv6](#dhcpv6-ipv6true) for semantics and DUID/IAID identity. The Docker-visible v6 address is renewed as of v1.2.0 (#152). Since v1.9.0 this works on any IPv6 segment rather than only one running stateful DHCPv6: a segment that offers no DHCPv6 address creates the endpoint without one (#868) instead of refusing every container, stateless DHCPv6 configuration reaches the container instead of being discarded (#815), and a leased address keeps being refreshed with its default route intact (#875). |
 | `lease_timeout` | all | `10s` | upstream | Budget for the up-front DHCP exchange at container creation. Since v1.3.4 it is a *retry* budget (#332): transient failures are retried inside it (500 ms plus jitter between attempts) until it expires, while permanent ones — a missing interface, a malformed option — still fail immediately. Raise on slow/relayed networks (`-o lease_timeout=60s`). |
 | `ignore_conflicts` | bridge | `false` | upstream | Skip the bridge-already-in-use check against other Docker networks. No-op in macvlan/ipvlan. |
 | `skip_routes` | all | `false` | upstream; all modes since v0.9.0 | Don't copy non-default static routes from the parent (bridge or NIC) into containers, **and** don't apply DHCP-supplied classless static routes (option 121, see below). v0.9.0 extended parent route-copying from bridge-only to all modes (#102); set `true` to restore the old macvlan/ipvlan no-copy behaviour. The default gateway is unaffected either way. |
-| `propagate_dns` | all | `false` | v0.9.0 | Write the DHCP-supplied DNS server list (option 6 / v6 option 23) into the container's `/etc/resolv.conf` on every bind/renew. Overrides Docker's embedded resolver for this network; the `search` line uses option 119 with fallback to option 15. |
+| `propagate_dns` | all | `false` | v0.9.0 | Write the DHCP-supplied DNS server list (option 6 / v6 option 23) into the container's `/etc/resolv.conf` on every bind/renew. Overrides Docker's embedded resolver for this network; the `search` line uses option 119 with fallback to option 15 on v4, and DHCPv6 option 24 on v6 (v1.9.0+, #815). |
 | `propagate_mtu` | all | `false` | v0.9.0 | Apply DHCP option 26 (Interface MTU) to the container link on bind/renew. For jumbo-frame (9000) and VPN-reduced (~1450) networks. Since v1.8.0 an MTU outside `[576, 65535]` is refused and the link keeps the MTU it had, counted by `mtu_refused` — neither `dhcpcd` nor the kernel holds the bottom of that range, so a server-supplied 68 used to be applied verbatim. |
 | `client_id` | all | per-endpoint id | v0.9.0 | Override DHCP option 61 (Client Identifier) for every endpoint on this network; sent as RFC 2132 opaque bytes (type `0x00`). The default per-endpoint id is what makes per-container reservations work — a fixed `client_id` makes all containers look like one client to the server. Pair with `vendor_class` for class-based policy. **The derived default differs by mode** (see below). |
 | `vendor_class` | all | `docker-net-dhcp` | v0.9.0 | Override DHCP option 60 (Vendor Class Identifier), for DHCP servers running class-based policy (different gateway/option sets per class). v4 only — the DHCPv6 client sends no vendor-class option. |
@@ -598,7 +608,8 @@ Everything the server returns is captured. Some is applied, the rest is
 logged:
 
 **Applied**, when the matching option is enabled — option 6 / v6 option 23
-(DNS servers) and option 119 (search list, falling back to option 15) into
+(DNS servers), option 119 (v4 search list, falling back to option 15) and
+v6 option 24 (v6 search list, read since v1.9.0) into
 `/etc/resolv.conf` with `propagate_dns`; option 26 into the link MTU with
 `propagate_mtu`; option 121 as routes (see
 [classless static routes](#dhcp-classless-static-routes-option-121)).
@@ -690,8 +701,13 @@ docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.8.0 \
   recovers by itself, without intervention, when the next advertisement
   arrives.
 - **On a segment that advertises a prefix with the A flag set *and* runs
-  stateful DHCPv6, a container gets two global addresses** (v1.9.0+,
-  #875). This follows from `autoconf=1` above and it is correct
+  stateful DHCPv6, a container gets at least two global addresses**
+  (v1.9.0+, #875) — the DHCPv6 lease, and one formed from the advertised
+  prefix. It can be more, and the plugin does not decide how many: it
+  neither sets nor reads `net.ipv6.conf.<if>.use_tempaddr`, so an image
+  whose kernel default enables RFC 4941 privacy addressing also forms
+  temporary addresses on that prefix and rotates them. This follows from
+  `autoconf=1` above and it is correct
   behaviour, not a defect: RFC 4861 §6.3.4 has a host apply
   advertisement-derived configuration as a union with whatever else
   configured it, so every other host on such a segment does the same.
@@ -707,6 +723,15 @@ docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.8.0 \
   one would discard the lease the network administrator issued. Bind
   explicitly, or advertise the prefix with A=0, which is what the
   integration fixture's `managed` mode does.
+
+  Following from the same fact: **an advertisement-derived address is not
+  a stable identifier, and must not be keyed on by a firewall rule, an
+  ACL or a server-side allowlist.** Its interface identifier is decided
+  by the container's `addr_gen_mode` and `use_tempaddr`, neither of which
+  this plugin sets, reads or reports, so it is not a function of the
+  prefix and the MAC and it is not guaranteed to survive a restart. The
+  DHCPv6 lease is the address to key on, and only as far as MAC
+  stability reaches — see the DUID/IAID bullet below.
 - **Identity is a stable DUID-LL** (type 3) derived from the interface
   MAC via pinned config — no timestamp, so the same MAC always yields the
   same DUID. **The IAID is pinned from the MAC too** (v1.2.0, #152): the
@@ -719,7 +744,9 @@ docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.8.0 \
 - **The Docker-visible v6 address is renewed** as of v1.2.0. Before that
   the two clients drew different IAIDs, so the interface address could
   outlive its server-side lease on networks with short v6 lease times.
-- `propagate_dns` covers v6 as well, via option 23. The two families are
+- `propagate_dns` covers v6 as well, via option 23 (nameservers) and,
+  since v1.9.0, option 24 (search list — #815; before that a DHCPv6-only
+  lease produced no `search` line at all). The two families are
   last-writer-wins on `resolv.conf`.
 - **A network that offers no DHCPv6 address no longer refuses the
   container** (v1.9.0+, #868). Before this, `ipv6=true` on a segment
@@ -1228,6 +1255,8 @@ consumer-side:
 | Container starts and gets an address, but traffic to it is intermittent or lands on the wrong machine | Another device on the segment already holds that address. Usually a **statically configured** host inside the DHCP pool range: it never asks the server for anything, so the server cannot know the address is taken and hands it out. Nothing else reports this — the container starts, Docker shows an address, the lease was issued normally | Read `address_conflicts` on `/Plugin.Health` (v1.6.0+), and read `address_conflict_probes` **first**: with no probes the two are indistinguishable and "the detector never ran" is what this looked like for months. If probes are 0 or `conflict_probe_failures` is climbing, the parent most likely has no address on the leased subnet, which leaves the probe unable to get an answer back — give the parent an on-subnet address and detection starts working. The conflict itself is fixed at the DHCP server (reserve or exclude the address), not at the plugin |
 | `--mac-address` fails on an ipvlan network | ipvlan children share the parent MAC (kernel design) | Use `mode=macvlan`, or drop the custom MAC |
 | Reservations don't stick on ipvlan | DHCP server keys on MAC only, ignores option 61 | Use `mode=macvlan`, or configure the server to honor client identifiers |
+| `ipv6=true`: the container has a v6 address, on-link IPv6 keeps working, but traffic through the router stops minutes or hours after start | The Router Advertisement guard did not take on that container (v1.9.0+, #875). DHCPv6 carries no router option, so advertisements are the only source of an IPv6 default route; with advertisement processing off inside the container, nothing reinstalls that route once it goes, and nothing refreshes the address either. It looks completely healthy from outside | Read `router_advert_guard_failures` on `/Plugin.Health` — any non-zero value means at least one container is on this path. A `procsys-ro` step means *none* of the knobs was pinned; a `<knob>-writable` step means the read-only remount was accepted without taking effect, one step per knob left writable. Restart the affected container to get a fresh guard attempt. Separately, and not a guard failure: after a **carrier flap** a container can be without a default route until the router's next unsolicited advertisement — see the known bound under [DHCPv6](#dhcpv6-ipv6true) |
+| `ipv6=true` but the container has no global IPv6 address at all | The segment offers no DHCPv6 address. Since v1.9.0 the endpoint is created anyway (#868) instead of every container being refused, so this is a working container rather than a failed start | Read three counters on `/Plugin.Health` and treat them differently. `dhcpv6_not_offered`: the advertisement offered no DHCPv6 address (stateless or SLAAC) — not a fault, the segment is working as configured and there is no DHCPv6 address to be had. `dhcpv6_no_router_advert`: no advertisement arrived at all inside the acquisition budget — usually a missing or misconfigured router, not a plugin fault. `ipv6_link_enable_failures`: the plugin could not administratively enable IPv6 on the container link, so nothing IPv6 could arrive; that one **is** worth investigating. If the advertised prefix sets the A flag the container's own kernel may still form a SLAAC address — it is not a lease and is not reported in `docker inspect`, which shows only what the plugin leased |
 | One container on two plugin networks fails to start with `cannot program address ... conflicts with existing route` | The two networks lease from **overlapping** subnets, and libnetwork refuses to program a second sandbox address in a subnet the container already routes. Overlapping, not identical: the upstream check is containment in either direction, so `10.0.0.0/8` on one network and `10.1.2.0/24` on another are different subnets and still collide. **Which modes reach this.** In `mode=macvlan` and `mode=ipvlan` nothing stands in the way — two networks on one parent NIC are one LAN with one DHCP server, which is exactly this case. In **bridge mode — the default when `mode` is unset** — two networks on the *same* bridge are refused earlier and with a different message, at `docker network create` (see the `Bridge already in use` row above), so you never get as far as starting a container. If you are seeing *this* error in bridge mode, it is one of two things: the two networks sit on *different* bridges whose subnets overlap (the create-time guard keys on the bridge **name**, not on the subnet), or you set `-o ignore_conflicts=true`, which skips that guard and is what allowed the pair to be created. Measured identical on two daemons differing only in [moby/moby#52866](https://github.com/moby/moby/pull/52866), each with and without the endpoint interface-name option — four cells, one error. That is the sample; it is not a claim about engines nobody has run, and the integration test pins it so a future engine that behaves differently shows up as a failure here rather than as a stale sentence | Not a plugin setting and not fixable here. Put the two networks on **non-overlapping** subnets — different *and* neither one containing the other (different parent NICs / VLANs, each with its own DHCP scope); "different subnets" alone is not enough, since a supernet and a range carved out of it are different and still conflict. Or attach the container to one network only. In bridge mode, if you reached this through `-o ignore_conflicts=true`, drop that option and let the create-time guard refuse the pair up front, where the message names the real problem. Note the container **takes a real lease per network before it fails** — the plugin leases in `CreateEndpoint`, before libnetwork gets as far as refusing — and **nothing releases them**: this plugin never sends a DHCPRELEASE on any path (see [How a lease gets handed back](internals.md#how-a-lease-gets-handed-back) — it does not, #800), so those addresses stay leased until the server expires them. A repeatedly retried start therefore consumes the pool at one address per network per attempt. If addresses are scarce, shorten the lease time on the server or reserve the range, and do not wait for the plugin to hand them back |
 | Container can't reach the Docker host (or vice versa) | macvlan/ipvlan kernel rule: children can't talk to the parent NIC's host IP | Bridge mode, or a second NIC — not a plugin setting |
 | `dhcp_timeouts` climbs on a healthy network, often just after containers start | `OUTAGE_GRACE` is set below the time a client needs to acquire its first lease, so ordinary start-up is being reported as an outage | Raise `OUTAGE_GRACE`, or unset both outage variables to return to the defaults. The plugin logs a warning at startup whenever either is overridden — check the log's first lines |
