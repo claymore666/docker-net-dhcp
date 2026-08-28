@@ -116,6 +116,7 @@ LANE=(
   "run-body expansions|-|bash scripts/check-run-expansions.sh"
   "capture lane|-|bash scripts/check-capture-lane.sh"
   "dispatch reachable|-|bash scripts/check-dispatch-reachable.sh"
+  "action pins|-|bash scripts/check-action-pins.sh"
   "concurrency parity|-|bash scripts/check-concurrency-parity.sh"
   "lane hygiene|-|bash scripts/check-lane-hygiene.sh"
   "allowlist parity|-|bash scripts/check-allowlist-parity.sh"

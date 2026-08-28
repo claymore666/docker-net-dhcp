@@ -673,6 +673,14 @@ jobs:
       - name: Dispatch targets are reachable
         run: bash scripts/check-dispatch-reachable.sh
 
+      # Every `uses:` must name a 40-hex commit SHA. Pinning was at 100%
+      # when this landed and was enforced by nothing -- planting
+      # `actions/checkout@v7` produced zero new reds against a clean-tree
+      # baseline. Prophylactic, and said so in the script's own header
+      # so whoever weighs deleting it can see there was no incident (#831).
+      - name: Actions are pinned to commit SHAs
+        run: bash scripts/check-action-pins.sh
+
       # #390 put the three privileged lanes in one concurrency group;
       # #617 changed the key so branch pushes bucket on the commit;
       # 76d0b7f then added a third lane with the pre-#617 spelling two
