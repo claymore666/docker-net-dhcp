@@ -86,19 +86,10 @@ func dumpOnFailure(t *testing.T, f *harness.V6Fixture) {
 //
 // The fatal case has its own test: TestDHCPv6_Managed_ServerSilent_IsStillFatal.
 func TestDHCPv6_NoAddressModes_StartTheEndpoint(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-	defer cancel()
-
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
-	if err != nil {
-		t.Fatalf("docker client: %v", err)
-	}
-	defer cli.Close()
-
 	// Each mode gets its own segment and its own container, and asserts
 	// against those. There is no aggregate claim here: "these modes
 	// start" is not the same statement as "each of them starts".
-	for _, tc := range []struct {
+	cases := []struct {
 		name string
 		mode harness.V6Mode
 		net  string
@@ -110,7 +101,56 @@ func TestDHCPv6_NoAddressModes_StartTheEndpoint(t *testing.T) {
 		{"stateless", harness.V6Stateless, "dh-itest-v6sl", true},
 		{"slaac", harness.V6SLAAC, "dh-itest-v6slaac", true},
 		{"nora", harness.V6NoRA, "dh-itest-v6nora", false},
-	} {
+	}
+
+	// NON-VACUITY, and this table is #868's acceptance criterion: the
+	// three network shapes on which no container could start. Emptying
+	// it leaves this test green, the lane green and
+	// check-test-weakening.sh clean -- "the fix is verified end to end"
+	// would then be a statement about nothing.
+	//
+	// It runs BEFORE the fixture and the engine are touched, so it is
+	// reachable without root and cannot be reported as an environment
+	// failure.
+	//
+	// Keyed on the modes and on both wantRA polarities rather than on a
+	// row count, because the two counters exist precisely to tell an
+	// advertised absence from an absent advertisement, and a table
+	// holding only one polarity cannot see that distinction at all.
+	want := map[harness.V6Mode]bool{
+		harness.V6Stateless: false,
+		harness.V6SLAAC:     false,
+		harness.V6NoRA:      false,
+	}
+	polarities := map[bool]int{}
+	for _, tc := range cases {
+		want[tc.mode] = true
+		polarities[tc.wantRA]++
+	}
+	for mode, present := range want {
+		if !present {
+			t.Fatalf("no arm for the %s segment. All three are shapes on which #868 "+
+				"refused every container, and an arm that is not here is a shape "+
+				"nothing checks", mode)
+		}
+	}
+	if polarities[true] < 1 || polarities[false] < 1 {
+		t.Fatalf("the table has %d arms expecting a router advertisement and %d "+
+			"expecting none; both are needed, since the whole discrimination under "+
+			"test is between an advertised absence and an absent advertisement",
+			polarities[true], polarities[false])
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+
+	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	if err != nil {
+		t.Fatalf("docker client: %v", err)
+	}
+	defer cli.Close()
+
+	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			f := harness.NewV6Fixture(t, tc.mode)
 			dumpOnFailure(t, f)
@@ -295,6 +335,38 @@ func TestDHCPv6_Managed_StillRequiresALease(t *testing.T) {
 		t.Errorf("the container's IPv6 address %q is not from this segment's prefix %q — "+
 			"it did not come from the fixture's DHCPv6 server",
 			settings.GlobalIPv6Address, harness.V6Prefix)
+	}
+
+	// OUTSIDE EVIDENCE, and this is the assertion the test rests on.
+	//
+	// Everything above reads GlobalIPv6Address, which is the plugin's
+	// OWN returned value relayed back by the engine. A plugin that
+	// fabricated an in-prefix address — or kept returning a remembered
+	// one after DHCPv6 stopped working — satisfies every one of those
+	// checks. This is #868's preservation control, the thing that
+	// separates "the fix tolerates an absent offer" from "the v6 path
+	// was removed", so it is the worst possible place to take the
+	// plugin's word for it.
+	//
+	// The server's own log is the only record that an address was
+	// actually leased: dnsmasq writes one DHCPREPLY per blessed
+	// request, naming the address it handed out. Counters prove intent;
+	// only the server proves effect.
+	//
+	// A bare substring match is sound for the address: dnsmasq renders
+	// it with inet_ntop and the engine with net.IP.String(), so both
+	// sides are canonical RFC 5952 lowercase. The same pattern is
+	// already read out of an identically-configured dnsmasq log by
+	// countDHCPv6Replies in ipv6_test.go. If that ever stopped holding
+	// the failure would be legible rather than mysterious, which is why
+	// the message below also reports the unfiltered DHCPREPLY count.
+	if n := f.CountLogLines("DHCPREPLY", settings.GlobalIPv6Address); n < 1 {
+		t.Errorf("the DHCPv6 server logged no DHCPREPLY carrying %s (it logged %d "+
+			"DHCPREPLY lines in total). docker inspect reports that address, but the "+
+			"server never handed it out — so it came from the plugin rather than from "+
+			"DHCPv6, and this preservation control would pass against a plugin that "+
+			"had stopped asking for IPv6 entirely",
+			settings.GlobalIPv6Address, f.CountLogLines("DHCPREPLY"))
 	}
 
 	before, after := w.End()
