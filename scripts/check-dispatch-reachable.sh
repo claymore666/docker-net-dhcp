@@ -303,20 +303,27 @@ pending=""
 inspected=0
 for f in "${WF_FILES[@]}"; do
     [ -e "$f" ] || continue
-    # `on:` may be block or inline, and the comment above this line used
-    # to promise that while the pattern delivered only the block form
-    # (#743). Verified against GitHub's accepted spellings: `on:
-    # [workflow_dispatch]` and `on: {workflow_dispatch: null}` both
-    # produced zero matches. All 24 workflows happen to use the block
-    # form, so it was latent — but latent plus a vacuous pass means a
-    # reformat would have emptied this gate's input set with nothing to
-    # notice, which is the pairing that makes each half worse.
+    # THE DOMAIN IS EVERY DEFAULT-BRANCH-RESTRICTED TRIGGER, NOT ONE OF
+    # THEM. This loop used to key on `workflow_dispatch` alone, with its
+    # own private pattern, while `dead_triggers()` fifty lines up already
+    # derived BOTH triggers for the `Triggers:` field. Two rules answering
+    # one question is how they come to disagree: the header of
+    # .github/dispatch-pending.txt has said since #846 that `schedule` is
+    # subject to the identical restriction, and the code below it did not
+    # act on that sentence. A workflow declaring ONLY `schedule` and
+    # absent from the default branch was inspected by nothing — not by
+    # this gate, whose domain excluded it, and not by
+    # check-scheduled-ref-pins.sh, which reads the tree and has no notion
+    # of what is on the default branch (#839).
     #
-    # A key in a block, an item in a flow sequence, or a key in a flow
-    # mapping. Anchored to a boundary either side so a workflow merely
-    # mentioning the word in prose is not counted as declaring it.
-    grep -E '(^|[[:space:]]|[[,{])workflow_dispatch([[:space:]]*:|[[:space:]]*[],}]|$)' \
-        "$f" >/dev/null || continue
+    # MEASURED 2026-08-28, and the reason this is a widening rather than a
+    # new gate: the two workflows off `main` today, run-retention.yml and
+    # fork-execution-policy.yml, BOTH happen to declare workflow_dispatch
+    # as well, so both were already covered. The coverage was a property
+    # of the current corpus, not of the rule — a schedule-only sibling
+    # added tomorrow would have left the domain silently.
+    triggers="$(dead_triggers "$f")"
+    [ -n "$triggers" ] || continue
 
     inspected=$((inspected + 1))
 
@@ -333,11 +340,31 @@ for f in "${WF_FILES[@]}"; do
 
     pending="$pending $rel"
     if ! printf '%s\n' "$declared" | grep -Fx "$rel" >/dev/null; then
-        note "'$rel' declares workflow_dispatch but is not on ${BASE_REF}."
-        echo "  GitHub only exposes a dispatchable workflow from the DEFAULT" >&2
-        echo "  branch, so 'gh workflow run $(basename "$rel")' answers 404 today —" >&2
-        echo "  and any documentation telling a reader to run it is wrong until" >&2
-        echo "  the next release ships." >&2
+        note "'$rel' declares [$triggers] but is not on ${BASE_REF}."
+        # NAME THE REMEDY FOR THE TRIGGER THAT IS ACTUALLY DEAD. This
+        # block printed the workflow_dispatch remedy unconditionally,
+        # which was right while the domain was workflow_dispatch-only and
+        # became wrong the moment it widened: telling the author of a
+        # schedule-only workflow that `gh workflow run` answers 404 is
+        # true and beside the point, and a remedy that names the wrong
+        # thing is how a reader concludes the gate is confused and
+        # discharges it.
+        case "$triggers" in
+            *workflow_dispatch*)
+                echo "  GitHub only exposes a dispatchable workflow from the DEFAULT" >&2
+                echo "  branch, so 'gh workflow run $(basename "$rel")' answers 404 today —" >&2
+                echo "  and any documentation telling a reader to run it is wrong until" >&2
+                echo "  the next release ships." >&2
+                ;;
+        esac
+        case "$triggers" in
+            *schedule*)
+                echo "  GitHub registers a cron only from the DEFAULT branch, so this" >&2
+                echo "  workflow's schedule does not fire at all while it is absent from" >&2
+                echo "  ${BASE_REF} — it is inert, not merely unreachable by hand, and it" >&2
+                echo "  will not appear in the workflows API until the next release." >&2
+                ;;
+        esac
         echo "  Either say so where it is documented and add an entry to" >&2
         echo "  ${ALLOWLIST} with the reason and what clears it, or do not" >&2
         echo "  present it as a route yet." >&2
@@ -353,7 +380,8 @@ fi
 # like, so it is stated rather than hidden inside a "PASS".
 if [ "$inspected" -eq 0 ]; then
     echo "::error title=Nothing to inspect::${#WF_FILES[@]} workflow(s) in $WF_DIR" \
-         "and none declares workflow_dispatch. Either that is new, or this" \
+         "and none declares workflow_dispatch or schedule. Either that is" \
+         "new, or this" \
          "gate's detector has stopped matching the form in use." >&2
     exit 2
 fi
@@ -361,5 +389,5 @@ fi
 if [ -n "$pending" ]; then
     echo "PASS  ${inspected} dispatch target(s) reachable on ${BASE_REF}; declared pending:$pending"
 else
-    echo "PASS  all ${inspected} workflow_dispatch workflow(s) are on ${BASE_REF}"
+    echo "PASS  all ${inspected} default-branch-restricted workflow(s) are on ${BASE_REF}"
 fi

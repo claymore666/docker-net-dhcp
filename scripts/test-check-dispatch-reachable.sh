@@ -13,7 +13,16 @@
 # git ref" — a mock would test the mock.
 set -uo pipefail
 
-CHECK="$(cd "$(dirname "$0")" && pwd)/check-dispatch-reachable.sh"
+# DISPATCH_REACHABLE_CHECK is a declared seam: the implementation under
+# test. It exists so a case can be driven against a DIFFERENT version of
+# the gate -- in practice the previous one, which is the strongest mutant
+# there is. Without it "does this case go red before the fix?" cannot be
+# asked at all, and a case that passes either way looks exactly like a
+# case that works. This suite had no seam, and the first attempt to
+# measure the new cases against the pre-fix gate silently re-ran the
+# fixed one and reported an identical tally both ways.
+CHECK="${DISPATCH_REACHABLE_CHECK:-$(cd "$(dirname "$0")" && pwd)/check-dispatch-reachable.sh}"
+[ -r "$CHECK" ] || { echo "FAIL: gate under test '$CHECK' is not readable"; exit 2; }
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 fails=0
@@ -79,6 +88,7 @@ entry() {
 
 dispatchable() { printf 'name: %s\non:\n  workflow_dispatch:\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps: [{run: "true"}]\n' "$1"; }
 push_only()    { printf 'name: %s\non:\n  push:\n    branches: [main]\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps: [{run: "true"}]\n' "$1"; }
+scheduled_only() { printf 'name: %s\non:\n  schedule:\n    - cron: "0 7 * * *"\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps: [{run: "true"}]\n' "$1"; }
 
 # main carries one dispatchable workflow.
 dispatchable released > "$REPO/.github/workflows/released.yml"
@@ -198,6 +208,100 @@ mkdir -p "$TMP/nodispatch"
 push_only only > "$TMP/nodispatch/only.yml"
 none_rc=$( cd "$REPO" && BASE_REF=main bash "$CHECK" "$TMP/nodispatch" >/dev/null 2>&1; echo $? )
 check "a directory with no dispatchable workflow is rc2, not a pass" 2 "$none_rc"
+
+# --- `schedule` is default-branch-restricted too, and the domain now says so
+# The header of .github/dispatch-pending.txt has said since #846 that a
+# cron does not fire off the default branch either. The code did not act
+# on that sentence: this loop's domain was `declares workflow_dispatch`,
+# so a schedule-only workflow absent from the default branch was
+# inspected by NOTHING -- not here, and not by check-scheduled-ref-pins.sh,
+# which reads the tree and has no notion of the default branch at all.
+#
+# MEASURED 2026-08-28: both workflows off `main` that day, run-retention.yml
+# and fork-execution-policy.yml, happened to declare workflow_dispatch as
+# well, so the old domain covered them by COINCIDENCE OF THE CORPUS rather
+# than by rule. A schedule-only sibling added tomorrow would have left the
+# domain in silence. These cases pin the rule instead of the coincidence.
+#
+# Its own repository, because the shared fixture above deliberately ends
+# in a red state and a case that inherits it cannot tell its own verdict
+# from the one it walked in on.
+REPO_S="$TMP/repo-sched"
+mkdir -p "$REPO_S/.github/workflows"
+git -C "$REPO_S" init -q -b main
+git -C "$REPO_S" config user.email t@example.com
+git -C "$REPO_S" config user.name t
+git -C "$REPO_S" config commit.gpgsign false
+dispatchable released > "$REPO_S/.github/workflows/released.yml"
+git -C "$REPO_S" add -A && git -C "$REPO_S" commit -qm base
+git -C "$REPO_S" checkout -q -b work
+
+verdict_s() {
+    ( cd "$REPO_S" && BASE_REF=main bash "$CHECK" >"$TMP/outs" 2>&1 ) \
+        && echo pass || echo "rc$?"
+}
+
+check "the schedule-only fixture repo starts clean" pass "$(verdict_s)"
+
+scheduled_only dormant > "$REPO_S/.github/workflows/dormant.yml"
+
+# ORTHOGONALITY, in the shape this suite already uses for the glob: the
+# PREVIOUS domain is reproduced and asserted to ACCEPT this fixture.
+# Without it the red below proves only that something is wrong, not that
+# the widening is what catches it.
+narrowed_dom="$TMP/narrowed-domain.sh"
+sed -e 's@^    \[ -n "$triggers" \] || continue$@    case "$triggers" in *workflow_dispatch*) : ;; *) continue ;; esac@' \
+    "$CHECK" > "$narrowed_dom"
+if ! cmp -s "$CHECK" "$narrowed_dom"; then
+    if ( cd "$REPO_S" && BASE_REF=main bash "$narrowed_dom" >/dev/null 2>&1 ); then
+        echo "PASS: the workflow_dispatch-only domain ACCEPTS the schedule-only fixture (orthogonality)"
+    else
+        echo "FAIL: the reproduced narrow domain did not accept the schedule-only"
+        echo "      fixture, so the case below would go red for some other reason"
+        fails=1
+    fi
+else
+    echo "FAIL: INTERNAL: the narrowing edit matched nothing, so the orthogonality"
+    echo "      control compared the gate against itself and proved nothing"
+    fails=1
+fi
+
+check "a schedule-only workflow absent from the default branch is caught" rc1 "$(verdict_s)"
+grep -F 'dormant.yml' "$TMP/outs" >/dev/null \
+    && echo "PASS: and the schedule-only workflow is the one reported" \
+    || { echo "FAIL: the schedule-only workflow was not named"; fails=1; }
+
+# The remedy has to name the trigger that is actually dead. Telling the
+# author of a schedule-only workflow that `gh workflow run` answers 404 is
+# true and beside the point, and a gate whose remedy names the wrong thing
+# gets discharged.
+check "the schedule-only finding names the cron" yes \
+    "$(grep -qF 'schedule does not fire at all' "$TMP/outs" && echo yes || echo no)"
+check "and it does not print the workflow_dispatch remedy" yes \
+    "$(grep -qF 'gh workflow run' "$TMP/outs" && echo no || echo yes)"
+
+# Declaring it clears it, exactly as for a dispatch target.
+{ printf '# reason: lands in the next release\n'
+  entry .github/workflows/dormant.yml schedule
+} > "$REPO_S/.github/dispatch-pending.txt"
+check "a declared schedule-only workflow is honoured" pass "$(verdict_s)"
+
+# ...and the declaration has to stay true for a cron exactly as for a
+# dispatch target: once it reaches the default branch the entry is stale.
+git -C "$REPO_S" add -A && git -C "$REPO_S" commit -qm add-dormant
+git -C "$REPO_S" checkout -q main && git -C "$REPO_S" merge -q work
+git -C "$REPO_S" checkout -q work
+check "a stale declaration for a schedule-only workflow fails" rc1 "$(verdict_s)"
+rm -f "$REPO_S/.github/dispatch-pending.txt"
+git -C "$REPO_S" add -A && git -C "$REPO_S" commit -qm drop-ledger
+
+# PRESERVATION, the other direction. A widening that also swept in
+# workflows nobody restricted would be a gate that cries wolf: a push-only
+# workflow absent from the default branch is NOT a finding. That is the
+# stated bound, pinned rather than asserted.
+push_only offbase > "$REPO_S/.github/workflows/offbase.yml"
+check "a push-only workflow off the default branch stays outside the domain" pass "$(verdict_s)"
+rm -f "$REPO_S/.github/workflows/offbase.yml"
 
 # --- the inline `on:` spellings are workflows too (#743) ----------------
 # The comment above the detector said "`on:` may be block or inline";
