@@ -33,7 +33,9 @@ import (
 // in thirteen seconds. Something deleted it, and until that something is
 // named, a fix to the sysctls may repair nothing at all.
 //
-// Four candidates, from the protocol review on #875:
+// FIVE candidates. The first four came from the protocol review on
+// #875; the fifth was found only when this probe was re-derived, and it
+// had been hiding inside candidate 2's signature:
 //
 //  1. the netns move flushing the link's v6 addresses and routes. The
 //     one-shot client runs at CreateEndpoint while the container-side
@@ -44,22 +46,73 @@ import (
 //  3. the engine disabling IPv6 on a link with no v6 address, which
 //     flushes both.
 //  4. forwarding enabled in the namespace, purging RA-learned routers.
+//  5. an advertisement carrying Router Lifetime 0, which RFC 4861 6.3.4
+//     requires a host to honour by removing the router. Correct host
+//     behaviour reacting to a misconfigured segment -- and it looks
+//     exactly like candidate 2 unless `expires` and `proto` are read.
 //
-// HOW ONE INSTRUMENT SEPARATES ALL FOUR. Netlink says who did what and
-// when. Two monitors run, because the interesting events happen on both
-// sides of a namespace move and neither side can see the other:
+// WHAT THE EARLIER MEASUREMENT ALREADY EXCLUDES. The +3s/+13s
+// observation was taken in a SINGLE isolated network namespace with the
+// client run directly: no container, no libnetwork, no engine, no veth
+// move. Candidates 1, 2 and 3 were therefore all ABSENT while the route
+// died, which promotes 4 and 5 for THAT observation. It does not clear
+// 1-3 for the container path, which has never been measured. That gap is
+// what this probe is for.
+//
+// WHAT THE KERNEL ACTUALLY DOES (MEASURED, read from torvalds/linux
+// master at VERSION 7.2.0 on 2026-08-28; line numbers drift, the
+// conditionals do not):
+//
+//   - net/ipv6/addrconf.c addrconf_fixup_forwarding ends in
+//     `if (newf) rt6_purge_dflt_routers(net);`. The guard is the VALUE
+//     WRITTEN, not a change. A redundant write of 1 over 1 still purges.
+//   - the netconf notification beside it IS change-gated,
+//     `(!newf) ^ (!old)`. So the 1-over-1 write purges and emits NO
+//     event. That is the ambiguous cell this probe reports rather than
+//     resolves.
+//   - a write to conf.DEFAULT.forwarding returns early and never
+//     reaches the purge. Only conf.all and conf.<if> do. conf.default is
+//     still read, to show it was checked.
+//   - the purge argument is `net` and rt6_purge_dflt_routers walks every
+//     table in the namespace. It is namespace-wide, not per-device.
+//   - __rt6_purge_dflt_routers deletes a route when
+//     `rt->fib6_flags & (RTF_DEFAULT | RTF_ADDRCONF)` -- EITHER flag
+//     suffices -- AND `(!idev || idev->cnf.accept_ra != 2)`.
+//   - rtm_to_fib6_config builds a userspace route's flags from
+//     `RTF_UP` plus REJECT/LOCAL/CACHE/ONLINK only. It never sets
+//     RTF_DEFAULT or RTF_ADDRCONF, so a userspace-installed default
+//     route is IMMUNE to the purge. `proto` is the readable proxy for
+//     that; the flags are what actually decide.
+//
+// The accept_ra=2 exemption is the reason this probe samples accept_ra:
+// it excludes candidate 4 outright and DOMINATES the forwarding verdict.
+// It is also, note, a candidate REMEDY rather than a cause.
+//
+// HOW THE INSTRUMENT SEPARATES THEM -- AND WHERE IT CANNOT. Netlink says
+// what happened and when, but route events carry NO ORIGINATOR: a
+// userspace delete and the kernel's purge emit the same RTM_DELROUTE.
+// So the probe is built to EXCLUDE candidates, not to spot one, and it
+// reports AMBIGUOUS where exclusion is not available. Two monitors run,
+// because the interesting events happen on both sides of a namespace
+// move and neither side can see the other:
 //
 //	host monitor       started BEFORE the container exists, so it sees
 //	                   the veth created, addressed and then MOVED AWAY
 //	container monitor  started as soon as there is a namespace to enter,
 //	                   so it sees RTM_DELROUTE and who follows it
 //
-// An RTM_DELROUTE in the container after the move, with no preceding
-// link event, is candidate 2 or 4. A route that is never in the
-// container at all is candidate 1. A disable_ipv6 flip beside the
-// deletion is candidate 3. `expires` on the route separates "expired
-// normally" from "deleted early" without a packet capture, which this
-// runner image has no tcpdump for.
+// A route that is never in the container at all is candidate 1 -- but
+// only if the monitor was already attached, which is why it attaches by
+// SANDBOX KEY (present from Join, strictly before the container process)
+// and logs its attach instant: candidate 1's signature is an ABSENCE,
+// and an absence proves nothing if the observer arrived late. A
+// disable_ipv6 flip beside the deletion is candidate 3. A
+// NETCONFA_FORWARDING event immediately before the deletion is candidate
+// 4; its absence WITH forwarding at 0 throughout is candidate 2 or 5.
+// `expires` and `proto` on the route separate "expired when it was told
+// to" from "deleted early" without a packet capture, which this runner
+// image has no tcpdump for -- expires IS the advertised Router Lifetime,
+// which turns candidate 5 from inference into arithmetic.
 //
 // It asserts NOTHING about the route, deliberately -- a probe that
 // asserted the current behaviour would have to be rewritten by the fix
@@ -226,7 +279,24 @@ func TestProbe_DHCPv6_WhatDeletesTheDefaultRoute(t *testing.T) {
 				fwdEverOn = fwdEverOn || on
 				fwdAlwaysOn = fwdAlwaysOn && on
 			}
+			// The purge SKIPS any interface whose accept_ra is 2: in
+			// __rt6_purge_dflt_routers the flag test is AND-ed with
+			// `!idev || idev->cnf.accept_ra != 2`. accept_ra=2 therefore
+			// excludes candidate 4 outright, whatever forwarding reads,
+			// and it DOMINATES the forwarding verdict below -- including
+			// the ambiguous 1-over-1 cell, which cannot arise on an
+			// exempt interface. Read before forwarding for that reason.
+			acceptRA2Always := len(rows) > 0
+			for _, r := range rows {
+				acceptRA2Always = acceptRA2Always && strings.TrimSpace(r.acceptRA) == "2"
+			}
 			switch {
+			case acceptRA2Always:
+				t.Logf("VERDICT INPUT (forwarding): accept_ra read 2 on the interface for " +
+					"the WHOLE window. The kernel's purge skips interfaces with " +
+					"accept_ra=2, so candidate 4 is EXCLUDED regardless of what " +
+					"forwarding reads, and the ambiguous 1-over-1 cell does not apply. " +
+					"The deleter is candidate 2 or 5 (or unenumerated).")
 			case fwdAlwaysOn:
 				t.Logf("VERDICT INPUT (forwarding): forwarding read 1 for the WHOLE window. " +
 					"This is the ambiguous cell: a redundant 1-over-1 write still purges " +
