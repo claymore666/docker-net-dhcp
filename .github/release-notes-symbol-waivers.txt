@@ -59,8 +59,16 @@ LastIPv6
 #   netns.GetFromPath were both removed by 79d4d2f, "open the sandbox
 #   netns by fd, not by /proc path" (#695). The paragraph describes the
 #   /proc-path era accurately; the replacement is awaitContainerNetNS.
+#
+#   `GetFromPath` is NO LONGER WAIVED and its line is deliberately gone.
+#   The symbol resolves again: the route-death probe opens the container
+#   namespace by its SANDBOX KEY to attach a netlink subscription, which
+#   is a path the engine owns rather than a /proc path built from a pid,
+#   so #695's rule is untouched by it. Product code still reaches the
+#   namespace through awaitContainerNetNS. A waiver that cannot fire is a
+#   hole -- it would sit silent on the day the symbol really did go away
+#   -- so it is removed rather than kept for tidiness.
 AwaitNetNS
-GetFromPath
 #
 # HISTORICAL — v0.6.0, line 2790. `tombstoneMu` was the mutex guarding
 #   the tombstone read-modify-write path. 6463aaa extracted the

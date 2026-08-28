@@ -602,7 +602,7 @@ func TestProbe_DHCPv6_WhatDeletesTheDefaultRoute(t *testing.T) {
 			// from the kernel's own copy of the number. If the two ever
 			// disagree, the hook is the tie-breaker.
 
-			attrMon.report(t, tc.mode, sandbox)
+			attrMon.report(t, tc.mode)
 			icmpMon.report(t, tc.mode)
 			reportDockerdLog(t, tc.mode, probeWindow)
 
@@ -776,17 +776,28 @@ type attrEvent struct {
 	family uint8
 	dstLen uint8
 	proto  uint8
+	// peer is resolved AT EVENT TIME, not when the report is written.
+	// A netlink port id is only a lead to a pid, and a pid is only
+	// valid while that process lives: the report runs at the end of a
+	// three-minute window, by which point a short-lived originator has
+	// exited and its number may already have been reissued to something
+	// unrelated. Resolving late would not merely lose the name, it
+	// would confidently print the WRONG one. Resolving here narrows the
+	// race to the microseconds between the kernel's broadcast and this
+	// line -- it does not close it, and the text says so.
+	peer string
 }
 
 func (e attrEvent) v6Default() bool { return e.family == unix.AF_INET6 && e.dstLen == 0 }
 
 type attrMon struct {
-	mu     sync.Mutex
-	events []attrEvent
-	errs   []string
-	closed bool
-	sock   *nl.NetlinkSocket
-	start  time.Time
+	mu        sync.Mutex
+	events    []attrEvent
+	errs      []string
+	closed    bool
+	sock      *nl.NetlinkSocket
+	start     time.Time
+	netnsPath string
 }
 
 // startAttrMonitor subscribes to route notifications INSIDE the
@@ -831,7 +842,7 @@ func startAttrMonitor(t *testing.T, netnsPath string, start time.Time) *attrMon 
 	if err != nil {
 		t.Fatalf("subscribe to route notifications in the container namespace: %v", err)
 	}
-	m := &attrMon{sock: sock, start: start}
+	m := &attrMon{sock: sock, start: start, netnsPath: netnsPath}
 	go m.run()
 	return m
 }
@@ -860,15 +871,17 @@ func (m *attrMon) run() {
 			if len(msg.Data) < 12 {
 				continue
 			}
-			m.mu.Lock()
-			m.events = append(m.events, attrEvent{
+			ev := attrEvent{
 				at:     at,
 				del:    del,
 				pid:    msg.Header.Pid,
 				family: msg.Data[0],
 				dstLen: msg.Data[1],
 				proto:  msg.Data[5],
-			})
+			}
+			ev.peer = describeNetlinkPeer(ev.pid, m.netnsPath)
+			m.mu.Lock()
+			m.events = append(m.events, ev)
 			m.mu.Unlock()
 		}
 	}
@@ -883,7 +896,7 @@ func (m *attrMon) stop() {
 	}
 }
 
-func (m *attrMon) report(t *testing.T, mode, netnsPath string) {
+func (m *attrMon) report(t *testing.T, mode harness.V6Mode) {
 	m.mu.Lock()
 	events := append([]attrEvent(nil), m.events...)
 	errs := append([]string(nil), m.errs...)
@@ -921,8 +934,7 @@ func (m *attrMon) report(t *testing.T, mode, netnsPath string) {
 			verb = "DELETED  "
 		}
 		fmt.Fprintf(&b, "  t+%-8s %s  proto=%-3d  by %s\n",
-			e.at.Round(time.Millisecond), verb, e.proto,
-			describeNetlinkPeer(e.pid, netnsPath))
+			e.at.Round(time.Millisecond), verb, e.proto, e.peer)
 	}
 	if b.Len() == 0 {
 		fmt.Fprintf(&b, "  (no IPv6 default-route change was broadcast in this window)\n")
@@ -950,6 +962,15 @@ func (m *attrMon) report(t *testing.T, mode, netnsPath string) {
 
 // describeNetlinkPeer turns a netlink port id into something a reader
 // can act on, and is careful to say which half of the answer is solid.
+//
+// Called from the receive loop rather than from the report, because a
+// pid is a perishable identifier: the kernel reissues it once the
+// process is reaped, so a lookup taken minutes later can name a process
+// that had nothing to do with the event. This is the same hazard #695
+// removed from the product when it stopped opening the container
+// namespace through a /proc path built from a pid, and the reason that
+// rule is worth respecting in a probe is that a probe's output is read
+// as evidence.
 func describeNetlinkPeer(pid uint32, netnsPath string) string {
 	if pid == 0 {
 		return "the KERNEL (no userspace originator)"
@@ -1153,7 +1174,7 @@ func (m *icmp6Mon) stop() {
 	}
 }
 
-func (m *icmp6Mon) report(t *testing.T, mode string) {
+func (m *icmp6Mon) report(t *testing.T, mode harness.V6Mode) {
 	if m == nil || m.dead {
 		return
 	}
@@ -1231,7 +1252,7 @@ func b2i(b bool) int {
 // corroboration rather than the primary instrument, and it is here
 // because collecting it costs one command and arguing about it costs
 // more.
-func reportDockerdLog(t *testing.T, mode string, window time.Duration) {
+func reportDockerdLog(t *testing.T, mode harness.V6Mode, window time.Duration) {
 	since := fmt.Sprintf("%d seconds ago", int(window.Seconds())+30)
 	sources := [][]string{
 		{"journalctl", "-u", "docker.service", "--no-pager", "--since", since},
