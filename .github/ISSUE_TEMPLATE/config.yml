@@ -5,3 +5,11 @@ contact_links:
     about: >-
       Do NOT open a public issue for anything you believe is exploitable.
       Report it privately via GitHub Security Advisories. See SECURITY.md.
+  - name: Ask for a first task, or ask anything else
+    url: https://github.com/claymore666/docker-net-dhcp/discussions/new?category=q-a
+    about: >-
+      New here and looking for somewhere to start? Say what interests you —
+      a subsystem, a bug you hit, a piece of the documentation you found thin
+      — and a first task will be scoped against it. General questions belong
+      here too: neither issue form above fits one, and both stamp a type
+      label that would be wrong for it.
