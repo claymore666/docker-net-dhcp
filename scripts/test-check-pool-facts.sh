@@ -14,12 +14,25 @@
 #
 # Fixture numbers are 6 and 3 on purpose: neither is the real pool size
 # nor the real per-run job count, so a fixture cannot pass by accidentally
-# agreeing with the tree this file lives in.
+# agreeing with the tree this file lives in. That rule was broken in the
+# watchdog-arithmetic cases at the bottom, which used the live 16 and the
+# live 6 as their operands until it was noticed -- a fixture that agrees
+# with the tree by coincidence is a case that can pass for the wrong
+# reason, which is the same defect as a marker satisfied by a coincidence.
 #
 # WHAT THIS DRIVES, in both directions:
 #   - the real tree stays green                    (preservation control)
 #   - a stale number goes red                      (the finding direction)
 #   - a marker bumped without its sentence goes red
+#   - a marker satisfied only by digits welded into a larger token goes
+#     red, AND ordinary prose stating the number still passes -- without
+#     that second half the first measures strictness, not the defect
+#   - a marker that does not parse (a line wrap splitting it) REFUSES
+#     rather than being skipped, AND the marker word occurring inside a
+#     longer identifier is still not a marker
+#   - every job in the workflow is DECIDED: a runs-on the file cannot
+#     resolve refuses even while another job still matches, AND a
+#     resolvable non-pool job is still an ordinary skip
 #   - every refusal path is asserted BY EXIT CODE, never by message text
 #   - the domain being empty is a refusal, not a pass
 #   - deleting what the gate guards makes something go red
@@ -312,6 +325,207 @@ git -C "$d" add -A >/dev/null 2>&1
 [ "$(rc "$d")" = 0 ] && ok "two matrix dimensions expand to their product, not to their sum" \
     || no "a 3x2 matrix was not counted as 6: $(run "$d")"
 
+# --- refusals: a runs-on this file cannot resolve ----------------------
+#
+# The defect these drive: the non-vacuity guard fires only when NO job
+# matches, so while one pool job still matches literally, a SECOND one can
+# be skipped and the derived count is silently low. Every case below
+# therefore keeps the original matching job in place — a refusal that only
+# happens once nothing matches is the guard that already existed.
+
+# addjob <dir> <yaml> — append a job to the fixture workflow and re-index.
+addjob() {
+    printf '%s\n' "$2" >> "$1/.github/workflows/integration.yml"
+    git -C "$1" add -A >/dev/null 2>&1
+}
+
+d=$(newfix)
+addjob "$d" '  second:
+    runs-on: ${{ needs.gate.outputs.runner }}
+    strategy:
+      matrix:
+        shard: [1, 2, 3, 4, 5]
+    steps:
+      - run: echo second'
+[ "$(rc "$d")" = 2 ] && ok "a runs-on built from an expression refuses, beside a job that still matches" \
+    || no "an expression runs-on was skipped and the count went silently low, got $(rc "$d")"
+
+d=$(newfix)
+addjob "$d" '  second:
+    uses: ./.github/workflows/other.yml
+    strategy:
+      matrix:
+        shard: [1, 2, 3, 4]'
+[ "$(rc "$d")" = 2 ] && ok "a reusable-workflow call refuses — its runner is declared elsewhere" \
+    || no "a uses: job was skipped rather than refused, got $(rc "$d")"
+
+d=$(newfix)
+addjob "$d" '  second:
+    steps:
+      - run: echo no runs-on at all'
+[ "$(rc "$d")" = 2 ] && ok "a job with no runs-on at all refuses" \
+    || no "a job with no runs-on was silently decided, got $(rc "$d")"
+
+d=$(newfix)
+addjob "$d" '  second:
+    runs-on:
+      other: thing
+    steps:
+      - run: echo mapping with neither labels nor group'
+[ "$(rc "$d")" = 2 ] && ok "a runs-on mapping naming neither labels nor a group refuses" \
+    || no "an unresolvable runs-on mapping was skipped, got $(rc "$d")"
+
+d=$(newfix)
+python3 - "$d" <<'PY'
+import io, sys
+p = sys.argv[1] + "/.github/workflows/integration.yml"
+s = io.open(p, encoding="utf-8").read()
+s = s.replace("      fail-fast: false\n", "      fail-fast: false\n      max-parallel: 2\n")
+io.open(p, "w", encoding="utf-8").write(s)
+PY
+git -C "$d" add -A >/dev/null 2>&1
+[ "$(rc "$d")" = 2 ] && ok "max-parallel: refuses — it decouples the expansion from the runners occupied" \
+    || no "max-parallel: left the old answer standing, got $(rc "$d")"
+
+d=$(newfix)
+addjob "$d" '  second: not-a-mapping'
+[ "$(rc "$d")" = 2 ] && ok "a job that is not a mapping refuses rather than being passed over" \
+    || no "a non-mapping job was skipped, got $(rc "$d")"
+
+# --- and the OTHER direction, or the reds above only measure "strict" --
+#
+# A resolvable runs-on that simply is not the pool must stay a skip. If
+# every one of these went red too, the cases above would be measuring
+# nothing but a gate that refuses everything.
+
+d=$(newfix)
+addjob "$d" '  second:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        shard: [1, 2, 3, 4, 5]
+    steps:
+      - run: echo hosted and irrelevant'
+[ "$(rc "$d")" = 0 ] && ok "a resolvable non-pool job is still skipped, not refused" \
+    || no "a plain ubuntu-latest job was refused, so the refusals above prove nothing: $(run "$d")"
+case "$(run "$d" --facts)" in
+    *"jobs-per-run=3"*) ok "and it does not change the derived count" ;;
+    *) no "a hosted job moved the pool count: $(run "$d" --facts)" ;;
+esac
+
+d=$(newfix)
+sed -i 's/    runs-on: \[self-hosted, fixture-pool\]/    runs-on: [self-hosted, FIXTURE-Pool]/' \
+    "$d/.github/workflows/integration.yml"
+git -C "$d" add -A >/dev/null 2>&1
+case "$(run "$d" --facts)" in
+    *"jobs-per-run=3"*) ok "labels are matched case-insensitively, as GitHub matches them" ;;
+    *) no "a differently-cased label lost the job: $(run "$d" --facts)" ;;
+esac
+
+# runs-on: {group, labels} — the mapping shape. Driven because it is live
+# code with a branch of its own; without a case here, blinding that branch
+# is a mutation nothing kills.
+d=$(newfix)
+python3 - "$d" <<'PY'
+import io, sys
+p = sys.argv[1] + "/.github/workflows/integration.yml"
+s = io.open(p, encoding="utf-8").read()
+s = s.replace("    runs-on: [self-hosted, fixture-pool]\n",
+              "    runs-on:\n      group: some-group\n      labels: [self-hosted, fixture-pool]\n")
+io.open(p, "w", encoding="utf-8").write(s)
+PY
+git -C "$d" add -A >/dev/null 2>&1
+case "$(run "$d" --facts)" in
+    *"jobs-per-run=3"*) ok "a runs-on {group, labels} mapping is matched on its labels" ;;
+    *) no "the mapping runs-on shape lost the job: $(run "$d" --facts)" ;;
+esac
+
+d=$(newfix)
+python3 - "$d" <<'PY'
+import io, sys
+p = sys.argv[1] + "/.github/workflows/integration.yml"
+s = io.open(p, encoding="utf-8").read()
+s = s.replace("    runs-on: [self-hosted, fixture-pool]\n",
+              "    runs-on:\n      group: fixture-pool\n")
+io.open(p, "w", encoding="utf-8").write(s)
+PY
+git -C "$d" add -A >/dev/null 2>&1
+case "$(run "$d" --facts)" in
+    *"jobs-per-run=3"*) ok "a runner GROUP named for the pool is matched too" ;;
+    *) no "a group named for the pool was not counted: $(run "$d" --facts)" ;;
+esac
+
+# --- check (3): the digits must be STATED, not merely present ---------
+#
+# The defect: the marked line's only occurrence of the value sat inside a
+# larger token, and the check accepted it. On the real tree that was a
+# runner-name range ending in the pool size, which let the canonical value
+# be bumped, every marked line edited as instructed, and two sentences
+# left stating the old number with the gate green.
+
+d=$(newfix)
+printf 'Runners are fixture-pool-1..6 here. <!-- %s pool-size=6 -->\n' "$M" > "$d/docs/pool.md"
+printf 'A run places 3 jobs on the pool. <!-- %s jobs-per-run=3 -->\n' "$M" >> "$d/docs/pool.md"
+git -C "$d" add -A >/dev/null 2>&1
+[ "$(rc "$d")" = 1 ] && ok "a value reachable only inside a larger token is not a statement of it" \
+    || no "a marker was satisfied by digits welded into a token, got $(rc "$d")"
+
+# The same weld from the RIGHT-hand side: a value followed by a letter, and
+# a value that is only the integer part of a decimal. Driven separately
+# from the left-hand case because the two sides of the rule are separate
+# assertions in the pattern and a test for one does not reach the other.
+d=$(newfix)
+printf 'The pool is 6x wide. <!-- %s pool-size=6 -->\n' "$M" > "$d/docs/pool.md"
+printf 'A run places 3 jobs on the pool. <!-- %s jobs-per-run=3 -->\n' "$M" >> "$d/docs/pool.md"
+git -C "$d" add -A >/dev/null 2>&1
+[ "$(rc "$d")" = 1 ] && ok "a value welded to a following letter is not a statement of it" \
+    || no "'6x' satisfied a marker for 6, got $(rc "$d")"
+
+d=$(newfix)
+printf 'The pool is 6.5 units. <!-- %s pool-size=6 -->\n' "$M" > "$d/docs/pool.md"
+printf 'A run places 3 jobs on the pool. <!-- %s jobs-per-run=3 -->\n' "$M" >> "$d/docs/pool.md"
+git -C "$d" add -A >/dev/null 2>&1
+[ "$(rc "$d")" = 1 ] && ok "the integer part of a decimal is not a statement of the integer" \
+    || no "'6.5' satisfied a marker for 6, got $(rc "$d")"
+
+# The preservation half. If the boundary rule rejected ordinary prose too,
+# the red above would be measuring strictness rather than the defect.
+d=$(newfix)
+printf 'It is a 6-runner pool, so the size is 6. <!-- %s pool-size=6 -->\n' "$M" > "$d/docs/pool.md"
+printf 'A run places 3 jobs on the pool. <!-- %s jobs-per-run=3 -->\n' "$M" >> "$d/docs/pool.md"
+git -C "$d" add -A >/dev/null 2>&1
+[ "$(rc "$d")" = 0 ] && ok "ordinary prose stating the number still passes (hyphen, sentence end)" \
+    || no "the token-boundary rule rejected a plain statement: $(run "$d")"
+
+# --- a marker that does not parse is refused, not skipped -------------
+#
+# Found by running this gate over its own source: a rewrap split a marker
+# across two lines, so it matched nothing, bound nothing, and was passed
+# over in silence.
+
+d=$(newfix)
+printf 'The pool is 6 runners, wrapped (%s\n' "$M" >> "$d/docs/pool.md"
+printf 'pool-size=6)\n' >> "$d/docs/pool.md"
+git -C "$d" add -A >/dev/null 2>&1
+[ "$(rc "$d")" = 2 ] && ok "a marker word with no NAME=VALUE after it refuses — it binds nothing" \
+    || no "a split marker was skipped in silence, got $(rc "$d")"
+
+# And its preservation control: the marker word occurs inside this gate's
+# own NAME, in every message it prints. Without a left boundary on the
+# pattern, that alone would refuse the whole tree.
+d=$(newfix)
+printf 'The script prints `check-%s OK` when it agrees.\n' "$M" >> "$d/docs/pool.md"
+git -C "$d" add -A >/dev/null 2>&1
+[ "$(rc "$d")" = 0 ] && ok "the marker word inside a longer identifier is not a marker" \
+    || no "the pattern matched inside a longer word and refused the tree, got $(rc "$d")"
+
+# --- the canonical file must say each thing once ----------------------
+d=$(newfix)
+printf 'DHCP_CI_POOL_SIZE=99\n' >> "$d/.github/ci-pool-facts.env"
+git -C "$d" add -A >/dev/null 2>&1
+[ "$(rc "$d")" = 2 ] && ok "a key declared twice refuses — which one wins is the parser's opinion" \
+    || no "a duplicate declaration silently resolved to one of them, got $(rc "$d")"
+
 # --- --facts refuses too, and prints nothing when it does -------------
 d=$(newfix)
 rm -f "$d/.github/ci-pool-facts.env"
@@ -420,24 +634,24 @@ seam() {  # seam <pool> <jobs> -> the advice the watchdog prints
     watchdog_out "$stub_dir/busy.json" "$d/ci-queue-watchdog.sh"
 }
 
-out=$(seam 16 4)
+out=$(seam 12 4)
 case "$out" in
-    *"4 concurrent runs fit exactly"*) ok "an exact division is reported as an exact fit" ;;
-    *) no "16/4 was not reported as 4 exact: $out" ;;
+    *"3 concurrent runs fit exactly"*) ok "an exact division is reported as an exact fit" ;;
+    *) no "12/4 was not reported as an exact fit: $out" ;;
 esac
-out=$(seam 16 6)
+out=$(seam 14 4)
 case "$out" in
     *"fit exactly"*) no "an inexact division was reported as an exact fit: $out" ;;
     *) ok "an inexact division is not reported as an exact fit" ;;
 esac
 case "$out" in
-    *"PARTIAL pickup — 4 of its 6 jobs assigned"*) ok "a remainder is reported as a partial pickup, with both operands" ;;
-    *) no "16/6 did not describe the partial pickup: $out" ;;
+    *"PARTIAL pickup — 2 of its 4 jobs assigned"*) ok "a remainder is reported as a partial pickup, with both operands" ;;
+    *) no "14/4 did not describe the partial pickup: $out" ;;
 esac
-out=$(seam 3 6)
+out=$(seam 3 8)
 case "$out" in
     *"only 3 runners"*) ok "a pool smaller than one run says so instead of dividing to zero" ;;
-    *) no "a pool of 3 against 6 jobs per run was not called out: $out" ;;
+    *) no "a pool of 3 against 8 jobs per run was not called out: $out" ;;
 esac
 
 # Drive the ABSENCE on the watchdog's side too: take the gate away and

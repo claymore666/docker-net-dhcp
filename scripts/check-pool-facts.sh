@@ -8,9 +8,12 @@
 # WHY THIS EXISTS
 #
 # Both numbers were stated in prose in six tracked files and checked by
-# nothing. Every one of them was wrong: the pool had been resized 8 -> 16
-# and the suite matrix widened 2 -> 4 jobs, and each site went on saying
-# what was true when it was written. Two of the six are not comments —
+# nothing. Every one of them was wrong: the pool had been resized, and so
+# had the suite matrix, and each site went on saying what was true when it
+# was written. Deliberately no figures in that sentence — a "was N, now M"
+# in the header of the gate against stale numbers is a copy that nothing
+# checks, and the M in it went stale during this change's own rebase. For
+# the live values, run this script. Two of the six are not comments —
 # they are the text scripts/ci-queue-watchdog.sh prints to an operator
 # DURING a capacity incident, on the STARVATION and POOL SHORT paths. A
 # diagnostic that misstates both operands is worse than a stale comment.
@@ -27,6 +30,53 @@
 #                  DHCP_CI_JOBS_PER_RUN_WORKFLOW: the jobs whose
 #                  `runs-on` carries the pool label, matrix-expanded.
 #                  Nothing declares it, so nothing can declare it wrong.
+#
+# WHAT THE DERIVATION REFUSES, AND WHY IT IS A REFUSAL AND NOT A SKIP
+#
+# Every job in that workflow must be RESOLVED — decided to be on the pool
+# or decided not to be. A job the parser cannot resolve is a refusal, not
+# a job quietly worth zero. That asymmetry was the first version's worst
+# bug: an unmodelled MATRIX shape refused loudly with "not knowable from
+# the file", while an unmodelled RUNS-ON shape was skipped by the same
+# `continue` that skips `ubuntu-latest`. Since the non-vacuity guard only
+# fires when NO job matches, one pool job could vanish from the count
+# while another still matched, and the gate stayed green on a canonical
+# value that was silently too LOW — the direction in which every marked
+# site is then held against a wrong number.
+#
+# Unresolvable, and therefore refused:
+#
+#   * `runs-on` absent, and `uses:` present — a reusable-workflow call
+#     lands on a runner declared in the CALLED workflow. This file does
+#     not say which, so this file cannot answer the question.
+#   * `runs-on` absent with no `uses:` at all.
+#   * any `runs-on` carrying `${{` — in the string, in a list element, or
+#     in a mapping value. Its value is a runtime fact.
+#   * a `runs-on` mapping naming neither `labels` nor a `group`.
+#   * a `runs-on` that is not a string, a list or a mapping.
+#   * `strategy: max-parallel:` — it caps how many of a matrix's jobs are
+#     in flight at once, so with it present the expansion is no longer the
+#     number of runners the run occupies. Nothing in the tree uses it
+#     today; it is refused now so that adding one cannot silently change
+#     what this number means.
+#
+# Labels are compared CASE-INSENSITIVELY, because GitHub matches them that
+# way: `[self-hosted, DHCP-CI]` is the same pool as `[self-hosted,
+# dhcp-ci]`, and a gate that disagreed with the platform on that would
+# under-count without ever saying so.
+#
+# A `runs-on: {group: G, labels: [...]}` matches on either G or a label,
+# since a group named for the pool is targeting the pool. The residual
+# hole is named rather than papered over: a group under some OTHER name
+# whose members are pool runners is not knowable from the file, and this
+# gate will count that job out. Membership lives in the org's runner
+# settings, not in the repository.
+#
+# One bound in the other direction: a pool job carrying `if:` is counted
+# as though it runs. Whether it does is a runtime fact. That over-counts
+# rather than under-counts, which is the safe direction for a capacity
+# figure — but it is an approximation, and the workflow this gate reads
+# today has exactly such a job.
 #
 #   pool-size      DECLARED, in .github/ci-pool-facts.env, with the date
 #                  it was measured.
@@ -54,23 +104,54 @@
 #
 # HOW A SITE IS CHECKED — three-way, so no single edit satisfies it
 #
-# A prose site opts in with a marker on the line that states the number:
+# A prose site opts in with a marker on the line that states the number.
+# The marker is the word "pool", a hyphen, the word "facts", a colon, then
+# NAME=VALUE. It is described here rather than spelled, and the code
+# assembles it from two string literals, for one reason: a literal marker
+# in this file would be a site the sweep then tried to check. Written
+# MARKER below to stand for it:
 #
-#     # ... the pool is 16 runners ...   <!-- pool-facts: NAME=VALUE -->
+#     # ... the pool is 99 runners ...   <!-- MARKER pool-size=99 -->
 #
 # and the gate requires all three of:
 #
 #   1. NAME is a fact this gate knows            (else: refusal)
 #   2. VALUE equals the canonical value          (else: red — stale)
-#   3. the prose on that line, with the marker removed, contains VALUE
-#      as a standalone number                    (else: red — the marker
-#                                                 was bumped and the
-#                                                 sentence was not)
+#   3. the prose on that line, with the marker removed, STATES VALUE
+#      (else: red — the marker was bumped and the sentence was not)
 #
 # (3) is what stops the marker becoming a second copy that drifts from
 # the sentence beside it, and it forces the digit: "a pool of eight"
 # cannot satisfy it, which is how the spelling problem is closed by
 # construction rather than by enumerating spellings.
+#
+# "STATES" is narrower than "contains", and the difference was a real
+# defect in the first version of this gate rather than a refinement.
+# There, (3) accepted any occurrence of the digits with no digit either
+# side. A marker sitting on the line BELOW its sentence was therefore
+# satisfied by a runner-name range such as `dhcp-ci-1..99` — which happens
+# to end in the pool size — so the canonical value could be bumped, every marked
+# line dutifully edited, and two sentences left still stating the OLD pool
+# size with the gate green. The check that exists to catch a marker drifting
+# from its sentence was itself satisfied by a coincidence.
+#
+# So VALUE must not be welded to a larger token. It may not be preceded
+# by [0-9A-Za-z_.=-] and may not be followed by [0-9A-Za-z_] or by a
+# decimal point and another digit. Taking 99 as the value purely so these
+# examples cannot be read as claims about the live pool: `99 runners`,
+# `is 99.` and `99-runner` state the number; `dhcp-ci-99`, `1..99`, `v99`,
+# `OF=99` and `99.5` do not. The direction of the error that remains
+# matters: a rejected site goes
+# RED and says so, which costs a rewrap; an accepted one goes green and
+# says nothing. This gate takes the loud failure.
+#
+# What it still cannot see, stated rather than implied: a line that
+# states the digits in a genuinely delimited way but is talking about
+# something else entirely ("99 files changed") satisfies (3). (3) is a
+# syntactic check on where the digits sit, not a semantic one on what the
+# sentence means, and no regex closes that. Nor does it reach a number
+# ARITHMETICALLY DERIVED from a fact — "a SEVENTH job", "two runs fit" —
+# which is one step downstream and has no fact of its own.
 #
 # WHAT IS NORMAL AND WHAT IS NOT
 #
@@ -134,6 +215,24 @@ fact_value() {
     sed -n "s/^[[:space:]]*$1=\\(.*\\)\$/\\1/p" "$FACTS" | tail -1
 }
 
+# A key declared twice used to resolve silently to the last one, so a
+# stray second DHCP_CI_POOL_SIZE could move the canonical value with
+# nothing said. "The file is the single canonical declaration" has to
+# mean the file says each thing ONCE; a duplicate is a refusal.
+fact_lines() {
+    sed -n "s/^[[:space:]]*$1=.*/x/p" "$FACTS" | wc -l | tr -d '[:space:]'
+}
+
+for _key in DHCP_CI_POOL_SIZE DHCP_CI_POOL_SIZE_MEASURED DHCP_CI_POOL_LABEL \
+            DHCP_CI_JOBS_PER_RUN_WORKFLOW; do
+    _n=$(fact_lines "$_key")
+    case "$_n" in
+        ""|*[!0-9]*) refuse "could not count the declarations of $_key in $FACTS_REL." ;;
+    esac
+    [ "$_n" -le 1 ] \
+        || refuse "$FACTS_REL declares $_key $_n times. Which one wins is a property of the parser rather than of the declaration, so this file no longer says what the canonical value is."
+done
+
 POOL_SIZE=$(fact_value DHCP_CI_POOL_SIZE)
 POOL_MEASURED=$(fact_value DHCP_CI_POOL_SIZE_MEASURED)
 POOL_LABEL=$(fact_value DHCP_CI_POOL_LABEL)
@@ -194,21 +293,70 @@ if not isinstance(jobs, dict) or not jobs:
     sys.exit(0)
 
 
-def runs_on_labels(spec):
-    """Every label of a runs-on, in each of the shapes GitHub accepts."""
+def has_expression(value):
+    """True if any scalar reachable from `value` carries a ${{ }} expression."""
+    if isinstance(value, str):
+        return "${{" in value
+    if isinstance(value, list):
+        return any(has_expression(v) for v in value)
+    if isinstance(value, dict):
+        return any(has_expression(v) for v in value.values())
+    return False
+
+
+def runs_on_labels(job, name):
+    """(labels, None) for a resolvable runs-on, (None, reason) otherwise.
+
+    Every job must be DECIDED — on the pool or not on it. A job whose
+    runner cannot be read out of this file is a refusal, never a skip:
+    skipping it silently lowers the canonical count while the gate stays
+    green, which is the failure mode this whole script exists to close.
+    """
+    if "uses" in job:
+        return None, ("job '%s' calls a reusable workflow (`uses:`), so the runner it "
+                      "lands on is declared in the called workflow and is not knowable "
+                      "from this file. It might be on the pool." % name)
+
+    spec = job.get("runs-on")
+    if spec is None:
+        return None, ("job '%s' declares no runs-on, so there is nothing to decide it "
+                      "against." % name)
+    if has_expression(spec):
+        return None, ("job '%s' builds its runs-on from an expression (%r), so the runner "
+                      "is a runtime fact and is not knowable from the file." % (name, spec))
+
     if isinstance(spec, str):
-        return [spec]
+        return [spec], None
     if isinstance(spec, list):
-        return [x for x in spec if isinstance(x, str)]
+        bad = [x for x in spec if not isinstance(x, str)]
+        if bad:
+            return None, ("job '%s' has a runs-on list containing a non-string entry (%r)."
+                          % (name, bad[0]))
+        return list(spec), None
     if isinstance(spec, dict):
-        # runs-on: {group: .., labels: [..]}
+        # runs-on: {group: .., labels: [..]}. A group named for the pool is
+        # targeting the pool, so it counts as a label for matching purposes.
+        out = []
         got = spec.get("labels")
         if isinstance(got, str):
-            return [got]
-        if isinstance(got, list):
-            return [x for x in got if isinstance(x, str)]
-        return []
-    return []
+            out.append(got)
+        elif isinstance(got, list):
+            out.extend(x for x in got if isinstance(x, str))
+        elif got is not None:
+            return None, ("job '%s' has a runs-on mapping whose labels: is neither a string "
+                          "nor a list." % name)
+        group = spec.get("group")
+        if isinstance(group, str):
+            out.append(group)
+        elif group is not None:
+            return None, "job '%s' has a runs-on mapping whose group: is not a string." % name
+        if not out:
+            return None, ("job '%s' has a runs-on mapping naming neither labels nor a group."
+                          % name)
+        return out, None
+
+    return None, ("job '%s' has a runs-on that is neither a string, a list nor a mapping "
+                  "(%r)." % (name, type(spec).__name__))
 
 
 def matrix_count(job, name):
@@ -218,6 +366,12 @@ def matrix_count(job, name):
         return 1, None
     if not isinstance(strategy, dict):
         return None, "job '%s' has a non-mapping strategy" % name
+    if "max-parallel" in strategy:
+        return None, ("job '%s' sets strategy: max-parallel:, which caps how many of its "
+                      "matrix jobs are in flight at once. With it present the expansion is "
+                      "no longer the number of runners the run occupies, so the fact this "
+                      "gate derives would quietly change meaning. Teach it the semantics "
+                      "rather than letting it keep the old answer." % name)
     matrix = strategy.get("matrix")
     if matrix is None:
         return 1, None
@@ -257,10 +411,18 @@ def matrix_count(job, name):
 
 total = 0
 matched = []
+want_label = label.strip().lower()
 for name, job in jobs.items():
     if not isinstance(job, dict):
-        continue
-    if label not in runs_on_labels(job.get("runs-on")):
+        print("ERROR\tjob '%s' in %s did not parse to a mapping, so it could not be "
+              "decided on or off the pool" % (name, path))
+        sys.exit(0)
+    labels, why = runs_on_labels(job, name)
+    if labels is None:
+        print("ERROR\t%s" % why)
+        sys.exit(0)
+    # GitHub matches runner labels case-insensitively; so does this.
+    if want_label not in [x.strip().lower() for x in labels]:
         continue
     count, why = matrix_count(job, name)
     if count is None:
@@ -325,7 +487,42 @@ CANONICAL = {"pool-size": pool_size, "jobs-per-run": jobs_per_run}
 
 # The marker. Assembled from parts so that this line -- and the same line
 # in the self-test -- is not itself a site the sweep then tries to check.
-MARKER = re.compile(r"pool" + r"-facts:\s*([A-Za-z][A-Za-z0-9-]*)=([0-9]+)")
+# The leading boundary is load-bearing, and its absence was caught here by
+# this gate running on its own source: without it the word matches inside
+# `check-pool-facts:`, this script's own name, which appears in every
+# message it prints and in its self-test's assertions. That is the same
+# token-boundary defect as a bare value matching inside `dhcp-ci-1..99`,
+# arriving from the other side.
+BOUNDARY = r"(?<![A-Za-z0-9_-])"
+MARKER = re.compile(BOUNDARY + r"pool" + r"-facts:\s*([A-Za-z][A-Za-z0-9-]*)=([0-9]+)")
+
+# The bare marker WORD, with no requirement that a well-formed NAME=VALUE
+# follows it. Every occurrence of the word must parse as a complete marker
+# or the sweep refuses: a marker that does not parse binds nothing and,
+# before this check existed, said nothing about it. That was not
+# hypothetical -- it was found on this gate's own facts file, where a
+# rewrap left the value and an opening `(pool` on one line and the rest of
+# the marker on the next. The site LOOKED bound to a reader, the sweep skipped it in
+# silence, and the count went up by one anyway because an unrelated site
+# had just been added. A silently unbound site is the same defect as a
+# stale one, minus the evidence.
+MARKER_WORD = re.compile(BOUNDARY + r"pool" + r"-facts:")
+
+
+def STATES(value):
+    """Does the prose STATE this number, rather than merely contain the digits?
+
+    The digits must not be welded into a larger token. Rejecting the left
+    neighbours [0-9A-Za-z_.=-] kills `dhcp-ci-16`, `1..16`, `v16` and
+    `OF=6`; rejecting the right neighbours [0-9A-Za-z_] and a following
+    `.<digit>` kills `16x` and `16.5`. A trailing `.` or `-` survives, so
+    `... is 99.` and `a 99-runner pool` still count as statements.
+
+    An over-strict rule here costs a rewrap and says why; an over-loose
+    one goes green over a stale sentence. This takes the loud side.
+    """
+    return re.compile(r"(?<![0-9A-Za-z_.=-])" + re.escape(value)
+                      + r"(?![0-9A-Za-z_])(?!\.[0-9])")
 
 with open(listing, "rb") as fh:
     names = [n for n in fh.read().split(b"\0") if n]
@@ -350,7 +547,17 @@ for raw in names:
     except UnicodeDecodeError:
         continue
     for lineno, line in enumerate(text.splitlines(), 1):
+        words = list(MARKER_WORD.finditer(line))
         hits = list(MARKER.finditer(line))
+        if len(words) != len(hits):
+            findings.append(
+                "REFUSE\t%s:%d\tcarries the marker word %d time(s) but only %d of them "
+                "parse as `NAME=VALUE`. A marker that does not parse is not a site: it "
+                "binds nothing, and it is refused rather than skipped because a reader "
+                "cannot tell the difference by looking. The usual cause is a line wrap "
+                "splitting the marker; keep it whole, on the line that states the number."
+                % (name, lineno, len(words), len(hits)))
+            continue
         if not hits:
             continue
         prose = MARKER.sub("", line)
@@ -370,12 +577,15 @@ for raw in names:
                     "FAIL\t%s:%d\tstates %s=%s; the canonical value is %s."
                     % (name, lineno, fact, value, want))
                 continue
-            if not re.search(r"(?<![0-9])" + re.escape(value) + r"(?![0-9])", prose):
+            if not STATES(value).search(prose):
                 findings.append(
                     "FAIL\t%s:%d\tmarks %s=%s, but the sentence on that line does not state "
-                    "%s. The marker was updated and the prose was not -- which is the exact "
-                    "decay this gate exists to catch, one layer in."
-                    % (name, lineno, fact, value, value))
+                    "%s as a number of its own. Either the marker was updated and the prose "
+                    "was not -- the exact decay this gate exists to catch, one layer in -- or "
+                    "the only %s on the line is welded into a larger token such as a runner "
+                    "name or a version, which is a coincidence rather than a statement. Put "
+                    "the marker on the line that says the number."
+                    % (name, lineno, fact, value, value, value))
 
 for fact, count in sorted(sites.items()):
     if count == 0:

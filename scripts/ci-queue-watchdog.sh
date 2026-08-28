@@ -93,11 +93,18 @@ fi
 # and how many jobs one integration run places on it (#879).
 #
 # NOT literals. Both were literals here until #879, in the two advise()
-# messages below, and both were wrong: the text told an operator during a
-# capacity incident that the pool held 8 runners at 2 jobs per run when it
-# held 16 at 4. A diagnostic that misstates its own operands sends the one
-# person reading it in the wrong direction, which is worse than a comment
-# that is merely stale.
+# messages below, and both were wrong: during a capacity incident the text
+# told an operator a pool size and a per-run job count that the pool and
+# the matrix had both moved past. A diagnostic that misstates its own
+# operands sends the one person reading it in the wrong direction, which is
+# worse than a comment that is merely stale.
+#
+# Deliberately no figures in that paragraph. It carried a pool size and a
+# per-run count, written as "was X, when it was really Y" -- and the Y half
+# is a claim about the then-current state, so it goes stale exactly like
+# the messages it is explaining. Its per-run operand did, inside #879's own
+# rebase, in the comment about why literals here are dangerous. For the
+# live values, run check-pool-facts.sh --facts.
 #
 # So they are read from scripts/check-pool-facts.sh, which declares the
 # pool size in one tracked file and DERIVES the per-run job count from

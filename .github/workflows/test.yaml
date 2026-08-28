@@ -150,11 +150,21 @@ jobs:
             exit 1
           }
 
-      # PyYAML IS A NEW DEPENDENCY IN THIS REPOSITORY AND IT IS NOT ON THE
-      # RUNNER (#844). check-fork-execution-policy.sh derives which
-      # workflows an outsider can cause to run by PARSING them, because
-      # the line regexes it replaced saw one `runs-on` spelling out of
-      # seven. MEASURED from actions/runner-images
+      # PyYAML IS A DEPENDENCY OF MORE THAN ONE GATE AND IT IS NOT ON THE
+      # RUNNER (#844, #879). Two gates parse the workflow tree rather than
+      # grepping it, and both REFUSE without this module:
+      #
+      #   check-fork-execution-policy.sh  which workflows an outsider can
+      #                                   cause to run -- the line regexes
+      #                                   it replaced saw one `runs-on`
+      #                                   spelling out of seven
+      #   check-pool-facts.sh             how many jobs one run puts on the
+      #                                   privileged pool -- a matrix
+      #                                   expansion, which no regex sees
+      #
+      # Naming only the first was itself the bug this step guards against:
+      # a reader deciding the install was safe to drop would have measured
+      # one consumer and missed the other. MEASURED from actions/runner-images
       # images/ubuntu/toolsets/toolset-2404.json: the apt list carries
       # `libyaml-dev` and `python-is-python3` but no `python3-yaml`, and
       # `yamllint` is installed through PIPX, so its own PyYAML sits in an
@@ -168,7 +178,7 @@ jobs:
       # the same bargain as the locale step above, and for the same
       # reason. An install that reported success while the module is still
       # unimportable must go red here, not in the gate.
-      - name: Provide PyYAML for the fork-execution-policy gate self-test
+      - name: Provide PyYAML for the workflow-parsing gates
         run: |
           # The install runs only when the module is genuinely absent, and
           # `apt-get update` runs only then too: the hosted image's package
@@ -180,8 +190,9 @@ jobs:
           }
           python3 -c 'import yaml; print("PyYAML", yaml.__version__)' || {
             echo "::error title=PyYAML unavailable::python3 cannot import yaml" \
-                 "after the install step. check-fork-execution-policy.sh parses" \
-                 "the workflow tree and refuses without it." >&2
+                 "after the install step. check-fork-execution-policy.sh and" \
+                 "check-pool-facts.sh both parse the workflow tree and both" \
+                 "refuse without it." >&2
             exit 1
           }
 

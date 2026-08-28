@@ -12,8 +12,8 @@ name: Integration
 # The `dhcp-ci` runners are ephemeral: one container = one job, each
 # with its own nested Docker daemon (image ghcr.io/claymore666/
 # dhcp-ci-runner, Docker Engine >= 28). An orchestrator pools them
-# (names dhcp-ci-<n>); 16 of them, dhcp-ci-1..16 — MEASURED 2026-08-28
-# from the runners API. This line said 8, and so did every other
+# (names dhcp-ci-<n>); 16 of them (pool-facts: pool-size=16) — MEASURED
+# 2026-08-28 from the runners API. This line was wrong, and so was every other
 # capacity comment in this file and in coverage.yml, until #878
 # re-measured them — which is why each of them now carries its operand
 # and the date it was measured. How long they had been wrong is not
@@ -170,11 +170,11 @@ on:
 # daemon, so the isolation the group provided by hand is provided by the
 # pool. The limit becomes capacity — privileged runners against the
 # 6 jobs a run now asks for (#877) (pool-facts: jobs-per-run=6)
-# — which is the correct thing to queue on. That expansion is done:
-# the pool is 16
-# (dhcp-ci-1..16, MEASURED 2026-08-28 from the runners API) (pool-facts: pool-size=16)
-# against the 6 privileged jobs a run asks for (pool-facts: jobs-per-run=6), so two
-# concurrent runs fit and a third queues. The watchdog
+# — which is the correct thing to queue on. That expansion is done: the
+# pool is 16 runners (pool-facts: pool-size=16), MEASURED 2026-08-28 from
+# the runners API, against the 6 (pool-facts: jobs-per-run=6) privileged
+# jobs a run asks for, so two concurrent runs fit and a third
+# queues. The watchdog
 # names a shortage as a shortage (#513) rather than letting it read as a
 # suite failure.
 concurrency:
@@ -475,10 +475,10 @@ jobs:
         # spends. #468 stopped at
         # three for exactly that
         # reason against the pool of 8 it measured, where two concurrent
-        # runs had to fit. That premise no longer binds: the pool is 16
-        # (pool-facts: pool-size=16) (dhcp-ci-1..16, MEASURED 2026-08-28 from the
-        # runners API), so two runs at 6 jobs fit with headroom (pool-facts: jobs-per-run=6)
-        # and a third queues —
+        # runs had to fit. That premise no longer binds: the pool is
+        # 16 runners (pool-facts: pool-size=16), MEASURED 2026-08-28 from
+        # the runners API, so two runs at 6 (pool-facts: jobs-per-run=6)
+        # jobs fit with headroom and a third queues —
         # which the watchdog reports as a capacity shortage rather than
         # as a suite failure (#513), so the symptom is legible rather
         # than silent.
