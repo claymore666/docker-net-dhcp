@@ -86,6 +86,15 @@ name: Fork execution policy
 # goes amber when that PAT expires, which is a refusal (exit 2) naming the
 # token, not a silent pass.
 
+# What this judges, for scripts/check-scheduled-ref-pins.sh (#839): the
+# TREE. Its verdict is the repository's Actions settings measured against
+# the workflow population it parses out of its own checkout — no live
+# tracker state, so a cron firing from the default branch reads the right
+# copy. Pinning it to `dev` would make it report on workflows no release
+# contains, which is the over-correction #839 names. The paragraph above
+# on WHEN THIS STARTS OBSERVING ANYTHING already reasons from `main`
+# being the copy that runs.
+# scheduled-subject: tree
 on:
   schedule:
     # Daily, offset from Label taxonomy (7 8), Milestone scope (23 6) and
