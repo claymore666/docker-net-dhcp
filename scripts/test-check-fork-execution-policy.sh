@@ -172,6 +172,15 @@ WF0="$TMP/wf-none"; mkdir -p "$WF0"
 printf 'name: hosted\non:\n  pull_request:\njobs:\n  h:\n    runs-on: ubuntu-latest\n    steps: [{run: "true"}]\n' > "$WF0/hosted.yml"
 runwf "zero exposed workflows refuses rather than passing" 2 0 "$WF0" "ZERO workflows"
 
+# AND AN EMPTY DIRECTORY IS NOT "ZERO EXPOSED WORKFLOWS" EITHER. The two
+# read the same in the verdict and mean opposite things: one is an answer
+# about the tree, the other is the scan having no input at all. Every
+# gate in this repository that reported success over an empty input set
+# was hiding something by the time anyone looked.
+WFEMPTY="$TMP/wf-empty"; mkdir -p "$WFEMPTY"
+runwf "an empty workflow directory refuses rather than deriving zero" 2 0 "$WFEMPTY" \
+    "no *.yml or *.yaml files"
+
 # --- the two false positives that produced the wrong number ------------
 # A `pull_request` trigger with every job hosted is NOT exposure. This
 # is exactly what coverage-presence, release-backmerge and test are, and
