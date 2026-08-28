@@ -61,7 +61,15 @@ re-accepting it.
 
 ## v1.9.0
 
-*In development.*
+The release that makes IPv6 work. `ipv6=true` was accepted before this
+and did not do what it says on most segments: no container could start
+at all where the router advertises stateless or SLAAC-only configuration,
+a stateless server's configuration was received and thrown away, and on
+a managed segment the leased address stopped being refreshed and its
+default route disappeared. All three are fixed. Separately, the plugin
+no longer sends DHCPRELEASE on any path — an address is held until the
+lease expires, like any other host's — and every place the plugin
+refuses operator input is now counted.
 
 ### Upgrade notes
 
@@ -77,6 +85,11 @@ sudo mkdir -p /var/lib/net-dhcp
 | --- | --- |
 | A container's address on stop, restart, or removal | **held until the lease expires.** The plugin no longer sends a DHCPRELEASE on any path, and no longer scans for and releases orphaned leases (#800) |
 | Log line for a client signalled before it ever bound | said `Persistent client stopped before it ever held the lease; reclaiming it`; now ends `the one-shot's lease is left to expire on the server`. Log alerts matching the old wording stop matching |
+| `ipv6=true` on a segment offering no DHCPv6 address | **containers now start.** Every endpoint on a stateless (RA "other configuration" flag only) or plain SLAAC segment used to fail: there is no DHCPv6 address on such a segment by definition, the acquisition always timed out, and the timeout was fatal. The endpoint is now created without a v6 lease. What the router **advertised** decides this, not how long the plugin waited — a segment advertising the managed-address flag whose server then goes quiet is still a fatal error, exactly as before (#868) |
+| Router Advertisements inside the container | **the container's kernel now processes them.** `dhcpcd` set `accept_ra=0` and `autoconf=0` on the interface it manages and re-did it on every carrier acquisition, so nothing in the container performed router discovery. Since DHCPv6 carries no router option, that was the only source of an IPv6 default route: the route went away and the address stopped being refreshed, while on-link traffic kept working. The DHCPv6 client now runs with `accept_ra=2`, `autoconf=1` and `keep_addr_on_down=1` (#875) |
+| A segment that advertises a prefix with the A flag **and** runs stateful DHCPv6 | **containers get more than one global IPv6 address** — the DHCPv6 lease plus one the kernel forms from the prefix, and more again if the image's kernel default enables privacy addressing. Correct behaviour, and a consequence worth checking before upgrading: an outbound connection that does not bind explicitly picks its source per RFC 6724, which is not necessarily the leased address `docker inspect` reports. If a firewall, ACL or allowlist is keyed on the leased address, traffic can leave from another one. Advertise the prefix with A=0, or bind explicitly (#875) |
+| Stateless DHCPv6 replies | **applied instead of dropped unread.** A network advertising "other configuration available" answers an information request with options and no address; the plugin discarded those. With `propagate_dns`, option 23 nameservers and option 24 search domain now reach the container (#815) |
+| The `search` line in `resolv.conf` on a DHCPv6 lease | **now written.** The v6 branch mapped nameservers and not the search list, so a DHCPv6-only lease produced no `search` line at all. It now comes from option 24 (#815) |
 | How a DHCP outage is first noticed | **the DHCP client now reports it.** Dropping the `release` directive also changed what `dhcpcd` fires when a lease lapses — `EXPIRE` instead of `RELEASE`, which the plugin counts. `dhcp_timeouts` therefore rises at the lease deadline instead of one watchdog grace later, and the plugin log carries a lease-failure record where it previously carried only a watchdog line. `dhcp_timeouts` itself is untouched — same name, same labels, before and after; the counter renames in the table below are a separate change. The deadline watchdog stays as the backstop (#800; whether it still earns its place is the open measurement in #855) |
 
 **The plugin now behaves like an ordinary machine on the segment.** A host
@@ -108,6 +121,140 @@ zero, not an error, so a `jq`-over-the-socket check of the kind in
 existing. The ledger rename matters for the same reason as the counter one: a
 line saying `release` was a claim about what the DHCP server saw, and it was
 false.
+
+### New
+
+**IPv6 that works on the segment you actually have** (#868, #815, #875).
+Three separate defects, one outcome. What changes, in the order a
+container meets them:
+
+- A DHCPv6 acquisition that produces nothing is no longer read as a
+  failure by default. The discriminator is the router advertisement's
+  managed-address flag, so "this segment has no DHCPv6 addresses" and
+  "this segment has DHCPv6 and the server went quiet" are two
+  observations rather than two readings of one timeout (#868).
+- The engine writes `disable_ipv6=1` on a sandbox interface whose
+  endpoint has no IPv6 address — a case only reachable once the previous
+  point stopped refusing those endpoints. On such a link nothing IPv6 can
+  arrive at all, so the plugin enables IPv6 on the link before starting a
+  DHCPv6 client (#868).
+- Address-less DHCPv6 configuration replies are turned into an event the
+  plugin consumes instead of being dropped at two separate points (#815).
+- The container's kernel is put in charge of router discovery and kept
+  there for the life of the client, rather than only until `dhcpcd`'s
+  next carrier event (#875).
+
+`docs/reference.md` carries the full semantics, including the two
+bounds this release does **not** close: after a carrier flap a container
+waits for the router's next unsolicited advertisement before it regains
+a default route, and an address formed by the container's own kernel is
+not a stable identifier.
+
+**Seven new health counters**, all also on `/metrics` with the
+`net_dhcp_` prefix. Four are IPv6: `dhcpv6_config_only` (stateless
+information replies received), `dhcpv6_not_offered` (endpoints started on
+a segment offering no DHCPv6 address), `dhcpv6_no_router_advert` (no
+advertisement arrived inside the budget) and
+`router_advert_guard_failures` (steps of the advertisement guard that
+failed). One is a link fault: `ipv6_link_enable_failures`. Two come from
+counting refusals (#780): `directives_refused` (a `dhcpcd` directive
+dropped because your value carried a control character — a `hostname`,
+`vendor_class` or `client_id` you set that never reached the server) and
+`mount_prep_failures` (steps of a DHCP client's private mount-namespace
+preparation that failed). None of the seven affects `healthy`; the five
+that do are unchanged. Each counts what its name says and the counted
+unit differs between them — `docs/reference.md` states the unit per
+counter.
+
+### Fixed
+
+IPv6 (#868, #815, #875) — described under **New** above, because the
+change an operator sees is a capability rather than a repair.
+
+Lease handling:
+
+- The plugin sent DHCPRELEASE on stop, restart and removal, and swept
+  for orphaned leases to release those too. A `docker stop` therefore
+  released an address that the `docker start` seconds later was about to
+  ask for again, and the server was free to have given it away in
+  between. Nothing releases now (#800).
+
+Operator input the plugin refuses (#780) — each refusal is correct and
+each was silent, which is the defect:
+
+- A `dhcpcd` directive whose value carries a control character is
+  dropped rather than written, because `dhcpcd.conf` has no quoting and
+  the value would become a second directive. The lease is obtained
+  without it and the plugin reports `healthy`.
+- Steps of a DHCP client's mount-namespace preparation can fail without
+  stopping the client, and two containers whose interface has the same
+  name then collide on `dhcpcd`'s control socket — the second client
+  becomes a no-op that never renews.
+
+CI gates that reported success over something they could not see:
+
+- `staticcheck` never looked at the integration-tagged files, and
+  reported a defect that was not there (#871).
+- A required check named `test` ran a large set of gates that are not
+  tests, so a gate failure and a test failure were one signal (#829).
+- Two gates judged a narrower set than their own headers claimed (#832),
+  the health-contract gate could not see a negated property (#826), the
+  test-weakening gate could not see CI's own gate self-tests (#828), and
+  the label-taxonomy gate's queries had never executed under test (#840,
+  #715).
+- Nothing enforced action SHA-pinning, so a tag could have shipped
+  (#831); the only barrier to fork code on the self-hosted runners was a
+  web-UI toggle (#830).
+- The install-verify set is now derived from the publish set, so a new
+  registry cannot ship unverified (#833).
+- The retention purge could delete an open pull request head's only
+  evidence (#874, #837).
+- The dispatch-pending ledger's framing left schedule-only workflows out
+  of its domain (#846); a runner-image dispatch from any branch could
+  repoint the CI pool's `:latest` (#812); the issue-reference gate
+  was unsatisfiable for Dependabot, failing a required check on every
+  dependency bump (#809).
+
+Tests and harness:
+
+- The `interface_name` acceptance test had never run and could not have
+  passed (#841); the coverage baseline's cleanup arm had no observer and
+  its non-vacuity guard caught zero rather than incompleteness (#789,
+  #791); the wiring gate's presence check stopped one level short of the
+  wrapper (#790); a denied Kea reported only that it never became ready
+  (#869).
+- The integration gate ran over its design budget on a stale
+  shard-balance table; the main suite is now five shards (#877).
+
+Documentation:
+
+- Two networks on one subnet cannot both attach, and nothing said so
+  (#847). The starter-task promise in the README and its badge was false
+  (#851). The `interface_name` upstream blocker was stale — the engine
+  change is merged and waiting on a release (#822).
+
+Dependencies: Go 1.27.0, `logrus` 1.10.1, and a GitHub Actions group
+bump.
+
+### Deferred to v1.10.0
+
+- The rest of IPv6. An acquisition still reports a lease timeout where no
+  exchange was possible (#816); fresh and restarted containers take
+  different DHCPv6 paths on the same network (#820); the gateway, DNS,
+  MTU and routes are not taken from the advertisement (#821); SLAAC is
+  not something the plugin acquires (#818). Address lifetimes,
+  withdrawal and renumbering (#819) and prefix delegation (#214) are
+  later still.
+- Sweeping `STATE_DIR` at startup so an upgrade tightens the state files
+  it finds rather than only the ones it writes (#804).
+- The harness treats a netlink dump interruption as fatal, and two
+  product sites share the hazard (#802).
+- Whether the outage watchdog still earns its place now that `dhcpcd`
+  reports a lapse directly (#855).
+- What each `config.json` capability buys (#690), and whether a
+  restricted socket proxy would serve the three read-only Docker API
+  calls the plugin makes (#691). Both were listed under v1.8.0's
+  "Deferred to v1.9.0" and neither was done.
 
 ## v1.8.0
 
