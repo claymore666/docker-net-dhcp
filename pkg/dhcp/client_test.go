@@ -18,6 +18,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/vishvananda/netns"
+
 	"github.com/claymore666/docker-net-dhcp/pkg/util"
 )
 
@@ -275,7 +277,7 @@ func TestNewDHCPClient_FIFOWiredIntoConfig(t *testing.T) {
 }
 
 func TestMountPrep_RemountsProcSysRW(t *testing.T) {
-	script := mountPrep()
+	script := mountPrep(unguardedPrepParams())
 	// dhcpcd's interface setup writes /proc/sys, which is ro in the
 	// managed-plugin rootfs; the wrapper must flip it rw in the private
 	// mount namespace before exec (#247). It must still mount the
@@ -306,7 +308,7 @@ func TestNewDHCPClient_WrapsRemountIntoCommand(t *testing.T) {
 	c := newTestClient(t, "eth0", &DHCPClientOptions{MAC: mustMAC(t, "de:ad:be:ef:00:01")})
 	// The mount-prep script rides as the `sh -c` argument; assert the
 	// /proc/sys remount actually reaches the spawned command.
-	if !hasArg(c.cmd.Args, mountPrep()) {
+	if !hasArg(c.cmd.Args, mountPrep(dhcpcdParams{Iface: "eth0"})) {
 		t.Errorf("mount-prep script not wired into command; args: %v", c.cmd.Args)
 	}
 }
@@ -698,14 +700,26 @@ func mountPrepCommandWords(prep string) []string {
 }
 
 func TestMountPrep_NamesEveryBinaryAbsolutely(t *testing.T) {
-	prep := mountPrep()
-	words := mountPrepCommandWords(prep)
+	// BOTH shapes, because the Router-Advertisement guard (#875) adds
+	// command words that the unguarded string does not contain — and a
+	// test that only ever reads the unguarded shape is exactly the
+	// "word nobody had looked at yet" this test exists for.
+	prep := mountPrep(unguardedPrepParams())
+	words := mountPrepCommandWords(prep + guardedPrep())
 	for _, w := range words {
 		if !strings.HasPrefix(w, "/") {
 			t.Errorf("mountPrep runs %q, resolved through PATH by the shell; "+
 				"name it absolutely as dhcpcdBin and unsharePath are\n---\n%s",
-				w, prep)
+				w, prep+guardedPrep())
 		}
+	}
+	// The guarded shape must actually CONTRIBUTE words, or the loop
+	// above is being satisfied by the unguarded ones alone and the
+	// widening measured nothing.
+	if base, all := len(mountPrepCommandWords(prep)), len(words); all <= base {
+		t.Errorf("the Router-Advertisement guard contributed %d command words on top of "+
+			"%d; it is either absent from the guarded shape or written in a form this "+
+			"splitter cannot read", all-base, base)
 	}
 	// The loop body is a rule about command words that exist, so it is
 	// satisfied completely by there being none — which is what a
@@ -781,7 +795,7 @@ func TestMountPrepCommandWords_SeesBareCommandsAndNotRedirections(t *testing.T) 
 // /proc/sys is not a separate mount and is already writable, so `set -e`
 // would kill a client on a host that is fine. Audible, not fatal.
 func TestMountPrep_DoesNotSwallowDiagnostics(t *testing.T) {
-	prep := mountPrep()
+	prep := mountPrep(unguardedPrepParams()) + guardedPrep()
 	for _, swallow := range []string{
 		"2>/dev/null",
 		"2> /dev/null",
@@ -1220,5 +1234,224 @@ func TestSettleAcquisition_TakesNoContext(t *testing.T) {
 				"segment with a silent server becomes a running container (#868)",
 				fn.In(i), i)
 		}
+	}
+}
+
+// unguardedPrepParams is the mountPrep input for a client with NO
+// Router-Advertisement guard: the DHCPv4 client, and the DHCPv6
+// one-shot that runs against a link still in the host namespace.
+//
+// A named helper rather than a bare literal at each call site so the
+// two shapes this file tests are named rather than implied, and so
+// adding a field to dhcpcdParams cannot silently turn an unguarded
+// assertion into a guarded one.
+func unguardedPrepParams() dhcpcdParams {
+	return dhcpcdParams{Iface: "eth0"}
+}
+
+// guardedPrepParams is the mountPrep input for the persistent DHCPv6
+// client: the one inside the container's network namespace.
+func guardedPrepParams() dhcpcdParams {
+	return dhcpcdParams{Iface: "eth0", V6: true, HonorRouterAdverts: true}
+}
+
+// guardedPrep is the guard's own contribution to the shell body — what
+// the guarded shape has and the unguarded one does not.
+func guardedPrep() string {
+	return raGuardSteps(guardedPrepParams().Iface)
+}
+
+// TestMountPrep_GuardIsAbsentUnlessAsked drives the ABSENCE.
+//
+// The guard writes a container's IPv6 host configuration. If it leaked
+// into the DHCPv4 client or into the CreateEndpoint one-shot it would
+// be writing those values on a link that is still in the HOST network
+// namespace — changing the host's own router-discovery behaviour, on
+// every endpoint, with nothing reporting it.
+//
+// Keyed on the sysctl DIRECTORY rather than on the three knob names, so
+// a fourth knob added to raGuardKnobs is covered without anyone
+// remembering this test.
+func TestMountPrep_GuardIsAbsentUnlessAsked(t *testing.T) {
+	off := mountPrep(unguardedPrepParams())
+	if strings.Contains(off, sysctlIPv6ConfDir) {
+		t.Errorf("mountPrep touches %v without HonorRouterAdverts; that link may still be "+
+			"in the host namespace\n---\n%s", sysctlIPv6ConfDir, off)
+	}
+	on := mountPrep(guardedPrepParams())
+	if !strings.Contains(on, sysctlIPv6ConfDir) {
+		t.Errorf("HonorRouterAdverts produced no guard at all; the check above then has "+
+			"one possible verdict\n---\n%s", on)
+	}
+}
+
+// TestRAGuard_WritesVerifiesAndShieldsEveryKnob pins the steps a knob
+// needs and the ORDER they must come in.
+//
+// Order is the whole design: shielding before the write makes the write
+// fail, and verifying after the shield verifies the shield's own view
+// rather than the kernel's. Derived from raGuardKnobs so a knob added
+// with only two of its three steps fails here.
+
+func TestRAGuard_WritesVerifiesAndShieldsEveryKnob(t *testing.T) {
+	const iface = "eth0"
+	prep := mountPrep(dhcpcdParams{Iface: iface, V6: true, HonorRouterAdverts: true})
+	knobs := raGuardKnobs()
+	if len(knobs) == 0 {
+		t.Fatal("no knobs: every assertion below is satisfied by an empty domain")
+	}
+	for _, k := range knobs {
+		path := raGuardPath(iface, k.name)
+		shield := strings.Index(prep, mountBin+" -o remount,bind,ro "+path)
+		write := strings.Index(prep, echoBin+" "+k.value+" > "+path)
+		verify := strings.Index(prep, grepBin+" -qxF "+k.value+" "+path)
+		switch {
+		case k.value == "":
+			t.Errorf("%v: knob with no value; the guard cannot verify, and therefore "+
+				"cannot claim to hold, a knob it names no value for", k.name)
+		case write < 0:
+			t.Errorf("%v: no write of %q\n---\n%s", k.name, k.value, prep)
+		case verify < 0:
+			t.Errorf("%v: written but never read back; a /proc/sys write that reports "+
+				"success is not evidence the value is there\n---\n%s", k.name, prep)
+		case shield < 0:
+			t.Errorf("%v: written but not shielded; dhcpcd re-runs if_setup_inet6() on "+
+				"every carrier acquisition and would undo it\n---\n%s", k.name, prep)
+		case !(write < verify && verify < shield):
+			t.Errorf("%v: steps out of order (write=%d verify=%d shield=%d); must be "+
+				"write, then read back, then shield\n---\n%s",
+				k.name, write, verify, shield, prep)
+		}
+	}
+}
+
+// The values are not arbitrary and the reasons are not interchangeable,
+// so they are pinned individually with the reason in the failure text.
+func TestRAGuard_ValuesAreTheOnesTheReasonsRequire(t *testing.T) {
+	want := map[string]string{
+		// 1 accepts advertisements only while forwarding is disabled, so
+		// any container that routes — VPN, NAT, docker-in-docker — would
+		// silently lose router discovery. RFC 7084 §4.2 W-1/W-3.
+		"accept_ra": "2",
+		// The router's A flag decides whether an address forms
+		// (RFC 4862 §5.5.3); 0 would override the router host-side and
+		// leave a stateless or SLAAC segment with no address at all.
+		"autoconf": "1",
+		// A carrier flap otherwise flushes every global IPv6 address on
+		// the link, and nothing re-applies the one libnetwork set.
+		"keep_addr_on_down": "1",
+	}
+	got := map[string]string{}
+	for _, k := range raGuardKnobs() {
+		got[k.name] = k.value
+	}
+	if len(got) != len(want) {
+		t.Fatalf("guard knobs = %v, want %v: a knob was added or removed without a "+
+			"reason being written down here", got, want)
+	}
+	for name, v := range want {
+		if got[name] != v {
+			t.Errorf("%v = %q, want %q", name, got[name], v)
+		}
+	}
+}
+
+// The guard's paths must be PER-INTERFACE.
+//
+// MEASURED: writing net.ipv6.conf.all.accept_ra=2 left an existing
+// interface's own accept_ra at 0. A guard that wrote the `all` node
+// would report success and change nothing.
+func TestRAGuard_PathsArePerInterface(t *testing.T) {
+	prep := mountPrep(dhcpcdParams{Iface: "veth9", V6: true, HonorRouterAdverts: true})
+	for _, bad := range []string{
+		sysctlIPv6ConfDir + "/all/",
+		sysctlIPv6ConfDir + "/default/",
+	} {
+		if strings.Contains(prep, bad) {
+			t.Errorf("guard writes %v, which does not propagate to an existing "+
+				"interface\n---\n%s", bad, prep)
+		}
+	}
+	if !strings.Contains(prep, sysctlIPv6ConfDir+"/veth9/") {
+		t.Errorf("guard does not name the interface it was given\n---\n%s", prep)
+	}
+}
+
+// The guard is refused on every shape but the persistent DHCPv6 client.
+func TestNewDHCPClient_RefusesRouterAdvertGuardOffThePersistentV6Client(t *testing.T) {
+	ns := netns.NsHandle(0)
+	for _, tc := range []struct {
+		name string
+		opts DHCPClientOptions
+	}{
+		{"v4", DHCPClientOptions{HonorRouterAdverts: true, NetNS: &ns}},
+		{"host namespace", DHCPClientOptions{HonorRouterAdverts: true, V6: true}},
+		{"one-shot", DHCPClientOptions{HonorRouterAdverts: true, V6: true, Once: true, NetNS: &ns}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := tc.opts
+			opts.MAC = mustMAC(t, "de:ad:be:ef:00:01")
+			if _, err := NewDHCPClient("eth0", &opts); err == nil {
+				t.Error("accepted the guard on a client that must not carry it; " +
+					"a silently dropped flag looks exactly like a working plugin")
+			}
+		})
+	}
+	// The other direction: the shape it is FOR must still be accepted,
+	// or the refusal above is satisfied by refusing everything.
+	opts := DHCPClientOptions{
+		HonorRouterAdverts: true, V6: true, NetNS: &ns,
+		MAC: mustMAC(t, "de:ad:be:ef:00:01"),
+	}
+	c, err := NewDHCPClient("eth0", &opts)
+	if err != nil {
+		t.Fatalf("refused the persistent DHCPv6 client: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(c.workDir) })
+}
+
+// TestRAGuard_DoesNotClaimKnobsTheShieldCannotHold is the executable
+// form of a measurement, and it exists because this guard already had
+// the defect once.
+//
+// The shield is a bind mount. It makes a write through /proc/sys fail
+// and it is BLIND TO NETLINK. addr_gen_mode was added to raGuardKnobs
+// as a shield-only entry and looked completely healthy — the shield
+// step succeeded, no failure marker was emitted, the counter stayed at
+// zero — while dhcpcd went on setting it to 1 (NONE) over netlink
+// (IFLA_INET6_ADDR_GEN_MODE) exactly as before. MEASURED by driving
+// both routes by hand inside the client's own mount namespace: the
+// /proc/sys write is refused, `ip link set dev eth0 addrgenmode none`
+// succeeds.
+//
+// A green step over a knob nothing is holding is worse than no step at
+// all, so the rule is written down where it goes red rather than in a
+// comment somebody has to remember to read. This is a NAMED list, not
+// a property, because "which sysctls does dhcpcd set over netlink" is
+// not derivable from this repo — so it carries its own escape: it
+// cannot catch a fifth knob nobody has measured. What it does catch is
+// the one that was already measured and already got in.
+func TestRAGuard_DoesNotClaimKnobsTheShieldCannotHold(t *testing.T) {
+	// Keys are knob names; values are why the mount shield cannot hold
+	// them, quoted back in the failure so the next person gets the
+	// measurement and not just a veto.
+	cannotHold := map[string]string{
+		"addr_gen_mode": "dhcpcd sets it over netlink (IFLA_INET6_ADDR_GEN_MODE), " +
+			"where a bind mount has no say; MEASURED, the shield holds the " +
+			"/proc/sys write and the netlink write succeeds anyway",
+	}
+	for _, k := range raGuardKnobs() {
+		if why, bad := cannotHold[k.name]; bad {
+			t.Errorf("raGuardKnobs contains %q, which the shield cannot hold: %s",
+				k.name, why)
+		}
+	}
+	// The map must actually be consulted against a non-empty table, or
+	// this passes by having nothing to look at.
+	if len(raGuardKnobs()) == 0 {
+		t.Fatal("no knobs: this test is vacuous")
+	}
+	if len(cannotHold) == 0 {
+		t.Fatal("nothing named: this test is vacuous")
 	}
 }

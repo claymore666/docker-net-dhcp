@@ -150,6 +150,12 @@ const (
 	mountBin = "/bin/mount"
 	mkdirBin = "/bin/mkdir"
 	echoBin  = "/bin/echo"
+	// grepBin reads a sysctl back after the Router-Advertisement guard
+	// writes it (#875). It is here rather than in ra_guard.go for the
+	// reason this comment block gives: the Dockerfile parity derivation
+	// reads this package's constants, and a binary with no constant is a
+	// binary that derivation cannot see.
+	grepBin = "/bin/grep"
 )
 
 // shBin is the ABSOLUTE path to the shell unshare execs.
@@ -244,12 +250,21 @@ const workDirPrefix = "net-dhcp-dhcpcd-"
 //
 // NOT A CLAIM THAT A COLLISION HAS HAPPENED. It has not been observed.
 // The finding is that it could not have been observed.
-func mountPrep() string {
-	return mountPrepStep(fmt.Sprintf("%s -t tmpfs tmpfs %s", mountBin, dhcpcdStateDir), "state-tmpfs") +
+func mountPrep(p dhcpcdParams) string {
+	prep := mountPrepStep(fmt.Sprintf("%s -t tmpfs tmpfs %s", mountBin, dhcpcdStateDir), "state-tmpfs") +
 		mountPrepStep(fmt.Sprintf("%s -p %s", mkdirBin, dhcpcdRunDir), "run-mkdir") +
 		mountPrepStep(fmt.Sprintf("%s -t tmpfs tmpfs %s", mountBin, dhcpcdRunDir), "run-tmpfs") +
-		mountPrepStep(fmt.Sprintf("%s -o remount,bind,rw %s", mountBin, procSysPath), "procsys-remount") +
-		"exec \"$0\" \"$@\""
+		mountPrepStep(fmt.Sprintf("%s -o remount,bind,rw %s", mountBin, procSysPath), "procsys-remount")
+	// The Router-Advertisement guard runs AFTER the /proc/sys remount
+	// above and BEFORE the exec below, and both halves of that sentence
+	// are load-bearing: it writes to /proc/sys, which is read-only in
+	// the managed-plugin rootfs until the line above, and its whole
+	// purpose is to be in force before dhcpcd's if_setup_inet6() runs.
+	// See ra_guard.go.
+	if p.HonorRouterAdverts {
+		prep += raGuardSteps(p.Iface)
+	}
+	return prep + "exec \"$0\" \"$@\""
 }
 
 // mountPrepFailMarker prefixes the line mountPrep writes to stderr when
@@ -265,6 +280,18 @@ func mountPrep() string {
 // else.
 const mountPrepFailMarker = "net-dhcp-mountprep-failed:"
 
+// raGuardFailMarker prefixes the line a Router-Advertisement guard step
+// writes to stderr when it fails (#875).
+//
+// A SEPARATE marker, not a reason string under the existing one. The
+// two failures mean different things to an operator -- a namespace
+// isolation that did not land versus a container whose IPv6 will stop
+// working -- and a single counter could not tell them apart. Like its
+// sibling it is deliberately not a word in dhcpcd's vocabulary, so a
+// count can never be manufactured by dhcpcd logging about something
+// else.
+const raGuardFailMarker = "net-dhcp-raguard-failed:"
+
 // mountPrepStep appends `|| echo <marker> <step> >&2; ` to one command.
 //
 // `||` and not `&&`, and the chain stays `;`-separated: a failed step
@@ -279,7 +306,18 @@ const mountPrepFailMarker = "net-dhcp-mountprep-failed:"
 // that by counting markers against commands rather than by naming the
 // four that exist today.
 func mountPrepStep(cmd, step string) string {
-	return fmt.Sprintf("%s || %s '%s %s' >&2; ", cmd, echoBin, mountPrepFailMarker, step)
+	return prepStep(cmd, mountPrepFailMarker, step)
+}
+
+// prepStep is mountPrepStep with the marker as a parameter, so a second
+// family of prepared steps can be counted separately (#875).
+//
+// The marker is what decides WHICH counter a failure lands on, so it is
+// a parameter of the step builder rather than something the watcher
+// infers from the step name. A watcher that guessed from the name would
+// be keyed on today's spelling; this is keyed on the derivation.
+func prepStep(cmd, marker, step string) string {
+	return fmt.Sprintf("%s || %s '%s %s' >&2; ", cmd, echoBin, marker, step)
 }
 
 // mountPrepWatcher counts mountPrep failure markers on a byte stream.
@@ -311,8 +349,11 @@ func (w *mountPrepWatcher) Write(p []byte) (int, error) {
 		if i < 0 {
 			break
 		}
-		if bytes.Contains(w.buf[:i], []byte(mountPrepFailMarker)) {
+		switch {
+		case bytes.Contains(w.buf[:i], []byte(mountPrepFailMarker)):
 			mountPrepFailures.Add(1)
+		case bytes.Contains(w.buf[:i], []byte(raGuardFailMarker)):
+			raGuardFailures.Add(1)
 		}
 		w.buf = w.buf[i+1:]
 	}
@@ -450,6 +491,20 @@ type DHCPClientOptions struct {
 	// and #243.
 	Broadcast bool
 
+	// HonorRouterAdverts asks the client to put the interface's KERNEL
+	// in charge of Router Advertisement processing, and to keep dhcpcd
+	// from turning it back off (#875).
+	//
+	// The plugin sets it for the persistent DHCPv6 client, which is the
+	// one that runs inside the container's network namespace. It is
+	// REFUSED on any other shape -- see NewDHCPClient -- because the
+	// values it writes are host configuration for a container's link,
+	// and writing them on a link that is still in the host namespace
+	// would be changing the HOST's router-discovery behaviour.
+	//
+	// What it writes and why each value is what it is: ra_guard.go.
+	HonorRouterAdverts bool
+
 	// FQDN, when non-empty, sets dhcpcd's `fqdn` directive mode (e.g.
 	// "both"), making the client send the DHCP FQDN option (81 v4 / 39 v6)
 	// built from Hostname and ask the server to register it in DNS (#261).
@@ -486,6 +541,26 @@ func NewDHCPClient(iface string, opts *DHCPClientOptions) (*DHCPClient, error) {
 	if !ValidIfaceName(iface) {
 		return nil, fmt.Errorf("invalid interface name %q", iface)
 	}
+	// The Router-Advertisement guard writes a container's IPv6 host
+	// configuration, so it is only meaningful on the client that runs
+	// inside that container's network namespace: the persistent DHCPv6
+	// one. REFUSE the other shapes rather than silently ignoring the
+	// flag -- a dropped flag is a wiring mistake that looks like a
+	// working plugin, and the failure it would cause (accept_ra=2 on a
+	// link still in the HOST namespace, or on the CreateEndpoint
+	// one-shot's host-side veth) is not one anything downstream would
+	// report. See ra_guard.go and DHCPClientOptions.HonorRouterAdverts.
+	if opts.HonorRouterAdverts {
+		switch {
+		case !opts.V6:
+			return nil, fmt.Errorf("HonorRouterAdverts is IPv6-only")
+		case opts.NetNS == nil:
+			return nil, fmt.Errorf("HonorRouterAdverts needs a target network namespace")
+		case opts.Once:
+			return nil, fmt.Errorf("HonorRouterAdverts is for the persistent client, not the one-shot")
+		}
+	}
+
 	handler := opts.HandlerScript
 	if handler == "" {
 		handler = DefaultHandler
@@ -512,22 +587,23 @@ func NewDHCPClient(iface string, opts *DHCPClientOptions) (*DHCPClient, error) {
 
 	configPath := filepath.Join(workDir, "dhcpcd.conf")
 	params := dhcpcdParams{
-		Iface:        iface,
-		MAC:          opts.MAC,
-		V6:           opts.V6,
-		Once:         opts.Once,
-		Hostname:     opts.Hostname,
-		FQDN:         opts.FQDN,
-		VendorClass:  vendor,
-		ClientID:     opts.ClientID,
-		RequestedIP:  opts.RequestedIP,
-		PreferredV6:  opts.PreferredV6,
-		Broadcast:    opts.Broadcast,
-		AllowServers: opts.AllowServers,
-		DenyServers:  opts.DenyServers,
-		Handler:      handler,
-		ConfigPath:   configPath,
-		EventFIFO:    fifoPath,
+		Iface:              iface,
+		MAC:                opts.MAC,
+		V6:                 opts.V6,
+		Once:               opts.Once,
+		Hostname:           opts.Hostname,
+		FQDN:               opts.FQDN,
+		VendorClass:        vendor,
+		ClientID:           opts.ClientID,
+		RequestedIP:        opts.RequestedIP,
+		PreferredV6:        opts.PreferredV6,
+		Broadcast:          opts.Broadcast,
+		HonorRouterAdverts: opts.HonorRouterAdverts,
+		AllowServers:       opts.AllowServers,
+		DenyServers:        opts.DenyServers,
+		Handler:            handler,
+		ConfigPath:         configPath,
+		EventFIFO:          fifoPath,
 		// Forward our own GOCOVERDIR to the hook so its coverage counters
 		// survive dhcpcd's environment scrub (cover build only; unset and
 		// thus omitted in production). See renderConfig.
@@ -564,7 +640,7 @@ func NewDHCPClient(iface string, opts *DHCPClientOptions) (*DHCPClient, error) {
 	// Wait target it directly. `sh -c '... exec "$0" "$@"'` passes the
 	// dhcpcd argv as $0/$@, avoiding any quoting of paths.
 	dargs := renderArgs(params)
-	wrapped := append([]string{unsharePath, "-m", shBin, "-c", mountPrep()}, dargs...)
+	wrapped := append([]string{unsharePath, "-m", shBin, "-c", mountPrep(params)}, dargs...)
 
 	// unsharePath, not wrapped[0]. They are the same string — wrapped is
 	// built one line up with unsharePath at index 0 — but an index

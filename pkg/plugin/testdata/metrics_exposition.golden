@@ -220,6 +220,10 @@ net_dhcp_netns_pid_mismatches_total 9479108
 # TYPE net_dhcp_directives_refused_total counter
 net_dhcp_directives_refused_total 3390657
 
+# HELP net_dhcp_router_advert_guard_failures_total Steps of a DHCPv6 client's Router-Advertisement guard that failed. The guard puts the container's kernel in charge of router discovery and prefix processing -- the only source of an IPv6 default route and of on-link determination, on a managed DHCPv6 segment as much as a stateless one -- and stops dhcpcd turning that off again. A failed step degrades rather than refusing the endpoint, and it is invisible in behaviour until the advertisement nothing refreshed expires and off-link IPv6 stops while on-link still works. Counts steps, not clients (#875).
+# TYPE net_dhcp_router_advert_guard_failures_total counter
+net_dhcp_router_advert_guard_failures_total 7077324
+
 # HELP net_dhcp_mount_prep_failures_total Commands in a DHCP client per-client mount-namespace preparation that failed. The chain continues deliberately and dhcpcd starts anyway, so a rise is invisible in behaviour until two containers whose interface is the default eth0 collide on the dhcpcd control socket and the second client stops renewing. Counts commands, not clients: one client failing three of four steps adds 3 (#780).
 # TYPE net_dhcp_mount_prep_failures_total counter
 net_dhcp_mount_prep_failures_total 8228874

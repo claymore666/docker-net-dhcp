@@ -1242,6 +1242,21 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 		FQDN:         m.opts.fqdnMode(),
 		V6:           v6,
 		NetNS:        &m.nsHandle,
+		// Put the container's KERNEL in charge of Router Advertisement
+		// processing and keep dhcpcd from turning it off again (#875).
+		//
+		// v6 only, and only here: this is the persistent client, the one
+		// that runs inside the container's network namespace. The
+		// CreateEndpoint one-shot runs against a link that is still in
+		// the HOST namespace, where these values are the host's business
+		// and not ours -- pkg/dhcp refuses the combination rather than
+		// trusting this comment.
+		//
+		// DHCPv6 carries no router (RFC 8415 §21) and an assigned
+		// address does not imply an on-link prefix (RFC 5942 §4 rule 1,
+		// RFC 8415 §18.2.10.1), so advertisement processing is mandatory
+		// on THIS path too, not only on a stateless one.
+		HonorRouterAdverts: v6,
 		// Same MAC the CreateEndpoint one-shot used (this is the same
 		// link, moved into the netns), so dhcpcd derives the identical
 		// DUID-LL/IAID and the persistent client renews the very lease

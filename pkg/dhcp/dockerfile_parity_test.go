@@ -419,7 +419,12 @@ func deriveCommandWords(t *testing.T) map[string]string {
 	// same shape of blindness as looking only at $0: the word that gets
 	// checked is the word the splitter happened to produce.
 	shellWords := 0
-	for _, seg := range strings.FieldsFunc(mountPrep(), func(r rune) bool {
+	// The GUARDED shape, not the bare one: the Router-Advertisement
+	// guard (#875) adds command words to this same `sh -c` body, and a
+	// derivation that read only the unguarded string would conclude the
+	// image need not provide them.
+	guardedBody := mountPrep(dhcpcdParams{Iface: "eth0", V6: true, HonorRouterAdverts: true})
+	for _, seg := range strings.FieldsFunc(guardedBody, func(r rune) bool {
 		return r == ';' || r == '&' || r == '|'
 	}) {
 		fields := strings.Fields(seg)

@@ -54,13 +54,13 @@ func testMAC(t *testing.T) net.HardwareAddr {
 func TestRenderConfig_CountsARefusedDirective(t *testing.T) {
 	// Negative arm first, so the positive arm below is a DELTA against a
 	// tree that has just been shown to sit still.
-	before, _ := RefusalCounts()
+	before, _, _ := RefusalCounts()
 	renderConfig(dhcpcdParams{
 		Iface:    "eth0",
 		MAC:      testMAC(t),
 		Hostname: "well-formed",
 	})
-	quiet, _ := RefusalCounts()
+	quiet, _, _ := RefusalCounts()
 	if quiet != before {
 		t.Errorf("directives_refused moved by %d on a config with nothing to refuse, want 0",
 			quiet-before)
@@ -74,7 +74,7 @@ func TestRenderConfig_CountsARefusedDirective(t *testing.T) {
 		MAC:      testMAC(t),
 		Hostname: "web1\nduid 00:03:00:01:be:ef:be:ef:be:ef",
 	})
-	after, _ := RefusalCounts()
+	after, _, _ := RefusalCounts()
 
 	if after <= quiet {
 		t.Errorf("directives_refused did not move on a refused directive (%d -> %d). "+
@@ -96,25 +96,103 @@ func TestRenderConfig_CountsARefusedDirective(t *testing.T) {
 // TestMountPrep_NamesEveryBinaryAbsolutely was written to avoid and the
 // same reasoning applies here.
 func TestMountPrep_EveryCommandReportsItsFailure(t *testing.T) {
-	prep := mountPrep()
+	// Both shapes: the Router-Advertisement guard (#875) appends steps
+	// to this same body, and they are prepared steps under the same
+	// contract.
+	for _, tc := range []struct {
+		name   string
+		params dhcpcdParams
+		marker string
+	}{
+		{"unguarded", unguardedPrepParams(), mountPrepFailMarker},
+		{"guarded", guardedPrepParams(), raGuardFailMarker},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			prep := mountPrep(tc.params)
 
-	markers := strings.Count(prep, mountPrepFailMarker)
+			// PER STATEMENT, not by counting commands against markers.
+			//
+			// The counting form excluded every `echo` as "the reporting
+			// command", which silently exempted any prepared step whose
+			// own command happened to be an echo — and #875's guard
+			// writes a sysctl with exactly that. A gate that cannot see
+			// a whole class of step is the blind spot this file's
+			// siblings were written about; keying on "does this
+			// statement carry a marker" needs no such exemption and does
+			// not care which binary a step runs.
+			statements := 0
+			for _, stmt := range strings.Split(prep, ";") {
+				if len(strings.Fields(stmt)) == 0 || strings.HasPrefix(strings.TrimSpace(stmt), "exec ") {
+					continue
+				}
+				statements++
+				if !strings.Contains(stmt, mountPrepFailMarker) &&
+					!strings.Contains(stmt, raGuardFailMarker) {
+					t.Errorf("prepared step %q carries no failure marker; it fails "+
+						"silently and dhcpcd starts anyway\n---\n%s", strings.TrimSpace(stmt), prep)
+				}
+			}
+			if statements == 0 {
+				t.Errorf("found no prepared steps — the loop above is satisfied by an "+
+					"empty domain and checks nothing\n---\n%s", prep)
+			}
+			// And the shape's OWN marker family must be present, so a
+			// guarded body whose guard vanished cannot pass on the
+			// unguarded steps' markers alone.
+			if !strings.Contains(prep, tc.marker) {
+				t.Errorf("no %q marker in the %v shape\n---\n%s", tc.marker, tc.name, prep)
+			}
+		})
+	}
+}
 
-	prepared := 0
-	for _, w := range mountPrepCommandWords(prep) {
-		if w != echoBin {
-			prepared++
-		}
+// The Router-Advertisement guard's failures reach their OWN counter, and
+// not the mount-prep one.
+//
+// Built with the product's own step builder for the reason its sibling
+// gives: a test that transcribes the marker proves the transcription.
+// Two counters that are wired to the same atomic look identical from a
+// single-counter test, so both are read on every arm here.
+func TestRAGuardWatcher_CountsARealFailedStepSeparately(t *testing.T) {
+	run := func(t *testing.T, body string) (mountPrep, raGuard int32) {
+		t.Helper()
+		_, mBefore, rBefore := RefusalCounts()
+
+		var w mountPrepWatcher
+		cmd := exec.Command(shBin, "-c", body)
+		cmd.Stderr = &w
+		_ = cmd.Run()
+
+		_, mAfter, rAfter := RefusalCounts()
+		return mAfter - mBefore, rAfter - rBefore
 	}
 
-	if markers != prepared {
-		t.Errorf("mountPrep runs %d preparation commands but carries %d failure markers; "+
-			"a command with no marker fails silently and dhcpcd starts anyway\n---\n%s",
-			prepared, markers, prep)
+	// Negative arm: the same real step shape with a command that
+	// succeeds. One variable apart from the positive arm.
+	if m, r := run(t, prepStep(trueBin, raGuardFailMarker, "accept_ra-write")); m != 0 || r != 0 {
+		t.Errorf("counters moved by mount_prep=%d ra_guard=%d for a step that SUCCEEDED, want 0/0", m, r)
 	}
-	if prepared == 0 {
-		t.Errorf("found no preparation commands in mountPrep — the equality above is "+
-			"satisfied by an empty domain and checks nothing\n---\n%s", prep)
+
+	// Positive control, and the separation.
+	if m, r := run(t, prepStep(falseBin, raGuardFailMarker, "accept_ra-write")); m != 0 || r != 1 {
+		t.Errorf("counters moved by mount_prep=%d ra_guard=%d for one failed guard step, "+
+			"want 0/1. A 0 in the second is indistinguishable from a counter that was "+
+			"never wired; a 1 in the first means the two families share an atomic", m, r)
+	}
+
+	// The other direction: a mount-prep failure must not land on the
+	// guard's counter.
+	if m, r := run(t, mountPrepStep(falseBin, "state-tmpfs")); m != 1 || r != 0 {
+		t.Errorf("counters moved by mount_prep=%d ra_guard=%d for one failed mount-prep "+
+			"step, want 1/0", m, r)
+	}
+
+	// Counts STEPS: a guard that failed to write and to shield one knob
+	// reads 2, not 1.
+	body := prepStep(falseBin, raGuardFailMarker, "accept_ra-write") +
+		prepStep(falseBin, raGuardFailMarker, "accept_ra-shield")
+	if _, r := run(t, body); r != 2 {
+		t.Errorf("ra_guard moved by %d for two failed steps, want 2", r)
 	}
 }
 
@@ -129,7 +207,7 @@ func TestMountPrep_EveryCommandReportsItsFailure(t *testing.T) {
 func TestMountPrepWatcher_CountsARealFailedStep(t *testing.T) {
 	run := func(t *testing.T, body string) int32 {
 		t.Helper()
-		_, mBefore := RefusalCounts()
+		_, mBefore, _ := RefusalCounts()
 
 		var w mountPrepWatcher
 		cmd := exec.Command(shBin, "-c", body)
@@ -139,7 +217,7 @@ func TestMountPrepWatcher_CountsARealFailedStep(t *testing.T) {
 		// than asserted on.
 		_ = cmd.Run()
 
-		_, mAfter := RefusalCounts()
+		_, mAfter, _ := RefusalCounts()
 		return mAfter - mBefore
 	}
 
@@ -171,7 +249,7 @@ func TestMountPrepWatcher_CountsARealFailedStep(t *testing.T) {
 // diagnostic into a namespace-preparation failure, and an operator
 // alerting on the counter would be paged for nothing.
 func TestMountPrepWatcher_IgnoresOrdinaryStderr(t *testing.T) {
-	_, before := RefusalCounts()
+	_, before, _ := RefusalCounts()
 
 	var w mountPrepWatcher
 	for _, line := range []string{
@@ -185,7 +263,7 @@ func TestMountPrepWatcher_IgnoresOrdinaryStderr(t *testing.T) {
 		}
 	}
 
-	_, after := RefusalCounts()
+	_, after, _ := RefusalCounts()
 	if after != before {
 		t.Errorf("mount_prep_failures moved by %d on ordinary dhcpcd stderr, want 0",
 			after-before)
@@ -198,7 +276,7 @@ func TestMountPrepWatcher_IgnoresOrdinaryStderr(t *testing.T) {
 // obligation to hand over whole lines. Matching per-chunk would miss
 // this and, on a boundary inside one line, could count it twice.
 func TestMountPrepWatcher_CountsAMarkerSplitAcrossWrites(t *testing.T) {
-	_, before := RefusalCounts()
+	_, before, _ := RefusalCounts()
 
 	var w mountPrepWatcher
 	full := mountPrepFailMarker + " state-tmpfs\n"
@@ -215,7 +293,7 @@ func TestMountPrepWatcher_CountsAMarkerSplitAcrossWrites(t *testing.T) {
 		t.Fatalf("watcher Write: %v", err)
 	}
 
-	_, after := RefusalCounts()
+	_, after, _ := RefusalCounts()
 	if got := after - before; got != 1 {
 		t.Errorf("a marker delivered in 7-byte chunks counted %d times, want 1", got)
 	}

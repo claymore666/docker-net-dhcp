@@ -180,6 +180,15 @@ type dhcpcdParams struct {
 	PreferredV6 string // v6 IA_NA preferred address; "" omits
 	Broadcast   bool   // request a broadcast reply (v4 only; ipvlan-L2 shared MAC)
 
+	// HonorRouterAdverts turns on the Router-Advertisement guard in the
+	// client's private mount namespace: the kernel is put in charge of
+	// RFC 4861 §6.3.4 / RFC 4862 §5.5.3 on this interface and dhcpcd is
+	// prevented from turning that back off (#875). It reaches the argv
+	// only through mountPrep; renderConfig has nothing to say about it,
+	// because dhcpcd offers no directive that suppresses the write.
+	// See ra_guard.go.
+	HonorRouterAdverts bool
+
 	// AllowServers restricts which DHCPv4 servers may be accepted, as
 	// dhcpcd `whitelist` entries (IPv4 only — dhcp6.c never consults
 	// them). Empty imposes no restriction. Set from the network's
