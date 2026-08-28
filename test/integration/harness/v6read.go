@@ -422,3 +422,98 @@ func AssertV6LifetimeRefreshed(t V6Reporter, samples []V6LftReading, mode V6Mode
 			first.pref, last.pref, validRise, first.valid, caveat)
 	}
 }
+
+// V6RouteReading is one reading of `ip -6 route show` taken inside the
+// container, with the label and elapsed time it was taken at.
+type V6RouteReading struct {
+	Label   string
+	Elapsed time.Duration
+	Route   string
+}
+
+// V6RouteFormBy bounds how long the RA-derived IPv6 default route may
+// take to appear before its absence means something is WRONG.
+//
+// It is a bound, not a tuned wait: DAD on the link-local is one
+// RetransTimer (1s by default, RFC 4861 §6.3.2) and what follows it is a
+// single solicit/advertise round trip on a veth. 60s is far past both.
+const V6RouteFormBy = 60 * time.Second
+
+// AssertV6DefaultRouteFormsAndHolds is #875's managed arm: the
+// container's IPv6 default route must APPEAR, and having appeared must
+// still be there at every later reading.
+//
+// WHY IT IS NOT "A ROUTE AT EVERY READING". That is what this asserted
+// first, and it went red at t+0 on a segment that routes perfectly.
+// The premise is one no host can satisfy: this route is RA-derived, so
+// it cannot exist until DAD on the link-local has finished and the
+// solicit/advertise exchange DAD gates has completed. The managed
+// address is NOT subject to this -- libnetwork applies it statically at
+// Join, before the container runs -- so the two readings taken at the
+// same instant have different provenance, and only the route one moved.
+//
+// FORM-then-PERSIST is STRICTLY STRONGER than the t+0 demand it
+// replaces. Every way the old shape could fail still fails here: a
+// route that never appears, one that appears past the bound, and one
+// that appears and is then withdrawn -- which is #875 itself. One case
+// is newly caught: a series whose route appears only at the LAST
+// reading proves nothing about durability and is refused as vacuous
+// rather than passing, because the persist loop would be empty and an
+// empty universal is satisfied by anything.
+//
+// The verdict takes readings rather than a container so it can be
+// driven against series whose answer is known -- including the two that
+// matter, the defect series this branch measured before the fix and the
+// series a fixed tree must produce.
+func AssertV6DefaultRouteFormsAndHolds(t V6Reporter, readings []V6RouteReading, formBy time.Duration) {
+	t.Helper()
+
+	if len(readings) < 2 {
+		t.Errorf("the IPv6 default route verdict was handed %d reading(s); it needs at "+
+			"least two, one to see the route form and one to see whether it held. "+
+			"With fewer, durability -- which is the whole of #875 -- is not measured "+
+			"at all and a pass would mean nothing", len(readings))
+		return
+	}
+
+	formed := -1
+	for i, r := range readings {
+		if HasDefaultV6Route(r.Route) {
+			formed = i
+			break
+		}
+	}
+
+	switch {
+	case formed < 0:
+		last := readings[len(readings)-1]
+		t.Errorf("M4 FAILED: the container NEVER had an IPv6 default route, at any of the "+
+			"%d readings across t+%s. On-link traffic still works, which is what hides "+
+			"this; nothing off-link is reachable over IPv6:\n%s",
+			len(readings), last.Elapsed, last.Route)
+	case readings[formed].Elapsed > formBy:
+		t.Errorf("M4 FAILED: the container's IPv6 default route did not appear until %s "+
+			"(t+%s), past the %s bound. DAD plus one solicit/advertise round trip on a "+
+			"veth is seconds, so this is a client or a segment that is not answering:\n%s",
+			readings[formed].Label, readings[formed].Elapsed, formBy, readings[formed].Route)
+	case formed == len(readings)-1:
+		t.Errorf("M4 FAILED (vacuous): the IPv6 default route first appeared at the LAST "+
+			"reading %s (t+%s), so there is no later reading and durability -- which is "+
+			"the whole of #875 -- was not measured. Extend the sample grid past the "+
+			"formation point rather than reading this as a pass",
+			readings[formed].Label, readings[formed].Elapsed)
+	default:
+		t.Logf("M4: the IPv6 default route appeared by %s (t+%s); %d later reading(s) "+
+			"must still carry it.",
+			readings[formed].Label, readings[formed].Elapsed, len(readings)-formed-1)
+		for _, r := range readings[formed+1:] {
+			if !HasDefaultV6Route(r.Route) {
+				t.Errorf("M4 FAILED at %s (t+%s): the container HAD an IPv6 default route "+
+					"at t+%s and has none now, so it was WITHDRAWN -- that is #875. "+
+					"On-link traffic still works, which is what hides this; nothing "+
+					"off-link is reachable over IPv6:\n%s",
+					r.Label, r.Elapsed, readings[formed].Elapsed, r.Route)
+			}
+		}
+	}
+}

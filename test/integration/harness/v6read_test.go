@@ -599,3 +599,173 @@ func TestV6ObserveWindowCoversTheAdvertisementCadence(t *testing.T) {
 			"at this ratio the two are not separable", lifetime, V6ObserveWindow)
 	}
 }
+
+// routePoint is one reading in a synthetic route series: when it was
+// taken, and whether a default route was present.
+type routePoint struct {
+	elapsed int // seconds
+	present bool
+}
+
+// synthRouteOutput renders `ip -6 route show` output. The on-link line
+// is always there, because it is there on a real container whether or
+// not a default route is: a verdict that keyed on "any output at all"
+// would pass every row, so the fixture must not make absence look empty.
+func synthRouteOutput(present bool) string {
+	out := "fd00:6470:6865::/64 dev dh-itest-br60 proto kernel metric 256 expires 2591997sec pref medium\n" +
+		"fe80::/64 dev dh-itest-br60 proto kernel metric 256 pref medium\n"
+	if present {
+		out = "default via fe80::b0a2:afff:fe53:5227 dev dh-itest-br60 proto ra metric 1024 " +
+			"expires 1799sec hoplimit 64 pref medium\n" + out
+	}
+	return out
+}
+
+func routeSeries(pts ...routePoint) []V6RouteReading {
+	out := make([]V6RouteReading, 0, len(pts))
+	for _, p := range pts {
+		out = append(out, V6RouteReading{
+			Label:   fmt.Sprintf("t+%ds", p.elapsed),
+			Elapsed: time.Duration(p.elapsed) * time.Second,
+			Route:   synthRouteOutput(p.present),
+		})
+	}
+	return out
+}
+
+// TestV6DefaultRoute_FormsAndHolds drives #875's managed-arm verdict
+// against series whose answer is known in advance.
+//
+// The two rows that carry the most are named for what they are: the
+// series this branch MEASURED on the pre-fix tree, which must fail, and
+// the series a fixed tree must produce, which must pass. A change that
+// cannot tell those two apart has broken the pin, and the table says so
+// by name rather than by row count.
+func TestV6DefaultRoute_FormsAndHolds(t *testing.T) {
+	cases := []struct {
+		name     string
+		series   []V6RouteReading
+		wantFail bool
+		why      string
+	}{
+		{
+			name: "the measured pre-fix series: forms, then is withdrawn",
+			series: routeSeries(routePoint{0, false}, routePoint{15, true},
+				routePoint{150, false}),
+			wantFail: true,
+			why: "this is what run 33144952381 read on the managed segment before the " +
+				"fix: no route at t+0, a route at t+15s, none at t+150s. It is #875 " +
+				"itself and it must stay red, or this branch pins nothing",
+		},
+		{
+			name: "the series a fixed tree must produce: forms and holds",
+			series: routeSeries(routePoint{0, false}, routePoint{15, true},
+				routePoint{150, true}),
+			wantFail: false,
+			why: "the preservation control. t+0 is EMPTY here on purpose: an RA-derived " +
+				"route cannot exist before DAD and the exchange it gates finish, so a " +
+				"verdict that reds on this row is the unsatisfiable premise this " +
+				"replaced, reintroduced",
+		},
+		{
+			name:     "present from the very first reading and held",
+			series:   routeSeries(routePoint{0, true}, routePoint{15, true}, routePoint{150, true}),
+			wantFail: false,
+			why:      "a segment that answered before the first reading is healthy, not suspicious",
+		},
+		{
+			name:     "never appears at all",
+			series:   routeSeries(routePoint{0, false}, routePoint{15, false}, routePoint{150, false}),
+			wantFail: true,
+			why:      "no route ever formed; the container has no off-link IPv6 for the whole window",
+		},
+		{
+			name:     "appears only at the LAST reading is vacuous, not a pass",
+			series:   routeSeries(routePoint{0, false}, routePoint{15, false}, routePoint{150, true}),
+			wantFail: true,
+			why: "the persist loop is empty here, so durability is unmeasured. An empty " +
+				"universal is satisfied by anything, which is exactly how a test that " +
+				"proves nothing reports success",
+		},
+		{
+			name:     "appears only at the last reading, WITHIN the bound, is still vacuous",
+			series:   routeSeries(routePoint{0, false}, routePoint{30, true}),
+			wantFail: true,
+			why: "the row above reaches the vacuity guard only because it is ALSO past " +
+				"the bound, so the bound decides it and the vacuity guard is never " +
+				"exercised alone -- a mutation removing that guard survived until this " +
+				"row existed. 30s is inside V6RouteFormBy, so only vacuity can red it",
+		},
+		{
+			name:     "appears past the bound",
+			series:   routeSeries(routePoint{0, false}, routePoint{90, true}, routePoint{150, true}),
+			wantFail: true,
+			why: "90s is past V6RouteFormBy. DAD plus one round trip on a veth is " +
+				"seconds, so this is a client or segment that is not answering",
+		},
+		{
+			name:     "appears exactly AT the bound is not too late",
+			series:   routeSeries(routePoint{0, false}, routePoint{60, true}, routePoint{150, true}),
+			wantFail: false,
+			why:      "the bound is inclusive; an off-by-one here would red a healthy segment",
+		},
+		{
+			name: "withdrawn and then restored is still a withdrawal",
+			series: routeSeries(routePoint{0, false}, routePoint{15, true},
+				routePoint{80, false}, routePoint{150, true}),
+			wantFail: true,
+			why: "a route the container lost for a minute is an outage. A verdict that " +
+				"only read the last reading would call this healthy",
+		},
+		{
+			name:     "a single reading cannot measure durability",
+			series:   routeSeries(routePoint{0, true}),
+			wantFail: true,
+			why:      "one reading has nothing after it, so it can only ever prove formation",
+		},
+		{
+			name:     "no readings at all is refused, not passed",
+			series:   nil,
+			wantFail: true,
+			why:      "an empty series is the shape a broken collector produces; it must not read as a pass",
+		},
+	}
+
+	// NON-VACUITY, keyed on the properties this table exists to hold
+	// rather than on a row count. Both polarities must be present, or
+	// the table can only catch failures in one direction; and the two
+	// measured-series rows must be present BY NAME, because they are
+	// the pin itself and a table that lost them would still look full.
+	var pass, fail int
+	var haveDefect, haveFixed bool
+	for _, tc := range cases {
+		if tc.wantFail {
+			fail++
+		} else {
+			pass++
+		}
+		if strings.Contains(tc.name, "measured pre-fix series") {
+			haveDefect = true
+		}
+		if strings.Contains(tc.name, "a fixed tree must produce") {
+			haveFixed = true
+		}
+	}
+	if pass < 1 || fail < 1 || !haveDefect || !haveFixed {
+		t.Fatalf("the route table has %d passing and %d failing row(s), defect series present=%v, "+
+			"fixed series present=%v — it must hold both polarities AND both measured "+
+			"series, or it stops discriminating the defect from the fix",
+			pass, fail, haveDefect, haveFixed)
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var r recordingReporter
+			AssertV6DefaultRouteFormsAndHolds(&r, tc.series, V6RouteFormBy)
+			if r.failed != tc.wantFail {
+				t.Errorf("failed=%v, want %v — %s\nverdict said:\n%s",
+					r.failed, tc.wantFail, tc.why, strings.Join(r.msgs, "\n"))
+			}
+		})
+	}
+}

@@ -262,7 +262,7 @@ func TestDHCPv6_Managed_AddressAndRouteOnTheInterface(t *testing.T) {
 		}
 	}
 
-	// ---- M4: is there an IPv6 default route, and does it persist? ----
+	// ---- M4: does an IPv6 default route FORM, and does it persist? ----
 	//
 	// This is the concern the isolated measurement could only INFER.
 	// The plugin's ONLY source of GatewayIPv6 is a default route
@@ -273,13 +273,22 @@ func TestDHCPv6_Managed_AddressAndRouteOnTheInterface(t *testing.T) {
 	// default route on it, so the plugin has nothing to return, and
 	// the only other candidate is the RA-derived route the kernel
 	// installs -- which is the one dhcpcd's accept_ra=0 removes.
+	//
+	// The verdict itself lives in the harness package, with the
+	// readers, for the reason this branch already had to learn twice:
+	// logic in THIS package cannot be executed by anyone without root,
+	// an engine and an installed plugin, so a defect in it is found by
+	// the heavy lane ten minutes later and one layer from the line at
+	// fault. Why it is form-then-persist rather than a route at every
+	// reading, and why that is the stronger claim, is argued where the
+	// verdict is -- along with the cases that drive it.
+	routeReadings := make([]harness.V6RouteReading, 0, len(got))
 	for _, s := range got {
-		if !harness.HasDefaultV6Route(s.route) {
-			t.Errorf("M4 FAILED at %s (t+%s): the container has NO IPv6 default route. "+
-				"On-link traffic still works, which is what hides this; nothing off-link "+
-				"is reachable over IPv6:\n%s", s.label, s.elapsed, s.route)
-		}
+		routeReadings = append(routeReadings, harness.V6RouteReading{
+			Label: s.label, Elapsed: s.elapsed, Route: s.route,
+		})
 	}
+	harness.AssertV6DefaultRouteFormsAndHolds(t, routeReadings, harness.V6RouteFormBy)
 
 	// ---- M5: off-link reachability ----
 	//
