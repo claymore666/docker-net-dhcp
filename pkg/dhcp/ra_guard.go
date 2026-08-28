@@ -31,10 +31,41 @@ import (
 // MEASURED, dhcpcd 10.3.2 on the pinned base image: dhcpcd writes
 // net.ipv6.conf.<if>.accept_ra=0 and .autoconf=0 on the interface it
 // manages, in if_setup_inet6() (if-linux.c). `--noconfigure` does not
-// gate that write -- the plugin passes it on every client -- and under
-// `--noconfigure` dhcpcd also skips ipv6nd_applyra(), ipv6_addaddrs()
-// and rt_build(). So nobody in the container performed §6.3.4 or
-// §5.5.3 at all.
+// gate that write -- the plugin passes it on every client -- because
+// if_setup_inet6() is reached from dhcpcd's own interface setup, which
+// tests no option at all.
+//
+// What `--noconfigure` DOES gate is narrower than this comment claimed
+// until now, and the correction is recorded rather than quietly applied
+// because the wrong version was read back as evidence during a
+// route-deletion investigation. MEASURED by reading the pinned 10.3.2
+// source, cited by function because line numbers rot:
+//
+//   - On the ADVERTISEMENT path the old sentence was right. The
+//     handler in ipv6nd.c tests DHCPCD_CONFIGURE and jumps over
+//     ipv6nd_applyra(), ipv6_addaddrs() and rt_build() together.
+//   - On the DHCPv6 BIND/RENEW path it was wrong. dhcp6_bind() calls
+//     rt_build() UNCONDITIONALLY, outside the DHCPCD_CONFIGURE guard
+//     that gates ipv6_addaddrs() a few lines above it. rt_build()
+//     therefore runs under `--noconfigure`, once per REPLY.
+//
+// The conclusion survives on a stronger footing: rt_build() under
+// `--noconfigure` can neither add nor delete. Its per-route loop
+// `continue`s on every route when DHCPCD_CONFIGURE is clear, so its
+// "added" set stays empty; the context route table is inserted into
+// from that set and, in the whole tree, from nowhere else; and every
+// if_route(RTM_DELETE) call site sits either inside rt_add() -- reached
+// only past that same `continue` -- or inside rt_delete(), reached only
+// from the removal loop over that permanently empty table. So dhcpcd
+// under `--noconfigure` cannot issue a route deletion at all, and
+// nobody in the container performed §6.3.4 or §5.5.3.
+//
+// Stated as a bound and not a closure: this is a claim about dhcpcd's
+// ROUTE code at the pinned version, established by reading it. It says
+// nothing about what the kernel does, and it is not an exoneration by
+// observation -- attributing an observed RTM_DELROUTE to a pid is the
+// measurement that would settle a live deletion, and none has been
+// taken.
 //
 // The loss is ACTIVE, not merely a failure to refresh. MEASURED, in the
 // ordering that is least favourable to this claim -- an advertisement

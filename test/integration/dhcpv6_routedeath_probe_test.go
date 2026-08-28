@@ -28,10 +28,18 @@ import (
 // WHY IT IS NEEDED, AND WHY READING THE CODE WILL NOT DO. The
 // measurement that opened #875 shows the route present at +3s and gone
 // by +13s. `accept_ra=0` explains a route that is not REFRESHED; it does
-// not explain one that DISAPPEARS. The advertised Router Lifetime is
-// around 1800s, so a route that should have lived half an hour was gone
-// in thirteen seconds. Something deleted it, and until that something is
-// named, a fix to the sysctls may repair nothing at all.
+// not explain one that DISAPPEARS. The advertised Router Lifetime at
+// that measurement was around 1800s, so a route that should have lived
+// half an hour was gone in thirteen seconds. Something deleted it, and
+// until that something is named, a fix to the sysctls may repair nothing
+// at all.
+//
+// That 1800 is not a constant and re-measuring will not reproduce it.
+// The fixture now PINS the advertised lifetime with an explicit
+// --ra-param; before the pin the server derived it from the
+// advertisement interval, which is RFC 4861 6.2.1's 3x
+// MaxRtrAdvInterval. A later reading of a different lifetime is the pin
+// working, not a new finding and not a contradiction of this paragraph.
 //
 // FIVE candidates. The first four came from the protocol review on
 // #875; the fifth was found only when this probe was re-derived, and it
@@ -49,7 +57,10 @@ import (
 //  5. an advertisement carrying Router Lifetime 0, which RFC 4861 6.3.4
 //     requires a host to honour by removing the router. Correct host
 //     behaviour reacting to a misconfigured segment -- and it looks
-//     exactly like candidate 2 unless `expires` and `proto` are read.
+//     exactly like candidate 2 unless the advertisements themselves are
+//     placed in time. The on-link prefix route is that witness: it is
+//     reset by every advertisement carrying a prefix option, so a
+//     countdown running unbroken across a deletion says none arrived.
 //
 // WHAT THE EARLIER MEASUREMENT ALREADY EXCLUDES. The +3s/+13s
 // observation was taken in a SINGLE isolated network namespace with the
@@ -303,6 +314,62 @@ func TestProbe_DHCPv6_WhatDeletesTheDefaultRoute(t *testing.T) {
 					break
 				}
 			}
+			// The ON-LINK PREFIX ROUTE, which is a witness for RA
+			// ARRIVAL and is strictly stronger than reading the
+			// default route's own `expires`. Every accepted
+			// advertisement carrying a Prefix Information option
+			// resets this route's `expires` to the advertised Valid
+			// Lifetime; between advertisements it counts down. So a
+			// RESET marks an RA arriving, and an UNBROKEN countdown
+			// across a default-route deletion says no advertisement
+			// arrived at that instant -- which is what excludes
+			// candidate 5, because candidate 5 requires an
+			// advertisement to be the thing that did it.
+			//
+			// Identified as "carries expires and is not the default
+			// route": the link-local fe80::/64 route is `proto
+			// kernel` with no lifetime, so it cannot be confused for
+			// this one.
+			type onlinkPoint struct {
+				at   time.Duration
+				line string
+			}
+			var onlink []onlinkPoint
+			for _, r := range rows {
+				for _, line := range strings.Split(r.route, "\n") {
+					l := strings.TrimSpace(line)
+					if l == "" || strings.HasPrefix(l, "default") {
+						continue
+					}
+					if !strings.Contains(l, "expires") {
+						continue
+					}
+					onlink = append(onlink, onlinkPoint{at: r.at, line: l})
+					break
+				}
+			}
+			if len(onlink) == 0 {
+				t.Logf("VERDICT INPUT (RA arrival): no on-link prefix route with a lifetime " +
+					"was seen at any sample, so this run carries NO witness for advertisement " +
+					"arrival and cannot exclude candidate 5. Read that as a missing " +
+					"instrument, not as an absence of advertisements.")
+			} else {
+				var b strings.Builder
+				for _, p := range onlink {
+					fmt.Fprintf(&b, "  t+%s: %s\n", p.at.Round(time.Second), p.line)
+				}
+				t.Logf("VERDICT INPUT (RA arrival): on-link prefix route across the window.\n%s"+
+					"  A RESET of `expires` marks an advertisement arriving. If the countdown "+
+					"runs UNBROKEN across a default-route deletion in the trace below, no "+
+					"advertisement arrived at that instant and candidate 5 is excluded for "+
+					"that deletion.\n"+
+					"  The one escape, named rather than closed over: an advertisement "+
+					"carrying no Prefix Information option would not reset this route, and "+
+					"would be invisible to this witness. Reading the advertisements off the "+
+					"wire is what closes that, and this probe does not.",
+					b.String())
+			}
+
 			// The forwarding verdict, which is the one that can be
 			// reached by elimination and therefore the one worth
 			// stating explicitly.
@@ -373,10 +440,19 @@ func TestProbe_DHCPv6_WhatDeletesTheDefaultRoute(t *testing.T) {
 					"candidate 5 outright -- the kernel's purge selects RTF_ADDRCONF and "+
 					"RFC 4861 6.3.4 governs RA-derived routers, so neither reaches a route "+
 					"userspace programmed.\n"+
-					"  expires: this IS the advertised Router Lifetime counting down. A "+
-					"small value here is candidate 5 -- an advertisement that asked for the "+
-					"router to be removed -- and a value near the advertised lifetime "+
-					"excludes candidate 5 by arithmetic, leaving a deleter.",
+					"  expires: this IS the advertised Router Lifetime counting down, and "+
+					"it bounds candidate 5 in ONE direction only. A small value here is "+
+					"candidate 5. A value near the advertised lifetime excludes a "+
+					"lifetime-0 FIRST advertisement and nothing more -- a later one could "+
+					"still carry 0, and this reading is taken at the first sample. The RA "+
+					"arrival witness above is the discriminator that covers every deletion "+
+					"in the window; prefer it, and treat this line as arithmetic on the "+
+					"opening state.\n"+
+					"  Do not bank the NUMBER as a finding either way. This branch pins the "+
+					"advertised lifetime with an explicit --ra-param; unpinned, the server "+
+					"derives it from the advertisement interval as RFC 4861 6.2.1's 3x "+
+					"MaxRtrAdvInterval, so measurements taken before and after the pin read "+
+					"different lifetimes without disagreeing about anything.",
 					firstDefault)
 			}
 
