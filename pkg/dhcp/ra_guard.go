@@ -261,14 +261,28 @@ import (
 //	/proc/sys returned ro   accept_ra=2  autoconf=1   dhcpcd exit 0, no abort
 //	/proc/sys left rw       accept_ra=0  autoconf=0   (control: the defect)
 //
-// A host that REFUSES the read-only remount has still not been
-// observed. It emits one procsys-ro marker rather than three, because
-// one operation covers all the knobs -- read that marker as "none of
-// the knobs are held", never as "one of them is not". The prologue's
-// own read-WRITE remount of the same mount succeeds on every host the
-// suite has run on, including the one that refuses the leaf bind, which
-// is the reason to expect the reverse to be available too; expecting is
-// not measuring, and the integration lane is where it gets decided.
+// A host that REFUSES the read-only remount HAS been observed, and an
+// earlier version of this paragraph said it had not. MEASURED, and
+// recorded from the other side in mountPrep's own comment: on a
+// --privileged runtime /proc/sys is not a separate mount, busybox's
+// mount resolves a remount through /proc/mounts, and so BOTH remounts
+// -- the prologue's read-WRITE one at step (3) and this read-only one
+// -- are refused with `mount: can't find /proc/sys in /proc/mounts`.
+// That is the "no /proc/sys mount entry" row of the topology table
+// below, and it is loud: 1 marker before the -writable probes existed,
+// 4 with them.
+//
+// The scoped claim that IS true, and the one this paragraph should have
+// made: under the capability set this plugin actually declares
+// (CAP_SYS_ADMIN, CAP_NET_ADMIN, CAP_SYS_PTRACE, no --privileged), both
+// remounts succeed on every host measured so far. The refusal shape
+// belongs to a runtime this plugin does not ask for -- which makes it
+// unlikely, not unobserved, and those are different words.
+//
+// When the shield alone is refused it emits one procsys-ro marker
+// rather than three, because one operation covers all the knobs -- read
+// that marker as "none of the knobs are held", never as "one of them is
+// not".
 //
 // WHAT THIS PARAGRAPH USED TO CLAIM, AND WHY IT WAS WRONG. It read
 // "KNOWINGLY OPEN, and the honest boundary of this comment: a host that

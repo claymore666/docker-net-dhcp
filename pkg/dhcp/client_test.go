@@ -842,14 +842,35 @@ func TestMountPrep_DoesNotSwallowDiagnostics(t *testing.T) {
 			reportsOnFailure)
 	}
 
-	// Keyed on the REDIRECTION, not on a list of destinations. The
-	// version this replaces enumerated three spellings of "somewhere
-	// else" (`2>/dev/null`, `2> /dev/null`, `2>&-`) and therefore could
-	// not see `2>&1`, `2>>/dev/null`, `2>&3` or a redirect to a file —
-	// and two spellings enumerated means a third exists. Any `2>` in a
-	// statement is an fd-2 redirection; the marker's own `>&2` does not
-	// contain that sequence, and neither does a `echo <value> > <path>`
-	// write step, so the predicate needs no exemption to be exact here.
+	// Keyed on the REDIRECTION, not on a list of destinations.
+	//
+	// The version this replaces -- an earlier commit on this same branch,
+	// not the one on dev -- enumerated FOUR spellings of "somewhere else":
+	// `2>/dev/null`, `2> /dev/null`, `2>&-` and `2>&1`. So `2>&1` was
+	// COVERED by it and is not one of the escapes. The escapes it actually
+	// had, each driven as a mutant against it and each SURVIVING:
+	// `2>>/dev/null`, `2>&3`, and a redirect to a plain file.
+	//
+	// It also skipped any statement whose first word is `exec`, and that
+	// opened a hole the version before it did NOT have. `exec 2>/dev/null`
+	// silences every statement after it; the file-wide `strings.Contains`
+	// on dev catches that spelling, and a per-statement check that skips
+	// `exec` does not. MEASURED. That hole was introduced by the rework,
+	// not inherited by it -- which is the argument for keying on the
+	// property rather than re-deriving a list each time this is touched.
+	//
+	// So: any `2>` in a statement is an fd-2 redirection. The marker's own
+	// `>&2` does not contain that sequence, and neither does an
+	// `echo <value> > <path>` write step, so the predicate needs no
+	// exemption list to be exact over what mountPrep emits.
+	//
+	// BOUND, because sufficient is not necessary: `2>` catches every
+	// redirection spelling reachable from prepStep/prepStepMustFail today,
+	// but `&>/dev/null` contains no `2>` and would pass. INFERRED, not
+	// measured: whether busybox ash honours `&>` at all is untested, and
+	// no builder can currently emit it. This gate also reads only the
+	// string mountPrep returns, so a redirection applied by the Go code
+	// that WRAPS the prologue is outside its domain by construction.
 	const redirectsFd2 = "2>"
 
 	for _, tc := range []struct {
@@ -1628,11 +1649,14 @@ func TestRAGuard_ShieldIsCheckedByItsEffectAndNotItsExitStatus(t *testing.T) {
 				"on every healthy endpoint\n---\n%s", k.name, sup, red, stmt)
 		}
 	}
-	// The probes must not be the ONLY thing keyed on the knob: if the
-	// shield itself vanished, every probe would fire on every host.
+	// The probes must not be the ONLY thing keyed on the knob: with the
+	// shield gone, every probe succeeds and therefore fires, on any host
+	// where /proc/sys is writable to begin with. That is the normal case
+	// and the one mountPrep itself creates -- not "every host", since a
+	// /proc/sys already read-only for some other reason would stay quiet.
 	if !strings.Contains(prep, mountBin+" -o remount,bind,ro "+procSysPath) {
 		t.Error("the probes are present and the shield is not; the guard would report " +
-			"itself broken everywhere")
+			"itself broken on every host whose /proc/sys is writable")
 	}
 }
 

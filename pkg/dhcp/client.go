@@ -325,9 +325,14 @@ func prepStep(cmd, marker, step string) string {
 //
 // It exists for one shape — a check whose passing condition is that an
 // operation is REFUSED. The RA guard's shield returns /proc/sys to
-// read-only, and the only way to know it took effect is to attempt a
-// write and be turned away. The remount's exit status does not carry
-// that information: `mount -o remount,bind,ro P` changes the flags of
+// read-only, and attempting a write and being turned away is the way
+// this package chooses to know it took effect. NOT the only possible
+// way, and saying so would be false: a longest-mount-prefix parse of
+// /proc/mounts would also separate the twelve topologies in raGuardSteps'
+// table. It was rejected for being keyed on the MECHANISM — it has to
+// model how mount flags compose — where this is keyed on the effect the
+// guard actually needs. What IS true without qualification is the
+// negative: the remount's exit status does not carry that information: `mount -o remount,bind,ro P` changes the flags of
 // the mount at P and not its submounts', so a /proc/sys with a
 // read-write mount anywhere beneath it takes the remount, exits 0,
 // emits nothing, and leaves the knobs writable. MEASURED in five such

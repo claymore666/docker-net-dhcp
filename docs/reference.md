@@ -659,10 +659,12 @@ docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.8.0 \
   hard to spot. The DHCPv6 client now runs with `accept_ra=2`,
   `autoconf=1` and `keep_addr_on_down=1` set per-interface before
   `dhcpcd` starts, after which `/proc/sys` is returned to read-only
-  inside the client's own private mount namespace, so `dhcpcd` cannot
-  turn them off again — and, because a read-only remount can be accepted
+  inside the client's own private mount namespace, so `dhcpcd`'s own
+  write is refused — and, because a read-only remount can be accepted
   without taking effect, each knob is then probed by attempting a write
   of the value it already holds, with success treated as the failure.
+  The probe is what makes a shield that did not hold **loud**; it does
+  not make one impossible, and the counter below is where it shows up.
   The read-only step is invisible to the host, to
   the container and to every other client; the IPv4 client keeps a
   writable `/proc/sys`, because its own setup write is fatal if it
