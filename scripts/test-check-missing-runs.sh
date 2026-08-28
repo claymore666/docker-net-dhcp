@@ -37,6 +37,11 @@ J
   *"actions/runs?head_sha"*)
      [ "$runs" = "ERR" ] && exit 1
      echo "$runs" ;;
+  *"actions/runs/"*)
+     # The witness lookup. "GONE" makes the API answer fail, which is
+     # the documented condition, not an error.
+     [ "\${WITNESS:-GONE}" = "GONE" ] && exit 1
+     printf '%s\n' "\${WITNESS}" ;;
   *"repo view"*) echo "o/r" ;;
   *) echo "" ;;
 esac
@@ -318,6 +323,150 @@ MERGE_CHAIN="$(printf 'mmm999\t%s\tccc333,ddd444\nccc333\t%s\t\nddd444\t%s\t\n' 
 out=$(run_chain "$MERGE_CHAIN" "mmm999:completed:success"); rc=$?
 [ "$rc" = 0 ] && ok "a tested merge covers both of its parents" || \
   no "one side of a tested merge was flagged (exit $rc): $out"
+
+# --- the recovered-heads record (#874) --------------------------------
+#
+# A head whose runs were DELETED answers zero exactly like a head that
+# was never tested. The record separates them by naming the run that saw
+# the head tested -- so these cases drive the SEPARATION, not the file:
+# the recorded head is spared AND a different untested head still goes
+# red in the same scan.
+
+# A full 40-char sha, because the record refuses anything shorter and a
+# 12-char fixture would exercise the refusal instead of the acceptance.
+REC_SHA=41aa96b4a302bf0cae849c158e4356c1bd286024
+OTHER_SHA=0123456789abcdef0123456789abcdef01234567
+REC_PR="[{\"number\":7,\"head\":\"$REC_SHA\",\"branch\":\"feature/x\",\"updated\":\"2026-08-01T10:00:00Z\",\"draft\":false}]"
+OTHER_PR="[{\"number\":9,\"head\":\"$OTHER_SHA\",\"branch\":\"feature/y\",\"updated\":\"2026-08-01T10:00:00Z\",\"draft\":false}]"
+
+# run_rec <record-body> <pulls-json>
+run_rec() {
+    local dir; dir=$(mktemp -d)
+    make_gh "$dir" "$2" "$OLD" "0"
+    printf '%s\n' "$1" > "$dir/rec.tsv"
+    PATH="$dir/bin:$PATH" GATE_REPO=o/r GATE_BRANCHES='' \
+        WITNESS="${WITNESS:-GONE}" \
+        GATE_RECOVERED_FILE="$dir/rec.tsv" bash "$CHECK" 20 >"$dir/o" 2>&1
+    local rc=$?; cat "$dir/o"; rm -rf "$dir"; return $rc
+}
+
+GOOD_REC="$(printf '%s\t2026-08-27\t33036626425\trecords destroyed by the retention purge; no re-test is possible at this ref\n' "$REC_SHA")"
+
+out=$(run_rec "$GOOD_REC" "$REC_PR"); rc=$?
+if [ "$rc" = 0 ] && [ "${out#*33036626425}" != "$out" ]; then
+    ok "a recorded head is spared AND its evidence run is named in the output"
+else
+    no "a recorded head was not spared, or was spared silently (exit $rc): $out"
+fi
+
+# THE DIRECTION THAT MATTERS. The record must not become a way to be
+# quiet: a head with no entry and no runs still fails, in a scan where
+# the record is present and loaded.
+out=$(run_rec "$GOOD_REC" "$OTHER_PR"); rc=$?
+[ "$rc" = 1 ] && ok "an unrecorded head with no runs still fails while a record is loaded" || \
+  no "the record silenced a head it does not name (exit $rc): $out"
+
+# Evidence is the whole point, so a line that carries none is refused --
+# and refused loudly enough to stop the run, not skipped as noise.
+out=$(run_rec "$(printf '%s\t2026-08-27\t33036626425\t\n' "$REC_SHA")" "$REC_PR"); rc=$?
+[ "$rc" = 2 ] && ok "an entry with no reason refuses the whole run" || \
+  no "an entry carrying no evidence was accepted (exit $rc): $out"
+
+out=$(run_rec "$(printf '%s\t2026-08-27\t\ta reason\n' "$REC_SHA")" "$REC_PR"); rc=$?
+[ "$rc" = 2 ] && ok "an entry naming no run id refuses" || \
+  no "an entry with no witnessing run was accepted (exit $rc): $out"
+
+# A short sha would match more than one commit, which is how an
+# exemption written for one head quietly covers another.
+out=$(run_rec "$(printf '41aa96b4\t2026-08-27\t33036626425\ta reason\n')" "$REC_PR"); rc=$?
+[ "$rc" = 2 ] && ok "an abbreviated commit id refuses" || \
+  no "an abbreviated commit id was accepted (exit $rc): $out"
+
+out=$(run_rec "$(printf '%s\t27-08-2026\t33036626425\ta reason\n' "$REC_SHA")" "$REC_PR"); rc=$?
+[ "$rc" = 2 ] && ok "a malformed observed date refuses" || \
+  no "a malformed date was accepted (exit $rc): $out"
+
+# Comments and blank lines are not entries.
+out=$(run_rec "$(printf '# a comment\n\n%s' "$GOOD_REC")" "$REC_PR"); rc=$?
+[ "$rc" = 0 ] && ok "comments and blank lines are not read as entries" || \
+  no "a comment or blank line was parsed as an entry (exit $rc): $out"
+
+# With no record at all the gate behaves exactly as it did before it
+# existed -- the control that proves the feature is additive.
+dir=$(mktemp -d); make_gh "$dir" "$REC_PR" "$OLD" "0"
+out=$(PATH="$dir/bin:$PATH" GATE_REPO=o/r GATE_BRANCHES='' \
+      GATE_RECOVERED_FILE="$dir/absent.tsv" bash "$CHECK" 20 2>&1); rc=$?
+rm -rf "$dir"
+[ "$rc" = 1 ] && ok "with no record file the gate flags the head as before" || \
+  no "an absent record file changed the verdict (exit $rc): $out"
+
+# The record shipped in the tree must itself be loadable -- a file that
+# only the fixtures ever parse is not the file CI reads.
+if [ -f "$HERE/../.github/recovered-heads.tsv" ]; then
+    dir=$(mktemp -d); make_gh "$dir" "$ONE_PR" "$NEW" "1"
+    out=$(PATH="$dir/bin:$PATH" GATE_REPO=o/r GATE_BRANCHES='' bash "$CHECK" 20 2>&1); rc=$?
+    rm -rf "$dir"
+    [ "$rc" = 0 ] && ok "the record committed to the tree parses under the real default path" || \
+      no "the in-tree record does not load (exit $rc): $out"
+fi
+
+# --- the witness is checked for truth, not presence (#874) -------------
+#
+# A numeric field nothing resolves is an id-shaped hole: any plausible
+# number silences a head. These drive what the resolution actually
+# asserts -- and, as importantly, what it must NOT assert.
+
+WIT_OK=$(printf 'Missing runs\tsuccess')
+
+out=$(WITNESS="$WIT_OK" run_rec "$GOOD_REC" "$REC_PR"); rc=$?
+if [ "$rc" = 0 ] && [ "${out#*verified}" != "$out" ]; then
+    ok "a resolvable witness is verified and said to be verified"
+else
+    no "a good witness was not verified (exit $rc): $out"
+fi
+
+# A witness from some other workflow proves nothing about open heads.
+out=$(WITNESS="$(printf 'CodeQL\tsuccess')" run_rec "$GOOD_REC" "$REC_PR"); rc=$?
+[ "$rc" = 1 ] && ok "a witness from a different workflow is refused" || \
+  no "any workflow was accepted as a witness (exit $rc): $out"
+
+# A DETECTOR RUN THAT FAILED IS ONE THAT FOUND A HEAD MISSING, so its
+# word is not evidence that every head had runs. This is the case that
+# separates "the run exists" from "the run supports the claim".
+out=$(WITNESS="$(printf 'Missing runs\tfailure')" run_rec "$GOOD_REC" "$REC_PR"); rc=$?
+[ "$rc" = 1 ] && ok "a witness run that FAILED is refused, not merely present" || \
+  no "a failed detector run was accepted as a witness (exit $rc): $out"
+
+# FAIL-OPEN, AND ONLY HERE. The premise of the whole record is that run
+# records get deleted; a gate that demanded the witness still exist
+# would rot into the dependency the record was built to survive.
+out=$(WITNESS=GONE run_rec "$GOOD_REC" "$REC_PR"); rc=$?
+if [ "$rc" = 0 ] && [ "${out#*could not be re-checked}" != "$out" ]; then
+    ok "a witness whose own record is gone is accepted AND says so"
+else
+    no "a vanished witness was not handled as the documented case (exit $rc): $out"
+fi
+
+# The refusal must not become a way to be quiet either: an unrecorded
+# head still fails while witness verification is switched on.
+out=$(WITNESS="$WIT_OK" run_rec "$GOOD_REC" "$OTHER_PR"); rc=$?
+[ "$rc" = 1 ] && ok "an unrecorded head still fails with witness checking on" || \
+  no "witness checking silenced an unnamed head (exit $rc): $out"
+
+# A spent entry is NAMED but must not fail, and must not be named while
+# it is still live -- the two halves are a guard with a direction.
+out=$(WITNESS="$WIT_OK" run_rec "$GOOD_REC" "$OTHER_PR"); rc=$?
+case "$out" in
+  *"is spent"*) ok "an entry for no open PR head is reported as spent" ;;
+  *) no "a spent entry was not named: $out" ;;
+esac
+
+out=$(WITNESS="$WIT_OK" run_rec "$GOOD_REC" "$REC_PR"); rc=$?
+if [ "$rc" = 0 ] && [ "${out#*is spent}" = "$out" ]; then
+    ok "a live entry is NOT called spent, and reporting one does not fail the gate"
+else
+    no "a live entry was called spent, or the note changed the verdict (exit $rc): $out"
+fi
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

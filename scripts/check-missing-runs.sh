@@ -95,6 +95,72 @@ prs=$(gh api "repos/${REPO}/pulls?state=open&per_page=100" \
     exit 2
 }
 
+# --- recovered heads: evidence that was destroyed, recorded once ---------
+#
+# A head whose runs were DELETED is indistinguishable from one that was
+# never tested: both answer zero. Keep rule 4 in purge-workflow-runs.sh
+# stops this repository creating new ones, but it cannot resurrect the
+# records already gone, and no query recovers them.
+#
+# So an entry here says "a named run observed this head as tested, and
+# something later deleted the record". It is a claim about EVIDENCE, not
+# a permission to be quiet, and the difference is enforced: every field
+# is required and a malformed line REFUSES the whole run rather than
+# being skipped. A head with no entry and no runs still fails.
+#
+# Each entry ends by itself, because it names a commit id rather than a
+# rule: it stops applying the moment that commit stops being the head it
+# was recorded for. Nothing has to remember to remove it.
+# The workflow name a witness run must carry. Named once: the check
+# below compares against it, and a rename that missed this line would
+# turn every entry into a refusal rather than a silent pass.
+GATE_NAME="${GATE_WITNESS_NAME:-Missing runs}"
+RECOVERED_FILE="${GATE_RECOVERED_FILE:-$(dirname "$0")/../.github/recovered-heads.tsv}"
+recovered=""
+rec_nl=$'\n'
+if [ -f "$RECOVERED_FILE" ]; then
+    rec_line=0
+    while IFS= read -r rline || [ -n "$rline" ]; do
+        rec_line=$((rec_line + 1))
+        case "${rline#"${rline%%[![:space:]]*}"}" in ''|'#'*) continue ;; esac
+        rsha=$(printf '%s' "$rline" | cut -f1)
+        robs=$(printf '%s' "$rline" | cut -f2)
+        rrun=$(printf '%s' "$rline" | cut -f3)
+        rwhy=$(printf '%s' "$rline" | cut -f4-)
+        rbad=""
+        case "$rsha" in
+            ''|*[!0-9a-f]*) rbad="the commit id is not lowercase hex" ;;
+        esac
+        if [ -z "$rbad" ] && [ "${#rsha}" -ne 40 ]; then
+            rbad="the commit id is ${#rsha} characters, not a full 40-character sha"
+        fi
+        if [ -z "$rbad" ]; then
+            case "$robs" in
+                [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;;
+                *) rbad="the observed date '${robs}' is not YYYY-MM-DD" ;;
+            esac
+        fi
+        if [ -z "$rbad" ]; then
+            case "$rrun" in
+                ''|*[!0-9]*) rbad="the run id '${rrun}' is not numeric — name the run that SAW this head tested" ;;
+            esac
+        fi
+        if [ -z "$rbad" ] && [ -z "$(printf '%s' "$rwhy" | tr -d '[:space:]')" ]; then
+            rbad="no reason is given for why the head cannot simply be re-tested"
+        fi
+        if [ -n "$rbad" ]; then
+            echo "::error title=Recovered-heads record is not usable::${RECOVERED_FILE}:${rec_line}: ${rbad}." \
+                 "Every entry must carry a full sha, an observed date, the run id that saw the head tested," \
+                 "and a reason. Refusing the whole run rather than skipping the line: a record that can be" \
+                 "written badly and ignored is a place to dump commit ids, which is exactly what this must" \
+                 "not become." >&2
+            exit 2
+        fi
+        recovered="${recovered}${rsha} ${robs} ${rrun}${rec_nl}"
+    done < "$RECOVERED_FILE"
+fi
+rec_used=0
+
 now=$(date -u +%s)
 missing=0
 checked=0
@@ -135,10 +201,85 @@ while IFS=$'\t' read -r num head branch _ draft; do
     }
     if [ "$runs" = "0" ]; then
         d=""; [ "$draft" = "true" ] && d=" (draft)"
+        # A recorded head is REPORTED, never silent. The whole failure
+        # this file exists for is a zero that nobody saw, and a record
+        # that made heads disappear from the output would reproduce it
+        # one level up -- with the added charm of being invisible in the
+        # green run where it matters.
+        rec=$(printf '%s' "$recovered" | awk -v s="$head" '$1 == s { print; exit }')
+        if [ -n "$rec" ]; then
+            set -- $rec
+            # THE WITNESS IS CHECKED FOR TRUTH, NOT PRESENCE. A numeric
+            # field that nothing resolves is an id-shaped hole: any
+            # plausible number silences a head, which is the failure
+            # mode of every allowlist whose reason is never read.
+            #
+            # But note WHAT is verified, because the obvious check is
+            # wrong. The witness is a scheduled run of THIS detector
+            # whose log observed the head; it is NOT a run on that head
+            # -- run 33036626425 carries head_sha 56a72b66 (main).
+            # Asserting run.head_sha == the entry's sha would reject
+            # every valid entry. What must hold is that the run is this
+            # gate and that it CONCLUDED SUCCESS: a detector run that
+            # failed is one that found a head missing, so its word is
+            # not evidence that every head had runs.
+            #
+            # Fail-open on a run that no longer exists, and only there.
+            # The entire premise is that run records get deleted, so a
+            # gate demanding the witness still exist would rot into
+            # exactly the dependency this record was built to survive.
+            wname=$(gh api "repos/${REPO}/actions/runs/$3" \
+                    --jq '[.name, (.conclusion // "-")] | @tsv' 2>/dev/null) || wname=""
+            if [ -n "$wname" ]; then
+                wn=$(printf '%s' "$wname" | cut -f1)
+                wc=$(printf '%s' "$wname" | cut -f2)
+                if [ "$wn" != "$GATE_NAME" ] || [ "$wc" != "success" ]; then
+                    echo "::error title=Recovered-heads witness does not support its claim::" \
+                         "${RECOVERED_FILE}: run $3 is '${wn}' concluding '${wc}', not a successful" \
+                         "'${GATE_NAME}' run. Only a successful run of this detector establishes" \
+                         "that every open head had runs; anything else cannot witness ${head:0:8}." >&2
+                    missing=$((missing + 1))
+                    continue
+                fi
+                wverdict="verified"
+            else
+                # Not an error: this is the documented condition.
+                wverdict="the witness run's own record is gone too, so it could not be re-checked"
+            fi
+            echo "  PR #${num}${d} [${branch}] head ${head:0:8}: no surviving run, but run $3 observed it" \
+                 "tested on $2 before the record was deleted (${wverdict}; ${RECOVERED_FILE})"
+            rec_used=$((rec_used + 1))
+            continue
+        fi
         echo "  PR #${num}${d} [${branch}] head ${head:0:8} pushed ${age_min}m ago has NO workflow run"
         missing=$((missing + 1))
     fi
 done < <(printf '%s' "$prs" | jq -r '.[] | [.number, .head, .branch, .updated, .draft] | @tsv')
+
+# SPENT ENTRIES ARE NAMED, NOT ENFORCED, AND THE DISTINCTION IS THE
+# DESIGN. An entry is keyed on a commit id, so once that commit stops
+# being a head the entry matches nothing and can silence nothing -- it
+# has already expired, which is the property that lets the record exist
+# without a review date. Making a spent entry FAIL would take that back:
+# it converts "nothing has to remember to remove it" into a cleanup
+# obligation enforced by a red on the scheduled main lane, for a line
+# that is provably inert. So this reports and does not refuse.
+#
+# It is still worth saying out loud, because the one thing the record
+# genuinely cannot do is shrink by itself, and an accumulating file
+# nobody reads is how a record of evidence turns into a list of excuses.
+if [ -n "$recovered" ]; then
+    while IFS= read -r rline; do
+        [ -n "$rline" ] || continue
+        rsha=${rline%% *}
+        if ! printf '%s' "$prs" | jq -e --arg s "$rsha" 'any(.[]; .head == $s)' >/dev/null 2>&1; then
+            echo "  note: recovered-heads entry ${rsha:0:8} is spent — it is no longer any open" \
+                 "PR's head, so it can no longer spare anything. Delete the line when convenient."
+        fi
+    done <<EOF
+$recovered
+EOF
+fi
 
 branch_checked=0
 
