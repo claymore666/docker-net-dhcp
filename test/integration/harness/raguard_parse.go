@@ -63,3 +63,46 @@ func SysctlReadFailed(out string) bool {
 		strings.Contains(out, "No such file") ||
 		strings.Contains(out, "can't open")
 }
+
+// CountDHCPv6Binds counts dnsmasq DHCPREPLY lines in log that mention
+// every one of needles (case-insensitively). dnsmasq logs one
+// DHCPREPLY per blessed REQUEST/RENEW, so this counts binds and
+// renewals, not solicits or advertisements.
+//
+// Pure, and unit-tested in the fast lane on purpose (#875). This
+// predicate decides when the RA-guard assertions are allowed to run;
+// if it matches too eagerly those assertions fire before the guard has
+// executed and the whole gate goes quietly vacuous, which is the exact
+// bug it was written to close. A matcher that lives only behind the
+// `integration` build tag is one nothing can drive.
+//
+// Callers scope it to a single endpoint by passing the container's MAC
+// alongside the address: dnsmasq puts the client DUID on the reply
+// line, and the plugin pins that DUID as a DUID-LL over the MAC, so
+// the MAC distinguishes this container's bind from a reply left in the
+// shared fixture log by an earlier container that held the same pooled
+// address.
+func CountDHCPv6Binds(log string, needles ...string) int {
+	lowered := make([]string, 0, len(needles))
+	for _, n := range needles {
+		lowered = append(lowered, strings.ToLower(n))
+	}
+	count := 0
+	for _, line := range strings.Split(log, "\n") {
+		l := strings.ToLower(line)
+		if !strings.Contains(l, "dhcpreply") {
+			continue
+		}
+		all := true
+		for _, n := range lowered {
+			if !strings.Contains(l, n) {
+				all = false
+				break
+			}
+		}
+		if all {
+			count++
+		}
+	}
+	return count
+}

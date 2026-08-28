@@ -78,3 +78,68 @@ func TestSysctlReadFailed(t *testing.T) {
 		}
 	}
 }
+
+// Verbatim DHCPREPLY lines from the CI fixture's dnsmasq in the run
+// that exposed the RA-assertion ordering bug (#875). Pinned as literal
+// text rather than reconstructed: the anchor these feed decides
+// whether the RA-guard assertions are allowed to run at all, so its
+// matcher has to be driven against the real rendering.
+const (
+	ciBindBridge  = `Aug 28 13:57:39 dnsmasq-dhcp[6902]: 3874478 DHCPREPLY(dh-itest-br2) fd00:6470:6864::32 00:03:00:01:ea:eb:ed:a4:b0:f5 `
+	ciBindMacvlan = `Aug 28 13:57:33 dnsmasq-dhcp[6947]: 4883247 DHCPREPLY(dh-itest-dhcp) fd00:6470:6863::91 00:03:00:01:26:54:5f:ae:24:20`
+	ciSolicit     = `Aug 28 13:57:32 dnsmasq-dhcp[6947]: 6042079 sent size: 40 option:  3 ia-na  IAID=1605248032 T1=60 T2=105`
+)
+
+func TestCountDHCPv6Binds_CountsARealBind(t *testing.T) {
+	if got := CountDHCPv6Binds(ciBindBridge, "fd00:6470:6864::32"); got != 1 {
+		t.Errorf("bind for the address: got %d, want 1", got)
+	}
+	if got := CountDHCPv6Binds(ciBindBridge+"\n"+ciBindBridge, "fd00:6470:6864::32"); got != 2 {
+		t.Errorf("two binds: got %d, want 2", got)
+	}
+}
+
+// The MAC scoping is the whole point of the discriminator, so drive
+// its absence: a reply for the SAME address from a DIFFERENT container
+// must not count. Without this the anchor fires early on a reused
+// pooled address and the RA assertions go back to racing the guard.
+func TestCountDHCPv6Binds_ADifferentMACOnTheSameAddressDoesNotCount(t *testing.T) {
+	const otherClient = `Aug 28 13:40:01 dnsmasq-dhcp[6902]: 1111111 DHCPREPLY(dh-itest-br2) fd00:6470:6864::32 00:03:00:01:aa:bb:cc:dd:ee:ff`
+
+	mine := "ea:eb:ed:a4:b0:f5"
+	log := otherClient + "\n" + ciBindBridge
+
+	if got := CountDHCPv6Binds(log, "fd00:6470:6864::32"); got != 2 {
+		t.Fatalf("precondition: address alone must match both lines, got %d, want 2 "+
+			"— if this is not 2 the test below proves nothing", got)
+	}
+	if got := CountDHCPv6Binds(log, "fd00:6470:6864::32", mine); got != 1 {
+		t.Errorf("address+mac: got %d, want 1 — the other container's reply was counted", got)
+	}
+}
+
+func TestCountDHCPv6Binds_IgnoresNonReplyLines(t *testing.T) {
+	if got := CountDHCPv6Binds(ciSolicit, "iaid=1605248032"); got != 0 {
+		t.Errorf("a solicit line is not a bind: got %d, want 0", got)
+	}
+	if got := CountDHCPv6Binds("", "fd00:6470:6864::32"); got != 0 {
+		t.Errorf("empty log: got %d, want 0", got)
+	}
+}
+
+func TestCountDHCPv6Binds_IsCaseInsensitiveOnBothSides(t *testing.T) {
+	if got := CountDHCPv6Binds(ciBindMacvlan, "FD00:6470:6863::91", "26:54:5F:AE:24:20"); got != 1 {
+		t.Errorf("uppercase needles: got %d, want 1", got)
+	}
+}
+
+// An address that is a PREFIX of another pool address must not be
+// matched by substring alone in a way the caller would not expect.
+// Recorded as the known bound rather than fixed: the matcher is
+// substring-based, so ::9 matches ::91. Callers pass whole addresses
+// taken from the link, never truncated ones.
+func TestCountDHCPv6Binds_SubstringMatchingIsTheDocumentedBound(t *testing.T) {
+	if got := CountDHCPv6Binds(ciBindMacvlan, "fd00:6470:6863::9"); got != 1 {
+		t.Errorf("documented bound (substring match): got %d, want 1", got)
+	}
+}

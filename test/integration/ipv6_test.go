@@ -99,21 +99,13 @@ func linkGlobalV6(t *testing.T, ctx context.Context, ctrID string, budget time.D
 // given dnsmasq log — the v6 sibling of the DHCPACK counting in the
 // lease-renew test. dnsmasq logs one DHCPREPLY per blessed
 // REQUEST/RENEW, so bind=1, renewal=2.
-func countDHCPv6Replies(t *testing.T, logPath, addr string) int {
+func countDHCPv6Replies(t *testing.T, logPath, addr string, alsoMatch ...string) int {
 	t.Helper()
 	data, err := os.ReadFile(logPath)
 	if err != nil {
 		t.Fatalf("read dnsmasq log: %v", err)
 	}
-	needle := strings.ToLower(addr)
-	count := 0
-	for _, line := range strings.Split(string(data), "\n") {
-		l := strings.ToLower(line)
-		if strings.Contains(l, "dhcpreply") && strings.Contains(l, needle) {
-			count++
-		}
-	}
-	return count
+	return harness.CountDHCPv6Binds(string(data), append([]string{addr}, alsoMatch...)...)
 }
 
 // leaseDUIDForV6 extracts the client DUID from the dnsmasq lease DB
@@ -738,40 +730,72 @@ const persistentV6BindBudget = 45 * time.Second
 // This is a wait for an EVENT, not a retry: nothing here re-reads a
 // failed assertion hoping for a better answer, and expiry is fatal
 // rather than skipped.
-func awaitPersistentV6Bind(t *testing.T, logPath, addr string) {
+// mac scopes the count to THIS endpoint. The fixture log is shared
+// across every test in a shard, so counting replies by address alone
+// would also count a reply left by an EARLIER container that happened
+// to be handed the same pooled address, firing the anchor early and
+// restoring the race this function exists to close.
+//
+// dnsmasq puts the client's DUID on the reply line, and the plugin
+// pins that DUID as a DUID-LL over the container's MAC, so the MAC is
+// an exact per-endpoint discriminator. MEASURED, one line from the
+// failing run's fixture log next to the plugin's own record of the
+// same endpoint:
+//
+//	DHCPREPLY(dh-itest-br2) fd00:6470:6864::32 00:03:00:01:ea:eb:ed:a4:b0:f5
+//	"dh-itest-br20: IAID ed:a4:b0:f5"
+//
+// i.e. 00:03 (link-layer) + 00:01 (Ethernet) + the six MAC bytes, with
+// the IAID as that MAC's low four.
+//
+// Worth being explicit about the direction of the bug this closes: an
+// early anchor makes the knobs read kernel defaults, so it FAILS the
+// test. It was a flake source, not a hole in the gate. It is fixed
+// anyway because it was exactly eliminable.
+func awaitPersistentV6Bind(t *testing.T, logPath, addr, mac string) {
 	t.Helper()
 
 	if logPath == "" {
 		t.Fatal("awaitPersistentV6Bind: empty dnsmasq log path — the fixture was " +
 			"never started, so this assertion would have measured nothing (#875)")
 	}
+	// An unreadable MAC must not silently degrade to an address-only
+	// match. That is the same "assertion that cannot read its subject
+	// quietly passes" pattern this whole change is about.
+	if mac == "" {
+		t.Fatal("awaitPersistentV6Bind: could not read the container link's MAC, so " +
+			"the bind count cannot be scoped to this endpoint (#875)")
+	}
 
 	deadline := time.Now().Add(persistentV6BindBudget)
 	replies := 0
 	for time.Now().Before(deadline) {
-		replies = countDHCPv6Replies(t, logPath, addr)
+		replies = countDHCPv6Replies(t, logPath, addr, mac)
 		if replies >= 2 {
 			return
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
-	t.Fatalf("only %d DHCPv6 bind(s) for %s after %s — the PERSISTENT v6 client never "+
-		"bound, so the Router-Advertisement guard never ran and there is nothing here "+
-		"to assert on. This is a failure, not a reason to skip: an unfixed tree would "+
-		"reach exactly this point too (#875)", replies, addr, persistentV6BindBudget)
+	t.Fatalf("only %d DHCPv6 bind(s) for %s (mac %s) after %s — the PERSISTENT v6 "+
+		"client never bound, so the Router-Advertisement guard never ran and there is "+
+		"nothing here to assert on. This is a failure, not a reason to skip: an "+
+		"unfixed tree would reach exactly this point too (#875)",
+		replies, addr, mac, persistentV6BindBudget)
 }
 
 func assertRouterAdvertsAreBeingProcessed(t *testing.T, ctx context.Context, id, addr, logPath string) {
 	t.Helper()
 
-	// Establish the precondition BEFORE reading anything -- see the
+	iface := containerV6Iface(t, ctx, id, addr)
+	mac := strings.TrimSpace(harness.ExecOutput(t, ctx, id, "cat", "/sys/class/net/"+iface+"/address"))
+
+	// Establish the precondition BEFORE reading any knob -- see the
 	// measured ordering above. Everything below is a statement about
 	// the persistent client, and until this returns there is no
 	// persistent client to make a statement about.
-	awaitPersistentV6Bind(t, logPath, addr)
+	awaitPersistentV6Bind(t, logPath, addr, mac)
 
-	iface := containerV6Iface(t, ctx, id, addr)
-	t.Logf("RA guard: asserting on derived container interface %q", iface)
+	t.Logf("RA guard: asserting on derived container interface %q (mac %s)", iface, mac)
 
 	for knob, want := range raGuardKnobs {
 		p := "/proc/sys/net/ipv6/conf/" + iface + "/" + knob
