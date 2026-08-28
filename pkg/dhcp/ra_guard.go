@@ -296,17 +296,25 @@ import (
 // test/integration/ipv6_test.go is what reads the live value.
 //
 // Two writers reach these paths in this codebase, and they compose.
-// The mount is private to the client: MEASURED for route A's leaf bind
-// (after a shielded child exits, the parent's mountinfo carries no
-// entry for the shielded leaf and the parent's accept_ra is writable
-// again), and the same unshare(1) -m boundary is what the prologue has
-// always relied on for its read-WRITE remount of this very mount --
-// that has never leaked to the host or to another client. Stated as the
-// boundary rather than re-quoting the leaf measurement at the new
-// mechanism, since the mechanism changed under it. pkg/plugin's
-// v6_link.go writes disable_ipv6 from the plugin process, outside that
-// namespace, so it is unaffected either way: the guard cannot break
-// that path and that path cannot break the guard.
+// The read-only remount is confined to the client: MEASURED for THIS
+// mechanism rather than inherited from route A's -- with the parent's
+// /proc/sys writable, a child that remounts it read-only sees its own
+// write blocked while the parent's write still succeeds, both before
+// and after the child exits. pkg/plugin's v6_link.go writes
+// disable_ipv6 from the plugin process, outside that namespace, so it
+// is unaffected: the guard cannot break that path and that path cannot
+// break the guard. That containment is not incidental -- it is the same
+// unshare(1) -m boundary the prologue has always relied on for its
+// read-WRITE remount of this very mount, which has never leaked to the
+// host or to another client.
+//
+// Worth noting where the two agree: v6_link.go records that in a
+// --privileged runtime the /proc/sys remount fails with "can't find
+// /proc/sys in /proc/mounts" because /proc/sys is not a separate mount
+// there. That is the same phenomenon, from the other side, that closed
+// route A -- busybox's mount resolves a remount through /proc/mounts,
+// so a target with no entry there cannot be remounted whatever the
+// kernel would allow.
 const (
 	// sysctlIPv6ConfDir is the per-interface IPv6 configuration tree.
 	// /proc/sys/net is per-NETWORK-NAMESPACE: the same path names a
