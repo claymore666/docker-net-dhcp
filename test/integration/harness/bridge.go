@@ -222,6 +222,17 @@ func (f *Fixture) DumpBridgeLogs(write func(string)) {
 	write("--- bridge dnsmasq log ---\n" + string(data))
 }
 
+// BridgeDnsmasqLogPath returns the PATH of the bridge fixture's
+// dnsmasq log, the bridge-side twin of Fixture.DnsmasqLog. Named for
+// the path rather than the contents because the neighbouring
+// BridgeLog returns the bytes, and a caller that confuses the two
+// gets a filename parsed as a log rather than an error (#875).
+//
+// Empty when the bridge fixture was never started, which is a
+// distinguishable value: reading it fails loudly instead of silently
+// counting zero lines.
+func (f *Fixture) BridgeDnsmasqLogPath() string { return f.bridgeDnsmasqLog }
+
 // CountBridgeLogLines counts bridge-fixture dnsmasq log lines
 // containing every one of the given substrings (case-insensitive), e.g.
 // ("DHCPRELEASE", mac). The bridge-side twin of Fixture.CountLogLines,

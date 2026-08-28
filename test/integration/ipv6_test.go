@@ -8,23 +8,41 @@
 // --enable-ra); `ipv6=true` networks run a v6 dhcpcd client alongside
 // the v4 one.
 //
-// Audit findings these tests encode (from the busybox source,
-// networking/udhcp/d6_dhcpc.c):
-//   - udhcpc6's CLIENTID is a DUID-LL (type 3) derived from the
-//     interface MAC — NOT a per-process timestamped DUID-LLT. DUID
-//     stability across plugin restarts therefore follows from MAC
-//     stability, which the plugin already guarantees (the container
-//     link keeps its MAC across a plugin disable/enable; tombstones
-//     pin it across container restarts). TestDUID_PersistsAcross-
-//     PluginRestart asserts this end-to-end.
-//   - option 23 (DNS servers) is requested by default — the `dns6`
-//     env arrives without any -O flag.
+// The two findings these tests encode were originally derived from the
+// busybox source (networking/udhcp/d6_dhcpc.c), because the v6 client
+// used to be udhcpc6. Since #152 it is dhcpcd, so that derivation no
+// longer supports anything here. Both were re-derived against dhcpcd
+// (#875) rather than restated, and the mechanism changed underneath
+// each of them even though the conclusion did not:
 //
-// Since #152 the v6 client is dhcpcd (not busybox udhcpc6), and #213
-// wires a preferred-address request: a requested v6 (`--ip6` or
-// tombstone-inherited) is sent as the IA_NA preferred address
-// (`ia_na <iaid> / ADDR`), so v6 stickiness no longer relies on the
-// server's DUID memory alone.
+//   - The client identifier is a DUID-LL (type 3, RFC 8415 §11.4)
+//     over the interface MAC — not a per-process timestamped
+//     DUID-LLT. Under udhcpc6 that was the client's own derivation.
+//     Under dhcpcd the plugin PINS it: dhcpcd.go renders duidLL(MAC)
+//     as a literal `duid` value, deliberately not the `duid ll`
+//     keyword, so a pre-existing /var/lib/dhcpcd/duid cannot override
+//     it. MEASURED as outside evidence — the fixture dnsmasq records
+//     `DUID 00:03:00:01:<mac>` for these containers, i.e. type 0x0003
+//     (link-layer) + hardware type 0x0001 (Ethernet) + the six MAC
+//     bytes, and the IAID is that MAC's low four bytes. DUID
+//     stability across plugin restarts therefore still follows from
+//     MAC stability, which the plugin guarantees (the container link
+//     keeps its MAC across a plugin disable/enable; tombstones pin it
+//     across container restarts). TestDUID_PersistsAcrossPluginRestart
+//     asserts it end-to-end and does not depend on which client is in
+//     use.
+//   - DNS servers still arrive as `dns6`, but NOT "by default with no
+//     -O flag" as they did under udhcpc6. dhcpcd asks because the
+//     plugin's generated config asks: dhcpcd.go emits an explicit
+//     request list containing domain_name_servers, which dhcpcd maps
+//     to the right per-protocol code — option 6 on v4, option 23 on
+//     v6. TestIPv6_DNS6Propagation asserts the arrival, not the
+//     mechanism.
+//
+// #213 wires a preferred-address request on top: a requested v6
+// (`--ip6` or tombstone-inherited) is sent as the IA_NA preferred
+// address (`ia_na <iaid> / ADDR`), so v6 stickiness no longer relies
+// on the server's DUID memory alone.
 package integration
 
 import (
@@ -212,7 +230,7 @@ func TestLifecycleMacvlan_IPv6_GoldenPath(t *testing.T) {
 		t.Errorf("inspect IPv6 %s != live link IPv6 %s", insV6, liveV6)
 	}
 
-	assertRouterAdvertsAreBeingProcessed(t, ctx, id, liveV6)
+	assertRouterAdvertsAreBeingProcessed(t, ctx, id, liveV6, fixture.DnsmasqLog())
 
 	// Teardown: both families release cleanly.
 	if err := cli.ContainerStop(ctx, id, container.StopOptions{}); err != nil {
@@ -328,7 +346,7 @@ func TestLifecycleBridge_IPv6_GoldenPath(t *testing.T) {
 		t.Errorf("live IPv6 %s not in bridge fixture v6 pool [%s, %s]", liveV6, harness.BridgeDHCPv6PoolStart, harness.BridgeDHCPv6PoolEnd)
 	}
 
-	assertRouterAdvertsAreBeingProcessed(t, ctx, id, liveV6)
+	assertRouterAdvertsAreBeingProcessed(t, ctx, id, liveV6, fixture.BridgeDnsmasqLogPath())
 }
 
 // TestLeaseRenewIPv6_HonorsT1: the v6 sibling of
@@ -657,8 +675,100 @@ func containerV6Iface(t *testing.T, ctx context.Context, id, addr string) string
 // solicit a fresh one (measured; see the residual in
 // pkg/dhcp/ra_guard.go). Refresh over time is evidenced in the PR by
 // direct measurement, not by this test.
-func assertRouterAdvertsAreBeingProcessed(t *testing.T, ctx context.Context, id, addr string) {
+// persistentV6BindBudget bounds the wait for the persistent v6
+// client's own DHCPv6 bind. MEASURED in the CI run that exposed the
+// ordering bug below: the gap between the one-shot's bind and the
+// persistent client's was 2 s (bridge) and 5 s (macvlan), so this is
+// roughly an order of magnitude of headroom for a loaded runner. It
+// is a deadline, not a settling time — expiry fails the test.
+const persistentV6BindBudget = 45 * time.Second
+
+// awaitPersistentV6Bind blocks until the fixture's DHCP server has
+// recorded a SECOND DHCPv6 bind for addr, which is the precondition
+// every RA-guard assertion below depends on and which none of them
+// used to establish.
+//
+// Why a precondition is needed at all. There are TWO dhcpcd v6 clients
+// per endpoint. The one-shot runs at CreateEndpoint, in the HOST
+// namespace, and it is the one whose lease Docker is told about — so
+// a container has its global v6 address, and `docker inspect` agrees,
+// well before the PERSISTENT client has started inside the container
+// namespace. The RA guard is a property of the persistent client's
+// prologue. An assertion gated only on "the address is there" is
+// therefore free to run before the guard has written anything.
+//
+// It did. MEASURED, macvlan shard, one-second log resolution:
+//
+//	13:57:31  one-shot binds the address (host ns, link pre-rename)
+//	13:57:34.180  test reads eth0/accept_ra          -> 1
+//	13:57:34.456  test reads eth0/keep_addr_on_down  -> 0
+//	13:57:35  the guard's prologue runs on eth0, then dhcpcd solicits
+//
+// Every value read was a kernel default: neither the guard's 2/1/1 nor
+// dhcpcd's 0/0/0. The test read the right file, in the right
+// namespace, one second before anything wrote to it. `autoconf` could
+// never have caught this, its default and its target both being 1.
+//
+// The route half was blind in the same way for a different reason: it
+// polls for 15 s but RETURNS ON THE FIRST SUCCESS, and at 13:57:34 the
+// RA-derived default route is still present because the code that
+// deletes it has not run. A fifteen-second timeout does not make an
+// assertion patient if it is satisfied immediately.
+//
+// So the whole block was vacuous, and vacuous in the worst direction:
+// it could not have witnessed #875's symptom on the UNFIXED tree
+// either, which is the only thing that makes a green here mean
+// anything.
+//
+// Why THIS anchor. It is outside evidence — the DHCP server's own
+// record, not the plugin's opinion of itself (the standing rule).
+// It is strictly downstream of the guard: the prologue runs before
+// dhcpcd is exec'd, so a bind logged by the server proves the
+// prologue completed. And it is FIX-INDEPENDENT — the persistent
+// client binds on the unfixed tree too, so the precondition cannot
+// quietly become a restatement of the thing under test.
+//
+// Why the second bind and not the first: MEASURED — the one-shot
+// contributes exactly one DHCPREPLY per address (the whole fixture log
+// of each failing shard held exactly one, which is also independent
+// corroboration that the persistent client had not bound before the
+// test gave up). dnsmasq logs one DHCPREPLY per blessed REQUEST/RENEW,
+// so the persistent client's own bind is the second.
+//
+// This is a wait for an EVENT, not a retry: nothing here re-reads a
+// failed assertion hoping for a better answer, and expiry is fatal
+// rather than skipped.
+func awaitPersistentV6Bind(t *testing.T, logPath, addr string) {
 	t.Helper()
+
+	if logPath == "" {
+		t.Fatal("awaitPersistentV6Bind: empty dnsmasq log path — the fixture was " +
+			"never started, so this assertion would have measured nothing (#875)")
+	}
+
+	deadline := time.Now().Add(persistentV6BindBudget)
+	replies := 0
+	for time.Now().Before(deadline) {
+		replies = countDHCPv6Replies(t, logPath, addr)
+		if replies >= 2 {
+			return
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	t.Fatalf("only %d DHCPv6 bind(s) for %s after %s — the PERSISTENT v6 client never "+
+		"bound, so the Router-Advertisement guard never ran and there is nothing here "+
+		"to assert on. This is a failure, not a reason to skip: an unfixed tree would "+
+		"reach exactly this point too (#875)", replies, addr, persistentV6BindBudget)
+}
+
+func assertRouterAdvertsAreBeingProcessed(t *testing.T, ctx context.Context, id, addr, logPath string) {
+	t.Helper()
+
+	// Establish the precondition BEFORE reading anything -- see the
+	// measured ordering above. Everything below is a statement about
+	// the persistent client, and until this returns there is no
+	// persistent client to make a statement about.
+	awaitPersistentV6Bind(t, logPath, addr)
 
 	iface := containerV6Iface(t, ctx, id, addr)
 	t.Logf("RA guard: asserting on derived container interface %q", iface)
@@ -685,6 +795,15 @@ func assertRouterAdvertsAreBeingProcessed(t *testing.T, ctx context.Context, id,
 
 	// The RA itself is asynchronous: the container solicits at link-up
 	// and dnsmasq answers. Poll rather than sample once.
+	//
+	// This poll returns on the first success, which is only sound
+	// because awaitPersistentV6Bind has already run: before that, the
+	// route is trivially present on ANY tree because the code that
+	// would delete it has not executed yet, and this loop exits on
+	// poll #1 having witnessed nothing. Do not hoist this above the
+	// anchor to "save time" -- the fifteen seconds are a deadline for
+	// an RA that may be slow, not a window in which the defect might
+	// show up.
 	deadline := time.Now().Add(harness.IPAcquisitionBudget)
 	var routes string
 	for time.Now().Before(deadline) {
