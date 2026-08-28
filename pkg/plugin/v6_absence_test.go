@@ -24,7 +24,7 @@ import (
 // silently turns every stateless segment fatal too. Pinning the
 // impossible row states which of the two fields decides.
 func TestClassifyV6Absence(t *testing.T) {
-	for _, tc := range []struct {
+	cases := []struct {
 		name string
 		ra   dhcp.RAObservation
 		want v6Verdict
@@ -33,7 +33,31 @@ func TestClassifyV6Absence(t *testing.T) {
 		{"stateless or slaac", dhcp.RAObservation{Seen: true}, v6NotOffered},
 		{"no router advertised", dhcp.RAObservation{}, v6NoRouter},
 		{"managed without an advertisement", dhcp.RAObservation{Managed: true}, v6NoRouter},
-	} {
+	}
+
+	// NON-VACUITY, keyed on the input domain rather than on a row
+	// count. "All four RAObservation values" is what the comment above
+	// claims, and a table is a universal that a deleted row satisfies
+	// silently -- nothing else in the package, and not
+	// check-test-weakening.sh, reports a row that stopped being there.
+	// Two booleans have exactly four inhabitants, so the domain can be
+	// stated rather than counted.
+	covered := map[dhcp.RAObservation]bool{}
+	for _, tc := range cases {
+		covered[tc.ra] = true
+	}
+	for _, seen := range []bool{false, true} {
+		for _, managed := range []bool{false, true} {
+			ra := dhcp.RAObservation{Seen: seen, Managed: managed}
+			if !covered[ra] {
+				t.Fatalf("no row for %+v. This table is the whole statement of which "+
+					"field decides the verdict, and every RAObservation value has to "+
+					"be in it -- a missing row is a case nothing judges", ra)
+			}
+		}
+	}
+
+	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := classifyV6Absence(tc.ra); got != tc.want {
 				t.Errorf("classifyV6Absence(%+v) = %v, want %v", tc.ra, got, tc.want)
@@ -53,7 +77,12 @@ func TestClassifyV6Absence(t *testing.T) {
 // went silent. A `return true` in noteV6Absence's default arm makes that
 // row red here and nothing else in the package.
 func TestNoteV6Absence_TolerancePolarity(t *testing.T) {
-	for _, tc := range []struct {
+	type outcome struct {
+		tolerated  bool
+		notOffered int32
+		noRouter   int32
+	}
+	cases := []struct {
 		name          string
 		ra            dhcp.RAObservation
 		wantTolerated bool
@@ -63,7 +92,34 @@ func TestNoteV6Absence_TolerancePolarity(t *testing.T) {
 		{"stateless is tolerated", dhcp.RAObservation{Seen: true}, true, 1, 0},
 		{"absent router is tolerated", dhcp.RAObservation{}, true, 0, 1},
 		{"managed is fatal", dhcp.RAObservation{Seen: true, Managed: true}, false, 0, 0},
-	} {
+	}
+
+	// NON-VACUITY, and it is load-bearing here rather than tidy.
+	//
+	// MEASURED: emptying this table -- INCLUDING the fatal row, the one
+	// thing in the package that keeps a real DHCPv6 outage from being
+	// waved through -- leaves the lane green and check-test-weakening.sh
+	// clean. A table is a universal, and a universal over an empty set
+	// is satisfied by nothing at all.
+	//
+	// Keyed on the three OUTCOMES rather than on a row count, because a
+	// count is equally satisfied by duplicating a tolerated row over the
+	// fatal one, which is the deletion that actually costs something.
+	required := map[outcome]string{
+		{true, 1, 0}:  "a stateless segment is TOLERATED and counted as not-offered",
+		{true, 0, 1}:  "an absent router is TOLERATED and counted as no-router",
+		{false, 0, 0}: "a managed segment is FATAL and moves neither counter",
+	}
+	for _, tc := range cases {
+		delete(required, outcome{tc.wantTolerated, tc.wantNotOffer, tc.wantNoRouter})
+	}
+	for _, missing := range required {
+		t.Fatalf("this table no longer states that %s. All three polarities belong in "+
+			"ONE table so that flipping any of them cannot read as a change to only "+
+			"its own case -- which is exactly what dropping the row does.", missing)
+	}
+
+	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			p := &Plugin{}
 			got := p.noteV6Absence(tc.ra, "eth0", "abcdef0123456789", errors.New("timed out"))

@@ -792,14 +792,34 @@ func TestBuildEvent_RouterAdvertEmitsOnlyWhenOptedIn(t *testing.T) {
 // "no flags were set", never "no advertisement". The event's existence
 // carries that.
 func TestBuildEvent_RouterAdvertCarriesTheFlags(t *testing.T) {
-	for _, tc := range []struct {
+	cases := []struct {
 		name  string
 		flags string
 	}{
 		{"managed", "MO"},
 		{"stateless", "O"},
 		{"slaac", ""},
-	} {
+	}
+
+	// Non-vacuity. The three spellings ARE the claim -- the comment
+	// above names them as measured against dhcpcd 10.3.2 -- and the
+	// empty one carries the part that is easy to lose: an RA with no
+	// flags is SLAAC, not an absent advertisement. Emptying this table,
+	// or dropping just that row, leaves the lane green.
+	haveEmpty := false
+	for _, tc := range cases {
+		if tc.flags == "" {
+			haveEmpty = true
+		}
+	}
+	if len(cases) != 3 || !haveEmpty {
+		t.Fatalf("the flag table has %d rows, empty-flags row present=%v; want the 3 "+
+			"spellings dhcpcd exports, the empty one among them — that row is what "+
+			"says an advertisement with no flags is still an advertisement",
+			len(cases), haveEmpty)
+	}
+
+	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			env := map[string]string{EmitRAEnv: "1"}
 			if tc.flags != "" {

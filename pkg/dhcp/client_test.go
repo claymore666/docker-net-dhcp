@@ -909,19 +909,52 @@ func TestRAObservation_MergeIsSymmetricAndAccumulating(t *testing.T) {
 	managed := RAObservation{Seen: true, Managed: true}
 	var zero RAObservation
 
-	for _, tc := range []struct {
-		name string
-		got  RAObservation
-		want RAObservation
+	// The operands are stored rather than the computed value, so the
+	// direction of each merge stays visible to the guard below. A table
+	// holding only results cannot tell "seen into managed" from
+	// "managed into seen" -- they produce the same value, which is
+	// precisely the symmetry being claimed and therefore precisely what
+	// a non-vacuity check must not have to infer.
+	cases := []struct {
+		name     string
+		recv, in RAObservation
+		want     RAObservation
 	}{
-		{"zero into managed", managed.Merge(zero), managed},
-		{"managed into zero", zero.Merge(managed), managed},
-		{"seen into managed", managed.Merge(seen), managed},
-		{"managed into seen", seen.Merge(managed), managed},
-		{"zero into zero", zero.Merge(zero), zero},
+		{"zero into managed", managed, zero, managed},
+		{"managed into zero", zero, managed, managed},
+		{"seen into managed", managed, seen, managed},
+		{"managed into seen", seen, managed, managed},
+		{"zero into zero", zero, zero, zero},
+	}
+
+	// Non-vacuity. A table is a universal, and shrinking one leaves the
+	// lane green with nothing reporting the loss -- not the package, not
+	// check-test-weakening.sh.
+	//
+	// Keyed on the ORDERED OPERAND PAIRS rather than on a row count,
+	// because symmetry is the claim: a count of five is equally
+	// satisfied by five copies of one direction, and the direction that
+	// gets dropped is always the one where the receiver already carries
+	// the flag.
+	present := map[[2]RAObservation]bool{}
+	for _, tc := range cases {
+		present[[2]RAObservation{tc.recv, tc.in}] = true
+	}
+	for _, pair := range [][2]RAObservation{
+		{managed, zero}, {zero, managed},
+		{managed, seen}, {seen, managed},
+		{zero, zero},
 	} {
-		if tc.got != tc.want {
-			t.Errorf("%s: got %+v, want %+v", tc.name, tc.got, tc.want)
+		if !present[pair] {
+			t.Fatalf("the Merge table no longer covers %+v.Merge(%+v). Symmetry is "+
+				"the claim, so every pair belongs in BOTH orders; a table holding one "+
+				"direction asserts nothing about the other", pair[0], pair[1])
+		}
+	}
+
+	for _, tc := range cases {
+		if got := tc.recv.Merge(tc.in); got != tc.want {
+			t.Errorf("%s: %+v.Merge(%+v) = %+v, want %+v", tc.name, tc.recv, tc.in, got, tc.want)
 		}
 	}
 }
@@ -939,7 +972,7 @@ func TestRAObservation_MergeIsSymmetricAndAccumulating(t *testing.T) {
 // future switch to a case-insensitive match has to change this test
 // on purpose.
 func TestObserveRA(t *testing.T) {
-	for _, tc := range []struct {
+	cases := []struct {
 		name  string
 		flags string
 		want  RAObservation
@@ -950,7 +983,28 @@ func TestObserveRA(t *testing.T) {
 		{"slaac", "", RAObservation{Seen: true}},
 		{"unknown letters", "XY", RAObservation{Seen: true}},
 		{"lowercase is not the flag", "mo", RAObservation{Seen: true}},
-	} {
+	}
+
+	// Non-vacuity, keyed on the two verdicts rather than on the count
+	// alone: this is the one place a wire spelling becomes a boolean, so
+	// a table left with only managed rows -- or only unmanaged ones --
+	// asserts nothing about the discrimination it exists to pin, and
+	// nothing else in the package would say so.
+	var managed, unmanaged int
+	for _, tc := range cases {
+		if tc.want.Managed {
+			managed++
+		} else {
+			unmanaged++
+		}
+	}
+	if len(cases) != 6 || managed < 1 || unmanaged < 1 {
+		t.Fatalf("the flag table has %d rows (%d managed, %d not), want 6 with both "+
+			"verdicts present — a table that reached only one verdict would pass "+
+			"against a matcher that always returns it", len(cases), managed, unmanaged)
+	}
+
+	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := observeRA(RAObservation{}, tc.flags); got != tc.want {
 				t.Errorf("observeRA(zero, %q) = %+v, want %+v", tc.flags, got, tc.want)
@@ -1054,7 +1108,7 @@ func TestCollectAcquisition(t *testing.T) {
 }
 
 // TestAcquisition_ObservationIsReadableBeforeTheStreamCloses is the
-// unit-level statement of #873.
+// unit-level statement of the fail-open recorded on #868.
 //
 // The first version of this code accumulated the observation inside the
 // collector goroutine and published it by sending on a channel when the
@@ -1084,7 +1138,7 @@ func TestAcquisition_ObservationIsReadableBeforeTheStreamCloses(t *testing.T) {
 	if !ra.Seen || !ra.Managed {
 		t.Errorf("observation = %+v, want a managed advertisement — reading it as "+
 			"absent is what let a container start on a managed network whose "+
-			"DHCPv6 server answered nothing (#873)", ra)
+			"DHCPv6 server answered nothing (#868)", ra)
 	}
 	if last != nil {
 		t.Errorf("lease = %+v, want none — an advertisement is not a lease", *last)
@@ -1135,7 +1189,7 @@ func TestSettleAcquisition_ReportsWhatWasFoldedEvenIfTheStreamNeverEnds(t *testi
 		if !ra.Seen || !ra.Managed {
 			t.Errorf("observation = %+v, want the managed advertisement that was already "+
 				"folded — a stream that has not ended is not evidence that nothing was "+
-				"advertised, and treating it as such tolerates a DHCPv6 outage (#873)", ra)
+				"advertised, and treating it as such tolerates a DHCPv6 outage (#868)", ra)
 		}
 		if last == nil || last.IP != "2001:db8::1/64" {
 			t.Errorf("lease = %v, want the folded lease — the same argument applies to "+
@@ -1163,7 +1217,7 @@ func TestSettleAcquisition_TakesNoContext(t *testing.T) {
 			t.Fatalf("settleAcquisition takes a %v as argument %d. It must not: it is "+
 				"reached with the acquisition context already expired, so a "+
 				"context-bounded read there returns the zero observation and a managed "+
-				"segment with a silent server becomes a running container (#873)",
+				"segment with a silent server becomes a running container (#868)",
 				fn.In(i), i)
 		}
 	}
