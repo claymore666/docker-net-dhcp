@@ -323,6 +323,24 @@ jobs:
 '
 runwf "issue_comment on the pool is exposure" 2 0 "$WFI" "newlane.yml" "has CHANGED"
 
+# THE RESIDUE. The four triggers above are the ones anybody would think
+# to enumerate, and enumerating them is the defect this whole change is
+# about. The scan names the SAFE triggers instead, so a trigger it has
+# never heard of -- a future GitHub event, a typo, anything outside the
+# safe list -- counts and refuses. Without the inversion this case is the
+# fifth trigger nobody wrote down, and it passes silently.
+WFN="$TMP/wf-newtrigger"; wflane "$WFN" 'name: newlane
+on:
+  some_future_event:
+    types: [created]
+jobs:
+  n:
+    runs-on: [self-hosted, dhcp-ci]
+    steps: [{run: "true"}]
+'
+runwf "a trigger this gate has never heard of counts, not vanishes" 2 0 "$WFN" \
+    "newlane.yml" "has CHANGED"
+
 # THE FACT THAT THERE ARE NONE OF THOSE TODAY IS PINNED, NOT ASSUMED.
 # MEASURED at b9b31bb: no workflow_run and no issue_comment workflow
 # exists, and the one `pull_request_target` workflow --
@@ -469,7 +487,13 @@ NOPY="$TMP/nopy"; mkdir -p "$NOPY"
 cat > "$NOPY/python3" <<'PYEOF'
 #!/usr/bin/env bash
 cat > /dev/null
-echo "PyYAML is not importable by this python3" >&2
+# THE STUB MUST NOT SPEAK THE GATE'S WORDS. This printed the same
+# sentence the gate prints, and the assertion below then matched the
+# STUB's stderr -- which the suite captures with 2>&1 -- so deleting the
+# gate's exit-3 branch entirely left this case GREEN. Measured: mutant
+# M8 SURVIVED until this line was changed. The discriminator has to be
+# text only the gate can produce.
+echo "ModuleNotFoundError: No module named 'yaml'" >&2
 exit 3
 PYEOF
 chmod +x "$NOPY/python3"
@@ -479,7 +503,7 @@ PATH="$NOPY:$STUB:$PATH" REPO="owner/name" WF_DIR="$WFOK" bash "$CHECK" > "$TMP/
 nopy_rc=$?
 nopy_calls=$(grep -c . "$GH_CALLS" 2>/dev/null); nopy_calls=${nopy_calls:-0}
 if [ "$nopy_rc" -ne 2 ] || [ "$nopy_calls" -ne 0 ] \
-   || ! grep -F -- "PyYAML is not importable" "$TMP/out" >/dev/null; then
+   || ! grep -F -- "does not fall back to a line scan" "$TMP/out" >/dev/null; then
     echo "FAIL: a missing PyYAML refuses and names it -- want exit 2 / 0 call(s), got $nopy_rc / $nopy_calls"
     sed 's/^/    /' "$TMP/out"; failures=$((failures + 1))
 else

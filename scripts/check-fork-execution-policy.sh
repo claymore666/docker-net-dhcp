@@ -149,8 +149,8 @@ refuse() {
 # WHICH TRIGGERS COUNT, AND WHY IT IS NOT JUST `pull_request` (#844).
 # The question this gate answers is "can a pull request from a fork
 # reach the private pool", not "does the word pull_request appear in
-# `on:`". Three other triggers carry fork-controlled input, and one of
-# them defeats the very setting this gate watches: a workflow with
+# `on:`". Other triggers carry fork-controlled input, and one of them
+# defeats the very setting this gate watches: a workflow with
 #
 #     on: pull_request_target
 #     jobs: { x: { runs-on: [self-hosted, dhcp-ci],
@@ -159,13 +159,24 @@ refuse() {
 #
 # runs fork code on the pool AND bypasses the approval policy entirely,
 # because bypassing it is what `pull_request_target` is FOR. `workflow_run`
-# and `issue_comment` are the same class. MEASURED on the tree at b9b31bb:
-# there is no `workflow_run` and no `issue_comment` workflow, and exactly
-# one `pull_request_target` workflow -- `issue-state-labels.yml`, which is
-# safe today because every job is on `ubuntu-latest` and it pins `ref: dev`.
-# That "none today" is pinned by a self-test case that derives against the
-# REAL workflow directory, because a fact left true by the accident of the
-# current tree is an unrun checklist.
+# and `issue_comment` are the same class.
+#
+# AND THE TRIGGER SET IS NOT WRITTEN AS AN ENUMERATION OF THE DANGEROUS
+# ONES. A list of four dangerous triggers is the same shape as the
+# `runs-on` regex this change removes: it excludes the fifth one
+# silently, in the permissive direction. The scan names the triggers no
+# outsider can cause -- push, schedule, workflow_dispatch and the rest --
+# and counts EVERYTHING ELSE, so a trigger nobody thought of refuses
+# rather than disappearing. The list and its price are argued where the
+# constant is.
+#
+# MEASURED on the tree at b9b31bb: there is no `workflow_run` and no
+# `issue_comment` workflow, and exactly one `pull_request_target`
+# workflow -- `issue-state-labels.yml`, which is safe today because every
+# job is on `ubuntu-latest` and it pins `ref: dev`. That "none today" is
+# pinned by a self-test case that derives against the REAL workflow
+# directory, because a fact left true by the accident of the current tree
+# is an unrun checklist.
 #
 # WHAT COUNTS AS REACHING THE POOL. Any label set that is not entirely
 # GitHub-hosted -- `ubuntu-*`, `windows-*`, `macos-*`. Not "contains
@@ -208,17 +219,50 @@ except ImportError:
     sys.stderr.write("PyYAML is not importable by this python3\n")
     sys.exit(3)
 
-# Triggers whose runs carry, or can be steered by, input from a fork
-# pull request. `pull_request_target`, `workflow_run` and `issue_comment`
-# are here for the reason spelled out in the caller: the first of them
-# runs with repository credentials and can be pointed at the fork's head
-# ref, which is exactly the approval policy this gate watches being made
-# irrelevant.
-TRIGGERS = {
-    "pull_request",
-    "pull_request_target",
-    "workflow_run",
-    "issue_comment",
+# THIS IS A DENYLIST INVERTED ON PURPOSE, and the inversion is the whole
+# point. The obvious spelling is a set of dangerous triggers --
+# {pull_request, pull_request_target, workflow_run, issue_comment} -- and
+# that set is an ENUMERATION, which is the exact defect this gate is being
+# fixed for: an enumeration silently excludes everything added after it
+# was written, and it excludes it in the permissive direction. A fifth
+# fork-influenceable trigger, or one GitHub has not shipped yet, would
+# read as "not exposure" and nothing would go red.
+#
+# So the constant below names the triggers NO OUTSIDER CAN CAUSE OR STEER
+# -- a `push` needs write access, a `schedule` is the repository's own
+# clock, a `workflow_dispatch` needs a permission -- and EVERYTHING ELSE
+# counts as fork-reachable. A trigger this list has never heard of is
+# therefore counted, the derived population diverges, and this gate
+# refuses and sends a human to look. That is the residue: the unknown
+# case fails closed instead of vanishing.
+#
+# The price is stated rather than discovered: a workflow on an
+# outsider-visible-but-harmless trigger with a job off the hosted images
+# will refuse and need a human to widen this list deliberately. MEASURED
+# at b9b31bb over all 25 workflows in this tree: the triggers in use are
+# push, schedule, workflow_dispatch, pull_request and
+# pull_request_target, so nothing pays that price today.
+#
+# `pull_request_target` deserves its own sentence because it is the one
+# that defeats rather than relaxes what this gate watches: it runs with
+# repository credentials and can be pointed at the fork's head ref, so a
+# self-hosted job on it would route around the approval policy entirely,
+# which is what that trigger exists to do.
+SAFE_TRIGGERS = {
+    "branch_protection_rule",
+    "create",
+    "delete",
+    "deployment",
+    "deployment_status",
+    "merge_group",
+    "page_build",
+    "push",
+    "registry_package",
+    "release",
+    "repository_dispatch",
+    "schedule",
+    "workflow_call",
+    "workflow_dispatch",
 }
 
 # The GitHub-hosted image families. Everything else -- `self-hosted`, a
@@ -331,7 +375,7 @@ for path in sys.argv[1:]:
     if not isinstance(doc, dict):
         print("ERROR\t%s\ttop level is not a mapping" % path)
         continue
-    triggers = sorted(on_triggers(doc) & TRIGGERS)
+    triggers = sorted(on_triggers(doc) - SAFE_TRIGGERS)
     if not triggers:
         continue
     jobs = doc.get("jobs")
