@@ -145,25 +145,33 @@
 # EXIT CODES ARE PART OF THE CONTRACT:
 #   0  the claims hold
 #   1  a claim is FALSE — the artifacts and the tracker disagree
-#   2  the check COULD NOT SEE. Never silently 0: a gate that cannot
-#      look must say so, or its green means nothing.
+#   2  the run did NOT establish whether the claims hold. Never
+#      silently 0: a gate that cannot look must say so, or its green
+#      means nothing.
 #
-#      Two kinds land here, and the second is the one a reader does not
-#      expect. The first is the obvious one: a missing file, an
-#      unparseable one, an unknown status value, an unreachable API.
-#      The second is CANNOT ATTRIBUTE — the inputs were all readable and
-#      the answer is still not the gate's to give. `small_tasks_status`
-#      is Met while the README links no listing this check recognises is
-#      either the badge over-claiming or this check having gone blind to
-#      a URL form, and those are not distinguishable from here. It
-#      refuses instead of picking one, and the message names both
-#      readings. Do not "tidy" such a case into a 1: reporting a claim
-#      FALSE on evidence that also fits the gate's own blindness is how a
-#      gate starts being trusted for something it never established.
+#      That is the whole rule, and it is written as an invariant rather
+#      than a list on purpose. Every enumerating version of this comment
+#      has been an under-enumeration: it first listed four spellings of
+#      "could not see" and missed a whole kind; #867 replaced that with
+#      two kinds and missed the usage error at the mode case below,
+#      which is a 2 and is neither a blindness nor an attribution
+#      problem. The test for a new refusal is the invariant — did this
+#      run establish the claims true or false? If not, it exits 2 — and
+#      not membership of any shape named here.
 #
-#      This list is not closed, and it is written as a list of KINDS for
-#      that reason — an enumeration of today's four spellings is what
-#      the second kind was missing from until #867 drove it.
+#      Two shapes are named anyway, not to close the set but because the
+#      second one surprises readers. The familiar one is CANNOT SEE: a
+#      missing file, an unparseable one, an unknown status value, an
+#      unreachable API. The other is CANNOT ATTRIBUTE — every input was
+#      readable and the answer is still not the gate's to give.
+#      `small_tasks_status` is Met while the README links no listing this
+#      check recognises is either the badge over-claiming or this check
+#      having gone blind to a URL form, and those are not distinguishable
+#      from here. It refuses instead of picking one, and the message
+#      names both readings. Do not "tidy" such a case into a 1: reporting
+#      a claim FALSE on evidence that also fits the gate's own blindness
+#      is how a gate starts being trusted for something it never
+#      established.
 #
 # Env seams, for the self-test:
 #   GFI_README  path to README.md
