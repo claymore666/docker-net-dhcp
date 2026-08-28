@@ -351,6 +351,85 @@ mk_claim "- No starter tasks; ask at \`$ROUTE and say what interests you\` if yo
 check "static/Unmet: the route only in backticks is not a route" 1 \
     "$(run --static "$TMP/readme.codespan" "$TMP/badge.unmet")" 'names no ask route'
 
+# THREE MORE INERT RENDERINGS, and the reason they are here rather than
+# assumed away: the three above were the ones the fix first enumerated,
+# and enumerating renderings is spelling-keyed by construction. Each of
+# the three below was measured INERT against GitHub's own /markdown
+# renderer while the gate still counted it as a route — a fail-open on
+# the arm that exists to keep the invitation honest.
+
+# A code span may cross LINES. The single-line pattern this replaces
+# could not see one, so the page rendered code and the gate read a link.
+{ printf 'Contributing.\n\n%s\n' "$BEGIN"
+  printf -- '- No starter tasks; ask at `see\n  %s here` if you like.\n' "$ROUTE"
+  printf '%s\n' "$END"; } > "$TMP/readme.mlcodespan"
+check "static/Unmet: the route only in a MULTI-LINE code span is not a route" 1 \
+    "$(run --static "$TMP/readme.mlcodespan" "$TMP/badge.unmet")" 'names no ask route'
+
+# An UNTERMINATED <!-- runs to the next --> on the page, which is the end
+# marker's own, so everything after it in the block is comment.
+{ printf 'Contributing.\n\n%s\n' "$BEGIN"
+  printf -- '- No starter tasks.\n  <!-- disabled:\n  [ask](%s)\n' "$ROUTE"
+  printf '%s\n' "$END"; } > "$TMP/readme.untermcomment"
+check "static/Unmet: the route after an UNTERMINATED comment is not a route" 1 \
+    "$(run --static "$TMP/readme.untermcomment" "$TMP/badge.unmet")" 'names no ask route'
+
+# A link reference definition nothing references renders as NOTHING.
+{ printf 'Contributing.\n\n%s\n' "$BEGIN"
+  printf -- '- No starter tasks; ask somewhere.\n\n  [ar]: %s\n' "$ROUTE"
+  printf '%s\n' "$END"; } > "$TMP/readme.deadref"
+check "static/Unmet: an UNREFERENCED link definition is not a route" 1 \
+    "$(run --static "$TMP/readme.deadref" "$TMP/badge.unmet")" 'names no ask route'
+
+# PRESERVATION CONTROLS for the three above. Without these, "strip more"
+# would score green by refusing everything, and two of the three strips
+# have a cheap wrong version that these are what catch:
+
+# The SAME definition, referenced. GitHub renders a real link, so the gate
+# must accept it — the half that stops the definition strip from being
+# "delete any line with a colon in it".
+{ printf 'Contributing.\n\n%s\n' "$BEGIN"
+  printf -- '- No starter tasks; [ask here][ar] and one will be scoped.\n\n  [ar]: %s\n' "$ROUTE"
+  printf '%s\n' "$END"; } > "$TMP/readme.usedref"
+check "static/Unmet: a REFERENCED link definition is a route" 0 \
+    "$(run --static "$TMP/readme.usedref" "$TMP/badge.unmet")" ''
+
+# The same BYTES mid-paragraph are NOT a definition — a definition has to
+# start a block. GitHub renders this one as text and autolinks the bare
+# URL, so it IS clickable and the gate must accept it. Measured against
+# the /markdown renderer, both shapes, because they differ only in a blank
+# line: this is what stops the definition strip from keying on the bracket
+# syntax alone and refusing a route a newcomer really can follow.
+{ printf 'Contributing.\n\n%s\n' "$BEGIN"
+  printf -- '- No starter tasks; ask where it says\n  [ar]: %s\n  and one will be scoped.\n' "$ROUTE"
+  printf '%s\n' "$END"; } > "$TMP/readme.midref"
+check "static/Unmet: a definition-shaped line MID-PARAGRAPH is still a route" 0 \
+    "$(run --static "$TMP/readme.midref" "$TMP/badge.unmet")" ''
+
+# An UNPAIRED backtick is literal text, not an open code span. This is the
+# over-refusal a naive multi-line pattern introduces: match lazily across
+# newlines and one stray backtick swallows the real link below it. Code
+# spans are paired by RUN LENGTH so that cannot happen.
+{ printf 'Contributing.\n\n%s\n' "$BEGIN"
+  printf -- '- No starter tasks (about 3` of them); [ask](%s).\n' "$ROUTE"
+  printf '%s\n' "$END"; } > "$TMP/readme.straytick"
+check "static/Unmet: a stray backtick does not swallow the real link" 0 \
+    "$(run --static "$TMP/readme.straytick" "$TMP/badge.unmet")" ''
+
+# PINNED BOUND, not an assertion of correctness. A route reachable only
+# from an INDENTED (four-space) code block is inert on the page and this
+# gate still counts it, so this case asserts today's WRONG answer (0).
+# Closing it needs the enclosing list's content indent — a real CommonMark
+# parser, which the runner image does not ship — and every indent rule
+# guessed at instead refuses a README that merely reflows its bullet. The
+# gate header states the same bound. If this case ever starts failing,
+# the gate got BETTER: delete the case, do not weaken the gate.
+{ printf 'Contributing.\n\n%s\n' "$BEGIN"
+  printf -- '- No starter tasks. Someday:\n\n      %s\n' "$ROUTE"
+  printf '%s\n' "$END"; } > "$TMP/readme.indentcode"
+check "static/Unmet: KNOWN BOUND — an indented code block is still read as a route" 0 \
+    "$(run --static "$TMP/readme.indentcode" "$TMP/badge.unmet")" ''
+
 # A DIFFERENT route that merely CONTAINS the published one. The substring
 # check accepted this; equality on the extracted target does not.
 mk_claim "- No starter tasks; [ask](${ROUTE}-archive)." > "$TMP/readme.prefix"

@@ -434,10 +434,29 @@ except Exception as e:
 # label. An EMPTY block is different and is exit 1: the gate found the
 # claim and the claim names no route.
 #
-# What this still cannot see, stated rather than implied: markers moved
-# to wrap some OTHER bullet would satisfy it. That is a deliberate
-# defeat, not silent decay, and it is the same residual limit the
-# contact-link parse has.
+# WHAT THIS STILL CANNOT SEE — a bound, not a completeness claim, and
+# every line of it measured against GitHub's own renderer (the /markdown
+# API) rather than reasoned about:
+#
+#   * Markers moved to wrap some OTHER bullet satisfy it. A deliberate
+#     defeat, not silent decay — the same residual limit the contact-link
+#     parse has.
+#   * A route reachable ONLY from an indented (four-space) code block is
+#     inert on the page and this gate still counts it. Closing it needs
+#     the enclosing list's content indent, i.e. a real CommonMark parser,
+#     and none is available here — the runner image ships no markdown
+#     module. Every indent rule guessed at instead refuses a README that
+#     merely reflows its bullet, which is the expensive direction for a
+#     guard whose whole job is to not cry wolf about an honest page. The
+#     shape is PINNED as a case asserting today's answer so a later reader
+#     cannot mistake it for a rendering this gate understands.
+#
+# The four inert renderings it DOES refuse — fenced block, HTML comment
+# (terminated or not), code span (single- or multi-line), and a dead link
+# reference definition — were each confirmed inert by that renderer, and
+# each has a clickable counterpart driven beside it as a preservation
+# control. Enumerating renderings is spelling-keyed by construction, so
+# assume a further one exists rather than that this list is closed.
 BEGIN = re.compile(r'^[ \t]*<!--[ \t]*starter-task-claim:[ \t]*begin[ \t]*-->[ \t]*$', re.M)
 END = re.compile(r'^[ \t]*<!--[ \t]*starter-task-claim:[ \t]*end[ \t]*-->[ \t]*$', re.M)
 
@@ -477,6 +496,101 @@ def strip_fences(s):
     return "\n".join(out)
 
 
+def strip_comments(s):
+    """Drop HTML comments, INCLUDING an unterminated one. `<!--` with no
+    `-->` after it runs to the next `-->` on the rendered page, which is
+    the end marker's own — so everything after it in the block is a
+    comment and nothing in it is clickable. Same safe direction as
+    strip_fences: it can only remove a candidate route."""
+    out, i = [], 0
+    while True:
+        j = s.find("<!--", i)
+        if j < 0:
+            out.append(s[i:])
+            break
+        out.append(s[i:j])
+        k = s.find("-->", j + 4)
+        if k < 0:
+            break
+        # Keep the block line-aligned by re-emitting the newlines the
+        # comment spanned. Nothing downstream is line-oriented today —
+        # `inert`'s only consumer is the URL scan below, to which a
+        # newline and a space are both whitespace — so this is insurance
+        # against a line-oriented step being added after this one, and a
+        # mutant that removes it SURVIVES for exactly that reason.
+        out.append("\n" * s.count("\n", j, k + 3))
+        i = k + 3
+    return "".join(out)
+
+
+def strip_codespans(s):
+    """Drop code spans, pairing backtick RUNS BY LENGTH the way CommonMark
+    does. A span may cross lines; the single-line form this replaces could
+    not see one, and a route inside it read as clickable when the page
+    renders it as code.
+
+    An UNPAIRED run is literal text and is left alone. That is the point of
+    pairing by length rather than matching lazily across newlines: a naive
+    multi-line pattern lets one stray backtick swallow a real link, which
+    would refuse an honest README — a guard failing in the expensive
+    direction."""
+    runs = [(m.start(), m.end() - m.start()) for m in re.finditer(r'`+', s)]
+    out, i, r = [], 0, 0
+    while r < len(runs):
+        start, n = runs[r]
+        close = next((q for q in range(r + 1, len(runs)) if runs[q][1] == n), None)
+        if close is None:
+            r += 1
+            continue
+        out.append(s[i:start])
+        end = runs[close][0] + n
+        out.append("\n" * s.count("\n", start, end))
+        i = end
+        r = close + 1
+    out.append(s[i:])
+    return "".join(out)
+
+
+REFDEF = re.compile(r'^[ \t]{0,3}\[([^\]\n]+)\]:[ \t]*\S')
+
+
+def _norm_label(x):
+    return " ".join(x.split()).lower()
+
+
+def strip_dead_refdefs(s):
+    """A link reference definition renders as NOTHING unless some other
+    text references its label. `[ar]: <route>` alone puts the route in the
+    source and nowhere on the page.
+
+    It is a definition only at a BLOCK start — the start of the block, or
+    after a blank line. Mid-paragraph the same bytes are ordinary text and
+    GitHub autolinks the bare URL, so stripping those would refuse a route
+    a newcomer really can click. That asymmetry is measured, not assumed:
+    the two shapes render differently."""
+    lines = s.split("\n")
+    labels = [None] * len(lines)
+    prev_blank = True
+    for n, ln in enumerate(lines):
+        m = REFDEF.match(ln) if prev_blank else None
+        if m:
+            labels[n] = _norm_label(m.group(1))
+        prev_blank = (ln.strip() == "")
+    out = []
+    for n, ln in enumerate(lines):
+        if labels[n] is not None:
+            used = any(
+                _norm_label(u) == labels[n]
+                for o, other in enumerate(lines) if o != n
+                for u in re.findall(r'\[([^\]\n]+)\]', other)
+            )
+            if not used:
+                out.append("")
+                continue
+        out.append(ln)
+    return "\n".join(out)
+
+
 # The same two patterns the label scan at the top of this file uses, for
 # the same reason: an angle-bracketed target is collected first, or a
 # link whose target runs past a character the bare form stops at is read
@@ -485,10 +599,11 @@ def strip_fences(s):
 # one and change the other.
 URL = re.compile(r'https://github\.com/[^\s)"\]>]+')
 BRACKETED = re.compile(r'<(https://github\.com/[^>]+)>')
-COMMENT = re.compile(r'<!--.*?-->', re.S)
-CODESPAN = re.compile(r'`[^`\n]*`')
 
-inert = CODESPAN.sub(" ", COMMENT.sub(" ", strip_fences(block)))
+# Order matters and is line-oriented first: the reference-definition scan
+# needs blank lines to tell a definition from a paragraph, so it runs
+# before anything collapses the block.
+inert = strip_codespans(strip_comments(strip_fences(strip_dead_refdefs(block))))
 # Trailing sentence punctuation is not part of the target GitHub links,
 # so a bare URL ending a sentence stays a route.
 targets = [u.rstrip(".,;:!") for u in BRACKETED.findall(inert) + URL.findall(inert)]
