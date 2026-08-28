@@ -126,7 +126,7 @@
 # how this gate passed locally and went red on its first push. Stage the
 # change before believing a green. (CI compounds it: `pull_request`
 # checks out the MERGE REF, so its domain is larger than the branch
-# head's -- 179 files against 173 here on the same day.)
+# head's -- 179 files against 173, measured 2026-08-28 at 5e35574.)
 #
 # NOT REACHABLE, AND IT MATTERS: `.claude/` is gitignored, so its 14
 # shell instruments -- ci-slot.sh, review-verdict.sh and the rest -- are

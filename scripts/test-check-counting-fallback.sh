@@ -143,9 +143,9 @@ echo "--- the real tree is a real population"
 
 # NON-VACUITY ON THE LIVE RUN. The gate reports how many files it
 # examined; a clean verdict over a suspiciously small domain is the
-# failure this asserts against. The tracked shell corpus is ~171 files;
-# anything under 50 means the domain derivation broke, and a green
-# result would be meaningless.
+# failure this asserts against. The tracked shell corpus was 177 files
+# when this was written (2026-08-28); anything under 50 means the
+# domain derivation broke, and a green result would be meaningless.
 n=$((n + 1))
 out=$(cd "$HERE/.." && bash "$GATE" 2>&1); rc=$?
 seen=$(sed -n 's/.*clean, \([0-9]*\) shell file.*/\1/p' <<< "$out")
