@@ -1,0 +1,2041 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Docker network plugin that leases container IPs from an existing DHCP server — bridge, macvlan, and ipvlan modes.">
+      
+      
+        <meta name="author" content="claymore666">
+      
+      
+        <link rel="canonical" href="https://claymore666.github.io/docker-net-dhcp/latest/release-runbook/">
+      
+      
+        <link rel="prev" href="../verifying-releases/">
+      
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>Release runbook - docker-net-dhcp</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#release-runbook" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="docker-net-dhcp" class="md-header__button md-logo" aria-label="docker-net-dhcp" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            docker-net-dhcp
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Release runbook
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/claymore666/docker-net-dhcp" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    claymore666/docker-net-dhcp
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href=".." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../bridge-mode/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Bridge mode
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../parent-attached-modes/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  macvlan / ipvlan
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../reference/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Driver reference
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../internals/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  How it works
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../roadmap/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Roadmap
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../verifying-releases/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Verifying releases
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="./" class="md-tabs__link">
+          
+  
+  
+  Maintainer
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="docker-net-dhcp" class="md-nav__button md-logo" aria-label="docker-net-dhcp" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    docker-net-dhcp
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/claymore666/docker-net-dhcp" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    claymore666/docker-net-dhcp
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../bridge-mode/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Bridge mode
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../parent-attached-modes/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    macvlan / ipvlan
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Driver reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../internals/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    How it works
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../roadmap/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Roadmap
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../verifying-releases/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Verifying releases
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Maintainer
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_8">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Maintainer
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Release runbook
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Release runbook
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#one-time-prerequisites" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        One-time prerequisites
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="One-time prerequisites">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#local-tooling-on-the-release-box" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Local tooling on the release box
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ghcr-package-must-be-linked-to-the-repo" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GHCR — package must be linked to the repo
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#github-pages-enable-the-docs-site" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GitHub Pages — enable the docs site
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#docker-hub-secrets-and-scopes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Docker Hub — secrets and scopes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#workflow-file-must-parse" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Workflow file must parse
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#dispatching-an-existing-tag" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Dispatching an existing tag
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#pre-release-dry-run-rc-tags" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Pre-release dry-run (rc tags)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#one-time-prerequisites" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        One-time prerequisites
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="One-time prerequisites">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#local-tooling-on-the-release-box" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Local tooling on the release box
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ghcr-package-must-be-linked-to-the-repo" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GHCR — package must be linked to the repo
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#github-pages-enable-the-docs-site" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GitHub Pages — enable the docs site
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#docker-hub-secrets-and-scopes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Docker Hub — secrets and scopes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#workflow-file-must-parse" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Workflow file must parse
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#dispatching-an-existing-tag" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Dispatching an existing tag
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#pre-release-dry-run-rc-tags" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Pre-release dry-run (rc tags)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+    <a href="https://github.com/claymore666/docker-net-dhcp/edit/dev/docs/release-runbook.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
+    </a>
+  
+  
+
+
+<h1 id="release-runbook">Release runbook<a class="headerlink" href="#release-runbook" title="Permanent link">&para;</a></h1>
+<p>How to publish a <code>vX.Y.Z</code> of <code>docker-net-dhcp</code>. Written from the
+v0.8.0 cycle, where we hit two operator-side gotchas (GHCR
+package-link, Docker Hub token scope) that aren't reproducible
+from the workflow file alone — capturing them here so the next
+release isn't another archaeology session.</p>
+<p>The goal: a clean release is one tag push, no manual steps.</p>
+<h2 id="one-time-prerequisites">One-time prerequisites<a class="headerlink" href="#one-time-prerequisites" title="Permanent link">&para;</a></h2>
+<p>These are per-account / per-Hub-repo setup plus the tooling on the
+box you release from, <strong>not</strong> per-release. Done once when the
+publishing chain is first wired up.</p>
+<h3 id="local-tooling-on-the-release-box">Local tooling on the release box<a class="headerlink" href="#local-tooling-on-the-release-box" title="Permanent link">&para;</a></h3>
+<p>The workflow installs everything it needs itself; this is only about
+the commands <strong>you</strong> type. Nothing here is checked by CI, so a missing
+tool surfaces as a step you skip rather than a gate that fails — which
+is exactly how the v1.3.5 release ended up unable to run step 10's
+verification, and how v1.5.0 was tagged before anyone noticed <code>cosign</code>
+was absent, leaving the signature unverified locally until afterwards.</p>
+<p>Twice is a class, so it has a check now. <strong>Run this before step 1:</strong></p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>bash<span class="w"> </span>scripts/check-release-tooling.sh
+</code></pre></div>
+<p>Exit 0 means every step below can actually be executed on this box. It
+verifies <code>gh</code>, <code>cosign</code> <strong>major 3</strong>, and a configured
+<code>user.signingkey</code>; <code>crane</code> is reported but optional. Its own
+table-driven tests run in CI (<code>scripts/test-check-release-tooling.sh</code>),
+so the check cannot rot into something that always passes.</p>
+<table>
+<thead>
+<tr>
+<th>Tool</th>
+<th>Needed for</th>
+<th>Install</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>gh</code></td>
+<td>every step — PRs, milestones, run status, <code>gh release view</code></td>
+<td>distro package or <a href="https://cli.github.com">https://cli.github.com</a></td>
+</tr>
+<tr>
+<td><code>cosign</code></td>
+<td>step 10's <code>verify-blob</code> re-verification</td>
+<td><code>go install github.com/sigstore/cosign/v3/cmd/cosign@latest</code></td>
+</tr>
+<tr>
+<td><code>crane</code></td>
+<td>optional — comparing <code>:latest</code> and <code>:vX.Y.Z</code> digests by hand</td>
+<td><code>go install github.com/google/go-containerregistry/cmd/crane@latest</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Use cosign v3 or newer.</strong> The release signs <code>checksums.txt</code> keylessly
+and emits a <strong>Sigstore bundle</strong>, which is the v3 default; v2's
+<code>--output-signature</code> / <code>--output-certificate</code> pair was removed in
+favour of it. v3 is what the workflow itself installs and what the
+v1.3.5 verification was run with (v3.1.2), and what verified v1.5.0
+(v3.1.3); older majors are untested against
+<code>checksums.txt.sigstore.json</code> here.</p>
+<p>v2 does not fail with anything resembling "your cosign is too old" — it
+fails with <code>Error: bundle does not contain cert for verification, please
+provide public key</code>, which implicates the artifact rather than the
+toolchain (#522). That string is now quoted on
+<a href="../verifying-releases/">Verifying releases</a> so a search for it lands on
+the answer. <code>scripts/check-cosign-docs.sh</code> keeps every page that prints
+a cosign command naming the same major as
+<code>scripts/check-release-tooling.sh</code> enforces.</p>
+<p>Also needed, but already true on any box that has committed here: a
+git signing key, since step 9 tags with <code>-s</code>. Confirm with
+<code>git config --get user.signingkey</code> before you get to the tag.</p>
+<h3 id="ghcr-package-must-be-linked-to-the-repo">GHCR — package must be linked to the repo<a class="headerlink" href="#ghcr-package-must-be-linked-to-the-repo" title="Permanent link">&para;</a></h3>
+<p>By default a workflow's <code>GITHUB_TOKEN</code> can push to GHCR packages it
+<strong>created</strong> but not packages that already exist under the user/org.
+This fork's <code>ghcr.io/claymore666/docker-net-dhcp</code> package was first
+published manually before the release workflow existed, so on first
+tag push the workflow gets <code>403 Forbidden</code> from GHCR even though
+<code>permissions: packages: write</code> is set.</p>
+<p>Fix it once at
+<a href="https://github.com/users/claymore666/packages/container/docker-net-dhcp/settings">https://github.com/users/claymore666/packages/container/docker-net-dhcp/settings</a>:</p>
+<ol>
+<li><strong>Manage Actions access</strong> → <strong>Add Repository</strong> → pick
+   <code>claymore666/docker-net-dhcp</code>.</li>
+<li>Set role to <strong>Write</strong>.</li>
+<li>Save.</li>
+</ol>
+<p>Symptom if missed: workflow run logs show <code>error pushing plugin:
+unexpected status from POST request to
+https://ghcr.io/v2/.../blobs/uploads/: 403 Forbidden</code> at the <strong>Push
+to GHCR</strong> step. The fix takes effect for the next workflow run; no
+re-tag needed.</p>
+<h3 id="github-pages-enable-the-docs-site">GitHub Pages — enable the docs site<a class="headerlink" href="#github-pages-enable-the-docs-site" title="Permanent link">&para;</a></h3>
+<p>The versioned documentation site (mkdocs-material + mike, <code>#133</code>) is
+built and published by <code>.github/workflows/pages.yml</code>. That workflow
+pushes the rendered site to the <code>gh-pages</code> branch; GitHub Pages has to
+be told to serve from it — once, after the branch first exists.</p>
+<p>The first run on <code>dev</code> (or the first tag) creates <code>gh-pages</code>. Then, at
+<a href="https://github.com/claymore666/docker-net-dhcp/settings/pages">https://github.com/claymore666/docker-net-dhcp/settings/pages</a>:</p>
+<ol>
+<li><strong>Build and deployment → Source</strong> = <strong>Deploy from a branch</strong>.</li>
+<li><strong>Branch</strong> = <code>gh-pages</code> / <code>(root)</code>. Save.</li>
+</ol>
+<p>The site then resolves at <a href="https://claymore666.github.io/docker-net-dhcp/">https://claymore666.github.io/docker-net-dhcp/</a>.
+No per-release action: each <code>vX.Y.Z</code> tag publishes its own docs version
+and moves the <code>latest</code> alias automatically (rc tags publish a preview
+without moving <code>latest</code> — same guard as the image <code>:latest</code>). Until the
+first release, the workflow points the site root at the moving <code>dev</code>
+version so it isn't a 404.</p>
+<h3 id="docker-hub-secrets-and-scopes">Docker Hub — secrets and scopes<a class="headerlink" href="#docker-hub-secrets-and-scopes" title="Permanent link">&para;</a></h3>
+<p>The workflow's Hub steps are gated on a job-level
+<code>HAS_HUB_CREDS</code> check. They skip cleanly when credentials are
+absent (GHCR alone still publishes), so initial setup can be
+deferred.</p>
+<p>When you <strong>do</strong> want Hub published:</p>
+<ol>
+<li>Create the repo on Hub (free): <a href="https://hub.docker.com/repository/create">https://hub.docker.com/repository/create</a>
+   — name <code>net-dhcp</code>, namespace <code>claymore666</code>, visibility <strong>Public</strong>.
+   The Hub UI doesn't auto-create plugin repos on first push the
+   way it does for image repos; create it manually first.</li>
+<li>Generate an access token at
+   <a href="https://app.docker.com/settings/personal-access-tokens">https://app.docker.com/settings/personal-access-tokens</a>:</li>
+<li>Description: something descriptive (<code>docker-net-dhcp release CI</code>).</li>
+<li><strong>Access permissions: Read &amp; Write</strong> at minimum, but the
+     description-sync step needs <strong>admin</strong> scope on the repo —
+     read+write alone gets <code>401</code> on description PATCH. Picking
+     "Read, Write &amp; Delete" (the broadest permission level Hub
+     offers personal tokens) covers both image push and
+     description sync.</li>
+<li>Add two repo secrets at
+   <a href="https://github.com/claymore666/docker-net-dhcp/settings/secrets/actions">https://github.com/claymore666/docker-net-dhcp/settings/secrets/actions</a>:</li>
+<li><code>DOCKERHUB_USERNAME</code> = <code>claymore666</code></li>
+<li><code>DOCKERHUB_TOKEN</code> = the token from step 2.</li>
+</ol>
+<p>Symptom if scope is wrong: image push works, but the <strong>Sync Docker
+Hub description from README</strong> step ends with
+<code>401 Unauthorized</code> calling <code>PATCH /v2/repositories/...</code>. Regenerate
+the token with the broader scope, then re-run the sync <strong>from an rc
+tag</strong>, not from the release tag:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>gh<span class="w"> </span>workflow<span class="w"> </span>run<span class="w"> </span>release.yml<span class="w"> </span>-f<span class="w"> </span><span class="nv">tag</span><span class="o">=</span>vX.Y.Z-rcN<span class="w"> </span>--ref<span class="w"> </span>main
+</code></pre></div>
+<p>The description is not version-specific — the step pushes <code>README.md</code>
+to the same Hub repository whichever tag ran it — so the rc dry-run
+fixes it while touching no bare release tag and no <code>:latest</code>. Use the
+rc that preceded this release; re-dispatching an rc of an
+already-released version is permitted and moves only <code>latest-rc</code>.</p>
+<p>Dispatching the <strong>release</strong> tag would work too and is what this line
+used to say. Don't: it rebuilds the plugin, and the rebuild carries a
+new digest — see <a href="#dispatching-an-existing-tag">Dispatching an existing
+tag</a>.</p>
+<p>One reason to check this deliberately rather than wait for it to
+fail the run: the sync step is <code>continue-on-error</code>, so a <code>401</code> shows
+as a failed step inside a <strong>green</strong> job.</p>
+<h3 id="workflow-file-must-parse">Workflow file must parse<a class="headerlink" href="#workflow-file-must-parse" title="Permanent link">&para;</a></h3>
+<p>GitHub Actions parses every workflow on every push, including
+branch pushes that don't match the trigger. A parse error doesn't
+fail loudly — it produces a "failed" run with no jobs and silently
+<strong>doesn't</strong> trigger on tag pushes either. v0.8.0 hit this with
+<code>if: ${{ secrets.X != '' }}</code> at step level (rejected; secrets
+context isn't allowed in step-level <code>if</code>).</p>
+<p>First line of defence: the <code>actionlint</code> job in the Test workflow
+lints every workflow file on every PR (and
+<code>scripts/test-actionlint.sh</code> asserts the linter still catches this
+exact bug class). Second line: the <a href="#pre-release-dry-run-rc-tags"><strong>rc-tag
+dry-run</strong></a> exercises the whole
+publishing chain before every real tag.</p>
+<h3 id="dispatching-an-existing-tag">Dispatching an existing tag<a class="headerlink" href="#dispatching-an-existing-tag" title="Permanent link">&para;</a></h3>
+<p>Dispatching <code>release.yml</code> with a bare existing release tag
+<em>rebuilds and re-points</em> that tag (a different toolchain gives a
+different digest), which mutates artifacts users may have pinned.
+Where it used to be genuinely dangerous is <code>:latest</code>: <code>crane tag
+&lt;repo&gt;:$TAG latest</code> does not know what <code>:latest</code> already points at,
+so dispatching an older tag moved <code>:latest</code> <strong>backwards</strong> on both
+registries, and there is no rollback — <code>docker plugin create</code>
+re-tars the rootfs non-reproducibly, so undoing it means publishing
+yet another digest and orphaning the previous signature.</p>
+<p><strong>Use an rc tag instead.</strong> <a href="#pre-release-dry-run-rc-tags">The rc dry-run</a>
+runs the identical chain and touches no bare release tag and no
+<code>:latest</code>, which is what every recovery step in this file now points
+at. Two of them used to hand you the release-tag dispatch — the one
+action this section is about — to someone whose release was already
+broken.</p>
+<p>The irreversible half is also now refused rather than written down
+(#736). <code>promote-latest</code> runs <code>scripts/assert-newest-release-tag.sh</code>
+before it touches either registry, and it <strong>refuses, never skips</strong> —
+a skip during an incident is not noticed, and an incident is exactly
+when this fires. What follows is what you need to know if you are
+looking at a refusal, or deciding whether to dispatch anyway:</p>
+<ul>
+<li><strong>Re-running the tag currently being released is allowed</strong> by the
+  guard. It still rebuilds, so it still drifts the digest; the guard
+  is about <code>:latest</code> moving backwards, not about the rebuild.</li>
+<li><strong>Dispatching an older release is refused,</strong> with a non-zero exit
+  and nothing published. This is the case that used to succeed
+  quietly and move <code>:latest</code> back with it.</li>
+<li><strong>A genuine backport is refused too</strong> — publishing v1.7.2 after
+  v1.8.0 exists. Deliberate: moving <code>:latest</code> to a backport is then
+  an explicit manual <code>crane tag</code>, not an accident.</li>
+<li><strong>rc tags are compared only against the other rcs of their own
+  version</strong>, because <code>git tag --sort=-v:refname</code> sorts
+  <code>v1.8.0-rc1</code> above <code>v1.8.0</code> unless <code>versionsort.suffix</code> is set,
+  and a single "newest tag overall" rule would have refused the real
+  v1.8.0 release.</li>
+<li><strong>Re-dispatching an rc of an already-released version is not
+  refused.</strong> It moves <code>latest-rc</code>, which no documented install
+  command names. Left uncovered deliberately, and recorded in the
+  script's header so the next reader does not take it for an
+  oversight.</li>
+</ul>
+<p>The rebuild itself is still a rebuild, so this remains something to
+do on purpose and not by reflex. The difference is that the
+irreversible half now fails loudly instead of relying on this
+paragraph being read first.</p>
+<h3 id="pre-release-dry-run-rc-tags">Pre-release dry-run (rc tags)<a class="headerlink" href="#pre-release-dry-run-rc-tags" title="Permanent link">&para;</a></h3>
+<p>A tag with a pre-release suffix (<code>v1.0.0-rc1</code>) runs the release
+workflow in <strong>pre-release mode</strong>: the full chain executes — build,
+push of <code>:v1.0.0-rc1</code> to both registries, Hub description sync,
+the four install proofs — but <strong><code>:latest</code> is not moved</strong> and no bare
+release tag is touched. Zero impact on anything a user pulls by
+default.</p>
+<p>Since #736 an rc does not <em>skip</em> promotion, it is <strong>redirected</strong>:
+<code>promote-latest</code> runs on an rc too, with the same steps and the same
+digest assertion, aimed at <code>latest-rc</code> and <code>latest-rc-arm64</code> instead
+of <code>latest</code> and <code>latest-arm64</code>. That matters twice.</p>
+<ul>
+<li><strong>The dry-run now covers the promotion step.</strong> Under the old
+  <code>if: prerelease != 'true'</code> skip, promotion was the one part of
+  this workflow an rc could not reach, so a change to the promote
+  ordering would first execute on a real tag — with no rollback
+  behind it.</li>
+<li><strong><code>:latest</code> is still untouched, and that is now asserted from the
+  registry</strong> rather than inferred from the skip: the run reads
+  <code>:latest</code> before it starts and re-reads it at the end. If the
+  redirect were ever mistyped, the rc would fail rather than ship
+  itself to everyone pulling <code>:latest</code>.</li>
+</ul>
+<p><code>latest-rc</code> and <code>latest-rc-arm64</code> are public tags on both
+registries, so treat them as published surface: they are moved by
+every rc and they point at a build that has not been accepted. <strong>No
+install instruction in any document may name them</strong> — install
+instructions pin <code>vX.Y.Z</code> or <code>latest</code>. If you are ever adding a tag
+to a <code>docker plugin install</code> line in these docs, that is the check
+to run.</p>
+<p>Use it before every real release tag (step 9 below):</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>git<span class="w"> </span>checkout<span class="w"> </span>main<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>pull<span class="w"> </span>--ff-only<span class="w">      </span><span class="c1"># the release commit</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>git<span class="w"> </span>tag<span class="w"> </span>-s<span class="w"> </span>v1.0.0-rc1<span class="w"> </span>-m<span class="w"> </span><span class="s2">&quot;v1.0.0-rc1&quot;</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>push<span class="w"> </span>origin<span class="w"> </span>v1.0.0-rc1
+</code></pre></div>
+<p>Watch the run; every step including <strong>verify-install</strong>, since
+v1.7.0 <strong>release-arm64</strong> / <strong>verify-install-arm64</strong>, and since #776
+<strong>verify-install-hub</strong> / <strong>verify-install-hub-arm64</strong> must be green —
+and since #736 <strong>promote-latest</strong>, which an rc now reaches. Its last
+step, <em>Assert a pre-release did not move :latest</em>, is the one that
+proves the dry-run stayed a dry-run.</p>
+<p><strong>The rc tag also starts the arm64 integration lane</strong> (#531) — pushing
+it triggers <code>integration-arm64</code> on its own. Nothing to dispatch, and
+nothing to remember: the tag is the gate, so what the rc proves follows
+from the tag. The lane still runs only against release candidates
+(<code>v*-rc*</code> never matches a bare release tag), because the runner pool it
+targets — label <code>dhcp-ci-arm64</code> — is provided for that window and not
+for day-to-day PRs.</p>
+<p>An arm64 runner has to be online for the rc. Since v1.8.0 (#632) that
+needs no action: the board carries a standing runner that registers
+itself at boot and reconnects on its own, so pushing the tag is the
+whole procedure. Nothing to mint, nothing to launch. If the lane
+reports no runner anyway, the board is down rather than unstarted —
+that is a host problem, not a release step.</p>
+<p>Two jobs to read, and they say different things:</p>
+<ul>
+<li><strong><code>arm64-suite</code></strong> — the verdict. Must be green before the real tag.</li>
+<li><strong><code>arm64-lane-present</code></strong> — red means the suite never <em>started</em>: no
+  runner carried <code>dhcp-ci-arm64</code> within the wait, so this candidate has
+  <strong>no arm64 verdict at all</strong>. It exists because a job with no runner
+  sits queued for hours and queued renders as "in progress", which is
+  indistinguishable from a lane still working. Treat it as "bring the
+  board up and re-dispatch", never as a flake to wave through.</li>
+</ul>
+<p>Inside <code>arm64-suite</code>, one step is worth knowing about before it
+surprises you: <strong>Verify the host's NFS-outage watchdog</strong> (v1.8.0+,</p>
+<h1 id="677-it-asks-the-board-whether-it-actually-booted-a-working">677). It asks the board whether it actually <em>booted</em> a working<a class="headerlink" href="#677-it-asks-the-board-whether-it-actually-booted-a-working" title="Permanent link">&para;</a></h1>
+<p>watchdog, which the source-side check cannot know — that root is a
+netbooted image and can predate a fix the tree already carries. If it
+fails the suite fails, and it means the board is running unwatched: an
+NFS outage will wedge it until someone visits it physically. Fix the
+image; do not wave it through.</p>
+<p>It can also come back <strong>only partly verified</strong>, which surfaces as a
+workflow annotation and does <em>not</em> fail the step. That means the kernel
+ring buffer has aged past this boot, so the watchdog's <em>holder</em> could
+not be confirmed. The arming verdict comes from sysfs and is never the
+part that is lost, so an annotation here does not block the tag.</p>
+<p>To re-run the lane against a tag that already exists:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>gh<span class="w"> </span>workflow<span class="w"> </span>run<span class="w"> </span>integration-arm64.yml<span class="w"> </span>--ref<span class="w"> </span>vX.Y.Z-rcN
+</code></pre></div>
+<p>The rc window is the <strong>enforcement gate</strong> for the
+documentation review (procedure step 3): every PR on the milestone
+must be reconciled against README, <code>docs/</code>, and the RELEASE_NOTES
+section, and they must describe the version about to ship — if
+stale text or an undocumented behaviour change surfaces now, fix it
+before the real tag. Then tag the real release. Naming: rc of the <em>upcoming</em>
+version (<code>v1.0.0-rc1</code> before <code>v1.0.0</code>) — semver orders it before
+the release and it labels the content truthfully. Bump the rc
+number for another attempt after a fix; never reuse an rc tag.</p>
+<p>Cleanup (optional): rc plugin tags can be deleted from GHCR/Hub
+after the real release ships; the git tag stays as the audit
+trail.</p>
+<h2 id="per-release-procedure">Per-release procedure<a class="headerlink" href="#per-release-procedure" title="Permanent link">&para;</a></h2>
+<p>Pre-flight: every issue / PR going into the release should be on
+the <code>vX.Y.Z</code> milestone (the workflow leans on this for the
+"Closes" list in the release PR).</p>
+<ol>
+<li><strong>Branch off <code>dev</code>:</strong> <code>git checkout -b release/vX.Y.Z origin/dev</code></li>
+<li><strong>Bump install pins:</strong> <code>scripts/bump-version.sh vX.Y.Z</code> (#251). It
+   rewrites every published-image pin
+   (<code>ghcr.io/claymore666/docker-net-dhcp:vPREV</code> in the <code>plugin install</code> /
+   <code>network create</code> / <code>driver:</code> / <code>plugin inspect</code> snippets across
+   <code>README.md</code> and <code>docs/</code>) to the new tag, and leaves bare <code>vX.Y.Z</code>
+   feature markers and historical prose (<code>As of vPREV every PR...</code>,
+   <code>v1.1.0 onward</code>) alone — the image ref is what tells a pin from
+   prose. Verify with <code>git diff</code> and <code>scripts/check-version-pins.sh</code>
+   (the same gate <code>test.yaml</code> runs: every pin must agree on one
+   version). The gate also fails CI if a future hand-edit leaves the
+   pins inconsistent.</li>
+<li><strong>Documentation review — PR-driven against the milestone.</strong> Don't
+   review from memory; review from the change set. List every PR on the
+   <code>vX.Y.Z</code> milestone and reconcile each one's user-visible change
+   against the docs:</li>
+</ol>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>gh<span class="w"> </span>pr<span class="w"> </span>list<span class="w"> </span>--state<span class="w"> </span>merged<span class="w"> </span>--limit<span class="w"> </span><span class="m">200</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">  </span>--json<span class="w"> </span>number,title,milestone<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="w">  </span>--jq<span class="w"> </span><span class="s1">&#39;.[] | select(.milestone.title==&quot;vX.Y.Z&quot;) | &quot;#\(.number) \(.title)&quot;&#39;</span>
+</code></pre></div>
+<p>For <strong>each</strong> merged PR, confirm the docs reflect what it changed:
+   new/changed driver-opts land in the option tables (<code>README.md</code>,
+   <code>docs/reference.md</code>, <code>docs/parent-attached-modes.md</code>); behaviour
+   changes (Health counters, DHCP-client behaviour, identity, recovery)
+   land in <code>reference.md</code> / <code>parent-attached-modes.md</code> / <code>internals.md</code>;
+   examples and numbers match. <strong>A milestone PR that changed
+   user-visible behaviour but carries no doc delta is the signal to look
+   harder, not to wave through</strong> — that is exactly the drift that the
+   #205↔#152 case (busybox→dhcpcd prose surviving a docs restructure;
+   fixed in #234/#237) slipped through a memory-based read.</p>
+<p>Then still read everything user-visible top-to-bottom for anything
+   the per-PR pass misses — <code>README.md</code> (feature list, driver-opt table,
+   examples), <code>GOVERNANCE.md</code> and <code>SECURITY.md</code>, every file under
+   <code>docs/</code> (including this runbook — process changes during the cycle
+   land here too), and the coverage table if republished. Anything
+   describing the previous version's behaviour, options, or numbers gets
+   updated on the release branch now. Everything under <code>docs/</code> (plus
+   <code>docs/index.md</code>, the site home) is what the versioned documentation
+   site publishes for this tag, so the review <em>is</em> the site review —
+   there's no separate wiki to reconcile.</p>
+<p><strong>Read the pages whole, and aim at the ungated prose.</strong> The
+   reference material defends itself: <code>check-option-docs.sh</code>,
+   <code>check-docs-drift.sh</code> and <code>check-version-pins.sh</code> gate every driver
+   option, health counter, plugin setting and image pin, so those tables
+   are the <em>least</em> likely place to find drift. What rots is everything
+   else — a walkthrough's shell snippet, a troubleshooting row, a
+   sentence in a Behaviour section, a hand-maintained list. The v1.5.0
+   pass found eight divergences (#489) and every one of them was in
+   ungated prose; none would have been caught by grepping for keywords.</p>
+<p><strong>Some drift belongs to no milestone PR at all</strong>, so the per-PR read
+   cannot reach it by construction. Check these directly:</p>
+<ul>
+<li><strong>Commands and paths that never existed or stopped working.</strong>
+     <code>docker plugin logs</code> was in the README's bug-report checklist and
+     is not a Docker subcommand. Run the commands the docs tell a
+     reader to run.</li>
+<li><strong>Text invalidated by a feature in <em>this</em> release.</strong> #440 mounted
+     <code>STATE_DIR</code> from the host and left two recipes still routing
+     operators through the plugin rootfs. A feature PR updates the
+     section it is about; it rarely finds the other page that quietly
+     depended on the old behaviour.</li>
+<li><strong>Syntax deprecated upstream.</strong> Compose, Docker CLI and dhcpcd move
+     on their own schedule. <code>docker compose -f &lt;snippet&gt; config</code> prints
+     the deprecation warnings for anything in a Compose example.</li>
+<li><strong>Restated lists that live somewhere else.</strong> Required CI checks,
+     registries, privileges. Prefer replacing the copy with a pointer at
+     the authority — the way step 5 defers to branch protection — over
+     updating a copy that will decay again.</li>
+<li><strong>Mechanisms this release added that no page describes.</strong> The
+     failure is <em>absence</em>, not wrongness, so nothing reads as wrong and
+     no grep finds it. Take the release's mechanism changes and ask
+     which section of <code>internals.md</code> covers each; v1.6.0 shipped a lease
+     reclaim and a per-parent gate with no section for either, while
+     every counter table was green.</li>
+<li><strong>Standing preconditions that read like old-version prose.</strong> The
+     <code>BREAKING CHANGE IN v1.5.0</code> block (<code>README.md</code>, <code>docs/index.md</code>,
+     <code>docs/reference.md</code>) is a precondition for <em>every</em> install, not a
+     changelog entry — but it names an old version, so a pass tidying
+     stale version references deletes it in good faith. <strong>Keep it.</strong></li>
+<li>
+<p><strong>Counted claims.</strong> "Four flip <code>healthy</code> to <code>false</code>" is right until
+     a fifth is added, and the sentence still parses. Check any stated
+     count against the code.</p>
+<p><strong>This bullet's own example went stale while it was being used as
+ the example.</strong> It said the claim was "now enforced by
+ <code>scripts/check-health-contract.sh</code> (#638)", and v1.8.0 added a
+ fifth counter: the gate held every counter <em>list</em> it read, and the
+ doc still shipped rows saying "four" over a list of five — because
+ the gate read the count word in one sentence and the file states
+ it in five (#724). The claim was not enforced. A narrower claim
+ was, and the bullet had rounded it up.</p>
+<p>So the instruction is not "change four to five". It is that
+ <strong>"a gate covers this" is itself a counted claim, and decays the
+ same way.</strong> A gate covers the statements it was taught, and adding
+ a statement is exactly the edit nobody thinks to teach it about.</p>
+<p>Read what the gate says it read rather than trusting that it read
+ everything. <code>check-health-contract.sh</code> ends in a receipt —</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>scripts/check-health-contract.sh
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="c1"># PASS  healthy contract agrees in N doc counter-list(s), N doc</span>
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="c1">#       count-word(s) and N code term(s): &lt;the counters&gt;</span>
+</code></pre></div>
+<p>The numbers are deliberately not reproduced here — a count quoted
+ into this file is the very thing this bullet is about. Run it and
+ read them: they are what it parsed on that run, not a total it
+ asserts. If the file states it six times and the receipt says
+ five, the gate is green and the doc is wrong.</p>
+<p>Most gates in <code>scripts/</code> that discover what to check print the
+ same kind of receipt — a count, or a line per item inspected. A
+ few print a bare <code>PASS</code>, and for those the coverage is not
+ visible at all without reading the script. Either way: when a
+ gate's coverage is load-bearing for a claim in these docs, quote
+ what it read, not the fact that it exists.</p>
+<p>The rule survives the correction: the drift ran for two releases
+ <em>under this instruction</em> before #638, which is still the argument
+ for a gate over a rule. It just does not end there — the gate is
+ the floor, and the count of what it reads is the part that has to
+ be re-checked, once per release, by running it.</p>
+</li>
+</ul>
+<p><strong>Verify each finding against the artifact, not from reasoning.</strong>
+   Run the command, <code>config</code> the snippet, <code>ls</code> the path on the test
+   box, query the API (<code>gh api repos/.../branches/dev/protection</code>). A
+   confidently-argued divergence that turns out to be wrong costs more
+   than the one it replaced.</p>
+<p><strong>A finding that is a class, not an incident, ends in a gate.</strong> Same
+   rule as anywhere else in this project: if the same shape of staleness
+   can recur on the next mount, option or workflow change, add the check
+   rather than a promise to remember. The rootfs-path finding above
+   became a fourth rule in <code>check-docs-drift.sh</code>, deriving the
+   bind-mount destinations from <code>config.json</code>, so that class now fails
+   loudly.</p>
+<p><strong>The badge answers are documentation too.</strong> <code>.bestpractices.json</code>
+   at the repo root holds this project's OpenSSF Best Practices answers
+   — one <code>&lt;criterion&gt;_status</code> plus a <code>&lt;criterion&gt;_justification</code> each —
+   and every justification is a claim about the repository that can go
+   stale exactly like prose. Reconcile it against the milestone the same
+   way, then check it against the live entry:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>python3<span class="w"> </span>scripts/badge-sync.py<span class="w"> </span>--diff
+</code></pre></div>
+<p>If a milestone PR earned or invalidated a criterion (a new gate, a
+   document that now exists, a policy that changed), update the file on
+   the release branch.</p>
+<p>Getting the reviewed answers <em>onto</em> the live entry is manual and
+   deliberate: the badge site takes them through its own form, one
+   <strong>criteria level</strong> at a time —
+   <code>https://www.bestpractices.dev/en/projects/13229/{passing,silver,gold}/edit</code>,
+   in a browser you are signed into. A field only appears on the level
+   that owns it, and the level-less <code>/edit</code> URL 404s for everyone
+   including the owner, which is worth knowing before it looks like an
+   expired login.</p>
+<p><strong>Hash-check every justification you paste before submitting</strong> — the
+   procedure is in the script's header. Typing an answer by hand is how
+   this project once produced a 65-field divergence from its own
+   source of truth; the hash is what makes hand-entry safe. Then run
+   <code>--diff</code> again: it must report that the entry matches. That
+   confirmation is the point of the script, and the reason it has no
+   push mode.</p>
+<p>The work happens here, on the release branch. The rc dry-run (step 8)
+   is the <strong>enforcement gate</strong>: the real <code>vX.Y.Z</code> tag does not ship
+   until every milestone PR is ticked off against the docs — by the real
+   tag, text and code (and the published site) must agree.
+4. <strong>Add a <code>## vX.Y.Z</code> section</strong> to <code>RELEASE_NOTES.md</code>, <strong>above
+   the previous version's section</strong>. Summarise what's changing in
+   user-visible terms; the workflow doesn't auto-build this from
+   commit messages. Include any <strong>operator-visible compatibility
+   notes</strong> (e.g. v0.8.0 narrowed the <code>IsDHCPPlugin</code> regex — that
+   needed a callout).</p>
+<p><strong>House style — this is the default, not a per-release choice.</strong>
+   A release note is reference material an operator scans, not a
+   narrative. v1.8.0 shipped at 90KB of prose and was rewritten to 7KB;
+   write the short version first.</p>
+<ul>
+<li>Fixed structure, in this order: a two-to-three sentence lead,
+     then <code>### Upgrade notes</code>, <code>### New</code>, <code>### Fixed</code>,
+     <code>### Deferred to vX.Y.Z</code>, <code>### With thanks to</code>. Omit a section
+     that has no content; do not add others.</li>
+<li>Put operator-visible behaviour changes in a <strong>table</strong> under
+     Upgrade notes — one row per change, "what changed" and "what it
+     does to you". That table is the part most readers need.</li>
+<li>Group <code>### Fixed</code> by origin (a review, a theme), one line per
+     defect, each ending in its issue number. State the defect and its
+     effect; do not narrate how it was found or how the fix was chosen.</li>
+<li>No process commentary, no anecdotes, no meta-commentary about the
+     notes themselves, no HTML comments carrying instructions to the
+     next writer — those belong in the issue or this runbook.</li>
+<li>Avoid universal claims ("every defect is fixed", "nothing was
+     carried"). They quantify over things a reader cannot check and go
+     false on somebody else's commit. List what is deferred instead.</li>
+<li>Prefer a named list over a count: "six (#720, #721, ...)" rather
+     than "six of the ten", so a wrong number is visible.</li>
+</ul>
+<p><strong>The maintainer signs off on the release notes before the tag.</strong>
+   Not optional and not implied by approving the release PR: show the
+   rendered <code>## vX.Y.Z</code> section and wait for an explicit go. The rc
+   window (step 8) is the checkpoint — by the real <code>vX.Y.Z</code> tag the
+   notes must already be signed off, because the tag publishes them.
+   If the notes change after the tag, edit <code>RELEASE_NOTES.md</code> on <code>dev</code>
+   <em>and</em> <code>gh release edit vX.Y.Z --notes-file</code> the published body, or
+   the two silently diverge.</p>
+<p><strong>Credit outside contributions by name</strong>, the way the v1.0.0 notes
+   do. Find them rather than recalling them — almost every PR here is
+   the maintainer's or Dependabot's, so an outside one is easy to miss
+   precisely because it is rare:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>gh<span class="w"> </span>pr<span class="w"> </span>list<span class="w"> </span>--state<span class="w"> </span>merged<span class="w"> </span>--limit<span class="w"> </span><span class="m">300</span><span class="w"> </span>--json<span class="w"> </span>number,title,author<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="w">  </span>--jq<span class="w"> </span><span class="s1">&#39;.[] | select(.author.login|test(&quot;claymore666|dependabot&quot;)|not)</span>
+<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="s1">             | &quot;#\(.number) @\(.author.login) \(.title)&quot;&#39;</span>
+</code></pre></div>
+<p>Also confirm the merged commit still carries their authorship
+   (<code>git log -1 --format='%an &lt;%ae&gt;' &lt;sha&gt;</code>) — a rebase or squash of a
+   fork branch is where that quietly becomes the maintainer's.
+5. <strong>PR <code>release/vX.Y.Z</code> → <code>dev</code>.</strong> Required checks on <code>dev</code> are
+   <code>test</code>, <code>policy-gates</code>, <code>staticcheck</code>, <code>integration</code> (every PR builds
+   and exercises its own plugin on the integration runner), <code>actionlint</code>,
+   <code>govulncheck</code>, <code>attribution</code>, and CodeQL's <code>Analyze (go)</code> +
+   <code>Analyze (actions)</code>. <code>main</code> requires those <strong>plus <code>coverage</code> and
+   <code>coverage-present</code></strong>, which is why the ratchet first bites at the
+   release PR in the next step and not before. Merge when green.</p>
+<p><strong>Do not trust the list above — read the authority.</strong> It carried a
+   hand-written total ("eight in total") that was correct when written
+   and became a number nothing checked:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>gh<span class="w"> </span>api<span class="w"> </span>repos/claymore666/docker-net-dhcp/branches/dev/protection<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="w">  </span>--jq<span class="w"> </span><span class="s1">&#39;.required_status_checks.contexts&#39;</span>
+<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a>gh<span class="w"> </span>api<span class="w"> </span>repos/claymore666/docker-net-dhcp/branches/main/protection<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="w">  </span>--jq<span class="w"> </span><span class="s1">&#39;.required_status_checks.contexts&#39;</span>
+</code></pre></div>
+<p>Branch protection is the authority; if the prose and the settings
+   disagree, the settings win and the prose is the thing to fix.</p>
+<p><code>policy-gates</code> is the half of the old <code>test</code> job that runs the policy
+   gates rather than the Go suite (#829). It became required on both
+   branches on 2026-08-28; at the time #829 landed it was on neither
+   list, and for that window those gates ran on every pull request and
+   blocked nothing. If it is ever missing from the output above, that is
+   the state to restore — check before trusting a green release PR.</p>
+<p><code>coverage-present</code> became required in #735. It is the detector that
+   tells an <em>absent</em> coverage run apart from a pending one, and it was
+   advisory: it could go red without blocking the merge it exists to
+   protect, which is the failure it was built for happening to the
+   guard itself.
+6. <strong>Open the release PR <code>dev</code> → <code>main</code></strong> with title
+   <code>Release vX.Y.Z</code> and a <code>Closes #N</code> line for <strong>every issue</strong> in
+   the milestone. The list is what auto-closes them when the PR
+   merges; without it the milestone stays open after the tag.</p>
+<p><strong>Because the list is milestone membership, membership has to be
+   true.</strong> An issue that is in the milestone but not done gets closed
+   as delivered, silently, by the tag. The taxonomy already says
+   <code>backlog</code> never sits on a milestoned issue for exactly this reason,
+   and the <strong>Milestone scope</strong> workflow
+   (<code>.github/workflows/milestone-scope.yml</code>,
+   <code>scripts/check-milestone-scope.sh</code>) checks it daily rather than
+   leaving it to whoever builds the list. It splits the two cases,
+   because their fixes are opposite: <code>backlog</code> <strong>with</strong> <code>in-dev</code> means
+   the work shipped and the label is stale (drop the label, keep the
+   milestone); <code>backlog</code> <strong>without</strong> it means the work has not started
+   (move it off the milestone). Read that run before opening the
+   release PR — it is a schedule, so a red one waits quietly.
+   Release PRs additionally run the <strong>Coverage</strong> workflow with the
+   coverage ratchet (<code>scripts/coverage-ratchet.sh</code> vs
+   <code>.github/coverage-baseline.txt</code>): no release ships with less
+   per-package coverage than the previous one. If a package beat its
+   floor during the cycle, raise the baseline as part of the release
+   branch.</p>
+<p><strong>Read that run with <code>scripts/coverage-read.sh &lt;run-id&gt;</code>, not by eye</strong>
+   (#794). It prints every package's measured number beside <em>both</em> floor
+   sets — <code>dev</code>'s and <code>main</code>'s — because <code>main</code>'s floors can be lower, so
+   a package red against <code>dev</code> may still clear the release PR, and a
+   package comfortable on <code>dev</code> may not. It also refuses rather than
+   reporting a clean read: an incomplete comparison, an empty baseline, a
+   raw block it cannot scope to the ratchet step. Eyeballing the log is
+   how the v1.8.0 read started, and building the instrument instead found
+   three defects an eyeball would have shipped.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>bash<span class="w"> </span>scripts/coverage-read.sh<span class="w"> </span><span class="m">32623575563</span>
+</code></pre></div>
+<p>The exit code carries the verdict: 0 a complete reading, 1 the
+   ratchet's account and the raw <code>covdata</code> numbers disagree, 2 it cannot
+   judge. What it does <em>not</em> do is decide the release — a package under
+   <code>main</code>'s floor is information for the raise-or-explain decision the
+   baseline file records, not an error the script can settle.</p>
+<p>Coverage shares a concurrency group with the release PR's own
+   integration run, so it normally starts once integration finishes —
+   five to eight minutes in since the main suite went to five shards
+   (#877; measured 2026-08-28 over the eight most recent successful
+   <code>integration.yml</code> runs). Do not trust that range from this page —
+   <code>gh run list --workflow integration.yml --status success</code> re-derives
+   it in one command. A <code>coverage</code> check still showing nothing well past
+   it is worth the next paragraph.</p>
+<p><strong>Release PR blocked on a check that has no run.</strong> A required check
+   that was <em>cancelled</em> looks exactly like one that is <em>pending</em>: the
+   PR sits at <code>BLOCKED</code> with nothing to click into. It is not a missing
+   trigger. GitHub keeps one running plus one pending run per
+   concurrency group, so pushing another commit to the release PR while
+   coverage is still queued displaces it — and a run displaced before
+   any job was assigned creates no check run at all, which is why the
+   <code>coverage</code> context goes absent rather than red.</p>
+<p>You should not have to notice this yourself: the <strong>Coverage
+   presence</strong> check (<code>.github/workflows/coverage-presence.yml</code>, #504)
+   watches the head and fails with the run id and the exact recovery
+   command when the run was evicted. It is a required context on <code>main</code>
+   as of #735, so a red one blocks the release PR rather than sitting
+   in the list being ignored. If it is red, do what it says. The manual
+   form, for a head it did not cover:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a>gh<span class="w"> </span>run<span class="w"> </span>list<span class="w"> </span>--workflow<span class="w"> </span>coverage.yml<span class="w"> </span>--limit<span class="w"> </span><span class="m">5</span><span class="w">   </span><span class="c1"># look for &quot;cancelled&quot;</span>
+<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>gh<span class="w"> </span>run<span class="w"> </span>rerun<span class="w"> </span>&lt;id&gt;<span class="w">                               </span><span class="c1"># once the group is idle</span>
+</code></pre></div>
+<p>Wait for the integration run on the same ref to finish before
+   rerunning, or it will just queue and be displaced again. This cost a
+   full debugging session on v1.3.5 (#365) — the fix is thirty seconds
+   once you know the shape of it.
+7. <strong>Assemble the verification evidence, don't hand-write it.</strong>
+   <div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a>scripts/run-evidence.sh<span class="w"> </span><span class="s2">&quot;</span><span class="k">$(</span>git<span class="w"> </span>rev-parse<span class="w"> </span><span class="s1">&#39;HEAD^{tree}&#39;</span><span class="k">)</span><span class="s2">&quot;</span>
+</code></pre></div>
+   Prints every integration run that tested exactly this tree, with its
+   window and what else was on the privileged pool at the time. Paste
+   it into the release PR rather than reconstructing it from memory.</p>
+<p>Read the overlap line literally. <code>none — ran alone</code> and <code>unknown</code>
+   are different claims: the second means the concurrent-run list did
+   not reach back far enough to judge, which happens once the repo has
+   been busy since. Do not upgrade an <code>unknown</code> to "ran alone" — the
+   v1.4.0 write-up asserted a concurrency caveat that the data did not
+   support, in both directions, which is what #432 was filed about.</p>
+<ol>
+<li><strong>Merge the release PR.</strong> Squash or merge commit — both fine;
+   match what's in <code>git log</code>.</li>
+<li><strong>Pull main, dry-run, then tag:</strong> first push <code>vX.Y.Z-rc1</code> and
+   confirm the workflow run is green end-to-end (pre-release mode,
+   <code>:latest</code> untouched — see "Pre-release dry-run" above). Then:
+   <div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a>git<span class="w"> </span>checkout<span class="w"> </span>main<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>pull<span class="w"> </span>--ff-only
+<a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a>git<span class="w"> </span>tag<span class="w"> </span>-s<span class="w"> </span>vX.Y.Z<span class="w"> </span>-m<span class="w"> </span><span class="s2">&quot;vX.Y.Z — &lt;one-liner&gt;&quot;</span><span class="w">   </span><span class="c1"># signed (#175)</span>
+<a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a>git<span class="w"> </span>push<span class="w"> </span>origin<span class="w"> </span>vX.Y.Z
+</code></pre></div>
+   Use <code>-s</code> (signed) so the release tag shows <strong>Verified</strong> on GitHub —
+   the dev box has <code>tag.gpgsign=true</code> so <code>-a</code> would also sign, but spell
+   it out so it holds from any checkout. Confirm with
+   <code>git tag -v vX.Y.Z</code> (or the green "Verified" on the tag page).
+   The workflow fires on <code>tags: v*</code>. Watch it at
+   <a href="https://github.com/claymore666/docker-net-dhcp/actions/workflows/release.yml">https://github.com/claymore666/docker-net-dhcp/actions/workflows/release.yml</a>.
+   Expected steps, under the names the run shows. Tag resolution is its
+   own job: <strong>resolve</strong> runs first and has one step, <em>Resolve release
+   tag</em> — a releaser watching the run sees two job rows, not one. The
+   <strong>release</strong> job then runs, in this order:
+   checkout → setup-go →
+   Log in to GHCR → Log in to Docker Hub → <strong>Both registries, or say
+   why not</strong> → Push to GHCR → <strong>Check the documented
+   reference digests against this build</strong> (the gate step 10b is about —
+   on the first rc of a new version it is <em>expected</em> to fail and print
+   the block to paste into the doc) → Push to Docker Hub (or skip) →
+   Sync Docker Hub description from README (or skip) → Install cosign →
+   <strong>Record and gate the cosign version</strong> → <strong>Sign published images
+   (cosign keyless)</strong> → Install syft → <strong>Generate SBOM (SPDX +
+   CycloneDX)</strong> → <strong>Package and sign release artifact</strong> → <strong>Attest
+   release-artifact provenance</strong> → <strong>Attest image provenance (GHCR)</strong> →
+   <strong>Check attestation parity across registries</strong> →
+   <strong>Upload signed artifacts for the release job</strong> → Workflow summary.</li>
+</ol>
+<p>Since v1.7.0 the run carries a parallel arm64 chain (#507):
+   <strong>release-arm64</strong> (native <code>ubuntu-24.04-arm</code> build, pushes
+   <code>vX.Y.Z-arm64</code> — per-arch tags, because a Docker plugin cannot
+   install from a manifest list) and <strong>verify-install-arm64</strong>.</p>
+<p>Then, as separate jobs:</p>
+<ul>
+<li><strong>verify-install</strong> / <strong>verify-install-arm64</strong> — install the
+     just-published plugin from GHCR on a clean hosted runner and
+     assert it enables. A red verify-install means users can't install
+     what we just shipped.</li>
+<li><strong>verify-install-hub</strong> / <strong>verify-install-hub-arm64</strong> — the same
+     proof for Docker Hub, which is the other place a user installs
+     from (#776). Each is its <strong>own job on its own runner</strong> and that is
+     deliberate: the value of these jobs is a daemon that has never
+     created a network sandbox, which is how v1.6.0-rc2 caught a bind
+     source the daemon creates lazily (#588). A second install appended
+     to <code>verify-install</code> would run after that property was already
+     spent, and <code>docker plugin rm</code> does not give it back. When a run
+     published no Hub image the steps are skipped and the job records
+     <code>⚠️ Docker Hub install not verified</code> in the summary, so a
+     GHCR-only run cannot be mistaken for a both-registries one.</li>
+<li>
+<p><strong>promote-latest</strong> — since #736 this is where every floating tag
+     moves, for both arches and both registries, and it runs only after
+     all six of the above are green. <code>scripts/check-latest-promotion.sh</code>
+     asserts that dependency, naming all four install proofs. Steps: <em>Refuse to promote a
+     floating tag backwards</em> → Install crane → the two logins →
+     <em>Record what :latest resolves to before promotion</em> → <em>Promote the
+     GHCR floating tags</em> → <em>Promote the Docker Hub floating tags</em> →
+     <em>Verify the floating tags resolve to the signed digests</em> →
+     <em>Assert a pre-release did not move :latest</em>.</p>
+<p>Two of those are guards that read the registry rather than this
+ workflow, and they check different things. <em>Verify the floating
+ tags resolve to the signed digests</em> compares the floating tag
+ against the version tag by digest — that is the #267 guard, that
+ retagging preserved the digest the signature covers. <em>Assert a
+ pre-release did not move :latest</em> re-reads <code>:latest</code> and compares
+ it to what the <em>Record</em> step saw before anything was touched; it
+ runs only on an rc, and it is the one that proves the rc contract
+ from outside.
+   - <strong>github-release</strong> — does <strong>not</strong> wait for <code>promote-latest</code>; it
+ needs the same six jobs. Promotion and the Releases page are
+ siblings, so a refused promotion does not suppress the release.</p>
+</li>
+</ul>
+<p>Every green checklist below includes the arm64 jobs.
+10. <strong>Confirm the GitHub Release</strong> — the <code>github-release</code> job now cuts
+   it automatically once the install proofs are green (so a plugin
+   that doesn't install never gets an advertised Releases page). It attaches
+   the cosign-signed artifacts and builds the body as: a generated lead
+   line naming the project and version (it becomes the page's
+   <code>og:description</code>, so it is what link previews show — #469), the
+   <code>## vX.Y.Z</code> section of <code>RELEASE_NOTES.md</code>, a generated Downloads
+   table, and a link to <a href="../verifying-releases/">Verifying releases</a>.
+   Step 4's notes must therefore already be in place at tag time.
+   rc tags produce a <strong>draft</strong> release: the publish path is still
+   exercised, but dry-run builds stay out of the public list.
+   No manual <code>gh release create</code> — instead verify:
+   <div class="highlight"><pre><span></span><code><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a>gh<span class="w"> </span>release<span class="w"> </span>view<span class="w"> </span>vX.Y.Z<span class="w">   </span><span class="c1"># body = the RELEASE_NOTES section; assets:</span>
+<a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a><span class="w">                         </span><span class="c1">#   net-dhcp-plugin-vX.Y.Z-linux-amd64.tar.gz</span>
+<a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a><span class="w">                         </span><span class="c1">#   net-dhcp-plugin-vX.Y.Z-linux-arm64.tar.gz</span>
+<a id="__codelineno-13-4" name="__codelineno-13-4" href="#__codelineno-13-4"></a><span class="w">                         </span><span class="c1">#   checksums.txt + checksums.txt.sigstore.json</span>
+<a id="__codelineno-13-5" name="__codelineno-13-5" href="#__codelineno-13-5"></a><span class="w">                         </span><span class="c1">#   checksums-arm64.txt + checksums-arm64.txt.sigstore.json</span>
+<a id="__codelineno-13-6" name="__codelineno-13-6" href="#__codelineno-13-6"></a><span class="c1"># Re-verify the signature the way a downstream consumer would:</span>
+<a id="__codelineno-13-7" name="__codelineno-13-7" href="#__codelineno-13-7"></a>cosign<span class="w"> </span>verify-blob<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-13-8" name="__codelineno-13-8" href="#__codelineno-13-8"></a><span class="w">  </span>--bundle<span class="w"> </span>checksums.txt.sigstore.json<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-13-9" name="__codelineno-13-9" href="#__codelineno-13-9"></a><span class="w">  </span>--certificate-identity-regexp<span class="w"> </span><span class="s1">&#39;^https://github.com/claymore666/docker-net-dhcp/.github/workflows/release.yml@&#39;</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-13-10" name="__codelineno-13-10" href="#__codelineno-13-10"></a><span class="w">  </span>--certificate-oidc-issuer<span class="w"> </span>https://token.actions.githubusercontent.com<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-13-11" name="__codelineno-13-11" href="#__codelineno-13-11"></a><span class="w">  </span>checksums.txt
+</code></pre></div>
+   Adjust the title/notes in the UI if the one-liner needs polish.
+   The job is idempotent on a tag re-dispatch (re-uploads assets with
+   <code>--clobber</code>). This satisfies OpenSSF Scorecard <strong>Signed-Releases</strong>;
+   an rc dry-run produces an equivalent <strong>pre-release</strong> with the same
+   signed assets, which is how this path is exercised before the real
+   tag (rc releases never move <code>:latest</code> and are marked pre-release).
+10b. <strong>Refresh the reference digests in
+   <a href="../verifying-releases/">Verifying releases</a>.</strong> The "Rebuilding the
+   binaries yourself" section ends with the expected <code>sha256sum</code> of
+   <code>net-dhcp</code> and <code>dhcp-handler</code>, prefixed by the version they belong
+   to. Those can only be known once the tag has built, so this is the
+   one documentation change that cannot happen before the tag.
+   Since v1.7.0 there are TWO digest blocks, one per architecture —
+   refresh both; the failing gate in each of the <code>release</code> and
+   <code>release-arm64</code> jobs prints its arch's corrected block verbatim:
+   <div class="highlight"><pre><span></span><code><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a>gh<span class="w"> </span>run<span class="w"> </span>download<span class="w"> </span>&lt;release-run-id&gt;<span class="w"> </span>-n<span class="w"> </span>&lt;artifact&gt;<span class="w">   </span><span class="c1"># or from the release</span>
+<a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a>sha256sum<span class="w"> </span>rootfs/usr/sbin/net-dhcp<span class="w"> </span>rootfs/usr/lib/net-dhcp/dhcp-handler
+</code></pre></div>
+   Update the version name and both digests, and land it on <code>dev</code> as a
+   normal PR — <strong>then bring it to <code>main</code> before the next rc.</strong> Since
+   #547 the release run itself checks this block, so the fix has to be
+   on the <strong>tagged commit</strong>: leaving it on <code>dev</code> makes the next rc fail
+   in exactly the same place. (Before #547 it could ride along with the
+   next release, which is what this step used to say. v1.6.0 is where
+   that stopped being true.) Leaving
+   the previous version's digests in place is worse than having none:
+   a reader who rebuilds the current tag and compares against them sees
+   a mismatch and concludes the release does not match its source.</p>
+<p><strong>The rc dry-run tells you the digests.</strong> <code>release.yml</code> compares this
+   block against the binaries it just built and fails the run when they
+   disagree, printing the corrected block ready to paste (#502). So the
+   first rc of a new version is <em>expected</em> to fail on this step — that
+   is the check doing its job, and it is why the rc exists. Take the
+   block from the failed run's log, land it, and re-tag <code>-rc2</code>; the real
+   tag then passes silently. A pre-release compares against its base
+   version, so <code>v1.6.0-rc2</code> validates exactly what <code>v1.6.0</code> will publish.
+11. <strong>Fast-forward <code>dev</code> to <code>main</code></strong> so the release commit (version
+   pins, RELEASE_NOTES section) lands on <code>dev</code> too:
+   <div class="highlight"><pre><span></span><code><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a>git<span class="w"> </span>checkout<span class="w"> </span>dev<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>merge<span class="w"> </span>--ff-only<span class="w"> </span>main<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>push<span class="w"> </span>origin<span class="w"> </span>dev
+</code></pre></div>
+   Skipping this leaves the next feature branch starting from the
+   previous version's README/docs, and the next release PR has to
+   re-bump them. Forgotten once after v0.9.0 — that's why
+   <code>release.yml</code>'s header comment carries the same checklist.</p>
+<p><strong>Do this before merging anything else into <code>dev</code>.</strong> Forgetting is
+   the mild failure. The one that has actually happened is
+   <em>foreclosure</em>: the <code>--ff-only</code> is possible only while <code>dev</code> has no
+   commits of its own since the release, so the window opens when the
+   release PR lands and closes on the next merge into <code>dev</code> —
+   permanently, and by doing something otherwise correct.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a><span class="c1"># is a back-merge OWED?  prints a count</span>
+<a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a>git<span class="w"> </span>rev-list<span class="w"> </span>--count<span class="w"> </span>origin/dev..origin/main
+<a id="__codelineno-16-3" name="__codelineno-16-3" href="#__codelineno-16-3"></a><span class="c1"># does `dev` carry commits of its own?  (--is-ancestor prints nothing)</span>
+<a id="__codelineno-16-4" name="__codelineno-16-4" href="#__codelineno-16-4"></a>git<span class="w"> </span>merge-base<span class="w"> </span>--is-ancestor<span class="w"> </span>origin/dev<span class="w"> </span>origin/main<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-16-5" name="__codelineno-16-5" href="#__codelineno-16-5"></a><span class="w">    </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">echo</span><span class="w"> </span><span class="s2">&quot;dev is contained in main&quot;</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-16-6" name="__codelineno-16-6" href="#__codelineno-16-6"></a><span class="w">    </span><span class="o">||</span><span class="w"> </span><span class="nb">echo</span><span class="w"> </span><span class="s2">&quot;dev has commits of its own&quot;</span>
+</code></pre></div>
+<p><strong>Two different questions, and neither answers the other.</strong> The count
+   is commits on <code>main</code> that <code>dev</code> lacks — it says a back-merge is
+   <em>owed</em>. The predicate asks whether <code>dev</code> has commits of its own, which
+   is what <code>--ff-only</code> needs. Both outcomes of both, because a documented
+   command with only one outcome written down leaves the reader to supply
+   the other by negation:</p>
+<table>
+<thead>
+<tr>
+<th>count</th>
+<th><code>dev</code> contained in <code>main</code>?</th>
+<th>state</th>
+<th>do</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>non-zero</td>
+<td>yes</td>
+<td><strong>owed and available</strong> — the normal post-tag state</td>
+<td>run the <code>--ff-only</code> above, now</td>
+</tr>
+<tr>
+<td>non-zero</td>
+<td>no</td>
+<td>owed, and <strong>foreclosed</strong></td>
+<td>back-merge PR</td>
+</tr>
+<tr>
+<td>zero</td>
+<td>yes</td>
+<td><code>main</code> and <code>dev</code> identical</td>
+<td>nothing</td>
+</tr>
+<tr>
+<td>zero</td>
+<td>no</td>
+<td><code>dev</code> ahead mid-cycle — the ordinary state</td>
+<td>nothing</td>
+</tr>
+</tbody>
+</table>
+<p>A non-zero count is not bad news: at the v1.6.0 tag it was <strong>4</strong>, and
+   the fast-forward worked. It is the warning the CI advisory prints, in
+   those words — <em>"While that is true, <code>git merge --ff-only main</code> still
+   works."</em></p>
+<p>Once foreclosed the recovery is a back-merge PR, <code>main</code> → <code>dev</code>,
+   <strong>merged with a merge commit — a squash does not put <code>main</code>'s commits
+   on <code>dev</code></strong>, which is the entire point of this step.</p>
+<p><strong>The failure is silent, which is why this needs a command and not a
+   reminder.</strong> The divergence carries no content: every release merge
+   has a <code>dev</code> commit as its second parent — because step 5 merged the
+   release branch into <code>dev</code> before the tag — so <code>git diff main dev</code> is
+   clean and the whole suite passes while the graph is wrong. Nothing
+   reads as broken, so nothing prompts the check.</p>
+<p>Worked instance: v1.6.0 published at 23:11:30Z on 2026-08-16; three
+   Dependabot PRs went into <code>dev</code> at 23:26, <strong>fifteen minutes later</strong>,
+   before anyone looked at <code>main</code>. That foreclosed it; recovered by #597
+   at 23:38. Fifteen minutes is not a window anyone watches by hand.</p>
+<p><strong>CI warns, but it cannot block.</strong>
+   <code>.github/workflows/release-backmerge.yml</code> runs
+   <code>scripts/check-release-backmerge.sh</code> in two modes:</p>
+<ul>
+<li><strong>Advisory, on every PR into <code>dev</code></strong> — warns on any divergence and
+     <strong>ignores the grace window</strong>, because the fresh divergence is the
+     only case this mode exists for. It warns and never blocks, on
+     purpose — reasoning in the workflow header. An annotation can be
+     scrolled past, which is why the command stays in this step.</li>
+<li><strong>Enforcing, on the nightly schedule</strong> — the backstop for the
+     <em>permanent</em> omission, and the only mode <code>BACKMERGE_GRACE_HOURS</code>
+     (default 24) applies to, so a release in flight is not a false red.</li>
+</ul>
+<p>One caveat on the recovery: the back-merge diff is not always empty.
+   #597 was, but <code>6af0749</code> carried three real files. Hitting a conflict
+   there does not mean you have done something wrong.
+12. <strong>Prune merged branches.</strong> The repo has <em>Automatically delete head
+   branches</em> enabled, so merged PR head branches are removed on merge.
+   Two things that setting doesn't cover, so clean them now:
+   <div class="highlight"><pre><span></span><code><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a><span class="c1"># the release branch is merged but was never a PR head:</span>
+<a id="__codelineno-17-2" name="__codelineno-17-2" href="#__codelineno-17-2"></a>git<span class="w"> </span>push<span class="w"> </span>origin<span class="w"> </span>--delete<span class="w"> </span>release/vX.Y.Z
+<a id="__codelineno-17-3" name="__codelineno-17-3" href="#__codelineno-17-3"></a><span class="c1"># sweep for any other branch already merged into dev that lingered:</span>
+<a id="__codelineno-17-4" name="__codelineno-17-4" href="#__codelineno-17-4"></a>git<span class="w"> </span>fetch<span class="w"> </span>--prune<span class="w"> </span>origin
+<a id="__codelineno-17-5" name="__codelineno-17-5" href="#__codelineno-17-5"></a>git<span class="w"> </span>branch<span class="w"> </span>-r<span class="w"> </span>--merged<span class="w"> </span>origin/dev<span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span>-vE<span class="w"> </span><span class="s1">&#39;origin/(dev|main|HEAD)$&#39;</span>
+</code></pre></div>
+   Delete what that sweep lists. Leave alone: open-PR branches,
+   Dependabot branches (it recreates its own — close via the PR), and
+   the <code>upstream/*</code> refs (those are the original fork's remote, not
+   ours).</p>
+<h2 id="verifying">Verifying<a class="headerlink" href="#verifying" title="Permanent link">&para;</a></h2>
+<p>After the workflow succeeds:</p>
+<ul>
+<li><code>curl -sI https://hub.docker.com/v2/repositories/claymore666/net-dhcp/tags/vX.Y.Z/</code>
+  returns <code>HTTP/2 200</code>.</li>
+<li><code>curl -sI https://ghcr.io/v2/claymore666/docker-net-dhcp/manifests/vX.Y.Z</code>
+  returns <code>HTTP/2 401</code> (auth required) — the manifest IS there,
+  GHCR just won't expose it anonymously. To confirm presence
+  authenticated: <code>gh auth token | docker login ghcr.io -u &lt;you&gt;
+  --password-stdin &amp;&amp; docker plugin install
+  ghcr.io/claymore666/docker-net-dhcp:vX.Y.Z</code>.</li>
+<li>The Docker Hub page (<a href="https://hub.docker.com/r/claymore666/net-dhcp">https://hub.docker.com/r/claymore666/net-dhcp</a>)
+  shows the new tag in the Tags tab and the README content
+  matches GitHub.</li>
+<li>The milestone is closed (every issue moved to Done by the
+  release PR's <code>Closes</code> list). Verify with
+  <code>gh issue list --milestone vX.Y.Z --state open</code> — should be
+  empty.</li>
+<li><strong>Anything listed in <code>.github/dispatch-pending.txt</code> is now
+  dispatchable — exercise it once and remove the entry.</strong> A
+  <code>workflow_dispatch</code> workflow is only exposed from the default branch,
+  so one that merged to <code>dev</code> during this cycle has never run, and this
+  release is the first moment it can. Dispatch it, confirm it does what
+  its documentation claims, then drop the entry —
+  <code>scripts/check-dispatch-reachable.sh</code> fails on a declaration that has
+  stopped being true, so a forgotten one surfaces on the next PR rather
+  than a year later.</li>
+</ul>
+<h2 id="troubleshooting">Troubleshooting<a class="headerlink" href="#troubleshooting" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Symptom</th>
+<th>Likely cause</th>
+<th>Fix</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Workflow shows zero-job "failed" runs on every push, tag push doesn't trigger anything</td>
+<td>release.yml parse error (often <code>secrets</code> context in step-level <code>if</code>)</td>
+<td>Fix the YAML, then verify with an <strong>rc</strong> tag — <code>gh workflow run release.yml -f tag=vX.Y.Z-rcN --ref main</code> — which exercises the whole chain without touching a bare release tag or <code>:latest</code>. Then retry the real tag. Do not verify by dispatching the release tag: <a href="#dispatching-an-existing-tag">Dispatching an existing tag</a></td>
+</tr>
+<tr>
+<td><code>Push to GHCR</code> step ends <code>403 Forbidden</code></td>
+<td>GHCR package not linked to repo with Write</td>
+<td>One-time fix in package settings (see prerequisites)</td>
+</tr>
+<tr>
+<td><code>Push to Docker Hub</code> step ends <code>unauthorized: incorrect username or password</code></td>
+<td>Token revoked / expired / wrong scope</td>
+<td>Regenerate at hub.docker.com, update <code>DOCKERHUB_TOKEN</code> repo secret</td>
+</tr>
+<tr>
+<td><code>Sync Docker Hub description from README</code> step ends <code>401</code></td>
+<td>Token scope is image-push only, not admin</td>
+<td>Regenerate token with broader scope (see prerequisites)</td>
+</tr>
+<tr>
+<td>Hub page README is stale after a release</td>
+<td>Description-sync step skipped (no Hub creds) or 401'd</td>
+<td>Check the workflow run; either set creds or fix the token</td>
+</tr>
+<tr>
+<td>Tag push succeeded but no Hub publish</td>
+<td><code>HAS_HUB_CREDS</code> evaluated false (secrets blank)</td>
+<td>Set the secrets, then exercise the publish from an <strong>rc</strong> tag — <code>gh workflow run release.yml -f tag=vX.Y.Z-rcN --ref main</code>. Do <strong>not</strong> dispatch the bare release tag: it rebuilds and re-points that tag plus <code>:latest</code>, and <code>scripts/assert-newest-release-tag.sh</code> refuses an older one outright — <a href="#dispatching-an-existing-tag">Dispatching an existing tag</a></td>
+</tr>
+</tbody>
+</table>
+<h2 id="backports-between-dev-and-main">Backports between <code>dev</code> and <code>main</code><a class="headerlink" href="#backports-between-dev-and-main" title="Permanent link">&para;</a></h2>
+<p>When a release-blocking hotfix has to land on <code>main</code> without
+going through dev (e.g. v0.8.0's release.yml parser bug), the
+flow is:</p>
+<ol>
+<li>Branch off <code>main</code>, fix, PR to <code>main</code>, merge. Don't push to
+   <code>main</code> directly — branch protection and the audit trail.</li>
+<li>Cherry-pick the same commit onto a branch off <code>dev</code>, PR to
+   <code>dev</code>. This keeps <code>dev</code> from regressing on the next release
+   PR.</li>
+</ol>
+<p>The v0.8.0 cycle uses #97 (main hotfix) and #98 (dev backport) as
+the canonical example.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+        
+<div class="md-social">
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://github.com/claymore666/docker-net-dhcp" target="_blank" rel="noopener" title="github.com" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+    </a>
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://github.com/claymore666/docker-net-dhcp/pkgs/container/docker-net-dhcp" target="_blank" rel="noopener" title="github.com" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M349.9 236.3h-66.1v-59.4h66.1zm0-204.3h-66.1v60.7h66.1zm78.2 144.8H362v59.4h66.1zm-156.3-72.1h-66.1v60.1h66.1zm78.1 0h-66.1v60.1h66.1zm276.8 100c-14.4-9.7-47.6-13.2-73.1-8.4-3.3-24-16.7-44.9-41.1-63.7l-14-9.3-9.3 14c-18.4 27.8-23.4 73.6-3.7 103.8-8.7 4.7-25.8 11.1-48.4 10.7H2.4c-8.7 50.8 5.8 116.8 44 162.1 37.1 43.9 92.7 66.2 165.4 66.2 157.4 0 273.9-72.5 328.4-204.2 21.4.4 67.6.1 91.3-45.2 1.5-2.5 6.6-13.2 8.5-17.1zm-511.1-27.9h-66v59.4h66.1v-59.4zm78.1 0h-66.1v59.4h66.1zm78.1 0h-66.1v59.4h66.1zm-78.1-72.1h-66.1v60.1h66.1z"/></svg>
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.tabs", "navigation.sections", "navigation.top", "navigation.instant", "navigation.tracking", "content.code.copy", "content.action.edit", "search.suggest", "search.highlight"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"default": "latest", "provider": "mike"}}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>
