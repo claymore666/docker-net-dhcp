@@ -2429,8 +2429,12 @@ one is present, so plain LANs get no extra noise — option 42 (NTP),
 config files, and writing into them would mean another setns into the
 container's mount namespace on every renewal.</p>
 <h3 id="dhcpv6-ipv6true">DHCPv6 (<code>ipv6=true</code>)<a class="headerlink" href="#dhcpv6-ipv6true" title="Permanent link">&para;</a></h3>
-<p>Runs a second persistent client (<code>dhcpcd -6</code>) alongside the v4 one —
-<strong>stateful DHCPv6</strong>, not SLAAC. Note that Docker's own <code>--ipv6</code> flag does
+<p>Runs a second persistent client (<code>dhcpcd -6</code>) alongside the v4 one.
+What it leases is <strong>stateful DHCPv6</strong>, never SLAAC — a SLAAC address is
+formed by the container's own kernel and this plugin neither requests
+nor manages it. Since v1.9.0 that is a statement about what the plugin
+leases and no longer about which networks it will start a container on;
+see the last bullet below. Note that Docker's own <code>--ipv6</code> flag does
 not work with the null IPAM driver and is not what you want:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a>docker<span class="w"> </span>network<span class="w"> </span>create<span class="w"> </span>-d<span class="w"> </span>ghcr.io/claymore666/docker-net-dhcp:v1.8.0<span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a><span class="w">    </span>--ipam-driver<span class="w"> </span>null<span class="w"> </span><span class="se">\</span>
@@ -2457,8 +2461,35 @@ not work with the null IPAM driver and is not what you want:</p>
   outlive its server-side lease on networks with short v6 lease times.</li>
 <li><code>propagate_dns</code> covers v6 as well, via option 23. The two families are
   last-writer-wins on <code>resolv.conf</code>.</li>
-<li>Prefix delegation (DHCPv6-PD) is out of scope (#214).</li>
+<li><strong>A network that offers no DHCPv6 address no longer refuses the
+  container</strong> (v1.9.0+, #868). Before this, <code>ipv6=true</code> on a segment
+  whose router advertisements are stateless (the RA "other config" flag
+  only) or plain SLAAC failed every endpoint: there is no DHCPv6 address
+  on such a segment by definition, the acquisition always timed out, and
+  the timeout was fatal — so nothing could start on the default
+  configuration of a great many home routers. The endpoint is now
+  created without a v6 lease, and on a stateless segment the DHCPv6
+  <em>configuration</em> (option 23 nameservers, option 24 search domain)
+  still reaches the container through the persistent client.</li>
 </ul>
+<p><strong>The container does not get a SLAAC address on such a network.</strong>
+  <code>dhcpcd</code> sets <code>accept_ra=0</code> and <code>autoconf=0</code> on the interface it
+  manages, so the container's kernel does not autoconfigure from the
+  advertised prefix while the plugin's DHCPv6 client is running —
+  measured, not inferred. The endpoint comes up with IPv4 from DHCP, an
+  IPv6 link-local, and IPv6 DNS configuration where the segment offers
+  it. Giving the container a usable global IPv6 address on a
+  stateless/SLAAC segment is a separate piece of work.</p>
+<p>What the segment <em>advertised</em> decides this, not how long the plugin
+  waited. An RA carrying the managed-address flag says DHCPv6 addresses
+  are available here, so a server that then answers nothing is still a
+  fatal error and the container still fails to start — a real DHCPv6
+  outage must not quietly become a container with no IPv6. The two
+  tolerated cases are visible as <code>dhcpv6_not_offered</code> and
+  <code>dhcpv6_no_router_advert</code> on <code>/Plugin.Health</code>; the second also logs a
+  warning, because a segment nothing advertises on is not a
+  configuration anyone chose.
+- Prefix delegation (DHCPv6-PD) is out of scope (#214).</p>
 <h3 id="recovery-after-a-plugin-restart">Recovery after a plugin restart<a class="headerlink" href="#recovery-after-a-plugin-restart" title="Permanent link">&para;</a></h3>
 <p><code>docker plugin disable &amp;&amp; enable</code>, a plugin upgrade, or a plugin crash
 used to leave running containers without a renewal client — the lease
@@ -2823,6 +2854,21 @@ diagnosing a specific container from them alone is not.</p>
 <td><code>dhcpv6_config_only</code></td>
 <td>no</td>
 <td>(v1.9.0+) DHCPv6 <strong>information replies</strong> received: a network advertising the RA "other configuration available" flag answered an information request with options and no address (#815). Not <code>healthy</code>-affecting — this is the normal exchange on a stateless IPv6 network, not a fault. Before v1.9.0 these were dropped unread, so such a network was indistinguishable from one that answered nothing at all. It counts replies <strong>received</strong>, not configuration applied: whether anything reaches the container depends on <code>propagate_dns</code> and on what the server actually sent, so a value climbing while the container's resolver never changes is the signal that the network advertises configuration it does not supply. No <code>_v4</code> half exists — the plugin never runs <code>dhcpcd</code>'s v4 DHCPINFORM mode, and a zero-forever v4 series would imply a measurement nobody takes.</td>
+</tr>
+<tr>
+<td><code>dhcpv6_not_offered</code></td>
+<td>no</td>
+<td>(v1.9.0+) Endpoints that came up on an IPv6 network whose router advertisement offered <strong>no DHCPv6 address</strong> — the RA carried neither the managed flag nor, in the SLAAC case, any DHCPv6 offer at all (#868). Not <code>healthy</code>-affecting and not a fault: the network is working exactly as configured and there is no DHCPv6 address on it to be had. The container comes up with IPv4 from DHCP and an IPv6 link-local; it does <strong>not</strong> get a global IPv6 address, because <code>dhcpcd</code> turns kernel autoconfiguration off on the interface it manages (see the DHCPv6 section). Before v1.9.0 the endpoint was refused outright and no container could start on such a network. Read it together with <code>dhcpv6_config_only</code>: that one says a stateless network answered an information request; this one says the endpoint proceeded without a v6 lease. Kept apart from <code>dhcpv6_no_router_advert</code> below because the two are different situations that would otherwise be indistinguishable — this one is a deliberate operator configuration.</td>
+</tr>
+<tr>
+<td><code>dhcpv6_no_router_advert</code></td>
+<td>no</td>
+<td>(v1.9.0+) Endpoints that came up on an IPv6 network where <strong>no router advertisement arrived at all</strong> inside the acquisition budget (#868). The endpoint starts and the container runs with no IPv6 address from this plugin. Not <code>healthy</code>-affecting — the plugin did its part and the segment did not answer — but unlike <code>dhcpv6_not_offered</code> this is not a configuration anyone chose: it usually means the segment has no router, its advertisements are filtered, or the interval between them is longer than the acquisition budget. The accompanying log line is a warning and carries the underlying acquisition error; the counter is the part a dashboard can alert on. A network that is genuinely v6-less will hold this at one per endpoint start, so alert on the rate rather than on any non-zero value.</td>
+</tr>
+<tr>
+<td><code>ipv6_link_enable_failures</code></td>
+<td>no</td>
+<td>(v1.9.0+) Container links the plugin could not administratively enable IPv6 on before starting a DHCPv6 client (#868). The engine sets <code>net.ipv6.conf.&lt;iface&gt;.disable_ipv6 = 1</code> on a sandbox interface whose endpoint carries no IPv6 address — a state that only became reachable once an endpoint could be created without a v6 lease — and on such a link nothing IPv6 can arrive at all: no link-local, no router solicitation, no information request. The plugin clears it before its DHCPv6 client starts. When that fails, every DHCPv6 exchange on the endpoint fails too, and without this counter that is indistinguishable from a segment that is merely quiet. Any non-zero value is worth investigating; the log line beside it carries the cause.</td>
 </tr>
 <tr>
 <td><code>lease_changed_v6</code>, <code>leases_obtained_v6</code>, <code>leases_renewed_v6</code>, <code>dhcp_timeouts_v6</code>, <code>naks_received_v6</code></td>
