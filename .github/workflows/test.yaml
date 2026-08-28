@@ -706,6 +706,16 @@ jobs:
       # reconciling it against this file rather than on trust. A gate
       # that cannot run on a workstation is declared out of lane with a
       # reason; it is never simply absent.
+      # The boundary this job's own existence rests on (#829). `test`
+      # became a required check that meant "the tests passed, and also
+      # forty-eight unrelated policy gates passed"; splitting it fixed
+      # that by construction, and construction is not a guarantee. The
+      # next person with a gate to wire up appends it where gate steps
+      # have always gone, `test` grows a policy check back, and #829
+      # reopens in silence. Prose decays quietly; a check fails loudly.
+      - name: test/gates split holds
+        run: bash scripts/check-test-job-purity.sh
+
       - name: Local-lane coverage
         run: bash scripts/check-local-lane.sh
 
