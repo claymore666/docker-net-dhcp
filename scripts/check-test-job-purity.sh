@@ -86,7 +86,10 @@ refuse() {
 command -v python3 >/dev/null 2>&1 || refuse \
     "python3 is required to PARSE the workflow. This gate does not fall back to a line scan: a line scan cannot tell which job a step belongs to, and the job boundary is the entire subject."
 
-out=$(python3 - "$WF" <<'PARSE'
+err="$(mktemp)"
+trap 'rm -f "$err"' EXIT
+
+out=$(python3 - "$WF" 2>"$err" <<'PARSE'
 import re
 import sys
 
@@ -219,10 +222,10 @@ PARSE
 rc=$?
 
 if [ "$rc" -eq 3 ]; then
-    refuse "$WF could not be parsed into two jobs with steps. PyYAML must be importable and both \`test\` and \`gates\` must exist: $(printf '%s' "$out" | tr '\n' ' ')"
+    refuse "$WF could not be parsed into two jobs with steps, so the boundary was not judged. The parser said: $(tr '\n' ' ' < "$err"). PyYAML must be importable and both \`test\` and \`gates\` must exist with steps."
 fi
 if [ "$rc" -ne 0 ]; then
-    refuse "the parse of $WF exited $rc, which is neither a verdict nor a documented refusal."
+    refuse "the parse of $WF exited $rc, which is neither a verdict nor a documented refusal. The parser said: $(tr '\n' ' ' < "$err")"
 fi
 
 findings=$(printf '%s\n' "$out" | grep '^FINDING	' | sed 's/^FINDING	//')

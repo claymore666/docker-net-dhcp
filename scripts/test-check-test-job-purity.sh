@@ -151,29 +151,91 @@ FOLD
 check "folding the corpus back into test goes red" 1 "$TMP/folded.yaml" "invokes scripts/"
 
 # 2. Delete the INVOCATION. A gate nothing runs reports nothing, so the
-#    wiring is asserted structurally -- in a non-comment run line of the
-#    `gates` job, not anywhere in the file. A step name or a sentence
-#    would satisfy a substring search for it.
-if python3 - "$REPO/.github/workflows/test.yaml" <<'WIRED'
+#    wiring is asserted structurally: the script must appear in COMMAND
+#    POSITION on a non-comment run line of the `gates` job.
+#
+#    Command position is not pedantry. The first draft of this case
+#    grepped the run lines for the script's name, and a mutant that
+#    replaced the invocation with `echo "scripts/check-test-job-purity.sh
+#    runs elsewhere"` SURVIVED it -- measured. That is #871's defect
+#    reproduced inside the gate whose own header warns about it, and
+#    scripts/workflow-shell-lines.sh names the same boundary in as many
+#    words: it answers "is this token in something the workflow runs",
+#    not "is this token the command being run".
+#
+#    So the assertion is driven against four workflows, not one: the
+#    real tree, and three that NAME the script without running it.
+wired() {
+    local name="$1" want="$2" wf="$3"
+    python3 - "$wf" <<'WIRED'
 import re
 import sys
 import yaml
+
+# The invocation forms this repository actually uses for a gate, anchored
+# at the start of the command. Anything else -- an echo argument, a here
+# document, a quoted string -- names the script without running it.
+INVOKE = re.compile(
+    r"^\s*(?:(?:bash|sh)\s+)?(?:\./)?scripts/check-test-job-purity\.sh(?:\s|$)"
+)
 doc = yaml.safe_load(open(sys.argv[1]))
-steps = doc.get("jobs", {}).get("gates", {}).get("steps", [])
-for s in steps:
-    for ln in (s.get("run") or "").splitlines():
+for step in doc.get("jobs", {}).get("gates", {}).get("steps", []) or []:
+    body = step.get("run")
+    if not isinstance(body, str):
+        continue
+    for ln in body.splitlines():
         if ln.strip().startswith("#"):
             continue
-        if re.search(r"scripts/check-test-job-purity\.sh", ln):
+        if INVOKE.search(ln):
             sys.exit(0)
 sys.exit(1)
 WIRED
-then
-    echo "PASS: gate is invoked from a run line of the gates job"
-else
-    echo "FAIL: gate is not invoked from any non-comment run line of the gates job"
-    failures=$((failures + 1))
-fi
+    local got=$?
+    if [ "$got" -eq "$want" ]; then
+        echo "PASS: $name"
+    else
+        echo "FAIL: $name (exit $got, want $want)"
+        failures=$((failures + 1))
+    fi
+}
+
+REAL="$REPO/.github/workflows/test.yaml"
+wired "gate is invoked from a run line of the gates job" 0 "$REAL"
+
+python3 - "$REAL" "$TMP" <<'DECOYS'
+import sys
+import yaml
+
+real, tmp = sys.argv[1], sys.argv[2]
+base = yaml.safe_load(open(real))
+
+
+def rewrite(job_steps, replacement):
+    for step in job_steps:
+        body = step.get("run")
+        if isinstance(body, str) and "scripts/check-test-job-purity.sh" in body:
+            step["run"] = replacement
+            return True
+    return False
+
+
+decoys = {
+    # the mutant that survived the first draft
+    "echo": 'echo "scripts/check-test-job-purity.sh runs elsewhere"',
+    # the shape run-gate-selftests.sh was defeated by (#871)
+    "comment": "# scripts/check-test-job-purity.sh\ntrue",
+    # a name with no shell behind it at all
+    "nameonly": "true",
+}
+for tag, repl in decoys.items():
+    doc = yaml.safe_load(open(real))
+    assert rewrite(doc["jobs"]["gates"]["steps"], repl), tag
+    yaml.safe_dump(doc, open("%s/decoy-%s.yaml" % (tmp, tag), "w"))
+DECOYS
+
+wired "an echo naming the gate does not count as wiring" 1 "$TMP/decoy-echo.yaml"
+wired "a comment naming the gate does not count as wiring" 1 "$TMP/decoy-comment.yaml"
+wired "a step that only names the gate does not count as wiring" 1 "$TMP/decoy-nameonly.yaml"
 
 if [ "$failures" -ne 0 ]; then echo "$failures failure(s)"; exit 1; fi
 echo "all passed"
