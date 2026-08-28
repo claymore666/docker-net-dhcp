@@ -49,10 +49,10 @@ FROM alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6ee
 # isolation of dhcpcd's state dir), `echo` (the per-step failure
 # marker mountPrep writes to stderr, #780) and `grep` (the
 # Router-Advertisement guard reads each sysctl back after writing it,
-# #875) come from the base Alpine busybox. Every one of them is asserted below; the count that used to
-# stand in this sentence is deliberately gone, because it named three
-# while the list beside it named four, and a count goes false without
-# anything editing it.
+# #875) come from the base Alpine busybox. Every one of them is
+# asserted below; the count that used to stand in this sentence is
+# deliberately gone, because it named three while the list beside it
+# named four, and a count goes false without anything editing it.
 #
 # The `test -x` is not belt-and-braces. pkg/dhcp names dhcpcd by the
 # ABSOLUTE path /sbin/dhcpcd (#707) — a bare name would be resolved out

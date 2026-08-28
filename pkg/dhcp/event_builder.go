@@ -379,6 +379,25 @@ func buildEvent(reason string, getenv Getenv) (Event, bool) {
 		// dhcpcd emits a bare address; defensively strip any /prefix and
 		// canonicalise via ParseCIDR to /128 (stable compressed form for
 		// downstream string comparisons).
+		//
+		// THE /128 IS REQUIRED, NOT A PLACEHOLDER. Do not "fix" it to a
+		// /64 to make the container's address look like its neighbours'.
+		// A DHCPv6 IA_NA address carries no prefix length -- RFC 8415
+		// §21.6 defines the IA Address option with lifetimes and no
+		// on-link information -- and RFC 5942 §4 rule 1 states that
+		// assigning an address "whether through IPv6 stateless address
+		// autoconfiguration, DHCPv6, or manual configuration" MUST NOT
+		// implicitly cause a prefix derived from it to be treated as
+		// on-link. RFC 8415 §18.2.10.1 repeats that inside the DHCPv6
+		// specification itself.
+		//
+		// So /128 is the only length that does not assert something the
+		// server never said. Widening it to /64 would install an on-link
+		// prefix route the segment may not have, and would black-hole
+		// every neighbour inside that /64 that is not actually on-link.
+		// On-link determination comes from Router Advertisements -- see
+		// the Router-Advertisement guard in pkg/dhcp/ra_guard.go (#875),
+		// which exists precisely so that the kernel keeps receiving them.
 		bare := strings.SplitN(addr, "/", 2)[0]
 		_, netV6, err := net.ParseCIDR(bare + "/128")
 		if err != nil {

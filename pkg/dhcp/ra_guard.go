@@ -34,9 +34,20 @@ import (
 // gate that write -- the plugin passes it on every client -- and under
 // `--noconfigure` dhcpcd also skips ipv6nd_applyra(), ipv6_addaddrs()
 // and rt_build(). So nobody in the container performed §6.3.4 or
-// §5.5.3 at all: the address and route that existed at t+0 came from
-// the single advertisement the kernel accepted before dhcpcd got there,
-// and then nothing refreshed them.
+// §5.5.3 at all.
+//
+// The loss is ACTIVE, not merely a failure to refresh. MEASURED, in the
+// ordering that is least favourable to this claim -- an advertisement
+// accepted and a `proto ra` default route installed BEFORE dhcpcd is
+// started at all:
+//
+//	unguarded: route present before dhcpcd, GONE after   (accept_ra 0)
+//	guarded:   route present before dhcpcd, still present (accept_ra 2)
+//
+// So the reported symptom is not "the route eventually ages out". The
+// route the container already had disappears once the `-6` client
+// starts, and nothing can replace it, because the same write also
+// stopped the kernel accepting the advertisement that would.
 //
 // Only the `-6` client does this. MEASURED: a `-4` dhcpcd left
 // accept_ra and autoconf at 1/1 on the same link.
@@ -73,22 +84,50 @@ import (
 //
 // # WHY accept_ra=2 AND NOT 1
 //
-// Value 1 accepts advertisements only while forwarding is disabled.
-// Containers that enable forwarding -- VPN, NAT, router and
-// docker-in-docker images do it routinely -- would silently lose
-// advertisement processing, with exactly the symptom above. Value 2
-// overrules that. RFC 7084 §4.2 is the IETF precedent for a node that
-// is a router on one interface and a host on another: W-1 requires such
-// a router to "act as an IPv6 host" on its WAN side and W-3 requires it
-// to "use Router Discovery ... to discover a default router(s) and
-// install a default route(s)".
+// This is a KERNEL-BEHAVIOUR argument, not a standards one, and it is
+// stated that way on purpose: no RFC assigns meanings to the values of
+// a Linux sysctl.
+//
+// Linux ties advertisement processing to forwarding. At accept_ra=1 the
+// kernel refuses advertisements once forwarding is enabled on the
+// interface, and rt6_purge_dflt_routers() removes the default routes it
+// had already learned from them. accept_ra=2 is the only value that
+// overrules the forwarding check. Containers enable forwarding
+// routinely -- VPN, NAT, router and docker-in-docker images all do --
+// and at accept_ra=1 doing so silently reproduces the #875 symptom the
+// guard exists to prevent.
+//
+// MEASURED, precondition-gated so the treatment is only applied to a
+// container that had actually received an advertisement first, three
+// trials per arm:
+//
+//	accept_ra=1: default route purged 3/3 when forwarding was enabled
+//	accept_ra=2: default route survived 3/3
+//
+// An earlier draft of this paragraph cited RFC 7084 §4.2 (W-1, W-3) as
+// precedent. That citation was WRONG and is recorded here so it is not
+// reinstated: RFC 7084 governs IPv6 CE routers, which is not what a
+// container is, and W-2 in that same requirement list expects the
+// link-local address that this guard's own residual (below) admits to
+// losing. The value is right; the reason it is right is the paragraph
+// above, which is measurable rather than analogical.
 //
 // # WHY autoconf=1, WHICH LOOKS WRONG FOR A MANAGED ENDPOINT
 //
-// Because the ROUTER decides, not us. RFC 4862 §5.5.3 gates address
-// formation on the prefix option's A flag; `autoconf` is the host-side
-// veto on top of it. Setting it to 0 overrides the router; setting it
-// to 1 defers to the router, which is what a host is supposed to do.
+// Because the ROUTER decides, not us. RFC 4862 §5.5.3(a) gates address
+// formation on the prefix option's A flag -- a host processes the
+// prefix for autoconfiguration only if that flag is set; `autoconf` is
+// the host-side veto on top of it. Setting it to 0 overrides the
+// router; setting it to 1 defers to the router, which is what a host is
+// supposed to do.
+//
+// Deferring is also what keeps the two mechanisms from being read as
+// alternatives. RFC 4861 §6.3.4 has a host apply the advertisement's
+// contents as a UNION with whatever else configured it -- stateful
+// DHCPv6 does not suppress advertisement-derived configuration and
+// advertisement-derived configuration does not suppress DHCPv6. A
+// managed endpoint that vetoed autoconf would be deciding, on the
+// router's behalf, that its segment is stateful-only.
 //
 // MEASURED against the shape the integration fixture calls "managed"
 // (a dnsmasq DHCPv6 pool plus --enable-ra): with autoconf=1 the
@@ -146,12 +185,70 @@ import (
 // TestRAGuard_DoesNotClaimKnobsTheShieldCannotHold keeps it out.
 //
 // The residual, precisely: after a carrier flap a guarded container has
-// no link-local address. MEASURED, that does not break what #875 is
-// about -- the global address is kept, advertisements are still
-// received, and the default route is restored within seconds -- but it
-// is a conformance gap and closing it needs a netlink re-assertion
-// driven by carrier events, which is a different mechanism with a race
-// this design does not have.
+// no link-local address, and the consequence is sharper than "a
+// conformance gap".
+//
+// MEASURED, single-variable control across a flap, addr_gen_mode being
+// the only thing that differs:
+//
+//	addr_gen_mode=eui64: link-local re-formed, and the container sent a
+//	                     Router Solicitation (ICMPv6 type 133, observed
+//	                     on the router side with tcpdump) -- 1 seen
+//	addr_gen_mode=none:  no link-local, and NO Router Solicitation -- 0
+//	                     seen
+//
+// RFC 4861 §6.3.7 lets a host solicit from the unspecified address, but
+// Linux drives solicitation off link-local DAD completion, so with no
+// link-local there is nothing to trigger it. So the container cannot
+// ASK for an advertisement after a flap; it can only wait for the next
+// unsolicited one.
+//
+// That is why the recovery time is a property of the SEGMENT, not of
+// this design. It is bounded by the router's MaxRtrAdvInterval, whose
+// RFC 4861 §6.2.1 default is 600s and whose permitted maximum is 1800s.
+// The integration fixture recovers in seconds only because its dnsmasq
+// advertises far more often than that; a real segment on the defaults
+// can leave a flapped container without a default route for ten
+// minutes. Do not restate that as "restored within seconds" -- an
+// earlier draft of this comment did, and it was reading the fixture's
+// cadence as if it were the design's guarantee.
+//
+// The global address itself is kept across the flap (keep_addr_on_down,
+// above), and advertisements are still processed when they arrive.
+// Closing the residual needs a netlink re-assertion driven by carrier
+// events, which is a different mechanism with a race this design does
+// not have.
+//
+// # WHEN THE SHIELD IS REFUSED
+//
+// Every step is non-fatal by construction: the client starts either
+// way, because a container with a working lease and stale advertisement
+// settings is better than a container with no address at all. What
+// matters is that a refusal is LOUD. MEASURED, one arm per refusal
+// mode, each against a live interface with the precondition asserted
+// (accept_ra=1) before the arm ran:
+//
+//	shield honoured      accept_ra=2   0 markers   dhcpcd saw EROFS
+//	bind-mount denied    accept_ra=0   3 markers   (the three -shield steps)
+//	/proc/sys absent     accept_ra=0   9 markers   (write+verify+shield x3)
+//	guard not asked      accept_ra=0   0 markers   (control)
+//
+// Two things to read off that table. First, a refused shield is never
+// silent: it costs the knob AND raises router_advert_guard_failures, so
+// the zero-marker rows are the only ones where a zero counter means
+// what it looks like -- and the last two rows are distinguishable, which
+// is what stops "guard failed" being confused with "guard not asked".
+//
+// Second, the write-only design would have shipped broken. Row 2 is
+// exactly that design -- the write succeeds, the shield does not -- and
+// accept_ra reads 0 afterwards, because dhcpcd overwrote it. The shield
+// is not belt-and-braces on top of the write; it is the half that
+// works.
+//
+// Not measured, and open: a rootfs mounted read-only, and a runtime
+// that denies CAP_SYS_ADMIN. The second cannot reach these steps at all
+// -- unshare(1) -m fails first and the prologue never runs -- so it is
+// a mountPrep concern rather than a guard one.
 //
 // # THE BOUND ON ALL OF THIS
 //
@@ -163,6 +260,27 @@ import (
 // all: RFC 4861 §6.3.4 has no source of a default route other than an
 // advertisement, so a DHCPv6-only segment with RAs disabled has no
 // default route to discover and this guard will not invent one.
+//
+// The shield's own escape, stated because a read-only bind mount reads
+// like a stronger promise than it is: it constrains DHCPCD, because
+// dhcpcd is what runs inside that mount namespace. It constrains
+// nothing else. Any other writer in the container's network namespace
+// -- a process in the container running as root, an `nsenter` from the
+// host, a `docker exec` -- sees the container's ordinary /proc/sys and
+// can set accept_ra back to 0. The guard neither prevents that nor
+// counts it, and the health counter will still read zero afterwards,
+// because the counter observes the guard's own steps and not the
+// current value of the knob. The integration assertion in
+// test/integration/ipv6_test.go is what reads the live value.
+//
+// Two writers reach these paths in this codebase, and they compose.
+// MEASURED: the shield does not escape unshare(1) -m -- after a
+// shielded child exits, the parent's mountinfo carries no entry for the
+// shielded leaf and the parent's accept_ra is writable again -- and
+// pkg/plugin/v6_link.go's disable_ipv6 write targets a different leaf,
+// which stayed writable both inside and outside the shielded namespace.
+// The guard cannot break that path and that path cannot break the
+// guard.
 const (
 	// sysctlIPv6ConfDir is the per-interface IPv6 configuration tree.
 	// /proc/sys/net is per-NETWORK-NAMESPACE: the same path names a

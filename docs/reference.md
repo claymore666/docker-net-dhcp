@@ -670,7 +670,34 @@ docker network create -d ghcr.io/claymore666/docker-net-dhcp:v1.8.0 \
   *Known bound:* `dhcpcd` also sets the interface's address generation
   mode to `none` over netlink, which the read-only pin cannot reach, so
   after a carrier flap the interface does not regenerate a link-local
-  address. Global addressing and the default route are unaffected.
+  address. The global address survives the flap, but the consequence for
+  the default route is not "unaffected" — an earlier version of this
+  page said that and it was wrong. Without a link-local address the
+  container cannot *solicit* an advertisement, so after a flap it waits
+  for the router's next unsolicited one. That wait is bounded by the
+  router's `MaxRtrAdvInterval`, which RFC 4861 §6.2.1 defaults to 600
+  seconds and permits up to 1800. On a segment running those defaults a
+  flapped container can be without a default route for ten minutes; it
+  recovers by itself, without intervention, when the next advertisement
+  arrives.
+- **On a segment that advertises a prefix with the A flag set *and* runs
+  stateful DHCPv6, a container gets two global addresses** (v1.9.0+,
+  #875). This follows from `autoconf=1` above and it is correct
+  behaviour, not a defect: RFC 4861 §6.3.4 has a host apply
+  advertisement-derived configuration as a union with whatever else
+  configured it, so every other host on such a segment does the same.
+  Both addresses are usable and both are renewed by their own mechanism.
+  The consequence worth knowing about is **source address selection**: an
+  outbound connection that does not bind explicitly picks its source per
+  RFC 6724, and the winner there is not necessarily the DHCPv6 address
+  the plugin reports in `docker inspect`. If a firewall, an ACL or a
+  server-side allowlist is keyed on the leased address, traffic can leave
+  from the other one. The plugin does not currently offer a way to
+  suppress either address, and deliberately so — suppressing the
+  advertised one would override the router, and suppressing the leased
+  one would discard the lease the network administrator issued. Bind
+  explicitly, or advertise the prefix with A=0, which is what the
+  integration fixture's `managed` mode does.
 - **Identity is a stable DUID-LL** (type 3) derived from the interface
   MAC via pinned config — no timestamp, so the same MAC always yields the
   same DUID. **The IAID is pinned from the MAC too** (v1.2.0, #152): the

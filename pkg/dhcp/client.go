@@ -320,7 +320,12 @@ func prepStep(cmd, marker, step string) string {
 	return fmt.Sprintf("%s || %s '%s %s' >&2; ", cmd, echoBin, marker, step)
 }
 
-// mountPrepWatcher counts mountPrep failure markers on a byte stream.
+// mountPrepWatcher counts the per-step failure markers that the shell
+// prologue writes to stderr, on a byte stream. It counts TWO marker
+// families, not one: mountPrep's own steps (#780) and the
+// Router-Advertisement guard's write/verify/shield steps (#875), each
+// into its own counter. The type keeps its original name because it is
+// still the mountPrep prologue that emits both.
 //
 // It sits in the client's stderr MultiWriter beside the debug-log pipe
 // and the bounded tail buffer, so it sees exactly what the shell wrote,
@@ -523,7 +528,8 @@ type DHCPClient struct {
 	fifoRead *os.File    // read end of the event FIFO (scanner side)
 	fifoKeep *os.File    // write keep-alive (O_RDWR) end of the event FIFO
 	stderr   *tailWriter // last bytes of dhcpcd stderr, for the exit error
-	// mountWatch counts mountPrep failure markers on the same stderr
+	// mountWatch counts both families of prologue failure marker on the
+	// same stderr
 	// stream. By value: it is written only by exec's stderr copy
 	// goroutine, exactly like stderr above.
 	mountWatch mountPrepWatcher
@@ -698,7 +704,8 @@ func NewDHCPClient(iface string, opts *DHCPClientOptions) (*DHCPClient, error) {
 	outPipe := log.StandardLogger().WriterLevel(log.DebugLevel)
 	errPipe := log.StandardLogger().WriterLevel(log.DebugLevel)
 	c.cmd.Stdout = outPipe
-	// The third writer counts mountPrep's failure markers (#780). It has
+	// The third writer counts the prologue's failure markers -- both
+	// mountPrep's (#780) and the RA guard's (#875). It has
 	// to be here rather than wrapped around c.stderr, because that
 	// buffer is BOUNDED to its last few KiB — a namespace-prep failure
 	// followed by chatty dhcpcd output would be trimmed out of it before
