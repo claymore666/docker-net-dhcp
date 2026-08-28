@@ -845,6 +845,24 @@ func restoreV6ProtoRADefaults(t *testing.T, before []netlink.Route) {
 		// CAN install a default route tagged `proto ra`, so the
 		// protocol is preserved rather than downgraded to static.
 		//
+		// WHAT THE RESTORE DOES NOT REINSTATE, stated because the
+		// obvious reading of the line above is too generous. The same
+		// measurement showed a USERSPACE `proto ra` default route
+		// SURVIVING a forwarding transition that would have purged a
+		// kernel one: rt6_purge_dflt_routers takes routes carrying the
+		// kernel's RTF_ADDRCONF provenance, which userspace cannot
+		// recreate. So what comes back is a route with the same
+		// destination, gateway, device, metric, table and protocol --
+		// and without the RA provenance or the advertisement lifetime
+		// that went with it. Routing works; the route is no longer
+		// managed by advertisement processing. That is a real
+		// difference and it is not called equivalence anywhere here.
+		//
+		// One benign consequence: only the FIRST fixture in a job pays
+		// this cost. The restored routes are userspace routes, so a
+		// later fixture'"'"'s forwarding write finds nothing left to
+		// purge.
+		//
 		// The flags are the part that could not be measured without a
 		// real advertisement to generate one. An RA-derived route
 		// carries kernel-set rtm_flags that the kernel may refuse
