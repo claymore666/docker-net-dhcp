@@ -91,10 +91,31 @@ FROM alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6ee
 # `sh: /bin/mount: unknown operand`, rc=2, whatever the files are.
 # Measured on this exact digest, all arguments present and executable
 # still exits 2 — it checks nothing and fails the build.
+# libcrypto3/libssl3 are pinned to a patched version of a library the
+# PLUGIN does not use. Measured on the built image rather than assumed:
+# neither plugin binary links it (both are Go) and neither dhcpcd nor ip
+# does. The image is not free of OpenSSL — apk-tools, busybox's
+# ssl_client and OpenSSL's own engine modules link it — but none of those
+# is on a path the plugin invokes at runtime, which is why this is
+# hygiene and not an incident. They are pinned because the base digest
+# above ships 3.5.7-r0, whose unfixed CVEs the image scanner reports
+# against every release; carrying known findings makes a real one harder
+# to see.
+#
+# Exact pins rather than `apk upgrade`, matching the two above: a version
+# that has been superseded fails the build loudly instead of drifting
+# silently between builds of the same Dockerfile.
+#
+# Clears: when the base digest above moves to an Alpine that already ships
+# 3.5.8-r0 or later, these two lines are redundant and should go. Until
+# then they need bumping each time Alpine supersedes 3.5.8-r0 — a stale
+# pin is a failed build, which is the intended failure direction.
 RUN mkdir -p /run/docker/plugins /var/lib/net-dhcp && \
     apk add --no-cache \
         dhcpcd=10.3.2-r0 \
-        iproute2=7.0.0-r0 && \
+        iproute2=7.0.0-r0 \
+        libcrypto3=3.5.8-r0 \
+        libssl3=3.5.8-r0 && \
     test -x /sbin/dhcpcd && test -x /bin/mount && test -x /bin/mkdir && \
     test -x /bin/sh && test -x /usr/bin/unshare && test -x /bin/echo && \
     test -x /bin/grep

@@ -211,6 +211,10 @@ Documentation:
   `interface_name` upstream blocker was stale — the engine change is merged and
   waiting on a release (#822).
 
+Base image: `libssl3` and `libcrypto3` pinned to 3.5.8-r0, clearing ten
+OpenSSL advisories reported against the published image. The plugin does not
+link OpenSSL, so no plugin code path was affected.
+
 Dependencies: Go 1.27.0, `logrus` 1.10.1, and a GitHub Actions group bump.
 
 ### Deferred to v1.10.0
