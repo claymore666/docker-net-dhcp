@@ -8,13 +8,20 @@
 # and is exercised by scripts/test-purge-workflow-runs.sh; this file is
 # only the trigger and the credentials.
 #
-# THIS FILE DOES NOTHING UNTIL IT REACHES `main` (#846). GitHub runs
-# scheduled workflows only from the default branch, which here is `main`,
-# and the same is true of workflow_dispatch. Merged to `dev` this file is
-# inert on BOTH triggers -- measured 2026-08-27: `gh workflow list --all`
-# does not return it, and 100 of the 100 most recent schedule-triggered
-# runs in this repo fired on `main`. The retention window therefore opens
-# at the v1.9.0 release, not at this merge. See .github/dispatch-pending.txt.
+# THIS FILE IS LIVE AND IT DELETES. It reached `main` with the v1.9.0
+# release, `main` is the default branch, and the scheduled lane passes
+# DRY_RUN=0 -- so the daily 04:17 UTC run removes runs for real, against
+# several hundred of them. A manual dispatch still defaults to a dry run.
+#
+# WHY THE DEFAULT BRANCH IS WHAT DECIDES (#846). GitHub runs `schedule`
+# only from the default branch, and the same is true of workflow_dispatch.
+# Merged to `dev` a workflow is inert on BOTH triggers and is not in the
+# workflows API at all -- measured 2026-08-27, while this file was still
+# dev-only: `gh workflow list --all` did not return it, and 100 of the 100
+# most recent schedule-triggered runs in this repo fired on `main`. That is
+# the normal state of a new workflow here for one release cycle;
+# .github/dispatch-pending.txt is where one still waiting on the default
+# branch is declared, and this file's entry went when it shipped.
 #
 # WHY THE DEFAULT IS A DRY RUN EVERYWHERE BUT THE SCHEDULE. A destructive
 # job that deletes by default is one typo in an input away from erasing

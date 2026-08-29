@@ -197,13 +197,12 @@ fi
 #
 # Any other column-zero key ends the block, so `jobs:` closes it.
 #
-# This paragraph cited "the same shape as check-fork-execution-policy.sh".
-# That file is not on this branch, not on `dev` and not on `main`; it
-# exists only on the unmerged #830 branch. The citation is dropped rather
-# than qualified, because a reader following it finds nothing. It is the
-# same defect the ledger this gate reads retracts about itself: a claim
-# true of the union of the branches in flight is not a claim about the
-# merged tree.
+# THE SAME SHAPE AS check-fork-execution-policy.sh, which parses the
+# `on:` block structurally for this reason rather than grepping the
+# file. That script reached `dev` and `main` with the v1.9.0 release.
+# This citation was previously dropped while it existed only on the
+# unmerged #830 branch: a claim true of the union of the branches in
+# flight is not a claim about the merged tree.
 #
 # COMMENTS INSIDE THE BLOCK ARE STRIPPED TOO, and that is one scope
 # smaller than the bug above rather than a different bug. Narrowing the

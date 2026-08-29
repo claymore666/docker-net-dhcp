@@ -55,14 +55,19 @@ name: Fork execution policy
 # read, and secrets are withheld from fork pull requests. In the Test lane it
 # would refuse on every fork PR and be discharged as noise inside a month.
 #
-# WHEN THIS STARTS OBSERVING ANYTHING. Not at merge. GitHub runs `schedule`
-# only from the DEFAULT branch, and this project develops on `dev` and releases
-# to `main`. Until v1.9.0 carries this file to `main` the workflow is not in the
-# workflows API at all -- neither the cron nor a manual dispatch is reachable,
-# and nothing errors, because nothing is scheduled to fail. The window described
-# below opens at the RELEASE, not at the merge. Declared in
-# .github/dispatch-pending.txt, which is what makes that expiry something a gate
-# checks rather than something a reader has to remember.
+# THIS IS OBSERVING NOW. The file reached `main` with the v1.9.0 release and
+# `main` is the default branch, so the cron below is registered and runs daily.
+# The "notices within a day" coverage described further down is what is in
+# force from here.
+#
+# IT OBSERVED NOTHING BEFORE THAT, and the reason generalises to the next
+# workflow of this kind. GitHub runs `schedule` only from the DEFAULT branch,
+# and this project develops on `dev` and releases to `main`. Merged to `dev` a
+# workflow is not in the workflows API at all -- neither the cron nor a manual
+# dispatch is reachable, and nothing errors, because nothing is scheduled to
+# fail. That silence is why one still waiting on the default branch is declared
+# in .github/dispatch-pending.txt, where a gate checks the expiry rather than a
+# reader having to remember it; this file's entry went when it shipped.
 #
 # WHAT A SCHEDULE COSTS HERE, STATED RATHER THAN GLOSSED. Label taxonomy can
 # argue that a wrong label sits for days before it misleads anybody. This one
