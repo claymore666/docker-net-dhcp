@@ -80,17 +80,48 @@ FROM alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6ee
 #
 # Clears: when the base digest above moves to an Alpine that already
 # ships 3.5.8-r0 or later, these two lines are redundant and should go.
+#
+# NO SECOND DHCP CLIENT (2.0). 1.x shipped dhcpcd and drove it as a child
+# process; 2.0 leases in-process through the library, so a client that
+# could also lease on the same link is an unmanaged second speaker for
+# the same address -- two clients, one binding, and the loser is
+# whichever the server answered second.
+#
+# THE CHECK IS FOR AN *INSTALLED* CLIENT, and that distinction is not a
+# nicety. MEASURED against this base digest: `udhcpc` and `udhcpc6` are
+# symlinks to /bin/busybox and are present in EVERY Alpine image --
+# BusyBox provides them as applets and they cannot be removed without
+# removing the shell this line runs in. A refusal that named them
+# without that distinction was unsatisfiable: it could only ever fail,
+# which is a check with one possible verdict just as much as one that
+# can only pass.
+#
+# So an applet is skipped, and the trailing test is the CALIBRATION that
+# keeps the skip honest: it requires busybox's udhcpc to be there. If it
+# ever is not, the skip branch has never been taken, the loop cannot be
+# said to tell an installed client from an applet, and the build stops
+# rather than passing on a premise nobody re-derived.
+#
+# The other half of the guarantee is not expressible here. The applet IS
+# in the image, so what has to be true is that nothing ever RUNS it, and
+# that is a property of the source: pkg/dhcp/no_exec_test.go requires
+# that no non-test file in this repository imports os/exec.
 RUN mkdir -p /run/docker/plugins /var/lib/net-dhcp && \
     apk add --no-cache \
         iproute2=7.0.0-r0 \
         libcrypto3=3.5.8-r0 \
         libssl3=3.5.8-r0 && \
     for c in dhcpcd udhcpc udhcpc6 dhclient dhcpcd6; do \
-        if command -v "$c" >/dev/null 2>&1 || [ -e "/sbin/$c" ] || [ -e "/usr/sbin/$c" ]; then \
-            echo "A DHCP client ($c) is present in the image. 2.0 leases in-process; anything that can also lease is a second, unmanaged client on the same link." >&2; \
-            exit 1; \
-        fi; \
-    done
+        p="$(command -v "$c" 2>/dev/null || true)"; \
+        [ -n "$p" ] || continue; \
+        [ "$(readlink -f "$p")" = /bin/busybox ] && continue; \
+        echo "A DHCP client ($c) is INSTALLED in the image at $p. 2.0 leases in-process; anything that can also lease is a second, unmanaged client on the same link." >&2; \
+        exit 1; \
+    done && \
+    if [ "$(readlink -f "$(command -v udhcpc 2>/dev/null || echo /nonexistent)")" != /bin/busybox ]; then \
+        echo "The busybox udhcpc applet is not where this check expects it. The loop above skips busybox applets, so with none present it has never taken that branch and cannot be said to distinguish an installed client from an applet. Re-derive it against this base image." >&2; \
+        exit 1; \
+    fi
 
 COPY --from=builder /usr/local/src/docker-net-dhcp/bin/net-dhcp /usr/sbin/
 
