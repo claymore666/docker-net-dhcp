@@ -682,20 +682,21 @@ type Plugin struct {
 	// broken, and the two look identical in a timeout log.
 	dhcpServerPolicyExhausted atomic.Int32
 
-	// dhcpServerPolicyTimeouts counts outage ticks on endpoints whose
-	// RENEWAL client is restricted to an operator-named dhcp_servers
-	// allow-list (#731). The exhausted counter above is the acquisition
-	// half and cannot cover this one: nothing is exhausted at renewal,
-	// because the persistent client has no ladder to walk. It holds one
-	// whitelist and simply gets no answers, so the only visible symptom
-	// is a dhcp_timeouts tick indistinguishable from a real outage.
+	// dhcpServerPolicyTimeouts counts unanswered renewal attempts on
+	// endpoints whose RENEWAL client is restricted to an operator-named
+	// dhcp_servers allow-list (#731). The exhausted counter above is the
+	// acquisition half and cannot cover this one: nothing is exhausted
+	// at renewal, because the persistent client has no ladder to walk.
+	// It holds one whitelist and simply gets no answers, so the only
+	// visible symptom is a dhcp_timeouts bump indistinguishable from a
+	// real outage.
 	//
 	// A strict subset of dhcpTimeouts, deliberately: the two rising
 	// together says the allow-list is the cause, dhcpTimeouts rising
 	// alone says it is not.
 	//
-	// Not healthy-affecting: every tick it counts is already counted by
-	// dhcpTimeouts, and weighting one outage twice would make a
+	// Not healthy-affecting: every attempt it counts is already counted
+	// by dhcpTimeouts, and weighting one outage twice would make a
 	// policy-restricted endpoint look worse than an unrestricted one
 	// failing in exactly the same way.
 	//
@@ -933,9 +934,15 @@ type Plugin struct {
 	//   - leasesObtainedV4: "bound" event — first successful
 	//     DHCPACK on either initial bind or after a NAK / lease loss
 	//   - leasesRenewedV4: "renew" event — a renewal DHCPACK
-	//   - dhcpTimeoutsV4: "leasefail" event — a bound lease lapsed
-	//     (dhcpcd EXPIRE) or the outage watchdog fired without an
-	//     OFFER or ACK
+	//   - dhcpTimeoutsV4: "leasefail" event — the library ran an
+	//     acquisition or renewal attempt out of retransmissions with
+	//     no OFFER or ACK, reported as Failed{ReasonNoServer}. One
+	//     bump per attempt, so it keeps climbing through an outage
+	//     rather than marking its start. Until 2.0 this was dhcpcd's
+	//     EXPIRE plus a 30-second watchdog tick synthesised by the
+	//     plugin, because dhcpcd under `--noconfigure` announced
+	//     nothing when a bound lease lapsed (#353); see the long note
+	//     in dhcp_manager.go for what went with the watchdog.
 	//   - clientStopFailuresV4: client.Finish returned an error in
 	//     Stop, meaning the SIGTERM-driven shutdown didn't complete
 	//     cleanly (timeout, exit code, or pipe closure)

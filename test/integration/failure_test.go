@@ -28,37 +28,50 @@
 // They are split out of the main suite into
 // `make integration-test-failure` (second CI step).
 //
-// dhcpcd timing facts the asserts below lean on (see pkg/dhcp):
+// Timing facts the asserts below lean on (see pkg/dhcp). THESE CHANGED
+// AT 2.0: the numbers here described dhcpcd and an outage watchdog, and
+// both are gone. The shape of what these tests assert did not change —
+// dhcp_timeouts still rises during an outage and the address still
+// survives it — but WHAT MAKES IT RISE, and how fast, did.
 //
-//   - a dead server produces NO event at T1/T2, and — the part this
-//     file originally got wrong, see #353 — no usable event at expiry
-//     either — up to v1.8.x. `--noconfigure` PLUS the `release`
-//     directive made dhcpcd report a lapse as RELEASE, which the plugin
-//     drops; #800 removed the directive and a lapse now fires EXPIRE,
-//     counted as a leasefail (#855). From the kill onward dhcpcd may
-//     still say nothing at all, which is what the watchdog is for.
+//   - the client reports the outage itself. dhcpcd under
+//     `--noconfigure` announced nothing usable when a bound lease
+//     lapsed (#353), so the plugin ran a ticker that called the outage
+//     from a lease lifetime and a clock. The library owns the
+//     retransmission schedule and the T1/T2/expiry timers and emits
+//     Failed{ReasonNoServer} when an attempt runs out of retries; the
+//     chassis translates that to "leasefail" and handleEvent counts it
+//     as dhcp_timeouts. There is no watchdog, no OUTAGE_TICK and no
+//     OUTAGE_GRACE — the plugin refuses to install with either, since
+//     the daemon rejects a `docker plugin set` naming a setting
+//     config.json does not declare.
 //
-//   - dhcp_timeouts therefore moves on the plugin's OWN reckoning: the
-//     outage watchdog knows the granted lease lifetime
-//     (dhcp.Info.LeaseSeconds) and calls the outage once
-//     lastAffirmed + lease + grace has passed, re-checking on each
-//     tick. CI installs the plugin with OUTAGE_TICK=2s /
-//     OUTAGE_GRACE=10s (#278), so on the outage tests' 20s lease the
-//     rise lands ~32s after the last bind/renew. Against a plugin left
-//     on the shipped 30s/25s defaults it is 45–75s instead.
+//   - the counter therefore moves ONCE PER FAILED ATTEMPT, not once
+//     per tick, and the first bump lands when the first attempt after
+//     the kill exhausts its retransmissions rather than at
+//     lastAffirmed + lease + grace. The first attempt after a renewal
+//     boundary is what starts that clock, so the rise is bounded below
+//     by the time to the next T1 and above by T1 plus one exhausted
+//     attempt.
 //
-//     The budgets below are sized for the SLOWER of the two on purpose.
-//     They are poll deadlines, not waits: each test returns as soon as
-//     the counter moves, so a generous budget costs nothing and keeps
-//     these tests correct when run against a default-cadence plugin.
+//     The budgets below are poll deadlines, not waits: each test
+//     returns as soon as the counter moves, so a generous budget costs
+//     nothing. They were sized for the slowest watchdog cadence and are
+//     kept at that size deliberately — they are now loose rather than
+//     tight, which is the safe direction for a deadline, and tightening
+//     them to the library's schedule would buy nothing and would make
+//     these tests fail on a slow runner rather than on a real defect.
+//     The inequalities each test states are what keeps it honest; the
+//     budget is not one of them.
 //
-//   - dhcpcd keeps re-DISCOVERing forever, so recovery after the server
-//     returns lands within ~30s, and while it's gone dhcp_timeouts keeps
-//     climbing once per watchdog tick.
+//   - the library retries indefinitely, so recovery after the server
+//     returns still lands promptly, and while it is gone dhcp_timeouts
+//     keeps climbing rather than stopping at one.
 //
 //   - the plugin DELIBERATELY does NOT tear down the address when the
 //     lease lapses (would wipe copied routes, see dhcp_manager.go) —
-//     the container keeps its address through an outage.
+//     the container keeps its address through an outage. Unchanged, and
+//     the property these tests exist for.
 //
 // TWO RULES THIS FILE LEARNED THE HARD WAY (#278). Both cost almost
 // nothing to keep, and dropping either one silently guts these tests:
