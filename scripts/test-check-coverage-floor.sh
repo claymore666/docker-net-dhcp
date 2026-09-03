@@ -182,5 +182,102 @@ else
     no "usage error should exit 2"
 fi
 
+# --- a floor removed WITH its package (2.0 M8b) ----------------------
+#
+# The gate treats a removed floor as a decrease, which is right while
+# the package is still there. When the package itself is deleted the
+# row cannot be honoured by anything, and keeping it would leave a
+# floor nothing will ever test. All four outcomes are driven, because
+# "it noticed the deletion" and "it stopped noticing anything" look the
+# same from a single passing case.
+#
+# These cases need a real module: the gate asks the TREE whether any
+# .go file remains under the package, so the fixture has to have one.
+# run_case above deliberately does not, which is why the plain
+# "dropping a package" case still trips the gate — it cannot resolve
+# the module path and says so rather than assuming.
+#
+# run_pkg_case <name> <base-baseline> <head-baseline> <gomod> <base-pkgs> <head-pkgs> <want-exit> [want-grep]
+run_pkg_case() {
+    local name="$1" base="$2" head="$3" gomod="$4" basepkgs="$5" headpkgs="$6"
+    local want="$7" want_grep="${8-}"
+    local dir rc out
+    dir=$(mktemp -d)
+    (
+        cd "$dir" || exit 2
+        git init -q .
+        git config user.email t@t; git config user.name t
+        git config commit.gpgsign false
+        mkdir -p .github
+        printf '%s\n' "$base" > .github/coverage-baseline.txt
+        [ -n "$gomod" ] && printf '%s\n' "$gomod" > go.mod
+        for d in $basepkgs; do mkdir -p "$d"; printf 'package p\n' > "$d/p.go"; done
+        printf 'base\n' > sentinel.txt
+        git add -A; git commit -qm base
+        printf '%s\n' "$head" > .github/coverage-baseline.txt
+        for d in $basepkgs; do rm -rf "$d"; done
+        for d in $headpkgs; do mkdir -p "$d"; printf 'package p\n' > "$d/p.go"; done
+        printf 'head\n' > sentinel.txt
+        git add -A; git commit -qm "drop a package"
+        bash "$GATE" HEAD~1..HEAD > "$dir/out" 2>&1
+        echo $? > "$dir/rc"
+    ) >/dev/null 2>&1
+    rc=$(cat "$dir/rc" 2>/dev/null)
+    out=$(cat "$dir/out" 2>/dev/null)
+    rm -rf "$dir"
+    if [ "$rc" != "$want" ]; then
+        no "$name (exit $rc, want $want)"
+        printf '%s\n' "$out" | sed 's/^/      /' >&2
+        return
+    fi
+    if [ -n "$want_grep" ] && ! printf '%s\n' "$out" | grep -- "$want_grep" >/dev/null; then
+        no "$name (exit $rc as wanted, but the output never said '$want_grep')"
+        printf '%s\n' "$out" | sed 's/^/      /' >&2
+        return
+    fi
+    ok "$name"
+}
+
+GOMOD='module example.com/mod
+
+go 1.24'
+
+TWO='example.com/mod/pkg/a 80.0
+example.com/mod/pkg/b 50.0'
+ONE='example.com/mod/pkg/a 80.0'
+
+# 1. The case this is for: the row went because the package went.
+run_pkg_case "a floor dropped with its deleted package is not a decrease" \
+    "$TWO" "$ONE" "$GOMOD" "pkg/a pkg/b" "pkg/a" 0 "The package is gone"
+
+# 2. The case it must not swallow. Same baseline edit, package still
+#    there — this is the decrease the gate exists for, and if the two
+#    were not driven together the exemption would look like a pass.
+run_pkg_case "a floor dropped while its package remains is still a decrease" \
+    "$TWO" "$ONE" "$GOMOD" "pkg/a pkg/b" "pkg/a pkg/b" 1 "the ratchet no longer judges"
+
+# 3. Cannot tell is a FINDING, not a pass. A malformed or absent go.mod
+#    must not switch the check off — wrong in the direction of
+#    reporting, never of silence.
+run_pkg_case "an unresolvable module path is reported, not assumed" \
+    "$TWO" "$ONE" "" "pkg/a pkg/b" "pkg/a" 1 "cannot tell"
+
+# 4. A floor on some other module's package is equally unresolvable
+#    against this tree, and gets the same answer rather than the
+#    convenient one.
+run_pkg_case "a floor from another module is reported, not assumed gone" \
+    'example.com/other/pkg/z 80.0
+example.com/mod/pkg/a 80.0' 'example.com/mod/pkg/a 80.0' "$GOMOD" "pkg/a" "pkg/a" 1 "cannot tell"
+
+# 5. The emptied domain. Every package gone means there is no ratchet
+#    left at all, and "no floor lowered" would read as a healthy one.
+run_pkg_case "dropping every floor with every package is refused, not passed" \
+    "$TWO" '# nothing left' "$GOMOD" "pkg/a pkg/b" "" 2 "Nothing left to ratchet"
+
+# 6. The other direction, so the note is not printed on every run.
+run_pkg_case "an untouched baseline prints no dropped-package note" \
+    "$TWO" "$TWO" "$GOMOD" "pkg/a pkg/b" "pkg/a pkg/b" 0 ""
+
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
