@@ -364,48 +364,71 @@ func (c *DHCPClient) translate() {
 	for ev := range c.client.Events() {
 		now := time.Now()
 		// Written before it is translated. The record is the thing a
-		// restart reads, and translate() drops two kinds on the floor
+		// restart reads, and translateOne drops two kinds on the floor
 		// deliberately — the coalesced Changed and the stop — neither
 		// of which the record may lose.
 		c.opts.record(ev)
-		info, dropped := infoFromLease(ev.Lease, now)
 
-		var out Event
-		switch ev.Kind {
-		case lease.Acquired:
-			out = Event{Type: "bound", Data: info}
-		case lease.Renewed:
-			renewedAt = now
-			out = Event{Type: "renew", Data: info}
-		case lease.Changed:
-			if now.Sub(renewedAt) < coalesceWindow {
-				// The Renewed for this same ACK has just been
-				// delivered; the plugin re-applies a changed address
-				// on "renew" already, so there is nothing left to say.
-				continue
-			}
-			out = Event{Type: "renew", Data: info}
-		case lease.Lost:
-			if ev.Reason == proto.ReasonStopped {
-				continue
-			}
-			if ev.Reason == proto.ReasonNak {
-				out = Event{Type: "nak"}
-			} else {
-				out = Event{Type: "leasefail"}
-			}
-		case lease.Failed:
-			if ev.Reason == proto.ReasonNak {
-				out = Event{Type: "nak"}
-			} else {
-				out = Event{Type: "leasefail"}
-			}
-		default:
+		out, emit, at := translateOne(ev, now, renewedAt)
+		renewedAt = at
+		if !emit {
 			continue
 		}
-		out.UnsafeValuesDropped = dropped
 		c.events <- out
 	}
+}
+
+// translateOne is the whole of the event translation, split out from
+// the loop above so the two rules that are easiest to break by accident
+// can be driven directly.
+//
+// It returns the event to emit, whether to emit at all, and the updated
+// "last renewal" mark. NOTHING here reads a socket or a clock: `now` is
+// supplied, which is what lets a test place a Changed inside and
+// outside the coalesce window without sleeping.
+func translateOne(ev lease.Event, now, renewedAt time.Time) (Event, bool, time.Time) {
+	info, dropped := infoFromLease(ev.Lease, now)
+
+	var out Event
+	switch ev.Kind {
+	case lease.Acquired:
+		out = Event{Type: "bound", Data: info}
+	case lease.Renewed:
+		renewedAt = now
+		out = Event{Type: "renew", Data: info}
+	case lease.Changed:
+		if now.Sub(renewedAt) < coalesceWindow {
+			// The Renewed for this same ACK has just been delivered;
+			// the plugin re-applies a changed address on "renew"
+			// already, so there is nothing left to say.
+			return Event{}, false, renewedAt
+		}
+		out = Event{Type: "renew", Data: info}
+	case lease.Lost:
+		// THE ONE RULE THAT LOOKS LIKE A MISSING CASE. A Lost carrying
+		// ReasonStopped is this process cancelling its own manager --
+		// every CreateEndpoint one-shot ends with one, and so does
+		// every clean Leave. Emitting it would make a successful
+		// container start report a lease loss.
+		if ev.Reason == proto.ReasonStopped {
+			return Event{}, false, renewedAt
+		}
+		if ev.Reason == proto.ReasonNak {
+			out = Event{Type: "nak"}
+		} else {
+			out = Event{Type: "leasefail"}
+		}
+	case lease.Failed:
+		if ev.Reason == proto.ReasonNak {
+			out = Event{Type: "nak"}
+		} else {
+			out = Event{Type: "leasefail"}
+		}
+	default:
+		return Event{}, false, renewedAt
+	}
+	out.UnsafeValuesDropped = dropped
+	return out, true, renewedAt
 }
 
 // coalesceWindow is how close a Changed must follow a Renewed to be
