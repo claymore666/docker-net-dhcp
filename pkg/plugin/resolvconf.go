@@ -186,7 +186,7 @@ func writeContainerResolvConf(pid int, ctrID string, dns []string, searchList []
 	// nameserver line at all (#689).
 	dns = resolvSafe(dns)
 	searchList = resolvSafe(searchList)
-	if !dhcp.SafeDirectiveValue(searchDomain) {
+	if !dhcp.SafeValue(searchDomain) {
 		log.WithField("domain", fmt.Sprintf("%q", searchDomain)).
 			Warn("Dropping DHCP domain name: it carries a control character")
 		searchDomain = ""
@@ -282,7 +282,7 @@ func buildResolvConf(dns []string, searchList []string, searchDomain string) []b
 	// only available answer.
 	dns = resolvSafe(dns)
 	searchList = resolvSafe(searchList)
-	if !dhcp.SafeDirectiveValue(searchDomain) {
+	if !dhcp.SafeValue(searchDomain) {
 		searchDomain = ""
 	}
 	searchDomain, _ = dhcp.FirstSearchDomain(searchDomain)
@@ -314,7 +314,7 @@ func buildResolvConf(dns []string, searchList []string, searchDomain string) []b
 func resolvSafe(vals []string) []string {
 	out := vals[:0:0]
 	for _, v := range vals {
-		if v == "" || !dhcp.SafeDirectiveValue(v) {
+		if v == "" || !dhcp.SafeValue(v) {
 			log.WithField("value", fmt.Sprintf("%q", v)).
 				Warn("Dropping DHCP-supplied resolv.conf value: it carries a control character")
 			continue
