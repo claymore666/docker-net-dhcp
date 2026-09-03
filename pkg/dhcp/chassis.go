@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"net"
 	"runtime"
+	"sync/atomic"
 	"time"
 
 	"github.com/claymore666/dhcp-golib/lease"
@@ -295,7 +296,51 @@ type DHCPClient struct {
 	done    chan error
 	events  chan Event
 	manager string
+
+	// src is the library's event stream, taken once in Start. translate
+	// ranges over THIS rather than over c.client.Events() so that the
+	// goroutine can be driven without a socket: the wedge this field
+	// exists for (X-34) is a property of the goroutine and not of
+	// translateOne, and a test that cannot start the goroutine cannot
+	// see it. c.client stays nil on that path, which Stats() already
+	// tolerates.
+	src <-chan lease.Event
+
+	// dropped counts emits this client could not hand to the plugin
+	// because nothing was reading. See translate.
+	dropped atomic.Uint64
 }
+
+// eventBuffer is the depth of the channel translate emits on.
+//
+// DERIVED from the depth the chassis already asked the library for:
+// newLibClient sets EventBuffer to the same 16 below, so a burst the
+// library was willing to hold is a burst this side can hold too, and a
+// smaller number here would start dropping while the library was still
+// buffering. (The library's own fallback when nothing is configured is
+// 8 — lease/manager.go — so the 16 is this package's choice on both
+// sides of the seam, not an inherited default.) The base used 16 here
+// for the same reason.
+const eventBuffer = 16
+
+// newEventChan builds the channel translate emits on.
+//
+// A function and not an inline make, because the test that drives
+// translate has to obtain its channel from the SAME expression
+// production does. MEASURED: while the harness built its own
+// `make(chan Event, eventBuffer)`, a mutant that returned Start's
+// channel to unbuffered SURVIVED all three tests — they were holding a
+// depth they had chosen themselves.
+func newEventChan() chan Event { return make(chan Event, eventBuffer) }
+
+// DroppedEvents is how many translated events were discarded because
+// the plugin side had stopped reading.
+//
+// Exported so the drop can be ASSERTED rather than inferred from a log
+// line. A silent drop and a wedge look identical from outside the
+// package — both produce no event — and the whole of X-34 is that the
+// difference matters.
+func (c *DHCPClient) DroppedEvents() uint64 { return c.dropped.Load() }
 
 // NewDHCPClient prepares a persistent client. Nothing is opened until
 // Start: the socket must be created inside the sandbox namespace, and
@@ -328,7 +373,8 @@ func (c *DHCPClient) Start() (chan Event, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	c.cancel = cancel
 	c.done = make(chan error, 1)
-	c.events = make(chan Event)
+	c.events = newEventChan()
+	c.src = client.Events()
 
 	go func() { c.done <- client.Run(ctx) }()
 	go c.translate()
@@ -357,7 +403,7 @@ func (c *DHCPClient) translate() {
 	defer func() { c.opts.count(c.manager, c.Stats()) }()
 
 	renewedAt := time.Time{}
-	for ev := range c.client.Events() {
+	for ev := range c.src {
 		now := time.Now()
 		// Written before it is translated. The record is the thing a
 		// restart reads, and translateOne drops two kinds on the floor
@@ -370,7 +416,55 @@ func (c *DHCPClient) translate() {
 		if !emit {
 			continue
 		}
-		c.events <- out
+
+		// THE SEND MUST NOT BLOCK, AND THE LOOP MUST NOT STOP (X-34).
+		//
+		// The only reader is the per-family goroutine in
+		// pkg/plugin/dhcp_manager.go, and its other arm returns on
+		// stopChan and never reads this channel again. A bare send here
+		// parks this goroutine forever on the first event that arrives
+		// in that window — a Leave while a renewal is in flight, a
+		// plugin Close over every live endpoint, or the legacy
+		// dual-stack path where the v6 client refuses and closes
+		// stopChan under a live v4 client.
+		//
+		// WHICH LOSS THIS CHOOSES, AND WHY. A wedge loses far more than
+		// the event that caused it: the range never advances, so every
+		// LATER event is lost from the durable record too; deferred
+		// close(c.events) never runs, so the reader's own "stream
+		// closed" arm never fires; deferred count() never runs, and it
+		// is the only writer of this manager's wire counters (P-7's
+		// per-endpoint half), so a TICKED parity row silently produces
+		// nothing for the endpoint; and the goroutine and its client
+		// leak for the life of the daemon. A drop loses exactly one
+		// plugin-side event — one ledger row and its counter bumps —
+		// and nothing else: c.opts.record(ev) above has ALREADY written
+		// this event to the durable record, unconditionally, before the
+		// translation, so the record's tail is complete either way. The
+		// drop is strictly the smaller loss, and it is the loss the
+		// base chose too.
+		//
+		// WHAT THIS REPLACES. Base pkg/dhcp/client.go:819 made the
+		// channel `make(chan Event, 16)` and :839-840 sent through a
+		// select/default commented "A full channel drops events rather
+		// than blocking the DHCP exchange." The swap deleted both
+		// halves and named no replacement. This is that guard,
+		// restored, plus the half it never had: the base dropped
+		// SILENTLY, so a drop and a wedge were indistinguishable from
+		// outside. Every drop is counted on DroppedEvents() and logged
+		// at Warn.
+		select {
+		case c.events <- out:
+		default:
+			c.dropped.Add(1)
+			log.
+				WithField("record", c.opts.RecordID).
+				WithField("event", out.Type).
+				WithField("dropped_total", c.dropped.Load()).
+				Warn("The plugin stopped reading this endpoint's DHCP events; the event was " +
+					"dropped. The durable record still has it; the ledger row and counters for " +
+					"it are lost.")
+		}
 	}
 }
 
@@ -501,7 +595,7 @@ func newLibClient(iface string, params proto.Params, opts *DHCPClientOptions) (*
 		// Deep enough that a plugin busy elsewhere cannot make the
 		// manager drop an event on the floor; the manager counts a
 		// drop, but a dropped Acquired is an address nobody applies.
-		EventBuffer: 16,
+		EventBuffer: eventBuffer,
 	}
 
 	if opts.NetNS == nil {
