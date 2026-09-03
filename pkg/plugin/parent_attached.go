@@ -372,6 +372,12 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 		return res, explainChildLinkAdd(err, mode, opts.Parent, parent.Attrs().Index)
 	}
 
+	// Hoisted out of the closure so the failure path below can close
+	// the record it opened. A CREATED record whose CreateEndpoint
+	// failed holds no lease and so offers nothing to resume, but it is
+	// a line in an append-only file that nothing would ever remove.
+	var recordID string
+
 	if err := func() error {
 		// Reload to pick up the kernel-assigned MAC (macvlan) or the
 		// inherited parent MAC (ipvlan) if we didn't set one.
@@ -433,6 +439,17 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 		// client_id overrides the derived value.
 		clientID := resolveClientID(opts, r.EndpointID, mac)
 
+		// The CREATED record (D10). Identity is generated once, here,
+		// and written with the record: the option-61 value AS SENT,
+		// type byte included, because that is what the server files
+		// the lease under. The one-shot below writes its own events to
+		// this record, and the Join manager reads them back as an
+		// INIT-REBOOT rather than starting a fresh DISCOVER.
+		recordID = p.recordCreated(r.NetworkID, mac, dhcp.ClientIdentity(clientID))
+		p.updateJoinHint(r.EndpointID, func(hint *joinHint) {
+			hint.RecordID = recordID
+		})
+
 		runDHCP := func(v6 bool) error {
 			v6str := ""
 			if v6 {
@@ -454,14 +471,15 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 				FQDN:        opts.fqdnMode(),
 				ClientID:    clientID,
 				VendorClass: opts.VendorClass,
-				Broadcast:   mode == ModeIPvlan,
 				// MAC pins the dhcpcd DUID-LL/IAID so the one-shot and
 				// persistent clients share one identity (#152). NOTE:
 				// ipvlan-L2 slaves share the parent MAC, so v6 identity
 				// is not unique per endpoint in that mode — a known
 				// limitation for ipvlan+ipv6 (bridge/macvlan have unique,
 				// tombstone-preserved MACs).
-				MAC: mac,
+				MAC:      mac,
+				Records:  p.records,
+				RecordID: recordID,
 			}
 			if v6 {
 				base.PreferredV6 = requestedV6
@@ -523,6 +541,7 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 		// Roll back the child link if anything after LinkAdd failed.
 		// Best-effort: if LinkDel itself fails the kernel will reap the
 		// link with the netns soon enough.
+		p.closeRecord(recordID)
 		_ = netlink.LinkDel(link)
 		return res, err
 	}

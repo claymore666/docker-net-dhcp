@@ -81,6 +81,7 @@ LANE=(
   "docs drift|-|bash scripts/check-docs-drift.sh"
   "health contract|-|bash scripts/check-health-contract.sh"
   "plugin-set order|-|bash scripts/check-plugin-set-order.sh"
+  "plugin-set settings declared|-|bash scripts/check-plugin-set-settings.sh"
   "fuzz budget|-|bash scripts/check-fuzz-budget.sh"
   "upstream-blocker claims|-|bash scripts/check-upstream-blocker-claims.sh"
   "version pins|-|bash scripts/check-version-pins.sh"
@@ -123,6 +124,7 @@ LANE=(
   "shard-balance table|-|bash scripts/check-durations-table.sh"
   "golden fixture keying|go|bash scripts/check-golden-fixture-name-keyed.sh"
   "test/policy-gates split|-|bash scripts/check-test-job-purity.sh"
+  "library copy vs manifest|-|bash scripts/check-dhcp-golib-copy.sh"
   # The lane checks itself: if test.yaml gains a gate this file does
   # not list, a local run says so instead of quietly covering less.
   "local-lane coverage|-|bash scripts/check-local-lane.sh"

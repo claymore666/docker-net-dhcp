@@ -6,18 +6,6 @@ BINARY = bin/net-dhcp
 
 PLUGIN_COVER_TAG ?= golang-cover
 
-# Outage-watchdog cadence for locally built / test plugins (#278). The
-# shipped defaults are 30s/25s; the failure suite pays them on top of a
-# fixture lease it cannot shorten below dnsmasq's 2-minute floor, so a
-# tighter cadence buys back most of that wait. The grace stays well
-# above a healthy client's acquisition time — drop it near zero and
-# ordinary start-up registers as an outage.
-#
-# These are set on locally created plugins only. Released images carry
-# config.json's defaults, and nothing here reaches them.
-TEST_OUTAGE_TICK ?= 2s
-TEST_OUTAGE_GRACE ?= 10s
-
 .PHONY: all debug build create enable disable pdebug push clean check integration-test \
         integration-test-failure integration-test-shard integration-local integration-cleanup \
         build-cover plugin-cover create-cover enable-cover disable-cover capture-fixtures \
@@ -57,8 +45,7 @@ plugin: plugin/rootfs config.json
 create: plugin
 	docker plugin rm -f $(PLUGIN_NAME):$(PLUGIN_TAG) || true
 	docker plugin create $(PLUGIN_NAME):$(PLUGIN_TAG) $<
-	docker plugin set $(PLUGIN_NAME):$(PLUGIN_TAG) LOG_LEVEL=trace \
-	    OUTAGE_TICK=$(TEST_OUTAGE_TICK) OUTAGE_GRACE=$(TEST_OUTAGE_GRACE)
+	docker plugin set $(PLUGIN_NAME):$(PLUGIN_TAG) LOG_LEVEL=trace
 
 # STATE_DIR is bind-mounted from the host (#440) and the daemon does not
 # create a missing bind source, so enabling without it fails with an OCI
@@ -113,8 +100,7 @@ create-cover: plugin-cover
 	    config-cover.json | xargs -r mkdir -p
 	docker plugin rm -f $(PLUGIN_NAME):$(PLUGIN_COVER_TAG) || true
 	docker plugin create $(PLUGIN_NAME):$(PLUGIN_COVER_TAG) $<
-	docker plugin set $(PLUGIN_NAME):$(PLUGIN_COVER_TAG) LOG_LEVEL=trace \
-	    OUTAGE_TICK=$(TEST_OUTAGE_TICK) OUTAGE_GRACE=$(TEST_OUTAGE_GRACE)
+	docker plugin set $(PLUGIN_NAME):$(PLUGIN_COVER_TAG) LOG_LEVEL=trace
 
 enable-cover:
 	docker plugin enable $(PLUGIN_NAME):$(PLUGIN_COVER_TAG)
@@ -235,11 +221,18 @@ integration-test:
 #
 # 20m, not 15m (#278): each test waits for the persistent client's own
 # bind BEFORE killing the server, so the outage it injects has to be
-# detected the slow way — a bound 2m lease lapsing, plus the watchdog
-# grace and up to one tick. TEST_OUTAGE_* above trims the plugin-side
-# part of that; the 2m lease floor is dnsmasq's and stays (#356). The
-# ceiling is kept sized for the shipped 30s/25s cadence so the suite
-# still passes against a default-configured plugin.
+# detected the slow way — a bound 2m lease lapsing. The 2m lease floor
+# is dnsmasq's and stays (#356).
+#
+# 2.0 REMOVED THE KNOBS THAT USED TO TRIM THIS. The outage watchdog went
+# with dhcpcd: dhcp_timeouts is re-sourced from the library's
+# Failed{ReasonNoServer}, which arrives when the protocol machine gives
+# up rather than on a timer, so there is no plugin-side cadence left to
+# shorten. The two test variables here, and the settings they fed, went
+# with it — and a `docker plugin set` naming a setting the manifest does
+# not declare is refused by the daemon outright, which is how their
+# absence was found. The ceiling stays 20m: it was already sized for the
+# shipped cadence, so it was never the tight side of this budget.
 # One shard of the main suite (#381). SHARD is 1-based, OF is the total.
 #
 # The partition comes from scripts/integration-shard.sh, which balances

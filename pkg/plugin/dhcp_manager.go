@@ -56,161 +56,36 @@ const dhcpClientFinishTimeout = 5 * time.Second
 // we log and skip — the next renewal will retry.
 const dnsPropagateTimeout = 2 * time.Second
 
-// dhcpOutageTick / dhcpOutageGrace drive the DHCP-outage watchdog.
+// NO OUTAGE WATCHDOG, AND WHAT COUNTS dhcp_timeouts NOW.
 //
-// busybox udhcpc ran the handler with "leasefail" on every failed
-// acquisition/renewal cycle, so dhcp_timeouts climbed steadily while a
-// DHCP server was unreachable. dhcpcd gives us nothing equivalent, and
-// it gives us less than this comment used to claim (#353): under
-// `--noconfigure` it does not even fire EXPIRE when a bound lease
-// lapses. So we synthesise the recurring signal ourselves — a ticker
-// asks outageTracker, on each tick, whether this client is currently
-// being served. The grace is the settling time before the first tick
-// counts, so a single slow exchange doesn't register as an outage.
+// A ticker used to ask an outageTracker, every 30 seconds, whether this
+// client was still being served, because dhcpcd under `--noconfigure`
+// announced nothing when a bound lease lapsed (#353): no EXPIRE, and a
+// RELEASE indistinguishable from a graceful stop. The recurring signal
+// had to be synthesised from a lease lifetime and a clock.
 //
-// The tick is also the resolution of the signal: dhcp_timeouts climbs
-// about once per tick for as long as the outage lasts.
+// The library reports it directly. Its state machine owns the
+// retransmission schedule and the T1/T2/expiry timers, and it emits
+// Failed{ReasonNoServer} when an attempt runs out of retries — which
+// the chassis translates to "leasefail" and handleEvent counts as
+// dhcp_timeouts, per attempt, for as long as the outage lasts. That is
+// the same signal busybox udhcpc gave and dhcpcd took away, back from
+// the client that actually knows.
 //
-// Both are overridable per-plugin (OUTAGE_TICK / OUTAGE_GRACE, see
-// Options) because these two numbers are the only part of outage
-// detection that is ours: the rest of the wait is the DHCP lease, and
-// the integration fixture's lease has a hard 2-minute floor imposed by
-// dnsmasq (#356). Lowering them is what makes the failure suite
-// affordable. The defaults are the production values and are what any
-// deployment that doesn't set the variables gets.
-const defaultOutageTick = 30 * time.Second
-const defaultOutageGrace = 25 * time.Second
-
-// minOutageTick floors the ticker period. time.NewTicker panics on a
-// non-positive duration, so a misconfigured OUTAGE_TICK must never
-// reach it; this also stops a near-zero value from spinning the
-// watchdog goroutine.
-const minOutageTick = 100 * time.Millisecond
-
-// outageCadence returns the tick and grace this manager's watchdog
-// should use. m.plugin is nil in unit tests that drive a manager
-// directly, and a zero field means "not configured", so both fall back
-// to the production defaults.
-func (m *dhcpManager) outageCadence() (tick, grace time.Duration) {
-	tick, grace = defaultOutageTick, defaultOutageGrace
-	if m.plugin != nil {
-		if m.plugin.outageTick > 0 {
-			tick = m.plugin.outageTick
-		}
-		if m.plugin.outageGrace > 0 {
-			grace = m.plugin.outageGrace
-		}
-	}
-	if tick < minOutageTick {
-		tick = minOutageTick
-	}
-	return tick, grace
-}
-
-// outageTracker decides when a persistent client counts as "no longer
-// getting DHCP service". It is a plain value with no clock of its own —
-// the caller supplies `now` — so the whole state machine is unit
-// testable without waiting out real DHCP timers.
+// Three things went with the watchdog and are named here because each
+// was load-bearing for something:
 //
-// It has two independent triggers, and the second one is why this type
-// exists (#353):
-//
-//   - the client is ACQUIRING (never bound, or bound then told the lease
-//     was lost) and has stayed that way past the grace;
-//   - the client believes it is bound, but the deadline the server
-//     itself handed us has passed with no bound/renew in between.
-//
-// The first trigger was the original design. It assumed dhcpcd would
-// announce a lapsed lease via an EXPIRE hook, flipping the client into
-// the acquiring state. It does not: under `--noconfigure` a lapsed
-// lease is reported as RELEASE (see pkg/dhcp.mapReason), which is
-// indistinguishable from a graceful stop and so cannot be counted. With
-// only the first trigger the watchdog was inert in exactly the scenario
-// it was written for — a bound endpoint whose server disappears — and
-// dhcp_timeouts stayed at zero through a total outage.
-//
-// The second trigger needs nothing from dhcpcd but the lease it already
-// reported at bind time. It does not false-positive on a healthy
-// client: a client that is being served gets a fresh lease (as a REBIND
-// at T2, see leaseDeadline) before the previous one runs out, and that
-// restarts the deadline. That holds only because the deadline is never
-// cut below the client's own rebind — see maxRenewableLease for what
-// went wrong when it was, and for the one case where a substituted
-// deadline can fire on a server that is in fact answering: a
-// "permanent" lease, from which the client never contacts the server
-// again, so there is nothing to distinguish an outage from silence.
-type outageTracker struct {
-	acquiring      bool
-	acquiringSince time.Time
-
-	// lastAffirmed is when the server last proved it was answering
-	// (bound/renew); lapseAfter is how long after that the lease runs
-	// out. Zero lapseAfter = the server told us no lifetime, so no
-	// deadline is enforced and only the acquiring trigger applies.
-	lastAffirmed time.Time
-	lapseAfter   time.Duration
-}
-
-// newOutageTracker starts in the acquiring state: a freshly started
-// persistent client has not confirmed its own lease yet.
-func newOutageTracker(now time.Time) outageTracker {
-	return outageTracker{acquiring: true, acquiringSince: now}
-}
-
-// leaseDeadline is how long after a confirmed lease the client must have
-// been served again before we call it an outage: the full lease, which
-// is the last instant the address is even valid.
-//
-// Not T1, and not any fraction of the lease. Under `--noconfigure` the
-// interface carries no address, so dhcpcd's T1 unicast renewal cannot
-// succeed and every renewal lands at T2 as a broadcast rebind — a
-// T1-derived deadline would fire on healthy clients. The lease is the
-// one instant that needs no assumption about which retry succeeded.
-// Zero when the server supplied no lifetime, in which case no deadline
-// is enforced at all.
-//
-// A lifetime the client will never renew from is replaced by
-// maxLeaseDeadline, and that is reported. The substitution is on the
-// DEADLINE only: data.LeaseSeconds still reaches the log and the ledger
-// unchanged, because the anomaly is the thing worth seeing and
-// rewriting it would hide it. See maxRenewableLease for which lifetimes
-// qualify, and why applying it to every long lease is worse than not
-// having it.
-func leaseDeadline(data dhcp.Info) (time.Duration, bool) {
-	// This guard is for the READER, not for behaviour, and narrowing it
-	// to `< 0` is an EQUIVALENT change rather than a bug: 0 would fall
-	// through, fail `0 > maxOption51Seconds`, and reach
-	// clampLeaseDeadline(0), which returns (0, false) — the same pair
-	// this line returns. There is no input that distinguishes the two,
-	// so no test can pin it and any test written to try would be
-	// asserting nothing. Kept because "no lifetime" and "a lifetime we
-	// clamped to zero" are different statements about the server, and
-	// saying which one this is here costs nothing.
-	if data.LeaseSeconds <= 0 {
-		return 0, false
-	}
-	if data.LeaseSeconds > maxOption51Seconds {
-		// Option 51 is four octets, so no DHCP server can have sent
-		// this. LeaseSeconds is an int decoded from the hook's JSON, and
-		// time.Duration counts NANOSECONDS: multiplying a large enough
-		// value by time.Second wraps, and a NEGATIVE duration reaches
-		// `due` as lapseAfter <= 0, which means "no deadline is
-		// enforced". A garbage lifetime would then switch the watchdog
-		// off silently — the same outcome as the 0xFFFFFFFF lease this
-		// clamp exists for, reached by arithmetic instead of by a value
-		// on the wire, and with nothing counted.
-		//
-		// Treated as permanent, so the failure direction is an armed
-		// watchdog and a counter rather than a disarmed one.
-		return maxLeaseDeadline, true
-	}
-	return clampLeaseDeadline(time.Duration(data.LeaseSeconds) * time.Second)
-}
-
-// maxOption51Seconds is the widest value DHCP's IP Address Lease Time
-// option can carry: four octets, so 0xFFFFFFFF. dhcpcd exports it
-// verbatim, and it is the conventional encoding for "permanent".
-const maxOption51Seconds = 0xFFFFFFFF
+//   - outageTracker's lease deadline. The library holds the lease and
+//     drives its own expiry; there is no second party guessing when a
+//     lease lapsed from a lifetime it was told once.
+//   - clampLeaseDeadline and lease_time_clamped. Option 51's 0xFFFFFFFF
+//     is an INFINITE lease, and the library represents it as a zero
+//     Expire (seam D-10) rather than as 4294967295 seconds. There is no
+//     nanosecond multiplication to overflow into a negative duration,
+//     so there is no clamp, so there is nothing to count.
+//   - OUTAGE_TICK / OUTAGE_GRACE. They existed to make the failure
+//     suite affordable by shortening a synthetic cadence. There is no
+//     synthetic cadence.
 
 // noteDNSPropagationPIDMismatch counts a DNS propagation refused because
 // the PID it resolved turned out not to belong to the container it was
@@ -259,91 +134,6 @@ func (m *dhcpManager) noteDNSPropagationPIDMismatch(err error) {
 	m.plugin.dnsPropagationPIDMismatches.Add(1)
 }
 
-// observeLease folds one client event into the tracker and counts the
-// clamp if there was one.
-//
-// The pairing lives here rather than at the event-loop call site for the
-// same reason the netns mismatch counter moved inside its opener: a
-// caller cannot fold an event into the tracker without going through
-// this method, so a future path cannot observe a clamp and forget to
-// count it. The event loop needs a live dhcpcd to reach, so three lines
-// there are three lines nothing can assert — which is exactly how
-// lease_time_clamped came to be documented, exposed on /metrics, and
-// read by no test at all.
-//
-// The nil check is on plugin, not on the clamp: unit tests that do not
-// drive lease events pass a nil plugin (see dhcpManager.plugin), and a
-// clamp is still worth logging when there is no counter to bump.
-func (m *dhcpManager) observeLease(o *outageTracker, event dhcp.Event, now time.Time, v6 bool) {
-	if !o.observe(event.Type, event.Data, now) {
-		return
-	}
-	if m.plugin != nil {
-		m.plugin.leaseTimeClamped.Add(1)
-	}
-	log.
-		WithFields(m.logFields(v6)).
-		WithField("lease_seconds", event.Data.LeaseSeconds).
-		WithField("deadline", maxLeaseDeadline).
-		Warn("DHCP lease lifetime too long to use as an outage deadline; clamped for the watchdog only")
-}
-
-// observe folds one client event into the tracker, reporting whether the
-// lease lifetime it carried had to be clamped to stay usable as a
-// deadline (see leaseDeadline).
-func (o *outageTracker) observe(eventType string, data dhcp.Info, now time.Time) (clamped bool) {
-	prev := o.acquiring
-	o.acquiring = nextAcquiring(prev, eventType)
-	if o.acquiring && !prev {
-		// Just lost the lease: restart the grace so the first post-loss
-		// timeout isn't counted until a full interval of continued failure.
-		o.acquiringSince = now
-	}
-	// A bound/renew is the ONLY proof the server answered, so it is the
-	// only thing that restarts the deadline. A NAK must not: it leaves
-	// the acquiring state alone and is a refusal, not service.
-	if eventType == "bound" || eventType == "renew" {
-		o.lastAffirmed = now
-		o.lapseAfter, clamped = leaseDeadline(data)
-	}
-	return clamped
-}
-
-// due reports whether this tick counts a DHCP timeout, and whether it is
-// the tick that first noticed a silently-lapsed lease — worth saying
-// differently in the log, because nothing failed audibly: the renewal
-// simply never happened.
-func (o *outageTracker) due(now time.Time, grace time.Duration) (count, silentLapse bool) {
-	if o.acquiring {
-		return now.Sub(o.acquiringSince) >= grace, false
-	}
-	if o.lapseAfter <= 0 || now.Sub(o.lastAffirmed) < o.lapseAfter+grace {
-		return false, false
-	}
-	// Deadline blown with no bound/renew in between. dhcpcd may never say
-	// so out loud, so say it here and drop into the recurring acquiring
-	// state from now on.
-	o.acquiring = true
-	o.acquiringSince = now
-	return true, true
-}
-
-// nextAcquiring returns the post-event acquisition state. A bound/renew
-// means we hold a lease (not acquiring); a leasefail (dhcpcd EXPIRE /
-// TIMEOUT) drops us back to acquiring. Other event types (nak) leave the
-// state unchanged — a NAK is usually followed immediately by a fresh
-// bound, and EXPIRE is the authoritative "lease lost" signal.
-func nextAcquiring(prev bool, eventType string) bool {
-	switch eventType {
-	case "bound", "renew":
-		return false
-	case "leasefail":
-		return true
-	default:
-		return prev
-	}
-}
-
 // closeNsHandle / closeNetHandle log close errors at Debug instead of
 // silently dropping them. Cleanup paths can't act on a Close failure
 // (we're already on an error path or shutting down), but a recurring
@@ -384,6 +174,18 @@ type dhcpManager struct {
 	ipMu     sync.Mutex
 	lastIP   *netlink.Addr
 	lastIPv6 *netlink.Addr
+
+	// recordID is the durable lease record this manager writes to.
+	// Empty means there is none — a unit-test manager, or an endpoint
+	// adopted from Docker's view with no record behind it — and every
+	// record call is a no-op then.
+	recordID string
+
+	// policyRestricted is whether this client was started against an
+	// operator-named allow-list. Captured at setupClient rather than
+	// re-resolved where it is read, so the counter cannot describe a
+	// policy the client is not running under.
+	policyRestricted bool
 
 	// boundV4 records that the persistent v4 client actually took
 	// ownership of the binding, i.e. that it reached a bound/renew.
@@ -919,11 +721,14 @@ func (m *dhcpManager) reconcileDefaultRoute(v6 bool, info dhcp.Info) error {
 
 	newGateway := net.ParseIP(info.Gateway)
 	if newGateway == nil {
-		// Belt and braces with the refusal in BuildEvent (#728). The
-		// two are not redundant: that one runs in the dhcpcd hook, a
-		// different process, and this function is also reached by any
-		// future caller that builds an Info without going through the
-		// hook at all -- the recovery and replay paths already do.
+		// #728's second guard, and since 2.0 its only one. The first
+		// lived in pkg/dhcp.BuildEvent, which parsed dhcpcd's hook
+		// environment in a separate process; there is no hook and no
+		// second process now, and the library hands over a parsed
+		// netip.Addr rather than a string. What is left is this
+		// function's own obligation, which it always had: it is
+		// reached by callers that build an Info without a server
+		// exchange at all -- the recovery and replay paths do.
 		//
 		// Nil is the dangerous value precisely because netlink accepts
 		// it. `Gw: nil` is not "no change", it is `default dev ethX
@@ -1164,8 +969,14 @@ func (m *dhcpManager) handleEvent(event dhcp.Event, v6 bool) {
 			WithField("search", event.Data.SearchList).
 			Info("DHCPv6 configuration received without an address")
 	case "leasefail":
+		// dhcp_timeouts, from the library's Failed{ReasonNoServer}
+		// rather than from a ticker. Through countOutageTick, because
+		// dhcp_server_policy_timeouts is defined as a STRICT SUBSET of
+		// this counter and a relationship between two counters is not
+		// something a comment can hold — it has to be written by one
+		// function a test can call twice.
 		if m.plugin != nil {
-			bumpFamily(&m.plugin.dhcpTimeoutsV4, &m.plugin.dhcpTimeoutsV6, v6)
+			m.countOutageTick(v6, m.policyRestricted)
 		}
 		log.WithFields(m.logFields(v6)).Warn("dhcp failed to get a lease")
 	case "nak":
@@ -1186,29 +997,44 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 		WithFields(m.logFields(v6)).
 		Info("Starting persistent DHCP client")
 
-	// On plugin-restart recovery the persistent client should ask the
-	// DHCP server for the IP the container is already using, instead
-	// of doing a fresh DISCOVER that might return something different.
-	// In the normal CreateEndpoint -> Join path lastIP / lastIPv6
-	// already point at the IP we just acquired; passing it via the
-	// dhcpcd `request` directive (DHCP option 50) is a no-op (server
-	// still ACKs the same address). On recovery it's
-	// what makes the lease "sticky".
+	// WHAT THIS MANAGER MAY ASK THE SERVER FOR, and the difference
+	// between the two answers is a whole RFC section.
+	//
+	// The record holds the lease the CreateEndpoint one-shot won, or
+	// the one a previous plugin process was renewing. If it is still
+	// unexpired, the first packet on the wire is an INIT-REBOOT
+	// DHCPREQUEST (RFC 2131 section 4.4.2): the server confirms the
+	// address or NAKs, and the container keeps the IP it had across a
+	// plugin restart instead of being handed a new one. If the record
+	// only PREFERS an address — a tombstone's, or a lapsed lease's —
+	// that goes out as option 50 in an ordinary DHCPDISCOVER, which a
+	// server may ignore (section 4.4.1 makes it a MAY).
+	//
+	// The two are never both set: the library's Record.Prefer refuses
+	// whatever Record.Resume answers.
+	//
+	// lastIPs() is the fallback for an endpoint with no record at all —
+	// one adopted from Docker's own view during recovery. It is what
+	// this function did for every endpoint before the record existed,
+	// and it is strictly weaker: Docker knows the address and nothing
+	// about the lease behind it, so there is no expiry to decide
+	// whether an INIT-REBOOT is even legal.
 	requestedIP := ""
 	preferredV6 := ""
+	var resumption dhcp.Resumption
 	if !v6 {
-		if v4Addr, _ := m.lastIPs(); v4Addr != nil && v4Addr.IP != nil {
-			requestedIP = v4Addr.IP.String()
+		m.recordID, resumption = m.resumeFromRecord()
+		requestedIP = resumption.Prefer
+		if resumption.Lease == nil && requestedIP == "" {
+			if v4Addr, _ := m.lastIPs(); v4Addr != nil && v4Addr.IP != nil {
+				requestedIP = v4Addr.IP.String()
+			}
 		}
-	} else {
-		// Same stickiness for v6: on recovery ask for the IA_NA address
-		// the container already holds (lastIPv6 is seeded from the
-		// recovered state) rather than risk a fresh one. In the normal
-		// create->Join path it's a no-op — dhcpcd's pinned IA already
-		// returns the same address (#213).
-		if _, v6Addr := m.lastIPs(); v6Addr != nil && v6Addr.IP != nil {
-			preferredV6 = v6Addr.IP.String()
-		}
+	} else if _, v6Addr := m.lastIPs(); v6Addr != nil && v6Addr.IP != nil {
+		// IPv6 is refused at CreateNetwork in the beta; this branch is
+		// reachable only for a network created by an earlier build,
+		// and pkg/dhcp refuses it loudly a few lines below.
+		preferredV6 = v6Addr.IP.String()
 	}
 	// The persistent client gets the WHOLE allowed set, not the single
 	// tier that won acquisition: it must still be able to rebind after
@@ -1228,12 +1054,11 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 	allowServers, denyServers := clientServerLists(pol, v6)
 
 	// Whether THIS client is restricted to an operator-named server
-	// list. Captured here rather than re-resolved in the watchdog
-	// goroutine below, which outlives these locals: a second
-	// resolveServerPolicy could disagree with what the client was
-	// actually started with, and then the counter would describe a
-	// policy that is not in force.
-	policyRestricted := len(allowServers) > 0
+	// list. Captured on the manager rather than re-resolved where it is
+	// read: a second resolveServerPolicy could disagree with what the
+	// client was actually started with, and the counter would then
+	// describe a policy that is not in force.
+	m.policyRestricted = len(allowServers) > 0
 
 	client, err := dhcp.NewDHCPClient(m.ctrLink.Attrs().Name, &dhcp.DHCPClientOptions{
 		Hostname:     m.hostname,
@@ -1242,41 +1067,30 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 		FQDN:         m.opts.fqdnMode(),
 		V6:           v6,
 		NetNS:        &m.nsHandle,
-		// Put the container's KERNEL in charge of Router Advertisement
-		// processing and keep dhcpcd from turning it off again (#875).
-		//
-		// v6 only, and only here: this is the persistent client, the one
-		// that runs inside the container's network namespace. The
-		// CreateEndpoint one-shot runs against a link that is still in
-		// the HOST namespace, where these values are the host's business
-		// and not ours -- pkg/dhcp refuses the combination rather than
-		// trusting this comment.
-		//
-		// DHCPv6 carries no router (RFC 8415 §21) and an assigned
-		// address does not imply an on-link prefix (RFC 5942 §4 rule 1,
-		// RFC 8415 §18.2.10.1), so advertisement processing is mandatory
-		// on THIS path too, not only on a stateless one.
-		HonorRouterAdverts: v6,
-		// Same MAC the CreateEndpoint one-shot used (this is the same
-		// link, moved into the netns), so dhcpcd derives the identical
-		// DUID-LL/IAID and the persistent client renews the very lease
+		// Same MAC the CreateEndpoint one-shot used — this is the same
+		// link, moved into the netns — so the chaddr and the derived
+		// client-id are identical and the server renews the very lease
 		// Docker was told about (#152).
 		MAC:         m.ctrLink.Attrs().HardwareAddr,
 		RequestedIP: requestedIP,
 		PreferredV6: preferredV6,
-		// ipvlan slaves share the parent's MAC; without a broadcast
-		// reply the server may unicast renewals to the parent and the
-		// kernel has no way to demux to the right slave. Requesting the
-		// broadcast flag in ipvlan mode keeps lease lifecycle stable.
-		// NOTE: dhcpcd broadcast handling is not yet wired in the client
-		// (DHCPClientOptions.Broadcast, #243) — this flag is set for the
-		// ipvlan path but currently has no effect.
-		Broadcast: m.opts.effectiveMode() == ModeIPvlan,
+		// The record's unexpired lease, which makes the first packet an
+		// INIT-REBOOT rather than a DISCOVER. nil is the ordinary
+		// CreateEndpoint -> Join path having found nothing to resume.
+		Resume:   resumption.Lease,
+		Records:  m.recordStore(),
+		RecordID: m.recordID,
+		// No Broadcast option: the library sets the BROADCAST flag of
+		// RFC 2131 section 2 by default and the chassis no longer
+		// overrides it. The ipvlan reason this used to name (#243 --
+		// slaves share the parent MAC, so a unicast renewal cannot be
+		// demuxed to the right slave) is real and is now covered as a
+		// special case of the general one: every mode runs on a raw
+		// AF_PACKET socket. See the note in pkg/dhcp/params.go.
 		// Same client-id the initial DISCOVER used in CreateEndpoint, so
 		// renewals are seen as the same client by the server. Derived
 		// from the MAC the one-shot ran under rather than from the link
-		// in hand, so this and the orphan-release path cannot drift
-		// apart (#371). Honours the operator's client_id override.
+		// in hand (#371). Honours the operator's client_id override.
 		ClientID:    m.clientID(),
 		VendorClass: m.opts.VendorClass,
 	})
@@ -1294,59 +1108,35 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 	// the goroutine here would block forever on the final write below.
 	errChan := make(chan error, 1)
 	go func() {
-		// DHCP-outage watchdog: dhcpcd emits no per-attempt failure hook,
-		// so synthesise the recurring dhcp_timeouts signal busybox gave us
-		// (see dhcpOutageTick). "acquiring" starts true — the persistent
-		// client has not confirmed its own lease yet — and flips with each
-		// bound/renew/leasefail event.
-		tracker := newOutageTracker(time.Now())
-		outageTick, outageGrace := m.outageCadence()
-		ticker := time.NewTicker(outageTick)
-		defer ticker.Stop()
-
 		for {
 			select {
-			case <-ticker.C:
-				if count, silentLapse := tracker.due(time.Now(), outageGrace); count {
-					if m.plugin != nil {
-						m.countOutageTick(v6, policyRestricted)
-					}
-					msg := "DHCP server still unreachable; lease not (re)acquired"
-					if silentLapse {
-						// The distinction matters when reading a log after
-						// the fact: this one means dhcpcd never reported a
-						// failure at all — the lease's own deadline is what
-						// exposed the outage (#353).
-						msg = "DHCP lease passed its renewal deadline with no server response; treating the server as unreachable"
-					}
-					log.
-						WithFields(m.logFields(v6)).
-						Warn(msg)
-				}
-
 			case event, ok := <-events:
 				if !ok {
-					// dhcpcd exited on its own (NAK, parent NIC vanished,
-					// container netns torn down out from under us, etc.).
-					// The scanner goroutine in dhcp.Start closes events
-					// when its read pipe hits EOF. Without this branch,
-					// `<-events` on a closed channel returns the zero
-					// Event{} every iteration, the switch matches nothing,
-					// and we burn a CPU thread forever.
+					// The manager returned on its own: the link went
+					// away, the sandbox was torn down under it, or Run
+					// hit an error it could not continue from. The
+					// chassis closes this channel when its translate
+					// goroutine ends. Without this branch a receive on
+					// a closed channel returns the zero Event every
+					// iteration, the switch matches nothing, and this
+					// goroutine spins a core forever.
 					log.
 						WithFields(m.logFields(v6)).
-						Warn("dhcp event stream closed; client process exited")
+						Warn("dhcp event stream closed; the renewal client stopped")
 
-					// Reap the child so it doesn't linger as a zombie:
-					// cmd.Wait must be called exactly once per process,
-					// and Stop's Finish path won't run if the consumer
-					// returned first.
+					// Wait is not a reap any more — there is no child
+					// process to leave a zombie — but it is still the
+					// only thing that says Run has RETURNED, and the
+					// AF_PACKET socket is closed there. Leave without
+					// it and a Join for the next container can open a
+					// second client on the same interface while this
+					// one is still on it.
 					reapCtx, reapCancel := context.WithTimeout(context.Background(), dhcpClientReapTimeout)
 					if err := client.Wait(reapCtx); err != nil {
 						log.
 							WithError(err).
 							WithFields(m.logFields(v6)).
-							Debug("dhcp reap returned error")
+							Debug("waiting for the renewal client returned an error")
 					}
 					reapCancel()
 
@@ -1357,7 +1147,6 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 					errChan <- nil
 					return
 				}
-				m.observeLease(&tracker, event, time.Now(), v6)
 				m.handleEvent(event, v6)
 
 			case <-m.stopChan:

@@ -398,6 +398,43 @@ else
     bad "could not build mutant C; case 11 is unverified"
 fi
 
+# --- the pinned-library exemption (D21) -------------------------------
+#
+# internal/dhcp-golib/ is a copy of another repository at a fixed SHA,
+# linted in that repository's own lane. Its build tags are not this
+# repo's obligation, and editing a file there to satisfy this gate
+# would falsify internal/dhcp-golib/SOURCE. Three cases, one per way an
+# exemption goes wrong.
+SHAPE=bare
+go_vendored() {
+    mkdir -p "$R/internal/dhcp-golib/runtime"
+    printf '//go:build %s\n\npackage runtime\n\nfunc C() {}\n' "$1" \
+        > "$R/internal/dhcp-golib/runtime/tagged.go"
+}
+
+# 1. It applies: a term carried ONLY by the pinned copy is not a gap.
+repo v1; go_plain; go_tagged integration; go_vendored linux; wf_both; track
+chk "a build tag carried only by the pinned library copy is not a gap" "$(rc)" "0"
+
+# 2. It is anchored at the repository root. The same directory name
+#    deeper in the tree is this repo's own source and still counts.
+repo v2; go_plain; wf_both; track
+mkdir -p "$R/pkg/internal/dhcp-golib"
+printf '//go:build linux\n\npackage x\n\nfunc D() {}\n' > "$R/pkg/internal/dhcp-golib/t.go"
+track
+chk "the same path deeper in the tree is NOT exempt" "$(rc)" "1"
+
+# 3. A universal gate is satisfied by emptying its domain. If every Go
+#    file were exempt this gate would report full coverage having read
+#    none, so it must refuse: exit 2 is "cannot see", not "clean".
+repo v3; wf_both; go_vendored linux; track
+chk "a tree whose only Go files are exempt is a refusal, not a pass" "$(rc)" "2"
+
+# And the exemption is ANNOUNCED, on a run that passed: an exemption a
+# green run does not mention is one nobody re-examines.
+repo v4; go_plain; go_tagged integration; go_vendored linux; wf_both; track
+says "the exempt count is announced on a passing run" "not inspected here"
+
 # UNMUTATED CONTROL. A mutant that fails to run at all produces the same
 # verdict as one that runs and behaves differently.
 for SHAPE in bare named block; do

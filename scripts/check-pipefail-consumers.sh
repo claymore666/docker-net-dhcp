@@ -127,10 +127,38 @@ fi
 # gate is meant to be useful, and never showed in CI, where a fresh
 # checkout makes tracked and present mean the same thing. Same argument
 # and same fix as check-license-headers.sh:74.
-mapfile -t FILES < <({
+mapfile -t ALL < <({
     git -C "$ROOT" ls-files -- '*.sh'
     git -C "$ROOT" ls-files --others --exclude-standard -- '*.sh'
 } | sort -u)
+
+# THE PINNED LIBRARY COPY IS NOT THIS REPO'S SOURCE (D21).
+#
+# internal/dhcp-golib/ is a copy of ONE COMMIT of
+# github.com/claymore666/dhcp-golib, made by scripts/sync-dhcp-golib.sh
+# and named by the SHA in internal/dhcp-golib/SOURCE. Editing a file in
+# it to satisfy a gate here would falsify that SOURCE line -- the copy
+# would no longer be the commit it claims to be -- and the next sync
+# would revert the edit without saying so. The library carries this
+# same class of check in its own lane, over its own tree.
+#
+# So its files are SKIPPED, and the skip is COUNTED AND ANNOUNCED on
+# every run, pass or fail: an exemption a green run does not mention is
+# an exemption nobody re-examines. The directory goes away at M9 with
+# the published module and the count falls to zero on its own.
+VENDORED_PREFIX="${PIPE_VENDORED_PREFIX:-internal/dhcp-golib/}"
+FILES=()
+skipped=0
+for f in "${ALL[@]}"; do
+    case "$f" in
+        "$VENDORED_PREFIX"*) skipped=$((skipped + 1)) ;;
+        *) FILES+=("$f") ;;
+    esac
+done
+if [ "$skipped" -ne 0 ]; then
+    echo "note: $skipped shell file(s) under $VENDORED_PREFIX not inspected here;" \
+         "that tree is a pinned copy of another repository and is checked in its own lane."
+fi
 
 if [ "${#FILES[@]}" -eq 0 ]; then
     echo "::error title=Nothing to inspect::no *.sh files in $ROOT." \

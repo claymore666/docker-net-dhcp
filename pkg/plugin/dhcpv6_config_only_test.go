@@ -9,7 +9,6 @@ import (
 	"reflect"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	log "github.com/sirupsen/logrus"
 	logtest "github.com/sirupsen/logrus/hooks/test"
@@ -75,48 +74,6 @@ func TestHandleEvent_ConfigHasNoFamilySplit(t *testing.T) {
 func TestHandleEvent_ConfigWithNilPluginIsSafe(t *testing.T) {
 	m := &dhcpManager{plugin: nil}
 	m.handleEvent(dhcp.Event{Type: "config", Data: dhcp.Info{DNSServers: []string{"2001:db8::53"}}}, true)
-}
-
-// The outage watchdog derives "are we currently trying to get a lease?"
-// from the event stream. An information reply proves the server is
-// reachable; it does NOT prove we hold a lease. If it were treated as
-// one, a network that answers information requests and hands out no
-// addresses would look healthy forever and dhcp_timeouts would never
-// move — the precise failure #816 describes.
-func TestOutageTracker_ConfigDoesNotAffirmALease(t *testing.T) {
-	now := time.Now()
-	o := &outageTracker{}
-
-	// Drop into the acquiring state the way a real failure does.
-	o.observe("leasefail", dhcp.Info{}, now)
-	if !o.acquiring {
-		t.Fatalf("leasefail should leave the tracker acquiring")
-	}
-	before := o.lastAffirmed
-
-	o.observe("config", dhcp.Info{DNSServers: []string{"2001:db8::53"}, LeaseSeconds: 600}, now.Add(time.Minute))
-
-	if !o.acquiring {
-		t.Errorf("a config event cleared the acquiring state — the watchdog would go quiet " +
-			"on a network that configures but never leases")
-	}
-	if o.lastAffirmed != before {
-		t.Errorf("a config event restarted the lease deadline: %v -> %v", before, o.lastAffirmed)
-	}
-	if o.lapseAfter != 0 {
-		t.Errorf("a config event installed a lease deadline from LeaseSeconds: %v", o.lapseAfter)
-	}
-
-	// The control: the same tracker, same instant, with the event that
-	// IS proof of a lease. Without this, a tracker that ignored every
-	// event would pass the assertions above.
-	o.observe("bound", dhcp.Info{LeaseSeconds: 600}, now.Add(2*time.Minute))
-	if o.acquiring {
-		t.Errorf("bound should have cleared the acquiring state")
-	}
-	if o.lapseAfter == 0 {
-		t.Errorf("bound should have installed a lease deadline")
-	}
 }
 
 // The counter has to reach /Plugin.Health, not just exist. The

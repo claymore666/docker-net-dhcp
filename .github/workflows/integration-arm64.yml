@@ -153,8 +153,7 @@ jobs:
           # The daemon does not create a missing bind source (#440).
           mkdir -p /var/lib/net-dhcp
           docker plugin create "${INTEGRATION_PLUGIN_REF}" plugin
-          docker plugin set "${INTEGRATION_PLUGIN_REF}" LOG_LEVEL=trace \
-            OUTAGE_TICK=2s OUTAGE_GRACE=10s
+          docker plugin set "${INTEGRATION_PLUGIN_REF}" LOG_LEVEL=trace
           docker plugin enable "${INTEGRATION_PLUGIN_REF}"
 
       # shell: bash is LOAD-BEARING for pipefail, exactly as in

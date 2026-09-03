@@ -8,7 +8,6 @@ import (
 	"math"
 	"net"
 	"sort"
-	"time"
 )
 
 // Bounds on the values a DHCP server chooses for us.
@@ -23,51 +22,6 @@ import (
 // leaves no trace is indistinguishable from a value that was never sent.
 
 const (
-	// maxLeaseDeadline is the deadline substituted for a lease the
-	// client will never renew from. It caps the outage watchdog's
-	// deadline, NOT the lease time reported to operators or written to
-	// the ledger.
-	//
-	// leaseDeadline is the only trigger that can detect a silently
-	// lapsed lease under `--noconfigure` (see outageTracker) — the
-	// acquiring trigger never fires for it. So option 51 is a number
-	// the server picks that decides whether our own watchdog runs at
-	// all: dhcpcd exports 0xFFFFFFFF verbatim, which is a 136-year
-	// deadline, and dhcp_timeouts then stays at zero through a total
-	// outage for that endpoint. That is exactly the failure #353 exists
-	// to catch, re-opened from the wire.
-	//
-	// 24h is longer than any renewal interval that matters and short
-	// enough that a silent lapse is noticed the same day.
-	maxLeaseDeadline = 24 * time.Hour
-
-	// maxRenewableLease decides WHICH leases maxLeaseDeadline is applied
-	// to, and it is the whole correctness of the clamp.
-	//
-	// Applying the 24h deadline to every long lease is wrong, and wrong
-	// in the direction that costs the most. Under `--noconfigure` the
-	// interface carries no address, so dhcpcd's T1 unicast renewal
-	// cannot succeed and every renewal lands at T2 — RFC 2131's
-	// 0.875 × lease (measured: 105s on a 120s lease, dhcpcd 10.3.2). A
-	// deadline of 24h therefore falls BEFORE the healthy client's own
-	// next contact with the server for any lease longer than about
-	// 27.4h, and `due` then counts a dhcp_timeout on every tick from
-	// 24h until the rebind actually happens. On a 7-day lease — an
-	// ordinary value, not an exotic one — that is roughly 14,800
-	// fabricated timeouts per endpoint per lease, each with its own
-	// "DHCP server still unreachable" log line, for a client that is
-	// working perfectly.
-	//
-	// So the clamp applies only where there is no renewal to wait for.
-	// A year is far above any operational lease anyone grants and far
-	// below what "permanent" encodes: 0xFFFFFFFF is 136 years. Above
-	// this line the client will never come back to the server on its
-	// own, so substituting a deadline invents nothing — below it, the
-	// client's own rebind restarts the deadline and the lease is the
-	// only instant that needs no assumption about which retry
-	// succeeded (see leaseDeadline).
-	maxRenewableLease = 365 * 24 * time.Hour
-
 	// minPropagatedMTU is the smallest MTU we will apply from option 26.
 	// 576 is the IPv4 minimum reassembly buffer (RFC 791) and the
 	// smallest value any real deployment uses. Below it, throughput is
@@ -86,22 +40,6 @@ const (
 	// in one place rather than half-stated.
 	maxPropagatedMTU = 65535
 )
-
-// clampLeaseDeadline substitutes maxLeaseDeadline for a lease lifetime
-// the client will never renew from, reporting whether it had to.
-//
-// A lease at or below maxRenewableLease is returned UNCHANGED, however
-// long it is: the client rebinds at T2 and that restarts the deadline,
-// so shortening it here would count a healthy client as an outage on
-// every tick in between. See maxRenewableLease.
-//
-// The bound is on the deadline only, never on the value we report.
-func clampLeaseDeadline(d time.Duration) (time.Duration, bool) {
-	if d > maxRenewableLease {
-		return maxLeaseDeadline, true
-	}
-	return d, false
-}
 
 // mtuAcceptable reports whether a server-supplied MTU is inside the
 // range propagateMTU will apply. Split out as a pure function so the

@@ -251,8 +251,30 @@
 #   - cmd/dhcp-handler LEFT AT 74.0, measured 75.0, as at every release
 #     since v1.3.1. The v1.8.0 entry gives the reason: one ~16-statement
 #     main(), so a real regression here is a six-point fall.
+#
+# 2.0 BETA (2x-beta): FOUR PACKAGES, NOT FIVE.
+#
+# cmd/dhcp-handler is DELETED on this branch. It was the hook binary
+# dhcpcd exec'd on every state change, and the beta has no dhcpcd: the
+# library reports state changes on a Go channel from lease.Manager, so
+# there is no process to exec and no argv to parse. Its row is removed
+# rather than left at 74.0 because the ratchet fails on a baselined
+# package that VANISHED, which is the correct behaviour and would
+# otherwise turn a deliberate deletion into a red gate on every run.
+#
+# The two moving floors are pkg/plugin (86.8) and pkg/dhcp (89.9). Both
+# packages changed shape rather than size: pkg/dhcp lost the dhcpcd
+# process supervisor, the mount/unshare/FIFO path and the RA guard and
+# gained a chassis over the library plus the durable record; pkg/plugin
+# lost the outage watchdog, the orphan sweep and the refusal counters.
+# Neither floor is RAISED here. This number is measured with the
+# integration lane's covdata and the integration lane cannot run
+# locally, so a raise written from a local unit run would be a floor
+# nobody measured -- and the v1.5.0 and #695 entries above are two
+# recorded cases of the merged number moving opposite to the local one.
+# Read the measured values off this branch's first green coverage run
+# and raise then, in the same PR, if they hold.
 github.com/claymore666/docker-net-dhcp/pkg/util 95.0
 github.com/claymore666/docker-net-dhcp/pkg/plugin 86.8
 github.com/claymore666/docker-net-dhcp/pkg/dhcp 89.9
 github.com/claymore666/docker-net-dhcp/cmd/net-dhcp 77.8
-github.com/claymore666/docker-net-dhcp/cmd/dhcp-handler 74.0

@@ -1021,6 +1021,125 @@ run_dirty "a real verdict still names the work it did not inspect" \
      printf 'package x\n' > later_test.go" \
     "NOT INSPECTED" "" 0
 
+# --- the pinned library copy (D21) -----------------------------------
+#
+# internal/dhcp-golib/ is another repository's tracked tree, copied in
+# with its SHA in SOURCE. Its tests are judged there, not here. The
+# exemption is tested in all four directions that make it an exemption
+# and not a hole: it APPLIES, it is ANCHORED at the repository root, it
+# REFUSES rather than passes when it empties a non-empty domain, and it
+# is ANNOUNCED even when it suppressed nothing.
+#
+# Two files per case, because one file cannot separate "the exemption
+# skipped this" from "the gate found nothing anywhere".
+run_two_file_case() { # NAME VENDORED_PATH VENDORED_NEW OTHER_PATH OTHER_NEW WANT_RC [WANT_GREP] [WANT_ABSENT]
+    local name="$1" vf="$2" vnew="$3" of="$4" onew="$5"
+    local want="$6" want_grep="${7-}" want_absent="${8-}"
+    local dir rc out
+    dir=$(mktemp -d)
+    (
+        cd "$dir" || exit 2
+        git init -q .
+        git config user.email t@t; git config user.name t
+        git config commit.gpgsign false
+        mkdir -p "$(dirname "$vf")"
+        printf '%s\n' "$BASE" > "$vf"
+        if [ -n "$of" ]; then
+            mkdir -p "$(dirname "$of")"
+            printf '%s\n' "$BASE" > "$of"
+        fi
+        git add -A; git commit -qm base
+        printf '%s\n' "$vnew" > "$vf"
+        if [ -n "$of" ]; then printf '%s\n' "$onew" > "$of"; fi
+        git add -A; git commit -qm change
+        bash "$GATE" HEAD~1..HEAD > "$dir/out" 2>&1
+        echo $? > "$dir/rc"
+    ) >/dev/null 2>&1
+    rc=$(cat "$dir/rc" 2>/dev/null)
+    out=$(cat "$dir/out" 2>/dev/null)
+    rm -rf "$dir"
+    if [ "$rc" != "$want" ]; then
+        no "$name (exit $rc, want $want)"
+        printf '%s\n' "$out" | sed 's/^/      /' >&2
+        return
+    fi
+    if [ -n "$want_grep" ] && ! printf '%s\n' "$out" | grep -- "$want_grep" >/dev/null; then
+        no "$name (exit $rc as wanted, but the output never said '$want_grep')"
+        printf '%s\n' "$out" | sed 's/^/      /' >&2
+        return
+    fi
+    if [ -n "$want_absent" ] && printf '%s\n' "$out" | grep -- "$want_absent" >/dev/null; then
+        no "$name (exit $rc as wanted, but the output said '$want_absent' and must not)"
+        printf '%s\n' "$out" | sed 's/^/      /' >&2
+        return
+    fi
+    ok "$name"
+}
+
+SKIPPED='package x
+import "testing"
+func TestThing(t *testing.T) {
+	t.Skip("later")
+	if 1 != 1 {
+		t.Errorf("boom")
+	}
+	if 2 != 2 {
+		t.Fatalf("bang")
+	}
+}'
+
+# One more assertion than BASE, so the change is real and CLEAN.
+TIGHTENED='package x
+import "testing"
+func TestThing(t *testing.T) {
+	if 1 != 1 {
+		t.Errorf("boom")
+	}
+	if 2 != 2 {
+		t.Fatalf("bang")
+	}
+	if 3 != 3 {
+		t.Errorf("crash")
+	}
+}'
+
+# 1. APPLIES. A t.Skip added inside the copy is not this gate's finding.
+run_two_file_case "a weakening inside the pinned copy is not judged here" \
+    internal/dhcp-golib/runtime/x_test.go "$SKIPPED" \
+    a_test.go "$TIGHTENED" \
+    0 "not judged here"
+
+# 2. ANCHORED. Same basename, one directory deeper into OUR tree. If the
+#    match were unanchored this would be exempt too, and a directory
+#    anyone can create would switch the gate off for whatever it holds.
+run_two_file_case "the exemption is anchored at the repository root" \
+    pkg/internal/dhcp-golib/x_test.go "$SKIPPED" \
+    a_test.go "$TIGHTENED" \
+    1 "pkg/internal/dhcp-golib/x_test.go"
+
+# 3. REFUSES rather than passes. With nothing but the copy in the range
+#    — which is exactly a sync commit — "no test files changed" would be
+#    a clean pass over the change most worth reading.
+run_two_file_case "a range of nothing but the pinned copy is refused, not passed" \
+    internal/dhcp-golib/runtime/x_test.go "$SKIPPED" \
+    "" "" \
+    2 "Nothing left to judge"
+
+# 4. ANNOUNCED even when it suppressed nothing. An exemption that only
+#    speaks up when it swallowed a finding is invisible on every ordinary
+#    run, and invisible is how one stops being reviewed.
+run_two_file_case "the count is announced even when nothing was suppressed" \
+    internal/dhcp-golib/runtime/x_test.go "$TIGHTENED" \
+    a_test.go "$TIGHTENED" \
+    0 "1 test file(s) under internal/dhcp-golib/"
+
+# 5. The other direction, so the note is not unconditional boilerplate:
+#    no vendored file in the range, no note.
+run_two_file_case "no note when the range touches no vendored file" \
+    b_test.go "$TIGHTENED" \
+    a_test.go "$TIGHTENED" \
+    0 "" "not judged here"
+
 # --- usage -----------------------------------------------------------
 if bash "$GATE" >/dev/null 2>&1; then
     no "no arguments should be a usage error"

@@ -44,6 +44,22 @@ const (
 	BridgeDHCPPoolEnd   = "192.168.100.99"
 	BridgeSubnetCIDR    = "192.168.100.0/24"
 
+	// BridgeTestDNSServer is what the bridge fixture advertises as
+	// IPv4 DHCP option 6, and it is deliberately NOT TestDNSServer.
+	//
+	// Distinct because that is what makes the bridge-mode assertion
+	// mean something: both fixtures are up in the same run, and a
+	// container on the bridge that somehow got the macvlan fixture's
+	// answer would be indistinguishable from a correct one if the two
+	// addresses were equal. Nothing serves DNS there — the test
+	// asserts propagation, not resolution, exactly as TestDNSServer's
+	// comment says of the macvlan side.
+	//
+	// The option is NEW on this fixture (r2, finding 5a). It only ever
+	// reaches a container whose network opted in with propagate_dns,
+	// so every other bridge test is unaffected by its presence.
+	BridgeTestDNSServer = "192.168.100.53"
+
 	// Dual-stack constants for the bridge fixture (#103) — a distinct
 	// ULA prefix from the macvlan fixture's fd00:6470:6863::/64, same
 	// isolation rationale as the distinct v4 subnets above.
@@ -131,6 +147,7 @@ func (f *Fixture) startBridge() error {
 		"--dhcp-range="+BridgeDHCPv6PoolStart+","+BridgeDHCPv6PoolEnd+","+LeaseTime,
 		"--enable-ra",
 		"--dhcp-option=option6:dns-server,["+TestDNS6Server+"]",
+		"--dhcp-option=6,"+BridgeTestDNSServer, // option 6: DNS servers (IPv4)
 		"--dhcp-leasefile="+f.bridgeLeaseFile,
 		"--dhcp-no-override",
 		"--dhcp-broadcast",

@@ -273,6 +273,78 @@ else
     fail "--fix reaches an untracked file too" "header not inserted" "$(cat "$REPO/newly-written.go")"
 fi
 
+# --- the pinned-library exemption (D21) --------------------------------
+#
+# internal/dhcp-golib/ is a copy of another repository at a fixed SHA;
+# writing a header into it would falsify internal/dhcp-golib/SOURCE and
+# the next sync would revert it. The exemption is on the DISCOVERY path
+# only -- an explicit LICENSE_HEADER_FILES list is a deliberate request
+# and is still honoured -- so these cases build a real git tree.
+vrepo() {
+    local d="$TMP/$1"; rm -rf "$d"; mkdir -p "$d/internal/dhcp-golib/wire"
+    (
+        cd "$d" || exit 1
+        git init -q .; git config user.email t@example.com; git config user.name t
+        git config commit.gpgsign false
+        printf 'package wire\n' > internal/dhcp-golib/wire/codec.go
+        shift
+        git add -A; git commit -qm fixture
+    ) >/dev/null 2>&1
+    echo "$d"
+}
+
+# 1. It applies: a headerless file under the prefix is not a finding.
+D=$(vrepo vend-ok)
+printf '// %s\n// %s\n\npackage x\n' "$COPY" "$SPDX" > "$D/ours.go"
+(cd "$D" && git add -A && git commit -qm ours) >/dev/null 2>&1
+vout=$(cd "$D" && bash "$CHECK" 2>&1); vrc=$?
+if [ "$vrc" -eq 0 ]; then pass "a headerless file in the pinned library copy is exempt"
+else fail "a headerless file in the pinned library copy is exempt" "exit $vrc" "$vout"; fi
+
+# 2. And it ANNOUNCES the hole on the run that passed.
+if grep -qF 'not inspected here' <<<"$vout"; then
+    pass "the exempt count is announced on a passing run"
+else
+    fail "the exempt count is announced on a passing run" "$vout"
+fi
+
+# 3. Anchored at the repository root: the same directory name deeper in
+#    the tree is this repo's source and is still inspected.
+D=$(vrepo vend-deep)
+mkdir -p "$D/pkg/internal/dhcp-golib"
+printf 'package y\n' > "$D/pkg/internal/dhcp-golib/t.go"
+printf '// %s\n// %s\n\npackage x\n' "$COPY" "$SPDX" > "$D/ours.go"
+(cd "$D" && git add -A && git commit -qm deep) >/dev/null 2>&1
+vout=$(cd "$D" && bash "$CHECK" 2>&1); vrc=$?
+if [ "$vrc" -eq 1 ] && grep -qF 'pkg/internal/dhcp-golib/t.go' <<<"$vout"; then
+    pass "the same path deeper in the tree is NOT exempt"
+else
+    fail "the same path deeper in the tree is NOT exempt" "exit $vrc" "$vout"
+fi
+
+# 4. THE ONE THAT MATTERS. A rule over an empty population is satisfied
+#    by emptying the population, so a tree whose only source files are
+#    exempt must REFUSE (exit 2), not pass.
+D=$(vrepo vend-only)
+vout=$(cd "$D" && bash "$CHECK" 2>&1); vrc=$?
+if [ "$vrc" -eq 2 ]; then
+    pass "a tree whose only source files are exempt is a refusal, not a pass"
+else
+    fail "a tree whose only source files are exempt is a refusal, not a pass" "exit $vrc" "$vout"
+fi
+
+# 5. --fix must not write into the pinned copy either.
+D=$(vrepo vend-fix)
+printf '// %s\n// %s\n\npackage x\n' "$COPY" "$SPDX" > "$D/ours.go"
+(cd "$D" && git add -A && git commit -qm ours) >/dev/null 2>&1
+(cd "$D" && bash "$CHECK" --fix) >/dev/null 2>&1
+if [ "$(head -1 "$D/internal/dhcp-golib/wire/codec.go")" = "package wire" ]; then
+    pass "--fix does not write a header into the pinned library copy"
+else
+    fail "--fix does not write a header into the pinned library copy" \
+        "$(head -3 "$D/internal/dhcp-golib/wire/codec.go")"
+fi
+
 if [ "$failures" -ne 0 ]; then
     echo "$failures test(s) failed" >&2
     exit 1

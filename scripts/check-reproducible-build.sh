@@ -72,7 +72,19 @@ fi
 # but it means a non-empty result is NOT evidence that our binaries were
 # compared. Without this check, moving or renaming the build output
 # would leave the gate green over ten unrelated toolchain files.
-for want in net-dhcp dhcp-handler; do
+#
+# The list was `net-dhcp dhcp-handler` until 2.0. dhcp-handler was the
+# hook binary dhcpcd exec'd on every state change; the beta leases
+# in-process and the library reports state changes on a channel, so
+# there is no process to exec and cmd/dhcp-handler is deleted. One name
+# is enough for what this guard is for — it is the sweep's own
+# vacuity it closes, not a count — but ONE name is also the weakest the
+# guard has ever been, so if a second binary is ever added to cmd/ it
+# belongs here on the same commit.
+# shellcheck disable=SC2043  # one element today, and a LIST on purpose:
+# the loop is the shape that stays correct when cmd/ gains a second
+# binary, and unrolling it is how the second one gets left out.
+for want in net-dhcp; do
     if ! printf '%s\n' "$list_a" | grep -E "(^|/)${want}\$" >/dev/null; then
         echo "FAIL  '$want' is not among the binaries found in $A." >&2
         echo "      The build output moved, or the build produced nothing." >&2
@@ -120,5 +132,5 @@ if [ "$differences" -ne 0 ]; then
 fi
 
 echo "Reproducible — $count binaries identical across two independent builds,"
-echo "including net-dhcp and dhcp-handler. The count is above two because the"
-echo "exported builder stage carries the pinned Go toolchain's own bin/ as well."
+echo "including net-dhcp. The count is above one because the exported builder"
+echo "stage carries the pinned Go toolchain's own bin/ as well."

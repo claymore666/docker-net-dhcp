@@ -88,11 +88,43 @@ command -v git >/dev/null 2>&1 || {
 # nested worktrees under .claude/ stay out, exactly as before. Untracked
 # and ignored are different questions and only the first one is being
 # reversed here.
+# THE PINNED LIBRARY COPY IS NOT THIS REPO'S SOURCE (D21).
+#
+# internal/dhcp-golib/ is a copy of ONE COMMIT of
+# github.com/claymore666/dhcp-golib, made by scripts/sync-dhcp-golib.sh
+# and named by the SHA in internal/dhcp-golib/SOURCE. Writing a header
+# into a file there would falsify that SOURCE line -- the copy would no
+# longer be the commit it claims to be -- and the next sync would
+# revert it without saying so. --fix must not touch it either.
+#
+# THIS ONE IS NOT ONLY A GATE QUESTION, and the note below is the whole
+# reason it is announced rather than filtered quietly: the copied tree
+# carries no per-file headers and no LICENSE file of its own, and this
+# branch is public. That is a question for the maintainer, recorded in
+# the M8b handover, not something a filter here answers. The directory
+# is dropped at M9 for the published module.
+#
+# Anchored at the repository root, announced on every run, and the
+# emptied-domain case is refused below.
+VENDORED_PREFIX="${LICENSE_HEADER_VENDORED_PREFIX:-internal/dhcp-golib/}"
 FILES="${LICENSE_HEADER_FILES:-}"
 if [ -z "$FILES" ]; then
     tracked=$(git ls-files '*.go' '*.sh' '*.py') || exit 2
     untracked=$(git ls-files --others --exclude-standard '*.go' '*.sh' '*.py') || exit 2
-    FILES=$(printf '%s\n%s\n' "$tracked" "$untracked" | grep -v '^$' | sort -u)
+    all=$(printf '%s\n%s\n' "$tracked" "$untracked" | grep -v '^$' | sort -u)
+    FILES=$(printf '%s\n' "$all" | grep -v "^$VENDORED_PREFIX" )
+    skipped=$(printf '%s\n' "$all" | grep -c "^$VENDORED_PREFIX")
+    if [ "${skipped:-0}" -ne 0 ]; then
+        echo "note: $skipped file(s) under $VENDORED_PREFIX not inspected here;" \
+             "that tree is a pinned copy of another repository, and it carries no" \
+             "headers of its own -- see the M8b handover."
+    fi
+    if [ -z "$FILES" ]; then
+        echo "::error title=Nothing to inspect::every candidate file is under" \
+             "$VENDORED_PREFIX. A header rule over an empty population is satisfied" \
+             "by emptying the population, so this is a refusal and not a pass." >&2
+        exit 2
+    fi
 fi
 
 MODE="$MODE" FILES="$FILES" python3 -c '

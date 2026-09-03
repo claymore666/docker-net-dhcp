@@ -53,22 +53,6 @@
             ]
         },
         {
-            "description": "How often the DHCP-outage watchdog re-checks; also the resolution of dhcp_timeouts",
-            "name": "OUTAGE_TICK",
-            "value": "30s",
-            "settable": [
-                "value"
-            ]
-        },
-        {
-            "description": "Settling time before the watchdog reports an outage; must exceed normal lease-acquisition time",
-            "name": "OUTAGE_GRACE",
-            "value": "25s",
-            "settable": [
-                "value"
-            ]
-        },
-        {
             "description": "Optional TCP address for the Prometheus /metrics endpoint (e.g. 127.0.0.1:9099); empty means no TCP listener",
             "name": "METRICS_ADDR",
             "value": "",
@@ -131,6 +115,7 @@
     "linux": {
         "capabilities": [
             "CAP_NET_ADMIN",
+            "CAP_NET_RAW",
             "CAP_SYS_ADMIN",
             "CAP_SYS_PTRACE"
         ]

@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/claymore666/docker-net-dhcp/pkg/dhcp"
 	"github.com/claymore666/docker-net-dhcp/pkg/util"
 )
 
@@ -501,13 +500,6 @@ type HealthResponse struct {
 	// often as it is not. They are the evidence trail (#700).
 	DHCPRoutesApplied          int32 `json:"dhcp_routes_applied"`
 	DHCPDefaultRouteSuperseded int32 `json:"dhcp_default_route_superseded"`
-	// LeaseTimeClamped counts option-51 lifetimes cut down before use
-	// as the outage watchdog's deadline. NOT healthy-affecting -- the
-	// clamp is the safe outcome and the lease time reported to
-	// operators is unchanged. Any non-zero value is worth reading: an
-	// over-long lease is how a server switches this plugin's only
-	// silent-lapse detector off (#701).
-	LeaseTimeClamped int32 `json:"lease_time_clamped"`
 	// MTURefused counts option-26 MTUs outside the range the plugin
 	// will apply; the link keeps the MTU it had. NOT healthy-affecting.
 	// Read it because the alternative was silent: a link clamped near
@@ -673,59 +665,6 @@ type HealthResponse struct {
 	// alert on this directly.
 	LedgerWriteFailures int32 `json:"ledger_write_failures"`
 
-	// DirectivesRefused / MountPrepFailures are the two places pkg/dhcp
-	// declines to do what it was asked and carries on anyway (#780).
-	// They are pulled from that package at snapshot time rather than
-	// pushed into a sink, because one of them fires during config
-	// rendering, which no caller watches.
-	//
-	// DirectivesRefused counts dhcpcd directives dropped for carrying a
-	// control character in their value. dhcpcd.conf has no quoting, so a
-	// value with a newline in it would become a second directive; the
-	// drop is correct. What was missing is that an operator who set
-	// hostname, vendor class or client ID then had it silently not
-	// applied, and read a healthy plugin.
-	//
-	// MountPrepFailures counts individual commands in the per-client
-	// mount-namespace preparation that failed. The chain is `;`-joined
-	// deliberately, so dhcpcd starts regardless — but two containers
-	// whose interface is the default eth0 then collide on dhcpcd's
-	// control socket, and the second client silently never renews or
-	// releases. It counts COMMANDS, so one client failing three of four
-	// steps adds 3.
-	//
-	// Neither latches the healthy flag. Both describe an input that did
-	// not take effect, not a container left without a renewal client,
-	// and either can be non-zero on a plugin that is otherwise doing its
-	// job. Alert on them moving, not on their absolute value.
-	//
-	// Both are process-global in pkg/dhcp and therefore do NOT reset
-	// with a plugin restart of anything smaller than the process — which
-	// is the same lifetime as every other counter here, since the
-	// instance_id label changes with the process.
-	DirectivesRefused int32 `json:"directives_refused"`
-	MountPrepFailures int32 `json:"mount_prep_failures"`
-
-	// RouterAdvertGuardFailures counts individual steps of the
-	// Router-Advertisement guard that failed inside a DHCPv6 client's
-	// private mount namespace (#875).
-	//
-	// The guard is what makes the container's kernel perform router
-	// discovery and prefix processing -- the only source of an IPv6
-	// default route and of on-link determination, on the managed path as
-	// much as the stateless one -- and what stops dhcpcd switching that
-	// back off. Like MountPrepFailures its steps are `;`-joined, so a
-	// failure degrades rather than refusing the endpoint, and the
-	// degrade is invisible from inside the plugin: the container has an
-	// address, on-link traffic works, and only off-link traffic stops,
-	// seconds later, when the advertisement nothing refreshed expires.
-	//
-	// NOT healthy-affecting, for the same reason as its two neighbours:
-	// it describes configuration that did not take, not a running
-	// container left without a renewal client. Alert on it moving.
-	// Counts STEPS, not clients.
-	RouterAdvertGuardFailures int32 `json:"router_advert_guard_failures"`
-
 	// Per-family breakdown of the wire counters (#212, #730). Both
 	// halves are STORED; the un-suffixed field above is their sum,
 	// computed in healthSnapshot from the same two values rendered
@@ -748,6 +687,25 @@ type HealthResponse struct {
 	// ClientStopFailuresV4 is the v4 half of ClientStopFailures.
 	ClientStopFailuresV4 int32 `json:"client_stop_failures_v4"`
 
+	// EVERY v6 FIELD BELOW IS STRUCTURALLY ZERO IN THE 2.0 BETA, and
+	// that is the reason it is written here rather than left for a
+	// reader to work out from an empty graph.
+	//
+	// The beta leases through the in-house library, which speaks
+	// DHCPv4; a network created with ipv6=true is refused at
+	// CreateNetwork (P-8, returns at M7). So no v6 client is ever
+	// constructed and nothing increments any of these -- including
+	// dhcpv6_config_only, dhcpv6_not_offered, dhcpv6_no_router_advert
+	// and ipv6_link_enable_failures further down, and the `config`
+	// kind in the audit ledger, whose only writer is the information
+	// reply.
+	//
+	// A zero here therefore means "not reachable in this build", NOT
+	// "nothing went wrong". The fields are kept rather than deleted
+	// because the M7 client restores their writers unchanged and
+	// because every one of them is a documented row of
+	// docs/reference.md; deleting and re-adding a documented counter
+	// costs two documentation changes to end where it started.
 	LeaseChangedV6   int32 `json:"lease_changed_v6"`
 	LeasesObtainedV6 int32 `json:"leases_obtained_v6"`
 	LeasesRenewedV6  int32 `json:"leases_renewed_v6"`
@@ -827,9 +785,6 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 	conflicts := p.addressConflicts.Load()
 	tsQuarantines := p.tombstones.quarantines.Load()
 
-	// Pulled from pkg/dhcp rather than held here: see DirectivesRefused.
-	directivesRefused, mountPrepFailures, raGuardFailures := dhcp.RefusalCounts()
-
 	// One load per half, used for both the half and the sum.
 	leaseChangedV4 := p.leaseChangedV4.Load()
 	leaseChangedV6 := p.leaseChangedV6.Load()
@@ -892,7 +847,6 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		NetnsPIDMismatches:           p.netnsPIDMismatches.Load(),
 		DHCPRoutesApplied:            p.dhcpRoutesApplied.Load(),
 		DHCPDefaultRouteSuperseded:   p.dhcpDefaultRouteSuperseded.Load(),
-		LeaseTimeClamped:             p.leaseTimeClamped.Load(),
 		MTURefused:                   p.mtuRefused.Load(),
 		TombstonesConsumed:           p.tombstonesConsumed.Load(),
 		LeaseChanged:                 leaseChangedV4 + leaseChangedV6,
@@ -914,9 +868,6 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		ParentLinkWaits:              p.parentLinkWaits.Load(),
 		ParentLinkWaitTimeouts:       p.parentLinkWaitTimeouts.Load(),
 		LedgerWriteFailures:          p.ledgerWriteFailures.Load(),
-		DirectivesRefused:            directivesRefused,
-		MountPrepFailures:            mountPrepFailures,
-		RouterAdvertGuardFailures:    raGuardFailures,
 		LeaseChangedV4:               leaseChangedV4,
 		LeasesObtainedV4:             leasesObtainedV4,
 		LeasesRenewedV4:              leasesRenewedV4,

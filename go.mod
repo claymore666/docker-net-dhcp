@@ -3,6 +3,7 @@ module github.com/claymore666/docker-net-dhcp
 go 1.27.0
 
 require (
+	github.com/claymore666/dhcp-golib v0.0.0-00010101000000-000000000000
 	github.com/containerd/errdefs v1.0.0
 	github.com/docker/docker v28.5.2+incompatible
 	github.com/gorilla/handlers v1.5.2
@@ -40,3 +41,11 @@ require (
 	golang.org/x/time v0.15.0 // indirect
 	gotest.tools/v3 v3.5.2 // indirect
 )
+
+// The DHCP library travels as a directory of this branch rather than as a
+// module dependency (D21): the repository it is published from is private
+// and this branch is public, so there is no credential here to fetch it
+// with. internal/dhcp-golib/ is a copy of one commit, made by
+// scripts/sync-dhcp-golib.sh, and internal/dhcp-golib/SOURCE names it.
+// Dropped at publication (M9), when the module resolves normally.
+replace github.com/claymore666/dhcp-golib => ./internal/dhcp-golib

@@ -74,14 +74,17 @@ const preflightProbeBudget = 8 * time.Second
 //     endpoint. (This used to say "exactly as they are on the release
 //     path", an analogy to a path #800 deleted; a reader can check the
 //     endpoint and cannot check a path that is gone.) The
-//     one thing the parent's address does reach is chaddr, which is why
-//     Broadcast is already requested below (#243): an ipvlan-L2 segment
-//     cannot demux a unicast OFFER to a shared MAC.
+//     one thing the parent's address does reach is chaddr, which is
+//     why the OFFER has to come back broadcast (#243): an ipvlan-L2
+//     segment cannot demux a unicast OFFER to a shared MAC. The probe
+//     no longer asks for that explicitly — the library sets the
+//     BROADCAST flag by default for every client on its raw transport,
+//     and the chassis stopped overriding it (see pkg/dhcp/params.go).
 //
 //  3. Bring it up and run dhcp.GetIP one-shot with the probe budget.
-//     dhcpcd has no DISCOVER-only flag; we accept the full DORA and
-//     let the upstream server briefly hold a lease that times out
-//     naturally. Since #800 that is true of every client this plugin
+//     The library has no DISCOVER-only mode, as dhcpcd had no such
+//     flag before it; we accept the full DORA and let the upstream
+//     server briefly hold a lease that times out naturally. Since #800 that is true of every client this plugin
 //     starts, not something the probe does differently — the probe's
 //     lease is short-lived only because the probe is. The cost is one
 //     transient pool entry
@@ -193,12 +196,6 @@ func (p *Plugin) runDHCPProbe(ctx context.Context, parent, mode string, pol serv
 		// there, not which one is preferred.
 		AllowServers: pol.allowList(),
 		DenyServers:  pol.denyList(),
-		// Request a broadcast reply (#243). The probe is a transient
-		// reachability check from a brand-new random MAC; asking the
-		// server to broadcast its OFFER makes the probe robust whether
-		// or not the server unicasts back to an unconfigured client,
-		// so a reachable server is never reported as unreachable.
-		Broadcast: true,
 	})
 	if err != nil {
 		if errors.Is(err, util.ErrNoLease) || errors.Is(err, context.DeadlineExceeded) {

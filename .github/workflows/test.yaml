@@ -321,6 +321,30 @@ jobs:
       - name: Plugin-set snippet order
         run: bash scripts/check-plugin-set-order.sh
 
+      # The sibling above reads these same invocations to check that a
+      # `set` is preceded by a `disable`. So they were being parsed all
+      # along and nothing asked the more basic question: does the
+      # setting being set exist? 2.0 deleted the outage watchdog and its
+      # two settings from config.json; the deletion reached the manifest
+      # and the Go code but not the five places that INSTALL the plugin.
+      # The daemon refuses `docker plugin set` naming an undeclared
+      # setting outright, so package, scan, integration, all five main-*
+      # shards and failure-suite went red together and the error named
+      # the setting rather than the file that set it.
+      - name: Plugin-set settings are declared
+        run: bash scripts/check-plugin-set-settings.sh
+
+      # The in-tree library copy (D21) is what the plugin is BUILT from,
+      # and five gates were taken off it on the ground that the next
+      # sync would revert any edit. Nothing compared the copy to
+      # anything. This does: the manifest half runs everywhere and needs
+      # no credential. The provenance half needs the private library
+      # checkout, which this branch has none for, so the step below
+      # prints "provenance NOT CHECKED" rather than claiming a check it
+      # could not make.
+      - name: The library copy matches its manifest
+        run: bash scripts/check-dhcp-golib-copy.sh
+
       # Presence is not agreement (#638). check-docs-drift proves every
       # counter is documented; this proves the places that say WHICH
       # ones flip `healthy` still say the same thing. The `healthy` row

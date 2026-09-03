@@ -159,21 +159,6 @@ func main() {
 		*into = d
 	}
 	durationEnv("AWAIT_TIMEOUT", &opts.AwaitTimeout)
-	durationEnv("OUTAGE_TICK", &opts.OutageTick)
-	durationEnv("OUTAGE_GRACE", &opts.OutageGrace)
-
-	// The outage knobs exist for the integration suite, where the
-	// fixture's lease floor makes the production cadence expensive
-	// (#278). A production deployment should not normally carry them,
-	// and a grace below a healthy client's acquisition time turns
-	// ordinary start-up into a reported outage — so say so at startup
-	// rather than leaving it to be discovered from the counters.
-	if opts.OutageTick > 0 || opts.OutageGrace > 0 {
-		log.WithFields(log.Fields{
-			"outage_tick":  opts.OutageTick,
-			"outage_grace": opts.OutageGrace,
-		}).Warn("DHCP-outage watchdog cadence overridden; defaults are 30s/25s")
-	}
 
 	// Request capture (#644). Test instrumentation for regenerating the
 	// replay fixtures; declared in config-cover.json only, so reaching

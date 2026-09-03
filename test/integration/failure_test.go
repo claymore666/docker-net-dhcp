@@ -28,37 +28,58 @@
 // They are split out of the main suite into
 // `make integration-test-failure` (second CI step).
 //
-// dhcpcd timing facts the asserts below lean on (see pkg/dhcp):
+// Timing facts the asserts below lean on (see pkg/dhcp). THESE CHANGED
+// AT 2.0: the numbers here described dhcpcd and an outage watchdog, and
+// both are gone. The shape of what these tests assert did not change —
+// dhcp_timeouts still rises during an outage and the address still
+// survives it — but WHAT MAKES IT RISE, and how fast, did.
 //
-//   - a dead server produces NO event at T1/T2, and — the part this
-//     file originally got wrong, see #353 — no usable event at expiry
-//     either — up to v1.8.x. `--noconfigure` PLUS the `release`
-//     directive made dhcpcd report a lapse as RELEASE, which the plugin
-//     drops; #800 removed the directive and a lapse now fires EXPIRE,
-//     counted as a leasefail (#855). From the kill onward dhcpcd may
-//     still say nothing at all, which is what the watchdog is for.
+//   - the client reports the outage itself. dhcpcd under
+//     `--noconfigure` announced nothing usable when a bound lease
+//     lapsed (#353), so the plugin ran a ticker that called the outage
+//     from a lease lifetime and a clock. The library owns the
+//     retransmission schedule and the T1/T2/expiry timers and emits
+//     Failed{ReasonNoServer} when an attempt runs out of retries; the
+//     chassis translates that to "leasefail" and handleEvent counts it
+//     as dhcp_timeouts. There is no watchdog, no OUTAGE_TICK and no
+//     OUTAGE_GRACE — the plugin refuses to install with either, since
+//     the daemon rejects a `docker plugin set` naming a setting
+//     config.json does not declare.
 //
-//   - dhcp_timeouts therefore moves on the plugin's OWN reckoning: the
-//     outage watchdog knows the granted lease lifetime
-//     (dhcp.Info.LeaseSeconds) and calls the outage once
-//     lastAffirmed + lease + grace has passed, re-checking on each
-//     tick. CI installs the plugin with OUTAGE_TICK=2s /
-//     OUTAGE_GRACE=10s (#278), so on the outage tests' 20s lease the
-//     rise lands ~32s after the last bind/renew. Against a plugin left
-//     on the shipped 30s/25s defaults it is 45–75s instead.
+//   - the counter therefore moves ONCE PER FAILED ATTEMPT, not once
+//     per tick, and the first bump lands when the first attempt after
+//     the kill exhausts its retransmissions rather than at
+//     lastAffirmed + lease + grace. The first attempt after a renewal
+//     boundary is what starts that clock, so the rise is bounded below
+//     by the time to the next T1 and above by T1 plus one exhausted
+//     attempt.
 //
-//     The budgets below are sized for the SLOWER of the two on purpose.
-//     They are poll deadlines, not waits: each test returns as soon as
-//     the counter moves, so a generous budget costs nothing and keeps
-//     these tests correct when run against a default-cadence plugin.
+//     The budgets below are poll deadlines, not waits: each test
+//     returns as soon as the counter moves, so a generous budget costs
+//     nothing. AND ONE OF THEM WAS NOT GENEROUS ENOUGH. The first
+//     version of this block claimed all of them were sized for the
+//     slowest watchdog cadence and were therefore now loose rather than
+//     tight. That was INFERRED, and run 33773687839 falsified it:
+//     TestFailure_LeaseExpiry's recurrence budget was a bare 80s
+//     literal, the period it bounds is now ~80s MEASURED, and the test
+//     lost the dead heat. See outageRecurBudget, which is derived from
+//     proto.DefaultBackoff() instead of inherited from a tick.
 //
-//   - dhcpcd keeps re-DISCOVERing forever, so recovery after the server
-//     returns lands within ~30s, and while it's gone dhcp_timeouts keeps
-//     climbing once per watchdog tick.
+//     The lesson generalises past that one number: a budget sized
+//     against a deleted mechanism is not conservative just because the
+//     old mechanism was faster. The FIRST-rise budgets did survive,
+//     because that rise is one lease lapsing and the lease is a
+//     parameter of each scenario. Every budget here is now derived from
+//     something this tree still contains, and says from what.
+//
+//   - the library retries indefinitely, so recovery after the server
+//     returns still lands promptly, and while it is gone dhcp_timeouts
+//     keeps climbing rather than stopping at one.
 //
 //   - the plugin DELIBERATELY does NOT tear down the address when the
 //     lease lapses (would wipe copied routes, see dhcp_manager.go) —
-//     the container keeps its address through an outage.
+//     the container keeps its address through an outage. Unchanged, and
+//     the property these tests exist for.
 //
 // TWO RULES THIS FILE LEARNED THE HARD WAY (#278). Both cost almost
 // nothing to keep, and dropping either one silently guts these tests:
@@ -68,11 +89,15 @@
 //     address, and that address comes from CreateEndpoint's one-shot
 //     lease — the long-lived client Join starts may not have confirmed
 //     its own lease yet. Kill the server inside that window and the
-//     client never leaves the "acquiring" state it starts in; the
-//     watchdog then fires one grace later and the test goes green
-//     having never crossed the expiry it claims to exercise. Both
-//     outage tests used to finish in ~77s, which is less than the one
-//     120s lease they were supposedly waiting out.
+//     client never leaves the "acquiring" state it starts in, so the
+//     failure it reports is a first acquisition that never succeeded
+//     rather than the lease expiry the test is named after, and the
+//     test goes green having never crossed the boundary it claims to
+//     exercise. Both outage tests used to finish in ~77s, which is less
+//     than the one 120s lease they were supposedly waiting out. The
+//     mechanism that made this cheap to get wrong was the watchdog
+//     firing one grace after the kill; the rule outlives it, because
+//     what it is really about is WHICH lease the assertion is watching.
 //  2. Assert endpoint-scoped, not plugin-wide. Every health counter is
 //     a plugin-level total, so "dhcp_timeouts went up" is satisfied by
 //     ANY manager in the plugin, including an orphan left by an earlier
@@ -101,25 +126,48 @@ import (
 // counters themselves do not.
 const (
 	logLeaseFail = "dhcp failed to get a lease"
-	// The watchdog has two wordings and a bound client hits the second
-	// one FIRST: a lease that lapses unheard is reported as the
-	// deadline line, and only the repeat ticks after it say "still
-	// unreachable". Matching just one of the two would make these
-	// tests race the wording (#353).
-	logWatchdog  = "DHCP server still unreachable"
-	logLapse     = "passed its renewal deadline"
 	logIPChanged = "dhcp renew with changed IP"
 
-	// outageRiseBudget bounds the wait for the first dhcp_timeouts rise
-	// after a BOUND client's server dies. Sized for the shipped 30s/25s
-	// cadence — lease + grace (20s + 25s) plus up to one 30s tick, ~75s
-	// worst case — not for the tighter cadence CI installs, so the same
-	// test is valid either way. It is a deadline, not a wait: under
-	// CI's 2s/10s the rise arrives at ~32s and the poll returns there.
+	// outageRiseBudget bounds the wait for the FIRST dhcp_timeouts rise
+	// after a BOUND client's server dies. That first rise is the lease
+	// lapsing: the library drives its own expiry, so the rise arrives
+	// one lease after the kill (MEASURED at t+20s on a 20s fixture
+	// lease, run 33773687839). It is a deadline, not a wait — the poll
+	// returns as soon as the counter moves — and the headroom is cheap
+	// because the budget is only ever spent in full when the test is
+	// about to fail anyway.
 	//
-	// The headroom over 75s is deliberate and cheap: the budget is only
-	// ever spent in full when the test is about to fail anyway.
+	// Until 2.0 this was sized against the outage watchdog's arithmetic
+	// (lease + grace + one tick, ~75s worst case). There is no watchdog
+	// and no grace; the number is kept because it still clears the new
+	// worst case, not because the old derivation still holds.
 	outageRiseBudget = 120 * time.Second
+
+	// outageRecurBudget bounds the wait for EVERY LATER rise, and it is
+	// a different quantity from the first — which is why it now has its
+	// own name instead of an 80s literal at the call site.
+	//
+	// THIS IS THE ONE THE SWAP BROKE. Under the watchdog the recurrence
+	// period was a configured tick: 30s shipped, 2s in CI. It is now
+	// one exhausted DISCOVER transaction, because the counter moves on
+	// the library's Failed{ReasonNoServer} and nothing else. DERIVED
+	// from proto.DefaultBackoff() — Initial 4s, doubling, Max 64s,
+	// MaxRetransmissions 4 — so the sends fall at +0, +4, +12, +28,
+	// +60, and the machine tests Exhausted only when the NEXT delay
+	// fires: 60 + 64 = 124s worst case, plus up to 1s of jitter per
+	// step.
+	//
+	// MEASURED at 80s between the first and second rise on run
+	// 33773687839. The budget it replaced was exactly 80s, so the two
+	// raced and the test lost by a fraction of a second — a budget
+	// equal to the period it bounds is a coin flip, not a bound. 180s
+	// clears the 124s ceiling with room for a loaded runner.
+	//
+	// The assertion below is UNCHANGED: if the signal stops recurring
+	// this still fails, and it fails inside the enclosing 5-minute
+	// context either way. What changed is a parameter that was derived
+	// from a mechanism this branch deleted.
+	outageRecurBudget = 180 * time.Second
 )
 
 // assertNoNewHealthFaults is what a bare `!h.Healthy` check should have
@@ -187,29 +235,28 @@ func awaitBoundPersistentClient(t *testing.T, w *harness.CounterWindow) {
 }
 
 // outageLines counts, for one endpoint, the plugin-log records of the
-// two events that bump dhcp_timeouts: a leasefail (a dhcpcd TIMEOUT
-// while acquiring) and an outage-watchdog tick. Returned separately
-// because which of the two fires is the diagnostic — a leasefail means
-// dhcpcd spoke, a watchdog line means the plugin synthesised the
-// signal from the lease deadline.
+// event that bumps dhcp_timeouts: a leasefail.
 //
-// Which of the two fires CHANGED in #800, and the change is visible
-// here. This block used to say "For a client that was BOUND before the
-// server died, expect the watchdog", because a lapse under
-// `--noconfigure` + `release` fires RELEASE and is dropped. Removing the
-// directive makes a lapse fire EXPIRE, so dhcpcd now speaks: the same
-// outage that logged "+0 leasefail / +1 watchdog" on dev logs "+1
-// leasefail / +0 watchdog" on this branch, and the first rise arrives at
-// the lease deadline rather than one grace later.
+// IT USED TO RETURN TWO COUNTS and every caller asserted their SUM --
+// a leasefail beside an outage-watchdog tick, because which of the two
+// fired was the diagnostic. The watchdog is gone: dhcp_timeouts now
+// moves only on the library's Failed{ReasonNoServer}, translated to
+// "leasefail" in handleEvent. MEASURED on run 33773687839: every one of
+// the four tests logged "+N leasefail / +0 watchdog line(s)", at every
+// site, because the two strings the second count matched ("DHCP server
+// still unreachable", "passed its renewal deadline") are emitted
+// NOWHERE in this tree any more.
 //
-// Both are still legitimate outcomes and the tests assert their sum, not
-// which one fired — a watchdog-only outage stays correct, and is what a
-// lapse dhcpcd does not report looks like. See #855.
-func outageLines(t *testing.T, ctx context.Context, endpoint string) (leasefail, watchdog int) {
+// So the second count could only ever be zero, and a term that is
+// always zero inside a `a + b == 0` assertion is not neutral -- it
+// reads to the next person as a live alternative, and it would silently
+// absorb a real regression if either string ever came back for an
+// unrelated reason. Collapsing it makes every one of those assertions
+// STRICTER, not looser: they now require the leasefail they were
+// already, in fact, requiring.
+func outageLines(t *testing.T, ctx context.Context, endpoint string) (leasefail int) {
 	t.Helper()
-	return harness.CountPluginLogLines(t, ctx, endpoint, logLeaseFail),
-		harness.CountPluginLogLines(t, ctx, endpoint, logWatchdog) +
-			harness.CountPluginLogLines(t, ctx, endpoint, logLapse)
+	return harness.CountPluginLogLines(t, ctx, endpoint, logLeaseFail)
 }
 
 // containerIPv4 returns the container's first non-loopback IPv4
@@ -286,7 +333,7 @@ func TestFailure_ServerLossDuringRenewal(t *testing.T) {
 	// INEQUALITY: the outage must OUTLIVE the lease — that is the whole
 	// scenario, and it is what separates this test from
 	// TestFailure_ServerReturnsBeforeExpiry. The outage here is bounded
-	// by outageRiseBudget, which is lease + grace + a tick, so any
+	// by outageRiseBudget, which now bounds one lease lapsing, so any
 	// lease shorter than that budget satisfies it.
 	ef := harness.NewEphemeralFixture(t, harness.WithLeaseSeconds(harness.EphemeralOutageLeaseSeconds))
 	t.Cleanup(func() {
@@ -316,12 +363,12 @@ func TestFailure_ServerLossDuringRenewal(t *testing.T) {
 	faultW := harness.BeginCounterWindow(t, ctx, cli,
 		"recovery_failed", "join_start_failures", "tombstone_write_failures")
 	base := faultW.Before()
-	baseFail, baseWatch := outageLines(t, ctx, ep)
-	if baseFail+baseWatch > 0 {
+	baseFail := outageLines(t, ctx, ep)
+	if baseFail > 0 {
 		// Not fatal: one dhcpcd TIMEOUT during initial acquisition on a
 		// loaded runner is plausible and harmless. Asserting the delta
 		// below keeps the proof intact either way.
-		t.Logf("endpoint %s carried %d leasefail / %d watchdog line(s) from start-up; asserting on the delta", ep, baseFail, baseWatch)
+		t.Logf("endpoint %s carried %d leasefail line(s) from start-up; asserting on the delta", ep, baseFail)
 	}
 
 	// Kill the server uncleanly. The persistent client — now provably
@@ -337,10 +384,10 @@ func TestFailure_ServerLossDuringRenewal(t *testing.T) {
 	if !ok {
 		t.Fatalf("dhcp_timeouts never rose above %d within %s of the server dying (last: %+v)", base.DHCPTimeouts, outageRiseBudget, h)
 	}
-	nowFail, nowWatch := outageLines(t, ctx, ep)
-	t.Logf("dhcp_timeouts %d -> %d at t+%.0fs after the kill; endpoint %s logged +%d leasefail / +%d watchdog line(s)",
-		base.DHCPTimeouts, h.DHCPTimeouts, time.Since(killed).Seconds(), ep, nowFail-baseFail, nowWatch-baseWatch)
-	if (nowFail-baseFail)+(nowWatch-baseWatch) == 0 {
+	nowFail := outageLines(t, ctx, ep)
+	t.Logf("dhcp_timeouts %d -> %d at t+%.0fs after the kill; endpoint %s logged +%d leasefail line(s)",
+		base.DHCPTimeouts, h.DHCPTimeouts, time.Since(killed).Seconds(), ep, nowFail-baseFail)
+	if nowFail-baseFail == 0 {
 		t.Errorf("dhcp_timeouts rose but the plugin logged no outage line for endpoint %s: the counter is plugin-wide, so this rise belongs to some other client and says nothing about the endpoint under test (#278)", ep)
 	}
 	assertNoNewHealthFaults(t, faultW, "a dead DHCP server is a degraded mode, not a plugin failure")
@@ -465,7 +512,7 @@ func TestFailure_ServerReturnsBeforeExpiry(t *testing.T) {
 	faultW := harness.BeginCounterWindow(t, ctx, cli,
 		"recovery_failed", "join_start_failures", "tombstone_write_failures")
 	base := faultW.Before()
-	baseFail, baseWatch := outageLines(t, ctx, ep)
+	baseFail := outageLines(t, ctx, ep)
 
 	// Down and back up well inside the lease — see the inequality at
 	// the top of this function.
@@ -513,8 +560,8 @@ func TestFailure_ServerReturnsBeforeExpiry(t *testing.T) {
 	if after.LeaseChanged != base.LeaseChanged {
 		t.Errorf("lease_changed moved %d -> %d across an outage shorter than the lease; want flat", base.LeaseChanged, after.LeaseChanged)
 	}
-	nowFail, nowWatch := outageLines(t, ctx, ep)
-	if d := (nowFail - baseFail) + (nowWatch - baseWatch); d != 0 {
+	nowFail := outageLines(t, ctx, ep)
+	if d := nowFail - baseFail; d != 0 {
 		t.Errorf("endpoint %s logged %d outage line(s) for an outage that never reached lease+grace; the watchdog fired early", ep, d)
 	}
 	assertNoNewHealthFaults(t, faultW, "an outage the plugin should have ridden out silently")
@@ -675,10 +722,13 @@ func TestFailure_LeaseExpiry(t *testing.T) {
 
 	const netName = "dh-itest-fexp"
 
-	// INEQUALITY: the lease must FULLY lapse and then keep lapsing —
-	// this test asserts a recurring signal, so it needs the lease short
-	// enough that expiry plus two watchdog ticks fits inside the
-	// budgets below.
+	// INEQUALITY: the lease must FULLY lapse and then keep failing to
+	// be re-acquired — this test asserts a RECURRING signal, so it
+	// needs the lease short enough that expiry plus two exhausted
+	// DISCOVER transactions fits inside the budgets below. With the
+	// watchdog gone the second term is the library's retransmission
+	// ladder rather than a configured tick, and it is roughly 40x
+	// longer; outageRecurBudget carries that derivation.
 	ef := harness.NewEphemeralFixture(t, harness.WithLeaseSeconds(harness.EphemeralOutageLeaseSeconds))
 	t.Cleanup(func() {
 		if t.Failed() {
@@ -707,9 +757,9 @@ func TestFailure_LeaseExpiry(t *testing.T) {
 	faultW := harness.BeginCounterWindow(t, ctx, cli,
 		"recovery_failed", "join_start_failures", "tombstone_write_failures")
 	base := faultW.Before()
-	baseFail, baseWatch := outageLines(t, ctx, ep)
-	if baseFail+baseWatch > 0 {
-		t.Logf("endpoint %s carried %d leasefail / %d watchdog line(s) from start-up; asserting on the delta", ep, baseFail, baseWatch)
+	baseFail := outageLines(t, ctx, ep)
+	if baseFail > 0 {
+		t.Logf("endpoint %s carried %d leasefail line(s) from start-up; asserting on the delta", ep, baseFail)
 	}
 
 	killed := time.Now()
@@ -722,28 +772,29 @@ func TestFailure_LeaseExpiry(t *testing.T) {
 	if !ok {
 		t.Fatalf("dhcp_timeouts never rose above %d within %s of the kill (last: %+v)", base.DHCPTimeouts, outageRiseBudget, first)
 	}
-	firstFail, firstWatch := outageLines(t, ctx, ep)
-	t.Logf("first dhcp_timeouts rise %d -> %d at t+%.0fs after the kill; endpoint %s logged +%d leasefail / +%d watchdog line(s)",
-		base.DHCPTimeouts, first.DHCPTimeouts, time.Since(killed).Seconds(), ep, firstFail-baseFail, firstWatch-baseWatch)
-	if (firstFail-baseFail)+(firstWatch-baseWatch) == 0 {
+	firstFail := outageLines(t, ctx, ep)
+	t.Logf("first dhcp_timeouts rise %d -> %d at t+%.0fs after the kill; endpoint %s logged +%d leasefail line(s)",
+		base.DHCPTimeouts, first.DHCPTimeouts, time.Since(killed).Seconds(), ep, firstFail-baseFail)
+	if firstFail-baseFail == 0 {
 		t.Errorf("dhcp_timeouts rose but the plugin logged no outage line for endpoint %s: the counter is plugin-wide, so this rise belongs to some other client (#278)", ep)
 	}
 
-	// The retry loop must keep recording failures — once per watchdog
-	// tick — and keep recording them AGAINST THIS ENDPOINT: a watchdog
-	// that stalled on our client is invisible in the plugin-wide total.
-	// 80s covers one full 30s tick with headroom for a default-cadence
-	// plugin; under CI's 2s tick the second rise lands almost at once.
-	second, ok := faultW.Await(80*time.Second, func(h, _ *harness.HealthResponse) bool {
+	// The retry loop must keep recording failures — once per exhausted
+	// DISCOVER transaction — and keep recording them AGAINST THIS
+	// ENDPOINT: a client that stalled is invisible in the plugin-wide
+	// total, which is the whole point of reading the per-endpoint log
+	// lines beside the counter. See outageRecurBudget for where the
+	// period comes from now.
+	second, ok := faultW.Await(outageRecurBudget, func(h, _ *harness.HealthResponse) bool {
 		return h.DHCPTimeouts > first.DHCPTimeouts
 	})
 	if !ok {
 		t.Errorf("dhcp_timeouts stalled at %d; the re-DISCOVER loop should keep recording failures (last: %+v)", first.DHCPTimeouts, second)
 	}
-	secondFail, secondWatch := outageLines(t, ctx, ep)
-	t.Logf("second dhcp_timeouts rise at t+%.0fs after the kill; endpoint %s now +%d leasefail / +%d watchdog line(s) since baseline",
-		time.Since(killed).Seconds(), ep, secondFail-baseFail, secondWatch-baseWatch)
-	if (secondFail-firstFail)+(secondWatch-firstWatch) == 0 {
+	secondFail := outageLines(t, ctx, ep)
+	t.Logf("second dhcp_timeouts rise at t+%.0fs after the kill; endpoint %s now +%d leasefail line(s) since baseline",
+		time.Since(killed).Seconds(), ep, secondFail-baseFail)
+	if secondFail-firstFail == 0 {
 		t.Errorf("endpoint %s logged no further outage line while the server stayed down; the recurring signal is not recurring for this client (#278)", ep)
 	}
 	assertNoNewHealthFaults(t, faultW, "a permanent server loss is a defined degraded mode")

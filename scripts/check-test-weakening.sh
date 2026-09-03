@@ -218,8 +218,62 @@ added_code_lines() { # <file>
         }'
 }
 
-mapfile -t FILES < <(git diff --name-only --diff-filter=d "$DIFF_RANGE" -- \
+mapfile -t ALL_FILES < <(git diff --name-only --diff-filter=d "$DIFF_RANGE" -- \
     "${TEST_PATHS[@]}" 2>/dev/null || true)
+
+# --- the pinned library copy is not this repo's source ---------------
+#
+# internal/dhcp-golib/ is a clean copy of another repository's tracked
+# tree, written by scripts/sync-dhcp-golib.sh and identified by the SHA
+# in internal/dhcp-golib/SOURCE (D21). Its tests are that repository's
+# tests. This gate would judge them on OUR rules -- it already reports
+# `runtime/ipudp_test.go adds an opt-out helper` on the very first sync
+# -- and the only way to answer a finding there is to edit the copy,
+# which falsifies SOURCE and is reverted by the next sync. So a finding
+# here is unactionable by construction, and an unactionable finding is
+# answered with a waiver, which is how waiver-by-reflex starts (#450).
+#
+# Judged upstream instead, in the repository that can act on it. The
+# directory is dropped at M9 for the published module and this block
+# goes with it; the announced count reaching zero is the signal.
+#
+# Three properties, the same three as the four other gates that had to
+# meet this tree:
+#
+#   ANCHORED at the repository root. `pkg/internal/dhcp-golib/` would
+#   still be this repo's source and is still judged.
+#
+#   ANNOUNCED on every run, pass or fail. An exemption nobody is told
+#   about is indistinguishable from a gate that found nothing.
+#
+#   REFUSED, not passed, when it empties a NON-EMPTY domain. That last
+#   qualifier is the whole of it: an empty FILES is a perfectly normal
+#   verdict here ("no test files changed"), unlike in the header gate
+#   where it is always wrong. What must never happen is a change whose
+#   only test files are the vendored ones reporting the same "no test
+#   files changed" as a change that touches no test at all -- a sync
+#   commit is exactly that change, and it is the one worth reading.
+VENDORED_PREFIX="${WEAKENING_VENDORED_PREFIX:-internal/dhcp-golib/}"
+FILES=()
+vendored=0
+for f in "${ALL_FILES[@]}"; do
+    case "$f" in
+        "$VENDORED_PREFIX"*) vendored=$((vendored + 1)) ;;
+        *) FILES+=("$f") ;;
+    esac
+done
+if [ "$vendored" -ne 0 ]; then
+    echo "note: $vendored test file(s) under $VENDORED_PREFIX not judged here;" \
+         "that tree is a pinned copy of another repository (see its SOURCE file)" \
+         "and its tests are judged there."
+fi
+if [ "${#ALL_FILES[@]}" -ne 0 ] && [ "${#FILES[@]}" -eq 0 ]; then
+    echo "::error title=Nothing left to judge::all ${#ALL_FILES[@]} test file(s) in" \
+         "this range are under $VENDORED_PREFIX. Reporting 'no test files changed'" \
+         "would be a clean pass over a library sync, which is the change most worth" \
+         "reading. This is a refusal, not a pass." >&2
+    exit 2
+fi
 
 # --- work the range cannot see (#569) --------------------------------
 #

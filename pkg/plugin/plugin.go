@@ -420,6 +420,11 @@ type joinHint struct {
 	// labels, not endpoint options, to Join — so it rides the hint to
 	// become the Join response's DstName.
 	Ifname string
+	// RecordID is the durable lease record CreateEndpoint opened for
+	// this endpoint. Join writes its manager's events to that record
+	// and resumes its lease; an empty value means there is none and
+	// the Join manager DISCOVERs.
+	RecordID string
 }
 
 // Options carries the plugin's runtime knobs. Every field is sourced
@@ -431,16 +436,6 @@ type Options struct {
 	// AwaitTimeout caps the polling helpers (sandbox readiness, link
 	// rename, netns appearance). AWAIT_TIMEOUT, default 10s.
 	AwaitTimeout time.Duration
-
-	// OutageTick is how often the DHCP-outage watchdog re-checks, and
-	// so the resolution of dhcp_timeouts. OUTAGE_TICK, default 30s.
-	OutageTick time.Duration
-
-	// OutageGrace is the settling time before the watchdog will call an
-	// outage. It must stay comfortably above how long a healthy client
-	// takes to acquire its first lease — below that, ordinary start-up
-	// registers as an outage. OUTAGE_GRACE, default 25s.
-	OutageGrace time.Duration
 
 	// RequestCaptureDir, when non-empty, tees every libnetwork request
 	// body into that directory so an integration run can be turned into
@@ -456,8 +451,6 @@ type Options struct {
 // Plugin is the DHCP network plugin
 type Plugin struct {
 	awaitTimeout time.Duration
-	outageTick   time.Duration
-	outageGrace  time.Duration
 	startTime    time.Time
 	// instanceID identifies this plugin *process*. Every counter on
 	// HealthResponse lives in memory and returns to zero when the
@@ -689,20 +682,21 @@ type Plugin struct {
 	// broken, and the two look identical in a timeout log.
 	dhcpServerPolicyExhausted atomic.Int32
 
-	// dhcpServerPolicyTimeouts counts outage ticks on endpoints whose
-	// RENEWAL client is restricted to an operator-named dhcp_servers
-	// allow-list (#731). The exhausted counter above is the acquisition
-	// half and cannot cover this one: nothing is exhausted at renewal,
-	// because the persistent client has no ladder to walk. It holds one
-	// whitelist and simply gets no answers, so the only visible symptom
-	// is a dhcp_timeouts tick indistinguishable from a real outage.
+	// dhcpServerPolicyTimeouts counts unanswered renewal attempts on
+	// endpoints whose RENEWAL client is restricted to an operator-named
+	// dhcp_servers allow-list (#731). The exhausted counter above is the
+	// acquisition half and cannot cover this one: nothing is exhausted
+	// at renewal, because the persistent client has no ladder to walk.
+	// It holds one whitelist and simply gets no answers, so the only
+	// visible symptom is a dhcp_timeouts bump indistinguishable from a
+	// real outage.
 	//
 	// A strict subset of dhcpTimeouts, deliberately: the two rising
 	// together says the allow-list is the cause, dhcpTimeouts rising
 	// alone says it is not.
 	//
-	// Not healthy-affecting: every tick it counts is already counted by
-	// dhcpTimeouts, and weighting one outage twice would make a
+	// Not healthy-affecting: every attempt it counts is already counted
+	// by dhcpTimeouts, and weighting one outage twice would make a
 	// policy-restricted endpoint look worse than an unrestricted one
 	// failing in exactly the same way.
 	//
@@ -786,17 +780,6 @@ type Plugin struct {
 	// traffic go" has an answer after the fact (#700).
 	dhcpRoutesApplied          atomic.Int32
 	dhcpDefaultRouteSuperseded atomic.Int32
-
-	// leaseTimeClamped counts leases whose option-51 lifetime was too
-	// long to use as the outage watchdog's deadline and was cut to
-	// maxLeaseDeadline.
-	//
-	// Not healthy-affecting -- the clamp is the safe outcome, and the
-	// reported lease time is untouched. Read it anyway: a legitimate
-	// server does not grant a container a lease measured in years, and
-	// before the clamp one such ACK followed by silence left
-	// dhcp_timeouts at zero through a total outage (#701).
-	leaseTimeClamped atomic.Int32
 
 	// mtuRefused counts DHCP option-26 MTUs outside the range
 	// propagateMTU will apply, which leave the link's MTU alone.
@@ -951,9 +934,15 @@ type Plugin struct {
 	//   - leasesObtainedV4: "bound" event — first successful
 	//     DHCPACK on either initial bind or after a NAK / lease loss
 	//   - leasesRenewedV4: "renew" event — a renewal DHCPACK
-	//   - dhcpTimeoutsV4: "leasefail" event — a bound lease lapsed
-	//     (dhcpcd EXPIRE) or the outage watchdog fired without an
-	//     OFFER or ACK
+	//   - dhcpTimeoutsV4: "leasefail" event — the library ran an
+	//     acquisition or renewal attempt out of retransmissions with
+	//     no OFFER or ACK, reported as Failed{ReasonNoServer}. One
+	//     bump per attempt, so it keeps climbing through an outage
+	//     rather than marking its start. Until 2.0 this was dhcpcd's
+	//     EXPIRE plus a 30-second watchdog tick synthesised by the
+	//     plugin, because dhcpcd under `--noconfigure` announced
+	//     nothing when a bound lease lapsed (#353); see the long note
+	//     in dhcp_manager.go for what went with the watchdog.
 	//   - clientStopFailuresV4: client.Finish returned an error in
 	//     Stop, meaning the SIGTERM-driven shutdown didn't complete
 	//     cleanly (timeout, exit code, or pipe closure)
@@ -1101,6 +1090,18 @@ type Plugin struct {
 	// audit_log should alert on the counter instead.
 	ledger              *leaseLedger
 	ledgerWriteFailures atomic.Int32
+
+	// records is the durable lease record: the file a plugin restart
+	// reads to resume a lease as INIT-REBOOT instead of DISCOVERing a
+	// new address. Exactly one per process, and the one-writer
+	// guarantee (G-10) is constructed inside dhcp.OpenRecords, not
+	// asserted here.
+	//
+	// nil ONLY in unit tests that build a Plugin literal. NewPlugin
+	// refuses to return without one, because a plugin that cannot
+	// write the record is a plugin every container loses its address
+	// to at the next upgrade, and it would do it silently.
+	records *dhcp.Records
 }
 
 // storeJoinHint records the state collected during CreateEndpoint so
@@ -1999,12 +2000,6 @@ func NewPlugin(opts Options) (*Plugin, error) {
 	if opts.AwaitTimeout <= 0 {
 		opts.AwaitTimeout = defaultAwaitTimeout
 	}
-	if opts.OutageTick <= 0 {
-		opts.OutageTick = defaultOutageTick
-	}
-	if opts.OutageGrace <= 0 {
-		opts.OutageGrace = defaultOutageGrace
-	}
 	client, err := docker.NewClientWithOpts(
 		docker.WithHost("unix:///run/docker.sock"),
 		docker.WithAPIVersionNegotiation(),
@@ -2019,8 +2014,6 @@ func NewPlugin(opts Options) (*Plugin, error) {
 
 	p := Plugin{
 		awaitTimeout: opts.AwaitTimeout,
-		outageTick:   opts.OutageTick,
-		outageGrace:  opts.OutageGrace,
 		startTime:    time.Now(),
 		instanceID:   newInstanceID(),
 
@@ -2031,6 +2024,26 @@ func NewPlugin(opts Options) (*Plugin, error) {
 		endpointFingerprints: make(map[string]endpointFingerprint),
 	}
 	p.ledger = newLeaseLedger(filepath.Join(stateDir, ledgerFileName), &p.ledgerWriteFailures)
+
+	// Opened BEFORE recovery below, which reads it. Fatal on failure,
+	// and the commonest failure is the one that must be fatal: a second
+	// plugin process holding the lock, mid-upgrade. Two processes on one
+	// record file interleave their sequence numbers, each rejects the
+	// other's events as stale, and the endpoint that survives is
+	// whichever wrote last — silently, because a rejected event is
+	// folded, counted and dropped rather than returned.
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		return nil, fmt.Errorf("failed to create state dir %v: %w", stateDir, err)
+	}
+	records, err := dhcp.OpenRecords(filepath.Join(stateDir, recordFileName), p.instanceID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open the lease record: %w", err)
+	}
+	p.records = records
+	if d := records.Damage(); d.TornTail > 0 || d.Skipped > 0 {
+		log.WithFields(log.Fields{"torn_tail": d.TornTail, "skipped": d.Skipped}).
+			Warn("The lease record has unreadable lines; endpoints they described will be recovered from Docker instead of resumed")
+	}
 
 	// Routing table, and the RPCs deliberately left off it: routes.go.
 	mux := p.newServeMux()
@@ -2052,37 +2065,16 @@ func NewPlugin(opts Options) (*Plugin, error) {
 		IdleTimeout:       socketIdleTimeout,
 	}
 
-	// Kill dhcpcd clients left behind by a PREVIOUS plugin process
-	// before recovery can start new ones (#722).
+	// NO ORPHAN SWEEP. There is nothing to sweep: the DHCP client is a
+	// goroutine in this process and dies with it, so a previous plugin
+	// process cannot leave one running. What it CAN leave is a lease
+	// nobody is renewing, and that is what the durable record and
+	// recoverEndpoints below are for.
 	//
-	// Placement is the whole point. Every orphan the sweep does not
-	// reach before recoverEndpoints runs becomes a second client on the
-	// same binding, with the same DUID, IAID and client-id -- two
-	// clients renewing one lease, each unaware of the other, and the
-	// server's idea of who holds it decided by whichever REQUEST landed
-	// last. (Before #800 the harm was sharper still: on the eventual
-	// Leave one of the pair released the lease while the other kept
-	// renewing it. Nothing releases now, but a duplicate binding is a
-	// defect on its own.)
-	//
-	// Here covers BOTH recovery entry points. recoverEndpoints is called
-	// from two places: synchronously just below, and again from
-	// recoverEndpointsDeferred once the socket is up, for the case where
-	// the daemon was not serving yet (#383). The deferred walk cannot
-	// start a client before the synchronous one has run, so a sweep that
-	// precedes the synchronous call precedes both.
-	//
-	// A failure here is a warning, not a fatal: the plugin still has to
-	// come up. It is the case where recovery is about to start a second
-	// client for an endpoint whose first one is still alive, so it must
-	// not pass silently.
-	if n, err := dhcp.SweepOrphans(); err != nil {
-		log.WithError(err).
-			Warn("Could not sweep dhcpcd clients left by a previous plugin process; recovery may start a second client per endpoint")
-	} else if n > 0 {
-		log.WithField("killed", n).
-			Warn("Killed dhcpcd clients left by a previous plugin process")
-	}
+	// The sweep this replaces killed dhcpcd processes left behind by a
+	// crashed plugin, which recovery would otherwise have duplicated:
+	// two clients renewing one binding with one identity, the server's
+	// idea of the holder decided by whichever REQUEST landed last.
 
 	// Run endpoint recovery synchronously before NewPlugin returns
 	// (and thus before Listen accepts the first RPC). Doing it on a
@@ -2393,7 +2385,7 @@ func (p *Plugin) Close() error {
 // caller that only writes the DHCP config can keep ignoring the
 // difference; the caller that makes an identity decision must not.
 func (p *Plugin) safeHostname(h string) dhcpHostname {
-	if dhcp.SafeDirectiveValue(h) {
+	if dhcp.SafeValue(h) {
 		return dhcpHostname{name: h}
 	}
 	p.unsafeHostnamesRejected.Add(1)
