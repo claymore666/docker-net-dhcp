@@ -109,43 +109,67 @@ func TestTranslate_ARenewalIsNotCountedTwice(t *testing.T) {
 	}
 }
 
-// TestBuildParams_TheAcquisitionManagerDoesNotDesync is D-1, with the
-// cost of getting it wrong MEASURED rather than asserted.
+// TestBuildParams_NeitherManagerDesyncs is D-1, with the cost of
+// getting it wrong MEASURED rather than asserted.
 //
 // RFC 2131 section 4.4.1 says a client SHOULD wait one to ten seconds
 // before its first DISCOVER, to desynchronise a fleet of hosts booting
-// together. The CreateEndpoint one-shot is one container asking for one
-// address inside a `docker run`, against a lease_timeout that defaults
-// to ten seconds. The delay does not spread load there; it eats the
-// budget, and the resulting failure is INTERMITTENT — the shape that
-// gets diagnosed as a flaky harness and skipped rather than fixed.
+// together. Neither manager here is a fleet. Each is one container
+// asking for one address, started by one `docker run` or one
+// `docker start`.
 //
-// The Join manager keeps the desync: it is not on anyone's critical
-// path, and it is the one manager of which there may be many starting
-// at once, after a plugin restart.
-func TestBuildParams_TheAcquisitionManagerDoesNotDesync(t *testing.T) {
+// THIS TEST USED TO ASSERT THE OPPOSITE FOR THE JOIN MANAGER, and the
+// reason it gave was "it is the one manager of which there may be many
+// starting at once, after a plugin restart". That was an argument, and
+// it was falsified by a measurement — see
+// TestBuildParams_AColdJoinSendsItsFirstPacketAtOnce below, and D-1 in
+// the seam note. It is recorded here rather than quietly deleted
+// because the shape it belongs to is this repository's most expensive
+// one: a claim that survives because nothing ever drove it.
+func TestBuildParams_NeitherManagerDesyncs(t *testing.T) {
 	mac := testMAC(t)
 
+	for _, tc := range []struct {
+		name string
+		once bool
+	}{
+		{"the CreateEndpoint one-shot", true},
+		{"the Join manager", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p, err := buildParams(&DHCPClientOptions{MAC: mac}, tc.once)
+			if err != nil {
+				t.Fatalf("buildParams: %v", err)
+			}
+			if p.DesyncMin != 0 || p.DesyncMax != 0 {
+				t.Errorf("%s desyncs by %v..%v; the library documents both zero as the "+
+					"disabling value", tc.name, p.DesyncMin, p.DesyncMax)
+			}
+		})
+	}
+
+	// The equality is the rule, and it is asserted separately from the
+	// two values so that a future arm on `once` fails HERE, at the
+	// statement that the two managers are the same, rather than only at
+	// whichever of them was changed.
 	once, err := buildParams(&DHCPClientOptions{MAC: mac}, true)
 	if err != nil {
 		t.Fatalf("buildParams(once): %v", err)
 	}
-	if once.DesyncMin != 0 || once.DesyncMax != 0 {
-		t.Errorf("the CreateEndpoint one-shot desyncs by %v..%v; the library documents both "+
-			"zero as the disabling value", once.DesyncMin, once.DesyncMax)
-	}
-
 	persistent, err := buildParams(&DHCPClientOptions{MAC: mac}, false)
 	if err != nil {
 		t.Fatalf("buildParams(persistent): %v", err)
 	}
-	if persistent.DesyncMin == 0 && persistent.DesyncMax == 0 {
-		t.Error("the Join manager's desync was disabled too. Nothing on the CreateEndpoint " +
-			"deadline is served by that, and it is the manager of which a plugin restart " +
-			"starts many at once — the case section 4.4.1 is actually about.")
+	if once.DesyncMin != persistent.DesyncMin || once.DesyncMax != persistent.DesyncMax {
+		t.Errorf("the two managers desync differently: one-shot %v..%v, Join %v..%v. "+
+			"D-1 is that neither of them is the fleet section 4.4.1 is about, and the "+
+			"argument for exempting only one of them has already been falsified once.",
+			once.DesyncMin, once.DesyncMax, persistent.DesyncMin, persistent.DesyncMax)
 	}
 
-	// MEASURED, and the reason this is not an argument.
+	// MEASURED, against the REJECTED shape rather than against the
+	// shipped one — the shipped one now waits zero, so measuring it
+	// would price nothing.
 	//
 	// The right question is not "does the delay exceed the budget" --
 	// it cannot, the window closes at 10s and so does lease_timeout --
@@ -156,6 +180,11 @@ func TestBuildParams_TheAcquisitionManagerDoesNotDesync(t *testing.T) {
 	// cannot survive a single dropped packet inside the budget, which
 	// is precisely the intermittent failure. Driven through the
 	// library's own jitter rather than recomputed here.
+	rejected := proto.DefaultParams(mac)
+	if rejected.DesyncMin == 0 && rejected.DesyncMax == 0 {
+		t.Fatal("proto.DefaultParams no longer desyncs, so the measurement below prices " +
+			"nothing and D-1 has become a no-op the chassis is still paying a line for")
+	}
 	const (
 		budget      = 10 * proto.Second
 		oneRetrans  = 4 * proto.Second // RFC 2131 4.1's first retransmission
@@ -164,7 +193,7 @@ func TestBuildParams_TheAcquisitionManagerDoesNotDesync(t *testing.T) {
 	var tight, n int
 	var worst proto.Duration
 	for i := 0; i < drawsWanted; i++ {
-		d := firstSendDelay(t, persistent, uint64(i)*0x9e3779b97f4a7c15+1)
+		d := firstSendDelay(t, rejected, uint64(i)*0x9e3779b97f4a7c15+1)
 		n++
 		if d > worst {
 			worst = d
@@ -183,6 +212,145 @@ func TestBuildParams_TheAcquisitionManagerDoesNotDesync(t *testing.T) {
 		t.Error("no draw left the exchange short of a retransmission, so this measurement does " +
 			"not show what the desync costs and the rule above is unmotivated by it")
 	}
+}
+
+// TestBuildParams_AColdJoinSendsItsFirstPacketAtOnce drives the path
+// that the argument for keeping the Join manager's desync never
+// considered: a JOINED endpoint whose remembered lease is NOT LIVE.
+//
+// proto.Machine.beginAcquisition takes the resume BEFORE the desync
+// block and returns, so a Join that resumes a live lease never reaches
+// the draw at all — which is why every green run in this branch's
+// history was blind to it. takeResume returns false for a lease that
+// has expired ("a server with no record of a client must stay silent",
+// RFC 2131 4.3.2) and falls through to the draw. A container that was
+// down over a weekend comes back on exactly that path.
+//
+// WHAT IT COSTS, MEASURED, run 33785125087. The `Resume`-dropped mutant
+// forced every Join onto this path and took two kills that were not the
+// one it was aimed at: TestDNSPropagate_OptInWritesResolvConf on shard
+// main-3 and TestMTUPropagate_OptInSetsLinkMTU on main-5. The run's own
+// dumps show the mechanism is not a slow exchange but SILENCE — the
+// fixture logged exactly one DHCP transaction for the container's MAC,
+// CreateEndpoint's one-shot, and the plugin logged at teardown
+// "Persistent client stopped before it ever held the lease; the
+// one-shot's lease is left to expire on the server". The Join manager
+// spent the container's entire life inside the draw.
+//
+// WHY THE ASSERTION IS ON THE PACKET AND NOT ON resolv.conf. The two
+// tests that caught it assert on a file appearing within five seconds,
+// so they are a race whose outcome is a uniform draw: they fail about
+// 60% of the time on this path and pass the rest, which is the shape
+// that gets called a flaky harness. The delay before the first packet
+// is the thing itself, and it is exact on the library's virtual clock.
+func TestBuildParams_AColdJoinSendsItsFirstPacketAtOnce(t *testing.T) {
+	mac := testMAC(t)
+
+	p, err := buildParams(&DHCPClientOptions{MAC: mac}, false)
+	if err != nil {
+		t.Fatalf("buildParams(Join): %v", err)
+	}
+	// An expired remembered lease: Expire is not after now (0), so
+	// takeResume refuses it and the machine acquires from INIT. This is
+	// the record a container that was down too long comes back with.
+	p.Resume = &proto.Resume{
+		Addr:      netip.MustParseAddr("192.168.99.7"),
+		Expire:    0,
+		HasExpire: true,
+	}
+
+	const draws = 256
+	var worst proto.Duration
+	for i := 0; i < draws; i++ {
+		rnd := uint64(i)*0x9e3779b97f4a7c15 + 1
+		d, mt := firstSendDelayAndType(t, p, rnd)
+		if mt != wire.MsgDiscover {
+			t.Fatalf("the first packet on draw %d was %s, not a DHCPDISCOVER: this test is "+
+				"not on the path it claims to be on. An expired Resume must be refused by "+
+				"takeResume and acquired from INIT (RFC 2131 4.3.2).", i, mt)
+		}
+		if d > worst {
+			worst = d
+		}
+	}
+	if worst != 0 {
+		t.Errorf("a Join with an expired remembered lease waited up to %.2fs before its "+
+			"first DHCPDISCOVER. That is RFC 2131 4.4.1's fleet desync applied to one "+
+			"container, and for the length of it the container runs with Docker's own "+
+			"resolv.conf and the link-default MTU on a network that asked for neither "+
+			"(propagate_dns / propagate_mtu are applied from the bind event). D-1 says "+
+			"both managers send at once.", float64(worst)/float64(proto.Second))
+	}
+	t.Logf("MEASURED: cold Join, first DHCPDISCOVER at %.2fs over %d entropy draws",
+		float64(worst)/float64(proto.Second), draws)
+
+	// The control, and it is what makes the assertion above mean
+	// something: restore the library default on this same drive and the
+	// delay must come back. Without it, "worst == 0" is equally
+	// satisfied by a helper that measures nothing.
+	restored := p
+	restored.DesyncMin, restored.DesyncMax = proto.DefaultParams(mac).DesyncMin, proto.DefaultParams(mac).DesyncMax
+	var delayed int
+	var ctlWorst proto.Duration
+	for i := 0; i < draws; i++ {
+		d, _ := firstSendDelayAndType(t, restored, uint64(i)*0x9e3779b97f4a7c15+1)
+		if d > 0 {
+			delayed++
+		}
+		if d > ctlWorst {
+			ctlWorst = d
+		}
+	}
+	if delayed != draws {
+		t.Errorf("control: with the desync restored, %d of %d draws still sent at once. "+
+			"The drive is not reaching the desync block, so the assertion above is not "+
+			"measuring the thing it names.", draws-delayed, draws)
+	}
+	t.Logf("control: with the library default restored, the same cold Join waits up to "+
+		"%.2fs before its first DHCPDISCOVER (%d of %d draws delayed)",
+		float64(ctlWorst)/float64(proto.Second), delayed, draws)
+}
+
+// firstSendDelayAndType is firstSendDelay plus the message type of the
+// packet it stopped on. The type is what proves which path the machine
+// took: INIT-REBOOT sends a DHCPREQUEST, INIT sends a DHCPDISCOVER, and
+// a test that only measured the delay could not tell a refused resume
+// from a resume it never had.
+func firstSendDelayAndType(t *testing.T, p proto.Params, rnd uint64) (proto.Duration, wire.MessageType) {
+	t.Helper()
+	m, err := proto.New(p)
+	if err != nil {
+		t.Fatalf("proto.New: %v", err)
+	}
+	now := proto.Instant(0)
+	ev := proto.Simple(proto.EvStart)
+	for step := 0; step < 20; step++ {
+		_, acts := m.Step(now, rnd+uint64(step), ev)
+		var next proto.Duration
+		var armed bool
+		for _, a := range acts {
+			switch a.Kind {
+			case proto.ActSend:
+				if a.Msg == nil {
+					t.Fatalf("ActSend with no message at %v", now)
+				}
+				mt, ok := a.Msg.Type()
+				if !ok {
+					t.Fatalf("the message sent at %v carries no option 53", now)
+				}
+				return proto.Duration(now), mt
+			case proto.ActSetTimer:
+				next, armed = a.After, true
+			}
+		}
+		if !armed {
+			t.Fatalf("no send and no timer at %v", now)
+		}
+		now += proto.Instant(next)
+		ev = proto.TimerFired(lastTimer(acts))
+	}
+	t.Fatal("no send within 20 steps")
+	return 0, 0
 }
 
 // firstSendDelay drives one machine from EvStart to its first send and

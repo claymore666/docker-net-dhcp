@@ -49,8 +49,12 @@ func ClientIdentity(clientID []byte) []byte {
 // set for one manager instance.
 //
 // once distinguishes the CreateEndpoint acquisition manager from the
-// persistent Join manager, and the only thing it changes is the desync
-// window — see the DesyncMin/DesyncMax assignment below.
+// persistent Join manager. Since the desync fix below it selects
+// NOTHING: both managers get the same parameters. It stays in the
+// signature because it is how the seam names which manager a call site
+// is building, and because the equality is the rule — a future arm here
+// has to be argued at the assignment it would sit beside, not slipped
+// in. TestBuildParams_NeitherManagerDesyncs asserts the equality.
 func buildParams(opts *DHCPClientOptions, once bool) (proto.Params, error) {
 	if opts.V6 {
 		return proto.Params{}, ErrIPv6Unsupported
@@ -118,20 +122,54 @@ func buildParams(opts *DHCPClientOptions, once bool) (proto.Params, error) {
 	// every integration suite is green. The server that decides it is
 	// the one in production.
 
-	if once {
-		// D-1. proto.DefaultParams desyncs the first DISCOVER by 1–10
-		// seconds (RFC 2131 section 4.4.1's "random delay between one
-		// and ten seconds"), which is a rule about a fleet of hosts
-		// booting together. The acquisition manager is one container
-		// asking for one address inside a `docker run`, against a
-		// lease_timeout that defaults to ten seconds — so the desync
-		// does not spread load here, it eats the budget, and the
-		// failure is intermittent rather than reproducible.
-		//
-		// Both zero disables the delay; the library documents that as
-		// the disabling value rather than as a degenerate range.
-		p.DesyncMin, p.DesyncMax = 0, 0
-	}
+	// D-1, and it applies to BOTH managers.
+	//
+	// proto.DefaultParams desyncs the first DISCOVER by 1–10 seconds
+	// (RFC 2131 section 4.4.1's "random delay between one and ten
+	// seconds"), which is a rule about a fleet of hosts booting
+	// together. Neither manager here is a fleet: each one is a single
+	// container asking for a single address, started by a single
+	// `docker run` or `docker start`.
+	//
+	// The acquisition manager was exempted first, because the desync
+	// ate a lease_timeout that defaults to ten seconds. The Join
+	// manager was left with the draw on the argument that a plugin
+	// restart starts many of them at once — and that argument was
+	// FALSIFIED by measurement rather than re-reasoned. Run
+	// 33785125087 scored the `Resume`-dropped mutant and took two
+	// extra kills with it, TestDNSPropagate_OptInWritesResolvConf and
+	// TestMTUPropagate_OptInSetsLinkMTU, on two different shards. What
+	// the run's own dumps showed was not a slow exchange but SILENCE:
+	// the fixture logged exactly one DHCP transaction for the
+	// container's MAC — CreateEndpoint's one-shot — and the plugin
+	// logged, at teardown, "Persistent client stopped before it ever
+	// held the lease; the one-shot's lease is left to expire on the
+	// server". The Join manager spent the container's whole life
+	// inside the draw and sent nothing.
+	//
+	// That path is reachable UNMUTATED: proto.Machine.takeResume
+	// returns false for a remembered lease that is no longer live and
+	// falls through to this same draw, so a JOINED record whose lease
+	// expired while the container was down (a weekend) starts from
+	// INIT with a 1–10 s wait in front of it. Options 6 and 26 are
+	// applied from the bind event (pkg/plugin/dhcp_manager.go:508-509,
+	// reached from the "bound" and "renew" arms), so for the length of
+	// the draw plus a DORA the container runs with Docker's own
+	// resolv.conf and the link-default MTU on a network that opted
+	// into propagate_dns / propagate_mtu.
+	//
+	// The blast radius is exactly one packet, and that is checkable
+	// rather than asserted: the library requests the desync only for
+	// EvStart and EvLinkUp (proto/machine.go, stepStopped and
+	// stepInit; every other re-acquisition passes withDesync=false),
+	// nothing above ring 1 in this tree ever emits EvLinkUp, and
+	// lease.Manager.Run dispatches EvStart exactly once. So this
+	// assignment moves the FIRST packet of a cold-lease start and
+	// nothing else.
+	//
+	// Both zero disables the delay; the library documents that as the
+	// disabling value rather than as a degenerate range.
+	p.DesyncMin, p.DesyncMax = 0, 0
 
 	return p, nil
 }

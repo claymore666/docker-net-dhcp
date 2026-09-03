@@ -68,9 +68,20 @@ import (
 // second is a worse failure and a more frequent one.
 //
 // This test is therefore an ASSERTION THAT NOTHING SHORTENS IT: it
-// fails if the chassis ever starts trimming the Request backoff, the
-// retransmission count or the Join manager's desync, which is exactly
-// how the decision above would be reversed by accident.
+// fails if the chassis ever starts trimming the Request backoff or the
+// retransmission count, which is exactly how the decision above would
+// be reversed by accident.
+//
+// IT NO LONGER GUARDS THE JOIN MANAGER'S DESYNC, and that is a
+// deliberate narrowing rather than an oversight. D-1 now sets
+// DesyncMin/Max to zero on BOTH managers, so the desync is not part of
+// this window and cannot be: proto.Machine.beginAcquisition takes the
+// resume before the desync block, so a live resume never reached the
+// draw even when the Join manager still had one. What the desync did
+// govern was the COLD Join — the path this test's control walks — and
+// that is now owned by
+// TestBuildParams_AColdJoinSendsItsFirstPacketAtOnce, which asserts the
+// opposite of what this line used to.
 func TestRebootBudget_TheChassisDoesNotShortenTheInitRebootWindow(t *testing.T) {
 	mac, err := net.ParseMAC("02:42:c0:a8:63:07")
 	if err != nil {
@@ -126,18 +137,31 @@ func TestRebootBudget_TheChassisDoesNotShortenTheInitRebootWindow(t *testing.T) 
 	// machine that never rebooted at all: a DISCOVER sent immediately
 	// would be a SMALLER number, and "not shortened" is a one-sided
 	// claim. So the same drive with no Resume must produce a
-	// materially smaller window — the desync alone.
+	// materially smaller window.
+	//
+	// It used to be "the desync alone", 1..10s, and the bound was 11s.
+	// Since D-1 zeroed the Join manager's desync the answer is EXACTLY
+	// zero, which is both a tighter control and a second observer for
+	// the fix: an 11s bound would also be satisfied by a draw of 9s,
+	// and 9s is the defect.
 	var noResume proto.Params = p
 	noResume.Resume = nil
 	bare := measureRebootWindow(t, noResume, 1)
-	if bare >= 11*proto.Second {
-		t.Errorf("with no remembered lease the first DISCOVER took %.2fs, past the 1..10s "+
-			"desync that is the whole of the INIT path's delay: this test cannot tell a "+
-			"machine that rebooted from one that did not, and its measurement above "+
-			"means nothing",
+	if bare != 0 {
+		t.Errorf("with no remembered lease the first DISCOVER took %.2fs. D-1 sets "+
+			"DesyncMin/Max to zero on both managers, so a cold start sends in the same "+
+			"step as EvStart; anything else is RFC 2131 4.4.1's fleet delay applied to "+
+			"one container, and it also means this test cannot tell a machine that "+
+			"rebooted from one that did not",
 			float64(bare)/float64(proto.Second))
 	}
-	t.Logf("control: no remembered lease, first DHCPDISCOVER at %.2fs (the desync alone)",
+	if bare >= wantLo {
+		t.Errorf("the no-resume control took %.2fs, inside the %.2fs window this test "+
+			"measures: the two paths are indistinguishable and the measurement above "+
+			"means nothing",
+			float64(bare)/float64(proto.Second), float64(wantLo)/float64(proto.Second))
+	}
+	t.Logf("control: no remembered lease, first DHCPDISCOVER at %.2fs",
 		float64(bare)/float64(proto.Second))
 }
 
