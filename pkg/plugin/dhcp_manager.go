@@ -721,11 +721,14 @@ func (m *dhcpManager) reconcileDefaultRoute(v6 bool, info dhcp.Info) error {
 
 	newGateway := net.ParseIP(info.Gateway)
 	if newGateway == nil {
-		// Belt and braces with the refusal in BuildEvent (#728). The
-		// two are not redundant: that one runs in the dhcpcd hook, a
-		// different process, and this function is also reached by any
-		// future caller that builds an Info without going through the
-		// hook at all -- the recovery and replay paths already do.
+		// #728's second guard, and since 2.0 its only one. The first
+		// lived in pkg/dhcp.BuildEvent, which parsed dhcpcd's hook
+		// environment in a separate process; there is no hook and no
+		// second process now, and the library hands over a parsed
+		// netip.Addr rather than a string. What is left is this
+		// function's own obligation, which it always had: it is
+		// reached by callers that build an Info without a server
+		// exchange at all -- the recovery and replay paths do.
 		//
 		// Nil is the dangerous value precisely because netlink accepts
 		// it. `Gw: nil` is not "no change", it is `default dev ethX
