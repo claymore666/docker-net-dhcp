@@ -30,8 +30,8 @@
 #   corpus     879.2s across 70 tests; mean 12.56s AS SAMPLED. Ten of
 #              those rows have since been removed together with the
 #              DHCPv6 tests they costed -- see the 2.0-beta stanza
-#              below -- so the table now holds 65 rows, 677.0s, mean
-#              10.42s.
+#              below -- so the table now holds 66 rows, 712.0s, mean
+#              10.79s.
 #
 # Runs sampled:
 #   33146366330 33145891905 33145646801 33145007735 33144508563 
@@ -67,8 +67,14 @@
 #   TestIPv6_TheV4PathIsUnaffectedByTheRefusal     5.00
 #     one macvlan network that must succeed, no container. Sibling:
 #     TestPreflightProbe_PassesOnReachableServer 5.00.
-# Refresh both from the first green Integration run that produces suite
-# logs on this branch, by the recipe at the foot of this header.
+#   TestLeaseRetention_ARestartRebootsRatherThanDiscovers  35.00
+#     one container, a full plugin disable/enable recycle and one
+#     5s settle. Siblings, added: TestLeaseRetention_NothingEverReleases
+#     26.21 (same file, one container, five settles) and
+#     TestRecovery_PluginDisableEnable_PreservesEndpoint 7.57 (the
+#     recycle alone).
+# Refresh all three from the first green Integration run that produces
+# suite logs on this branch, by the recipe at the foot of this header.
 #
 # ONE ROW IS A SKIP COST, NOT A RUN COST.
 # TestInterfaceName_MultiNetworkDeterministic skipped in all 22 samples —
@@ -141,6 +147,7 @@ TestInterfaceName_PluginHonorsOption	7.04
 TestInterfaceName_ProbeSkipPrecedesTheEphemeralFixture	0.00
 TestJoinNoContainer_AddressIsHeldUntilItExpires	18.48
 TestLeaseRenew_HonorsT1	22.52
+TestLeaseRetention_ARestartRebootsRatherThanDiscovers	35.00
 TestLeaseRetention_NothingEverReleases	26.21
 TestLifecycleBridge_GoldenPath	7.73
 TestLifecycleIPvlan_GoldenPath	7.29
