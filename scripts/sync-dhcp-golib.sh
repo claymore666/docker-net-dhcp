@@ -25,7 +25,7 @@
 #                         one case-insensitive fixed string per line, blank
 #                         lines and #-comments ignored
 #        DEST_DIR         destination (default internal/dhcp-golib) — the
-#                         seam the self-test drives
+#                         seam the self-test drives (scripts/test-sync-dhcp-golib.sh)
 # Exit:  0 copied, 1 refused, 2 usage or environment error.
 
 set -euo pipefail
@@ -111,3 +111,16 @@ printf '%s\n' "$SHA" >"$DEST/SOURCE"
 
 echo "Synced github.com/claymore666/dhcp-golib @ $SHA into $DEST"
 echo "Files: $(find "$DEST" -type f | wc -l)"
+
+# The manifest is written HERE, by the gate that reads it, so the two
+# cannot disagree about its format. Without it the copy ships with
+# nothing to check it against -- which is the state this seam was in
+# until r2, and the reason five gates could be switched off over this
+# directory on an argument nothing enforced.
+#
+# git ls-files is the manifest's population, so a freshly synced tree
+# must be staged before the manifest means anything. Said out loud
+# rather than assumed: a manifest generated before `git add` would
+# record the OLD file set and pass against the new one.
+echo "Stage the copy, then write its manifest:"
+echo "  git add -A $DEST && DEST_DIR=$DEST scripts/check-dhcp-golib-copy.sh --write && git add $DEST/MANIFEST"
