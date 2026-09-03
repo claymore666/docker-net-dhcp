@@ -18,10 +18,12 @@ on:
     branches:
       - main
       - dev
+      - 2.x-beta
   pull_request:
     branches:
       - main
       - dev
+      - 2.x-beta
   schedule:
     # Weekly, so advisories that publish between commits still surface.
     - cron: '29 7 * * 3'

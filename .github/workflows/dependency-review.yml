@@ -11,6 +11,7 @@ on:
     branches:
       - main
       - dev
+      - 2.x-beta
 
 # Read-only on purpose. The action can post its summary as a PR comment,
 # but that needs pull-requests: write; the summary is reported to the job

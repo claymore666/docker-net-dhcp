@@ -34,6 +34,7 @@ on:
     branches:
       - dev
       - main
+      - 2.x-beta
     paths:
       - test/arm64-netboot/**
       - .github/workflows/netboot-image.yml

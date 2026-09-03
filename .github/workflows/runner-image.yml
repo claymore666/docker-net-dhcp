@@ -8,6 +8,7 @@ on:
   push:
     branches:
       - dev
+      - 2.x-beta
     paths:
       - ci/runner-image/**
       - .github/workflows/runner-image.yml

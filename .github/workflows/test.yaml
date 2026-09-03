@@ -5,10 +5,12 @@ on:
     branches:
       - main
       - dev
+      - 2.x-beta
   pull_request:
     branches:
       - main
       - dev
+      - 2.x-beta
     # `edited` IS LOAD-BEARING HERE (#742). The default set is
     # opened/synchronize/reopened, so nothing re-ran when a PR BODY
     # changed — and three gates in this workflow read the body:

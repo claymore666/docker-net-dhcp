@@ -54,6 +54,9 @@ run "dispatch with promote_latest=true"   0 "abc1234 latest" workflow_dispatch r
 
 # --- the non-promoting cases --------------------------------------------
 run "push to a non-dev branch"            0 "abc1234" push refs/heads/other ""
+# 2.x-beta reaches this workflow's push trigger as of M8a. The pool's
+# :latest must keep pointing at dev's image while the beta builds its own.
+run "push to 2.x-beta"                    0 "abc1234" push refs/heads/2.x-beta ""
 run "push to a tag ref"                   0 "abc1234" push refs/tags/v1.9.0 ""
 run "dispatch, input unset"               0 "abc1234" workflow_dispatch refs/heads/b ""
 run "dispatch, input false"               0 "abc1234" workflow_dispatch refs/heads/b false
