@@ -73,7 +73,18 @@
 #     26.21 (same file, one container, five settles) and
 #     TestRecovery_PluginDisableEnable_PreservesEndpoint 7.57 (the
 #     recycle alone).
-# Refresh all three from the first green Integration run that produces
+#   TestDNSPropagate_BridgeModeWritesResolvConfToo         8.50
+#     added in round 2 for review finding 5(a): bridge-mode
+#     propagate_dns was exercised nowhere after the v6 retirement.
+#     One bridge network, one container, one resolv.conf poll with a
+#     5s ceiling. Siblings, both MEASURED: the macvlan arm of the same
+#     assertion, TestDNSPropagate_OptInWritesResolvConf 8.71, and the
+#     bridge-mode container tests TestLifecycleBridge_GoldenPath 7.73
+#     and TestAddressConflict_BridgeModeDoesNotSelfReport 7.95. Taken
+#     just under the macvlan arm rather than at the bridge mean: it is
+#     the same test body and the same poll, and the bridge fixture is
+#     the cheaper of the two to attach to.
+# Refresh all FOUR from the first green Integration run that produces
 # suite logs on this branch, by the recipe at the foot of this header.
 #
 # ONE ROW IS A SKIP COST, NOT A RUN COST.
@@ -128,6 +139,7 @@ TestClientID_OverrideAppearsInLeaseFile	7.16
 TestConcurrency_DistinctLeases	27.35
 TestConcurrentRenew_SameInterfaceNameBothRenew	32.15
 TestConflictProbe_ReclaimsLeftoverRoute	13.73
+TestDNSPropagate_BridgeModeWritesResolvConfToo	8.50
 TestDNSPropagate_DefaultIsUnchanged	7.26
 TestDNSPropagate_OptInWritesResolvConf	8.71
 TestErrors_DriverOptIPMalformed	0.42
