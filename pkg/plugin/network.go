@@ -113,6 +113,20 @@ func validateModeOptions(opts DHCPNetworkOptions) error {
 		return err
 	}
 
+	// IPv4 only, for every mode (P-8, M7).
+	//
+	// Keyed on the DECODED FIELD and not on an option key. decodeOpts
+	// runs mapstructure with no MatchName, so the match is
+	// case-insensitive against the field name: `-o ipv6=true`,
+	// `-o IPv6=true` and `-o Ipv6=true` all set this one bool. A
+	// refusal that looked for a key string would enumerate two
+	// spellings and miss the third, and the network would be created
+	// with IPv6 silently doing nothing — which is what this refusal
+	// exists to prevent.
+	if opts.IPv6 {
+		return util.ErrIPv6Beta
+	}
+
 	switch opts.effectiveMode() {
 	case ModeMacvlan, ModeIPvlan:
 		if opts.Parent == "" {

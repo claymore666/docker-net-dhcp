@@ -125,24 +125,6 @@ type HealthResponse struct {
 	ClientStopFailures  int32 `json:"client_stop_failures"`
 	NAKsReceived        int32 `json:"naks_received"`
 	LedgerWriteFailures int32 `json:"ledger_write_failures"`
-	// DirectivesRefused / MountPrepFailures are the two places the DHCP
-	// client package declines to do what it was asked and carries on
-	// anyway (#780): a dhcpcd directive dropped for a control character
-	// in its value, and a per-client mount-namespace preparation command
-	// that failed. Neither is healthy-affecting — both describe an input
-	// that did not take effect, not a container without a renewal
-	// client. MountPrepFailures counts COMMANDS, not clients.
-	DirectivesRefused int32 `json:"directives_refused"`
-	MountPrepFailures int32 `json:"mount_prep_failures"`
-	// RouterAdvertGuardFailures counts steps of a DHCPv6 client's
-	// Router-Advertisement guard that failed (#875): the guard puts the
-	// container's kernel in charge of router discovery and prefix
-	// processing and stops dhcpcd turning that off again. Not
-	// healthy-affecting, and it counts STEPS, not clients. A suite that
-	// reads it non-zero is looking at a container whose IPv6 default
-	// route will stop being refreshed, which the plugin's own view
-	// cannot distinguish from a quiet segment.
-	RouterAdvertGuardFailures int32 `json:"router_advert_guard_failures"`
 	// ParentLinkWaits / ParentLinkWaitTimeouts cover contention on a
 	// shared parent NIC, where a macvlan and an ipvlan child cannot
 	// coexist (#486/#549). Waits means an operation queued and got
