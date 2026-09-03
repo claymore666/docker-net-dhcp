@@ -103,10 +103,6 @@ type DHCPClientOptions struct {
 	// VendorClass overrides option 60. Empty means VendorID.
 	VendorClass string
 
-	// Broadcast asks for an L2-broadcast reply (the BROADCAST flag,
-	// RFC 2131 section 2).
-	Broadcast bool
-
 	// Resume is a lease this identity held in a previous run of the
 	// plugin. Supplying it makes the first message on the wire an
 	// INIT-REBOOT DHCPREQUEST (RFC 2131 section 4.4.2) instead of a

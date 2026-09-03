@@ -95,7 +95,28 @@ func buildParams(opts *DHCPClientOptions, once bool) (proto.Params, error) {
 	}
 	p.Servers = proto.ServerPolicy{Allow: allow, Deny: deny}
 
-	p.Broadcast = opts.Broadcast
+	// Broadcast is NOT set from an option, and that is the fix for a
+	// regression this seam introduced rather than a simplification.
+	//
+	// proto.DefaultParams sets it TRUE and the library documents why:
+	// the flag exists for "a client that cannot receive unicast IP
+	// datagrams until its protocol software has been configured with an
+	// IP address", which is exactly ring 3's raw AF_PACKET socket on an
+	// unconfigured interface, and clearing it "produces a client that
+	// works against servers ignoring the flag and hangs against those
+	// honouring it".
+	//
+	// The plugin used to pass `mode == ModeIPvlan` here, carried across
+	// unchanged from 1.x. Under dhcpcd that expression ADDED the flag
+	// for ipvlan on top of whatever dhcpcd did by default (#243). Here
+	// it OVERWROTE a default of true, so bridge and macvlan endpoints
+	// cleared a flag the transport underneath them requires. The
+	// expression survived the swap; its meaning inverted.
+	//
+	// The fixture cannot see this: dnsmasq and Kea both answer an
+	// unconfigured client whether or not the flag is set, which is why
+	// every integration suite is green. The server that decides it is
+	// the one in production.
 
 	if once {
 		// D-1. proto.DefaultParams desyncs the first DISCOVER by 1–10

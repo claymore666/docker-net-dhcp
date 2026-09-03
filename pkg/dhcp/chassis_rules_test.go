@@ -11,6 +11,7 @@ import (
 
 	"github.com/claymore666/dhcp-golib/lease"
 	"github.com/claymore666/dhcp-golib/proto"
+	"github.com/claymore666/dhcp-golib/wire"
 )
 
 func testMAC(t *testing.T) net.HardwareAddr {
@@ -276,5 +277,96 @@ func TestClientIdentity_CarriesTheTypeByte(t *testing.T) {
 	// be a third identity, distinct from both.
 	if n := len(ClientIdentity(nil)); n != 0 {
 		t.Errorf("ClientIdentity(nil) is %d byte(s); an empty client-id must send no option 61", n)
+	}
+}
+
+// TestBuildParams_TheBroadcastFlagReachesTheWire is the fifth seam rule,
+// and the only one of the five that was already broken when it was
+// written.
+//
+// WHAT IT PINS. proto.DefaultParams sets Params.Broadcast TRUE, and the
+// library's own doc comment gives the reason: the BROADCAST flag of RFC
+// 2131 section 2 exists for "a client that cannot receive unicast IP
+// datagrams until its protocol software has been configured with an IP
+// address", and ring 3 is a raw AF_PACKET socket on an unconfigured
+// interface for EVERY mode -- there is one transport, chosen nowhere.
+// The library states the consequence of clearing it too: "a client that
+// works against servers ignoring the flag and hangs against those
+// honouring it".
+//
+// WHY IT BROKE. buildParams ended with `p.Broadcast = opts.Broadcast`,
+// and both plugin call sites passed `mode == ModeIPvlan`. That
+// expression is correct 1.x code: under dhcpcd it ADDED the flag for
+// ipvlan, whose slaves share the parent MAC, on top of dhcpcd's own
+// behaviour (#243). Carried across the seam onto a default of true it
+// INVERTED -- bridge and macvlan cleared a flag their transport
+// requires. Nothing failed, because the option's name and value were
+// unchanged on both sides of the swap; only the meaning of `false`
+// moved.
+//
+// WHY NO FIXTURE RUN COULD HAVE DECIDED IT. The brief asks for this row
+// to be settled by one measured fixture run. It cannot be. dnsmasq and
+// Kea both answer an unconfigured client whether or not the flag is
+// set, so the suite is green either way -- and it WAS green, on every
+// mode, with the flag cleared. A measurement whose two arms produce the
+// same observation is not a measurement of that variable. The oracle
+// here is the library's documented contract with its own transport, so
+// the test drives the flag onto the wire instead.
+func TestBuildParams_TheBroadcastFlagReachesTheWire(t *testing.T) {
+	mac := testMAC(t)
+
+	for _, tc := range []struct {
+		name string
+		once bool
+	}{
+		{"the CreateEndpoint one-shot", true},
+		{"the Join manager", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p, err := buildParams(&DHCPClientOptions{MAC: mac}, tc.once)
+			if err != nil {
+				t.Fatalf("buildParams: %v", err)
+			}
+			if !p.Broadcast {
+				t.Fatal("the chassis cleared Params.Broadcast. The library sets it true in " +
+					"DefaultParams for a raw-socket client and documents that clearing it " +
+					"hangs against any server that honours the flag; the fixture cannot " +
+					"see the difference, so nothing downstream of here will catch this.")
+			}
+		})
+	}
+
+	// The field is not the wire. Driven through the machine so that a
+	// library that stopped honouring Params.Broadcast is caught here
+	// rather than in production: the one-shot has no desync, so EvStart
+	// sends the DISCOVER in the same step.
+	p, err := buildParams(&DHCPClientOptions{MAC: mac}, true)
+	if err != nil {
+		t.Fatalf("buildParams: %v", err)
+	}
+	m, err := proto.New(p)
+	if err != nil {
+		t.Fatalf("proto.New: %v", err)
+	}
+	_, acts := m.Step(0, 0, proto.Simple(proto.EvStart))
+
+	var sent int
+	for _, a := range acts {
+		if a.Kind != proto.ActSend || a.Msg == nil {
+			continue
+		}
+		sent++
+		mt, _ := a.Msg.Type()
+		if a.Msg.Flags&wire.FlagBroadcast == 0 {
+			t.Errorf("%s went out with flags %#04x; the BROADCAST bit (%#04x) is clear, so a "+
+				"server honouring it will unicast the reply to an address this client does "+
+				"not have yet", mt, a.Msg.Flags, wire.FlagBroadcast)
+		}
+	}
+	if sent == 0 {
+		t.Fatal("EvStart emitted no ActSend, so the flag assertion above judged nothing. " +
+			"The one-shot's desync is zero and the DISCOVER is supposed to go out in this " +
+			"same step; a test that passes here having sent nothing is the failure this " +
+			"repository keeps meeting.")
 	}
 }

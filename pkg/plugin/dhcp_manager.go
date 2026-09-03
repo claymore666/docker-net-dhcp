@@ -1080,12 +1080,13 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 		Resume:   resumption.Lease,
 		Records:  m.recordStore(),
 		RecordID: m.recordID,
-		// ipvlan slaves share the parent's MAC; without a broadcast
-		// reply the server may unicast renewals to the parent and the
-		// kernel has no way to demux to the right slave. The library
-		// sets the BROADCAST flag of RFC 2131 section 2 from this, so
-		// unlike under dhcpcd (#243) it now reaches the wire.
-		Broadcast: m.opts.effectiveMode() == ModeIPvlan,
+		// No Broadcast option: the library sets the BROADCAST flag of
+		// RFC 2131 section 2 by default and the chassis no longer
+		// overrides it. The ipvlan reason this used to name (#243 --
+		// slaves share the parent MAC, so a unicast renewal cannot be
+		// demuxed to the right slave) is real and is now covered as a
+		// special case of the general one: every mode runs on a raw
+		// AF_PACKET socket. See the note in pkg/dhcp/params.go.
 		// Same client-id the initial DISCOVER used in CreateEndpoint, so
 		// renewals are seen as the same client by the server. Derived
 		// from the MAC the one-shot ran under rather than from the link
