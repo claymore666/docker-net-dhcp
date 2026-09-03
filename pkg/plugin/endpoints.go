@@ -500,13 +500,6 @@ type HealthResponse struct {
 	// often as it is not. They are the evidence trail (#700).
 	DHCPRoutesApplied          int32 `json:"dhcp_routes_applied"`
 	DHCPDefaultRouteSuperseded int32 `json:"dhcp_default_route_superseded"`
-	// LeaseTimeClamped counts option-51 lifetimes cut down before use
-	// as the outage watchdog's deadline. NOT healthy-affecting -- the
-	// clamp is the safe outcome and the lease time reported to
-	// operators is unchanged. Any non-zero value is worth reading: an
-	// over-long lease is how a server switches this plugin's only
-	// silent-lapse detector off (#701).
-	LeaseTimeClamped int32 `json:"lease_time_clamped"`
 	// MTURefused counts option-26 MTUs outside the range the plugin
 	// will apply; the link keeps the MTU it had. NOT healthy-affecting.
 	// Read it because the alternative was silent: a link clamped near
@@ -835,7 +828,6 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		NetnsPIDMismatches:           p.netnsPIDMismatches.Load(),
 		DHCPRoutesApplied:            p.dhcpRoutesApplied.Load(),
 		DHCPDefaultRouteSuperseded:   p.dhcpDefaultRouteSuperseded.Load(),
-		LeaseTimeClamped:             p.leaseTimeClamped.Load(),
 		MTURefused:                   p.mtuRefused.Load(),
 		TombstonesConsumed:           p.tombstonesConsumed.Load(),
 		LeaseChanged:                 leaseChangedV4 + leaseChangedV6,

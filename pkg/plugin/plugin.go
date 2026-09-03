@@ -420,6 +420,11 @@ type joinHint struct {
 	// labels, not endpoint options, to Join — so it rides the hint to
 	// become the Join response's DstName.
 	Ifname string
+	// RecordID is the durable lease record CreateEndpoint opened for
+	// this endpoint. Join writes its manager's events to that record
+	// and resumes its lease; an empty value means there is none and
+	// the Join manager DISCOVERs.
+	RecordID string
 }
 
 // Options carries the plugin's runtime knobs. Every field is sourced
@@ -431,16 +436,6 @@ type Options struct {
 	// AwaitTimeout caps the polling helpers (sandbox readiness, link
 	// rename, netns appearance). AWAIT_TIMEOUT, default 10s.
 	AwaitTimeout time.Duration
-
-	// OutageTick is how often the DHCP-outage watchdog re-checks, and
-	// so the resolution of dhcp_timeouts. OUTAGE_TICK, default 30s.
-	OutageTick time.Duration
-
-	// OutageGrace is the settling time before the watchdog will call an
-	// outage. It must stay comfortably above how long a healthy client
-	// takes to acquire its first lease — below that, ordinary start-up
-	// registers as an outage. OUTAGE_GRACE, default 25s.
-	OutageGrace time.Duration
 
 	// RequestCaptureDir, when non-empty, tees every libnetwork request
 	// body into that directory so an integration run can be turned into
@@ -456,8 +451,6 @@ type Options struct {
 // Plugin is the DHCP network plugin
 type Plugin struct {
 	awaitTimeout time.Duration
-	outageTick   time.Duration
-	outageGrace  time.Duration
 	startTime    time.Time
 	// instanceID identifies this plugin *process*. Every counter on
 	// HealthResponse lives in memory and returns to zero when the
@@ -787,17 +780,6 @@ type Plugin struct {
 	dhcpRoutesApplied          atomic.Int32
 	dhcpDefaultRouteSuperseded atomic.Int32
 
-	// leaseTimeClamped counts leases whose option-51 lifetime was too
-	// long to use as the outage watchdog's deadline and was cut to
-	// maxLeaseDeadline.
-	//
-	// Not healthy-affecting -- the clamp is the safe outcome, and the
-	// reported lease time is untouched. Read it anyway: a legitimate
-	// server does not grant a container a lease measured in years, and
-	// before the clamp one such ACK followed by silence left
-	// dhcp_timeouts at zero through a total outage (#701).
-	leaseTimeClamped atomic.Int32
-
 	// mtuRefused counts DHCP option-26 MTUs outside the range
 	// propagateMTU will apply, which leave the link's MTU alone.
 	//
@@ -1101,6 +1083,18 @@ type Plugin struct {
 	// audit_log should alert on the counter instead.
 	ledger              *leaseLedger
 	ledgerWriteFailures atomic.Int32
+
+	// records is the durable lease record: the file a plugin restart
+	// reads to resume a lease as INIT-REBOOT instead of DISCOVERing a
+	// new address. Exactly one per process, and the one-writer
+	// guarantee (G-10) is constructed inside dhcp.OpenRecords, not
+	// asserted here.
+	//
+	// nil ONLY in unit tests that build a Plugin literal. NewPlugin
+	// refuses to return without one, because a plugin that cannot
+	// write the record is a plugin every container loses its address
+	// to at the next upgrade, and it would do it silently.
+	records *dhcp.Records
 }
 
 // storeJoinHint records the state collected during CreateEndpoint so
@@ -1999,12 +1993,6 @@ func NewPlugin(opts Options) (*Plugin, error) {
 	if opts.AwaitTimeout <= 0 {
 		opts.AwaitTimeout = defaultAwaitTimeout
 	}
-	if opts.OutageTick <= 0 {
-		opts.OutageTick = defaultOutageTick
-	}
-	if opts.OutageGrace <= 0 {
-		opts.OutageGrace = defaultOutageGrace
-	}
 	client, err := docker.NewClientWithOpts(
 		docker.WithHost("unix:///run/docker.sock"),
 		docker.WithAPIVersionNegotiation(),
@@ -2019,8 +2007,6 @@ func NewPlugin(opts Options) (*Plugin, error) {
 
 	p := Plugin{
 		awaitTimeout: opts.AwaitTimeout,
-		outageTick:   opts.OutageTick,
-		outageGrace:  opts.OutageGrace,
 		startTime:    time.Now(),
 		instanceID:   newInstanceID(),
 
@@ -2031,6 +2017,26 @@ func NewPlugin(opts Options) (*Plugin, error) {
 		endpointFingerprints: make(map[string]endpointFingerprint),
 	}
 	p.ledger = newLeaseLedger(filepath.Join(stateDir, ledgerFileName), &p.ledgerWriteFailures)
+
+	// Opened BEFORE recovery below, which reads it. Fatal on failure,
+	// and the commonest failure is the one that must be fatal: a second
+	// plugin process holding the lock, mid-upgrade. Two processes on one
+	// record file interleave their sequence numbers, each rejects the
+	// other's events as stale, and the endpoint that survives is
+	// whichever wrote last — silently, because a rejected event is
+	// folded, counted and dropped rather than returned.
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		return nil, fmt.Errorf("failed to create state dir %v: %w", stateDir, err)
+	}
+	records, err := dhcp.OpenRecords(filepath.Join(stateDir, recordFileName), p.instanceID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open the lease record: %w", err)
+	}
+	p.records = records
+	if d := records.Damage(); d.TornTail > 0 || d.Skipped > 0 {
+		log.WithFields(log.Fields{"torn_tail": d.TornTail, "skipped": d.Skipped}).
+			Warn("The lease record has unreadable lines; endpoints they described will be recovered from Docker instead of resumed")
+	}
 
 	// Routing table, and the RPCs deliberately left off it: routes.go.
 	mux := p.newServeMux()

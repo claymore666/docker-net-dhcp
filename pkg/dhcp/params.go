@@ -31,6 +31,21 @@ const VendorID = "docker-net-dhcp"
 // different key and hands out a second address from the pool.
 const clientIDTypeOpaque = 0x00
 
+// ClientIdentity is the option-61 value AS SENT: the chassis's type
+// byte followed by the caller's payload.
+//
+// Exported because the durable record stores the identity rather than
+// re-deriving it (D10), and it must store what went on the wire. A
+// record that kept the payload alone would be a record of a different
+// client than the one the server filed the lease under, and the two
+// would only be seen to differ when a restart got a second address.
+func ClientIdentity(clientID []byte) []byte {
+	if len(clientID) == 0 {
+		return nil
+	}
+	return append([]byte{clientIDTypeOpaque}, clientID...)
+}
+
 // buildParams turns one endpoint's options into the protocol parameter
 // set for one manager instance.
 //
@@ -52,9 +67,7 @@ func buildParams(opts *DHCPClientOptions, once bool) (proto.Params, error) {
 	if p.VendorClass == "" {
 		p.VendorClass = VendorID
 	}
-	if len(opts.ClientID) > 0 {
-		p.ClientID = append([]byte{clientIDTypeOpaque}, opts.ClientID...)
-	}
+	p.ClientID = ClientIdentity(opts.ClientID)
 
 	// register_dns arrives as a mode string because dhcpcd spelled it
 	// that way ("both"); what it means is "ask the server to register

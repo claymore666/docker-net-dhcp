@@ -77,14 +77,13 @@ func TestCountingWrappers_AreTheOnlyCallers(t *testing.T) {
 				"docs/reference.md tells operators that counter is the only thing distinguishing that " +
 				"refusal from a slow container start",
 		},
-		{
-			callee:  "observe",
-			wrapper: "observeLease",
-			why: "lease_time_clamped is counted around the fold, so a second caller would take a clamped " +
-				"lease time into the tracker without counting the clamp -- and the clamp is the only " +
-				"signal that a server's lease time was overridden, which /metrics publishes and " +
-				"nothing else records",
-		},
+		// The observe/observeLease row went with the outage watchdog.
+		// lease_time_clamped counted a lease lifetime cut down to stay
+		// usable as a synthetic deadline; the library owns the lease's
+		// own expiry and represents an infinite lease as a zero Expire
+		// (seam D-10), so there is no lifetime to clamp and no counter
+		// to guard. The row is not merely unreachable — its callee,
+		// its wrapper and its counter are all deleted.
 		{
 			callee:  "netnsPIDMismatches",
 			wrapper: "openSandboxNetNS",
@@ -109,7 +108,7 @@ func TestCountingWrappers_AreTheOnlyCallers(t *testing.T) {
 				"separating \"this segment is quiet\" from \"nothing IPv6 could ever have arrived on this " +
 				"link\", which otherwise present identically as DHCPv6 timeouts (#868)",
 		},
-		// The four rows above cost one line each, which was the point
+		// The rows above cost one line each, which was the point
 		// of the table: the next instance of this shape adds a row
 		// rather than another near-identical test.
 		//

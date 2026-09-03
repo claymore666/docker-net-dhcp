@@ -116,6 +116,55 @@ type DHCPClientOptions struct {
 	// DHCPDISCOVER — the whole of what makes an address survive a
 	// plugin restart rather than being re-offered by luck.
 	Resume *lease.Lease
+
+	// Records and RecordID are the durable record this manager writes
+	// its own events and counters to.
+	//
+	// THE MANAGER WRITES ITS OWN HALF AND NOTHING ELSE. Which phase the
+	// record is in — created, joined, left, retained — is the plugin's
+	// decision and is written there; what happened on the wire, and the
+	// counters that go with it, are known only here. Splitting it that
+	// way is what keeps a manager id unique per MANAGER INSTANCE: the
+	// id is minted where the manager is built, so there is no call site
+	// that can hand two managers one id.
+	//
+	// A nil Records writes nothing. That is the unit-test shape, not a
+	// production one: an endpoint with no record cannot be resumed
+	// after a restart, and the plugin refuses to start without one.
+	Records  *Records
+	RecordID string
+
+	// paramsWritten is set once the Params snapshot has ridden an
+	// event, so the second and later events do not repeat it.
+	paramsWritten bool
+	params        proto.Params
+}
+
+// record writes one manager event, if this manager has a record.
+func (o *DHCPClientOptions) record(ev lease.Event) {
+	if o.Records == nil || o.RecordID == "" {
+		return
+	}
+	var params *proto.Params
+	if !o.paramsWritten {
+		params = &o.params
+		o.paramsWritten = true
+	}
+	if err := o.Records.Observed(o.RecordID, ev, params); err != nil {
+		log.WithError(err).WithField("record", o.RecordID).
+			Warn("Could not write the lease record; a plugin restart will not resume this lease")
+	}
+}
+
+// count writes one manager's counter snapshot under its own id.
+func (o *DHCPClientOptions) count(manager string, s lease.Stats) {
+	if o.Records == nil || o.RecordID == "" || manager == "" {
+		return
+	}
+	if err := o.Records.Counted(o.RecordID, manager, s); err != nil {
+		log.WithError(err).WithField("record", o.RecordID).
+			Warn("Could not write the manager's counters to the lease record")
+	}
 }
 
 // RAObservation is what a router advertisement told us about a segment.
@@ -156,10 +205,20 @@ func GetIP(ctx context.Context, iface string, opts *DHCPClientOptions) (Info, RA
 	if err != nil {
 		return Info{}, ra, err
 	}
+	opts.params = params
 
 	client, err := newLibClient(iface, params, opts)
 	if err != nil {
 		return Info{}, ra, err
+	}
+
+	// One id for THIS manager instance. The Join manager that follows
+	// gets its own from the same mint, which is what stops the record
+	// reading the second manager's counters as a continuation of the
+	// first's (lease.RecordEvent.Manager).
+	manager := ""
+	if opts.Records != nil {
+		manager = opts.Records.NewManagerID()
 	}
 
 	runCtx, cancel := context.WithCancel(ctx)
@@ -183,6 +242,7 @@ func GetIP(ctx context.Context, iface string, opts *DHCPClientOptions) (Info, RA
 				got = true
 				break
 			}
+			opts.record(ev)
 			switch ev.Kind {
 			case lease.Acquired:
 				info, _ = infoFromLease(ev.Lease, time.Now())
@@ -199,16 +259,25 @@ func GetIP(ctx context.Context, iface string, opts *DHCPClientOptions) (Info, RA
 	}
 
 	cancel()
-	// Drain so the manager's own Lost{ReasonStopped} cannot be
-	// delivered to anybody, and wait for Run to return before the
-	// caller moves the link: the transport's socket is closed there.
-	go func() {
-		for range client.Events() {
-		}
-	}()
+	// Drain IN THE FOREGROUND, and record what is drained.
+	//
+	// The tail of this manager's life is exactly one event that matters:
+	// the Lost{ReasonStopped} the cancel above produces. It is not a
+	// lease loss — it is this function's own shutdown reported back —
+	// and the fold's OpLost arm is the one place that knows the
+	// difference. It has to be on disk BEFORE this function returns,
+	// because the Join manager reads the record the moment CreateEndpoint
+	// does; a background drain would race it and the resume would
+	// sometimes see a lease and sometimes not.
+	//
+	// Run closes the event channel on its way out, so this terminates.
+	for ev := range client.Events() {
+		opts.record(ev)
+	}
 	if err := <-done; err != nil && !errors.Is(err, context.Canceled) {
 		log.WithError(err).WithField("iface", iface).Debug("Acquisition manager returned an error")
 	}
+	opts.count(manager, client.Stats())
 
 	if info.IP == "" {
 		if lastE == nil {
@@ -228,10 +297,11 @@ type DHCPClient struct {
 	opts   DHCPClientOptions
 	params proto.Params
 
-	client *dhcpruntime.Client
-	cancel context.CancelFunc
-	done   chan error
-	events chan Event
+	client  *dhcpruntime.Client
+	cancel  context.CancelFunc
+	done    chan error
+	events  chan Event
+	manager string
 }
 
 // NewDHCPClient prepares a persistent client. Nothing is opened until
@@ -245,7 +315,9 @@ func NewDHCPClient(iface string, opts *DHCPClientOptions) (*DHCPClient, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &DHCPClient{iface: iface, opts: *opts, params: params}, nil
+	copied := *opts
+	copied.params, copied.paramsWritten = params, false
+	return &DHCPClient{iface: iface, opts: copied, params: params}, nil
 }
 
 // Start opens the client in the endpoint's namespace and begins
@@ -256,6 +328,9 @@ func (c *DHCPClient) Start() (chan Event, error) {
 		return nil, err
 	}
 	c.client = client
+	if c.opts.Records != nil {
+		c.manager = c.opts.Records.NewManagerID()
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	c.cancel = cancel
@@ -286,10 +361,16 @@ func (c *DHCPClient) Start() (chan Event, error) {
 //     it arrives on every clean Leave.
 func (c *DHCPClient) translate() {
 	defer close(c.events)
+	defer func() { c.opts.count(c.manager, c.Stats()) }()
 
 	renewedAt := time.Time{}
 	for ev := range c.client.Events() {
 		now := time.Now()
+		// Written before it is translated. The record is the thing a
+		// restart reads, and translate() drops two kinds on the floor
+		// deliberately — the coalesced Changed and the stop — neither
+		// of which the record may lose.
+		c.opts.record(ev)
 		info, dropped := infoFromLease(ev.Lease, now)
 
 		var out Event

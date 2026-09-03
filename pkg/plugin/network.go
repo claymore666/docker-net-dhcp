@@ -982,6 +982,12 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 	if err := netlink.LinkAdd(hostLink); err != nil {
 		return res, fmt.Errorf("failed to create veth pair: %w", err)
 	}
+	// Hoisted out of the closure so the failure path below can close
+	// the record it opened. A CREATED record whose CreateEndpoint
+	// failed holds no lease and so offers nothing to resume, but it is
+	// a line in an append-only file that nothing would ever remove.
+	var recordID string
+
 	if err := func() error {
 		if err := netlink.LinkSetUp(hostLink); err != nil {
 			return fmt.Errorf("failed to set host side link of veth pair up: %w", err)
@@ -1038,6 +1044,17 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 		// v6 binding always has; see resolveClientID (#371). Same link,
 		// same MAC the DUID-LL/IAID below is pinned to.
 		clientID := resolveClientID(opts, r.EndpointID, ctrLink.Attrs().HardwareAddr)
+
+		// The CREATED record (D10). Identity is generated once, here,
+		// and written with the record: the option-61 value AS SENT,
+		// type byte included, because that is what the server files
+		// the lease under. The one-shot below writes its own events to
+		// this record, and the Join manager reads them back as an
+		// INIT-REBOOT rather than starting a fresh DISCOVER.
+		recordID = p.recordCreated(r.NetworkID, ctrLink.Attrs().HardwareAddr, dhcp.ClientIdentity(clientID))
+		p.updateJoinHint(r.EndpointID, func(hint *joinHint) {
+			hint.RecordID = recordID
+		})
 		initialIP := func(v6 bool) error {
 			v6str := ""
 			if v6 {
@@ -1064,7 +1081,9 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 				// MAC so this one-shot and the persistent client (same
 				// link, same MAC, post-move) share one identity and the
 				// server returns a single binding (#152).
-				MAC: ctrLink.Attrs().HardwareAddr,
+				MAC:      ctrLink.Attrs().HardwareAddr,
+				Records:  p.records,
+				RecordID: recordID,
 			}
 			// Hint the preferred address per family: `request ADDR`
 			// for v4, `ia_na / ADDR` for v6 (#213). Empty values omit
@@ -1135,6 +1154,7 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 	}(); err != nil {
 		// Be sure to clean up the veth pair if any of this fails.
 		// Best-effort cleanup; ignore secondary error.
+		p.closeRecord(recordID)
 		_ = netlink.LinkDel(hostLink)
 		return res, err
 	}
@@ -1282,8 +1302,19 @@ func (p *Plugin) DeleteEndpoint(ctx context.Context, r DeleteEndpointRequest) er
 	// that this one container does not keep its MAC across a restart,
 	// which is the correct price for a hostname the plugin would not
 	// put in a DHCP packet.
-	if fp, ok := p.takeEndpoint(r.EndpointID); ok && modeKnown && mode != ModeIPvlan && !fp.HostnameRefused {
-		p.addTombstone(r.NetworkID, fp.Hostname, fp.MAC, fp.IPv4, fp.IPv6)
+	if fp, ok := p.takeEndpoint(r.EndpointID); ok {
+		if modeKnown && mode != ModeIPvlan && !fp.HostnameRefused {
+			p.addTombstone(r.NetworkID, fp.Hostname, fp.MAC, fp.IPv4, fp.IPv6)
+		}
+		// RETAINED, on every mode and every hostname decision, which is
+		// wider than the tombstone above deliberately. The tombstone
+		// decides whether the next container MAY INHERIT this MAC, and
+		// the skips above are about that inheritance being unsafe. The
+		// record's tombstone phase decides when this record stops being
+		// the answer for this identity, and leaving a record in JOINED
+		// after its endpoint is gone would have plugin-restart recovery
+		// resume a lease for a container that no longer exists.
+		p.retainRecordFor(r.NetworkID, fp.MAC)
 	}
 
 	if mode == ModeMacvlan || mode == ModeIPvlan {
@@ -1862,6 +1893,14 @@ func (p *Plugin) Leave(ctx context.Context, r LeaveRequest) error {
 	}
 
 	stopErr := manager.StopForLeave()
+
+	// LEFT: the manager stopped and the last lease snapshot stays.
+	// Written on the error path too, because what it records is that
+	// no manager is renewing this lease any more, and that is true
+	// whether the stop was clean or wedged. NO RELEASE goes on the
+	// wire (D-7, #800) — the address is left to expire on the server's
+	// clock, exactly as any other host on the segment leaves it.
+	p.recordLeft(manager.recordID)
 
 	// Refresh the endpoint fingerprint with the most recent v4/v6 IPs
 	// the persistent client saw, *whether or not Stop succeeded*. Stop

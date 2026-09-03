@@ -76,10 +76,6 @@ net_dhcp_dhcp_routes_applied_total 1196133
 # TYPE net_dhcp_dhcp_default_route_superseded_total counter
 net_dhcp_dhcp_default_route_superseded_total 6302980
 
-# HELP net_dhcp_lease_time_clamped_total Option-51 lease lifetimes cut down before use as the outage watchdog's deadline. The reported lease time is unchanged. Non-zero means a server granted a container a lease long enough to switch silent-lapse detection off.
-# TYPE net_dhcp_lease_time_clamped_total counter
-net_dhcp_lease_time_clamped_total 7936126
-
 # HELP net_dhcp_mtu_refused_total Option-26 MTUs outside the range the plugin will apply; the container link keeps the MTU it had.
 # TYPE net_dhcp_mtu_refused_total counter
 net_dhcp_mtu_refused_total 3489289
