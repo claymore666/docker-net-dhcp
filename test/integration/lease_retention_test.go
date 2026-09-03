@@ -27,6 +27,20 @@ import (
 // early exit, because there is no positive event to wait for.
 const leaseRetentionSettle = 5 * time.Second
 
+// leaseRetentionRebootDeadline bounds the wait for the FIRST packet a
+// resumed endpoint puts on the wire after a plugin recycle, and
+// leaseRetentionPoll is that wait's interval.
+//
+// Neither is a property. The deadline only has to outlast a plugin
+// start on a loaded runner; the test asserts on WHICH message arrived,
+// never on how long it took, and an expired deadline is reported by the
+// positive control ("the resumed client never spoke at all") rather
+// than by the property.
+const (
+	leaseRetentionRebootDeadline = 45 * time.Second
+	leaseRetentionPoll           = 250 * time.Millisecond
+)
+
 // TestLeaseRetention_NothingEverReleases is #800, asserted where it can
 // actually be seen.
 //
@@ -269,13 +283,35 @@ func TestLeaseRetention_ARestartRebootsRatherThanDiscovers(t *testing.T) {
 	harness.WaitPluginHealth(t, ctx, cli, 15*time.Second)
 	t.Log("plugin recycled")
 
-	// Spent in full. The INIT-REBOOT goes out as the Join manager
-	// starts, but "no DISCOVER" is an ABSENCE and an absence declared
-	// early is a pass the tree has not earned.
-	time.Sleep(leaseRetentionSettle)
-
-	request := fixture.CountLogLines("DHCPREQUEST", mac) - requestBefore
-	discover := fixture.CountLogLines("DHCPDISCOVER", mac) - discoverBefore
+	// WAIT FOR THE FIRST PACKET, NOT FOR A DURATION.
+	//
+	// "No DISCOVER" is an absence, and an absence declared early is a
+	// pass the tree has not earned — so the obvious shape is to sleep
+	// long enough and then look. It is the wrong shape twice. A fixed
+	// sleep is too short on a loaded runner, which turns the control
+	// below red for a reason that has nothing to do with INIT-REBOOT;
+	// and it is a guess in the other direction too, because what this
+	// test actually wants to know is WHICH MESSAGE the resumed client
+	// sent FIRST. RFC 2131 4.4.2 puts the DHCPREQUEST first on the
+	// reboot path and 4.4.1 puts the DHCPDISCOVER first on the init
+	// path, so the first packet to appear IS the verdict, and waiting
+	// past it buys nothing.
+	//
+	// So: poll both counts against one deadline and stop at whichever
+	// moves. The deadline is generous because it is not the property —
+	// it only has to outlast a slow plugin start; nothing is asserted
+	// from its length, and it is the CONTROL below that fails if it
+	// expires with the wire still silent.
+	var request, discover int
+	deadline := time.Now().Add(leaseRetentionRebootDeadline)
+	for {
+		request = fixture.CountLogLines("DHCPREQUEST", mac) - requestBefore
+		discover = fixture.CountLogLines("DHCPDISCOVER", mac) - discoverBefore
+		if request > 0 || discover > 0 || !time.Now().Before(deadline) {
+			break
+		}
+		time.Sleep(leaseRetentionPoll)
+	}
 	t.Logf("after the recycle: +%d DHCPREQUEST, +%d DHCPDISCOVER for %s", request, discover, mac)
 
 	if request < 1 {
