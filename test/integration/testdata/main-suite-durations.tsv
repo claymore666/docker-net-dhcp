@@ -27,7 +27,11 @@
 #                TestDHCPv6_NoAddressModes_RefuseTheEndpoint         20
 #                TestInterfaceName_ProbeSkipPrecedesTheEphemeralFixture  11
 #                TestMultiNetwork_SameSubnetRefused                   8
-#   corpus     879.2s across 70 tests; mean 12.56s
+#   corpus     879.2s across 70 tests; mean 12.56s AS SAMPLED. Ten of
+#              those rows have since been removed together with the
+#              DHCPv6 tests they costed -- see the 2.0-beta stanza
+#              below -- so the table now holds 65 rows, 677.0s, mean
+#              10.42s.
 #
 # Runs sampled:
 #   33146366330 33145891905 33145646801 33145007735 33144508563 
@@ -35,16 +39,36 @@
 #   33142691992 33126731828 33126471548 33125634261 33124986791 
 #   33124593887 33124518969 33124422853 33123576221 33122097314 
 #   33119628132 33119366240 #
-# FOUR ROWS COME FROM THIS BRANCH, NOT FROM THE 2026-08-28 CORPUS (#868).
-# The DHCPv6 no-address-mode work adds three tests and renames the fourth
-# (TestDHCPv6_NoAddressModes_RefuseTheEndpoint, 47.34, became
-# _StartTheEndpoint once the modes started rather than being refused), so
-# none of them appears in the runs sampled above. Their figures are the
-# median of the same `--- PASS: <name> (<n>s)` lines over the three
-# successful Integration runs this branch produced -- 33119628132,
-# 33126731828 and 33148580807 -- n=3 rather than n=22, spreads of 1.5s,
-# 1.4s, 1.8s and 1.7s respectively. Refresh them from the main corpus
-# once they have run on dev for a window.
+# TEN ROWS WERE REMOVED, AND TWO ARE INFERRED RATHER THAN MEASURED (2.0 beta).
+# The 2.0 beta leases through the in-house DHCP library, which speaks
+# DHCPv4 only; IPv6 is refused at CreateNetwork until M7. The ten tests
+# that drove a v6 client are retired -- named one by one in
+# test/integration/ipv6_refused_test.go and in the commit that retired
+# them -- so their rows went with them:
+#   TestLifecycleMacvlan_IPv6_GoldenPath  TestLifecycleBridge_IPv6_GoldenPath
+#   TestTombstoneRestart_PreservesIPv6    TestLeaseRenewIPv6_HonorsT1
+#   TestIPv6_DNS6Propagation              TestDUID_PersistsAcrossPluginRestart
+#   TestDHCPv6_NoAddressModes_StartTheEndpoint
+#   TestDHCPv6_Stateless_ConfigurationReachesTheContainer
+#   TestDHCPv6_Managed_StillRequiresALease
+#   TestDHCPv6_Managed_ServerSilent_IsStillFatal
+# That also retires the #868 stanza this replaces: all four of the rows
+# it described were among the ten.
+#
+# The two rows that replace them are INFERRED, not measured, and are
+# marked here rather than left to look like the rest of the file. This
+# branch cannot run the suite -- the integration lane is CI-only -- so
+# there is no `--- PASS:` line to take a median of yet. Each figure is
+# read off the nearest MEASURED row of the same shape:
+#   TestIPv6_RefusedAtCreateWithTheMilestoneNamed  0.10
+#     one refused create and one inspect, no fixture and no container.
+#     Siblings: TestErrors_NetworkCreateValidation 0.04 (a table of
+#     refused creates), TestErrors_ParentIsBridge 0.08.
+#   TestIPv6_TheV4PathIsUnaffectedByTheRefusal     5.00
+#     one macvlan network that must succeed, no container. Sibling:
+#     TestPreflightProbe_PassesOnReachableServer 5.00.
+# Refresh both from the first green Integration run that produces suite
+# logs on this branch, by the recipe at the foot of this header.
 #
 # ONE ROW IS A SKIP COST, NOT A RUN COST.
 # TestInterfaceName_MultiNetworkDeterministic skipped in all 22 samples —
@@ -98,13 +122,8 @@ TestClientID_OverrideAppearsInLeaseFile	7.16
 TestConcurrency_DistinctLeases	27.35
 TestConcurrentRenew_SameInterfaceNameBothRenew	32.15
 TestConflictProbe_ReclaimsLeftoverRoute	13.73
-TestDHCPv6_Managed_ServerSilent_IsStillFatal	18.14
-TestDHCPv6_Managed_StillRequiresALease	10.74
-TestDHCPv6_NoAddressModes_StartTheEndpoint	41.03
-TestDHCPv6_Stateless_ConfigurationReachesTheContainer	12.46
 TestDNSPropagate_DefaultIsUnchanged	7.26
 TestDNSPropagate_OptInWritesResolvConf	8.71
-TestDUID_PersistsAcrossPluginRestart	13.86
 TestErrors_DriverOptIPMalformed	0.42
 TestErrors_NetworkCreateValidation	0.04
 TestErrors_ParentDown	0.01
@@ -114,20 +133,18 @@ TestExtraOptions_SearchListInResolvConf	8.45
 TestExtraOptions_WPADAndTimezoneLogged	7.28
 TestFQDN_RegistersInDNS	8.36
 TestHealthCounters_ObtainedAndReleased	8.00
-TestIPv6_DNS6Propagation	24.31
+TestIPv6_RefusedAtCreateWithTheMilestoneNamed	0.10
+TestIPv6_TheV4PathIsUnaffectedByTheRefusal	5.00
 TestInterfaceName_InvalidRejected	0.41
 TestInterfaceName_MultiNetworkDeterministic	7.41
 TestInterfaceName_PluginHonorsOption	7.04
 TestInterfaceName_ProbeSkipPrecedesTheEphemeralFixture	0.00
 TestJoinNoContainer_AddressIsHeldUntilItExpires	18.48
-TestLeaseRenewIPv6_HonorsT1	85.21
 TestLeaseRenew_HonorsT1	22.52
 TestLeaseRetention_NothingEverReleases	26.21
 TestLifecycleBridge_GoldenPath	7.73
-TestLifecycleBridge_IPv6_GoldenPath	9.87
 TestLifecycleIPvlan_GoldenPath	7.29
 TestLifecycleMacvlan_GoldenPath	7.53
-TestLifecycleMacvlan_IPv6_GoldenPath	10.09
 TestMTUPropagate_DefaultIsUnchanged	7.46
 TestMTUPropagate_OptInSetsLinkMTU	8.30
 TestMetrics_SocketServesTheFullSurface	0.01
@@ -152,7 +169,6 @@ TestStaticIP_DriverOpt	3.75
 TestStaticRoutes_BridgeCopiesToContainer	7.29
 TestStaticRoutes_MacvlanCopiesToContainer	6.94
 TestStaticRoutes_MacvlanSkipRoutesOpt	7.55
-TestTombstoneRestart_PreservesIPv6	16.69
 TestTombstoneRestart_PreservesMACAndIP	11.28
 TestV6Fixture_ModesComeUpAsRequested	9.15
 TestVendorClass_DefaultUsesUntaggedGateway	7.33

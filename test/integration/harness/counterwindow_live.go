@@ -87,12 +87,19 @@ func BeginCounterWindow(t *testing.T, ctx context.Context, cli *docker.Client, c
 // SkipRecycleCheck — is exactly what CLAUDE.md's "never weaken a
 // failing test" rule forbids, and what #413's gate should reject.
 //
-// The three tests that legitimately need it are the ones that end the
-// plugin process on purpose: TestRecovery_PluginDisableEnable_PreservesEndpoint,
-// TestIPv6_MACSurvivesPluginRecycle and TestRecovery_DaemonRestart_PreservesContainer.
-// Counter deltas across such a window are void by construction; what
-// those tests assert is that the endpoint survived, not that a number
-// moved.
+// It is carried by ONE test today — TestRecovery_PluginDisableEnable_PreservesEndpoint,
+// which disables and re-enables the plugin. Counter deltas across such
+// a window are void by construction; what that test asserts is that
+// the endpoint survived, not that a number moved.
+//
+// The list this replaces named three tests and was wrong about two of
+// them: TestIPv6_MACSurvivesPluginRecycle has never existed in this
+// tree under that name, and TestRecovery_DaemonRestart_PreservesContainer
+// does exist but opens no counter window at all. An enumeration in a
+// comment is an unrun checklist, so the fix is not a corrected list of
+// three — it is to state the property (a window that spans a
+// deliberate plugin restart) and let `grep -rn ExpectRecycle` answer
+// the question of who carries it.
 func (w *CounterWindow) ExpectRecycle() *CounterWindow {
 	w.expectRecycle = true
 	return w

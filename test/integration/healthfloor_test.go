@@ -38,9 +38,8 @@ const healthFloorBudget = 30 * time.Second
 // Two honest limits, stated here rather than discovered later:
 //
 //   - The counters reset when the plugin process does, and
-//     TestRecovery_PluginDisableEnable_PreservesEndpoint,
-//     TestIPv6_..._MACSurvivesPluginRecycle and the daemon-restart
-//     test all recycle it. So this is "no fault since the last plugin
+//     TestRecovery_PluginDisableEnable_PreservesEndpoint and the
+//     daemon-restart test both recycle it. So this is "no fault since the last plugin
 //     restart in this run", not "no fault in the whole run". The
 //     failure suite has no such test, so there it does cover
 //     everything. The per-test deltas cover what the reset erases.
