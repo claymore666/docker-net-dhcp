@@ -116,7 +116,34 @@ if ! git -C "$ROOT" rev-parse --git-dir >/dev/null 2>&1; then
          "be read. This is not the same as finding no Go files there." >&2
     exit 2
 fi
-mapfile -t gofiles < <(git -C "$ROOT" ls-files '*.go' 2>/dev/null)
+# THE PINNED LIBRARY COPY IS NOT THIS REPO'S SOURCE (D21).
+#
+# internal/dhcp-golib/ is a copy of ONE COMMIT of
+# github.com/claymore666/dhcp-golib, made by scripts/sync-dhcp-golib.sh
+# and named by the SHA in internal/dhcp-golib/SOURCE. Editing a file in
+# it to satisfy a gate here would falsify that SOURCE line -- the copy
+# would no longer be the commit it claims to be -- and the next sync
+# would revert the edit without saying so. The library carries this
+# same class of check in its own lane, over its own tree.
+#
+# So its files are SKIPPED, and the skip is COUNTED AND ANNOUNCED on
+# every run, pass or fail: an exemption a green run does not mention is
+# an exemption nobody re-examines. The directory goes away at M9 with
+# the published module and the count falls to zero on its own.
+VENDORED_PREFIX="${LINT_TAG_VENDORED_PREFIX:-internal/dhcp-golib/}"
+mapfile -t allgo < <(git -C "$ROOT" ls-files '*.go' 2>/dev/null)
+gofiles=()
+skipped=0
+for f in "${allgo[@]}"; do
+    case "$f" in
+        "$VENDORED_PREFIX"*) skipped=$((skipped + 1)) ;;
+        *) gofiles+=("$f") ;;
+    esac
+done
+if [ "$skipped" -ne 0 ]; then
+    echo "note: $skipped Go file(s) under $VENDORED_PREFIX not inspected here;" \
+         "that tree is a pinned copy of another repository and is linted in its own lane."
+fi
 if [ "${#gofiles[@]}" -eq 0 ]; then
     echo "FAIL  no tracked .go files under $ROOT. A coverage rule over an" \
          "empty population is satisfied by emptying the population." >&2

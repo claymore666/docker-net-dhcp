@@ -55,6 +55,55 @@ run_case "a pipe into grep -${Q} is reported" 1 \
     "scripts/x.sh:::set -uo pipefail
 if git grep -n foo | grep -${Q}E 'bar'; then echo hi; fi"
 
+# --- the pinned-library exemption (D21) -------------------------------
+#
+# internal/dhcp-golib/ is a copy of another repository at a fixed SHA
+# and is checked in that repository's own lane; editing a file there to
+# satisfy this gate would falsify internal/dhcp-golib/SOURCE. The three
+# cases below are the three ways an exemption goes wrong.
+
+# 1. It applies where it is meant to.
+run_case "a bad pipeline inside the pinned library copy is exempt" 0 \
+    "scripts/real.sh:::set -uo pipefail
+echo ok" \
+    "internal/dhcp-golib/scripts/x.sh:::set -uo pipefail
+if git grep -n foo | grep -${Q}E 'bar'; then echo hi; fi"
+
+# 2. It is anchored at the repository root, so a directory of the same
+#    name further down is still this repo's source and still inspected.
+run_case "the same path deeper in the tree is NOT exempt" 1 \
+    "scripts/internal/dhcp-golib/x.sh:::set -uo pipefail
+if git grep -n foo | grep -${Q}E 'bar'; then echo hi; fi"
+
+# 3. THE ONE THAT MATTERS. A universal gate is satisfied by emptying
+#    its domain: if every shell file in the tree were exempt, this gate
+#    would report a clean pass having read nothing. It must refuse
+#    instead, and exit 2 is "cannot see", not "nothing wrong".
+run_case "a tree whose only shell files are exempt is a refusal, not a pass" 2 \
+    "internal/dhcp-golib/scripts/x.sh:::set -uo pipefail
+echo ok"
+
+# The exemption is ANNOUNCED. A hole a green run does not mention is a
+# hole nobody re-examines, so the count is printed on every run.
+adir=$(mktemp -d)
+(
+    cd "$adir" || exit 2
+    git init -q .; git config user.email t@t; git config user.name t
+    git config commit.gpgsign false
+    mkdir -p scripts internal/dhcp-golib
+    printf 'set -uo pipefail\necho ok\n' > scripts/real.sh
+    printf 'set -uo pipefail\necho ok\n' > internal/dhcp-golib/x.sh
+    git add -A; git commit -qm fixture
+) >/dev/null 2>&1
+aout=$(PIPE_ROOT="$adir" bash "$GATE" 2>&1)
+rm -rf "$adir"
+if printf '%s\n' "$aout" | grep -F 'not inspected here' >/dev/null; then
+    ok "the exempt count is announced on a passing run"
+else
+    no "the exempt count is announced on a passing run"
+    printf '      %s\n' "$aout" >&2
+fi
+
 # The fix, which must read as clean or nobody can satisfy the gate.
 run_case "the redirect form is clean" 0 \
     "scripts/x.sh:::set -uo pipefail

@@ -72,7 +72,12 @@ mkdir -p "$TMP/tree"
 git -C "$SRC" archive --format=tar "$SHA" | tar -x -C "$TMP/tree"
 
 rm -rf "$TMP/tree/.claude" "$TMP/tree/.git"
-if find "$TMP/tree" -name .claude -o -name .git | grep -q .; then
+# Captured rather than piped into a consumer. A `find | grep -q` exits
+# at the first match, the SIGPIPE makes the pipeline status non-zero,
+# and under pipefail this `if` would then read a HIT as no hit -- the
+# one direction a refusal must never fail in.
+survivors="$(find "$TMP/tree" \( -name .claude -o -name .git \) -print)"
+if [ -n "$survivors" ]; then
     die "Excluded directory survived" "A .claude or .git directory is still present after removal."
 fi
 
