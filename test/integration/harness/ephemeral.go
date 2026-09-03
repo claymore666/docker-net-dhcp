@@ -1089,54 +1089,122 @@ func lineMatches(line string, substrings []string, ackToken string) bool {
 	return true
 }
 
-// LastACKAddress returns the address in the most recent DHCPACK the
-// server logged for mac, or "" if it never ACKed one.
+// LastACKAddress returns the address the server most recently GRANTED
+// mac, as the server's own log states it, or "" if it never ACKed one.
 //
 // Use it to check that the container and the server agree on which
 // address the container holds — the container's own view alone cannot
 // catch a divergence, and this is the outside evidence that the health
 // counters cannot supply.
+//
+// THE GRANT, NOT THE PACKET'S DESTINATION. This used to read Kea's
+// `DHCPACK ... to <addr>:68` and treat the recipient as the granted
+// address, and the doc comment on ackAddress asserted the two were the
+// same thing. They coincide only while the reply is UNICAST. Once the
+// client sets the BROADCAST flag of RFC 2131 section 2 — which every
+// client on this plugin's raw transport now does — Kea sends the ACK to
+// 255.255.255.255 and logs that as the destination, so the reader
+// returned 255.255.255.255 and TestFailure_ServerLossDuringRenewal
+// reported the container and the server as diverged when they agreed.
+//
+// Kea states the grant on its own line ("lease <addr> has been
+// allocated"), on both versions and for renewals as well as first
+// binds, so that line is preferred and the packet destination is only a
+// fallback. dnsmasq puts the granted address immediately after the
+// DHCPACK token and is unaffected.
 func (ef *EphemeralFixture) LastACKAddress(mac string) string {
 	ef.t.Helper()
 	// Same per-log token choice as CountLogLines, for the same reason:
 	// which line Kea writes for an ACK depends on its version (#612).
 	log := ef.readLog()
 	ackToken := ef.keaACKToken(log)
-	last := ""
+
+	addr, matched := lastACKAddressFrom(ef.backend, log, ackToken, mac)
+	// The reader cannot silently answer "unknown" for a client the
+	// server demonstrably ACKed: the caller's guard is `acked != ""`,
+	// so returning "" there would DISABLE the divergence assertion
+	// instead of failing it — the shape this harness has met before.
+	if matched > 0 && addr == "" {
+		ef.t.Errorf("LastACKAddress(%s): the server logged %d ACK line(s) for this MAC and no "+
+			"address could be read from any of them. The log format changed; fix the reader "+
+			"rather than letting the divergence check pass on an empty answer.", mac, matched)
+	}
+	return addr
+}
+
+// lastACKAddressFrom is LastACKAddress's reading, separated from its
+// reporting so both the answer and the "ACKed but unreadable" case can
+// be driven directly. matched counts the ACK lines seen for mac, which
+// is what distinguishes "this client was never ACKed" (a legitimate
+// empty answer) from "the parser failed" (a harness defect).
+func lastACKAddressFrom(backend ephemeralBackend, log, ackToken, mac string) (addr string, matched int) {
+	// ONE ORDERED PASS, because "last" is chronological and the two
+	// line kinds interleave. Preferring the newest allocation line over
+	// the newest ACK line globally would be wrong: a renewal onto a
+	// different address can arrive as an ACK with no allocation line
+	// after it, and the newest allocation would then be the older
+	// event. Kea 2.6.3 writes the allocation line immediately BEFORE
+	// the ACK for the same event, so taking each line in turn lands on
+	// the right one either way.
+	//
+	// A line that yields no address leaves the previous value standing
+	// rather than clearing it. That is what makes a broadcast ACK
+	// harmless: its destination is refused by ackAddress, so the grant
+	// logged one line earlier — the same event — remains the answer.
 	for _, line := range strings.Split(log, "\n") {
-		if !lineMatches(line, []string{"DHCPACK", mac}, ackToken) {
+		isAlloc := lineMatches(line, []string{"has been allocated", mac}, ackToken)
+		isACK := lineMatches(line, []string{"DHCPACK", mac}, ackToken)
+		if !isAlloc && !isACK {
 			continue
 		}
-		if ip := ackAddress(ef.backend, line); ip != "" {
-			last = ip
+		matched++
+		if ip := ackAddress(backend, line); ip != "" {
+			addr = ip
 		}
 	}
-	return last
+	return addr, matched
 }
 
 // ackAddress pulls the ACKed address out of one server log line.
 //
-// Kea has two shapes, by version: `... DHCPACK ... to <addr>:68 ...`
-// names the recipient of the packet, and `lease <addr> has been
-// allocated` names the address granted. dnsmasq puts the address
-// immediately after the DHCPACK token. All three are the address the
-// server told the client to use, which is the claim callers check.
+// Kea has two shapes: `lease <addr> has been allocated` names the
+// address GRANTED, and `... DHCPACK ... to <addr>:68 ...` names the
+// recipient of the packet. dnsmasq puts the granted address
+// immediately after the DHCPACK token.
+//
+// THE TWO KEA SHAPES ARE NOT THE SAME QUANTITY. This comment used to
+// end "All three are the address the server told the client to use",
+// which held only because every reply was unicast to the address being
+// granted. A client that sets the BROADCAST flag gets its ACK sent to
+// 255.255.255.255, and the destination stops being evidence of
+// anything about the lease. So a destination that is not a unicast host
+// address is refused here rather than returned: 255.255.255.255 is a
+// real answer to "where was the packet sent" and no answer at all to
+// "what address does this client hold". LastACKAddress prefers the
+// allocation line for the same reason.
 func ackAddress(backend ephemeralBackend, line string) string {
 	fields := strings.Fields(line)
 	if backend == backendKea {
 		for i, f := range fields {
 			var candidate string
+			fromDest := false
 			switch {
 			case f == "to" && i+1 < len(fields):
 				candidate = strings.SplitN(fields[i+1], ":", 2)[0]
+				fromDest = true
 			case f == "lease" && i+1 < len(fields):
 				candidate = fields[i+1]
 			default:
 				continue
 			}
-			if ip := net.ParseIP(candidate); ip != nil && ip.To4() != nil {
-				return candidate
+			ip := net.ParseIP(candidate)
+			if ip == nil || ip.To4() == nil {
+				continue
 			}
+			if fromDest && !isUnicastHost(ip) {
+				continue
+			}
+			return candidate
 		}
 		return ""
 	}
@@ -1150,6 +1218,17 @@ func ackAddress(backend ephemeralBackend, line string) string {
 		break
 	}
 	return ""
+}
+
+// isUnicastHost reports whether ip can be a client's own address, so a
+// packet destination that is the limited broadcast or the unspecified
+// address is not mistaken for one.
+func isUnicastHost(ip net.IP) bool {
+	v4 := ip.To4()
+	if v4 == nil {
+		return false
+	}
+	return !v4.Equal(net.IPv4bcast) && !v4.IsUnspecified() && !v4.IsMulticast()
 }
 
 // keaLeaseGrant is one lifetime the server stated it granted, kept
