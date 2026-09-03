@@ -107,9 +107,6 @@ type DHCPClientOptions struct {
 	// RFC 2131 section 2).
 	Broadcast bool
 
-	// HonorRouterAdverts is IPv6-only and therefore unreachable here.
-	HonorRouterAdverts bool
-
 	// Resume is a lease this identity held in a previous run of the
 	// plugin. Supplying it makes the first message on the wire an
 	// INIT-REBOOT DHCPREQUEST (RFC 2131 section 4.4.2) instead of a

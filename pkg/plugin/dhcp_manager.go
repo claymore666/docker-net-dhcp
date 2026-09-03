@@ -1064,9 +1064,6 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 		FQDN:         m.opts.fqdnMode(),
 		V6:           v6,
 		NetNS:        &m.nsHandle,
-		// IPv6-only and unreachable in the beta; kept so the v6 call
-		// site still compiles against the refusal.
-		HonorRouterAdverts: v6,
 		// Same MAC the CreateEndpoint one-shot used — this is the same
 		// link, moved into the netns — so the chaddr and the derived
 		// client-id are identical and the server renews the very lease
