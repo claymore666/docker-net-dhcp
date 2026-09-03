@@ -226,8 +226,7 @@ jobs:
           # without it the hosted run pays the shipped 30s/25s on top of
           # the fixture's immovable 2m lease — ~80s more than the other
           # two lanes, against the same 35m budget.
-          docker plugin set "${INTEGRATION_PLUGIN_REF}" LOG_LEVEL=trace \
-            OUTAGE_TICK=2s OUTAGE_GRACE=10s
+          docker plugin set "${INTEGRATION_PLUGIN_REF}" LOG_LEVEL=trace
           docker plugin enable "${INTEGRATION_PLUGIN_REF}"
 
       # The Makefile targets require root (netns/veth/UDP-67). Hosted
