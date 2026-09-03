@@ -5,7 +5,6 @@ package dhcp
 
 import (
 	"fmt"
-	"net"
 	"net/netip"
 
 	"github.com/claymore666/dhcp-golib/proto"
@@ -133,7 +132,3 @@ func parseAddrs(in []string) ([]netip.Addr, error) {
 	}
 	return out, nil
 }
-
-// hardwareAddr is net.HardwareAddr's String on a byte slice the library
-// handed back, used for logging only.
-func hardwareAddr(b []byte) string { return net.HardwareAddr(b).String() }

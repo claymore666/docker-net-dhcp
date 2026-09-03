@@ -28,11 +28,6 @@ func testRecords(t *testing.T) (*Records, string) {
 	return r, path
 }
 
-func mustParams(t *testing.T) proto.Params {
-	t.Helper()
-	return proto.DefaultParams([]byte{0x02, 0, 0, 0, 0, 1})
-}
-
 // TestRecords_SecondOpenIsRefused drives G-10 in the only direction
 // that can be driven without a second process.
 //
