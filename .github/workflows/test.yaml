@@ -411,6 +411,15 @@ jobs:
       - name: Plugin-manifest parity check
         run: bash scripts/check-manifest-parity.sh
 
+      # Every grant in config.json has one sentence in SECURITY.md and
+      # every sentence names a grant still requested (E-2, #725). The
+      # direction that is easy to forget is the second: a privilege
+      # dropped from the manifest and left in the prose reads as one
+      # the plugin still holds, and an operator's approval decision is
+      # made against the prose.
+      - name: Privilege-sentence check
+        run: bash scripts/check-privilege-sentences.sh
+
       # The issue labeller's rule map (#393). A pattern that has stopped
       # matching costs nothing visible at runtime — issues just fall
       # through to the model pass — so the fixture is the only thing

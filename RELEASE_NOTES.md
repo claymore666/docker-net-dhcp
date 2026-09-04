@@ -91,6 +91,34 @@ of the plugin process is the same seventeen it was before. What changed is
 the manifest, and therefore the prompt: the request is now honest about a
 power the process already had. See `SECURITY.md`.
 
+**The manifest delta against v1.9.0, field by field.** `docker plugin
+upgrade` prompts on the *privilege* fields only, so the two halves of this
+table are read differently: the first is what the prompt shows you, the
+second is not prompted at all.
+
+| field | v1.9.0 | v2.0.0-alpha.1 | prompted |
+| --- | --- | --- | --- |
+| `linux.capabilities` | `CAP_NET_ADMIN`, `CAP_SYS_ADMIN`, `CAP_SYS_PTRACE` | the same three plus `CAP_NET_RAW` | **yes** |
+| `network.type` | `host` | `host` | no change |
+| `pidhost` | `true` | `true` | no change |
+| `mounts` | the Docker socket, `STATE_DIR`, `/var/run/docker` read-only | unchanged | no change |
+| `env` | `LOG_LEVEL`, `AWAIT_TIMEOUT`, `STATE_DIR`, `METRICS_ADDR` | the same four plus `DOCKER_HOST` | no — a setting is not a privilege |
+
+**Nothing was dropped.** The beta enters a container's network namespace
+through the sandbox key the daemon publishes rather than through
+`/proc/<pid>/ns/net`, which removes the PID-recycling hazard from the attach
+path — but `pidhost` and `CAP_SYS_PTRACE` stay, because `resolv.conf`
+propagation still enters the container's *mount* namespace by PID and a mount
+namespace has no sandbox key. `sandbox_key_entries`, `sandbox_key_entry_failures`
+and `sandbox_pid_fallbacks` report which route your host is using.
+
+**New: `DOCKER_HOST`.** Empty by default, which keeps the mounted socket and
+the behaviour every earlier release had. Set it to a read-only Docker socket
+proxy and the plugin loses nothing: it issues only `GET` and `HEAD`, refuses
+anything else before sending it, and counts each refusal as
+`docker_api_non_get_refusals`. The allowed paths and a worked example are in
+`SECURITY.md`.
+
 ### IPv4 only
 
 | change | effect |
