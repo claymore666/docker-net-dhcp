@@ -163,8 +163,8 @@ Verifying a **1.x** release means adding
 `rootfs/usr/lib/net-dhcp/dhcp-handler` to step 4, and comparing both
 pairs. Everything else in the recipe is the same for either.
 
-The digests must match. For **v1.9.0** (`linux/amd64`), a 1.x release
-and so two of them:
+The digests must match. **v1.9.0 is a 1.x release, so its list has two
+entries per platform.** For **v1.9.0** (`linux/amd64`) they are:
 
 ```
 eee5a6d5c269f7d05ea4ce230c30389479d4de3043b57f3cf6ef92fc0b710a06  net-dhcp
@@ -174,7 +174,7 @@ d1fb8d4487b1ec7170afe7635e7861a220a770e21b351f363b0da58b335eac85  dhcp-handler
 Since v1.7.0 each release also ships arm64 binaries under the `-arm64`
 tags; rebuild them the same way on an arm64 host (the build follows the
 host architecture) and unpack `net-dhcp-plugin-VERSION-linux-arm64.tar.gz`
-in step 4. For **v1.9.0** (`linux/arm64`), again a 1.x release:
+in step 4. For **v1.9.0** (`linux/arm64`) they are:
 
 ```
 8523f80370e54235c929b8e755c44a3cf10ab33ddf4bde4490e60367dc7ee7b7  net-dhcp
