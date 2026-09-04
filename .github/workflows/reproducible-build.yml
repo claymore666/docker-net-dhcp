@@ -27,7 +27,7 @@ name: Reproducible build
 
 on:
   pull_request:
-    branches: [main, dev, 2.x-beta]
+    branches: [main, dev, '2.*']
     paths:
       - 'Dockerfile'
       - 'go.mod'

@@ -81,12 +81,12 @@ on:
     branches:
       - main
       - dev
-      - 2.x-beta
+      - '2.*'
   pull_request:
     branches:
       - main
       - dev
-      - 2.x-beta
+      - '2.*'
   # On-demand runs against a tree that has not changed (#419).
   #
   # "Three consecutive green runs" is this project's bar for trusting a
