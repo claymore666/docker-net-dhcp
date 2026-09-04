@@ -84,7 +84,13 @@ func sandboxKeyCell(t *testing.T, mode, netName, ctrName, user string) {
 	} else {
 		id, ipv4, _ = harness.RunContainerUser(t, ctx, netName, ctrName, user)
 	}
-	harness.AssertIP(t, ipv4)
+	// The pools differ per fixture, and asserting the wrong one would
+	// fail a cell for a reason that has nothing to do with the route.
+	if mode == "bridge" {
+		harness.AssertBridgeIP(t, ipv4)
+	} else {
+		harness.AssertIP(t, ipv4)
+	}
 
 	// 1. Outside evidence, from inside the namespace.
 	out := harness.ExecOutput(t, ctx, id, "ip", "-4", "addr", "show")
