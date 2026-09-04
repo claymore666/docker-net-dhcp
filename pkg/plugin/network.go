@@ -127,6 +127,22 @@ func validateModeOptions(opts DHCPNetworkOptions) error {
 		return util.ErrIPv6Beta
 	}
 
+	// RFC 5227 conflict detection, per network (D23). Two refusals and
+	// they are separate questions: whether the mode NAMES anything, and
+	// whether lease_timeout can fund an acquisition in it.
+	mode, err := dhcp.ParseConflictCheck(opts.ConflictCheck)
+	if err != nil {
+		return fmt.Errorf("%w: %v", util.ErrIPAM, err)
+	}
+	// Keyed on the DECODED mode and on the operator's own
+	// lease_timeout, not on either after defaulting. A check that read
+	// the mode back after normalising it to the default would refuse
+	// nothing on an `async` network, and one that computed the window
+	// from the operator's timeout would compare a number with itself.
+	if err := dhcp.CheckLeaseTimeout(opts.LeaseTimeout, mode); err != nil {
+		return fmt.Errorf("%w: %v", util.ErrIPAM, err)
+	}
+
 	switch opts.effectiveMode() {
 	case ModeMacvlan, ModeIPvlan:
 		if opts.Parent == "" {
@@ -1085,6 +1101,12 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 				Records:  p.records,
 				RecordID: recordID,
 			}
+			// RFC 5227 conflict detection, from the network's stored
+			// conflict_check (D23). Set on the BASE, so every attempt
+			// down the dhcp_servers ladder runs in the same mode.
+			if err := p.conflictWiring(&base, opts, roleAcquire, r.NetworkID, r.EndpointID); err != nil {
+				return err
+			}
 			// Hint the preferred address per family: `request ADDR`
 			// for v4, `ia_na / ADDR` for v6 (#213). Empty values omit
 			// the directive, so an unhinted endpoint behaves as before.
@@ -1179,16 +1201,6 @@ func (p *Plugin) CreateEndpoint(ctx context.Context, r CreateEndpointRequest) (C
 		mac = res.Interface.MacAddress
 	}
 	p.rememberEndpoint(r.EndpointID, endpointFingerprint{MAC: mac, IPv4: v4IP, IPv6: v6IP, Ifname: p.hintIfname(r.EndpointID)}, hostname)
-
-	// Same post-lease conflict probe as the parent-attached path (#524),
-	// against the bridge. Bridge mode is the case that makes the MAC
-	// comparison in checkAddressConflict load-bearing rather than
-	// belt-and-braces: the host CAN reach the container here, so our own
-	// endpoint answers, and a probe that only asked "did anything reply?"
-	// would report every single endpoint as a conflict.
-	if res.Interface.Address != "" {
-		go p.checkAddressConflict(opts.Bridge, res.Interface.Address, mac, r.EndpointID, r.NetworkID)
-	}
 
 	log.WithFields(log.Fields{
 		"network":  shortID(r.NetworkID),

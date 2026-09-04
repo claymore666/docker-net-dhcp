@@ -4,9 +4,15 @@
 package plugin
 
 import (
+	"net"
+	"net/netip"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/claymore666/dhcp-golib/proto"
+
+	"github.com/claymore666/docker-net-dhcp/pkg/dhcp"
 )
 
 // TestNewProbeMAC pins the LAA + unicast bit semantics. Stable
@@ -85,3 +91,64 @@ func TestPreflightProbeBudget_CoversOneLostDiscover(t *testing.T) {
 		t.Errorf("preflightProbeBudget %v is below the lost-first-DISCOVER floor %v (see #307)", preflightProbeBudget, floor)
 	}
 }
+
+// TestPreflightProbeOptions_RFC5227IsOffOnTheThrowawayLease pins the
+// one field in the preflight client whose wrong value is invisible
+// everywhere except against a working DHCP server.
+//
+// preflightProbeBudget is 8s. conflict_check=wait spends up to 7.0s of
+// it inside RFC 5227 section 2.1 (PROBE_WAIT 1s + two intervals of up
+// to PROBE_MAX 2s + ANNOUNCE_WAIT 2s), so a probe that inherits the
+// network's mode fails `docker network create -o validate_dhcp=true`
+// against a server that answered correctly. MEASURED on the beta lane
+// 2026-09-04 at 8.1s.
+//
+// The mode is asserted against proto.ConflictOff, and separately
+// against the arithmetic, so that a future change to either the budget
+// or the RFC schedule that reintroduces the overlap goes red here
+// rather than on the lane.
+func TestPreflightProbeOptions_RFC5227IsOffOnTheThrowawayLease(t *testing.T) {
+	mac, err := newProbeMAC()
+	if err != nil {
+		t.Fatalf("newProbeMAC: %v", err)
+	}
+
+	o := preflightProbeOptions(mac, serverPolicy{})
+	if o.ConflictMode != proto.ConflictOff {
+		t.Errorf("the preflight probe runs conflict_check=%v; it must be %v. "+
+			"Section 2.1 answers \"may I use this address\", and this address is released "+
+			"milliseconds later on a link deleted with it.",
+			o.ConflictMode, proto.ConflictOff)
+	}
+
+	// Why this is not merely tidy: the window does not fit in the
+	// budget ALONGSIDE the exchange the budget was sized for. The
+	// budget covers a lost first DISCOVER and its jittered
+	// retransmission (#307), which is exactly the difference between
+	// dhcp.AcquisitionWindow and dhcp.ConflictWindow, so the two terms
+	// below are derived from the library's constants rather than read
+	// off this file's own comment.
+	window := dhcp.ConflictWindow(proto.DefaultACDParams())
+	exchange := dhcp.AcquisitionWindow(proto.DefaultParams(nil)) - window
+	if exchange+window <= preflightProbeBudget {
+		t.Errorf("this test's premise has gone stale: the RFC 5227 window (%v) plus the "+
+			"DHCP exchange the budget was sized for (%v) is now %v, which fits inside the "+
+			"%v budget. Re-derive the reason before relaxing anything.",
+			window, exchange, exchange+window, preflightProbeBudget)
+	}
+
+	// The probe still honours the network's server policy: a server
+	// this network will never lease from is not an answer to "is
+	// anyone listening?" (#111, #669). Asserted here so the extraction
+	// cannot quietly drop it.
+	pol := serverPolicy{Prefer: []netip.Addr{netip.MustParseAddr("192.0.2.1")}}
+	o = preflightProbeOptions(mac, pol)
+	if len(o.AllowServers) != 1 || o.AllowServers[0] != "192.0.2.1" {
+		t.Errorf("the preflight probe dropped the network's server allow list: %v", o.AllowServers)
+	}
+	if !bytesEqualMAC(o.MAC, mac) {
+		t.Errorf("the preflight probe's MAC is %v, not the probe link's %v", o.MAC, mac)
+	}
+}
+
+func bytesEqualMAC(a, b net.HardwareAddr) bool { return a.String() == b.String() }

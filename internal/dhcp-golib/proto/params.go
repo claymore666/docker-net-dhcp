@@ -115,6 +115,28 @@ type Params struct {
 	// Machine.noteActionFailed.
 	MaxSendFailures int
 
+	// Conflict is how this client checks that the address it is given is not
+	// already in use. The zero value, ConflictWait, is RFC 5227 section 2.1's
+	// check before the address is used (D22).
+	Conflict ConflictMode
+
+	// ACD is RFC 5227 section 1.1's constant table.
+	//
+	// THE ZERO STRUCT MEANS THE RFC TABLE, and a table that is not the zero
+	// struct is used verbatim and must be COMPLETE: validate refuses one with
+	// any field left at zero. The all-or-nothing rule exists because the
+	// tempting mistake is the partial fill — a caller setting ProbeNum alone
+	// would otherwise get a client that fires three probes with no spacing and
+	// no ANNOUNCE_WAIT, which is not conflict detection at all but does not
+	// look like a configuration error from the outside.
+	//
+	// Section 1.1 says the values "are not intended to be modifiable by
+	// implementers, operators, or end users". They are settable here for the
+	// same reason DesyncMin and DesyncMax are: a test whose subject is the
+	// ORDER of the probes cannot spend section 1.1's five and a half seconds
+	// per case measuring section 1.1 instead.
+	ACD ACDParams
+
 	// Servers is the policy on which DHCP servers this client will deal with.
 	// Empty means every server.
 	Servers ServerPolicy
@@ -345,6 +367,7 @@ func DefaultParams(chaddr []byte) Params {
 		DesyncMax:       10 * Second,
 		RestartDelay:    DefaultRestartDelay,
 		MaxSendFailures: 5,
+		ACD:             DefaultACDParams(),
 	}
 }
 
@@ -373,6 +396,17 @@ var ErrBadFQDN = errors.New("proto: Params.FQDN cannot be encoded")
 // address. See Params.validate.
 var ErrBadResume = errors.New("proto: Params.Resume names no usable IPv4 address")
 
+// ErrBadConflictMode is returned by New for a ConflictMode that is not one of
+// the three. Refused rather than defaulted: the default is the SAFE mode, so
+// silently defaulting an out-of-range value would turn a caller that meant
+// ConflictOff into one that waits five seconds per acquisition and never says
+// why.
+var ErrBadConflictMode = errors.New("proto: Params.Conflict is not a known conflict mode")
+
+// ErrBadACDParams is returned by New for a partially-filled RFC 5227 constant
+// table. See Params.ACD.
+var ErrBadACDParams = errors.New("proto: Params.ACD is incomplete")
+
 func (p Params) validate() error {
 	if len(p.CHAddr) == 0 {
 		return ErrNoCHAddr
@@ -393,12 +427,28 @@ func (p Params) validate() error {
 		// trying to replace and no way to find out.
 		return fmt.Errorf("%w: %s", ErrBadResume, p.Resume.Addr)
 	}
+	switch p.Conflict {
+	case ConflictWait, ConflictAsync, ConflictOff:
+	default:
+		return fmt.Errorf("%w: %d", ErrBadConflictMode, uint8(p.Conflict))
+	}
+	if err := p.ACD.validate(); err != nil {
+		return err
+	}
 	if p.FQDN.Name != "" {
 		if _, err := wire.EncodeFQDN(p.FQDN.flags(), p.FQDN.Name); err != nil {
 			return fmt.Errorf("%w: %w", ErrBadFQDN, err)
 		}
 	}
 	return nil
+}
+
+// acd returns the RFC 5227 constant table this client uses.
+func (p Params) acd() ACDParams {
+	if p.ACD == (ACDParams{}) {
+		return DefaultACDParams()
+	}
+	return p.ACD
 }
 
 func (p Params) restartDelay() Duration {

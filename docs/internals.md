@@ -219,70 +219,55 @@ follows from where the filtering happens.
 
 ## How a lease is checked against the segment
 
-Since v1.6.0 the plugin asks, when an endpoint is created and gets an
-IPv4 address, whether some *other* device already holds it (#524). The
-probe fires from `CreateEndpoint` — both the bridge path and the
-parent-attached one — and from nowhere else: `checkAddressConflict` has
-exactly those two call sites, and nothing on the renew/rebind path calls
-it. So the check covers the address a new endpoint is about to be handed,
-not every address it ever holds. An address that changes mid-life is not
-re-probed. The counters
-and the operator-facing rules are in the
-[driver reference](reference.md#pluginhealth); this is the mechanism, and
-every part of it is a constraint rather than a preference.
+The plugin asks whether some *other* device already holds the address
+its DHCP server just leased (#524). Since the 2.0 beta the question is
+asked by the DHCP client itself, as RFC 5227 Address Conflict Detection,
+from inside the container's own network namespace and on its own link —
+not by the chassis from the parent. The operator-facing rules and the
+counters are in the [driver reference](reference.md#pluginhealth); this
+is the mechanism.
 
-- **The question is asked by sending, not by asking netlink.** Inserting
-  the neighbour in `NUD_INCOMPLETE` and letting the kernel resolve it
-  looks like the tidy implementation. The call succeeds, the kernel does
-  not probe, and the entry stays `INCOMPLETE` — so the check reports
-  "nobody holds it" with a squatter sitting on the address. An ordinary
-  datagram to the discard port makes the kernel do the ARP instead; its
-  delivery is irrelevant, the packet exists to resolve L2.
-- **It does not stand on a capability argument, and it never should
-  have.** The reasoning originally written here was that a real RFC 5227
-  ARP probe needs `AF_PACKET` and therefore `CAP_NET_RAW`, which
-  `config.json` did not request. Both halves of that have since moved:
-  the process always held the capability, because Docker composes a
-  plugin's capabilities additively over the OCI defaults (`CapEff` on a
-  running plugin decodes to seventeen, not three), and `config.json`
-  now requests it outright for the DHCP client's own socket. So an
-  `AF_PACKET` probe needs no new grant and no further re-approval — see
-  [#725], whose title asserted the grant was already in the manifest
-  when it was not. The datagram probe stands on the merits above: it is
-  what makes the kernel ask the question, and the answer is the same
-  one. Conflict detection inside the DHCP exchange itself — DECLINE on
-  a lease the segment refuses — is a later milestone and is not in this
-  build.
-- **The probe runs from the parent link, and compares MACs.** Our own
-  endpoint holds the leased address too — that is the premise — so the
-  vantage point has to be one our endpoint cannot answer from, which is
-  what macvlan's parent/child isolation gives. Comparing the answering
-  MAC against the endpoint's is what makes the same code correct in
-  bridge mode, where the host *can* reach the container and a
-  did-anything-reply probe would report every single endpoint as a
-  conflict. The cost of that vantage point is that a squatter which is
-  another container on the same parent is invisible; that is excluded by
-  construction, not pending work (#528).
-- **Egress is pinned, because an unrouted datagram answers the wrong
-  question.** The packet is otherwise routed by the host table and can
-  leave by a different interface entirely, landing the neighbour entry
-  somewhere nobody is reading — measured as a squatted address reported
-  clean. A temporary `/32` scope-link route on the parent fixes the exit,
-  and both it and any borrowed address are removed when the probe
-  returns.
-- **The source address decides whether the question is answerable at
-  all.** A host answers ARP only when it can route a reply back to the
-  sender, so the probe prefers an address the parent already holds on the
-  leased subnet. Where the parent has none it falls back to a random
-  link-local source — random because two probes can run at once, and
-  link-local because any address borrowed from the operator's own subnet
-  might be the next one their DHCP server hands out. A gateway-less
-  squatter cannot reply to that fallback, which is why a parent with no
-  on-subnet address yields `conflict_probe_failures` and an explicit
-  *undetermined* rather than a clean result.
-
-The probe is asynchronous and off `CreateEndpoint`'s critical path, with
-a 2-second cap that only an unclaimed address ever pays.
+- **It is part of the acquisition, not a step beside it.** §2.1 sends
+  three ARP Probes with an all-zero sender protocol address, then waits
+  ANNOUNCE_WAIT before the address may be used; §2.3 sends two
+  Announcements once it is; §2.4 keeps listening for the whole life of
+  the lease. A conflict at any point produces a `DHCPDECLINE` (RFC 2131
+  §3.1(5)) and a fresh DISCOVER, which is what makes the DHCP server's
+  own log the outside evidence for the whole thing.
+- **The vantage point moved, and that is what closed the two holes the
+  old check had.** The chassis used to send a datagram from the PARENT
+  link to make the kernel resolve the address, and compare the answering
+  MAC with the endpoint's. That could only ever check the address a new
+  endpoint was about to be handed — an address that changed mid-life was
+  never re-probed — and it needed the parent to carry an address on the
+  leased subnet, because a host answers an ordinary ARP request only if
+  it can route a reply back to the sender. A §2.1.1 Probe carries an
+  all-zero sender protocol address, which Linux answers for any local
+  target without consulting a route, so the bare-parent limitation is
+  gone; and §2.4 covers the rest of the lease's life, so the mid-life
+  hole is gone with it.
+- **Our own endpoint holds the address too — that is the premise.** The
+  old check answered it with macvlan's parent/child isolation plus a MAC
+  comparison. RFC 5227 answers it in the client: a reply whose sender
+  hardware address is the client's own is not a conflict. That is what
+  keeps bridge mode correct, where the host *can* reach the container
+  and a did-anything-reply check would report every single endpoint as a
+  conflict. The cost is unchanged: a squatter that is another container
+  on the same parent is invisible, excluded by construction and not
+  pending work (#528).
+- **It costs seconds, and the operator chooses who pays them.**
+  `conflict_check=wait` (the default) finishes §2.1 before the address is
+  configured, so `docker run` waits 4.0–7.0s; `async` configures the
+  address at the DHCPACK and probes behind it, so a conflict found later
+  CHANGES a running container's address; `off` sends no ARP at all. The
+  `lease_timeout` default is derived from the same constants — one
+  DISCOVER retransmission plus the worst probe window — rather than
+  written down, so the two cannot drift apart.
+- **The phase survives a plugin restart.** In `async` the address is in
+  use while §2.1 is still running, so the conflict-detection phase is
+  written into the durable lease record and handed back to the next
+  process on resume. Without it a restart inside that window would leave
+  a container holding an address nothing ever finished checking.
 
 ## How a lease gets handed back
 

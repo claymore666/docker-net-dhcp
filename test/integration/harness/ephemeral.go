@@ -214,22 +214,25 @@ func WithPool(start, end string) EphemeralOption {
 // parent is the host's own NIC and carries the host's address on the
 // segment, and where a bridge parent always has one.
 //
-// It is required by any test that expects the address-conflict probe to
-// reach a verdict, and the reason is a kernel behaviour rather than a
-// harness detail: a host answers an ARP request only if it can route a
-// reply back to the SENDER. With no address on the leased subnet the
-// probe has to fall back to a link-local source, and a responder with no
-// default route then stays silent. Measured on 6.12 over a veth pair,
-// squatter on 192.168.101.42:
+// It used to be required by any test that expected the address-conflict
+// probe to reach a verdict. That requirement is gone with the probe: a
+// host answers an ordinary ARP request only if it can route a reply back
+// to the SENDER, which is why the old datagram probe needed an on-subnet
+// source, but an RFC 5227 section 2.1.1 Probe carries an all-zero sender
+// protocol address and Linux answers it for any local target without
+// consulting a route. Measured on 6.12 over a veth pair, squatter on
+// 192.168.101.42:
 //
 //	responder routes    link-local sender   on-subnet sender
 //	none                INCOMPLETE          answered
 //	link-local route    answered            -
 //	default route       answered            -
 //
-// The fixture's namespace has no default route, so it is the strict
-// left-hand column. That is deliberate: it is the configuration in which
-// a detector that only works by luck goes red (#524).
+// The fixture's namespace has no default route, so under the old probe
+// it was the strict left-hand column. What the parent address is still
+// needed for is anything that has to reach the host FROM the segment —
+// the section 2.4 tests ping it to make a squatter announce itself.
+//
 // It is ON BY DEFAULT, derived from the fixture's server address, so
 // the suite models the ordinary deployment rather than the exotic one.
 // Use WithBareParent for the opposite case, and say why.
@@ -242,12 +245,14 @@ func WithParentAddress(addr string) EphemeralOption {
 // WithBareParent leaves the parent with no address at all.
 //
 // This is the deployment where a NIC exists only to be a macvlan
-// parent, and it is the configuration in which the address-conflict
-// probe is degraded: with no on-subnet source to send from it cannot
-// get an answer out of a gateway-less host, and must report
-// "undetermined" instead of "clean". A test that wants that state asks
-// for it here rather than getting it by accident, because getting it by
-// accident is what made the first conflict probe look like it worked.
+// parent. Under the chassis's old datagram probe it was also the
+// configuration in which conflict detection was degraded — no on-subnet
+// source to send from, so no answer out of a gateway-less host, and an
+// honest "undetermined" instead of "clean". RFC 5227 removed that
+// degradation, so this option no longer selects a blind detector; it
+// selects a bare parent, which is all it ever claimed to do in its
+// name. A test that wants that state still asks for it here rather than
+// getting it by accident.
 func WithBareParent() EphemeralOption {
 	return func(ef *EphemeralFixture) {
 		ef.parentCIDR = ""
@@ -518,6 +523,30 @@ func (ef *EphemeralFixture) netnsCommand(name string, args ...string) *exec.Cmd 
 func (ef *EphemeralFixture) PingFromServer(ip string) ([]byte, error) {
 	ef.t.Helper()
 	return ef.netnsCommand("ping", "-c", "1", "-W", "2", "-I", ef.ServerIP(), ip).CombinedOutput()
+}
+
+// AnnounceSquatter makes the squatter put a frame on the wire whose ARP
+// SENDER address is the squatted address, which is what RFC 5227 section
+// 2.4 defines a conflict as: an ARP packet claiming an address we hold,
+// from a hardware address that is not ours.
+//
+// Adding the address with Squat is not enough on its own. The kernel
+// announces a new address only under arp_notify, which is off by
+// default, so a squatter that merely exists is invisible to a client
+// that is already BOUND — it would only be found by the section 2.1
+// probe of a LATER acquisition. This is what makes the after-the-fact
+// scenario testable at all.
+//
+// A ping is the whole mechanism: to reach dst the squatter must first
+// resolve it, and the request it broadcasts carries the squatted
+// address as its sender. Whether the ping itself succeeds is
+// irrelevant and is not reported — the ARP request goes out either way,
+// and that is the frame under test.
+func (ef *EphemeralFixture) AnnounceSquatter(squattedAddr, dst string) {
+	ef.t.Helper()
+	out, err := ef.netnsCommand("ping", "-c", "1", "-W", "1", "-I", squattedAddr, dst).CombinedOutput()
+	ef.t.Logf("squatter %s announced itself towards %s (ping err=%v): %s",
+		squattedAddr, dst, err, strings.TrimSpace(string(out)))
 }
 
 // start launches the configured backend and blocks until it is ready

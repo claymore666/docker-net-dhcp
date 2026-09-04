@@ -170,12 +170,11 @@ is recorded so a contributor can read it before writing the PR.
     the capability is *already granted* — true of the effective set the
     process runs with, and the reason the beta's addition buys no power,
     only the prompt.
-- **It will not detect a conflicting container on the same host.** The
-  conflict probe's vantage point is the parent link, and the isolation
-  that keeps our own endpoint from answering also hides a sibling. That
-  is excluded by construction rather than pending ([#528]); a vantage
-  point that could see the sibling would hear our own container and no
-  reply would be informative.
+- **It will not detect a conflicting container on the same host.** RFC
+  5227 runs on the container's own link, and macvlan's parent/child
+  isolation — the same property that keeps a sibling from disturbing us
+  — also hides a sibling that has taken our address. That is excluded by
+  construction rather than pending ([#528]).
 - **It will not support ipvlan L3 / L3S.** DHCP needs L2 broadcast.
 - **It will not run its arm64 verification under qemu-user/binfmt.**
   Measured, not assumed — on the 1.x client, which opened a

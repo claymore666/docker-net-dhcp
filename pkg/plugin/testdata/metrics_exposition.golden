@@ -152,25 +152,25 @@ net_dhcp_restart_link_up_waited_total 2239453
 # TYPE net_dhcp_restart_link_up_timeouts_total counter
 net_dhcp_restart_link_up_timeouts_total 2453629
 
-# HELP net_dhcp_address_conflict_probes_total Conflict probes that reached a verdict. Read this before believing address_conflicts is zero: zero here means the detector never ran.
-# TYPE net_dhcp_address_conflict_probes_total counter
-net_dhcp_address_conflict_probes_total 8468506
-
-# HELP net_dhcp_address_conflicts_total Leased addresses found already in use by another host. Healthy-affecting.
+# HELP net_dhcp_address_conflicts_total Leased addresses RFC 5227 found already in use by another host, over the whole life of the lease: section 2.1's probes before the address is used and section 2.4's listener afterwards. Healthy-affecting. Moves in conflict_check=wait and =async. In =off the client neither probes nor listens, so this moves only for a conflict reported to the client from outside it, which no code path in this plugin does today.
 # TYPE net_dhcp_address_conflicts_total counter
 net_dhcp_address_conflicts_total 1942014
 
-# HELP net_dhcp_conflict_probe_failures_total Conflict probes that could not reach a verdict.
-# TYPE net_dhcp_conflict_probe_failures_total counter
-net_dhcp_conflict_probe_failures_total 8734728
+# HELP net_dhcp_acd_probes_sent_total RFC 5227 section 2.1.1 ARP Probes sent. READ THIS BEFORE BELIEVING address_conflicts IS ZERO: zero here over a running plugin means no address was ever checked, which is not the same reading as a clean segment (#524). Moves in conflict_check=wait and =async, never in =off.
+# TYPE net_dhcp_acd_probes_sent_total counter
+net_dhcp_acd_probes_sent_total 4230282
 
-# HELP net_dhcp_conflict_probe_stale_routes_total Leftover probe routes reclaimed from a probe cut short before it cleaned up.
-# TYPE net_dhcp_conflict_probe_stale_routes_total counter
-net_dhcp_conflict_probe_stale_routes_total 6653534
+# HELP net_dhcp_acd_announcements_sent_total RFC 5227 section 2.3 ARP Announcements sent, two per address that passed the probe. Moves in conflict_check=wait and =async, never in =off. Read against acd_probes_sent: probes climbing with no announcements means addresses are being checked and none is coming back clean.
+# TYPE net_dhcp_acd_announcements_sent_total counter
+net_dhcp_acd_announcements_sent_total 5321411
 
-# HELP net_dhcp_conflict_probe_stale_addrs_total Leftover borrowed probe SOURCE addresses reclaimed from the parent NIC. The sibling conflict_probe_stale_routes covers the leftover route, which is recognisable because its destination is the probed address; the source address has random octets by design (#575) so nothing ever collided with it and it accumulated on the operator's NIC, one per stop-inside-the-probe-window. Not healthy-affecting: the probe went on to run (#723).
-# TYPE net_dhcp_conflict_probe_stale_addrs_total counter
-net_dhcp_conflict_probe_stale_addrs_total 4864028
+# HELP net_dhcp_acd_conflicts_detected_total Conflicts the DHCP library itself counted. It is the same population as address_conflicts, counted inside the state machine rather than from the events it emitted, and the two are expected to be equal; a difference is a defect in the plugin's event handling, not a property of the segment. Its =off rule is address_conflicts's, not a different one: with no probe and no listener the only thing that can move either counter is a conflict reported to the client from outside it, which no code path in this plugin does today.
+# TYPE net_dhcp_acd_conflicts_detected_total counter
+net_dhcp_acd_conflicts_detected_total 4640136
+
+# HELP net_dhcp_acd_arp_send_failures_total ARP Probes and Announcements the socket refused. Not healthy-affecting: a refused send is not itself a conflict, but a probe that never went out proves nothing about the address, so a rise turns "no conflict found" into "the question was not asked". Moves in conflict_check=wait and =async, never in =off.
+# TYPE net_dhcp_acd_arp_send_failures_total counter
+net_dhcp_acd_arp_send_failures_total 6209145
 
 # HELP net_dhcp_parent_link_waits_total Endpoint creations that waited for their parent interface to appear.
 # TYPE net_dhcp_parent_link_waits_total counter
@@ -192,11 +192,11 @@ net_dhcp_tombstone_quarantines_total 1780865
 # TYPE net_dhcp_tombstones_consumed_total counter
 net_dhcp_tombstones_consumed_total 5670747
 
-# HELP net_dhcp_unsafe_hostnames_rejected_total Container hostnames dropped before reaching the DHCP client config because they carried a control character. A legitimate hostname never does, so any rise is deliberate (#692).
+# HELP net_dhcp_unsafe_hostnames_rejected_total Container hostnames dropped before reaching the DHCP request because they carried a control character. A legitimate hostname never does, so any rise is deliberate (#692).
 # TYPE net_dhcp_unsafe_hostnames_rejected_total counter
 net_dhcp_unsafe_hostnames_rejected_total 5543185
 
-# HELP net_dhcp_unsafe_option_values_dropped_total Server-chosen DHCP string values refused before use because they carried a control character, plus option-15 domains truncated at their first space. dhcpcd validates only its dname-typed options; the string-typed ones pass newlines through (#703, #704).
+# HELP net_dhcp_unsafe_option_values_dropped_total Server-chosen DHCP string values refused before use because they carried a control character, plus option-15 domains truncated at their first space. The DHCP library validates domain-typed options; string-typed ones can carry anything the server put on the wire (#703, #704).
 # TYPE net_dhcp_unsafe_option_values_dropped_total counter
 net_dhcp_unsafe_option_values_dropped_total 9536334
 
@@ -208,7 +208,7 @@ net_dhcp_network_options_rejected_total 5605255
 # TYPE net_dhcp_dns_propagation_pid_mismatches_total counter
 net_dhcp_dns_propagation_pid_mismatches_total 9341279
 
-# HELP net_dhcp_netns_pid_mismatches_total Sandbox network-namespace opens refused because the container PID resolved through Docker no longer belonged to that container. Each one is a netlink handle, and a root dhcpcd, that would otherwise have been bound to an unrelated host process's network namespace.
+# HELP net_dhcp_netns_pid_mismatches_total Sandbox network-namespace opens refused because the container PID resolved through Docker no longer belonged to that container. Each one is a netlink handle, and a root DHCP client, that would otherwise have been bound to an unrelated host process's network namespace.
 # TYPE net_dhcp_netns_pid_mismatches_total counter
 net_dhcp_netns_pid_mismatches_total 9479108
 

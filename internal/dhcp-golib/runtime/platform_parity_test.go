@@ -16,7 +16,7 @@ import (
 // one test run sees both platforms' declarations. That is the whole point: the
 // fields' only readers are Linux-only test files, so a build on either
 // platform cannot observe a field going missing from the other.
-func transportStatsFields(t *testing.T, path string) []string {
+func statsFields(t *testing.T, path, typeName string) []string {
 	t.Helper()
 	src, err := os.ReadFile(path)
 	if err != nil {
@@ -35,12 +35,12 @@ func transportStatsFields(t *testing.T, path string) []string {
 		}
 		for _, s := range gd.Specs {
 			ts, ok := s.(*ast.TypeSpec)
-			if !ok || ts.Name.Name != "TransportStats" {
+			if !ok || ts.Name.Name != typeName {
 				continue
 			}
 			st, ok := ts.Type.(*ast.StructType)
 			if !ok {
-				t.Fatalf("%s: TransportStats is not a struct", path)
+				t.Fatalf("%s: %s is not a struct", path, typeName)
 			}
 			for _, fl := range st.Fields.List {
 				typ := typeText(t, fset, src, fl.Type)
@@ -51,7 +51,7 @@ func transportStatsFields(t *testing.T, path string) []string {
 		}
 	}
 	if len(out) == 0 {
-		t.Fatalf("%s declares no TransportStats fields; the check would compare two empty lists", path)
+		t.Fatalf("%s declares no %s fields; the check would compare two empty lists", path, typeName)
 	}
 	return out
 }
@@ -153,14 +153,29 @@ type s struct {
 // type fail it; and it cannot see a third platform file, which if one is added
 // must be added here too, with nothing but this sentence saying so.
 func TestTransportStatsDeclarationsAgree(t *testing.T) {
-	linux := transportStatsFields(t, "transport_packet_linux.go")
-	other := transportStatsFields(t, "transport_packet_other.go")
+	compareStatsDecls(t, "TransportStats", "transport_packet_linux.go", "transport_packet_other.go")
+}
+
+// TestARPStatsDeclarationsAgree is the same check for the ARP socket's
+// counters, and is the check arp_other.go's comment names.
+//
+// It is a SECOND CALL and not a loop over a list of pairs, because the bound
+// above is per pair: a third platform file for either type has to be added by
+// hand, and a loop over a list would read as if the list were derived.
+func TestARPStatsDeclarationsAgree(t *testing.T) {
+	compareStatsDecls(t, "ARPStats", "arp_linux.go", "arp_other.go")
+}
+
+func compareStatsDecls(t *testing.T, typeName, linuxPath, otherPath string) {
+	t.Helper()
+	linux := statsFields(t, linuxPath, typeName)
+	other := statsFields(t, otherPath, typeName)
 	if len(linux) != len(other) {
-		t.Fatalf("field count differs: linux %d %v, other %d %v", len(linux), linux, len(other), other)
+		t.Fatalf("%s field count differs: linux %d %v, other %d %v", typeName, len(linux), linux, len(other), other)
 	}
 	for i := range linux {
 		if linux[i] != other[i] {
-			t.Errorf("field %d differs: linux %q, other %q", i, linux[i], other[i])
+			t.Errorf("%s field %d differs: linux %q, other %q", typeName, i, linux[i], other[i])
 		}
 	}
 }

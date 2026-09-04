@@ -67,17 +67,24 @@ const (
 	// DHCPServerAddr is the static IP on DHCPSegment.
 	DHCPServerAddr = "192.168.99.1/24"
 	// HostVethAddr / IpvlanParentAddr are on-subnet addresses for the
-	// macvlan and ipvlan PARENTS, and they are what let the
-	// address-conflict detector work on this fixture at all (#549).
+	// macvlan and ipvlan PARENTS, so the host is a participant on the
+	// segment its own children are on (#549).
 	//
-	// A host answers an ARP request only if it can route a reply back
-	// to the sender, so the conflict probe has to send from an address
-	// on the leased subnet. Without one here the probe fell back to a
-	// link-local source and — correctly, since #524 — reported every
-	// result as *undetermined* rather than clean. The effect was that
-	// the detector could not run on the macvlan and ipvlan fixtures,
-	// i.e. on the two modes the feature exists for, while the bridge
-	// fixture passed because its parent IS the addressed bridge.
+	// They were introduced for a reason that has since expired: the
+	// chassis's datagram conflict probe had to send from an on-subnet
+	// address, because a host answers an ARP request only if it can
+	// route a reply back to the sender, and without one here the probe
+	// fell back to a link-local source and reported every result as
+	// *undetermined*. RFC 5227 replaced that probe and does not have
+	// the problem — a section 2.1.1 Probe carries an all-zero sender
+	// protocol address, which Linux answers for any local target with
+	// no routing decision at all.
+	//
+	// They are kept because the fixture needs them for other things —
+	// a parent to attach to, a target the section 2.4 tests ping to
+	// make a squatter announce itself — and the constraints on their
+	// VALUES are re-derived in parentaddr_test.go rather than left
+	// resting on the retired reason.
 	//
 	// That is the exact failure this release keeps finding: "nothing
 	// checked" and "nothing found" reading the same. The detector was
@@ -350,8 +357,8 @@ func New() (*Fixture, error) {
 		return nil, wrapTeardown(fmt.Errorf("AddrAdd dhcp v6: %w", err))
 	}
 
-	// The parent's own on-subnet address, so the conflict probe has a
-	// source a responder can route back to. See HostVethAddr (#549).
+	// The parent's own on-subnet address, so the host is a participant
+	// on the segment rather than a bystander. See HostVethAddr (#549).
 	//
 	// Added AFTER the server's, deliberately. Both ends of the pair now
 	// hold an address in 192.168.99.0/24, so the host has two connected

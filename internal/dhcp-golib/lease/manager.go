@@ -20,6 +20,17 @@ type Config struct {
 	Timers    Timers
 	Entropy   Entropy
 
+	// ARP is the link's ARP traffic, and it is REQUIRED unless
+	// Params.Conflict is proto.ConflictOff.
+	//
+	// Required rather than optional because the alternative is a client that
+	// believes it is checking for conflicts and is not: RFC 5227 section 2.1's
+	// check is the default (proto.ConflictWait is the zero value), so a
+	// caller that simply did not know about this field would otherwise get
+	// silence where it had been promised a DHCPDECLINE. NewManager returns
+	// ErrNoARP instead.
+	ARP ARP
+
 	// Journal and Packets are optional. A nil Journal means transitions are
 	// not recorded and Replay has nothing to replay; a nil PacketRing means
 	// no packet capture. Both default to a discarding implementation rather
@@ -85,6 +96,12 @@ type Manager struct {
 	held  bool
 	seq   uint64
 
+	// acd is the last ACD phase read off the machine, kept under mu because
+	// ACDPhase is called by the caller's goroutine and the machine belongs to
+	// Run's. It is written once per Step, from Run's goroutine, which is the
+	// only place the machine is touched.
+	acd proto.ACDPhase
+
 	// stats are counters the plugin's Health RPC will need (constraint C5).
 	// They are a fold over what actually happened rather than increments
 	// scattered at call sites — the shape the 1.x antipattern list names as
@@ -149,6 +166,40 @@ type Stats struct {
 	// behaviour.
 	NaksSeen     uint64
 	NaksAccepted uint64
+
+	// The RFC 5227 counters (P-7).
+	//
+	// ConflictsDetected counts addresses this client found in use — by the
+	// conflict rules or by a caller's ReportConflict — each exactly once,
+	// whichever path reported it. It is bumped at the event that reports the
+	// conflict: Failed{ReasonConflict} for one found before the address was
+	// ever used, Lost{ReasonConflict} for one found afterwards. The two are
+	// never both emitted for one conflict, which is what makes "exactly once"
+	// true rather than approximately true.
+	ConflictsDetected uint64
+
+	// ProbesSent and AnnouncementsSent count the two kinds of ARP packet RFC
+	// 5227 defines, read off the packet that actually left the host rather
+	// than off the machine's intention — the same rule countSent follows, and
+	// the reason a probe that failed to send is in ARPSendFailures and in
+	// neither of these.
+	ProbesSent        uint64
+	AnnouncementsSent uint64
+	ARPSendFailures   uint64
+
+	// ARPSeen is every frame the link delivered; ARPIgnored the ones the
+	// relevance filter dropped before ring 1 saw them; ARPDecodeFailures the
+	// ones that were not an Ethernet/IPv4 ARP packet at all.
+	//
+	// THREE COUNTERS BECAUSE THEIR DIFFERENCES ARE THE DIAGNOSTIC. Seen minus
+	// ignored minus decode failures is what reached the conflict rules, and on
+	// a link where a conflict was missed that number is the first thing to
+	// look at: a zero says the socket saw nothing worth showing, and a large
+	// one with no conflict says the rules looked and disagreed.
+	ARPSeen           uint64
+	ARPIgnored        uint64
+	ARPDecodeFailures uint64
+	ARPErrors         uint64
 }
 
 // ErrNoTransport and friends are returned by NewManager for a Config that
@@ -159,6 +210,14 @@ var (
 	ErrNoClock     = errors.New("lease: Config.Clock is required")
 	ErrNoTimers    = errors.New("lease: Config.Timers is required")
 	ErrNoEntropy   = errors.New("lease: Config.Entropy is required")
+
+	// ErrNoARP is a Config with conflict detection on and no ARP port.
+	//
+	// It is an error and not a silent downgrade to proto.ConflictOff, because
+	// the downgrade is invisible: the client acquires, binds and looks
+	// healthy, and the one thing it does not do is the thing it was
+	// configured to do. See Config.ARP.
+	ErrNoARP = errors.New("lease: Config.ARP is required unless Params.Conflict is proto.ConflictOff")
 
 	// ErrResumeTwice is Config.Resume and Config.Params.Resume both set.
 	//
@@ -189,6 +248,8 @@ func NewManager(cfg Config) (*Manager, error) {
 		return nil, ErrNoTimers
 	case cfg.Entropy == nil:
 		return nil, ErrNoEntropy
+	case cfg.Params.Conflict != proto.ConflictOff && cfg.ARP == nil:
+		return nil, ErrNoARP
 	}
 	params := cfg.Params
 	if cfg.Resume != nil {
@@ -276,6 +337,14 @@ func (mg *Manager) Run(ctx context.Context) error {
 	inbound := mg.cfg.Transport.Received()
 	fired := mg.cfg.Timers.Fired()
 
+	// A nil channel blocks forever, so a client with conflict detection off
+	// has no ARP arm in the select rather than an arm guarded by a flag. That
+	// is the whole implementation of "no listener".
+	var arpIn <-chan ARPInbound
+	if mg.cfg.ARP != nil {
+		arpIn = mg.cfg.ARP.Received()
+	}
+
 	for {
 		select {
 		case req := <-mg.requests:
@@ -293,6 +362,28 @@ func (mg *Manager) Run(ctx context.Context) error {
 				return errors.New("lease: transport closed")
 			}
 			mg.onInbound(ctx, in)
+
+		case in, ok := <-arpIn:
+			if !ok {
+				// The ARP socket closing is NOT fatal to the lease. The DHCP
+				// transport still works, the lease is still held and its
+				// timers are still armed; what has stopped is RFC 5227
+				// section 2.4's ongoing detection. Tearing the client down
+				// here would turn a lost listener into a lost address, which
+				// is strictly worse than the conflict it was watching for.
+				//
+				// The arm is nilled so the closed channel does not spin the
+				// loop, and the loss is journalled: a client that has stopped
+				// watching must not look like one that is watching and seeing
+				// nothing.
+				arpIn = nil
+				mg.journal.Append(proto.JournalEntry{
+					Kind:   proto.EvARPReceived,
+					Reason: "the ARP socket closed: RFC 5227 2.4 ongoing conflict detection has stopped for this lease",
+				})
+				continue
+			}
+			mg.onARP(ctx, in)
 
 		case id, ok := <-fired:
 			if !ok {
@@ -343,10 +434,12 @@ func (mg *Manager) Release() { mg.request(proto.Simple(proto.EvRelease)) }
 // holds, which obliges a DHCPRELEASE's counterpart — a DHCPDECLINE (RFC 2131
 // section 3.1(5), a MUST).
 //
-// THE DETECTION IS NOT IN THIS LIBRARY. Nothing here runs an ARP probe or
-// duplicate address detection; a conflict reaches the machine only because a
-// caller called this. Until a probe exists, a real conflict on a real host
-// produces no DHCPDECLINE, because nothing notices it.
+// IT IS NOT THE ONLY DETECTOR ANY MORE, and it is still here for the callers
+// that have evidence this library cannot see: a kernel ARP cache entry, a
+// switch complaint, a second interface answering. Since M6 the library runs RFC
+// 5227 itself unless Params.Conflict is proto.ConflictOff — and it stays
+// available in that mode too, which is what makes ConflictOff "no probing"
+// rather than "no DHCPDECLINE".
 //
 // It can be dropped for the same reason Release can, and is counted the same
 // way; the event to wait for is Lost carrying proto.ReasonConflict.
@@ -427,6 +520,7 @@ func (mg *Manager) dispatch(ctx context.Context, ev proto.Event) {
 		seq := mg.seq
 		mg.seq++
 		mg.stats.Steps++
+		mg.acd = mg.machine.ACDPhase()
 		mg.mu.Unlock()
 
 		mg.journal.Append(proto.NewJournalEntry(seq, now, rnd, e, from, to, acts))
@@ -460,6 +554,40 @@ func (mg *Manager) drain(ctx context.Context, acts []proto.Action) []proto.Event
 			mg.countSent(a.Msg)
 			mg.packets.Record(CapturedPacket{
 				At: bridgeAt.wall, Dir: DirOut, Raw: raw, Msg: a.Msg,
+			})
+
+		case proto.ActSendARP:
+			raw, err := wire.EncodeARP(a.ARP)
+			if err != nil {
+				mg.bump(func(s *Stats) { s.ARPSendFailures++ })
+				failures = append(failures, proto.ActionFailed(a.ID, "encode ARP: "+err.Error()))
+				continue
+			}
+			if mg.cfg.ARP == nil {
+				// Unreachable through NewManager, which refuses this Config
+				// with ErrNoARP. Handled anyway, and as a FAILURE rather than
+				// a panic: R2 says the machine is told when an action did not
+				// happen, and a nil dereference in the loop that owns the
+				// lease takes the lease with it.
+				mg.bump(func(s *Stats) { s.ARPSendFailures++ })
+				failures = append(failures, proto.ActionFailed(a.ID, "no ARP port"))
+				continue
+			}
+			if err := mg.cfg.ARP.Send(raw); err != nil {
+				mg.bump(func(s *Stats) { s.ARPSendFailures++ })
+				failures = append(failures, proto.ActionFailed(a.ID, err.Error()))
+				continue
+			}
+			// Counted off the packet that left, not off the intention. An ARP
+			// Probe is defined by its all-zero sender IP (RFC 5227 section
+			// 1.1), so this reads the same field a receiver would.
+			if a.ARP.IsProbe() {
+				mg.bump(func(s *Stats) { s.ProbesSent++ })
+			} else {
+				mg.bump(func(s *Stats) { s.AnnouncementsSent++ })
+			}
+			mg.packets.Record(CapturedPacket{
+				At: bridgeAt.wall, Dir: DirOut, Raw: raw, ARP: a.ARP,
 			})
 
 		case proto.ActSetTimer:
@@ -496,6 +624,12 @@ func (mg *Manager) drain(ctx context.Context, acts []proto.Action) []proto.Event
 			lost := mg.lease
 			mg.lease, mg.held = Lease{}, false
 			mg.stats.LeasesLost++
+			if a.Reason == proto.ReasonConflict {
+				// RFC 5227 section 2.4's path: the address was in use and had
+				// already been announced to the caller. See the Failed arm for
+				// the other half.
+				mg.stats.ConflictsDetected++
+			}
 			mg.mu.Unlock()
 			mg.emit(ctx, Event{Kind: Lost, Lease: lost, Reason: a.Reason})
 
@@ -505,8 +639,17 @@ func (mg *Manager) drain(ctx context.Context, acts []proto.Action) []proto.Event
 			// reading Stats when it arrives must see them. See Stats.
 			mg.bump(func(s *Stats) {
 				s.AcquireFailures++
-				if a.Reason == proto.ReasonNak {
+				switch a.Reason {
+				case proto.ReasonNak:
 					s.NaksAccepted++
+				case proto.ReasonConflict:
+					// A conflict found before the address was ever used: RFC
+					// 5227 section 2.1's check failing, so nothing was
+					// acquired and no ActLeaseLost follows. This is the
+					// counterpart bump to the one in the Lost arm, and the two
+					// are mutually exclusive by construction — ring 1 emits
+					// ActFailed with this reason only when no lease is held.
+					s.ConflictsDetected++
 				}
 			})
 			mg.emit(ctx, Event{Kind: Failed, Reason: a.Reason, Note: a.Note})
@@ -531,6 +674,58 @@ func (mg *Manager) drain(ctx context.Context, acts []proto.Action) []proto.Event
 	return failures
 }
 
+// onARP is one frame off the link.
+//
+// THE THREE REFUSALS ARE COUNTED SEPARATELY and none of them reaches ring 1.
+// A shared link carries ARP continuously, every event that reaches Step costs a
+// journal entry, and the journal is bounded — so an unfiltered feed would wrap
+// it between one acquisition and the next and destroy the replay (R3). The
+// filter itself is ring 1's, for the reason Machine.ARPRelevant gives.
+func (mg *Manager) onARP(ctx context.Context, in ARPInbound) {
+	if in.Err != nil {
+		mg.bump(func(s *Stats) { s.ARPErrors++ })
+		return
+	}
+	// ONE bump per frame, carrying both the sighting and its verdict.
+	//
+	// Two bumps would leave a window in which a reader sees ARPSeen raised and
+	// the frame not yet classified, so the invariant a caller reads these
+	// counters for — every frame seen is exactly one of decode-failed, ignored
+	// and delivered — would be false at arbitrary moments rather than only
+	// while a frame is genuinely in flight.
+	p, err := wire.DecodeARP(in.Frame)
+	if err != nil {
+		// Not an Ethernet/IPv4 ARP packet, or shorter than one. Counted and
+		// dropped: RFC 5227's rules are all predicates over the sender and
+		// target addresses of such a packet, and a frame that has none has
+		// nothing for them to read.
+		mg.bump(func(s *Stats) { s.ARPSeen++; s.ARPDecodeFailures++ })
+		return
+	}
+	if !mg.machine.ARPRelevant(p) {
+		mg.bump(func(s *Stats) { s.ARPSeen++; s.ARPIgnored++ })
+		return
+	}
+	mg.bump(func(s *Stats) { s.ARPSeen++ })
+	mg.packets.Record(CapturedPacket{
+		At:  mg.cfg.Clock.Wall(),
+		Dir: DirIn,
+		Raw: append([]byte(nil), in.Frame...),
+		ARP: p,
+	})
+	mg.dispatch(ctx, proto.ARPReceived(p))
+}
+
+// ACDPhase reports where RFC 5227's conflict check stands.
+//
+// It is proto.ACDIdle before Run starts, after it returns, and for the whole
+// life of a client running with proto.ConflictOff.
+func (mg *Manager) ACDPhase() proto.ACDPhase {
+	mg.mu.Lock()
+	defer mg.mu.Unlock()
+	return mg.acd
+}
+
 // emit delivers an outward event.
 //
 // While running it BLOCKS until the caller takes it or the context ends.
@@ -547,6 +742,11 @@ func (mg *Manager) drain(ctx context.Context, acts []proto.Action) []proto.Event
 // counts the case where even the buffer was full, so "we dropped one" is a
 // measurement rather than an assumption.
 func (mg *Manager) emit(ctx context.Context, e Event) {
+	// Stamped here rather than at each of the five call sites, so that a new
+	// event kind cannot be added without it. emit runs on Run's goroutine,
+	// which is the machine's owner, so this reads the live phase and not the
+	// snapshot ACDPhase serves to other goroutines.
+	e.ACD = mg.machine.ACDPhase()
 	if mg.stopping {
 		select {
 		case mg.events <- e:

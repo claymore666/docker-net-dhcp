@@ -799,10 +799,10 @@ func TestAttachGraceLine_DistinguishesQuietFromFixed(t *testing.T) {
 	})
 }
 
-// ConflictProbeLine's whole job is to stop a zero from being read as
+// ACDCensusLine's whole job is to stop a zero from being read as
 // evidence. Each branch is a different answer to "does this run tell us
 // anything about #524", so each one is pinned.
-func TestConflictProbeLine(t *testing.T) {
+func TestACDCensusLine(t *testing.T) {
 	cases := []struct {
 		name string
 		h    *HealthResponse
@@ -821,37 +821,45 @@ func TestConflictProbeLine(t *testing.T) {
 			// Deny the AFFIRMATIVE claim, not the substring: this line
 			// legitimately says "is not evidence the segment was clean",
 			// and a looser check would have failed on the right answer.
-			deny: []string{"detector ran and the segment was clean"},
+			deny: []string{"check ran and the segment was clean"},
 		},
 		{
 			name: "probes ran clean is stated as observed",
-			h:    &HealthResponse{AddressConflictProbes: 7},
-			want: []string{"7 probe(s)", "observed, not inferred"},
+			h:    &HealthResponse{ACDProbesSent: 7, ACDAnnouncementsSent: 14},
+			want: []string{"7 ARP Probe(s)", "14 Announcement(s)", "observed, not inferred"},
 			deny: []string{"not\n  evidence"},
 		},
 		{
 			name: "a conflict is reported over the probe count",
-			h:    &HealthResponse{AddressConflicts: 1, AddressConflictProbes: 4},
-			want: []string{"1 leased address(es)", "out of 4 probe(s)"},
-			deny: []string{"detector ran and the segment was clean"},
+			h:    &HealthResponse{AddressConflicts: 1, ACDProbesSent: 4},
+			want: []string{"1 leased address(es)", "out of 4 ARP Probe(s)"},
+			deny: []string{"check ran and the segment was clean"},
 		},
 		{
 			name: "partial coverage is not a clean bill",
-			h:    &HealthResponse{AddressConflictProbes: 3, ConflictProbeFailures: 2},
-			want: []string{"3 probe(s)", "2 could not", "only the endpoints that were checked"},
+			h:    &HealthResponse{ACDProbesSent: 3, ACDARPSendFailures: 2},
+			want: []string{"3 ARP Probe(s)", "2\n  send(s) were refused", "only what was actually asked"},
 			deny: []string{"observed, not inferred"},
 		},
 		{
-			name: "a conflict outranks probe failures",
+			name: "a conflict outranks refused sends",
 			// Both non-zero: the conflict is the finding that matters.
-			h:    &HealthResponse{AddressConflicts: 2, AddressConflictProbes: 5, ConflictProbeFailures: 1},
+			h:    &HealthResponse{AddressConflicts: 2, ACDProbesSent: 5, ACDARPSendFailures: 1},
 			want: []string{"2 leased address(es)"},
-			deny: []string{"could not\n  run at all"},
+			deny: []string{"send(s) were refused"},
+		},
+		{
+			// conflict_check=off is a real operator choice, and the
+			// line must not read as an accusation: it names the mode
+			// among the reasons a run can honestly have no probes.
+			name: "the no-probe line names conflict_check=off as a reason",
+			h:    &HealthResponse{LeasesObtained: 3},
+			want: []string{"conflict_check=off"},
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := ConflictProbeLine(tc.h)
+			got := ACDCensusLine(tc.h)
 			if tc.h == nil {
 				if got != "" {
 					t.Errorf("nil health produced %q, want empty", got)

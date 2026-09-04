@@ -12,6 +12,7 @@ import (
 	"net"
 	"time"
 
+	"github.com/claymore666/dhcp-golib/proto"
 	log "github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
 
@@ -26,8 +27,8 @@ import (
 // macvlan child that solicits immediately, and that first broadcast
 // is not reliably delivered:
 //
-//	dhcpcd startup (unshare/mounts/DUID/carrier)   ≤ ~2s on slow or
-//	                                               virtualized hosts
+//	client startup (netns entry, socket, DUID, carrier) ≤ ~2s on slow
+//	                                                    or virtualized hosts
 //	initial DISCOVER lost + jittered retransmit    ~3–4s
 //	server response + handler round-trip           < 0.5s
 //
@@ -68,7 +69,7 @@ const preflightProbeBudget = 8 * time.Second
 //     The shared MAC that motivated the old choice turns out not to
 //     bite. An ipvlan probe link wears the parent's address because the
 //     kernel permits nothing else, but the random probe MAC is still
-//     what dhcpcd derives its DUID and IAID from, so the probe's
+//     what the DHCP client derives its DUID and IAID from, so the probe's
 //     identity stays its own — the link's address and the DHCP identity
 //     are separate things, the same way they are for a container's own
 //     endpoint. (This used to say "exactly as they are on the release
@@ -82,8 +83,8 @@ const preflightProbeBudget = 8 * time.Second
 //     and the chassis stopped overriding it (see pkg/dhcp/params.go).
 //
 //  3. Bring it up and run dhcp.GetIP one-shot with the probe budget.
-//     The library has no DISCOVER-only mode, as dhcpcd had no such
-//     flag before it; we accept the full DORA and let the upstream
+//     The library has no DISCOVER-only mode, as the external client
+//     it replaced had no such flag; we accept the full DORA and let the upstream
 //     server briefly hold a lease that times out naturally. Since #800 that is true of every client this plugin
 //     starts, not something the probe does differently — the probe's
 //     lease is short-lived only because the probe is. The cost is one
@@ -93,7 +94,7 @@ const preflightProbeBudget = 8 * time.Second
 //  4. Tear down the child unconditionally on return.
 //
 // On success returns nil. On failure wraps the underlying error
-// (link-create failed, dhcpcd timeout, malformed lease, etc.) with
+// (link-create failed, acquisition timeout, malformed lease, etc.) with
 // a parent-aware prefix so the operator's docker CLI surfaces a
 // clear "no DHCP OFFER on <parent> within 8s" message instead of
 // the generic CreateNetwork failure shape.
@@ -174,9 +175,36 @@ func (p *Plugin) runDHCPProbe(ctx context.Context, parent, mode string, pol serv
 	// The router-advertisement observation is #868's discriminator for a
 	// container endpoint; the preflight probe asks a different question
 	// ("is anyone listening?") and has no use for it.
-	info, _, err := dhcp.GetIP(probeCtx, probeName, &dhcp.DHCPClientOptions{
-		// MAC is the probe link's (random) address; dhcpcd derives its
-		// DUID-LL from it. Identity-neutral otherwise:
+	info, _, err := dhcp.GetIP(probeCtx, probeName, preflightProbeOptions(probeMAC, pol))
+	if err != nil {
+		if errors.Is(err, util.ErrNoLease) || errors.Is(err, context.DeadlineExceeded) {
+			return fmt.Errorf("no DHCP OFFER on %q within %v — parent NIC may be isolated, firewalled (UDP/67-68), or VLAN-tagged wrong", parent, preflightProbeBudget)
+		}
+		return fmt.Errorf("validate_dhcp probe on %q: %w", parent, err)
+	}
+
+	log.
+		WithField("parent", parent).
+		WithField("probe_ip", info.IP).
+		WithField("probe_gateway", info.Gateway).
+		Info("validate_dhcp probe succeeded — DHCP server reachable")
+	return nil
+}
+
+// preflightProbeOptions is the client configuration for validate_dhcp's
+// throwaway lease.
+//
+// Split out of runDHCPProbe for the reason newProbeLink was: the
+// properties that matter here cannot be reached through runDHCPProbe,
+// which needs CAP_NET_ADMIN, a real parent and a DHCP server, so left
+// inline they are asserted by nothing at all. ConflictMode in
+// particular is a value whose wrong setting does not fail any test and
+// does not fail on a quiet network -- it fails validate_dhcp against a
+// working server, which is how it reached the lane.
+func preflightProbeOptions(probeMAC net.HardwareAddr, pol serverPolicy) *dhcp.DHCPClientOptions {
+	return &dhcp.DHCPClientOptions{
+		// MAC is the probe link's (random) address, and the DHCP client
+		// derives its DUID-LL from it. Identity-neutral otherwise:
 		// Hostname intentionally empty — the probe shouldn't
 		// register any name in the upstream's lease table.
 		// VendorClass / ClientID likewise omitted: the goal is
@@ -196,20 +224,21 @@ func (p *Plugin) runDHCPProbe(ctx context.Context, parent, mode string, pol serv
 		// there, not which one is preferred.
 		AllowServers: pol.allowList(),
 		DenyServers:  pol.denyList(),
-	})
-	if err != nil {
-		if errors.Is(err, util.ErrNoLease) || errors.Is(err, context.DeadlineExceeded) {
-			return fmt.Errorf("no DHCP OFFER on %q within %v — parent NIC may be isolated, firewalled (UDP/67-68), or VLAN-tagged wrong", parent, preflightProbeBudget)
-		}
-		return fmt.Errorf("validate_dhcp probe on %q: %w", parent, err)
+		// RFC 5227 IS OFF HERE, WHATEVER THE NETWORK ASKED FOR, and it
+		// is not the mode being ignored -- the mode is about an address
+		// this plugin is going to USE, and this one is thrown away
+		// milliseconds later on a link that is deleted with it.
+		// Section 2.1 exists to answer "may I use this address"; the
+		// probe never asks that question.
+		//
+		// It is also the difference between a working gate and a
+		// broken one: preflightProbeBudget is 8s and conflict_check=wait
+		// spends up to 7 of them waiting out a check whose answer
+		// nothing reads, so validate_dhcp=true failed against a
+		// perfectly good DHCP server. MEASURED on the beta lane
+		// 2026-09-04 (TestPreflightProbe_PassesOnReachableServer, 8.1s).
+		ConflictMode: proto.ConflictOff,
 	}
-
-	log.
-		WithField("parent", parent).
-		WithField("probe_ip", info.IP).
-		WithField("probe_gateway", info.Gateway).
-		Info("validate_dhcp probe succeeded — DHCP server reachable")
-	return nil
 }
 
 // newProbeLink builds the temporary child the probe runs on.
@@ -222,9 +251,9 @@ func (p *Plugin) runDHCPProbe(ctx context.Context, parent, mode string, pol serv
 // what made `validate_dhcp=true` unusable on an ipvlan network.
 //
 // The MAC is applied only where the kernel accepts one. ipvlan children
-// inherit the parent's address; the random probe MAC still reaches
-// dhcpcd, where it becomes the probe's DUID and IAID, so identity is
-// unaffected either way.
+// inherit the parent's address; the random probe MAC still reaches the
+// DHCP client, where it becomes the probe's DUID and IAID, so identity
+// is unaffected either way.
 func newProbeLink(mode, name string, parentIndex int, mac net.HardwareAddr) netlink.Link {
 	la := netlink.NewLinkAttrs()
 	la.Name = name

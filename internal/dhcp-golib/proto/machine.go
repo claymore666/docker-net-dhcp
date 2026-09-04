@@ -78,6 +78,34 @@ type Machine struct {
 	// Held apart from resume because the retransmissions need it after the
 	// Resume is gone, and because it is what Action.Requested reports.
 	rebootAddr netip.Addr
+
+	// acd is RFC 5227's sub-machine, or nil when Params.Conflict is
+	// ConflictOff. Nil rather than a disabled instance, so that "no probing
+	// and no listener" is a shape the type system can see: every path that
+	// could probe has to say what it does without one.
+	acd *acd
+
+	// probing is the lease this machine has been ACKed and is checking, in
+	// StateProbing only. It is NOT m.lease: nothing has been acquired, the
+	// caller has not been told, and Lease() must keep saying so — D22's whole
+	// content is that the address is not usable yet.
+	//
+	// It is nonetheless a real allocation at the server, which is why
+	// heldOrProbing exists: a DHCPDECLINE or DHCPRELEASE from here names this
+	// address and this server.
+	probing   Lease
+	haveProbe bool
+
+	// arpAction is the id of the ActSendARP most recently emitted, and
+	// haveARPAction says whether one is outstanding.
+	//
+	// AT MOST ONE IS EVER IN FLIGHT: every ARP packet this machine sends is
+	// emitted by one acd timer arm, each of which sends at most one and then
+	// arms the next. That is what makes a single id enough, and
+	// TestAtMostOneARPSendIsOutstanding drives it over the whole schedule
+	// rather than leaving it as a claim.
+	arpAction     ActionID
+	haveARPAction bool
 }
 
 // New builds a Machine in StateStopped.
@@ -105,7 +133,11 @@ func New(p Params) (*Machine, error) {
 	// passed in could otherwise move the remembered address out from under a
 	// machine that has already decided to ask for it.
 	p.Resume = p.Resume.Clone()
-	return &Machine{params: p, state: StateStopped, resume: p.Resume}, nil
+	m := &Machine{params: p, state: StateStopped, resume: p.Resume}
+	if p.Conflict != ConflictOff {
+		m.acd = newACD(p.acd(), p.Conflict, p.CHAddr)
+	}
+	return m, nil
 }
 
 // State returns the current state.
@@ -149,6 +181,8 @@ func (m *Machine) Step(now Instant, rnd uint64, ev Event) (State, []Action) {
 		m.stepRenewal(now, rnd, ev, &out)
 	case StateRebooting:
 		m.stepRebooting(now, rnd, ev, &out)
+	case StateProbing:
+		m.stepProbing(now, rnd, ev, &out)
 	default:
 		// Unreachable through the exported API — State is not settable from
 		// outside — and handled anyway, because "unreachable" is a claim about
@@ -310,7 +344,7 @@ func (m *Machine) stepRequesting(now Instant, rnd uint64, ev Event, out *actions
 			if note != "" {
 				out.journal(m, note)
 			}
-			m.enterBound(now, lse, out, false)
+			m.afterAck(now, rnd, lse, out)
 		case wire.MsgNak:
 			// RFC 2131 section 3.1(5): "If the client receives a DHCPNAK
 			// message, the client restarts the configuration process."
@@ -394,7 +428,7 @@ func (m *Machine) stepRebooting(now Instant, rnd uint64, ev Event, out *actions)
 			// remembered lease. Both are reported rather than enforced:
 			// Action.Requested carries what was asked for, and the lease's
 			// ServerID is read out of this ACK.
-			m.enterBound(now, lse, out, false)
+			m.afterAck(now, rnd, lse, out)
 		case wire.MsgNak:
 			// Figure 5's "DHCPNAK/Restart" edge, and section 3.2(3): "If the
 			// client receives a DHCPNAK message, it cannot reuse its
@@ -426,17 +460,23 @@ func (m *Machine) stepRebooting(now Instant, rnd uint64, ev Event, out *actions)
 			// configuration parameters for the remainder of the unexpired
 			// lease."
 			//
-			// DECISION 2026-09-03: the MAY is not taken. Silence is what
-			// section 4.3.2 requires of a server that "has no record of this
-			// client" — the case where the address has been reissued to
-			// somebody else is indistinguishable, from here, from the case
-			// where the server is merely down. Taking the MAY puts a host on
-			// the network with an address nothing has confirmed in this boot,
-			// and this library has no conflict probe until M6. The cost of not
-			// taking it is an outage where a client could have carried on
-			// using an address it still held; the cost of taking it is two
-			// hosts on one address, which is the failure this plugin exists to
-			// avoid.
+			// DECISION 2026-09-03, REASON CORRECTED 2026-09-04 (M6 shipped
+			// the probe the original reason said did not exist): the MAY is
+			// not taken. Silence is what section 4.3.2 requires of a server
+			// that "has no record of this client" — the case where the address
+			// has been reissued to somebody else is indistinguishable, from
+			// here, from the case where the server is merely down. Taking the
+			// MAY puts a host on the network with an address nothing has
+			// confirmed in this boot, and RFC 5227 does not make that safe:
+			// its probe proves that nobody ANSWERS for the address right now,
+			// which a lease reissued to a host that is powered off satisfies
+			// exactly. The two hosts then collide when the other one boots,
+			// which is section 2.4's path and a conflict rather than a
+			// prevention. In ConflictOff there is no probe at all. The cost of
+			// not taking the MAY is an outage where a client could have
+			// carried on using an address it still held; the cost of taking it
+			// is two hosts on one address, which is the failure this plugin
+			// exists to avoid.
 			out.failed(m, ReasonNoServer, "no answer to the INIT-REBOOT DHCPREQUEST after the retransmission budget; acquiring from INIT")
 			m.beginAcquisition(now, split(rnd, 1), out, false)
 			return
@@ -476,6 +516,14 @@ func (m *Machine) stepBound(now Instant, rnd uint64, ev Event, out *actions) {
 			// T1 could not be used — a lease with no server identifier — and
 			// the safety net when the renewal timer never fired at all.
 			m.enterRebinding(now, rnd, out, true)
+		case TimerACD:
+			// ConflictAsync probes from BOUND: the lease is announced first
+			// and section 2.1's check runs beside its use. In ConflictWait
+			// this arm is reached only for a renewal that moved onto a new
+			// address, which is section 2.1's "a host that is ... configured
+			// with a new address" trigger arriving at a lease that has
+			// already been announced and cannot be un-announced.
+			m.acdTimer(now, rnd, out)
 		default:
 			out.journal(m, fmt.Sprintf("timer %s fired in BOUND: ignored", ev.Timer))
 		}
@@ -486,7 +534,9 @@ func (m *Machine) stepBound(now Instant, rnd uint64, ev Event, out *actions) {
 		m.dropLease(out, ReasonAddressLost)
 		m.beginAcquisition(now, rnd, out, false)
 	case EvConflictDetected:
-		m.declineAndRestart(rnd, out)
+		m.declineAndRestart(now, rnd, out)
+	case EvARPReceived:
+		m.onARP(now, rnd, ev, out)
 	case EvRelease:
 		m.release(rnd, out)
 	case EvStart:
@@ -525,7 +575,9 @@ func (m *Machine) stepRenewal(now Instant, rnd uint64, ev Event, out *actions) {
 		// abandoned; release halts, which cancels every timer.
 		m.release(rnd, out)
 	case EvConflictDetected:
-		m.declineAndRestart(rnd, out)
+		m.declineAndRestart(now, rnd, out)
+	case EvARPReceived:
+		m.onARP(now, rnd, ev, out)
 	case EvReceived:
 		msg, ok := m.acceptable(ev.Msg, out)
 		if !ok {
@@ -545,7 +597,7 @@ func (m *Machine) stepRenewal(now Instant, rnd uint64, ev Event, out *actions) {
 			if note != "" {
 				out.journal(m, note)
 			}
-			m.enterBound(now, lse, out, true)
+			m.enterBound(now, rnd, lse, out, true)
 		case wire.MsgNak:
 			// RFC 2131 Figure 5: the edges leaving RENEWING and REBINDING on
 			// a DHCPNAK are both labelled "DHCPNAK / Halt network" and both
@@ -587,6 +639,12 @@ func (m *Machine) stepRenewal(now Instant, rnd uint64, ev Event, out *actions) {
 			// initialization parameters as if the client were uninitialized."
 			m.dropLease(out, ReasonExpired)
 			m.beginAcquisition(now, rnd, out, false)
+		case TimerACD:
+			// The lease is held and being renewed while section 2.1's check
+			// on a moved address is still running. Section 2.4's "ongoing
+			// process that is in effect for as long as a host is using an
+			// address" does not pause for a renewal, and neither does this.
+			m.acdTimer(now, rnd, out)
 		default:
 			out.journal(m, fmt.Sprintf("timer %s fired in %s: ignored", ev.Timer, m.state))
 		}
@@ -733,6 +791,7 @@ func (m *Machine) toInitIdle(out *actions) {
 	m.state = StateInit
 	m.offer = nil
 	m.retransmits = 0
+	m.acdIdle()
 	out.cancelAll(m)
 }
 
@@ -746,6 +805,7 @@ func (m *Machine) stop(out *actions) { m.halt(out, ReasonStopped) }
 // halt gives up whatever is held, cancels everything and parks in STOPPED.
 func (m *Machine) halt(out *actions, r Reason) {
 	m.dropLease(out, r)
+	m.acdIdle()
 	out.cancelAll(m)
 	m.state = StateStopped
 	m.started = false
@@ -765,11 +825,31 @@ func (m *Machine) halt(out *actions, r Reason) {
 // The machine lands in INIT, not STOPPED: RFC 2131 section 3.2(3), "This
 // action corresponds to the client moving to the INIT state in the DHCP state
 // diagram."
-func (m *Machine) declineAndRestart(rnd uint64, out *actions) {
+func (m *Machine) declineAndRestart(now Instant, rnd uint64, out *actions) {
 	m.sendDecline(rnd, out)
 	m.dropLease(out, ReasonConflict)
+	// The conflict count is read BEFORE toInitIdle, which returns the
+	// sub-machine to ACDIdle. acd.stop keeps the count for exactly this
+	// reason; see the comment on acd.conflicts.
+	limited := m.acd != nil && m.acd.rateLimited()
+	conflicts := 0
+	if m.acd != nil {
+		conflicts = m.acd.conflicts
+	}
 	m.toInitIdle(out)
 	d := m.params.restartDelay()
+	if limited {
+		// RFC 5227 section 2.1.1: "if the host experiences MAX_CONFLICTS or
+		// more address conflicts on a given interface, then the host MUST
+		// limit the rate at which it probes for new addresses on this
+		// interface to no more than one attempted new address per
+		// RATE_LIMIT_INTERVAL." D5 makes "a given interface" this client.
+		//
+		// It composes with section 3.1(5)'s floor as a MAXIMUM, never
+		// replacing it: acd.restartDelay says why.
+		d = m.acd.restartDelay(now, d)
+		out.journal(m, fmt.Sprintf("RFC 5227 2.1.1 rate limit: %d conflicts on this client, next attempt in %s", conflicts, d))
+	}
 	out.set(m, TimerRestart, d)
 	out.journal(m, fmt.Sprintf("INIT: waiting %s before restarting after DHCPDECLINE (RFC 2131 3.1)", d))
 }
@@ -854,7 +934,7 @@ func (m *Machine) releaseBeforeBound(out *actions) {
 // processes, every one of them `no expiry timer armed after acquisition`.
 // -race does not flag it, because the two sides are synchronised; the ordering
 // was simply wrong.
-func (m *Machine) enterBound(now Instant, l Lease, out *actions, renewal bool) {
+func (m *Machine) enterBound(now Instant, rnd uint64, l Lease, out *actions, renewal bool) {
 	prev, hadPrev := m.lease, m.haveLse
 	out.cancel(m, TimerRetransmit)
 	m.lease = l
@@ -904,6 +984,21 @@ func (m *Machine) enterBound(now Instant, l Lease, out *actions, renewal bool) {
 			// change that invalidates everything the caller configured, and
 			// because a server doing it by accident is worth seeing.
 			out.journal(m, "renewal moved the address from "+prev.Addr.String()+" to "+l.Addr.String())
+			// RFC 5227 section 2.1 lists "a host that is ... configured with a
+			// new address" among the moments a host MUST probe, and this is
+			// one: the binding moved onto an address this client has never
+			// checked. It is NOT the periodic re-check the same section
+			// forbids — "A host MUST NOT perform this check periodically as a
+			// matter of course" — which is why a renewal that comes back on
+			// the SAME address starts nothing.
+			//
+			// The probing runs BESIDE the address in every mode here, not
+			// before it, including ConflictWait. That is not the mode being
+			// ignored: the lease was announced seconds or hours ago and cannot
+			// be un-announced, so there is no "before use" left to wait for.
+			// What ConflictWait still buys is the DHCPDECLINE when the check
+			// fails, which is section 2.4's path and is the same in both.
+			m.startACD(now, rnd, l.Addr.Addr(), out)
 		}
 		// AFTER the renewal, not before: ActLeaseRenewed carries the new
 		// lease and is the caller's record of it, and ActLeaseChanged is the
@@ -963,6 +1058,28 @@ func (m *Machine) dropLease(out *actions, r Reason) {
 // failures the transport is reported broken with a typed reason, instead of
 // the machine sitting in SELECTING looking healthy.
 func (m *Machine) noteActionFailed(now Instant, rnd uint64, ev Event, out *actions) {
+	if m.haveARPAction && ev.Action == m.arpAction {
+		// AN RFC 5227 ARP PACKET THAT DID NOT LEAVE THE HOST IS NOT A
+		// TRANSPORT FAILURE, and this arm is keyed on the ACTION rather than
+		// on the state because the same failure can arrive in PROBING,
+		// BOUND (ConflictAsync) or RENEWING, and it means the same thing in
+		// all three.
+		//
+		// MaxSendFailures exists to break a machine that RETRANSMITS forever
+		// into a dead transport. The ACD schedule retransmits nothing: it is
+		// PROBE_NUM probes and ANNOUNCE_NUM announcements and then it is over,
+		// whatever happens to any of them. There is no loop to break, and
+		// counting these toward the budget would let five unsendable
+		// announcements drop a lease the server is perfectly happy with.
+		//
+		// What it DOES mean is that the check did not happen, and the journal
+		// says so: a probe that was never sent and a probe that drew no answer
+		// are the same silence from here.
+		m.haveARPAction = false
+		out.journal(m, fmt.Sprintf("%s failed (%s): an RFC 5227 ARP packet did not leave the host, so this address's conflict check is incomplete",
+			ev.Action, ev.Reason))
+		return
+	}
 	m.sendFailures++
 	out.journal(m, fmt.Sprintf("%s failed (%s), consecutive failures %d",
 		ev.Action, ev.Reason, m.sendFailures))
@@ -1204,8 +1321,9 @@ func (m *Machine) sendRequest(now Instant, rnd uint64, out *actions) {
 // message is answered, so an unusable one would be indistinguishable from a
 // correct one on the wire; it is not sent, and the note says why.
 func (m *Machine) terminalFields() (addr, sid netip.Addr, why string) {
-	addr = m.lease.Addr.Addr()
-	sid = m.lease.ServerID
+	l := m.heldOrProbing()
+	addr = l.Addr.Addr()
+	sid = l.ServerID
 	switch {
 	case !addr.Is4() || addr.IsUnspecified():
 		return addr, sid, "the held lease carries no IPv4 address"

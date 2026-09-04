@@ -257,19 +257,21 @@ they prove:
   Bridge-mode only — a point-to-point veth fixture cannot host a second
   server, and the selection path itself is mode-independent.
 
-**Address conflict detection**
-- `address_conflict_test.go` — an address the server leased that
-  another device on the segment already holds is **reported**, not
-  silently accepted (#524), with a clean segment, bridge mode, and a
-  bare parent (verdict: undetermined) as the negative cases. The
-  fixture server's log is deliberately not an assertion here: from its
-  point of view the lease was ordinary, and it cannot see a static host
-  that never asked it for anything.
-- `probe_stale_route_test.go` — a `/32` the conflict probe left on the
-  parent when its process went away mid-window does not blind every
-  later probe for that address; the plugin reclaims the route instead
-  of failing at `RouteAdd` with EEXIST (#572). The test leaves the
-  route itself rather than racing a daemon restart for it.
+**Address conflict detection (RFC 5227, `conflict_check`)**
+- `conflict_check_test.go` — an address the server leased that another
+  device on the segment already holds is **detected and declined**, not
+  silently accepted (#524, D23). A squatter on the offered address
+  (`wait` and `async`), a squatter that arrives after the container is
+  up (RFC 5227 section 2.4, `wait` and `async`), `conflict_check=off`
+  sending no ARP at all, the timed cost of a clean `wait` acquisition,
+  a plugin restart inside `async`'s probe window, and bridge mode not
+  reporting its own endpoint as a conflict.
+  The fixture server's log IS an assertion here, which it was not under
+  the old chassis probe: RFC 5227 obliges a `DHCPDECLINE` (RFC 2131
+  section 3.1(5)), so the server learns about the conflict and writes
+  it down. The `off` case can only be shown from the wire — an absence
+  of frames, which no counter can report — and uses the harness's ARP
+  capture on the parent link (`harness/arpcapture.go`).
 
 **Failure injection (#128, separate step: `make integration-test-failure`)**
 - `failure_test.go` — `TestFailure_*` against per-test ephemeral

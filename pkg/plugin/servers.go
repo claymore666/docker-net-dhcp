@@ -201,11 +201,19 @@ type acquisitionAttempt struct {
 // attempt may be given.
 //
 // This is a POLICY CHOICE, not a measurement, and saying so is the
-// point: nothing here has timed a dhcpcd spawn on the hosts this runs
-// on. What it encodes is that an attempt costs an unshare, a process
-// spawn, FIFO setup and a DHCP round trip before it can succeed, so
-// below some slice an attempt cannot answer the question it was given
-// and the ladder is spending the budget on nothing.
+// point: nothing here has timed an acquisition on the hosts this runs
+// on. What it encodes is that an attempt costs entering the container's
+// network namespace, opening a raw socket on the link and a DHCP round
+// trip before it can succeed -- and since M6, in the default
+// conflict_check=wait, RFC 5227's check on top of that -- so below some
+// slice an attempt cannot answer the question it was given and the
+// ladder is spending the budget on nothing.
+//
+// The daemon this was first written for is gone. An attempt used to be
+// priced as a process spawn: an unshare, a dhcpcd exec and a FIFO
+// handshake. None of those happen now, and the arithmetic below did not
+// change, because what the floor is protecting is the DHCP EXCHANGE at
+// the end of the attempt and that has not moved.
 //
 // The number is NOT the adjustable part, and an earlier draft of this
 // comment said it was. Moving it is a BEHAVIOUR CHANGE, not a tuning
@@ -295,10 +303,11 @@ func acquisitionAttemptsWithFloor(pol serverPolicy, v6 bool, total, floor time.D
 	// same as the number of servers named.
 	//
 	// Dividing total by the list length with no floor is what #731
-	// found: every attempt is a full dhcp.NewDHCPClient -- an unshare,
-	// a dhcpcd spawn, FIFO setup, then a DHCP round trip -- so a slice
-	// too small to hold one exchange is not a fast attempt, it is a
-	// guaranteed failure. Six preferred servers bought 1.66s each and
+	// found: every attempt is a full acquisition -- entering the
+	// container's netns, opening a raw socket, then a DHCP round trip,
+	// with RFC 5227's check after it under conflict_check=wait -- so a
+	// slice too small to hold one exchange is not a fast attempt, it is
+	// a guaranteed failure. Six preferred servers bought 1.66s each and
 	// twenty bought 500ms, which made an operator's careful ordering
 	// FAIL where naming nothing would have succeeded. An option that
 	// gets worse the more carefully it is filled in is not an option.
@@ -308,9 +317,9 @@ func acquisitionAttemptsWithFloor(pol serverPolicy, v6 bool, total, floor time.D
 	// on -- a preference list must never make `docker run` slower than
 	// it is today (#403, #417). Capping the LIST at validation time
 	// would refuse a legitimate configuration for an implementation
-	// reason. Instead the tail shares one attempt: dhcpcd's whitelist
-	// takes several servers, so [a] [b] [c d e ... t] tries the top
-	// preferences in strict order and asks the rest as a group.
+	// reason. Instead the tail shares one attempt: a server whitelist
+	// takes several servers at once, so [a] [b] [c d e ... t] tries the
+	// top preferences in strict order and asks the rest as a group.
 	//
 	// What degrades is strict ordering WITHIN the last attempt, and
 	// only once the list outgrows the budget. What does not degrade is
@@ -379,8 +388,8 @@ func policyRestricted(attempts []acquisitionAttempt) bool {
 
 // dhcpGetIP indirects the one-shot acquisition, in the same shape and
 // for the same reason as the netlink seam: the ladder below could not
-// be tested at all otherwise, because every attempt spawns dhcpcd in a
-// new namespace. That left the counter semantics #731 found -- one
+// be tested at all otherwise, because every attempt opens a raw socket
+// in the container's network namespace. That left the counter semantics #731 found -- one
 // bump per STEP down the ladder, not one per acquisition -- described
 // in four places, wrong in three, and pinned by nothing.
 var dhcpGetIP = dhcp.GetIP

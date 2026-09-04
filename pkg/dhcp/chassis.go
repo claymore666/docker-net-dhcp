@@ -42,6 +42,17 @@ var ErrIPv6Unsupported = errors.New("dhcp: DHCPv6 is not implemented in the 2.0 
 // ErrNoLease is returned when an acquisition ended without one.
 var ErrNoLease = errors.New("dhcp: no lease was acquired")
 
+// ErrAddressConflict is an acquisition whose last failure was RFC
+// 5227's: the address the server offered is already in use on the
+// segment.
+//
+// A separate error because the operator action is different and the
+// two are indistinguishable in a timeout log. "No server answered"
+// means the network is broken; this means the DHCP server's pool
+// overlaps something it cannot see -- a statically configured host
+// inside the range -- and it will hand the same address out again.
+var ErrAddressConflict = errors.New("dhcp: the offered address is already in use on this segment")
+
 // DHCPClientOptions is one endpoint's DHCP configuration.
 type DHCPClientOptions struct {
 	// Hostname is DHCPv4 option 12. Empty omits it.
@@ -104,6 +115,46 @@ type DHCPClientOptions struct {
 	// VendorClass overrides option 60. Empty means VendorID.
 	VendorClass string
 
+	// ConflictMode is RFC 5227 conflict detection for this endpoint
+	// (D23), from the network's `conflict_check` option. The zero value
+	// is proto.ConflictWait, which is both the library's default and
+	// the option's.
+	//
+	// It is the PARSED mode and not the operator's string, so a value
+	// that never passed ParseConflictCheck cannot reach the wire: the
+	// refusal happens once, at CreateNetwork, and everything after it
+	// deals in a type with three inhabitants.
+	ConflictMode proto.ConflictMode
+
+	// OnConflict is called once per address conflict this endpoint's
+	// client detects, from the manager's own goroutine, with what the
+	// event says about it.
+	//
+	// It exists because the two managers report a conflict on two
+	// different paths and the count must not be derived twice. The
+	// CreateEndpoint one-shot has no outward event stream at all --
+	// GetIP returns a lease or an error -- and the Join manager's
+	// stream deliberately drops the conflict (see translateOne), so a
+	// counter fed from the plugin's event arm would count half the
+	// conflicts and a counter fed from both would count some twice.
+	// This is the one route, and both managers take it.
+	//
+	// nil is the unit-test and probe shape.
+	OnConflict func(Conflict)
+
+	// OnACDStats is called with the DELTA in the library's RFC 5227
+	// counters since the previous call, so the plugin can hold them
+	// process-wide.
+	//
+	// A DELTA and not a snapshot: the plugin's counters are monotonic
+	// across every manager that ever ran, and a manager that exits
+	// takes its snapshot with it. Summing live managers instead would
+	// make every counter fall when a container stops, which is the one
+	// thing a counter may not do.
+	//
+	// nil is the unit-test and probe shape.
+	OnACDStats func(ACDStats)
+
 	// Resume is a lease this identity held in a previous run of the
 	// plugin. Supplying it makes the first message on the wire an
 	// INIT-REBOOT DHCPREQUEST (RFC 2131 section 4.4.2) instead of a
@@ -132,6 +183,10 @@ type DHCPClientOptions struct {
 	// event, so the second and later events do not repeat it.
 	paramsWritten bool
 	params        proto.Params
+
+	// acdSeen is the last ACD counter snapshot handed to OnACDStats,
+	// which is what makes that callback a delta rather than a total.
+	acdSeen ACDStats
 }
 
 // record writes one manager event, if this manager has a record.
@@ -161,6 +216,85 @@ func (o *DHCPClientOptions) count(manager string, s lease.Stats) {
 	}
 }
 
+// conflict reports one address conflict to the caller, if this event is
+// one.
+//
+// ONE PREDICATE, ONE CALL SITE PER MANAGER. RFC 5227 conflicts leave
+// this library as exactly two events -- Failed{ReasonConflict} when
+// nothing was held yet (the probe window) and Lost{ReasonConflict} when
+// the address was already in use (section 2.4) -- and the library
+// guarantees they are exclusive per conflict, so one bump each is one
+// bump per conflict. That guarantee is asserted from this side rather
+// than assumed: TestConflict_TheLibraryEmitsExactlyOneEventPerConflict
+// drives proto.Machine through both cases.
+func (o *DHCPClientOptions) conflict(ev lease.Event) bool {
+	if ev.Reason != proto.ReasonConflict {
+		return false
+	}
+	if ev.Kind != lease.Failed && ev.Kind != lease.Lost {
+		return false
+	}
+	if o.OnConflict != nil {
+		o.OnConflict(Conflict{Held: ev.Kind == lease.Lost, Addr: bareAddr(ev.Lease), Note: ev.Note})
+	}
+	return true
+}
+
+// Conflict is one address conflict, as much of it as leaves the
+// library.
+type Conflict struct {
+	// Held says the address was already in use by this endpoint when
+	// the conflict was found -- RFC 5227 section 2.4's ongoing check --
+	// so the container is about to CHANGE address. False is section
+	// 2.1's probe window: nothing was configured, and the container
+	// simply gets a different address than it would have.
+	//
+	// It is the operationally important half of the distinction and it
+	// is why the two library events are not folded into one bool here.
+	Held bool
+
+	// Addr is the address found in use, and it is EMPTY when Held is
+	// false. That is a property of the library rather than an
+	// omission: Failed carries no lease, because in the probe window
+	// no lease was ever held. The address is in the DHCP server's log
+	// as the DHCPDECLINE's, which is the outside evidence anyway.
+	Addr string
+
+	// Note is the library's own human-readable line for the event.
+	Note string
+}
+
+// bareAddr renders a lease's address without its prefix length, or ""
+// for a lease that has none.
+func bareAddr(l lease.Lease) string {
+	if !l.Addr.IsValid() {
+		return ""
+	}
+	return l.Addr.Addr().String()
+}
+
+// acdReport hands the caller everything the library's RFC 5227 counters
+// have gained since the last call.
+//
+// Called on every event and once more when the manager ends. The probes
+// are sent from a TIMER and not from an event, so between events these
+// numbers lag by up to one probe interval; the call after the drain is
+// what makes the total exact for a manager that has finished. Stated
+// rather than hidden: a live scrape of acd_probes_sent can be one probe
+// behind the wire, and no operator decision turns on that.
+func (o *DHCPClientOptions) acdReport(s lease.Stats) {
+	if o.OnACDStats == nil {
+		return
+	}
+	cur := acdStats(s)
+	delta := cur.Sub(o.acdSeen)
+	o.acdSeen = cur
+	if delta.IsZero() {
+		return
+	}
+	o.OnACDStats(delta)
+}
+
 // RAObservation is what a router advertisement told us about a segment.
 //
 // Nothing in this build observes one: advertisements are IPv6 and the
@@ -175,6 +309,50 @@ type RAObservation struct {
 // Merge folds another attempt's observation into this one.
 func (o RAObservation) Merge(other RAObservation) RAObservation {
 	return RAObservation{Seen: o.Seen || other.Seen, Managed: o.Managed || other.Managed}
+}
+
+// acquireOutcome is what one lease.Event means to a one-shot
+// acquisition: whether the acquisition ENDS here, with what address,
+// and what to tell the caller if the deadline ends it instead.
+type acquireOutcome struct {
+	Info Info
+	Done bool
+	Err  error
+}
+
+// acquireStep decides whether a one-shot acquisition ends on ev.
+//
+// IT IS A FUNCTION AND NOT THREE LINES INSIDE GetIP's SELECT because
+// the rule it carries is the one this milestone turns on and the loop
+// around it cannot be driven without a raw socket and a netns: an
+// acquisition returns on lease.Acquired and on NOTHING else, in every
+// proto.ConflictMode.
+//
+// A conflict found in RFC 5227 section 2.1's probe window arrives as
+// Failed{ReasonConflict}. RFC 2131 section 3.1(5) obliges the
+// DHCPDECLINE, and the library sends it, waits section 3.1(5)'s "a
+// minimum of ten seconds" and starts again from INIT on its own. The
+// only thing returning here would achieve is to fail `docker run` for
+// a container the library was about to give a perfectly good second
+// address to. GetIP's other select arm -- the deadline -- is what ends
+// a hopeless attempt, exactly as it does for a silent server.
+//
+// Err without Done is deliberate and is the whole shape: it names the
+// last real cause so the error the caller finally sees is
+// "address conflict" or "acquisition failed: <reason>" rather than
+// "context deadline exceeded" alone.
+func acquireStep(ev lease.Event, conflicted bool, now time.Time) acquireOutcome {
+	switch ev.Kind {
+	case lease.Acquired:
+		info, _ := infoFromLease(ev.Lease, now)
+		return acquireOutcome{Info: info, Done: true}
+	case lease.Failed:
+		if conflicted {
+			return acquireOutcome{Err: fmt.Errorf("%w: %v", ErrAddressConflict, ev.Lease.Addr)}
+		}
+		return acquireOutcome{Err: fmt.Errorf("dhcp: acquisition failed: %v", ev.Reason)}
+	}
+	return acquireOutcome{}
 }
 
 // GetIP performs one acquisition and returns as soon as a lease exists.
@@ -237,17 +415,30 @@ func GetIP(ctx context.Context, iface string, opts *DHCPClientOptions) (Info, RA
 				break
 			}
 			opts.record(ev)
-			switch ev.Kind {
-			case lease.Acquired:
-				info, _ = infoFromLease(ev.Lease, time.Now())
+			opts.acdReport(client.Stats())
+			// A CONFLICT IS NOT THE END OF THIS ACQUISITION, in any
+			// mode. RFC 2131 section 3.1(5) obliges the DHCPDECLINE
+			// and the library sends it, waits section 3.1(5)'s "a
+			// minimum of ten seconds" and starts again from INIT on
+			// its own; a chassis that returned here would fail
+			// `docker run` for a container the library was about to
+			// give a perfectly good second address to. The deadline
+			// is what ends the attempt, exactly as it does for a
+			// silent server.
+			//
+			// In proto.ConflictWait that arrives as
+			// Failed{ReasonConflict}, because nothing was held yet.
+			// In proto.ConflictAsync the address was already handed
+			// out, so it arrives as Lost{ReasonConflict} and the
+			// caller has by then returned -- this arm is the
+			// one-shot's window only.
+			out := acquireStep(ev, opts.conflict(ev), time.Now())
+			if out.Err != nil {
+				lastE = out.Err
+			}
+			if out.Done {
+				info = out.Info
 				got = true
-			case lease.Failed:
-				// Not terminal by itself: the machine keeps trying
-				// and the deadline above is what ends the attempt.
-				// Recorded so the error the caller sees names the
-				// last real cause rather than "context deadline
-				// exceeded" alone.
-				lastE = fmt.Errorf("dhcp: acquisition failed: %v", ev.Reason)
 			}
 		}
 	}
@@ -267,11 +458,14 @@ func GetIP(ctx context.Context, iface string, opts *DHCPClientOptions) (Info, RA
 	// Run closes the event channel on its way out, so this terminates.
 	for ev := range client.Events() {
 		opts.record(ev)
+		opts.conflict(ev)
 	}
 	if err := <-done; err != nil && !errors.Is(err, context.Canceled) {
 		log.WithError(err).WithField("iface", iface).Debug("Acquisition manager returned an error")
 	}
-	opts.count(manager, client.Stats())
+	final := client.Stats()
+	opts.acdReport(final)
+	opts.count(manager, final)
 
 	if info.IP == "" {
 		if lastE == nil {
@@ -400,7 +594,11 @@ func (c *DHCPClient) Start() (chan Event, error) {
 //     it arrives on every clean Leave.
 func (c *DHCPClient) translate() {
 	defer close(c.events)
-	defer func() { c.opts.count(c.manager, c.Stats()) }()
+	defer func() {
+		final := c.Stats()
+		c.opts.acdReport(final)
+		c.opts.count(c.manager, final)
+	}()
 
 	renewedAt := time.Time{}
 	for ev := range c.src {
@@ -410,6 +608,8 @@ func (c *DHCPClient) translate() {
 		// deliberately — the coalesced Changed and the stop — neither
 		// of which the record may lose.
 		c.opts.record(ev)
+		c.opts.acdReport(c.Stats())
+		c.opts.conflict(ev)
 
 		out, emit, at := translateOne(ev, now, renewedAt)
 		renewedAt = at
@@ -503,12 +703,35 @@ func translateOne(ev lease.Event, now, renewedAt time.Time) (Event, bool, time.T
 		if ev.Reason == proto.ReasonStopped {
 			return Event{}, false, renewedAt
 		}
+		// A CONFLICT IS NOT A LEASE FAILURE AND MUST NOT BE ONE.
+		// "leasefail" is what feeds dhcp_timeouts through
+		// countOutageTick, and dhcp_timeouts means the DHCP server
+		// went quiet -- which is exactly what has NOT happened here:
+		// the server answered, the address it named is occupied, and
+		// the library is already declining it and asking for another.
+		// Counting it as an outage would make a squatted pool
+		// indistinguishable from a dead server in the one counter an
+		// operator alerts on.
+		//
+		// Nothing else is lost by dropping it. The conflict is counted
+		// through DHCPClientOptions.OnConflict, which the one-shot
+		// takes too; the event is already on the durable record,
+		// unconditionally, before this function is called; and the
+		// address change the library then wins arrives as the ordinary
+		// Acquired -> "bound" that reconfigures the container. The
+		// existing Lost -> re-acquire path is the whole handling.
+		if ev.Reason == proto.ReasonConflict {
+			return Event{}, false, renewedAt
+		}
 		if ev.Reason == proto.ReasonNak {
 			out = Event{Type: "nak"}
 		} else {
 			out = Event{Type: "leasefail"}
 		}
 	case lease.Failed:
+		if ev.Reason == proto.ReasonConflict {
+			return Event{}, false, renewedAt
+		}
 		if ev.Reason == proto.ReasonNak {
 			out = Event{Type: "nak"}
 		} else {

@@ -147,6 +147,7 @@ func EventRecord(id, instance string, seq uint64, at time.Time, ev Event) Record
 		Kind:     ev.Kind,
 		Reason:   ev.Reason,
 		Note:     ev.Note,
+		ACD:      ev.ACD,
 	}
 	if ev.Kind == Lost {
 		out.Op = OpLost

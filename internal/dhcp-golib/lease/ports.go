@@ -54,6 +54,38 @@ type Transport interface {
 	Close() error
 }
 
+// ARPInbound is one ARP frame that arrived on the link, or the error that
+// ended the stream. Frame and Err are mutually exclusive, for the reason
+// Inbound gives.
+type ARPInbound struct {
+	Frame []byte
+	Err   error
+}
+
+// ARP is the link's ARP traffic: RFC 5227's Probes and Announcements out, and
+// everything the link carries in.
+//
+// IT IS A SECOND PORT AND NOT A MODE OF Transport. The two sockets carry
+// different EtherTypes — ETH_P_IP for the DHCP datagram this library builds
+// itself, ETH_P_ARP for these — so a single port would have to inspect what it
+// was handed in order to decide where to write it, which is ring 3 parsing
+// ring 0's output to route it. Keeping them apart is also what makes
+// ConflictOff a shape rather than a flag: that client is built with no ARP
+// port at all, so there is nothing open to listen on.
+//
+// Send takes ENCODED BYTES, like Transport.Send, because encoding is ring 0's
+// and the manager does it: an implementation that took a wire.ARPPacket would
+// put the codec below the ring that owns it.
+//
+// Received DELIVERS EVERYTHING ON THE LINK, unfiltered. Which frames matter is
+// RFC 5227's question and it is answered in ring 1 (Machine.ARPRelevant), not
+// here — a filter in the socket is a protocol rule in a place with no test.
+type ARP interface {
+	Send(frame []byte) error
+	Received() <-chan ARPInbound
+	Close() error
+}
+
 // Timers turns ring 1's SetTimer and CancelTimer into one fire on Fired.
 //
 // Set on an already-armed timer REPLACES it: ring 1 re-arms the retransmit
@@ -99,6 +131,20 @@ type CapturedPacket struct {
 	Raw       []byte
 	Msg       *wire.Message
 	DecodeErr error
+
+	// ARP is set instead of Msg when this capture is an ARP packet: an RFC
+	// 5227 Probe or Announcement going out, or a frame coming in that the
+	// conflict rules had something to say about.
+	//
+	// ONLY THE RELEVANT INBOUND FRAMES ARE CAPTURED. A shared link carries
+	// ARP continuously and this ring is bounded, so recording every frame
+	// would wrap it between one acquisition and the next and take the
+	// evidence of the acquisition with it. What is kept is what
+	// Machine.ARPRelevant admitted — every frame the conflict rules could
+	// have acted on, which is the population a conflict has to be explained
+	// from. Stats.ARPIgnored counts the rest, so the gap is a number rather
+	// than a silence.
+	ARP *wire.ARPPacket
 }
 
 // PacketRing is the bounded ring of every message in and out (G1, R3).

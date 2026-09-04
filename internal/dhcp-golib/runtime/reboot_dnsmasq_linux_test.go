@@ -78,6 +78,30 @@ func rebootParams(f rebootFixture, hostname string) proto.Params {
 	// TestDesyncDoesNotDelayTheInitRebootRequest pins that the INIT-REBOOT
 	// DHCPREQUEST is not subject to it at all.
 	p.DesyncMin, p.DesyncMax = 0, 0
+	// ConflictAsync, and it is the ONE line in this fixture that is a
+	// judgement rather than a scaling.
+	//
+	// The subject of this test is the DHCP exchange. RFC 5227's
+	// probe-before-use — the default, ConflictWait — adds four to seven
+	// seconds to EVERY acquisition here, which is the price D22 charges a
+	// container and not something worth paying in a test of something else;
+	// conflict_dnsmasq_linux_test.go pays it once, with the RFC's own
+	// constants, and measures it.
+	//
+	// Async rather than off, because off would take the ARP socket, the
+	// probes and section 2.4's listener out of the path of every one of these
+	// tests. Under async they are all still there and still running beside
+	// the exchange; what changes is only when the caller is told it may use
+	// the address. A conflict check that broke an ordinary acquisition, or
+	// that saw this host's own frames as somebody else's, would still redden
+	// these tests.
+	//
+	// briskACD scales the schedule's DURATIONS and not its counts, so the
+	// probing here is over in a third of a second instead of overlapping the
+	// renewal and the reboot these tests are about. Its reasons are at its
+	// definition.
+	p.Conflict = proto.ConflictAsync
+	p.ACD = briskACD()
 	p.Hostname = hostname
 	return p
 }
@@ -507,6 +531,25 @@ func namespaceCaptureAgainstDnsmasq(t *testing.T) {
 
 		p := proto.DefaultParams(iface.HardwareAddr)
 		p.DesyncMin, p.DesyncMax = 0, 0
+		// ConflictAsync, and it is the ONE line in this fixture that is a
+		// judgement rather than a scaling.
+		//
+		// The subject of this test is the DHCP exchange. RFC 5227's
+		// probe-before-use — the default, ConflictWait — adds four to seven
+		// seconds to EVERY acquisition here, which is the price D22 charges a
+		// container and not something worth paying in a test of something else;
+		// conflict_dnsmasq_linux_test.go pays it once, with the RFC's own
+		// constants, and measures it.
+		//
+		// Async rather than off, because off would take the ARP socket, the
+		// probes and section 2.4's listener out of the path of every one of these
+		// tests. Under async they are all still there and still running beside
+		// the exchange; what changes is only when the caller is told it may use
+		// the address. A conflict check that broke an ordinary acquisition, or
+		// that saw this host's own frames as somebody else's, would still redden
+		// these tests.
+		p.Conflict = proto.ConflictAsync
+		p.ACD = briskACD()
 		p.Hostname = "m5-netns"
 		c, err := NewClient(ClientConfig{Interface: testClientIf, Params: p, EventBuffer: 8})
 		if err != nil {

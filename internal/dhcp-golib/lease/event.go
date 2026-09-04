@@ -124,6 +124,24 @@ type Event struct {
 	// address; the check is Requested.IsValid() && Requested != the lease's
 	// address.
 	Requested netip.Addr
+
+	// ACD is where RFC 5227's conflict check stood when this event was
+	// emitted. It is proto.ACDIdle for a client running with
+	// proto.ConflictOff, which is the truth: that client runs no check.
+	//
+	// IT IS ON EVERY EVENT BECAUSE OF proto.ConflictAsync (D23). That client
+	// is told Acquired while the probing is still running, so "is this address
+	// checked yet" is a real question with a real answer, and the answer is
+	// only here. A caller that persists the record and restarts inside the
+	// window needs it to resume the probe rather than skip it — a lease
+	// recorded as ACDProbing has not been cleared, and one recorded as
+	// ACDDefending has.
+	//
+	// For proto.ConflictWait it is ACDAnnouncing on Acquired and never
+	// earlier, because that mode does not announce the lease until the check
+	// has passed. That difference between the two modes on the SAME field is
+	// what TestTheModesDifferInWhenAcquiredIsEmitted reads.
+	ACD proto.ACDPhase
 }
 
 func (e Event) String() string {

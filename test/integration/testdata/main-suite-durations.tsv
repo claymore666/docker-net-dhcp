@@ -87,6 +87,50 @@
 # Refresh all FOUR from the first green Integration run that produces
 # suite logs on this branch, by the recipe at the foot of this header.
 #
+# FIVE ROWS WERE REMOVED AND SIX ADDED, ALL SIX INFERRED (M6b, conflict_check).
+# The chassis's datagram conflict probe is gone; the DHCP library runs
+# RFC 5227 in the container's namespace under the per-network
+# conflict_check option. The five rows below went with the mechanism
+# they costed:
+#   TestAddressConflict_SquattedAddressIsReported     5.77
+#   TestAddressConflict_CleanSegmentIsNotReported     6.71
+#   TestAddressConflict_BareParentIsUndetermined      6.14
+#   TestAddressConflict_BridgeModeDoesNotSelfReport   7.95
+#   TestConflictProbe_ReclaimsLeftoverRoute          13.73
+# The bare-parent case retires outright rather than being ported: a
+# Linux host answers an RFC 5227 Probe (sender protocol address 0.0.0.0)
+# whatever its routing, so "the parent has no on-subnet address" is no
+# longer a reason the check cannot run, and there is no undetermined
+# verdict left to assert.
+#
+# The six replacements are now MEASURED, from Integration run
+# 33909858014 (the first green run of this branch), ONE sample each --
+# which the header below says is a worse number than a 22-run median and
+# fine, because the value only weights a shard. The inferred figures
+# they replace are kept beside them because the difference is the
+# interesting part: the arithmetic was an upper bound everywhere, by
+# between 0.6s and 10.4s, and the reason is that the RFC windows it
+# added are worst cases while the fixture draws the mean.
+#                                               measured   was inferred
+#   TestConflictCheck_SquattedOfferIsDeclined         36.64      36.00
+#   TestConflictCheck_SquatterAfterTheFact            37.61      42.00
+#   TestConflictCheck_OffSendsNoProbe                 33.75      37.00
+#   TestConflictCheck_WaitAcquisitionIsTimed           9.39      14.00
+#   TestConflictCheck_RestartInsideTheAsyncWindow      4.64      15.00
+#   TestConflictCheck_BridgeModeDoesNotSelfReport     11.52      15.00
+#
+# The two that moved most say something about the mechanism rather than
+# about the estimate. The restart case costs 4.64s, not 15.0: async
+# hands the address back before section 2.1 finishes, so the restart
+# lands inside the window by construction and the test never waits out
+# a probe window at all -- the inferred figure had priced a clean
+# acquisition it does not perform. The timed case costs 9.39s against
+# 6.71 + 7.0 = 13.71 because 7.0s is section 2.1's WORST window and the
+# lane measured 4.92s on the wire, the mean of the entropy draw.
+# TestConflictCheck_OffSendsNoProbe is the one that cannot fall much
+# further: its 30s quiet window IS the assertion.
+# Refresh again from a several-run median once this branch has one.
+#
 # ONE ROW IS A SKIP COST, NOT A RUN COST.
 # TestInterfaceName_MultiNetworkDeterministic skipped in all 22 samples —
 # the engine does not yet honour a plugin-returned DstName (#125), so the
@@ -126,10 +170,6 @@
 # the value only weights a shard, and the next regeneration replaces it.
 # No row is the strictly worse option — it costs the test at the mean
 # AND reddens the gate.
-TestAddressConflict_BareParentIsUndetermined	6.14
-TestAddressConflict_BridgeModeDoesNotSelfReport	7.95
-TestAddressConflict_CleanSegmentIsNotReported	6.71
-TestAddressConflict_SquattedAddressIsReported	5.77
 TestAuditLog_DefaultOff	8.75
 TestAuditLog_RecordsLifecycle	8.33
 TestClasslessStaticRoutes_AbsentWithoutOptIn	7.28
@@ -138,7 +178,12 @@ TestClientID_DefaultIsMACDerived	7.14
 TestClientID_OverrideAppearsInLeaseFile	7.16
 TestConcurrency_DistinctLeases	27.35
 TestConcurrentRenew_SameInterfaceNameBothRenew	32.15
-TestConflictProbe_ReclaimsLeftoverRoute	13.73
+TestConflictCheck_BridgeModeDoesNotSelfReport	11.52
+TestConflictCheck_OffSendsNoProbe	33.75
+TestConflictCheck_RestartInsideTheAsyncWindow	4.64
+TestConflictCheck_SquattedOfferIsDeclined	36.64
+TestConflictCheck_SquatterAfterTheFact	37.61
+TestConflictCheck_WaitAcquisitionIsTimed	9.39
 TestDNSPropagate_BridgeModeWritesResolvConfToo	8.50
 TestDNSPropagate_DefaultIsUnchanged	7.26
 TestDNSPropagate_OptInWritesResolvConf	8.71

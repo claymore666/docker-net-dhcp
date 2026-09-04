@@ -10,24 +10,36 @@ import (
 	"testing"
 )
 
-// TestHostVethAddr_MakesTheConflictProbeUsable pins the properties
-// HostVethAddr has to satisfy for the address-conflict detector to work
-// on the macvlan/ipvlan fixture (#549).
+// TestHostVethAddr_IsAUsableParentAddress pins the properties
+// HostVethAddr has to satisfy on the macvlan/ipvlan fixture (#549).
 //
-// The detector was blind here for a release: the parent carried no
-// address at all, so the probe fell back to a link-local source, and a
-// host answers an ARP request only if it can route a reply back to the
-// sender. Every result came back *undetermined*. Nothing failed — the
-// run said so in a log line and went green, which is the same shape of
-// mistake #524 was filed about, one level up.
+// THE ORIGINAL REASON IS GONE AND THE CONSTRAINTS ARE NOT. This test was
+// written because the chassis's datagram conflict probe was blind here
+// for a release: the parent carried no address at all, so the probe fell
+// back to a link-local source, and a host answers an ARP request only if
+// it can route a reply back to the sender. Every result came back
+// *undetermined*, nothing failed, and the run went green — the same
+// shape of mistake #524 was filed about, one level up.
 //
-// A static test cannot prove the address is actually applied to the
-// link; the suite's own conflict-probe census is what reports that. What
-// it can do is stop the constant from silently drifting into a value
-// that makes the probe useless again — inside the DHCP pool (dnsmasq
-// hands it to a client, and now two things own it), or equal to the
-// server or the reserved static address.
-func TestHostVethAddr_MakesTheConflictProbeUsable(t *testing.T) {
+// That probe is gone. RFC 5227 section 2.1.1 probes with an ALL-ZERO
+// sender protocol address, and Linux answers such a request whenever the
+// target is a local address, without any routing decision at all. So a
+// bare parent no longer blinds the check, and the "on-subnet source"
+// requirement that half of this file was written for has expired.
+//
+// The rows below are kept because each one is load-bearing for a reason
+// that never depended on the probe, and they are re-justified here
+// rather than left standing on a premise that is no longer true:
+//
+//   - inside the DHCP pool, dnsmasq would hand this address to a
+//     container and manufacture a genuine conflict — which now really
+//     would be detected, and would fail the shard;
+//   - equal to the server's address or to the reserved static address,
+//     two things claim one address on the fixture's own segment;
+//   - off-subnet or a bare /32, the parent is not a participant on the
+//     segment at all, which is what the section 2.4 tests ping to make
+//     a squatter announce itself.
+func TestHostVethAddr_IsAUsableParentAddress(t *testing.T) {
 	ip, _, err := net.ParseCIDR(HostVethAddr)
 	if err != nil {
 		t.Fatalf("HostVethAddr %q does not parse: %v", HostVethAddr, err)
@@ -39,16 +51,16 @@ func TestHostVethAddr_MakesTheConflictProbeUsable(t *testing.T) {
 			t.Fatalf("HostVethAddr %q has no prefix", HostVethAddr)
 		}
 		if ones, bits := ipnet.Mask.Size(); ones == bits {
-			t.Errorf("HostVethAddr %q is a /%d: a host route gives the probe no on-subnet "+
-				"source and the fallback path returns undetermined again", HostVethAddr, ones)
+			t.Errorf("HostVethAddr %q is a /%d: a host route makes the parent a bystander "+
+				"rather than a participant on the segment, and there is then nothing on "+
+				"it for a squatter to ARP for", HostVethAddr, ones)
 		}
 	})
 
 	t.Run("is on the leased subnet", func(t *testing.T) {
 		if !Subnet().Contains(ip) {
-			t.Errorf("HostVethAddr %s is outside %s. The probe needs a source the responder "+
-				"can route back to; off-subnet is the failure this constant exists to fix",
-				ip, SubnetCIDR)
+			t.Errorf("HostVethAddr %s is outside %s, so the parent is not on the segment its "+
+				"own children are on", ip, SubnetCIDR)
 		}
 	})
 

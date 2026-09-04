@@ -47,6 +47,17 @@ const (
 	// timer id for both would cancel its own deadline every time it
 	// retransmitted.
 	TimerRebind
+	// TimerACD is RFC 5227's one conflict-detection timer: section 2.1.1's
+	// initial random delay, then the PROBE_MIN-to-PROBE_MAX gaps between the
+	// probes, then ANNOUNCE_WAIT, then the ANNOUNCE_INTERVAL between the
+	// announcements.
+	//
+	// ONE timer for the whole schedule, because the schedule is sequential:
+	// each of those waits begins when the previous one ends, so a second timer
+	// id could only ever be armed by a phase that had already disarmed the
+	// first. That is not true of TimerRenew and TimerRebind, which is why
+	// those are two.
+	TimerACD
 )
 
 func (t TimerID) String() string {
@@ -63,6 +74,8 @@ func (t TimerID) String() string {
 		return "renew"
 	case TimerRebind:
 		return "rebind"
+	case TimerACD:
+		return "acd"
 	default:
 		return fmt.Sprintf("timer(%d)", uint8(t))
 	}
@@ -70,7 +83,10 @@ func (t TimerID) String() string {
 
 // AllTimerIDs is every TimerID.
 func AllTimerIDs() []TimerID {
-	return []TimerID{TimerRetransmit, TimerDesync, TimerExpire, TimerRestart, TimerRenew, TimerRebind}
+	return []TimerID{
+		TimerRetransmit, TimerDesync, TimerExpire, TimerRestart, TimerRenew,
+		TimerRebind, TimerACD,
+	}
 }
 
 // ActionKind is what an action asks the caller to do.
@@ -113,6 +129,16 @@ const (
 	// discard", and a client that is silent to its own operator is the reason
 	// this project has debugging requirements at all.
 	ActJournal
+	// ActSendARP broadcasts one ARP packet: an RFC 5227 section 2.1.1 Probe or
+	// a section 2.3 Announcement. ARP says which.
+	//
+	// It is a SEPARATE kind from ActSend and not a Dest on it. The two go out
+	// of different sockets — ActSend's is AF_PACKET/ETH_P_IP carrying a UDP
+	// datagram this library builds itself, this one's is AF_PACKET/ETH_P_ARP
+	// carrying no IP header at all — so a caller that folded them together
+	// would have to inspect the payload to know where to write it, which is
+	// ring 3 parsing ring 0's output to route it.
+	ActSendARP
 )
 
 func (k ActionKind) String() string {
@@ -135,6 +161,8 @@ func (k ActionKind) String() string {
 		return "Failed"
 	case ActJournal:
 		return "Journal"
+	case ActSendARP:
+		return "SendARP"
 	default:
 		return fmt.Sprintf("action(%d)", uint8(k))
 	}
@@ -250,6 +278,9 @@ type Action struct {
 	Msg  *wire.Message // ActSend
 	Dest Dest          // ActSend
 
+	// ARP is the packet to broadcast, on ActSendARP only.
+	ARP *wire.ARPPacket
+
 	Timer TimerID  // ActSetTimer, ActCancelTimer
 	After Duration // ActSetTimer
 
@@ -299,6 +330,8 @@ func (a Action) String() string {
 		return fmt.Sprintf("Failed %s: %s", a.Reason, a.Note)
 	case ActJournal:
 		return "Journal " + a.Note
+	case ActSendARP:
+		return "SendARP " + a.ARP.String()
 	default:
 		return a.Kind.String()
 	}

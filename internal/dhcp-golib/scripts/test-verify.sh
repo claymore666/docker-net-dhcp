@@ -490,15 +490,38 @@ GO
 }
 
 sc_bounds_ordering() {
-	# Only the timeout moves, and it moves BELOW the shipped ceiling, so a
-	# ceiling failure cannot be what this scenario measures.
+	# Only the timeout moves, and it moves to the boundary the bounds step
+	# actually checks: that step is `-le`, so a timeout EQUAL to the ceiling is
+	# already an ordering violation. The plant is therefore read from the copy
+	# under test rather than written down, and the scenario asks one question --
+	# does verify.sh notice that its hang timeout no longer exceeds its ceiling
+	# -- with no second premise about how fast the suite runs.
+	#
+	# The literal it replaces was 30. Being below the ceiling is what the old
+	# comment claimed, and that much was true, but the literal carried a SECOND,
+	# unstated premise: SUITE_TIMEOUT_SECONDS is also what verify.sh passes to
+	# `go test -timeout`, so planting 30 asserts that every package finishes
+	# inside 30s. No rule states that bound. The only stated bound on suite
+	# duration is SUITE_CEILING_SECONDS, which is why the plant is now read from
+	# it instead of written down.
+	#
+	# That premise was not merely fragile, it was already false when this was
+	# written. MEASURED 2026-09-04 at ee6900e: `go test -race -count=1 ./runtime/`
+	# alone takes 40.197s, 40.125s, 40.996s over three runs -- M6's conflict
+	# detection waits out real RFC 5227 probe intervals -- against a whole-suite
+	# wall of 41-42s idle and 49s loaded, and 24s at base 78cb532 before that
+	# work landed. So the scenario was reddening on `exit 1 after 31s: panic:
+	# test timed out after 30s`: it failed as a suite regression, naming a defect
+	# it had not planted, while the ordering property it exists for went
+	# unchecked. A plant equal to the ceiling has no such premise -- the suite
+	# gets the same budget the ceiling already promises it.
 	local d="$1"
 	copy_tree "$d"
 	edit "$d/verify.sh" \
 		"SUITE_TIMEOUT_SECONDS=$(verify_const SUITE_TIMEOUT_SECONDS "$d/verify.sh")" \
-		'SUITE_TIMEOUT_SECONDS=30'
+		"SUITE_TIMEOUT_SECONDS=$(verify_const SUITE_CEILING_SECONDS "$d/verify.sh")"
 	run_verify "$d"
-	[ "$RC" -ne 0 ] || note "a hang timeout below the ceiling passed"
+	[ "$RC" -ne 0 ] || note "a hang timeout equal to the ceiling passed"
 	[ "$(row bounds)" = FAIL ] || note "the bounds step did not catch it: $(row bounds)"
 	[ "$(row unit-suite)" = PASS ] || note "the suite itself failed; this run failed for a reason this scenario does not name: $(row unit-suite) — $(why unit-suite)"
 }

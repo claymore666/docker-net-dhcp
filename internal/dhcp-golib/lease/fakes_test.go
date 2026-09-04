@@ -449,6 +449,14 @@ func testParams() proto.Params {
 	// would make every manager test start by firing a timer that has nothing
 	// to do with what it asserts.
 	p.DesyncMin, p.DesyncMax = 0, 0
+	// Conflict detection off, explicitly. The zero value is proto.ConflictWait
+	// so a caller with no opinion gets RFC 5227's check; these fixtures have
+	// an opinion, and it is that their subject is the manager — the action
+	// drain, the counters, the record — not RFC 5227's five-and-a-half-second
+	// schedule sitting between every DHCPACK and every Acquired they wait for.
+	// The ACD manager tests say ConflictWait or ConflictAsync at their own
+	// line and supply an ARP port.
+	p.Conflict = proto.ConflictOff
 	return p
 }
 
@@ -655,4 +663,42 @@ func (r *rig) nextEvent(t *testing.T) Event {
 		t.Fatal("the event channel closed before the expected event arrived")
 	}
 	return e
+}
+
+// lastSent returns the last message the server decoded, and whether it is of
+// the wanted type.
+//
+// It reads the fake SERVER's record, not the manager's, and the server holds
+// what came off the wire: it decodes the payload the transport handed it. An
+// assertion here is on the bytes, where an assertion on a.Msg would be on the
+// machine's opinion of them.
+func lastSent(t *testing.T, r *rig, want wire.MessageType) *wire.Message {
+	t.Helper()
+	sent := r.server.sentMessages()
+	if len(sent) == 0 {
+		t.Fatal("the server saw nothing")
+	}
+	msg := sent[len(sent)-1]
+	got, ok := msg.Type()
+	if !ok {
+		t.Fatalf("the last message the server saw carries no DHCP message type")
+	}
+	if got != want {
+		t.Fatalf("the last message the server saw is %s, want %s", got, want)
+	}
+	return msg
+}
+
+// findEntry returns the first journalled Step satisfying want. It reads the
+// recorder's snapshot, so it must follow a waitAppended for the same predicate
+// rather than replace one: the barrier is what makes the entry present.
+func findEntry(t *testing.T, r *rig, what string, want func(proto.JournalEntry) bool) proto.JournalEntry {
+	t.Helper()
+	for _, e := range r.mgr.Journal() {
+		if want(e) {
+			return e
+		}
+	}
+	t.Fatalf("no journal entry for %s", what)
+	return proto.JournalEntry{}
 }
