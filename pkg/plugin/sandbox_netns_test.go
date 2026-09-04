@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -141,6 +142,41 @@ func TestAwaitSandboxNetNSByKey_WaitsForAnEntryThatArrivesLate(t *testing.T) {
 		t.Fatalf("gave up on an entry that arrived late: %v", err)
 	}
 	closeNsHandle(ns)
+}
+
+// TestAwaitSandboxNetNSByKey_DeadlineNamesTheLastAttempt pins the third
+// outcome: the key was ACCEPTABLE and the entry never appeared.
+//
+// The deadline is the only thing separating "the sandbox is still being
+// assembled" from "the container went away", so the error a caller sees
+// is the whole of what it has to work with. Without the cause, both
+// arrive as a bare context deadline and read identically — the same
+// collapse #317 was diagnosed through, one layer down. The claim was
+// written in the comment on awaitSandboxNetNSByKey and asserted
+// nowhere: a mutant that dropped the wrapped cause survived the suite.
+func TestAwaitSandboxNetNSByKey_DeadlineNamesTheLastAttempt(t *testing.T) {
+	dir := t.TempDir()
+	key := filepath.Join(dir, "never-appears")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
+	defer cancel()
+
+	ns, err := awaitSandboxNetNSByKeyIn(ctx, []string{dir}, key, 10*time.Millisecond)
+	if err == nil {
+		closeNsHandle(ns)
+		t.Fatal("succeeded on an entry that was never created")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("err = %v, want it to wrap context.DeadlineExceeded", err)
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("err = %v, but it does not carry the last attempt's cause. A bare deadline cannot "+
+			"be told apart from a sandbox that is merely slow to appear, and the two want opposite "+
+			"responses from whoever reads the log", err)
+	}
+	if !strings.Contains(err.Error(), "never-appears") {
+		t.Errorf("err = %v: it does not name the entry it waited for", err)
+	}
 }
 
 // TestOpenSandboxNetNS_CountsTheKeyRoute drives the production opener —

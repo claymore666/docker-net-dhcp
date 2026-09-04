@@ -17,6 +17,7 @@ import (
 	"testing"
 
 	dNetwork "github.com/docker/docker/api/types/network"
+	log "github.com/sirupsen/logrus"
 )
 
 // countingBase records what actually reached the wire.
@@ -157,6 +158,54 @@ func TestReadOnlyTransport_RecordsBothWhatItSentAndWhatItRefused(t *testing.T) {
 	sort.Strings(want)
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("calls() = %v, want %v", got, want)
+	}
+}
+
+// TestReadOnlyTransport_WritesTheRecordToTheLog pins the one thing the
+// in-memory record above cannot: the LINE.
+//
+// calls() is unexported and lives in the plugin's process. The only way
+// the claim "this plugin issues these calls and no others" reaches
+// anyone outside is the log line the transport writes the first time it
+// sees a shape, and the integration lane parses exactly that line to
+// judge the set against a live daemon. So the message text and the two
+// field names are an interface, and nothing else in this package
+// treats them as one — a rename would leave every unit test green while
+// the lane's parser silently found nothing to judge.
+//
+// It also asserts the ONCE: a line per request would put one entry per
+// health poll in the log, which is the reason the record is keyed at
+// all.
+func TestReadOnlyTransport_WritesTheRecordToTheLog(t *testing.T) {
+	var buf strings.Builder
+	restoreOut, restoreLevel := log.StandardLogger().Out, log.GetLevel()
+	log.SetOutput(&buf)
+	log.SetLevel(log.DebugLevel)
+	t.Cleanup(func() {
+		log.SetOutput(restoreOut)
+		log.SetLevel(restoreLevel)
+	})
+
+	tr := newReadOnlyTransport(&countingBase{}, nil)
+	for i := 0; i < 3; i++ {
+		req, _ := http.NewRequest(http.MethodGet, "http://docker/v1.51/networks", nil)
+		if resp, err := tr.RoundTrip(req); err == nil {
+			resp.Body.Close()
+		}
+	}
+
+	out := buf.String()
+	if n := strings.Count(out, "docker-api call"); n != 1 {
+		t.Errorf("the record was logged %d time(s) across three identical requests, want exactly 1.\n%s\n"+
+			"The lane reads this line for the SET of shapes the plugin sends; one line per request "+
+			"would bury it under the health poll.", n, out)
+	}
+	for _, want := range []string{`msg="docker-api call"`, "method=GET", "path=/v1.51/networks"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the record does not carry %s.\n%s\n"+
+				"test/integration/docker_api_readonly_test.go parses this line; a rename here makes "+
+				"that test find nothing to judge rather than judge something wrong.", want, out)
+		}
 	}
 }
 
