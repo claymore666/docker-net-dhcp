@@ -27,6 +27,12 @@ type Timers struct {
 	gen   []uint64
 	timer []*time.Timer
 
+	// sending counts the fires that have passed the closed check and dropped
+	// the mutex but have not yet finished with the channel. Close waits on it
+	// before closing fired, because a send racing that close is a panic and
+	// not a dropped fire.
+	sending sync.WaitGroup
+
 	fired  chan proto.TimerID
 	closed bool
 	done   chan struct{}
@@ -97,8 +103,8 @@ func (t *Timers) Fired() <-chan proto.TimerID { return t.fired }
 // more than once.
 func (t *Timers) Close() error {
 	t.mu.Lock()
-	defer t.mu.Unlock()
 	if t.closed {
+		t.mu.Unlock()
 		return nil
 	}
 	t.closed = true
@@ -107,6 +113,9 @@ func (t *Timers) Close() error {
 		t.gen[i]++
 	}
 	close(t.done)
+	t.mu.Unlock()
+
+	t.sending.Wait()
 	close(t.fired)
 	return nil
 }
@@ -120,9 +129,11 @@ func (t *Timers) stopLocked(id proto.TimerID) {
 
 // fire delivers one fire if it is still the current arming of id.
 //
-// The generation check is the whole race resolution: Stop cannot tell us
-// whether an AfterFunc callback has already started, so a cancel that arrives
-// while the callback is in flight is caught here instead.
+// Two races meet here and they resolve in opposite directions. Stop cannot
+// tell us whether an AfterFunc callback has already started, so a Cancel
+// arriving while the callback is in flight is caught by the generation check
+// and the fire is DROPPED. A Close arriving after that same check cannot drop
+// it — the sender is already past the lock — so Close is made to WAIT.
 func (t *Timers) fire(id proto.TimerID, g uint64) {
 	t.mu.Lock()
 	if t.closed || t.gen[id] != g {
@@ -130,7 +141,9 @@ func (t *Timers) fire(id proto.TimerID, g uint64) {
 		return
 	}
 	t.timer[id] = nil
+	t.sending.Add(1)
 	t.mu.Unlock()
+	defer t.sending.Done()
 
 	select {
 	case t.fired <- id:

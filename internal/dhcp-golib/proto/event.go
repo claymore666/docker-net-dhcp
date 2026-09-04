@@ -54,6 +54,15 @@ const (
 	// doing. It is NOT EvStop: Stop ends the client and keeps the binding at
 	// the server, release gives the binding back.
 	EvRelease
+	// EvARPReceived carries one decoded ARP packet that arrived on the link.
+	//
+	// It is DISTINCT from EvConflictDetected, which is a caller's verdict.
+	// This is evidence: RFC 5227's rules decide whether it is a conflict, and
+	// they decide differently depending on the phase — section 2.1.1's rules
+	// during the probe window, section 2.4's afterwards — so a packet that is
+	// a conflict at one moment is ordinary traffic at another. Collapsing the
+	// two would move that decision to whoever owns the socket.
+	EvARPReceived
 )
 
 func (k EventKind) String() string {
@@ -78,6 +87,8 @@ func (k EventKind) String() string {
 		return "ActionFailed"
 	case EvRelease:
 		return "Release"
+	case EvARPReceived:
+		return "ARPReceived"
 	default:
 		return fmt.Sprintf("event(%d)", uint8(k))
 	}
@@ -88,6 +99,7 @@ func AllEventKinds() []EventKind {
 	return []EventKind{
 		EvStart, EvStop, EvReceived, EvTimerFired, EvLinkDown, EvLinkUp,
 		EvConflictDetected, EvAddressLost, EvActionFailed, EvRelease,
+		EvARPReceived,
 	}
 }
 
@@ -105,6 +117,10 @@ type Event struct {
 	// stores it so a replay re-decodes rather than trusting an already-decoded
 	// struct, which puts ring 0 back inside the replay.
 	Raw []byte
+
+	// ARP is set when Kind is EvARPReceived, and may be nil even then, for
+	// the reason Msg may: Step is total, and ring 1 does not panic.
+	ARP *wire.ARPPacket
 
 	// Timer is set when Kind is EvTimerFired.
 	Timer TimerID
@@ -132,6 +148,9 @@ func ActionFailed(id ActionID, reason string) Event {
 	return Event{Kind: EvActionFailed, Action: id, Reason: reason}
 }
 
+// ARPReceived builds an EvARPReceived event.
+func ARPReceived(p *wire.ARPPacket) Event { return Event{Kind: EvARPReceived, ARP: p} }
+
 // Simple builds an event that carries nothing but its kind.
 func Simple(k EventKind) Event { return Event{Kind: k} }
 
@@ -143,6 +162,11 @@ func (e Event) String() string {
 		return "TimerFired " + e.Timer.String()
 	case EvActionFailed:
 		return fmt.Sprintf("ActionFailed %s: %s", e.Action, e.Reason)
+	case EvARPReceived:
+		if e.ARP == nil {
+			return "ARPReceived <nil>"
+		}
+		return "ARPReceived " + e.ARP.String()
 	default:
 		return e.Kind.String()
 	}

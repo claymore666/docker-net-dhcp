@@ -73,7 +73,7 @@ var pinnedGates = []string{"t1", "t2"}
 const (
 	minScenarios     = 63
 	minShellScripts  = 4
-	minDeclaredTests = 328
+	minDeclaredTests = 381
 	minOracleSeconds = 8
 	// The two operands of that floor. The measurement is a low-water mark on
 	// how long a real oracle run takes; the percentage is what stops the floor

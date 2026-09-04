@@ -229,6 +229,30 @@ func runAgainstDnsmasq(t *testing.T) {
 	// The desync delay would add up to ten seconds of nothing to a test whose
 	// subject is the exchange. Ring 1 pins the RFC default separately.
 	params.DesyncMin, params.DesyncMax = 0, 0
+	// ConflictAsync, and it is the ONE line in this fixture that is a
+	// judgement rather than a scaling.
+	//
+	// The subject of this test is the DHCP exchange. RFC 5227's
+	// probe-before-use — the default, ConflictWait — adds four to seven
+	// seconds to EVERY acquisition here, which is the price D22 charges a
+	// container and not something worth paying in a test of something else;
+	// conflict_dnsmasq_linux_test.go pays it once, with the RFC's own
+	// constants, and measures it.
+	//
+	// Async rather than off, because off would take the ARP socket, the
+	// probes and section 2.4's listener out of the path of every one of these
+	// tests. Under async they are all still there and still running beside
+	// the exchange; what changes is only when the caller is told it may use
+	// the address. A conflict check that broke an ordinary acquisition, or
+	// that saw this host's own frames as somebody else's, would still redden
+	// these tests.
+	//
+	// briskACD scales the schedule's DURATIONS and not its counts, so the
+	// probing here is over in a third of a second instead of overlapping the
+	// renewal and the reboot these tests are about. Its reasons are at its
+	// definition.
+	params.Conflict = proto.ConflictAsync
+	params.ACD = briskACD()
 	params.Hostname = "m1-client"
 
 	c, err := NewClient(ClientConfig{Interface: testClientIf, Params: params, EventBuffer: 8})
@@ -661,6 +685,30 @@ func declineAndReleaseAgainstDnsmasq(t *testing.T) {
 
 	params := proto.DefaultParams(iface.HardwareAddr)
 	params.DesyncMin, params.DesyncMax = 0, 0
+	// ConflictAsync, and it is the ONE line in this fixture that is a
+	// judgement rather than a scaling.
+	//
+	// The subject of this test is the DHCP exchange. RFC 5227's
+	// probe-before-use — the default, ConflictWait — adds four to seven
+	// seconds to EVERY acquisition here, which is the price D22 charges a
+	// container and not something worth paying in a test of something else;
+	// conflict_dnsmasq_linux_test.go pays it once, with the RFC's own
+	// constants, and measures it.
+	//
+	// Async rather than off, because off would take the ARP socket, the
+	// probes and section 2.4's listener out of the path of every one of these
+	// tests. Under async they are all still there and still running beside
+	// the exchange; what changes is only when the caller is told it may use
+	// the address. A conflict check that broke an ordinary acquisition, or
+	// that saw this host's own frames as somebody else's, would still redden
+	// these tests.
+	//
+	// briskACD scales the schedule's DURATIONS and not its counts, so the
+	// probing here is over in a third of a second instead of overlapping the
+	// renewal and the reboot these tests are about. Its reasons are at its
+	// definition.
+	params.Conflict = proto.ConflictAsync
+	params.ACD = briskACD()
 	// The RFC minimum is ten seconds and this fixture waits one. It is the
 	// same trade the desync window above gets, for the same reason: the
 	// subject here is whether the two messages reach a real server, and ten
@@ -887,6 +935,30 @@ func renewalAgainstDnsmasq(t *testing.T) {
 
 	params := proto.DefaultParams(iface.HardwareAddr)
 	params.DesyncMin, params.DesyncMax = 0, 0
+	// ConflictAsync, and it is the ONE line in this fixture that is a
+	// judgement rather than a scaling.
+	//
+	// The subject of this test is the DHCP exchange. RFC 5227's
+	// probe-before-use — the default, ConflictWait — adds four to seven
+	// seconds to EVERY acquisition here, which is the price D22 charges a
+	// container and not something worth paying in a test of something else;
+	// conflict_dnsmasq_linux_test.go pays it once, with the RFC's own
+	// constants, and measures it.
+	//
+	// Async rather than off, because off would take the ARP socket, the
+	// probes and section 2.4's listener out of the path of every one of these
+	// tests. Under async they are all still there and still running beside
+	// the exchange; what changes is only when the caller is told it may use
+	// the address. A conflict check that broke an ordinary acquisition, or
+	// that saw this host's own frames as somebody else's, would still redden
+	// these tests.
+	//
+	// briskACD scales the schedule's DURATIONS and not its counts, so the
+	// probing here is over in a third of a second instead of overlapping the
+	// renewal and the reboot these tests are about. Its reasons are at its
+	// definition.
+	params.Conflict = proto.ConflictAsync
+	params.ACD = briskACD()
 	params.Hostname = "m3-client"
 
 	c, err := NewClient(ClientConfig{Interface: testClientIf, Params: params, EventBuffer: 8})
@@ -921,6 +993,24 @@ func renewalAgainstDnsmasq(t *testing.T) {
 	discoversBefore := srv.count("DHCPDISCOVER(")
 	requestsBefore := srv.count("DHCPREQUEST(" + testServerIf + ") " + leased)
 	acksBefore := srv.count("DHCPACK(" + testServerIf + ") " + leased)
+	// RFC 5227 section 2.1's trigger list, on a real renewal. The list is
+	// "whenever a host ... is booting, ... awakening from sleep, ... a link
+	// status change, or ... a new IP address": a renewal that keeps the
+	// address is none of them, and re-probing one would add the whole
+	// schedule to every T1 for nothing. The count is taken across the
+	// renewal because "no probes were sent" is only a claim if some were
+	// sent before it. Defeat row M6-15; proto's
+	// TestARenewalOnTheSameAddressDoesNotReProbe holds the same property
+	// where it is decidable.
+	//
+	// The acquisition's own probes are waited for first, because a count
+	// taken before any were sent would be a comparison of zero with zero.
+	// This client runs in ConflictAsync, so Acquired arrived before the
+	// first probe was due.
+	want := uint64(briskACD().ProbeNum)
+	for c.Stats().ProbesSent < want {
+	}
+	probesBefore := c.Stats().ProbesSent
 	closeWindow := watchSendFailures(t, c)
 
 	renewed := awaitEvent(t, c, lease.Renewed)
@@ -932,6 +1022,9 @@ func renewalAgainstDnsmasq(t *testing.T) {
 	if !renewed.Lease.Expire.After(acquired.Lease.Expire) {
 		t.Fatalf("the renewed lease expires at %s, no later than the old %s",
 			renewed.Lease.Expire, acquired.Lease.Expire)
+	}
+	if got := c.Stats().ProbesSent; got != probesBefore {
+		t.Fatalf("the renewal sent %d further ARP Probe(s) for an address the client already held; RFC 5227 2.1 does not list a renewal among its triggers", got-probesBefore)
 	}
 
 	// THE BARRIER HAS TO NAME THE RENEWAL'S OWN LINES, not lines the

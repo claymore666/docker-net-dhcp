@@ -26,6 +26,57 @@ func testParams() Params {
 	p := DefaultParams(testCHAddr)
 	p.DesyncMin = 0
 	p.DesyncMax = 0
+	// ConflictOff, EXPLICITLY, and not because RFC 5227 is optional here.
+	//
+	// The zero value of Params.Conflict is ConflictWait, so a client built
+	// with no opinion gets the safe mode; that is deliberate and
+	// TestTheDefaultConflictModeIsWait pins it. What these fixtures need is
+	// the opposite: their subject is RFC 2131's state machine, and leaving
+	// ACD on would put five and a half seconds of section 1.1 arithmetic and
+	// a PROBING state between every DHCPACK and every assertion about BOUND —
+	// so each of them would be measuring RFC 5227 instead of what it is named
+	// for.
+	//
+	// The ACD fixtures say ConflictWait or ConflictAsync at their own line.
+	// The same pattern as DesyncMin/DesyncMax above, which are zeroed here and
+	// pinned to the RFC's window by TestDesyncWindowIsWithinTheRFC.
+	p.Conflict = ConflictOff
+	return p
+}
+
+// acdParams is testParams with conflict detection ON and RFC 5227 section
+// 1.1's SCHEDULE constants scaled down to nanoseconds.
+//
+// THE SCALE IS THE ONLY THING THAT CHANGES: the counts, the ordering and the
+// ratios are the RFC's, so a test that reads three probes here reads three
+// probes in production. The real durations are pinned once, by
+// TestACDConstantsAreTheRFCValues against DefaultACDParams, and measured once
+// on the wire by the netns run — no other test pays for them.
+//
+// RATE_LIMIT_INTERVAL IS NOT SCALED, and round 2 is why. It is not a schedule
+// constant: nothing waits on it, it is composed onto the DHCPDECLINE restart
+// delay and the composition is the only place it acts. Round 1 scaled it to
+// 600ns beside a RestartDelay of ten seconds, so the maximum of the two was
+// the ten seconds whatever the rate limit said, and the reviewer's mutant
+// deleting the composition survived: the fixture had made the two answers the
+// same number. At the RFC's own 60s against the RFC's own 10s floor they
+// differ by construction. TestTheACDFixtureCanSeeTheRateLimit refuses a
+// future edit that scales it back down.
+func acdParams(mode ConflictMode) Params {
+	p := testParams()
+	p.Conflict = mode
+	p.ACD = ACDParams{
+		ProbeWait:         3 * Nanosecond,
+		ProbeNum:          3,
+		ProbeMin:          4 * Nanosecond,
+		ProbeMax:          5 * Nanosecond,
+		AnnounceWait:      6 * Nanosecond,
+		AnnounceNum:       2,
+		AnnounceInterval:  7 * Nanosecond,
+		MaxConflicts:      10,
+		RateLimitInterval: 60 * Second,
+		DefendInterval:    8 * Nanosecond,
+	}
 	return p
 }
 
@@ -204,6 +255,16 @@ func machineIn(t *testing.T, s State) *Machine {
 			t.Fatal("the RENEWING fixture's lease has no T2; REBINDING is unreachable")
 		}
 		m.Step(t2, 5, TimerFired(TimerRebind))
+	case StateProbing:
+		// Reached by its only door: a DHCPACK at a ConflictWait client. There
+		// is no other way in, and building one by assignment would skip the
+		// thing PROBING is — an ACKed lease that has not been announced.
+		m = newMachine(t, acdParams(ConflictWait))
+		_, acts := m.Step(0, 1, Simple(EvStart))
+		disc := mustSend(t, acts, wire.MsgDiscover)
+		_, acts = m.Step(at(1), 2, received(t, offerFor(disc, "192.168.99.50", "192.168.99.1")))
+		req := mustSend(t, acts, wire.MsgRequest)
+		m.Step(at(2), 3, received(t, ackFor(req, "192.168.99.50", "192.168.99.1", 3600)))
 	default:
 		t.Fatalf("machineIn does not know how to reach %s — a new state was added without extending the totality fixture", s)
 	}

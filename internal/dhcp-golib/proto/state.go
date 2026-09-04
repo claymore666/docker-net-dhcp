@@ -58,6 +58,24 @@ const (
 	// lease is held, so there is nothing to lose here and nothing to unicast
 	// to.
 	StateRebooting
+	// StateProbing is RFC 5227 section 2.1's check, between the DHCPACK and
+	// the point where the address may be used. It is NOT an RFC 2131 state:
+	// figure 5 goes from REQUESTING straight to BOUND on "DHCPACK/Record lease,
+	// set timers T1, T2".
+	//
+	// It is a state here by the same test the paragraph above applies to
+	// INIT-REBOOT, and it passes where INIT-REBOOT failed: a client SITS in it,
+	// for a mean of 5.5 seconds by section 1.1's arithmetic, and observable
+	// events arrive while it does — ARP packets, the probe timer, a link going
+	// down, the caller releasing. Every one of those has a different answer
+	// here than in BOUND, because in BOUND there is a lease to lose and here
+	// there is not.
+	//
+	// ONLY ConflictWait REACHES IT. ConflictAsync probes from BOUND, because
+	// its whole definition is that the lease is announced first; ConflictOff
+	// probes not at all. So the state is where the caller is WAITING, which is
+	// the thing that needs a name.
+	StateProbing
 )
 
 func (s State) String() string {
@@ -78,6 +96,8 @@ func (s State) String() string {
 		return "REBINDING"
 	case StateRebooting:
 		return "REBOOTING"
+	case StateProbing:
+		return "PROBING"
 	default:
 		return fmt.Sprintf("state(%d)", uint8(s))
 	}
@@ -90,6 +110,6 @@ func (s State) String() string {
 func AllStates() []State {
 	return []State{
 		StateStopped, StateInit, StateSelecting, StateRequesting, StateBound,
-		StateRenewing, StateRebinding, StateRebooting,
+		StateRenewing, StateRebinding, StateRebooting, StateProbing,
 	}
 }

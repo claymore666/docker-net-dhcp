@@ -95,7 +95,7 @@ MANIFEST_SHELL_SCRIPTS_N=4
 # The Go pin holds a separate literal as a low-water mark, `>=` only. That one
 # is NOT maintained in step and is not meant to be: it exists so that lowering
 # the number here cannot go below a level somebody once measured.
-MIN_DECLARED_TESTS=328
+MIN_DECLARED_TESTS=381
 
 # How far above MIN_DECLARED_TESTS the tree may drift before the row refuses.
 #

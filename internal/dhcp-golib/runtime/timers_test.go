@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"runtime"
 	"testing"
 
 	"github.com/claymore666/dhcp-golib/proto"
@@ -162,5 +163,53 @@ func TestTimerTableIsSizedFromTheProtocol(t *testing.T) {
 	defer func() { _ = tm.Close() }()
 	if len(tm.gen) != numTimers || len(tm.timer) != numTimers {
 		t.Fatalf("timer table is %d/%d entries, want %d", len(tm.gen), len(tm.timer), numTimers)
+	}
+}
+
+func TestCloseDoesNotRaceAFireAlreadyPastTheLock(t *testing.T) {
+	// fire drops the mutex before it sends, so a Close landing in that window
+	// closed the channel under a live sender: a data race under -race, and a
+	// "send on closed channel" panic without it, which takes the plugin down
+	// at the one moment it is supposed to be shutting down cleanly. Raced
+	// deliberately, the way TestCancelDefeatsAnInFlightFire races Cancel.
+	const rounds = 500
+	for i := 0; i < rounds; i++ {
+		tm := NewTimers()
+		for _, id := range proto.AllTimerIDs() {
+			tm.Set(id, 0)
+		}
+		drained := make(chan struct{})
+		go func() {
+			defer close(drained)
+			for range tm.Fired() {
+			}
+		}()
+		if err := tm.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+		<-drained
+	}
+}
+
+func TestCloseReturnsWhileASenderIsBlockedOnTheStream(t *testing.T) {
+	// done is closed BEFORE Close waits for the senders, and that order is
+	// load-bearing. The stream is buffered by the number of timers, which is
+	// enough for one fire per arming — but Set re-arms freely, so an arming
+	// whose fire is already past the lock is delivered on top of the next
+	// one's, and the buffer can fill with nothing draining it. A sender
+	// blocked there escapes through done. Closed after the wait instead,
+	// Close would be waiting for a sender that is waiting for Close.
+	//
+	// Nothing drains here, deliberately. A deadlock is caught by the suite's
+	// own -timeout, which is what makes this a test rather than a comment.
+	tm := NewTimers()
+	for i := 0; i < 64; i++ {
+		for _, id := range proto.AllTimerIDs() {
+			tm.Set(id, 0)
+		}
+		runtime.Gosched()
+	}
+	if err := tm.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
 	}
 }
