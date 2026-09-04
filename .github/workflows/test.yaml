@@ -282,6 +282,23 @@ jobs:
       - name: Docs-drift check
         run: bash scripts/check-docs-drift.sh
 
+      # External review row E-4. This branch has no dhcpcd: not in the
+      # image, not in the tree, and no helper the plugin execs. The
+      # documents said otherwise in 82 places, and each one was a wrong
+      # instruction rather than a stale sentence -- `pgrep dhcpcd`, a
+      # lease file that does not exist, two plugin settings the manifest
+      # no longer declares.
+      #
+      # The gate is keyed on the SPELLING and says so in its own header:
+      # a page can describe the deleted mechanism perfectly without the
+      # word, and this is blind to that. It is a backstop against the
+      # word coming back, not evidence that the prose is true. The
+      # allowlist is two entries -- RELEASE_NOTES.md below its first 1.x
+      # heading, and the 1.x release runbook -- each with a dated reason
+      # in the script.
+      - name: No dhcpcd in a living document
+        run: bash scripts/check-no-dhcpcd-word.sh
+
       # RELEASE_NOTES.md merges last and describes code that is still
       # moving, so it is the one document whose claims can go stale
       # between being written and being true (#732). Three of the file's

@@ -1,10 +1,17 @@
 # docker-net-dhcp
 
-A Docker network plugin that allocates container IP addresses (IPv4 and
-optionally IPv6) from an **existing DHCP server** — your router, a
-Fritz!Box, dnsmasq, anything — instead of Docker's self-managed IPAM
-pools. Containers come up on your LAN as first-class hosts, addressable
-like any other machine. Bridge, macvlan, and ipvlan attachment modes.
+A Docker network plugin that allocates container IP addresses from an
+**existing DHCP server** — your router, a Fritz!Box, dnsmasq, anything —
+instead of Docker's self-managed IPAM pools. Containers come up on your
+LAN as first-class hosts, addressable like any other machine. Bridge,
+macvlan, and ipvlan attachment modes.
+
+!!! note "This documentation is the 2.0 beta's, and the beta is IPv4-only"
+    The plugin leases through the project's own in-tree DHCP client
+    library instead of an external client process. `ipv6=true` is
+    refused at `docker network create`, and DHCPv6 returns in a later
+    beta milestone; the 1.x line is where DHCPv6 works today. Pick a
+    v1.x version from the selector for the 1.x manual.
 
 !!! info "This is a maintained fork"
     A maintained fork of
@@ -13,8 +20,8 @@ like any other machine. Bridge, macvlan, and ipvlan attachment modes.
     modernises the toolchain (Go 1.27, docker SDK v28, current Alpine),
     adds **macvlan** and **ipvlan** modes, fixes the daemon-restart
     deadlock and a state data-race, and gates every PR on a live
-    integration suite (all three modes + DHCPv6, recovery, failure
-    injection) with a coverage ratchet and supply-chain gates on release.
+    integration suite (all three modes, recovery, failure injection)
+    with a coverage ratchet and supply-chain gates on release.
     The maintained image lives at `ghcr.io/claymore666/docker-net-dhcp`.
 
 !!! danger "⚠️ BREAKING CHANGE IN v1.5.0 — DO THIS FIRST ⚠️"
@@ -66,8 +73,9 @@ docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.9.0-arm64
 It requests `host` networking, the host PID namespace, the Docker
 socket, a bind mount of the state directory above, a read-only bind
 mount of `/var/run/docker` (v1.6.0+), and
-`CAP_NET_ADMIN`/`CAP_SYS_ADMIN`/`CAP_SYS_PTRACE` — grant them to
-proceed.
+`CAP_NET_ADMIN`/`CAP_NET_RAW`/`CAP_SYS_ADMIN`/`CAP_SYS_PTRACE` — grant
+them to proceed. `CAP_NET_RAW` is requested from the 2.0 beta onward,
+so an upgrade onto it asks you to approve the privilege set again.
 (If you hit `invalid rootfs in image configuration`, upgrade Docker.)
 
 Create a bridge-mode network and run a container on it (assumes you

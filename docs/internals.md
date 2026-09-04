@@ -19,151 +19,134 @@ namespace to it. Two things differ:
 1. A container-creation request is made.
 2. A `veth` pair is created and the host end is connected to the bridge
    (both interfaces are still in the host namespace at this point).
-3. A DHCP client (`dhcpcd`) is started on the container end (still in
-   the host namespace) — the initial IP address is provided to Docker by
+3. A one-shot DHCP acquisition runs on the container end (still in the
+   host namespace) — the initial IP address is provided to Docker by
    the plugin.
 4. Docker moves the container end of the `veth` pair into the
    container's network namespace and sets the IP address — at this point
-   that first client is stopped.
-5. `net-dhcp` starts a persistent `dhcpcd` on the container end of the
-   `veth` pair in the container's **network namespace** (but still in the
-   plugin's **PID namespace**, so the container can't see the DHCP
-   client). It runs observe-only (`--noconfigure`): the plugin applies
-   the lease to the link via netlink rather than letting the client
-   reconfigure the interface.
-6. `dhcpcd` keeps running, renewing the lease when required, until the
+   that first acquisition is finished with.
+5. `net-dhcp` starts a persistent DHCP client on the container end of
+   the `veth` pair whose socket lives in the container's **network
+   namespace**. The client is not a process: it is the in-tree DHCP
+   library running inside the plugin, so there is nothing for the
+   container to see and nothing to exec. It never configures the link
+   either — the plugin applies the lease via netlink.
+6. The client keeps running, renewing the lease when required, until the
    container shuts down.
 
 In macvlan and ipvlan mode the shape is the same, with a child interface
 on a host NIC in place of the veth pair and the bridge; the client
 lifecycle, the event plumbing, and everything below are identical.
 
-## How the plugin drives `dhcpcd`
+**The DHCP client is `internal/dhcp-golib`, a nested Go module** copied
+in from the project's own library repository at the SHA recorded in
+`internal/dhcp-golib/SOURCE` and checked byte-for-byte on every PR
+(`scripts/check-dhcp-golib-copy.sh`). `pkg/dhcp` is the chassis over it:
+it builds the protocol parameters (`pkg/dhcp/params.go`), owns the
+namespace and the socket (`pkg/dhcp/chassis.go`), and translates library
+events into the events `pkg/plugin` has always consumed. Nothing outside
+`pkg/dhcp` knows which client is underneath.
 
-- **Events come over a FIFO, not the client's stdout.** A `dhcpcd` hook
-  script reports each lease event (bind, renew, NAK) as JSON through a
-  pipe the plugin opened — which is why the plugin ships a small handler
-  binary rather than parsing client output. The plugin applies the
-  resulting address/routes via netlink itself.
-- **A lapsed lease is not one of those events.** The plugin runs
-  `dhcpcd --noconfigure`, and in that mode a lease running out is
-  reported as `RELEASE` — but only while the `release` directive was
-  also set, which it was up to v1.8.x. A graceful stop emitted the same
-  reason, so treating either as a failure would have counted every
-  normal container teardown as one, and the handler dropped both.
+## How the plugin drives the DHCP client
 
-  **v1.9.0 removes that directive, and a lapse now fires `EXPIRE`**,
-  which the plugin counts as a lease loss. Measured across all four
-  combinations of `--noconfigure` and `release` on the shipped dhcpcd,
-  and visible in the failure suite across the two trees: the same outage
-  that produced "+0 leasefail / +1 watchdog" before produces "+1
-  leasefail / +0 watchdog" after
-  ([#855](https://github.com/claymore666/docker-net-dhcp/issues/855)).
-  So the plugin CAN now learn about a dead DHCP server by being told,
-  sooner than the lease deadline would have told it. The deadline-based
-  watchdog stays as the backstop for a lapse dhcpcd does not report.
-- **Outages are therefore derived, not reported.** Each bind and renew
-  records the lease lifetime the server granted, and a watchdog compares
-  it against the time since that endpoint was last served: once
-  `lease + grace` has passed with nothing heard, the server is treated as
-  unreachable and `dhcp_timeouts` starts climbing (#353). The trade-off
-  is inherent — a valid lease means a working address, so an outage
-  cannot be *proven* before that lease would have run out. Cadence is
-  [`OUTAGE_TICK` / `OUTAGE_GRACE`](reference.md#plugin-settings).
-- **The FIFO is held open by a dedicated keep-alive writer.** The reader
-  drains it to a natural EOF rather than being torn down when the client
-  exits. This is not incidental: the one-shot client writes its `bound`
-  event and exits immediately, and closing the FIFO on that exit races
-  the reader for an event still sitting in the kernel pipe buffer. Under
-  load that lost roughly 4% of acquisitions (#332). With a separate
-  writer the reaper closes only the write end, so the event cannot be
-  dropped — the guarantee is structural rather than retried around.
-- **Each client runs in a private mount namespace.** `dhcpcd` keys *two*
-  on-disk locations by interface name, with no runtime override for
-  either: its **state** directory (lease files, DUID) and its **runtime**
-  directory (pidfile and control socket). Two containers whose link is
-  the default `eth0` would otherwise collide on both. The state collision
-  corrupts lease bookkeeping; the runtime collision is worse and silent —
-  the second client finds the first one's control socket, forwards its
-  arguments to that process and exits 0, so it never runs a client of its
-  own and its lease is never renewed (#332). The plugin
-  shadows both directories with a private `tmpfs` in each client's own
-  mount namespace, which keeps them fully independent.
+- **Events are values on a channel, not a pipe.** The library reports
+  each lease change as a typed event; `pkg/dhcp/chassis.go`'s
+  `translate` goroutine maps it to the plugin's `bound` / `renew` /
+  `nak` / `leasefail` and the per-endpoint goroutine in
+  `pkg/plugin/dhcp_manager.go` applies the address, routes, DNS and MTU
+  via netlink. There is no argv to build, no environment to scrub, no
+  JSON to parse and no second binary in the image.
+- **The emit must not block, and a drop is counted.** The only reader is
+  that per-endpoint goroutine, and it stops reading the moment the
+  endpoint is torn down. A bare send would park the translate goroutine
+  forever on the first event that arrives in that window — a `Leave`
+  while a renewal is in flight is enough — and with it the counter
+  snapshot the endpoint owes. The channel is buffered, the send has a
+  default arm, and a discarded event increments `DroppedEvents()` and
+  logs what was lost. A silent drop and a wedge look identical from
+  outside the package, which is the whole reason the counter exists.
+- **A lapsed lease is reported by the client, not derived from a
+  deadline.** The state machine drops the lease with `ReasonExpired`
+  when the expiry timer fires, and reports `ReasonNoServer` when a
+  retransmission budget runs out with nothing usable heard. Both become
+  `leasefail`, which is what moves `dhcp_timeouts`. The v1.x outage
+  watchdog is gone, and with it `OUTAGE_TICK`, `OUTAGE_GRACE` and the
+  lease-lifetime clamp that existed to keep the watchdog's deadline
+  usable.
 
-  A side effect worth knowing when debugging: the lease file is only
-  visible from inside that namespace, so reading it means
-  `nsenter -t <dhcpcd-pid> -m` (see
-  [verifying renewal](reference.md#verifying-that-renewal-works)).
+  What has not changed is the physics: a bound endpoint holds a valid
+  address until its lease runs out, so an outage still cannot be
+  *proven* before then. What changed is who says it and how precisely —
+  the client's own schedule rather than a 30-second tick with a 25-second
+  settling time on top.
+- **A zero lease lifetime is an infinite lease, not a number to guess
+  at.** The 1.x plugin clamped an implausibly long option 51 so its
+  watchdog had a usable deadline, and counted the clamp. The library
+  hands the chassis an explicit "no expiry" instead, which the caller
+  tests rather than compares against a threshold.
+- **No client keeps state on disk, so nothing is keyed by interface
+  name.** This is where a private mount namespace per client used to be
+  needed: the 1.x client kept its lease file and its control socket in
+  directories named after the interface, and two containers both called
+  `eth0` collided on both — the second client silently handing its
+  arguments to the first one's socket and never renewing (#332). The
+  library holds its lease in memory and the plugin holds the durable
+  copy in its own record, keyed by endpoint. There is no per-client
+  mount namespace, no `tmpfs`, and no lease file to go looking for.
+- **The socket belongs to the endpoint's namespace because of the
+  thread that created it.** `newLibClient` locks the OS thread, enters
+  the endpoint's network namespace, opens the client there, and returns
+  the thread. A raw `AF_PACKET` socket keeps the namespace it was
+  created in, which is the property the mount-namespace machinery used
+  to approximate from outside. If the thread cannot be returned it is
+  retired rather than reused, since a thread left in a container's
+  namespace would silently give the next caller the wrong one.
 
-## How IPv6 is handled
+## How IPv6 is handled in the beta
 
-Three mechanisms, all of them v1.9.0, all of them about the same fact:
-**DHCPv6 carries no router.** The option catalogue is RFC 8415 §21 and
-nothing in it has a next hop, so router discovery (RFC 4861 §6.3.4) is
-the only source of an IPv6 default route — and assigning an address does
-not make its prefix on-link either, "whether through IPv6 stateless
-address autoconfiguration, DHCPv6, or manual configuration" (RFC 5942 §4
-rule 1, repeated inside the DHCPv6 specification at RFC 8415
-§18.2.10.1). Advertisement processing is therefore mandatory on the
-*managed* path too, not only the stateless one. Before v1.9.0 none of
-this happened inside a container.
+**It is not.** `validateModeOptions` refuses `ipv6=true` at
+`CreateNetwork` with `util.ErrIPv6Beta`, in every mode and for every
+spelling the option arrives under, and the error names both the beta and
+the milestone that restores DHCPv6. The refusal is at network creation
+rather than at the first container because that is the only point where
+an operator finds out in time to do something about it: an endpoint that
+quietly comes up without the address its network asked for is precisely
+the failure this exists to prevent.
 
-**A DHCPv6 timeout is not one observation.** `pkg/plugin/v6_absence.go`.
-A failed v6 acquisition has two entirely different meanings and the
-timeout cannot tell them apart: the segment offers DHCPv6 and the server
-went quiet, or the segment offers no DHCPv6 address at all. The second
-is the ordinary configuration of a great many home routers, and treating
-it as fatal meant no container started on such a network (#868). The
-discriminator is what the router **advertised**, never how long the
-plugin waited — the managed-address flag makes silence fatal exactly as
-before, while an advertisement without it, or none at all inside the
-budget, creates the endpoint without a v6 address and counts
-`dhcpv6_not_offered` or `dhcpv6_no_router_advert`. Keeping the two
-observations apart is what keeps the tolerance one-directional.
+`pkg/dhcp` refuses again at every entry point (`GetIP`,
+`NewDHCPClient`, `buildParams`) with `ErrIPv6Unsupported`. That is not
+belt-and-braces for the create path — it is the only guard on the one
+route that still reaches v6 code, a network created by a 1.x build whose
+stored options survived the upgrade. What happens on that route, and
+what an operator sees, is in the release notes rather than here, because
+it is behaviour rather than mechanism.
 
-**The engine disables IPv6 on a link with no IPv6 address.**
-`pkg/plugin/v6_link.go`. libnetwork writes
-`net.ipv6.conf.<iface>.disable_ipv6 = 1` on a sandbox interface whose
-endpoint has no `AddressIPv6` — a case #868 made reachable for the first
-time, because before it such an endpoint was never created. The flag the
-engine sets for "no address" also forecloses every mechanism that was
-supposed to supply one: no link-local, no router solicitation, no
-information request, and `dhcpcd -6` prints nothing at all. So the
-plugin administratively re-enables IPv6 on the link before starting a
-DHCPv6 client, and counts `ipv6_link_enable_failures` when it cannot.
+The v6 code that remains — `pkg/plugin/v6_absence.go`,
+`pkg/plugin/v6_link.go`, the DHCPv6 counters, their `/Plugin.Health`
+fields and their rows in the exposition — keeps its declarations and
+loses its callers. It is left in place because the milestone that
+restores DHCPv6 restores them unchanged, and deleting a documented
+counter to add it back later costs two documentation changes to end
+where it started. **A zero in any of them means "not reachable in this
+build", not "nothing went wrong"**, and the same sentence is at the
+declaration in `pkg/plugin/endpoints.go`.
 
-**The Router-Advertisement guard.** `pkg/dhcp/ra_guard.go`. `dhcpcd`
-writes `net.ipv6.conf.<if>.accept_ra=0` and `.autoconf=0` on the
-interface it manages, in `if_setup_inet6()`; `--noconfigure`, which the
-plugin passes on every client, does not gate that write and additionally
-skips `dhcpcd`'s own advertisement handling — so nobody in the container
-performed §6.3.4 or §5.5.3. The loss is active rather than a failure to
-refresh: measured in the ordering least favourable to the claim, with a
-`proto ra` default route installed *before* `dhcpcd` starts, the route
-was gone after the unguarded client started and still present after the
-guarded one. Only the `-6` client does it; a `-4` `dhcpcd` left both
-knobs at 1. A one-shot re-write after `Start` is not enough either,
-because `dhcpcd` re-runs that setup on **every carrier acquisition** —
-so the guard sets `accept_ra=2`, `autoconf=1` and `keep_addr_on_down=1`
-before `dhcpcd` execs and then returns `/proc/sys` to read-only inside
-the client's own private mount namespace, where the remount is invisible
-to the host, to the container and to every other client. Because a
-read-only remount can be accepted without taking effect, each knob is
-then probed by writing back the value it already holds, with success
-treated as the failure. Failed steps count
-`router_advert_guard_failures` and the client starts anyway — a
-deliberate degrade, and the reason the counter exists: a container whose
-guard did not take looks entirely healthy until off-link IPv6 stops.
+`TestV6StructuralZero_TheWritersAreStillTheEnumeratedFour` is what keeps
+that claim from decaying: it derives the writer population from the AST
+and fails the build when a *new* writer appears, which is the shape that
+would make the statement silently false on an IPv4 path. It deliberately
+does not try to prove each writer sits behind a v6 branch — an AST proof
+of that breaks on a harmless refactor, and the weaker property is the
+one that can be held.
 
-**What this does not do**, stated because the shape invites the
-assumption. The plugin does not read RDNSS from advertisements — DNS
-comes from DHCPv6 options 23 and 24, and nothing parses the RA option.
-It does not manage `addr_gen_mode` or `use_tempaddr` either, so a
-SLAAC address formed by the container's own kernel is not a function of
-prefix and MAC, is not something the plugin reports, and is not an
-identifier anything should key on. The guard's own bound is narrower and
-is written out at the top of `ra_guard.go`: `dhcpcd` sets the address
-generation mode over netlink, which a `/proc/sys` pin cannot reach.
+**The Router-Advertisement guard is deleted, not disabled.** Its sysctls
+(`accept_ra=2`, `autoconf=1`, `keep_addr_on_down=1`) were applied only
+from inside the external client's mount-namespace preparation, so the
+path that applied them went with the process. Nothing on an IPv4 path
+read them: they are `net.ipv6.conf.*` knobs by construction. The
+milestone that restores DHCPv6 restores the guard and its argument
+together — what it inherits is the measurement, not a mechanism that can
+be switched back on.
 
 ## How a network chooses its DHCP server
 
@@ -171,31 +154,39 @@ generation mode over netlink, which a `/proc/sys` pin cannot reach.
 `dhcp_deny_servers` names ones it must never lease from (#111, #669).
 The operator-facing rules are in the
 [driver reference](reference.md); the shape of the implementation
-follows from two properties of the `dhcpcd` directives underneath.
+follows from where the filtering happens.
 
-- **Both lists match the packet's source address, not the Server
-  Identifier it advertises.** `dhcpcd`'s `whitelist` / `blacklist`
-  compare the offer's IP source, so behind a DHCP relay every offer
-  looks like it came from the relay and neither list can tell servers
-  apart — the no-relay limit is a property of the mechanism, not a gap
-  in the implementation. They are DHCPv4-only for the same kind of
-  reason: `dhcpcd` stores both as `in_addr_t` and its v6 path never
-  reads them, so a v6 entry is refused at `docker network create`
-  rather than applying to nothing while the operator believes a server
-  was ranked or denied.
-- **A whitelist switches the blacklist off, so the plugin never emits
-  both.** `dhcpcd` consults its blacklist only when no whitelist is
-  configured, so a network setting both options would get a denial the
-  client silently does not enforce. The deny list is subtracted from the
-  preference list at parse time instead: after that there is one truth
-  about what is allowed, and the renderer emits one kind of directive.
-  A preference list that denies its way to empty fails the network
-  create, because the alternative is degrading into "accept any server
-  at all" — the opposite of what both options were set to achieve. The
-  renderer carries the same either/or as a guard rather than trusting
-  the caller, since a comment asking callers not to emit both would
-  decay silently.
-- **Ordering is not expressible to `dhcpcd`, so preference is an
+- **Both lists match the Server Identifier (option 54), not the
+  packet's source address.** This is the one thing about these options
+  that a 1.x operator has to re-learn. The external client compared the
+  offer's IP source, which meant that behind a DHCP relay every offer
+  looked like it came from the relay and neither list could tell servers
+  apart; option 54 is what the server says it is, and it is also what a
+  renewal is unicast to, so the beta filters on it and the relay
+  limitation goes with the change. The two keys agree whenever a server
+  answers directly. They stay DHCPv4-only because DHCPv6 is not
+  implemented in the beta at all, so a v6 entry is still refused at
+  `docker network create` rather than applying to nothing.
+
+    The library's predicate is where the edge cases live, and they are
+    decided rather than incidental: **deny wins** over allow for a
+    server named in both; an **allow list fails closed** on a message
+    that carries no server identifier at all, because "only these
+    servers" that a message can satisfy by omitting the field is not a
+    restriction; and a **deny list alone fails open** on that same
+    message, because nothing shows it came from a denied server.
+- **The plugin still never sends both lists.** The deny list is
+  subtracted from the preference list at parse time, so after
+  `resolveServerPolicy` there is one truth about what is allowed and one
+  kind of list to hand down. That subtraction was forced in 1.x, where a
+  configured whitelist switched the blacklist off inside the client and
+  a network setting both would have got a denial nothing enforced; it is
+  kept here because the property it buys — one truth, not two composed
+  at the far end — is worth more than the redundancy the library would
+  now tolerate. A preference list that denies its way to empty fails the
+  network create, because the alternative is degrading into "accept any
+  server at all", the opposite of what both options were set to achieve.
+- **Ordering is not expressible to the client, so preference is an
   acquisition-time ladder.** The initial acquisition runs one attempt
   per preferred server, in the operator's order, each restricted to
   that server alone. The ladder **divides** the existing acquisition
@@ -203,7 +194,17 @@ follows from two properties of the `dhcpcd` directives underneath.
   `docker run` slower, and the one-shot at `CreateEndpoint` already
   runs against a tight ceiling — with the remainder of the division
   dropped rather than handed to the last tier, so the attempts can only
-  sum to at most the budget. `dhcp_server_tier_fallbacks` counts a
+  sum to at most the budget. The per-attempt floor (`minAttemptBudget`,
+  3s) predates the library and now sits just under its first
+  retransmission at 4s, so a tier that lands on the floor buys one
+  DISCOVER and no retry. The same reading applies to the undivided
+  budget: the library's intervals are 4s, 8s, 16s, 32s with a 64s
+  ceiling and ±1s of jitter, each armed as its packet goes out, so
+  retransmissions land at ~4s, ~12s, ~28s and ~60s and the default 10s
+  `lease_timeout` funds one of them. That is not a regression — the same 3s used to
+  have to pay for a namespace and a process spawn as well — but its
+  original derivation is dead and nothing re-derives it against the
+  library's schedule. `dhcp_server_tier_fallbacks` counts a
   fall-through to a lower tier, which is the only outside signal that a
   preferred server has gone quiet while every container still starts;
   `dhcp_server_policy_exhausted` counts a restricted acquisition where
@@ -211,7 +212,7 @@ follows from two properties of the `dhcpcd` directives underneath.
   ordinary DHCP timeout.
 - **The persistent client gets the whole allowed set, not the tier that
   won.** It has to be able to rebind after the preferred server goes
-  away, and a whitelist pinned to the winning tier would strand the
+  away, and an allow list pinned to the winning tier would strand the
   endpoint with no lease instead of failing over. Preference is an
   acquisition-time concept; once a lease is held it stays with whoever
   granted it, because renewal is unicast to that server.
@@ -237,19 +238,21 @@ every part of it is a constraint rather than a preference.
   "nobody holds it" with a squatter sitting on the address. An ordinary
   datagram to the discard port makes the kernel do the ARP instead; its
   delivery is irrelevant, the packet exists to resolve L2.
-- **It also stays inside what `config.json` asks for.** A real RFC 5227
+- **It does not stand on a capability argument, and it never should
+  have.** The reasoning originally written here was that a real RFC 5227
   ARP probe needs `AF_PACKET` and therefore `CAP_NET_RAW`, which
-  `config.json` does not request; ordinary traffic gets the same answer
-  from what it does. Note the premise this reasoning was originally
-  written on is **wrong**: Docker composes a plugin's capabilities
-  additively over the OCI defaults, so the process holds `CAP_NET_RAW`
-  already (`CapEff` on a running plugin decodes to seventeen
-  capabilities, not three). A `AF_PACKET` probe would therefore need no
-  new grant and no re-approval — see [#725]. The datagram probe stands
-  on its own merits above; it does not stand on a capability we do not
-  have. (`dhcpcd` itself runs with
-  `-A`, which turns *its* conflict detection off; this is what replaces
-  it.)
+  `config.json` did not request. Both halves of that have since moved:
+  the process always held the capability, because Docker composes a
+  plugin's capabilities additively over the OCI defaults (`CapEff` on a
+  running plugin decodes to seventeen, not three), and `config.json`
+  now requests it outright for the DHCP client's own socket. So an
+  `AF_PACKET` probe needs no new grant and no further re-approval — see
+  [#725], whose title asserted the grant was already in the manifest
+  when it was not. The datagram probe stands on the merits above: it is
+  what makes the kernel ask the question, and the answer is the same
+  one. Conflict detection inside the DHCP exchange itself — DECLINE on
+  a lease the segment refuses — is a later milestone and is not in this
+  build.
 - **The probe runs from the parent link, and compares MACs.** Our own
   endpoint holds the leased address too — that is the premise — so the
   vantage point has to be one our endpoint cannot answer from, which is
@@ -293,13 +296,18 @@ exactly what happens when a physical host on the segment reboots or
 loses power. A container is a host on this segment and costs the server
 what one costs.
 
-Neither client releases. The `CreateEndpoint` one-shot exits with
-`-1 -p` to keep its address for the persistent client that takes over
-moments later; the persistent client is signalled at `Leave` and keeps
-it for the container that may be about to restart.
+Neither client releases. The `CreateEndpoint` one-shot ends by
+cancelling its own manager, which drops the lease locally with
+`ReasonStopped` and sends nothing — the record carries the lease to the
+persistent client that takes over moments later, which resumes it as
+INIT-REBOOT rather than discovering afresh. The persistent client is
+stopped at `Leave` and keeps the address for the container that may be
+about to restart. A stop is this process's own shutdown reported back to
+it, which is why nothing counts it as a lease loss: doing so would
+report one for every container that started successfully.
 
 **Why this changed.** Up to v1.8.x the plugin released aggressively —
-`dhcpcd` emitted a `RELEASE` on a graceful stop, and a background
+the external client emitted a `RELEASE` on a graceful stop, and a background
 *reclaim* handed back the one-shot's address whenever no persistent
 client had taken ownership of it (a container that exited before the
 attach completed). Both were trying to return an address promptly rather
@@ -317,7 +325,7 @@ What was gained was a faster return of an address nobody wanted. What
 was risked was an address handed to someone else while a container was
 still using it — the duplicate assignment #524 added detection for,
 manufactured by the plugin itself. Waiting for expiry has no such
-failure mode, so the whole mechanism went: the `release` directive, the
+failure mode, so the whole mechanism went: the release itself, the
 reclaim, and the `orphaned_leases_released` and
 `orphaned_lease_release_failures` counters that measured it.
 
@@ -424,7 +432,7 @@ kinds of restart. Their *observable* behaviour is documented in the
   already registered for the endpoint, in one locked operation. The
   check and the registration used to be two, and a `Join` landing in
   the gap had its live manager evicted from the registry while its
-  `dhcpcd` kept running — untracked, unstoppable, and competing with
+  client kept running — untracked, unstoppable, and competing with
   recovery's fresh client on the same interface. A `Join` is newer
   truth than a recovery walk and may displace it; recovery is older
   truth and must yield, which is what a compare-and-set expresses and a
@@ -495,8 +503,8 @@ nothing else.
   without the plugin listening anywhere. The TCP listener is
   `METRICS_ADDR`, and it is off unless set. The plugin runs with
   `"network": {"type": "host"}` and holds `CAP_NET_ADMIN`,
-  `CAP_SYS_ADMIN` and `CAP_SYS_PTRACE`, so any port it opens is on the
-  host's own network namespace — opening one has to be a decision an
+  `CAP_NET_RAW`, `CAP_SYS_ADMIN` and `CAP_SYS_PTRACE`, so any port it
+  opens is on the host's own network namespace — opening one has to be a decision an
   operator made, not something they inherited by upgrading. That
   listener's mux carries `/metrics` and nothing else, so no libnetwork
   RPC becomes reachable over TCP; it binds before the call returns, so
@@ -538,7 +546,16 @@ format, the race suite and the short fuzz, `policy-gates` for every
 `check-*.sh` and the gate self-tests (#829 split them, and both are
 required contexts) — with no privileges
 and no host mutation, so the answer you get locally is the answer CI
-will give. The lane's contents live in `scripts/local-lane.sh`, and
+will give.
+
+The fuzz step is currently a no-op, and is named here as one rather than
+counted as coverage: its two targets belonged to the 1.x lease parsers
+and no target of either name exists in this tree, so `go test -fuzz`
+matches nothing and exits 0. The wire codec's own fuzzing lives in the
+library module. Re-pointing the step is work, not a claim this page
+makes.
+
+The lane's contents live in `scripts/local-lane.sh`, and
 `scripts/check-local-lane.sh` fails CI if that file lists fewer gates
 than the workflow runs; a local target that hand-listed them would
 quietly cover less the first time a gate was added (#636, the same

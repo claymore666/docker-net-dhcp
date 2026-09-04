@@ -177,11 +177,13 @@ they prove:
   `lifecycle_ipvlan_test.go` — full create→run→inspect→leave→delete
   in each attachment mode. ipvlan active since v0.7.0 (#62: `-B`
   broadcast flag + no MAC-echo on ipvlan).
-- `ipv6_test.go` — dual-stack golden paths (macvlan + bridge) with
-  `ipv6=true`, DNS6 default-off, and failure-only wire diagnostics
-  (tcpdump + neighbor tables). Three deeper tests (v6 renewal,
-  DNS6 opt-in, DUID persistence across plugin restart) are
-  `t.Skip`'d pending the IA unification (#152).
+- `ipv6_refused_test.go` — what is left of the DHCPv6 suite in the
+  IPv4-only beta: an operator asking for IPv6 is TOLD at
+  `docker network create`, rather than getting a network that quietly
+  does nothing with it. The ten dual-stack tests that used to live in
+  `ipv6_test.go` and `dhcpv6_noaddress_modes_test.go` drove a v6 client
+  this build does not contain; the file's own header names each one and
+  where it returns at M7. None is skipped and none passes vacuously.
 - `concurrency_test.go` — N simultaneous containers, distinct leases.
 
 **Lease lifecycle & identity**
@@ -207,10 +209,15 @@ they prove:
   in #800.
 - `concurrent_renew_test.go` — two containers on one network, both with
   the default `eth0`, each keep their own persistent client and each
-  renew. dhcpcd keys its pidfile and control sockets by interface name
-  alone, so without per-client runtime-dir isolation the second
-  container's client forwarded its argv to the first one's socket and
-  exited 0 (#330). No single-container renewal test can see that.
+  renew. The 1.x client keyed its pidfile and control socket on the
+  interface name alone, so without per-client runtime-dir isolation the
+  second container's client forwarded its argv to the first one's socket
+  and exited 0 (#330). The 2.0 beta's client is a goroutine holding its
+  own socket, with no pidfile, no control socket and no shared runtime
+  directory, so that particular collision cannot recur — the test is kept
+  because the property it asserts (two containers on one network, same
+  interface name, both renewing) is the one that mattered, and no
+  single-container renewal test can see it.
 - `nonroot_test.go` — the persistent client starts in a container whose
   init process runs as a **non-root** user (#317). Every other test
   here runs its container as root, so the netns open passed on the
@@ -514,8 +521,10 @@ about itself.** Shards run tests in declaration order, so a test that
 returns while the plugin is still tearing down on its behalf hands that
 state to whichever test is declared next. If your test can leave links
 on a fixture parent, wait until they are gone before returning (see
-`awaitReleaseLinksGone` in `orphan_release_test.go`) rather than
-assuming teardown outruns the next test.
+`awaitProbeLinksGone` in `parent_gate_test.go`, or `awaitNoReleaseLinks`
+in `join_no_container_test.go`) rather than assuming teardown outruns the
+next test. The original example lived in `orphan_release_test.go`, which
+went with the reclaim in #800.
 
 Distinct subnets keep the two dnsmasq instances cleanly isolated
 from each other — without that, two DHCP servers on the same

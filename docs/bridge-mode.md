@@ -53,9 +53,15 @@ sudo ip link set eth0 master my-bridge
 sudo iptables -A FORWARD -i my-bridge -j ACCEPT
 
 # Get an IP for the host (goes out to the DHCP server, since eth0 is
-# attached to the bridge). Replace with whatever config you used for eth0.
-sudo dhcpcd my-bridge
+# attached to the bridge). This is the HOST's own DHCP client, whichever
+# one your distribution ships -- the plugin is not involved and is not
+# installed yet. Use the same tool you used for eth0, e.g.
+sudo dhclient my-bridge
 ```
+
+Whatever brings addresses up on this host is the right command here;
+the persistent stanzas below hand the same job to the host's network
+manager.
 
 ### Make the bridge persistent
 
