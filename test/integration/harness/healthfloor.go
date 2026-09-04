@@ -972,6 +972,35 @@ func AllowedUnprobedLeases() int32 {
 // conflict it expects to cause, so the declaration cannot drift from
 // its reason. Declaring more than the shard causes weakens the row
 // silently.
+//
+// # THE BOUNDARY THIS BUYS, stated rather than left to be discovered
+//
+// The two causes are indistinguishable at the row's inputs. "The
+// counter lost a staged conflict to a plugin restart" and "the seam
+// dropped that conflict on its way to the counter" both arrive here as
+// log=n, counter<n, and the subtraction excuses n of them. So inside a
+// shard that declares n, the floor does NOT hold "a conflict the plugin
+// failed to count is caught" for the first n conflicts. MEASURED
+// (review r1, finding 3): declared=1, log=1, counter=0 yields zero
+// fatal findings. Beyond n it holds exactly as before, and in a shard
+// that declares nothing it holds from the first conflict — both pinned
+// in conflictcensus_test.go.
+//
+// What holds the property inside the declaration is the conflict cases
+// themselves, which is the right place for it: each one takes a counter
+// window across its own squatter and asserts address_conflicts moved
+// (conflict_check_test.go, TestConflictCheck_SquattedOfferIsDeclined and
+// TestConflictCheck_SquatterAfterTheFact), so a seam that drops the
+// event fails the test that staged it rather than the run that followed
+// it. The unit half is pkg/dhcp's conflict() Kind guard, whose mutant —
+// counting Failed{ReasonConflict} and not Lost{ReasonConflict} — is
+// killed by the unit suite.
+//
+// The floor is deliberately not widened to close this. Narrowing the
+// allowance to "only if the plugin restarted" would need the floor to
+// know about restarts it cannot see, and widening the row to fire
+// inside the declaration reddens correct builds — which is the failure
+// the allowance was added for, MEASURED on the beta lane 2026-09-04.
 func AllowStagedConflicts(n int32) {
 	acdAllowance.mu.Lock()
 	defer acdAllowance.mu.Unlock()
@@ -1178,6 +1207,11 @@ func ACDCensusFindings(h *HealthResponse, allowedSendFailures, allowedUnprobed, 
 	// So a STAGED conflict is subtracted, and only a staged one: the
 	// test that put the squatter on the segment declares it. Everything
 	// beyond the declaration is judged exactly as before.
+	//
+	// The cost is that inside the declaration this row cannot tell the
+	// restart from a dropped event, so it does not hold #524's property
+	// there. AllowStagedConflicts names the boundary and names what
+	// holds the property instead.
 	if int32(conflictsInLog) > conflicts+allowedConflicts {
 		why := fmt.Sprintf(
 			"the log records %d address conflict(s) across the run and the counter shows %d. "+

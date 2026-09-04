@@ -63,6 +63,24 @@ func buildParams(opts *DHCPClientOptions, once bool) (proto.Params, error) {
 		return proto.Params{}, fmt.Errorf("dhcp: no MAC address for the endpoint")
 	}
 
+	// CHAddr IS FILLED HERE, from opts.MAC, and which value that is
+	// matters (M6 review r2, finding 1): the library's own-traffic
+	// exemption in the probe window is keyed on CHAddr, so a client
+	// whose CHAddr is a stable identity rather than the sending
+	// interface's hardware address reads its own kernel's ARP replies
+	// as conflicts and DECLINEs its own address on every acquisition.
+	//
+	// runtime.NewClient's "fill it from the link" branch is therefore
+	// never reached from this chassis: DefaultParams sets CHAddr, and
+	// the empty-MAC refusal above means it is never set to nothing. The
+	// guarantee that the value IS the link's address is the caller's —
+	// both call sites pass link.Attrs().HardwareAddr
+	// (pkg/plugin/dhcp_manager.go for the Join manager,
+	// pkg/plugin/network.go for the one-shot). The end-to-end proof is
+	// TestConflictCheck_BridgeModeDoesNotSelfReport, where a bridge
+	// endpoint whose CHAddr was not the link's would DECLINE its own
+	// address; TestBuildParams_TheCHAddrIsOptsMACAndNotTheClientID
+	// covers the mapping this function is responsible for.
 	p := proto.DefaultParams(opts.MAC)
 
 	p.Hostname = opts.Hostname
@@ -85,18 +103,6 @@ func buildParams(opts *DHCPClientOptions, once bool) (proto.Params, error) {
 	// of the container's life, or the reverse. `once` selects nothing
 	// here for the same reason it selects nothing below.
 	p.Conflict = opts.ConflictMode
-
-	// Params.CHAddr is left to runtime.NewClient, which fills it from
-	// the link, and that is load-bearing rather than lazy (M6 review r2,
-	// finding 1). The library's own-traffic exemption in the probe
-	// window is keyed on CHAddr: a client whose CHAddr is a stable
-	// identity rather than the sending interface's hardware address
-	// reads its own kernel's ARP replies as conflicts and DECLINEs its
-	// own address on every acquisition. proto.DefaultParams(opts.MAC)
-	// above sets it to the endpoint's pinned MAC, which IS the link's
-	// address -- the same MAC Docker put on the interface -- so the two
-	// agree; TestBuildParams_TheCHAddrIsTheLinkSHardwareAddress is the
-	// assertion that they still do.
 
 	// register_dns arrives as a mode string because dhcpcd spelled it
 	// that way ("both"); what it means is "ask the server to register

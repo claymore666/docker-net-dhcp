@@ -152,7 +152,7 @@ net_dhcp_restart_link_up_waited_total 2239453
 # TYPE net_dhcp_restart_link_up_timeouts_total counter
 net_dhcp_restart_link_up_timeouts_total 2453629
 
-# HELP net_dhcp_address_conflicts_total Leased addresses RFC 5227 found already in use by another host, over the whole life of the lease: section 2.1's probes before the address is used and section 2.4's listener afterwards. Healthy-affecting. Moves in conflict_check=wait and =async; in =off only for a conflict reported from outside the client.
+# HELP net_dhcp_address_conflicts_total Leased addresses RFC 5227 found already in use by another host, over the whole life of the lease: section 2.1's probes before the address is used and section 2.4's listener afterwards. Healthy-affecting. Moves in conflict_check=wait and =async. In =off the client neither probes nor listens, so this moves only for a conflict reported to the client from outside it, which no code path in this plugin does today.
 # TYPE net_dhcp_address_conflicts_total counter
 net_dhcp_address_conflicts_total 1942014
 
@@ -164,7 +164,7 @@ net_dhcp_acd_probes_sent_total 4230282
 # TYPE net_dhcp_acd_announcements_sent_total counter
 net_dhcp_acd_announcements_sent_total 5321411
 
-# HELP net_dhcp_acd_conflicts_detected_total Conflicts the DHCP library itself counted. It is the same population as address_conflicts, counted inside the state machine rather than from the events it emitted, and the two are expected to be equal; a difference is a defect in the plugin's event handling, not a property of the segment. Moves in every mode, including conflict_check=off for a conflict reported from outside the client.
+# HELP net_dhcp_acd_conflicts_detected_total Conflicts the DHCP library itself counted. It is the same population as address_conflicts, counted inside the state machine rather than from the events it emitted, and the two are expected to be equal; a difference is a defect in the plugin's event handling, not a property of the segment. Its =off rule is address_conflicts's, not a different one: with no probe and no listener the only thing that can move either counter is a conflict reported to the client from outside it, which no code path in this plugin does today.
 # TYPE net_dhcp_acd_conflicts_detected_total counter
 net_dhcp_acd_conflicts_detected_total 4640136
 

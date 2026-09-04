@@ -216,6 +216,24 @@ func TestACDCensusFindings(t *testing.T) {
 			conflictLog: 2,
 		},
 		{
+			// THE BOUNDARY, pinned as a boundary and not as a wish.
+			//
+			// Inside a declaring shard the row cannot tell "the counter
+			// lost a staged conflict to a plugin restart" from "the seam
+			// dropped it on the way to the counter": both are log=n,
+			// counter<n. This triple is the one review r1 finding 3
+			// measured, and its verdict is NO fatal finding. The
+			// property #524 is about is held here by the conflict cases'
+			// own counter assertions, not by this row; see
+			// AllowStagedConflicts. The case exists so that a later
+			// change to the row cannot move this boundary silently in
+			// either direction.
+			name:        "inside the declaration a dropped conflict is invisible to the row",
+			h:           &HealthResponse{ACDProbesSent: 3, LeasesObtained: 2},
+			allowedConf: 1,
+			conflictLog: 1,
+		},
+		{
 			// THE PRESERVATION CONTROL, and the reason the allowance is
 			// a subtraction rather than an exemption: one more conflict
 			// than the shard staged is still the seam dropping an

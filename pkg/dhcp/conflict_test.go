@@ -483,7 +483,17 @@ func TestBuildParams_TheModeReachesBothManagers(t *testing.T) {
 // review r2, finding 1). A CHAddr that is not the sending interface's
 // hardware address makes the client read its own kernel's ARP replies
 // as conflicts and DECLINE its own address on every acquisition.
-func TestBuildParams_TheCHAddrIsTheLinkSHardwareAddress(t *testing.T) {
+//
+// THE NAME SAYS WHAT IS ASSERTED, which is the mapping buildParams owns:
+// CHAddr comes from opts.MAC and the client-id does not leak into it.
+// That opts.MAC is the container link's hardware address is the
+// caller's guarantee, not this function's — see the comment at
+// DefaultParams in params.go — and it is proved end to end by
+// TestConflictCheck_BridgeModeDoesNotSelfReport, which is the only
+// place a wrong CHAddr can actually be observed. The earlier name here
+// claimed the end-to-end fact and asserted the mapping (review r1,
+// finding 5).
+func TestBuildParams_TheCHAddrIsOptsMACAndNotTheClientID(t *testing.T) {
 	p, err := buildParams(&DHCPClientOptions{MAC: ourMAC, ClientID: []byte("something-else")}, false)
 	if err != nil {
 		t.Fatalf("buildParams: %v", err)

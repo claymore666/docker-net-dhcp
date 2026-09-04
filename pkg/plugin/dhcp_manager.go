@@ -1104,18 +1104,17 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 		// in hand (#371). Honours the operator's client_id override.
 		ClientID:    m.clientID(),
 		VendorClass: m.opts.VendorClass,
-		// Where RFC 5227's check stood for the lease being resumed
-		// (D23). It changes nothing on the wire -- the library
-		// re-probes any resumed address on the INIT-REBOOT DHCPACK --
-		// and it is the only evidence that this plugin process is
-		// picking up an address a previous one never finished
-		// checking, which is exactly the state an async network is in
-		// when it is restarted inside the probe window.
-		ResumeACD: resumption.ACD,
 	}
 	if err := m.plugin.conflictWiring(&clientOpts, m.opts, roleJoin, m.joinReq.NetworkID, m.joinReq.EndpointID); err != nil {
 		return nil, err
 	}
+	// THE PHASE IS NOT PASSED TO THE CLIENT, and there is nothing for it
+	// to do there: proto.Machine runs RFC 5227 section 2.1's check on
+	// the INIT-REBOOT DHCPACK whatever the record said, so the resumed
+	// address is re-checked either way (D23; the library states it on
+	// lease.Record.ACD). What the durable phase buys is the line below —
+	// the operator's only evidence that this process picked up an
+	// address a previous one never finished checking.
 	if resumption.Lease != nil && resumption.ACDUnfinished() {
 		log.
 			WithFields(m.logFields(v6)).

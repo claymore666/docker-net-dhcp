@@ -193,7 +193,7 @@ is evidence** — it never was before.
 | --- | --- | --- |
 | `wait` (default) | Waits for §2.1 to clear the address: **4.0s best, 5.5s mean, 7.0s worst**, on top of the DHCP exchange | The container never comes up on the contested address. The client declines it and asks for another |
 | `async` | Returns at the DHCPACK, with no added wait | The address of a **running** container changes, about **11s** after the conflict appears (MEASURED; ten of those are RFC 2131 §3.1(5)'s mandatory wait after the DHCPDECLINE, during which the container still holds the contested address). Connections on the old address are already broken for both hosts; `docker inspect` does not update (watch `lease_changed`) |
-| `off` | Returns at the DHCPACK | Nothing detects it. No ARP is sent, `address_conflicts` cannot move for this network, and `acd_probes_sent` stays where it was |
+| `off` | Returns at the DHCPACK | Nothing inside the client detects it. No ARP is sent; `address_conflicts` and `acd_conflicts_detected` move only for a conflict reported to the client from outside it, which nothing in the plugin does today, and `acd_probes_sent` stays where it was |
 
 Any other value is refused at `docker network create`, with the three
 names in the message. Networks created before this option existed read as

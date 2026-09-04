@@ -155,22 +155,6 @@ type DHCPClientOptions struct {
 	// nil is the unit-test and probe shape.
 	OnACDStats func(ACDStats)
 
-	// ResumeACD is where RFC 5227's check stood for the lease Resume
-	// carries, read back from the durable record (D23).
-	//
-	// It is proto.ACDProbing or proto.ACDSettling for an address the
-	// previous plugin process was still checking when it died, which is
-	// the whole reason the phase is durable: in proto.ConflictAsync the
-	// container was already using an address nothing had cleared, and
-	// the record of a half-checked lease is otherwise byte-for-byte the
-	// record of a checked one.
-	//
-	// The library re-probes any resumed address on the INIT-REBOOT
-	// DHCPACK, so this does not change what goes on the wire. What it
-	// changes is what the operator is told, and it is the only evidence
-	// that an unchecked address was ever resumed.
-	ResumeACD proto.ACDPhase
-
 	// Resume is a lease this identity held in a previous run of the
 	// plugin. Supplying it makes the first message on the wire an
 	// INIT-REBOOT DHCPREQUEST (RFC 2131 section 4.4.2) instead of a

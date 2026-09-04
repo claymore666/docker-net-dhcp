@@ -524,9 +524,17 @@ func TestConflictCheck_WaitAcquisitionIsTimed(t *testing.T) {
 // In async the container has its address while section 2.1 is still
 // running. If the plugin restarts inside that window the next process
 // has to know the check never finished — which is why the ACD phase is
-// written into the durable record and handed back on Resume. The
-// evidence is on the wire: probes from the endpoint's MAC AFTER the
-// plugin came back.
+// written into the durable record and handed back on Resume.
+//
+// THE HARD PART IS ATTRIBUTION, not observation. The pre-restart client
+// is probing when the restart is requested, and its frames are
+// indistinguishable from the resumed client's by source MAC, target
+// address and shape. "After the plugin came back" is therefore not an
+// oracle: it is a claim about a clock, and round 1's version of this
+// case passed on a frame the pre-restart client had sent (review r1,
+// finding 1). The window here opens on the resumed client's own
+// INIT-REBOOT DHCPACK, read from the DHCP server's log, which no other
+// process on this segment can produce.
 func TestConflictCheck_RestartInsideTheAsyncWindow(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 	defer cancel()
@@ -554,7 +562,28 @@ func TestConflictCheck_RestartInsideTheAsyncWindow(t *testing.T) {
 		"conflict_check": "async",
 	})
 	id, ip, mac := harness.RunContainer(t, ctx, netName, netName+"-ctr")
+	createdAt := time.Now()
 	t.Logf("async endpoint bound at once: ip=%s mac=%s", ip, mac)
+
+	// THE ANCHOR IS TAKEN BEFORE THE RESTART, and it is the whole
+	// difference between this case and a tautology.
+	//
+	// The pre-restart client is inside section 2.1 right now, and its
+	// frames carry the same source MAC, the same target address and the
+	// same shape as the resumed client's. Round 1 opened the window at
+	// the moment the restart was requested and accepted the first
+	// qualifying frame after it; on run 33911095990 the single frame it
+	// rested on was stamped 0.30s BEFORE the plugin was confirmed back,
+	// so a build whose resumed client never re-probed passed. The
+	// window below therefore opens on an event only the resumed client
+	// can produce — its own INIT-REBOOT DHCPACK, in the DHCP server's
+	// log — and not on the test's own clock.
+	acksBefore := ef.CountLogLines("DHCPACK", mac)
+	if acksBefore < 1 {
+		t.Fatalf("the server logged no DHCPACK for %s before the restart: either the endpoint "+
+			"never leased or this test cannot read the server's log, and the anchor below "+
+			"would be an absence mistaken for an event", mac)
+	}
 
 	// Recycle immediately. In async CreateEndpoint returns without
 	// waiting for section 2.1, so the restart lands inside the window
@@ -563,7 +592,9 @@ func TestConflictCheck_RestartInsideTheAsyncWindow(t *testing.T) {
 	if err := cliReset(ctx, t); err != nil {
 		t.Fatalf("plugin restart: %v", err)
 	}
-	t.Logf("plugin restarted %.2fs after the endpoint was created", time.Since(restartAt).Seconds())
+	backAt := time.Now()
+	t.Logf("plugin recycled %.2fs after the endpoint was created; the disable/enable itself "+
+		"took %.2fs", backAt.Sub(createdAt).Seconds(), backAt.Sub(restartAt).Seconds())
 
 	// The container must still hold its address across the restart.
 	// That is the recovery path this suite already covers; asserted
@@ -574,31 +605,78 @@ func TestConflictCheck_RestartInsideTheAsyncWindow(t *testing.T) {
 			"which is a recovery failure and makes the rest of this test unreadable", ip, now)
 	}
 
-	// The wire, after the restart: the resumed client re-checks the
-	// address rather than assuming a check that never finished.
-	var after []harness.ARPFrame
+	// Wait for the resumed client's own DHCPACK.
+	//
+	// The chain a resumed probe needs is: the plugin is enabled, it
+	// recovers the durable record, the Join manager sends RFC 2131
+	// section 4.4.2's INIT-REBOOT DHCPREQUEST, the server ACKs it, and
+	// proto.Machine runs section 2.1's check on that ACK — whatever the
+	// record said about the phase. So a new ACK for this MAC is the
+	// first outside evidence that the resumed client is the one on the
+	// wire. It cannot be the pre-restart client's: the count above was
+	// taken before PluginDisable, and cliReset does not return until
+	// the plugin is confirmed back, so the polling below starts after
+	// the old process is gone.
+	var ackAt time.Time
+	probesAtAnchor := -1
 	deadline := time.Now().Add(conflictWait)
-	for time.Now().Before(deadline) {
+	for {
+		if ef.CountLogLines("DHCPACK", mac) > acksBefore {
+			ackAt = time.Now()
+			probesAtAnchor = len(cap.ProbesFrom(mac))
+			break
+		}
+		if !time.Now().Before(deadline) {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if ackAt.IsZero() {
+		cap.Dump(func(s string) { t.Log(s) })
+		t.Fatalf("no new DHCPACK for %s within %s of the plugin coming back. The resumed "+
+			"client never completed an INIT-REBOOT exchange, so an absence of probes below "+
+			"would say nothing about D23 — this is a recovery failure, not a conflict-"+
+			"detection one.", mac, conflictWait)
+	}
+	t.Logf("the resumed client's INIT-REBOOT DHCPACK was in the server's log %.2fs after the "+
+		"plugin came back; %d Probe(s) from %s had been captured up to that point",
+		ackAt.Sub(backAt).Seconds(), probesAtAnchor, mac)
+
+	// The wire, after that ACK: the resumed client re-checks the
+	// address rather than assuming a check that never finished.
+	//
+	// A section 2.1.1 Probe, not "a Probe or an Announcement": an
+	// Announcement is also what the kernel emits when an address is
+	// added to a link, so accepting one would let the address being
+	// re-configured stand in for the check being re-run. The target
+	// address is asserted too, so a probe for some other address on the
+	// same MAC cannot carry the verdict.
+	var after []harness.ARPFrame
+	deadline = time.Now().Add(conflictWait)
+	for {
 		after = nil
-		for _, f := range cap.FramesFrom(mac) {
-			if f.At.After(restartAt) && (f.IsProbe() || f.IsAnnouncement()) {
+		for _, f := range cap.ProbesFrom(mac) {
+			if f.At.After(ackAt) && f.TargetIP != nil && f.TargetIP.String() == ip {
 				after = append(after, f)
 			}
 		}
-		if len(after) > 0 {
+		if len(after) > 0 || !time.Now().Before(deadline) {
 			break
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
 	if len(after) == 0 {
 		cap.Dump(func(s string) { t.Log(s) })
-		t.Errorf("no ARP Probe or Announcement from %s after the plugin restart.\n"+
+		t.Errorf("no RFC 5227 section 2.1.1 ARP Probe for %s from %s after the resumed "+
+			"client's own DHCPACK (%d Probe(s) from this MAC in the whole capture, %d of them "+
+			"before the anchor).\n"+
 			"The endpoint was handed an address while section 2.1 was still running and the "+
 			"restart lost the fact — the container keeps an address nothing ever finished "+
-			"checking (D23).", mac)
+			"checking (D23).", ip, mac, len(cap.ProbesFrom(mac)), probesAtAnchor)
 	} else {
-		t.Logf("MEASURED: %d RFC 5227 frame(s) from %s after the restart, first at +%.2fs: %s",
-			len(after), mac, after[0].At.Sub(restartAt).Seconds(), after[0])
+		t.Logf("MEASURED: %d section 2.1.1 Probe(s) for %s from %s after the resumed client's "+
+			"DHCPACK, first at +%.2fs: %s",
+			len(after), ip, mac, after[0].At.Sub(ackAt).Seconds(), after[0])
 	}
 }
 
