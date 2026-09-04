@@ -47,7 +47,7 @@ on:
     branches:
       - dev
       - main
-      - 2.x-beta
+      - '2.*'
     paths:
       - 'Dockerfile'
       - '.trivyignore.yaml'
