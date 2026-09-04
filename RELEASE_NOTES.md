@@ -104,20 +104,25 @@ second is not prompted at all.
 | `mounts` | the Docker socket, `STATE_DIR`, `/var/run/docker` read-only | unchanged | no change |
 | `env` | `LOG_LEVEL`, `AWAIT_TIMEOUT`, `STATE_DIR`, `METRICS_ADDR` | the same four plus `DOCKER_HOST` | no — a setting is not a privilege |
 
-**Nothing was dropped.** The beta enters a container's network namespace
-through the sandbox key the daemon publishes rather than through
-`/proc/<pid>/ns/net`, which removes the PID-recycling hazard from the attach
-path — but `pidhost` and `CAP_SYS_PTRACE` stay, because `resolv.conf`
-propagation still enters the container's *mount* namespace by PID and a mount
-namespace has no sandbox key. `sandbox_key_entries`, `sandbox_key_entry_failures`
-and `sandbox_pid_fallbacks` report which route your host is using.
+**Nothing was dropped, and the measurement says why.** The beta asks first
+for the sandbox key the daemon publishes, so that a host where that works
+can attach without the container's PID at all. On a stock engine it does not
+work: the plugin's read-only `/var/run/docker` mount carries the directory
+but not the daemon's per-sandbox namespace mounts, so the key is refused and
+`/proc/<pid>/ns/net` carries the attach exactly as before. `pidhost` and
+`CAP_SYS_PTRACE` therefore stay — and would have stayed regardless, because
+`resolv.conf` propagation enters the container's *mount* namespace by PID
+and a mount namespace has no sandbox key. `sandbox_key_entries`,
+`sandbox_key_entry_failures` and `sandbox_pid_fallbacks` report which route
+your host is using; on a stock engine the first stays at zero.
 
 **New: `DOCKER_HOST`.** Empty by default, which keeps the mounted socket and
-the behaviour every earlier release had. Set it to a read-only Docker socket
-proxy and the plugin loses nothing: it issues only `GET` and `HEAD`, refuses
-anything else before sending it, and counts each refusal as
-`docker_api_non_get_refusals`. The allowed paths and a worked example are in
-`SECURITY.md`.
+the behaviour every earlier release had. Point it at a read-only Docker API
+proxy — a plain TCP endpoint on the host's loopback, which the plugin reaches
+through host networking — and the plugin loses nothing: it issues only `GET`
+and `HEAD`, refuses anything else before sending it, and counts each refusal
+as `docker_api_non_get_refusals`. The allowed paths, a worked example, and
+why a proxy on its own unix socket is *not* reachable are in `SECURITY.md`.
 
 ### IPv4 only
 

@@ -16,40 +16,47 @@ import (
 	"github.com/claymore666/docker-net-dhcp/test/integration/harness"
 )
 
-// The PR-1 measurement (#725): does the sandbox key Docker publishes
-// suffice to enter a container's network namespace, in every mode and
-// for a container whose init is not root?
+// The PR-1 measurement (#725), and its ANSWER: **no.** Entering a
+// container's network namespace through the sandbox key alone does NOT
+// suffice on this engine, and these cells are the record of why.
 //
-// WHY THIS CANNOT BE ASKED OF THE UNIT SUITE. The key names a bind
-// mount libnetwork makes on the host, reached through the read-only
-// /var/run/docker mount in config.json. Whether that mount carries the
-// daemon's per-sandbox netns mounts — as opposed to merely showing
-// their directory entries, which #567 already proved it does — is a
-// property of mount propagation between two namespaces on a live host.
-// Nothing below a real daemon can answer it, and it is the property the
-// whole route rests on.
+// WHAT WAS MEASURED, 2026-09-04, Integration run 33925372728.
+// libnetwork creates each entry under /var/run/docker/netns/ as an
+// ordinary empty file and then bind-mounts the namespace over it. The
+// plugin's /var/run/docker mount carries the DIRECTORY — #567 proved
+// that, and sandbox_netns_visible still depends on it — but it does
+// NOT carry the per-sandbox mounts the daemon makes afterwards. So the
+// plugin opens the empty file underneath, every time.
 //
-// WHAT EACH CELL ASSERTS, AND WHY IT IS TWO THINGS
+// The first version of this change did exactly that and counted it as
+// a key-route entry, because a successful open looks like a successful
+// entry. Every cell here went green, every container had its address,
+// and twenty-six unrelated tests went red across the suite with
+// "failed to set into network namespace N ... invalid argument": the
+// address is applied by CreateEndpoint's one-shot client before Join,
+// so the container looks right while the PERSISTENT client — renewals,
+// resolv.conf, MTU — never starts. The counter has since been moved
+// behind an NS_GET_NSTYPE check, so it counts namespaces entered
+// rather than files opened.
 //
-//  1. OUTSIDE EVIDENCE. `ip -4 addr show` INSIDE the container carries
-//     the leased address. Not the plugin's report of it, not Docker's
-//     inspect: the kernel's own view from inside the namespace the
-//     plugin claims to have configured. If the plugin entered the wrong
-//     namespace, or none, this is the assertion that says so.
-//  2. WHICH ROUTE CARRIED IT. sandbox_key_entries must rise and
-//     sandbox_pid_fallbacks must not. Assertion 1 alone is satisfied by
-//     the PID fallback doing all the work, which is precisely the shape
-//     that would make a green suite mean nothing here.
+// WHAT THESE CELLS ASSERT NOW. Two things, and the second is a pinned
+// defect rather than a goal:
 //
-// WHY THE PAIR IS AIRTIGHT AND EITHER HALF ALONE IS NOT. "entries >= 1"
-// alone is satisfied by some other attach in the window while this
-// cell's attach fell back. "fallbacks == 0" alone is satisfied by a
-// plugin that opened no namespace at all. Together, over one window:
-// nothing in the window fell back, and assertion 1 says this cell's
-// container was in fact configured — so this cell's attach went through
-// the key. Nothing in this suite calls t.Parallel, so the window holds
-// this cell's attach and, at worst, some cleanup; the argument does not
-// depend on that, which is why it is written to survive parallelism.
+//  1. OUTSIDE EVIDENCE, unchanged and unconditional. `ip -4 addr show`
+//     INSIDE the container carries the leased address — the kernel's
+//     view of the namespace, not the plugin's report of it.
+//  2. THE ROUTE, as it actually is. The key route is refused
+//     (sandbox_key_entry_failures rises), the PID route carries the
+//     attach (sandbox_pid_fallbacks rises), and nothing enters through
+//     the key (sandbox_key_entries stays flat). Exactly one route per
+//     attach, so neither counter can be satisfied by an empty domain.
+//
+// **If assertion 2 fails because sandbox_key_entries rose, that is GOOD
+// NEWS and not a regression.** It means the daemon's sandbox mounts now
+// reach the plugin — a newer engine, or the /var/run/docker mount given
+// slave propagation in config.json, which is the named follow-up. The
+// response is to update these cells, drop the fallback, and rewrite
+// SECURITY.md's paragraph; not to make the assertion softer.
 //
 // The counters are deltas over a window, because the suite shares one
 // plugin instance and an absolute read would be arithmetic over every
@@ -63,6 +70,12 @@ func sandboxKeyCell(t *testing.T, mode, netName, ctrName, user string) {
 	t.Cleanup(func() {
 		if t.Failed() {
 			fixture.DumpLogs(func(s string) { t.Log(s) })
+			if mode == "bridge" {
+				// The bridge fixture runs its own dnsmasq on its own
+				// subnet; without this a bridge-cell failure shows the
+				// macvlan server's log, which never saw the request.
+				fixture.DumpBridgeLogs(func(s string) { t.Log(s) })
+			}
 			harness.DumpPluginLog(t)
 		}
 	})
@@ -108,24 +121,37 @@ func sandboxKeyCell(t *testing.T, mode, netName, ctrName, user string) {
 	if !ok1 || !ok2 || !ok3 {
 		return
 	}
-	// Printed in the run whether or not the cell passes: the cell table
-	// in the handover is read off these lines, and a table built only
-	// from failures has no rows on a green run.
+	// Printed whether or not the cell passes: the cell table in the
+	// handover is read off these lines, and a table built only from
+	// failures has no rows on a green run.
 	t.Logf("CELL mode=%s user=%q: sandbox_key_entries +%d, sandbox_key_entry_failures +%d, sandbox_pid_fallbacks +%d",
 		mode, user, entries, failures, fallbacks)
 
-	if entries < 1 {
-		t.Errorf("sandbox_key_entries rose by %d while a container was attached on %s: the key route "+
-			"carried nothing, so \"no fallbacks\" below would be a statement about an empty set", entries, mode)
+	// The domain: exactly one route carried this attach. Without it,
+	// every assertion below is satisfied by a plugin that entered no
+	// namespace at all.
+	if entries+fallbacks != 1 {
+		t.Errorf("sandbox_key_entries +%d and sandbox_pid_fallbacks +%d sum to %d across one "+
+			"container attach on %s, want exactly 1: one attach takes one route, and a sum of zero "+
+			"means the assertions below are about an empty set", entries, fallbacks, entries+fallbacks, mode)
 	}
-	if fallbacks != 0 {
-		t.Errorf("sandbox_pid_fallbacks rose by %d on %s: the sandbox key did NOT suffice here and the "+
-			"/proc/<pid>/ns/net route carried the attach. This cell is the reason the host PID namespace "+
-			"and CAP_SYS_PTRACE stay in config.json — record it in SECURITY.md, do not silence it", fallbacks, mode)
+
+	if entries != 0 {
+		t.Errorf("sandbox_key_entries rose by %d on %s. This is the LIMITATION LIFTING, not a "+
+			"regression: the daemon's sandbox netns mounts now reach the plugin, so the key route "+
+			"works. Update this cell to assert the key route, drop the PID fallback in "+
+			"pkg/plugin/dhcp_manager.go, and rewrite SECURITY.md's \"What the sandbox-key route "+
+			"changed\" paragraph — do not soften this assertion", entries, mode)
 	}
-	if failures != 0 {
-		t.Errorf("sandbox_key_entry_failures rose by %d on %s: the key route was refused or timed out at "+
-			"least once, even though something later succeeded", failures, mode)
+	if failures != 1 {
+		t.Errorf("sandbox_key_entry_failures rose by %d on %s, want exactly 1: the key route is "+
+			"refused once per attach and must not be retried, because a permanent refusal polled to "+
+			"the deadline is attach budget the PID route then does not have (#401)", failures, mode)
+	}
+	if fallbacks != 1 {
+		t.Errorf("sandbox_pid_fallbacks rose by %d on %s, want exactly 1. The key route cannot carry "+
+			"this attach on this engine, so the /proc/<pid>/ns/net route must — and it is why the "+
+			"manifest still asks for the host PID namespace and CAP_SYS_PTRACE", fallbacks, mode)
 	}
 }
 

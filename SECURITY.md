@@ -77,26 +77,36 @@ the effective set is the seventeen above, not these four.
 
 <!-- privilege-sentences: end -->
 
-**What the sandbox-key route changed, and what it did not.** The primary
-route into a container's network namespace is now the key the daemon
-publishes under `/var/run/docker/netns/`, not `/proc/<pid>/ns/net`. That
-removes the PID-recycling hazard from the attach path and makes the
-route work without the host PID namespace. It does **not** remove either
-grant: `resolv.conf` propagation still enters the container's mount
-namespace by PID, there is no key for a mount namespace, and the netns
-PID route is retained as a counted fallback. `sandbox_pid_fallbacks`
-read against `sandbox_key_entries` is how an operator sees which route
-their host is actually using.
+**The sandbox-key route was measured and does NOT carry the attach.**
+The plugin asks first for the key the daemon publishes under
+`/var/run/docker/netns/`, and is refused: libnetwork creates each entry
+as an ordinary empty file and bind-mounts the namespace over it, and
+the plugin's read-only `/var/run/docker` mount carries the *directory*
+but not the per-sandbox mounts the daemon makes afterwards. The plugin
+verifies what it opened is a network namespace before using it, so the
+refusal is immediate and counted rather than surfacing as a dead
+persistent client. `/proc/<pid>/ns/net` then carries every attach, as
+it always has.
+
+That is why `pidhost` and `CAP_SYS_PTRACE` are unchanged, and it is now
+two independent reasons rather than one: the network namespace, above,
+and `resolv.conf` propagation, which enters the container's **mount**
+namespace by PID and for which no sandbox key exists at all.
+
+`sandbox_key_entry_failures` and `sandbox_pid_fallbacks` rise once per
+attach on such a host, and `sandbox_key_entries` stays at zero. If you
+see the reverse, the daemon's sandbox mounts are reaching this plugin —
+a newer engine, or a different mount configuration — and the netns half
+of these two grants is no longer load-bearing on your host.
 
 **What the measurement covers, and what it does not.** The integration
-lane proves the key route on bridge, macvlan and ipvlan, for a root and
-a non-root container init, and across a plugin restart, on a rootful
-daemon whose sandbox netns entries live where this plugin looks for
-them. Rootless Docker, a daemon that keeps those entries elsewhere, and
-`dockerd --userns-remap` are **outside** it and are not claimed. That is
-the reason the PID route is a retained fallback rather than deleted
-code: on such a host the fallback is what keeps the attach working, and
-`sandbox_pid_fallbacks` is what tells you it happened.
+lane runs the cells above on bridge, macvlan and ipvlan, for a root and
+a non-root container init, and across a plugin restart, on one rootful
+daemon. Rootless Docker and `dockerd --userns-remap` are outside it and
+are not claimed. Whether giving `/var/run/docker` slave mount
+propagation in `config.json` would make the key route work is an open
+question this lane has not been asked; it is recorded rather than
+assumed.
 
 ### Pointing the plugin at a read-only Docker socket proxy
 

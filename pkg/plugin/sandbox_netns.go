@@ -67,6 +67,40 @@ func openSandboxNetNSByKeyIn(dirs []string, sandboxKey string) (netns.NsHandle, 
 	if err != nil {
 		return netns.None(), fmt.Errorf("open sandbox netns %s/%s: %w", dir, name, err)
 	}
+
+	// A SUCCESSFUL OPEN IS NOT AN ENTRY, and telling the two apart is
+	// the whole reason this check exists rather than a comment saying
+	// it should.
+	//
+	// libnetwork creates each sandbox entry as an ordinary empty file
+	// and then bind-mounts the namespace over it. Whether the plugin
+	// sees the file or the namespace is a property of MOUNT
+	// PROPAGATION into the plugin's own mount namespace, not of the
+	// path — and the plugin's /var/run/docker mount does not
+	// necessarily carry submounts the daemon makes after it was
+	// established. Opening the empty file underneath succeeds; setns
+	// on the result fails with EINVAL much later, deep inside a
+	// netlink call, on a code path that reads as a plugin fault.
+	// MEASURED on the lane 2026-09-04: every attach opened cleanly and
+	// every persistent client then died with "failed to set into
+	// network namespace ... invalid argument".
+	//
+	// NS_GET_NSTYPE answers the only question that matters — is this
+	// descriptor a NETWORK namespace — and answers it here, where the
+	// caller can still fall back, instead of two layers down where it
+	// cannot. On a regular file the ioctl fails with ENOTTY.
+	nsType, err := unix.IoctlRetInt(fd, unix.NS_GET_NSTYPE)
+	if err != nil {
+		unix.Close(fd)
+		return netns.None(), fmt.Errorf("%w: %s/%s opened, but it is not a namespace (%w) — the "+
+			"daemon's sandbox mounts are not propagated into this plugin's mount namespace",
+			errNoSandboxKey, dir, name, err)
+	}
+	if nsType != unix.CLONE_NEWNET {
+		unix.Close(fd)
+		return netns.None(), fmt.Errorf("%w: %s/%s is a namespace of type %#x, not a network namespace",
+			errNoSandboxKey, dir, name, nsType)
+	}
 	return netns.NsHandle(fd), nil
 }
 

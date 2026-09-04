@@ -151,45 +151,60 @@ func TestRecovery_PluginDisableEnable_PreservesEndpoint(t *testing.T) {
 		t.Errorf("MAC changed across plugin recycle: before=%s after=%s", macBefore, macAfter)
 	}
 
-	// THE RECOVERY CELL OF THE #725 MEASUREMENT.
+	// THE RECOVERY CELL OF THE #725 MEASUREMENT, and its answer.
 	//
 	// The brief asked whether the sandbox key survives a plugin
 	// restart, since recovery re-adopts an endpoint with no Join to
 	// carry one — "the key must come from the durable record — does
-	// it?". MEASURED ANSWER: it need not. Join and recovery both reach
-	// dhcpManager.Start, which already inspects the container, so the
-	// key is read from NetworkSettings.SandboxKey on a live inspect in
-	// both cases. Nothing was added to the durable record, and this is
-	// the assertion that says the live source is in fact enough.
+	// it?". The question turned out to have two answers.
+	//
+	// WHERE THE KEY COMES FROM: not the record, and it need not. Join
+	// and recovery both reach dhcpManager.Start, which already inspects
+	// the container, so NetworkSettings.SandboxKey is one always-fresh
+	// source for both. Nothing was added to the durable record.
+	//
+	// WHETHER IT WORKS: no, and for the same reason as every other
+	// cell. The daemon's per-sandbox netns mounts are not propagated
+	// into the plugin's mount namespace, so the key resolves to the
+	// ordinary file underneath and the route is refused. See
+	// test/integration/sandbox_key_route_test.go for the measurement
+	// and for what a rise in sandbox_key_entries would mean.
 	//
 	// The reads are ABSOLUTE, not deltas, for the reason stated at the
 	// window above: this is a fresh plugin process and its counters
 	// started at zero. That is what makes them exactly right here —
-	// every entry counted on this instance was made by recovery,
+	// every route taken on this instance was taken by recovery,
 	// because nothing else has run on it yet.
 	if healthAfter.SandboxKeyEntries == nil || healthAfter.SandboxPIDFallbacks == nil ||
 		healthAfter.SandboxKeyEntryFailures == nil {
 		t.Fatal("the recovered plugin publishes no sandbox route counters, so which route recovery " +
-			"took cannot be judged — and reading their absence as zero is how a recovery that fell " +
-			"back to the container PID would pass this test")
+			"took cannot be judged — and reading their absence as zero is how a recovery that took " +
+			"no route at all would pass this test")
 	}
+	keyEntries := *healthAfter.SandboxKeyEntries
+	fallbacks := *healthAfter.SandboxPIDFallbacks
+	keyFailures := *healthAfter.SandboxKeyEntryFailures
 	t.Logf("CELL mode=recovery user=\"\": sandbox_key_entries %d, sandbox_key_entry_failures %d, sandbox_pid_fallbacks %d (absolute, fresh instance)",
-		*healthAfter.SandboxKeyEntries, *healthAfter.SandboxKeyEntryFailures, *healthAfter.SandboxPIDFallbacks)
-	if *healthAfter.SandboxKeyEntries < 1 {
-		t.Errorf("sandbox_key_entries=%d on the recovered instance: recovery re-adopted an endpoint "+
-			"without entering its namespace through the key, so \"no fallbacks\" below would be a "+
-			"statement about an empty set", *healthAfter.SandboxKeyEntries)
+		keyEntries, keyFailures, fallbacks)
+
+	if keyEntries+fallbacks < 1 {
+		t.Errorf("neither sandbox_key_entries nor sandbox_pid_fallbacks moved on the recovered "+
+			"instance (%d and %d): recovery re-adopted the endpoint without entering its network "+
+			"namespace at all, so the assertions below would be about an empty set", keyEntries, fallbacks)
 	}
-	if *healthAfter.SandboxPIDFallbacks != 0 {
-		t.Errorf("sandbox_pid_fallbacks=%d on the recovered instance: the sandbox key did NOT survive "+
-			"the recycle and the /proc/<pid>/ns/net route carried the re-adoption. That is the cell "+
-			"that keeps pidhost in config.json — record it in SECURITY.md, do not silence it",
-			*healthAfter.SandboxPIDFallbacks)
+	if keyEntries != 0 {
+		t.Errorf("sandbox_key_entries=%d on the recovered instance. This is the LIMITATION LIFTING, "+
+			"not a regression — the daemon's sandbox mounts now reach the plugin. Update this cell "+
+			"and sandbox_key_route_test.go together, and rewrite SECURITY.md", keyEntries)
 	}
-	if *healthAfter.SandboxKeyEntryFailures != 0 {
-		t.Errorf("sandbox_key_entry_failures=%d on the recovered instance: the key route was refused "+
-			"or timed out during recovery even though something later succeeded",
-			*healthAfter.SandboxKeyEntryFailures)
+	if fallbacks < 1 {
+		t.Errorf("sandbox_pid_fallbacks=%d on the recovered instance: the key route cannot carry a "+
+			"re-adoption on this engine, so the /proc/<pid>/ns/net route must — and that is why the "+
+			"manifest still asks for the host PID namespace", fallbacks)
+	}
+	if keyFailures < 1 {
+		t.Errorf("sandbox_key_entry_failures=%d on the recovered instance: the key route is tried "+
+			"first and refused, and a refusal that is not counted is a route change nobody sees", keyFailures)
 	}
 
 	// Outside evidence, the same as every other cell: the kernel's view
