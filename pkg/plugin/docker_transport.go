@@ -166,8 +166,11 @@ func (t *readOnlyTransport) calls() []string {
 // A TLS endpoint is not supported and never was: nothing here reads
 // DOCKER_CERT_PATH or configures a TLS client, so an https:// value
 // would reach the daemon unencrypted-or-not-at-all rather than
-// silently working. The documented proxy deployment is a unix socket
-// or a plain tcp endpoint on the host.
+// silently working. Nor is a proxy on its own unix socket: the plugin
+// sees only the paths config.json mounts, and that mount's source is
+// fixed there with no settable field. The documented deployment is a
+// plain tcp endpoint on the host's loopback, which the plugin reaches
+// because it runs with host networking.
 //
 // TWO CONSTRUCTIONS, ON PURPOSE. client.WithHost configures the dialer
 // on a *http.Transport and fails on anything else, so the wrapper

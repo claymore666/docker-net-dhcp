@@ -88,6 +88,16 @@ PID route is retained as a counted fallback. `sandbox_pid_fallbacks`
 read against `sandbox_key_entries` is how an operator sees which route
 their host is actually using.
 
+**What the measurement covers, and what it does not.** The integration
+lane proves the key route on bridge, macvlan and ipvlan, for a root and
+a non-root container init, and across a plugin restart, on a rootful
+daemon whose sandbox netns entries live where this plugin looks for
+them. Rootless Docker, a daemon that keeps those entries elsewhere, and
+`dockerd --userns-remap` are **outside** it and are not claimed. That is
+the reason the PID route is a retained fallback rather than deleted
+code: on such a host the fallback is what keeps the attach working, and
+`sandbox_pid_fallbacks` is what tells you it happened.
+
 ### Pointing the plugin at a read-only Docker socket proxy
 
 The plugin's whole use of the Docker API is three read calls plus the
@@ -105,15 +115,16 @@ GET  /v1.*/networks/{id}
 GET  /v1.*/containers/{id}/json
 ```
 
-A minimal example, with the proxy listening on its own unix socket on
-the host and the plugin pointed at it:
+A worked example. The proxy listens on a **TCP endpoint on the host's
+loopback**, which the plugin reaches because it runs with host
+networking:
 
 ```
 # 1. run any HTTP proxy that forwards only the paths above to
-#    /var/run/docker.sock, listening on /run/docker-ro.sock
-# 2. make the proxy's socket the one the plugin sees
+#    /var/run/docker.sock, listening on 127.0.0.1:2375
+# 2. point the plugin at it
 docker plugin disable claymore666/docker-net-dhcp:<tag>
-docker plugin set    claymore666/docker-net-dhcp:<tag> DOCKER_HOST=unix:///run/docker-ro.sock
+docker plugin set    claymore666/docker-net-dhcp:<tag> DOCKER_HOST=tcp://127.0.0.1:2375
 docker plugin enable claymore666/docker-net-dhcp:<tag>
 ```
 
@@ -121,15 +132,27 @@ The socket bind mount in `config.json` stays either way — it is what
 the default value resolves to, and dropping it would break every
 installation that sets nothing.
 
-**Two bounds, said here rather than found later.** A TLS endpoint is not
-supported: nothing in the plugin reads `DOCKER_CERT_PATH` or configures
-a TLS client, so the proxy has to be a unix socket or a plain TCP
-endpoint the plugin can already reach on the host network. And the
-plugin's own refusal is a backstop, not the boundary: it refuses unsafe
-methods before sending them and counts each one
+**Three bounds, said here rather than found later.**
+
+*A proxy on its own unix socket does not work, and the reason is the
+manifest.* The plugin sees exactly the paths `config.json` mounts, and
+the socket mount's `source` is fixed at `/var/run/docker.sock` with no
+`settable` field — so `docker plugin set … DOCKER_HOST=unix:///run/
+docker-ro.sock` names a path that does not exist inside the plugin. A
+unix-socket proxy is only reachable if it listens at the manifest's own
+source path, which means displacing the daemon's socket for every other
+client on the host. Use the TCP form above.
+
+*A TLS endpoint is not supported.* Nothing in the plugin reads
+`DOCKER_CERT_PATH` or configures a TLS client, so the endpoint has to be
+a plain one on a host the plugin already trusts — loopback, in practice.
+
+*The plugin's own refusal is a backstop, not the boundary.* It refuses
+unsafe methods before sending them and counts each one
 (`docker_api_non_get_refusals`), which means the plugin and the proxy
-fail the same way — it does not mean the proxy is unnecessary, because
-the plugin is the thing being defended against.
+fail the same way. It does not make the proxy unnecessary: the plugin is
+the thing being defended against, and a refusal it implements itself is
+a refusal an attacker who controls it can remove.
 
 Assume the effective set when reasoning about a report, not the four
 in `config.json`. Reports are especially welcome for:

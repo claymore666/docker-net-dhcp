@@ -311,6 +311,66 @@ func TestManifestsDeclareDockerHost(t *testing.T) {
 	}
 }
 
+// TestDefaultDockerHostIsAMountedPath pins the fact SECURITY.md's proxy
+// section turns on, and that nothing else in the tree would notice.
+//
+// The plugin sees exactly the destinations config.json mounts. So the
+// default endpoint has to BE one of them — otherwise an operator who
+// sets nothing gets a dial to a path that does not exist inside the
+// plugin — and, the other way round, a proxy on some other unix socket
+// is unreachable no matter what DOCKER_HOST says, because the mount's
+// source is fixed in the manifest with no settable field. That is why
+// the documented deployment is a TCP endpoint on the host's loopback
+// and not the unix socket the first draft of that section described.
+//
+// If the socket mount's source ever becomes settable, this test fails
+// and SECURITY.md's bound is what has to change with it.
+func TestDefaultDockerHostIsAMountedPath(t *testing.T) {
+	const socketMountSource = "/var/run/docker.sock"
+
+	for _, name := range pluginManifests {
+		b, err := os.ReadFile(filepath.Join("..", "..", name))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		var m struct {
+			Mounts []struct {
+				Source      string   `json:"source"`
+				Destination string   `json:"destination"`
+				Settable    []string `json:"settable"`
+			} `json:"mounts"`
+		}
+		if err := json.Unmarshal(b, &m); err != nil {
+			t.Fatalf("parse %s: %v", name, err)
+		}
+
+		want := strings.TrimPrefix(defaultDockerHost, "unix://")
+		found := false
+		for _, mt := range m.Mounts {
+			if mt.Source != socketMountSource {
+				continue
+			}
+			found = true
+			if mt.Destination != want {
+				t.Errorf("%s mounts the Docker socket at %q, but defaultDockerHost is %q. An "+
+					"operator who sets nothing would get a dial to a path the plugin cannot see",
+					name, mt.Destination, defaultDockerHost)
+			}
+			for _, f := range mt.Settable {
+				if f == "source" {
+					t.Errorf("%s makes the Docker socket mount's source settable. SECURITY.md tells "+
+						"operators a unix-socket proxy is NOT reachable for exactly the opposite "+
+						"reason; that paragraph is now wrong and has to change with this", name)
+				}
+			}
+		}
+		if !found {
+			t.Errorf("%s mounts no %s, so the default endpoint %q resolves to nothing",
+				name, socketMountSource, defaultDockerHost)
+		}
+	}
+}
+
 // TestNewDockerClient_InstallsTheReadOnlyTransport is the wiring
 // assertion: the refusal is only a contract if it is on the client the
 // plugin actually uses.
