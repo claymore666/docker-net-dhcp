@@ -80,7 +80,9 @@ func TestRecovery_PluginDisableEnable_PreservesEndpoint(t *testing.T) {
 	// a delta against a stale baseline (#405). It is also the only
 	// place instance_id is exercised against a real recycle rather than
 	// a fabricated payload.
-	w := harness.BeginCounterWindow(t, ctx, cli, "recovered_ok", "recovery_failed").ExpectRecycle()
+	w := harness.BeginCounterWindow(t, ctx, cli,
+		"recovered_ok", "recovery_failed",
+		"sandbox_key_entries", "sandbox_key_entry_failures", "sandbox_pid_fallbacks").ExpectRecycle()
 
 	if err := cli.PluginDisable(ctx, harness.PluginRef, types.PluginDisableOptions{Force: true}); err != nil {
 		t.Fatalf("PluginDisable: %v", err)
@@ -147,5 +149,57 @@ func TestRecovery_PluginDisableEnable_PreservesEndpoint(t *testing.T) {
 	}
 	if macAfter != macBefore {
 		t.Errorf("MAC changed across plugin recycle: before=%s after=%s", macBefore, macAfter)
+	}
+
+	// THE RECOVERY CELL OF THE #725 MEASUREMENT.
+	//
+	// The brief asked whether the sandbox key survives a plugin
+	// restart, since recovery re-adopts an endpoint with no Join to
+	// carry one — "the key must come from the durable record — does
+	// it?". MEASURED ANSWER: it need not. Join and recovery both reach
+	// dhcpManager.Start, which already inspects the container, so the
+	// key is read from NetworkSettings.SandboxKey on a live inspect in
+	// both cases. Nothing was added to the durable record, and this is
+	// the assertion that says the live source is in fact enough.
+	//
+	// The reads are ABSOLUTE, not deltas, for the reason stated at the
+	// window above: this is a fresh plugin process and its counters
+	// started at zero. That is what makes them exactly right here —
+	// every entry counted on this instance was made by recovery,
+	// because nothing else has run on it yet.
+	if healthAfter.SandboxKeyEntries == nil || healthAfter.SandboxPIDFallbacks == nil ||
+		healthAfter.SandboxKeyEntryFailures == nil {
+		t.Fatal("the recovered plugin publishes no sandbox route counters, so which route recovery " +
+			"took cannot be judged — and reading their absence as zero is how a recovery that fell " +
+			"back to the container PID would pass this test")
+	}
+	t.Logf("CELL mode=recovery user=\"\": sandbox_key_entries %d, sandbox_key_entry_failures %d, sandbox_pid_fallbacks %d (absolute, fresh instance)",
+		*healthAfter.SandboxKeyEntries, *healthAfter.SandboxKeyEntryFailures, *healthAfter.SandboxPIDFallbacks)
+	if *healthAfter.SandboxKeyEntries < 1 {
+		t.Errorf("sandbox_key_entries=%d on the recovered instance: recovery re-adopted an endpoint "+
+			"without entering its namespace through the key, so \"no fallbacks\" below would be a "+
+			"statement about an empty set", *healthAfter.SandboxKeyEntries)
+	}
+	if *healthAfter.SandboxPIDFallbacks != 0 {
+		t.Errorf("sandbox_pid_fallbacks=%d on the recovered instance: the sandbox key did NOT survive "+
+			"the recycle and the /proc/<pid>/ns/net route carried the re-adoption. That is the cell "+
+			"that keeps pidhost in config.json — record it in SECURITY.md, do not silence it",
+			*healthAfter.SandboxPIDFallbacks)
+	}
+	if *healthAfter.SandboxKeyEntryFailures != 0 {
+		t.Errorf("sandbox_key_entry_failures=%d on the recovered instance: the key route was refused "+
+			"or timed out during recovery even though something later succeeded",
+			*healthAfter.SandboxKeyEntryFailures)
+	}
+
+	// Outside evidence, the same as every other cell: the kernel's view
+	// from inside the namespace, not Docker's record of it. The inspect
+	// above proves libnetwork still believes the endpoint; this proves
+	// the address is actually configured on the interface after the
+	// recycle.
+	out := harness.ExecOutput(t, ctx, id, "ip", "-4", "addr", "show")
+	if !strings.Contains(out, ipAfter+"/") {
+		t.Errorf("`ip -4 addr show` inside the container does not carry %s after the recycle.\n%s",
+			ipAfter, out)
 	}
 }

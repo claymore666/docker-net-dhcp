@@ -123,10 +123,21 @@ type HealthResponse struct {
 	// not publish it is distinguishable from one reporting -1 — absent
 	// data is not a value.
 	SandboxNetnsVisible *int32 `json:"sandbox_netns_visible"`
-	LeaseChanged        int32  `json:"lease_changed"`
-	LeasesObtained      int32  `json:"leases_obtained"`
-	LeasesRenewed       int32  `json:"leases_renewed"`
-	DHCPTimeouts        int32  `json:"dhcp_timeouts"`
+	// SandboxKeyEntries / SandboxKeyEntryFailures / SandboxPIDFallbacks
+	// say which route the plugin took into each container's network
+	// namespace. Pointers, all three: a plugin that does not publish
+	// them is not a plugin reporting zero, and reading an absence as
+	// "no fallbacks" is exactly the claim these exist to support.
+	SandboxKeyEntries       *int32 `json:"sandbox_key_entries"`
+	SandboxKeyEntryFailures *int32 `json:"sandbox_key_entry_failures"`
+	SandboxPIDFallbacks     *int32 `json:"sandbox_pid_fallbacks"`
+	// DockerAPINonGETRefusals counts requests to the Docker API the
+	// plugin refused to send because their method was not safe (#691).
+	DockerAPINonGETRefusals *int32 `json:"docker_api_non_get_refusals"`
+	LeaseChanged            int32  `json:"lease_changed"`
+	LeasesObtained          int32  `json:"leases_obtained"`
+	LeasesRenewed           int32  `json:"leases_renewed"`
+	DHCPTimeouts            int32  `json:"dhcp_timeouts"`
 	// ClientStopFailures was lease_release_failures until #800. A
 	// renewal client that did not shut down cleanly when signalled — it
 	// says nothing about the lease, which is held to expiry either way

@@ -21,9 +21,9 @@ import (
 // apart, so the error text names the key it rejected.
 var errNoSandboxKey = errors.New("no usable sandbox key")
 
-// openSandboxNetNSByKey opens the network namespace libnetwork bind-mounts
-// for a sandbox, named by the sandbox key Docker hands to Join and reports
-// from ContainerInspect.
+// openSandboxNetNSByKeyIn opens the network namespace libnetwork
+// bind-mounts for a sandbox, named by the sandbox key Docker hands to
+// Join and reports from ContainerInspect.
 //
 // WHY THIS AND NOT /proc/<pid>/ns/net. The PID route needs the host PID
 // namespace to see the container's task at all, needs CAP_SYS_PTRACE to
@@ -43,10 +43,11 @@ var errNoSandboxKey = errors.New("no usable sandbox key")
 //
 // The returned handle is an open file descriptor. It is the caller's to
 // close.
-func openSandboxNetNSByKey(sandboxKey string) (netns.NsHandle, error) {
-	return openSandboxNetNSByKeyIn(sandboxNetnsDirs, sandboxKey)
-}
-
+// dirs is a parameter so the refusal table can be driven without root,
+// exactly as splitSandboxKeyIn takes it; production passes
+// sandboxNetnsDirs through awaitSandboxNetNSByKey and there is no
+// second caller, which is why no zero-argument wrapper exists to go
+// stale beside it.
 func openSandboxNetNSByKeyIn(dirs []string, sandboxKey string) (netns.NsHandle, error) {
 	dir, name := splitSandboxKeyIn(dirs, sandboxKey)
 	if dir == "" {
@@ -69,7 +70,7 @@ func openSandboxNetNSByKeyIn(dirs []string, sandboxKey string) (netns.NsHandle, 
 	return netns.NsHandle(fd), nil
 }
 
-// awaitSandboxNetNSByKey polls openSandboxNetNSByKey until it succeeds,
+// awaitSandboxNetNSByKey polls openSandboxNetNSByKeyIn until it succeeds,
 // ctx is cancelled, or interval-paced retries exhaust.
 //
 // A key that is absent right now is the ordinary case at Join: the

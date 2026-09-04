@@ -187,6 +187,7 @@ TestConflictCheck_WaitAcquisitionIsTimed	9.39
 TestDNSPropagate_BridgeModeWritesResolvConfToo	8.50
 TestDNSPropagate_DefaultIsUnchanged	7.26
 TestDNSPropagate_OptInWritesResolvConf	8.71
+TestDockerAPI_OnlySafeMethodsReachTheDaemon	7.70
 TestErrors_DriverOptIPMalformed	0.42
 TestErrors_NetworkCreateValidation	0.04
 TestErrors_ParentDown	0.01
@@ -222,6 +223,10 @@ TestPreflightProbe_RejectedInBridgeMode	0.01
 TestRecovery_DaemonKilled_LeaseIsHeldUntilItExpires	23.52
 TestRecovery_DaemonRestart_PreservesContainer	21.28
 TestRecovery_PluginDisableEnable_PreservesEndpoint	7.57
+TestSandboxKeyRoute_Bridge	7.73
+TestSandboxKeyRoute_Ipvlan	7.29
+TestSandboxKeyRoute_Macvlan	7.53
+TestSandboxKeyRoute_NonRootContainer	7.60
 TestSandboxNetnsIsVisibleToThePlugin	7.28
 TestServerPolicy_DenyBeatsPreferForTheSameServer	21.16
 TestServerPolicy_DenyExcludesTheNamedServer	42.45
