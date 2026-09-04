@@ -82,7 +82,9 @@ func TestRecovery_PluginDisableEnable_PreservesEndpoint(t *testing.T) {
 	// a fabricated payload.
 	w := harness.BeginCounterWindow(t, ctx, cli,
 		"recovered_ok", "recovery_failed",
-		"sandbox_key_entries", "sandbox_key_entry_failures", "sandbox_pid_fallbacks").ExpectRecycle()
+		"sandbox_key_entries", "sandbox_key_entry_failures", "sandbox_pid_fallbacks",
+		"sandbox_key_not_permitted", "sandbox_key_not_a_namespace",
+		"sandbox_key_wrong_ns_type", "sandbox_key_unavailable").ExpectRecycle()
 
 	if err := cli.PluginDisable(ctx, harness.PluginRef, types.PluginDisableOptions{Force: true}); err != nil {
 		t.Fatalf("PluginDisable: %v", err)
@@ -227,6 +229,44 @@ func TestRecovery_PluginDisableEnable_PreservesEndpoint(t *testing.T) {
 		t.Errorf("sandbox_key_entry_failures=%d on the recovered instance: the key route was refused "+
 			"for a sandbox it should be able to open, and a refusal here is the same regression as a "+
 			"fallback", keyFailures)
+	}
+
+	// The negative half of the arm measurement, and the control for the
+	// four attach cells.
+	//
+	// Those cells assert sandbox_key_not_a_namespace == 1 per attach.
+	// On its own that is satisfied by a plugin that refuses every key
+	// for that reason, whatever the sandbox — which is precisely the
+	// reading "the key route is simply broken" would give. Here the
+	// SAME code, on the SAME daemon, in the SAME run, refuses nothing:
+	// no arm fires at all. That is what makes the placeholder-file
+	// explanation a discriminator rather than a description of a
+	// uniformly negative result.
+	if healthAfter.SandboxKeyNotPermitted == nil || healthAfter.SandboxKeyNotANamespace == nil ||
+		healthAfter.SandboxKeyWrongNSType == nil || healthAfter.SandboxKeyUnavailable == nil {
+		t.Fatal("the recovered plugin publishes no sandbox key refusal arms, so 'no refusal fired' " +
+			"cannot be judged — and reading their absence as zero is how a plugin that refused every " +
+			"key would pass this")
+	}
+	t.Logf("CELL-ARM mode=recovery user=\"\": sandbox_key_not_permitted %d, sandbox_key_not_a_namespace %d, "+
+		"sandbox_key_wrong_ns_type %d, sandbox_key_unavailable %d (absolute, fresh instance)",
+		*healthAfter.SandboxKeyNotPermitted, *healthAfter.SandboxKeyNotANamespace,
+		*healthAfter.SandboxKeyWrongNSType, *healthAfter.SandboxKeyUnavailable)
+	for _, arm := range []struct {
+		name string
+		got  int32
+	}{
+		{"sandbox_key_not_permitted", *healthAfter.SandboxKeyNotPermitted},
+		{"sandbox_key_not_a_namespace", *healthAfter.SandboxKeyNotANamespace},
+		{"sandbox_key_wrong_ns_type", *healthAfter.SandboxKeyWrongNSType},
+		{"sandbox_key_unavailable", *healthAfter.SandboxKeyUnavailable},
+	} {
+		if arm.got != 0 {
+			t.Errorf("%s=%d on the recovered instance: a sandbox that predates this plugin process "+
+				"was refused, so the asymmetry the attach cells and this one measure together — the "+
+				"same key form accepted here and refused there — is gone, and the reason SECURITY.md "+
+				"gives for keeping pidhost and CAP_SYS_PTRACE has to be re-derived", arm.name, arm.got)
+		}
 	}
 
 	// Outside evidence, the same as every other cell: the kernel's view

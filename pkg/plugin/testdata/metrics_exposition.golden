@@ -216,9 +216,25 @@ net_dhcp_netns_pid_mismatches_total 9479108
 # TYPE net_dhcp_sandbox_key_entries_total counter
 net_dhcp_sandbox_key_entries_total 9128177
 
-# HELP net_dhcp_sandbox_key_entry_failures_total Attempts to enter a container network namespace through the sandbox key that were refused — the key named a directory this plugin does not accept, or the entry could not be opened. Each one falls back to the container PID route; a sustained rise means the /var/run/docker mount is not carrying the daemon's sandbox netns entries on this host.
+# HELP net_dhcp_sandbox_key_entry_failures_total Attempts to enter a container network namespace through the sandbox key that were refused. EXPECTED, once per container attach, on a stock engine: the daemon bind-mounts each sandbox netns after the plugin's own /var/run/docker mount was taken, so the key resolves to the placeholder file underneath and the container PID route carries the attach. Nothing is degraded and no action is indicated. Read sandbox_key_not_permitted, sandbox_key_not_a_namespace, sandbox_key_wrong_ns_type and sandbox_key_unavailable to see which refusal this was; they sum to this counter.
 # TYPE net_dhcp_sandbox_key_entry_failures_total counter
 net_dhcp_sandbox_key_entry_failures_total 3507070
+
+# HELP net_dhcp_sandbox_key_not_permitted_total Key-route refusals because the sandbox key did not name an entry of a directory this plugin accepts (/var/run/docker/netns, /run/docker/netns). This is the arm that is NOT expected: a daemon started with a non-default --exec-root publishes keys elsewhere, and the remedy is a change to this plugin rather than to the host. An arm of sandbox_key_entry_failures.
+# TYPE net_dhcp_sandbox_key_not_permitted_total counter
+net_dhcp_sandbox_key_not_permitted_total 5326664
+
+# HELP net_dhcp_sandbox_key_not_a_namespace_total Key-route refusals because the entry opened and was not a namespace — the placeholder file libnetwork creates before it bind-mounts the sandbox netns over it. EXPECTED, once per container attach, on a stock engine, and it is the evidence for SECURITY.md's reason that the host PID namespace and CAP_SYS_PTRACE stay. An arm of sandbox_key_entry_failures.
+# TYPE net_dhcp_sandbox_key_not_a_namespace_total counter
+net_dhcp_sandbox_key_not_a_namespace_total 9354322
+
+# HELP net_dhcp_sandbox_key_wrong_ns_type_total Key-route refusals because the entry was a namespace of some other type. Not observed on any measured host; published so that "not observed" stays a statement a reader can check. An arm of sandbox_key_entry_failures.
+# TYPE net_dhcp_sandbox_key_wrong_ns_type_total counter
+net_dhcp_sandbox_key_wrong_ns_type_total 8781143
+
+# HELP net_dhcp_sandbox_key_unavailable_total Key-route refusals that were none of the three named arms — the entry never became openable inside the attach budget, or its directory could not be read. The residual arm, so that the four always sum to sandbox_key_entry_failures rather than nearly doing so.
+# TYPE net_dhcp_sandbox_key_unavailable_total counter
+net_dhcp_sandbox_key_unavailable_total 6849095
 
 # HELP net_dhcp_sandbox_pid_fallbacks_total Endpoints whose network namespace was entered through /proc/<pid>/ns/net after the sandbox key route was refused. That route is why the manifest asks for the host PID namespace and CAP_SYS_PTRACE; a zero here across a host's whole uptime, with sandbox_key_entries non-zero, is the evidence that it was not needed.
 # TYPE net_dhcp_sandbox_pid_fallbacks_total counter

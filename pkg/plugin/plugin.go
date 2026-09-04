@@ -858,6 +858,30 @@ type Plugin struct {
 	sandboxKeyEntryFailures atomic.Int32
 	sandboxPIDFallbacks     atomic.Int32
 
+	// The four arms of sandboxKeyEntryFailures. They exist because the
+	// aggregate cannot carry a CAUSE, and the cause is what SECURITY.md
+	// asserts: that the refusal an operator sees on a stock engine is
+	// the unpropagated bind mount, not a key this plugin declined to
+	// recognise. Both produce the same aggregate, want opposite
+	// remedies, and until these existed nothing in the tree could tell
+	// a reader which had happened -- the plugin log carries the reason
+	// and reaches an integration run only when a cell has already
+	// failed, so a green run carried no evidence for the claim at all.
+	//
+	// THEY SUM TO sandboxKeyEntryFailures, by construction rather than
+	// by convention: openSandboxNetNS classifies every failure into
+	// exactly one of them, and sandboxKeyUnavailable is the residual
+	// arm that catches anything not carrying one of the three
+	// refusal sentinels (an entry that never appeared inside the attach
+	// budget, or a directory that could not be opened at all).
+	//
+	// None of them is healthy-affecting, for the same reason the three
+	// above are not.
+	sandboxKeyNotPermitted  atomic.Int32
+	sandboxKeyNotANamespace atomic.Int32
+	sandboxKeyWrongNSType   atomic.Int32
+	sandboxKeyUnavailable   atomic.Int32
+
 	// dockerAPINonGETRefusals counts requests to the Docker API this
 	// plugin refused to send because their method was not GET.
 	//

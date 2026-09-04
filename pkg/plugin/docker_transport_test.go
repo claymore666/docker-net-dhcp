@@ -422,3 +422,71 @@ func TestNewDockerClient_InstallsTheReadOnlyTransport(t *testing.T) {
 		t.Errorf("docker_api_non_get_refusals = %d after a refused POST, want 1", got)
 	}
 }
+
+// TestManifestsDescribeTheSafeMethodContract closes the surface
+// TestManifestsDeclareDockerHost left open: the setting's DESCRIPTION.
+//
+// `docker plugin inspect` is the one place that string is visible on a
+// running host, and it is what an operator writing the allowlist for
+// their read-only proxy reads. Both manifests said "the plugin issues
+// only GET requests" while the shipped contract is GET and HEAD — so a
+// proxy configured from the manifest refuses the client library's
+// version ping, which is the first request the plugin makes, and the
+// plugin cannot reach the daemon at all.
+//
+// THE EXPECTATION IS DERIVED FROM safeDaemonMethods, not typed beside
+// it. That is the whole point: adding a method to the set without
+// saying so in the manifest fails here, and so does naming a method the
+// set does not carry.
+func TestManifestsDescribeTheSafeMethodContract(t *testing.T) {
+	if len(safeDaemonMethods) == 0 {
+		t.Fatal("safeDaemonMethods is empty; every assertion below would pass vacuously")
+	}
+	// Every method RFC 9110 registers, so "unsafe" is a population
+	// rather than the two or three that came to mind.
+	unsafe := []string{
+		http.MethodPost, http.MethodPut, http.MethodPatch,
+		http.MethodDelete, http.MethodConnect, http.MethodOptions, http.MethodTrace,
+	}
+
+	for _, name := range pluginManifests {
+		b, err := os.ReadFile(filepath.Join("..", "..", name))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		var m struct {
+			Env []struct {
+				Name        string `json:"name"`
+				Description string `json:"description"`
+			} `json:"env"`
+		}
+		if err := json.Unmarshal(b, &m); err != nil {
+			t.Fatalf("parse %s: %v", name, err)
+		}
+		found := false
+		for _, e := range m.Env {
+			if e.Name != envDockerHost {
+				continue
+			}
+			found = true
+			for method := range safeDaemonMethods {
+				if !strings.Contains(e.Description, method) {
+					t.Errorf("%s describes %s as %q, which does not name %s. The plugin sends it "+
+						"(safeDaemonMethods), `docker plugin inspect` is where an operator reads "+
+						"this, and a proxy allowlist written from it refuses a request the plugin "+
+						"makes.", name, envDockerHost, e.Description, method)
+				}
+			}
+			for _, method := range unsafe {
+				if !safeDaemonMethods[method] && strings.Contains(e.Description, method) {
+					t.Errorf("%s describes %s as %q, which names %s — a method this plugin refuses "+
+						"before sending. The description would tell an operator to allow it.",
+						name, envDockerHost, e.Description, method)
+				}
+			}
+		}
+		if !found {
+			t.Errorf("%s declares no %s", name, envDockerHost)
+		}
+	}
+}

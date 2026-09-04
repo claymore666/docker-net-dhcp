@@ -1385,11 +1385,27 @@ func (m *dhcpManager) openSandboxNetNS(ctx context.Context, sandboxKey string, p
 	}
 	if m.plugin != nil {
 		m.plugin.sandboxKeyEntryFailures.Add(1)
+		m.plugin.countSandboxKeyRefusal(keyErr)
 	}
+	// DEBUG, NOT WARN, AND THE LEVEL IS DERIVED FROM WHAT AN OPERATOR
+	// SHOULD DO ABOUT IT: nothing. On a stock engine this fires once per
+	// attach, for every container, forever -- the daemon's per-sandbox
+	// netns mounts are made after the plugin's own /var/run/docker bind
+	// was taken, so the key resolves to the placeholder file and the PID
+	// route carries the attach exactly as it did before the key route
+	// existed. A warning is a request for attention, and a request for
+	// attention that is correct on every attach of a healthy host trains
+	// its reader to ignore the level.
+	//
+	// The signal is not lost by lowering it. sandbox_key_entries,
+	// sandbox_key_entry_failures, sandbox_pid_fallbacks and the four
+	// arm counters are on /Plugin.Health and /metrics at every level,
+	// and they are what says which route this host takes. This line is
+	// the detail behind them, and detail is what Debug is for.
 	log.WithError(keyErr).WithFields(log.Fields{
 		"sandbox": sandboxKey,
 		"pid":     pid,
-	}).Warn("Entering the sandbox through its netns key failed; falling back to the container PID")
+	}).Debug("Entering the sandbox through its netns key was refused; the container PID route carries this attach")
 
 	ns, err := awaitContainerNetNS(ctx, pid, ctrID, interval)
 	if errors.Is(err, errPIDNotContainer) && m.plugin != nil {

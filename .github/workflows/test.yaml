@@ -411,6 +411,34 @@ jobs:
       - name: Plugin-manifest parity check
         run: bash scripts/check-manifest-parity.sh
 
+      # THE TAGS ARE LOAD-BEARING FOR THE STEP BELOW, and the default
+      # checkout has none: it is a depth-1 clone of one ref. The
+      # manifest-delta table is checked against the PREVIOUS RELEASE's
+      # config.json, which exists nowhere but in history, and the gate
+      # refuses rather than passing when it cannot resolve the tag — so
+      # without this the step would go red on every pull request.
+      #
+      # --depth=1 and not fetch-depth: 0 on the checkout: the gate needs
+      # each tag's tree, not the history between them. MEASURED
+      # 2026-09-05 on a shallow clone of this repository: the tag
+      # resolves and `git show v1.9.0:config.json` reads, with .git at
+      # 5.5M.
+      - name: Fetch the release tags the manifest-delta gate reads
+        run: git fetch --tags --depth=1 --no-recurse-submodules origin
+
+      # RELEASE_NOTES.md's manifest-delta table is what an operator
+      # reads before approving `docker plugin upgrade`'s privilege
+      # prompt, and it was TYPED: every cell prose written from memory,
+      # compared against a manifest that is only in git and that nothing
+      # read. It was wrong — the v1.9.0 `env` row named four of six
+      # settings, so a removal of two read as "nothing was dropped",
+      # while the same file said otherwise sixty lines further down.
+      # This derives both columns with jq, from the tag the table's own
+      # marker names and from the manifest in the tree, and fails in
+      # either direction.
+      - name: Manifest-delta table check
+        run: bash scripts/check-manifest-delta-table.sh
+
       # Every grant in config.json has one sentence in SECURITY.md and
       # every sentence names a grant still requested (E-2, #725). The
       # direction that is easy to forget is the second: a privilege

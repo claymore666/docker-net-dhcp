@@ -108,6 +108,39 @@ recovered endpoint instead. If attaches start counting under
 `sandbox_key_entries`, the daemon's sandbox mounts are reaching this
 plugin — a newer engine, or a different mount configuration — and the
 netns half of these two grants is no longer load-bearing on your host.
+None of that is `healthy`-affecting: a fallback that succeeds is a
+working endpoint, and it costs a privilege rather than a lease. The
+per-attach log line naming the refused key is at `debug`, because on a
+stock engine it is correct on every attach and there is nothing to do
+about it; the counters carry the signal at every level.
+
+**Which refusal, and how you can tell.** The paragraph above names one
+cause — the entry is the placeholder file, because the daemon's bind
+mount came after the plugin's own. A second cause produces the same
+`sandbox_key_entry_failures` count and wants the opposite response: a
+daemon started with a non-default `--exec-root` publishes sandbox keys
+under `<exec-root>/netns/`, which this plugin does not accept and
+refuses on sight. The two are separated by the arm counters —
+`sandbox_key_not_a_namespace` for the first, `sandbox_key_not_permitted`
+for the second (`sandbox_key_wrong_ns_type` and `sandbox_key_unavailable`
+are the remaining two; all four sum to `sandbox_key_entry_failures`).
+
+The claim in this section is the first, and it is asserted rather than
+argued: `TestSandboxKeyRoute_Macvlan`, `_Bridge`, `_Ipvlan` and
+`_NonRootContainer` in `test/integration/sandbox_key_route_test.go` each
+require `sandbox_key_not_a_namespace` to rise by exactly one per attach
+and the other three arms to stay flat, and
+`TestRecovery_PluginDisableEnable_PreservesEndpoint` in
+`test/integration/recovery_test.go` requires all four to be zero on the
+recovered instance — the same key form, on the same daemon, in the same
+run, refused there and accepted here.
+
+**The bound on that claim**, stated rather than closed: those cells
+measure this lane's daemon, which runs the default `--exec-root`. On a
+host where it is not the default, the refusal you see is
+`sandbox_key_not_permitted`, the paragraph above does not describe what
+happened, and the remedy is a change to this plugin rather than to your
+host.
 
 **What the measurement covers, and what it does not.** The integration
 lane runs the cells above on bridge, macvlan and ipvlan, for a root and

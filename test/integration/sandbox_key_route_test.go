@@ -97,7 +97,9 @@ func sandboxKeyCell(t *testing.T, mode, netName, ctrName, user string) {
 	defer cli.Close()
 
 	w := harness.BeginCounterWindow(t, ctx, cli,
-		"sandbox_key_entries", "sandbox_key_entry_failures", "sandbox_pid_fallbacks")
+		"sandbox_key_entries", "sandbox_key_entry_failures", "sandbox_pid_fallbacks",
+		"sandbox_key_not_permitted", "sandbox_key_not_a_namespace",
+		"sandbox_key_wrong_ns_type", "sandbox_key_unavailable")
 
 	harness.CreateNetwork(t, ctx, netName, mode, nil)
 
@@ -128,7 +130,11 @@ func sandboxKeyCell(t *testing.T, mode, netName, ctrName, user string) {
 	entries, ok1 := counterDelta(t, "sandbox_key_entries", before.SandboxKeyEntries, after.SandboxKeyEntries)
 	fallbacks, ok2 := counterDelta(t, "sandbox_pid_fallbacks", before.SandboxPIDFallbacks, after.SandboxPIDFallbacks)
 	failures, ok3 := counterDelta(t, "sandbox_key_entry_failures", before.SandboxKeyEntryFailures, after.SandboxKeyEntryFailures)
-	if !ok1 || !ok2 || !ok3 {
+	notPermitted, ok4 := counterDelta(t, "sandbox_key_not_permitted", before.SandboxKeyNotPermitted, after.SandboxKeyNotPermitted)
+	notANamespace, ok5 := counterDelta(t, "sandbox_key_not_a_namespace", before.SandboxKeyNotANamespace, after.SandboxKeyNotANamespace)
+	wrongType, ok6 := counterDelta(t, "sandbox_key_wrong_ns_type", before.SandboxKeyWrongNSType, after.SandboxKeyWrongNSType)
+	unavailable, ok7 := counterDelta(t, "sandbox_key_unavailable", before.SandboxKeyUnavailable, after.SandboxKeyUnavailable)
+	if !ok1 || !ok2 || !ok3 || !ok4 || !ok5 || !ok6 || !ok7 {
 		return
 	}
 	// Printed whether or not the cell passes: the cell table in the
@@ -136,6 +142,9 @@ func sandboxKeyCell(t *testing.T, mode, netName, ctrName, user string) {
 	// failures has no rows on a green run.
 	t.Logf("CELL mode=%s user=%q: sandbox_key_entries +%d, sandbox_key_entry_failures +%d, sandbox_pid_fallbacks +%d",
 		mode, user, entries, failures, fallbacks)
+	t.Logf("CELL-ARM mode=%s user=%q: sandbox_key_not_permitted +%d, sandbox_key_not_a_namespace +%d, "+
+		"sandbox_key_wrong_ns_type +%d, sandbox_key_unavailable +%d",
+		mode, user, notPermitted, notANamespace, wrongType, unavailable)
 
 	// The domain: exactly one route carried this attach. Without it,
 	// every assertion below is satisfied by a plugin that entered no
@@ -162,6 +171,49 @@ func sandboxKeyCell(t *testing.T, mode, netName, ctrName, user string) {
 		t.Errorf("sandbox_pid_fallbacks rose by %d on %s, want exactly 1. The key route cannot carry "+
 			"this attach on this engine, so the /proc/<pid>/ns/net route must — and it is why the "+
 			"manifest still asks for the host PID namespace and CAP_SYS_PTRACE", fallbacks, mode)
+	}
+
+	// WHICH REFUSAL, and this is the assertion SECURITY.md's causal
+	// sentence rests on rather than the aggregate above.
+	//
+	// "The key route was refused" is compatible with two causes that
+	// produce identical counts and want opposite remedies: the bind
+	// snapshot (this plugin opens the placeholder file libnetwork left
+	// under the mount — sandbox_key_not_a_namespace) and a daemon
+	// started with a non-default --exec-root, which publishes keys in a
+	// directory this plugin declines outright
+	// (sandbox_key_not_permitted). Until the arms were published, every
+	// cell in this file was equally consistent with the second, and
+	// SECURITY.md asserted the first.
+	if notANamespace != 1 {
+		t.Errorf("sandbox_key_not_a_namespace rose by %d on %s, want exactly 1. This is the arm "+
+			"SECURITY.md names: the entry opened and was NOT a namespace, i.e. the daemon's later "+
+			"bind mount never reached this plugin's mount namespace. Without this the refusal "+
+			"counted above is equally consistent with a key shape this plugin simply refuses, "+
+			"which is a different finding and a different fix", notANamespace, mode)
+	}
+	if notPermitted != 0 {
+		t.Errorf("sandbox_key_not_permitted rose by %d on %s. The daemon is publishing sandbox keys "+
+			"outside /var/run/docker/netns and /run/docker/netns — a non-default --exec-root does "+
+			"this. The key route is then untested on this host rather than refused for the "+
+			"documented reason, and SECURITY.md's paragraph does not describe what happened here",
+			notPermitted, mode)
+	}
+	if wrongType != 0 {
+		t.Errorf("sandbox_key_wrong_ns_type rose by %d on %s: the entry was a namespace of another "+
+			"type, which no measured host has produced", wrongType, mode)
+	}
+	if unavailable != 0 {
+		t.Errorf("sandbox_key_unavailable rose by %d on %s: the refusal was none of the three named "+
+			"arms, so the cause is one nothing in the tree has named", unavailable, mode)
+	}
+	// The arms are exhaustive by construction (countSandboxKeyRefusal).
+	// Asserting it here is what makes the four deltas above an account
+	// of the aggregate rather than four numbers beside it.
+	if arms := notPermitted + notANamespace + wrongType + unavailable; arms != failures {
+		t.Errorf("the refusal arms sum to %d and sandbox_key_entry_failures rose by %d on %s: a "+
+			"refusal was counted in the aggregate and attributed to no arm, so the arms are no "+
+			"longer an account of it", arms, failures, mode)
 	}
 }
 

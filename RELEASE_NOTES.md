@@ -96,13 +96,31 @@ upgrade` prompts on the *privilege* fields only, so the two halves of this
 table are read differently: the first is what the prompt shows you, the
 second is not prompted at all.
 
+Every cell below is the full set for that field, not a description of how
+it changed. `scripts/check-manifest-delta-table.sh` derives both columns —
+the left from `v1.9.0:config.json` in git, the right from the manifest in
+the tree — and fails if either disagrees with what is written here. The
+`prompted` column is not derived: which fields the daemon prompts on is a
+property of Docker, not of this manifest.
+
+<!-- manifest-delta: begin baseline=v1.9.0 -->
+
 | field | v1.9.0 | v2.0.0-alpha.1 | prompted |
 | --- | --- | --- | --- |
-| `linux.capabilities` | `CAP_NET_ADMIN`, `CAP_SYS_ADMIN`, `CAP_SYS_PTRACE` | the same three plus `CAP_NET_RAW` | **yes** |
+| `linux.capabilities` | `CAP_NET_ADMIN`, `CAP_SYS_ADMIN`, `CAP_SYS_PTRACE` | `CAP_NET_ADMIN`, `CAP_NET_RAW`, `CAP_SYS_ADMIN`, `CAP_SYS_PTRACE` | **yes** |
 | `network.type` | `host` | `host` | no change |
 | `pidhost` | `true` | `true` | no change |
-| `mounts` | the Docker socket, `STATE_DIR`, `/var/run/docker` read-only | unchanged | no change |
-| `env` | `LOG_LEVEL`, `AWAIT_TIMEOUT`, `STATE_DIR`, `METRICS_ADDR` | the same four plus `DOCKER_HOST` | no — a setting is not a privilege |
+| `mounts` | `/var/run/docker.sock`, `/var/lib/net-dhcp`, `/var/run/docker` | `/var/run/docker.sock`, `/var/lib/net-dhcp`, `/var/run/docker` | no change |
+| `propagatedmount` | `(absent)` | `(absent)` | no change |
+| `linux.devices` | `(absent)` | `(absent)` | no change |
+| `env` | `LOG_LEVEL`, `AWAIT_TIMEOUT`, `STATE_DIR`, `OUTAGE_TICK`, `OUTAGE_GRACE`, `METRICS_ADDR` | `LOG_LEVEL`, `AWAIT_TIMEOUT`, `STATE_DIR`, `METRICS_ADDR`, `DOCKER_HOST` | no — a setting is not a privilege |
+
+<!-- manifest-delta: end -->
+
+Read the `env` row against **Removed: plugin settings** below: the delta
+is one added and two removed, not one added. `OUTAGE_TICK` and
+`OUTAGE_GRACE` are gone from the manifest, so `docker plugin set
+OUTAGE_TICK=…` is refused by the daemon rather than accepted and ignored.
 
 **Nothing was dropped, and the measurement says why.** The beta asks first
 for the sandbox key the daemon publishes, so that a host where that works
@@ -116,7 +134,16 @@ carries it. `pidhost` and `CAP_SYS_PTRACE` therefore stay, and would have
 stayed regardless, because `resolv.conf` propagation enters the container's
 *mount* namespace by PID and a mount namespace has no sandbox key.
 `sandbox_key_entries`, `sandbox_key_entry_failures` and
-`sandbox_pid_fallbacks` report which route your host is using.
+`sandbox_pid_fallbacks` report which route your host is using, and
+`sandbox_key_not_permitted`, `sandbox_key_not_a_namespace`,
+`sandbox_key_wrong_ns_type` and `sandbox_key_unavailable` say which
+refusal it was — the four sum to `sandbox_key_entry_failures`. On a stock
+engine the one that rises is `sandbox_key_not_a_namespace`, once per
+attach, and that is the expected state: nothing is degraded, the log line
+that accompanies it is at `debug`, and no action is indicated. A rise in
+`sandbox_key_not_permitted` is the one to look at — it means the daemon
+publishes sandbox keys somewhere this plugin does not accept, which a
+non-default `--exec-root` does.
 
 **New: `DOCKER_HOST`.** Empty by default, which keeps the mounted socket and
 the behaviour every earlier release had. Point it at a read-only Docker API

@@ -61,7 +61,7 @@
             ]
         },
         {
-            "description": "Docker API endpoint; empty means the mounted /run/docker.sock. Set it to a read-only socket proxy (the plugin issues only GET requests)",
+            "description": "Docker API endpoint; empty means the mounted /run/docker.sock. Set it to a read-only socket proxy: anything but GET and HEAD is refused before it is sent",
             "name": "DOCKER_HOST",
             "value": "",
             "settable": [
