@@ -55,14 +55,34 @@ const (
 // http.Server's WriteTimeout is a deadline on the whole exchange
 // measured from the start of reading the request — it does not know or
 // care that a handler is still working. On this socket the handlers are
-// not fast: CreateEndpoint performs a real DHCP acquisition, waits for a
-// parent link that may not exist yet, and runs an address-conflict probe
-// afterwards. Adding up the constants those paths use:
+// not fast: CreateEndpoint performs a real DHCP acquisition -- which in
+// the default conflict_check=wait includes RFC 5227's check before the
+// address is used -- and waits for a parent link that may not exist yet.
+// Adding up the constants those paths use:
 //
 //	linkAwaitTimeout       30s   waiting for the parent interface
-//	defaultLeaseTimeout    10s   one DHCP acquisition attempt
-//	conflictProbeBudget     2s   the post-lease ARP/route probe
-//	preflightProbeBudget    8s   CreateNetwork's opt-in probe
+//	defaultLeaseTimeout          one DHCP acquisition attempt, which
+//	                             since M6 INCLUDES RFC 5227 section
+//	                             2.1's probe window in the default
+//	                             conflict_check=wait, AND one conflict
+//	                             found inside it: an acquisition (12.0s
+//	                             by dhcp.AcquisitionWindow), RFC 2131
+//	                             section 3.1(5)'s mandatory 10s restart
+//	                             delay after the DHCPDECLINE, and the
+//	                             second acquisition -- 34.0s, read out
+//	                             of the library's constants by
+//	                             dhcp.ConflictRecoveryWindow. The lane
+//	                             measured why the shorter figure is not
+//	                             enough; see that function's doc.
+//	preflightProbeBudget    8s   CreateNetwork's opt-in probe, which
+//	                             runs conflict_check=off and so carries
+//	                             no probe window of its own
+//
+// The post-lease ARP/route probe that used to be the third term is
+// gone: the plugin no longer sends a datagram on the parent to make the
+// kernel resolve the address. RFC 5227 now runs inside the acquisition
+// itself, which is why its cost moved INTO defaultLeaseTimeout rather
+// than being dropped from the sum.
 //
 // — and `lease_timeout` is an operator-settable network option with no
 // upper bound, so the true worst case is not knowable from this file at
@@ -86,7 +106,7 @@ const socketWriteTimeout = 0
 // bound on reality — `lease_timeout` is operator-settable — which is
 // precisely why socketWriteTimeout is zero.
 func socketWorstCaseHandler() time.Duration {
-	return linkAwaitTimeout + defaultLeaseTimeout + conflictProbeBudget + preflightProbeBudget
+	return linkAwaitTimeout + defaultLeaseTimeout + preflightProbeBudget
 }
 
 // limitBody caps every request body reaching the driver handlers, at the

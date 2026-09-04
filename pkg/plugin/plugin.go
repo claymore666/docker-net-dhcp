@@ -19,6 +19,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/claymore666/dhcp-golib/proto"
 	cerrdefs "github.com/containerd/errdefs"
 	dNetwork "github.com/docker/docker/api/types/network"
 	docker "github.com/docker/docker/client"
@@ -224,7 +225,45 @@ func resolveClientID(opts DHCPNetworkOptions, endpointID string, mac net.Hardwar
 	return clientIDFromEndpoint(endpointID)
 }
 
-const defaultLeaseTimeout = 10 * time.Second
+// defaultLeaseTimeout is how long CreateEndpoint waits for a lease when
+// the network sets no lease_timeout.
+//
+// DERIVED FROM THE LIBRARY'S CONSTANTS, NOT CHOSEN. It was 10s while
+// the address went straight on the interface at the DHCPACK. Since M6
+// the default mode is conflict_check=wait, which holds the address back
+// for the whole of RFC 5227 section 2.1 -- up to PROBE_WAIT +
+// (PROBE_NUM-1)*PROBE_MAX + ANNOUNCE_WAIT = 7s -- and 10s then funds an
+// acquisition only when the very first DHCPDISCOVER is answered. One
+// lost DISCOVER costs RFC 2131 section 4.1's "four seconds randomized
+// ... -1 to +1", up to 5s, and 5 + 7 = 12 > 10: `docker run` would fail
+// against a working server, sometimes, depending on the entropy draw.
+// That is the shape this repository loses findings to.
+//
+// dhcp.AcquisitionWindow is that sum, taken from proto.DefaultParams
+// and proto.DefaultACDParams rather than transcribed, so a constant
+// that moves in the library moves this with it.
+//
+// AND THAT IS STILL NOT ENOUGH, which the beta lane proved on
+// 2026-09-04. 12s funds an acquisition that finds NO conflict. The
+// case this whole feature exists for is the one where it finds one:
+// the library then owes RFC 2131 section 3.1(5) a DHCPDECLINE and
+// "a minimum of ten seconds" before it may ask again, and the address
+// it is granted afterwards arrives ~11s after the first ACK. A 12s
+// deadline cut that off 0.8s early and `docker run` failed with a
+// DHCP timeout while a clean lease sat in the server's log. So the
+// default is dhcp.ConflictRecoveryWindow: two acquisitions and the
+// restart delay between them, 34.0s with the library's constants,
+// funding ONE conflict. Two in a row is a network to fix.
+//
+// The cost is paid only where a conflict happened. What it does change
+// for everyone is how long `docker run` takes to give up on a segment
+// with no DHCP server at all, and docs/reference.md says so on the
+// option rather than leaving an operator to time it.
+// TestLeaseTimeout_DefaultCoversTheWorstWaitAcquisition and
+// TestLeaseTimeout_DefaultFundsOneConflictAndItsRestartDelay are the
+// assertions; the first fails against the old 10s literal and the
+// second against the 12s one.
+var defaultLeaseTimeout = dhcp.ConflictRecoveryWindow(proto.DefaultParams(nil))
 
 // driverRegexp matches plugin references that this driver should treat
 // as "another instance of itself" when scanning for bridge conflicts.
@@ -251,11 +290,46 @@ type DHCPNetworkOptions struct {
 	// upstream DHCP server. Useful for split-horizon LANs where
 	// containers should egress via a different router than the one
 	// the DHCP server advertises (e.g. VPN gateway).
-	Gateway         string
-	IPv6            bool
-	LeaseTimeout    time.Duration `mapstructure:"lease_timeout"`
-	IgnoreConflicts bool          `mapstructure:"ignore_conflicts"`
-	SkipRoutes      bool          `mapstructure:"skip_routes"`
+	Gateway      string
+	IPv6         bool
+	LeaseTimeout time.Duration `mapstructure:"lease_timeout"`
+	// IgnoreConflicts skips the BRIDGE OVERLAP check at CreateNetwork:
+	// whether some other Docker network already has this bridge, or an
+	// address range covering it. It is a question about this host's own
+	// configuration, asked once, before any container exists.
+	//
+	// IT IS NOT conflict_check AND THE TWO ARE NOT ALTERNATIVES.
+	// conflict_check is RFC 5227 address conflict detection: whether
+	// some OTHER DEVICE ON THE SEGMENT already holds the address the
+	// DHCP server just leased to a container, asked on the wire, once
+	// per acquisition and then continuously for the life of the lease.
+	// One knob is about Docker's bookkeeping and the other is about the
+	// LAN; a network legitimately sets either, both or neither.
+	IgnoreConflicts bool `mapstructure:"ignore_conflicts"`
+	// ConflictCheck selects RFC 5227 address conflict detection for
+	// every endpoint on this network (D23). Empty is
+	// dhcp.DefaultConflictCheck, which is the library's own default
+	// mode by name.
+	//
+	//   wait   probe before the address is used. The container's
+	//          address is configured only after RFC 5227 section 2.1
+	//          has cleared it, which costs 4-7s on every acquisition
+	//          (section 2.1.1's schedule; see dhcp.ConflictWindow) and
+	//          is why lease_timeout's default covers it.
+	//   async  use the address at once and probe beside it. `docker
+	//          run` is as fast as it was; a conflict found afterwards
+	//          is a DHCPDECLINE and an address CHANGE on a running
+	//          container.
+	//   off    no probing and no listener. RFC 2131 section 4.4.1's
+	//          check is a SHOULD, so this is conformant; section
+	//          3.1(5)'s DECLINE remains a MUST for a conflict detected
+	//          by other means, and the plugin can still report one.
+	//
+	// The value is validated at CreateNetwork against the library's own
+	// list of modes, so a typo fails the create rather than silently
+	// selecting the default.
+	ConflictCheck string `mapstructure:"conflict_check"`
+	SkipRoutes    bool   `mapstructure:"skip_routes"`
 	// PropagateDNS, when true, makes the plugin write DHCP option 6
 	// (v4 DNS server list) or option 23 (v6) into the container's
 	// /etc/resolv.conf on every bind/renew with a non-empty list.
@@ -861,69 +935,55 @@ type Plugin struct {
 	// discussion deferred from v0.9.0.
 	leaseChangedV4 atomic.Int32
 
-	// addressConflicts counts leases whose address was found to be
-	// already held by another device on the segment (#524).
+	// addressConflicts counts leased addresses RFC 5227 found already
+	// in use on the segment (#524, D12).
+	//
 	// Healthy-affecting: the container is up, Docker reports an
-	// address, and traffic is broken or intermittently wrong for two
-	// hosts — an operator has to look, and nothing else will tell them.
+	// address, and traffic for it is wrong for two hosts -- an operator
+	// has to look, and nothing else will tell them. The DHCP server
+	// cannot see a statically configured host inside its own pool, so
+	// it will hand the same address out again.
 	//
-	// conflictProbeFailures counts probes that could not run at all
-	// (unroutable parent, unparseable lease or MAC). NOT
-	// Healthy-affecting: an unanswered question is not a known-broken
-	// address. It is counted so the detector cannot quietly stop
-	// working — a check that silently does not happen is exactly how
-	// #524 stayed invisible through a production incident.
-	addressConflicts      atomic.Int32
-	conflictProbeFailures atomic.Int32
+	// SINCE M6 IT IS THE LIBRARY THAT FINDS THEM, not a datagram sent
+	// on the parent to make the kernel do an ARP. The plugin's own
+	// probe is deleted: it ran once, after the lease, from outside the
+	// container's namespace, and could only ever answer "is it held
+	// right now". What replaces it is RFC 5227 in full -- section
+	// 2.1's probes before the address is used and section 2.4's
+	// listener for the whole life of the lease -- so this counter now
+	// moves for a conflict that appears an hour after the container
+	// started, which the old one structurally could not see.
+	//
+	// It is fed from the EVENTS: Failed{ReasonConflict} for a conflict
+	// found before the address was ever used and Lost{ReasonConflict}
+	// for one found afterwards. The library guarantees the two are
+	// exclusive per conflict, which is asserted rather than assumed --
+	// see pkg/dhcp's TestConflict_TheLibraryEmitsExactlyOneEventPerConflict.
+	//
+	// READ IT AGAINST acdProbesSent. A zero here over a plugin whose
+	// networks all run conflict_check=off, or whose ARP socket is
+	// failing every send, is not a clean segment; it is a detector that
+	// is not running. That ambiguity is #524 itself, and the four rows
+	// below are what removes it.
+	addressConflicts atomic.Int32
 
-	// conflictProbeStaleRoutes counts leftover probe routes reclaimed
-	// from a previous probe that was cut short before it could clean up
-	// (#572). The probe goroutine is detached, so a plugin stop inside
-	// its window leaves its /32 behind and every later probe for that
-	// address fails with EEXIST until something removes it.
+	// acdProbesSent / acdAnnouncementsSent / acdConflictsDetected /
+	// acdARPSendFailures are the library's own RFC 5227 counters,
+	// accumulated process-wide across every manager that ever ran --
+	// the CreateEndpoint one-shots included, which is why they are not
+	// summed from the live managers.
 	//
-	// Not healthy-affecting: the probe it appears in went on to run.
-	// Counted because the recovery hides a real event — the plugin being
-	// stopped mid-probe — and a detector that silently repairs itself is
-	// how the last one stopped being trustworthy.
-	conflictProbeStaleRoutes atomic.Int32
-
-	// conflictProbeStaleAddrs counts leftover BORROWED PROBE SOURCE
-	// addresses reclaimed from the parent NIC (#723).
-	//
-	// The sibling above reclaims the leftover /32 route, and it can,
-	// because that route's destination is the address being probed --
-	// so a later probe for the same address collides with the leftover
-	// and recognises it. The borrowed source has random third and
-	// fourth octets by design (#575, so two concurrent probes on one
-	// parent cannot delete each other's), and randomness is exactly
-	// what makes it unrecognisable: no future probe ever collides with
-	// it. It accumulated on the operator's NIC, one per stop-inside-
-	// the-window, forever, visible only in `ip addr`.
-	//
-	// Not healthy-affecting, for the same reason as the sibling: the
-	// probe it appears in went on to run. Counted because the repair
-	// hides the event that caused it.
-	conflictProbeStaleAddrs atomic.Int32
-
-	// probeAddrsInUse holds the borrowed probe source addresses this
-	// process currently has on a parent NIC, keyed by CIDR string.
-	// Guarded by mu; created on first use so &Plugin{} stays valid.
-	//
-	// It exists so reclaimStaleProbeAddrs can tell a leftover from a
-	// LIVE sibling: both carry the same label, and deleting a live
-	// one mid-probe is #575 -- the failure that produced these
-	// leftovers in the first place. A crash takes this map with it,
-	// which is exactly right: after a restart nothing is live, so
-	// everything labelled is stale.
-	probeAddrsInUse map[string]struct{}
-	// addressConflictProbes counts probes that ran to a verdict —
-	// conflict or clean. Not Healthy-affecting, and the reason it
-	// exists at all: without it, "the segment is clean" and "the
-	// detector never ran" are the same reading (all counters zero),
-	// which is precisely the ambiguity #524 hid behind. A run is only
-	// evidence of a clean segment if this advanced.
-	addressConflictProbes atomic.Int32
+	// acdConflictsDetected is deliberately a SECOND derivation of the
+	// same fact addressConflicts counts: that one is the chassis's
+	// tally of the events it acted on, this one is the library's tally
+	// inside the machine that emitted them. They must agree, and a run
+	// where they do not is a finding about this seam rather than about
+	// the segment. Documented as a pair in docs/reference.md and
+	// asserted together in the chassis tests.
+	acdProbesSent        atomic.Int32
+	acdAnnouncementsSent atomic.Int32
+	acdConflictsDetected atomic.Int32
+	acdARPSendFailures   atomic.Int32
 
 	// leasesObtainedV4 / leasesRenewedV4 / dhcpTimeoutsV4 / clientStopFailuresV4
 	// expose DHCP-wire-level counters via /Plugin.Health (T2-4). They
@@ -2355,8 +2415,8 @@ func (p *Plugin) Close() error {
 	return nil
 }
 
-// safeHostname returns h when it can be carried into the generated dhcpcd
-// config unchanged, and ("", false) when it cannot (#692).
+// safeHostname returns h when it can be put on the wire as the DHCP
+// hostname option unchanged, and ("", false) when it cannot (#692).
 //
 // The hostname is the container's own and Docker does not validate it, so
 // it is the one value on this path chosen by whoever started the
@@ -2382,7 +2442,7 @@ func (p *Plugin) Close() error {
 // inherit another endpoint's MAC and request its address.
 //
 // A refusal therefore has to be distinguishable from an absence. The
-// caller that only writes the DHCP config can keep ignoring the
+// caller that only fills in the DHCP request can keep ignoring the
 // difference; the caller that makes an identity decision must not.
 func (p *Plugin) safeHostname(h string) dhcpHostname {
 	if dhcp.SafeValue(h) {
@@ -2390,6 +2450,6 @@ func (p *Plugin) safeHostname(h string) dhcpHostname {
 	}
 	p.unsafeHostnamesRejected.Add(1)
 	log.WithField("hostname", fmt.Sprintf("%q", h)).
-		Warn("Dropping container hostname: it carries a control character and cannot be written to the DHCP client config")
+		Warn("Dropping container hostname: it carries a control character and will not be sent as the DHCP hostname option")
 	return dhcpHostname{refused: true}
 }

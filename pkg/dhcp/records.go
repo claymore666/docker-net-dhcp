@@ -304,6 +304,57 @@ type Resumption struct {
 	Lease  *lease.Lease
 	Prefer string
 	Phase  string
+
+	// ACD is where RFC 5227's check stood at this record's last lease
+	// event, and it is a DIFFERENT phase from the field above: Phase is
+	// the endpoint's lifecycle (created, joined, left, retained) and
+	// this is the conflict-detection sub-machine's.
+	//
+	// D23 IS WHY IT IS DURABLE. A proto.ConflictAsync client is told
+	// Acquired while section 2.1's check is still running, so a plugin
+	// that dies in that window and rebuilds from this file is resuming
+	// an address nothing ever cleared -- and without the phase that
+	// record is byte-for-byte the record of an address that passed.
+	// proto.ACDProbing and proto.ACDSettling are the unchecked values;
+	// proto.ACDAnnouncing and proto.ACDDefending mean section 2.1
+	// completed; proto.ACDIdle is the honest value for a
+	// proto.ConflictOff client, which runs no check at all.
+	ACD proto.ACDPhase
+}
+
+// ACDUnfinished reports whether this record is EVIDENCE OF A CHECK
+// THAT WAS STILL RUNNING when the process that wrote it stopped.
+//
+// IT IS NOT THE NEGATION OF "cleared", and the difference is the whole
+// function. proto.ACDIdle means the sub-machine holds nothing: it is
+// what a proto.ConflictOff client writes, what every record written
+// before M6 says, and -- the case that matters here -- what the fold
+// records at the end of EVERY ordinary acquisition, because cancelling
+// a manager drops the lease and the ACD sub-machine goes idle with it
+// (the library's Record.ACD says "the phase at the loss, whatever the
+// reason"). Reading idle as "not cleared" put a warning on the healthy
+// path of every single container start; MEASURED on the beta lane,
+// 2026-09-04.
+//
+// So idle is named here explicitly, with its reason, rather than left
+// to fall out of a negation. Everything else that is not one of the
+// two finished phases -- proto.ACDProbing, proto.ACDSettling, and any
+// phase the library adds later -- is unfinished, which keeps the
+// asymmetry that matters: an unknown phase costs a log line rather
+// than silently reading as clean.
+//
+// It is DIAGNOSTIC ONLY. D23's "a restart during the window resumes
+// the check" is delivered by the library, which re-runs section 2.1 on
+// the INIT-REBOOT DHCPACK whatever the record said; this is the
+// chassis's evidence about what the previous process was in the middle
+// of, and the only place that evidence exists at all.
+func (r Resumption) ACDUnfinished() bool {
+	switch r.ACD {
+	case proto.ACDAnnouncing, proto.ACDDefending, proto.ACDIdle:
+		return false
+	default:
+		return true
+	}
 }
 
 // Resume finds the record for one identity on one network and says what
@@ -330,7 +381,7 @@ func (r *Records) Resume(scope string, chaddr []byte, now time.Time) (string, Re
 		if rec.Phase == lease.PhaseClosed {
 			continue
 		}
-		res := Resumption{Phase: rec.Phase.String()}
+		res := Resumption{Phase: rec.Phase.String(), ACD: rec.ACD}
 		if l, ok := rec.Resume(now); ok {
 			res.Lease = &l
 		} else if a, ok := rec.Prefer(now); ok {

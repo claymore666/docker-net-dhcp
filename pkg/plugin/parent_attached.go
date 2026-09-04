@@ -321,10 +321,15 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 			if requestedV6 == "" {
 				requestedV6 = tombIPv6
 			}
+			// hostname is a dhcpHostname, which is a NAME AND A REFUSAL
+			// FLAG. Logging the struct printed `hostname="{ false}"` on
+			// a real run (2026-09-04) -- the operator got the zero value
+			// of the flag and no name at all, on the one line that says
+			// which container's identity was inherited. Log the name.
 			log.WithFields(log.Fields{
 				"network":  shortID(r.NetworkID),
 				"endpoint": shortID(r.EndpointID),
-				"hostname": hostname,
+				"hostname": hostname.name,
 			}).Info("Inherited MAC/IP from recent endpoint on same network (likely container restart)")
 			log.WithFields(log.Fields{
 				"network":      shortID(r.NetworkID),
@@ -481,6 +486,12 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 				Records:  p.records,
 				RecordID: recordID,
 			}
+			// RFC 5227 conflict detection, from the network's stored
+			// conflict_check (D23). Set on the BASE, so every attempt
+			// down the dhcp_servers ladder runs in the same mode.
+			if err := p.conflictWiring(&base, opts, roleAcquire, r.NetworkID, r.EndpointID); err != nil {
+				return err
+			}
 			if v6 {
 				base.PreferredV6 = requestedV6
 			} else {
@@ -563,16 +574,6 @@ func (p *Plugin) createParentAttachedEndpoint(ctx context.Context, r CreateEndpo
 	// parent's and there's nothing to stabilize.
 	if mode == ModeMacvlan {
 		p.rememberEndpoint(r.EndpointID, endpointFingerprint{MAC: hintMAC, IPv4: hintIPv4, IPv6: hintIPv6, Ifname: p.hintIfname(r.EndpointID)}, hostname)
-	}
-
-	// Is anyone else already using the address we were just given
-	// (#524)? Asynchronous on purpose: the answer changes no part of
-	// this response, and keeping it off the critical path is what lets
-	// dhcpcd keep `-A` and its acquisition deadline. The probe runs on
-	// the parent link in the host namespace, so it cannot be raced by
-	// Docker moving the child into the container's netns.
-	if res.Interface.Address != "" {
-		go p.checkAddressConflict(opts.Parent, res.Interface.Address, hintMAC, r.EndpointID, r.NetworkID)
 	}
 
 	log.WithFields(log.Fields{

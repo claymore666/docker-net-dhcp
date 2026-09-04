@@ -450,8 +450,8 @@ type HealthResponse struct {
 	// particular symptom cleared itself.
 	TombstoneQuarantines int32 `json:"tombstone_quarantines"`
 	// UnsafeHostnamesRejected counts container hostnames dropped before
-	// reaching the generated DHCP client config because they carried a
-	// control character (#692). NOT healthy-affecting: the drop is the
+	// reaching the DHCP request because they carried a control
+	// character (#692). NOT healthy-affecting: the drop is the
 	// safe outcome and the lease proceeds. It is reported because a
 	// legitimate hostname never contains one, so a rising value is
 	// somebody probing rather than background noise.
@@ -522,33 +522,39 @@ type HealthResponse struct {
 	// truthfulness-gap discussion), but worth alerting on for
 	// long-running containers.
 	LeaseChanged int32 `json:"lease_changed"`
-	// AddressConflicts counts leases whose address was already held by
-	// another device on the segment, found by probing after the lease
-	// (#524). Healthy-affecting: the endpoint is up and reporting an
-	// address that does not work, and no other counter moves for it.
+	// AddressConflicts counts leased addresses RFC 5227 found already
+	// in use on the segment (#524, D12). Healthy-affecting: the
+	// endpoint is up and reporting an address that does not work, and
+	// no other counter moves for it.
 	//
-	// ConflictProbeFailures counts probes that could not run. NOT
-	// Healthy-affecting — it says the question went unasked, not that
-	// the answer was bad. Watch it anyway: a detector that has stopped
-	// running looks identical to a clean segment.
-	AddressConflicts      int32 `json:"address_conflicts"`
-	ConflictProbeFailures int32 `json:"conflict_probe_failures"`
-	// ConflictProbeStaleRoutes counts leftover probe routes reclaimed
-	// from a probe that was cut short before it could clean up (#572).
-	// Not Healthy-affecting — the probe that reclaimed it went on to
-	// run — but a rising count means the plugin is being stopped inside
-	// probe windows.
-	ConflictProbeStaleRoutes int32 `json:"conflict_probe_stale_routes"`
-	// ConflictProbeStaleAddrs counts leftover borrowed probe SOURCE
-	// addresses reclaimed from the parent NIC (#723). Its sibling
-	// above covers the leftover route; this one covers the address the
-	// route was sourced from, which nothing recognised because it is
-	// randomly chosen. NOT healthy-affecting: the probe went on to run.
-	ConflictProbeStaleAddrs int32 `json:"conflict_probe_stale_addrs"`
-	// AddressConflictProbes counts probes that reached a verdict. Read
-	// it before believing address_conflicts=0: a zero here means the
-	// detector did not run, not that the segment is clean.
-	AddressConflictProbes int32 `json:"address_conflict_probes"`
+	// Since 2.0 it covers the whole life of the lease, not just the
+	// moment after acquisition: section 2.1's probes before the address
+	// is used AND section 2.4's listener afterwards. A conflict that
+	// appears an hour into a container's life moves it.
+	AddressConflicts int32 `json:"address_conflicts"`
+	// ACDProbesSent, ACDAnnouncementsSent, ACDConflictsDetected and
+	// ACDARPSendFailures are the library's own RFC 5227 counters.
+	//
+	// READ ACDProbesSent BEFORE BELIEVING AddressConflicts IS ZERO.
+	// That is the whole reason these are here: a zero conflict count
+	// over a plugin that never sent a probe is not a clean segment, and
+	// the two readings were indistinguishable in #524.
+	// ACDProbesSent and ACDAnnouncementsSent move on every acquisition
+	// in conflict_check=wait and =async, and never in =off.
+	//
+	// ACDConflictsDetected is the library's count of the same conflicts
+	// AddressConflicts counts from the chassis side. They must agree;
+	// a divergence is a defect in this seam, not a property of the
+	// segment.
+	//
+	// ACDARPSendFailures is probes and announcements the ARP socket
+	// refused. NOT Healthy-affecting on its own — but a probe that was
+	// never sent proves nothing about the address, so a rise here is
+	// what turns "no conflict" into "no question asked".
+	ACDProbesSent        int32 `json:"acd_probes_sent"`
+	ACDAnnouncementsSent int32 `json:"acd_announcements_sent"`
+	ACDConflictsDetected int32 `json:"acd_conflicts_detected"`
+	ACDARPSendFailures   int32 `json:"acd_arp_send_failures"`
 
 	// SandboxNetnsVisible is how many sandbox netns entries the plugin
 	// can currently see, or -1 when it cannot read the directory at all
@@ -851,10 +857,10 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		TombstonesConsumed:           p.tombstonesConsumed.Load(),
 		LeaseChanged:                 leaseChangedV4 + leaseChangedV6,
 		AddressConflicts:             conflicts,
-		ConflictProbeFailures:        p.conflictProbeFailures.Load(),
-		ConflictProbeStaleRoutes:     p.conflictProbeStaleRoutes.Load(),
-		ConflictProbeStaleAddrs:      p.conflictProbeStaleAddrs.Load(),
-		AddressConflictProbes:        p.addressConflictProbes.Load(),
+		ACDProbesSent:                p.acdProbesSent.Load(),
+		ACDAnnouncementsSent:         p.acdAnnouncementsSent.Load(),
+		ACDConflictsDetected:         p.acdConflictsDetected.Load(),
+		ACDARPSendFailures:           p.acdARPSendFailures.Load(),
 		SandboxNetnsVisible:          sandboxNetnsVisibleIn(sandboxNetnsDirs),
 		LeasesObtained:               leasesObtainedV4 + leasesObtainedV6,
 		LeasesRenewed:                leasesRenewedV4 + leasesRenewedV6,

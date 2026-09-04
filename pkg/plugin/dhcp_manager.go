@@ -31,22 +31,33 @@ const linkAwaitTimeout = 30 * time.Second
 
 const pollTime = 100 * time.Millisecond
 
-// dhcpClientReapTimeout caps how long the dhcpcd consumer waits to
-// reap a self-exited child process before giving up and letting it
-// linger as a zombie. The kernel's eventual reaping by init handles
-// the worst case; this just bounds wall time on the cleanup path.
+// dhcpClientReapTimeout caps how long the event consumer waits for a
+// self-stopped client to finish unwinding.
+//
+// The name is a fossil and the budget is not. It was the wait to reap a
+// dhcpcd child process before letting it linger as a zombie; there is no
+// child process now, and what the wait is for is stated at its call
+// site: Wait is the only thing that says the library's Run has RETURNED
+// and its AF_PACKET socket is closed. Give up too early and a Join for
+// the next container can open a second client on the same interface
+// while this one is still on it.
 const dhcpClientReapTimeout = 5 * time.Second
 
-// dhcpClientFinishTimeout caps how long Stop waits for SIGTERM -> exit
-// on the persistent dhcpcd child.
+// dhcpClientFinishTimeout caps how long Stop waits for the persistent
+// client to unwind and return.
 //
-// Before #800 this budget covered a DHCPRELEASE round trip. It no longer
-// does — the client has nothing to send and only has to unwind and
-// exit — but the value is unchanged deliberately: dhcpcd's own teardown
-// (dropping the address, closing the lease file, reaping its own
-// children) is what it now bounds, and shortening it would start
-// counting slow-but-clean exits as client_stop_failures. Short enough
-// either way that plugin shutdown / Leave is not held hostage.
+// Two things it no longer covers, in the order they went. Before #800 it
+// covered a DHCPRELEASE round trip; the client has nothing to send. And
+// it once bounded a SIGTERM to a dhcpcd child and that child's own
+// teardown — dropping the address, closing its lease file, reaping its
+// own children. There is no child: the client is a goroutine and a
+// socket in this process.
+//
+// The value is unchanged deliberately. What it bounds now is the
+// library cancelling its own timers, closing its socket and returning
+// from Run, and shortening it would start counting slow-but-clean exits
+// as client_stop_failures. Short enough either way that plugin shutdown
+// / Leave is not held hostage.
 const dhcpClientFinishTimeout = 5 * time.Second
 
 // dnsPropagateTimeout caps the docker-API round-trip cost of
@@ -1060,7 +1071,7 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 	// describe a policy that is not in force.
 	m.policyRestricted = len(allowServers) > 0
 
-	client, err := dhcp.NewDHCPClient(m.ctrLink.Attrs().Name, &dhcp.DHCPClientOptions{
+	clientOpts := dhcp.DHCPClientOptions{
 		Hostname:     m.hostname,
 		AllowServers: allowServers,
 		DenyServers:  denyServers,
@@ -1093,7 +1104,29 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 		// in hand (#371). Honours the operator's client_id override.
 		ClientID:    m.clientID(),
 		VendorClass: m.opts.VendorClass,
-	})
+		// Where RFC 5227's check stood for the lease being resumed
+		// (D23). It changes nothing on the wire -- the library
+		// re-probes any resumed address on the INIT-REBOOT DHCPACK --
+		// and it is the only evidence that this plugin process is
+		// picking up an address a previous one never finished
+		// checking, which is exactly the state an async network is in
+		// when it is restarted inside the probe window.
+		ResumeACD: resumption.ACD,
+	}
+	if err := m.plugin.conflictWiring(&clientOpts, m.opts, roleJoin, m.joinReq.NetworkID, m.joinReq.EndpointID); err != nil {
+		return nil, err
+	}
+	if resumption.Lease != nil && resumption.ACDUnfinished() {
+		log.
+			WithFields(m.logFields(v6)).
+			WithField("address", resumption.Lease.Addr.Addr()).
+			WithField("acd_phase", resumption.ACD).
+			WithField("conflict_check", clientOpts.ConflictMode).
+			Warn("Resuming an address whose RFC 5227 check had not completed when the plugin last stopped; " +
+				"it is re-checked on the INIT-REBOOT acknowledgement")
+	}
+
+	client, err := dhcp.NewDHCPClient(m.ctrLink.Attrs().Name, &clientOpts)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create DHCP%v client: %w", v6Str, err)
 	}

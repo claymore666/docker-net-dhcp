@@ -147,6 +147,10 @@ reading a removed key gets zero, not an error.
 | `directives_refused` | Counted values dropped before being written into a generated client config file. No config file is generated |
 | `mount_prep_failures` | Counted failed steps of a per-client private mount-namespace setup. There is no per-client state directory, so there is no mount to prepare |
 | `router_advert_guard_failures` | Counted failed steps of the DHCPv6 Router Advertisement guard, which is deleted along with the rest of the DHCPv6 path |
+| `address_conflict_probes` | Counted verdicts reached by the plugin's own datagram probe on the parent link. That probe is deleted; RFC 5227 runs inside the DHCP client now, and `acd_probes_sent` is what says whether the address was checked |
+| `conflict_probe_failures` | Counted probes that could not reach a verdict, almost always because the parent carried no address on the leased subnet. An RFC 5227 probe does not need one, so the condition no longer exists. `acd_arp_send_failures` is the nearest thing that remains, and it means something narrower: the socket refused the send |
+| `conflict_probe_stale_routes` | Counted temporary `/32` routes reclaimed from a probe cut short. The probe installed no routes at all now, so there is nothing to leak or reclaim |
+| `conflict_probe_stale_addrs` | Counted borrowed link-local source addresses reclaimed from the parent NIC, for the same probe. Nothing is borrowed and nothing is left behind |
 
 **Two of the four v6 counters can still be incremented, and both mean
 something other than what their 1.x descriptions say.** On the legacy
@@ -163,6 +167,69 @@ classifies as "no router" and never as "no DHCPv6 offered". All four are still
 rendered so a scrape does not lose a series across the upgrade. **Read a zero
 on those two as "this build cannot report it", not as "nothing went wrong."**
 
+### New: RFC 5227 address conflict detection (`conflict_check`)
+
+The plugin checks whether the address its DHCP server just leased is
+already in use on the segment, and this is the release where that check
+becomes real rather than best-effort. It is run by the DHCP client, as
+RFC 5227 Address Conflict Detection, from inside the container's own
+network namespace — not by the plugin from the parent link.
+
+Two holes in the v1.6.0 probe close with it. The old check could only
+look at the address a **new** endpoint was about to be handed, so a
+conflict that started after the container was up was never seen; RFC 5227
+§2.4 listens for the whole life of the lease. And the old check needed
+the parent to carry an address on the leased subnet, because a host
+answers an ordinary ARP request only if it can route a reply back to the
+sender; a §2.1.1 Probe carries an all-zero sender address, which Linux
+answers for any local target without consulting a route, so a bare parent
+is no longer blind. A conflict now also produces a `DHCPDECLINE` (RFC
+2131 §3.1(5)) and a fresh DISCOVER, which means **your DHCP server's log
+is evidence** — it never was before.
+
+**It costs seconds, and `-o conflict_check=<mode>` says who pays them.**
+
+| mode | `docker run` | on a conflict |
+| --- | --- | --- |
+| `wait` (default) | Waits for §2.1 to clear the address: **4.0s best, 5.5s mean, 7.0s worst**, on top of the DHCP exchange | The container never comes up on the contested address. The client declines it and asks for another |
+| `async` | Returns at the DHCPACK, with no added wait | The address of a **running** container changes, about **11s** after the conflict appears (MEASURED; ten of those are RFC 2131 §3.1(5)'s mandatory wait after the DHCPDECLINE, during which the container still holds the contested address). Connections on the old address are already broken for both hosts; `docker inspect` does not update (watch `lease_changed`) |
+| `off` | Returns at the DHCPACK | Nothing detects it. No ARP is sent, `address_conflicts` cannot move for this network, and `acd_probes_sent` stays where it was |
+
+Any other value is refused at `docker network create`, with the three
+names in the message. Networks created before this option existed read as
+`wait`, so **an upgrade adds up to seven seconds to `docker run` on every
+existing network** — set `-o conflict_check=async` at create time if that
+matters more than starting clean. The default `lease_timeout` grows with
+it, from 10s to **34s**; see its entry in `docs/reference.md` for what
+that buys and what it costs on a segment with no DHCP server.
+
+`wait` is a rule about **acquiring** an address, not about keeping one.
+Two paths deliberately do not wait:
+
+- **A container joining a network it already has a lease on** (the
+  resumed-lease path) runs the check in `async` even where the network
+  says `wait`. Nothing is skipped — the same probes, the same §2.4
+  listener and the same DHCPDECLINE — but the address the container
+  already holds is not held back while they run. Holding it back would
+  add the probe window to every restart of every container, to re-check
+  an address the previous run already cleared.
+- **`-o validate_dhcp=true`'s preflight probe at `docker network
+  create`** runs `off`. It is asking whether a DHCP server answers on
+  this parent; the address it is offered is released immediately and
+  never configured, so there is nothing for RFC 5227 to protect and no
+  reason to spend the window inside an 8s budget.
+
+`ignore_conflicts` is untouched and is not related: it is about another
+Docker network on **this host** already owning the bridge you named,
+before any lease exists.
+
+Four counters are added, on `/Plugin.Health` and `/metrics`:
+`acd_probes_sent` (read it before believing `address_conflicts` is zero),
+`acd_announcements_sent`, `acd_conflicts_detected` and
+`acd_arp_send_failures`. `address_conflicts` keeps its name, keeps
+flipping `healthy`, and is now fed by the DHCP client rather than by the
+plugin's probe.
+
 ### Changed on the wire
 
 Each line names the v1.9.0 behaviour and the beta's.
@@ -173,7 +240,7 @@ Each line names the v1.9.0 behaviour and the beta's.
 | Legacy static routes (option 33) | Not requested and not honoured | Requested, and used when option 121 is absent or does not decode. Option 121 supersedes it when both arrive |
 | Broadcast flag in the DHCP header | Set for **ipvlan only** | Set for **every mode**. The plugin's socket is a raw packet socket on an interface with no address yet, which is the condition RFC 2131 defines the flag for; clearing it works against servers that ignore the flag and hangs against servers that honour it |
 | Initial-DISCOVER delay (RFC 2131 §4.4.1) | Whatever the external client did; not set or observed by the plugin | **None**, explicitly. The 1–10 second random delay is a rule for a fleet of hosts booting together; a container start is one client asking for one address. The library defaults to applying it and the plugin disables it, on both the acquisition and the renewal client |
-| Retransmission schedule | The external client's; not set or observed by the plugin | RFC 2131 §4.1's worked example, set by the plugin: intervals of 4s, 8s, 16s, 32s to a 64s ceiling, ±1s of jitter on each, armed as each packet goes out — so retransmissions land at ~4s, ~12s, ~28s and ~60s after the first DISCOVER, and the fourth is followed by a restart of the exchange. The default 10s `lease_timeout` funds one retransmission |
+| Retransmission schedule | The external client's; not set or observed by the plugin | RFC 2131 §4.1's worked example, set by the plugin: intervals of 4s, 8s, 16s, 32s to a 64s ceiling, ±1s of jitter on each, armed as each packet goes out — so retransmissions land at ~4s, ~12s, ~28s and ~60s after the first DISCOVER, and the fourth is followed by a restart of the exchange. The default `lease_timeout` funds one retransmission, and since it now also has to cover RFC 5227's probe window **and one conflict found inside it** — a DHCPDECLINE, RFC 2131 §3.1(5)'s mandatory ten-second restart delay, and a second acquisition — it is **34s** rather than 10s, derived from the two schedules rather than written down |
 | `dhcp_servers` / `dhcp_deny_servers` matching | Matched the **packet's source address**, so the lists did not work behind a DHCP relay (#111) | Matches the **server identifier (option 54)**, so the lists work behind a relay. Deny wins over allow; an allow list refuses a message that carries no server identifier at all; a deny list alone permits one |
 | First-attempt budget floor for the `dhcp_servers` ladder | 3s per attempt, sized for a process spawn | Unchanged at 3s. The attempt no longer spawns a process, but the floor is a policy choice pinned by tests, not a measurement of the old cost |
 | DHCPRELEASE | Never sent (v1.9.0, #800) | Never sent. Unchanged |
@@ -187,9 +254,7 @@ Each line names the v1.9.0 behaviour and the beta's.
 - **`/etc/resolv.conf` and the link MTU are still applied by the plugin**,
   over netlink and a `setns` into the container's mount namespace, exactly as
   before. Nothing about `propagate_dns`, `propagate_mtu`, `skip_routes`,
-  `register_dns`, `audit_log` or the conflict probe changes for an operator.
-- **Address-conflict detection is unchanged in this release** — still the
-  datagram probe v1.6.0 introduced.
+  `register_dns` or `audit_log` changes for an operator.
 
 ## v1.9.0
 

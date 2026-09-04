@@ -72,6 +72,32 @@ func buildParams(opts *DHCPClientOptions, once bool) (proto.Params, error) {
 	}
 	p.ClientID = ClientIdentity(opts.ClientID)
 
+	// RFC 5227 conflict detection, per network (D23). The zero value is
+	// proto.ConflictWait and DefaultConflictCheck is that value's own
+	// name, so an endpoint whose network predates the option gets the
+	// mode the option's default names — one fact, read from the
+	// library, never spelled here.
+	//
+	// BOTH MANAGERS GET THE SAME MODE, which is not a detail. The
+	// one-shot wins the address and the Join manager holds it; a mode
+	// that applied to one of them would probe the address before use
+	// and then stop listening for section 2.4's conflicts for the whole
+	// of the container's life, or the reverse. `once` selects nothing
+	// here for the same reason it selects nothing below.
+	p.Conflict = opts.ConflictMode
+
+	// Params.CHAddr is left to runtime.NewClient, which fills it from
+	// the link, and that is load-bearing rather than lazy (M6 review r2,
+	// finding 1). The library's own-traffic exemption in the probe
+	// window is keyed on CHAddr: a client whose CHAddr is a stable
+	// identity rather than the sending interface's hardware address
+	// reads its own kernel's ARP replies as conflicts and DECLINEs its
+	// own address on every acquisition. proto.DefaultParams(opts.MAC)
+	// above sets it to the endpoint's pinned MAC, which IS the link's
+	// address -- the same MAC Docker put on the interface -- so the two
+	// agree; TestBuildParams_TheCHAddrIsTheLinkSHardwareAddress is the
+	// assertion that they still do.
+
 	// register_dns arrives as a mode string because dhcpcd spelled it
 	// that way ("both"); what it means is "ask the server to register
 	// the name in DNS", which RFC 4702 encodes as option 81. Flags are
