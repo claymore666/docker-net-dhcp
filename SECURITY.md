@@ -22,13 +22,13 @@ and the fix's release notes unless they ask to remain anonymous.
 `docker-net-dhcp` is a privileged Docker network plugin: it runs with
 the host PID namespace, host networking, and the Docker socket mounted.
 
-`config.json` at the repository root **requests** three capabilities —
-`CAP_NET_ADMIN`, `CAP_SYS_ADMIN`, `CAP_SYS_PTRACE` — and that is what
-the daemon asks you to approve at `docker plugin install`. It is **not**
-the effective set. Docker composes a plugin's capabilities *additively*
-over the OCI defaults, so the process ends up with seventeen, the three
-above plus the default set — `CAP_NET_RAW` among them. Read off a
-running plugin process:
+`config.json` at the repository root **requests** four capabilities —
+`CAP_NET_ADMIN`, `CAP_NET_RAW`, `CAP_SYS_ADMIN`, `CAP_SYS_PTRACE` — and
+that is what the daemon asks you to approve at `docker plugin install`.
+It is **not** the effective set. Docker composes a plugin's capabilities
+*additively* over the OCI defaults, so the process ends up with
+seventeen: the four above plus the default set, which already contains
+`CAP_NET_RAW`. Read off a running plugin process:
 
 ```
 $ grep CapEff /proc/<plugin-pid>/status
@@ -36,14 +36,29 @@ CapEff: 00000000a82c35fb
 $ capsh --decode=00000000a82c35fb
 ```
 
-Assume the effective set when reasoning about a report, not the three
+**`CAP_NET_RAW` is requested from the 2.0 beta onward, and the request
+is what changed, not the power.** The DHCP exchange runs on an
+interface that has no address yet, which needs an `AF_PACKET` socket,
+and that is the ordinary path for every endpoint rather than an
+optional feature. The plugin process already held the capability before
+the beta, because it is in the OCI default set — the read above is from
+a 1.x process. What `config.json` controls is the set the daemon
+**shows you and asks you to approve** at install and on upgrade, so
+adding the line makes every operator re-approve while the effective set
+stays exactly as it was. If you are prompted on an upgrade, that is
+this change; it is recorded in the release notes so a prompt nobody
+intended can be told apart from this one.
+
+Assume the effective set when reasoning about a report, not the four
 in `config.json`. Reports are especially welcome for:
 
-- container → host or container → plugin escapes through the netns /
-  mount-ns handling (`pkg/plugin`, `pkg/dhcp`);
-- parsing of untrusted DHCP-server responses (the `dhcpcd` hook-event
-  path: `cmd/dhcp-handler`, `pkg/dhcp.BuildEvent`, lease/option
-  propagation into containers);
+- container → host or container → plugin escapes through the netns
+  handling (`pkg/plugin`, `pkg/dhcp`);
+- parsing of untrusted DHCP-server responses: the wire decoders in the
+  in-tree DHCP library (`internal/dhcp-golib/wire`), the chassis that
+  turns a decoded lease into a plugin event
+  (`pkg/dhcp/chassis.go`, `pkg/dhcp/info_sanitize.go`), and lease/option
+  propagation into containers;
 - anything that lets one container influence another container's
   lease, address, or DNS (cross-endpoint identity confusion).
 
@@ -138,18 +153,26 @@ must not cause memory-unsafe behaviour or injection. (3) Published
 artifacts must be tamper-evident so users install what was built.
 
 **Threats** (see *Scope* above). The plugin is privileged
-(`CAP_NET_ADMIN`, `CAP_SYS_ADMIN`, `CAP_SYS_PTRACE`, host PID ns,
-Docker socket), so the
+(`CAP_NET_ADMIN`, `CAP_NET_RAW`, `CAP_SYS_ADMIN`, `CAP_SYS_PTRACE`,
+host PID ns, Docker socket), so the
 relevant adversaries are a malicious container, a hostile LAN DHCP
 server supplying crafted lease/option bytes, and a supply-chain
 attacker tampering with distributed images.
 
 **Mitigations and why they suffice.**
-- *Memory safety / injection:* the plugin is written in Go (memory-safe)
-  and the untrusted DHCP-response parsers (`pkg/dhcp.BuildEvent`, the
-  handler-pipe JSON decoder) have native fuzz targets plus seed corpora
-  run on every PR, so malformed server input is exercised, not assumed
-  safe.
+- *Memory safety / injection:* the plugin is written in Go
+  (memory-safe). Server-supplied bytes are decoded by the in-tree DHCP
+  library's wire codec, which is a nested Go module with its own test
+  suite, pinned by SHA in `internal/dhcp-golib/SOURCE` and checked
+  byte-for-byte on every PR by `scripts/check-dhcp-golib-copy.sh`; every
+  string value that reaches a container or a log first passes
+  `pkg/dhcp.SafeValue`, which refuses control characters and counts the
+  refusal (`unsafe_option_values_dropped`). **The named bound:** this
+  repository's own fuzz step is a leftover of the 1.x parsers and no
+  longer names a target that exists here, so no fuzzing runs in this
+  branch's lane — the library's suite is where the codec is exercised,
+  and re-pointing the step is tracked work rather than a claim made
+  here.
 - *Escape / cross-container confusion:* the live integration suite drives
   real DHCP exchanges through bridge/macvlan/ipvlan against a real
   kernel and daemon, including recovery, tombstone-stability, and

@@ -147,17 +147,24 @@ docker buildx build --builder repro --no-cache --target builder \
   --output type=local,dest=out .
 docker buildx rm repro
 
-# 3. Your binaries.
-sha256sum out/usr/local/src/docker-net-dhcp/bin/net-dhcp \
-          out/usr/local/src/docker-net-dhcp/bin/dhcp-handler
+# 3. Your binary.
+sha256sum out/usr/local/src/docker-net-dhcp/bin/net-dhcp
 
-# 4. The published ones, from the release tarball.
+# 4. The published one, from the release tarball.
 tar -xzf net-dhcp-plugin-VERSION-linux-amd64.tar.gz
-sha256sum rootfs/usr/sbin/net-dhcp \
-          rootfs/usr/lib/net-dhcp/dhcp-handler
+sha256sum rootfs/usr/sbin/net-dhcp
 ```
 
-The two pairs of digests must match. For **v1.9.0** (`linux/amd64`) they are:
+**One binary is the 2.0 shape; a 1.x tarball carries two.** The second
+was `dhcp-handler`, the helper the external DHCP client execed for each
+lease event. The 2.0 beta leases in-process and builds `net-dhcp` alone.
+Verifying a **1.x** release means adding
+`out/usr/local/src/docker-net-dhcp/bin/dhcp-handler` to step 3 and
+`rootfs/usr/lib/net-dhcp/dhcp-handler` to step 4, and comparing both
+pairs. Everything else in the recipe is the same for either.
+
+The digests must match. For **v1.9.0** (`linux/amd64`), a 1.x release
+and so two of them:
 
 ```
 eee5a6d5c269f7d05ea4ce230c30389479d4de3043b57f3cf6ef92fc0b710a06  net-dhcp
@@ -167,7 +174,7 @@ d1fb8d4487b1ec7170afe7635e7861a220a770e21b351f363b0da58b335eac85  dhcp-handler
 Since v1.7.0 each release also ships arm64 binaries under the `-arm64`
 tags; rebuild them the same way on an arm64 host (the build follows the
 host architecture) and unpack `net-dhcp-plugin-VERSION-linux-arm64.tar.gz`
-in step 4. For **v1.9.0** (`linux/arm64`) they are:
+in step 4. For **v1.9.0** (`linux/arm64`), again a 1.x release:
 
 ```
 8523f80370e54235c929b8e755c44a3cf10ab33ddf4bde4490e60367dc7ee7b7  net-dhcp

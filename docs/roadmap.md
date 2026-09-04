@@ -22,6 +22,13 @@ for exactly that reason.
 
 ## Where the project is today
 
+**This branch is the 2.0 beta.** The plugin leases through the
+project's own in-tree DHCP client library instead of an external client
+process, and the beta implements **DHCPv4 only**: `ipv6=true` is
+refused at `docker network create` and DHCPv6 lands in a later beta
+milestone. Everything else in this section describes the 1.x line the
+beta is replacing, feature for feature, and stays true of it.
+
 Bridge, macvlan and ipvlan attachment; DHCPv4 and DHCPv6; addresses that
 survive `docker restart`, plugin restart and daemon restart; a
 `/Plugin.Health` counter surface and the same counters in Prometheus
@@ -146,12 +153,21 @@ is recorded so a contributor can read it before writing the PR.
 - **It will not ask for more privileges to buy a feature.** Adding a
   capability to `config.json` forces **every** operator to re-approve
   the plugin's privileges on upgrade, and that trade is the default
-  answer, not a one-off. The example this rule used to be illustrated
-  with does not actually hold: proper RFC 5227 conflict detection needs
-  `CAP_NET_RAW`, and the plugin **already has it** — Docker composes
-  capabilities additively over the OCI defaults, so the effective set is
-  seventeen, not the three `config.json` requests. Nothing would have to
-  be re-approved. See [#725]; the rule stands, the example was wrong.
+  answer, not a one-off.
+
+    The 2.0 beta is what this rule costs when it is met head-on. The
+    beta **does** add `CAP_NET_RAW` to `config.json`, and every
+    operator upgrading onto it re-approves. It buys no feature: the
+    DHCP exchange runs on an interface with no address, which requires
+    an `AF_PACKET` socket on the ordinary path for every endpoint,
+    with no configuration in which the plugin works without it. The
+    *power* is unchanged — the capability is in the OCI default set and
+    the process always held it — so what the line bought is an honest
+    manifest and what it cost is the prompt. Read the rule as written:
+    not "never add a capability", but "never add one to buy a feature",
+    and pay the re-approval out loud when the plugin genuinely needs
+    the grant it is already exercising. See [#725], whose title asserts
+    the grant was already in the manifest; it was not.
 - **It will not detect a conflicting container on the same host.** The
   conflict probe's vantage point is the parent link, and the isolation
   that keeps our own endpoint from answering also hides a sibling. That
@@ -160,10 +176,13 @@ is recorded so a contributor can read it before writing the PR.
   reply would be informative.
 - **It will not support ipvlan L3 / L3S.** DHCP needs L2 broadcast.
 - **It will not run its arm64 verification under qemu-user/binfmt.**
-  Measured, not assumed: `dhcpcd` opens a `NETLINK_GENERIC` socket and
-  qemu-user does not translate that family, so the emulated plugin
-  cannot acquire a lease at all. arm64 testing means a full-system VM or
-  real hardware.
+  Measured, not assumed — on the 1.x client, which opened a
+  `NETLINK_GENERIC` socket qemu-user does not translate, so the
+  emulated plugin could not acquire a lease at all. The 2.0 client is a
+  different program and has not been re-measured under emulation; the
+  conclusion is unchanged either way, because arm64 verification runs
+  on real hardware and there is nothing to be gained by finding out
+  which syscall the emulator drops next.
 - **It will not backport security fixes.** Only the latest release is
   supported; upgrading is one `docker plugin install`. See
   [SECURITY.md](https://github.com/claymore666/docker-net-dhcp/blob/main/SECURITY.md).

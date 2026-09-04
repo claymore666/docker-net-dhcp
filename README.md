@@ -10,19 +10,27 @@
 [![OpenSSF gold](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fwww.bestpractices.dev%2Fprojects%2F13229.json&query=%24.badge_percentage_2&label=OpenSSF%20gold&suffix=%25&color=b8860b)](https://www.bestpractices.dev/projects/13229/gold)
 [![Docs](https://img.shields.io/badge/docs-claymore666.github.io-blue?logo=materialformkdocs&logoColor=white)](https://claymore666.github.io/docker-net-dhcp/)
 
-A Docker network plugin that allocates container IP addresses (IPv4 and
-optionally IPv6) from an **existing DHCP server** — your router, a
-Fritz!Box, dnsmasq, anything — instead of Docker's self-managed IPAM
-pools. Containers come up on your LAN as first-class hosts, addressable
-like any other machine. Bridge, macvlan, and ipvlan attachment modes.
+A Docker network plugin that allocates container IP addresses from an
+**existing DHCP server** — your router, a Fritz!Box, dnsmasq, anything —
+instead of Docker's self-managed IPAM pools. Containers come up on your
+LAN as first-class hosts, addressable like any other machine. Bridge,
+macvlan, and ipvlan attachment modes.
+
+> [!NOTE]
+> **This branch is the 2.0 beta, and it is IPv4-only.** The plugin
+> leases through the project's own in-tree DHCP client library instead
+> of an external client process. `ipv6=true` is refused at
+> `docker network create`, and DHCPv6 returns in a later beta
+> milestone; the 1.x line is where DHCPv6 works today. Every page in
+> this branch describes this build.
 
 > **This is a maintained fork** of [`devplayer0/docker-net-dhcp`][fork-parent]
 > (quiet since 2021, no longer builds on current Docker). This fork
 > modernises the toolchain (Go 1.27, docker SDK v28, current Alpine),
 > adds **macvlan** and **ipvlan** modes, fixes the daemon-restart
 > deadlock and a state data-race, and gates every PR on a live
-> integration suite (all three modes + DHCPv6, recovery, failure
-> injection) with a coverage ratchet and supply-chain gates on release.
+> integration suite (all three modes, recovery, failure injection)
+> with a coverage ratchet and supply-chain gates on release.
 > The maintained image lives at `ghcr.io/claymore666/docker-net-dhcp`.
 
 [fork-parent]: https://github.com/devplayer0/docker-net-dhcp
@@ -76,8 +84,11 @@ docker plugin install ghcr.io/claymore666/docker-net-dhcp:v1.9.0-arm64
 It requests `host` networking, the host PID namespace, the Docker
 socket, a bind mount of the state directory above, a read-only bind
 mount of `/var/run/docker` (v1.6.0+), and
-`CAP_NET_ADMIN`/`CAP_SYS_ADMIN`/`CAP_SYS_PTRACE` — grant them to
-proceed.
+`CAP_NET_ADMIN`/`CAP_NET_RAW`/`CAP_SYS_ADMIN`/`CAP_SYS_PTRACE` — grant
+them to proceed. `CAP_NET_RAW` is requested from the 2.0 beta onward,
+so an upgrade onto it asks you to approve the privilege set again; what
+that does and does not change is in
+[SECURITY.md](SECURITY.md#scope--what-this-plugin-is).
 (If you hit `invalid rootfs in image configuration`, upgrade Docker.)
 
 Create a bridge-mode network and run a container on it (assumes you

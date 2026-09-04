@@ -59,6 +59,123 @@ assessment above is retained here as the audit trail. If it becomes
 reachable again the gate fails loudly rather than silently
 re-accepting it.
 
+## v2.0.0-alpha.1 (unreleased)
+
+The plugin performs the DHCP exchange itself, through an in-tree Go library,
+instead of driving an external client process. The image contains no DHCP
+client and the plugin execs nothing. **This release is IPv4 only**; DHCPv6
+returns in a later 2.0 milestone, and the 1.x line is where it works today.
+
+Everything below is a change against v1.9.0.
+
+### Upgrade notes
+
+Required on every host before `docker plugin install`, unchanged since v1.5.0:
+
+```bash
+sudo mkdir -p /var/lib/net-dhcp
+```
+
+**The upgrade re-prompts for privileges, and you must approve it.** The
+plugin manifest now requests a fourth Linux capability, `CAP_NET_RAW`,
+alongside `CAP_NET_ADMIN`, `CAP_SYS_ADMIN` and `CAP_SYS_PTRACE`. It is
+requested because the plugin now opens the packet socket that carries the
+DHCP exchange, which the external client used to open for it. `docker plugin
+upgrade` shows the new list and waits; an unattended upgrade that does not
+pass `--grant-all-permissions` stops there.
+
+**The capability the plugin can exercise does not change.** Docker composes a
+plugin's requested capabilities *additively* over the OCI default set, and
+`CAP_NET_RAW` is already in that default set, so the effective capability set
+of the plugin process is the same seventeen it was before. What changed is
+the manifest, and therefore the prompt: the request is now honest about a
+power the process already had. See `SECURITY.md`.
+
+### IPv4 only
+
+| change | effect |
+| --- | --- |
+| `docker network create … -o ipv6=true` | **Refused**, in every mode, with an error naming the beta. The refusal is keyed on the decoded option, so `ipv6`, `IPv6` and `Ipv6` are all refused |
+| `--ip6` / `Interface.AddressIPv6` on an endpoint | Ignored. There is no DHCPv6 exchange to carry a preferred address |
+| `docker network create --ipv6` | Unchanged: Docker's own flag does not work with the null IPAM driver, and never did |
+
+**A network created by a 1.x build with `ipv6=true` survives the upgrade, and
+its containers stop working.** Nothing rewrites a stored network record and
+the refusal above runs at `CreateNetwork`, which an existing network does not
+go through again. What the plugin does with such a record, read from the tree
+rather than from intent:
+
+- `CreateEndpoint` **succeeds, IPv4 only**. The v6 acquisition is refused
+  inside the plugin and reports no router advertisement, which is classified
+  as the tolerated "no router on this segment" case: a warning is logged and
+  **`dhcpv6_no_router_advert` increments**.
+- `Join` **fails**. Starting the persistent client for the v6 family is
+  refused, and that failure takes down the v4 persistent client started
+  beside it. The container does not start.
+- At plugin start, **recovery fails** for such an endpoint the same way and
+  increments `recovery_failed`, which flips `healthy` to `false`.
+
+There is no migration step. Recreate the network without `ipv6=true`.
+
+### Removed: plugin settings
+
+| setting | why |
+| --- | --- |
+| `OUTAGE_TICK` | The outage watchdog it paced is gone. The DHCP client holds the lease and reports a failed attempt itself, so there is no cadence to tune |
+| `OUTAGE_GRACE` | Same. It was the settling time the watchdog added on top of the lease lifetime |
+
+Both are removed from `config.json`, so `docker plugin set OUTAGE_TICK=…` is
+refused by the daemon rather than accepted and ignored.
+
+### Removed: health counters and `/metrics` series
+
+Each is removed from `/Plugin.Health` and from `/metrics`. A JSON consumer
+reading a removed key gets zero, not an error.
+
+| counter | why |
+| --- | --- |
+| `lease_time_clamped` | Counted a lease lifetime clamped to a 24h watchdog deadline. Option 51's `0xFFFFFFFF` is now carried as an infinite lease rather than as 4294967295 seconds, so there is no overflow to clamp and no watchdog to clamp it for |
+| `directives_refused` | Counted values dropped before being written into a generated client config file. No config file is generated |
+| `mount_prep_failures` | Counted failed steps of a per-client private mount-namespace setup. There is no per-client state directory, so there is no mount to prepare |
+| `router_advert_guard_failures` | Counted failed steps of the DHCPv6 Router Advertisement guard, which is deleted along with the rest of the DHCPv6 path |
+
+**Four v6 counters remain declared but can no longer be incremented**:
+`dhcpv6_config_only`, `dhcpv6_not_offered`, `dhcpv6_no_router_advert` and
+`ipv6_link_enable_failures`. They are still rendered so a scrape does not lose
+a series across the upgrade. **Read a zero on any of them as "this build
+cannot report it", not as "nothing went wrong."** The one exception is
+`dhcpv6_no_router_advert`, which does move on the legacy-network path
+described above and there means something different from what its 1.x
+description says.
+
+### Changed on the wire
+
+Each line names the v1.9.0 behaviour and the beta's.
+
+| behaviour | v1.9.0 | 2.0 beta |
+| --- | --- | --- |
+| Parameter request list (option 55) | The 16 codes 1, 2, 3, 6, 12, 15, 26, 28, 42, 66, 67, 100, 101, 119, 121, 252, asked for by name in the external client's config; the order it put them in was that client's business | The same 16 codes minus **12** (the host name is sent, not requested back) plus **33** (static routes), and the plugin controls the order: **121 first**, which RFC 3442 requires of a client that implements it |
+| Legacy static routes (option 33) | Not requested and not honoured | Requested, and used when option 121 is absent or does not decode. Option 121 supersedes it when both arrive |
+| Broadcast flag in the DHCP header | Set for **ipvlan only** | Set for **every mode**. The plugin's socket is a raw packet socket on an interface with no address yet, which is the condition RFC 2131 defines the flag for; clearing it works against servers that ignore the flag and hangs against servers that honour it |
+| Initial-DISCOVER delay (RFC 2131 §4.4.1) | Whatever the external client did; not set or observed by the plugin | **None**, explicitly. The 1–10 second random delay is a rule for a fleet of hosts booting together; a container start is one client asking for one address. The library defaults to applying it and the plugin disables it, on both the acquisition and the renewal client |
+| Retransmission schedule | The external client's; not set or observed by the plugin | RFC 2131 §4.1's worked example, set by the plugin: first retransmission after 4s, doubling to a 64s ceiling, ±1s of jitter, 4 retransmissions before restarting the exchange |
+| `dhcp_servers` / `dhcp_deny_servers` matching | Matched the **packet's source address**, so the lists did not work behind a DHCP relay (#111) | Matches the **server identifier (option 54)**, so the lists work behind a relay. Deny wins over allow; an allow list refuses a message that carries no server identifier at all; a deny list alone permits one |
+| First-attempt budget floor for the `dhcp_servers` ladder | 3s per attempt, sized for a process spawn | Unchanged at 3s. The attempt no longer spawns a process, but the floor is a policy choice pinned by tests, not a measurement of the old cost |
+| DHCPRELEASE | Never sent (v1.9.0, #800) | Never sent. Unchanged |
+
+### Also
+
+- **One binary per release.** The image built only `net-dhcp` and
+  `dhcp-handler`; the handler was the hook the external client called back
+  into, and it is gone. From this release the checksum list in
+  `docs/verifying-releases.md` has one entry per platform, not two.
+- **`/etc/resolv.conf` and the link MTU are still applied by the plugin**,
+  over netlink and a `setns` into the container's mount namespace, exactly as
+  before. Nothing about `propagate_dns`, `propagate_mtu`, `skip_routes`,
+  `register_dns`, `audit_log` or the conflict probe changes for an operator.
+- **Address-conflict detection is unchanged in this release** — still the
+  datagram probe v1.6.0 introduced.
+
 ## v1.9.0
 
 IPv6 works on stateless, SLAAC-only and managed segments. The plugin no longer
