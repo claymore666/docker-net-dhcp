@@ -166,8 +166,10 @@ is recorded so a contributor can read it before writing the PR.
     manifest and what it cost is the prompt. Read the rule as written:
     not "never add a capability", but "never add one to buy a feature",
     and pay the re-approval out loud when the plugin genuinely needs
-    the grant it is already exercising. See [#725], whose title asserts
-    the grant was already in the manifest; it was not.
+    the grant it is already exercising. See [#725], whose title says
+    the capability is *already granted* — true of the effective set the
+    process runs with, and the reason the beta's addition buys no power,
+    only the prompt.
 - **It will not detect a conflicting container on the same host.** The
   conflict probe's vantage point is the parent link, and the isolation
   that keeps our own endpoint from answering also hides a sibling. That

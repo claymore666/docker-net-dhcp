@@ -197,7 +197,11 @@ follows from where the filtering happens.
   sum to at most the budget. The per-attempt floor (`minAttemptBudget`,
   3s) predates the library and now sits just under its first
   retransmission at 4s, so a tier that lands on the floor buys one
-  DISCOVER and no retry. That is not a regression — the same 3s used to
+  DISCOVER and no retry. The same reading applies to the undivided
+  budget: the library's intervals are 4s, 8s, 16s, 32s with a 64s
+  ceiling and ±1s of jitter, each armed as its packet goes out, so
+  retransmissions land at ~4s, ~12s, ~28s and ~60s and the default 10s
+  `lease_timeout` funds one of them. That is not a regression — the same 3s used to
   have to pay for a namespace and a process spawn as well — but its
   original derivation is dead and nothing re-derives it against the
   library's schedule. `dhcp_server_tier_fallbacks` counts a

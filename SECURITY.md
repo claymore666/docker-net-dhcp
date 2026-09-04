@@ -52,8 +52,11 @@ intended can be told apart from this one.
 Assume the effective set when reasoning about a report, not the four
 in `config.json`. Reports are especially welcome for:
 
-- container → host or container → plugin escapes through the netns
-  handling (`pkg/plugin`, `pkg/dhcp`);
+- container → host or container → plugin escapes through the netns /
+  mount-ns handling (`pkg/plugin`, `pkg/dhcp`). Both namespaces are still
+  entered: the plugin `setns`es a locked thread into a container's network
+  namespace to open the DHCP socket, and into its **mount** namespace on
+  every `resolv.conf` write (`pkg/plugin/resolvconf.go`);
 - parsing of untrusted DHCP-server responses: the wire decoders in the
   in-tree DHCP library (`internal/dhcp-golib/wire`), the chassis that
   turns a decoded lease into a plugin event

@@ -109,11 +109,20 @@ rather than from intent:
   inside the plugin and reports no router advertisement, which is classified
   as the tolerated "no router on this segment" case: a warning is logged and
   **`dhcpv6_no_router_advert` increments**.
-- `Join` **fails**. Starting the persistent client for the v6 family is
-  refused, and that failure takes down the v4 persistent client started
-  beside it. The container does not start.
-- At plugin start, **recovery fails** for such an endpoint the same way and
-  increments `recovery_failed`, which flips `healthy` to `false`.
+- `Join` **returns success and the container starts — with an address
+  nothing will renew.** Two things happen, in order. Because the record says
+  `ipv6=true`, the manager first clears the engine's `disable_ipv6` on the
+  container link; if that write fails it increments
+  **`ipv6_link_enable_failures`** and carries on. It then tries to start the
+  persistent client for the v6 family, which is refused, and that failure
+  takes down the v4 persistent client started beside it. The client start
+  runs in the background *after* `Join` has answered Docker, so the container
+  comes up holding the IPv4 address the `CreateEndpoint` one-shot won, with
+  no client renewing it. The failure increments **`join_start_failures`**,
+  which flips `healthy` to `false`.
+- At plugin start, **recovery replays the same sequence** for such an
+  endpoint — the same `disable_ipv6` clear, the same refusal — and increments
+  `recovery_failed`, which also flips `healthy` to `false`.
 
 There is no migration step. Recreate the network without `ipv6=true`.
 
@@ -139,14 +148,20 @@ reading a removed key gets zero, not an error.
 | `mount_prep_failures` | Counted failed steps of a per-client private mount-namespace setup. There is no per-client state directory, so there is no mount to prepare |
 | `router_advert_guard_failures` | Counted failed steps of the DHCPv6 Router Advertisement guard, which is deleted along with the rest of the DHCPv6 path |
 
-**Four v6 counters remain declared but can no longer be incremented**:
-`dhcpv6_config_only`, `dhcpv6_not_offered`, `dhcpv6_no_router_advert` and
-`ipv6_link_enable_failures`. They are still rendered so a scrape does not lose
-a series across the upgrade. **Read a zero on any of them as "this build
-cannot report it", not as "nothing went wrong."** The one exception is
-`dhcpv6_no_router_advert`, which does move on the legacy-network path
-described above and there means something different from what its 1.x
-description says.
+**Two of the four v6 counters can still be incremented, and both mean
+something other than what their 1.x descriptions say.** On the legacy
+`ipv6=true` path described above, `dhcpv6_no_router_advert` increments once
+per `CreateEndpoint` — always, whatever the segment carries — and
+`ipv6_link_enable_failures` increments at `Join` if clearing the engine's
+`disable_ipv6` on the container link fails. That step runs even though no
+DHCPv6 client is constructed, which is why the counter is not dead here.
+
+**The other two, `dhcpv6_config_only` and `dhcpv6_not_offered`, cannot be
+incremented in this build.** Nothing emits the audit event the first reads,
+and the v6 refusal reports nothing observed about the segment, so it always
+classifies as "no router" and never as "no DHCPv6 offered". All four are still
+rendered so a scrape does not lose a series across the upgrade. **Read a zero
+on those two as "this build cannot report it", not as "nothing went wrong."**
 
 ### Changed on the wire
 
@@ -158,7 +173,7 @@ Each line names the v1.9.0 behaviour and the beta's.
 | Legacy static routes (option 33) | Not requested and not honoured | Requested, and used when option 121 is absent or does not decode. Option 121 supersedes it when both arrive |
 | Broadcast flag in the DHCP header | Set for **ipvlan only** | Set for **every mode**. The plugin's socket is a raw packet socket on an interface with no address yet, which is the condition RFC 2131 defines the flag for; clearing it works against servers that ignore the flag and hangs against servers that honour it |
 | Initial-DISCOVER delay (RFC 2131 §4.4.1) | Whatever the external client did; not set or observed by the plugin | **None**, explicitly. The 1–10 second random delay is a rule for a fleet of hosts booting together; a container start is one client asking for one address. The library defaults to applying it and the plugin disables it, on both the acquisition and the renewal client |
-| Retransmission schedule | The external client's; not set or observed by the plugin | RFC 2131 §4.1's worked example, set by the plugin: first retransmission after 4s, doubling to a 64s ceiling, ±1s of jitter, 4 retransmissions before restarting the exchange |
+| Retransmission schedule | The external client's; not set or observed by the plugin | RFC 2131 §4.1's worked example, set by the plugin: intervals of 4s, 8s, 16s, 32s to a 64s ceiling, ±1s of jitter on each, armed as each packet goes out — so retransmissions land at ~4s, ~12s, ~28s and ~60s after the first DISCOVER, and the fourth is followed by a restart of the exchange. The default 10s `lease_timeout` funds one retransmission |
 | `dhcp_servers` / `dhcp_deny_servers` matching | Matched the **packet's source address**, so the lists did not work behind a DHCP relay (#111) | Matches the **server identifier (option 54)**, so the lists work behind a relay. Deny wins over allow; an allow list refuses a message that carries no server identifier at all; a deny list alone permits one |
 | First-attempt budget floor for the `dhcp_servers` ladder | 3s per attempt, sized for a process spawn | Unchanged at 3s. The attempt no longer spawns a process, but the floor is a policy choice pinned by tests, not a measurement of the old cost |
 | DHCPRELEASE | Never sent (v1.9.0, #800) | Never sent. Unchanged |

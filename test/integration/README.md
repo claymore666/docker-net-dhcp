@@ -521,8 +521,10 @@ about itself.** Shards run tests in declaration order, so a test that
 returns while the plugin is still tearing down on its behalf hands that
 state to whichever test is declared next. If your test can leave links
 on a fixture parent, wait until they are gone before returning (see
-`awaitReleaseLinksGone` in `orphan_release_test.go`) rather than
-assuming teardown outruns the next test.
+`awaitProbeLinksGone` in `parent_gate_test.go`, or `awaitNoReleaseLinks`
+in `join_no_container_test.go`) rather than assuming teardown outruns the
+next test. The original example lived in `orphan_release_test.go`, which
+went with the reclaim in #800.
 
 Distinct subnets keep the two dnsmasq instances cleanly isolated
 from each other — without that, two DHCP servers on the same
