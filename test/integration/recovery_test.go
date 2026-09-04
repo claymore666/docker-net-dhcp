@@ -151,30 +151,48 @@ func TestRecovery_PluginDisableEnable_PreservesEndpoint(t *testing.T) {
 		t.Errorf("MAC changed across plugin recycle: before=%s after=%s", macBefore, macAfter)
 	}
 
-	// THE RECOVERY CELL OF THE #725 MEASUREMENT, and its answer.
+	// THE RECOVERY CELL OF THE #725 MEASUREMENT, and the cell that
+	// explains all the others.
 	//
-	// The brief asked whether the sandbox key survives a plugin
-	// restart, since recovery re-adopts an endpoint with no Join to
-	// carry one — "the key must come from the durable record — does
-	// it?". The question turned out to have two answers.
+	// The brief asked whether the sandbox key survives a plugin restart,
+	// since recovery re-adopts an endpoint with no Join to carry one —
+	// "the key must come from the durable record — does it?". Two
+	// separate answers came back.
 	//
 	// WHERE THE KEY COMES FROM: not the record, and it need not. Join
 	// and recovery both reach dhcpManager.Start, which already inspects
 	// the container, so NetworkSettings.SandboxKey is one always-fresh
 	// source for both. Nothing was added to the durable record.
 	//
-	// WHETHER IT WORKS: no, and for the same reason as every other
-	// cell. The daemon's per-sandbox netns mounts are not propagated
-	// into the plugin's mount namespace, so the key resolves to the
-	// ordinary file underneath and the route is refused. See
-	// test/integration/sandbox_key_route_test.go for the measurement
-	// and for what a rise in sandbox_key_entries would mean.
+	// WHETHER IT WORKS: HERE, YES — and in sandbox_key_route_test.go's
+	// four cells, no. Same code, opposite results, and the discriminator
+	// is the one fact that makes the whole finding precise:
+	//
+	//   the plugin's read-only /var/run/docker is a bind mount taken when
+	//   the plugin process starts, and a bind mount is a SNAPSHOT, not a
+	//   subscription. libnetwork bind-mounts each netns over an ordinary
+	//   empty file under netns/. Sandboxes that already existed when the
+	//   plugin started are therefore visible through the key; sandboxes
+	//   created afterwards are not, and the key resolves to the empty file
+	//   underneath (which is why openSandboxNetNSByKeyIn checks
+	//   NS_GET_NSTYPE rather than trusting a successful open).
+	//
+	// Recovery is the case where the sandbox necessarily predates the
+	// plugin process: the container was running before the disable, and
+	// this is a fresh plugin after the enable. So recovery is exactly the
+	// case the key route CAN carry, and it does. MEASURED on the lane
+	// 2026-09-05, run 33927195482: entries 1, failures 0, fallbacks 0
+	// here; entries 0, failures 1, fallbacks 1 in every attach cell.
+	//
+	// This is also why the manifest cannot lose pidhost or
+	// CAP_SYS_PTRACE: a Join is always for a sandbox younger than the
+	// plugin, so the PID route carries every attach on this engine.
 	//
 	// The reads are ABSOLUTE, not deltas, for the reason stated at the
 	// window above: this is a fresh plugin process and its counters
 	// started at zero. That is what makes them exactly right here —
-	// every route taken on this instance was taken by recovery,
-	// because nothing else has run on it yet.
+	// every route taken on this instance was taken by recovery, because
+	// nothing else has run on it yet.
 	if healthAfter.SandboxKeyEntries == nil || healthAfter.SandboxPIDFallbacks == nil ||
 		healthAfter.SandboxKeyEntryFailures == nil {
 		t.Fatal("the recovered plugin publishes no sandbox route counters, so which route recovery " +
@@ -192,19 +210,23 @@ func TestRecovery_PluginDisableEnable_PreservesEndpoint(t *testing.T) {
 			"instance (%d and %d): recovery re-adopted the endpoint without entering its network "+
 			"namespace at all, so the assertions below would be about an empty set", keyEntries, fallbacks)
 	}
-	if keyEntries != 0 {
-		t.Errorf("sandbox_key_entries=%d on the recovered instance. This is the LIMITATION LIFTING, "+
-			"not a regression — the daemon's sandbox mounts now reach the plugin. Update this cell "+
-			"and sandbox_key_route_test.go together, and rewrite SECURITY.md", keyEntries)
+	if keyEntries < 1 {
+		t.Errorf("sandbox_key_entries=%d on the recovered instance: the key route did NOT carry the "+
+			"re-adoption. This cell is the positive half of the #725 measurement — the sandbox predates "+
+			"this plugin process, so its netns mount is inside the bind snapshot and the key must "+
+			"resolve. If this is zero the snapshot explanation is wrong and the whole finding in "+
+			"SECURITY.md has to be re-derived, not patched", keyEntries)
 	}
-	if fallbacks < 1 {
-		t.Errorf("sandbox_pid_fallbacks=%d on the recovered instance: the key route cannot carry a "+
-			"re-adoption on this engine, so the /proc/<pid>/ns/net route must — and that is why the "+
-			"manifest still asks for the host PID namespace", fallbacks)
+	if fallbacks != 0 {
+		t.Errorf("sandbox_pid_fallbacks=%d on the recovered instance: recovery fell back to "+
+			"/proc/<pid>/ns/net for a sandbox that predates this plugin process. Either the key route "+
+			"regressed or the netns bind mount is no longer captured at plugin start; either way the "+
+			"asymmetry this cell and sandbox_key_route_test.go measure together is gone", fallbacks)
 	}
-	if keyFailures < 1 {
-		t.Errorf("sandbox_key_entry_failures=%d on the recovered instance: the key route is tried "+
-			"first and refused, and a refusal that is not counted is a route change nobody sees", keyFailures)
+	if keyFailures != 0 {
+		t.Errorf("sandbox_key_entry_failures=%d on the recovered instance: the key route was refused "+
+			"for a sandbox it should be able to open, and a refusal here is the same regression as a "+
+			"fallback", keyFailures)
 	}
 
 	// Outside evidence, the same as every other cell: the kernel's view

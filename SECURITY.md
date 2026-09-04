@@ -69,7 +69,7 @@ the effective set is the seventeen above, not these four.
 | `pidhost` | Two consumers, and only one of them is the network namespace: the fallback route into a container's netns via `/proc/<pid>/ns/net`, and every `resolv.conf` write, which enters the container's MOUNT namespace through `/proc/<pid>/ns/mnt` and has no sandbox-key equivalent. | `pkg/plugin/resolvconf.go`, `pkg/plugin/container_netns.go` |
 | `mount:/var/run/docker.sock` | The Docker API, read-only: `NetworkList`, `NetworkInspect` and `ContainerInspect`, which is where a container's hostname for DHCP option 12 comes from. Anything but GET and HEAD is refused before it is sent. | `pkg/plugin/docker_client.go`, `pkg/plugin/docker_transport.go` |
 | `mount:/var/lib/net-dhcp` | `STATE_DIR`: the lease record, per-network options, tombstones and the audit ledger, which must survive `docker plugin rm` and upgrade. | `pkg/plugin/state.go` |
-| `mount:/var/run/docker` | Read-only. The daemon's sandbox netns entries: the primary route into a container's network namespace, and the evidence that separates "the container went away mid-attach" from a plugin fault. | `pkg/plugin/sandbox_netns.go`, `pkg/plugin/network.go` |
+| `mount:/var/run/docker` | Read-only. The daemon's sandbox netns entries: the route tried first into a container's network namespace, which carries a recovery after a plugin restart, and the evidence that separates "the container went away mid-attach" from a plugin fault. | `pkg/plugin/sandbox_netns.go`, `pkg/plugin/network.go` |
 | `CAP_NET_ADMIN` | Every address, route, MTU and link change the plugin applies inside a container's network namespace, and the parent/child link creation that attaches it. | `pkg/plugin/dhcp_manager.go`, `pkg/plugin/netlink_seam.go` |
 | `CAP_NET_RAW` | The `AF_PACKET` socket the DHCP exchange runs on — the interface has no address yet, so an ordinary UDP socket cannot carry it — and the RFC 5227 ARP probes on the same socket family. | `internal/dhcp-golib/runtime/transport_packet_linux.go`, `internal/dhcp-golib/runtime/arp_linux.go` |
 | `CAP_SYS_ADMIN` | `setns` into a container's network namespace on a locked OS thread, and into its mount namespace for a `resolv.conf` write. | `pkg/dhcp/chassis.go`, `pkg/plugin/resolvconf.go` |
@@ -77,36 +77,48 @@ the effective set is the seventeen above, not these four.
 
 <!-- privilege-sentences: end -->
 
-**The sandbox-key route was measured and does NOT carry the attach.**
-The plugin asks first for the key the daemon publishes under
-`/var/run/docker/netns/`, and is refused: libnetwork creates each entry
-as an ordinary empty file and bind-mounts the namespace over it, and
-the plugin's read-only `/var/run/docker` mount carries the *directory*
-but not the per-sandbox mounts the daemon makes afterwards. The plugin
-verifies what it opened is a network namespace before using it, so the
-refusal is immediate and counted rather than surfacing as a dead
-persistent client. `/proc/<pid>/ns/net` then carries every attach, as
-it always has.
+**The sandbox-key route was measured, and it carries a re-adoption but
+not an attach.** The plugin asks first for the key the daemon publishes
+under `/var/run/docker/netns/`. Whether that key resolves depends on one
+thing: libnetwork creates each entry as an ordinary empty file and
+bind-mounts the namespace over it, and the plugin's read-only
+`/var/run/docker` is a bind mount taken when the *plugin process*
+starts — a snapshot, not a subscription. A sandbox that already existed
+at that moment is reachable through its key; one created afterwards is
+not, and the key resolves to the empty file underneath.
+
+A `Join` is always for a sandbox younger than the plugin, so
+`/proc/<pid>/ns/net` carries **every attach**, as it always has. The one
+case that goes the other way is recovery after a plugin restart, where
+the container predates the new plugin process: there the key route is
+used and the container's PID is never read. The plugin verifies that
+what it opened is a network namespace before using it, so the refusal is
+immediate and counted rather than surfacing later as a dead persistent
+client.
 
 That is why `pidhost` and `CAP_SYS_PTRACE` are unchanged, and it is now
 two independent reasons rather than one: the network namespace, above,
 and `resolv.conf` propagation, which enters the container's **mount**
 namespace by PID and for which no sandbox key exists at all.
 
-`sandbox_key_entry_failures` and `sandbox_pid_fallbacks` rise once per
-attach on such a host, and `sandbox_key_entries` stays at zero. If you
-see the reverse, the daemon's sandbox mounts are reaching this plugin —
-a newer engine, or a different mount configuration — and the netns half
-of these two grants is no longer load-bearing on your host.
+On such a host, per attach, `sandbox_key_entry_failures` and
+`sandbox_pid_fallbacks` each rise by one and `sandbox_key_entries` stays
+flat; after a plugin restart `sandbox_key_entries` rises once per
+recovered endpoint instead. If attaches start counting under
+`sandbox_key_entries`, the daemon's sandbox mounts are reaching this
+plugin — a newer engine, or a different mount configuration — and the
+netns half of these two grants is no longer load-bearing on your host.
 
 **What the measurement covers, and what it does not.** The integration
 lane runs the cells above on bridge, macvlan and ipvlan, for a root and
 a non-root container init, and across a plugin restart, on one rootful
 daemon. Rootless Docker and `dockerd --userns-remap` are outside it and
 are not claimed. Whether giving `/var/run/docker` slave mount
-propagation in `config.json` would make the key route work is an open
-question this lane has not been asked; it is recorded rather than
-assumed.
+propagation in `config.json` would make the attach route work as well is
+an open question this lane has not been asked; the recovery case shows
+the key route itself is sound when the mount is visible, so propagation
+is the indicated experiment — but it is a manifest privilege change and
+it is recorded rather than assumed.
 
 ### Pointing the plugin at a read-only Docker socket proxy
 

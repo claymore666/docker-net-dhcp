@@ -106,15 +106,17 @@ second is not prompted at all.
 
 **Nothing was dropped, and the measurement says why.** The beta asks first
 for the sandbox key the daemon publishes, so that a host where that works
-can attach without the container's PID at all. On a stock engine it does not
-work: the plugin's read-only `/var/run/docker` mount carries the directory
-but not the daemon's per-sandbox namespace mounts, so the key is refused and
-`/proc/<pid>/ns/net` carries the attach exactly as before. `pidhost` and
-`CAP_SYS_PTRACE` therefore stay — and would have stayed regardless, because
-`resolv.conf` propagation enters the container's *mount* namespace by PID
-and a mount namespace has no sandbox key. `sandbox_key_entries`,
-`sandbox_key_entry_failures` and `sandbox_pid_fallbacks` report which route
-your host is using; on a stock engine the first stays at zero.
+can attach without the container's PID at all. For an attach it does not
+work: the plugin's read-only `/var/run/docker` is a bind mount taken when
+the plugin starts, so it never receives the per-sandbox namespace mounts the
+daemon makes afterwards, the key is refused, and `/proc/<pid>/ns/net` carries
+the attach exactly as before. Recovery after a plugin restart is the
+exception — the sandbox is older than the plugin process, so the key route
+carries it. `pidhost` and `CAP_SYS_PTRACE` therefore stay, and would have
+stayed regardless, because `resolv.conf` propagation enters the container's
+*mount* namespace by PID and a mount namespace has no sandbox key.
+`sandbox_key_entries`, `sandbox_key_entry_failures` and
+`sandbox_pid_fallbacks` report which route your host is using.
 
 **New: `DOCKER_HOST`.** Empty by default, which keeps the mounted socket and
 the behaviour every earlier release had. Point it at a read-only Docker API

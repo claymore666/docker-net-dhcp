@@ -20,13 +20,21 @@ import (
 // container's network namespace through the sandbox key alone does NOT
 // suffice on this engine, and these cells are the record of why.
 //
-// WHAT WAS MEASURED, 2026-09-04, Integration run 33925372728.
+// WHAT WAS MEASURED, 2026-09-05, Integration run 33927195482.
 // libnetwork creates each entry under /var/run/docker/netns/ as an
 // ordinary empty file and then bind-mounts the namespace over it. The
 // plugin's /var/run/docker mount carries the DIRECTORY — #567 proved
-// that, and sandbox_netns_visible still depends on it — but it does
-// NOT carry the per-sandbox mounts the daemon makes afterwards. So the
-// plugin opens the empty file underneath, every time.
+// that, and sandbox_netns_visible still depends on it — but that mount
+// is a bind taken when the PLUGIN PROCESS STARTS, and a bind mount is a
+// SNAPSHOT, not a subscription. The daemon's later per-sandbox mounts
+// never reach it, so the plugin opens the empty file underneath.
+//
+// A Join is always for a sandbox younger than the plugin, so that is
+// every attach — these four cells. The one case where the sandbox is
+// OLDER is recovery after a plugin restart, and there the key route
+// works: see TestRecovery_PluginDisableEnable_PreservesEndpoint, which
+// is the positive half of this measurement and the control that makes
+// "snapshot" the explanation rather than "broken".
 //
 // The first version of this change did exactly that and counted it as
 // a key-route entry, because a successful open looks like a successful
@@ -54,9 +62,11 @@ import (
 // **If assertion 2 fails because sandbox_key_entries rose, that is GOOD
 // NEWS and not a regression.** It means the daemon's sandbox mounts now
 // reach the plugin — a newer engine, or the /var/run/docker mount given
-// slave propagation in config.json, which is the named follow-up. The
-// response is to update these cells, drop the fallback, and rewrite
-// SECURITY.md's paragraph; not to make the assertion softer.
+// slave propagation in config.json, which is the named follow-up and
+// which the recovery cell shows would be sufficient if the mounts
+// arrived. The response is to update these cells, drop the fallback,
+// and rewrite SECURITY.md's paragraph; not to make the assertion
+// softer.
 //
 // The counters are deltas over a window, because the suite shares one
 // plugin instance and an absolute read would be arithmetic over every
