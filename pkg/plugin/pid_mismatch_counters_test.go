@@ -35,6 +35,12 @@ import (
 // addressing, routes and a root DHCP client into a namespace, reads
 // zero as "did not happen".
 
+// noSandboxKey is what these cases pass for the sandbox key: they are
+// about the PID route, and the empty key is refused structurally and
+// without a poll, so the fallback is reached on the first attempt with
+// the whole budget intact.
+const noSandboxKey = ""
+
 // TestOpenSandboxNetNS_CountsAPIDMismatch drives the real refusal with
 // a live PID that is emphatically not the named container -- the test
 // process itself -- and asserts the counter, not the error.
@@ -45,7 +51,7 @@ func TestOpenSandboxNetNS_CountsAPIDMismatch(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 
-	ns, err := m.openSandboxNetNS(ctx, os.Getpid(), foreignCtrID, time.Millisecond)
+	ns, err := m.openSandboxNetNS(ctx, noSandboxKey, os.Getpid(), foreignCtrID, time.Millisecond)
 	if err == nil {
 		closeNsHandle(ns)
 		t.Fatal("opened the network namespace of a PID that does not name the container")
@@ -70,7 +76,7 @@ func TestOpenSandboxNetNS_DoesNotCountAnOrdinaryFailure(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 
-	ns, err := m.openSandboxNetNS(ctx, 0x7FFFFFFF, foreignCtrID, time.Millisecond)
+	ns, err := m.openSandboxNetNS(ctx, noSandboxKey, 0x7FFFFFFF, foreignCtrID, time.Millisecond)
 	if err == nil {
 		closeNsHandle(ns)
 		t.Fatal("opened a namespace for a PID that does not exist")
@@ -102,7 +108,7 @@ func TestOpenSandboxNetNS_CountsNothingWhenThePIDMatches(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	ns, err := m.openSandboxNetNS(ctx, pid, selfCgroupLeaf(t, pid), time.Millisecond)
+	ns, err := m.openSandboxNetNS(ctx, noSandboxKey, pid, selfCgroupLeaf(t, pid), time.Millisecond)
 	if err != nil {
 		t.Fatalf("refused a PID whose cgroup names it: %v", err)
 	}

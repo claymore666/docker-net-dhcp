@@ -212,6 +212,22 @@ net_dhcp_dns_propagation_pid_mismatches_total 9341279
 # TYPE net_dhcp_netns_pid_mismatches_total counter
 net_dhcp_netns_pid_mismatches_total 9479108
 
+# HELP net_dhcp_sandbox_key_entries_total Container network namespaces entered through the sandbox key the daemon publishes at /var/run/docker/netns/<key>. This is the denominator for sandbox_pid_fallbacks: zero fallbacks with zero entries here means nothing was opened, not that the key route works.
+# TYPE net_dhcp_sandbox_key_entries_total counter
+net_dhcp_sandbox_key_entries_total 9128177
+
+# HELP net_dhcp_sandbox_key_entry_failures_total Attempts to enter a container network namespace through the sandbox key that were refused — the key named a directory this plugin does not accept, or the entry could not be opened. Each one falls back to the container PID route; a sustained rise means the /var/run/docker mount is not carrying the daemon's sandbox netns entries on this host.
+# TYPE net_dhcp_sandbox_key_entry_failures_total counter
+net_dhcp_sandbox_key_entry_failures_total 3507070
+
+# HELP net_dhcp_sandbox_pid_fallbacks_total Endpoints whose network namespace was entered through /proc/<pid>/ns/net after the sandbox key route was refused. That route is why the manifest asks for the host PID namespace and CAP_SYS_PTRACE; a zero here across a host's whole uptime, with sandbox_key_entries non-zero, is the evidence that it was not needed.
+# TYPE net_dhcp_sandbox_pid_fallbacks_total counter
+net_dhcp_sandbox_pid_fallbacks_total 5585284
+
+# HELP net_dhcp_docker_api_non_get_refusals_total Requests to the Docker API refused before they were sent because their method was not GET. The plugin's whole Docker surface is three read calls, so this stays zero unless code in this process tried to write to the daemon; the socket mount is the grant that makes such a write equivalent to root on the host (#691).
+# TYPE net_dhcp_docker_api_non_get_refusals_total counter
+net_dhcp_docker_api_non_get_refusals_total 4050535
+
 # HELP net_dhcp_ledger_write_failures_total Lease-ledger writes that failed.
 # TYPE net_dhcp_ledger_write_failures_total counter
 net_dhcp_ledger_write_failures_total 8412728

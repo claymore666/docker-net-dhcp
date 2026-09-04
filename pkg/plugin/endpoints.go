@@ -490,6 +490,30 @@ type HealthResponse struct {
 	// failure looks like a slow start; only this counter distinguishes a
 	// recycled PID from one.
 	NetnsPIDMismatches int32 `json:"netns_pid_mismatches"`
+	// SandboxKeyEntries, SandboxKeyEntryFailures and SandboxPIDFallbacks
+	// say which route the plugin took into each container's network
+	// namespace. SandboxKeyEntries counts opens carried by the sandbox
+	// key the daemon publishes; SandboxKeyEntryFailures counts refusals
+	// of that route; SandboxPIDFallbacks counts the endpoints that ended
+	// up on the /proc/<pid>/ns/net route instead.
+	//
+	// READ FALLBACKS AGAINST ENTRIES. Zero fallbacks with zero entries
+	// is not "the key route works" -- it is "nothing was opened". The
+	// pair is what makes the claim have a domain, and it is the evidence
+	// for whether the host PID namespace and CAP_SYS_PTRACE are still
+	// needed for the netns route on this host. Neither is
+	// healthy-affecting: a fallback that succeeds is a working endpoint.
+	SandboxKeyEntries       int32 `json:"sandbox_key_entries"`
+	SandboxKeyEntryFailures int32 `json:"sandbox_key_entry_failures"`
+	SandboxPIDFallbacks     int32 `json:"sandbox_pid_fallbacks"`
+
+	// DockerAPINonGETRefusals counts requests to the Docker API the
+	// plugin refused to send because their method was not GET. The
+	// plugin's whole Docker surface is three read calls, so this is
+	// expected to stay zero for the life of an installation; a non-zero
+	// value means code in this process tried to write to the daemon
+	// (#691). NOT healthy-affecting: the refusal is the safe outcome.
+	DockerAPINonGETRefusals int32 `json:"docker_api_non_get_refusals"`
 	// DHCPRoutesApplied counts DHCP option-121 classless static routes
 	// handed to Docker. DHCPDefaultRouteSuperseded counts the Joins
 	// where those routes cover 0.0.0.0/0 by union rather than by a
@@ -851,6 +875,10 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		NetworkOptionsRejected:       p.networkOptionsRejected.Load(),
 		DNSPropagationPIDMismatches:  p.dnsPropagationPIDMismatches.Load(),
 		NetnsPIDMismatches:           p.netnsPIDMismatches.Load(),
+		SandboxKeyEntries:            p.sandboxKeyEntries.Load(),
+		SandboxKeyEntryFailures:      p.sandboxKeyEntryFailures.Load(),
+		SandboxPIDFallbacks:          p.sandboxPIDFallbacks.Load(),
+		DockerAPINonGETRefusals:      p.dockerAPINonGETRefusals.Load(),
 		DHCPRoutesApplied:            p.dhcpRoutesApplied.Load(),
 		DHCPDefaultRouteSuperseded:   p.dhcpDefaultRouteSuperseded.Load(),
 		MTURefused:                   p.mtuRefused.Load(),

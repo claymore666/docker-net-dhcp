@@ -43,6 +43,14 @@
             "settable": [
                 "value"
             ]
+        },
+        {
+            "description": "Docker API endpoint; empty means the mounted /run/docker.sock. Set it to a read-only socket proxy (the plugin issues only GET requests)",
+            "name": "DOCKER_HOST",
+            "value": "",
+            "settable": [
+                "value"
+            ]
         }
     ],
     "workdir": "/",
