@@ -32,7 +32,7 @@ OLD_MANIFEST='{
     "network": { "type": "host" },
     "pidhost": true,
     "mounts": [
-        { "source": "/var/run/docker.sock", "destination": "/run/docker.sock" },
+        { "source": "/var/run/docker.sock", "destination": "/run/docker.sock", "options": ["rbind", "ro"] },
         { "source": "/var/lib/net-dhcp", "destination": "/var/lib/net-dhcp" }
     ],
     "env": [
@@ -46,7 +46,7 @@ NEW_MANIFEST='{
     "network": { "type": "host" },
     "pidhost": true,
     "mounts": [
-        { "source": "/var/run/docker.sock", "destination": "/run/docker.sock" },
+        { "source": "/var/run/docker.sock", "destination": "/run/docker.sock", "options": ["rbind", "ro"] },
         { "source": "/var/lib/net-dhcp", "destination": "/var/lib/net-dhcp" }
     ],
     "env": [
@@ -77,10 +77,12 @@ MD
 
 GOOD_ROWS='| `linux.capabilities` | `CAP_NET_ADMIN`, `CAP_SYS_ADMIN` | `CAP_NET_ADMIN`, `CAP_NET_RAW`, `CAP_SYS_ADMIN` | **yes** |
 | `network.type` | `host` | `host` | no change |
+| `ipchost` | `false` | `false` | no change |
 | `pidhost` | `true` | `true` | no change |
-| `mounts` | `/var/run/docker.sock`, `/var/lib/net-dhcp` | `/var/run/docker.sock`, `/var/lib/net-dhcp` | no change |
+| `mounts` | `/var/run/docker.sock:rbind,ro`, `/var/lib/net-dhcp` | `/var/run/docker.sock:rbind,ro`, `/var/lib/net-dhcp` | no change |
 | `propagatedmount` | `(absent)` | `(absent)` | no change |
 | `linux.devices` | `(absent)` | `(absent)` | no change |
+| `linux.allowalldevices` | `false` | `false` | no change |
 | `env` | `LOG_LEVEL`, `OUTAGE_TICK` | `LOG_LEVEL`, `DOCKER_HOST` | no |'
 
 # build <dir> — a repository whose v1.9.0 tag carries OLD_MANIFEST and
@@ -208,10 +210,93 @@ json.dump(m, open(sys.argv[1], 'w'), indent=4)
 PY
 expect "a manifest that GAINS propagatedmount no longer agrees with (absent)" 1 "$(run "$D")"
 
+# --- the three the privilege review measured ---------------------------
+# Each of these edits passed the WHOLE lane on 2026-09-05: the reviewer
+# flipped both manifests read-write and nothing went red, because
+# neither gate projected mount options, ipchost or allowAllDevices.
+# They are driven here in the direction that used to pass, so a
+# projection that narrows again fails this file rather than a release.
+
+# 1. A mount flipped read-only -> read-write, table unchanged. Docker
+#    does not re-prompt for it (computePrivileges takes the source path
+#    alone), so this gate is the only thing that can notice.
+build "$D"
+python3 - "$D/config.json" <<'PY2'
+import json, sys
+p = sys.argv[1]
+m = json.load(open(p))
+m["mounts"][0]["options"] = ["rbind", "rw"]
+json.dump(m, open(p, "w"), indent=4)
+PY2
+expect "a mount flipped read-only -> read-write" 1 "$(run "$D")"
+
+# 2. ipchost: true, table unchanged.
+build "$D"
+python3 - "$D/config.json" <<'PY2'
+import json, sys
+p = sys.argv[1]
+m = json.load(open(p))
+m["ipchost"] = True
+json.dump(m, open(p, "w"), indent=4)
+PY2
+expect "ipchost flipped true" 1 "$(run "$D")"
+
+# 3. linux.allowAllDevices: true, table unchanged.
+build "$D"
+python3 - "$D/config.json" <<'PY2'
+import json, sys
+p = sys.argv[1]
+m = json.load(open(p))
+m["linux"]["allowAllDevices"] = True
+json.dump(m, open(p, "w"), indent=4)
+PY2
+expect "linux.allowAllDevices flipped true" 1 "$(run "$D")"
+
+# The preservation control: the same three edits, each with its row
+# updated, agree. Without it the three cases above are satisfied by a
+# gate that refuses every manifest carrying any of these keys.
+build "$D"
+python3 - "$D/config.json" <<'PY2'
+import json, sys
+p = sys.argv[1]
+m = json.load(open(p))
+m["mounts"][0]["options"] = ["rbind", "rw"]
+m["ipchost"] = True
+m["linux"]["allowAllDevices"] = True
+json.dump(m, open(p, "w"), indent=4)
+PY2
+python3 - "$D/RELEASE_NOTES.md" <<'PY2'
+import sys
+p = sys.argv[1]
+s = open(p).read()
+# Only the CURRENT column moves: what the v1.9.0 tag carries is fixed.
+s = s.replace("| `ipchost` | `false` | `false` | no change |",
+              "| `ipchost` | `false` | `true` | **yes** |")
+s = s.replace("| `linux.allowalldevices` | `false` | `false` | no change |",
+              "| `linux.allowalldevices` | `false` | `true` | **yes** |")
+s = s.replace("| `/var/run/docker.sock:rbind,ro`, `/var/lib/net-dhcp` | no change |",
+              "| `/var/run/docker.sock:rbind,rw`, `/var/lib/net-dhcp` | no change |")
+open(p, "w").write(s)
+PY2
+expect "the same three, each with its row, agree" 0 "$(run "$D")"
+
 # --- structural cases -------------------------------------------------
 build "$D"
 sed -i '/^| `env` |/d' "$D/RELEASE_NOTES.md"
 expect "a field with no row at all" 1 "$(run "$D")"
+
+# The same, per field added by the privilege review. Deleting the ROW
+# is what drives the FIELDS list itself: the per-row comparison above
+# is row-driven, so a field dropped from FIELDS while its row survives
+# is still compared, and only a missing row reaches the completeness
+# loop. MEASURED 2026-09-05 as a surviving mutant: removing ipchost and
+# linux.allowalldevices from FIELDS left every other case in this file
+# green.
+for f in ipchost linux.allowalldevices; do
+    build "$D"
+    sed -i "/^| \`$f\` |/d" "$D/RELEASE_NOTES.md"
+    expect "no row for '$f'" 1 "$(run "$D")"
+done
 
 build "$D"
 sed -i 's/^| `env` |/| `entrypoint` |/' "$D/RELEASE_NOTES.md"

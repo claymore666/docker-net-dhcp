@@ -790,6 +790,23 @@ func (c *DHCPClient) Lease() (lease.Lease, bool) {
 	return c.client.Lease()
 }
 
+// ACDPhase is where RFC 5227 has got to for the address this client
+// holds. proto.ACDIdle for a client that is not running, which is also
+// the answer in conflict_check=off -- read it beside ConflictMode,
+// never alone.
+func (c *DHCPClient) ACDPhase() proto.ACDPhase {
+	if c.client == nil {
+		return proto.ACDIdle
+	}
+	return c.client.ACDPhase()
+}
+
+// ConflictMode is the RFC 5227 mode this client was started in (D23).
+// Read from the params the client was built with rather than from the
+// network's stored options, so it is the mode in force and not the
+// mode the options would resolve to now.
+func (c *DHCPClient) ConflictMode() proto.ConflictMode { return c.params.Conflict }
+
 // Stats is the manager's counters, which are the per-endpoint half of
 // the health surface (P-7).
 func (c *DHCPClient) Stats() lease.Stats {

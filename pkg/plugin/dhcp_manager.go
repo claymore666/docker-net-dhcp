@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/claymore666/dhcp-golib/proto"
 	dNetwork "github.com/docker/docker/api/types/network"
 	log "github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
@@ -185,6 +186,15 @@ type dhcpManager struct {
 	ipMu     sync.Mutex
 	lastIP   *netlink.Addr
 	lastIPv6 *netlink.Addr
+	// lastEvent / lastEventAt are the most recent lifecycle event this
+	// manager saw and when it saw it, for the per-endpoint half of
+	// /Plugin.Health. Under ipMu with the addresses beside them
+	// because they are written from the same goroutine at the same
+	// moments, and a reader that got the address from one instant and
+	// the event from another would describe an endpoint that never
+	// existed.
+	lastEvent   string
+	lastEventAt time.Time
 
 	// recordID is the durable lease record this manager writes to.
 	// Empty means there is none — a unit-test manager, or an endpoint
@@ -302,6 +312,26 @@ type dhcpManager struct {
 	// cancellation would be exactly the blanket amnesty #373 and #376
 	// were careful not to grant.
 	attachAborted atomic.Bool
+
+	// clientV4 is the persistent v4 client, published for READING only:
+	// the health document asks it for the lease it holds and the RFC
+	// 5227 phase it is in, and nothing writes through it.
+	//
+	// Its type is the three-method endpointClient rather than
+	// *dhcp.DHCPClient so that the health document can be driven
+	// against a client in a state a unit test cannot reach otherwise --
+	// a bound lease with T1, T2, an expiry and a server ID lives inside
+	// the library's own client, which no test in this package can
+	// construct. The narrow type is what makes the endpoints array
+	// assertable on its FIELDS rather than on its length.
+	//
+	// Under ipMu, which is released before the client is asked
+	// anything; see healthView.
+	//
+	// v6 has no counterpart: the beta refuses IPv6 before a client is
+	// constructed (see NewDHCPClient), so a v6 field would be nil by
+	// construction rather than by observation.
+	clientV4 endpointClient
 }
 
 func newDHCPManager(docker dockerClient, r JoinRequest, opts DHCPNetworkOptions) *dhcpManager {
@@ -330,6 +360,62 @@ func (m *dhcpManager) logFields(v6 bool) log.Fields {
 		"sandbox":  m.joinReq.SandboxKey,
 		"is_ipv6":  v6,
 	}
+}
+
+// setHealthClient publishes the client the health document reads.
+func (m *dhcpManager) setHealthClient(c endpointClient) {
+	m.ipMu.Lock()
+	defer m.ipMu.Unlock()
+	m.clientV4 = c
+}
+
+// healthClient is the published client, or nil. The lock is dropped
+// before the caller asks the client anything.
+func (m *dhcpManager) healthClient() endpointClient {
+	m.ipMu.Lock()
+	defer m.ipMu.Unlock()
+	return m.clientV4
+}
+
+// noteResumedACD reports an address picked up from a durable record
+// whose RFC 5227 section 2.1 check had not completed (D23).
+//
+// THE CONDITION IS INSIDE AND THE CALL SITE IS UNCONDITIONAL. It used
+// to be an `if` around the log line at the call site with nothing
+// observing it, and the M6b review measured the consequence: the
+// inverted-guard mutant -- warn on a clean resume, stay silent on a
+// half-checked one -- survived the whole suite. There is no guard left
+// at the call site to invert, and the counter beside the line puts the
+// same fact in /Plugin.Health as the acd_resumed_unchecked warn check,
+// so the operator half of D23 is reachable without reading logs.
+func (m *dhcpManager) noteResumedACD(r dhcp.Resumption, mode proto.ConflictMode, v6 bool) {
+	if r.Lease == nil || !r.ACDUnfinished() {
+		return
+	}
+	if m.plugin != nil {
+		m.plugin.acdResumedUnchecked.Add(1)
+	}
+	log.
+		WithFields(m.logFields(v6)).
+		WithField("address", r.Lease.Addr.Addr()).
+		WithField("acd_phase", r.ACD).
+		WithField("conflict_check", mode).
+		Warn("Resuming an address whose RFC 5227 check had not completed when the plugin last stopped; " +
+			"it is re-checked on the INIT-REBOOT acknowledgement")
+}
+
+// lastEventSeen returns the most recent lifecycle event and its time.
+func (m *dhcpManager) lastEventSeen() (string, time.Time) {
+	m.ipMu.Lock()
+	defer m.ipMu.Unlock()
+	return m.lastEvent, m.lastEventAt
+}
+
+// noteEvent records one lifecycle event for the health document.
+func (m *dhcpManager) noteEvent(kind string) {
+	m.ipMu.Lock()
+	defer m.ipMu.Unlock()
+	m.lastEvent, m.lastEventAt = kind, time.Now()
 }
 
 // lastIPs returns the most recently observed v4/v6 leases under ipMu.
@@ -829,7 +915,7 @@ func (m *dhcpManager) neverBound(v6 bool) bool {
 // monotonic under EVERY interleaving, because neither operand can
 // decrease. See healthSnapshot for the addition and #730 for the
 // arithmetic.
-func bumpFamily(v4Counter, v6Counter *atomic.Int32, v6 bool) {
+func bumpFamily(v4Counter, v6Counter intCounter, v6 bool) {
 	if v6 {
 		v6Counter.Add(1)
 		return
@@ -891,6 +977,7 @@ func (m *dhcpManager) countOutageTick(v6, policyRestricted bool) {
 // the naks_received contract is pinned here rather than in an
 // integration test (#128).
 func (m *dhcpManager) handleEvent(event dhcp.Event, v6 bool) {
+	m.noteEvent(event.Type)
 	// The hook process already dropped these; all that is left here is
 	// to make the drop visible. Counted for every event type, including
 	// the data-less ones, because the count describes the exchange and
@@ -1115,19 +1202,14 @@ func (m *dhcpManager) setupClient(v6 bool) (chan error, error) {
 	// lease.Record.ACD). What the durable phase buys is the line below —
 	// the operator's only evidence that this process picked up an
 	// address a previous one never finished checking.
-	if resumption.Lease != nil && resumption.ACDUnfinished() {
-		log.
-			WithFields(m.logFields(v6)).
-			WithField("address", resumption.Lease.Addr.Addr()).
-			WithField("acd_phase", resumption.ACD).
-			WithField("conflict_check", clientOpts.ConflictMode).
-			Warn("Resuming an address whose RFC 5227 check had not completed when the plugin last stopped; " +
-				"it is re-checked on the INIT-REBOOT acknowledgement")
-	}
+	m.noteResumedACD(resumption, clientOpts.ConflictMode, v6)
 
 	client, err := dhcp.NewDHCPClient(m.ctrLink.Attrs().Name, &clientOpts)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create DHCP%v client: %w", v6Str, err)
+	}
+	if !v6 {
+		m.setHealthClient(client)
 	}
 
 	events, err := client.Start()

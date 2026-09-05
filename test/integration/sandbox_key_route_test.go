@@ -98,7 +98,7 @@ func sandboxKeyCell(t *testing.T, mode, netName, ctrName, user string) {
 
 	w := harness.BeginCounterWindow(t, ctx, cli,
 		"sandbox_key_entries", "sandbox_key_entry_failures", "sandbox_pid_fallbacks",
-		"sandbox_key_not_permitted", "sandbox_key_not_a_namespace",
+		"sandbox_key_absent", "sandbox_key_not_permitted", "sandbox_key_not_a_namespace",
 		"sandbox_key_wrong_ns_type", "sandbox_key_unavailable")
 
 	harness.CreateNetwork(t, ctx, netName, mode, nil)
@@ -134,7 +134,8 @@ func sandboxKeyCell(t *testing.T, mode, netName, ctrName, user string) {
 	notANamespace, ok5 := counterDelta(t, "sandbox_key_not_a_namespace", before.SandboxKeyNotANamespace, after.SandboxKeyNotANamespace)
 	wrongType, ok6 := counterDelta(t, "sandbox_key_wrong_ns_type", before.SandboxKeyWrongNSType, after.SandboxKeyWrongNSType)
 	unavailable, ok7 := counterDelta(t, "sandbox_key_unavailable", before.SandboxKeyUnavailable, after.SandboxKeyUnavailable)
-	if !ok1 || !ok2 || !ok3 || !ok4 || !ok5 || !ok6 || !ok7 {
+	absent, ok8 := counterDelta(t, "sandbox_key_absent", before.SandboxKeyAbsent, after.SandboxKeyAbsent)
+	if !ok1 || !ok2 || !ok3 || !ok4 || !ok5 || !ok6 || !ok7 || !ok8 {
 		return
 	}
 	// Printed whether or not the cell passes: the cell table in the
@@ -142,9 +143,9 @@ func sandboxKeyCell(t *testing.T, mode, netName, ctrName, user string) {
 	// failures has no rows on a green run.
 	t.Logf("CELL mode=%s user=%q: sandbox_key_entries +%d, sandbox_key_entry_failures +%d, sandbox_pid_fallbacks +%d",
 		mode, user, entries, failures, fallbacks)
-	t.Logf("CELL-ARM mode=%s user=%q: sandbox_key_not_permitted +%d, sandbox_key_not_a_namespace +%d, "+
-		"sandbox_key_wrong_ns_type +%d, sandbox_key_unavailable +%d",
-		mode, user, notPermitted, notANamespace, wrongType, unavailable)
+	t.Logf("CELL-ARM mode=%s user=%q: sandbox_key_absent +%d, sandbox_key_not_permitted +%d, "+
+		"sandbox_key_not_a_namespace +%d, sandbox_key_wrong_ns_type +%d, sandbox_key_unavailable +%d",
+		mode, user, absent, notPermitted, notANamespace, wrongType, unavailable)
 
 	// The domain: exactly one route carried this attach. Without it,
 	// every assertion below is satisfied by a plugin that entered no
@@ -204,13 +205,21 @@ func sandboxKeyCell(t *testing.T, mode, netName, ctrName, user string) {
 			"type, which no measured host has produced", wrongType, mode)
 	}
 	if unavailable != 0 {
-		t.Errorf("sandbox_key_unavailable rose by %d on %s: the refusal was none of the three named "+
+		t.Errorf("sandbox_key_unavailable rose by %d on %s: the refusal was none of the four named "+
 			"arms, so the cause is one nothing in the tree has named", unavailable, mode)
 	}
+	// An attach always carries a key: libnetwork puts it in the Join
+	// request. A rise here means it did not, and then the refusal
+	// measured above is about the absence of the input rather than
+	// about the mount propagation SECURITY.md argues from.
+	if absent != 0 {
+		t.Errorf("sandbox_key_absent rose by %d on %s: this attach reached the key route with no key "+
+			"at all, so the arm below is not measuring what the daemon published", absent, mode)
+	}
 	// The arms are exhaustive by construction (countSandboxKeyRefusal).
-	// Asserting it here is what makes the four deltas above an account
+	// Asserting it here is what makes the five deltas above an account
 	// of the aggregate rather than four numbers beside it.
-	if arms := notPermitted + notANamespace + wrongType + unavailable; arms != failures {
+	if arms := absent + notPermitted + notANamespace + wrongType + unavailable; arms != failures {
 		t.Errorf("the refusal arms sum to %d and sandbox_key_entry_failures rose by %d on %s: a "+
 			"refusal was counted in the aggregate and attributed to no arm, so the arms are no "+
 			"longer an account of it", arms, failures, mode)

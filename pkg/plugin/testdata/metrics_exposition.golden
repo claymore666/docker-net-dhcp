@@ -1,6 +1,10 @@
-# HELP net_dhcp_build_info Plugin instance identity. The instance_id label changes on every plugin restart, so a counter reset appears as a new series rather than as a rewind.
+# HELP net_dhcp_build_info Plugin build and instance identity. version is the release tag (dev outside a release), commit the git revision it was built from, library the revision of the in-tree DHCP library; none of the three is ever empty, and `unknown` means the build did not carry it. The instance_id label changes on every plugin restart, so a counter reset appears as a new series rather than as a rewind.
 # TYPE net_dhcp_build_info gauge
-net_dhcp_build_info{instance_id="fixture-instance"} 1
+net_dhcp_build_info{instance_id="fixture-instanceid",version="fixture-version",commit="fixture-commit",library="fixture-library"} 1
+
+# HELP net_dhcp_health_status The health document's overall status, ordered so that worse is higher: 0 pass, 1 warn, 2 fail. `> 0` is the alerting expression; `>= 2` is the subset net_dhcp_healthy already carried. Like net_dhcp_healthy it LATCHES for the life of the process -- read net_dhcp_build_info's instance_id to tell a fault this process recorded earlier from a new one.
+# TYPE net_dhcp_health_status gauge
+net_dhcp_health_status 1
 
 # HELP net_dhcp_healthy 1 when the plugin reports itself healthy, 0 when an operator should look. Mirrors the healthy field of /Plugin.Health.
 # TYPE net_dhcp_healthy gauge
@@ -172,6 +176,10 @@ net_dhcp_acd_conflicts_detected_total 4640136
 # TYPE net_dhcp_acd_arp_send_failures_total counter
 net_dhcp_acd_arp_send_failures_total 6209145
 
+# HELP net_dhcp_acd_resumed_unchecked_total Endpoints picked up after a plugin restart from a durable record whose RFC 5227 section 2.1 check had not completed (D23). The resumed client re-runs section 2.1 on its INIT-REBOOT acknowledgement whatever the record said, so the window closes on its own; this counts how often it opened. Not healthy-affecting: the container keeps its address and the check is re-run.
+# TYPE net_dhcp_acd_resumed_unchecked_total counter
+net_dhcp_acd_resumed_unchecked_total 6930712
+
 # HELP net_dhcp_parent_link_waits_total Endpoint creations that waited for their parent interface to appear.
 # TYPE net_dhcp_parent_link_waits_total counter
 net_dhcp_parent_link_waits_total 5247821
@@ -216,11 +224,15 @@ net_dhcp_netns_pid_mismatches_total 9479108
 # TYPE net_dhcp_sandbox_key_entries_total counter
 net_dhcp_sandbox_key_entries_total 9128177
 
-# HELP net_dhcp_sandbox_key_entry_failures_total Attempts to enter a container network namespace through the sandbox key that were refused. EXPECTED, once per container attach, on a stock engine: the daemon bind-mounts each sandbox netns after the plugin's own /var/run/docker mount was taken, so the key resolves to the placeholder file underneath and the container PID route carries the attach. Nothing is degraded and no action is indicated. Read sandbox_key_not_permitted, sandbox_key_not_a_namespace, sandbox_key_wrong_ns_type and sandbox_key_unavailable to see which refusal this was; they sum to this counter.
+# HELP net_dhcp_sandbox_key_entry_failures_total Attempts to enter a container network namespace through the sandbox key that were refused. EXPECTED, once per container attach, on a stock engine: the daemon bind-mounts each sandbox netns after the plugin's own /var/run/docker mount was taken, so the key resolves to the placeholder file underneath and the container PID route carries the attach. Nothing is degraded and no action is indicated. Read sandbox_key_absent, sandbox_key_not_permitted, sandbox_key_not_a_namespace, sandbox_key_wrong_ns_type and sandbox_key_unavailable to see which refusal this was; they sum to this counter.
 # TYPE net_dhcp_sandbox_key_entry_failures_total counter
 net_dhcp_sandbox_key_entry_failures_total 3507070
 
-# HELP net_dhcp_sandbox_key_not_permitted_total Key-route refusals because the sandbox key did not name an entry of a directory this plugin accepts (/var/run/docker/netns, /run/docker/netns). This is the arm that is NOT expected: a daemon started with a non-default --exec-root publishes keys elsewhere, and the remedy is a change to this plugin rather than to the host. An arm of sandbox_key_entry_failures.
+# HELP net_dhcp_sandbox_key_absent_total Key-route refusals because neither the Join request nor the container inspect carried a sandbox key, so the key route was never attempted and the container PID route carries the attach. Not observed on any measured host; split out of sandbox_key_not_permitted in 2.0-alpha.1, where an absent key was indistinguishable from the --exec-root case whose remedy is a change to this plugin. An arm of sandbox_key_entry_failures.
+# TYPE net_dhcp_sandbox_key_absent_total counter
+net_dhcp_sandbox_key_absent_total 5837378
+
+# HELP net_dhcp_sandbox_key_not_permitted_total Key-route refusals because a non-empty sandbox key did not name an entry of a directory this plugin accepts (/var/run/docker/netns, /run/docker/netns). This is the arm that is NOT expected: a daemon started with a non-default --exec-root publishes keys elsewhere, and the remedy is a change to this plugin rather than to the host. An arm of sandbox_key_entry_failures.
 # TYPE net_dhcp_sandbox_key_not_permitted_total counter
 net_dhcp_sandbox_key_not_permitted_total 5326664
 

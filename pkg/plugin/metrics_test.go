@@ -8,10 +8,10 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 )
 
@@ -69,7 +69,21 @@ func fixtureSnapshot(t *testing.T) HealthResponse {
 		case reflect.Bool:
 			f.SetBool(true)
 		case reflect.String:
-			f.SetString("fixture-instance")
+			f.SetString(fixtureString(v.Type().Field(i)))
+		case reflect.Map:
+			// checks: one entry, so a renderer that walked it would
+			// have something to walk. Its own shape is asserted by the
+			// health-check tests; here it exists so the exposition
+			// tests see the whole struct rather than a struct with the
+			// structured fields left at nil.
+			f.Set(reflect.ValueOf(map[string][]HealthCheck{
+				"fixture_check": {{Status: statusWarn, ObservedValue: 1, ObservedUnit: "events", Time: "2026-01-02T03:04:05Z"}},
+			}))
+		case reflect.Slice:
+			f.Set(reflect.ValueOf([]EndpointHealth{{
+				Endpoint: "fixtureep", Network: "fixturenet", Mode: "macvlan",
+				Address: "192.0.2.7/24", LeaseState: "bound",
+			}}))
 		default:
 			t.Fatalf("HealthResponse field %q has kind %s, which fixtureSnapshot cannot populate — teach it, do not skip it",
 				v.Type().Field(i).Name, f.Kind())
@@ -78,6 +92,34 @@ func fixtureSnapshot(t *testing.T) HealthResponse {
 	assertFixtureValuesDoNotCollide(t)
 	assertFixtureIsNotDegenerate(t, h)
 	return h
+}
+
+// fixtureString is the fixture value for a string field.
+//
+// A field whose metricDef declares an enumeration gets a value FROM
+// that enumeration, and deliberately not the first one: `status` reads
+// `warn`, so a golden rendered over this fixture shows the middle
+// value. A renderer that hardcoded pass, or that fell back to zero on
+// an unknown string, renders differently.
+//
+// Everything else gets its own name, so two string labels on one
+// series cannot be swapped without the golden moving.
+func fixtureString(f reflect.StructField) string {
+	tag := strings.Split(f.Tag.Get("json"), ",")[0]
+	for _, d := range metricDefs() {
+		if d.field == tag && d.values != nil {
+			if _, ok := d.values[statusWarn]; ok {
+				return statusWarn
+			}
+			keys := make([]string, 0, len(d.values))
+			for k := range d.values {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			return keys[0]
+		}
+	}
+	return "fixture-" + strings.ToLower(f.Name)
 }
 
 // fixtureValue maps a field NAME to the value the fixture gives it.
@@ -208,6 +250,14 @@ func TestMetrics_EveryHealthFieldIsExposed(t *testing.T) {
 	for tag, by := range metricLabelOnlyFields {
 		claim(tag, by+" label", t)
 	}
+	for tag, why := range metricNotExposedFields {
+		if len(why) < 30 {
+			t.Errorf("health field %q is declared not-exposed with the reason %q, which is not a reason. "+
+				"An entry here removes a field from the /metrics surface; the sentence is what a "+
+				"reviewer judges that removal by.", tag, why)
+		}
+		claim(tag, "metricNotExposedFields", t)
+	}
 
 	typ := reflect.TypeOf(HealthResponse{})
 	for i := 0; i < typ.NumField(); i++ {
@@ -276,7 +326,7 @@ func TestMetrics_GoldenExposition(t *testing.T) {
 // Mutating writeExposition back to a subtraction makes this test emit
 // -4 and fail; that is the mutant it was written to kill.
 func TestMetrics_NoSeriesRendersNegative(t *testing.T) {
-	hostile := HealthResponse{LeasesObtained: 1, LeasesObtainedV6: 5}
+	hostile := HealthResponse{Status: statusPass, LeasesObtained: 1, LeasesObtainedV6: 5}
 	for _, tc := range []struct {
 		name string
 		h    HealthResponse
@@ -332,7 +382,7 @@ func TestMetrics_NoSeriesRendersNegative(t *testing.T) {
 // neither expectation.
 func TestMetrics_FamilySeriesReadTheStoredHalves(t *testing.T) {
 	// v6-only traffic: the v4 half never moved.
-	h := HealthResponse{LeasesObtained: 6, LeasesObtainedV4: 0, LeasesObtainedV6: 6}
+	h := HealthResponse{Status: statusPass, LeasesObtained: 6, LeasesObtainedV4: 0, LeasesObtainedV6: 6}
 	var buf bytes.Buffer
 	if err := writeExposition(&buf, h); err != nil {
 		t.Fatalf("writeExposition: %v", err)
@@ -351,7 +401,7 @@ func TestMetrics_FamilySeriesReadTheStoredHalves(t *testing.T) {
 	// Mixed, with three distinct numbers: a renderer that emitted the
 	// aggregate, or the wrong half, or a constant zero, fails one of
 	// these. 99 is not 6+4 precisely so that reading it stands out.
-	h = HealthResponse{LeasesObtained: 99, LeasesObtainedV4: 6, LeasesObtainedV6: 4}
+	h = HealthResponse{Status: statusPass, LeasesObtained: 99, LeasesObtainedV4: 6, LeasesObtainedV6: 4}
 	buf.Reset()
 	if err := writeExposition(&buf, h); err != nil {
 		t.Fatalf("writeExposition: %v", err)
@@ -454,39 +504,39 @@ func TestMetrics_FamilySeriesCannotGoBackwards(t *testing.T) {
 // it about all six rather than about the one that was convenient.
 type familyPair struct {
 	metric string
-	atoms  func(p *Plugin) (v4, v6 *atomic.Int32)
+	atoms  func(p *Plugin) (v4, v6 intCounter)
 	fields func(h HealthResponse) (agg, v4, v6 int32)
 }
 
 func familyPairs() []familyPair {
 	return []familyPair{
 		{"net_dhcp_lease_changed_total",
-			func(p *Plugin) (*atomic.Int32, *atomic.Int32) { return &p.leaseChangedV4, &p.leaseChangedV6 },
+			func(p *Plugin) (intCounter, intCounter) { return &p.leaseChangedV4, &p.leaseChangedV6 },
 			func(h HealthResponse) (int32, int32, int32) {
 				return h.LeaseChanged, h.LeaseChangedV4, h.LeaseChangedV6
 			}},
 		{"net_dhcp_leases_obtained_total",
-			func(p *Plugin) (*atomic.Int32, *atomic.Int32) { return &p.leasesObtainedV4, &p.leasesObtainedV6 },
+			func(p *Plugin) (intCounter, intCounter) { return &p.leasesObtainedV4, &p.leasesObtainedV6 },
 			func(h HealthResponse) (int32, int32, int32) {
 				return h.LeasesObtained, h.LeasesObtainedV4, h.LeasesObtainedV6
 			}},
 		{"net_dhcp_leases_renewed_total",
-			func(p *Plugin) (*atomic.Int32, *atomic.Int32) { return &p.leasesRenewedV4, &p.leasesRenewedV6 },
+			func(p *Plugin) (intCounter, intCounter) { return &p.leasesRenewedV4, &p.leasesRenewedV6 },
 			func(h HealthResponse) (int32, int32, int32) {
 				return h.LeasesRenewed, h.LeasesRenewedV4, h.LeasesRenewedV6
 			}},
 		{"net_dhcp_dhcp_timeouts_total",
-			func(p *Plugin) (*atomic.Int32, *atomic.Int32) { return &p.dhcpTimeoutsV4, &p.dhcpTimeoutsV6 },
+			func(p *Plugin) (intCounter, intCounter) { return &p.dhcpTimeoutsV4, &p.dhcpTimeoutsV6 },
 			func(h HealthResponse) (int32, int32, int32) {
 				return h.DHCPTimeouts, h.DHCPTimeoutsV4, h.DHCPTimeoutsV6
 			}},
 		{"net_dhcp_naks_received_total",
-			func(p *Plugin) (*atomic.Int32, *atomic.Int32) { return &p.naksReceivedV4, &p.naksReceivedV6 },
+			func(p *Plugin) (intCounter, intCounter) { return &p.naksReceivedV4, &p.naksReceivedV6 },
 			func(h HealthResponse) (int32, int32, int32) {
 				return h.NAKsReceived, h.NAKsReceivedV4, h.NAKsReceivedV6
 			}},
 		{"net_dhcp_client_stop_failures_total",
-			func(p *Plugin) (*atomic.Int32, *atomic.Int32) {
+			func(p *Plugin) (intCounter, intCounter) {
 				return &p.clientStopFailuresV4, &p.clientStopFailuresV6
 			},
 			func(h HealthResponse) (int32, int32, int32) {
@@ -774,12 +824,12 @@ func seriesValue(exposition, prefix string) (int64, bool) {
 // operator-supplied would otherwise produce a payload that fails to parse
 // with no test to catch it.
 func TestMetrics_LabelValuesAreEscaped(t *testing.T) {
-	h := HealthResponse{InstanceID: `a"b\c` + "\n" + `d`}
+	h := HealthResponse{Status: statusPass, InstanceID: `a"b\c` + "\n" + `d`}
 	var buf bytes.Buffer
 	if err := writeExposition(&buf, h); err != nil {
 		t.Fatalf("writeExposition: %v", err)
 	}
-	want := `net_dhcp_build_info{instance_id="a\"b\\c\nd"} 1`
+	want := `net_dhcp_build_info{instance_id="a\"b\\c\nd",version="",commit="",library=""} 1`
 	if !strings.Contains(buf.String(), want) {
 		t.Errorf("want %q in:\n%s", want, buf.String())
 	}
@@ -890,8 +940,15 @@ func TestMetrics_UnknownFieldIsAnError(t *testing.T) {
 // back to SECURITY.md.
 func TestMetricsExposition_NoPerEndpointIdentifiers(t *testing.T) {
 	// instance_id is a per-process UUID, not a container identifier;
-	// family is "ipv4"/"ipv6". Both are documented as safe.
-	allowed := map[string]bool{"instance_id": true, "family": true}
+	// family is "ipv4"/"ipv6"; version, commit and library are build
+	// identity — the release tag, the git revision and the in-tree
+	// library revision, all three the same for every endpoint on the
+	// host and all three already public in the image tag. SECURITY.md
+	// and docs/reference.md name the same five.
+	allowed := map[string]bool{
+		"instance_id": true, "family": true,
+		"version": true, "commit": true, "library": true,
+	}
 
 	var buf bytes.Buffer
 	if err := writeExposition(&buf, fixtureSnapshot(t)); err != nil {

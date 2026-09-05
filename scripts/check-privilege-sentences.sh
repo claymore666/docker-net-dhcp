@@ -26,11 +26,33 @@
 # one canonical token per grant:
 #
 #   network:<type>            from .network.type
+#   ipchost                   when .ipchost is true
 #   pidhost                   when .pidhost is true
-#   mount:<source>            one per .mounts[] entry, keyed on the HOST
-#                             path, because that is what an operator is
-#                             being asked to expose
+#   mount:<source>:<options>  one per .mounts[] entry, keyed on the HOST
+#                             path AND the mount options, because that
+#                             is what an operator is being asked to
+#                             expose and on what terms
+#   device:<path>             one per .linux.devices[]
+#   allowalldevices           when .linux.allowAllDevices is true
 #   CAP_*                     one per .linux.capabilities[]
+#
+# THE SET IS MOBY'S, NOT THIS MANIFEST'S. The fields are the ones
+# `computePrivileges` walks when the daemon builds the install prompt
+# (moby, daemon/pkg/plugin/backend_linux.go: network.type, IpcHost,
+# PidHost, mounts[].Source, linux.devices[].Path, linux.AllowAllDevices,
+# linux.capabilities). Deriving the list from what this manifest happens
+# to carry is how `ipchost: true` and `allowAllDevices: true` came to be
+# invisible to this gate: both are prompted, neither was projected, and
+# either could have been added with the whole lane green.
+#
+# MOUNT OPTIONS ARE PART OF THE TOKEN AND THE DAEMON DOES NOT PROMPT ON
+# THEM. `computePrivileges` takes the source path alone, so flipping
+# /var/run/docker from `ro` to `rw` re-uses the operator's existing
+# approval and asks nobody anything. "Read-only" is the word the
+# sentence for that mount rests on, and a reviewer flipped it on both
+# manifests with the lane green (privilege review, 2026-09-05). The
+# option set is in the token so the row has to be rewritten when the
+# terms change.
 #
 # The document must use those tokens verbatim. That is the answer to
 # "two spellings enumerated means a third exists": there is one spelling
@@ -80,8 +102,12 @@ fi
 
 manifest_grants=$(jq -r '
     ("network:" + (.network.type // "none")),
+    (if .ipchost == true then "ipchost" else empty end),
     (if .pidhost == true then "pidhost" else empty end),
-    (.mounts[]? | "mount:" + .source),
+    (.mounts[]? | "mount:" + (.source // "")
+        + (if ((.options // []) | length) > 0 then ":" + ((.options | sort) | join(",")) else "" end)),
+    (.linux.devices[]? | "device:" + ((.path // .name) // "")),
+    (if ((.linux.allowAllDevices // .linux.allowalldevices) // false) == true then "allowalldevices" else empty end),
     (.linux.capabilities[]? )
 ' "$MANIFEST" | sort -u)
 

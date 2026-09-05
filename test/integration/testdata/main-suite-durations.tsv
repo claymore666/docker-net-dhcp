@@ -146,11 +146,12 @@
 #   TestConflictCheck_SquatterAfterTheFact            37.61      42.00
 #   TestConflictCheck_OffSendsNoProbe                 33.75      37.00
 #   TestConflictCheck_WaitAcquisitionIsTimed           9.39      14.00
-#   TestConflictCheck_RestartInsideTheAsyncWindow      4.64      15.00
+#   TestConflictCheck_RestartInsideTheAsyncWindow      4.64      15.00  (now 5.98, below)
 #   TestConflictCheck_BridgeModeDoesNotSelfReport     11.52      15.00
 #
 # The two that moved most say something about the mechanism rather than
-# about the estimate. The restart case costs 4.64s, not 15.0: async
+# about the estimate. The restart case cost 4.64s at that measurement,
+# not 15.0 (it is 5.98 on this branch -- see below): async
 # hands the address back before section 2.1 finishes, so the restart
 # lands inside the window by construction and the test never waits out
 # a probe window at all -- the inferred figure had priced a clean
@@ -160,6 +161,35 @@
 # TestConflictCheck_OffSendsNoProbe is the one that cannot fall much
 # further: its 30s quiet window IS the assertion.
 # Refresh again from a several-run median once this branch has one.
+#
+# THE O-3/O-4 ROWS, NOW MEASURED. Two runs of this branch:
+# 33938855928 (five of six jobs green) and 33939820304 (all green).
+#                                               measured   was inferred
+#   TestHealthDocument_BuildInfoIsWhatTheLaneBuilt     0.01       1.00
+#   TestHealthDocument_EndpointEntryMatchesTheContainer 12.43      8.00
+#   TestConflictCheck_RestartInsideTheAsyncWindow      5.98       4.64
+#
+# The build-identity cell creates nothing at all -- it reads one
+# document and one exposition -- so 0.01, not the cheapest measured row
+# it was priced at, and both runs agree on it to the sampled precision.
+#
+# The endpoint cell is 12.43 from 33939820304, and 33938855928 is NOT a
+# second sample of it: the cell FAILED there, and a `--- FAIL:` duration
+# is the cost of stopping at the first assertion, which is a lower bound
+# on the passing figure and a measurement of nothing. Only the passing
+# run is sampled. (The interim 13.00 in this file was that failed run's
+# 12.45 plus the assertions it never reached -- inferred, and marked so
+# while it stood.)
+#
+# The restart case is the M6b (d) refresh and the only row here with two
+# samples: 6.24 and 5.71, so 5.98. Both are above the 4.64 this replaces
+# and the 4.64 was itself measured, so the rise is a real change, not
+# noise: this branch anchors the probe window on `backAt` rather than
+# `ackAt`, which is later, so the case now spans the plugin coming back
+# rather than the ACK before it. The (d) refresh and the (c) fix are the
+# same edit. The spread between the two samples (0.53s) is the scale of
+# what a single sample buys anywhere in this file -- the rows above were
+# medians of 22.
 #
 # ONE ROW IS A SKIP COST, NOT A RUN COST.
 # TestInterfaceName_MultiNetworkDeterministic skipped in all 22 samples —
@@ -210,7 +240,7 @@ TestConcurrency_DistinctLeases	27.35
 TestConcurrentRenew_SameInterfaceNameBothRenew	32.15
 TestConflictCheck_BridgeModeDoesNotSelfReport	11.52
 TestConflictCheck_OffSendsNoProbe	33.75
-TestConflictCheck_RestartInsideTheAsyncWindow	4.64
+TestConflictCheck_RestartInsideTheAsyncWindow	5.98
 TestConflictCheck_SquattedOfferIsDeclined	36.64
 TestConflictCheck_SquatterAfterTheFact	37.61
 TestConflictCheck_WaitAcquisitionIsTimed	9.39
@@ -227,6 +257,8 @@ TestExtraOptions_SearchListInResolvConf	8.45
 TestExtraOptions_WPADAndTimezoneLogged	7.28
 TestFQDN_RegistersInDNS	8.36
 TestHealthCounters_ObtainedAndReleased	8.00
+TestHealthDocument_BuildInfoIsWhatTheLaneBuilt	0.01
+TestHealthDocument_EndpointEntryMatchesTheContainer	12.43
 TestIPv6_RefusedAtCreateWithTheMilestoneNamed	0.10
 TestIPv6_TheV4PathIsUnaffectedByTheRefusal	5.00
 TestInterfaceName_InvalidRejected	0.41

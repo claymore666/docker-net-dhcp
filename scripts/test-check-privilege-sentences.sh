@@ -61,7 +61,7 @@ Prose above the block.
 |---|---|---|
 | `network:host` | The plugin reads the host's own links to resolve a parent interface. | `pkg/plugin/alpha.go` |
 | `pidhost` | The plugin enters a container's mount namespace through its PID to write resolv.conf. | `pkg/plugin/beta.go` |
-| `mount:/var/run/docker.sock` | The Docker API, read-only, for network and container inspection. | `pkg/plugin/alpha.go` |
+| `mount:/var/run/docker.sock:bind` | The Docker API, read-only, for network and container inspection. | `pkg/plugin/alpha.go` |
 | `CAP_NET_ADMIN` | Addresses, routes and links inside the container's network namespace. | `pkg/plugin/beta.go` |
 
 <!-- privilege-sentences: end -->
@@ -134,6 +134,94 @@ build "$R"
 sed -i 's/"pidhost": true/"pidhost": false/' "$R/config.json"
 expect "a row for a disabled pidhost fails" 1 "$(run "$R")"
 expect_out "  and names pidhost" "'pidhost'"
+
+# --- the three the privilege review measured ---------------------------
+# Each of these edits passed the WHOLE lane on 2026-09-05: the reviewer
+# flipped both manifests read-write and nothing went red. They are
+# driven here in the direction that used to pass, so a projection that
+# silently narrows again fails this file rather than a release.
+
+# 1. A mount flipped read-only -> read-write. Docker does not re-prompt
+#    for it -- computePrivileges takes the source path alone -- so
+#    nothing outside this gate can notice, and "read-only" is the word
+#    the sentence for that mount rests on.
+build "$R"
+python3 - "$R/config.json" <<'PY2'
+import json, sys
+p = sys.argv[1]
+m = json.load(open(p))
+m["mounts"][0]["options"] = ["bind", "rw"]
+json.dump(m, open(p, "w"), indent=4)
+PY2
+expect "a mount flipped read-write fails" 1 "$(run "$R")"
+expect_out "  and names the option set" "mount:/var/run/docker.sock:bind,rw"
+
+# 2. ipchost: true. Prompted by the daemon; projected by neither gate
+#    before the privilege review.
+build "$R"
+python3 - "$R/config.json" <<'PY2'
+import json, sys
+p = sys.argv[1]
+m = json.load(open(p))
+m["ipchost"] = True
+json.dump(m, open(p, "w"), indent=4)
+PY2
+expect "ipchost: true with no row fails" 1 "$(run "$R")"
+expect_out "  and names ipchost" "'ipchost'"
+
+# 3. linux.allowAllDevices: true. Same shape, one key over -- and the
+#    one that hands the plugin every device node on the host.
+build "$R"
+python3 - "$R/config.json" <<'PY2'
+import json, sys
+p = sys.argv[1]
+m = json.load(open(p))
+m["linux"]["allowAllDevices"] = True
+json.dump(m, open(p, "w"), indent=4)
+PY2
+expect "linux.allowAllDevices: true with no row fails" 1 "$(run "$R")"
+expect_out "  and names allowalldevices" "'allowalldevices'"
+
+# A device node, for the same reason: linux.devices[] is on moby's list
+# and this manifest carries none, so gaining one must not be silent.
+build "$R"
+python3 - "$R/config.json" <<'PY2'
+import json, sys
+p = sys.argv[1]
+m = json.load(open(p))
+m["linux"]["devices"] = [{"name": "tun", "path": "/dev/net/tun"}]
+json.dump(m, open(p, "w"), indent=4)
+PY2
+expect "a device node with no row fails" 1 "$(run "$R")"
+expect_out "  and names the device" "device:/dev/net/tun"
+
+# The preservation control for all four: each of them, ACCOMPANIED by
+# its row, passes. Without it the four cases above are satisfied by a
+# gate that refuses every manifest carrying any of these keys.
+build "$R"
+python3 - "$R/config.json" <<'PY2'
+import json, sys
+p = sys.argv[1]
+m = json.load(open(p))
+m["mounts"][0]["options"] = ["bind", "rw"]
+m["ipchost"] = True
+m["linux"]["allowAllDevices"] = True
+m["linux"]["devices"] = [{"name": "tun", "path": "/dev/net/tun"}]
+json.dump(m, open(p, "w"), indent=4)
+PY2
+python3 - "$R/SECURITY.md" <<'PY2'
+import sys
+p = sys.argv[1]
+s = open(p).read()
+s = s.replace("| `mount:/var/run/docker.sock:bind` |", "| `mount:/var/run/docker.sock:bind,rw` |")
+s = s.replace("<!-- privilege-sentences: end -->",
+    "| `ipchost` | The plugin shares the host IPC namespace, which this fixture states a reason for. | `pkg/plugin/alpha.go` |\n"
+    "| `allowalldevices` | Every device node on the host, which this fixture states a reason for. | `pkg/plugin/beta.go` |\n"
+    "| `device:/dev/net/tun` | One device node, which this fixture states a reason for. | `pkg/plugin/beta.go` |\n"
+    "\n<!-- privilege-sentences: end -->")
+open(p, "w").write(s)
+PY2
+expect "the same four, each with a row, pass" 0 "$(run "$R")"
 
 # --- substance --------------------------------------------------------
 build "$R"

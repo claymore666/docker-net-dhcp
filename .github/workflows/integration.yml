@@ -618,7 +618,15 @@ jobs:
       # clock.
       - name: Build + install integration plugin
         run: |
-          make PLUGIN_NAME=ghcr.io/claymore666/docker-net-dhcp PLUGIN_TAG=integration plugin
+          # O-4: the SHA this lane builds, threaded into the binary
+          # through the Dockerfile's build-arg -> ldflags, and exported
+          # so the health cell can read it back out of the running
+          # plugin. Derived ONCE, here: a cell that re-derived it would
+          # be comparing a derivation with itself, and the looser of the
+          # two would decide.
+          COMMIT="$(git rev-parse HEAD)"
+          echo "NET_DHCP_EXPECT_COMMIT=$COMMIT" >> "$GITHUB_ENV"
+          make PLUGIN_NAME=ghcr.io/claymore666/docker-net-dhcp PLUGIN_TAG=integration COMMIT="$COMMIT" plugin
           docker plugin rm -f "${INTEGRATION_PLUGIN_REF}" 2>/dev/null || true
           # STATE_DIR is bind-mounted from the host since #440, and the
           # daemon does NOT create a missing bind source — `plugin enable`

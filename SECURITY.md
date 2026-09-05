@@ -67,9 +67,9 @@ the effective set is the seventeen above, not these four.
 |---|---|---|
 | `network:host` | The plugin resolves and reads the parent link of every macvlan/ipvlan network, and any `METRICS_ADDR` listener binds, on the host's own network namespace rather than in a namespace of its own. | `pkg/plugin/parent_gate.go`, `cmd/net-dhcp/metrics.go` |
 | `pidhost` | Two consumers, and only one of them is the network namespace: the fallback route into a container's netns via `/proc/<pid>/ns/net`, and every `resolv.conf` write, which enters the container's MOUNT namespace through `/proc/<pid>/ns/mnt` and has no sandbox-key equivalent. | `pkg/plugin/resolvconf.go`, `pkg/plugin/container_netns.go` |
-| `mount:/var/run/docker.sock` | The Docker API, read-only: `NetworkList`, `NetworkInspect` and `ContainerInspect`, which is where a container's hostname for DHCP option 12 comes from. Anything but GET and HEAD is refused before it is sent. | `pkg/plugin/docker_client.go`, `pkg/plugin/docker_transport.go` |
-| `mount:/var/lib/net-dhcp` | `STATE_DIR`: the lease record, per-network options, tombstones and the audit ledger, which must survive `docker plugin rm` and upgrade. | `pkg/plugin/state.go` |
-| `mount:/var/run/docker` | Read-only. The daemon's sandbox netns entries: the route tried first into a container's network namespace, which carries a recovery after a plugin restart, and the evidence that separates "the container went away mid-attach" from a plugin fault. | `pkg/plugin/sandbox_netns.go`, `pkg/plugin/network.go` |
+| `mount:/var/run/docker.sock:bind` | The Docker API, read-only: `NetworkList`, `NetworkInspect` and `ContainerInspect`, which is where a container's hostname for DHCP option 12 comes from. Anything but GET and HEAD is refused before it is sent. | `pkg/plugin/docker_client.go`, `pkg/plugin/docker_transport.go` |
+| `mount:/var/lib/net-dhcp:rbind,rw` | `STATE_DIR`: the lease record, per-network options, tombstones and the audit ledger, which must survive `docker plugin rm` and upgrade. | `pkg/plugin/state.go` |
+| `mount:/var/run/docker:rbind,ro` | Read-only. The daemon's sandbox netns entries: the route tried first into a container's network namespace, which carries a recovery after a plugin restart, and the evidence that separates "the container went away mid-attach" from a plugin fault. | `pkg/plugin/sandbox_netns.go`, `pkg/plugin/network.go` |
 | `CAP_NET_ADMIN` | Every address, route, MTU and link change the plugin applies inside a container's network namespace, and the parent/child link creation that attaches it. | `pkg/plugin/dhcp_manager.go`, `pkg/plugin/netlink_seam.go` |
 | `CAP_NET_RAW` | The `AF_PACKET` socket the DHCP exchange runs on — the interface has no address yet, so an ordinary UDP socket cannot carry it — and the RFC 5227 ARP probes on the same socket family. | `internal/dhcp-golib/runtime/transport_packet_linux.go`, `internal/dhcp-golib/runtime/arp_linux.go` |
 | `CAP_SYS_ADMIN` | `setns` into a container's network namespace on a locked OS thread, and into its mount namespace for a `resolv.conf` write. | `pkg/dhcp/chassis.go`, `pkg/plugin/resolvconf.go` |
@@ -122,8 +122,10 @@ daemon started with a non-default `--exec-root` publishes sandbox keys
 under `<exec-root>/netns/`, which this plugin does not accept and
 refuses on sight. The two are separated by the arm counters —
 `sandbox_key_not_a_namespace` for the first, `sandbox_key_not_permitted`
-for the second (`sandbox_key_wrong_ns_type` and `sandbox_key_unavailable`
-are the remaining two; all four sum to `sandbox_key_entry_failures`).
+for the second, which since 2.0-alpha.1 means a key that EXISTS and was
+refused (`sandbox_key_absent`, the endpoint no key was published for at
+all, `sandbox_key_wrong_ns_type` and `sandbox_key_unavailable` are the
+remaining three; all five sum to `sandbox_key_entry_failures`).
 
 The claim in this section is the first, and it is asserted rather than
 argued: `TestSandboxKeyRoute_Macvlan`, `_Bridge`, `_Ipvlan` and
@@ -131,7 +133,7 @@ argued: `TestSandboxKeyRoute_Macvlan`, `_Bridge`, `_Ipvlan` and
 require `sandbox_key_not_a_namespace` to rise by exactly one per attach
 and the other three arms to stay flat, and
 `TestRecovery_PluginDisableEnable_PreservesEndpoint` in
-`test/integration/recovery_test.go` requires all four to be zero on the
+`test/integration/recovery_test.go` requires all five to be zero on the
 recovered instance — the same key form, on the same daemon, in the same
 run, refused there and accepted here.
 

@@ -22,10 +22,85 @@ import (
 	"sync"
 )
 
+// HealthCheck mirrors pkg/plugin.HealthCheck: one element of the
+// health document's `checks` object. camelCase field names are the
+// draft's, not this repo's, and a cell that renamed them would be
+// reading a different document.
+type HealthCheck struct {
+	Status        string `json:"status"`
+	ObservedValue int64  `json:"observedValue"`
+	ObservedUnit  string `json:"observedUnit"`
+	Time          string `json:"time"`
+	Output        string `json:"output,omitempty"`
+}
+
+// EndpointHealth mirrors pkg/plugin.EndpointHealth: one entry of the
+// health document's `endpoints` array.
+type EndpointHealth struct {
+	Endpoint      string `json:"endpoint"`
+	Network       string `json:"network"`
+	Mode          string `json:"mode"`
+	Address       string `json:"address,omitempty"`
+	LeaseState    string `json:"lease_state"`
+	RenewAt       string `json:"renew_at,omitempty"`
+	RebindAt      string `json:"rebind_at,omitempty"`
+	ExpiresAt     string `json:"expires_at,omitempty"`
+	Server        string `json:"server,omitempty"`
+	LastEvent     string `json:"last_event,omitempty"`
+	LastEventAt   string `json:"last_event_at,omitempty"`
+	ConflictCheck string `json:"conflict_check"`
+	ACDPhase      string `json:"acd_phase"`
+}
+
+// HealthFieldSeries names the exposition series for the health fields
+// whose series is not net_dhcp_<tag> or net_dhcp_<tag>_total.
+var HealthFieldSeries = map[string]string{
+	"status": "health_status",
+}
+
+// HealthFieldsInBuildInfo are the fields carried as LABELS on
+// net_dhcp_build_info instead of as series of their own, and
+// HealthFieldsNotExposed the ones deliberately absent from /metrics,
+// with the reason.
+//
+// MIRRORS pkg/plugin's metricLabelOnlyFields and metricNotExposedFields
+// for the reason HealthResponse mirrors HealthResponse: this suite asks
+// what the INSTALLED plugin serves, and an oracle imported from the
+// plugin would answer out of the plugin's own declaration. Drift is
+// loud in both directions -- TestMetrics_SocketServesTheFullSurface
+// reports a field it can find no series for, and reports a label it was
+// told to expect and did not find on the line.
+var HealthFieldsInBuildInfo = []string{"instance_id", "version", "commit", "library"}
+
+var HealthFieldsNotExposed = map[string]string{
+	"checks":    "each check's observedValue is the counter's own series, already exposed",
+	"endpoints": "a series per container is a cardinality decision O-5 takes, not this one",
+}
+
 // HealthResponse mirrors pkg/plugin.HealthResponse. Duplicated here
 // so the integration package doesn't pull on pkg/plugin internals.
 type HealthResponse struct {
 	Healthy bool `json:"healthy"`
+	// Status is draft-inadarei-api-health-check-06's pass/warn/fail
+	// (2.0-alpha.1). A pointer: an older plugin publishes none, and
+	// reading its absence as "pass" is the failure this field exists
+	// to make visible. Healthy stays the latched flag it always was;
+	// Status is never allowed to disagree with it, which is what
+	// TestHealth_StatusAgreesWithHealthy drives per counter.
+	Status *string `json:"status"`
+	// Checks is the same document's named checks, one array per
+	// counter that backs one. Nil on a plugin that publishes none.
+	Checks map[string][]HealthCheck `json:"checks"`
+	// Endpoints is one entry per registered manager (O-3), bounded by
+	// ActiveEndpoints.
+	Endpoints []EndpointHealth `json:"endpoints"`
+	// Version / Commit / Library identify the binary that served this
+	// response (O-4). Pointers, because "" and "not published" are the
+	// two answers a cell has to tell apart -- an empty label is the
+	// failure that looks like nothing.
+	Version *string `json:"version"`
+	Commit  *string `json:"commit"`
+	Library *string `json:"library"`
 	// InstanceID identifies the plugin process that served this
 	// response. Two reads are comparable as a delta only when their
 	// InstanceID matches — see counterwindow.go and #405.
@@ -117,6 +192,12 @@ type HealthResponse struct {
 	// refused. A probe that never went out proves nothing about the
 	// address: this is the question that was not asked.
 	ACDARPSendFailures int32 `json:"acd_arp_send_failures"`
+	// ACDResumedUnchecked counts endpoints resumed from a record whose
+	// RFC 5227 check had not finished when the plugin last stopped
+	// (D23's operator half). Not healthy-affecting -- it is a `warn`
+	// check, and the address is re-checked on the INIT-REBOOT
+	// acknowledgement.
+	ACDResumedUnchecked int32 `json:"acd_resumed_unchecked"`
 	// SandboxNetnsVisible is how many sandbox netns entries the plugin
 	// can see, or -1 if it cannot read the directory (#567). Sampled per
 	// request, not accumulated. A pointer so an older plugin that does
@@ -131,13 +212,16 @@ type HealthResponse struct {
 	SandboxKeyEntries       *int32 `json:"sandbox_key_entries"`
 	SandboxKeyEntryFailures *int32 `json:"sandbox_key_entry_failures"`
 	SandboxPIDFallbacks     *int32 `json:"sandbox_pid_fallbacks"`
-	// The four arms SandboxKeyEntryFailures folds together. They are
+	// The five arms SandboxKeyEntryFailures folds together. They are
 	// what lets a cell assert WHICH refusal happened rather than only
 	// that one did: an unpropagated bind mount (NotANamespace, the
 	// expected arm on a stock engine) and a daemon publishing keys
 	// under a non-default --exec-root (NotPermitted) produce identical
 	// aggregate counts and want opposite remedies. Pointers for the
 	// same reason as the three above.
+	// SandboxKeyAbsent is the fifth arm (2.0-alpha.1): no key was
+	// published for the endpoint at all, by either source.
+	SandboxKeyAbsent        *int32 `json:"sandbox_key_absent"`
 	SandboxKeyNotPermitted  *int32 `json:"sandbox_key_not_permitted"`
 	SandboxKeyNotANamespace *int32 `json:"sandbox_key_not_a_namespace"`
 	SandboxKeyWrongNSType   *int32 `json:"sandbox_key_wrong_ns_type"`

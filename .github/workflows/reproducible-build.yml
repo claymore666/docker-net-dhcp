@@ -8,9 +8,49 @@ name: Reproducible build
 # inside the published release tarball exactly. What did not exist was
 # anything that would notice the day it stopped. Determinism here rests
 # on digest-pinned base images, version-pinned apk packages, a fixed
-# in-container build path and no timestamp or VCS stamping; any of those
-# can be undone by a change that looks entirely reasonable and breaks
-# nothing else in CI.
+# in-container build path and no timestamp or build-host stamping; any
+# of those can be undone by a change that looks entirely reasonable and
+# breaks nothing else in CI.
+#
+# THE VERSION AND THE COMMIT *ARE* STAMPED IN, since 2.0 (`-ldflags -X`,
+# O-4), and this workflow passes both as build arguments so it exercises
+# the shape release.yml builds in. They are inputs, so identical inputs
+# still give identical bytes; what they mean is that "the same source"
+# is not sufficient to name a binary — the same source built for a
+# different commit is a different, equally deterministic binary. That
+# is why no per-release digest list lives in this repository and why
+# the published digests are produced by the release build itself, into
+# the signed checksums manifest. See docs/verifying-releases.md and
+# scripts/check-release-digest-fixed-point.sh.
+#
+# Both builds get the SAME two values (this workflow is about
+# determinism, not about identity), and they are non-default values on
+# purpose: passing a real tag and a real commit is the shape release.yml
+# builds in, and that is the shape worth exercising.
+#
+# WHAT THIS WORKFLOW CANNOT SEE, stated because the reason above used to
+# claim it could: whether the Dockerfile still threads the two arguments
+# into the binary at all. Both builds get the same pair and
+# check-reproducible-build.sh compares out-a against out-b, so a
+# Dockerfile that had stopped passing them through reproduces perfectly
+# here — with the arguments or without them.
+#
+# AND CLAIM D IS NOT THE ANSWER EITHER, which is what this note said
+# until review r3. Claim D of scripts/check-release-digest-fixed-point.sh
+# reconciles the -X keys the Dockerfile SPELLS against the Makefile's
+# evaluated GO_LDFLAGS; deleting `ARG VERSION` and `ARG COMMIT` leaves
+# that -ldflags text exactly as it was, so D exits 0 while ${VERSION}
+# and ${COMMIT} expand to nothing (MEASURED, review r3, finding 4).
+#
+# The observer that does answer it is the integration lane. Its
+# "Build + install integration plugin" step derives the revision once,
+# builds the plugin image through this same Dockerfile with that value
+# as COMMIT, and exports it as NET_DHCP_EXPECT_COMMIT;
+# test/integration/health_document_test.go then reads /Plugin.Health off
+# the RUNNING plugin and requires the commit it reports to be that
+# value. An argument that stopped reaching the binary shows up there as
+# an identity the plugin cannot state — on the wire, which is where this
+# question has an answer and here it has none.
 #
 # WHY A SEPARATE BUILDER PER BUILD, and not just `--no-cache`. The
 # Dockerfile mounts BuildKit caches for the Go module and build caches.
@@ -69,6 +109,9 @@ jobs:
           target: builder
           no-cache: true
           builder: ${{ steps.builder_a.outputs.name }}
+          build-args: |
+            VERSION=repro-fixed
+            COMMIT=${{ github.sha }}
           outputs: type=local,dest=out-a
 
       - name: Build B
@@ -78,6 +121,9 @@ jobs:
           target: builder
           no-cache: true
           builder: ${{ steps.builder_b.outputs.name }}
+          build-args: |
+            VERSION=repro-fixed
+            COMMIT=${{ github.sha }}
           outputs: type=local,dest=out-b
 
       - name: Compare

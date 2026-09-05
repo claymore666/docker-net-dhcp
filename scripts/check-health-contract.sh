@@ -47,6 +47,8 @@
 #      words carries the count that list actually has
 #   3. the code's Healthy expression -- the only one in the file -- has
 #      that many terms
+#   4. the CHECK column of the same table agrees with metricDefs'
+#      `healthy:` / `warn:` declarations, in both directions
 #
 # WHAT IT CANNOT CHECK, stated because the PASS line looks total and is
 # not: it reads statements it was TAUGHT, by pattern, in ONE file. A
@@ -290,6 +292,244 @@ if [ "$n_code" != "$n_doc" ]; then
     echo "  $rest" >&2
 fi
 
+# --- 4b. the check classification column -------------------------------
+# /Plugin.Health's `status` and `checks` are derived from metricDefs'
+# `healthy` and `warn` declarations, and the reference table states the
+# same classification in a column an operator reads. Same #638 shape as
+# everything else in this file: one fact, two places.
+#
+# The fail half is redundant with the healthy-affecting column by
+# construction and is checked anyway -- a table whose two columns
+# disagree about the same counter is a table a reader cannot use, and
+# the redundancy is only free while something reads it.
+#
+# Both directions. A counter marked `warn` in the doc and declared
+# nowhere is a check an operator is told to expect and will never see;
+# a counter declared `warn: true` and left off the table is a check that
+# appears in the document with nothing explaining it.
+doc_fail=$(grep -oE '^\| `[a-z0-9_]+` \| [^|]* \| fail \|' "$DOC" \
+    | sed -E 's/^\| `([a-z0-9_]+)`.*/\1/' | sort -u)
+doc_warn=$(grep -oE '^\| `[a-z0-9_]+` \| [^|]* \| warn \|' "$DOC" \
+    | sed -E 's/^\| `([a-z0-9_]+)`.*/\1/' | sort -u)
+if [ -z "$doc_warn" ]; then
+    echo "check-health-contract: no rows classified 'warn' in $DOC" >&2
+    echo "  Two readings, and this cannot tell them apart, so it refuses" >&2
+    echo "  rather than reporting clean: either the check column was" >&2
+    echo "  dropped or moved and this read nothing, or every warn" >&2
+    echo "  classification was genuinely removed -- which is a change to" >&2
+    echo "  the health document's shape and wants a human either way." >&2
+    exit 2
+fi
+n_checks=$(printf '%s\n%s\n' "$doc_fail" "$doc_warn" | grep -c .)
+
+# Declared on the metricDef, keyed on the FIELD (the json tag the
+# document renders) rather than on the metric name, because that is what
+# the check is keyed on in the document. The leading non-word character
+# is load-bearing: `v4field:`/`v6field:` sit on the same line for the
+# family-split metrics, and a bare `field:` collects the halves as
+# though each were its own check.
+code_class() {
+    awk -v want="$1" '
+        /field:[[:space:]]*"/ && $0 ~ want { print }
+    ' "$METRICS" \
+        | grep -oE '[^a-z0-9_]field:[[:space:]]*"[a-z0-9_]+"' \
+        | sed -E 's/.*"([a-z0-9_]+)".*/\1/' | sort -u
+}
+code_fail=$(code_class 'healthy:[[:space:]]*true')
+code_warn=$(code_class 'warn:[[:space:]]*true')
+if [ -z "$code_warn" ]; then
+    echo "check-health-contract: no metricDef in $METRICS declares warn: true" >&2
+    echo "  Teach this check the new shape rather than letting it pass unread." >&2
+    exit 2
+fi
+
+if [ "$doc_fail" != "$code_fail" ]; then
+    note "the check column's 'fail' rows and the metricDef healthy declarations disagree:"
+    diff <(printf '%s\n' "$doc_fail") <(printf '%s\n' "$code_fail") \
+        | sed 's|^<|  classified fail in the doc, not declared healthy: true -- one of the two is wrong: |; s|^>|  declared healthy: true, not classified fail in the doc -- one of the two is wrong: |' >&2
+fi
+if [ "$doc_warn" != "$code_warn" ]; then
+    note "the check column's 'warn' rows and the metricDef warn declarations disagree:"
+    diff <(printf '%s\n' "$doc_warn") <(printf '%s\n' "$code_warn") \
+        | sed 's|^<|  classified warn in the doc, not declared warn: true -- one of the two is wrong: |; s|^>|  declared warn: true, not classified warn in the doc -- one of the two is wrong: |' >&2
+fi
+
+# A counter cannot be both. The Go side holds it too
+# (TestHealthChecks_EveryCheckIsAnnotated); here because a doc row
+# carrying two classifications would be read by whichever grep ran
+# first and would otherwise pass silently.
+both=$(comm -12 <(printf '%s\n' "$doc_fail") <(printf '%s\n' "$doc_warn"))
+if [ -n "$both" ]; then
+    note "classified both fail and warn in $DOC: $(printf '%s' "$both" | tr '\n' ' ')"
+fi
+
+# --- 4c. the column must be DERIVABLE from the rows ---------------------
+# The check column is stated in docs/reference.md as a rule an operator
+# can apply to any row. Section 4b reconciles the column against the
+# code; it never asks whether the column reproduces the RULE, so the
+# next counter's classification is a judgement nothing reads. This is
+# the smallest thing that can be asked mechanically about that rule:
+#
+#   (a) every `warn` row carries an imperative about its own counter.
+#       A row classified warn with nothing in it telling the operator to
+#       act cannot be derived from the reference by a reader, which is
+#       the property the rule paragraph promises.
+#   (b) every `-` row that DOES carry such an imperative says why it is
+#       not a check, in the row, with the marker below. Those are the
+#       near misses -- the rule's second clause -- and they shipped
+#       classified `-` with the reasoning living only in a handover.
+#
+# (a) IS THE POSITIVE CONTROL FOR (b). The vocabulary is a fixed list of
+# phrasings, so a rewrite of the reference that stopped matching it
+# would silently empty (b)'s domain -- a universal satisfied by having
+# nothing to check. It cannot empty (a)'s: section 4b refuses when the
+# warn set is empty, so there is always a non-empty population that must
+# match, and a vocabulary that has gone stale fails there first.
+#
+# WHAT IT CANNOT SEE, and it is the same bound in both directions: the
+# vocabulary is ENUMERATED. A row that tells the operator to act in a
+# phrasing not on this list is invisible to (b) -- it will be neither
+# required to carry the marker nor reported. Two spellings enumerated
+# means a third exists; this list is the whole claim.
+#
+# Only COUNTER rows are judged. The document's non-counter fields
+# (`status`, `checks`, `endpoints`, `healthy`, `version`, ...) carry `-`
+# in the healthy-affecting column and describe structures rather than
+# values, and `endpoints`'s own "read the phase against the mode and
+# never alone" is an instruction about two fields of one entry, not
+# about a counter that could be a check. The reference says the same in
+# its own words, at the rule paragraph, so a reader applying the rule
+# to a field row is told not to. The exclusion is spelled as a COLUMN
+# VALUE rather than as the table's boundary, which is a hole with its
+# own refusal after the loop.
+# The vocabulary grew in review r3: `read against`, `read it as` and
+# `denominator` were the phrasings two `-` rows used to carry clause
+# 3's shape while this list could not see them (`acd_announcements_sent`,
+# `dhcp_routes_applied`). Running the widened list over the whole table
+# found four more rows in the same position, not two -- which is the
+# bound below restated as a measurement rather than a worry.
+# 4c's ROW SHAPE, in one place, used by all three of its programs. The
+# name cell is one backticked counter name -- or a comma-separated
+# family of them, which is how the reference writes the v4/v6 splits
+# (`lease_changed_v6, leases_obtained_v6, ...`). Only the single-name
+# spelling was read, so those rows were invisible to the loop AND to the
+# positional refusal below: a `-`/`-` row written as a family passed
+# where the same row written as one name failed, and the section judged
+# 57 rows while the domain the reference states yields 59 (review r3,
+# finding 2, MEASURED). The shape is the table's, not a widening: a cell
+# that is anything else is still not a counter row.
+COUNTER_ROW_RE='^ `[a-z0-9_]+`(, `[a-z0-9_]+`)* $'
+
+CHECK_IMPERATIVES='alert on|watch it|watch for|worth investigating|worth attention|actionable|read this \*\*before\*\*|never alone|read (it |them )?against|read it as|denominator|how to read it'
+CHECK_NEARMISS='Not a check:'
+
+n_warn_rows=0
+n_nearmiss=0
+n_judged=0
+while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    n_judged=$((n_judged + 1))
+    name=$(printf '%s' "$row" | awk -F'|' '{n = $2; gsub(/^[ ]+|[ ]+$/, "", n); print n}')
+    col=$(printf '%s' "$row" | awk -F'|' '{gsub(/[* ]/,"",$4); print $4}')
+    low=$(printf '%s' "$row" | tr '[:upper:]' '[:lower:]')
+    imperative=no
+    printf '%s' "$low" | grep -E "$(printf '%s' "$CHECK_IMPERATIVES" | tr '[:upper:]' '[:lower:]')" >/dev/null && imperative=yes
+
+    case "$col" in
+        warn)
+            n_warn_rows=$((n_warn_rows + 1))
+            if [ "$imperative" = no ]; then
+                note "$name is classified warn and its row tells the operator nothing to do about its own value."
+                echo "  The check column is documented as derivable from the rows: a warn row" >&2
+                echo "  states the imperative that puts it there. Add it, or reclassify the row." >&2
+            fi
+            ;;
+        fail) ;;
+        *)
+            if [ "$imperative" = yes ]; then
+                if printf '%s' "$row" | grep -F -- "$CHECK_NEARMISS" >/dev/null; then
+                    n_nearmiss=$((n_nearmiss + 1))
+                else
+                    note "$name is classified '$col' and its row carries an imperative about the counter."
+                    echo "  Under the stated rule that reads as a warn check, so the row has to say which" >&2
+                    echo "  clause excluded it -- its own value carrying no verdict, or a normal reading" >&2
+                    echo "  that is already non-zero. Write that in the row, starting '$CHECK_NEARMISS'." >&2
+                fi
+            fi
+            ;;
+    esac
+done <<EOF
+$(awk -F'|' -v ROW="$COUNTER_ROW_RE" '
+    NF >= 6 && $2 ~ ROW {
+        ha = $3; gsub(/[*[:space:]]/, "", ha)
+        if (ha == "yes" || ha == "no") print
+    }' "$DOC")
+EOF
+
+if [ "$n_warn_rows" -eq 0 ]; then
+    echo "check-health-contract: section 4c read no warn-classified counter rows in $DOC." >&2
+    echo "  Section 4b has already refused an empty warn set, so reaching here means this" >&2
+    echo "  section's row parser no longer matches the table -- it would report clean over" >&2
+    echo "  a document it cannot read." >&2
+    exit 2
+fi
+
+# 4c's DOMAIN is a column value, not the boundary it stands for. Fields
+# and counters share ONE table in the reference; a row is judged when
+# its healthy-affecting cell reads yes or no, and every other row is
+# dropped. That is right for the field rows -- `status`, `checks`,
+# `endpoints`, `healthy` and the rest lead the table, describe a
+# structure or a gauge rather than a monotonic counter, and contribute
+# no check -- and it is a hole for anything after them. A counter row
+# that landed `-` in that column would be dropped in silence, and this
+# section's universal would be satisfied by shrinking its own domain
+# rather than by its rows passing.
+#
+# The fact checked is positional, because that is the fact the table
+# actually carries: the fields lead, the counters follow, so every
+# dropped row is above every judged one. A dropped row below the first
+# judged one is either a counter missing its column value or a table
+# this section can no longer delimit; both need a human and neither may
+# read as clean.
+first_judged=$(awk -F'|' -v ROW="$COUNTER_ROW_RE" '
+    NF >= 6 && $2 ~ ROW {
+        ha = $3; gsub(/[*[:space:]]/, "", ha)
+        if (ha == "yes" || ha == "no") { print NR; exit }
+    }' "$DOC")
+# One line number, or nothing. awk hands back whatever its program
+# printed, and a program that printed several would be folded into the
+# first by the arithmetic below rather than reported -- an error with no
+# direction. A value that is not a single number means this section can
+# no longer find where the counters start, and it says so.
+case "$first_judged" in
+    '' ) : ;;
+    *[!0-9]* )
+        echo "check-health-contract: section 4c could not locate the first counter row in $DOC" >&2
+        echo "  (its row scan returned '$(printf '%s' "$first_judged" | tr '\n' ' ')')." >&2
+        exit 2
+        ;;
+esac
+
+if [ -n "$first_judged" ]; then
+    stray=$(awk -F'|' -v first="$first_judged" -v ROW="$COUNTER_ROW_RE" '
+        NF >= 6 && $2 ~ ROW && NR + 0 > first + 0 {
+            ha = $3; gsub(/[*[:space:]]/, "", ha)
+            if (ha != "yes" && ha != "no") {
+                n = $2; gsub(/^[ ]+|[ ]+$/, "", n)
+                print NR ": " n " (healthy-affecting: " ha ")"
+            }
+        }' "$DOC")
+    if [ -n "$stray" ]; then
+        note "$DOC has rows below the first counter that section 4c cannot judge:"
+        printf '%s\n' "$stray" | sed 's/^/    /' >&2
+        echo "  A row is judged only when its healthy-affecting column says yes or no. Ahead of" >&2
+        echo "  the first counter those are the document's fields and are intended; after it the" >&2
+        echo "  row is dropped with no verdict, which is this section's domain shrinking rather" >&2
+        echo "  than its rows passing. Give the row its column value, or move it up with the" >&2
+        echo "  fields." >&2
+    fi
+fi
+
 # --- 5. the /metrics help strings --------------------------------------
 # Operator-facing text, served on the wire. Name and help sit on one
 # line in metricDefs, so this reads that line. If the shape ever
@@ -400,5 +640,5 @@ if [ "$fail" -ne 0 ]; then
     exit 1
 fi
 
-echo "PASS  healthy contract agrees in ${n_lists} doc counter-list(s), ${n_words} doc count-word(s), ${n_code} code term(s), ${n_metrics} /metrics healthy declaration(s) and ${n_floor} integration floor entr(ies): $(printf '%s' "$column_set" | tr '\n' ' ')"
+echo "PASS  healthy contract agrees in ${n_lists} doc counter-list(s), ${n_words} doc count-word(s), ${n_code} code term(s), ${n_metrics} /metrics healthy declaration(s), ${n_floor} integration floor entr(ies) and ${n_checks} check classification(s) over ${n_judged} judged counter row(s): $(printf '%s' "$column_set" | tr '\n' ' ')"
 exit 0

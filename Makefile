@@ -6,6 +6,26 @@ BINARY = bin/net-dhcp
 
 PLUGIN_COVER_TAG ?= golang-cover
 
+# Build identity (O-4). VERSION is `dev` for every build that is not a
+# release: release.yml overrides it with the tag. COMMIT is derived here
+# rather than in the Dockerfile because the build context is a tarball
+# with no .git. Both fall back to a WORD, never to an empty string --
+# `unknown` in a label says the build did not carry it, an empty label
+# says nothing at all. The library revision is read inside the Dockerfile
+# from internal/dhcp-golib/SOURCE, so it cannot be passed wrong.
+#
+# The FULL revision, not --short: git abbreviates to a length that
+# depends on how many objects the clone holds, so a rebuilder verifying
+# a release (docs/verifying-releases.md) could derive a different string
+# from the same commit and get a different binary. A value that reaches
+# a reproducible binary has to be a function of the commit alone.
+VERSION ?= dev
+COMMIT ?= $(shell git rev-parse HEAD 2>/dev/null || echo unknown)
+LIBRARY := $(shell cat internal/dhcp-golib/SOURCE 2>/dev/null || echo unknown)
+BUILDINFO_PKG = github.com/claymore666/docker-net-dhcp/pkg/buildinfo
+GO_LDFLAGS = -X $(BUILDINFO_PKG).Version=$(VERSION) -X $(BUILDINFO_PKG).Commit=$(COMMIT) -X $(BUILDINFO_PKG).Library=$(LIBRARY)
+BUILD_ARGS = --build-arg VERSION=$(VERSION) --build-arg COMMIT=$(COMMIT)
+
 .PHONY: all debug build create enable disable pdebug push clean check integration-test \
         integration-test-failure integration-test-shard integration-local integration-cleanup \
         build-cover plugin-cover create-cover enable-cover disable-cover capture-fixtures \
@@ -25,13 +45,13 @@ PLUGIN_COVER_TAG ?= golang-cover
 all: create enable
 
 bin/%: $(SOURCES)
-	go build -o $@ ./cmd/$(shell basename $@)
+	go build -ldflags "$(GO_LDFLAGS)" -o $@ ./cmd/$(shell basename $@)
 
 debug: $(BINARY)
 	sudo $< -log debug
 
 build: $(SOURCES)
-	DOCKER_BUILDKIT=1 docker build -t $(PLUGIN_NAME):rootfs .
+	DOCKER_BUILDKIT=1 docker build $(BUILD_ARGS) -t $(PLUGIN_NAME):rootfs .
 
 plugin/rootfs: build
 	mkdir -p plugin/rootfs
@@ -83,7 +103,7 @@ push: create
 # installs continue to use `make create enable` / the unparameterized
 # image. The two tags coexist on the same host without conflicting.
 build-cover: $(SOURCES)
-	DOCKER_BUILDKIT=1 docker build --build-arg COVER_FLAGS="-cover -coverpkg=./..." -t $(PLUGIN_NAME):rootfs-cover .
+	DOCKER_BUILDKIT=1 docker build $(BUILD_ARGS) --build-arg COVER_FLAGS="-cover -coverpkg=./..." -t $(PLUGIN_NAME):rootfs-cover .
 
 plugin-cover/rootfs: build-cover
 	mkdir -p plugin-cover/rootfs
