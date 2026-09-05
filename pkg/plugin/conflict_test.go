@@ -287,7 +287,7 @@ func TestHTTPLimits_TheWorstCaseHandlerCarriesTheProbeWindow(t *testing.T) {
 // address back that CreateEndpoint has already handed to dockerd —
 // there is no "before use" left at Join, and waiting for one cost the
 // whole probe window on every container start (MEASURED ~6s on the
-// beta lane 2026-09-04; it is what broke the resolv.conf and MTU
+// 2.x lane 2026-09-04; it is what broke the resolv.conf and MTU
 // propagation cases).
 //
 // The `off` row is the one that would carry Y-11 if the rule were
@@ -339,7 +339,7 @@ func TestConflictWiring_TheJoinManagerNeverHoldsTheAddressBack(t *testing.T) {
 }
 
 // TestLeaseTimeout_DefaultFundsOneConflictAndItsRestartDelay is the
-// beta lane's 2026-09-04 finding, pinned.
+// 2.x lane's 2026-09-04 finding, pinned.
 //
 // A deadline of AcquisitionWindow alone funds an acquisition that finds
 // NO conflict. The run that matters is the other one: the squatter

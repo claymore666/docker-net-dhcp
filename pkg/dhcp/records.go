@@ -333,7 +333,7 @@ type Resumption struct {
 // a manager drops the lease and the ACD sub-machine goes idle with it
 // (the library's Record.ACD says "the phase at the loss, whatever the
 // reason"). Reading idle as "not cleared" put a warning on the healthy
-// path of every single container start; MEASURED on the beta lane,
+// path of every single container start; MEASURED on the 2.x lane,
 // 2026-09-04.
 //
 // So idle is named here explicitly, with its reason, rather than left

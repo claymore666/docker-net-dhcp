@@ -102,12 +102,12 @@ events into the events `pkg/plugin` has always consumed. Nothing outside
   retired rather than reused, since a thread left in a container's
   namespace would silently give the next caller the wrong one.
 
-## How IPv6 is handled in the beta
+## How IPv6 is handled in 2.0
 
-**It is not.** `validateModeOptions` refuses `ipv6=true` at
-`CreateNetwork` with `util.ErrIPv6Beta`, in every mode and for every
-spelling the option arrives under, and the error names both the beta and
-the milestone that restores DHCPv6. The refusal is at network creation
+**It is not, until IPv6 parity lands (#911).** `validateModeOptions`
+refuses `ipv6=true` at `CreateNetwork` with `util.ErrIPv6Unsupported`,
+in every mode and for every spelling the option arrives under, and the
+error names both the 2.0 line and where DHCPv6 is tracked. The refusal is at network creation
 rather than at the first container because that is the only point where
 an operator finds out in time to do something about it: an endpoint that
 quietly comes up without the address its network asked for is precisely
@@ -162,10 +162,10 @@ follows from where the filtering happens.
   offer's IP source, which meant that behind a DHCP relay every offer
   looked like it came from the relay and neither list could tell servers
   apart; option 54 is what the server says it is, and it is also what a
-  renewal is unicast to, so the beta filters on it and the relay
+  renewal is unicast to, so 2.0 filters on it and the relay
   limitation goes with the change. The two keys agree whenever a server
   answers directly. They stay DHCPv4-only because DHCPv6 is not
-  implemented in the beta at all, so a v6 entry is still refused at
+  implemented in 2.0 yet, so a v6 entry is still refused at
   `docker network create` rather than applying to nothing.
 
     The library's predicate is where the edge cases live, and they are
@@ -220,7 +220,7 @@ follows from where the filtering happens.
 ## How a lease is checked against the segment
 
 The plugin asks whether some *other* device already holds the address
-its DHCP server just leased (#524). Since the 2.0 beta the question is
+its DHCP server just leased (#524). Since 2.0 the question is
 asked by the DHCP client itself, as RFC 5227 Address Conflict Detection,
 from inside the container's own network namespace and on its own link —
 not by the chassis from the parent. The operator-facing rules and the

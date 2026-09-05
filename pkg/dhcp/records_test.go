@@ -379,7 +379,7 @@ func TestRecords_TheACDPhaseSurvivesARestart(t *testing.T) {
 }
 
 // TestResumption_IdleIsNotEvidenceOfAnUncheckedAddress pins the
-// distinction the beta lane taught on 2026-09-04: proto.ACDIdle is the
+// distinction the 2.x lane taught on 2026-09-04: proto.ACDIdle is the
 // ABSENCE of evidence, not evidence of an unchecked address.
 //
 // The first version of this predicate was spelled as the negation of

@@ -29,7 +29,7 @@
 #                TestMultiNetwork_SameSubnetRefused                   8
 #   corpus     879.2s across 70 tests; mean 12.56s AS SAMPLED. Ten of
 #              those rows have since been removed together with the
-#              DHCPv6 tests they costed -- see the 2.0-beta stanza
+#              DHCPv6 tests they costed -- see the 2.0 stanza
 #              below -- so the table now holds 66 rows, 712.0s, mean
 #              10.79s.
 #
@@ -39,9 +39,9 @@
 #   33142691992 33126731828 33126471548 33125634261 33124986791 
 #   33124593887 33124518969 33124422853 33123576221 33122097314 
 #   33119628132 33119366240 #
-# TEN ROWS WERE REMOVED, AND TWO ARE INFERRED RATHER THAN MEASURED (2.0 beta).
-# The 2.0 beta leases through the in-house DHCP library, which speaks
-# DHCPv4 only; IPv6 is refused at CreateNetwork until M7. The ten tests
+# TEN ROWS WERE REMOVED, AND TWO ARE INFERRED RATHER THAN MEASURED (2.0).
+# 2.0 leases through the in-house DHCP library, which speaks
+# DHCPv4 only; IPv6 is refused at CreateNetwork until #911. The ten tests
 # that drove a v6 client are retired -- named one by one in
 # test/integration/ipv6_refused_test.go and in the commit that retired
 # them -- so their rows went with them:

@@ -31,13 +31,14 @@ import (
 // ErrIPv6Unsupported is returned by every entry point in this package
 // for an IPv6 request.
 //
-// The 2.0 beta is IPv4-only: the library implements DHCPv4 and DHCPv6
-// is M7. CreateNetwork refuses `ipv6=true` outright, so the only way to
+// 2.0 is IPv4-only: the library implements DHCPv4, and DHCPv6 returns
+// with #911, before v2.0.0-rc2. CreateNetwork refuses `ipv6=true`
+// outright, so the only way to
 // reach this error is a network that was created by an earlier build
 // and survived the upgrade. It is a loud failure on purpose — the
 // alternative is a container that starts with no IPv6 address and no
 // statement anywhere that it was supposed to have one.
-var ErrIPv6Unsupported = errors.New("dhcp: DHCPv6 is not implemented in the 2.0 beta (IPv4-only; IPv6 returns at M7)")
+var ErrIPv6Unsupported = errors.New("dhcp: DHCPv6 is not implemented in 2.0 yet: IPv4-only until IPv6 parity (#911)")
 
 // ErrNoLease is returned when an acquisition ended without one.
 var ErrNoLease = errors.New("dhcp: no lease was acquired")
@@ -90,7 +91,8 @@ type DHCPClientOptions struct {
 
 	// PreferredV6 is the DHCPv6 address hint. Unreachable in this
 	// build; kept so the v6 call sites still compile against the
-	// refusal rather than being deleted and re-added at M7.
+	// refusal rather than being deleted and re-added at IPv6 parity
+	// (#911).
 	PreferredV6 string
 
 	// AllowServers and DenyServers restrict which DHCPv4 servers a
@@ -297,10 +299,10 @@ func (o *DHCPClientOptions) acdReport(s lease.Stats) {
 
 // RAObservation is what a router advertisement told us about a segment.
 //
-// Nothing in this build observes one: advertisements are IPv6 and the
-// beta refuses IPv6. The type survives because the v6 call sites in
+// Nothing in this build observes one: advertisements are IPv6 and 2.0
+// refuses IPv6. The type survives because the v6 call sites in
 // pkg/plugin do, and deleting it would mean deleting and restoring
-// those at M7.
+// those at IPv6 parity (#911).
 type RAObservation struct {
 	Seen    bool
 	Managed bool

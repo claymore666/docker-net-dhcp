@@ -124,7 +124,7 @@ func AcquisitionWindow(p proto.Params) time.Duration {
 // already in use — which is the case conflict detection exists for,
 // and therefore the case the default deadline has to fund.
 //
-// MEASURED on the beta lane 2026-09-04 with a deadline of
+// MEASURED on the 2.x lane 2026-09-04 with a deadline of
 // AcquisitionWindow alone: the squatter answered the probe, the library
 // sent the DHCPDECLINE, waited RFC 2131 section 3.1(5)'s ten seconds,
 // asked again and was granted a clean address 10.7s after the first

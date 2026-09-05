@@ -38,7 +38,7 @@ import (
 //
 // WHERE IT LISTENS, AND WHY NOT ON THE PARENT. The obvious vantage
 // point is the macvlan parent, and it is the wrong one. MEASURED on the
-// beta lane 2026-09-04: a capture bound to the parent veth's host end
+// 2.x lane 2026-09-04: a capture bound to the parent veth's host end
 // saw the SQUATTER's reply arriving and not one of the container's own
 // Probes, on a run where the DHCPDECLINE in the server log proves the
 // Probes were sent and answered. A macvlan child's transmit path
@@ -82,7 +82,7 @@ type ARPFrame struct {
 // makes it a question about an address at all.
 //
 // BOTH halves are load-bearing, and the second was missing. MEASURED on
-// the beta lane 2026-09-04: a container whose network has no gateway
+// the 2.x lane 2026-09-04: a container whose network has no gateway
 // resolves 0.0.0.0, and the kernel emits an ordinary ARP Request whose
 // sender protocol address `inet_select_addr` could not fill either --
 // spa 0.0.0.0, tpa 0.0.0.0, three of them a second apart, which is the
@@ -427,7 +427,7 @@ func openARPSocket(iface string) (int, string, error) {
 // `ptype_base`, which the receive path consults; the TRANSMIT path
 // (`dev_queue_xmit_nit`) delivers only to `ptype_all`. So an ETH_P_ARP
 // socket sees what arrives on the link and nothing the host sends out
-// of it. MEASURED on the beta lane 2026-09-04: the squatter's ARP
+// of it. MEASURED on the 2.x lane 2026-09-04: the squatter's ARP
 // Request was missing from the capture while the reply to it was
 // present -- which would have made the positive control in the
 // conflict_check=off case unsatisfiable, and every absence beneath it

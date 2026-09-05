@@ -242,7 +242,7 @@ func resolveClientID(opts DHCPNetworkOptions, endpointID string, mac net.Hardwar
 // and proto.DefaultACDParams rather than transcribed, so a constant
 // that moves in the library moves this with it.
 //
-// AND THAT IS STILL NOT ENOUGH, which the beta lane proved on
+// AND THAT IS STILL NOT ENOUGH, which the 2.x lane proved on
 // 2026-09-04. 12s funds an acquisition that finds NO conflict. The
 // case this whole feature exists for is the one where it finds one:
 // the library then owes RFC 2131 section 3.1(5) a DHCPDECLINE and

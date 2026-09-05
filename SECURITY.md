@@ -36,12 +36,12 @@ CapEff: 00000000a82c35fb
 $ capsh --decode=00000000a82c35fb
 ```
 
-**`CAP_NET_RAW` is requested from the 2.0 beta onward, and the request
+**`CAP_NET_RAW` is requested from 2.0 onward, and the request
 is what changed, not the power.** The DHCP exchange runs on an
 interface that has no address yet, which needs an `AF_PACKET` socket,
 and that is the ordinary path for every endpoint rather than an
 optional feature. The plugin process already held the capability before
-the beta, because it is in the OCI default set — the read above is from
+2.0, because it is in the OCI default set — the read above is from
 a 1.x process. What `config.json` controls is the set the daemon
 **shows you and asks you to approve** at install and on upgrade, so
 adding the line makes every operator re-approve while the effective set

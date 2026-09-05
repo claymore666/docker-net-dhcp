@@ -13,7 +13,7 @@
 # THE FIXTURE CARRIES A TOOLCHAIN BINARY ON PURPOSE (2.0). It used to
 # carry two of ours, net-dhcp and dhcp-handler, and the "different sets"
 # case was built by deleting the second. cmd/dhcp-handler is deleted in
-# the beta -- the library reports state changes on a channel, so there
+# 2.0 -- the library reports state changes on a channel, so there
 # is no hook process -- and a one-file fixture would have made that
 # case unbuildable and the happy path a comparison of one. So mk now
 # plants the shape the real export actually has: one binary of ours

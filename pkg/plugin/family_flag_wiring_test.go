@@ -45,7 +45,7 @@ import (
 //   - Hardcoded `V6: false` at the dhcp_manager.go site: setupClient is
 //     the ONE call rendered for both families by the legacy dual-stack
 //     path, so a constant false there silently starts a SECOND IPv4
-//     client where a v6 one was asked for. The beta's IPv4-only refusal
+//     client where a v6 one was asked for. 2.0's IPv4-only refusal
 //     — the thing that is supposed to make the missing family visible —
 //     then never fires at all, and the endpoint quietly gets two v4
 //     clients racing for one lease. Silent, and no integration run in

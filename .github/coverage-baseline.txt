@@ -252,10 +252,10 @@
 #     since v1.3.1. The v1.8.0 entry gives the reason: one ~16-statement
 #     main(), so a real regression here is a six-point fall.
 #
-# 2.0 BETA (2x-beta): FOUR PACKAGES, NOT FIVE.
+# 2.0 (branch 2.0.0): FOUR PACKAGES, NOT FIVE.
 #
 # cmd/dhcp-handler is DELETED on this branch. It was the hook binary
-# dhcpcd exec'd on every state change, and the beta has no dhcpcd: the
+# dhcpcd exec'd on every state change, and 2.0 has no dhcpcd: the
 # library reports state changes on a Go channel from lease.Manager, so
 # there is no process to exec and no argv to parse. Its row is removed
 # rather than left at 74.0 because the ratchet fails on a baselined

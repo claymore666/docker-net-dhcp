@@ -113,7 +113,7 @@ func validateModeOptions(opts DHCPNetworkOptions) error {
 		return err
 	}
 
-	// IPv4 only, for every mode (P-8, M7).
+	// IPv4 only, for every mode (P-8, #911).
 	//
 	// Keyed on the DECODED FIELD and not on an option key. decodeOpts
 	// runs mapstructure with no MatchName, so the match is
@@ -124,7 +124,7 @@ func validateModeOptions(opts DHCPNetworkOptions) error {
 	// with IPv6 silently doing nothing — which is what this refusal
 	// exists to prevent.
 	if opts.IPv6 {
-		return util.ErrIPv6Beta
+		return util.ErrIPv6Unsupported
 	}
 
 	// RFC 5227 conflict detection, per network (D23). Two refusals and
