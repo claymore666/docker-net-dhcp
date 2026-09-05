@@ -60,8 +60,11 @@ mkdoc() {
         for n in ${DOC_WARN_LIST-lease_changed}; do printf '| `%s` | no | warn | %s |\n' "$n" "${DOC_WARN_TEXT:-watch it.}"; done
         for n in ${DOC_FAIL_EXTRA-}; do printf '| `%s` | no | fail | a fault. |\n' "$n"; done
         printf '| `leases_renewed` | no | — | %s |\n' "${DOC_DASH_TEXT:-not a fault.}"
+        for n in ${DOC_STRAY_MID-}; do printf '| `%s` | — | — | a structure. |\n' "$n"; done
+        for n in ${DOC_FAMILY_MID-}; do printf '| `%s_x`, `%s_y` | no | — | %s |\n' "$n" "$n" "${DOC_FAMILY_TEXT:-not a fault.}"; done
         printf '| `pending_hints` | no | — | not a fault. |\n'
         for n in ${DOC_STRAY_BELOW-}; do printf '| `%s` | — | — | a structure. |\n' "$n"; done
+        for n in ${DOC_FAMILY_BELOW-}; do printf '| `%s_x`, `%s_y` | — | — | a structure. |\n' "$n" "$n"; done
         printf '\n## Troubleshooting\n\n| symptom | likely cause | fix |\n| --- | --- | --- |\n'
         printf '| `healthy: false` on `/Plugin.Health` | Exactly %s counters flip it:' "$(printf '%s' "$tword" | tr '[:upper:]' '[:lower:]')"
         for n in $trouble; do printf ' `%s`,' "$n"; done
@@ -664,6 +667,51 @@ DOC_STRAY_ABOVE=stray_counter \
 out=$(bash "$CHECK" "$DIR/4c-stray-above.md" "$DIR/4c-stray-above.go" "$M4" "$F4" 2>&1); rc=$?
 [ $rc -eq 0 ] && ok "the same row ahead of the counters is a field and passes" \
                || no "a field row before the counters returned $rc (: $out)"
+
+# (d), the anchor. The refusal asks whether a dropped row sits below the
+# FIRST judged one, and the cases above cannot tell that apart from the
+# LAST judged one: their stray row is after every counter, so both
+# readings report it. The reviewer's mutant -- `{ print NR; exit }`
+# replaced by `{ last = NR } END { print last }` -- SURVIVED for exactly
+# that reason (review r3, finding 5, MEASURED). This row sits BETWEEN
+# two counters, where the two readings disagree: the first-judged anchor
+# reports it, the last-judged anchor cannot see it.
+DOC_STRAY_MID=stray_counter \
+    mkdoc "$DIR/4c-stray-mid.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/4c-stray-mid.go" 4
+out=$(bash "$CHECK" "$DIR/4c-stray-mid.md" "$DIR/4c-stray-mid.go" "$M4" "$F4" 2>&1); rc=$?
+[ $rc -eq 1 ] && ok "a row BETWEEN two counters with no yes/no value fails" \
+               || no "a stray row between counters returned $rc (: $out)"
+case "$out" in *"stray_counter"*) ok "the between-counters failure names the row" ;;
+  *) no "the between-counters failure does not name the row: $out" ;; esac
+
+# (e) the row SHAPE. The reference writes the v4/v6 counter families as a
+# comma-separated list of names in one cell, and section 4c read only the
+# single-name spelling -- so the same `-`/`-` row that fails as one name
+# passed as a family, and the section judged fewer rows than the domain
+# the reference states (review r3, finding 2, MEASURED). Both directions:
+# a family row outside the domain fails where a single name would, and a
+# family row inside it is judged rather than dropped.
+DOC_FAMILY_BELOW=toy_counter \
+    mkdoc "$DIR/4c-family-below.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/4c-family-below.go" 4
+out=$(bash "$CHECK" "$DIR/4c-family-below.md" "$DIR/4c-family-below.go" "$M4" "$F4" 2>&1); rc=$?
+[ $rc -eq 1 ] && ok "a comma-separated family row after the counters fails" \
+               || no "a family stray row returned $rc (: $out)"
+case "$out" in *"toy_counter_x"*) ok "the family failure names the row it cannot judge" ;;
+  *) no "the family failure does not name the row: $out" ;; esac
+
+DOC_FAMILY_MID=toy_counter DOC_FAMILY_TEXT="worth investigating whenever it moves." \
+    mkdoc "$DIR/4c-family-bare.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/4c-family-bare.go" 4
+out=$(bash "$CHECK" "$DIR/4c-family-bare.md" "$DIR/4c-family-bare.go" "$M4" "$F4" 2>&1); rc=$?
+[ $rc -eq 1 ] && ok "a family row inside the domain is JUDGED, not dropped" \
+               || no "a family near-miss row returned $rc (: $out)"
+case "$out" in *"toy_counter_x"*) ok "the family near-miss names the whole cell" ;;
+  *) no "the family near-miss does not name the cell: $out" ;; esac
+
+DOC_FAMILY_MID=toy_counter \
+    mkdoc "$DIR/4c-family-ok.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/4c-family-ok.go" 4
+out=$(bash "$CHECK" "$DIR/4c-family-ok.md" "$DIR/4c-family-ok.go" "$M4" "$F4" 2>&1); rc=$?
+[ $rc -eq 0 ] && ok "a family row with a yes/no value and no imperative passes" \
+               || no "a plain family row returned $rc (: $out)"
 
 # (a), the other direction, and the vocabulary's own positive control: a
 # `-` row with NO imperative needs no sentence. A gate demanding one

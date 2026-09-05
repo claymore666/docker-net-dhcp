@@ -408,14 +408,28 @@ fi
 # `dhcp_routes_applied`). Running the widened list over the whole table
 # found four more rows in the same position, not two -- which is the
 # bound below restated as a measurement rather than a worry.
+# 4c's ROW SHAPE, in one place, used by all three of its programs. The
+# name cell is one backticked counter name -- or a comma-separated
+# family of them, which is how the reference writes the v4/v6 splits
+# (`lease_changed_v6, leases_obtained_v6, ...`). Only the single-name
+# spelling was read, so those rows were invisible to the loop AND to the
+# positional refusal below: a `-`/`-` row written as a family passed
+# where the same row written as one name failed, and the section judged
+# 57 rows while the domain the reference states yields 59 (review r3,
+# finding 2, MEASURED). The shape is the table's, not a widening: a cell
+# that is anything else is still not a counter row.
+COUNTER_ROW_RE='^ `[a-z0-9_]+`(, `[a-z0-9_]+`)* $'
+
 CHECK_IMPERATIVES='alert on|watch it|watch for|worth investigating|worth attention|actionable|read this \*\*before\*\*|never alone|read (it |them )?against|read it as|denominator|how to read it'
 CHECK_NEARMISS='Not a check:'
 
 n_warn_rows=0
 n_nearmiss=0
+n_judged=0
 while IFS= read -r row; do
     [ -n "$row" ] || continue
-    name=$(printf '%s' "$row" | sed -E 's/^\| `([a-z0-9_]+)`.*/\1/')
+    n_judged=$((n_judged + 1))
+    name=$(printf '%s' "$row" | awk -F'|' '{n = $2; gsub(/^[ ]+|[ ]+$/, "", n); print n}')
     col=$(printf '%s' "$row" | awk -F'|' '{gsub(/[* ]/,"",$4); print $4}')
     low=$(printf '%s' "$row" | tr '[:upper:]' '[:lower:]')
     imperative=no
@@ -425,7 +439,7 @@ while IFS= read -r row; do
         warn)
             n_warn_rows=$((n_warn_rows + 1))
             if [ "$imperative" = no ]; then
-                note "\`$name\` is classified warn and its row tells the operator nothing to do about its own value."
+                note "$name is classified warn and its row tells the operator nothing to do about its own value."
                 echo "  The check column is documented as derivable from the rows: a warn row" >&2
                 echo "  states the imperative that puts it there. Add it, or reclassify the row." >&2
             fi
@@ -436,7 +450,7 @@ while IFS= read -r row; do
                 if printf '%s' "$row" | grep -F -- "$CHECK_NEARMISS" >/dev/null; then
                     n_nearmiss=$((n_nearmiss + 1))
                 else
-                    note "\`$name\` is classified '$col' and its row carries an imperative about the counter."
+                    note "$name is classified '$col' and its row carries an imperative about the counter."
                     echo "  Under the stated rule that reads as a warn check, so the row has to say which" >&2
                     echo "  clause excluded it -- its own value carrying no verdict, or a normal reading" >&2
                     echo "  that is already non-zero. Write that in the row, starting '$CHECK_NEARMISS'." >&2
@@ -445,8 +459,8 @@ while IFS= read -r row; do
             ;;
     esac
 done <<EOF
-$(awk -F'|' '
-    NF >= 6 && $2 ~ /^ `[a-z0-9_]+` $/ {
+$(awk -F'|' -v ROW="$COUNTER_ROW_RE" '
+    NF >= 6 && $2 ~ ROW {
         ha = $3; gsub(/[*[:space:]]/, "", ha)
         if (ha == "yes" || ha == "no") print
     }' "$DOC")
@@ -477,8 +491,8 @@ fi
 # judged one is either a counter missing its column value or a table
 # this section can no longer delimit; both need a human and neither may
 # read as clean.
-first_judged=$(awk -F'|' '
-    NF >= 6 && $2 ~ /^ `[a-z0-9_]+` $/ {
+first_judged=$(awk -F'|' -v ROW="$COUNTER_ROW_RE" '
+    NF >= 6 && $2 ~ ROW {
         ha = $3; gsub(/[*[:space:]]/, "", ha)
         if (ha == "yes" || ha == "no") { print NR; exit }
     }' "$DOC")
@@ -497,12 +511,12 @@ case "$first_judged" in
 esac
 
 if [ -n "$first_judged" ]; then
-    stray=$(awk -F'|' -v first="$first_judged" '
-        NF >= 6 && $2 ~ /^ `[a-z0-9_]+` $/ && NR + 0 > first + 0 {
+    stray=$(awk -F'|' -v first="$first_judged" -v ROW="$COUNTER_ROW_RE" '
+        NF >= 6 && $2 ~ ROW && NR + 0 > first + 0 {
             ha = $3; gsub(/[*[:space:]]/, "", ha)
             if (ha != "yes" && ha != "no") {
-                n = $2; gsub(/[` ]/, "", n)
-                print NR ": `" n "` (healthy-affecting: " ha ")"
+                n = $2; gsub(/^[ ]+|[ ]+$/, "", n)
+                print NR ": " n " (healthy-affecting: " ha ")"
             }
         }' "$DOC")
     if [ -n "$stray" ]; then
@@ -626,5 +640,5 @@ if [ "$fail" -ne 0 ]; then
     exit 1
 fi
 
-echo "PASS  healthy contract agrees in ${n_lists} doc counter-list(s), ${n_words} doc count-word(s), ${n_code} code term(s), ${n_metrics} /metrics healthy declaration(s), ${n_floor} integration floor entr(ies) and ${n_checks} check classification(s): $(printf '%s' "$column_set" | tr '\n' ' ')"
+echo "PASS  healthy contract agrees in ${n_lists} doc counter-list(s), ${n_words} doc count-word(s), ${n_code} code term(s), ${n_metrics} /metrics healthy declaration(s), ${n_floor} integration floor entr(ies) and ${n_checks} check classification(s) over ${n_judged} judged counter row(s): $(printf '%s' "$column_set" | tr '\n' ' ')"
 exit 0
