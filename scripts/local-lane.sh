@@ -88,6 +88,8 @@ LANE=(
   "version pins|-|bash scripts/check-version-pins.sh"
   "go pins|-|bash scripts/check-go-pins.sh"
   "manifest parity|-|bash scripts/check-manifest-parity.sh"
+  "manifest delta table|-|bash scripts/check-manifest-delta-table.sh"
+  "privilege sentences|-|bash scripts/check-privilege-sentences.sh"
   "issue label map|-|bash scripts/check-issue-label-map.sh"
   "label taxonomy|-|bash scripts/check-label-taxonomy.sh --static"
   "release-notes symbols|-|bash scripts/check-release-notes-symbols.sh"

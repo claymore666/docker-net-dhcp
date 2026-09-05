@@ -49,6 +49,166 @@ stays exactly as it was. If you are prompted on an upgrade, that is
 this change; it is recorded in the release notes so a prompt nobody
 intended can be told apart from this one.
 
+### Every grant in `config.json`, one sentence each
+
+One row per privilege the manifest asks for, naming what in this tree
+consumes it. `scripts/check-privilege-sentences.sh` fails when this
+table and `config.json` disagree in either direction — a grant with no
+row, or a row for a grant that is no longer requested — so a privilege
+that is dropped cannot go on reading as granted here.
+
+The rows say what the grant is FOR. They are not a claim that nothing
+else in the process could use it: a capability is held process-wide, and
+the effective set is the seventeen above, not these four.
+
+<!-- privilege-sentences: begin -->
+
+| grant | what it is for | consumer |
+|---|---|---|
+| `network:host` | The plugin resolves and reads the parent link of every macvlan/ipvlan network, and any `METRICS_ADDR` listener binds, on the host's own network namespace rather than in a namespace of its own. | `pkg/plugin/parent_gate.go`, `cmd/net-dhcp/metrics.go` |
+| `pidhost` | Two consumers, and only one of them is the network namespace: the fallback route into a container's netns via `/proc/<pid>/ns/net`, and every `resolv.conf` write, which enters the container's MOUNT namespace through `/proc/<pid>/ns/mnt` and has no sandbox-key equivalent. | `pkg/plugin/resolvconf.go`, `pkg/plugin/container_netns.go` |
+| `mount:/var/run/docker.sock` | The Docker API, read-only: `NetworkList`, `NetworkInspect` and `ContainerInspect`, which is where a container's hostname for DHCP option 12 comes from. Anything but GET and HEAD is refused before it is sent. | `pkg/plugin/docker_client.go`, `pkg/plugin/docker_transport.go` |
+| `mount:/var/lib/net-dhcp` | `STATE_DIR`: the lease record, per-network options, tombstones and the audit ledger, which must survive `docker plugin rm` and upgrade. | `pkg/plugin/state.go` |
+| `mount:/var/run/docker` | Read-only. The daemon's sandbox netns entries: the route tried first into a container's network namespace, which carries a recovery after a plugin restart, and the evidence that separates "the container went away mid-attach" from a plugin fault. | `pkg/plugin/sandbox_netns.go`, `pkg/plugin/network.go` |
+| `CAP_NET_ADMIN` | Every address, route, MTU and link change the plugin applies inside a container's network namespace, and the parent/child link creation that attaches it. | `pkg/plugin/dhcp_manager.go`, `pkg/plugin/netlink_seam.go` |
+| `CAP_NET_RAW` | The `AF_PACKET` socket the DHCP exchange runs on — the interface has no address yet, so an ordinary UDP socket cannot carry it — and the RFC 5227 ARP probes on the same socket family. | `internal/dhcp-golib/runtime/transport_packet_linux.go`, `internal/dhcp-golib/runtime/arp_linux.go` |
+| `CAP_SYS_ADMIN` | `setns` into a container's network namespace on a locked OS thread, and into its mount namespace for a `resolv.conf` write. | `pkg/dhcp/chassis.go`, `pkg/plugin/resolvconf.go` |
+| `CAP_SYS_PTRACE` | Opening `/proc/<pid>/ns/*` of a container whose init runs as a non-root user: the kernel gates it on `PTRACE_MODE_READ`, which a uid mismatch fails without this capability (#317). Both `/proc/<pid>/ns/mnt` for `resolv.conf` and the netns fallback route need it. | `pkg/plugin/resolvconf.go`, `pkg/plugin/container_netns.go` |
+
+<!-- privilege-sentences: end -->
+
+**The sandbox-key route was measured, and it carries a re-adoption but
+not an attach.** The plugin asks first for the key the daemon publishes
+under `/var/run/docker/netns/`. Whether that key resolves depends on one
+thing: libnetwork creates each entry as an ordinary empty file and
+bind-mounts the namespace over it, and the plugin's read-only
+`/var/run/docker` is a bind mount taken when the *plugin process*
+starts — a snapshot, not a subscription. A sandbox that already existed
+at that moment is reachable through its key; one created afterwards is
+not, and the key resolves to the empty file underneath.
+
+A `Join` is always for a sandbox younger than the plugin, so
+`/proc/<pid>/ns/net` carries **every attach**, as it always has. The one
+case that goes the other way is recovery after a plugin restart, where
+the container predates the new plugin process: there the key route is
+used and the container's PID is never read. The plugin verifies that
+what it opened is a network namespace before using it, so the refusal is
+immediate and counted rather than surfacing later as a dead persistent
+client.
+
+That is why `pidhost` and `CAP_SYS_PTRACE` are unchanged, and it is now
+two independent reasons rather than one: the network namespace, above,
+and `resolv.conf` propagation, which enters the container's **mount**
+namespace by PID and for which no sandbox key exists at all.
+
+On such a host, per attach, `sandbox_key_entry_failures` and
+`sandbox_pid_fallbacks` each rise by one and `sandbox_key_entries` stays
+flat; after a plugin restart `sandbox_key_entries` rises once per
+recovered endpoint instead. If attaches start counting under
+`sandbox_key_entries`, the daemon's sandbox mounts are reaching this
+plugin — a newer engine, or a different mount configuration — and the
+netns half of these two grants is no longer load-bearing on your host.
+None of that is `healthy`-affecting: a fallback that succeeds is a
+working endpoint, and it costs a privilege rather than a lease. The
+per-attach log line naming the refused key is at `debug`, because on a
+stock engine it is correct on every attach and there is nothing to do
+about it; the counters carry the signal at every level.
+
+**Which refusal, and how you can tell.** The paragraph above names one
+cause — the entry is the placeholder file, because the daemon's bind
+mount came after the plugin's own. A second cause produces the same
+`sandbox_key_entry_failures` count and wants the opposite response: a
+daemon started with a non-default `--exec-root` publishes sandbox keys
+under `<exec-root>/netns/`, which this plugin does not accept and
+refuses on sight. The two are separated by the arm counters —
+`sandbox_key_not_a_namespace` for the first, `sandbox_key_not_permitted`
+for the second (`sandbox_key_wrong_ns_type` and `sandbox_key_unavailable`
+are the remaining two; all four sum to `sandbox_key_entry_failures`).
+
+The claim in this section is the first, and it is asserted rather than
+argued: `TestSandboxKeyRoute_Macvlan`, `_Bridge`, `_Ipvlan` and
+`_NonRootContainer` in `test/integration/sandbox_key_route_test.go` each
+require `sandbox_key_not_a_namespace` to rise by exactly one per attach
+and the other three arms to stay flat, and
+`TestRecovery_PluginDisableEnable_PreservesEndpoint` in
+`test/integration/recovery_test.go` requires all four to be zero on the
+recovered instance — the same key form, on the same daemon, in the same
+run, refused there and accepted here.
+
+**The bound on that claim**, stated rather than closed: those cells
+measure this lane's daemon, which runs the default `--exec-root`. On a
+host where it is not the default, the refusal you see is
+`sandbox_key_not_permitted`, the paragraph above does not describe what
+happened, and the remedy is a change to this plugin rather than to your
+host.
+
+**What the measurement covers, and what it does not.** The integration
+lane runs the cells above on bridge, macvlan and ipvlan, for a root and
+a non-root container init, and across a plugin restart, on one rootful
+daemon. Rootless Docker and `dockerd --userns-remap` are outside it and
+are not claimed. Whether giving `/var/run/docker` slave mount
+propagation in `config.json` would make the attach route work as well is
+an open question this lane has not been asked; the recovery case shows
+the key route itself is sound when the mount is visible, so propagation
+is the indicated experiment — but it is a manifest privilege change and
+it is recorded rather than assumed.
+
+### Pointing the plugin at a read-only Docker socket proxy
+
+The plugin's whole use of the Docker API is three read calls plus the
+client library's version ping. `DOCKER_HOST` (empty by default, which
+keeps the mounted socket) lets an operator put a proxy in front of it,
+so a compromise of the plugin cannot reach the API calls that start a
+container.
+
+The proxy must allow exactly:
+
+```
+GET  /_ping                       and  HEAD /_ping
+GET  /v1.*/networks
+GET  /v1.*/networks/{id}
+GET  /v1.*/containers/{id}/json
+```
+
+A worked example. The proxy listens on a **TCP endpoint on the host's
+loopback**, which the plugin reaches because it runs with host
+networking:
+
+```
+# 1. run any HTTP proxy that forwards only the paths above to
+#    /var/run/docker.sock, listening on 127.0.0.1:2375
+# 2. point the plugin at it
+docker plugin disable claymore666/docker-net-dhcp:<tag>
+docker plugin set    claymore666/docker-net-dhcp:<tag> DOCKER_HOST=tcp://127.0.0.1:2375
+docker plugin enable claymore666/docker-net-dhcp:<tag>
+```
+
+The socket bind mount in `config.json` stays either way — it is what
+the default value resolves to, and dropping it would break every
+installation that sets nothing.
+
+**Three bounds, said here rather than found later.**
+
+*A proxy on its own unix socket does not work, and the reason is the
+manifest.* The plugin sees exactly the paths `config.json` mounts, and
+the socket mount's `source` is fixed at `/var/run/docker.sock` with no
+`settable` field — so `docker plugin set … DOCKER_HOST=unix:///run/
+docker-ro.sock` names a path that does not exist inside the plugin. A
+unix-socket proxy is only reachable if it listens at the manifest's own
+source path, which means displacing the daemon's socket for every other
+client on the host. Use the TCP form above.
+
+*A TLS endpoint is not supported.* Nothing in the plugin reads
+`DOCKER_CERT_PATH` or configures a TLS client, so the endpoint has to be
+a plain one on a host the plugin already trusts — loopback, in practice.
+
+*The plugin's own refusal is a backstop, not the boundary.* It refuses
+unsafe methods before sending them and counts each one
+(`docker_api_non_get_refusals`), which means the plugin and the proxy
+fail the same way. It does not make the proxy unnecessary: the plugin is
+the thing being defended against, and a refusal it implements itself is
+a refusal an attacker who controls it can remove.
+
 Assume the effective set when reasoning about a report, not the four
 in `config.json`. Reports are especially welcome for:
 

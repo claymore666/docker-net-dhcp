@@ -22,7 +22,6 @@ import (
 	"github.com/claymore666/dhcp-golib/proto"
 	cerrdefs "github.com/containerd/errdefs"
 	dNetwork "github.com/docker/docker/api/types/network"
-	docker "github.com/docker/docker/client"
 	"github.com/gorilla/handlers"
 	"github.com/mitchellh/mapstructure"
 	log "github.com/sirupsen/logrus"
@@ -837,6 +836,64 @@ type Plugin struct {
 	// reads like a slow container start, and only the counter says the
 	// PID belonged to something else.
 	netnsPIDMismatches atomic.Int32
+
+	// sandboxKeyEntries, sandboxKeyEntryFailures and sandboxPIDFallbacks
+	// describe WHICH ROUTE the plugin took into a container's network
+	// namespace: the sandbox key the daemon publishes, or the container
+	// PID that needs the host PID namespace and CAP_SYS_PTRACE.
+	//
+	// Three counters and not one, because the question has a domain and
+	// two outcomes. sandboxKeyEntries is the domain -- how many opens
+	// the key route carried. Without it, "no fallbacks" is true of a
+	// plugin that never opened a namespace at all, which is the reading
+	// a green suite would otherwise support. sandboxKeyEntryFailures is
+	// every refusal of the key route, whether or not the fallback then
+	// worked; sandboxPIDFallbacks is the subset where an endpoint is
+	// actually running on the PID route, which is what an operator has
+	// to know before the grant that route needs can be reasoned about.
+	//
+	// None of them is healthy-affecting. A fallback that succeeds is a
+	// working endpoint; what it costs is a privilege, not a lease.
+	sandboxKeyEntries       atomic.Int32
+	sandboxKeyEntryFailures atomic.Int32
+	sandboxPIDFallbacks     atomic.Int32
+
+	// The four arms of sandboxKeyEntryFailures. They exist because the
+	// aggregate cannot carry a CAUSE, and the cause is what SECURITY.md
+	// asserts: that the refusal an operator sees on a stock engine is
+	// the unpropagated bind mount, not a key this plugin declined to
+	// recognise. Both produce the same aggregate, want opposite
+	// remedies, and until these existed nothing in the tree could tell
+	// a reader which had happened -- the plugin log carries the reason
+	// and reaches an integration run only when a cell has already
+	// failed, so a green run carried no evidence for the claim at all.
+	//
+	// THEY SUM TO sandboxKeyEntryFailures, by construction rather than
+	// by convention: openSandboxNetNS classifies every failure into
+	// exactly one of them, and sandboxKeyUnavailable is the residual
+	// arm that catches anything not carrying one of the three
+	// refusal sentinels (an entry that never appeared inside the attach
+	// budget, or a directory that could not be opened at all).
+	//
+	// None of them is healthy-affecting, for the same reason the three
+	// above are not.
+	sandboxKeyNotPermitted  atomic.Int32
+	sandboxKeyNotANamespace atomic.Int32
+	sandboxKeyWrongNSType   atomic.Int32
+	sandboxKeyUnavailable   atomic.Int32
+
+	// dockerAPINonGETRefusals counts requests to the Docker API this
+	// plugin refused to send because their method was not GET.
+	//
+	// It should stay zero for the life of every installation: the
+	// plugin's Docker surface is three read calls, and the refusal is
+	// what makes that a property of the binary rather than a property
+	// of today's call sites (#691). A non-zero value means code in this
+	// process tried to write to the daemon, and an operator who has put
+	// a read-only proxy in front of the socket would have seen the same
+	// request refused there -- which is the point: the plugin fails the
+	// same way on both sides of that boundary.
+	dockerAPINonGETRefusals atomic.Int32
 
 	// dhcpRoutesApplied counts DHCP option-121 classless static routes
 	// handed to Docker, and dhcpDefaultRouteSuperseded counts the
@@ -2060,29 +2117,25 @@ func NewPlugin(opts Options) (*Plugin, error) {
 	if opts.AwaitTimeout <= 0 {
 		opts.AwaitTimeout = defaultAwaitTimeout
 	}
-	client, err := docker.NewClientWithOpts(
-		docker.WithHost("unix:///run/docker.sock"),
-		docker.WithAPIVersionNegotiation(),
-		// Fail fast on hung API calls. Concretely defends against the
-		// daemon-startup window where dockerd may be calling into us
-		// before it can respond to our own NetworkInspect / etc.
-		docker.WithTimeout(2*time.Second),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create docker client: %w", err)
-	}
-
 	p := Plugin{
 		awaitTimeout: opts.AwaitTimeout,
 		startTime:    time.Now(),
 		instanceID:   newInstanceID(),
 
-		docker: client,
-
 		joinHints:            make(map[string]joinHint),
 		persistentDHCP:       make(map[string]*dhcpManager),
 		endpointFingerprints: make(map[string]endpointFingerprint),
 	}
+
+	// The Docker client is built AFTER p exists because the GET-only
+	// transport counts its refusals on p. Wiring the counter in later
+	// would put the refusal arm behind a nil check that production
+	// always passes and a test never drives.
+	client, err := newDockerClient(dockerHostFromEnv(os.Getenv), &p)
+	if err != nil {
+		return nil, err
+	}
+	p.docker = client
 	p.ledger = newLeaseLedger(filepath.Join(stateDir, ledgerFileName), &p.ledgerWriteFailures)
 
 	// Opened BEFORE recovery below, which reads it. Fatal on failure,

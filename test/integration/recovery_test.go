@@ -80,7 +80,11 @@ func TestRecovery_PluginDisableEnable_PreservesEndpoint(t *testing.T) {
 	// a delta against a stale baseline (#405). It is also the only
 	// place instance_id is exercised against a real recycle rather than
 	// a fabricated payload.
-	w := harness.BeginCounterWindow(t, ctx, cli, "recovered_ok", "recovery_failed").ExpectRecycle()
+	w := harness.BeginCounterWindow(t, ctx, cli,
+		"recovered_ok", "recovery_failed",
+		"sandbox_key_entries", "sandbox_key_entry_failures", "sandbox_pid_fallbacks",
+		"sandbox_key_not_permitted", "sandbox_key_not_a_namespace",
+		"sandbox_key_wrong_ns_type", "sandbox_key_unavailable").ExpectRecycle()
 
 	if err := cli.PluginDisable(ctx, harness.PluginRef, types.PluginDisableOptions{Force: true}); err != nil {
 		t.Fatalf("PluginDisable: %v", err)
@@ -147,5 +151,132 @@ func TestRecovery_PluginDisableEnable_PreservesEndpoint(t *testing.T) {
 	}
 	if macAfter != macBefore {
 		t.Errorf("MAC changed across plugin recycle: before=%s after=%s", macBefore, macAfter)
+	}
+
+	// THE RECOVERY CELL OF THE #725 MEASUREMENT, and the cell that
+	// explains all the others.
+	//
+	// The brief asked whether the sandbox key survives a plugin restart,
+	// since recovery re-adopts an endpoint with no Join to carry one —
+	// "the key must come from the durable record — does it?". Two
+	// separate answers came back.
+	//
+	// WHERE THE KEY COMES FROM: not the record, and it need not. Join
+	// and recovery both reach dhcpManager.Start, which already inspects
+	// the container, so NetworkSettings.SandboxKey is one always-fresh
+	// source for both. Nothing was added to the durable record.
+	//
+	// WHETHER IT WORKS: HERE, YES — and in sandbox_key_route_test.go's
+	// four cells, no. Same code, opposite results, and the discriminator
+	// is the one fact that makes the whole finding precise:
+	//
+	//   the plugin's read-only /var/run/docker is a bind mount taken when
+	//   the plugin process starts, and a bind mount is a SNAPSHOT, not a
+	//   subscription. libnetwork bind-mounts each netns over an ordinary
+	//   empty file under netns/. Sandboxes that already existed when the
+	//   plugin started are therefore visible through the key; sandboxes
+	//   created afterwards are not, and the key resolves to the empty file
+	//   underneath (which is why openSandboxNetNSByKeyIn checks
+	//   NS_GET_NSTYPE rather than trusting a successful open).
+	//
+	// Recovery is the case where the sandbox necessarily predates the
+	// plugin process: the container was running before the disable, and
+	// this is a fresh plugin after the enable. So recovery is exactly the
+	// case the key route CAN carry, and it does. MEASURED on the lane
+	// 2026-09-05, run 33927195482: entries 1, failures 0, fallbacks 0
+	// here; entries 0, failures 1, fallbacks 1 in every attach cell.
+	//
+	// This is also why the manifest cannot lose pidhost or
+	// CAP_SYS_PTRACE: a Join is always for a sandbox younger than the
+	// plugin, so the PID route carries every attach on this engine.
+	//
+	// The reads are ABSOLUTE, not deltas, for the reason stated at the
+	// window above: this is a fresh plugin process and its counters
+	// started at zero. That is what makes them exactly right here —
+	// every route taken on this instance was taken by recovery, because
+	// nothing else has run on it yet.
+	if healthAfter.SandboxKeyEntries == nil || healthAfter.SandboxPIDFallbacks == nil ||
+		healthAfter.SandboxKeyEntryFailures == nil {
+		t.Fatal("the recovered plugin publishes no sandbox route counters, so which route recovery " +
+			"took cannot be judged — and reading their absence as zero is how a recovery that took " +
+			"no route at all would pass this test")
+	}
+	keyEntries := *healthAfter.SandboxKeyEntries
+	fallbacks := *healthAfter.SandboxPIDFallbacks
+	keyFailures := *healthAfter.SandboxKeyEntryFailures
+	t.Logf("CELL mode=recovery user=\"\": sandbox_key_entries %d, sandbox_key_entry_failures %d, sandbox_pid_fallbacks %d (absolute, fresh instance)",
+		keyEntries, keyFailures, fallbacks)
+
+	if keyEntries+fallbacks < 1 {
+		t.Errorf("neither sandbox_key_entries nor sandbox_pid_fallbacks moved on the recovered "+
+			"instance (%d and %d): recovery re-adopted the endpoint without entering its network "+
+			"namespace at all, so the assertions below would be about an empty set", keyEntries, fallbacks)
+	}
+	if keyEntries < 1 {
+		t.Errorf("sandbox_key_entries=%d on the recovered instance: the key route did NOT carry the "+
+			"re-adoption. This cell is the positive half of the #725 measurement — the sandbox predates "+
+			"this plugin process, so its netns mount is inside the bind snapshot and the key must "+
+			"resolve. If this is zero the snapshot explanation is wrong and the whole finding in "+
+			"SECURITY.md has to be re-derived, not patched", keyEntries)
+	}
+	if fallbacks != 0 {
+		t.Errorf("sandbox_pid_fallbacks=%d on the recovered instance: recovery fell back to "+
+			"/proc/<pid>/ns/net for a sandbox that predates this plugin process. Either the key route "+
+			"regressed or the netns bind mount is no longer captured at plugin start; either way the "+
+			"asymmetry this cell and sandbox_key_route_test.go measure together is gone", fallbacks)
+	}
+	if keyFailures != 0 {
+		t.Errorf("sandbox_key_entry_failures=%d on the recovered instance: the key route was refused "+
+			"for a sandbox it should be able to open, and a refusal here is the same regression as a "+
+			"fallback", keyFailures)
+	}
+
+	// The negative half of the arm measurement, and the control for the
+	// four attach cells.
+	//
+	// Those cells assert sandbox_key_not_a_namespace == 1 per attach.
+	// On its own that is satisfied by a plugin that refuses every key
+	// for that reason, whatever the sandbox — which is precisely the
+	// reading "the key route is simply broken" would give. Here the
+	// SAME code, on the SAME daemon, in the SAME run, refuses nothing:
+	// no arm fires at all. That is what makes the placeholder-file
+	// explanation a discriminator rather than a description of a
+	// uniformly negative result.
+	if healthAfter.SandboxKeyNotPermitted == nil || healthAfter.SandboxKeyNotANamespace == nil ||
+		healthAfter.SandboxKeyWrongNSType == nil || healthAfter.SandboxKeyUnavailable == nil {
+		t.Fatal("the recovered plugin publishes no sandbox key refusal arms, so 'no refusal fired' " +
+			"cannot be judged — and reading their absence as zero is how a plugin that refused every " +
+			"key would pass this")
+	}
+	t.Logf("CELL-ARM mode=recovery user=\"\": sandbox_key_not_permitted %d, sandbox_key_not_a_namespace %d, "+
+		"sandbox_key_wrong_ns_type %d, sandbox_key_unavailable %d (absolute, fresh instance)",
+		*healthAfter.SandboxKeyNotPermitted, *healthAfter.SandboxKeyNotANamespace,
+		*healthAfter.SandboxKeyWrongNSType, *healthAfter.SandboxKeyUnavailable)
+	for _, arm := range []struct {
+		name string
+		got  int32
+	}{
+		{"sandbox_key_not_permitted", *healthAfter.SandboxKeyNotPermitted},
+		{"sandbox_key_not_a_namespace", *healthAfter.SandboxKeyNotANamespace},
+		{"sandbox_key_wrong_ns_type", *healthAfter.SandboxKeyWrongNSType},
+		{"sandbox_key_unavailable", *healthAfter.SandboxKeyUnavailable},
+	} {
+		if arm.got != 0 {
+			t.Errorf("%s=%d on the recovered instance: a sandbox that predates this plugin process "+
+				"was refused, so the asymmetry the attach cells and this one measure together — the "+
+				"same key form accepted here and refused there — is gone, and the reason SECURITY.md "+
+				"gives for keeping pidhost and CAP_SYS_PTRACE has to be re-derived", arm.name, arm.got)
+		}
+	}
+
+	// Outside evidence, the same as every other cell: the kernel's view
+	// from inside the namespace, not Docker's record of it. The inspect
+	// above proves libnetwork still believes the endpoint; this proves
+	// the address is actually configured on the interface after the
+	// recycle.
+	out := harness.ExecOutput(t, ctx, id, "ip", "-4", "addr", "show")
+	if !strings.Contains(out, ipAfter+"/") {
+		t.Errorf("`ip -4 addr show` inside the container does not carry %s after the recycle.\n%s",
+			ipAfter, out)
 	}
 }

@@ -1353,8 +1353,17 @@ func (p *joinPhases) total() time.Duration {
 	return time.Since(p.start)
 }
 
-// openSandboxNetNS opens the container's network namespace and counts a
-// PID-reuse refusal as netns_pid_mismatches.
+// openSandboxNetNS opens the container's network namespace, preferring
+// the sandbox key Docker publishes and falling back to the container's
+// PID, and counts what it did.
+//
+// TWO COUNTERS, NOT ONE, AND THAT IS THE MEASUREMENT. sandbox_key_entries
+// says the key path carried an open; sandbox_pid_fallbacks says one left
+// it. A single "no fallbacks" reading is satisfied by a plugin that never
+// opened a namespace at all, so the pair is what makes "every entry went
+// through the key" a statement with a domain. The integration cells assert
+// both deltas, per cell, and the PID route is removed only on the strength
+// of that -- not on the strength of nothing having failed.
 //
 // The count lives HERE, wrapped around the open, rather than at the call
 // site in Start, and that placement is the point: a caller cannot get
@@ -1363,15 +1372,55 @@ func (p *joinPhases) total() time.Duration {
 // for the sentinel. It also makes the branch reachable from a unit test
 // -- Start needs Docker, netlink and a live namespace, and until this
 // existed nothing executed the increment at all. docs/reference.md says
-// this counter is the ONLY thing that distinguishes a PID-reuse refusal
-// from a slow container start, so an operator reads its zero as "did
-// not happen" (#731 review).
-func (m *dhcpManager) openSandboxNetNS(ctx context.Context, pid int, ctrID string, interval time.Duration) (netns.NsHandle, error) {
+// netns_pid_mismatches is the ONLY thing that distinguishes a PID-reuse
+// refusal from a slow container start, so an operator reads its zero as
+// "did not happen" (#731 review).
+func (m *dhcpManager) openSandboxNetNS(ctx context.Context, sandboxKey string, pid int, ctrID string, interval time.Duration) (netns.NsHandle, error) {
+	ns, keyErr := awaitSandboxNetNSByKey(ctx, sandboxKey, interval)
+	if keyErr == nil {
+		if m.plugin != nil {
+			m.plugin.sandboxKeyEntries.Add(1)
+		}
+		return ns, nil
+	}
+	if m.plugin != nil {
+		m.plugin.sandboxKeyEntryFailures.Add(1)
+		m.plugin.countSandboxKeyRefusal(keyErr)
+	}
+	// DEBUG, NOT WARN, AND THE LEVEL IS DERIVED FROM WHAT AN OPERATOR
+	// SHOULD DO ABOUT IT: nothing. On a stock engine this fires once per
+	// attach, for every container, forever -- the daemon's per-sandbox
+	// netns mounts are made after the plugin's own /var/run/docker bind
+	// was taken, so the key resolves to the placeholder file and the PID
+	// route carries the attach exactly as it did before the key route
+	// existed. A warning is a request for attention, and a request for
+	// attention that is correct on every attach of a healthy host trains
+	// its reader to ignore the level.
+	//
+	// The signal is not lost by lowering it. sandbox_key_entries,
+	// sandbox_key_entry_failures, sandbox_pid_fallbacks and the four
+	// arm counters are on /Plugin.Health and /metrics at every level,
+	// and they are what says which route this host takes. This line is
+	// the detail behind them, and detail is what Debug is for.
+	log.WithError(keyErr).WithFields(log.Fields{
+		"sandbox": sandboxKey,
+		"pid":     pid,
+	}).Debug("Entering the sandbox through its netns key was refused; the container PID route carries this attach")
+
 	ns, err := awaitContainerNetNS(ctx, pid, ctrID, interval)
 	if errors.Is(err, errPIDNotContainer) && m.plugin != nil {
 		m.plugin.netnsPIDMismatches.Add(1)
 	}
-	return ns, err
+	if err != nil {
+		// Both routes failed. The key error is the one that explains
+		// why the fallback was reached at all, and reporting only the
+		// second is how the first became invisible.
+		return ns, fmt.Errorf("%w (sandbox key route: %w)", err, keyErr)
+	}
+	if m.plugin != nil {
+		m.plugin.sandboxPIDFallbacks.Add(1)
+	}
+	return ns, nil
 }
 
 func (m *dhcpManager) Start(ctx context.Context) (err error) {
@@ -1428,12 +1477,16 @@ func (m *dhcpManager) Start(ctx context.Context) (err error) {
 	// omitted directive here.
 	m.hostname = m.plugin.safeHostname(ctr.Config.Hostname).name
 
-	// Using the "sandbox key" directly causes issues on some platforms,
-	// so the namespace is reached through the container's PID -- but
-	// never through a /proc path rebuilt as a string, and never as a
-	// path handed onward to be resolved a second time. See
-	// openContainerNetNS.
-	m.nsHandle, err = m.openSandboxNetNS(ctx, ctr.State.Pid, ctrID, pollTime)
+	// The sandbox key is the primary route (sandbox_netns.go). Join
+	// carries it; recovery does not, and reads it from the inspect it
+	// has already made -- one source for both paths, and always the
+	// daemon's current answer rather than a value this plugin wrote
+	// down earlier and might be wrong about.
+	sandboxKey := m.joinReq.SandboxKey
+	if sandboxKey == "" && ctr.NetworkSettings != nil {
+		sandboxKey = ctr.NetworkSettings.SandboxKey
+	}
+	m.nsHandle, err = m.openSandboxNetNS(ctx, sandboxKey, ctr.State.Pid, ctrID, pollTime)
 	if err != nil {
 		return fmt.Errorf("failed to get sandbox network namespace: %w", err)
 	}

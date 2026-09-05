@@ -87,6 +87,7 @@ each group.
 | `AWAIT_TIMEOUT` | `10s` |
 | `STATE_DIR` | `/var/lib/net-dhcp` |
 | `METRICS_ADDR` | *(empty)* |
+| `DOCKER_HOST` | *(empty)* |
 
 **[Health counters](#pluginhealth)** — `/Plugin.Health` on the plugin socket. Five flip `healthy` to `false`: `recovery_failed`, `join_start_failures`, `tombstone_write_failures`, `tombstone_quarantines`, `address_conflicts`. The flag latches for the life of the plugin process — see [`healthy`](#pluginhealth).
 
@@ -168,9 +169,31 @@ socket mount, a bind mount of `STATE_DIR` (v1.5.0+, see below), a
 `CAP_NET_ADMIN` + `CAP_SYS_ADMIN` + `CAP_SYS_PTRACE` (v1.3.3+) and
 `CAP_NET_RAW` (2.0 beta+). All are inherent to what the plugin does:
 creating links in arbitrary netns, driving DHCP on the host's L2
-segments, querying the daemon — and entering a container's netns via
-`/proc/<pid>/ns/net`, which the kernel ptrace-gates when the container
-runs as a non-root user (#317).
+segments, and querying the daemon. **SECURITY.md carries one sentence
+per grant, naming what in the tree consumes it**, and a CI gate fails
+when that list and `config.json` disagree in either direction.
+
+`CAP_SYS_PTRACE` and the host PID namespace are the pair worth reading
+carefully. From the 2.0 beta the plugin ASKS FIRST for the sandbox key the
+daemon publishes under `/var/run/docker/netns/`, and for an attach it is
+refused: the read-only `/var/run/docker` mount is a bind taken when the
+plugin starts, and it does not receive the per-sandbox namespace mounts the
+daemon makes afterwards, so the key resolves to the ordinary file
+underneath. The plugin checks that what it opened is a network namespace,
+counts the refusal (`sandbox_key_entry_failures`, and specifically
+`sandbox_key_not_a_namespace`, which is the arm that says the entry was
+the placeholder file rather than a key shape this plugin declined), and
+enters through `/proc/<pid>/ns/net` (`sandbox_pid_fallbacks`) as it always
+has. **This is the expected state on a stock engine and needs no action**;
+the accompanying log line is at `debug` for that reason, and the counters
+are what an operator reads. Recovery
+after a plugin restart is the one case that goes the other way — the
+sandbox is older than the plugin process, so it is inside the bind snapshot
+and `sandbox_key_entries` rises instead. Neither grant could be dropped
+in any case: `resolv.conf` propagation enters the container's **mount**
+namespace by PID and there is no sandbox key for a mount namespace at all
+— and it is those `/proc/<pid>/ns/*` opens the kernel ptrace-gates when the
+container runs as a non-root user (#317).
 
 **Upgrading onto the 2.0 beta re-prompts for privileges**, because
 `CAP_NET_RAW` is a new line in the manifest. It is not new power: the
@@ -230,6 +253,17 @@ docker plugin install ghcr.io/claymore666/docker-net-dhcp:vNEW
 (`docker plugin upgrade` exists but in-place upgrades while networks
 exist risk a driver-reference mismatch; the remove/recreate path is
 the supported one.)
+
+> **Upgrading onto the 2.0 beta prompts once for privileges, at step 3's
+> `docker plugin install`.** The manifest requests `CAP_NET_RAW` in
+> addition to the three capabilities v1.9.0 requested; nothing was
+> dropped, and the effective set is unchanged (the capability was already
+> in the OCI default set). An unattended run that does not pass
+> `--grant-all-permissions` stops at the prompt with the host still
+> without a driver, because `vOLD` was removed two lines earlier. The
+> field-by-field delta is in `RELEASE_NOTES.md`; if you are prompted on an
+> upgrade that is *not* this one, that is worth investigating rather than
+> approving.
 
 > **Expect the container's IP to change on `macvlan` and `ipvlan`.**
 > Recreating the network builds a **new** child interface with a fresh
@@ -461,6 +495,7 @@ variable is not an error and takes the default below.
 | `AWAIT_TIMEOUT` | `10s` | Cap on the polling helpers (sandbox readiness, link rename, netns appearance). Bump if a slow daemon-restore window starves endpoint setup. |
 | `STATE_DIR` | `/var/lib/net-dhcp` | Where per-network options, the tombstone file, and the `audit_log` ledger persist. **Bind-mounted from the host at this exact path since v1.5.0**, so its contents survive `docker plugin rm` — before that they lived in the plugin rootfs and every upgrade destroyed them. Two consequences: durability begins with the version that introduced the mount (an upgrade *onto* v1.5.0 still starts from nothing, because the old state was never on the host), and **repointing this setting opts out** — a path other than the mounted one is inside the rootfs again and is wiped by the next upgrade. |
 | `METRICS_ADDR` | *(empty)* | (v1.8.0+) TCP address for the Prometheus `/metrics` endpoint, e.g. `127.0.0.1:9099`. Empty means **no TCP listener**, which is the default and the recommended state unless you are scraping it. `/metrics` is always available on the plugin socket regardless of this setting. **Bind it to loopback or a management interface, never `0.0.0.0`** — see the security note under [`/metrics`](#metrics). A malformed address fails plugin startup rather than being ignored, and a wildcard bind (`:9099`, `0.0.0.0:…`, `[::]:…`) logs a warning at startup naming what the endpoint exposes — it is not refused, because it is a legitimate choice on a private segment, but it should be a choice. |
+| `DOCKER_HOST` | *(empty)* | (2.0 beta+) Docker API endpoint. Empty means the socket `config.json` bind-mounts, which is what every installation before this setting used and what an operator who sets nothing keeps. Point it at a read-only Docker API proxy to reduce the one grant that makes a compromise of the plugin equivalent to root on the host — the plugin issues only `GET` and `HEAD`, refuses anything else before sending it, and counts the refusal as `docker_api_non_get_refusals`. The allowed paths and a worked example are in [SECURITY.md](https://github.com/claymore666/docker-net-dhcp/blob/main/SECURITY.md). A TLS endpoint is not supported (nothing here reads `DOCKER_CERT_PATH`), and neither is a proxy on its own unix socket: the plugin only sees the paths `config.json` mounts, and that mount's source is not settable. Use a plain TCP endpoint on the host's loopback, which the plugin reaches through host networking. |
 
 ---
 
@@ -874,6 +909,14 @@ diagnosing a specific container from them alone is not.
 | `dhcp_routes_applied` | no | (v1.8.0+) DHCP option-121 classless static routes handed to Docker at Join — routes, not Joins. `skip_routes=true` opts out and then this never moves. Read it as the denominator for the row below. |
 | `dhcp_default_route_superseded` | no | (v1.8.0+) Joins whose option-121 routes cover `0.0.0.0/0` **by union** rather than by a literal default entry — e.g. `0.0.0.0/1 g` plus `128.0.0.0/1 g`. Neither half is a default route, so the gateway reported to Docker (and shown by `docker inspect`) is still the one from option 3, while every packet follows the option-121 next hop instead. This is legitimate in split-tunnel setups and the routes are applied either way; the counter exists because before it, nothing in the plugin's output distinguished the two cases. The accompanying log line names each destination and next hop. |
 | `mtu_refused` | no | (v1.8.0+) Option-26 MTUs outside `[576, 65535]`, refused with the container link left at the MTU it had. Only moves with `propagate_mtu=true`. Nothing below the plugin holds the bottom of that range — a server-supplied 68 is carried through verbatim and would be accepted — and the result is destroyed throughput plus black-holed path MTU discovery, re-applied on every renewal, which looks like a slow network rather than a misconfiguration. |
+| `sandbox_key_entries` | no | (2.0 beta+) Container network namespaces entered through the sandbox key the daemon publishes under `/var/run/docker/netns/`. **On a stock engine no attach counts here, and each endpoint recovered after a plugin restart does**: the plugin's read-only `/var/run/docker` is a bind taken at plugin start, so a sandbox older than this plugin process is reachable through its key and one created afterwards is not (measured 2026-09-05). It is the **denominator** for the two rows below and the reason they can be read at all — zero fallbacks with zero entries means nothing was entered, not that the key route works. If it rises on attaches, the mounts do reach this plugin on your host, and the netns half of `pidhost`/`CAP_SYS_PTRACE` is not load-bearing for you. |
+| `sandbox_key_entry_failures` | no | (2.0 beta+) Attempts to enter a container network namespace through the sandbox key that were refused. **This rises once per attach on a stock engine and that is the expected state — nothing is degraded and no action is indicated.** Each refusal falls straight through to the PID route without a retry, so the endpoint still comes up; it is the counterpart of `sandbox_key_entries` staying at zero, and it means the host PID namespace and `CAP_SYS_PTRACE` are load-bearing on this host. The four rows below say WHICH refusal it was, and they sum to this counter exactly. |
+| `sandbox_key_not_permitted` | no | (2.0 beta+) An arm of `sandbox_key_entry_failures`: the key did not name an entry of `/var/run/docker/netns` or `/run/docker/netns`, so it was refused rather than opened. **This is the arm that is not expected.** A daemon started with a non-default `--exec-root` publishes sandbox keys somewhere else and produces exactly this, with the same aggregate count as the ordinary case below — which is why the arms are published separately. The remedy for a rise here is a change to this plugin, not to your host. |
+| `sandbox_key_not_a_namespace` | no | (2.0 beta+) An arm of `sandbox_key_entry_failures`, and **the expected one: it rises once per attach on a stock engine.** The entry opened and was not a namespace — it is the ordinary empty file libnetwork creates before bind-mounting the sandbox netns over it, seen through a mount namespace that bind never reached. This row is the measured evidence for the reason `SECURITY.md` gives for keeping the host PID namespace and `CAP_SYS_PTRACE`. |
+| `sandbox_key_wrong_ns_type` | no | (2.0 beta+) An arm of `sandbox_key_entry_failures`: the entry was a namespace of some other type. Not observed on any host measured so far, and published for exactly that reason — "not observed" is a claim, and a claim needs something a reader can check. |
+| `sandbox_key_unavailable` | no | (2.0 beta+) The residual arm of `sandbox_key_entry_failures`: the entry never became openable inside the attach budget, or its directory could not be read. It exists so the four arms sum to the aggregate rather than nearly summing to it — a refusal reaching this row is one nothing has named yet. |
+| `sandbox_pid_fallbacks` | no | (2.0 beta+) Endpoints whose network namespace was entered through `/proc/<pid>/ns/net` after the key route was refused. **On a stock engine this is every attach.** That route is why the manifest asks for the host PID namespace and `CAP_SYS_PTRACE`, and it carries the PID-recycling hazard `netns_pid_mismatches` counts. Not `healthy`-affecting — a fallback that succeeds is a working endpoint — but read against `sandbox_key_entries` it is the one number that says which route your host actually uses. |
+| `docker_api_non_get_refusals` | no | (2.0 beta+) Requests to the Docker API refused before they were sent because their method was neither `GET` nor `HEAD`. The plugin's whole Docker surface is `NetworkList`, `NetworkInspect`, `ContainerInspect` and the client library's version ping, so this stays at zero for the life of an installation; a non-zero value means code in this process tried to **write** to the daemon, which is the grant that makes a compromise of the plugin equivalent to root on the host (#691). Not `healthy`-affecting: the refusal is the safe outcome and the caller sees the error. |
 | `ledger_write_failures` | no | Failed `audit_log` ledger appends — degrades forensics, not networking. Operators using `audit_log` alert on this. |
 | `dhcpv6_config_only` | no | (v1.9.0+) **Cannot move in the 2.0 beta.** In 1.x this counted DHCPv6 information replies — a stateless network answering with options and no address (#815). It increments only on a `config` audit event, and the layer that translates the library's events into audit kinds emits no such kind at all, so the increment is unreachable from any input. The field is still rendered so a scrape does not lose a series across the upgrade; **a zero here means "this build cannot report it", not "nothing went wrong"**. |
 | `dhcpv6_not_offered` | no | (v1.9.0+) **Cannot move in the 2.0 beta.** In 1.x this counted endpoints on an IPv6 network whose router advertisement offered no DHCPv6 address (#868). Reaching it needs an observation that a router *was* seen and advertised no managed DHCPv6. The beta's v6 acquisition is refused before a packet goes out and hands back an observation with nothing seen, so the classifier always takes the "no router" arm and `dhcpv6_no_router_advert` below takes every legacy-network endpoint instead. A zero here means the build cannot report it. |

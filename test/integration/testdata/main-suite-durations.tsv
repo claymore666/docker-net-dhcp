@@ -87,6 +87,36 @@
 # Refresh all FOUR from the first green Integration run that produces
 # suite logs on this branch, by the recipe at the foot of this header.
 #
+# FIVE ROWS ADDED FOR THE #725 / #691 PRIVILEGE CELLS, MEASURED AND
+# SCALED (sec/privilege-set). Integration run 33927195482, one sample
+# each. That run was slow relative to the 22-run medians this file is
+# built from, so the raw samples are NOT what is written: they would
+# over-weight five tests against every unchanged row, which is the one
+# thing this file must not do, since only the RELATIVE weights balance a
+# shard.
+#
+# The scale factor is derived from the run itself, not assumed. For the
+# 58 tests that appear both in this run and in this file with a value at
+# or above 1.0s, the median of run/file is 1.4981 (mean 1.4357, p25
+# 1.248, p75 1.671). Each new row is its raw sample divided by that
+# median:
+#                                               raw     written
+#   TestSandboxKeyRoute_Macvlan                 12.92      8.62
+#   TestSandboxKeyRoute_Bridge                  12.16      8.12
+#   TestSandboxKeyRoute_Ipvlan                  12.07      8.06
+#   TestSandboxKeyRoute_NonRootContainer        12.03      8.03
+#   TestDockerAPI_OnlySafeMethodsReachTheDaemon 12.29      8.20
+#
+# The seeded estimates these replace (7.53 / 7.73 / 7.29 / 7.60 / 7.70)
+# were sibling-derived and low by 0.4-0.9s, all in the same direction:
+# each cell pays for one health read and one `docker exec` that its
+# siblings do not.
+#
+# TestRecovery_PluginDisableEnable_PreservesEndpoint keeps its 7.57. The
+# same scaling puts this run's sample at 7.96, but that row is a real
+# 22-run median and a one-sample estimate does not improve it; the cell
+# added to that test reads counters already fetched and times nothing.
+#
 # FIVE ROWS WERE REMOVED AND SIX ADDED, ALL SIX INFERRED (M6b, conflict_check).
 # The chassis's datagram conflict probe is gone; the DHCP library runs
 # RFC 5227 in the container's namespace under the per-network
@@ -187,6 +217,7 @@ TestConflictCheck_WaitAcquisitionIsTimed	9.39
 TestDNSPropagate_BridgeModeWritesResolvConfToo	8.50
 TestDNSPropagate_DefaultIsUnchanged	7.26
 TestDNSPropagate_OptInWritesResolvConf	8.71
+TestDockerAPI_OnlySafeMethodsReachTheDaemon	8.20
 TestErrors_DriverOptIPMalformed	0.42
 TestErrors_NetworkCreateValidation	0.04
 TestErrors_ParentDown	0.01
@@ -222,6 +253,10 @@ TestPreflightProbe_RejectedInBridgeMode	0.01
 TestRecovery_DaemonKilled_LeaseIsHeldUntilItExpires	23.52
 TestRecovery_DaemonRestart_PreservesContainer	21.28
 TestRecovery_PluginDisableEnable_PreservesEndpoint	7.57
+TestSandboxKeyRoute_Bridge	8.12
+TestSandboxKeyRoute_Ipvlan	8.06
+TestSandboxKeyRoute_Macvlan	8.62
+TestSandboxKeyRoute_NonRootContainer	8.03
 TestSandboxNetnsIsVisibleToThePlugin	7.28
 TestServerPolicy_DenyBeatsPreferForTheSameServer	21.16
 TestServerPolicy_DenyExcludesTheNamedServer	42.45

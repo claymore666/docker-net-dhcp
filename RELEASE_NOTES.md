@@ -91,6 +91,68 @@ of the plugin process is the same seventeen it was before. What changed is
 the manifest, and therefore the prompt: the request is now honest about a
 power the process already had. See `SECURITY.md`.
 
+**The manifest delta against v1.9.0, field by field.** `docker plugin
+upgrade` prompts on the *privilege* fields only, so the two halves of this
+table are read differently: the first is what the prompt shows you, the
+second is not prompted at all.
+
+Every cell below is the full set for that field, not a description of how
+it changed. `scripts/check-manifest-delta-table.sh` derives both columns —
+the left from `v1.9.0:config.json` in git, the right from the manifest in
+the tree — and fails if either disagrees with what is written here. The
+`prompted` column is not derived: which fields the daemon prompts on is a
+property of Docker, not of this manifest.
+
+<!-- manifest-delta: begin baseline=v1.9.0 -->
+
+| field | v1.9.0 | v2.0.0-alpha.1 | prompted |
+| --- | --- | --- | --- |
+| `linux.capabilities` | `CAP_NET_ADMIN`, `CAP_SYS_ADMIN`, `CAP_SYS_PTRACE` | `CAP_NET_ADMIN`, `CAP_NET_RAW`, `CAP_SYS_ADMIN`, `CAP_SYS_PTRACE` | **yes** |
+| `network.type` | `host` | `host` | no change |
+| `pidhost` | `true` | `true` | no change |
+| `mounts` | `/var/run/docker.sock`, `/var/lib/net-dhcp`, `/var/run/docker` | `/var/run/docker.sock`, `/var/lib/net-dhcp`, `/var/run/docker` | no change |
+| `propagatedmount` | `(absent)` | `(absent)` | no change |
+| `linux.devices` | `(absent)` | `(absent)` | no change |
+| `env` | `LOG_LEVEL`, `AWAIT_TIMEOUT`, `STATE_DIR`, `OUTAGE_TICK`, `OUTAGE_GRACE`, `METRICS_ADDR` | `LOG_LEVEL`, `AWAIT_TIMEOUT`, `STATE_DIR`, `METRICS_ADDR`, `DOCKER_HOST` | no — a setting is not a privilege |
+
+<!-- manifest-delta: end -->
+
+Read the `env` row against **Removed: plugin settings** below: the delta
+is one added and two removed, not one added. `OUTAGE_TICK` and
+`OUTAGE_GRACE` are gone from the manifest, so `docker plugin set
+OUTAGE_TICK=…` is refused by the daemon rather than accepted and ignored.
+
+**Nothing was dropped, and the measurement says why.** The beta asks first
+for the sandbox key the daemon publishes, so that a host where that works
+can attach without the container's PID at all. For an attach it does not
+work: the plugin's read-only `/var/run/docker` is a bind mount taken when
+the plugin starts, so it never receives the per-sandbox namespace mounts the
+daemon makes afterwards, the key is refused, and `/proc/<pid>/ns/net` carries
+the attach exactly as before. Recovery after a plugin restart is the
+exception — the sandbox is older than the plugin process, so the key route
+carries it. `pidhost` and `CAP_SYS_PTRACE` therefore stay, and would have
+stayed regardless, because `resolv.conf` propagation enters the container's
+*mount* namespace by PID and a mount namespace has no sandbox key.
+`sandbox_key_entries`, `sandbox_key_entry_failures` and
+`sandbox_pid_fallbacks` report which route your host is using, and
+`sandbox_key_not_permitted`, `sandbox_key_not_a_namespace`,
+`sandbox_key_wrong_ns_type` and `sandbox_key_unavailable` say which
+refusal it was — the four sum to `sandbox_key_entry_failures`. On a stock
+engine the one that rises is `sandbox_key_not_a_namespace`, once per
+attach, and that is the expected state: nothing is degraded, the log line
+that accompanies it is at `debug`, and no action is indicated. A rise in
+`sandbox_key_not_permitted` is the one to look at — it means the daemon
+publishes sandbox keys somewhere this plugin does not accept, which a
+non-default `--exec-root` does.
+
+**New: `DOCKER_HOST`.** Empty by default, which keeps the mounted socket and
+the behaviour every earlier release had. Point it at a read-only Docker API
+proxy — a plain TCP endpoint on the host's loopback, which the plugin reaches
+through host networking — and the plugin loses nothing: it issues only `GET`
+and `HEAD`, refuses anything else before sending it, and counts each refusal
+as `docker_api_non_get_refusals`. The allowed paths, a worked example, and
+why a proxy on its own unix socket is *not* reachable are in `SECURITY.md`.
+
 ### IPv4 only
 
 | change | effect |
