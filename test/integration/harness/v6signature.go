@@ -321,6 +321,15 @@ func V6ModeFindings(mode V6Mode, ev V6Evidence) []string {
 // mode signature turns on.
 type RAFrame struct {
 	At time.Time
+	// Raw is the frame exactly as it came off the wire. It is carried
+	// so a lane run can print the bytes the decoder was given, which
+	// is where the verbatim frames the fast-lane tests are pinned to
+	// come from -- a decoder pinned to bytes no fixture in this repo
+	// produces is a decoder tested against nothing (2026-09-05: the
+	// first set of pinned frames advertised a /120 prefix with
+	// infinite lifetimes, because they were captured with an argv this
+	// fixture does not use; the lane emits /64 and 1800s).
+	Raw []byte
 	// SourceMAC is the ethernet source. A segment with two routers on
 	// it is a segment whose mode is whichever advertisement arrived
 	// last, so a test that finds two distinct sources here has learned
@@ -445,6 +454,7 @@ func ParseRA(b []byte) (RAFrame, bool) {
 	}
 
 	f := RAFrame{
+		Raw:            append([]byte(nil), b...),
 		SourceMAC:      net.HardwareAddr(append([]byte(nil), b[6:12]...)),
 		CurHopLimit:    icmp[4],
 		Managed:        icmp[raFlagsOffset]&raFlagManaged != 0,

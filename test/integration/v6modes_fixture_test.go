@@ -6,6 +6,7 @@
 package integration
 
 import (
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -75,6 +76,10 @@ func TestV6Fixture_ModesComeUpAsRequested(t *testing.T) {
 			}
 			t.Logf("wire: %d advertisement(s), first %s after the server started: %s",
 				len(frames), frames[0].At.Sub(f.StartedAt()).Round(time.Millisecond), frames[0])
+			// The bytes, so the fast-lane decoder can be pinned to a
+			// frame THIS fixture produced on THIS lane rather than to
+			// one captured elsewhere with a different argv.
+			t.Logf("wire bytes (%s): %s", mode, hex.EncodeToString(frames[0].Raw))
 		})
 	}
 }
