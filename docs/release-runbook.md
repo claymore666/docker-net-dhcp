@@ -723,11 +723,7 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
    **release** job then runs, in this order:
    checkout → setup-go →
    Log in to GHCR → Log in to Docker Hub → **Both registries, or say
-   why not** → Push to GHCR → **Check the documented
-   reference digests against this build** (the gate step 10b is about —
-   on the first rc of a new version, and since 2.0 on the release tag
-   itself, it is *expected* to fail and print the block to paste into
-   the doc) → Push to Docker Hub (or skip) →
+   why not** → Push to GHCR → Push to Docker Hub (or skip) →
    Sync Docker Hub description from README (or skip) → Install cosign →
    **Record and gate the cosign version** → **Sign published images
    (cosign keyless)** → Install syft → **Generate SBOM (SPDX +
@@ -813,47 +809,44 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
    an rc dry-run produces an equivalent **pre-release** with the same
    signed assets, which is how this path is exercised before the real
    tag (rc releases never move `:latest` and are marked pre-release).
-10b. **Refresh the reference digests in
-   [Verifying releases](verifying-releases.md).** The "Rebuilding the
-   binaries yourself" section ends with the expected `sha256sum` of
-   `net-dhcp` and `dhcp-handler`, prefixed by the version they belong
-   to. Those can only be known once the tag has built, so this is the
-   one documentation change that cannot happen before the tag.
-   Since v1.7.0 there are TWO digest blocks, one per architecture —
-   refresh both; the failing gate in each of the `release` and
-   `release-arm64` jobs prints its arch's corrected block verbatim:
-   ```sh
-   gh run download <release-run-id> -n <artifact>   # or from the release
-   sha256sum rootfs/usr/sbin/net-dhcp rootfs/usr/lib/net-dhcp/dhcp-handler
-   ```
-   Update the version name and both digests, and land it on `dev` as a
-   normal PR — **then bring it to `main` before the next rc.** Since
-   #547 the release run itself checks this block, so the fix has to be
-   on the **tagged commit**: leaving it on `dev` makes the next rc fail
-   in exactly the same place. (Before #547 it could ride along with the
-   next release, which is what this step used to say. v1.6.0 is where
-   that stopped being true.) Leaving
-   the previous version's digests in place is worse than having none:
-   a reader who rebuilds the current tag and compares against them sees
-   a mismatch and concludes the release does not match its source.
+10b. **Nothing to refresh, and that is a change from 1.x.** Through
+   1.x this step pasted a per-release digest block into
+   [Verifying releases](verifying-releases.md), and since #547 the
+   release run enforced it. From 2.0 that step is gone, from the doc and
+   from `release.yml` both.
 
-   **The rc dry-run tells you the shape; since 2.0 it no longer tells
-   you the numbers.** `release.yml` compares this block against the
-   binaries it just built and fails the run when they disagree, printing
-   the corrected block ready to paste (#502). So the first rc of a new
-   version is *expected* to fail on this step — that is the check doing
-   its job. Take the block from the failed run's log, land it, and
-   re-tag `-rc2`.
+   **Why it had to go, not just why it was tedious.** The tag and the
+   commit are compiled into the binary from 2.0 (`VERSION`/`COMMIT`
+   through `-ldflags -X`, plan row O-4). The step's own recovery was
+   "take the block from the failed run, land it on the **tagged**
+   commit, re-tag" — and landing it changes the commit, which changes
+   the binary, which changes the digest the block states. The recovery
+   could not converge, so the gate had no passing state to reach: an
+   operator following the runbook to the letter would re-tag forever,
+   each attempt leaving a `:vX.Y.Z` published and `:latest` behind it,
+   because the failing step sat between the GHCR push and the Hub push.
+   Measured in review: two builds differing only in the commit ldflag
+   hash differently.
 
-   Through 1.x the real tag then passed silently, because an rc built
-   from the same source to the same bytes. From 2.0 it does not: the tag
-   reaches the binary as build identity (`version` in `/Plugin.Health`
-   and in `net_dhcp_build_info`), so `v2.0.0-rc2` and `v2.0.0` have
-   different digests. **Expect this step to fail once on the real tag
-   too**, print the release's own block, and need the same paste and
-   re-run. Since #736 that failure is ahead of the floating tag, so
-   `:vX.Y.Z` is published and `:latest` untouched while you fix it —
-   land the block on the **tagged commit** and re-dispatch the run.
+   **Where the digests are now.** In the signed checksums manifest,
+   produced by the build that makes them true. `checksums.txt` and
+   `checksums-arm64.txt` each cover the tarball, both SBOMs and the
+   binary inside the tarball, recorded as `rootfs/usr/sbin/net-dhcp`, so
+   an operator who extracts the tarball beside the manifest can run
+   `sha256sum --ignore-missing -c checksums.txt` and check the binary
+   against a cosign-signed reference. Nothing here is a release step:
+   the release job does it, on every tag and every rc, with no paste and
+   no re-run.
+
+   **What stops this from rotting.** `scripts/check-release-digest-
+   fixed-point.sh` runs in the normal test lane and holds the two halves
+   of the argument above: it MEASURES that the commit is still part of
+   the binary's identity, refuses any file in the tree that records a
+   digest of a binary this tree builds while that is true, and requires
+   the release workflow's signed manifest to cover the binary. Restore
+   the block and it goes red before a tag is ever cut; delete the
+   manifest line and it goes red too.
+
 11. **Fast-forward `dev` to `main`** so the release commit (version
    pins, RELEASE_NOTES section) lands on `dev` too:
    ```sh

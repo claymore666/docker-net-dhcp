@@ -296,35 +296,27 @@ jobs:
           TAG: ${{ needs.resolve.outputs.tag }}
         run: make PLUGIN_NAME="${GHCR_NAME}" PLUGIN_TAG="${TAG}" VERSION="${TAG}" push
 
-      # The reference digests in docs/verifying-releases.md must describe
-      # the binaries this tag actually publishes (#502).
+      # THERE IS NO DOC-VERSUS-BUILD DIGEST GATE HERE ANY MORE, and the
+      # reason is arithmetic rather than taste. Until 2.0 this step
+      # compared a digest block in docs/verifying-releases.md against
+      # the binaries `make push` had just built, and its documented
+      # recovery was: take the block from the failed run, land it on the
+      # TAGGED commit, re-tag. From 2.0 the tag and the commit are
+      # inside the binary (VERSION/COMMIT above), so landing the block
+      # changes the commit, which changes the binary, which changes the
+      # digest the block states. No commit can record the digest of a
+      # binary built from itself, so the recovery could not converge and
+      # this step had no passing state to reach — it sat between the
+      # GHCR push and the Hub push, so every attempt left a
+      # half-published release.
       #
-      # Placed here deliberately: `make push` above has just built
-      # plugin/, so this is the earliest point the binaries exist. Since
-      # #736 every failure in this job is ahead of the floating tag, not
-      # just this one — a failure leaves a published `:vX.Y.Z` with
-      # `:latest` untouched, recoverable by fixing the doc and re-running,
-      # with nothing user-visible pointing at a release that was never
-      # announced.
-      #
-      # It fails the release rather than warning, and it fails on an rc
-      # too. That is the point: the rc dry-run is where a documentation
-      # error should stop the train, not the real tag. An rc compares
-      # against its base version (v1.6.0-rc1 -> v1.6.0) because it builds
-      # from the same source and therefore carries the same digests.
-      #
-      # The digests can only be known after a tag builds, so the first rc
-      # of a new version is EXPECTED to fail here and print the block to
-      # paste into the doc. That is runbook step 10b becoming enforced
-      # rather than remembered.
-      - name: Check the documented reference digests against this build
-        env:
-          TAG: ${{ needs.resolve.outputs.tag }}
-        run: |
-          bash scripts/check-reference-digests.sh \
-            "${TAG}" \
-            plugin/rootfs/usr/sbin/net-dhcp \
-            plugin/rootfs/usr/lib/net-dhcp/dhcp-handler
+      # The digests still ship. They are produced by the build that
+      # makes them true, into the cosign-signed checksums manifest
+      # below, which records the binary under the path it has inside the
+      # release tarball. scripts/check-release-digest-fixed-point.sh
+      # holds both halves of that: no file in this tree may record a
+      # digest of a binary this tree builds while the commit is part of
+      # the binary, and the manifest must cover the binary.
 
       # Same plugin to Docker Hub when credentials are present. Make
       # rebuilds the rootfs with the Hub-prefixed name; the underlying
@@ -483,9 +475,18 @@ jobs:
           set -euo pipefail
           ART="net-dhcp-plugin-${TAG}-linux-amd64.tar.gz"
           tar -czf "$ART" -C plugin .
-          # Manifest covers the tarball AND the SBOMs, so the single
-          # keyless signature below attests all release assets at once.
+          # Manifest covers the tarball, the SBOMs AND the binary
+          # inside the tarball, so the single keyless signature below
+          # attests all release assets at once.
           sha256sum "$ART" sbom.spdx.json sbom.cdx.json > checksums.txt
+          # The binary is recorded under the path it has once the
+          # tarball is extracted, so `sha256sum --ignore-missing -c
+          # checksums.txt` in the directory where you unpacked it checks
+          # the binary too. This is what replaced the digest block that
+          # used to live in docs/verifying-releases.md: a digest
+          # produced by the build that makes it true, signed, rather
+          # than one a commit would have to state about itself.
+          ( cd plugin && sha256sum rootfs/usr/sbin/net-dhcp ) >> checksums.txt
           # Keyless (Fulcio/OIDC) signature over the checksum manifest,
           # emitted as a Sigstore bundle (cosign v3 default; the v2
           # --output-signature/--output-certificate pair was removed —
@@ -642,14 +643,19 @@ jobs:
   # It is accepted for ONE class of amd64 failure, and it is worth
   # naming which, because the two classes are not alike:
   #
-  #   FAILS AFTER PUBLISHING — the digest gate. `Check the documented
-  #   reference digests against this build` runs AFTER `Push to GHCR`,
-  #   deliberately: that is the earliest point the binaries exist. So
-  #   a failed gate already leaves a published `:vX.Y.Z` behind, and
-  #   this is every first rc of a new version. Here the old edge
-  #   bought consistency between two
-  #   leftovers, not the absence of one, and giving it up costs
-  #   nothing that was not already spent.
+  #   FAILS AFTER PUBLISHING — everything from `Sign published images`
+  #   onward: cosign, the SBOM, the signed checksum manifest, both
+  #   provenance attestations and the cross-registry parity check all
+  #   run after `Push to GHCR`, because they act on bytes that have to
+  #   exist first. A failure in any of them already leaves a published
+  #   `:vX.Y.Z` behind. Here the old edge bought consistency between two
+  #   leftovers, not the absence of one, and giving it up costs nothing
+  #   that was not already spent.
+  #
+  #   (Until 2.0 the example given here was the doc-versus-build digest
+  #   gate, which was expected to fail on the first rc of every version.
+  #   That gate is gone — see the note in the `Push to GHCR` step — so
+  #   this class is no longer routine. It is still real.)
   #
   #   FAILS BEFORE PUBLISHING — a broken build, a bad ref, an expired
   #   token, or the `Both registries, or say why not` step. Checkout,
@@ -664,9 +670,9 @@ jobs:
   # The trade is deliberate. Nothing floating points at that tag --
   # both floating tags move only in `promote-latest`, which names every
   # build and verify job -- and re-running the tag recovers it. The
-  # price of keeping it was a whole rc round per release, because a
-  # skipped `release-arm64` never runs its own digest gate, so the
-  # first rc of a new version could only ever print the amd64 block.
+  # price of keeping it, when it was paid, was a whole rc round per
+  # release: a skipped `release-arm64` never reached its own steps, so
+  # an amd64 failure hid whatever arm64 would have said.
   release-arm64:
     needs: resolve
     runs-on: ubuntu-24.04-arm
@@ -733,16 +739,9 @@ jobs:
           echo "net-dhcp machine: $m"
           case "$m" in *AArch64*) ;; *) echo "::error::rootfs binary is not arm64: $m"; exit 1;; esac
 
-      # Same gate as amd64, against the arm64-labelled digest block in
-      # docs/verifying-releases.md (#502). Same expected-fail flow: the
-      # first rc of a new version prints the block to paste.
-      - name: Check the documented reference digests against this build
-        run: |
-          bash scripts/check-reference-digests.sh \
-            "${TAG}" \
-            plugin/rootfs/usr/sbin/net-dhcp \
-            plugin/rootfs/usr/lib/net-dhcp/dhcp-handler \
-            arm64
+      # No doc-versus-build digest gate here either — see the note in
+      # the amd64 job. This architecture's digests reach operators the
+      # same way: through checksums-arm64.txt below.
 
       - name: Push to Docker Hub
         id: hub-push-arm
@@ -791,6 +790,10 @@ jobs:
           ART="net-dhcp-plugin-${TAG}-linux-arm64.tar.gz"
           tar -czf "$ART" -C plugin .
           sha256sum "$ART" sbom-arm64.spdx.json sbom-arm64.cdx.json > checksums-arm64.txt
+          # Same as amd64: the binary under its extracted path, so the
+          # signed manifest covers what is inside the tarball as well as
+          # the tarball.
+          ( cd plugin && sha256sum rootfs/usr/sbin/net-dhcp ) >> checksums-arm64.txt
           cosign sign-blob --yes \
             --bundle checksums-arm64.txt.sigstore.json \
             "checksums-arm64.txt"

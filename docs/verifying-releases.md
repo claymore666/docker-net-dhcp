@@ -177,28 +177,45 @@ Verifying a **1.x** release means adding
 `rootfs/usr/lib/net-dhcp/dhcp-handler` to step 4, and comparing both
 pairs. Everything else in the recipe is the same for either.
 
-The digests must match. **v1.9.0 is a 1.x release, so its list has two
-entries per platform.** For **v1.9.0** (`linux/amd64`) they are:
+The digests must match — one pair for a 2.0 release, two for a 1.x one.
+That is the whole check: you built it, we built it, the bytes are the
+same.
 
+### Where the published digest comes from
+
+**This repository does not carry a list of per-release digests, and
+cannot.** From 2.0 the release tag and the commit are compiled into the
+binary, so a commit that recorded the digest of a binary built from
+itself would change that binary by being made. Through 1.x such a list
+lived in this section; it was removed with 2.0 rather than left to
+describe releases it can no longer describe.
+
+Instead the digest is produced by the build that makes it true and
+signed with everything else. `checksums.txt` (`checksums-arm64.txt` for
+arm64) covers the tarball, both SBOMs, **and the binary inside the
+tarball**, recorded under the path it has once extracted. So step 4 has
+a signed reference without needing one from a commit:
+
+```sh
+# In the directory holding the downloaded assets:
+cosign verify-blob checksums.txt \
+  --bundle checksums.txt.sigstore.json \
+  --certificate-identity-regexp '^https://github.com/claymore666/docker-net-dhcp/.github/workflows/release.yml@' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+tar -xzf net-dhcp-plugin-VERSION-linux-amd64.tar.gz
+sha256sum --ignore-missing -c checksums.txt
 ```
-eee5a6d5c269f7d05ea4ce230c30389479d4de3043b57f3cf6ef92fc0b710a06  net-dhcp
-d1fb8d4487b1ec7170afe7635e7861a220a770e21b351f363b0da58b335eac85  dhcp-handler
-```
+
+`--ignore-missing` is there so the manifest still checks whichever
+assets you downloaded; drop it once you have all of them and it becomes
+an exhaustive check. `rootfs/usr/sbin/net-dhcp: OK` is the line that
+says the binary inside the tarball is the one this release signed, and
+it is the same number your rebuild in step 3 produces.
 
 Since v1.7.0 each release also ships arm64 binaries under the `-arm64`
 tags; rebuild them the same way on an arm64 host (the build follows the
-host architecture) and unpack `net-dhcp-plugin-VERSION-linux-arm64.tar.gz`
-in step 4. For **v1.9.0** (`linux/arm64`) they are:
-
-```
-8523f80370e54235c929b8e755c44a3cf10ab33ddf4bde4490e60367dc7ee7b7  net-dhcp
-c7ed4037a4a20a686f938a4ef8a239fba7d430d1ebc952997e137d2d6521d3d7  dhcp-handler
-```
-
-Note that step 4 needs no separate digest list from us: the binaries you
-are comparing against are the ones inside the signed tarball, and
-`checksums.txt` already covers that tarball. The chain closes on
-artifacts you have in hand.
+host architecture), unpack `net-dhcp-plugin-VERSION-linux-arm64.tar.gz`
+in step 4, and check against `checksums-arm64.txt`.
 
 ### What the determinism rests on
 
@@ -209,7 +226,13 @@ rebuild ever fails to match:
   Alpine runtime;
 - Alpine packages pinned to exact versions;
 - a fixed build path inside the container, so no host path is embedded;
-- no timestamp, VCS revision or build host stamped into the binaries;
+- no timestamp and no build host stamped into the binaries. **The
+  version and the commit ARE stamped in** (`-ldflags -X`, since 2.0),
+  which is why step 2 passes them: identical inputs include those two.
+  Pass a different `COMMIT` and you get a different, equally
+  deterministic binary — that is a correct result, not a reproducibility
+  failure, and it is the reason the published digests live in the signed
+  manifest rather than in a commit;
 - Go's own compiler output, which is deterministic given identical
   inputs.
 

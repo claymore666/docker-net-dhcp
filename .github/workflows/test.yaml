@@ -726,6 +726,23 @@ jobs:
       - name: Floating-tag promotion order
         run: bash scripts/check-latest-promotion.sh
 
+      # The release lane must have a reachable passing state (#910).
+      # Until 2.0 a release step compared a digest block in
+      # docs/verifying-releases.md against the binaries it had just
+      # built, and its recovery was to land the corrected block on the
+      # tagged commit -- which, once the commit is compiled into the
+      # binary, changes the digest it states. This measures whether the
+      # commit is still part of the binary's identity and refuses a tree
+      # that records a digest of a binary it builds while it is, and
+      # requires the release manifest to carry the digest instead.
+      #
+      # Here rather than only in release.yml for the same reason as
+      # sparse-checkout above: release.yml runs on a tag push and on
+      # nothing else, so anything checked only there is first executed
+      # on tag day.
+      - name: Release digests are a fixed point
+        run: bash scripts/check-release-digest-fixed-point.sh
+
       # A checkout that sets `sparse-checkout:` must not share its
       # workspace path with another checkout in the same job (#736).
       # actions/checkout does not clear a sparse configuration it finds

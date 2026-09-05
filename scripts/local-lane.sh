@@ -115,6 +115,11 @@ LANE=(
   "cosign docs|-|bash scripts/check-cosign-docs.sh"
   "dispatch-ref guard|-|bash scripts/check-dispatch-ref-guard.sh"
   "latest promotion order|-|bash scripts/check-latest-promotion.sh"
+  # `go` rather than `-`: half of it is a measurement, not a scan -- it
+  # builds ./cmd twice with two commits and once more as a determinism
+  # control. It is the only gate here that has to compile to reach its
+  # verdict.
+  "release digest fixed point|go|bash scripts/check-release-digest-fixed-point.sh"
   "sparse-checkout paths|-|bash scripts/check-sparse-checkout-paths.sh"
   "per-arch build parallelism|-|bash scripts/check-build-job-independence.sh"
   "run-body expansions|-|bash scripts/check-run-expansions.sh"
