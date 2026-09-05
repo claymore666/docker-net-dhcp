@@ -451,25 +451,14 @@ func (f *V6Fixture) evidence() V6Evidence {
 			RALogged:   strings.Contains(log, raLogToken),
 			Frames:     f.raCap.FramesAfter(f.startedAt),
 		}
-		// Time can only turn an ABSENCE into a presence, never the
-		// reverse, so the budget is spent only while the outstanding
-		// disagreement is something that has not arrived yet. A
-		// presence the mode forbids is decided the moment it is seen,
-		// and an advertisement the mode expects settles its own flags
-		// as soon as one frame is in hand -- the next frame is the
-		// same frame. The drift matrix starts twenty-three segments,
-		// and without this it would spend a full budget on each.
-		//
-		// The pool clause is not folded into the first: dnsmasq writes
-		// its range lines at configuration time, before any
-		// advertisement, but that is its behaviour rather than a
-		// guarantee, so a mode that WANTS the pool line waits for it
-		// instead of concluding from the advertisement alone.
-		got := ev.Observed()
-		if got.RA && (got.Pool || !want.Pool) {
-			return ev
-		}
-		if got.Pool && !want.Pool {
+		// The stopping rule is V6EvidenceSettled's, in the fast lane
+		// with both its outcomes driven. Its one dependency on
+		// dnsmasq rather than on logic -- that the range lines are
+		// written at configuration time, above the first RTR-ADVERT
+		// -- is leaned on here because getting it wrong fails LOUD: a
+		// pool line arriving after the advertisement would redden the
+		// mode's own diagonal cell, not quietly excuse a drifted one.
+		if V6EvidenceSettled(ev) {
 			return ev
 		}
 		if time.Now().After(deadline) {

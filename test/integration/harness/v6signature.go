@@ -195,6 +195,27 @@ func (ev V6Evidence) Observed() V6Signature {
 	return s
 }
 
+// V6EvidenceSettled reports whether ev can still change into a
+// different verdict if the observer keeps watching.
+//
+// It is the stopping rule for the fixture's evidence loop, and it lives
+// here rather than beside that loop because it is the rule the loop got
+// wrong. Time turns an absence into a presence and never the reverse,
+// so an observation that merely DISAGREES with the mode under test is
+// not finished: the presence that would have agreed may still be in
+// flight. Stopping there is not just slow-but-safe in reverse -- the
+// evidence is also the refusal's message, so a segment cut short at
+// 370 ms was reported as "answers as nora" when it was a perfectly
+// ordinary managed segment whose advertisement had not landed yet
+// (run 33994533077).
+//
+// One advertisement settles it. A second carries the same flags, the
+// same prefix and the same options as the first; nothing about the
+// wire column can move afterwards. Nothing settles a segment that has
+// not advertised, which is why the no-RA mode alone spends its whole
+// window.
+func V6EvidenceSettled(ev V6Evidence) bool { return len(ev.Frames) > 0 }
+
 // ClassifyV6Segment names every mode whose signature the evidence
 // matches. It returns more than one when two modes are genuinely
 // indistinguishable from outside (managed and managed-silent are, until

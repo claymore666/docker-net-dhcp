@@ -517,3 +517,60 @@ func TestV6NoRAWindow_IsLongerThanDnsmasqsOwnWorstCase(t *testing.T) {
 			V6NoRAWindow(), raBudget)
 	}
 }
+
+// TestV6EvidenceSettled_ADisagreementAloneDoesNotFinishAnObservation is
+// the regression that run 33994533077 bought.
+//
+// The evidence loop used to stop the moment what it had seen disagreed
+// with the mode under test. That is sound for a VERDICT -- the
+// disagreement is real and only grows -- and wrong for the MESSAGE,
+// which is built from the same evidence and is what the drift matrix
+// asserts on. A stateless fixture started with managed's flags
+// disagrees on the pool bit within milliseconds, long before the
+// advertisement that would have said "managed" arrives; stopping there
+// reported the segment as nora, which it never was.
+//
+// Both outcomes are driven here, on the exact shape the lane produced.
+func TestV6EvidenceSettled_ADisagreementAloneDoesNotFinishAnObservation(t *testing.T) {
+	// 370 ms in: dnsmasq has written its range lines, no advertisement
+	// has been captured yet.
+	early := V6Evidence{PoolLogged: true}
+	if V6EvidenceSettled(early) {
+		t.Fatalf("an observation with no advertisement in it reports as settled; the fixture " +
+			"will stop the clock on whatever it happens to have seen and name that the mode")
+	}
+	if got := ClassifyV6Segment(early); len(got) != 1 || got[0] != V6NoRA {
+		t.Fatalf("ClassifyV6Segment(pool logged, nothing on the wire) = %v, want [%s]; the "+
+			"premise of this test is that the unsettled observation names a plausible WRONG "+
+			"mode rather than nothing at all", got, V6NoRA)
+	}
+
+	// The same segment once its first advertisement lands.
+	f, ok := ParseRA(mustFrame(t, raManagedHex))
+	if !ok {
+		t.Fatalf("the managed capture no longer parses")
+	}
+	settled := V6Evidence{PoolLogged: true, RALogged: true, Frames: []RAFrame{f}}
+	if !V6EvidenceSettled(settled) {
+		t.Fatalf("an observation holding an advertisement reports as unsettled; every fixture " +
+			"in an advertising mode would then spend its whole budget")
+	}
+	if got := ClassifyV6Segment(settled); len(got) != 2 || got[0] != V6Managed {
+		t.Fatalf("ClassifyV6Segment(settled managed evidence) = %v, want managed first", got)
+	}
+
+	// What the drift matrix actually asks for: the refusal names the
+	// mode the segment IS, and it can only do that from the settled
+	// observation.
+	findings := V6ModeFindings(V6Stateless, settled)
+	if len(findings) == 0 {
+		t.Fatalf("managed evidence under the stateless name produced no finding")
+	}
+	if !strings.Contains(findings[0], V6Managed.String()) {
+		t.Fatalf("the refusal does not name the mode observed (%s): %s", V6Managed, findings[0])
+	}
+	if strings.Contains(findings[0], V6NoRA.String()) {
+		t.Fatalf("the refusal names %s, the answer the unsettled observation gave: %s",
+			V6NoRA, findings[0])
+	}
+}

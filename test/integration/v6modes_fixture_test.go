@@ -58,6 +58,23 @@ func TestV6Fixture_ModesComeUpAsRequested(t *testing.T) {
 			if f.Mode() != mode {
 				t.Errorf("fixture mode = %s, want %s", f.Mode(), mode)
 			}
+
+			// The design table's two "to be measured" wire cells are
+			// measured HERE, on the lane, and this run's log is the
+			// record: every mode prints the advertisement the fixture
+			// accepted it on, decoded, with the delay from the moment
+			// the server was started. The assertion is assertMode's;
+			// this is the evidence a reader can check it against, and
+			// it is also the first-advertisement bound the readiness
+			// race needs, measured per mode rather than argued from
+			// one.
+			frames := f.RACapture().FramesAfter(f.StartedAt())
+			if len(frames) == 0 {
+				t.Logf("wire: no advertisement within %s of the server starting", harness.V6NoRAWindow())
+				return
+			}
+			t.Logf("wire: %d advertisement(s), first %s after the server started: %s",
+				len(frames), frames[0].At.Sub(f.StartedAt()).Round(time.Millisecond), frames[0])
 		})
 	}
 }
