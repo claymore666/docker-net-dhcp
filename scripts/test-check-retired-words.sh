@@ -128,6 +128,18 @@ expect_out "the region allowance names its word and its boundary" \
 expect_out "the region allowance is announced for BETA too" \
     "ALLOWED RELEASE_NOTES.md (from line 7 down, 'beta')"
 
+# ...and it is BETA'S allowance, not dhcpcd's reached through a shared
+# path. The two region entries happen to name the same file and the same
+# regex, so an index lookup that dropped the word from its key would
+# behave identically -- except in the reason it prints, which is the only
+# place the difference is visible. An allowance whose reason belongs to
+# another word is how a second word inherits a decision nobody made for
+# it, so the reason is asserted per word rather than for presence.
+expect_out "the BETA region allowance carries BETA's dated reason" \
+    "down, 'beta') — 2026-09-05:"
+expect_out "the DHCPCD region allowance carries DHCPCD's dated reason" \
+    "down, 'dhcpcd') — 2026-09-04:"
+
 # --- outcome 1: a planted word in a living document is caught ---------
 for target in README.md SECURITY.md docs/reference.md docs/extra.md; do
     build_repo "$R"
