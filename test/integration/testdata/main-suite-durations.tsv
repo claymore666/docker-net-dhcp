@@ -161,6 +161,15 @@
 # further: its 30s quiet window IS the assertion.
 # Refresh again from a several-run median once this branch has one.
 #
+# TWO ROWS ARE INFERRED, AND SAY SO (2.0-alpha.1, O-3/O-4).
+# TestHealthDocument_EndpointEntryMatchesTheContainer is priced at
+# TestHealthCounters_ObtainedAndReleased's measured 8.00: same shape --
+# one macvlan network, one container, one health read -- with one
+# `docker exec` on top. TestHealthDocument_BuildInfoIsWhatTheLaneBuilt
+# creates nothing and reads two endpoints, so it is priced at the
+# cheapest measured row. Both are refreshed from the first green run of
+# this branch, like the six above them.
+#
 # ONE ROW IS A SKIP COST, NOT A RUN COST.
 # TestInterfaceName_MultiNetworkDeterministic skipped in all 22 samples —
 # the engine does not yet honour a plugin-returned DstName (#125), so the
@@ -227,6 +236,8 @@ TestExtraOptions_SearchListInResolvConf	8.45
 TestExtraOptions_WPADAndTimezoneLogged	7.28
 TestFQDN_RegistersInDNS	8.36
 TestHealthCounters_ObtainedAndReleased	8.00
+TestHealthDocument_BuildInfoIsWhatTheLaneBuilt	1.00
+TestHealthDocument_EndpointEntryMatchesTheContainer	8.00
 TestIPv6_RefusedAtCreateWithTheMilestoneNamed	0.10
 TestIPv6_TheV4PathIsUnaffectedByTheRefusal	5.00
 TestInterfaceName_InvalidRejected	0.41

@@ -73,8 +73,25 @@ run "a published cell that never reaches :latest fails" 1 drop_hub_promote "HUB_
 # --- a NEW registry, which is the thing this gate is for ---------------
 # The whole point is that adding a registry cannot ship unverified. A
 # transcribed list of four job names would pass this.
+# Anchored on the NAME variable and not on the whole invocation: the
+# push line carries whatever else the release needs to pass through it
+# (VERSION since 2.0-alpha.1), and a mutator that has to be re-spelled
+# every time one is added is a mutator that silently stops mutating --
+# which is what happened here, and the case then "passed" by doing
+# nothing at all.
 add_third_registry() {
-    sed -i 's|^\( *\)run: make PLUGIN_NAME="${GHCR_NAME}" PLUGIN_TAG="${TAG}" push|\1run: make PLUGIN_NAME="${GHCR_NAME}" PLUGIN_TAG="${TAG}" push\n\1run: make PLUGIN_NAME="${QUAY_NAME}" PLUGIN_TAG="${TAG}" push|' "$1"
+    python3 - "$1" <<'PY'
+import re, sys
+p = sys.argv[1]; s = open(p).read()
+re_push = r'^( *)run: (make PLUGIN_NAME="\$\{GHCR_NAME\}".*)$'
+m = re.search(re_push, s, flags=re.M)
+if m is None:
+    raise SystemExit("no GHCR push invocation to duplicate")
+line = "%srun: %s\n%srun: %s" % (
+    m.group(1), m.group(2),
+    m.group(1), m.group(2).replace("${GHCR_NAME}", "${QUAY_NAME}"))
+open(p, "w").write(s[:m.start()] + line + s[m.end():])
+PY
 }
 run "a newly published registry with no verifier fails" 1 add_third_registry "QUAY_NAME"
 
@@ -166,7 +183,7 @@ unbind_tag() {
     python3 - "$1" <<'PY'
 import re, sys
 p = sys.argv[1]; s = open(p).read()
-s = re.sub(r'PLUGIN_TAG="\$\{TAG\}" push', 'PLUGIN_TAG="${NOSUCH}" push', s, count=1)
+s = re.sub(r'PLUGIN_TAG="\$\{TAG\}"', 'PLUGIN_TAG="${NOSUCH}"', s, count=1)
 open(p, "w").write(s)
 PY
 }

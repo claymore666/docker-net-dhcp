@@ -6,7 +6,6 @@ package plugin
 import (
 	"fmt"
 	"math"
-	"sync/atomic"
 
 	"github.com/claymore666/dhcp-golib/proto"
 	log "github.com/sirupsen/logrus"
@@ -169,7 +168,7 @@ func (p *Plugin) addACDStats(d dhcp.ACDStats) {
 // saturation is unreachable in practice (it needs two billion probes in
 // one plugin's life) and is written because the alternative failure is
 // silent and this file has no way to know the future.
-func addUint64(c *atomic.Int32, d uint64) {
+func addUint64(c intCounter, d uint64) {
 	if d == 0 {
 		return
 	}

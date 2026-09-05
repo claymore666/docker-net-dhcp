@@ -112,6 +112,12 @@ func PluginHealth(ctx context.Context, cli *docker.Client) (*HealthResponse, err
 // It deliberately makes no claim about counters, and comparing two of
 // its results is not a measurement: use BeginCounterWindow for that.
 //
+// It is also the suite's ONE-READING reader, for the same reason: a
+// cell that reads a field of the document rather than a change in one
+// (the `endpoints` array, `status`, the build identity) has no window
+// to belong to, and taking a lone PluginHealth for it is what
+// counterwindow_guard_test.go refuses.
+//
 // It exists so a readiness poll is not written as a bare PluginHealth
 // loop, which is indistinguishable at a glance from an unguarded
 // measurement and is what the suite-source guard rejects (#405).

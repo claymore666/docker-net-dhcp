@@ -42,16 +42,44 @@
 # names. Naming the wrong tag produces a table that is internally
 # consistent and about the wrong release.
 #
-# THE FIELDS. Seven, and they are the manifest's whole privilege- and
-# settings-bearing surface:
+# THE FIELDS. Nine. Seven of them are DERIVED FROM MOBY'S OWN LIST
+# rather than from what this manifest happens to carry: the fields
+# `computePrivileges` walks when the daemon builds the upgrade prompt
+# (moby, daemon/pkg/plugin/backend_linux.go, func computePrivileges --
+# network.type, IpcHost, PidHost, mounts[].Source, linux.devices[].Path,
+# linux.AllowAllDevices, linux.capabilities). The other two, `env` and
+# the mount OPTIONS, are here for reasons stated below.
 #
-#   linux.capabilities   one token per capability
-#   network.type         one token, the type
-#   pidhost              one token, `true` or `false`
-#   mounts               one token per mount, the HOST source path
-#   env                  one token per setting NAME
-#   propagatedmount      one token, or `(absent)`
-#   linux.devices        one token per device path, or `(absent)`
+#   linux.capabilities        one token per capability
+#   network.type              one token, the type
+#   ipchost                   one token, `true` or `false`
+#   pidhost                   one token, `true` or `false`
+#   mounts                    one token per mount, `source:options`
+#   linux.devices             one token per device path, or `(absent)`
+#   linux.allowalldevices     one token, `true` or `false`
+#   propagatedmount           one token, or `(absent)`
+#   env                       one token per setting NAME
+#
+# THE HEADER USED TO CLAIM SEVEN FIELDS WERE "the manifest's whole
+# privilege-bearing surface" AND THEY WERE NOT. `ipchost: true` and
+# `linux.allowAllDevices: true` are both prompted by the daemon and were
+# projected by neither manifest gate, so either could be added with the
+# whole lane green. The list was drawn from what this manifest carries;
+# it is now drawn from what the daemon reads, which is the only list
+# that can be complete (privilege review, 2026-09-05).
+#
+# MOUNT OPTIONS ARE PROJECTED AND THE DAEMON DOES NOT PROMPT ON THEM.
+# That is deliberate and it is the one place this gate is deliberately
+# wider than the prompt. `computePrivileges` takes mounts[].Source
+# alone, so flipping /var/run/docker from `ro` to `rw` re-uses the
+# operator's existing approval -- and "read-only" on that mount is the
+# sentence SECURITY.md's whole grant argument rests on. A reviewer made
+# exactly that edit, on both manifests, with the lane green. A row that
+# an operator will not be re-prompted about is a row this table has MORE
+# reason to state, not less.
+#
+# `env` is here for the older reason: it is not a privilege, its own
+# `prompted` cell says so, and it is the field most likely to drift.
 #
 # `(absent)` is the empty-set spelling. A field with no value must say
 # so, because an empty cell and a cell nobody filled in are the same
@@ -111,25 +139,37 @@ OLD_MANIFEST=$(git -C "$ROOT" show "$BASELINE:config.json" 2>/dev/null) ||
 #
 # The projection is enumerated here rather than derived from the JSON,
 # and that is a real bound: a privilege Docker honours under a key not
-# named below is invisible to this gate. The seven are the fields
-# config.json actually carries plus the two (propagatedmount,
-# linux.devices) it does not, which are listed precisely so that
-# GAINING one cannot happen silently.
+# named below is invisible to this gate. The list is moby's (see the
+# header) plus env and the mount options, and the fields this manifest
+# does not carry are listed precisely so that GAINING one cannot happen
+# silently.
+#
+# A BOOLEAN PROJECTS AS `false` WHEN ABSENT, never as the empty set: a
+# manifest that omits `ipchost` and a manifest that sets it to false
+# grant the same thing, and rendering the first as `(absent)` would put
+# a row in the table that changes wording when nothing changed --
+# training the reader to skip it.
+#
+# Case is not load-bearing in the key: Docker's Go struct field is
+# AllowAllDevices and the JSON tag is lowercase, so both spellings are
+# accepted rather than one being silently invisible.
 field_tokens() {
     local field="$1"
     case "$field" in
-        linux.capabilities) jq -r '.linux.capabilities[]? // empty' ;;
-        network.type)       jq -r '.network.type // empty' ;;
-        pidhost)            jq -r 'if has("pidhost") then (.pidhost | tostring) else "false" end' ;;
-        mounts)             jq -r '.mounts[]?.source // empty' ;;
-        env)                jq -r '.env[]?.name // empty' ;;
-        propagatedmount)    jq -r 'if (.propagatedmount // "") == "" then empty else .propagatedmount end' ;;
-        linux.devices)      jq -r '.linux.devices[]? | (.path // .name) // empty' ;;
-        *)                  return 1 ;;
+        linux.capabilities)    jq -r '.linux.capabilities[]? // empty' ;;
+        network.type)          jq -r '.network.type // empty' ;;
+        ipchost)               jq -r 'if has("ipchost") then (.ipchost | tostring) else "false" end' ;;
+        pidhost)               jq -r 'if has("pidhost") then (.pidhost | tostring) else "false" end' ;;
+        mounts)                jq -r '.mounts[]? | ((.source // "") + (if ((.options // []) | length) > 0 then ":" + ((.options | sort) | join(",")) else "" end))' ;;
+        env)                   jq -r '.env[]?.name // empty' ;;
+        propagatedmount)       jq -r 'if (.propagatedmount // "") == "" then empty else .propagatedmount end' ;;
+        linux.devices)         jq -r '.linux.devices[]? | (.path // .name) // empty' ;;
+        linux.allowalldevices) jq -r '((.linux.allowAllDevices // .linux.allowalldevices) // false) | tostring' ;;
+        *)                     return 1 ;;
     esac
 }
 
-FIELDS=(linux.capabilities network.type pidhost mounts env propagatedmount linux.devices)
+FIELDS=(linux.capabilities network.type ipchost pidhost mounts env propagatedmount linux.devices linux.allowalldevices)
 
 derive() { # <field> <manifest text>
     local field="$1" text="$2" out

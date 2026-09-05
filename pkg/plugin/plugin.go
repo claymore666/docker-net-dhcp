@@ -579,7 +579,7 @@ type Plugin struct {
 	// every previously-attached container or whether some containers
 	// are now running without renewal.
 	recoveredOK    atomic.Int32
-	recoveryFailed atomic.Int32
+	recoveryFailed stampedCounter
 
 	// recoveryAlreadyManaged counts endpoints a recovery walk found
 	// someone else already managing and therefore left alone. Not a
@@ -685,7 +685,7 @@ type Plugin struct {
 	// the plugin log. Healthy-affecting, same operator semantics as
 	// recovery_failed: restart the affected container once the cause
 	// is fixed.
-	joinStartFailures atomic.Int32
+	joinStartFailures stampedCounter
 
 	// joinAbortedContainerGone counts attaches abandoned because the
 	// container exited before the persistent client could be started
@@ -789,7 +789,7 @@ type Plugin struct {
 	// CreateEndpoint to the operator's terminal, whereas `healthy`
 	// exists for faults that are otherwise silent (#422).
 	restartLinkUpWaited   atomic.Int32
-	restartLinkUpTimeouts atomic.Int32
+	restartLinkUpTimeouts stampedCounter
 
 	// joinAbortedEndpointLeft counts attaches cancelled because Leave
 	// arrived while they were still running. Not healthy-affecting and
@@ -871,12 +871,13 @@ type Plugin struct {
 	// THEY SUM TO sandboxKeyEntryFailures, by construction rather than
 	// by convention: openSandboxNetNS classifies every failure into
 	// exactly one of them, and sandboxKeyUnavailable is the residual
-	// arm that catches anything not carrying one of the three
+	// arm that catches anything not carrying one of the four
 	// refusal sentinels (an entry that never appeared inside the attach
 	// budget, or a directory that could not be opened at all).
 	//
 	// None of them is healthy-affecting, for the same reason the three
 	// above are not.
+	sandboxKeyAbsent        atomic.Int32
 	sandboxKeyNotPermitted  atomic.Int32
 	sandboxKeyNotANamespace atomic.Int32
 	sandboxKeyWrongNSType   atomic.Int32
@@ -967,7 +968,7 @@ type Plugin struct {
 	// can detect a degraded restart-stability window — every failure
 	// here means one container that won't get its previous MAC/IP back
 	// on restart until the disk recovers.
-	tombstoneWriteFailures atomic.Int32
+	tombstoneWriteFailures stampedCounter
 
 	// tombstonesConsumed counts the other side of that story: a
 	// CreateEndpoint that found a fresh tombstone and reused its MAC/IP,
@@ -990,7 +991,7 @@ type Plugin struct {
 	// (forced container restart on lease change, or an out-of-band
 	// docker-socket update) lands. See issue #104 for the design
 	// discussion deferred from v0.9.0.
-	leaseChangedV4 atomic.Int32
+	leaseChangedV4 stampedCounter
 
 	// addressConflicts counts leased addresses RFC 5227 found already
 	// in use on the segment (#524, D12).
@@ -1022,7 +1023,7 @@ type Plugin struct {
 	// failing every send, is not a clean segment; it is a detector that
 	// is not running. That ambiguity is #524 itself, and the four rows
 	// below are what removes it.
-	addressConflicts atomic.Int32
+	addressConflicts stampedCounter
 
 	// acdProbesSent / acdAnnouncementsSent / acdConflictsDetected /
 	// acdARPSendFailures are the library's own RFC 5227 counters,
@@ -1040,7 +1041,20 @@ type Plugin struct {
 	acdProbesSent        atomic.Int32
 	acdAnnouncementsSent atomic.Int32
 	acdConflictsDetected atomic.Int32
-	acdARPSendFailures   atomic.Int32
+	acdARPSendFailures   stampedCounter
+
+	// acdResumedUnchecked counts endpoints this process picked up from a
+	// durable record whose RFC 5227 section 2.1 check had not finished
+	// when the previous process stopped -- D23's operator half, and
+	// until now carried only by a log line nothing observed.
+	//
+	// The address is re-checked either way: proto.Machine runs section
+	// 2.1 on the INIT-REBOOT DHCPACK whatever the record said. What this
+	// counts is the WINDOW, between the resume and that acknowledgement,
+	// in which a container holds an address no completed check stands
+	// behind. A warn check rather than a fail one for exactly that
+	// reason.
+	acdResumedUnchecked stampedCounter
 
 	// leasesObtainedV4 / leasesRenewedV4 / dhcpTimeoutsV4 / clientStopFailuresV4
 	// expose DHCP-wire-level counters via /Plugin.Health (T2-4). They
@@ -1100,7 +1114,7 @@ type Plugin struct {
 	// NIC, and even a timeout only restores the pre-gate behaviour.
 	parentGate             parentGate
 	parentLinkWaits        atomic.Int32
-	parentLinkWaitTimeouts atomic.Int32
+	parentLinkWaitTimeouts stampedCounter
 
 	// naksReceivedV4 counts "nak" events — the server refused a
 	// REQUEST (pool reconfigured, address reassigned, lease revoked).
@@ -1122,7 +1136,7 @@ type Plugin struct {
 	// dual-stack host the split is the only way to tell a v6-specific
 	// NAK or timeout (the signal #152 is landing against) from a v4 one
 	// on /Plugin.Health without scraping logs.
-	leaseChangedV6   atomic.Int32
+	leaseChangedV6   stampedCounter
 	leasesObtainedV6 atomic.Int32
 	leasesRenewedV6  atomic.Int32
 	dhcpTimeoutsV6   atomic.Int32
@@ -1206,7 +1220,7 @@ type Plugin struct {
 	// networking or restart stability — operators who enable
 	// audit_log should alert on the counter instead.
 	ledger              *leaseLedger
-	ledgerWriteFailures atomic.Int32
+	ledgerWriteFailures stampedCounter
 
 	// records is the durable lease record: the file a plugin restart
 	// reads to resume a lease as INIT-REBOOT instead of DISCOVERing a

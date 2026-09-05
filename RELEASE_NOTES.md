@@ -109,10 +109,12 @@ property of Docker, not of this manifest.
 | --- | --- | --- | --- |
 | `linux.capabilities` | `CAP_NET_ADMIN`, `CAP_SYS_ADMIN`, `CAP_SYS_PTRACE` | `CAP_NET_ADMIN`, `CAP_NET_RAW`, `CAP_SYS_ADMIN`, `CAP_SYS_PTRACE` | **yes** |
 | `network.type` | `host` | `host` | no change |
+| `ipchost` | `false` | `false` | **yes**, when true |
 | `pidhost` | `true` | `true` | no change |
-| `mounts` | `/var/run/docker.sock`, `/var/lib/net-dhcp`, `/var/run/docker` | `/var/run/docker.sock`, `/var/lib/net-dhcp`, `/var/run/docker` | no change |
+| `mounts` | `/var/run/docker.sock:bind`, `/var/lib/net-dhcp:rbind,rw`, `/var/run/docker:rbind,ro` | `/var/run/docker.sock:bind`, `/var/lib/net-dhcp:rbind,rw`, `/var/run/docker:rbind,ro` | source only |
 | `propagatedmount` | `(absent)` | `(absent)` | no change |
 | `linux.devices` | `(absent)` | `(absent)` | no change |
+| `linux.allowalldevices` | `false` | `false` | **yes**, when true |
 | `env` | `LOG_LEVEL`, `AWAIT_TIMEOUT`, `STATE_DIR`, `OUTAGE_TICK`, `OUTAGE_GRACE`, `METRICS_ADDR` | `LOG_LEVEL`, `AWAIT_TIMEOUT`, `STATE_DIR`, `METRICS_ADDR`, `DOCKER_HOST` | no — a setting is not a privilege |
 
 <!-- manifest-delta: end -->
@@ -135,15 +137,18 @@ stayed regardless, because `resolv.conf` propagation enters the container's
 *mount* namespace by PID and a mount namespace has no sandbox key.
 `sandbox_key_entries`, `sandbox_key_entry_failures` and
 `sandbox_pid_fallbacks` report which route your host is using, and
-`sandbox_key_not_permitted`, `sandbox_key_not_a_namespace`,
-`sandbox_key_wrong_ns_type` and `sandbox_key_unavailable` say which
-refusal it was — the four sum to `sandbox_key_entry_failures`. On a stock
+`sandbox_key_absent`, `sandbox_key_not_permitted`,
+`sandbox_key_not_a_namespace`, `sandbox_key_wrong_ns_type` and
+`sandbox_key_unavailable` say which
+refusal it was — the arms sum to `sandbox_key_entry_failures`. On a stock
 engine the one that rises is `sandbox_key_not_a_namespace`, once per
 attach, and that is the expected state: nothing is degraded, the log line
 that accompanies it is at `debug`, and no action is indicated. A rise in
 `sandbox_key_not_permitted` is the one to look at — it means the daemon
 publishes sandbox keys somewhere this plugin does not accept, which a
-non-default `--exec-root` does.
+non-default `--exec-root` does. It means a key that exists and was
+refused: an endpoint no key was published for at all has its own arm,
+`sandbox_key_absent`, so a rise in one is never the other.
 
 **New: `DOCKER_HOST`.** Empty by default, which keeps the mounted socket and
 the behaviour every earlier release had. Point it at a read-only Docker API
@@ -291,6 +296,37 @@ Four counters are added, on `/Plugin.Health` and `/metrics`:
 `acd_arp_send_failures`. `address_conflicts` keeps its name, keeps
 flipping `healthy`, and is now fed by the DHCP client rather than by the
 plugin's probe.
+
+### New: the health document says what is wrong, when it started, and where
+
+`/Plugin.Health` keeps every field it had. `healthy` is unchanged — same
+latch, same counters behind it, same meaning — so a dashboard that reads it
+needs no edit.
+
+Beside it there is now a `status` of `pass`, `warn` or `fail` and a `checks`
+object, in the shape of the IETF health-check draft
+(`draft-inadarei-api-health-check`). **What to poll:** `status` answers "is
+anything wrong", `checks` names which counter says so, and each check carries
+a `time` — the moment that counter last moved — which answers "is it still
+happening". That last question had no answer before: the flags latch, so a
+fault an hour ago and a fault in progress produced the same document.
+`fail` is exactly the set of counters that flips `healthy`, and the two are
+never allowed to disagree; `warn` is the set the reference table tells you to
+watch without calling it a fault, and it never touches `healthy`. Everything
+else stays informational and is not a check.
+
+The document also gains an `endpoints` array — one entry per attached
+container, with its address, lease state, T1/T2/expiry as absolute times, the
+server that granted the lease, the last lifecycle event and its time, the
+`conflict_check` mode and where RFC 5227 has got to — and `version`, `commit`
+and `library`, which say exactly which binary answered. The same three are
+labels on a new `net_dhcp_build_info` series with the value 1. A build made
+outside the release pipeline reports `dev` and the commit it was built from.
+
+Two deliberate departures from the draft, both stated in `docs/reference.md`:
+the endpoint answers HTTP 200 for every status, because a latched flag would
+otherwise make the socket look down for the life of the process, and the media
+type stays `application/json`.
 
 ### Changed on the wire
 

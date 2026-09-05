@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/claymore666/docker-net-dhcp/pkg/buildinfo"
 	"github.com/claymore666/docker-net-dhcp/pkg/util"
 )
 
@@ -287,7 +288,25 @@ func (p *Plugin) apiLeave(w http.ResponseWriter, r *http.Request) {
 // silence. If "unhealthy right now" is ever wanted, it is a new field,
 // not a change to this one.
 type HealthResponse struct {
-	Healthy bool `json:"healthy"`
+	// Status is draft-inadarei-api-health-check-06 section 3.1's
+	// pass/warn/fail, and Checks is its section 3.6 object. They are a
+	// REFINEMENT of Healthy, never a replacement: `fail` is exactly
+	// `healthy: false`, because both are read from the one declaration
+	// (metricDef.healthy) rather than derived twice. What they add is
+	// WHICH counter, WHEN it last moved, and a middle value for the
+	// counters the reference tells an operator to watch without
+	// calling them a fault.
+	//
+	// Healthy stays exactly as it was. 1.x dashboards read it, and a
+	// field whose meaning is narrowed by a new sibling is a field that
+	// silently changed.
+	Status string `json:"status"`
+	// Version, Commit and Library are what this binary was built from
+	// (pkg/buildinfo). They are also the labels of net_dhcp_build_info.
+	Version string `json:"version"`
+	Commit  string `json:"commit"`
+	Library string `json:"library"`
+	Healthy bool   `json:"healthy"`
 	// InstanceID identifies the plugin process that served this
 	// response. Every counter below is in-memory and returns to zero
 	// when the process does, so two reads are only comparable as a
@@ -528,8 +547,14 @@ type HealthResponse struct {
 	// to stay true. SandboxKeyUnavailable is the residual: the entry
 	// never became openable inside the attach budget.
 	//
+	// SandboxKeyAbsent is the endpoint no key was published for at
+	// all, by either source. It used to land in
+	// SandboxKeyNotPermitted, whose documented cause and remedy are
+	// about a key that exists.
+	//
 	// They sum to SandboxKeyEntryFailures exactly. None is
 	// healthy-affecting.
+	SandboxKeyAbsent        int32 `json:"sandbox_key_absent"`
 	SandboxKeyNotPermitted  int32 `json:"sandbox_key_not_permitted"`
 	SandboxKeyNotANamespace int32 `json:"sandbox_key_not_a_namespace"`
 	SandboxKeyWrongNSType   int32 `json:"sandbox_key_wrong_ns_type"`
@@ -607,6 +632,14 @@ type HealthResponse struct {
 	ACDAnnouncementsSent int32 `json:"acd_announcements_sent"`
 	ACDConflictsDetected int32 `json:"acd_conflicts_detected"`
 	ACDARPSendFailures   int32 `json:"acd_arp_send_failures"`
+	// ACDResumedUnchecked counts endpoints resumed from a record whose
+	// section 2.1 check had not completed when the previous plugin
+	// process stopped (D23). NOT healthy-affecting: the resumed client
+	// re-runs the check on its INIT-REBOOT acknowledgement, so the
+	// window closes on its own. It is a `warn` check because during
+	// that window a container holds an address nothing finished
+	// checking.
+	ACDResumedUnchecked int32 `json:"acd_resumed_unchecked"`
 
 	// SandboxNetnsVisible is how many sandbox netns entries the plugin
 	// can currently see, or -1 when it cannot read the directory at all
@@ -800,6 +833,18 @@ type HealthResponse struct {
 	// enabled on before a DHCPv6 client was started. Distinguishes a
 	// quiet segment from one the plugin could never have heard.
 	IPv6LinkEnableFailures int32 `json:"ipv6_link_enable_failures"`
+
+	// Checks is one entry per named check, keyed by the counter behind
+	// it. Each value is a SINGLE-ELEMENT ARRAY because section 4 says
+	// so: the draft's keys point to arrays so that a sub-component
+	// backed by several nodes can report each of them, and it asks for
+	// a one-element array where that is not relevant, "for
+	// consistency".
+	Checks map[string][]HealthCheck `json:"checks"`
+	// Endpoints is one entry per registered manager, bounded by
+	// ActiveEndpoints. Not in /metrics: a series per container is a
+	// cardinality decision, and it is taken separately.
+	Endpoints []EndpointHealth `json:"endpoints"`
 }
 
 func (p *Plugin) apiHealth(w http.ResponseWriter, r *http.Request) {
@@ -857,7 +902,8 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 	clientStopFailuresV4 := p.clientStopFailuresV4.Load()
 	clientStopFailuresV6 := p.clientStopFailuresV6.Load()
 
-	return HealthResponse{
+	now := time.Now()
+	h := HealthResponse{
 		// Healthy is false on any condition that means an operator
 		// should look: a recovery or join-start failure means a running
 		// container has no renewal goroutine; a tombstone-write failure
@@ -906,6 +952,7 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		SandboxKeyEntries:            p.sandboxKeyEntries.Load(),
 		SandboxKeyEntryFailures:      p.sandboxKeyEntryFailures.Load(),
 		SandboxPIDFallbacks:          p.sandboxPIDFallbacks.Load(),
+		SandboxKeyAbsent:             p.sandboxKeyAbsent.Load(),
 		SandboxKeyNotPermitted:       p.sandboxKeyNotPermitted.Load(),
 		SandboxKeyNotANamespace:      p.sandboxKeyNotANamespace.Load(),
 		SandboxKeyWrongNSType:        p.sandboxKeyWrongNSType.Load(),
@@ -921,6 +968,7 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		ACDAnnouncementsSent:         p.acdAnnouncementsSent.Load(),
 		ACDConflictsDetected:         p.acdConflictsDetected.Load(),
 		ACDARPSendFailures:           p.acdARPSendFailures.Load(),
+		ACDResumedUnchecked:          p.acdResumedUnchecked.Load(),
 		SandboxNetnsVisible:          sandboxNetnsVisibleIn(sandboxNetnsDirs),
 		LeasesObtained:               leasesObtainedV4 + leasesObtainedV6,
 		LeasesRenewed:                leasesRenewedV4 + leasesRenewedV6,
@@ -950,5 +998,34 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 		DHCPv6NotOffered:             p.dhcpv6NotOffered.Load(),
 		DHCPv6NoRouterAdvert:         p.dhcpv6NoRouterAdvert.Load(),
 		IPv6LinkEnableFailures:       p.ipv6LinkEnableFailures.Load(),
+		Version:                      buildinfo.Version,
+		Commit:                       buildinfo.Commit,
+		Library:                      buildinfo.Library,
 	}
+
+	// The checks are built from the response ABOVE, so the value a
+	// check reports and the value the counter field reports are the
+	// same read: they cannot disagree even under a concurrent bump.
+	//
+	// The stamps are the movement times of the counters the checks are
+	// declared on. Every entry here is one; a check whose field is
+	// missing from this map would render as though its counter had
+	// never moved, which is what TestHealthChecks_EveryCheckHasAStamp
+	// refuses.
+	stamps := map[string]time.Time{
+		"recovery_failed":           p.recoveryFailed.LastMoved(),
+		"join_start_failures":       p.joinStartFailures.LastMoved(),
+		"tombstone_write_failures":  p.tombstoneWriteFailures.LastMoved(),
+		"tombstone_quarantines":     p.tombstones.quarantines.LastMoved(),
+		"address_conflicts":         p.addressConflicts.LastMoved(),
+		"lease_changed":             laterOf(p.leaseChangedV4.LastMoved(), p.leaseChangedV6.LastMoved()),
+		"acd_arp_send_failures":     p.acdARPSendFailures.LastMoved(),
+		"acd_resumed_unchecked":     p.acdResumedUnchecked.LastMoved(),
+		"restart_link_up_timeouts":  p.restartLinkUpTimeouts.LastMoved(),
+		"parent_link_wait_timeouts": p.parentLinkWaitTimeouts.LastMoved(),
+		"ledger_write_failures":     p.ledgerWriteFailures.LastMoved(),
+	}
+	h.Status, h.Checks = healthChecks(h, stamps, now)
+	h.Endpoints = p.endpointViews()
+	return h
 }

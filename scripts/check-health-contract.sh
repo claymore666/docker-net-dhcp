@@ -47,6 +47,8 @@
 #      words carries the count that list actually has
 #   3. the code's Healthy expression -- the only one in the file -- has
 #      that many terms
+#   4. the CHECK column of the same table agrees with metricDefs'
+#      `healthy:` / `warn:` declarations, in both directions
 #
 # WHAT IT CANNOT CHECK, stated because the PASS line looks total and is
 # not: it reads statements it was TAUGHT, by pattern, in ONE file. A
@@ -290,6 +292,77 @@ if [ "$n_code" != "$n_doc" ]; then
     echo "  $rest" >&2
 fi
 
+# --- 4b. the check classification column -------------------------------
+# /Plugin.Health's `status` and `checks` are derived from metricDefs'
+# `healthy` and `warn` declarations, and the reference table states the
+# same classification in a column an operator reads. Same #638 shape as
+# everything else in this file: one fact, two places.
+#
+# The fail half is redundant with the healthy-affecting column by
+# construction and is checked anyway -- a table whose two columns
+# disagree about the same counter is a table a reader cannot use, and
+# the redundancy is only free while something reads it.
+#
+# Both directions. A counter marked `warn` in the doc and declared
+# nowhere is a check an operator is told to expect and will never see;
+# a counter declared `warn: true` and left off the table is a check that
+# appears in the document with nothing explaining it.
+doc_fail=$(grep -oE '^\| `[a-z0-9_]+` \| [^|]* \| fail \|' "$DOC" \
+    | sed -E 's/^\| `([a-z0-9_]+)`.*/\1/' | sort -u)
+doc_warn=$(grep -oE '^\| `[a-z0-9_]+` \| [^|]* \| warn \|' "$DOC" \
+    | sed -E 's/^\| `([a-z0-9_]+)`.*/\1/' | sort -u)
+if [ -z "$doc_warn" ]; then
+    echo "check-health-contract: no rows classified 'warn' in $DOC" >&2
+    echo "  Two readings, and this cannot tell them apart, so it refuses" >&2
+    echo "  rather than reporting clean: either the check column was" >&2
+    echo "  dropped or moved and this read nothing, or every warn" >&2
+    echo "  classification was genuinely removed -- which is a change to" >&2
+    echo "  the health document's shape and wants a human either way." >&2
+    exit 2
+fi
+n_checks=$(printf '%s\n%s\n' "$doc_fail" "$doc_warn" | grep -c .)
+
+# Declared on the metricDef, keyed on the FIELD (the json tag the
+# document renders) rather than on the metric name, because that is what
+# the check is keyed on in the document. The leading non-word character
+# is load-bearing: `v4field:`/`v6field:` sit on the same line for the
+# family-split metrics, and a bare `field:` collects the halves as
+# though each were its own check.
+code_class() {
+    awk -v want="$1" '
+        /field:[[:space:]]*"/ && $0 ~ want { print }
+    ' "$METRICS" \
+        | grep -oE '[^a-z0-9_]field:[[:space:]]*"[a-z0-9_]+"' \
+        | sed -E 's/.*"([a-z0-9_]+)".*/\1/' | sort -u
+}
+code_fail=$(code_class 'healthy:[[:space:]]*true')
+code_warn=$(code_class 'warn:[[:space:]]*true')
+if [ -z "$code_warn" ]; then
+    echo "check-health-contract: no metricDef in $METRICS declares warn: true" >&2
+    echo "  Teach this check the new shape rather than letting it pass unread." >&2
+    exit 2
+fi
+
+if [ "$doc_fail" != "$code_fail" ]; then
+    note "the check column's 'fail' rows and the metricDef healthy declarations disagree:"
+    diff <(printf '%s\n' "$doc_fail") <(printf '%s\n' "$code_fail") \
+        | sed 's|^<|  classified fail in the doc, not declared healthy: true -- one of the two is wrong: |; s|^>|  declared healthy: true, not classified fail in the doc -- one of the two is wrong: |' >&2
+fi
+if [ "$doc_warn" != "$code_warn" ]; then
+    note "the check column's 'warn' rows and the metricDef warn declarations disagree:"
+    diff <(printf '%s\n' "$doc_warn") <(printf '%s\n' "$code_warn") \
+        | sed 's|^<|  classified warn in the doc, not declared warn: true -- one of the two is wrong: |; s|^>|  declared warn: true, not classified warn in the doc -- one of the two is wrong: |' >&2
+fi
+
+# A counter cannot be both. The Go side holds it too
+# (TestHealthChecks_EveryCheckIsAnnotated); here because a doc row
+# carrying two classifications would be read by whichever grep ran
+# first and would otherwise pass silently.
+both=$(comm -12 <(printf '%s\n' "$doc_fail") <(printf '%s\n' "$doc_warn"))
+if [ -n "$both" ]; then
+    note "classified both fail and warn in $DOC: $(printf '%s' "$both" | tr '\n' ' ')"
+fi
+
 # --- 5. the /metrics help strings --------------------------------------
 # Operator-facing text, served on the wire. Name and help sit on one
 # line in metricDefs, so this reads that line. If the shape ever
@@ -400,5 +473,5 @@ if [ "$fail" -ne 0 ]; then
     exit 1
 fi
 
-echo "PASS  healthy contract agrees in ${n_lists} doc counter-list(s), ${n_words} doc count-word(s), ${n_code} code term(s), ${n_metrics} /metrics healthy declaration(s) and ${n_floor} integration floor entr(ies): $(printf '%s' "$column_set" | tr '\n' ' ')"
+echo "PASS  healthy contract agrees in ${n_lists} doc counter-list(s), ${n_words} doc count-word(s), ${n_code} code term(s), ${n_metrics} /metrics healthy declaration(s), ${n_floor} integration floor entr(ies) and ${n_checks} check classification(s): $(printf '%s' "$column_set" | tr '\n' ' ')"
 exit 0

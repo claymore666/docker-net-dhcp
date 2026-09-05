@@ -63,11 +63,18 @@ for f in "$BIN_MAIN" "$BIN_HANDLER"; do
     fi
 done
 
-# A pre-release tag builds from the same source as the release it
-# rehearses, so its binaries carry the digests the real tag will publish.
-# Compare the label against the BASE version: that makes an rc a true
-# dry run of this check rather than a guaranteed failure, which is the
-# whole reason the rc exists.
+# Compare the label against the BASE version, so the doc carries one
+# digest block per RELEASE rather than one per tag.
+#
+# This used to say an rc "carries the digests the real tag will publish",
+# and since 2.0 that is no longer true: the tag reaches the binary as a
+# -ldflags -X (build identity, O-4), so v2.0.0-rc1 and v2.0.0 build from
+# the same source to DIFFERENT digests. What an rc still dry-runs is this
+# check's mechanics and the doc's shape; what it can no longer do is
+# supply the release's numbers. Expect the first rc of a new version AND
+# the release tag itself to fail here once each and print the block to
+# paste -- since #736 that failure is ahead of the floating tag, so the
+# recovery is: paste, re-run, done.
 BASE_TAG="${TAG%%-*}"
 
 # The label line, e.g. "... For **v1.5.0** (`linux/amd64`) they are:".

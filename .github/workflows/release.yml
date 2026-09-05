@@ -285,10 +285,16 @@ jobs:
       # digest and the single signature made below covers both — which
       # is why promotion can happen after signing without needing a
       # second signature.
+      #
+      # VERSION="${TAG}" is the one point where the release tag reaches
+      # the binary (O-4): the Makefile turns it into -ldflags -X, and it
+      # comes back out of /Plugin.Health and net_dhcp_build_info. COMMIT
+      # is derived by the Makefile from this checkout. Nothing else in
+      # this job changes for build identity.
       - name: Push to GHCR
         env:
           TAG: ${{ needs.resolve.outputs.tag }}
-        run: make PLUGIN_NAME="${GHCR_NAME}" PLUGIN_TAG="${TAG}" push
+        run: make PLUGIN_NAME="${GHCR_NAME}" PLUGIN_TAG="${TAG}" VERSION="${TAG}" push
 
       # The reference digests in docs/verifying-releases.md must describe
       # the binaries this tag actually publishes (#502).
@@ -329,7 +335,7 @@ jobs:
         env:
           TAG: ${{ needs.resolve.outputs.tag }}
         run: |
-          make PLUGIN_NAME="${HUB_NAME}" PLUGIN_TAG="${TAG}" push
+          make PLUGIN_NAME="${HUB_NAME}" PLUGIN_TAG="${TAG}" VERSION="${TAG}" push
           # Written AFTER the push, so it records a push that happened
           # rather than a step that started.
           echo "pushed=true" >> "$GITHUB_OUTPUT"
@@ -716,7 +722,7 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Push to GHCR
-        run: make PLUGIN_NAME="${GHCR_NAME}" PLUGIN_TAG="${ARM_TAG}" push
+        run: make PLUGIN_NAME="${GHCR_NAME}" PLUGIN_TAG="${ARM_TAG}" VERSION="${TAG}" push
 
       # Belt to the assert's braces: the binary that was actually packed
       # into the rootfs must be arm64. `go version -m` is not available
@@ -742,7 +748,7 @@ jobs:
         id: hub-push-arm
         if: env.HAS_HUB_CREDS == 'true'
         run: |
-          make PLUGIN_NAME="${HUB_NAME}" PLUGIN_TAG="${ARM_TAG}" push
+          make PLUGIN_NAME="${HUB_NAME}" PLUGIN_TAG="${ARM_TAG}" VERSION="${TAG}" push
           echo "pushed=true" >> "$GITHUB_OUTPUT"
 
       - name: Install cosign

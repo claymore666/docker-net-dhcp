@@ -725,8 +725,9 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
    Log in to GHCR → Log in to Docker Hub → **Both registries, or say
    why not** → Push to GHCR → **Check the documented
    reference digests against this build** (the gate step 10b is about —
-   on the first rc of a new version it is *expected* to fail and print
-   the block to paste into the doc) → Push to Docker Hub (or skip) →
+   on the first rc of a new version, and since 2.0 on the release tag
+   itself, it is *expected* to fail and print the block to paste into
+   the doc) → Push to Docker Hub (or skip) →
    Sync Docker Hub description from README (or skip) → Install cosign →
    **Record and gate the cosign version** → **Sign published images
    (cosign keyless)** → Install syft → **Generate SBOM (SPDX +
@@ -836,14 +837,23 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
    a reader who rebuilds the current tag and compares against them sees
    a mismatch and concludes the release does not match its source.
 
-   **The rc dry-run tells you the digests.** `release.yml` compares this
-   block against the binaries it just built and fails the run when they
-   disagree, printing the corrected block ready to paste (#502). So the
-   first rc of a new version is *expected* to fail on this step — that
-   is the check doing its job, and it is why the rc exists. Take the
-   block from the failed run's log, land it, and re-tag `-rc2`; the real
-   tag then passes silently. A pre-release compares against its base
-   version, so `v1.6.0-rc2` validates exactly what `v1.6.0` will publish.
+   **The rc dry-run tells you the shape; since 2.0 it no longer tells
+   you the numbers.** `release.yml` compares this block against the
+   binaries it just built and fails the run when they disagree, printing
+   the corrected block ready to paste (#502). So the first rc of a new
+   version is *expected* to fail on this step — that is the check doing
+   its job. Take the block from the failed run's log, land it, and
+   re-tag `-rc2`.
+
+   Through 1.x the real tag then passed silently, because an rc built
+   from the same source to the same bytes. From 2.0 it does not: the tag
+   reaches the binary as build identity (`version` in `/Plugin.Health`
+   and in `net_dhcp_build_info`), so `v2.0.0-rc2` and `v2.0.0` have
+   different digests. **Expect this step to fail once on the real tag
+   too**, print the release's own block, and need the same paste and
+   re-run. Since #736 that failure is ahead of the floating tag, so
+   `:vX.Y.Z` is published and `:latest` untouched while you fix it —
+   land the block on the **tagged commit** and re-dispatch the run.
 11. **Fast-forward `dev` to `main`** so the release commit (version
    pins, RELEASE_NOTES section) lands on `dev` too:
    ```sh

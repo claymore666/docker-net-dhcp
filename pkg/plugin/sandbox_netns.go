@@ -21,7 +21,7 @@ import (
 // apart, so the error text names the key it rejected.
 var errNoSandboxKey = errors.New("no usable sandbox key")
 
-// The three arms of errNoSandboxKey, each its own sentinel.
+// The four arms of errNoSandboxKey, each its own sentinel.
 //
 // WHY THEY EXIST. errNoSandboxKey alone says the key route was refused
 // and says nothing about WHY, and the why is the whole of SECURITY.md's
@@ -42,9 +42,26 @@ var errNoSandboxKey = errors.New("no usable sandbox key")
 // anything that reaches it another way — so the arms always sum to
 // sandbox_key_entry_failures rather than nearly doing so.
 var (
-	// errSandboxKeyNotPermitted: the key does not name an entry of one
-	// of sandboxNetnsDirs. A daemon with a non-default --exec-root
-	// looks like this, and so does a malformed key.
+	// errSandboxKeyAbsent: there is no key at all, from either source
+	// -- the Join request carried none and the container inspect
+	// reported none either (dhcp_manager.go reads the second when the
+	// first is empty, which is how recovery's synthesised JoinRequest
+	// still reaches a real key).
+	//
+	// SPLIT OUT OF errSandboxKeyNotPermitted IN 2.0-alpha.1, because
+	// the empty key took that arm silently and the two want opposite
+	// readings: not-permitted is documented as the arm that is NOT
+	// expected, whose remedy is a change to this plugin, and an absent
+	// key is neither a host misconfiguration nor a plugin bug but the
+	// absence of the input, with the PID route carrying the attach.
+	// Not observed on any measured host -- the recovery cell requires
+	// every arm to be zero on the recovered instance -- and published
+	// for the same reason errSandboxKeyWrongNSType is.
+	errSandboxKeyAbsent = errors.New("no sandbox key was published for this endpoint")
+
+	// errSandboxKeyNotPermitted: the key is non-empty and does not name
+	// an entry of one of sandboxNetnsDirs. A daemon with a non-default
+	// --exec-root looks like this, and so does a malformed key.
 	errSandboxKeyNotPermitted = errors.New("sandbox key is not an entry of a permitted directory")
 
 	// errSandboxKeyNotANamespace: the entry opened and is not a
@@ -87,6 +104,11 @@ var (
 // second caller, which is why no zero-argument wrapper exists to go
 // stale beside it.
 func openSandboxNetNSByKeyIn(dirs []string, sandboxKey string) (netns.NsHandle, error) {
+	if sandboxKey == "" {
+		return netns.None(), fmt.Errorf("%w (%w): this endpoint has no sandbox key, so the key route "+
+			"was never attempted and the container PID route carries the attach",
+			errNoSandboxKey, errSandboxKeyAbsent)
+	}
 	dir, name := splitSandboxKeyIn(dirs, sandboxKey)
 	if dir == "" {
 		return netns.None(), fmt.Errorf("%w (%w): %q is not an entry of %v",
@@ -193,8 +215,9 @@ func awaitSandboxNetNSByKeyIn(ctx context.Context, dirs []string, sandboxKey str
 // and this always increments exactly one counter — so
 //
 //	sandbox_key_entry_failures ==
-//	    sandbox_key_not_permitted + sandbox_key_not_a_namespace +
-//	    sandbox_key_wrong_ns_type + sandbox_key_unavailable
+//	    sandbox_key_absent + sandbox_key_not_permitted +
+//	    sandbox_key_not_a_namespace + sandbox_key_wrong_ns_type +
+//	    sandbox_key_unavailable
 //
 // holds for every plugin instance, and a reader who finds it broken has
 // found a bug rather than a rounding difference. A new refusal added
@@ -202,6 +225,8 @@ func awaitSandboxNetNSByKeyIn(ctx context.Context, dirs []string, sandboxKey str
 // where it is visible, instead of silently making the sum wrong.
 func (p *Plugin) countSandboxKeyRefusal(err error) {
 	switch {
+	case errors.Is(err, errSandboxKeyAbsent):
+		p.sandboxKeyAbsent.Add(1)
 	case errors.Is(err, errSandboxKeyNotPermitted):
 		p.sandboxKeyNotPermitted.Add(1)
 	case errors.Is(err, errSandboxKeyNotANamespace):

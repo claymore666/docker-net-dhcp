@@ -571,13 +571,25 @@ func TestConflictCheck_RestartInsideTheAsyncWindow(t *testing.T) {
 	// The pre-restart client is inside section 2.1 right now, and its
 	// frames carry the same source MAC, the same target address and the
 	// same shape as the resumed client's. Round 1 opened the window at
-	// the moment the restart was requested and accepted the first
+	// the moment the restart was REQUESTED and accepted the first
 	// qualifying frame after it; on run 33911095990 the single frame it
 	// rested on was stamped 0.30s BEFORE the plugin was confirmed back,
-	// so a build whose resumed client never re-probed passed. The
-	// window below therefore opens on an event only the resumed client
-	// can produce — its own INIT-REBOOT DHCPACK, in the DHCP server's
-	// log — and not on the test's own clock.
+	// so a build whose resumed client never re-probed passed.
+	//
+	// WHAT MAKES A FRAME THE RESUMED CLIENT'S is that it was captured
+	// after the plugin was confirmed back: cliReset does not return
+	// until then, and the old process — with its client — is gone by
+	// that point. That is the boundary the probe window below uses, and
+	// it is the reason the case holds.
+	//
+	// The DHCPACK count is a PRECONDITION, not that boundary. It says
+	// the resumed client completed RFC 2131 section 4.4.2's INIT-REBOOT
+	// exchange, so that an absence of probes is a statement about D23
+	// rather than about a recovery that never happened. It cannot be
+	// the boundary: dnsmasq's log does not carry the request kind, so a
+	// late ACK to the PRE-restart client (whose manager starts in a
+	// goroutine waiting on ContainerStart) counts here exactly like the
+	// resumed client's own.
 	acksBefore := ef.CountLogLines("DHCPACK", mac)
 	if acksBefore < 1 {
 		t.Fatalf("the server logged no DHCPACK for %s before the restart: either the endpoint "+
@@ -605,18 +617,21 @@ func TestConflictCheck_RestartInsideTheAsyncWindow(t *testing.T) {
 			"which is a recovery failure and makes the rest of this test unreadable", ip, now)
 	}
 
-	// Wait for the resumed client's own DHCPACK.
+	// Wait until the server has logged a DHCPACK it had not logged
+	// before the restart.
 	//
 	// The chain a resumed probe needs is: the plugin is enabled, it
 	// recovers the durable record, the Join manager sends RFC 2131
 	// section 4.4.2's INIT-REBOOT DHCPREQUEST, the server ACKs it, and
 	// proto.Machine runs section 2.1's check on that ACK — whatever the
-	// record said about the phase. So a new ACK for this MAC is the
-	// first outside evidence that the resumed client is the one on the
-	// wire. It cannot be the pre-restart client's: the count above was
-	// taken before PluginDisable, and cliReset does not return until
-	// the plugin is confirmed back, so the polling below starts after
-	// the old process is gone.
+	// record said about the phase. Waiting for it is what separates "no
+	// probe, because D23 is broken" from "no probe yet, because the
+	// resumed client has not got to its exchange".
+	//
+	// ackAt is when this LOOP SAW the count rise, not when the server
+	// stamped the line: the poll is 100ms and the log is read through
+	// the fixture. It is used for the deadline and the diagnostics
+	// below, never as the probe boundary.
 	var ackAt time.Time
 	probesAtAnchor := -1
 	deadline := time.Now().Add(conflictWait)
@@ -638,12 +653,19 @@ func TestConflictCheck_RestartInsideTheAsyncWindow(t *testing.T) {
 			"would say nothing about D23 — this is a recovery failure, not a conflict-"+
 			"detection one.", mac, conflictWait)
 	}
-	t.Logf("the resumed client's INIT-REBOOT DHCPACK was in the server's log %.2fs after the "+
-		"plugin came back; %d Probe(s) from %s had been captured up to that point",
+	t.Logf("a DHCPACK the server had not logged before the restart was VISIBLE to this test "+
+		"%.2fs after the plugin came back (detection, not the server's own stamp); %d Probe(s) "+
+		"from %s had been captured up to that point",
 		ackAt.Sub(backAt).Seconds(), probesAtAnchor, mac)
 
-	// The wire, after that ACK: the resumed client re-checks the
-	// address rather than assuming a check that never finished.
+	// The wire, after the plugin was back: the resumed client re-checks
+	// the address rather than assuming a check that never finished.
+	//
+	// backAt, not ackAt. Anchoring on the ACK would discard the resumed
+	// client's FIRST probe whenever it goes out between the server
+	// stamping that ACK and this test polling for it — the case would
+	// then be resting on a later retransmission and would say nothing
+	// if only one probe were ever sent.
 	//
 	// A section 2.1.1 Probe, not "a Probe or an Announcement": an
 	// Announcement is also what the kernel emits when an address is
@@ -656,7 +678,7 @@ func TestConflictCheck_RestartInsideTheAsyncWindow(t *testing.T) {
 	for {
 		after = nil
 		for _, f := range cap.ProbesFrom(mac) {
-			if f.At.After(ackAt) && f.TargetIP != nil && f.TargetIP.String() == ip {
+			if f.At.After(backAt) && f.TargetIP != nil && f.TargetIP.String() == ip {
 				after = append(after, f)
 			}
 		}
@@ -667,16 +689,16 @@ func TestConflictCheck_RestartInsideTheAsyncWindow(t *testing.T) {
 	}
 	if len(after) == 0 {
 		cap.Dump(func(s string) { t.Log(s) })
-		t.Errorf("no RFC 5227 section 2.1.1 ARP Probe for %s from %s after the resumed "+
-			"client's own DHCPACK (%d Probe(s) from this MAC in the whole capture, %d of them "+
-			"before the anchor).\n"+
+		t.Errorf("no RFC 5227 section 2.1.1 ARP Probe for %s from %s after the plugin came "+
+			"back (%d Probe(s) from this MAC in the whole capture, %d of them by the time the "+
+			"resumed client's DHCPACK was visible).\n"+
 			"The endpoint was handed an address while section 2.1 was still running and the "+
 			"restart lost the fact — the container keeps an address nothing ever finished "+
 			"checking (D23).", ip, mac, len(cap.ProbesFrom(mac)), probesAtAnchor)
 	} else {
-		t.Logf("MEASURED: %d section 2.1.1 Probe(s) for %s from %s after the resumed client's "+
-			"DHCPACK, first at +%.2fs: %s",
-			len(after), ip, mac, after[0].At.Sub(ackAt).Seconds(), after[0])
+		t.Logf("MEASURED: %d section 2.1.1 Probe(s) for %s from %s after the plugin came back, "+
+			"first at +%.2fs: %s",
+			len(after), ip, mac, after[0].At.Sub(backAt).Seconds(), after[0])
 	}
 }
 

@@ -23,6 +23,7 @@ import (
 // checks one arm rose passes on a build where two did.
 type armCounts struct {
 	failures      int32
+	absent        int32
 	notPermitted  int32
 	notANamespace int32
 	wrongType     int32
@@ -32,6 +33,7 @@ type armCounts struct {
 func readArms(p *Plugin) armCounts {
 	return armCounts{
 		failures:      p.sandboxKeyEntryFailures.Load(),
+		absent:        p.sandboxKeyAbsent.Load(),
 		notPermitted:  p.sandboxKeyNotPermitted.Load(),
 		notANamespace: p.sandboxKeyNotANamespace.Load(),
 		wrongType:     p.sandboxKeyWrongNSType.Load(),
@@ -40,7 +42,7 @@ func readArms(p *Plugin) armCounts {
 }
 
 func (a armCounts) sum() int32 {
-	return a.notPermitted + a.notANamespace + a.wrongType + a.unavailable
+	return a.absent + a.notPermitted + a.notANamespace + a.wrongType + a.unavailable
 }
 
 // TestSandboxKeyRefusal_EachArmIsCountedSeparately is the unit half of
@@ -67,6 +69,18 @@ func TestSandboxKeyRefusal_EachArmIsCountedSeparately(t *testing.T) {
 		entry func(t *testing.T, dir string) string
 		want  armCounts
 	}{
+		{
+			// The empty key is the recovery path's shape: post-restart
+			// adoption builds a manager for a live container with no
+			// Join behind it, so there is no key. It counted as
+			// not_permitted until 2.0-alpha.1, which made every plugin
+			// restart read as a host running a non-default --exec-root
+			// -- the one arm whose documented remedy is a change to
+			// this plugin.
+			name:  "no sandbox key at all",
+			entry: func(t *testing.T, dir string) string { return "" },
+			want:  armCounts{failures: 1, absent: 1},
+		},
 		{
 			name:  "a key outside the permitted directories",
 			entry: func(t *testing.T, dir string) string { return "/tmp/not-a-sandbox-key" },
@@ -124,7 +138,7 @@ func TestSandboxKeyRefusal_EachArmIsCountedSeparately(t *testing.T) {
 			got := readArms(p)
 			if got != tc.want {
 				t.Errorf("arms = %+v, want %+v.\nAn arm that fires as well as the right one is as "+
-					"wrong as one that does not fire: the four are an account of "+
+					"wrong as one that does not fire: the five are an account of "+
 					"sandbox_key_entry_failures, and a cell reads them as one.", got, tc.want)
 			}
 			// Stated separately from the comparison above so a future
@@ -154,7 +168,7 @@ func TestSandboxKeyRefusal_ClassificationIsTotal(t *testing.T) {
 			"an unclassified refusal must land in the residual arm, where it is visible, rather "+
 			"than nowhere", got.unavailable)
 	}
-	if got.notPermitted+got.notANamespace+got.wrongType != 0 {
+	if got.absent+got.notPermitted+got.notANamespace+got.wrongType != 0 {
 		t.Errorf("a refusal carrying no arm sentinel was attributed to a named arm: %+v", got)
 	}
 }
@@ -354,6 +368,7 @@ func TestStart_RecoveryTakesTheKeyFromTheInspect(t *testing.T) {
 // rather than agreeing with itself.
 func TestHealthSnapshot_CarriesTheRefusalArms(t *testing.T) {
 	p := &Plugin{}
+	p.sandboxKeyAbsent.Store(2)
 	p.sandboxKeyNotPermitted.Store(3)
 	p.sandboxKeyNotANamespace.Store(5)
 	p.sandboxKeyWrongNSType.Store(7)
@@ -365,6 +380,7 @@ func TestHealthSnapshot_CarriesTheRefusalArms(t *testing.T) {
 		got  int32
 		want int32
 	}{
+		{"sandbox_key_absent", h.SandboxKeyAbsent, 2},
 		{"sandbox_key_not_permitted", h.SandboxKeyNotPermitted, 3},
 		{"sandbox_key_not_a_namespace", h.SandboxKeyNotANamespace, 5},
 		{"sandbox_key_wrong_ns_type", h.SandboxKeyWrongNSType, 7},

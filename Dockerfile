@@ -17,6 +17,21 @@ FROM golang:1.27.0-alpine@sha256:4c9fe60190a2a3350ddc51de80d0224b8a6698d12bdfc99
 # a cover-instrumented binary.
 ARG COVER_FLAGS=
 
+# Build identity, threaded into the binary through -ldflags and read back
+# out of /Plugin.Health and net_dhcp_build_info. The defaults are the
+# words the health document must show when nothing was passed -- never an
+# empty string, because an empty label reads as "nothing is wrong" rather
+# than "this build does not know". release.yml passes the tag; the
+# Makefile passes the short revision; the integration harness passes the
+# SHA it builds.
+#
+# The library revision is deliberately NOT an argument: it is a property
+# of the tree being built (internal/dhcp-golib/SOURCE, D21), so a caller
+# cannot get it wrong and a stale image cannot claim a library it does
+# not carry.
+ARG VERSION=dev
+ARG COMMIT=unknown
+
 WORKDIR /usr/local/src/docker-net-dhcp
 COPY go.* ./
 # The replaced module's own go.mod must exist before `go mod download`
@@ -44,7 +59,11 @@ COPY internal/ ./internal/
 # -cover builds never reuse each other's objects (no stale-digest hazard).
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    mkdir bin/ && go build $COVER_FLAGS -o bin/ ./cmd/...
+    mkdir bin/ && \
+    LIBRARY="$(cat internal/dhcp-golib/SOURCE 2>/dev/null || echo unknown)" && \
+    go build $COVER_FLAGS \
+      -ldflags "-X github.com/claymore666/docker-net-dhcp/pkg/buildinfo.Version=${VERSION} -X github.com/claymore666/docker-net-dhcp/pkg/buildinfo.Commit=${COMMIT} -X github.com/claymore666/docker-net-dhcp/pkg/buildinfo.Library=${LIBRARY}" \
+      -o bin/ ./cmd/...
 
 
 FROM alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b

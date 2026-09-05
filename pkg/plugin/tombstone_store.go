@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -62,7 +61,7 @@ type tombstoneStore struct {
 	// It lives here rather than on Plugin so the zero value stays usable
 	// -- tests construct &Plugin{} directly, and a counter that needed a
 	// constructor would turn those into nil-pointer panics.
-	quarantines atomic.Int32
+	quarantines stampedCounter
 }
 
 // add appends a tombstone, pruning expired entries in the same write.

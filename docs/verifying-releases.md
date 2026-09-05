@@ -124,10 +124,17 @@ gh attestation verify net-dhcp-plugin-VERSION-linux-amd64.tar.gz \
 ## Rebuilding the binaries yourself
 
 A signature tells you *who* built an artifact. Rebuilding tells you
-*what* they built. The build here is reproducible — the same commit
-produces byte-identical binaries on any machine — so you can check that
-a published release contains the code in this repository, without
-trusting the release workflow at all.
+*what* they built. The build here is reproducible — the same commit,
+built for the same tag, produces byte-identical binaries on any machine
+— so you can check that a published release contains the code in this
+repository, without trusting the release workflow at all.
+
+Since 2.0 the binary carries its own build identity (`version`, `commit`
+and the DHCP library revision, all three readable from `/Plugin.Health`
+and from the `net_dhcp_build_info` metric). `version` and `commit` reach
+it as build arguments, so the rebuild has to pass the same two values —
+step 2 below does. The library revision is read out of the source tree
+and needs no argument.
 
 You need Docker with `buildx`, and the release tarball you already
 downloaded above.
@@ -142,8 +149,15 @@ git checkout VERSION
 #    the Dockerfile mounts BuildKit caches for Go's module and build
 #    caches, and those survive it. A fresh docker-container builder has
 #    neither.
+#
+#    VERSION is the tag you checked out; COMMIT is the FULL revision of
+#    it, never the abbreviated one — git shortens to a length that
+#    depends on the size of your clone, and a different string is a
+#    different binary.
 docker buildx create --name repro --driver docker-container
 docker buildx build --builder repro --no-cache --target builder \
+  --build-arg VERSION=VERSION \
+  --build-arg COMMIT="$(git rev-parse HEAD)" \
   --output type=local,dest=out .
 docker buildx rm repro
 

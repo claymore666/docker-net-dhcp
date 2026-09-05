@@ -51,13 +51,15 @@ mkdoc() {
         printf '## At a glance\n\n'
         printf '**[Health counters](#pluginhealth)** — `/Plugin.Health` on the socket. %s flip `healthy` to `false`:' "$word"
         for n in $summary; do printf ' `%s`,' "$n"; done
-        printf '\n\n## Counters\n\n| field | healthy-affecting | meaning |\n| --- | --- | --- |\n'
-        printf '| `healthy` | — | `false` when'
+        printf '\n\n## Counters\n\n| field | healthy-affecting | check | meaning |\n| --- | --- | --- | --- |\n'
+        printf '| `healthy` | — | — | `false` when'
         for n in $row; do printf ' `%s`,' "$n"; done
-        printf ' is non-zero. Those %s, and only those, are the ones marked **yes** in this column. |\n' "$(printf '%s' "$rword" | tr '[:upper:]' '[:lower:]')"
-        for n in $yes; do printf '| `%s` | yes | a fault. |\n' "$n"; done
-        printf '| `leases_renewed` | no | not a fault. |\n'
-        printf '| `pending_hints` | no | not a fault. |\n'
+        printf ' is non-zero. Those %s, and only those, are the ones marked **yes** in the healthy-affecting column. |\n' "$(printf '%s' "$rword" | tr '[:upper:]' '[:lower:]')"
+        for n in $yes; do printf '| `%s` | yes | %s | a fault. |\n' "$n" "${DOC_YES_CLASS:-fail}"; done
+        for n in ${DOC_WARN_LIST-lease_changed}; do printf '| `%s` | no | warn | watch it. |\n' "$n"; done
+        for n in ${DOC_FAIL_EXTRA-}; do printf '| `%s` | no | fail | a fault. |\n' "$n"; done
+        printf '| `leases_renewed` | no | — | not a fault. |\n'
+        printf '| `pending_hints` | no | — | not a fault. |\n'
         printf '\n## Troubleshooting\n\n| symptom | likely cause | fix |\n| --- | --- | --- |\n'
         printf '| `healthy: false` on `/Plugin.Health` | Exactly %s counters flip it:' "$(printf '%s' "$tword" | tr '[:upper:]' '[:lower:]')"
         for n in $trouble; do printf ' `%s`,' "$n"; done
@@ -92,6 +94,9 @@ mkmetrics_opposed() {
         for n in leases_renewed pending_hints; do
             printf '\t{name: "%s", counter: true, help: "not a fault.", field: "%s"},\n' "$n" "$n"
         done
+        for n in ${METRICS_WARN_LIST-lease_changed}; do
+            printf '\t{name: "%s", counter: true, warn: true, unit: "renewals", action: "watch it.", help: "watch it.", field: "%s"},\n' "$n" "$n"
+        done
         for t in "$@"; do
             nm="${t%%=*}"; hy="${t#*=}"; hl="${hy#*=}"; hy="${hy%%=*}"
             if [ "$hy" = "yes" ]; then
@@ -120,6 +125,9 @@ mkmetrics() {
         done
         for n in leases_renewed pending_hints; do
             printf '\t{name: "%s", counter: true, help: "not a fault.", field: "%s"},\n' "$n" "$n"
+        done
+        for n in ${METRICS_WARN_LIST-lease_changed}; do
+            printf '\t{name: "%s", counter: true, warn: true, unit: "renewals", action: "watch it.", help: "watch it.", field: "%s"},\n' "$n" "$n"
         done
         for n in $extra; do
             printf '\t{name: "%s", counter: true, healthy: true, help: "not a fault. Healthy-affecting.", field: "%s"},\n' "$n" "$n"
@@ -484,6 +492,84 @@ out=$(bash "$CHECK" "$DIR/norow2.md" "$DIR/ok.go" "$M4" "$F4" 2>&1); rc=$?
 
 out=$(bash "$CHECK" "$DIR/does-not-exist.md" "$DIR/ok.go" "$M4" "$F4" 2>&1); rc=$?
 [ $rc -eq 2 ] && ok "a missing doc exits 2" || no "a missing doc returned $rc"
+
+# --- the check classification column (O-1) -----------------------------
+# The column an operator reads and the metricDef declaration the health
+# document is BUILT from are one fact in two places, which is the shape
+# this whole gate exists for. Each case moves exactly one side.
+
+# A fail check downgraded to warn in the doc. This is the mutant the
+# brief names: the document would still list the counter, still describe
+# it, and quietly tell an operator that the thing that flips `healthy`
+# is only worth watching.
+DOC_YES_CLASS=warn mkdoc "$DIR/cls-down.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/cls-down.go" 4
+out=$(bash "$CHECK" "$DIR/cls-down.md" "$DIR/cls-down.go" "$M4" "$F4" 2>&1); rc=$?
+[ $rc -eq 1 ] && ok "a fail check downgraded to warn in the doc fails" \
+               || no "a downgraded classification returned $rc (: $out)"
+case "$out" in *"not declared warn: true"*) ok "the downgrade names the direction of the disagreement" ;;
+  *) no "the downgrade failure does not say which side is which: $out" ;; esac
+
+# The other direction: the doc classifies a counter warn that the code
+# declares nothing about. An operator is promised a check that will
+# never appear in the document.
+DOC_WARN_LIST="lease_changed parent_link_wait_timeouts" \
+    mkdoc "$DIR/cls-extra.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/cls-extra.go" 4
+out=$(bash "$CHECK" "$DIR/cls-extra.md" "$DIR/cls-extra.go" "$M4" "$F4" 2>&1); rc=$?
+[ $rc -eq 1 ] && ok "a warn row the code does not declare fails" \
+               || no "an undeclared warn row returned $rc (: $out)"
+case "$out" in *parent_link_wait_timeouts*) ok "the failure names the undeclared warn counter" ;;
+  *) no "the failure does not name it: $out" ;; esac
+
+# And the same drift from the code side: a counter declared warn: true
+# and absent from the column, which is a check that turns up in the
+# document with nothing in the reference explaining it.
+M4W="$DIR/rail4warn.metrics.go"
+METRICS_WARN_LIST="lease_changed ledger_write_failures" mkmetrics "$M4W" "$FOUR"
+mkdoc "$DIR/cls-missing.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/cls-missing.go" 4
+out=$(bash "$CHECK" "$DIR/cls-missing.md" "$DIR/cls-missing.go" "$M4W" "$F4" 2>&1); rc=$?
+[ $rc -eq 1 ] && ok "a warn declaration missing from the column fails" \
+               || no "an undocumented warn declaration returned $rc (: $out)"
+
+# Drive the absence on each side: a column with no warn row at all, and
+# a metricDefs with no warn declaration at all, are both "this check
+# read nothing" rather than "everything agrees". A gate that cannot see
+# must not report clean.
+DOC_WARN_LIST="" mkdoc "$DIR/cls-none.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/cls-none.go" 4
+out=$(bash "$CHECK" "$DIR/cls-none.md" "$DIR/cls-none.go" "$M4" "$F4" 2>&1); rc=$?
+[ $rc -eq 2 ] && ok "a doc with no warn classification at all exits 2" \
+               || no "an empty check column returned $rc (: $out)"
+
+M4N="$DIR/rail4nowarn.metrics.go"
+METRICS_WARN_LIST="" mkmetrics "$M4N" "$FOUR"
+out=$(bash "$CHECK" "$DIR/ok.md" "$DIR/ok.go" "$M4N" "$F4" 2>&1); rc=$?
+[ $rc -eq 2 ] && ok "metricDefs with no warn declaration at all exits 2" \
+               || no "an empty warn declaration set returned $rc (: $out)"
+
+# The fail half, moved ALONE. Every case above that disagrees about a
+# fail row also disagrees about a warn row, so the fail comparison could
+# be deleted and this file would stay green -- MEASURED 2026-09-05 as a
+# surviving mutant. Here the doc classifies a counter `fail` in the
+# check column while its healthy-affecting column still says no, which
+# is a row section 4 has no quarrel with and only the fail comparison
+# can see.
+DOC_FAIL_EXTRA="leases_renewed" \
+    mkdoc "$DIR/cls-failextra.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/cls-failextra.go" 4
+out=$(bash "$CHECK" "$DIR/cls-failextra.md" "$DIR/cls-failextra.go" "$M4" "$F4" 2>&1); rc=$?
+[ $rc -eq 1 ] && ok "a fail row the code does not declare healthy fails" \
+               || no "an undeclared fail row returned $rc (: $out)"
+case "$out" in *"not declared healthy: true"*) ok "the fail-half failure names the direction" ;;
+  *) no "the fail-half failure does not say which side is which: $out" ;; esac
+
+# Preservation control: a SIXTH counter, classified warn on both sides,
+# passes. Without this the cases above are satisfied by a gate that
+# rejects every warn row it sees.
+DOC_WARN_LIST="lease_changed acd_arp_send_failures" \
+    mkdoc "$DIR/cls-ok.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/cls-ok.go" 4
+M4B="$DIR/rail4both.metrics.go"
+METRICS_WARN_LIST="lease_changed acd_arp_send_failures" mkmetrics "$M4B" "$FOUR"
+out=$(bash "$CHECK" "$DIR/cls-ok.md" "$DIR/cls-ok.go" "$M4B" "$F4" 2>&1); rc=$?
+[ $rc -eq 0 ] && ok "a new warn check agreed on both sides passes" \
+               || no "an agreeing warn classification failed (rc=$rc: $out)"
 
 # --- the repository itself ---------------------------------------------
 out=$(bash "$CHECK" "$HERE/../docs/reference.md" "$HERE/../pkg/plugin/endpoints.go" \
