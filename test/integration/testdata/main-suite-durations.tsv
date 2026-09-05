@@ -87,6 +87,56 @@
 # Refresh all FOUR from the first green Integration run that produces
 # suite logs on this branch, by the recipe at the foot of this header.
 #
+# FOUR ROWS ADDED AND ONE REWEIGHTED FOR #911. Four are now MEASURED
+# from run 33994533077 (main-1-suite, 2026-09-05, the first run that
+# executed them); the fifth is INFERRED and says why.
+#
+# What dominates these is not the container work every sibling row
+# shares -- there are no containers here at all -- but two waits whose
+# lengths are known: a segment that MUST advertise settles in about
+# 1.0s (dnsmasq's first advertisement, MEASURED 0.950-0.983s over 12
+# bring-ups, 2026-09-05) on top of roughly 0.3s of bridge/process setup
+# and teardown; a segment that must NOT advertise costs the derived
+# absence window, V6NoRAWindow() = 10s, and one that was asked to
+# advertise and did not costs raBudget = 5s.
+#
+#   TestV6Fixture_ModesComeUpAsRequested                    15.79
+#     MEASURED. Five modes; the no-RA mode spends the derived 10s
+#     window and the other four settle on their first advertisement.
+#   TestV6Fixture_AwaitRAAfterAndItsNegative                38.65
+#     MEASURED. Four live segments, three of them spending an absence
+#     window.
+#   TestV6RACapture_SeesTheAdvertisementOnTheBridgeAndNotOnAQuietLink
+#                                                            1.38
+#     MEASURED. One managed segment plus a dummy link; no waits beyond
+#     the fixture's own.
+#   TestV6Fixture_AssertExchangeRefusesASegmentNoClientEverUsed
+#                                                            2.47
+#     MEASURED.
+#   TestV6Fixture_RefusesASegmentInAnotherModesShape        56.00
+#     INFERRED, and the one row here that is. Run 33994533077 measured
+#     it at 76.64s and FAILED it: the evidence loop stopped on the
+#     first disagreement, so several cells returned in 0.3-0.4s with an
+#     observation too incomplete to name the mode they had found, and
+#     several others spent a full budget they did not need. The
+#     stopping rule is now V6EvidenceSettled, which changes the cost of
+#     nine of the 23 cells, so the measured 76.64 is a number for code
+#     that no longer exists. The figure below is that run's own
+#     per-cell timings with those nine replaced by the measured cost of
+#     the wait they now take:
+#       managed        1.33 + 1.35 + 1.35 + 5.35            =  9.4
+#       stateless      1.35 + 1.33 + 1.37 + 5.00 + 1.35     = 10.4
+#       slaac          1.35 + 1.39 + 1.39 + 5.00 + 1.35     = 10.5
+#       nora           1.36 + 1.40 + 1.40 + 10.43 + 1.39    = 16.0
+#       managed-silent 1.35 + 1.35 + 5.35 + 1.36            =  9.4
+#     23 cells, not 25: the two the signature table cannot separate are
+#     exempt. Refresh from the next green run.
+#
+# These five are the largest single addition this file has taken and the
+# drift matrix alone outweighs most measured rows in it, so the one that
+# is still inferred is flagged for the next refresh rather than left to
+# settle quietly, by the recipe at the foot of this header.
+#
 # FIVE ROWS ADDED FOR THE #725 / #691 PRIVILEGE CELLS, MEASURED AND
 # SCALED (sec/privilege-set). Integration run 33927195482, one sample
 # each. That run was slow relative to the 22-run medians this file is
@@ -301,7 +351,11 @@ TestStaticRoutes_BridgeCopiesToContainer	7.29
 TestStaticRoutes_MacvlanCopiesToContainer	6.94
 TestStaticRoutes_MacvlanSkipRoutesOpt	7.55
 TestTombstoneRestart_PreservesMACAndIP	11.28
-TestV6Fixture_ModesComeUpAsRequested	9.15
+TestV6Fixture_AssertExchangeRefusesASegmentNoClientEverUsed	2.47
+TestV6Fixture_AwaitRAAfterAndItsNegative	38.65
+TestV6Fixture_ModesComeUpAsRequested	15.79
+TestV6Fixture_RefusesASegmentInAnotherModesShape	56.00
+TestV6RACapture_SeesTheAdvertisementOnTheBridgeAndNotOnAQuietLink	1.38
 TestVendorClass_DefaultUsesUntaggedGateway	7.33
 TestVendorClass_NonMatchingValueUsesDefaultGateway	7.13
 TestVendorClass_OverrideRoutesViaTaggedGateway	6.91
