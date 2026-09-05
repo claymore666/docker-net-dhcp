@@ -107,7 +107,7 @@ property of Docker, not of this manifest.
 
 <!-- manifest-delta: begin baseline=v1.9.0 -->
 
-| field | v1.9.0 | v2.0.0-alpha.1 | prompted |
+| field | v1.9.0 | v2.0.0 | prompted |
 | --- | --- | --- | --- |
 | `linux.capabilities` | `CAP_NET_ADMIN`, `CAP_SYS_ADMIN`, `CAP_SYS_PTRACE` | `CAP_NET_ADMIN`, `CAP_NET_RAW`, `CAP_SYS_ADMIN`, `CAP_SYS_PTRACE` | **yes** |
 | `network.type` | `host` | `host` | no change |
