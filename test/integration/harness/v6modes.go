@@ -404,7 +404,7 @@ func (f *V6Fixture) start(rangeArgs []string) {
 // saying why it could not be read. It is never a silent empty value:
 // the whole point is that the version is recorded rather than assumed.
 func dnsmasqVersion() string {
-	out, err := exec.Command("/usr/sbin/dnsmasq", "--version").Output()
+	out, err := withCLocale(exec.Command("/usr/sbin/dnsmasq", "--version")).Output()
 	if err != nil {
 		return fmt.Sprintf("(could not read dnsmasq --version: %v)", err)
 	}
@@ -451,13 +451,25 @@ func (f *V6Fixture) evidence() V6Evidence {
 			RALogged:   strings.Contains(log, raLogToken),
 			Frames:     f.raCap.FramesAfter(f.startedAt),
 		}
-		// The wait exists only to tell "no advertisement yet" from "no
-		// advertisement ever". Once one has been captured that question
-		// is answered and every remaining disagreement is decidable, so
-		// spending the rest of the budget would only collect the same
-		// frame again -- and the drift matrix starts twenty-five of
-		// these.
-		if want.RA && ev.Observed().RA {
+		// Time can only turn an ABSENCE into a presence, never the
+		// reverse, so the budget is spent only while the outstanding
+		// disagreement is something that has not arrived yet. A
+		// presence the mode forbids is decided the moment it is seen,
+		// and an advertisement the mode expects settles its own flags
+		// as soon as one frame is in hand -- the next frame is the
+		// same frame. The drift matrix starts twenty-three segments,
+		// and without this it would spend a full budget on each.
+		//
+		// The pool clause is not folded into the first: dnsmasq writes
+		// its range lines at configuration time, before any
+		// advertisement, but that is its behaviour rather than a
+		// guarantee, so a mode that WANTS the pool line waits for it
+		// instead of concluding from the advertisement alone.
+		got := ev.Observed()
+		if got.RA && (got.Pool || !want.Pool) {
+			return ev
+		}
+		if got.Pool && !want.Pool {
 			return ev
 		}
 		if time.Now().After(deadline) {
