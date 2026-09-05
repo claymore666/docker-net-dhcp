@@ -146,11 +146,12 @@
 #   TestConflictCheck_SquatterAfterTheFact            37.61      42.00
 #   TestConflictCheck_OffSendsNoProbe                 33.75      37.00
 #   TestConflictCheck_WaitAcquisitionIsTimed           9.39      14.00
-#   TestConflictCheck_RestartInsideTheAsyncWindow      4.64      15.00
+#   TestConflictCheck_RestartInsideTheAsyncWindow      4.64      15.00  (now 6.24, below)
 #   TestConflictCheck_BridgeModeDoesNotSelfReport     11.52      15.00
 #
 # The two that moved most say something about the mechanism rather than
-# about the estimate. The restart case costs 4.64s, not 15.0: async
+# about the estimate. The restart case cost 4.64s at that measurement,
+# not 15.0 (it is 6.24 on this branch -- see below): async
 # hands the address back before section 2.1 finishes, so the restart
 # lands inside the window by construction and the test never waits out
 # a probe window at all -- the inferred figure had priced a clean
@@ -161,14 +162,31 @@
 # further: its 30s quiet window IS the assertion.
 # Refresh again from a several-run median once this branch has one.
 #
-# TWO ROWS ARE INFERRED, AND SAY SO (2.0-alpha.1, O-3/O-4).
-# TestHealthDocument_EndpointEntryMatchesTheContainer is priced at
-# TestHealthCounters_ObtainedAndReleased's measured 8.00: same shape --
-# one macvlan network, one container, one health read -- with one
-# `docker exec` on top. TestHealthDocument_BuildInfoIsWhatTheLaneBuilt
-# creates nothing and reads two endpoints, so it is priced at the
-# cheapest measured row. Both are refreshed from the first green run of
-# this branch, like the six above them.
+# THE O-3/O-4 ROWS, REFRESHED FROM THIS BRANCH'S RUN 33938855928.
+# One of the two is now measured and one is still not, and which is
+# which is the point of this paragraph.
+#                                               measured   was inferred
+#   TestHealthDocument_BuildInfoIsWhatTheLaneBuilt     0.01       1.00
+#   TestConflictCheck_RestartInsideTheAsyncWindow      6.24       4.64
+#
+# The build-identity cell creates nothing at all -- it reads one
+# document and one exposition -- so 0.01 rather than the cheapest
+# measured row it was priced at. The restart case moved the other way,
+# 4.64 to 6.24, and the row it replaces was itself measured: this
+# branch's version waits on `backAt` rather than `ackAt`, which is
+# later, so the case now spans the plugin coming back rather than the
+# ACK before it. That is the M6b (d) refresh, and the reason the figure
+# rose is the same edit as M6b (c).
+#
+# TestHealthDocument_EndpointEntryMatchesTheContainer IS STILL INFERRED,
+# at 13.00. The only run of it FAILED (it read the document in the
+# window between the Join returning and the renewal client binding, and
+# the cell now waits for `bound`), so its 12.45s is the cost of a run
+# that stopped at the first assertion -- an upper bound on nothing and a
+# lower bound on the real figure. 13.00 is that 12.45 plus the dozen
+# cheap field assertions the failed run never reached. Refreshed from
+# the first run in which the cell PASSES; a `--- FAIL:` duration is not
+# a measurement of a passing test and is not recorded as one here.
 #
 # ONE ROW IS A SKIP COST, NOT A RUN COST.
 # TestInterfaceName_MultiNetworkDeterministic skipped in all 22 samples —
@@ -219,7 +237,7 @@ TestConcurrency_DistinctLeases	27.35
 TestConcurrentRenew_SameInterfaceNameBothRenew	32.15
 TestConflictCheck_BridgeModeDoesNotSelfReport	11.52
 TestConflictCheck_OffSendsNoProbe	33.75
-TestConflictCheck_RestartInsideTheAsyncWindow	4.64
+TestConflictCheck_RestartInsideTheAsyncWindow	6.24
 TestConflictCheck_SquattedOfferIsDeclined	36.64
 TestConflictCheck_SquatterAfterTheFact	37.61
 TestConflictCheck_WaitAcquisitionIsTimed	9.39
@@ -236,8 +254,8 @@ TestExtraOptions_SearchListInResolvConf	8.45
 TestExtraOptions_WPADAndTimezoneLogged	7.28
 TestFQDN_RegistersInDNS	8.36
 TestHealthCounters_ObtainedAndReleased	8.00
-TestHealthDocument_BuildInfoIsWhatTheLaneBuilt	1.00
-TestHealthDocument_EndpointEntryMatchesTheContainer	8.00
+TestHealthDocument_BuildInfoIsWhatTheLaneBuilt	0.01
+TestHealthDocument_EndpointEntryMatchesTheContainer	13.00
 TestIPv6_RefusedAtCreateWithTheMilestoneNamed	0.10
 TestIPv6_TheV4PathIsUnaffectedByTheRefusal	5.00
 TestInterfaceName_InvalidRejected	0.41

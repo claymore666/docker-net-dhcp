@@ -851,6 +851,33 @@ func (p *Plugin) apiHealth(w http.ResponseWriter, r *http.Request) {
 	util.JSONResponse(w, p.healthSnapshot(), http.StatusOK)
 }
 
+// checkStamps is the movement time of every counter a check is declared
+// on, keyed by the json tag the check is keyed on.
+//
+// A METHOD RATHER THAN A LITERAL INSIDE healthSnapshot, so that this map
+// can be read on its own. A check whose field is missing here renders
+// with the time of the reading -- a fresh-looking timestamp on a latched
+// fault, saying the opposite of what happened -- and a stamp taken from
+// the neighbouring counter is the same lie with a plausible value. Both
+// are invisible in a document; TestHealthChecks_EveryCheckHasAStamp
+// drives one counter at a time and reads this map, which is the only
+// place either is observable at all.
+func (p *Plugin) checkStamps() map[string]time.Time {
+	return map[string]time.Time{
+		"recovery_failed":           p.recoveryFailed.LastMoved(),
+		"join_start_failures":       p.joinStartFailures.LastMoved(),
+		"tombstone_write_failures":  p.tombstoneWriteFailures.LastMoved(),
+		"tombstone_quarantines":     p.tombstones.quarantines.LastMoved(),
+		"address_conflicts":         p.addressConflicts.LastMoved(),
+		"lease_changed":             laterOf(p.leaseChangedV4.LastMoved(), p.leaseChangedV6.LastMoved()),
+		"acd_arp_send_failures":     p.acdARPSendFailures.LastMoved(),
+		"acd_resumed_unchecked":     p.acdResumedUnchecked.LastMoved(),
+		"restart_link_up_timeouts":  p.restartLinkUpTimeouts.LastMoved(),
+		"parent_link_wait_timeouts": p.parentLinkWaitTimeouts.LastMoved(),
+		"ledger_write_failures":     p.ledgerWriteFailures.LastMoved(),
+	}
+}
+
 // healthSnapshot builds one consistent view of the plugin's counters.
 //
 // It exists so that /Plugin.Health and /metrics cannot disagree (#651).
@@ -1006,26 +1033,7 @@ func (p *Plugin) healthSnapshot() HealthResponse {
 	// The checks are built from the response ABOVE, so the value a
 	// check reports and the value the counter field reports are the
 	// same read: they cannot disagree even under a concurrent bump.
-	//
-	// The stamps are the movement times of the counters the checks are
-	// declared on. Every entry here is one; a check whose field is
-	// missing from this map would render as though its counter had
-	// never moved, which is what TestHealthChecks_EveryCheckHasAStamp
-	// refuses.
-	stamps := map[string]time.Time{
-		"recovery_failed":           p.recoveryFailed.LastMoved(),
-		"join_start_failures":       p.joinStartFailures.LastMoved(),
-		"tombstone_write_failures":  p.tombstoneWriteFailures.LastMoved(),
-		"tombstone_quarantines":     p.tombstones.quarantines.LastMoved(),
-		"address_conflicts":         p.addressConflicts.LastMoved(),
-		"lease_changed":             laterOf(p.leaseChangedV4.LastMoved(), p.leaseChangedV6.LastMoved()),
-		"acd_arp_send_failures":     p.acdARPSendFailures.LastMoved(),
-		"acd_resumed_unchecked":     p.acdResumedUnchecked.LastMoved(),
-		"restart_link_up_timeouts":  p.restartLinkUpTimeouts.LastMoved(),
-		"parent_link_wait_timeouts": p.parentLinkWaitTimeouts.LastMoved(),
-		"ledger_write_failures":     p.ledgerWriteFailures.LastMoved(),
-	}
-	h.Status, h.Checks = healthChecks(h, stamps, now)
+	h.Status, h.Checks = healthChecks(h, p.checkStamps(), now)
 	h.Endpoints = p.endpointViews()
 	return h
 }

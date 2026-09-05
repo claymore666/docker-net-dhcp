@@ -58,10 +58,29 @@ func TestHealthDocument_EndpointEntryMatchesTheContainer(t *testing.T) {
 
 	// One reading, not a window: nothing here is a delta. The fields
 	// below are the document's account of a state that exists right
-	// now, and WaitPluginHealth is the suite's sanctioned single read
-	// (see counterwindow_guard_test.go) precisely because it makes no
-	// claim about counters.
-	h := harness.WaitPluginHealth(t, ctx, cli, 15*time.Second)
+	// now, and the WaitPluginHealth family is the suite's sanctioned
+	// single read (see counterwindow_guard_test.go) precisely because
+	// it makes no claim about counters.
+	//
+	// The reading has a precondition, and it is on a DIFFERENT field
+	// from any asserted below. `container_start` returning does not
+	// mean the renewal client has bound: the manager is registered when
+	// the Join returns and the client binds after it, so the document
+	// honestly reports `acquiring` with no address for a moment, and
+	// one reading landed there in CI. Waiting on lease_state is a
+	// precondition; waiting until the address matched would make this a
+	// report that the plugin eventually said the right thing.
+	wantNet := shortDockerID(netID)
+	h := harness.WaitPluginHealthFor(t, ctx, cli, 30*time.Second,
+		"the endpoint on network "+wantNet+" to report lease_state=bound",
+		func(h *harness.HealthResponse) bool {
+			for _, e := range h.Endpoints {
+				if e.Network == wantNet {
+					return e.LeaseState == "bound"
+				}
+			}
+			return false
+		})
 	if h.Endpoints == nil {
 		t.Fatal("this plugin publishes no `endpoints` array, so the per-endpoint document " +
 			"cannot be judged — and reading its absence as an empty array is how a plugin " +
@@ -73,7 +92,6 @@ func TestHealthDocument_EndpointEntryMatchesTheContainer(t *testing.T) {
 			len(h.Endpoints), h.ActiveEndpoints)
 	}
 
-	wantNet := shortDockerID(netID)
 	var e *harness.EndpointHealth
 	for i := range h.Endpoints {
 		if h.Endpoints[i].Network == wantNet {
@@ -120,10 +138,9 @@ func TestHealthDocument_EndpointEntryMatchesTheContainer(t *testing.T) {
 	if e.Mode != "macvlan" {
 		t.Errorf("`endpoints` says mode=%q for a network created with mode=macvlan", e.Mode)
 	}
-	if e.LeaseState != "bound" {
-		t.Errorf("`endpoints` says lease_state=%q for an endpoint whose container is up with %s; "+
-			"a bound client is the only state that carries an address", e.LeaseState, ipv4)
-	}
+	// lease_state is deliberately NOT re-asserted: it is the
+	// precondition the read above waited on, and a check that cannot
+	// fail reads on the page exactly like one that holds.
 	switch e.ConflictCheck {
 	case "wait", "async", "off":
 	default:

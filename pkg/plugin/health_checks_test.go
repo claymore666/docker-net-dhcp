@@ -307,3 +307,64 @@ func TestHealthChecks_InformationalCountersAreNotChecks(t *testing.T) {
 		t.Errorf("the document has %d checks, the declaration has %d", len(h.Checks), len(declaredChecks()))
 	}
 }
+
+// Every check's stamp exists, belongs to that check, and belongs to no
+// other.
+//
+// WHAT THIS ADDS OVER TestHealthChecks_TimeIsWhenTheCounterMoved, which
+// already brackets each check's rendered `time` around its own bump: that
+// test drives one counter on a fresh plugin and reads one check, so it
+// cannot see a stamp that moves for a counter OTHER than its own. A stamp
+// declared `laterOf(own, someone else's)` -- the file's own idiom, since
+// lease_changed is legitimately that -- renders correctly for its own bump
+// and passes every assertion there, while a neighbour's fault silently
+// restamps it. The result is a check reporting a time it never had, which
+// is the failure this document was added to end, wearing a plausible
+// value. The key-set halves are the cheap diagnosis of the same thing: a
+// check with no stamp renders with the time of the READING, so a fault
+// latched an hour ago reads as one happening now, and a stamp for a field
+// that is not a check is a value nothing will ever read.
+func TestHealthChecks_EveryCheckHasAStamp(t *testing.T) {
+	declared := declaredChecks()
+	stamps := newHealthPlugin().checkStamps()
+
+	for field, want := range declared {
+		if _, ok := stamps[field]; !ok {
+			t.Errorf("metricDefs declares %q as a %s check and checkStamps has no entry for it; "+
+				"it would render with the time of the reading, so a latched fault reads as a fresh one",
+				field, want)
+		}
+	}
+	for field := range stamps {
+		if _, ok := declared[field]; !ok {
+			t.Errorf("checkStamps carries %q, which metricDefs does not declare as a check; "+
+				"nothing renders it, so it is a stamp no reader will ever see", field)
+		}
+	}
+
+	for _, b := range checkBumpers() {
+		t.Run(b.field, func(t *testing.T) {
+			p := newHealthPlugin()
+			for field, at := range p.checkStamps() {
+				if !at.IsZero() {
+					t.Fatalf("an untouched plugin already stamps %q at %s; "+
+						"the isolation below would measure nothing", field, at)
+				}
+			}
+
+			b.bump(p)
+			after := p.checkStamps()
+
+			if after[b.field].IsZero() {
+				t.Errorf("%s moved and its stamp is still zero", b.field)
+			}
+			for field, at := range after {
+				if field == b.field || at.IsZero() {
+					continue
+				}
+				t.Errorf("bumping %s moved the stamp for %s as well; %s would report a time "+
+					"nothing that check counts ever happened at", b.field, field, field)
+			}
+		})
+	}
+}

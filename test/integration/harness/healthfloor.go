@@ -52,6 +52,31 @@ type EndpointHealth struct {
 	ACDPhase      string `json:"acd_phase"`
 }
 
+// HealthFieldSeries names the exposition series for the health fields
+// whose series is not net_dhcp_<tag> or net_dhcp_<tag>_total.
+var HealthFieldSeries = map[string]string{
+	"status": "health_status",
+}
+
+// HealthFieldsInBuildInfo are the fields carried as LABELS on
+// net_dhcp_build_info instead of as series of their own, and
+// HealthFieldsNotExposed the ones deliberately absent from /metrics,
+// with the reason.
+//
+// MIRRORS pkg/plugin's metricLabelOnlyFields and metricNotExposedFields
+// for the reason HealthResponse mirrors HealthResponse: this suite asks
+// what the INSTALLED plugin serves, and an oracle imported from the
+// plugin would answer out of the plugin's own declaration. Drift is
+// loud in both directions -- TestMetrics_SocketServesTheFullSurface
+// reports a field it can find no series for, and reports a label it was
+// told to expect and did not find on the line.
+var HealthFieldsInBuildInfo = []string{"instance_id", "version", "commit", "library"}
+
+var HealthFieldsNotExposed = map[string]string{
+	"checks":    "each check's observedValue is the counter's own series, already exposed",
+	"endpoints": "a series per container is a cardinality decision O-5 takes, not this one",
+}
+
 // HealthResponse mirrors pkg/plugin.HealthResponse. Duplicated here
 // so the integration package doesn't pull on pkg/plugin internals.
 type HealthResponse struct {

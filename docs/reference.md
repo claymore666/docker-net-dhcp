@@ -1030,11 +1030,17 @@ change removed, and doing it in the query reintroduces it.
 
 #### Counter resets
 
-`net_dhcp_build_info` carries the plugin's `instance_id` as a label:
+`net_dhcp_build_info` carries the plugin's `instance_id` as a label,
+and since 2.0-alpha.1 the build identity beside it:
 
 ```
-net_dhcp_build_info{instance_id="..."} 1
+net_dhcp_build_info{instance_id="...",version="...",commit="...",library="..."} 1
 ```
+
+None of the four is ever empty — `dev` and `unknown` are what a build
+that does not know says, because an empty label reads as "nothing to
+report". The series is a gauge with the value 1 and no `family` label:
+it exists for its labels.
 
 The counters are process-lifetime and reset when the plugin restarts.
 Because the id changes with the process, a restart appears to Prometheus
@@ -1046,6 +1052,14 @@ comparable at all.
 
 `net_dhcp_healthy` is `1`/`0`, mirroring the `healthy` field, so the one
 derived judgement the plugin makes stays alertable.
+`net_dhcp_health_status` (2.0-alpha.1+) is the same judgement one step
+finer — `0` pass, `1` warn, `2` fail, ordered so that worse is higher.
+`> 0` is the alerting expression and `>= 2` is exactly the subset
+`net_dhcp_healthy` already carried. It latches for the life of the
+process for the same reason `healthy` does; read `net_dhcp_build_info`'s
+`instance_id` to tell a fault this process recorded earlier from a new
+one, and the health document's `checks` to see WHEN the counter behind
+it last moved.
 
 #### Not exposed
 

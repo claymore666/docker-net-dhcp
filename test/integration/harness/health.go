@@ -123,17 +123,49 @@ func PluginHealth(ctx context.Context, cli *docker.Client) (*HealthResponse, err
 // measurement and is what the suite-source guard rejects (#405).
 func WaitPluginHealth(t *testing.T, ctx context.Context, cli *docker.Client, budget time.Duration) *HealthResponse {
 	t.Helper()
+	return WaitPluginHealthFor(t, ctx, cli, budget, "the plugin socket to answer", nil)
+}
+
+// WaitPluginHealthFor is WaitPluginHealth with a precondition on the
+// state the document describes: it polls until the socket answers AND
+// cond accepts, and fails naming what it was waiting for.
+//
+// WHY A ONE-READING CELL NEEDS ONE. A manager is registered in
+// persistentDHCP when the Join returns and its renewal client binds
+// after that, so there is a window in which `endpoints` truthfully
+// reports the container's entry as `acquiring` with no address. A cell
+// that reads the document once lands in it (measured in CI, run
+// 33938855928, on a container whose start had already returned).
+//
+// STILL NOT A MEASUREMENT, and two rules keep it from becoming the
+// unguarded before/after pair #405 found: cond sees ONE document, so
+// there is nothing to subtract; and cond must be written on a DIFFERENT
+// field from the ones the caller then asserts on. A cond that waits for
+// the answer the test wants makes the test a report that the answer was
+// eventually produced, which is the failure `--- FAIL` cannot show you.
+func WaitPluginHealthFor(t *testing.T, ctx context.Context, cli *docker.Client, budget time.Duration, what string, cond func(*HealthResponse) bool) *HealthResponse {
+	t.Helper()
 	deadline := time.Now().Add(budget)
 	var lastErr error
+	var last *HealthResponse
 	for time.Now().Before(deadline) {
 		h, err := PluginHealth(ctx, cli)
-		if err == nil {
-			return h
+		if err != nil {
+			lastErr = err
+		} else {
+			last = h
+			if cond == nil || cond(h) {
+				return h
+			}
 		}
-		lastErr = err
 		time.Sleep(200 * time.Millisecond)
 	}
-	t.Fatalf("plugin health never became reachable within %s; last error: %v", budget, lastErr)
+	if last == nil {
+		t.Fatalf("plugin health never became reachable within %s while waiting for %s; last error: %v",
+			budget, what, lastErr)
+	}
+	t.Fatalf("waited %s for %s and it never happened. The last document reported %d endpoint(s): %+v",
+		budget, what, len(last.Endpoints), last.Endpoints)
 	return nil
 }
 
