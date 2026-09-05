@@ -228,10 +228,26 @@ py_rc=$?
 # anyway, so that if it ever does, this gate judges the value that would be
 # used rather than one that would not.
 scope_words=$(sed -n 's/^[[:space:]]*GATE_SCOPE_BRANCHES=//p' "$SCOPE" | tr -d '"' | tail -1)
+# PATHNAME EXPANSION OFF FOR THE SPLIT. This value's character class admits
+# `*` and `?` -- a scope word may be a filter pattern, `2.*` -- and an
+# unquoted expansion globs against the CURRENT DIRECTORY before it splits.
+# MEASURED: from a directory holding a file named `2.zzz-not-a-branch`, the
+# word `2.*` was replaced by that filename and this gate failed on a branch
+# name written nowhere; from a directory where the pattern matched something
+# real, the pattern was never tested as a pattern and the
+# must-match-a-branch obligation was dropped. Either way the verdict was a
+# function of the working directory.
+#
+# This is one of the sites that split this value; the population is not a
+# number written here, it is what scripts/test-scope-splitting-sites.sh
+# discovers and drives -- an earlier count in prose said four and was wrong
+# about this very line.
+set -f
 for w in $scope_words; do
     subjects="${subjects}
 gate-branch-scope.env:GATE_SCOPE_BRANCHES	${w}"
 done
+set +f
 
 n_subj=$(printf '%s\n' "$subjects" | grep -c .)
 if [ "$n_subj" -eq 0 ]; then

@@ -99,7 +99,11 @@ jobs:
           # load-bearing for the reason above, which never depended on
           # the cleanup.
           path: .resolver
-          sparse-checkout: scripts/resolve-dispatch-ref.sh
+          # Two files, both OURS: the resolver, and the release-body
+          # extractor the pre-flight below runs against the tag's notes.
+          sparse-checkout: |
+            scripts/resolve-dispatch-ref.sh
+            scripts/release-body.sh
           sparse-checkout-cone-mode: false
 
       # The dispatch input reaches the shell as DATA, through env, and is
@@ -183,6 +187,42 @@ jobs:
             echo "latest_tag=$LATEST"
             echo "latest_arm_tag=$LATEST_ARM"
           } >> "$GITHUB_OUTPUT"
+
+      # THE NOTES ARE JUDGED HERE, BEFORE ANYTHING IS PUBLISHED.
+      #
+      # `github-release` assembles the body, and it `needs:` the four
+      # verify jobs, which need `release`/`release-arm64`. By the time a
+      # refusal there is printed, both registries hold the tag and
+      # `promote-latest` is moving the floating tags in parallel: the run
+      # goes red with the images already published and no release page.
+      # That is what v2.0.0-rc1 shipped (a generated placeholder, then;
+      # a refusal, now that the extraction refuses instead of falling
+      # back).
+      #
+      # `resolve` is the one job every publishing job descends from, so a
+      # refusal here fails the run with nothing pushed anywhere. The
+      # assembly in `github-release` stays exactly as it is — it is what
+      # produces the body — and this is the same script, run early,
+      # against the same two inputs.
+      #
+      # OUR SCRIPT, THEIR DATA. `.resolver` is this workflow's own ref
+      # (see the checkout above); `.notes` is the tag's tree, checked out
+      # for one file and never executed. Running the tag's copy of the
+      # extractor would let the tag decide whether the tag is publishable.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.tag.outputs.ref }}
+          path: .notes
+          sparse-checkout: RELEASE_NOTES.md
+          sparse-checkout-cone-mode: false
+
+      - name: Refuse a tag whose release notes cannot be assembled
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          bash .resolver/scripts/release-body.sh "$TAG" .notes/RELEASE_NOTES.md >/dev/null
+          echo "Release notes for $TAG assemble; nothing has been published yet."
 
   release:
     needs: resolve

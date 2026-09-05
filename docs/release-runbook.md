@@ -726,12 +726,17 @@ the `vX.Y.Z` milestone (the workflow leans on this for the
    confirm the workflow run is green end-to-end (pre-release mode,
    `:latest` untouched — see "Pre-release dry-run" above). Then:
    ```sh
-   git checkout main && git pull --ff-only
+   git checkout main && git pull --ff-only &&
    # Step 4's check, on the tree that is about to be tagged. The release
    # page's body comes from here, and its refusal would otherwise arrive
    # after the images are pushed.
-   scripts/release-body.sh vX.Y.Z RELEASE_NOTES.md >/dev/null
-   git tag -s vX.Y.Z -m "vX.Y.Z — <one-liner>"   # signed (#175)
+   #
+   # THE `&&` IS THE POINT. Newline-separated, a refusal here printed its
+   # error and the next line pushed the tag anyway, which is the failure
+   # this check exists to prevent. Chained, the block stops at the first
+   # non-zero and nothing below it runs.
+   scripts/release-body.sh vX.Y.Z RELEASE_NOTES.md >/dev/null &&
+   git tag -s vX.Y.Z -m "vX.Y.Z — <one-liner>" &&   # signed (#175)
    git push origin vX.Y.Z
    ```
    Use `-s` (signed) so the release tag shows **Verified** on GitHub —

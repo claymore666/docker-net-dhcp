@@ -856,6 +856,24 @@ jobs:
       - name: Branch names under .github/ resolve
         run: bash scripts/check-branch-refs.sh
 
+      # A command a document tells someone to RUN must be runnable, and a
+      # documented check whose refusal is the point must stop the block
+      # under it. scripts/release-body.sh shipped mode 100644 with both
+      # runbook blocks invoking it directly: exit 126, nothing read, and
+      # the tag pushed on the next line regardless. The bit is read from
+      # the git INDEX, which is the one place the filesystem cannot lie
+      # about.
+      - name: Documented commands run, and their refusals stop the block
+        run: bash scripts/check-direct-invocations.sh
+
+      # release.yml judges the release notes in `resolve`, which every
+      # publishing job descends from. Until #914 the only judgement was in
+      # `github-release`, downstream of both registry pushes, so a refusal
+      # arrived with the images already published. Nothing a pull request
+      # runs can execute release.yml; this reads its job graph instead.
+      - name: The release run judges the notes before it publishes
+        run: bash scripts/check-release-refusal-order.sh
+
       # Two allowlists accept the same advisories under two naming
       # schemes, and both headers state they stay in sync. They did not:
       # two GHSAs stayed accepted by dependency-review — which runs at
