@@ -116,15 +116,24 @@ RUN test -n "${RUNNER_VERSION}" || { echo "RUNNER_VERSION build-arg is required"
     && /opt/runner/bin/installdependencies.sh \
     && rm -rf /var/lib/apt/lists/*
 
-# Baked Go caches: module cache from go.mod/go.sum, then a warm compile
+# Baked Go caches: module cache from the module graph, then a warm compile
 # cache from building the tree (integration tag pulls in the docker SDK
 # test deps). PR source will differ, but stdlib and dependency compile
 # units still hit. Source is dropped afterwards; only caches stay.
+#
+# The two internal/ COPYs mirror the root Dockerfile, for the reasons
+# given there: go.mod replaces github.com/claymore666/dhcp-golib with the
+# in-tree copy (D21), so the replaced module's own go.mod must exist
+# before `go mod download` reads the replace, and its sources must exist
+# before the warm-up compiles the packages that import it. They are
+# 2.x-only: on dev internal/ does not exist and either COPY fails.
 COPY go.mod go.sum /tmp/cache-src/
+COPY internal/dhcp-golib/go.mod /tmp/cache-src/internal/dhcp-golib/go.mod
 RUN cd /tmp/cache-src && go mod download
 COPY pkg/ /tmp/cache-src/pkg/
 COPY cmd/ /tmp/cache-src/cmd/
 COPY test/ /tmp/cache-src/test/
+COPY internal/ /tmp/cache-src/internal/
 RUN cd /tmp/cache-src && go build -tags integration ./... && go vet -tags integration ./... || true; \
     rm -rf /tmp/cache-src
 
