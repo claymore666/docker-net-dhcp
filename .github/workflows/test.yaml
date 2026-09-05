@@ -240,6 +240,59 @@ jobs:
             exit 1
           }
 
+      # THE TAGS ARE LOAD-BEARING, and the default checkout has none:
+      # it is a depth-1 clone of one ref. The manifest-delta table is
+      # checked against the PREVIOUS RELEASE's config.json, which exists
+      # nowhere but in history, and the gate refuses rather than passing
+      # when it cannot resolve the tag.
+      #
+      # IT SITS HERE, AHEAD OF THE SELF-TESTS, AND NOT BESIDE THE GATE
+      # IT FEEDS. test-check-manifest-delta-table.sh's last case runs
+      # the gate against THIS repository — the preservation control that
+      # keeps "refuse everything" from satisfying its refusal cases — so
+      # the self-test step needs the tags as much as the gate step does.
+      # MEASURED: with the fetch below the self-tests, run 33932483754
+      # failed on exactly that case with "git cannot resolve 'v1.9.0'",
+      # while the local lane stayed green because a workstation clone
+      # has tags.
+      #
+      # --depth=1 and not fetch-depth: 0 on the checkout: the gate needs
+      # each tag's tree, not the history between them. MEASURED
+      # 2026-09-05 on a shallow clone of this repository: the tag
+      # resolves and `git show v1.9.0:config.json` reads, with .git at
+      # 5.5M.
+      #
+      # It asserts afterwards rather than trusting the fetch's exit
+      # code, like the locale and PyYAML steps above and for the same
+      # reason: a fetch that reported success while the baseline is
+      # still unresolvable must go red HERE, where the cause is named,
+      # not two steps later inside a gate.
+      - name: Fetch the release tags the manifest-delta gate reads
+        run: |
+          git fetch --tags --depth=1 --no-recurse-submodules origin
+          # The baseline comes from the table's own marker, so this step
+          # cannot drift from the gate by naming a different tag.
+          baseline=$(sed -n 's/^<!-- manifest-delta: begin baseline=\([^ ]*\) -->$/\1/p' \
+                     RELEASE_NOTES.md | head -n 1)
+          if [ -z "$baseline" ]; then
+            echo "::error title=No manifest-delta baseline::RELEASE_NOTES.md carries no" \
+                 "'<!-- manifest-delta: begin baseline=... -->' marker, so there is no tag" \
+                 "to fetch and check-manifest-delta-table.sh will refuse." >&2
+            exit 1
+          fi
+          if ! git rev-parse -q --verify "refs/tags/$baseline^{commit}" >/dev/null; then
+            echo "::error title=Baseline tag unavailable::'$baseline' is still unresolvable" \
+                 "after fetching tags. The manifest-delta gate and its self-test both read" \
+                 "that tag's config.json out of history and refuse without it." >&2
+            exit 1
+          fi
+          if ! git cat-file -e "$baseline:config.json" 2>/dev/null; then
+            echo "::error title=Baseline manifest missing::'$baseline' resolves but carries no" \
+                 "config.json, so there is nothing to compare the delta table against." >&2
+            exit 1
+          fi
+          echo "manifest-delta baseline $baseline resolves and carries config.json"
+
       - name: Gate script self-tests
         run: bash scripts/run-gate-selftests.sh
 
@@ -410,21 +463,6 @@ jobs:
       # CAP_SYS_PTRACE did exactly that on the v1.3.3 release PR).
       - name: Plugin-manifest parity check
         run: bash scripts/check-manifest-parity.sh
-
-      # THE TAGS ARE LOAD-BEARING FOR THE STEP BELOW, and the default
-      # checkout has none: it is a depth-1 clone of one ref. The
-      # manifest-delta table is checked against the PREVIOUS RELEASE's
-      # config.json, which exists nowhere but in history, and the gate
-      # refuses rather than passing when it cannot resolve the tag — so
-      # without this the step would go red on every pull request.
-      #
-      # --depth=1 and not fetch-depth: 0 on the checkout: the gate needs
-      # each tag's tree, not the history between them. MEASURED
-      # 2026-09-05 on a shallow clone of this repository: the tag
-      # resolves and `git show v1.9.0:config.json` reads, with .git at
-      # 5.5M.
-      - name: Fetch the release tags the manifest-delta gate reads
-        run: git fetch --tags --depth=1 --no-recurse-submodules origin
 
       # RELEASE_NOTES.md's manifest-delta table is what an operator
       # reads before approving `docker plugin upgrade`'s privilege
