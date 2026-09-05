@@ -59,7 +59,9 @@ assessment above is retained here as the audit trail. If it becomes
 reachable again the gate fails loudly rather than silently
 re-accepting it.
 
-## v2.0.0-alpha.1 (unreleased)
+## v2.0.0 (unreleased)
+
+Pre-releases of this version: `v2.0.0-rc1` (2026-09-05, IPv4 only).
 
 The plugin performs the DHCP exchange itself, through an in-tree Go library,
 instead of driving an external client process. The image contains no DHCP
@@ -105,7 +107,7 @@ property of Docker, not of this manifest.
 
 <!-- manifest-delta: begin baseline=v1.9.0 -->
 
-| field | v1.9.0 | v2.0.0-alpha.1 | prompted |
+| field | v1.9.0 | v2.0.0 | prompted |
 | --- | --- | --- | --- |
 | `linux.capabilities` | `CAP_NET_ADMIN`, `CAP_SYS_ADMIN`, `CAP_SYS_PTRACE` | `CAP_NET_ADMIN`, `CAP_NET_RAW`, `CAP_SYS_ADMIN`, `CAP_SYS_PTRACE` | **yes** |
 | `network.type` | `host` | `host` | no change |

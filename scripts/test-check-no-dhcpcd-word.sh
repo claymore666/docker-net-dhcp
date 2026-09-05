@@ -50,7 +50,7 @@ build_repo() {
         cat > RELEASE_NOTES.md <<'RN'
 # Release notes
 
-## v2.0.0-alpha.1 (unreleased)
+## v2.0.0 (unreleased)
 
 The plugin performs the exchange itself.
 
@@ -191,7 +191,7 @@ build_repo "$R"
 python3 - "$R/RELEASE_NOTES.md" <<'PY'
 import io,sys
 p=sys.argv[1]
-io.open(p,'w',encoding='utf-8').write("# Release notes\n\n## v2.0.0-alpha.1 (unreleased)\n\nNothing historical here.\n")
+io.open(p,'w',encoding='utf-8').write("# Release notes\n\n## v2.0.0 (unreleased)\n\nNothing historical here.\n")
 PY
 ( cd "$R" && git add -A && git commit -qm plant )
 expect "an unfindable history boundary is a REFUSAL" 2 "$(run "$R")"
