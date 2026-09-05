@@ -6,6 +6,7 @@ package dhcp
 import (
 	"net"
 	"net/netip"
+	"strings"
 	"testing"
 	"time"
 
@@ -536,5 +537,25 @@ func TestBuildParams_TheBroadcastFlagReachesTheWire(t *testing.T) {
 			"The one-shot's desync is zero and the DISCOVER is supposed to go out in this " +
 			"same step; a test that passes here having sent nothing is the failure this " +
 			"repository keeps meeting.")
+	}
+}
+
+// TestErrIPv6Unsupported_NamesTheLineAndWhereIPv6IsTracked is the
+// library half of the same obligation pkg/util carries for the
+// CreateNetwork refusal.
+//
+// This error is reached on one route only -- a network created by a
+// 1.x build whose stored ipv6=true survived the upgrade -- so it is
+// the message an operator sees at exactly the moment they are least
+// able to guess what happened. It owes them the same two facts: which
+// line does not implement DHCPv6, and where the work is tracked.
+func TestErrIPv6Unsupported_NamesTheLineAndWhereIPv6IsTracked(t *testing.T) {
+	got := ErrIPv6Unsupported.Error()
+	for _, want := range []string{"2.0", "#911"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the library refusal does not name %q, so an operator on the "+
+				"upgrade route cannot tell a permanent limit from one that is "+
+				"tracked: %s", want, got)
+		}
 	}
 }
