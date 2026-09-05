@@ -14,12 +14,12 @@ links here rather than repeating them.
 | artifact | what it is |
 | --- | --- |
 | `net-dhcp-plugin-vX.Y.Z-linux-amd64.tar.gz` | the plugin rootfs + `config.json`, `linux/amd64` |
-| `checksums.txt` | SHA-256 of every attached amd64 artifact |
+| `checksums.txt` | SHA-256 of every attached amd64 artifact, and of the plugin binary inside the tarball |
 | `checksums.txt.sigstore.json` | the cosign bundle signing `checksums.txt` |
 | `sbom.spdx.json` | SBOM, SPDX format |
 | `sbom.cdx.json` | SBOM, CycloneDX format |
 | `net-dhcp-plugin-vX.Y.Z-linux-arm64.tar.gz` | the same for `linux/arm64` (v1.7.0 onward) |
-| `checksums-arm64.txt`, `checksums-arm64.txt.sigstore.json` | the arm64 checksum manifest and its cosign bundle |
+| `checksums-arm64.txt`, `checksums-arm64.txt.sigstore.json` | the arm64 checksum manifest, in the same shape, and its cosign bundle |
 | `sbom-arm64.spdx.json`, `sbom-arm64.cdx.json` | the arm64 SBOMs |
 
 The plugin image itself lives at
@@ -33,9 +33,10 @@ verification step below applies to it with the `-arm64` tag and the
 `-arm64` artifact names substituted.
 
 One signature covers every attached file: `checksums.txt` is signed, and
-the checksums inside it cover the artifacts. So verifying the manifest
-and then checking the files against it is enough — there is no per-file
-signature to chase.
+the checksums inside it cover the artifacts — and the plugin binary
+packed inside the tarball, under the path it has once extracted. So
+verifying the manifest and then checking the files against it is enough
+— there is no per-file signature to chase.
 
 ## Verifying the release artifacts
 
@@ -64,13 +65,20 @@ cosign verify-blob \
   --certificate-identity-regexp '^https://github.com/claymore666/docker-net-dhcp/.github/workflows/release.yml@' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   checksums.txt
+tar -xzf net-dhcp-plugin-VERSION-linux-amd64.tar.gz
 sha256sum --ignore-missing -c checksums.txt
 ```
 
-`checksums.txt` covers **three** files — the plugin tarball and both
-SBOMs — because one signature over one manifest is what attests all of
-them at once. `--ignore-missing` is therefore not a weakening: without
-it, a reader who downloaded only the tarball gets
+`checksums.txt` covers **four** files — the plugin tarball, both SBOMs,
+and the plugin binary from inside the tarball, listed as
+`rootfs/usr/sbin/net-dhcp` — because one signature over one manifest is
+what attests all of them at once. That fourth entry is why the `tar
+-xzf` is in the block above and not an afterthought: it is a path, not
+an attached asset, and it exists only once you have unpacked the
+tarball into the directory you run the check from.
+
+`--ignore-missing` is not a weakening: without it, a reader who
+downloaded only the tarball and did not unpack it gets
 
 ```
 net-dhcp-plugin-vX.Y.Z-linux-amd64.tar.gz: OK
@@ -78,18 +86,30 @@ sha256sum: sbom.spdx.json: No such file or directory
 sbom.spdx.json: FAILED open or read
 sha256sum: sbom.cdx.json: No such file or directory
 sbom.cdx.json: FAILED open or read
-sha256sum: WARNING: 2 listed files could not be read
+sha256sum: rootfs/usr/sbin/net-dhcp: No such file or directory
+rootfs/usr/sbin/net-dhcp: FAILED open or read
+sha256sum: WARNING: 3 listed files could not be read
 ```
 
 and has every reason to conclude the release was tampered with. With
-it, every file you actually downloaded is verified and the rest are
-skipped. It does not soften the check that matters: a file that IS
-present and does not match still fails — `FAILED`, exit status 1.
-Download all three and drop the flag if you want the manifest checked
-exhaustively.
+it, every file you actually have is verified and the rest are skipped.
+It does not soften the check that matters: a file that IS present and
+does not match still fails — `FAILED`, exit status 1.
 
-The arm64 release ships its own `checksums-arm64.txt` and bundle, over
-the arm64 tarball and its two SBOMs. Verify that one the same way; the
+**What the flag costs you is the binary, and only the binary.** The
+three attached assets are either downloaded or obviously absent; the
+binary is the one entry a reader can be missing without noticing,
+because skipping it looks exactly like not having downloaded an SBOM.
+Unpack the tarball first, as the block above does, and
+`rootfs/usr/sbin/net-dhcp: OK` appears in the output — that line is the
+signed statement about the binary you are going to run. For an
+exhaustive check, download the tarball and both SBOMs, unpack the
+tarball, and drop the flag.
+
+The arm64 release ships its own `checksums-arm64.txt` and bundle.
+`checksums-arm64.txt` covers **four** files in the same shape: the
+arm64 tarball, its two SBOMs, and `rootfs/usr/sbin/net-dhcp` from
+inside that tarball. Verify it the same way, unpacking included; the
 two manifests do not cover each other's files.
 
 The identity regexp is the point of the exercise: it pins the signature
@@ -193,8 +213,9 @@ describe releases it can no longer describe.
 Instead the digest is produced by the build that makes it true and
 signed with everything else. `checksums.txt` (`checksums-arm64.txt` for
 arm64) covers the tarball, both SBOMs, **and the binary inside the
-tarball**, recorded under the path it has once extracted. So step 4 has
-a signed reference without needing one from a commit:
+tarball**, recorded under the path it has once extracted — the fourth
+entry described above. So step 4 has a signed reference without needing
+one from a commit:
 
 ```sh
 # In the directory holding the downloaded assets:
@@ -207,15 +228,19 @@ sha256sum --ignore-missing -c checksums.txt
 ```
 
 `--ignore-missing` is there so the manifest still checks whichever
-assets you downloaded; drop it once you have all of them and it becomes
-an exhaustive check. `rootfs/usr/sbin/net-dhcp: OK` is the line that
-says the binary inside the tarball is the one this release signed, and
-it is the same number your rebuild in step 3 produces.
+assets you downloaded; drop it once you have all of them **and have
+unpacked the tarball**, and it becomes an exhaustive check. Without the
+`tar -xzf` the binary's entry has no file to read, so dropping the flag
+turns a good release into an exit 1 and keeping it skips the entry in
+silence. `rootfs/usr/sbin/net-dhcp: OK` is the line that says the binary
+inside the tarball is the one this release signed, and it is the same
+number your rebuild in step 3 produces.
 
 Since v1.7.0 each release also ships arm64 binaries under the `-arm64`
 tags; rebuild them the same way on an arm64 host (the build follows the
 host architecture), unpack `net-dhcp-plugin-VERSION-linux-arm64.tar.gz`
-in step 4, and check against `checksums-arm64.txt`.
+in step 4, and check against `checksums-arm64.txt`, whose fourth entry
+is the arm64 binary at the same path.
 
 ### What the determinism rests on
 

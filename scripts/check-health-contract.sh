@@ -398,7 +398,13 @@ fi
 # values, and `endpoints`'s own "read the phase against the mode and
 # never alone" is an instruction about two fields of one entry, not
 # about a counter that could be a check.
-CHECK_IMPERATIVES='alert on|watch it|watch for|worth investigating|worth attention|actionable|read this \*\*before\*\*|never alone'
+# The vocabulary grew in review r3: `read against`, `read it as` and
+# `denominator` were the phrasings two `-` rows used to carry clause
+# 3's shape while this list could not see them (`acd_announcements_sent`,
+# `dhcp_routes_applied`). Running the widened list over the whole table
+# found four more rows in the same position, not two -- which is the
+# bound below restated as a measurement rather than a worry.
+CHECK_IMPERATIVES='alert on|watch it|watch for|worth investigating|worth attention|actionable|read this \*\*before\*\*|never alone|read (it |them )?against|read it as|denominator|how to read it'
 CHECK_NEARMISS='Not a check:'
 
 n_warn_rows=0

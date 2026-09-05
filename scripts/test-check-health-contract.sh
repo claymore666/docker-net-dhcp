@@ -615,6 +615,32 @@ out=$(bash "$CHECK" "$DIR/4c-dash-said.md" "$DIR/4c-dash-said.go" "$M4" "$F4" 2>
 [ $rc -eq 0 ] && ok "the same row with its near-miss reason passes" \
                || no "a near-miss row with its reason returned $rc (: $out)"
 
+# (c) the phrasings the vocabulary gained in review r3. Two shipped `-`
+# rows told the operator to read the counter against another one --
+# `acd_announcements_sent` ("Read against `acd_probes_sent`") and
+# `dhcp_routes_applied` ("Read it as the denominator for the row below")
+# -- in words the list could not see, so the rule's claim that such a row
+# says why it is not a check was false for them and nothing reported it.
+# Each new phrasing is driven in both directions: bare it fails, with the
+# reason it passes. Without the passing half these would be satisfied by
+# a gate that refuses the phrasing outright.
+for phrasing in "read against \`leases_obtained\`, not alone." \
+                "read it as the denominator for the row below." \
+                "a strict subset of \`dhcp_timeouts\`, and that is how to read it."; do
+    tag=$(printf '%s' "$phrasing" | tr -cd 'a-z' | cut -c1-12)
+    DOC_DASH_TEXT="$phrasing" \
+        mkdoc "$DIR/4c-$tag-bare.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/4c-$tag-bare.go" 4
+    out=$(bash "$CHECK" "$DIR/4c-$tag-bare.md" "$DIR/4c-$tag-bare.go" "$M4" "$F4" 2>&1); rc=$?
+    [ $rc -eq 1 ] && ok "a '-' row saying '$phrasing' with no reason fails" \
+                   || no "'$phrasing' bare returned $rc (: $out)"
+
+    DOC_DASH_TEXT="$phrasing Not a check: its own value carries no verdict." \
+        mkdoc "$DIR/4c-$tag-said.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/4c-$tag-said.go" 4
+    out=$(bash "$CHECK" "$DIR/4c-$tag-said.md" "$DIR/4c-$tag-said.go" "$M4" "$F4" 2>&1); rc=$?
+    [ $rc -eq 0 ] && ok "the same row with its near-miss reason passes" \
+                   || no "'$phrasing' with its reason returned $rc (: $out)"
+done
+
 # (a), the other direction, and the vocabulary's own positive control: a
 # `-` row with NO imperative needs no sentence. A gate demanding one
 # from every unclassified row would flag most of the table.

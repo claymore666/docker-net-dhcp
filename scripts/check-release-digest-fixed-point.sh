@@ -2,7 +2,8 @@
 # Copyright the docker-net-dhcp contributors.
 # SPDX-License-Identifier: GPL-3.0-only
 
-# The release lane must have a reachable passing state (#910, review r2).
+# The release lane must have a reachable passing state, and the tree must
+# describe the manifest it actually publishes (#910, reviews r2 and r3).
 #
 # WHAT WENT WRONG. Through 1.x this repository carried a per-release
 # block of binary digests in docs/verifying-releases.md, and the release
@@ -18,9 +19,9 @@
 # to reach, and because it ran between the GHCR push and the Hub push,
 # every attempt left a half-published release behind it.
 #
-# WHAT THIS CHECKS. Two claims, both of which have to hold for the lane
-# to have a reachable passing state, and one measurement that decides
-# which of them applies:
+# WHAT THIS CHECKS. Claims that all have to hold for the lane to have a
+# reachable passing state AND for the tree to describe it truthfully,
+# plus one measurement that decides which of them applies:
 #
 #   A (MEASURED, never skipped) — is the commit still part of the
 #     binary's identity? Two builds whose ONLY difference is the commit,
@@ -34,40 +35,75 @@
 #     is what would go red the moment someone pastes the block back.
 #
 #   C — the release workflow's signed checksum manifest must cover the
-#     binary. This is where the digests went instead: produced by the
-#     build that makes them true, signed with the tarball. Without it,
-#     removing the block would mean no published digest at all, which is
-#     a worse tree than the one this replaced.
+#     binary, UNDER THE PATH THE TARBALL EXTRACTS TO. This is where the
+#     digests went instead: produced by the build that makes them true,
+#     signed with the tarball. Without it, removing the block would mean
+#     no published digest at all, which is a worse tree than the one
+#     this replaced.
+#
+#   D — the container build's link flags are the host build's. Half A
+#     measures the HOST `go build` through the Makefile's GO_LDFLAGS,
+#     but the RELEASE binary comes out of the Dockerfile, which spells
+#     the same -X flags independently. With the two unreconciled,
+#     dropping Commit= from GO_LDFLAGS alone flips A to "the commit is
+#     not in the binary" while the release build still bakes it in, and
+#     a later commit re-adding the digest block passes (review r2,
+#     finding 3, MEASURED). So the two spellings are compared as SETS,
+#     and each key's binding to VERSION / COMMIT is reconciled by
+#     pushing sentinel values through `make`.
+#
+#   E — the verification document must describe the manifest the
+#     workflow writes. Not "mention it": the number of entries, the
+#     names that go missing when only the tarball was fetched, and the
+#     extraction precondition are all DERIVED from release.yml's own
+#     `sha256sum` operands and compared against what the document says.
+#     docs/verifying-releases.md said "three" while the workflow wrote
+#     four, so its exhaustive path exited 1 on a good release and its
+#     lenient path skipped the binary in silence (review r2, finding 1,
+#     MEASURED).
 #
 # The four cells of A x B are all reachable and all meaningful: A true
 # and B violated is the defect; A true and B clean is the shipped state;
 # A false and B populated is a tree that could carry digests again; A
-# false and B clean is fine. C is independent and is required in every
-# cell, so the B-clean arm is not a universal satisfied by an empty
-# domain -- there is always something left to fail.
+# false and B clean is fine. C, D and E are independent of that split
+# and are required in every cell, so the B-clean arm is not a universal
+# satisfied by an empty domain -- there is always something left to
+# fail.
 #
 # WHAT IT CANNOT SEE.
-#   - It measures the HOST `go build`, not the container build. The
-#     Dockerfile threads the same two build args into the same -ldflags,
-#     but a divergence between the two build shapes is invisible here.
-#     `Reproducible build` covers the container half.
+#   - Half A still measures the HOST `go build`. D reconciles the two
+#     spellings of the link flags, so a divergence between them is now
+#     loud; a divergence in build SHAPE that both spellings share (a
+#     different Go toolchain, a different trimpath setting) is not.
+#     `Reproducible build` covers the container half's determinism.
 #   - B is keyed on the SHAPE `<64 hex><spaces><path ending in a binary
 #     name>` -- what `sha256sum` writes. A digest recorded some other
 #     way (a prose sentence, a table cell, base64, a truncated hash) is
 #     invisible to it.
-#   - C reads the workflow's text. It asserts the manifest names the
-#     binary; it cannot assert the run produced a correct digest, and no
-#     tag will be cut to find out.
+#   - C and E read the workflow's TEXT. They assert what the manifest
+#     will contain and that the document says the same; they cannot
+#     assert a run produced a correct digest, and no tag will be cut to
+#     find out.
+#   - E's worked-example arm is derived for ONE scenario -- the reader
+#     who fetched the tarball and did not extract it, so exactly one
+#     entry is readable. A document that adds a second worked example
+#     for a different scenario would have to state its own count, and
+#     this gate would judge it by the first scenario's arithmetic.
+#   - E can only match manifest entries the workflow names LITERALLY. An
+#     operand that is a shell variable (the tarball is, `"$ART"`) is
+#     counted but its name is not checked against the document.
 #   - It says nothing about whether a recorded digest is CORRECT. Under
 #     A that question has no answer to give; without A it is a different
 #     check.
 #
-# Usage: check-release-digest-fixed-point.sh [TREE] [WORKFLOW]
+# Usage: check-release-digest-fixed-point.sh [TREE] [WORKFLOW] [DOC] [DOCKERFILE]
 # Exit:  0 pass, 1 a claim is violated, 2 cannot run.
 set -uo pipefail
 
 TREE="${1:-$(cd "$(dirname "$0")/.." && pwd)}"
 WF="${2:-$TREE/.github/workflows/release.yml}"
+DOC="${3:-$TREE/docs/verifying-releases.md}"
+DOCKERFILE="${4:-$TREE/Dockerfile}"
 
 die() { echo "check-release-digest-fixed-point: $*" >&2; exit 2; }
 note() { echo "FAIL  $*" >&2; failed=1; }
@@ -76,6 +112,8 @@ failed=0
 [ -d "$TREE" ] || die "$TREE is not a directory"
 [ -f "$TREE/Makefile" ] || die "$TREE/Makefile does not exist — the link flags are derived from it"
 [ -f "$WF" ] || die "$WF does not exist"
+[ -f "$DOC" ] || die "$DOC does not exist — claim E has lost its subject"
+[ -f "$DOCKERFILE" ] || die "$DOCKERFILE does not exist — claim D cannot reconcile the release build's link flags against the host build's"
 command -v go >/dev/null 2>&1 || die "go is not on PATH; half A is a measurement, not an assumption"
 command -v make >/dev/null 2>&1 || die "make is not on PATH; the link flags are read from the Makefile"
 
@@ -89,18 +127,23 @@ mapfile -t BINARIES < <(cd "$TREE/cmd" 2>/dev/null && for d in */; do [ -d "$d" 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
-# --- A. is the commit part of the binary's identity? --------------------
-# The link flags come from the Makefile's own GO_LDFLAGS, evaluated with
-# the COMMIT we want -- the release builds through that variable, so
-# asking make is asking the subject. Building it ourselves into a temp
-# directory keeps bin/ untouched: a developer's next `make debug` must
-# not run a binary this check stamped.
+# --- the link flags, from both spellings --------------------------------
+# The Makefile side is EVALUATED, never read as text: GO_LDFLAGS is
+# written in terms of $(BUILDINFO_PKG), $(VERSION) and $(COMMIT), and a
+# textual read would compare a template against an expansion. Asking
+# make is asking the subject, which is the same reason half A builds
+# with these flags rather than with flags of its own.
 ldflags_for() {
     make -C "$TREE" -s \
         --eval='fp-print-ldflags: ; @printf "%s\n" "$(GO_LDFLAGS)"' \
-        fp-print-ldflags COMMIT="$1" VERSION=fixed-point-probe 2>/dev/null
+        fp-print-ldflags COMMIT="$1" VERSION="${2:-fixed-point-probe}" 2>/dev/null
 }
 
+x_flags() { grep -oE '\-X +[^ "]+=[^ "]*' <<< "${1:-}" | sed -E 's/^-X +//'; }
+
+# --- A. is the commit part of the binary's identity? --------------------
+# Building into a temp directory keeps bin/ untouched: a developer's next
+# `make debug` must not run a binary this check stamped.
 build_hash() {
     local out="$2"
     ( cd "$TREE" && go build -ldflags "$1" -o "$out" "./cmd/$3" ) >/dev/null 2>&1 || return 1
@@ -143,6 +186,57 @@ for b in ${BINARIES_TO_BUILD[@]+"${BINARIES_TO_BUILD[@]}"}; do
     [ "$h1" != "$h3" ] && commit_dependent=yes
 done
 
+# --- D. the release build spells the same link flags --------------------
+# Half A's verdict is about the host build. It transfers to the release
+# binary only while the Dockerfile's -ldflags carry the same -X keys,
+# bound to the same build arguments. Sentinels rather than the real
+# values, so which key carries VERSION and which carries COMMIT is read
+# out of make's own expansion instead of assumed from the spelling.
+SENT_V=fixedpointsentinelversionvalue
+SENT_C=fixedpointsentinelcommitvalue
+
+mk_ld="$(ldflags_for "$SENT_C" "$SENT_V")"
+df_ld="$(grep -oE '\-ldflags +"[^"]*"' "$DOCKERFILE" | sed -E 's/^-ldflags +"//; s/"$//' | tr '\n' ' ')"
+
+mapfile -t MK_PAIRS < <(x_flags "$mk_ld")
+mapfile -t DF_PAIRS < <(x_flags "$df_ld")
+
+mk_keys="$(printf '%s\n' ${MK_PAIRS[@]+"${MK_PAIRS[@]}"} | sed 's/=.*//' | grep -v '^$' | sort -u)"
+df_keys="$(printf '%s\n' ${DF_PAIRS[@]+"${DF_PAIRS[@]}"} | sed 's/=.*//' | grep -v '^$' | sort -u)"
+
+if [ "$mk_keys" != "$df_keys" ]; then
+    note "the Makefile and the Dockerfile do not link the same -X keys into the binary."
+    {
+        echo "  Makefile GO_LDFLAGS (evaluated):"
+        printf '%s\n' "${mk_keys:-  (none)}" | sed 's/^/        /'
+        echo "  $(basename "$DOCKERFILE") -ldflags:"
+        printf '%s\n' "${df_keys:-  (none)}" | sed 's/^/        /'
+        echo "  Half A measures the host build through the Makefile; the released binary is"
+        echo "  built by the Dockerfile. While these two disagree, A's answer is about a"
+        echo "  binary nobody ships: dropping a key from one side alone flips this gate's"
+        echo "  verdict without changing what the release bakes in."
+    } >&2
+else
+    for pair in ${MK_PAIRS[@]+"${MK_PAIRS[@]}"}; do
+        key="${pair%%=*}"; val="${pair#*=}"
+        case "$val" in
+            "$SENT_V") want=VERSION ;;
+            "$SENT_C") want=COMMIT ;;
+            *) continue ;;
+        esac
+        dval=""
+        for dp in ${DF_PAIRS[@]+"${DF_PAIRS[@]}"}; do
+            [ "${dp%%=*}" = "$key" ] && dval="${dp#*=}"
+        done
+        dvar="$(printf '%s' "$dval" | sed -E 's/^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?$/\1/')"
+        if [ "$dvar" != "$want" ]; then
+            note "$key is bound to \$$want by the Makefile and to '${dval:-nothing}' by $(basename "$DOCKERFILE")."
+            echo "  The two builds would stamp different things into the same field, and half A" >&2
+            echo "  would be measuring the wrong one." >&2
+        fi
+    done
+fi
+
 # --- B. the tree must not record a digest of a binary it builds ---------
 # `sha256sum`'s own output shape, with an optional path in front of the
 # name, over the tracked files.
@@ -182,24 +276,99 @@ if [ "$n_records" -gt 0 ] && [ "$commit_dependent" = yes ]; then
     } >&2
 fi
 
-# --- C. the signed manifest covers the binary ---------------------------
-# Derived from the workflow: every checksums*.txt it writes, and whether
-# the sha256sum invocations feeding it name the binary.
+# --- the manifests, and what the workflow puts in them -------------------
+# Derived from the workflow: every checksums*.txt it writes, and the
+# operands of the sha256sum invocations feeding each one.
 mapfile -t MANIFESTS < <(grep -oE 'checksums[A-Za-z0-9_.-]*\.txt' "$WF" | grep -v '\.sigstore' | sort -u)
 if [ "${#MANIFESTS[@]}" -eq 0 ]; then
     die "$WF writes no checksums manifest — this check's third claim has lost its subject, which is a bigger change than it can judge"
 fi
 
+# The tarball's root directory, from the packaging itself. `tar -czf ART
+# -C plugin .` means an operand's path INSIDE the artifact is its path
+# relative to `plugin`, which is exactly the path an operator has after
+# extracting. Transcribing `rootfs/usr/sbin/` here instead would be a
+# second declaration of the layout, wrong the day the layout moves.
+mapfile -t TAR_ROOTS < <(grep -oE 'tar -[a-z]*c[a-z]* +[^ ]+ +-C +[^ ]+' "$WF" | awk '{print $NF}' | tr -d '"' | sort -u)
+case "${#TAR_ROOTS[@]}" in
+    1) TAR_ROOT="${TAR_ROOTS[0]}" ;;
+    0) die "$WF packages no tarball with 'tar -c ... -C <dir>' — the extracted path of a manifest entry cannot be derived" ;;
+    *) die "$WF packages tarballs from ${#TAR_ROOTS[@]} different -C directories (${TAR_ROOTS[*]}); which one a manifest entry extracts from is ambiguous and this check will not guess" ;;
+esac
+mapfile -t TARBALL_OPERANDS < <(grep -oE 'tar -[a-z]*c[a-z]* +[^ ]+' "$WF" | awk '{print $NF}' | tr -d '"' | sort -u)
+
+# Emits one "cwd<TAB>operand" per manifest entry.
+manifest_entries() {
+    local m="$1" mre line cwd rest op
+    local -a ops
+    mre="$(printf '%s' "$m" | sed 's/[.[\*^$]/\\&/g')"
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        cwd=""
+        [[ "$line" =~ \(\ *cd\ +([^\ \&\)]+)\ *\&\& ]] && cwd="${BASH_REMATCH[1]}"
+        rest="${line#*sha256sum }"
+        rest="${rest%%>*}"
+        rest="${rest%%)*}"
+        read -r -a ops <<< "$rest"
+        for op in ${ops[@]+"${ops[@]}"}; do
+            op="${op%\"}"; op="${op#\"}"
+            op="${op%\'}"; op="${op#\'}"
+            [ -n "$op" ] || continue
+            case "$op" in -*) continue ;; esac
+            printf '%s\t%s\n' "$cwd" "$op"
+        done
+    done < <(grep -E "sha256sum [^|]*>>? *\"?${mre}\"?" "$WF")
+}
+
+# --- C. the signed manifest covers the binary, at its extracted path ----
+declare -A ENTRY_COUNT=() MISSING_NAMES=()
 for m in "${MANIFESTS[@]}"; do
-    feeding="$(grep -E "sha256sum .*>>? *\"?${m}\"?" "$WF" || true)"
-    if [ -z "$feeding" ]; then
+    mapfile -t ENTRIES < <(manifest_entries "$m")
+    if [ "${#ENTRIES[@]}" -eq 0 ]; then
         note "$WF names $m but no sha256sum invocation writes it."
         continue
     fi
+    ENTRY_COUNT["$m"]="${#ENTRIES[@]}"
     covered=no
-    for b in "${BINARIES[@]}"; do
-        printf '%s\n' "$feeding" | grep -E "[^[:space:]\"]*/${b}([[:space:]\"]|$)" >/dev/null && covered=yes
+    missing=""
+    for e in "${ENTRIES[@]}"; do
+        cwd="${e%%$'\t'*}"; op="${e#*$'\t'}"
+        is_tarball=no
+        for t in ${TARBALL_OPERANDS[@]+"${TARBALL_OPERANDS[@]}"}; do
+            [ "$op" = "$t" ] && is_tarball=yes
+        done
+        [ "$is_tarball" = no ] && case "$op" in *'$'*) : ;; *) missing="${missing}${op} " ;; esac
+
+        base="${op##*/}"
+        is_bin=no
+        for b in "${BINARIES[@]}"; do [ "$base" = "$b" ] && is_bin=yes; done
+        [ "$is_bin" = yes ] || continue
+        covered=yes
+
+        full="$op"; [ -n "$cwd" ] && full="$cwd/$op"
+        full="${full#./}"
+        case "$full" in
+            "$TAR_ROOT"/*)
+                rel="${full#"$TAR_ROOT"/}"
+                if [ "$rel" != "$op" ]; then
+                    note "$m records the binary as '$op', but after extraction that file is at '$rel'."
+                    {
+                        echo "  The invocation runs in '${cwd:-.}' and the artifact is packed with"
+                        echo "  'tar -c ... -C $TAR_ROOT', so an operand is checkable by an operator only"
+                        echo "  when it is written relative to $TAR_ROOT. As it stands, 'sha256sum -c $m'"
+                        echo "  in the directory where the tarball was unpacked names a file that is not"
+                        echo "  there, and --ignore-missing skips it in silence rather than failing."
+                    } >&2
+                fi
+                ;;
+            *)
+                note "$m records '$full', which the tarball packed from '$TAR_ROOT' does not contain."
+                echo "  No operator can produce that file from a published asset, so the entry can" >&2
+                echo "  never be checked — only skipped by --ignore-missing." >&2
+                ;;
+        esac
     done
+    MISSING_NAMES["$m"]="$missing"
     if [ "$covered" = no ]; then
         note "$m covers no binary: nothing feeding it names $(printf '%s ' "${BINARIES[@]}")under a path."
         {
@@ -211,6 +380,132 @@ for m in "${MANIFESTS[@]}"; do
     fi
 done
 
+# --- E. the document describes the manifest the workflow writes ---------
+word_for() {
+    case "$1" in
+        1) echo one ;; 2) echo two ;; 3) echo three ;; 4) echo four ;;
+        5) echo five ;; 6) echo six ;; 7) echo seven ;; 8) echo eight ;;
+        9) echo nine ;; 10) echo ten ;; 11) echo eleven ;; 12) echo twelve ;;
+        *) echo "$1" ;;
+    esac
+}
+num_for() {
+    case "$1" in
+        one) echo 1 ;; two) echo 2 ;; three) echo 3 ;; four) echo 4 ;;
+        five) echo 5 ;; six) echo 6 ;; seven) echo 7 ;; eight) echo 8 ;;
+        nine) echo 9 ;; ten) echo 10 ;; eleven) echo 11 ;; twelve) echo 12 ;;
+        *) echo "$1" ;;
+    esac
+}
+
+# E1: every manifest the workflow writes is described, and every place
+# the document states its size states the size the workflow produces.
+for m in "${MANIFESTS[@]}"; do
+    want="${ENTRY_COUNT[$m]:-}"
+    [ -n "$want" ] || continue
+    mre="$(printf '%s' "$m" | sed 's/[.[\*^$]/\\&/g')"
+    mapfile -t STATED < <(grep -oE "\`${mre}\` covers \*\*[A-Za-z0-9]+\*\* files" "$DOC" | sed -E 's/.*\*\*([A-Za-z0-9]+)\*\*.*/\1/')
+    if [ "${#STATED[@]}" -eq 0 ]; then
+        note "$(basename "$DOC") never says how many files \`$m\` covers; the workflow puts $want in it."
+        {
+            echo "  An operator verifies a release from this document. It has to state the"
+            echo "  manifest's size in the shape '\`$m\` covers **$(word_for "$want")** files', once per"
+            echo "  place it makes the claim, so that adding an entry in release.yml goes red"
+            echo "  here rather than silently making the page wrong."
+        } >&2
+        continue
+    fi
+    for s in "${STATED[@]}"; do
+        got="$(num_for "$(printf '%s' "$s" | tr '[:upper:]' '[:lower:]')")"
+        if [ "$got" != "$want" ]; then
+            note "$(basename "$DOC") says \`$m\` covers $s files; release.yml writes $want entries into it."
+            echo "  Followed as written that document exits 1 on a good release, or skips an" >&2
+            echo "  entry in silence. The entries are: $(manifest_entries "$m" | awk -F'\t' '{printf "%s%s ", ($1==""?"":$1"/"), $2}')" >&2
+        fi
+    done
+done
+
+# E2/E3: the document's blocks. A block that runs `sha256sum -c <m>` for
+# a manifest with an entry INSIDE the tarball has to unpack the tarball
+# first, in that same block -- otherwise the reader who follows it
+# either fails on a good release or skips the binary without being told.
+# A worked example of a partial check has to tally with the manifest it
+# is an example of.
+mapfile -t DOC_LINES < <(cat "$DOC")
+in_block=0
+block=""
+check_blocks=0
+example_blocks=0
+flush_block() {
+    local body="$1" m mre tarline shaline n_stated n_failed missing ok_m
+    [ -n "$body" ] || return 0
+
+    for m in "${MANIFESTS[@]}"; do
+        mre="$(printf '%s' "$m" | sed 's/[.[\*^$]/\\&/g')"
+        printf '%s\n' "$body" | grep -E "sha256sum[^|]* -c +\"?${mre}\"?" >/dev/null || continue
+        # Only for a manifest with an entry that exists solely after extraction.
+        [ -n "${MISSING_NAMES[$m]:-}" ] || continue
+        check_blocks=$((check_blocks + 1))
+        shaline="$(printf '%s\n' "$body" | grep -nE "sha256sum[^|]* -c +\"?${mre}\"?" | head -1 | cut -d: -f1)"
+        tarline="$(printf '%s\n' "$body" | grep -nE '(^|[^a-z])tar +-[a-zA-Z]*x' | head -1 | cut -d: -f1)"
+        if [ -z "$tarline" ] || [ "$tarline" -ge "$shaline" ]; then
+            note "$(basename "$DOC") runs 'sha256sum -c $m' in a block that never unpacks the tarball first."
+            {
+                echo "  $m records an entry under the path it has once the tarball is extracted."
+                echo "  Without the extraction the reader either sees FAILED open or read on a good"
+                echo "  release, or -- with --ignore-missing -- never checks that entry and is not"
+                echo "  told. Put the 'tar -x' in the same block, ahead of the check."
+            } >&2
+        fi
+    done
+
+    printf '%s\n' "$body" | grep 'listed files could not be read' >/dev/null || return 0
+    example_blocks=$((example_blocks + 1))
+    n_stated="$(printf '%s\n' "$body" | sed -nE 's/.*WARNING: ([0-9]+) listed files could not be read.*/\1/p' | head -1)"
+    n_failed="$(printf '%s\n' "$body" | grep -c 'FAILED open or read' || true)"
+    if [ "$n_stated" != "$n_failed" ]; then
+        note "$(basename "$DOC")'s worked example says $n_stated listed files could not be read and shows $n_failed."
+        return 0
+    fi
+    ok_m=""
+    for m in "${MANIFESTS[@]}"; do
+        [ "$(( ${ENTRY_COUNT[$m]:-0} - 1 ))" = "$n_stated" ] || continue
+        missing=yes
+        for name in ${MISSING_NAMES[$m]:-}; do
+            printf '%s\n' "$body" | grep -F -- "$name: FAILED open or read" >/dev/null || missing=no
+        done
+        [ "$missing" = yes ] && ok_m="$m"
+    done
+    if [ -z "$ok_m" ]; then
+        note "$(basename "$DOC")'s worked example does not tally with any manifest release.yml writes."
+        {
+            echo "  It shows $n_stated files unreadable. The example is the reader who fetched the"
+            echo "  tarball and did not extract it, so that number is one less than the manifest's"
+            echo "  entry count and the unreadable names are the other entries. release.yml writes:"
+            for m in "${MANIFESTS[@]}"; do
+                echo "    $m: ${ENTRY_COUNT[$m]:-0} entries; without the tarball: ${MISSING_NAMES[$m]:-(none named literally)}"
+            done
+        } >&2
+    fi
+}
+for line in ${DOC_LINES[@]+"${DOC_LINES[@]}"}; do
+    trimmed="${line#"${line%%[![:space:]]*}"}"
+    trimmed="${trimmed#> }"
+    trimmed="${trimmed#"${trimmed%%[![:space:]]*}"}"
+    case "$trimmed" in
+        '```'*)
+            if [ "$in_block" = 1 ]; then flush_block "$block"; block=""; in_block=0; else in_block=1; fi
+            continue ;;
+    esac
+    [ "$in_block" = 1 ] && block="${block}${line}"$'\n'
+done
+if [ "$check_blocks" -eq 0 ]; then
+    die "$(basename "$DOC") contains no block that checks a manifest with 'sha256sum -c'. Claim E's precondition arm has nothing to judge, and reporting a clean pass over that is how a check goes quiet instead of red."
+fi
+if [ "$example_blocks" -eq 0 ]; then
+    die "$(basename "$DOC") carries no worked example of a partial check ('listed files could not be read'). That example is what tells a reader a good release can print FAILED lines; without it claim E's tally arm has an empty domain."
+fi
+
 [ "$failed" -eq 0 ] || exit 1
 
-echo "PASS  release digests are a fixed point: commit-in-binary=${commit_dependent}, ${n_records} in-tree digest record(s) of ${#BINARIES[@]} built binar(ies), ${#MANIFESTS[@]} signed manifest(s) covering them"
+echo "PASS  release digests are a fixed point: commit-in-binary=${commit_dependent}, ${n_records} in-tree digest record(s) of ${#BINARIES[@]} built binar(ies), ${#MANIFESTS[@]} signed manifest(s) covering them at their extracted paths, link flags reconciled across Makefile and $(basename "$DOCKERFILE"), $(basename "$DOC") in step with ${#MANIFESTS[@]} manifest(s)"

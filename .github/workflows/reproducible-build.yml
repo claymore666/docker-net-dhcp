@@ -25,9 +25,18 @@ name: Reproducible build
 #
 # Both builds get the SAME two values (this workflow is about
 # determinism, not about identity), and they are non-default values on
-# purpose: with VERSION=dev and COMMIT=unknown the -X flags would write
-# what the defaults already say, and a Dockerfile that had stopped
-# threading them through would reproduce perfectly here.
+# purpose: passing a real tag and a real commit is the shape release.yml
+# builds in, and that is the shape worth exercising.
+#
+# WHAT THIS WORKFLOW CANNOT SEE, stated because the reason above used to
+# claim it could: whether the Dockerfile still threads the two arguments
+# into the binary at all. Both builds get the same pair and
+# check-reproducible-build.sh compares out-a against out-b, so a
+# Dockerfile that had stopped passing them through reproduces perfectly
+# here — with the arguments or without them. That question is claim D of
+# scripts/check-release-digest-fixed-point.sh, which reconciles the -X
+# keys the Dockerfile spells against the Makefile's evaluated
+# GO_LDFLAGS and fails when the two diverge.
 #
 # WHY A SEPARATE BUILDER PER BUILD, and not just `--no-cache`. The
 # Dockerfile mounts BuildKit caches for the Go module and build caches.

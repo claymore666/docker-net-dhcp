@@ -1453,8 +1453,8 @@ jobs:
               case "$f" in
                 *-linux-amd64.tar.gz)     what="plugin rootfs + \`config.json\` (amd64)" ;;
                 *-linux-arm64.tar.gz)     what="plugin rootfs + \`config.json\` (arm64)" ;;
-                checksums.txt)            what="SHA-256 of the amd64 files" ;;
-                checksums-arm64.txt)      what="SHA-256 of the arm64 files" ;;
+                checksums.txt)            what="SHA-256 of the amd64 files, and of the binary inside the tarball" ;;
+                checksums-arm64.txt)      what="SHA-256 of the arm64 files, and of the binary inside the tarball" ;;
                 checksums.txt.sigstore.json) what="cosign bundle signing \`checksums.txt\`" ;;
                 checksums-arm64.txt.sigstore.json) what="cosign bundle signing \`checksums-arm64.txt\`" ;;
                 sbom.spdx.json)           what="SBOM, SPDX (amd64)" ;;
