@@ -20,15 +20,21 @@ import (
 )
 
 // A per-test dual-stack segment whose IPv6 service mode is chosen by
-// the test: managed DHCPv6, stateless DHCPv6, SLAAC only, or a DHCPv6
-// server that sends no router advertisements at all.
+// the test: managed DHCPv6, stateless DHCPv6, SLAAC only, a DHCPv6
+// server that sends no router advertisements at all, or a managed
+// server that answers nothing.
+//
+// The mode's observable signature, the RA decoder and the verdict live
+// in v6signature.go, untagged, so they can be driven in the fast lane.
+// This file is the part that needs root: the bridge, the addresses, the
+// server process and the capture.
 //
 // WHY THIS EXISTS AT ALL, AND WHY HERE. #815 needs exactly one of
 // these modes (stateless) to show that the plugin receives an
 // INFORMATION-REQUEST reply and then discards it. #816, #820 and #821
 // each need a different one. Building a stateless-only fixture for
 // #815 and widening it three times would mean the design is reviewed
-// as an increment three times and never on its merits; the four modes
+// as an increment three times and never on its merits; the five modes
 // are one mechanism with one parameter, so it lands once, under the
 // first issue that needs it.
 //
@@ -95,56 +101,29 @@ const (
 	// new_dhcp6_domain_search on INFORM6 and on BOUND6 alike.
 	V6DNSServer    = "fd00:6470:6865::53"
 	V6SearchDomain = "v6mode.example"
+
+	// raLogToken is dnsmasq's own advertisement line, printed
+	// verbatim as `RTR-ADVERT(%s) %s` (radv.c:758) rather than through
+	// gettext. It is the log column of the mode signature; the wire
+	// column is the captured frame.
+	raLogToken = "RTR-ADVERT("
 )
 
-// V6Mode selects what the segment offers over IPv6.
-type V6Mode int
-
-const (
-	// V6Managed is stateful DHCPv6: an address pool plus RAs with the
-	// M flag. The client gets its address over DHCPv6.
-	V6Managed V6Mode = iota
-	// V6Stateless is the #815 shape: RAs with the O flag and no
-	// address pool. The client forms its own address from the prefix
-	// and asks DHCPv6 only for configuration -- an
-	// INFORMATION-REQUEST answered with a REPLY carrying DNS servers
-	// and a search list, and no address at all.
-	V6Stateless
-	// V6SLAAC is RAs with neither flag and no DHCPv6 server. Address
-	// and nothing else; there is nobody to ask for configuration.
-	V6SLAAC
-	// V6NoRA is a DHCPv6 server on a segment with no router
-	// advertisements. Nothing tells the client to speak DHCPv6, so
-	// the server sits there unused. This is the negative control: it
-	// separates "the plugin handled the DHCPv6 reply" from "a DHCPv6
-	// server was running nearby".
-	V6NoRA
-	// V6ManagedSilent is managed DHCPv6 whose server answers nothing:
-	// RAs carry the M flag, so the segment says an address is
-	// available over DHCPv6, and every SOLICIT is dropped.
-	//
-	// This is the mode that keeps #868's fix honest. Tolerating a
-	// missing DHCPv6 address is correct exactly when the segment never
-	// offered one; here it did. A fix that read "v6 acquisition failed,
-	// carry on" rather than "the advertisement said no DHCPv6, carry
-	// on" passes every other mode in this file and fails only this one.
-	V6ManagedSilent
-)
-
-func (m V6Mode) String() string {
-	switch m {
-	case V6Managed:
-		return "managed"
-	case V6Stateless:
-		return "stateless"
-	case V6SLAAC:
-		return "slaac"
-	case V6NoRA:
-		return "nora"
-	case V6ManagedSilent:
-		return "managed-silent"
-	}
-	return fmt.Sprintf("V6Mode(%d)", int(m))
+// V6FixtureT is the slice of *testing.T this fixture uses.
+//
+// It exists for ONE reason and it is worth stating, because it is the
+// first interface of its kind in this harness: the fixture's whole job
+// is to FAIL when a segment is not in the mode it was asked for, and a
+// check that has never been observed failing is not known to work. The
+// drift matrix in v6modes_fixture_test.go drives every ordered pair of
+// modes through the real constructor and has to observe the failure
+// rather than suffer it. *testing.T satisfies this as it stands, so
+// every ordinary caller is unchanged and there is no second code path.
+type V6FixtureT interface {
+	Helper()
+	Logf(format string, args ...any)
+	Fatalf(format string, args ...any)
+	Cleanup(f func())
 }
 
 // rangeArgs is the dnsmasq spelling of the mode.
@@ -152,7 +131,14 @@ func (m V6Mode) String() string {
 // THESE ARE DNSMASQ FLAGS, NOT PROTOCOL NAMES. "ra-stateless" and
 // "ra-only" are one server's vocabulary for the M/O flag
 // combinations; another server spells them differently and the
-// protocol itself has no such words. Measured against dnsmasq 2.92.
+// protocol itself has no such words.
+//
+// The third field of a v6 --dhcp-range is a lease time only when it is
+// not a bare number: dnsmasq parses a bare number there as a PREFIX
+// LENGTH and refuses to start with "prefix length must be exactly 64
+// for RA subnets" (MEASURED 2026-09-05, dnsmasq 2.91). LeaseTime is
+// "2m", so this works; a future edit that makes it "120" breaks all
+// three RA modes at once, loudly.
 func (m V6Mode) rangeArgs() []string {
 	switch m {
 	case V6Managed:
@@ -184,12 +170,10 @@ func (m V6Mode) rangeArgs() []string {
 		// would fail the endpoint for the wrong reason.
 		//
 		// Measured 2026-08-27, dnsmasq 2.92rel2 / dhcpcd 10.3.2, one
-		// netns per arm:
+		// netns per arm, and again 2026-09-05 on 2.91:
 		//
 		//   --dhcp-ignore=tag:dhcpv6  -> DHCPSOLICIT ... ignored, no
-		//                                IA_NA, v4 DHCPACK still sent,
-		//                                client hook still sees three
-		//                                ROUTERADVERTs with nd1_flags=MO
+		//                                IA_NA, v4 DHCPACK still sent
 		//
 		// The obvious spelling does NOT work and was tried first:
 		// tagging the v6 range with `set:` and ignoring that tag leaves
@@ -204,41 +188,17 @@ func (m V6Mode) rangeArgs() []string {
 	return nil
 }
 
-// wantPool and wantRA are the mode's observable signature, measured
-// 2026-08-27 against dnsmasq 2.92rel2:
-//
-//	mode       pool-start in log   RTR-ADVERT sent
-//	managed    yes                 yes
-//	stateless  no                  yes
-//	slaac      no                  yes
-//	nora       yes                 no
-//
-// Both facts are LOCALE-PROOF, which is why they and not the obvious
-// startup prose are what the fixture checks. dnsmasq translates its
-// log strings -- "IP range" is "IP-Bereich" under the German locale
-// the integration runner speaks -- but an address is an address in
-// every language and RTR-ADVERT is a protocol token dnsmasq prints
-// verbatim like DHCPDISCOVER. Matching "DHCPv6 stateless on" would
-// have been the natural check and would go quietly green-to-red on a
-// locale nobody changed on purpose.
-//
-// That signature does not separate stateless from slaac, and
-// deliberately does not try to. The only thing that distinguishes
-// them is the range keyword, and dnsmasq VALIDATES THAT ITSELF at
-// config-parse time: a keyword it does not recognise is "bad
-// dhcp-range" and the process never starts, so the fixture's
-// readiness poll fails loudly rather than the segment coming up
-// silently in the other mode. Measured: ra-stateless and ra-only pass
-// --test, ra-bogus does not.
-func (m V6Mode) wantPool() bool {
-	return m == V6Managed || m == V6NoRA || m == V6ManagedSilent
-}
-func (m V6Mode) wantRA() bool { return m != V6NoRA }
+// RangeArgsFor is rangeArgs, exported for the drift matrix: the contract
+// test needs to start one mode's flags under another mode's name, and
+// doing that through the same function production uses is what makes
+// the matrix a statement about this fixture rather than about a copy of
+// it.
+func RangeArgsFor(m V6Mode) []string { return m.rangeArgs() }
 
 // V6Fixture is a per-test dual-stack segment in one V6Mode. Create it
 // with NewV6Fixture; it registers its own teardown.
 type V6Fixture struct {
-	t    *testing.T
+	t    V6FixtureT
 	mode V6Mode
 
 	cmd       *exec.Cmd
@@ -246,14 +206,42 @@ type V6Fixture struct {
 	leaseFile string
 	logFile   string
 
+	// startedAt is the instant dnsmasq was started, and it is the
+	// reference every "after" question is asked against.
+	startedAt time.Time
+	raCap     *RACapture
+
 	linkUp            bool
 	iptablesInstalled bool
 }
 
 // NewV6Fixture brings up the bridge, the addresses, the FORWARD rules
 // and a dnsmasq in the requested mode, and does not return until the
-// segment has been observed to be in that mode.
+// segment has been observed to be in that mode -- on the wire and in
+// the server's own log.
 func NewV6Fixture(t *testing.T, mode V6Mode) *V6Fixture {
+	t.Helper()
+	return NewV6FixtureWithArgs(t, mode, mode.rangeArgs())
+}
+
+// NewV6FixtureWithArgs is NewV6Fixture with the server's v6 flags given
+// explicitly, so the drift matrix can start one mode's flags under
+// another mode's name and require the fixture to notice.
+//
+// It is the ONLY constructor: NewV6Fixture is two lines over it, and
+// the mode assertion happens here, once. That is deliberate. A drift
+// test that reached the assertion by a path of its own would prove a
+// path production never takes -- two records, one observer -- and a
+// mutant that weakened the assertion in one of them would leave the
+// other's test green.
+func NewV6FixtureWithArgs(t V6FixtureT, name V6Mode, rangeArgs []string) *V6Fixture {
+	t.Helper()
+	f := newV6Fixture(t, name, rangeArgs)
+	f.assertMode()
+	return f
+}
+
+func newV6Fixture(t V6FixtureT, name V6Mode, rangeArgs []string) *V6Fixture {
 	t.Helper()
 	if os.Geteuid() != 0 {
 		t.Fatalf("V6Fixture needs root (got uid=%d)", os.Geteuid())
@@ -262,7 +250,7 @@ func NewV6Fixture(t *testing.T, mode V6Mode) *V6Fixture {
 	// Defensively, so a previous panicked run cannot poison this one.
 	cleanupV6Links()
 
-	f := &V6Fixture{t: t, mode: mode}
+	f := &V6Fixture{t: t, mode: name}
 	t.Cleanup(f.teardown)
 
 	la := netlink.NewLinkAttrs()
@@ -351,14 +339,27 @@ func NewV6Fixture(t *testing.T, mode V6Mode) *V6Fixture {
 	f.leaseFile = filepath.Join(tmp, "leases")
 	f.logFile = filepath.Join(tmp, "dnsmasq.log")
 
-	t.Logf("v6 fixture: mode=%s bridge=%s v4=%s-%s v6=%s",
-		mode, V6BridgeName, V6PoolStart, V6PoolEnd, V6SubnetV6CIDR)
+	// The signature in v6signature.go was measured against a stated
+	// dnsmasq version, and this box's version is not the runner's:
+	// 2.92rel2 was measured on 2026-08-27 and 2.91 on 2026-09-05, on
+	// the same machine role. Read it, never assume it -- a fixture
+	// validated against a version the runner does not run is a
+	// measurement that never ran.
+	t.Logf("v6 fixture: mode=%s bridge=%s v4=%s-%s v6=%s dnsmasq=%q",
+		name, V6BridgeName, V6PoolStart, V6PoolEnd, V6SubnetV6CIDR, dnsmasqVersion())
 
-	f.start()
+	// The capture is opened BEFORE dnsmasq starts. The first
+	// advertisement arrives about a second later (MEASURED, 12 of 12
+	// bring-ups, 0.950s..0.983s), and a capture opened after it would
+	// have to wait for the next one, which dnsmasq schedules 5 to 19
+	// seconds out.
+	f.raCap = StartRACapture(t, V6BridgeName)
+
+	f.start(rangeArgs)
 	return f
 }
 
-func (f *V6Fixture) start() {
+func (f *V6Fixture) start(rangeArgs []string) {
 	f.t.Helper()
 	logF, err := os.Create(f.logFile)
 	if err != nil {
@@ -376,7 +377,7 @@ func (f *V6Fixture) start() {
 		// The v4 half, present in every mode -- see WHY DUAL-STACK.
 		"--dhcp-range=" + V6PoolStart + "," + V6PoolEnd + "," + LeaseTime,
 	}
-	args = append(args, f.mode.rangeArgs()...)
+	args = append(args, rangeArgs...)
 	args = append(args,
 		"--dhcp-option=option6:dns-server,["+V6DNSServer+"]",
 		"--dhcp-option=option6:domain-search,"+V6SearchDomain,
@@ -391,17 +392,29 @@ func (f *V6Fixture) start() {
 	f.cmd.Stdout = logF
 	f.cmd.Stderr = logF
 	f.cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	f.startedAt = time.Now()
 	if err := f.cmd.Start(); err != nil {
 		f.t.Fatalf("start v6 dnsmasq: %v", err)
 	}
 
 	f.waitReady()
-	f.assertMode()
+}
+
+// dnsmasqVersion is the first line of `dnsmasq --version`, or a string
+// saying why it could not be read. It is never a silent empty value:
+// the whole point is that the version is recorded rather than assumed.
+func dnsmasqVersion() string {
+	out, err := exec.Command("/usr/sbin/dnsmasq", "--version").Output()
+	if err != nil {
+		return fmt.Sprintf("(could not read dnsmasq --version: %v)", err)
+	}
+	line, _, _ := strings.Cut(string(out), "\n")
+	return strings.TrimSpace(line)
 }
 
 // waitReady blocks until the v4 pool is logged, which every mode has
 // and which dnsmasq prints once its ranges are configured. Keyed on
-// the pool's start ADDRESS for the locale reason above.
+// the pool's start ADDRESS for the locale reason in V6Signature.
 func (f *V6Fixture) waitReady() {
 	f.t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
@@ -415,40 +428,78 @@ func (f *V6Fixture) waitReady() {
 		f.mode, f.readLog())
 }
 
-// assertMode checks the segment is in the mode the test asked for,
-// rather than assuming the flags did what they did the day they were
-// measured. Both halves matter: the positive says the mode is on, and
-// the negative says the OTHER mode is off. A check with one possible
-// verdict is not a check.
+// evidence gathers both columns of the mode signature: the two facts
+// from the server's own log, and every advertisement seen on the wire.
 //
-// The RA half has to wait rather than sample: an advertisement is
-// emitted about a second after startup, so "no RTR-ADVERT yet" and
-// "no RTR-ADVERT ever" are the same string until enough time has
-// passed. The positive case therefore polls, and the negative case
-// spends the same budget before concluding absence -- otherwise the
-// no-RA mode would pass instantly and for the wrong reason.
-func (f *V6Fixture) assertMode() {
+// The positive case polls and returns as soon as the whole signature is
+// satisfied. The negative case -- a mode that expects NO advertisement
+// -- always spends the full window, because "no RTR-ADVERT yet" and "no
+// RTR-ADVERT ever" are the same evidence until enough time has passed,
+// and a negative that returns early passes because it did not wait.
+func (f *V6Fixture) evidence() V6Evidence {
 	f.t.Helper()
-
-	if got := strings.Contains(f.readLog(), V6PoolStartV6); got != f.mode.wantPool() {
-		f.t.Fatalf("v6 fixture mode=%s: DHCPv6 address pool present=%v, want %v; log:\n%s",
-			f.mode, got, f.mode.wantPool(), f.readLog())
+	want := f.mode.Signature()
+	budget := raBudget
+	if !want.RA {
+		budget = V6NoRAWindow()
 	}
-
-	const raBudget = 5 * time.Second
-	deadline := time.Now().Add(raBudget)
-	sawRA := false
-	for time.Now().Before(deadline) {
-		if strings.Contains(f.readLog(), "RTR-ADVERT(") {
-			sawRA = true
-			break
+	deadline := time.Now().Add(budget)
+	for {
+		log := f.readLog()
+		ev := V6Evidence{
+			PoolLogged: strings.Contains(log, V6PoolStartV6),
+			RALogged:   strings.Contains(log, raLogToken),
+			Frames:     f.raCap.FramesAfter(f.startedAt),
+		}
+		// The wait exists only to tell "no advertisement yet" from "no
+		// advertisement ever". Once one has been captured that question
+		// is answered and every remaining disagreement is decidable, so
+		// spending the rest of the budget would only collect the same
+		// frame again -- and the drift matrix starts twenty-five of
+		// these.
+		if want.RA && ev.Observed().RA {
+			return ev
+		}
+		if time.Now().After(deadline) {
+			return ev
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	if sawRA != f.mode.wantRA() {
-		f.t.Fatalf("v6 fixture mode=%s: router advertisement sent=%v within %v, want %v; log:\n%s",
-			f.mode, sawRA, raBudget, f.mode.wantRA(), f.readLog())
+}
+
+// assertMode checks the segment is in the mode the test asked for,
+// rather than assuming the flags did what they did the day they were
+// measured. It is the fixture's reason to exist and the single place
+// the verdict is turned into a failure.
+//
+// The verdict itself is V6ModeFindings, which is pure and lives in the
+// fast lane, so both directions of it are driven without a bridge.
+func (f *V6Fixture) assertMode() {
+	f.t.Helper()
+	ev := f.evidence()
+	if findings := V6ModeFindings(f.mode, ev); len(findings) > 0 {
+		f.t.Fatalf("v6 fixture mode=%s: %s\ncaptured %d router advertisement(s):\n%s\nlog:\n%s",
+			f.mode, strings.Join(findings, "; "), len(ev.Frames),
+			formatRAFrames(ev.Frames), f.readLog())
 	}
+}
+
+func formatRAFrames(frames []RAFrame) string {
+	if len(frames) == 0 {
+		return "  (none)"
+	}
+	var b strings.Builder
+	for _, fr := range frames {
+		b.WriteString("  " + fr.String() + "\n")
+	}
+	return b.String()
+}
+
+// ModeFindings is assertMode's verdict without the failure, for the
+// contract test that has to observe the check working rather than
+// suffer it.
+func (f *V6Fixture) ModeFindings() []string {
+	return V6ModeFindings(f.mode, f.evidence())
 }
 
 // Mode is the mode this segment was brought up in.
@@ -457,42 +508,137 @@ func (f *V6Fixture) Mode() V6Mode { return f.mode }
 // Bridge is the bridge name to hand the driver as `bridge=`.
 func (f *V6Fixture) Bridge() string { return V6BridgeName }
 
+// StartedAt is when the server process started, which is the reference
+// for every "after" question about this segment.
+func (f *V6Fixture) StartedAt() time.Time { return f.startedAt }
+
+// RACapture is the segment's router-advertisement capture.
+func (f *V6Fixture) RACapture() *RACapture { return f.raCap }
+
+// AwaitRAAfter fails the test unless a router advertisement arrived
+// after since, in BOTH columns: the server logged an RTR-ADVERT line
+// and the capture holds a frame with a later timestamp.
+//
+// This is trap 1's observer, and the reason it takes an instant rather
+// than just counting is that the trap is a test passing because the
+// advertisement it depends on arrived BEFORE the client started, or
+// never, while the client reported "no router" and the test only
+// asserted that the endpoint came up. "An RA existed" and "an RA
+// arrived after this point" are different claims and only the second
+// one is the premise those tests rest on.
+func (f *V6Fixture) AwaitRAAfter(since time.Time, budget time.Duration) []RAFrame {
+	f.t.Helper()
+	deadline := time.Now().Add(budget)
+	for {
+		frames := f.raCap.FramesAfter(since)
+		logged := strings.Contains(f.readLog(), raLogToken)
+		if logged && len(frames) > 0 {
+			return frames
+		}
+		if time.Now().After(deadline) {
+			f.t.Fatalf("v6 fixture mode=%s: no router advertisement after %s within %v — "+
+				"server log has an %s line: %v, capture has %d frame(s) after that instant. "+
+				"Every v6 assertion downstream of this rests on an advertisement the client "+
+				"could actually have heard; log:\n%s",
+				f.mode, since.Format("15:04:05.000"), budget, raLogToken, logged,
+				len(frames), f.readLog())
+			return nil
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// AssertNoRAWithin fails the test if a router advertisement is seen at
+// all within window, in either column.
+//
+// The window is not a parameter with a default: pass V6NoRAWindow(),
+// which is derived from dnsmasq's own scheduling. A window shorter than
+// that interval passes because it did not wait, which is the negative
+// half of trap 1 and the reason this function exists rather than a
+// bare `if len(frames) != 0`.
+func (f *V6Fixture) AssertNoRAWithin(window time.Duration) {
+	f.t.Helper()
+	deadline := time.Now().Add(window)
+	for time.Now().Before(deadline) {
+		if frames := f.raCap.Frames(); len(frames) > 0 {
+			f.t.Fatalf("v6 fixture mode=%s: a router advertisement was captured on a segment "+
+				"that must not advertise:\n%s", f.mode, formatRAFrames(frames))
+		}
+		if strings.Contains(f.readLog(), raLogToken) {
+			f.t.Fatalf("v6 fixture mode=%s: the server logged %s on a segment that must not "+
+				"advertise; log:\n%s", f.mode, raLogToken, f.readLog())
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+// AssertExchange fails the test unless the server's log says a client
+// completed the exchange this mode is defined by.
+//
+// It is the client-dependent half of the mode signature, split out
+// because it can only be asked once a client has run: the fixture
+// checks the client-INdependent half (the pool line, the advertisement
+// and its flags) at construction, and this is what M7d's scenarios call
+// afterwards. The contract is a table in v6signature.go and the verdict
+// is a pure function over the log, driven in the fast lane against
+// captured server logs, one per mode.
+//
+// Nothing in this round can drive it positively on a live segment: the
+// 2.x branch refuses ipv6=true at network creation, so no run on this
+// branch constructs a DHCPv6 client. The live drive is M7d's.
+func (f *V6Fixture) AssertExchange(budget time.Duration) {
+	f.t.Helper()
+	deadline := time.Now().Add(budget)
+	for {
+		findings := V6ExchangeFindings(f.mode, f.readLog())
+		if len(findings) == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			f.t.Fatalf("v6 fixture mode=%s: the exchange this mode is defined by is not in the "+
+				"server's log after %v: %s\nlog:\n%s",
+				f.mode, budget, strings.Join(findings, "; "), f.readLog())
+			return
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+// ExchangeFindings is AssertExchange's verdict without the failure.
+func (f *V6Fixture) ExchangeFindings() []string {
+	return V6ExchangeFindings(f.mode, f.readLog())
+}
+
 // CountLogLines counts server log lines containing all of substrings.
 // Mirrors Fixture.CountBridgeLogLines: this is the outside evidence a
 // test should assert on, the plugin's own counters being evidence of
 // intent rather than of effect.
 func (f *V6Fixture) CountLogLines(substrings ...string) int {
-	n := 0
-	for _, line := range strings.Split(f.readLog(), "\n") {
-		all := true
-		for _, s := range substrings {
-			if !strings.Contains(line, s) {
-				all = false
-				break
-			}
-		}
-		if all && line != "" {
-			n++
-		}
-	}
-	return n
+	return countLinesWithAll(f.readLog(), substrings)
 }
 
 // AwaitIgnoredSolicit blocks until the server has logged a DHCPv6
 // request it refused to answer, and fails the test if none arrives.
 //
 // It exists because V6ManagedSilent has the same startup signature as
-// V6Managed -- same pool line, same RA -- so assertMode cannot tell
-// them apart, and the thing that separates them only becomes visible
-// once a client actually solicits. Without this a mistyped ignore
-// directive would produce a segment that quietly serves addresses
-// while the test believed the server was silent, which turns the
-// strongest assertion in the #868 set into a tautology.
+// V6Managed -- same pool line, same RA, same M and O flags, same prefix
+// option (MEASURED 2026-09-05; V6IndistinguishableModes derives that
+// pair from the table rather than asserting it here) -- so no
+// fixture-time check can tell them apart, and the thing that separates
+// them only becomes visible once a client actually solicits. Without
+// this a mistyped ignore directive would produce a segment that quietly
+// serves addresses while the test believed the server was silent, which
+// turns the strongest assertion in the #868 set into a tautology.
 //
-// "ignored" is dnsmasq's own word for the outcome and, like
-// DHCPSOLICIT, it is a protocol/state token it prints verbatim rather
-// than one of the translated prose strings -- see wantPool's note on
-// why the locale rules the choice of substring here.
+// "ignored" is NOT a protocol token, and an earlier version of this
+// comment said it was. dnsmasq writes it through gettext as
+// `_("ignored")` (rfc3315.c:652) and its own po/de.po renders it
+// "ignoriert" -- on the German locale the integration runner speaks,
+// this needle would match nothing and the wait would time out. What
+// makes it safe is withCLocale, which pins every fixture server to
+// LC_ALL=C; the dependency is on that helper, and it is named here so a
+// change to it is understood to reach this function. DHCPSOLICIT, by
+// contrast, really is printed verbatim.
 func (f *V6Fixture) AwaitIgnoredSolicit(budget time.Duration) {
 	f.t.Helper()
 	deadline := time.Now().Add(budget)
@@ -515,12 +661,20 @@ func (f *V6Fixture) readLog() string {
 	return string(data)
 }
 
-// DumpLogs mirrors Fixture.DumpBridgeLogs for failure diagnostics.
+// DumpLogs mirrors Fixture.DumpBridgeLogs for failure diagnostics, and
+// dumps the wire alongside the log because half the mode signature is
+// only in the frames.
 func (f *V6Fixture) DumpLogs(write func(string)) {
 	write(fmt.Sprintf("--- v6 fixture dnsmasq log (mode=%s) ---\n%s", f.mode, f.readLog()))
+	if f.raCap != nil {
+		f.raCap.Dump(write)
+	}
 }
 
 func (f *V6Fixture) teardown() {
+	if f.raCap != nil {
+		f.raCap.Stop()
+	}
 	if f.cmd != nil && f.cmd.Process != nil {
 		_ = f.cmd.Process.Signal(syscall.SIGTERM)
 		done := make(chan struct{})
@@ -588,7 +742,7 @@ const tentativeBudget = 250 * time.Millisecond
 // NODAD on -- it does not add it -- and it is also the address a
 // router advertisement is sent FROM, so it is the one that matters
 // most and the only one left racing the work queue.
-func awaitNoTentativeAddr(t *testing.T) {
+func awaitNoTentativeAddr(t V6FixtureT) {
 	t.Helper()
 	link, err := netlink.LinkByName(V6BridgeName)
 	if err != nil {
@@ -617,6 +771,7 @@ func awaitNoTentativeAddr(t *testing.T) {
 				"configured address here means NODAD was not honoured, the "+
 				"link-local means the sysctl did not take",
 				strings.Join(stuck, ", "), V6BridgeName, tentativeBudget)
+			return
 		}
 		time.Sleep(2 * time.Millisecond)
 	}
