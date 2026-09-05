@@ -869,8 +869,15 @@ identity as labels on `net_dhcp_build_info`; the `checks` and
 
 The **check** column below says which status each counter contributes.
 It is derived from the rows themselves, by the rule below — stated in
-full here so that you can apply it to any row and get the column back
-rather than having to trust it:
+full here so that you can apply it to any counter row and get the column
+back rather than having to trust it. **Its domain is the counter rows**
+— the ones whose healthy-affecting column says **yes** or **no**. The
+rows above them in the same table are the document's other fields, and
+a field describes a structure or a gauge rather than a monotonic
+counter: it contributes no check and carries `—` in both columns for
+that reason, so an imperative in one of those rows (`endpoints`,
+`healthy`) is about how to read that field, not about a value a check
+could fire on. The rule:
 
 1. **`fail`** — the healthy-affecting column says **yes**. Exactly the
    counters behind `healthy`, so a `fail` check and `healthy: false`

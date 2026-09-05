@@ -397,7 +397,11 @@ fi
 # in the healthy-affecting column and describe structures rather than
 # values, and `endpoints`'s own "read the phase against the mode and
 # never alone" is an instruction about two fields of one entry, not
-# about a counter that could be a check.
+# about a counter that could be a check. The reference says the same in
+# its own words, at the rule paragraph, so a reader applying the rule
+# to a field row is told not to. The exclusion is spelled as a COLUMN
+# VALUE rather than as the table's boundary, which is a hole with its
+# own refusal after the loop.
 # The vocabulary grew in review r3: `read against`, `read it as` and
 # `denominator` were the phrasings two `-` rows used to carry clause
 # 3's shape while this list could not see them (`acd_announcements_sent`,
@@ -454,6 +458,62 @@ if [ "$n_warn_rows" -eq 0 ]; then
     echo "  section's row parser no longer matches the table -- it would report clean over" >&2
     echo "  a document it cannot read." >&2
     exit 2
+fi
+
+# 4c's DOMAIN is a column value, not the boundary it stands for. Fields
+# and counters share ONE table in the reference; a row is judged when
+# its healthy-affecting cell reads yes or no, and every other row is
+# dropped. That is right for the field rows -- `status`, `checks`,
+# `endpoints`, `healthy` and the rest lead the table, describe a
+# structure or a gauge rather than a monotonic counter, and contribute
+# no check -- and it is a hole for anything after them. A counter row
+# that landed `-` in that column would be dropped in silence, and this
+# section's universal would be satisfied by shrinking its own domain
+# rather than by its rows passing.
+#
+# The fact checked is positional, because that is the fact the table
+# actually carries: the fields lead, the counters follow, so every
+# dropped row is above every judged one. A dropped row below the first
+# judged one is either a counter missing its column value or a table
+# this section can no longer delimit; both need a human and neither may
+# read as clean.
+first_judged=$(awk -F'|' '
+    NF >= 6 && $2 ~ /^ `[a-z0-9_]+` $/ {
+        ha = $3; gsub(/[*[:space:]]/, "", ha)
+        if (ha == "yes" || ha == "no") { print NR; exit }
+    }' "$DOC")
+# One line number, or nothing. awk hands back whatever its program
+# printed, and a program that printed several would be folded into the
+# first by the arithmetic below rather than reported -- an error with no
+# direction. A value that is not a single number means this section can
+# no longer find where the counters start, and it says so.
+case "$first_judged" in
+    '' ) : ;;
+    *[!0-9]* )
+        echo "check-health-contract: section 4c could not locate the first counter row in $DOC" >&2
+        echo "  (its row scan returned '$(printf '%s' "$first_judged" | tr '\n' ' ')')." >&2
+        exit 2
+        ;;
+esac
+
+if [ -n "$first_judged" ]; then
+    stray=$(awk -F'|' -v first="$first_judged" '
+        NF >= 6 && $2 ~ /^ `[a-z0-9_]+` $/ && NR + 0 > first + 0 {
+            ha = $3; gsub(/[*[:space:]]/, "", ha)
+            if (ha != "yes" && ha != "no") {
+                n = $2; gsub(/[` ]/, "", n)
+                print NR ": `" n "` (healthy-affecting: " ha ")"
+            }
+        }' "$DOC")
+    if [ -n "$stray" ]; then
+        note "$DOC has rows below the first counter that section 4c cannot judge:"
+        printf '%s\n' "$stray" | sed 's/^/    /' >&2
+        echo "  A row is judged only when its healthy-affecting column says yes or no. Ahead of" >&2
+        echo "  the first counter those are the document's fields and are intended; after it the" >&2
+        echo "  row is dropped with no verdict, which is this section's domain shrinking rather" >&2
+        echo "  than its rows passing. Give the row its column value, or move it up with the" >&2
+        echo "  fields." >&2
+    fi
 fi
 
 # --- 5. the /metrics help strings --------------------------------------

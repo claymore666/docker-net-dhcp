@@ -52,6 +52,7 @@ mkdoc() {
         printf '**[Health counters](#pluginhealth)** — `/Plugin.Health` on the socket. %s flip `healthy` to `false`:' "$word"
         for n in $summary; do printf ' `%s`,' "$n"; done
         printf '\n\n## Counters\n\n| field | healthy-affecting | check | meaning |\n| --- | --- | --- | --- |\n'
+        for n in ${DOC_STRAY_ABOVE-}; do printf '| `%s` | — | — | a structure. |\n' "$n"; done
         printf '| `healthy` | — | — | `false` when'
         for n in $row; do printf ' `%s`,' "$n"; done
         printf ' is non-zero. Those %s, and only those, are the ones marked **yes** in the healthy-affecting column. |\n' "$(printf '%s' "$rword" | tr '[:upper:]' '[:lower:]')"
@@ -60,6 +61,7 @@ mkdoc() {
         for n in ${DOC_FAIL_EXTRA-}; do printf '| `%s` | no | fail | a fault. |\n' "$n"; done
         printf '| `leases_renewed` | no | — | %s |\n' "${DOC_DASH_TEXT:-not a fault.}"
         printf '| `pending_hints` | no | — | not a fault. |\n'
+        for n in ${DOC_STRAY_BELOW-}; do printf '| `%s` | — | — | a structure. |\n' "$n"; done
         printf '\n## Troubleshooting\n\n| symptom | likely cause | fix |\n| --- | --- | --- |\n'
         printf '| `healthy: false` on `/Plugin.Health` | Exactly %s counters flip it:' "$(printf '%s' "$tword" | tr '[:upper:]' '[:lower:]')"
         for n in $trouble; do printf ' `%s`,' "$n"; done
@@ -640,6 +642,28 @@ for phrasing in "read against \`leases_obtained\`, not alone." \
     [ $rc -eq 0 ] && ok "the same row with its near-miss reason passes" \
                    || no "'$phrasing' with its reason returned $rc (: $out)"
 done
+
+# (d) 4c's DOMAIN. A row is judged only when its healthy-affecting cell
+# says yes or no, so a row that carries `-` there is dropped -- correct
+# for the document's field rows, which lead the table, and a hole for a
+# counter row written the same way after them. Both directions, moving
+# only the row's POSITION: the same cell above the counters is a field
+# and passes, after them it is undecidable and fails. Without the
+# passing half this is satisfied by a gate that refuses every `-`/`-`
+# row, which is every field the health document has.
+DOC_STRAY_BELOW=stray_counter \
+    mkdoc "$DIR/4c-stray-below.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/4c-stray-below.go" 4
+out=$(bash "$CHECK" "$DIR/4c-stray-below.md" "$DIR/4c-stray-below.go" "$M4" "$F4" 2>&1); rc=$?
+[ $rc -eq 1 ] && ok "a row after the counters with no yes/no healthy-affecting value fails" \
+               || no "a stray row after the counters returned $rc (: $out)"
+case "$out" in *"stray_counter"*) ok "the domain failure names the row it cannot judge" ;;
+  *) no "the domain failure does not name the row: $out" ;; esac
+
+DOC_STRAY_ABOVE=stray_counter \
+    mkdoc "$DIR/4c-stray-above.md" Four "$FOUR" "$FOUR" "$FOUR"; mkgo "$DIR/4c-stray-above.go" 4
+out=$(bash "$CHECK" "$DIR/4c-stray-above.md" "$DIR/4c-stray-above.go" "$M4" "$F4" 2>&1); rc=$?
+[ $rc -eq 0 ] && ok "the same row ahead of the counters is a field and passes" \
+               || no "a field row before the counters returned $rc (: $out)"
 
 # (a), the other direction, and the vocabulary's own positive control: a
 # `-` row with NO imperative needs no sentence. A gate demanding one
