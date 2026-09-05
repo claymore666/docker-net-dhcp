@@ -12,47 +12,56 @@ import (
 
 // The v6 mode signature's own observer, in the fast lane.
 //
-// Every frame and every log below is VERBATIM: the frames were captured
-// off the fixture's bridge with the AF_PACKET reader in racapture.go,
-// one user namespace per mode, dnsmasq 2.91, 2026-09-05, and printed as
-// hex; the logs are the same runs' `--log-dhcp --log-facility=-` output
-// with a minimal DHCPv6 sender in the peer namespace. That is the
-// raguard_parse.go pattern and it is here for the same reason: an
-// observer validated in a world it does not run in was already shipped
-// once, keyed on a field the real image never prints.
+// Every frame and every log below is VERBATIM. The frames are the LANE's
+// own: run 33996052773, main-1-suite, where the mode contract test
+// decodes the advertisement each mode was accepted on and prints the
+// bytes it decoded. The logs are `--log-dhcp --log-facility=-` output
+// from the same argv off the lane, driven by a minimal DHCPv6 sender in
+// a peer namespace, because no run on this branch can make a client
+// speak v6.
+//
+// The frames come from the lane and not from a convenient namespace
+// because the first set did not, and it showed: captured with an argv
+// this fixture does not use, they advertised a /120 prefix with
+// infinite lifetimes where every mode of this fixture advertises /64
+// with 1800s. Nothing failed -- the bits the signature reads were the
+// same -- and nothing would have, because nothing tied the bytes to the
+// fixture. That is the raguard_parse.go lesson twice over: an observer
+// validated in a world it does not run in was already shipped once,
+// keyed on a field the real image never prints.
 
 // --- verbatim frames ----------------------------------------------------
 
-// Captured on the fixture bridge, mode=managed. dnsmasq sets M and O
+// mode=managed. dnsmasq sets M and O
 // and, because it is serving addresses for this prefix itself, does NOT
 // set the prefix option's A bit.
-const raManagedHex = "333300000001dae712f7a02986dd6c0b662b00703afffe80000000000000d8e712fffef7a029" +
-	"ff020000000000000000000000000001860019ec40c00708000000000000000003047880ffffffff" +
-	"ffffffff00000000fd00647068650000000000000000000005010000000005dc0101dae712f7a029" +
-	"1f030000ffffffff0676366d6f6465076578616d706c650019030000fffffffffd00647068650000" +
-	"0000000000000053"
+const raManagedHex = "333300000001d66740dba1e886dd6c04517e00703afffe80000000000000d46740fffedba1e8" +
+	"ff0200000000000000000000000000018600df8540c007080000000000000000030440800000" +
+	"07080000070800000000fd00647068650000000000000000000005010000000005dc0101d667" +
+	"40dba1e81f030000000007080676366d6f6465076578616d706c65001903000000000708fd00" +
+	"6470686500000000000000000053"
 
 // mode=stateless: O set, M clear, prefix advertised as autonomous.
-const raStatelessHex = "33330000000132ab352e26a586dd6c02f8a700703afffe8000000000000030ab35fffe2e26a5" +
-	"ff02000000000000000000000000000186003520404007080000000000000000030440c000000708" +
-	"0000070800000000fd00647068650000000000000000000005010000000005dc010132ab352e26a5" +
-	"1f030000000007080676366d6f6465076578616d706c65001903000000000708fd00647068650000" +
-	"0000000000000053"
+const raStatelessHex = "33330000000146a1584be82e86dd6c0eca0100703afffe8000000000000044a158fffe4be82e" +
+	"ff020000000000000000000000000001860043e6404007080000000000000000030440c00000" +
+	"07080000070800000000fd00647068650000000000000000000005010000000005dc010146a1" +
+	"584be82e1f030000000007080676366d6f6465076578616d706c65001903000000000708fd00" +
+	"6470686500000000000000000053"
 
 // mode=slaac: neither flag, prefix autonomous.
-const raSLAACHex = "3333000000010271220de30986dd6c08501400703afffe80000000000000007122fffe0de309" +
-	"ff0200000000000000000000000000018600434d400007080000000000000000030440c000000708" +
-	"0000070800000000fd00647068650000000000000000000005010000000005dc01010271220de309" +
-	"1f030000000007080676366d6f6465076578616d706c65001903000000000708fd00647068650000" +
-	"0000000000000053"
+const raSLAACHex = "3333000000018ad3401f959486dd6c04fa6700703afffe8000000000000088d340fffe1f9594" +
+	"ff0200000000000000000000000000018600914e400007080000000000000000030440c00000" +
+	"07080000070800000000fd00647068650000000000000000000005010000000005dc01018ad3" +
+	"401f95941f030000000007080676366d6f6465076578616d706c65001903000000000708fd00" +
+	"6470686500000000000000000053"
 
 // mode=managed-silent: byte-for-byte the managed signature. --dhcp-ignore
 // changes what the server ANSWERS, not what it advertises.
-const raManagedSilentHex = "3333000000015a759226972886dd6c05a40c00703afffe80000000000000587592fffe269728" +
-	"ff02000000000000000000000000000186002e7440c00708000000000000000003047880ffff" +
-	"ffffffffffff00000000fd00647068650000000000000000000005010000000005dc01015a7592269728" +
-	"1f030000ffffffff0676366d6f6465076578616d706c650019030000fffffffffd00647068650000" +
-	"0000000000000053"
+const raManagedSilentHex = "33330000000162bb4b8d99c986dd6c066d8800703afffe8000000000000060bb4bfffe8d99c9" +
+	"ff0200000000000000000000000000018600c1b840c007080000000000000000030440800000" +
+	"07080000070800000000fd00647068650000000000000000000005010000000005dc010162bb" +
+	"4b8d99c91f030000000007080676366d6f6465076578616d706c65001903000000000708fd00" +
+	"6470686500000000000000000053"
 
 func mustFrame(t *testing.T, s string) []byte {
 	t.Helper()
@@ -85,12 +94,11 @@ func TestParseRA_ReadsTheFlagsFromTheByteAfterCurHopLimit(t *testing.T) {
 		hexFrame       string
 		managed, other bool
 		autonomous     bool
-		prefixLen      uint8
 	}{
-		{V6Managed, raManagedHex, true, true, false, 120},
-		{V6Stateless, raStatelessHex, false, true, true, 64},
-		{V6SLAAC, raSLAACHex, false, false, true, 64},
-		{V6ManagedSilent, raManagedSilentHex, true, true, false, 120},
+		{V6Managed, raManagedHex, true, true, false},
+		{V6Stateless, raStatelessHex, false, true, true},
+		{V6SLAAC, raSLAACHex, false, false, true},
+		{V6ManagedSilent, raManagedSilentHex, true, true, false},
 	}
 	for _, c := range cases {
 		t.Run(c.mode.String(), func(t *testing.T) {
@@ -120,8 +128,14 @@ func TestParseRA_ReadsTheFlagsFromTheByteAfterCurHopLimit(t *testing.T) {
 			if !p.OnLink {
 				t.Error("prefix L flag clear; dnsmasq sets on-link unless off-link was asked for")
 			}
-			if p.PrefixLen != c.prefixLen {
-				t.Errorf("prefix length = %d, want %d", p.PrefixLen, c.prefixLen)
+			// Every mode advertises the interface's own /64, whatever
+			// its pool covers. This is asserted as a constant rather
+			// than per row because it was per row, with /120 for the
+			// two managed modes, which is what the frames captured
+			// with the wrong argv said -- and no row disagreeing with
+			// another is a row that checks nothing.
+			if p.PrefixLen != 64 {
+				t.Errorf("prefix length = %d, want 64", p.PrefixLen)
 			}
 			if got := p.Prefix.String(); got != "fd00:6470:6865::" {
 				t.Errorf("prefix = %s, want fd00:6470:6865::", got)
