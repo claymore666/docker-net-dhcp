@@ -33,10 +33,24 @@ name: Reproducible build
 # into the binary at all. Both builds get the same pair and
 # check-reproducible-build.sh compares out-a against out-b, so a
 # Dockerfile that had stopped passing them through reproduces perfectly
-# here — with the arguments or without them. That question is claim D of
-# scripts/check-release-digest-fixed-point.sh, which reconciles the -X
-# keys the Dockerfile spells against the Makefile's evaluated
-# GO_LDFLAGS and fails when the two diverge.
+# here — with the arguments or without them.
+#
+# AND CLAIM D IS NOT THE ANSWER EITHER, which is what this note said
+# until review r3. Claim D of scripts/check-release-digest-fixed-point.sh
+# reconciles the -X keys the Dockerfile SPELLS against the Makefile's
+# evaluated GO_LDFLAGS; deleting `ARG VERSION` and `ARG COMMIT` leaves
+# that -ldflags text exactly as it was, so D exits 0 while ${VERSION}
+# and ${COMMIT} expand to nothing (MEASURED, review r3, finding 4).
+#
+# The observer that does answer it is the integration lane. Its
+# "Build + install integration plugin" step derives the revision once,
+# builds the plugin image through this same Dockerfile with that value
+# as COMMIT, and exports it as NET_DHCP_EXPECT_COMMIT;
+# test/integration/health_document_test.go then reads /Plugin.Health off
+# the RUNNING plugin and requires the commit it reports to be that
+# value. An argument that stopped reaching the binary shows up there as
+# an identity the plugin cannot state — on the wire, which is where this
+# question has an answer and here it has none.
 #
 # WHY A SEPARATE BUILDER PER BUILD, and not just `--no-cache`. The
 # Dockerfile mounts BuildKit caches for the Go module and build caches.
